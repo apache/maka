@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { AssistantStepContentKind, StoredMessage, TurnStatus } from '@maka/core/session';
 import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
 import type { ToolActivityKind, ToolResultContent } from '@maka/core/events';
@@ -148,7 +148,9 @@ export interface RuntimeEventReadModelProjection {
 }
 
 export interface ProjectRuntimeEventsToStoredMessagesOptions {
-  runHeaders: readonly AgentRunHeader[] | Readonly<Record<string, AgentRunHeader>>;
+  invocations:
+    | readonly RuntimeInvocationRecord[]
+    | Readonly<Record<string, RuntimeInvocationRecord>>;
   canonicalPermissionOutcomes?: ReadonlyMap<string, CanonicalPermissionOutcomeRecord>;
 }
 
@@ -179,7 +181,7 @@ export interface RuntimeEventTerminalFactResult {
 }
 
 interface ProjectionState {
-  headers: Map<string, AgentRunHeader>;
+  invocations: Map<string, RuntimeInvocationRecord>;
   diagnostics: RuntimeEventReadModelDiagnostic[];
   toolNameByUseId: Map<string, string>;
   permissionRequestById: Map<
@@ -217,7 +219,7 @@ export function projectRuntimeEventsToStoredMessages(
   options: ProjectRuntimeEventsToStoredMessagesOptions,
 ): RuntimeEventReadModelProjection {
   const state: ProjectionState = {
-    headers: normalizeHeaders(options.runHeaders),
+    invocations: normalizeInvocations(options.invocations),
     diagnostics: [],
     toolNameByUseId: new Map(),
     permissionRequestById: new Map(),
@@ -248,6 +250,11 @@ export function projectRuntimeEventsToStoredMessages(
           break;
         case 'thinking':
           projected = projectThinking(event, state, messages) || projected;
+          break;
+        case 'invocation_opened':
+          // The opening fact records route, configuration and lineage once per
+          // invocation. Every reader joins it by invocationId; it has no chat row.
+          projected = true;
           break;
         case 'error':
           if (!isTerminalRuntimeEvent(event)) {
@@ -285,6 +292,18 @@ export function projectRuntimeEventsToStoredMessages(
 
     if (event.actions?.userQuestionAnswerAccepted) {
       // InteractionStore owns the canonical answer. This Run-local audit fact
+      // intentionally has no legacy chat row.
+      projected = true;
+    }
+
+    if (event.actions?.formRequest) {
+      // The matching function_call/function_response own the legacy rows;
+      // this request is live interaction state only.
+      projected = true;
+    }
+
+    if (event.actions?.formAnswerAccepted) {
+      // InteractionStore owns the canonical result. This Run-local audit fact
       // intentionally has no legacy chat row.
       projected = true;
     }
@@ -501,15 +520,15 @@ export function compareRuntimeReadModelMessages(
 }
 
 export function classifyRuntimeEventTerminalFact(
-  header: AgentRunHeader,
+  invocation: Pick<RuntimeInvocationRecord, 'sessionId' | 'runId' | 'turnId'>,
   events: readonly RuntimeEvent[],
 ): RuntimeEventTerminalFactResult {
   const diagnostics: RuntimeEventReadModelDiagnostic[] = [];
   if (events.length === 0) {
     diagnostics.push(
       readModelDiagnostic('incomplete_event', 'runtime ledger has no readable RuntimeEvents', {
-        runId: header.runId,
-        turnId: header.turnId,
+        runId: invocation.runId,
+        turnId: invocation.turnId,
       }),
     );
     return { diagnostics };
@@ -518,9 +537,9 @@ export function classifyRuntimeEventTerminalFact(
   const terminalSignals = events.filter(
     (event) =>
       !isPartialRuntimeEvent(event) &&
-      event.sessionId === header.sessionId &&
-      event.runId === header.runId &&
-      event.turnId === header.turnId &&
+      event.sessionId === invocation.sessionId &&
+      event.runId === invocation.runId &&
+      event.turnId === invocation.turnId &&
       isTerminalRuntimeEvent(event),
   );
 
@@ -529,7 +548,7 @@ export function classifyRuntimeEventTerminalFact(
       readModelDiagnostic(
         'incomplete_event',
         'runtime ledger has no matching terminal RuntimeEvent',
-        { runId: header.runId, turnId: header.turnId },
+        { runId: invocation.runId, turnId: invocation.turnId },
       ),
     );
     return { diagnostics };
@@ -540,8 +559,8 @@ export function classifyRuntimeEventTerminalFact(
         'incomplete_event',
         'runtime ledger has multiple matching terminal RuntimeEvents',
         {
-          runId: header.runId,
-          turnId: header.turnId,
+          runId: invocation.runId,
+          turnId: invocation.turnId,
           eventIds: terminalSignals.map((event) => event.id),
         },
       ),
@@ -563,8 +582,8 @@ export function classifyRuntimeEventTerminalFact(
 
   if (terminalEvent.status === 'completed') {
     const fact: RuntimeEventTerminalFact = {
-      runId: header.runId,
-      turnId: header.turnId,
+      runId: invocation.runId,
+      turnId: invocation.turnId,
       runStatus: 'completed',
       turnStatus: 'completed',
       terminalEvent,
@@ -573,48 +592,51 @@ export function classifyRuntimeEventTerminalFact(
     return { fact, diagnostics };
   }
 
+  // A terminal event is the run's ending, and it is immutable once written, so
+  // an omitted failure class or abort source is a detail nobody can ever supply
+  // afterwards. Withholding the fact over it would only leave the reader with a
+  // run that ended and no way to say so; the omission is worth a diagnostic, not
+  // a refusal.
   if (terminalEvent.status === 'failed') {
-    const failureClass = failureClassFromRuntimeEvent(terminalEvent, header);
+    const failureClass = failureClassFromRuntimeEvent(terminalEvent);
     if (!failureClass) {
       diagnostics.push(
         readModelDiagnostic(
           'incomplete_event',
-          'failed terminal RuntimeEvent requires a stable failure class',
+          'failed terminal RuntimeEvent states no failure class',
           terminalEvent,
         ),
       );
-      return { diagnostics };
     }
     const fact: RuntimeEventTerminalFact = {
-      runId: header.runId,
-      turnId: header.turnId,
+      runId: invocation.runId,
+      turnId: invocation.turnId,
       runStatus: 'failed',
       turnStatus: 'failed',
       terminalEvent,
-      failureClass,
+      failureClass: failureClass ?? 'unknown',
       diagnostics,
     };
     return { fact, diagnostics };
   }
 
-  const abortSource = abortSourceFromRuntime(terminalEvent, header);
+  const abortSource = abortSourceFromRuntime(terminalEvent);
   if (!abortSource) {
     diagnostics.push(
       readModelDiagnostic(
         'incomplete_event',
-        'aborted terminal RuntimeEvent requires an abort source',
+        'aborted terminal RuntimeEvent states no abort source',
         terminalEvent,
       ),
     );
-    return { diagnostics };
   }
   const fact: RuntimeEventTerminalFact = {
-    runId: header.runId,
-    turnId: header.turnId,
+    runId: invocation.runId,
+    turnId: invocation.turnId,
     runStatus: 'cancelled',
     turnStatus: 'aborted',
     terminalEvent,
-    abortSource,
+    abortSource: abortSource ?? 'unknown',
     diagnostics,
   };
   return { fact, diagnostics };
@@ -634,13 +656,13 @@ function projectText(
   }
 
   if (event.role === 'model') {
-    const header = state.headers.get(event.runId);
-    if (!header?.modelId) {
+    const invocation = state.invocations.get(event.runId);
+    if (!invocation?.opening.route.modelId) {
       diagnostic(
         state,
         event,
         'incomplete_event',
-        'model text RuntimeEvent requires AgentRunHeader.modelId',
+        'model text RuntimeEvent requires the opening fact of its invocation',
       );
       return false;
     }
@@ -656,7 +678,7 @@ function projectText(
         ? { providerOptions: structuredClone(event.content.providerOptions) }
         : {}),
       ...(contentOrder ? { contentOrder } : {}),
-      modelId: header.modelId,
+      modelId: invocation.opening.route.modelId,
     });
     attachPendingThinking(event, state, messages, assistantId);
     return true;
@@ -687,7 +709,7 @@ export function projectRuntimeEventUserMessage(
   };
 }
 
-function nonCanonicalContentOrder(
+export function nonCanonicalContentOrder(
   order: readonly AssistantStepContentKind[] | undefined,
 ): AssistantStepContentKind[] | undefined {
   if (!order?.length) return undefined;
@@ -1127,17 +1149,18 @@ function projectTerminalTurnState(
   state: ProjectionState,
   messages: StoredMessage[],
 ): boolean {
-  const header = state.headers.get(event.runId);
-  if (!header) {
+  const invocation = state.invocations.get(event.runId);
+  if (!invocation) {
     diagnostic(
       state,
       event,
       'incomplete_event',
-      'terminal RuntimeEvent requires an AgentRunHeader',
+      'terminal RuntimeEvent requires the opening fact of its invocation',
     );
     return false;
   }
-  const status = turnStatusFor(event.status, header.status);
+  const lineage = invocation.opening.lineage;
+  const status = turnStatusFor(event.status);
   if (!status) {
     diagnostic(
       state,
@@ -1147,9 +1170,8 @@ function projectTerminalTurnState(
     );
     return false;
   }
-  const abortSource = status === 'aborted' ? abortSourceFromRuntime(event, header) : undefined;
-  const failureClass =
-    status === 'failed' ? failureClassFromRuntimeEvent(event, header) : undefined;
+  const abortSource = status === 'aborted' ? abortSourceFromRuntime(event) : undefined;
+  const failureClass = status === 'failed' ? failureClassFromRuntimeEvent(event) : undefined;
   const partialOutputRetained = messages.some(
     (message) =>
       message.turnId === event.turnId &&
@@ -1162,13 +1184,13 @@ function projectTerminalTurnState(
     turnId: event.turnId,
     ts: event.ts,
     status,
-    ...(header.parentTurnId ? { parentTurnId: header.parentTurnId } : {}),
-    ...(header.retriedFromTurnId ? { retriedFromTurnId: header.retriedFromTurnId } : {}),
-    ...(header.regeneratedFromTurnId
-      ? { regeneratedFromTurnId: header.regeneratedFromTurnId }
+    ...(lineage?.parentTurnId ? { parentTurnId: lineage.parentTurnId } : {}),
+    ...(lineage?.retriedFromTurnId ? { retriedFromTurnId: lineage.retriedFromTurnId } : {}),
+    ...(lineage?.regeneratedFromTurnId
+      ? { regeneratedFromTurnId: lineage.regeneratedFromTurnId }
       : {}),
-    ...(header.branchOfTurnId ? { branchOfTurnId: header.branchOfTurnId } : {}),
-    ...(header.parentSessionId ? { parentSessionId: header.parentSessionId } : {}),
+    ...(lineage?.branchOfTurnId ? { branchOfTurnId: lineage.branchOfTurnId } : {}),
+    ...(lineage?.parentSessionId ? { parentSessionId: lineage.parentSessionId } : {}),
     ...(status === 'aborted' ? { abortedAt: event.ts } : {}),
     ...(abortSource ? { abortSource } : {}),
     ...(status === 'failed' ? { errorClass: failureClass ?? 'unknown' } : {}),
@@ -1183,22 +1205,9 @@ function projectTerminalTurnState(
       kind: 'step_limit',
     });
   }
-  if (status === 'failed' && !failureClass) {
-    diagnostic(
-      state,
-      event,
-      'incomplete_event',
-      'failed terminal event did not carry an exact AgentRunHeader.failureClass',
-    );
-  }
-  if (status === 'aborted' && !abortSource) {
-    diagnostic(
-      state,
-      event,
-      'incomplete_event',
-      'abortSource is not present in RuntimeEvent or AgentRunHeader metadata',
-    );
-  }
+  // An omitted failure class or abort source is `classifyRuntimeEventTerminalFact`'s
+  // observation to make. Repeating it here would only turn a transcript row that
+  // already reads `unknown` into an unreadable Session.
   return true;
 }
 
@@ -1261,28 +1270,37 @@ function thinkingMessageId(event: RuntimeEvent): string {
   return event.refs?.providerEventId ?? event.refs?.storedMessageId ?? event.id;
 }
 
-function abortSourceFromRuntime(event: RuntimeEvent, header: AgentRunHeader): string | undefined {
+/**
+ * Why this invocation failed, according to its own terminal event.
+ *
+ * `undefined` for an invocation that is still running or did not fail. There is
+ * no second place to look: the event that ends the run also states the class.
+ */
+export function runtimeInvocationFailureClass(invocation: {
+  terminalEvent?: RuntimeEvent;
+}): string | undefined {
+  const terminalEvent = invocation.terminalEvent;
+  if (terminalEvent?.status !== 'failed') return undefined;
+  return failureClassFromRuntimeEvent(terminalEvent);
+}
+
+function abortSourceFromRuntime(event: RuntimeEvent): string | undefined {
   return (
     stringStateDelta(event, 'abortSource') ??
     stringStateDelta(event, 'source') ??
     stringRecordValue(event.refs, 'abortSource') ??
-    stringRecordValue(event.refs, 'source') ??
-    stringRecordValue(header as unknown as Record<string, unknown>, 'abortSource')
+    stringRecordValue(event.refs, 'source')
   );
 }
 
-function failureClassFromRuntimeEvent(
-  event: RuntimeEvent,
-  header: AgentRunHeader,
-): string | undefined {
+function failureClassFromRuntimeEvent(event: RuntimeEvent): string | undefined {
   const failureClass =
     stringStateDelta(event, 'failureClass') ??
     stringStateDelta(event, 'errorClass') ??
     stringStateDelta(event, 'reason') ??
     stringStateDelta(event, 'code') ??
     (event.content?.kind === 'error' ? nonEmptyString(event.content.reason) : undefined) ??
-    (event.content?.kind === 'error' ? nonEmptyString(event.content.code) : undefined) ??
-    header.failureClass;
+    (event.content?.kind === 'error' ? nonEmptyString(event.content.code) : undefined);
   // Retired outcome. The runtime no longer decides locally that a request
   // cannot be shaped to fit — the provider rejects it and recovery compacts and
   // retries — so a turn that ends over the window is a context overflow like any
@@ -1325,25 +1343,22 @@ function toolUseIdFor(event: RuntimeEvent): string | undefined {
   return event.content.id || event.refs?.toolCallId;
 }
 
-function normalizeHeaders(
-  headers: readonly AgentRunHeader[] | Readonly<Record<string, AgentRunHeader>>,
-): Map<string, AgentRunHeader> {
-  if (Array.isArray(headers)) {
-    return new Map(headers.map((header) => [header.runId, header]));
-  }
-  return new Map(Object.values(headers).map((header) => [header.runId, header]));
+function normalizeInvocations(
+  invocations:
+    | readonly RuntimeInvocationRecord[]
+    | Readonly<Record<string, RuntimeInvocationRecord>>,
+): Map<string, RuntimeInvocationRecord> {
+  const values = Array.isArray(invocations)
+    ? (invocations as readonly RuntimeInvocationRecord[])
+    : Object.values(invocations as Readonly<Record<string, RuntimeInvocationRecord>>);
+  return new Map(values.map((invocation) => [invocation.runId, invocation]));
 }
 
-function turnStatusFor(
-  eventStatus: RuntimeEventStatus | undefined,
-  runStatus: AgentRunHeader['status'],
-): TurnStatus | undefined {
+/** The terminal event states the outcome; nothing else is allowed to disagree. */
+function turnStatusFor(eventStatus: RuntimeEventStatus | undefined): TurnStatus | undefined {
   if (eventStatus === 'completed') return 'completed';
   if (eventStatus === 'failed') return 'failed';
   if (eventStatus === 'aborted' || eventStatus === 'cancelled') return 'aborted';
-  if (runStatus === 'completed') return 'completed';
-  if (runStatus === 'failed') return 'failed';
-  if (runStatus === 'cancelled') return 'aborted';
   return undefined;
 }
 

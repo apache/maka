@@ -27,6 +27,8 @@ import {
   mergePromptAnchorRailTurns,
   observeActivePromptRailVisibility,
   PromptAnchorRail,
+  selectPromptRailActiveTurn,
+  selectPromptRailTickForMountedTurn,
   type PromptRailFrameScheduler,
 } from '../prompt-anchor-rail.js';
 
@@ -224,6 +226,151 @@ test('a jump gives the transcript back the moment the reader touches it', () => 
   assert.equal(state.settled, 1, 'and settles exactly once');
 
   harness.restore();
+});
+
+const turnIndexById = new Map([
+  ['turn-1', 0],
+  ['turn-2', 1],
+  ['turn-3', 2],
+  ['turn-4', 3],
+]);
+
+test('the transcript tail selects the latest mounted Turn', () => {
+  assert.equal(selectPromptRailActiveTurn({
+    atEnd: true,
+    mountedTurnIds: ['turn-3', 'turn-1', 'turn-4'],
+    readingBandTurnIds: ['turn-1'],
+    scrollportTurnIds: ['turn-1', 'turn-3'],
+    turnIndexById,
+  }), 'turn-4');
+});
+
+test('the reading band selects its earliest Turn by transcript order', () => {
+  assert.equal(selectPromptRailActiveTurn({
+    atEnd: false,
+    mountedTurnIds: ['turn-1', 'turn-2', 'turn-3', 'turn-4'],
+    readingBandTurnIds: ['turn-4', 'turn-2', 'turn-3'],
+    scrollportTurnIds: ['turn-1', 'turn-2', 'turn-3', 'turn-4'],
+    turnIndexById,
+  }), 'turn-2');
+});
+
+test('an empty reading band falls back to the earliest Turn in the scrollport', () => {
+  assert.equal(selectPromptRailActiveTurn({
+    atEnd: false,
+    mountedTurnIds: ['turn-1', 'turn-2', 'turn-3', 'turn-4'],
+    readingBandTurnIds: [],
+    scrollportTurnIds: ['turn-4', 'turn-3'],
+    turnIndexById,
+  }), 'turn-3');
+});
+
+test('no eligible Turn leaves the selection unresolved', () => {
+  assert.equal(selectPromptRailActiveTurn({
+    atEnd: false,
+    mountedTurnIds: ['unknown-turn'],
+    readingBandTurnIds: [],
+    scrollportTurnIds: [],
+    turnIndexById,
+  }), null);
+});
+
+test('an unsampled mounted Turn maps through the two nearest durable landmarks', () => {
+  const railTurns = Array.from({ length: 64 }, (_, railIndex) => {
+    const turnIndex = Math.round(railIndex * 119 / 63);
+    return { turnId: `turn-${turnIndex + 1}`, label: '', sequence: turnIndex * 2 };
+  });
+  assert.equal(selectPromptRailTickForMountedTurn({
+    activeTurnId: 'turn-66',
+    mountedTurnIds: ['turn-66', 'turn-67', 'turn-68', 'turn-69'],
+    railTurns,
+    previousRailTurnId: 'turn-67',
+    atEnd: false,
+  }), 'turn-65');
+});
+
+test('uneven sequence gaps choose a nearby real landmark instead of a linear tick position', () => {
+  const railTurns = [
+    { turnId: 'turn-a', label: '', sequence: 0 },
+    { turnId: 'turn-b', label: '', sequence: 10 },
+    { turnId: 'turn-c', label: '', sequence: 1_000 },
+    { turnId: 'turn-d', label: '', sequence: 1_010 },
+  ];
+  assert.equal(selectPromptRailTickForMountedTurn({
+    activeTurnId: 'active',
+    mountedTurnIds: ['turn-b', 'active', 'turn-c'],
+    railTurns,
+    previousRailTurnId: 'turn-b',
+    atEnd: false,
+  }), 'turn-c');
+});
+
+test('one-sided sequence extrapolation cannot skip past the adjacent tick', () => {
+  const railTurns = [
+    { turnId: 'turn-a', label: '', sequence: 0 },
+    { turnId: 'turn-b', label: '', sequence: 10 },
+    { turnId: 'turn-c', label: '', sequence: 1_000 },
+    { turnId: 'turn-d', label: '', sequence: 1_010 },
+  ];
+  assert.equal(selectPromptRailTickForMountedTurn({
+    activeTurnId: 'active',
+    mountedTurnIds: ['active', 'turn-b', 'turn-c'],
+    railTurns,
+    previousRailTurnId: 'turn-d',
+    atEnd: false,
+  }), 'turn-a');
+});
+
+test('a prompt-less mounted tail uses the nearest loaded prompt before the index arrives', () => {
+  assert.equal(selectPromptRailTickForMountedTurn({
+    activeTurnId: 'active',
+    mountedTurnIds: ['turn-a', 'turn-b', 'active'],
+    railTurns: [
+      { turnId: 'turn-a', label: '' },
+      { turnId: 'turn-b', label: '' },
+    ],
+    previousRailTurnId: null,
+    atEnd: true,
+  }), 'turn-b');
+});
+
+test('a prompt-less tail without a mounted landmark uses the final rail tick', () => {
+  assert.equal(selectPromptRailTickForMountedTurn({
+    activeTurnId: 'active',
+    mountedTurnIds: ['active'],
+    railTurns: [
+      { turnId: 'turn-a', label: '', sequence: 0 },
+      { turnId: 'turn-b', label: '', sequence: 10 },
+    ],
+    previousRailTurnId: null,
+    atEnd: true,
+  }), 'turn-b');
+});
+
+test('a window without a sampled wrapper preserves its previous current tick', () => {
+  assert.equal(selectPromptRailTickForMountedTurn({
+    activeTurnId: 'active',
+    mountedTurnIds: ['active', 'neighbor'],
+    railTurns: [
+      { turnId: 'turn-a', label: '', sequence: 0 },
+      { turnId: 'turn-b', label: '', sequence: 10 },
+    ],
+    previousRailTurnId: 'turn-a',
+    atEnd: false,
+  }), 'turn-a');
+});
+
+test('a window without landmarks replaces a stale current with a current rail tick', () => {
+  assert.equal(selectPromptRailTickForMountedTurn({
+    activeTurnId: 'active',
+    mountedTurnIds: ['active'],
+    railTurns: [
+      { turnId: 'turn-a', label: '', sequence: 0 },
+      { turnId: 'turn-b', label: '', sequence: 10 },
+    ],
+    previousRailTurnId: 'stale-turn',
+    atEnd: false,
+  }), 'turn-a');
 });
 
 test('keeps the active tick visible when the rail viewport resizes', () => {

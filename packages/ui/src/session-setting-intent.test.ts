@@ -22,7 +22,11 @@ import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
-import { useSessionSettingIntent } from './session-setting-intent.js';
+import {
+  type SessionSettingIntentChannel,
+  type SessionSettingIntentWriteResult,
+  useSessionSettingIntent,
+} from './session-setting-intent.js';
 
 type Channels = {
   model: string;
@@ -99,6 +103,352 @@ test('channels keep independent workers and overlays for the same session', asyn
     assert.deepEqual(await Promise.all([modelCompletion, permissionCompletion]), [true, true]);
   });
 });
+
+test('revision-aware channel types require a catalog Session revision reader', () => {
+  // @ts-expect-error A revision receipt requires catalogSessionRevision.
+  const invalidChannel: SessionSettingIntentChannel<string> = {
+    write: async () => ({ committed: true, sessionRevision: 2 }),
+    onWriteError: () => {},
+  };
+
+  assert.equal(typeof invalidChannel.write, 'function');
+});
+
+test('preserves the public Session setting write result union', () => {
+  const booleanResult: SessionSettingIntentWriteResult = true;
+  const revisionResult: SessionSettingIntentWriteResult = {
+    committed: true,
+    sessionRevision: 2,
+  };
+
+  assert.equal(booleanResult, true);
+  assert.equal(revisionResult.sessionRevision, 2);
+});
+
+test('revision-aware commits retire only after the target session observes that revision', async () => {
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, {
+    document,
+    window,
+    HTMLElement: window.HTMLElement,
+    Node: window.Node,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  mountedRoot = root;
+
+  let controller: Controller | undefined;
+  const render = (catalogRevision: number, sessionRevision: number) => {
+    root.render(createElement(RevisionHarness, {
+      capture: (next) => {
+        controller = next;
+      },
+      catalogRevision,
+      sessionRevision,
+    }));
+  };
+
+  await act(async () => render(0, 0));
+  await act(async () => {
+    assert.equal(await controller!.request('model', 'session-1', 'model-b'), true);
+  });
+  assert.equal(controller!.overlayByChannel.model['session-1'], 'model-b');
+
+  await act(async () => render(1, 1));
+  assert.equal(controller!.overlayByChannel.model['session-1'], 'model-b');
+
+  await act(async () => render(2, 2));
+  assert.equal(controller!.overlayByChannel.model['session-1'], undefined);
+});
+
+test('rapid revision-aware requests retire only after the last committed revision', async () => {
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, {
+    document,
+    window,
+    HTMLElement: window.HTMLElement,
+    Node: window.Node,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  mountedRoot = root;
+
+  const writes: Array<{
+    value: string;
+    result: ReturnType<typeof deferred<{
+      committed: boolean;
+      sessionRevision: number;
+    }>>;
+  }> = [];
+  let controller: Controller | undefined;
+  const render = (catalogRevision: number, sessionRevision: number) => {
+    root.render(createElement(RapidRevisionHarness, {
+      capture: (next) => {
+        controller = next;
+      },
+      catalogRevision,
+      sessionRevision,
+      write: async (_sessionId, value) => {
+        const result = deferred<{ committed: boolean; sessionRevision: number }>();
+        writes.push({ value, result });
+        return result.promise;
+      },
+    }));
+  };
+
+  await act(async () => render(0, 0));
+  let completion!: Promise<boolean>;
+  await act(async () => {
+    completion = controller!.request('model', 'session-1', 'model-a');
+    void controller!.request('model', 'session-1', 'model-b');
+    void controller!.request('model', 'session-1', 'model-c');
+  });
+  assert.equal(controller!.overlayByChannel.model['session-1'], 'model-c');
+  assert.deepEqual(writes.map(({ value }) => value), ['model-a']);
+
+  await act(async () => {
+    writes[0]!.result.resolve({ committed: true, sessionRevision: 1 });
+    await Promise.resolve();
+  });
+  assert.deepEqual(writes.map(({ value }) => value), ['model-a', 'model-c']);
+
+  await act(async () => {
+    writes[1]!.result.resolve({ committed: true, sessionRevision: 3 });
+    assert.equal(await completion, true);
+  });
+  assert.equal(controller!.overlayByChannel.model['session-1'], 'model-c');
+
+  await act(async () => render(1, 1));
+  assert.equal(controller!.overlayByChannel.model['session-1'], 'model-c');
+
+  await act(async () => render(2, 2));
+  assert.equal(controller!.overlayByChannel.model['session-1'], 'model-c');
+
+  await act(async () => render(3, 3));
+  assert.equal(controller!.overlayByChannel.model['session-1'], undefined);
+});
+
+test('rapid requests drain to the latest requested value', async () => {
+  const { controller, writes } = await mountIntentHarness();
+
+  let completion!: Promise<boolean>;
+  await act(async () => {
+    completion = controller().request('model', 'session-1', 'plan');
+    void controller().request('model', 'session-1', 'agent');
+  });
+  assert.deepEqual(writes.map(({ value }) => value), ['plan']);
+  assert.equal(controller().overlayByChannel.model['session-1'], 'agent');
+
+  await act(async () => {
+    writes[0]!.result.resolve(true);
+    await Promise.resolve();
+  });
+  assert.deepEqual(writes.map(({ value }) => value), ['plan', 'agent']);
+
+  await act(async () => {
+    writes[1]!.result.resolve(true);
+    assert.equal(await completion, true);
+  });
+  assert.equal(controller().overlayByChannel.model['session-1'], 'agent');
+});
+
+test('a rejected catalog refresh does not roll back a committed value', async () => {
+  const { controller, writes } = await mountIntentHarness({
+    refreshCatalog: async () => {
+      throw new Error('catalog unavailable');
+    },
+  });
+
+  let completion!: Promise<boolean>;
+  await act(async () => {
+    completion = controller().request('model', 'session-1', 'plan');
+    writes[0]!.result.resolve(true);
+    assert.equal(await completion, true);
+  });
+  assert.equal(controller().overlayByChannel.model['session-1'], 'plan');
+});
+
+test('a newer request still writes after the in-flight write fails', async () => {
+  const errors: Array<{ attempted: string; error: unknown }> = [];
+  const { controller, writes } = await mountIntentHarness({ errors });
+
+  let completion!: Promise<boolean>;
+  await act(async () => {
+    completion = controller().request('model', 'session-1', 'plan');
+    void controller().request('model', 'session-1', 'agent');
+    writes[0]!.result.reject(new Error('first write failed'));
+    await Promise.resolve();
+  });
+  assert.deepEqual(writes.map(({ value }) => value), ['plan', 'agent']);
+  assert.deepEqual(errors, []);
+
+  await act(async () => {
+    writes[1]!.result.resolve(true);
+    assert.equal(await completion, true);
+  });
+  assert.equal(controller().overlayByChannel.model['session-1'], 'agent');
+});
+
+test('clearing a session drops its pending and queued requests', async () => {
+  const { controller, writes } = await mountIntentHarness();
+
+  let completion!: Promise<boolean>;
+  await act(async () => {
+    completion = controller().request('model', 'session-1', 'plan');
+    void controller().request('model', 'session-1', 'agent');
+    controller().clear('session-1');
+    assert.equal(await completion, false);
+  });
+  assert.equal(controller().overlayByChannel.model['session-1'], undefined);
+
+  await act(async () => {
+    writes[0]!.result.resolve(true);
+    await Promise.resolve();
+  });
+  assert.deepEqual(writes.map(({ value }) => value), ['plan']);
+  assert.equal(controller().overlayByChannel.model['session-1'], undefined);
+});
+
+async function mountIntentHarness(options?: {
+  refreshCatalog?: () => Promise<unknown>;
+  errors?: Array<{ attempted: string; error: unknown }>;
+}) {
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, {
+    document,
+    window,
+    HTMLElement: window.HTMLElement,
+    Node: window.Node,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  mountedRoot = root;
+
+  const writes: Array<{
+    value: string;
+    result: ReturnType<typeof deferred<boolean>> & { reject(error: unknown): void };
+  }> = [];
+  let captured: Controller | undefined;
+  await act(async () => {
+    root.render(createElement(IntentHarness, {
+      capture: (next) => {
+        captured = next;
+      },
+      refreshCatalog: options?.refreshCatalog ?? (async () => {}),
+      modelWrite: async (_sessionId, value) => {
+        let reject!: (error: unknown) => void;
+        const pending = deferred<boolean>();
+        const promise = new Promise<boolean>((resolve, rejectPromise) => {
+          reject = rejectPromise;
+          pending.promise.then(resolve, rejectPromise);
+        });
+        const result = { ...pending, promise, reject };
+        writes.push({ value, result });
+        return promise;
+      },
+      onModelWriteError: (_sessionId, error, attempted) => {
+        options?.errors?.push({ attempted, error });
+      },
+    }));
+  });
+  return {
+    controller: () => {
+      assert.ok(captured);
+      return captured;
+    },
+    writes,
+  };
+}
+
+function IntentHarness({
+  capture,
+  refreshCatalog,
+  modelWrite,
+  onModelWriteError,
+}: {
+  capture(controller: Controller): void;
+  refreshCatalog(): Promise<unknown>;
+  modelWrite(sessionId: string, value: string): Promise<boolean>;
+  onModelWriteError(sessionId: string, error: unknown, attempted: string): void;
+}) {
+  const controller = useSessionSettingIntent<Channels>({
+    catalogRevision: 0,
+    refreshCatalog,
+    channels: {
+      model: { write: modelWrite, onWriteError: onModelWriteError },
+      permission: { write: async () => true, onWriteError: () => {} },
+    },
+  });
+  capture(controller);
+  return null;
+}
+
+function RapidRevisionHarness({
+  capture,
+  catalogRevision,
+  sessionRevision,
+  write,
+}: {
+  capture(controller: Controller): void;
+  catalogRevision: number;
+  sessionRevision: number;
+  write(
+    sessionId: string,
+    value: string,
+  ): Promise<{ committed: boolean; sessionRevision: number }>;
+}) {
+  const controller = useSessionSettingIntent<Channels>({
+    catalogRevision,
+    refreshCatalog: async () => {},
+    channels: {
+      model: {
+        write,
+        catalogSessionRevision: () => sessionRevision,
+        onWriteError: () => {},
+      },
+      permission: {
+        write: async () => true,
+        onWriteError: () => {},
+      },
+    },
+  });
+  capture(controller);
+  return null;
+}
+
+function RevisionHarness({
+  capture,
+  catalogRevision,
+  sessionRevision,
+}: {
+  capture(controller: Controller): void;
+  catalogRevision: number;
+  sessionRevision: number;
+}) {
+  const controller = useSessionSettingIntent<Channels>({
+    catalogRevision,
+    refreshCatalog: async () => {},
+    channels: {
+      model: {
+        write: async () => ({ committed: true, sessionRevision: 2 }),
+        catalogSessionRevision: () => sessionRevision,
+        onWriteError: () => {},
+      },
+      permission: {
+        write: async () => true,
+        onWriteError: () => {},
+      },
+    },
+  });
+  capture(controller);
+  return null;
+}
 
 function Harness({
   capture,

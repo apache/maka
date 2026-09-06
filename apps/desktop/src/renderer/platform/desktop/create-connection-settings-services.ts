@@ -17,11 +17,26 @@
  * under the License.
  */
 
-import type { MakaBridge } from '../../../preload/bridge-contract.js';
-import type { ConnectionSettingsServices } from '../../features/connection-settings';
+import type {
+  DesktopRuntimeHostRef,
+  MakaBridge,
+} from '../../../preload/bridge-contract.js';
+import type {
+  ConnectionOAuthProviderBridge,
+  ConnectionSettingsServices,
+} from '../../features/connection-settings';
+
+type DesktopConnectionSettingsBridge = Pick<
+  MakaBridge,
+  'connections' | 'openAiCodex' | 'xaiOAuth' | 'githubCopilotSubscription'
+>;
+type DesktopOAuthProviderBridge =
+  | MakaBridge['openAiCodex']
+  | MakaBridge['xaiOAuth']
+  | MakaBridge['githubCopilotSubscription'];
 
 export function createDesktopConnectionSettingsServices(
-  bridge: () => Pick<MakaBridge, 'connections'> = () => window.maka,
+  bridge: () => DesktopConnectionSettingsBridge = () => window.maka,
 ): ConnectionSettingsServices {
   const uncertainTargets = new Map<string, number>();
   const uncertaintyListeners = new Map<string, Set<() => void>>();
@@ -36,6 +51,15 @@ export function createDesktopConnectionSettingsServices(
       const targetKey = `${host.profileId}\u0000${host.hostId}`;
       return {
         connections: {
+          oauth: {
+            openAiCodex: bindOAuthProvider(() => bridge().openAiCodex, host),
+            xaiOAuth: bindOAuthProvider(() => bridge().xaiOAuth, host),
+            githubCopilotSubscription: {
+              ...bindOAuthProvider(() => bridge().githubCopilotSubscription, host),
+              connectExistingLogin: () =>
+                bridge().githubCopilotSubscription.connectExistingLogin(host),
+            },
+          },
           getSnapshot: () => bridge().connections.getSnapshot(undefined, host),
           setDefault: (connection) => bridge().connections.setDefault(connection, host),
           setDefaultModel: (input) => bridge().connections.setDefaultModel(input, host),
@@ -84,5 +108,35 @@ export function createDesktopConnectionSettingsServices(
         },
       };
     },
+  };
+}
+
+function bindOAuthProvider(
+  provider: () => DesktopOAuthProviderBridge,
+  host: DesktopRuntimeHostRef,
+): ConnectionOAuthProviderBridge {
+  return {
+    getAuthUrl: (target) => provider().getAuthUrl(host, target),
+    openAuthUrl: (authRequestId) => provider().openAuthUrl(authRequestId, host),
+    completeAuthorization: (authRequestId) =>
+      provider().completeAuthorization(authRequestId, host),
+    cancelAuthorization: (authRequestId) =>
+      provider().cancelAuthorization(authRequestId, host),
+    getEnrollmentState: () => provider().getEnrollmentState(host),
+    getAccountState: async (connectionId) => {
+      const value = await provider().getAccountState(host, connectionId);
+      if (
+        value &&
+        typeof value === 'object' &&
+        'ok' in value &&
+        value.ok === false &&
+        'message' in value &&
+        typeof value.message === 'string'
+      ) {
+        throw new Error(value.message);
+      }
+      return value;
+    },
+    logout: (connectionId) => provider().logout(host, connectionId),
   };
 }

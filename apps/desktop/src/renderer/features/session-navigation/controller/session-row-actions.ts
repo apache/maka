@@ -21,39 +21,12 @@ import type { SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
-import type { SessionNavigationSessionService } from '../ports.js';
-
-type RefBox<T> = { current: T };
-
-/** What `sessions.remove` settled on. `restored` means the task is still there. */
-type SessionRemoveDisposition = 'removed' | 'restored';
-
-/**
- * How a delete settled together with the count the Host actually archived.
- * `archivedSubtaskCount` is the Host's executed number — 0 when the delete was
- * called off (`restored`) — so the toast reports a fact, not a renderer guess.
- */
-type SessionRemoveOutcome = {
-  disposition: SessionRemoveDisposition;
-  archivedSubtaskCount: number;
-};
-
-type ToastApi = {
-  success(title: string, description?: string): void;
-  error(
-    title: string,
-    description?: string,
-    diagnosticDetails?: string,
-    diagnosticTarget?: { sessionId: string },
-  ): void;
-  confirm(options: {
-    title: string;
-    description: string;
-    confirmLabel: string;
-    cancelLabel: string;
-    destructive?: boolean;
-  }): Promise<boolean>;
-};
+import type { RefObject } from 'react';
+import type {
+  SessionNavigationRemoveOutcome,
+  SessionNavigationSessionService,
+  SessionNavigationToastApi,
+} from '../ports.js';
 
 /**
  * What a sweep can honestly say afterwards. `verified: false` means the catalog
@@ -116,15 +89,15 @@ export interface SessionNavigationRowActions {
 
 export function createSessionNavigationRowActions(deps: {
   uiLocale: UiLocale;
-  activeIdRef: RefBox<string | undefined>;
+  activeIdRef: RefObject<string | undefined>;
   clearActiveMessages: () => void;
   clearSessionRendererState: (sessionId: string) => void;
-  pendingSessionRowActionsRef: RefBox<Set<string>>;
+  pendingSessionRowActionsRef: RefObject<Set<string>>;
   refreshSessions: () => Promise<ReadonlyArray<SessionSummary>>;
   service: SessionNavigationSessionService;
-  sessionsRef: RefBox<ReadonlyArray<SessionSummary>>;
+  sessionsRef: RefObject<ReadonlyArray<SessionSummary>>;
   setActiveId: (sessionId: string | undefined) => void;
-  toastApi: ToastApi;
+  toastApi: SessionNavigationToastApi;
 }): SessionNavigationRowActions {
   const {
     uiLocale,
@@ -258,7 +231,7 @@ export function createSessionNavigationRowActions(deps: {
   async function removeSessionFamily(
     sessionId: string,
     options: { requireArchived: boolean },
-  ): Promise<SessionRemoveOutcome> {
+  ): Promise<SessionNavigationRemoveOutcome> {
     // Read before the write: the family comes off the live catalog, which no
     // longer lists it afterwards.
     const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);

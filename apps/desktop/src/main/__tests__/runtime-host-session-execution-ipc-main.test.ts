@@ -58,6 +58,25 @@ test('registers Session observation as one reconnectable operation', () => {
   assert.equal(ipc.reconnectableChannels.has('sessions:observe'), true);
 });
 
+test('forward transcript paging is an observation operation scoped to the renderer', async () => {
+  const ipc = ipcHarness();
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const calls: unknown[] = [];
+  observations.loadTranscriptAfter = async (request, targetId) => { calls.push({ request, targetId }); };
+  registerRuntimeHostSessionObservationIpc({ observations, resolveSideConversation: async () => false }, ipc);
+  const request = {
+    consumerId: 'guest-consumer', sessionId: 'shared-session', hostEpoch: 'host-1',
+    anchorSequence: 42, maxBytes: 512 * 1024,
+  };
+  await ipc.invoke('sessions:transcript:load-after', request);
+  assert.deepEqual(calls, [{ request, targetId: 9 }]);
+  await assert.rejects(
+    ipc.invoke('sessions:transcript:load-after', { ...request, anchorSequence: -1 }),
+    /Invalid Desktop transcript range anchor/,
+  );
+  assert.equal(calls.length, 1);
+});
+
 test("keeps synthetic E2E interactions visible through Host hydration and retires their answer", async () => {
   const observer = observerWithSnapshot();
   const ipc = ipcHarness();
@@ -185,6 +204,69 @@ test('answers a Client Capability approval through the existing Interaction auth
       answer: { kind: 'client_capability', decision: 'allow' },
     },
   ]);
+  await observer.close();
+});
+
+test("validates and forwards Desktop form responses to the pending Host interaction", async () => {
+  const pending = {
+    schemaVersion: 1 as const,
+    interactionId: "form-1",
+    sessionId: "session-1",
+    turnId: "turn-1",
+    runId: "run-1",
+    revision: 1 as const,
+    status: "pending" as const,
+    outcome: null,
+    request: {
+      kind: "form" as const,
+      toolUseId: "tool-1",
+      message: "Configure deployment",
+      requester: { name: "deploy" },
+      fields: [{ kind: "integer" as const, name: "replicas", label: "Replicas", required: true }],
+    },
+  };
+  const observer = observerWithSnapshot({ interactions: { pending: [pending] } });
+  const answers: unknown[] = [];
+  const ipc = ipcHarness();
+  registerExecutionIpc({
+    observer,
+    client: executionClient({
+      answerInteraction: async (input) => {
+        answers.push(input);
+        return {
+          ...pending,
+          revision: 2,
+          status: "answered",
+          outcome: {
+            kind: "form_answer",
+            action: "accept",
+            values: { replicas: 3 },
+            committedAt: 2,
+          },
+        };
+      },
+    }),
+  }, ipc);
+
+  await ipc.invoke("sessions:respondToUserForm", "session-1", {
+    requestId: "form-1",
+    action: "accept",
+    values: { replicas: 3 },
+  });
+  assert.deepEqual(answers, [{
+    sessionId: "session-1",
+    interactionId: "form-1",
+    answer: { kind: "form", action: "accept", values: { replicas: 3 } },
+  }]);
+
+  await assert.rejects(
+    () => ipc.invoke("sessions:respondToUserForm", "session-1", {
+      requestId: "form-1",
+      action: "accept",
+      values: { replicas: Number.NaN },
+    }),
+  );
+  assert.equal(answers.length, 1);
   await observer.close();
 });
 

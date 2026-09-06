@@ -386,9 +386,18 @@ export interface ModelRequestMetadata {
  *   recovery and terminal error emission.
  */
 export type ModelStreamEvent =
-  | { kind: 'text-start' }
+  | {
+      kind: 'text-start';
+      /** Native Responses output item boundary; internal to adapter/backend replay. */
+      providerItemBoundary?: true;
+    }
   | { kind: 'text'; text: string }
-  | { kind: 'text-metadata'; providerOptions: ProviderOptions }
+  | {
+      kind: 'text-end';
+      providerOptions?: ProviderOptions;
+      /** Native Responses output item boundary; internal to adapter/backend replay. */
+      providerItemBoundary?: true;
+    }
   | {
       kind: 'thinking-start';
       reasoningPartId?: string;

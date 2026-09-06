@@ -115,6 +115,8 @@ function resolveBase(event: SessionEvent, ctx: RuntimeEventMapContext) {
  *   - sandbox_boundary_request     → role 'system',  author 'system'
  *   - sandbox_boundary_decision_ack → role 'system', author 'user'
  *   - user_question_answer_ack     → role 'system',  author 'user'
+ *   - form_request                 → role 'system',  author 'system'
+ *   - form_answer_ack              → role 'system',  author 'user'
  *   - plan_submitted               → role 'system',  author 'agent'
  *   - token_usage                  → role 'system',  author 'system'
  *   - error                        → role 'system',  author 'system'
@@ -451,6 +453,30 @@ function mapBackendSessionEvent(
             requestId: event.requestId,
           },
         },
+        refs: { toolCallId: event.toolUseId },
+      };
+    case 'form_request':
+      return {
+        ...base,
+        role: 'system',
+        author: 'system',
+        actions: {
+          formRequest: {
+            requestId: event.requestId,
+            toolUseId: event.toolUseId,
+            message: event.message,
+            requester: event.requester,
+            fields: event.fields,
+          },
+        },
+        refs: { toolCallId: event.toolUseId },
+      };
+    case 'form_answer_ack':
+      return {
+        ...base,
+        role: 'system',
+        author: 'user',
+        actions: { formAnswerAccepted: { requestId: event.requestId } },
         refs: { toolCallId: event.toolUseId },
       };
 

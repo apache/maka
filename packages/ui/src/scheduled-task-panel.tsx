@@ -22,10 +22,7 @@ import { useMountedRef } from './use-mounted-ref.js';
 import { useToast } from './toast.js';
 import { ICON_SIZE, Clock, MoreHorizontal, Plus, RefreshCcw } from './icons.js';
 import type { ScheduledTask, ScheduledTaskStatus } from '@maka/core/scheduled-task';
-import {
-  generalizedErrorMessage,
-  generalizedErrorMessageChinese,
-} from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import {
   type ScheduledTaskFormSeed,
   compareScheduledTaskBySort,
@@ -245,9 +242,10 @@ export function ScheduledTaskPanel(props: {
     } catch (error) {
       // Revert to reflect REALITY, and surface the failure in Chinese.
       if (scheduledTaskMountedRef.current) setKeepSystemAwakeChecked(!next);
-      toast.error(copy.page.keepAwakeErrorTitle, locale === 'zh'
-        ? generalizedErrorMessageChinese(error, copy.page.keepAwakeErrorFallback)
-        : generalizedErrorMessage(error, copy.page.keepAwakeErrorFallback));
+      toast.error(
+        copy.page.keepAwakeErrorTitle,
+        generalizedErrorMessageForLocale(error, copy.page.keepAwakeErrorFallback, locale),
+      );
     } finally {
       keepSystemAwakePendingRef.current = false;
       if (scheduledTaskMountedRef.current) setKeepSystemAwakePending(false);

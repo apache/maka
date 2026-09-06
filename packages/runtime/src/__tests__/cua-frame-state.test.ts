@@ -128,7 +128,7 @@ describe('CuaFrameState', () => {
     });
   });
 
-  test('binds coordinates to the immediately preceding window screenshot space', () => {
+  test('binds a non-semantic action only to the observation identity', () => {
     const state = createState();
     const observation = state.observe({
       capturedAt: 1,
@@ -142,35 +142,13 @@ describe('CuaFrameState', () => {
         sourceBoundsPx: { x: 0, y: 0, width: 800, height: 600 },
       },
     });
-    const action: CuAction = {
-      type: 'left_click',
-      coordinate: { x: 25, y: 30 },
-    };
+    const action: CuAction = { type: 'type', text: 'hello' };
 
     const bound = bindCuaActionToObservation(observation, action);
 
-    assert.equal(bound?.target?.windowId, 7);
-    assert.deepEqual(bound?.windowCoordinate, { x: 25, y: 30 });
-    assert.equal(bound?.coordinateSpace, 'window-screenshot-local');
-  });
-
-  test('rejects a coordinate outside the bound window screenshot', () => {
-    const state = createState();
-    const observation = state.observe({
-      capturedAt: 1,
-      screenshotWidthPx: 800,
-      screenshotHeightPx: 600,
-      displays: [],
-      target: { pid: 42, windowId: 7 },
-    });
-
-    assert.equal(
-      bindCuaActionToObservation(observation, {
-        type: 'left_click',
-        coordinate: { x: 801, y: 30 },
-      }),
-      undefined,
-    );
+    assert.equal(bound.target.windowId, 7);
+    assert.equal(bound.actionFingerprint, JSON.stringify(action));
+    assert.equal(bound.presentationScreenPoint, undefined);
   });
 
   // A refusal the executor never dispatched must not cost the frame.

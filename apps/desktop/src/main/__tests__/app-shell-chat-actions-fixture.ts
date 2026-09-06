@@ -118,6 +118,7 @@ export function createActionsDeps() {
     transcriptRangeRef: { current: undefined },
     setLiveTurnBySession: () => undefined,
     setInteractionBySession: () => undefined,
+    respondToUserForm: async () => undefined,
     showModelSetupToast: () => undefined,
     toastApi: { error: () => undefined, info: () => undefined },
     newChatModel: null,

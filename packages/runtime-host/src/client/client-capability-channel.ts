@@ -18,9 +18,11 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import type { InteractionFormInput, InteractionFormResult } from '@maka/core/interaction';
 import {
   CLIENT_CAPABILITY_MAX_RESULT_BYTES,
   CLIENT_CAPABILITY_RESULT_CHUNK_MAX_BYTES,
+  decodeClientCapabilityClientFrame,
   decodeClientCapabilityReplaceInput,
   decodeClientCapabilityResult,
   type ClientCapabilityAdmissionEvidence,
@@ -45,12 +47,27 @@ interface ClientCapabilityRegistration {
 interface ClientCapabilityInvocation {
   readonly controller: AbortController;
   admission?: ClientCapabilityAdmission;
+  interaction?: ClientCapabilityPendingInteraction;
   released: boolean;
 }
 
 interface ClientCapabilityAdmission {
   readonly promise: Promise<void>;
   resolve(): boolean;
+  reject(error: unknown): boolean;
+}
+
+interface ClientCapabilityPendingInteraction {
+  readonly interactionId: string;
+  readonly promise: Promise<
+    Extract<ClientCapabilityHostFrame, { kind: 'client.capability.interaction_result' }>['result']
+  >;
+  resolve(
+    result: Extract<
+      ClientCapabilityHostFrame,
+      { kind: 'client.capability.interaction_result' }
+    >['result'],
+  ): boolean;
   reject(error: unknown): boolean;
 }
 
@@ -163,6 +180,7 @@ export class ClientCapabilityChannel {
           new DOMException('Client Capability invocation was cancelled', 'AbortError'),
         );
         invocation.admission?.reject(capabilityInvocationAbortReason(invocation));
+        invocation.interaction?.reject(capabilityInvocationAbortReason(invocation));
         return;
       }
       case 'client.capability.release': {
@@ -173,6 +191,7 @@ export class ClientCapabilityChannel {
           new DOMException('Client Capability invocation was released', 'AbortError'),
         );
         invocation.admission?.reject(capabilityInvocationAbortReason(invocation));
+        invocation.interaction?.reject(capabilityInvocationAbortReason(invocation));
         this.#invocations.delete(frame.invocationId);
         return;
       }
@@ -187,6 +206,18 @@ export class ClientCapabilityChannel {
         }
         return;
       }
+      case 'client.capability.interaction_result': {
+        const invocation = this.#invocations.get(frame.invocationId);
+        const interaction = invocation?.interaction;
+        if (
+          !interaction ||
+          interaction.interactionId !== frame.interactionId ||
+          !interaction.resolve(frame.result)
+        ) {
+          throw new Error('Runtime Host returned an unmatched capability interaction result');
+        }
+        return;
+      }
     }
   }
 
@@ -197,6 +228,7 @@ export class ClientCapabilityChannel {
       invocation.released = true;
       invocation.controller.abort(error);
       invocation.admission?.reject(error);
+      invocation.interaction?.reject(error);
     }
     this.#invocations.clear();
     const providers = new Set(
@@ -285,6 +317,7 @@ export class ClientCapabilityChannel {
       readonly signal: AbortSignal;
       accept(evidence: ClientCapabilityAdmissionEvidence): Promise<void>;
       progress(current: number, total: number): void;
+      requestInteraction(form: InteractionFormInput): Promise<InteractionFormResult>;
     }) => Promise<ReturnType<typeof decodeClientCapabilityResult>>,
   ): Promise<void> {
     let accepted = false;
@@ -329,14 +362,52 @@ export class ClientCapabilityChannel {
           })
           .catch((error: unknown) => this.#options.onFailure(asError(error)));
       };
+      const requestInteraction = async (
+        request: InteractionFormInput,
+      ): Promise<InteractionFormResult> => {
+        if (!accepted) {
+          throw new Error('Client Capability interaction requires an admitted invocation');
+        }
+        if (invocation.released) throw capabilityInvocationAbortReason(invocation);
+        if (invocation.interaction) {
+          throw new Error('Client Capability invocation already has a pending interaction');
+        }
+        const interactionId = randomUUID();
+        const frame = decodeClientCapabilityClientFrame({
+          kind: 'client.capability.interaction_request',
+          invocationId,
+          interactionId,
+          request,
+        });
+        if (frame.kind !== 'client.capability.interaction_request') {
+          throw new Error('Client Capability interaction request was not canonical');
+        }
+        const interaction = createClientCapabilityPendingInteraction(interactionId);
+        invocation.interaction = interaction;
+        try {
+          try {
+            await this.#options.write(frame);
+          } catch (error) {
+            interaction.reject(error);
+            throw error;
+          }
+          return await interaction.promise;
+        } finally {
+          if (invocation.interaction === interaction) invocation.interaction = undefined;
+        }
+      };
       const result = decodeClientCapabilityResult(
         await execute({
           signal: invocation.controller.signal,
           accept,
           progress,
+          requestInteraction,
         }),
       );
       if (invocation.released) return;
+      if (invocation.interaction) {
+        throw new Error('Client Capability provider returned with a pending interaction');
+      }
       await accept({ kind: 'none' });
       await this.#sendResult(invocationId, result, invocation);
     } catch (error) {
@@ -437,6 +508,37 @@ function createClientCapabilityAdmission(): ClientCapabilityAdmission {
       if (state !== 'pending') return false;
       state = 'resolved';
       resolvePromise();
+      return true;
+    },
+    reject: (error) => {
+      if (state !== 'pending') return false;
+      state = 'rejected';
+      rejectPromise(error);
+      return true;
+    },
+  };
+}
+
+function createClientCapabilityPendingInteraction(
+  interactionId: string,
+): ClientCapabilityPendingInteraction {
+  let state: 'pending' | 'resolved' | 'rejected' = 'pending';
+  let resolvePromise!: (result: InteractionFormResult) => void;
+  let rejectPromise!: (error: unknown) => void;
+  const promise = new Promise<InteractionFormResult>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  // A buggy provider may start but not await the callback. The invocation still
+  // fails closed, while channel teardown must not create an unhandled rejection.
+  void promise.catch(() => undefined);
+  return {
+    interactionId,
+    promise,
+    resolve: (result) => {
+      if (state !== 'pending') return false;
+      state = 'resolved';
+      resolvePromise(result);
       return true;
     },
     reject: (error) => {

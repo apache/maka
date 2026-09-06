@@ -86,6 +86,10 @@ import {
   type WorkHubDelegationAssignedMessage,
   type WorkHubDelegationReplacementAbortedMessage,
   type WorkHubDelegationReplacementRequestedMessage,
+  type WorkHubActionClaim,
+  type WorkHubActionClaimOutcome,
+  type WorkHubDelegationStopRequestedMessage,
+  type WorkHubDelegationStopResolvedMessage,
   type WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
 import type {
@@ -421,6 +425,11 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     request: WorkHubMessageAssignmentRequest,
   ): Promise<WorkHubMessageAssignmentResult>;
   readWorkHubAssignment(actionId: string): Promise<WorkHubDelegationAssignedMessage | undefined>;
+  /** Newest active assignment first, across every requested target. */
+  readActiveWorkHubAssignmentsByTarget(
+    targetSessionIds: readonly string[],
+    maxAssignmentsPerTarget?: number,
+  ): Promise<readonly WorkHubDelegationAssignedMessage[]>;
   readWorkHubReplacement(
     delegationId: string,
   ): Promise<WorkHubDelegationReplacementRequestedMessage | undefined>;
@@ -430,6 +439,19 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   readWorkHubSupersession(
     delegationId: string,
   ): Promise<WorkHubDelegationSupersededMessage | undefined>;
+  readWorkHubStopRequest(
+    delegationId: string,
+  ): Promise<WorkHubDelegationStopRequestedMessage | undefined>;
+  readWorkHubStopResolution(
+    delegationId: string,
+  ): Promise<WorkHubDelegationStopResolvedMessage | undefined>;
+  /**
+   * Durably binds one action identity to one exact WorkHub operation before its
+   * effect. Survives removal of the target Session so a committed destructive
+   * claim can still converge afterwards.
+   */
+  claimWorkHubAction(claim: WorkHubActionClaim): Promise<WorkHubActionClaimOutcome>;
+  readWorkHubActionClaim(actionId: string): Promise<WorkHubActionClaim | undefined>;
   discardStableConversationCopy(sessionId: string, requestFingerprint: string): Promise<boolean>;
   listCatalogPage(
     filter: SessionListFilter | undefined,
@@ -682,6 +704,17 @@ class SqliteSessionStore implements SessionAuthorityStore {
       : undefined;
   }
 
+  async readActiveWorkHubAssignmentsByTarget(
+    targetSessionIds: readonly string[],
+    maxAssignmentsPerTarget?: number,
+  ): Promise<readonly WorkHubDelegationAssignedMessage[]> {
+    await this.ensureReady();
+    return this.metadata.readActiveWorkHubAssignmentsByTarget(
+      targetSessionIds,
+      maxAssignmentsPerTarget,
+    );
+  }
+
   async readWorkHubReplacement(
     delegationId: string,
   ): Promise<WorkHubDelegationReplacementRequestedMessage | undefined> {
@@ -717,21 +750,43 @@ class SqliteSessionStore implements SessionAuthorityStore {
       : undefined;
   }
 
+  async readWorkHubStopRequest(
+    delegationId: string,
+  ): Promise<WorkHubDelegationStopRequestedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whq_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_stop_requested'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubStopResolution(
+    delegationId: string,
+  ): Promise<WorkHubDelegationStopResolvedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whz_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_stop_resolved'
+      ? message
+      : undefined;
+  }
+
+  async claimWorkHubAction(claim: WorkHubActionClaim): Promise<WorkHubActionClaimOutcome> {
+    await this.ensureReady();
+    return this.metadata.claimWorkHubAction(claim);
+  }
+
+  async readWorkHubActionClaim(actionId: string): Promise<WorkHubActionClaim | undefined> {
+    await this.ensureReady();
+    return this.metadata.readWorkHubActionClaim(actionId);
+  }
+
   private async readWorkHubCoordinationMessage(
     messageId: string,
   ): Promise<StoredMessage | undefined> {
     await this.ensureReady();
-    const throughSequence = await this.metadata.readTranscriptHighWater(
-      WORKHUB_COORDINATION_SESSION_ID,
-    );
-    if (throughSequence === null) return undefined;
-    const messages = await this.metadata.readTranscriptMessages(WORKHUB_COORDINATION_SESSION_ID, {
-      messageIds: [messageId],
-      throughSequence,
-      maxMessages: 1,
-      maxBytes: 768 * 1024,
-    });
-    return messages[0];
+    return this.metadata.readMessageById(WORKHUB_COORDINATION_SESSION_ID, messageId);
   }
 
   async discardStableConversationCopy(
@@ -1057,6 +1112,11 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async hasCancelledMessageAdmission(sessionId: string, messageId: string): Promise<boolean> {
     await this.ensureReady();
     return this.metadata.hasCancelledMessageAdmission(sessionId, messageId);
+  }
+
+  async claimMessageAdmissionCancellation(sessionId: string, messageId: string, claimId: string) {
+    await this.ensureReady();
+    return this.metadata.claimMessageAdmissionCancellation(sessionId, messageId, claimId);
   }
 
   async listMessageAdmissions(sessionId: string): Promise<readonly PendingMessageAdmission[]> {

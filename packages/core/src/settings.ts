@@ -40,6 +40,7 @@ import type { UsageProvenance } from './usage-ledger-merge.js';
 import {
   UI_LOCALE_PREFERENCES,
   isUiLocalePreference,
+  normalizeUiLocalePreference,
   type UiLocalePreference,
 } from './ui-locale.js';
 import { normalizeSubagentSettings, type SubagentSettings } from './subagent-settings.js';
@@ -691,6 +692,14 @@ export type SettingsTestResultCode =
   | 'bot_token_missing'
   | 'bot_token_invalid'
   | 'bot_app_credentials_missing'
+  | 'slack_tokens_missing'
+  | 'wecom_credentials_missing'
+  | 'dingtalk_credentials_missing'
+  | 'dingtalk_no_access_token'
+  | 'qq_credentials_missing'
+  | 'qq_no_access_token'
+  | 'wechat_bridge_url_invalid'
+  | 'wechat_ilink_credentials_incomplete'
   | 'bot_connection_failed';
 
 export type UpdateAppSettingsInput = Partial<{
@@ -978,13 +987,12 @@ export function normalizeSettings(input: unknown): AppSettings {
     // PR-LANG-PREF-0: closed-enum fail-closed for the new
     // `personalization.uiLocale` preference. mergeSettings spreads
     // raw user values, so an unknown value would otherwise reach the
-    // renderer outside the closed reactive-locale contract. Fall back to
-    // 'auto' on any miss.
+    // renderer outside the closed reactive-locale contract. Preserve the
+    // former generic `zh` preference as Simplified Chinese, then fall back to
+    // 'auto' on any other miss.
     personalization: {
       ...base.personalization,
-      uiLocale: isUiLocalePreference(base.personalization.uiLocale)
-        ? base.personalization.uiLocale
-        : 'auto',
+      uiLocale: normalizeUiLocalePreference(base.personalization.uiLocale),
       selectedPetId: normalizeSelectedPetId(base.personalization.selectedPetId),
     },
     botChat: normalizeBotChatSettings(base.botChat, value.botChat),

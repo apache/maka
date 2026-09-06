@@ -59,16 +59,12 @@ import {
   connectionTestFailureMessage,
   getProviderSettingsCopy,
   providerPanelActionErrorMessage,
+  type ConnectionOAuthBridge,
+  type ConnectionOAuthProviderBridge,
   type ConnectionsBridge,
   type CredentialPresenceStatus,
 } from '../features/connection-settings';
-import {
-  useRuntimeHostSettingsErrorReporter,
-  useRuntimeHostSettingsTarget,
-} from './runtime-host-settings-target.js';
-import {
-  runtimeHostOAuthExistingLoginBridges,
-} from './runtime-host-settings-bridge.js';
+import { useRuntimeHostSettingsErrorReporter } from './runtime-host-settings-target.js';
 
 // Maps an OAuth model-connection provider type to the browser-assisted login
 // service that can re-run its authorization from inside the connection dialog. Only
@@ -79,43 +75,67 @@ export interface OAuthLoginService {
   authorizationBridge: OAuthAuthorizationFlowBridge;
   accountBridge: OAuthAccountFlowBridge;
   display: { name: string; shortName: string };
-  // Codex's device-authorization page requires the user to type the code the
-  // flow surfaces as `stateHint` — the verification URL does not embed it, so
-  // the notice must show it or the login cannot be completed. xAI's page
-  // needs no manual code, mirroring the catalog panel's `!isXai` guard.
+  // OAuth device pages that require manual code entry expose it as stateHint.
   showsDeviceCode: boolean;
 }
 
 export function oauthLoginServiceFor(
   providerType: ProviderType,
-  host: import('../../preload/bridge-contract.js').DesktopRuntimeHostRef,
+  oauth: ConnectionOAuthBridge,
   connectionId: string,
   connectionLabel?: string,
 ): OAuthLoginService | null {
   switch (providerType) {
     case 'openai-codex':
-      return {
-        ...runtimeHostOAuthExistingLoginBridges(
-          window.maka.openAiCodex,
-          host,
-          connectionId,
-        ),
-        display: { name: connectionLabel ?? 'OpenAI Codex', shortName: 'Codex' },
-        showsDeviceCode: true,
-      };
+      return oauthLoginService(
+        oauth.openAiCodex,
+        connectionId,
+        { name: connectionLabel ?? 'OpenAI Codex', shortName: 'Codex' },
+        true,
+      );
     case 'xai-oauth':
-      return {
-        ...runtimeHostOAuthExistingLoginBridges(
-          window.maka.xaiOAuth,
-          host,
-          connectionId,
-        ),
-        display: { name: connectionLabel ?? 'xAI Grok', shortName: 'SuperGrok / X Premium' },
-        showsDeviceCode: false,
-      };
+      return oauthLoginService(
+        oauth.xaiOAuth,
+        connectionId,
+        { name: connectionLabel ?? 'xAI Grok', shortName: 'SuperGrok / X Premium' },
+        false,
+      );
+    // Copilot re-login is the same Host-owned device grant the catalog drives;
+    // importing a local `gh` credential stays a catalog action, so an expired
+    // connection is re-authorized here exactly like every other OAuth account.
+    case 'github-copilot':
+      return oauthLoginService(
+        oauth.githubCopilotSubscription,
+        connectionId,
+        { name: connectionLabel ?? 'GitHub Copilot', shortName: 'GitHub Copilot' },
+        true,
+      );
     default:
       return null;
   }
+}
+
+function oauthLoginService(
+  provider: ConnectionOAuthProviderBridge,
+  connectionId: string,
+  display: OAuthLoginService['display'],
+  showsDeviceCode: boolean,
+): OAuthLoginService {
+  return {
+    authorizationBridge: {
+      getAuthUrl: () => provider.getAuthUrl({ kind: 'existing', connectionId }),
+      openAuthUrl: (authRequestId) => provider.openAuthUrl(authRequestId),
+      completeAuthorization: (authRequestId) => provider.completeAuthorization(authRequestId),
+      cancelAuthorization: (authRequestId) => provider.cancelAuthorization(authRequestId),
+      getEnrollmentState: () => provider.getEnrollmentState(),
+    },
+    accountBridge: {
+      getAccountState: () => provider.getAccountState(connectionId),
+      logout: () => provider.logout(connectionId),
+    },
+    display,
+    showsDeviceCode,
+  };
 }
 
 export interface ConnectionDetailProps {
@@ -135,7 +155,6 @@ export interface ConnectionDetailProps {
 // the guard, lifecycle gate, and cross-calls (save auto-fetches models) stay in
 // one place with zero behavior change.
 export function useConnectionDetail(props: ConnectionDetailProps) {
-  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
   const { connection } = props;
@@ -182,12 +201,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const oauthLoginService = needsOAuth && !retired && connection.connectionId
     ? oauthLoginServiceFor(
         connection.providerType,
-        host,
+        props.bridge.oauth,
         connection.connectionId,
         `${connection.name} · ${connection.slug}`,
       )
     : null;
-  const usesGitHubCopilotLogin = connection.providerType === 'github-copilot';
   const supportsRemoteDiscovery = providerSupportsModelDiscovery(connection.providerType);
   const requiresCredential = providerAuthRequiresSecret(connection.providerType);
   const probesCredential = supportsApiKey || needsOAuth;
@@ -455,17 +473,26 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     updateRelayProfileDraft(modelId, (current) => relayProfileWithThinkingLevels(current, levels));
   }
 
-  // The same edit across every enabled model, as ONE state update rather than
-  // a loop of per-model setters: a bulk tick is a single user gesture, and
-  // committing it in N steps would let a re-render land mid-way and paint a
-  // half-applied table.
-  function setDraftThinkingLevelForAll(
+  // The same edit across every enabled model, applied and saved as ONE gesture:
+  // the bulk menu has no Save of its own, so a tick there is a commit. The
+  // table is computed once and handed straight to the save so the write cannot
+  // race a re-render of the draft state.
+  async function saveThinkingLevelForAll(
     modelIds: readonly string[],
     level: ThinkingLevel,
     checked: boolean,
-  ): void {
+  ): Promise<boolean> {
+    const next = applyBulkThinkingLevel(modelIds, relayProfileDrafts, level, checked);
     setRelayProfilesDirty(true);
-    setRelayProfileDrafts((current) => applyBulkThinkingLevel(modelIds, current, level, checked));
+    setRelayProfileDrafts(next);
+    return saveRelayProfiles(next);
+  }
+
+  // Put one model's draft back to what is saved — a per-row Cancel. The other
+  // rows keep their drafts; only the row the user abandoned is discarded.
+  function resetDraftProfile(modelId: string): void {
+    const saved = relayProfileDraftSeed(connection.relayModelProfiles)[modelId];
+    updateRelayProfileDraft(modelId, () => saved);
   }
 
   // Tri-state vision: undefined = Auto (relay/metadata decides), true/false
@@ -554,7 +581,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connection.slug, connection.name]);
 
-  async function saveRelayProfiles(): Promise<boolean> {
+  async function saveRelayProfiles(
+    drafts: Readonly<Record<string, RelayModelProfile>> = relayProfileDrafts,
+  ): Promise<boolean> {
     // Refuse while the draft still belongs to the previous connection: in the
     // window between the slug switch rendering and the reseed effect
     // flushing, 保存 must not hand B this draft.
@@ -568,7 +597,8 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       // after the write-path sanitizer so a hand-assembled draft degrades the
       // same way a saved document would.
       await props.bridge.update(connectionIdentity, {
-        relayModelProfiles: draftedRelayProfiles ?? null,
+        relayModelProfiles:
+          normalizeRelayModelProfiles(pruneRelayModelProfiles(drafts, enabledModelIds) ?? {}) ?? null,
       });
       if (!isConnectionDetailCurrent(lifecycle)) return true;
       setRelayProfilesDirty(false);
@@ -842,7 +872,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     supportsApiKey,
     needsOAuth,
     retired,
-    usesGitHubCopilotLogin,
     oauthLoginService,
     supportsRemoteDiscovery,
     credentialProbePending,
@@ -863,10 +892,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     relayProfilesDirty,
     hasRelayProfileChanges,
     setDraftThinkingLevels,
-    setDraftThinkingLevelForAll,
+    saveThinkingLevelForAll,
     setDraftVision,
     setDraftContextWindow,
     setDraftServiceTier,
+    resetDraftProfile,
     saveRelayProfiles,
     runTest,
     refreshModels,

@@ -36,6 +36,7 @@ import type {
   SandboxEscalationRequest,
 } from './permission.js';
 import type { SandboxBoundaryExpansion, SandboxBoundaryRequestStatus } from './sandbox-boundary.js';
+import type { InteractionFormField, InteractionRequesterProjection } from './interaction.js';
 import type { UserQuestionRequest } from './user-question.js';
 import type {
   ClientCapabilityGrantCapability,
@@ -568,6 +569,8 @@ export type SessionEvent =
   | PermissionDecisionAckEvent
   | UserQuestionRequestEvent
   | UserQuestionAnswerAckEvent
+  | FormRequestEvent
+  | FormAnswerAckEvent
   | PlanSubmittedEvent
   | TokenUsageEvent
   | SteeringMessageEvent
@@ -1014,6 +1017,15 @@ export interface UserQuestionRequestEvent extends BaseEvent, UserQuestionRequest
   type: 'user_question_request';
 }
 
+export interface FormRequestEvent extends BaseEvent {
+  type: 'form_request';
+  requestId: string;
+  toolUseId: string;
+  message: string;
+  requester: InteractionRequesterProjection;
+  fields: readonly InteractionFormField[];
+}
+
 export interface SandboxBoundaryRequestEvent extends BaseEvent {
   type: 'sandbox_boundary_request';
   requestId: string;
@@ -1038,6 +1050,7 @@ export interface ClientCapabilityRequestEvent extends BaseEvent {
 export type ActiveInteractionRequestEvent =
   | SandboxBoundaryRequestEvent
   | UserQuestionRequestEvent
+  | FormRequestEvent
   | ClientCapabilityRequestEvent;
 
 export interface SandboxBoundaryDecisionAckEvent extends BaseEvent {
@@ -1062,6 +1075,13 @@ export interface ClientCapabilityDecisionAckEvent extends BaseEvent {
  */
 export interface UserQuestionAnswerAckEvent extends BaseEvent {
   type: 'user_question_answer_ack';
+  requestId: string;
+  toolUseId: string;
+}
+
+/** Echo that the hosted runtime accepted a form answer. */
+export interface FormAnswerAckEvent extends BaseEvent {
+  type: 'form_answer_ack';
   requestId: string;
   toolUseId: string;
 }

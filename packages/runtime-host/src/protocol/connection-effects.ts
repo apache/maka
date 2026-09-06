@@ -21,6 +21,7 @@ import {
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
   decodeConnectionModelId,
   decodeConnectionModel,
+  decodeConnectionName,
   decodeConnectionSlug,
   decodeProviderType,
   decodeConnectionTestSummary,
@@ -36,6 +37,7 @@ import {
   requireEntityId,
   requireExactRecord,
   requireRecord,
+  requireShapedRecord,
   requireString,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
@@ -87,6 +89,11 @@ export interface ConnectionTestRunInput {
 
 export interface ConnectionOnboardingVerifyInput {
   readonly target: ConnectionOnboardingTarget;
+  /**
+   * Transient connection credential. API-key providers carry the raw key;
+   * OAuth adoption carries canonical serialized OAuth subscription material.
+   * The value is used by the Host and never projected back to the Client.
+   */
   readonly apiKey: string | null;
   /**
    * Endpoint override for providers whose registry entry carries none (the
@@ -97,6 +104,7 @@ export interface ConnectionOnboardingVerifyInput {
 }
 
 export interface ConnectionOnboardingSaveInput extends ConnectionOnboardingVerifyInput {
+  /** Empty enables the complete non-empty model set discovered by this Host operation. */
   readonly enabledModelIds: readonly string[];
 }
 
@@ -109,6 +117,10 @@ export type ConnectionOnboardingVerifyResult =
         | 'connection_not_found'
         | 'credential_not_configured'
         | 'base_url_not_configured'
+        // The create target's caller-requested slug is taken. Surfaced at
+        // verify so the wizard can offer the identity step again before any
+        // model discovery runs.
+        | 'slug_taken'
         | 'catalog_full';
     }
   | { readonly kind: 'failed'; readonly errorClass: ConnectionEffectFailureClass };
@@ -132,6 +144,10 @@ export type ConnectionOnboardingSaveResult =
         | 'base_url_not_configured'
         | 'catalog_full'
         | 'model_unavailable'
+        // The caller asked for a slug that another connection already owns;
+        // nothing was created. Re-run the wizard with a different slug (or no
+        // slug for the derived identity).
+        | 'slug_taken'
         // The connection changed between model discovery and the commit; the
         // discovered inventory no longer describes it. Re-run the wizard.
         | 'superseded';
@@ -253,10 +269,9 @@ export function decodeConnectionOnboardingSaveInput(value: unknown): ConnectionO
   });
   if (
     !Array.isArray(input.enabledModelIds) ||
-    input.enabledModelIds.length === 0 ||
     input.enabledModelIds.length > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION
   ) {
-    throw invalidProtocolFrame('Connection onboarding requires at least one enabled model');
+    throw invalidProtocolFrame('Connection onboarding enabled models exceed the limit');
   }
   const enabledModelIds = input.enabledModelIds.map((modelId) =>
     decodeDomain(() => decodeConnectionModelId(modelId)),
@@ -315,6 +330,7 @@ export function decodeConnectionOnboardingSaveResult(
       rejected.reason !== 'base_url_not_configured' &&
       rejected.reason !== 'catalog_full' &&
       rejected.reason !== 'model_unavailable' &&
+      rejected.reason !== 'slug_taken' &&
       rejected.reason !== 'superseded')
   ) {
     throw invalidProtocolFrame('Invalid connection onboarding save rejection');
@@ -346,13 +362,24 @@ export function decodeConnectionOnboardingVerifyInput(
 function decodeConnectionOnboardingTarget(value: unknown): ConnectionOnboardingTarget {
   const target = requireRecord(value, 'connection onboarding target');
   if (target.kind === 'create') {
-    const exact = requireExactRecord(target, 'create connection onboarding target', [
-      'kind',
-      'providerType',
-    ]);
+    // slug/name are optional so a surface that accepts the derived identity
+    // can keep talking to any Host vintage; a surface that lets the user name
+    // the connection must tolerate an older Host rejecting the extra fields.
+    const exact = requireShapedRecord(
+      target,
+      'create connection onboarding target',
+      ['kind', 'providerType'],
+      ['slug', 'name'],
+    );
     return {
       kind: 'create',
       providerType: decodeDomain(() => decodeProviderType(exact.providerType)),
+      ...(exact.slug === undefined
+        ? {}
+        : { slug: decodeDomain(() => decodeConnectionSlug(exact.slug)) }),
+      ...(exact.name === undefined
+        ? {}
+        : { name: decodeDomain(() => decodeConnectionName(exact.name)) }),
     };
   }
   if (target.kind === 'existing') {
@@ -402,6 +429,7 @@ export function decodeConnectionOnboardingVerifyResult(
       rejected.reason !== 'connection_not_found' &&
       rejected.reason !== 'credential_not_configured' &&
       rejected.reason !== 'base_url_not_configured' &&
+      rejected.reason !== 'slug_taken' &&
       rejected.reason !== 'catalog_full')
   ) {
     throw invalidProtocolFrame('Invalid connection onboarding rejection');

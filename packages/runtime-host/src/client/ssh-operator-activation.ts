@@ -18,13 +18,18 @@
  */
 
 import { spawn } from 'node:child_process';
-import { posix } from 'node:path';
+import { posix, win32 } from 'node:path';
 import { finished } from 'node:stream/promises';
 import {
   RUNTIME_HOST_ACTIVATION_FRAME_MAX_BYTES,
   decodeRuntimeHostActivationFrame,
   type RuntimeHostActivationResult,
 } from '../operator/index.js';
+import {
+  decodeRuntimeHostOperatorCommand,
+  runtimeHostOperatorInvocation,
+  type RuntimeHostOperatorCommand,
+} from '../operator/operator-command.js';
 import { requireHostRootId } from '../protocol/index.js';
 import {
   normalizeRuntimeHostSshDestination,
@@ -36,7 +41,7 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 export interface RuntimeHostSshOperatorActivationInput {
   readonly destination: string;
   readonly sshPort?: number;
-  readonly operatorPath: string;
+  readonly operator: RuntimeHostOperatorCommand;
   readonly rootId: string;
   readonly interaction: RuntimeHostSshInteraction;
   readonly signal?: AbortSignal;
@@ -77,13 +82,18 @@ export async function activateRuntimeHostSshOperator(
   }
   const destination = normalizeRuntimeHostSshDestination(input.destination);
   const sshPort = input.sshPort === undefined ? undefined : requirePort(input.sshPort);
-  const operatorPath = requireOperatorPath(input.operatorPath);
+  const operator = decodeRuntimeHostOperatorCommand(input.operator);
   const rootId = requireHostRootId(input.rootId);
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > DEFAULT_TIMEOUT_MS) {
     throw new RangeError('Runtime Host SSH activation timeout must be between 1 and 120000 ms');
   }
-  const remoteCommand = `${quotePosix(operatorPath)} activate --framed --root-id ${rootId}`;
+  const remoteCommand = runtimeHostSshOperatorRemoteCommand(operator, [
+    'activate',
+    '--framed',
+    '--root-id',
+    rootId,
+  ]);
   const args = [
     '-T',
     '-o',
@@ -108,6 +118,52 @@ export async function activateRuntimeHostSshOperator(
     interaction: input.interaction,
   });
   return waitForActivation(child, input, timeoutMs);
+}
+
+export function runtimeHostSshOperatorRemoteCommand(
+  operator: RuntimeHostOperatorCommand,
+  args: readonly string[],
+  environment: Readonly<Record<string, string>> = {},
+  options: { readonly missingOperatorIsSuccess?: boolean } = {},
+): string {
+  const invocation = runtimeHostOperatorInvocation(operator, args);
+  const entries = Object.entries(environment);
+  for (const [name] of entries) {
+    if (!/^[A-Z][A-Z0-9_]*$/u.test(name)) {
+      throw new Error('Runtime Host operator environment variable name is invalid');
+    }
+  }
+  if (operator.kind === 'legacy_posix_executable' || operator.platform === 'posix') {
+    const command = [invocation.executable, ...invocation.args].map(quotePosix).join(' ');
+    const variables = entries.map(([name, value]) => `${name}=${quotePosix(value)}`).join(' ');
+    const execute = `${variables ? `${variables} ` : ''}exec ${command}`;
+    if (!options.missingOperatorIsSuccess) return execute;
+    const operatorPath = operator.kind === 'node' ? operator.modulePath : operator.executablePath;
+    const artifact = quotePosix(operatorPath);
+    const deploymentRoot = quotePosix(posix.dirname(operatorPath));
+    return `if [ ! -e ${artifact} ]; then [ ! -e ${deploymentRoot} ] && exit 0; exit 1; fi; ${execute}`;
+  }
+  if (operator.kind !== 'node') throw new Error('Windows Runtime Host operator must use Node');
+  const payload = Buffer.from(
+    JSON.stringify({
+      ...invocation,
+      environment,
+      modulePath: operator.modulePath,
+      deploymentRoot: win32.dirname(operator.modulePath),
+      missingOperatorIsSuccess: options.missingOperatorIsSuccess === true,
+    }),
+    'utf8',
+  ).toString('base64');
+  const script = [
+    `$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}'))|ConvertFrom-Json`,
+    `if($p.missingOperatorIsSuccess -and -not (Test-Path -LiteralPath $p.modulePath -PathType Leaf)){if(-not (Test-Path -LiteralPath $p.deploymentRoot)){exit 0}else{exit 1}}`,
+    `foreach($e in $p.environment.psobject.Properties){[Environment]::SetEnvironmentVariable($e.Name,[string]$e.Value,'Process')}`,
+    `$code=1`,
+    `try{& ([string]$p.executable) @($p.args|ForEach-Object {[string]$_});$code=if($null -eq $LASTEXITCODE){1}else{$LASTEXITCODE}}catch{$code=1}`,
+    `exit $code`,
+  ].join(';');
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
 }
 
 async function waitForActivation(
@@ -201,17 +257,6 @@ function spawnSshOperatorProcess(input: {
       child.kill(signal);
     },
   };
-}
-
-function requireOperatorPath(value: string): string {
-  if (
-    !posix.isAbsolute(value) ||
-    Buffer.byteLength(value, 'utf8') > 4_096 ||
-    /[\u0000-\u001f\u007f]/u.test(value)
-  ) {
-    throw new Error('Runtime Host SSH operator path must be an absolute POSIX path');
-  }
-  return posix.normalize(value);
 }
 
 function requirePort(value: number): number {

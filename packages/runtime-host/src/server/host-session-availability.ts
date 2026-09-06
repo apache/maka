@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { RootExecutionDescriptor } from '@maka/core/agent-run';
+import type { RootExecutionDescriptor } from '@maka/core/runtime-invocation';
 import {
   isWorkHubCoordinationSession,
   isWorkHubCoordinationSessionId,

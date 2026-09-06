@@ -501,6 +501,65 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
+  test('migrates a v36 cancellation tombstone without inventing a claim owner', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-message-cancellation-v36-'));
+    const path = join(root, 'state.sqlite');
+    try {
+      const setup = createSqliteSessionMetadataStore(path);
+      try {
+        await setup.create(fullHeader({ id: 'session-v36-cancellation' }));
+        const content = { text: 'cancelled before claim provenance existed' };
+        await setup.commitMessageAdmission({
+          sessionId: 'session-v36-cancellation',
+          turnId: 'turn-1',
+          runId: 'run-1',
+          messageId: 'message-1',
+          content,
+          submittedContentDigest: messageContentDigest(content),
+          submittedPlacement: 'next_turn',
+          placement: 'next_turn',
+          disposition: 'followup',
+          skillInvocation: { loaded: [], failed: [], receipts: [] },
+          admittedAt: 10,
+        });
+        await setup.cancelMessageAdmissions('session-v36-cancellation', ['message-1']);
+      } finally {
+        setup.close();
+      }
+
+      const legacy = new DatabaseSync(path);
+      try {
+        legacy.exec(`
+          ALTER TABLE cancelled_message_admissions DROP COLUMN cancellation_claim_id;
+          UPDATE session_metadata_schema SET version = 36 WHERE scope = 'session_metadata';
+        `);
+      } finally {
+        legacy.close();
+      }
+
+      const migrated = createSqliteSessionMetadataStore(path);
+      try {
+        assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
+        assert.equal(
+          await migrated.hasCancelledMessageAdmission('session-v36-cancellation', 'message-1'),
+          true,
+        );
+        assert.equal(
+          await migrated.claimMessageAdmissionCancellation(
+            'session-v36-cancellation',
+            'message-1',
+            'later-workhub-claim',
+          ),
+          'already_cancelled',
+        );
+      } finally {
+        migrated.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('materializes a proven Root message when its admission is absent', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
@@ -1441,6 +1500,107 @@ describe('SqliteSessionMetadataStore', () => {
       );
     } finally {
       persisted.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a WorkHub action identity owns one operation across store restarts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-action-claim-'));
+    const path = join(root, 'state.sqlite');
+    const stopClaim = {
+      actionId: 'stop-action',
+      operation: 'stop' as const,
+      actionFingerprint: `sha256:${'a'.repeat(64)}` as const,
+      subject: 'whd_payments',
+    };
+    let store = createSqliteSessionMetadataStore(path);
+    try {
+      assert.equal(await store.claimWorkHubAction(stopClaim), 'claimed');
+      assert.equal(await store.claimWorkHubAction(stopClaim), 'same_claim');
+    } finally {
+      store.close();
+    }
+
+    store = createSqliteSessionMetadataStore(path);
+    try {
+      assert.deepEqual(await store.readWorkHubActionClaim('stop-action'), stopClaim);
+      assert.equal(await store.claimWorkHubAction(stopClaim), 'same_claim');
+      // A second delegation, a second disposition, and a changed payload are
+      // each a different operation for the same identity.
+      assert.equal(
+        await store.claimWorkHubAction({ ...stopClaim, subject: 'whd_login' }),
+        'conflict',
+      );
+      assert.equal(
+        await store.claimWorkHubAction({ ...stopClaim, operation: 'delegate_existing' }),
+        'conflict',
+      );
+      assert.equal(
+        await store.claimWorkHubAction({
+          ...stopClaim,
+          actionFingerprint: `sha256:${'b'.repeat(64)}`,
+        }),
+        'conflict',
+      );
+      assert.equal(await store.readWorkHubActionClaim('unclaimed-action'), undefined);
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('cancellation tombstones retain the durable claim that created them', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-message-cancellation-claim-'));
+    const path = join(root, 'state.sqlite');
+    let store = createSqliteSessionMetadataStore(path);
+    try {
+      await store.create(fullHeader({ id: 'session-claim' }));
+      const content = { text: 'cancel this pending work' };
+      await store.commitMessageAdmission({
+        sessionId: 'session-claim',
+        turnId: 'turn-claim',
+        runId: 'run-claim',
+        messageId: 'message-claim',
+        content,
+        submittedContentDigest: messageContentDigest(content),
+        submittedPlacement: 'next_turn',
+        placement: 'next_turn',
+        disposition: 'followup',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: 10,
+      });
+      assert.equal(
+        await store.claimMessageAdmissionCancellation(
+          'session-claim',
+          'message-claim',
+          'stop-claim',
+        ),
+        'cancelled_by_claim',
+      );
+    } finally {
+      store.close();
+    }
+
+    store = createSqliteSessionMetadataStore(path);
+    try {
+      assert.equal(
+        await store.claimMessageAdmissionCancellation(
+          'session-claim',
+          'message-claim',
+          'stop-claim',
+        ),
+        'same_claim',
+      );
+      assert.equal(
+        await store.claimMessageAdmissionCancellation(
+          'session-claim',
+          'message-claim',
+          'other-claim',
+        ),
+        'already_cancelled',
+      );
+    } finally {
+      store.close();
       await rm(root, { recursive: true, force: true });
     }
   });

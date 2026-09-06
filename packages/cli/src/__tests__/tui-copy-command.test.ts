@@ -155,7 +155,7 @@ describe('serializeTranscriptText', () => {
 describe('getTuiCopyCopy', () => {
   test('resolves localized copy for each locale', () => {
     assert.equal(typeof getTuiCopyCopy('en').nothingToCopy, 'string');
-    assert.equal(typeof getTuiCopyCopy('zh').nothingToCopy, 'string');
+    assert.equal(typeof getTuiCopyCopy('zh-CN').nothingToCopy, 'string');
     assert.ok(getTuiCopyCopy('en').copiedLast.includes('{count'));
     const tooLarge = getTuiCopyCopy('en').tooLarge;
     assert.ok(tooLarge.includes('{bytes}') && tooLarge.includes('{limit}'));

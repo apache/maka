@@ -55,10 +55,30 @@ Prefer descriptive link text for external sources when it is available.
 Follow a more specific format requested by the user or task.`;
 }
 
+function buildProgressUpdatesPromptFragment(): string {
+  return `## Progress updates
+
+For tasks that require tools or multiple steps, send a brief user-facing progress update before the first non-trivial tool call.
+The opening update should name the concrete area you will inspect or change and what you expect to learn or accomplish.
+Send another update only when you reach a meaningful phase change, discover information that changes the plan, finish a long-running operation, or have completed several non-trivial tool calls without any user-visible update.
+Later updates should state a concrete finding or completed milestone and the next action when more work remains.
+When more work remains, put the progress update before the next tool call in the same response. Do not end a response after merely saying what you will do.
+Keep most updates to one concise sentence and never more than two short sentences.
+Avoid empty narration such as "I will take a look", "Working on it", "Continuing", or announcing a routine tool choice. Describe useful intent, findings, decisions, or changed direction instead.
+Do not expose hidden reasoning or repeat commands, tool names, counts, durations, or other raw activity that the interface already shows.
+Skip progress updates only when no tool is needed or exactly one obvious, quick tool call answers the whole request.
+End the turn with a distinct final answer that states the outcome.`;
+}
+
 export function assembleMainSessionSystemPrompt(
   fragments: readonly (string | undefined)[],
 ): string {
-  return [buildIdentityPromptFragment(), buildResponseFormatPromptFragment(), ...fragments]
+  return [
+    buildIdentityPromptFragment(),
+    buildResponseFormatPromptFragment(),
+    buildProgressUpdatesPromptFragment(),
+    ...fragments,
+  ]
     .filter((fragment): fragment is string => Boolean(fragment?.trim()))
     .join('\n\n');
 }

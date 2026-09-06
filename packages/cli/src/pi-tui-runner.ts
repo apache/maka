@@ -34,7 +34,11 @@ import {
 } from '@earendil-works/pi-tui';
 import type { PermissionMode } from '@maka/core/permission';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
-import { type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
+import {
+  deriveConnectionSlug,
+  type ModelInfo,
+  type ProviderType,
+} from '@maka/core/llm-connections';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type {
   SkillInvocationFailureReason,
@@ -74,6 +78,7 @@ import type {
   MakaOnboardingSurface,
   MakaPiTuiTurnActivitySurface,
   ModelChoice,
+  OnboardingIdentityChoice,
   OnboardingProviderEntry,
   SessionRecapGenerator,
 } from './pi-tui-contracts.js';
@@ -107,6 +112,7 @@ import {
   createMakaPiTranscriptState,
   hasRunningUserCommand,
   activeSandboxBoundaryRequest,
+  activeFormRequest,
   activeUserQuestionRequest,
   applyExpansionDefaultToAll,
   completePendingInteraction,
@@ -123,6 +129,8 @@ import {
   type ExpansionEntryKind,
   type MakaPiTranscriptMetadata,
 } from './pi-transcript.js';
+import { FormInteractionOverlay, type TuiFormDraft } from './pi-tui-form-interaction.js';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import { runMakaPiTuiTurn, type MakaPiTuiTurnRequest } from './pi-tui-turn.js';
 import { editorTheme, selectListTheme } from './tui-ansi.js';
 import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.js';
@@ -133,6 +141,11 @@ import { McpManagementOverlay } from './pi-tui-mcp-status.js';
 import type { TuiMcpManagement } from './tui-mcp-control.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
 import { createShellRunHydrationController } from './shell-run-hydration.js';
+import {
+  CTX_REFRESH_DEBOUNCE_MS,
+  createCtxRefresher,
+  scheduleCtxRefreshTimeout,
+} from './tui-context-refresh.js';
 import { sessionStatusBadge } from './tui-session-status.js';
 import {
   AttentionController,
@@ -224,6 +237,15 @@ export interface MakaPiTuiInput {
   shellRunTicker?: {
     now?: () => number;
     schedule?: (callback: () => void, intervalMs: number) => () => void;
+  };
+  /**
+   * Debounce scheduling for the live ctx refresh (#4545). Injectable so tests
+   * drive the timer deterministically; defaults to CTX_REFRESH_DEBOUNCE_MS +
+   * an unref'd setTimeout.
+   */
+  ctxRefreshTicker?: {
+    delayMs?: number;
+    schedule?: (callback: () => void, delayMs: number) => () => void;
   };
   subscribeSessionTitleChanges?: (listener: (sessionId: string) => void) => () => void;
   subscribeShellRunUpdates?: (listener: (update: ShellRunUpdate) => void) => () => void;
@@ -497,6 +519,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         answers: Array<string | null>;
       }
     | undefined;
+  let formResponseInFlightRequestId: string | undefined;
+  let formOverlay: OverlayHandle | undefined;
+  let formOverlayComponent: FormInteractionOverlay | undefined;
+  let formOverlayRequestId: string | undefined;
+  let formOverlaySessionId: string | undefined;
+  let formOverlaySchema: string | undefined;
+  let retainedFormDraft:
+    | {
+        readonly sessionId: string;
+        readonly requestId: string;
+        readonly schema: string;
+        readonly drafts: readonly TuiFormDraft[];
+      }
+    | undefined;
   let turnRunning = false;
   // Monotonic generation for visible agent turns. A mid-turn `/session`
   // switch-away (#3380) bumps it to orphan the in-flight drain: every callback
@@ -707,7 +743,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         return;
       }
       permissionResponseInFlightRequestId = null;
-      syncUserQuestionOverlay();
+      syncInteractionOverlays();
       requestRender();
     }) ?? (() => {});
   const unsubscribeTranscriptReplacements =
@@ -715,6 +751,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       if (closed || input.driver.getSessionId() !== sessionId) return;
       if (reason === 'reconnect') {
         replaceTranscript(messages, { preserveClientLocalEntries: true });
+        syncInteractionOverlays();
         shellRunElapsedTicker.sync();
         requestRender();
         const messageIds = state.entries.flatMap((entry) =>
@@ -744,6 +781,39 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     now: input.shellRunTicker?.now,
     schedule: input.shellRunTicker?.schedule,
   });
+
+  // Live ctx refresh (#4545): the end-of-turn token_usage event moves the
+  // statusline once per turn, but the Host's latest-context snapshot moves at
+  // every settled provider request. Pull it on the desktop inspector's signal
+  // (tui-context-refresh.ts) so a long turn shows the context filling as it
+  // fills. The query is a plain read on the driver — deliberately not routed
+  // through runControl, whose serial lock exists for mutations.
+  const getContextDiagnostics = input.driver.getContextDiagnostics?.bind(input.driver);
+  const ctxRefresher = getContextDiagnostics
+    ? createCtxRefresher({
+        query: async () => {
+          const sessionId = input.driver.getSessionId();
+          const diagnostics = await getContextDiagnostics();
+          return { sessionId, diagnostics };
+        },
+        apply: ({ sessionId, diagnostics }) => {
+          // The session moved under the query (switch, /new): its usage was
+          // rebuilt from stored messages, and a pre-switch snapshot must not
+          // overwrite it.
+          if (closed || input.driver.getSessionId() !== sessionId) return;
+          if (diagnostics.status !== 'available') return;
+          const { inputTokens, contextWindow } = diagnostics;
+          if (inputTokens === undefined || contextWindow === undefined || contextWindow <= 0)
+            return;
+          // Same formula the token_usage path uses (#1067), from the same
+          // settled request — the two cannot disagree.
+          state.usage.contextRemaining = Math.max(0, contextWindow - inputTokens);
+          requestRender();
+        },
+        delayMs: input.ctxRefreshTicker?.delayMs ?? CTX_REFRESH_DEBOUNCE_MS,
+        schedule: input.ctxRefreshTicker?.schedule ?? scheduleCtxRefreshTimeout,
+      })
+    : undefined;
 
   // ── Explicit skill invocation (#1148) ────────────────────────────────────
   // One cached list feeds autocomplete, the `/skill` picker, and the editor's
@@ -934,6 +1004,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     unsubscribeTranscriptReplacements();
     shellRunHydration.dispose();
     shellRunElapsedTicker.dispose();
+    ctxRefresher?.cancel();
     stopTurnElapsedTicker();
     setTaskbarProgress(false);
     // Drop the busy / attention title marker so the tab is not handed back to
@@ -1238,6 +1309,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // The existing connection the picked provider resolved to, so saving edits
   // it in place (a Desktop-created relay may live under a custom slug).
   let wizardTarget: OnboardingProviderEntry['target'] | undefined;
+  // The identity step's answer for a create target. Null halves keep the wire
+  // target bare so any Host vintage accepts it; an edited slug/name rides on
+  // the target and gets `slug_taken` back when it loses.
+  let wizardIdentity: OnboardingIdentityChoice = { slug: null, name: null };
   let wizardModels: readonly ModelInfo[] = [];
   // Authoritative ready model choices for `/model`. A startup snapshot refreshed
   // in place after `/setup` saves so newly configured models are immediately
@@ -1434,6 +1509,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           replaceTranscript(authoritativeAttachedTurn.messages, {
             preserveClientLocalEntries: true,
           });
+          syncInteractionOverlays();
           shellRunHydration.reset();
           if (input.listShellRunUpdates) {
             await shellRunHydration.hydrate(authoritativeAttachedTurn.sessionId);
@@ -1456,12 +1532,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         // not reach the adopted Session's transcript or overlays.
         if (superseded()) return;
         if (
-          (event.type === 'sandbox_boundary_request' || event.type === 'user_question_request') &&
+          (event.type === 'sandbox_boundary_request' ||
+            event.type === 'user_question_request' ||
+            event.type === 'form_request') &&
           resolvedInteractionIds.delete(event.requestId)
         ) {
           return;
         }
         applyMakaSessionEventToTranscript(state, event);
+        ctxRefresher?.observe(event);
         if (event.type === 'error') attention.attentionNeeded();
         if (
           permissionResponseInFlightRequestId !== null &&
@@ -1481,7 +1560,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           permissionAlerted = false;
         }
         shellRunElapsedTicker.sync();
-        syncUserQuestionOverlay();
+        syncInteractionOverlays();
         requestRender();
       },
       // A turn failing is worth pulling the user back, regardless of how long it
@@ -1495,7 +1574,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         appendTurnFailureToTranscript(state, error);
         attention.attentionNeeded();
         shellRunElapsedTicker.sync();
-        syncUserQuestionOverlay();
+        syncInteractionOverlays();
         requestRender();
       },
     }).then(
@@ -1659,6 +1738,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   }: MakaSessionSwitchResult): Promise<void> => {
     adoptSessionMetadata(summary, false);
     replaceTranscript(messages);
+    syncInteractionOverlays();
     if (connectionIdentityNotice) {
       state.entries.push({ kind: 'notice', level: 'error', text: connectionIdentityNotice });
     }
@@ -2021,7 +2101,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     tui.showOverlay(picker, {
       anchor: 'bottom-left',
       width: '100%',
-      maxHeight: Math.max(1, terminal.rows - BOTTOM_PICKER_MARGIN_ROWS),
+      // A numeric cap would freeze today's rows into the option; '100%' is
+      // re-resolved against the live terminal height on every composite, so
+      // after a resize the cap still lands at rows - margin (#4610 review).
+      maxHeight: '100%',
       margin: { bottom: BOTTOM_PICKER_MARGIN_ROWS },
     });
 
@@ -2047,13 +2130,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           completePendingInteraction(state, requestId);
         }
         userQuestionProgress = undefined;
-        syncUserQuestionOverlay();
+        syncInteractionOverlays();
         requestRender();
       })
       .catch((error) => {
         userQuestionInFlight = false;
         reportError(error);
-        syncUserQuestionOverlay();
+        syncInteractionOverlays();
       });
   };
 
@@ -2079,6 +2162,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         hint: '↑↓ move · type to answer · Enter select · Esc unanswered · Ctrl+C stop',
         placeholder: 'Other: type your answer…',
         options: question.options,
+        // Live budget: terminal.rows changes on resize, so read it per render
+        // rather than at overlay construction.
+        maxRows: () => Math.max(1, terminal.rows - BOTTOM_PICKER_MARGIN_ROWS),
         onSelectOption: (index) => advance(question.options[index]?.label ?? null),
         onSubmitText: (value) => advance(value),
         onSkip: () => advance(null),
@@ -2102,6 +2188,136 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       };
       showUserQuestion();
     }
+  };
+
+  const closeFormOverlay = (retainDraft = true): void => {
+    if (
+      retainDraft &&
+      formOverlayComponent &&
+      formOverlaySessionId &&
+      formOverlayRequestId &&
+      formOverlaySchema
+    ) {
+      retainedFormDraft = {
+        sessionId: formOverlaySessionId,
+        requestId: formOverlayRequestId,
+        schema: formOverlaySchema,
+        drafts: formOverlayComponent.snapshotDrafts(),
+      };
+    }
+    formOverlay?.hide();
+    formOverlay = undefined;
+    formOverlayComponent = undefined;
+    formOverlayRequestId = undefined;
+    formOverlaySessionId = undefined;
+    formOverlaySchema = undefined;
+  };
+
+  const finishUserForm = (response: InteractionFormResponse): void => {
+    if (formResponseInFlightRequestId) return;
+    const respond = input.driver.respondToUserForm;
+    if (!respond) {
+      formOverlayComponent?.setSubmissionFailed();
+      reportError(new Error('User forms are unavailable on this driver.'));
+      return;
+    }
+    const responseSessionId = formOverlaySessionId ?? input.driver.getSessionId();
+    formResponseInFlightRequestId = response.requestId;
+    void respond
+      .call(input.driver, response)
+      .then(() => {
+        if (formResponseInFlightRequestId === response.requestId) {
+          formResponseInFlightRequestId = undefined;
+        }
+        if (
+          input.driver.getSessionId() === responseSessionId &&
+          activeFormRequest(state)?.requestId === response.requestId
+        ) {
+          completePendingInteraction(state, response.requestId);
+        }
+        if (
+          retainedFormDraft?.sessionId === responseSessionId &&
+          retainedFormDraft.requestId === response.requestId
+        ) {
+          retainedFormDraft = undefined;
+        }
+        if (
+          formOverlaySessionId === responseSessionId &&
+          formOverlayRequestId === response.requestId
+        ) {
+          closeFormOverlay(false);
+        }
+        syncInteractionOverlays();
+        requestRender();
+      })
+      .catch((error) => {
+        if (formResponseInFlightRequestId === response.requestId) {
+          formResponseInFlightRequestId = undefined;
+        }
+        if (
+          activeFormRequest(state)?.requestId === response.requestId &&
+          formOverlaySessionId === responseSessionId &&
+          formOverlayRequestId === response.requestId
+        ) {
+          formOverlayComponent?.setSubmissionFailed();
+        } else {
+          closeFormOverlay();
+          syncInteractionOverlays();
+        }
+        reportError(error);
+        requestRender();
+      });
+  };
+
+  const syncFormOverlay = (): void => {
+    const request = activeFormRequest(state);
+    if (!request) {
+      closeFormOverlay();
+      return;
+    }
+    const sessionId = input.driver.getSessionId();
+    if (!sessionId) {
+      closeFormOverlay();
+      return;
+    }
+    if (
+      retainedFormDraft?.sessionId === sessionId &&
+      retainedFormDraft.requestId !== request.requestId
+    ) {
+      retainedFormDraft = undefined;
+    }
+    if (formOverlaySessionId !== sessionId || formOverlayRequestId !== request.requestId)
+      closeFormOverlay();
+    if (formResponseInFlightRequestId || formOverlayComponent) return;
+    const schema = JSON.stringify(request.fields);
+    const restoredDrafts =
+      retainedFormDraft?.sessionId === sessionId &&
+      retainedFormDraft.requestId === request.requestId &&
+      retainedFormDraft.schema === schema
+        ? retainedFormDraft.drafts
+        : undefined;
+    if (
+      retainedFormDraft?.sessionId === sessionId &&
+      retainedFormDraft.requestId === request.requestId &&
+      retainedFormDraft.schema !== schema
+    ) {
+      retainedFormDraft = undefined;
+    }
+    formOverlayComponent = new FormInteractionOverlay(tui, {
+      locale,
+      request,
+      initialDrafts: restoredDrafts,
+      onRespond: finishUserForm,
+    });
+    formOverlaySessionId = sessionId;
+    formOverlaySchema = schema;
+    formOverlayRequestId = request.requestId;
+    formOverlay = showBottomPicker(formOverlayComponent);
+  };
+
+  const syncInteractionOverlays = (): void => {
+    syncUserQuestionOverlay();
+    syncFormOverlay();
   };
 
   const showSelectPicker = (
@@ -2149,6 +2365,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     wizardApiKey = '';
     wizardBaseUrl = '';
     wizardTarget = undefined;
+    wizardIdentity = { slug: null, name: null };
     wizardModels = [];
   };
 
@@ -2177,7 +2394,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       (result) => {
         if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
         if (result.kind !== 'ok') {
-          wizard.setKeyError(onboardingFailureMessage(result, locale));
+          // A rejected slug is the identity step's to fix, not the key's.
+          if (result.kind === 'rejected' && result.reason === 'slug_taken') {
+            wizard.setIdentityError(onboardingFailureMessage(result, locale));
+          } else {
+            wizard.setKeyError(onboardingFailureMessage(result, locale));
+          }
           requestRender();
           return;
         }
@@ -2220,7 +2442,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         (result) => {
           if (result.kind !== 'ok') {
             if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
-            wizard.setModelError(onboardingFailureMessage(result, locale));
+            if (result.kind === 'rejected' && result.reason === 'slug_taken') {
+              wizard.setIdentityError(onboardingFailureMessage(result, locale));
+            } else {
+              wizard.setModelError(onboardingFailureMessage(result, locale));
+            }
             requestRender();
             return;
           }
@@ -2280,6 +2506,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         ...provider,
         target: { kind: 'create' as const, providerType: provider.providerType },
         label: provider.label,
+        suggestedSlug: deriveConnectionSlug(provider.providerType),
         enabledModelIds: [],
       }));
     }
@@ -2301,10 +2528,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         // reselects the same catalog row. A late save may converge only the
         // exact target object captured by its own submit.
         wizardTarget = { ...provider.target };
+        wizardIdentity = { slug: null, name: null };
         wizardApiKey = '';
         wizardBaseUrl = '';
         wizardModels = [];
         wizardAttempt += 1; // a new pick supersedes any in-flight attempt
+        requestRender();
+      },
+      onSubmitIdentity: (identity) => {
+        wizardIdentity = identity;
+        if (wizardTarget?.kind === 'create') {
+          wizardTarget = {
+            kind: 'create',
+            providerType: wizardTarget.providerType,
+            ...(identity.slug === null ? {} : { slug: identity.slug }),
+            ...(identity.name === null ? {} : { name: identity.name }),
+          };
+        }
         requestRender();
       },
       onSubmitBaseUrl: (baseUrl) => {
@@ -2473,8 +2713,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     try {
       for await (const event of input.driver.resumeLatest()) {
         applyMakaSessionEventToTranscript(state, event);
+        ctxRefresher?.observe(event);
         shellRunElapsedTicker.sync();
-        syncUserQuestionOverlay();
+        syncInteractionOverlays();
         requestRender();
       }
     } catch (error) {
@@ -2700,6 +2941,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // session, send a prompt to begin" cue. A notice here would make entries
     // non-empty and suppress it.
     replaceTranscript([]);
+    syncInteractionOverlays();
     shellRunElapsedTicker.sync();
     await discardCurrentSidePair();
     requestRender();
@@ -3815,7 +4057,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return { consume: true };
     }
     if (
-      activeUserQuestionRequest(state) &&
+      (activeUserQuestionRequest(state) || activeFormRequest(state)) &&
       turnRunning &&
       matchesKey(data, Key.ctrl('c')) &&
       !isKeyRepeat(data)

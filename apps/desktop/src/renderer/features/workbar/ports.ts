@@ -24,7 +24,6 @@ import type {
 } from '@maka/core/events';
 import type {
   ArtifactBinaryReadResult,
-  ArtifactChangedEvent,
   ArtifactDescriptor,
   ArtifactSaveResult,
   ArtifactTextReadResult,
@@ -42,10 +41,13 @@ import type {
   TurnRecord,
 } from '@maka/core/session';
 import type { SessionTrace } from '@maka/core/session-trace';
-import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { Result } from '@maka/core/result';
-import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
+import type {
+  ContextCompactResult,
+  ContextDiagnosticsResult,
+} from '@maka/runtime-host/protocol';
 import type { MergedUsageSummary } from '@maka/core/usage-ledger-merge';
 import type {
   ShellRunPtyDataEvent,
@@ -92,13 +94,6 @@ export interface WorkbarTerminalService {
   ): WorkbarUnsubscribe;
 }
 
-export interface WorkbarTodoService {
-  read(sessionId: string): Promise<SessionTodoItem[]>;
-  subscribeChanges(
-    handler: (event: { sessionId: string; at: number }) => void,
-  ): WorkbarUnsubscribe;
-}
-
 export interface WorkbarBrowserService {
   setActiveSession(sessionId: string | null): void;
   setViewport(input: { sessionId: string; rect: BrowserViewRect | null }): void;
@@ -130,10 +125,7 @@ export type WorkbarOpenArtifactResult =
     };
 
 export interface WorkbarArtifactsService {
-  list(
-    sessionId: string,
-    options?: { includeDeleted?: boolean },
-  ): Promise<ArtifactDescriptor[]>;
+  list(sessionId: string): Promise<ArtifactDescriptor[]>;
   readText(
     sessionId: string,
     artifactId: string,
@@ -143,9 +135,6 @@ export interface WorkbarArtifactsService {
     artifactId: string,
   ): Promise<ArtifactBinaryReadResult>;
   delete(sessionId: string, artifactId: string): Promise<void>;
-  subscribeChanges(
-    handler: (event: ArtifactChangedEvent) => void,
-  ): WorkbarUnsubscribe;
   openPath(
     sessionId: string,
     artifactId: string,
@@ -233,6 +222,7 @@ export interface SideChatSessionPort {
   >;
   cleanupSessionCopy(sessionId: string): Promise<void>;
   abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
+  compact(sessionId: string): Promise<ContextCompactResult>;
   send(
     sessionId: string,
     command: {
@@ -265,6 +255,10 @@ export interface SideChatSessionPort {
     sessionId: string,
     response: UserQuestionResponse,
   ): Promise<void>;
+  respondToUserForm(
+    sessionId: string,
+    response: InteractionFormResponse,
+  ): Promise<void>;
   subscribeEvents(
     sessionId: string,
     handler: (event: SessionEvent) => void,
@@ -277,7 +271,6 @@ export interface SideChatSessionPort {
 export interface WorkbarServices {
   readonly review: WorkbarReviewService;
   readonly terminal: WorkbarTerminalService;
-  readonly todo: WorkbarTodoService;
   readonly browser: WorkbarBrowserService;
   readonly artifacts: WorkbarArtifactsService;
   readonly inspector: WorkbarInspectorService;

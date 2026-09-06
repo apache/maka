@@ -20,21 +20,11 @@
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import {
   header,
-  AGENT_GRAPH_SESSION_ID,
   PARTIAL_HISTORY_SESSION_ID,
   PROMPT_RAIL_PROMPT_COUNT,
   PROMPT_RAIL_SESSION_ID,
   TURN_SESSION_ID,
 } from './seed-helpers.js';
-
-export function agentGraphSession(now: number): SessionHeader {
-  return {
-    ...turnSession(now),
-    id: AGENT_GRAPH_SESSION_ID,
-    name: 'Agent Graph 布局示例',
-    orchestrationMode: 'graph',
-  };
-}
 
 export function turnSession(now: number): SessionHeader {
   return header({
@@ -133,8 +123,8 @@ export function promptRailSession(now: number): SessionHeader {
 
 /**
  * A plain multi-prompt conversation: no tools, no thinking, no usage rows.
- * `prompt-rail.spec.ts` measures the rail against this, so every turn is just
- * a prompt and a reply long enough to push the transcript past the scrollport.
+ * The transcript perf suite measures against this, so every turn is just a
+ * prompt and a reply long enough to push the transcript past the scrollport.
  */
 export function promptRailMessages(now: number): StoredMessage[] {
   const messages: StoredMessage[] = [];
@@ -159,7 +149,6 @@ export function promptRailMessages(now: number): StoredMessage[] {
   }
   return messages;
 }
-
 export function partialHistorySession(now: number): SessionHeader {
   return header({
     id: PARTIAL_HISTORY_SESSION_ID,
@@ -172,7 +161,7 @@ export function partialHistorySession(now: number): SessionHeader {
 }
 
 /**
- * Eight turns whose durable transcript is well over the Desktop range budget.
+ * Eighteen turns whose durable transcript is well over both Desktop range budgets.
  * The whitespace is stored but collapses when rendered, keeping this a useful
  * visual fixture while forcing the initial open to contain only the latest
  * contiguous range.
@@ -180,9 +169,10 @@ export function partialHistorySession(now: number): SessionHeader {
 export function partialHistoryMessages(now: number): StoredMessage[] {
   const messages: StoredMessage[] = [];
   const rangePadding = ' '.repeat(180 * 1024);
-  for (let index = 1; index <= 8; index += 1) {
+  const turnCount = 18;
+  for (let index = 1; index <= turnCount; index += 1) {
     const turnId = `turn-partial-history-${index}`;
-    const ts = now - (9 - index) * 60_000;
+    const ts = now - (turnCount + 1 - index) * 60_000;
     messages.push({
       type: 'user',
       id: `msg-partial-history-user-${index}`,

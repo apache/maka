@@ -24,12 +24,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type { SandboxBoundaryRequest } from '@maka/core/sandbox-boundary';
-import type { SandboxBoundaryRequestEvent, UserQuestionRequestEvent } from '@maka/core/events';
+import type {
+  FormRequestEvent,
+  SandboxBoundaryRequestEvent,
+  UserQuestionRequestEvent,
+} from '@maka/core/events';
 import {
   bindRuntimeInteractionRun,
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionFailStopError,
   type RuntimeInteractionRunIdentity,
+  type RuntimeFormContinuation,
   type RuntimeSandboxBoundaryContinuation,
   type RuntimeUserQuestionContinuation,
 } from '@maka/runtime/interaction-authority';
@@ -158,6 +163,94 @@ describe('HostInteractionCoordinator', () => {
       }
 
       await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
+  test('validates and commits one canonical form answer before resuming its exact continuation', async () => {
+    await withStore(async ({ store }) => {
+      const order: string[] = [];
+      const coordinator = createCoordinator(store, {
+        refreshCanonicalContinuity: async () => {
+          const record = await store.readInteraction('form_1');
+          order.push(record?.outcome ? 'refresh:answered' : 'refresh:pending');
+        },
+      });
+      const owner = coordinator.bindRun(RUN);
+      assert.ok(owner.acceptFormRequest);
+      await owner.acceptFormRequest({
+        request: formEvent('form_1', 10),
+        continuation: formContinuation('form_1', {
+          answer: (answer) => order.push(`apply:${answer.action}`),
+        }),
+      });
+      assert.deepEqual(order, ['refresh:pending']);
+
+      const invalid = await coordinator.handlers['interaction.answer'](
+        {
+          sessionId: RUN.sessionId,
+          interactionId: 'form_1',
+          answer: { kind: 'form', action: 'accept', values: { replicas: 0 } },
+        },
+        connection(),
+      );
+      assert.equal(invalid.ok, false);
+      if (!invalid.ok) assert.equal(invalid.error.code, 'operation_conflict');
+      assert.deepEqual(order, ['refresh:pending']);
+
+      const answer = {
+        sessionId: RUN.sessionId,
+        interactionId: 'form_1',
+        answer: {
+          kind: 'form',
+          action: 'accept',
+          values: { replicas: 3, regions: ['us', 'eu'] },
+        },
+      } as const;
+      const [first, second] = await Promise.all([
+        coordinator.handlers['interaction.answer'](answer, connection()),
+        coordinator.handlers['interaction.answer'](answer, connection()),
+      ]);
+      assert.equal(first.ok, true);
+      assert.equal(second.ok, true);
+      assert.deepEqual(order, ['refresh:pending', 'refresh:answered', 'apply:accept']);
+      const record = await store.readInteraction('form_1');
+      assert.deepEqual(record?.outcome?.outcome, {
+        kind: 'form_answer',
+        action: 'accept',
+        values: { replicas: 3, regions: ['us', 'eu'] },
+        committedAt: 101,
+      });
+
+      const closures: string[] = [];
+      await owner.acceptFormRequest({
+        request: formEvent('form_2', 11),
+        continuation: formContinuation('form_2', {
+          closure: (reason) => closures.push(reason),
+        }),
+      });
+      await owner.withdrawFormRequest('form_2');
+      assert.deepEqual(closures, ['producer_cancelled']);
+      assert.deepEqual((await store.readInteraction('form_2'))?.outcome?.outcome, {
+        kind: 'closure',
+        reason: 'producer_cancelled',
+        committedAt: 102,
+      });
+
+      await owner.acceptFormRequest({
+        request: formEvent('form_3', 12),
+        continuation: formContinuation('form_3', {
+          closure: (reason) => closures.push(reason),
+        }),
+      });
+      await owner.close('turn_terminal');
+      assert.deepEqual(closures, ['producer_cancelled', 'turn_terminal']);
+      assert.deepEqual((await store.readInteraction('form_3'))?.outcome?.outcome, {
+        kind: 'closure',
+        reason: 'turn_terminal',
+        committedAt: 103,
+      });
       owner.release();
       await coordinator.close();
     });
@@ -771,6 +864,59 @@ function questionEvent(requestId: string, ts: number): UserQuestionRequestEvent 
         options: [{ label: 'Yes' }, { label: 'No' }],
       },
     ],
+  };
+}
+
+function formEvent(requestId: string, ts: number): FormRequestEvent {
+  return {
+    id: `event_${requestId}`,
+    type: 'form_request',
+    turnId: RUN.turnId,
+    ts,
+    requestId,
+    toolUseId: `tool_${requestId}`,
+    message: 'Choose deployment settings',
+    requester: { name: 'deploy', source: 'Synthetic provider' },
+    fields: [
+      {
+        kind: 'integer',
+        name: 'replicas',
+        label: 'Replicas',
+        required: true,
+        minimum: 1,
+        maximum: 10,
+      },
+      {
+        kind: 'multi_select',
+        name: 'regions',
+        label: 'Regions',
+        required: false,
+        options: [
+          { value: 'us', label: 'US' },
+          { value: 'eu', label: 'EU' },
+        ],
+      },
+    ],
+  };
+}
+
+function formContinuation(
+  requestId: string,
+  callbacks: {
+    answer?: (answer: Parameters<RuntimeFormContinuation['applyAnswer']>[0]) => unknown;
+    closure?: (reason: Parameters<RuntimeFormContinuation['applyClosure']>[0]) => unknown;
+  } = {},
+): RuntimeFormContinuation {
+  return {
+    ...RUN,
+    requestId,
+    waitForPublication: async () => {},
+    applyAnswer: async (answer) => {
+      await callbacks.answer?.(answer);
+    },
+    applyClosure: async (reason) => {
+      await callbacks.closure?.(reason);
+    },
   };
 }
 

@@ -178,18 +178,27 @@ export interface HostMessageStopFence {
   deliverStop(): Promise<void>;
 }
 
-export type HostMessageCancellationDisposition =
+type HostMessageResolvedDisposition =
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'owned_root'; readonly turnId: string; readonly runId: string }
   | { readonly kind: 'shared_turn'; readonly turnId: string; readonly runId: string }
   | { readonly kind: 'recovering' };
 
+export type HostMessageCancellationDisposition =
+  | HostMessageResolvedDisposition
+  | { readonly kind: 'cancelled_pending' };
+
 export type HostMessageExecutionDisposition =
-  | HostMessageCancellationDisposition
+  | HostMessageResolvedDisposition
   | { readonly kind: 'pending' };
 
 /** Root execution operations that must share the message coordinator's Session gate. */
 export interface HostMessageRootPort {
+  readLatestRootTurnLineage(identity: {
+    sessionId: string;
+    turnId: string;
+    runId: string;
+  }): Promise<{ turnId: string; runId: string }>;
   readSessionHeader(sessionId: string): Promise<HostMessageSessionHeader | null>;
   readRootState(sessionId: string): Promise<HostMessageRootState> | HostMessageRootState;
   claimStopFence(
@@ -466,11 +475,18 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     for (const messageId of input.messageIds) {
       const disposition = await this.#resolveMessageExecution(input.sessionId, messageId);
       if (disposition.kind === 'owned_root' || disposition.kind === 'shared_turn') {
+        // This read projects current execution, including safe-boundary
+        // continuations. The Message's durable admission ownership is unchanged.
+        const latest = await this.#root.readLatestRootTurnLineage({
+          sessionId: input.sessionId,
+          turnId: disposition.turnId,
+          runId: disposition.runId,
+        });
         resolutions.push({
           messageId,
           state: 'owned',
-          turnId: disposition.turnId,
-          runId: disposition.runId,
+          turnId: latest.turnId,
+          runId: latest.runId,
         });
         continue;
       }
@@ -489,13 +505,29 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
    * Cancels exactly one durable pending Message, or returns the Turn that has
    * already consumed it. This is the target Session's ordinary Message
    * authority; WorkHub never edits the queue or admission tables directly.
+   *
+   * The claim identity is required: the cancellation tombstone it writes is the
+   * only proof that distinguishes this caller's own cancellation from one that
+   * had already happened, which is what makes a crash between cancelling and
+   * recording the outcome recoverable.
    */
   cancelMessageIfPending(
     sessionId: string,
     messageId: string,
+    cancellationClaimId: string,
   ): Promise<HostMessageCancellationDisposition> {
     return this.#sessionAdmission.run(sessionId, async () => {
       const disposition = await this.#resolveMessageExecution(sessionId, messageId);
+      if (disposition.kind === 'cancelled') {
+        const outcome = await this.#admissions.claimMessageAdmissionCancellation(
+          sessionId,
+          messageId,
+          cancellationClaimId,
+        );
+        return outcome === 'same_claim'
+          ? { kind: 'cancelled_pending' as const }
+          : { kind: 'cancelled' as const };
+      }
       if (disposition.kind !== 'pending') return disposition;
 
       const state = this.#sessions.get(sessionId);
@@ -513,7 +545,11 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         return { kind: 'recovering' };
       }
 
-      await this.#admissions.cancelMessageAdmissions(sessionId, [messageId]);
+      const claimOutcome = await this.#admissions.claimMessageAdmissionCancellation(
+        sessionId,
+        messageId,
+        cancellationClaimId,
+      );
       if (state && steeringIndex >= 0) {
         const [entry] = state.steering.splice(steeringIndex, 1);
         if (entry) this.#releaseEntry(entry);
@@ -527,7 +563,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       } else {
         this.#onProjectionChanged(sessionId);
       }
-      return { kind: 'cancelled' };
+      return claimOutcome === 'already_cancelled'
+        ? { kind: 'cancelled' }
+        : { kind: 'cancelled_pending' };
     });
   }
 
@@ -536,6 +574,16 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     messageId: string,
   ): Promise<HostMessageExecutionDisposition> {
     return this.#sessionAdmission.run(sessionId, () =>
+      this.#resolveMessageExecution(sessionId, messageId),
+    );
+  }
+
+  readMessageExecutionDispositionAdmitted(
+    sessionId: string,
+    messageId: string,
+    admission: SessionAdmissionLease,
+  ): Promise<HostMessageExecutionDisposition> {
+    return this.#sessionAdmission.runAdmitted(sessionId, admission, () =>
       this.#resolveMessageExecution(sessionId, messageId),
     );
   }

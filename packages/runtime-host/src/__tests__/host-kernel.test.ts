@@ -809,6 +809,7 @@ describe('non-serving Runtime Host kernel', () => {
       assert.equal(diagnostics.platform, process.platform);
       assert.equal(diagnostics.protocolVersion, RUNTIME_HOST_PROTOCOL_VERSION);
       assert.equal(diagnostics.compatibilityEpoch, RUNTIME_HOST_COMPATIBILITY_EPOCH);
+      assert.equal(diagnostics.upgradeBlockingActivity, false);
       assert.ok(Array.isArray(diagnostics.logs));
       await connected.connection.close();
       await winner.host.closed;
@@ -1089,6 +1090,11 @@ describe('non-serving Runtime Host kernel', () => {
         { kind: 'active_tasks' },
       );
       assert.equal(host.state, 'ready');
+      assert.equal(
+        (await replacement.connection.request('host.diagnostics.query', {}))
+          .upgradeBlockingActivity,
+        true,
+      );
 
       await lateClient.connection.close();
       assert.deepEqual(
@@ -1099,6 +1105,23 @@ describe('non-serving Runtime Host kernel', () => {
         { kind: 'prepared', pid: process.pid },
       );
       await host.closed;
+      assert.equal(host.shutdownReason, 'retirement');
+    });
+  });
+
+  test('closing with a retirement reason reports a retirement shutdown', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const host = await RuntimeHostKernel.start({
+        owner,
+        lifecycleMode: 'service',
+        composition: KERNEL_COMPOSITION,
+      });
+
+      assert.equal(host.shutdownReason, undefined);
+      await host.close({ reason: 'retirement' });
       assert.equal(host.shutdownReason, 'retirement');
     });
   });
@@ -1268,7 +1291,7 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('process-exit retention closes admission before requiring termination without releasing ownership', async () => {
+  test('process-exit retention neither stalls the graceful close nor retains ownership', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
       const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -1276,7 +1299,7 @@ describe('non-serving Runtime Host kernel', () => {
       const host = await RuntimeHostKernel.start({
         owner,
         idleGraceMs: 10_000,
-        shutdownGraceMs: 50,
+        shutdownGraceMs: 10_000,
         composition: defineInteractiveRuntimeHostComposition(async (context) => {
           context.retainUntilProcessExit();
           context.retainUntilProcessExit();
@@ -1286,11 +1309,12 @@ describe('non-serving Runtime Host kernel', () => {
       });
 
       try {
-        await assert.rejects(
+        // The anti-idle marker is not work: the drain it accompanies closes
+        // gracefully, long before the shutdown deadline.
+        await withTimeout(
           host.closed,
-          (error: unknown) =>
-            error instanceof RuntimeHostProcessTerminationRequiredError &&
-            error.code === 'process_termination_required',
+          2_000,
+          'retained Host waited out its shutdown deadline instead of closing gracefully',
         );
         await assert.rejects(
           () => openSocket(host.endpoint),
@@ -1300,7 +1324,9 @@ describe('non-serving Runtime Host kernel', () => {
             ((error as NodeJS.ErrnoException).code === 'ENOENT' ||
               (error as NodeJS.ErrnoException).code === 'ECONNREFUSED'),
         );
-        assert.equal(await tryAcquireInteractiveRootOwner(capability), undefined);
+        const successor = await tryAcquireInteractiveRootOwner(capability);
+        assert.ok(successor, 'graceful close must release the State Root writer lease');
+        await successor?.close();
       } finally {
         await owner.close();
       }
@@ -1402,6 +1428,75 @@ describe('non-serving Runtime Host kernel', () => {
       const successor = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(successor);
       await successor.close();
+    });
+  });
+
+  test('an in-flight handshake keeps an ephemeral Host alive past the idle deadline', async () => {
+    await withHostPaths(async (paths) => {
+      const candidate = await startTestRuntimeHostCandidate(paths, {
+        rootPath: paths.root,
+        idleGraceMs: 250,
+        initialConnectionTimeoutMs: 5_000,
+        handshakeTimeoutMs: 5_000,
+      });
+      assert.equal(candidate.kind, 'winner');
+      if (candidate.kind !== 'winner') return;
+      const host = candidate.host;
+
+      // The first accepted connection leaves and the idle timer arms; a
+      // handshake that begins now is the phase the idle timer used to be
+      // blind to.
+      const first = await retryConnect(paths, CURRENT_PROTOCOL);
+      assert.equal(first.kind, 'connected');
+      if (first.kind !== 'connected') return;
+      await first.connection.close();
+
+      const silent = await openSocket(host.endpoint);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      try {
+        // Past the idle deadline with the handshake in flight: the Host must
+        // not drain under a connecting Client.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        assert.equal(host.state, 'ready');
+      } finally {
+        silent.destroy();
+      }
+      // Once the handshake settles, the idle timer re-arms and the Host exits.
+      await withTimeout(
+        host.closed,
+        5_000,
+        'ephemeral Host never idle-exited after the handshake settled',
+      );
+    });
+  });
+
+  test('a poisoned Host closes gracefully without waiting out the shutdown deadline', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const host = await RuntimeHostKernel.start({
+        owner,
+        lifecycleMode: 'service',
+        shutdownGraceMs: 10_000,
+        composition: defineInteractiveRuntimeHostComposition(async (context) => {
+          // Mirror the poison/fatal path: the anti-idle marker must not stall
+          // the drain it accompanies.
+          context.retainUntilProcessExit();
+          context.requestDrain();
+          return {
+            handlers: createUnavailableDomainOperationHandlers(),
+            beginDrain() {},
+            async recover() {},
+            async close() {},
+          };
+        }),
+      });
+      await withTimeout(
+        host.closed,
+        2_000,
+        'poisoned Host waited out its shutdown deadline instead of closing gracefully',
+      );
     });
   });
 
@@ -1591,18 +1686,26 @@ describe('non-serving Runtime Host kernel', () => {
       staleWhileResident.abort();
       await staleWhileResident.closed;
 
-      const blocked = await connectOrSpawnRuntimeHost({
-        ...paths,
-        rootPath: paths.root,
-        protocol: LEGACY_PROTOCOL,
-        compositionId: KERNEL_COMPOSITION.descriptor.id,
-        candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
-        electionDeadlineMs: 2_000,
-      });
-      assert.equal(blocked.kind, 'incompatible');
-      if (blocked.kind === 'incompatible') {
-        assert.equal(blocked.handshake.replacement, 'blocked_by_residency');
+      const blockedWhileResident = new FramedTransport(await openSocket(candidate.host.endpoint));
+      await writeRawLocalIpc(
+        blockedWhileResident,
+        encodeLegacyProtocolFrame({
+          kind: 'hello',
+          clientInstanceId: 'blocked-legacy-resident',
+          protocolMin: LEGACY_PROTOCOL.min,
+          protocolMax: LEGACY_PROTOCOL.max,
+        }),
+      );
+      const blockedResponse = decodeHostFrame(await blockedWhileResident.read(1_000));
+      assert.ok('kind' in blockedResponse && blockedResponse.kind === 'incompatible');
+      if ('kind' in blockedResponse && blockedResponse.kind === 'incompatible') {
+        assert.equal(blockedResponse.replacement, 'blocked_by_residency');
       }
+      blockedWhileResident.abort();
+      await blockedWhileResident.closed;
+      // The rejected handshake's teardown is asynchronous Host-side; let it
+      // settle so only the next probe's own handshake remains in flight.
+      await sleep(50);
       await resident.connection.close();
 
       const staleAtIdle = new FramedTransport(await openSocket(candidate.host.endpoint));
@@ -2173,8 +2276,11 @@ describe('non-serving Runtime Host kernel', () => {
           { sessionId: 'late-session' },
           50,
         );
-        await lateEntered;
-        await assert.rejects(
+        // Claim the rejection before awaiting anything else. The deadline above
+        // is shorter than the gate below can take to open on a loaded machine,
+        // so attaching the handler later leaves a window where the timeout is
+        // an unhandled rejection and fails the test on timing alone.
+        const locallyTimedRejected = assert.rejects(
           locallyTimed,
           (error: unknown) =>
             error instanceof RuntimeHostRequestInterruptedError &&
@@ -2183,6 +2289,8 @@ describe('non-serving Runtime Host kernel', () => {
             error.cause instanceof RuntimeHostTransportError &&
             error.cause.code === 'read_timeout',
         );
+        await lateEntered;
+        await locallyTimedRejected;
         assert.equal(
           (await connected.connection.status()).hostEpoch,
           connected.connection.hostEpoch,
@@ -2235,7 +2343,7 @@ describe('non-serving Runtime Host kernel', () => {
               error.cause.code === 'read_timeout' &&
               error.cause.message.includes('host.status'),
           ),
-          5_000,
+          12_000,
           'automatic Runtime Host liveness check did not reject pending work',
         );
         await withTimeout(

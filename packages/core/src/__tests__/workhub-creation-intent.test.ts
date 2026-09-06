@@ -23,9 +23,23 @@ import {
   readWorkHubRequestIntent,
   workHubCorrectionTargetsSession,
   workHubCreationAuthorizesTitle,
+  matchWorkHubSessionName,
+  type WorkHubRequestIntent,
 } from '../workhub-creation-intent.js';
 
 const intentFor = readWorkHubRequestIntent;
+/**
+ * The stop Action Policy, reproduced here over the shared matcher: a stop
+ * reference may carry punctuation after the name and nothing else.
+ */
+const workHubStopTargetsSession = (intent: WorkHubRequestIntent, sessionName: string): boolean => {
+  if (!intent.stop.imperative || !intent.stop.target) return false;
+  const match = matchWorkHubSessionName(intent.stop.target, sessionName);
+  return (
+    match.kind === 'elided_name_punctuation' ||
+    (match.kind === 'named' && /^[.!?。！？]*$/u.test(match.remainder))
+  );
+};
 const affirmativeWorkHubExistingCorrectionTarget = (value: string) =>
   intentFor(value).correction.existingTarget;
 const affirmativeWorkHubNamedCreationTitle = (value: string) => {
@@ -184,6 +198,21 @@ test('requires an affirmative target action for destructive corrections', () => 
   ]) {
     assert.equal(isAffirmativeWorkHubCorrectionRequest(text), false, text);
     assert.equal(isExplicitWorkHubCreationRequest(text), false, text);
+  }
+
+  for (const sessionName of ['U.S.', 'Dr.']) {
+    assert.equal(
+      workHubStopTargetsSession(readWorkHubRequestIntent(`Stop ${sessionName}`), sessionName),
+      true,
+      sessionName,
+    );
+  }
+  for (const text of ['Stop Payments, fix Login', 'Stop Payments and Login']) {
+    assert.equal(
+      workHubStopTargetsSession(readWorkHubRequestIntent(text), 'Payments'),
+      false,
+      text,
+    );
   }
 });
 
@@ -996,4 +1025,148 @@ test('returns one bounded intent record for routing and admission', () => {
   ]) {
     assert.equal(readWorkHubRequestIntent(text).execution, 'non_executable', text);
   }
+});
+
+test('requires a direct, explicitly named command for WorkHub stop authority', () => {
+  for (const [text, target] of [
+    ['Stop Payments', 'Payments'],
+    ['Please cancel the session Payments.', 'Payments'],
+    ['Terminate work "API migration"', 'API migration'],
+    ['停止支付任务', '支付任务'],
+    ['请取消这个会话 登录稳定性。', '登录稳定性'],
+  ] as const) {
+    const intent = readWorkHubRequestIntent(text);
+    assert.deepEqual(intent.stop, { cue: true, imperative: true, target }, text);
+    assert.equal(workHubStopTargetsSession(intent, target), true, text);
+    assert.equal(workHubStopTargetsSession(intent, `${target} extra`), false, text);
+  }
+
+  for (const text of [
+    'Stop it',
+    'Cancel this work',
+    '取消这个工作',
+    'Pause Payments',
+    'Wait on Payments',
+    'How do I stop Payments?',
+    'Can you stop Payments?',
+    'Do not stop Payments',
+    "Don't cancel Payments",
+    '不要停止支付任务',
+    'The literal text is "Stop Payments"',
+    '"Stop Payments"',
+    'Stop "Payments',
+  ]) {
+    assert.deepEqual(
+      readWorkHubRequestIntent(text).stop,
+      {
+        cue: text === 'Stop it' || text === 'Cancel this work' || text === '取消这个工作',
+        imperative: false,
+      },
+      text,
+    );
+  }
+});
+
+test('a quoted Session name is a title, not a reason to refuse the request', () => {
+  // The literal mask blanks quoted spans so a quoted word can never be read as
+  // a command. That is right for commands and wrong for the one place the
+  // quotes mark the object itself: naming a Session. Quoting the name is the
+  // natural way to write it, and it used to be the one way that did not work.
+  for (const [quoted, bare] of [
+    ['Create a new Session called "Payments"', 'Create a new Session called Payments'],
+    ['请创建一个新会话名为"支付任务"', '请创建一个新会话名为支付任务'],
+  ] as const) {
+    const quotedIntent = intentFor(quoted);
+    const bareIntent = intentFor(bare);
+    assert.equal(quotedIntent.execution, 'imperative', quoted);
+    assert.equal(quotedIntent.execution, bareIntent.execution, quoted);
+    assert.deepEqual(quotedIntent.creation.naming, bareIntent.creation.naming, quoted);
+  }
+
+  // The mask still decides everything else. None of these may be promoted.
+  for (const text of [
+    'Should we create a new Session called "Payments"?',
+    'Maybe create a new Session called "Payments" later',
+    'Do not create a new Session called "Payments"',
+    'Create a new Session called "',
+  ]) {
+    assert.notEqual(intentFor(text).execution, 'imperative', text);
+  }
+});
+
+test('a spoken Chinese stop is a stop, in the same range English already covers', () => {
+  // `停掉` and `停下` are how the request is usually spoken. Without them
+  // `停掉支付任务` carried no stop cue at all, so the sentence was routed as
+  // ordinary work and delivered to Payments — asking to stop it started more.
+  for (const text of ['停掉支付任务', '停下支付任务', '请停掉支付任务']) {
+    assert.deepEqual(
+      readWorkHubRequestIntent(text).stop,
+      { cue: true, imperative: true, target: '支付任务' },
+      text,
+    );
+  }
+
+  // Anaphora is a stop that names nothing, exactly as `Stop it` is: the cue is
+  // read so the user can be asked which work, and no target is claimed.
+  for (const text of ['停掉它', '停下它']) {
+    assert.deepEqual(readWorkHubRequestIntent(text).stop, { cue: true, imperative: false }, text);
+    // Same shape English gives `Stop it`: a stop was asked for, and no target
+    // was claimed, so the surface asks which work rather than guessing.
+    assert.deepEqual(
+      readWorkHubRequestIntent(text).stop,
+      readWorkHubRequestIntent('Stop it').stop,
+      text,
+    );
+  }
+
+  // Nothing here widens what counts as a stop. `关掉` reads as "switch off",
+  // which is usually work to do inside a Session, and English admits no
+  // equivalent; questions and negations stay refused.
+  for (const text of ['关掉调试日志', '不要停掉支付任务', '怎么停掉支付任务？']) {
+    assert.equal(readWorkHubRequestIntent(text).stop.cue, false, text);
+  }
+});
+
+test('a resume names one Session, and reads like a stop everywhere else', () => {
+  // Resume asks the Host to carry on work an interruption left unfinished, so
+  // it is admitted on the same terms as a stop: a direct speech act naming one
+  // existing Session, in either language.
+  for (const [text, target] of [
+    ['Resume Payments', 'Payments'],
+    ['恢复支付任务', '支付任务'],
+    ['接着跑支付任务', '支付任务'],
+    ['恢復支付任務', '支付任務'],
+    ['接著跑支付任務', '支付任務'],
+  ] as const) {
+    assert.deepEqual(
+      readWorkHubRequestIntent(text).resume,
+      { cue: true, imperative: true, target },
+      text,
+    );
+  }
+
+  for (const text of ['Resume it', '恢复它']) {
+    assert.deepEqual(readWorkHubRequestIntent(text).resume, { cue: true, imperative: false }, text);
+  }
+
+  // Ambiguous verbs remain ordinary Session instructions rather than being
+  // consumed as WorkHub resume commands.
+  for (const text of [
+    'Continue Payments',
+    'Restart Payments',
+    '继续支付任务',
+    '请继续支付任务',
+    '重新开始支付任务',
+    'Should I resume Payments?',
+    'Do not resume Payments',
+    'Resume "Payments',
+  ]) {
+    assert.equal(readWorkHubRequestIntent(text).resume.imperative, false, text);
+  }
+
+  // Stop and resume are separate speech acts; neither reads as the other, and
+  // ordinary work is neither.
+  assert.equal(readWorkHubRequestIntent('Stop Payments').resume.imperative, false);
+  assert.equal(readWorkHubRequestIntent('Resume Payments').stop.cue, false);
+  assert.equal(readWorkHubRequestIntent('Fix the login bug').resume.imperative, false);
 });

@@ -44,7 +44,7 @@ import type {
 } from '@maka/core/daily-review';
 
 import type { UiLocale } from '@maka/core/ui-locale';
-import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import { getDailyReviewCopy } from './daily-review-copy.js';
 
@@ -54,9 +54,7 @@ export function dailyReviewScopeKey(offsetDays: number, range: DailyReviewRange)
 
 export function dailyReviewPanelErrorMessage(error: unknown, locale: UiLocale): string {
   const fallback = getDailyReviewCopy(locale).errorFallback;
-  return locale === 'zh'
-    ? generalizedErrorMessageChinese(error, fallback)
-    : generalizedErrorMessage(error, fallback);
+  return generalizedErrorMessageForLocale(error, fallback, locale);
 }
 
 export function formatDailyReviewArchiveTitle(

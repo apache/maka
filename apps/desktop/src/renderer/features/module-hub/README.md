@@ -31,12 +31,15 @@ Automations:
 - selection and header composition for Skills, MCP, Scheduled Tasks, and Daily
   Review.
 
-`AppShell` still owns top-level `NavSelection`, module-memory persistence,
-Session/Project navigation, and the Composer. Those capabilities cross the
-boundary only as intents. The feature exposes a read-only Scheduled Tasks
-projection to the Session rail and a revision number that invalidates the
-Composer's separate Runtime-owned invocable-Skills projection; neither makes
-the Shell an owner of Module Hub data.
+`ModuleHubProvider` owns the controller below `AppShell`. `AppShell` still owns
+top-level `NavSelection`, module-memory persistence, Session/Project
+navigation, and the Composer. Those capabilities cross the boundary only as
+intents. Commands return through a stable imperative port because the Shell
+calls them only from event handlers. Two typed boundaries hand the read-only
+Scheduled Tasks projection to the Session rail and the Skill catalog revision
+to Composer mentions through a `render` prop at their actual readers, so the
+readers' props stay required and the compiler checks the wiring; Module Hub
+updates therefore do not subscribe or re-render `AppShell`.
 
 ## Dependency direction
 
@@ -53,6 +56,12 @@ older preload is converted into an unsupported keep-awake capability.
 MCP is the explicit exception to I/O ownership in this slice. `McpPage` keeps
 its existing page-owned controller and direct Desktop bridge. `ModuleHubHost`
 only selects and mounts that leaf; moving MCP internals is a separate change.
+
+The production entry deliberately does not export `useModuleHubController`.
+The renderer architecture policy records its implementation and
+`ModuleHubProvider` as the unique production owner. Moving, duplicating, or
+re-exporting that controller fails the central architecture check; tests may
+reach it only through `testing.ts`.
 
 ## Lifecycle invariants
 
@@ -77,6 +86,11 @@ only selects and mounts that leaf; moving MCP internals is a separate change.
   feedback.
 - Opening Scheduled Task creation selects the page and increments the request
   nonce; the page acknowledgement resets it to zero.
+- The Provider remains mounted across all routes. Navigation may hide every
+  Module Hub page, but it must not tear down default-Host refresh, Scheduled
+  Task subscriptions, Daily Review command state, or the create nonce.
+- The command port connects and disconnects in a layout effect. A stale
+  Provider cleanup cannot detach a newer controller target.
 
 There is intentionally no feature-level reducer or store: these projections and
 commands have real lifecycle ownership, while navigation persistence remains a

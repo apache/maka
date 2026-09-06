@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { RuntimeHostOperationError } from "@maka/runtime-host/client";
 import type {
   RuntimeHostSessionObserver,
   RuntimeHostRendererTarget,
@@ -36,6 +37,7 @@ type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'observe' | 'un
       | 'closeTranscript'
       | 'loadTranscriptAround'
       | 'loadTranscriptBefore'
+      | 'loadTranscriptAfter'
       | 'openTranscript'
     >
   >;
@@ -46,6 +48,7 @@ type TranscriptSource = Required<
     | 'closeTranscript'
     | 'loadTranscriptAround'
     | 'loadTranscriptBefore'
+    | 'loadTranscriptAfter'
     | 'openTranscript'
   >
 >;
@@ -66,12 +69,27 @@ function requireTranscriptSource(
   if (
     !source?.openTranscript ||
     !source.loadTranscriptBefore ||
+    !source.loadTranscriptAfter ||
     !source.loadTranscriptAround ||
     !source.closeTranscript
   ) {
     throw new Error('Runtime Host transcript source is unavailable');
   }
   return source as SessionObservationSource & TranscriptSource;
+}
+
+/**
+ * A `subscription.open`/`not_found` answer is deterministic: the Host no
+ * longer serves this Session (Host restart with ephemeral state, Session GC,
+ * or deletion by another client). Unlike `session.transcript.page`/`not_found`
+ * (see `isRecoverableSubscriptionFailure` in the subscription owner), there is
+ * nothing to retry — the registration must be forgotten instead of blocking
+ * every reconnect.
+ */
+function isMissingRuntimeHostSessionError(error: unknown): boolean {
+  if (!(error instanceof RuntimeHostOperationError)) return false;
+  if (error.operation !== "subscription.open") return false;
+  return error.code === "not_found";
 }
 
 interface SessionObservationRegistration {
@@ -139,6 +157,7 @@ export class RuntimeHostSessionObservationRegistry {
   async attach(
     source: SessionObservationSource,
     bindTarget: ObservationTargetBinding = (target) => target,
+    onSessionMissing?: (sessionId: string) => void,
   ): Promise<string[]> {
     this.#assertOpen();
     if (this.#source && this.#source !== source) {
@@ -176,6 +195,15 @@ export class RuntimeHostSessionObservationRegistry {
             this.#source === source &&
             this.#registrations.get(observerId) === registration
           ) {
+            if (isMissingRuntimeHostSessionError(error)) {
+              // The Host no longer serves this Session. Forget the
+              // registration regardless of lifecycle so the stale entry
+              // cannot fail every future reconnect, and let the upper layer
+              // drop the Session view.
+              onSessionMissing?.(registration.sessionId);
+              this.#deleteRegistration(observerId, registration);
+              return undefined;
+            }
             if (registration.lifecycle === "pending") {
               this.#deleteRegistration(observerId, registration);
             }
@@ -220,35 +248,6 @@ export class RuntimeHostSessionObservationRegistry {
         ...observations.map(([observerId]) => source.unobserve(observerId)),
         ...transcripts.map(([consumerId]) => source.closeTranscript?.(consumerId)),
       ]);
-    }
-  }
-
-  async releaseTarget(targetId: number): Promise<void> {
-    const source = this.#source;
-    const observations = [...this.#registrations].filter(
-      ([, registration]) => registration.target.id === targetId,
-    );
-    const transcripts = [...this.#transcripts].filter(
-      ([, registration]) => registration.target.id === targetId,
-    );
-    for (const [observerId, registration] of observations) {
-      this.#deleteRegistration(observerId, registration);
-    }
-    for (const [consumerId, registration] of transcripts) {
-      this.#deleteTranscript(consumerId, registration);
-    }
-    if (!source) return;
-
-    const cleanup = await Promise.allSettled([
-      ...observations.map(([observerId]) => source.unobserve(observerId)),
-      ...transcripts.map(([consumerId]) => source.closeTranscript?.(consumerId, targetId)),
-    ]);
-    const errors = cleanup
-      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-      .map((result) => result.reason);
-    if (errors.length === 1) throw errors[0];
-    if (errors.length > 1) {
-      throw new AggregateError(errors, 'Failed to release renderer Session observations');
     }
   }
 
@@ -394,6 +393,15 @@ export class RuntimeHostSessionObservationRegistry {
   ): Promise<void> {
     await this.#runTranscriptOperation(request.consumerId, (source) =>
       source.loadTranscriptAround(request, targetId),
+    );
+  }
+
+  async loadTranscriptAfter(
+    request: DesktopTranscriptRangeRequest,
+    targetId?: number,
+  ): Promise<void> {
+    await this.#runTranscriptOperation(request.consumerId, (source) =>
+      source.loadTranscriptAfter(request, targetId),
     );
   }
 

@@ -19,6 +19,12 @@
 
 import { join } from 'node:path';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type {
+  RuntimeInvocationPageInput,
+  RuntimeInvocationPageResult,
+  RuntimeInvocationRecord,
+  RuntimeInvocationSearchResult,
+} from '@maka/core/runtime-invocation';
 import type { BoundedEvidenceReadResult, EvidenceReadBudget } from './agent-run-store.js';
 import { createSqliteRuntimeStore, type SqliteRuntimeStore } from './sqlite-runtime-store.js';
 import {
@@ -40,6 +46,17 @@ export type RuntimeEventReadPersistence = {
 };
 
 export interface RuntimeEventReadStore {
+  listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  readRunInvocation(sessionId: string, runId: string): Promise<RuntimeInvocationRecord | undefined>;
+  listSessionInvocationsBounded(
+    sessionId: string,
+    limit: number,
+  ): Promise<RuntimeInvocationSearchResult>;
+  listSessionInvocationsPage(
+    sessionId: string,
+    input: RuntimeInvocationPageInput,
+  ): Promise<RuntimeInvocationPageResult>;
+  readInvocation(sessionId: string, invocationId: string): Promise<RuntimeInvocationRecord>;
   readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readRuntimeEventsBounded(
     sessionId: string,
@@ -79,6 +96,15 @@ export async function openRuntimeEventReadPersistence(input: {
   return {
     kind: 'sqlite',
     runtimeEventStore: Object.freeze({
+      listSessionInvocations: (sessionId: string) => store.listSessionInvocations(sessionId),
+      readRunInvocation: (sessionId: string, runId: string) =>
+        store.readRunInvocation(sessionId, runId),
+      listSessionInvocationsBounded: (sessionId: string, limit: number) =>
+        store.listSessionInvocationsBounded(sessionId, limit),
+      listSessionInvocationsPage: (sessionId: string, input: RuntimeInvocationPageInput) =>
+        store.listSessionInvocationsPage(sessionId, input),
+      readInvocation: (sessionId: string, invocationId: string) =>
+        store.readInvocation(sessionId, invocationId),
       readRuntimeEvents: (sessionId: string, runId: string) =>
         store.readRuntimeEvents(sessionId, runId),
       readRuntimeEventsBounded: (sessionId: string, runId: string, budget: EvidenceReadBudget) =>

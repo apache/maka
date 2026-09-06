@@ -18,9 +18,10 @@
  */
 
 import type { BackendStopMode } from '@maka/core/backend-types';
-import type { RootExecutionDescriptor } from '@maka/core/agent-run';
+import type { RootExecutionDescriptor } from '@maka/core/runtime-invocation';
 import type { MessageContent, SessionEvent } from '@maka/core/events';
 import type { UserMessageInput } from '@maka/core/runtime-inputs';
+import type { StopSessionInput } from '@maka/runtime/session-manager';
 import type { TurnSnapshot } from '../protocol/index.js';
 
 export interface HostedExecutionRef {
@@ -80,11 +81,9 @@ export interface HostedExecutionObserver {
   begin(input: HostedExecutionObservation): HostedExecutionCompletionObserver | undefined;
 }
 
-export interface HostedExecutionStopInput {
+export type HostedExecutionStopInput = {
   readonly execution: HostedExecutionRef;
-  readonly source?: 'stop_button' | 'graph_supervisor';
-  readonly mode?: BackendStopMode;
-}
+} & StopSessionInput;
 
 export type HostedExecutionListener = (execution: HostedExecutionRef) => void;
 
@@ -120,7 +119,7 @@ export interface HostedExecutionAuthority {
     input: {
       readonly sessionId: string;
       readonly abortSignal: AbortSignal;
-      readonly stopSource?: HostedExecutionStopInput['source'];
+      readonly stopSource?: Exclude<HostedExecutionStopInput['source'], 'workhub_direct_stop'>;
     },
     operation: () => Promise<T>,
   ): Promise<T>;

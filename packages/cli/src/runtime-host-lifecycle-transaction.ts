@@ -18,7 +18,6 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
   resolveExistingStorageRoot,
@@ -28,6 +27,8 @@ import {
 import {
   connectExistingRuntimeHost,
   prepareConnectedRuntimeHostRetirement,
+  RuntimeHostOperationError,
+  RuntimeHostRequestInterruptedError,
   waitForRuntimeHostReady,
 } from '@maka/runtime-host/client';
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '@maka/runtime-host/protocol';
@@ -39,6 +40,7 @@ import {
   readRuntimeHostManagedDeploymentAuthorityRecord,
   resolveRuntimeHostManagedDeploymentAuthority,
   resolveRuntimeHostNpmDeploymentLayout,
+  runtimeHostManagedOperatorModulePath,
   rollbackRuntimeHostManagedDeploymentTransition,
   RuntimeHostManagedDeploymentError,
   type RuntimeHostManagedDeploymentAuthorityOptions,
@@ -47,7 +49,6 @@ import {
   type RuntimeHostManagedDeploymentTransition,
   type RuntimeHostManagedDeploymentTransitionOperation,
   type RuntimeHostManagedDeploymentTransitionRecovery,
-  type RuntimeHostSupervisorProvider,
 } from '@maka/runtime-host/operator';
 import type {
   RuntimeHostLifecycleProvider,
@@ -59,7 +60,7 @@ export const RUNTIME_HOST_READY_TIMEOUT_MS = 45_000;
 
 export interface RuntimeHostLifecycleTransactionDeps {
   readonly resolveProvider: (
-    provider: RuntimeHostSupervisorProvider,
+    config: RuntimeHostManagedDeploymentConfig,
   ) => RuntimeHostLifecycleProvider;
   readonly convergeOperator: (
     current: RuntimeHostManagedDeploymentConfig | undefined,
@@ -316,6 +317,7 @@ function assertRecoveryTarget(
 export async function retireRuntimeHostLifecycleOwner(input: {
   readonly rootPath: string;
   readonly rootId: string;
+  readonly connectExisting?: typeof connectExistingRuntimeHost;
   readonly allowInterruptActiveTasks?: boolean;
   /**
    * Freshness fence evaluated before a canonical supervised-deployment retirement is admitted.
@@ -357,7 +359,7 @@ export async function retireRuntimeHostLifecycleOwner(input: {
       throw error;
     }
   }
-  const connected = await connectExistingRuntimeHost({
+  const connected = await (input.connectExisting ?? connectExistingRuntimeHost)({
     rootPath: capability.canonicalPath,
     protocol: {
       min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -384,31 +386,44 @@ export async function retireRuntimeHostLifecycleOwner(input: {
     );
   }
   try {
-    const diagnostics = await connected.connection.request('host.diagnostics.query', {});
     const supervisorStatus = await input.supervisor?.status();
     if (supervisorStatus) assertExpectedSupervisorOwner(input.expectedOwner, supervisorStatus);
     if (
       supervisorStatus &&
-      (!supervisorStatus.active || supervisorStatus.pid !== diagnostics.pid)
+      (!supervisorStatus.active || supervisorStatus.pid !== connected.registration.pid)
     ) {
       throw new RuntimeHostLifecycleTransactionError(
         'transition_failed',
-        'The supervisor and State Root report different Runtime Host processes',
+        'The supervisor and Runtime Host registration report different processes',
       );
     }
-    // The exact Root owner and canonical supervisor now agree while the deployment lock is held.
-    // This admits retirement of that deployment; a later same-deployment restart is not a new
-    // authority, but it must not acquire the Root before the supervisor is retired.
-    const prepared = await prepareConnectedRuntimeHostRetirement(
-      connected.connection,
-      input.allowInterruptActiveTasks ? 'interrupt_active_work' : 'refuse_active_work',
-    );
-    if (prepared.kind === 'active_tasks') return prepared;
-    if (prepared.pid !== diagnostics.pid) {
-      throw new RuntimeHostLifecycleTransactionError(
-        'transition_failed',
-        'The Runtime Host process changed while retirement was prepared',
+    try {
+      const diagnostics = await connected.connection.request('host.diagnostics.query', {});
+      if (diagnostics.pid !== connected.registration.pid) {
+        throw new RuntimeHostLifecycleTransactionError(
+          'transition_failed',
+          'The Runtime Host registration and diagnostics report different processes',
+        );
+      }
+      // The exact Root owner and canonical supervisor now agree while the deployment lock is held.
+      // This admits retirement of that deployment; a later same-deployment restart is not a new
+      // authority, but it must not acquire the Root before the supervisor is retired.
+      const prepared = await prepareConnectedRuntimeHostRetirement(
+        connected.connection,
+        input.allowInterruptActiveTasks ? 'interrupt_active_work' : 'refuse_active_work',
       );
+      if (prepared.kind === 'active_tasks') return prepared;
+      if (prepared.pid !== diagnostics.pid) {
+        throw new RuntimeHostLifecycleTransactionError(
+          'transition_failed',
+          'The Runtime Host process changed while retirement was prepared',
+        );
+      }
+    } catch (error) {
+      if (!isRuntimeHostRetirementUnavailable(error) || !input.supervisor) throw error;
+      if (!input.allowInterruptActiveTasks) return { kind: 'active_tasks' };
+      await input.supervisor.retire();
+      return waitForRuntimeHostLifecycleOwner(capability, input.timeoutMs ?? 45_000);
     }
     const retirement = await waitForRuntimeHostLifecycleOwner(
       capability,
@@ -424,6 +439,14 @@ export async function retireRuntimeHostLifecycleOwner(input: {
   } finally {
     await connected.connection.close().catch(() => undefined);
   }
+}
+
+function isRuntimeHostRetirementUnavailable(error: unknown): boolean {
+  return (
+    error instanceof RuntimeHostRequestInterruptedError ||
+    (error instanceof RuntimeHostOperationError &&
+      (error.code === 'host_not_ready' || error.code === 'host_draining'))
+  );
 }
 
 function assertExpectedRuntimeHostOwner(
@@ -495,7 +518,7 @@ export async function replaceRuntimeHostLifecycle(input: {
   const desired = decodeRuntimeHostManagedDeploymentConfig(input.desired);
   const currentProvider = supervisedProvider(current ?? null, input.deps);
   if (desired.lifecycle.mode === 'supervised') {
-    await input.deps.resolveProvider(desired.lifecycle.provider).supervisor.preflight();
+    await input.deps.resolveProvider(desired).supervisor.preflight();
   }
   const retirement = await retireRuntimeHostLifecycleOwner({
     rootPath: desired.root.path,
@@ -724,7 +747,7 @@ export async function activateRuntimeHostLifecycle(
 ): Promise<void> {
   const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
   if (canonical.lifecycle.mode !== 'supervised') return;
-  const provider = deps.resolveProvider(canonical.lifecycle.provider);
+  const provider = deps.resolveProvider(canonical);
   await provider.supervisor.activate();
   if (canonical.reconciliation.trigger === 'scheduled') {
     await provider.reconciliationTrigger.activate();
@@ -739,7 +762,7 @@ export async function verifyRuntimeHostLifecycleReady(
   const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
   await verifyRuntimeHostLifecycleProjection(canonical, deps);
   if (canonical.lifecycle.mode !== 'supervised') return;
-  const provider = deps.resolveProvider(canonical.lifecycle.provider);
+  const provider = deps.resolveProvider(canonical);
   const deadline = Date.now() + timeoutMs;
   let lastFailure: unknown = new Error('Runtime Host is not ready');
   while (Date.now() < deadline) {
@@ -783,6 +806,25 @@ export async function verifyRuntimeHostLifecycleReady(
   );
 }
 
+/** Repairs update-control artifacts without interrupting the running Host supervisor. */
+export async function convergeRuntimeHostLifecycleControlProjection(
+  config: RuntimeHostManagedDeploymentConfig,
+  deps: RuntimeHostLifecycleTransactionDeps,
+): Promise<void> {
+  const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
+  await deps.convergeOperator(canonical, canonical);
+  if (canonical.lifecycle.mode !== 'supervised') return;
+  const provider = deps.resolveProvider(canonical);
+  if (canonical.reconciliation.trigger === 'scheduled') {
+    await provider.reconciliationTrigger.converge(
+      runtimeHostReconciliationTriggerDefinition(canonical),
+    );
+    await provider.reconciliationTrigger.activate();
+  } else {
+    await provider.reconciliationTrigger.uninstall();
+  }
+}
+
 /** Verifies the durable operator and supervisor projection without requiring a compatible Host. */
 export async function verifyRuntimeHostLifecycleProjection(
   config: RuntimeHostManagedDeploymentConfig,
@@ -791,7 +833,7 @@ export async function verifyRuntimeHostLifecycleProjection(
   const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
   await deps.verifyOperator(canonical);
   if (canonical.lifecycle.mode !== 'supervised') return;
-  const provider = deps.resolveProvider(canonical.lifecycle.provider);
+  const provider = deps.resolveProvider(canonical);
   await provider.supervisor.verify(runtimeHostSupervisorDefinition(canonical));
   if (canonical.reconciliation.trigger !== 'scheduled') return;
   await provider.reconciliationTrigger.verify(
@@ -835,7 +877,15 @@ export function runtimeHostReconciliationTriggerDefinition(
 ): RuntimeHostProviderDefinition {
   const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
   return {
-    command: [join(canonical.deploymentRoot, 'operator'), 'reconcile-update', '--framed'],
+    command: [
+      canonical.launch.nodePath,
+      runtimeHostManagedOperatorModulePath(
+        canonical.deploymentRoot,
+        process.platform === 'win32' ? 'win32' : 'posix',
+      ),
+      'reconcile-update',
+      '--framed',
+    ],
   };
 }
 
@@ -900,7 +950,5 @@ function supervisedProvider(
   config: RuntimeHostManagedDeploymentConfig | null,
   deps: RuntimeHostLifecycleTransactionDeps,
 ): RuntimeHostLifecycleProvider | undefined {
-  return config?.lifecycle.mode === 'supervised'
-    ? deps.resolveProvider(config.lifecycle.provider)
-    : undefined;
+  return config?.lifecycle.mode === 'supervised' ? deps.resolveProvider(config) : undefined;
 }

@@ -19,6 +19,9 @@
 
 import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
+import { readInvocation, seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
+import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
+import { runtimeInvocationFailureClass } from '@maka/runtime/runtime-event-read-model';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -520,26 +523,31 @@ test('startup recovery closes a ScheduledTask Run after its pending fire was set
       text: 'Continue the scheduled work.',
       origin: { kind: 'scheduled_task', scheduledTaskId: 'task-settled-fire' },
     });
-    await fixture.stores.agentRunStore.createRun(
-      {
-        runId,
-        invocationId: runId,
-        sessionId: fixture.sessionId,
-        turnId,
-        status: 'created',
-        backendKind: 'fake',
-        llmConnectionId: session.llmConnectionId,
-        llmConnectionSlug: session.llmConnectionSlug,
-        modelId: session.model,
-        cwd: session.cwd,
-        scheduledTaskId: 'task-settled-fire',
-        permissionMode: session.permissionMode,
-        collaborationMode: session.collaborationMode,
-        createdAt: admittedAt,
-        updatedAt: admittedAt,
+    await seedInvocation(fixture.stores.runtimeEventStore, {
+      sessionId: fixture.sessionId,
+      invocationId: runId,
+      runId,
+      turnId,
+      openedAt: admittedAt,
+      opening: {
+        route: {
+          provenance: 'runtime',
+          backendKind: 'fake',
+          llmConnectionId: session.llmConnectionId!,
+          llmConnectionSlug: session.llmConnectionSlug,
+          modelId: session.model,
+        },
+        configuration: {
+          cwd: session.cwd,
+          permissionMode: session.permissionMode,
+          collaborationMode: session.collaborationMode ?? 'agent',
+          orchestrationMode: 'default',
+          orchestrationSource: 'session',
+          toolMode: 'direct',
+        },
+        root: { kind: 'scheduled_task', scheduledTaskId: 'task-settled-fire' },
       },
-      { durable: true },
-    );
+    });
 
     recovery = fixture.createRecoveryCoordinator();
     await recovery.prepareRecovery();
@@ -547,9 +555,9 @@ test('startup recovery closes a ScheduledTask Run after its pending fire was set
     await fixture.manager.recoverInterruptedSessionsStrict(fixture.stores);
     await recovery.recover();
 
-    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, runId);
-    assert.equal(run.status, 'failed');
-    assert.equal(run.failureClass, 'app_restarted');
+    const run = await readInvocation(fixture.stores, fixture.sessionId, runId);
+    assert.equal(runtimeInvocationOutcome(run), 'failed');
+    assert.equal(runtimeInvocationFailureClass(run), 'app_restarted');
     assert.deepEqual(recovery.readRootState(fixture.sessionId), { kind: 'idle' });
   } finally {
     await recovery?.close();
@@ -678,7 +686,7 @@ test('a failed exact Capability retry does not poison the parked continuation bi
     assert.equal(terminal.ok, true);
     if (terminal.ok) assert.equal(terminal.result.status, 'completed');
     assert.equal(
-      (await fixture.stores.agentRunStore.listSessionRuns(fixture.sessionId)).filter(
+      (await fixture.stores.runtimeEventStore.listSessionInvocations(fixture.sessionId)).filter(
         (run) => run.turnId === pending.targetTurnId,
       ).length,
       1,
@@ -800,13 +808,10 @@ test('turn.start durably applies one exact per-Turn orchestration override', asy
     if (!started.ok) return;
     assertStartedTurn(started);
 
-    const run = await fixture.stores.agentRunStore.readRun(
-      fixture.sessionId,
-      started.result.turn.runId,
-    );
-    assert.equal(run.orchestrationMode, 'swarm');
-    assert.equal(run.orchestrationSource, 'turn_override');
-    assert.equal(run.agentSwarmAuthorization, 'turn_override');
+    const run = await readInvocation(fixture.stores, fixture.sessionId, started.result.turn.runId);
+    assert.equal(run.opening.configuration.orchestrationMode, 'swarm');
+    assert.equal(run.opening.configuration.orchestrationSource, 'turn_override');
+    assert.equal(run.opening.configuration.agentSwarmAuthorization, 'turn_override');
     assert.deepEqual(
       (await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, input.turnId))
         ?.turnOrchestration,
@@ -865,6 +870,64 @@ test('turn.start durably binds a Guest request approval to the admitted Turn', a
     );
 
     const conflictingRetry = await fixture.interactiveTurns.handlers['turn.start'](
+      input,
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(conflictingRetry.ok, false);
+    if (!conflictingRetry.ok) assert.equal(conflictingRetry.error.code, 'operation_conflict');
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test('turn.regenerate durably binds a Guest request approval to the admitted Turn', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+  });
+  const authorization = {
+    kind: 'session_turn_access_request' as const,
+    requestId: 'request-regenerate-1',
+    principalId: 'session_guest:guest-1',
+    grantId: 'grant-1',
+    approvedAt: 1_788_000_000_000,
+    approvedBy: 'local_owner',
+  };
+  const input = {
+    sessionId: fixture.sessionId,
+    sourceTurnId: 'turn-regenerate-source',
+    turnId: 'turn-regenerate-approved',
+  };
+  try {
+    assertStartedTurn(
+      await fixture.interactiveTurns.handlers['turn.start'](
+        {
+          sessionId: fixture.sessionId,
+          turnId: input.sourceTurnId,
+          content: { text: 'Regenerate this approved request.' },
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency),
+      ),
+    );
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+
+    const regenerated = await fixture.interactiveTurns.handlers['turn.regenerate'](input, {
+      ...operationContext(fixture.hostEpoch, fixture.acquireResidency),
+      principal: authorization.principalId,
+      turnAdmissionAuthorization: authorization,
+    });
+    assert.equal(regenerated.ok, true, JSON.stringify(regenerated));
+    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+      fixture.sessionId,
+      input.turnId,
+    );
+    assert.deepEqual(admission?.execution, {
+      kind: 'regenerate',
+      sourceTurnId: input.sourceTurnId,
+    });
+    assert.deepEqual(admission?.authorization, authorization);
+
+    const conflictingRetry = await fixture.interactiveTurns.handlers['turn.regenerate'](
       input,
       operationContext(fixture.hostEpoch, fixture.acquireResidency),
     );
@@ -1205,6 +1268,8 @@ test('idle Skill admission persists a canonical draft without history before roo
         throw new Error('injected root admission failure');
       },
       readRootTurnAdmission: (sessionId, turnId) => store.readRootTurnAdmission(sessionId, turnId),
+      readRootTurnContinuationAdmission: (sessionId, sourceTurnId, sourceRunId) =>
+        store.readRootTurnContinuationAdmission(sessionId, sourceTurnId, sourceRunId),
       readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
         store.readRootTurnSourceMessageReceipt(sessionId, messageId),
       listRootTurnAdmissionsForRecovery: (sessionId) =>
@@ -1599,7 +1664,7 @@ test('linked child Sessions reject public safe-boundary continuation', async () 
 
     assert.deepEqual(recoveryCoordinator.readRootState(child.id), { kind: 'reserved' });
     assert.equal(
-      (await fixture.stores.agentRunStore.listSessionRuns(child.id)).some(
+      (await fixture.stores.runtimeEventStore.listSessionInvocations(child.id)).some(
         (run) => run.turnId === targetTurnId,
       ),
       false,
@@ -1776,7 +1841,10 @@ test('worktree child Sessions reject roots outside managed child execution', asy
       (await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(child.id)).length,
       1,
     );
-    assert.equal((await fixture.stores.agentRunStore.listSessionRuns(child.id)).length, 1);
+    assert.equal(
+      (await fixture.stores.runtimeEventStore.listSessionInvocations(child.id)).length,
+      1,
+    );
 
     backend?.release();
     await managed;
@@ -1803,7 +1871,10 @@ test('worktree child Sessions reject roots outside managed child execution', asy
       () => recovery.recover(),
       /Unable to recover admitted Turn legacy-external-child-turn: operation_unavailable/,
     );
-    assert.equal((await fixture.stores.agentRunStore.listSessionRuns(child.id)).length, 1);
+    assert.equal(
+      (await fixture.stores.runtimeEventStore.listSessionInvocations(child.id)).length,
+      1,
+    );
   } finally {
     backend?.release();
     await recoveryCoordinator?.close();
@@ -2031,14 +2102,14 @@ test('Agent Graph supervisor wake waits for root idle and binds one durable exec
       source: 'host_api',
     });
 
-    const graphRun = await fixture.stores.agentRunStore.readRun(
-      fixture.sessionId,
-      graphAdmission!.runId,
-    );
-    assert.equal(graphRun.agentGraphWakeId, wakeId);
-    assert.equal(graphRun.agentGraphWakeAttemptId, attemptId);
-    assert.equal(graphRun.orchestrationMode, 'graph');
-    assert.equal(graphRun.orchestrationSource, 'turn_override');
+    const graphRun = await readInvocation(fixture.stores, fixture.sessionId, graphAdmission!.runId);
+    assert.deepEqual(graphRun.opening.root, {
+      kind: 'agent_graph_supervisor_wake',
+      wakeId,
+      attemptId,
+    });
+    assert.equal(graphRun.opening.configuration.orchestrationMode, 'graph');
+    assert.equal(graphRun.opening.configuration.orchestrationSource, 'turn_override');
     const userMessage = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
       (message) => message.id === graphAdmission?.userMessageId,
     );
@@ -2284,7 +2355,7 @@ test('startup recovery replays an admitted context compact with its exact Run id
     assert.equal(stopped.ok, true);
     if (stopped.ok) assert.equal(stopped.result.status, 'cancelled');
     assert.equal(
-      (await fixture.stores.agentRunStore.listSessionRuns(fixture.sessionId)).filter(
+      (await fixture.stores.runtimeEventStore.listSessionInvocations(fixture.sessionId)).filter(
         (run) => run.turnId === turnId,
       ).length,
       1,
@@ -2443,7 +2514,10 @@ test('Agent Graph supervisor wake revalidates freshness before durable root admi
       await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(fixture.sessionId),
       [],
     );
-    assert.deepEqual(await fixture.stores.agentRunStore.listSessionRuns(fixture.sessionId), []);
+    assert.deepEqual(
+      await fixture.stores.runtimeEventStore.listSessionInvocations(fixture.sessionId),
+      [],
+    );
     assert.deepEqual(await fixture.stores.sessionStore.readMessages(fixture.sessionId), []);
     assert.equal(fixture.drainRequested(), false);
   } finally {
@@ -2492,13 +2566,16 @@ test('Agent Graph supervisor recovery closes a durable admission that has no Run
     await recovery.prepareRecovery();
     await recovery.recover();
 
-    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, runId);
-    assert.equal(run.status, 'failed');
-    assert.equal(run.failureClass, 'app_restarted');
-    assert.equal(run.agentGraphWakeId, wakeId);
-    assert.equal(run.agentGraphWakeAttemptId, attemptId);
-    assert.equal(run.orchestrationMode, 'graph');
-    assert.equal(run.orchestrationSource, 'turn_override');
+    const run = await readInvocation(fixture.stores, fixture.sessionId, runId);
+    assert.equal(runtimeInvocationOutcome(run), 'failed');
+    assert.equal(runtimeInvocationFailureClass(run), 'app_restarted');
+    assert.deepEqual(run.opening.root, {
+      kind: 'agent_graph_supervisor_wake',
+      wakeId,
+      attemptId,
+    });
+    assert.equal(run.opening.configuration.orchestrationMode, 'graph');
+    assert.equal(run.opening.configuration.orchestrationSource, 'turn_override');
     const message = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
       (candidate) => candidate.id === userMessageId,
     );
@@ -2582,6 +2659,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     let drainRequested = false;
     let stopClosureSignal: ReturnType<typeof deferred<void>> | undefined;
     const rootPort: HostMessageRootPort = {
+      readLatestRootTurnLineage: async (identity) => identity,
       readSessionHeader: (sessionId) =>
         requireCoordinator(coordinator).readSessionHeader(sessionId),
       readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
@@ -2945,7 +3023,8 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     const joinedInterrupted = await joinedInitial;
     assert.equal(interrupted.status, 'cancelled');
     assert.deepEqual(joinedInterrupted, interrupted);
-    const interruptedRun = await stores.agentRunStore.readRun(
+    const interruptedRun = await readInvocation(
+      stores,
       interrupted.childSessionId,
       interrupted.runId,
     );
@@ -3119,6 +3198,8 @@ test('successor admission failure retains the terminal transition and its confir
         return store.admitRootTurn(input);
       },
       readRootTurnAdmission: (sessionId, turnId) => store.readRootTurnAdmission(sessionId, turnId),
+      readRootTurnContinuationAdmission: (sessionId, sourceTurnId, sourceRunId) =>
+        store.readRootTurnContinuationAdmission(sessionId, sourceTurnId, sourceRunId),
       readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
         store.readRootTurnSourceMessageReceipt(sessionId, messageId),
       listRootTurnAdmissionsForRecovery: (sessionId) =>
@@ -3227,6 +3308,8 @@ test('shutdown contains a successor backend start rejected by Interaction drain'
         return store.admitRootTurn(input);
       },
       readRootTurnAdmission: (sessionId, turnId) => store.readRootTurnAdmission(sessionId, turnId),
+      readRootTurnContinuationAdmission: (sessionId, sourceTurnId, sourceRunId) =>
+        store.readRootTurnContinuationAdmission(sessionId, sourceTurnId, sourceRunId),
       readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
         store.readRootTurnSourceMessageReceipt(sessionId, messageId),
       listRootTurnAdmissionsForRecovery: (sessionId) =>
@@ -3293,7 +3376,7 @@ test('shutdown contains a successor backend start rejected by Interaction drain'
     assert.equal(admissions.length, 2);
     const successor = admissions[1];
     assert.ok(successor);
-    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, successor.runId);
+    const run = await readInvocation(fixture.stores, fixture.sessionId, successor.runId);
     const runtimeEvents = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
       fixture.sessionId,
       successor.runId,
@@ -3823,7 +3906,9 @@ async function assertSessionSuccessorCapabilityDegradation(
     const followup = admissions[1];
     assert.ok(followup);
     assert.equal(
-      (await fixture.stores.agentRunStore.readRun(fixture.sessionId, followup.runId)).status,
+      runtimeInvocationOutcome(
+        await readInvocation(fixture.stores, fixture.sessionId, followup.runId),
+      ),
       'completed',
     );
     assert.equal(fixture.drainRequested(), false);
@@ -4204,6 +4289,74 @@ test('public turn.interrupt releases the Session lane while a queried Run is sti
   }
 });
 
+test('invalid WorkHub Stop provenance fails before the root fence mutates authority', async () => {
+  let backend: BlockingRootBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => {
+        backend = new BlockingRootBackend(context.sessionId);
+        return backend;
+      }),
+  });
+  try {
+    const started = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-invalid-workhub-stop',
+        content: { text: 'keep this root active' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    assertStartedTurn(started);
+    await backend?.started.promise;
+
+    const queued = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'queued-before-invalid-workhub-stop',
+        content: { text: 'preserve this follow-up' },
+        placement: 'next_turn',
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(queued.ok, true);
+    const before = fixture.messages.projection(fixture.sessionId);
+
+    const invalidInputs = [
+      { source: 'workhub_direct_stop' },
+      { source: 'workhub_direct_stop', workHubActionId: '' },
+      { source: 'stop_button', workHubActionId: 'wrong-source-action' },
+    ];
+    for (const input of invalidInputs) {
+      await assert.rejects(
+        async () =>
+          fixture.coordinator.stopRoot(
+            {
+              sessionId: fixture.sessionId,
+              turnId: 'turn-invalid-workhub-stop',
+              runId: started.result.turn.runId,
+            },
+            input as never,
+          ),
+        /WorkHub direct-stop/,
+      );
+    }
+
+    assert.deepEqual(fixture.messages.projection(fixture.sessionId), before);
+    assert.equal(fixture.coordinator.readRootState(fixture.sessionId).kind, 'active');
+    assert.equal(fixture.fallbackRunClosureClaims(), 0);
+    assert.equal(backend?.stopCount, 0);
+  } finally {
+    backend?.release();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('Runtime stop lets a running admission publish before its exact-Run closure', {
   timeout: 20_000,
 }, async () => {
@@ -4345,10 +4498,7 @@ test('post-start backend failure closes its owner without draining an unrelated 
       runId: unrelatedStarted.result.turn.runId,
     });
     assert.equal(unrelatedBackend.stopCount, 0);
-    const run = await fixture.stores.agentRunStore.readRun(
-      fixture.sessionId,
-      started.result.turn.runId,
-    );
+    const run = await readInvocation(fixture.stores, fixture.sessionId, started.result.turn.runId);
     const events = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
       fixture.sessionId,
       started.result.turn.runId,
@@ -4523,10 +4673,7 @@ test('post-start backend AggregateError is contained after its failed terminal t
     await waitUntil(() => fixture.coordinator.readRootState(fixture.sessionId).kind === 'idle');
     assert.equal(fixture.drainRequested(), false);
 
-    const run = await fixture.stores.agentRunStore.readRun(
-      fixture.sessionId,
-      started.result.turn.runId,
-    );
+    const run = await readInvocation(fixture.stores, fixture.sessionId, started.result.turn.runId);
     const events = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
       fixture.sessionId,
       started.result.turn.runId,
@@ -4540,7 +4687,12 @@ test('post-start backend AggregateError is contained after its failed terminal t
     );
     assert.equal(queried.ok, true);
     if (queried.ok && queried.result.status === 'failed') {
-      assert.equal(queried.result.failureMessage, run.failureMessage);
+      assert.equal(
+        queried.result.failureMessage,
+        run.terminalEvent?.content?.kind === 'error'
+          ? run.terminalEvent.content.message
+          : undefined,
+      );
       assert.ok(queried.result.failureMessage);
     }
 
@@ -4598,10 +4750,7 @@ test('post-start message owner cleanup failure drains after its failed terminal 
 
     await waitUntil(() => fixture.drainRequested());
     await waitUntil(() => fixture.coordinator.readRootState(fixture.sessionId).kind === 'idle');
-    const run = await fixture.stores.agentRunStore.readRun(
-      fixture.sessionId,
-      started.result.turn.runId,
-    );
+    const run = await readInvocation(fixture.stores, fixture.sessionId, started.result.turn.runId);
     const events = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
       fixture.sessionId,
       started.result.turn.runId,
@@ -4858,32 +5007,37 @@ async function seedPendingSafeBoundaryContinuation(
   const targetTurnId = `target-turn-${identitySuffix}`;
   const session = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
   const createdAt = Date.now();
-  const sourceRun = {
-    runId: sourceRunId,
-    invocationId: sourceInvocationId,
+  const sourceRun = await seedInvocation(fixture.stores.runtimeEventStore, {
     sessionId: fixture.sessionId,
+    invocationId: sourceInvocationId,
+    runId: sourceRunId,
     turnId: sourceTurnId,
-    status: 'created' as const,
-    backendKind: 'fake' as const,
-    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-    llmConnectionSlug: 'fake',
-    modelId: 'fake-model',
-    cwd: session.cwd,
-    workspaceIdentity,
-    permissionMode: session.permissionMode,
-    collaborationMode: session.collaborationMode,
-    ...(sourceOrchestrationMode
-      ? {
-          orchestrationMode: sourceOrchestrationMode,
-          orchestrationSource: 'session' as const,
-          agentSwarmAuthorization:
-            sourceOrchestrationMode === 'swarm' ? ('session_mode' as const) : ('none' as const),
-        }
-      : {}),
-    createdAt,
-    updatedAt: createdAt,
-  };
-  await fixture.stores.agentRunStore.createRun(sourceRun, { durable: true });
+    openedAt: createdAt,
+    opening: {
+      route: {
+        provenance: 'runtime',
+        backendKind: 'fake',
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        llmConnectionSlug: 'fake',
+        modelId: 'fake-model',
+      },
+      configuration: {
+        cwd: session.cwd,
+        workspaceIdentity,
+        permissionMode: session.permissionMode,
+        collaborationMode: session.collaborationMode ?? 'agent',
+        toolMode: 'direct',
+        ...(sourceOrchestrationMode
+          ? {
+              orchestrationMode: sourceOrchestrationMode,
+              orchestrationSource: 'session' as const,
+              agentSwarmAuthorization:
+                sourceOrchestrationMode === 'swarm' ? ('session_mode' as const) : ('none' as const),
+            }
+          : { orchestrationMode: 'default' as const, orchestrationSource: 'session' as const }),
+      },
+    },
+  });
   await fixture.stores.runtimeEventStore.appendRuntimeEvent(fixture.sessionId, sourceRunId, {
     id: `source-user-${identitySuffix}`,
     sessionId: fixture.sessionId,
@@ -4898,7 +5052,6 @@ async function seedPendingSafeBoundaryContinuation(
   });
   const terminalAt = createdAt + 1;
   await commitTerminalRunWithRuntimeFact({
-    runStore: fixture.stores.agentRunStore,
     runtimeEventStore: fixture.stores.runtimeEventStore,
     newId: randomUUID,
     sessionId: fixture.sessionId,
@@ -5029,7 +5182,6 @@ async function createFailureFixture(options: {
   const artifacts = options.withArtifacts
     ? await openInteractiveArtifactStoreForWrite(owner.lease)
     : undefined;
-  await artifacts?.recover();
   const session = await stores.sessionStore.create({
     cwd: capability.canonicalPath,
     ...(options.legacyConnectionIdentity
@@ -5077,7 +5229,9 @@ async function createFailureFixture(options: {
   let canonicalProjection: CanonicalSessionProjectionReader | undefined;
   let messages!: HostMessageCoordinator;
   let interactions: HostInteractionCoordinator | undefined;
+  let fallbackRunClosureClaims = 0;
   const rootPort: HostMessageRootPort = {
+    readLatestRootTurnLineage: async (identity) => identity,
     readSessionHeader: (sessionId) => requireCoordinator(coordinator).readSessionHeader(sessionId),
     readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
     claimStopFence: (input, commitQueueFence, admission) =>
@@ -5187,7 +5341,9 @@ async function createFailureFixture(options: {
       admissionOwner,
       interactions ?? {
         assertTerminalFence: async () => undefined,
-        claimRunClosure: async () => undefined,
+        claimRunClosure: async () => {
+          fallbackRunClosureClaims += 1;
+        },
       },
       messages,
       requireContinuity(continuity),
@@ -5267,6 +5423,7 @@ async function createFailureFixture(options: {
     },
     liveResidencies: () => liveResidencies,
     drainRequested: () => drainRequested,
+    fallbackRunClosureClaims: () => fallbackRunClosureClaims,
     dispose: async () => {
       requireContinuity(continuity).close();
       artifacts?.close();

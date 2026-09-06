@@ -22,6 +22,8 @@ import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   decodePersistedRuntimeHostProfile,
+  migrateRuntimeHostProfileOperatorCommand,
+  sameEnvironmentRuntimeHostDeployment,
   sameResolvedRuntimeHostProfileTarget,
   type EnvironmentRuntimeHostProfile,
   type PersistedRuntimeHostProfile,
@@ -29,10 +31,15 @@ import {
   type RuntimeHostRemoteTransport,
 } from "@maka/runtime-host/client";
 import { requireHostRootId } from "@maka/runtime-host/protocol";
+import {
+  createRuntimeHostLegacyPosixOperatorCommand,
+  decodeRuntimeHostOperatorCommand,
+  type RuntimeHostOperatorCommand,
+} from "@maka/runtime-host/operator";
 import { withFileUpdateLock } from "@maka/storage/file-update-lock";
 import { syncDirectory } from "@maka/storage/stable-storage";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const DOCUMENT_MAX_BYTES = 256 * 1024;
 const BINDING_COUNT_MAX = 32;
 const PATH_MAX_BYTES = 4 * 1024;
@@ -49,7 +56,7 @@ type ManagedSshRuntimeHostProfile = RemoteRuntimeHostProfile & {
 
 interface DesktopRuntimeHostSshControlRoute {
   readonly kind: "ssh_operator";
-  readonly operatorPath: string;
+  readonly operator: RuntimeHostOperatorCommand;
 }
 
 interface DesktopRuntimeHostManagedServiceTargetBase {
@@ -157,9 +164,13 @@ export function findDesktopRuntimeHostManagedServiceBinding(
   const binding = document.bindings.find(
     (candidate) => candidate.profile.id === profile.id,
   );
-  return binding && sameManagedProfileTarget(binding.profile, profile)
-    ? binding
-    : undefined;
+  if (!binding || !sameManagedProfileTarget(binding.profile, profile)) return undefined;
+  // The profile catalog owns a WSL control route. The deployment binding owns only
+  // its stable environment identity, so a crash between their writes cannot hide it.
+  if (binding.profile.kind === "environment" && profile.kind === "environment") {
+    return { profile, deployment: binding.deployment, state: "active" };
+  }
+  return binding;
 }
 
 export function sameDesktopRuntimeHostManagedServiceBinding(
@@ -196,8 +207,7 @@ class FileDesktopRuntimeHostManagedServiceStore implements DesktopRuntimeHostMan
       try {
         contents = await readFile(this.#legacyPath, "utf8");
       } catch (legacyError) {
-        if ((legacyError as NodeJS.ErrnoException).code === "ENOENT")
-          return emptyDocument();
+        if ((legacyError as NodeJS.ErrnoException).code === "ENOENT") return emptyDocument();
         throw legacyError;
       }
       const migrated = decodeLegacyDocument(JSON.parse(contents));
@@ -208,9 +218,13 @@ class FileDesktopRuntimeHostManagedServiceStore implements DesktopRuntimeHostMan
     if (Buffer.byteLength(contents, "utf8") > DOCUMENT_MAX_BYTES) {
       throw new Error("Runtime Host managed service document is too large");
     }
-    const document = decodeDocument(JSON.parse(contents));
+    const value: unknown = JSON.parse(contents);
+    const migrated = decodeDocument(value);
+    if ((value as { readonly schemaVersion?: unknown }).schemaVersion === 1) {
+      await writeDocument(this.#path, migrated);
+    }
     await removeLegacyDocument(this.#legacyPath);
-    return document;
+    return migrated;
   }
 
   save(
@@ -373,10 +387,11 @@ function decodeDocument(
     "Runtime Host managed service document",
     ["schemaVersion", "bindings"],
   );
-  if (
-    record.schemaVersion !== SCHEMA_VERSION ||
-    !Array.isArray(record.bindings)
-  ) {
+  if (!Array.isArray(record.bindings)) {
+    throw new Error("Runtime Host managed service document is invalid");
+  }
+  if (record.schemaVersion === 1) return migrateVersionOneDocument(record.bindings);
+  if (record.schemaVersion !== SCHEMA_VERSION) {
     throw new Error("Runtime Host managed service document is invalid");
   }
   if (record.bindings.length > BINDING_COUNT_MAX) {
@@ -455,30 +470,75 @@ function decodeDocument(
   });
 }
 
-function decodeLegacyDocument(
-  value: unknown,
-): DesktopRuntimeHostManagedServiceDocument {
-  const record = requireExactRecord(
-    value,
-    "Legacy Runtime Host managed service document",
-    ["schemaVersion", "bindings"],
-  );
+function migrateVersionOneDocument(bindings: unknown[]): DesktopRuntimeHostManagedServiceDocument {
+  return decodeDocument({
+    schemaVersion: SCHEMA_VERSION,
+    bindings: bindings.map((candidate) => {
+      const profile = migrateRuntimeHostProfileOperatorCommand(
+        (candidate as { readonly profile?: unknown } | null)?.profile,
+      );
+      const decodedProfile = decodePersistedRuntimeHostProfile(profile);
+      const binding = requireExactRecord(
+        candidate,
+        "Runtime Host managed service binding",
+        decodedProfile.kind === "environment"
+          ? ["deployment", "profile", "state"]
+          : ["control", "deployment", "profile", "state"],
+      );
+      if (decodedProfile.kind === "environment") return { ...binding, profile };
+      const control = requireExactRecord(binding.control, "Managed Runtime Host control route", [
+        "kind",
+        "operatorPath",
+      ]);
+      if (control.kind !== "ssh_operator") {
+        throw new Error("Managed Runtime Host control route is invalid");
+      }
+      return {
+        ...binding,
+        profile,
+        control: {
+          kind: "ssh_operator",
+          operator: createRuntimeHostLegacyPosixOperatorCommand(
+            requirePosixOperatorPath(control.operatorPath),
+          ),
+        },
+      };
+    }),
+  });
+}
+
+function decodeLegacyDocument(value: unknown): DesktopRuntimeHostManagedServiceDocument {
+  const record = requireExactRecord(value, "Legacy Runtime Host managed service document", [
+    "schemaVersion",
+    "bindings",
+  ]);
   if (record.schemaVersion !== 1 || !Array.isArray(record.bindings)) {
     throw new Error("Legacy Runtime Host managed service document is invalid");
   }
   return decodeDocument({
     schemaVersion: SCHEMA_VERSION,
     bindings: record.bindings.map((candidate) => {
-      const binding = requireExactRecord(
-        candidate,
-        "Legacy Runtime Host service binding",
-        ["profile", "service", "state"],
-      );
-      const service = decodeLegacyService(binding.service);
+      const binding = requireExactRecord(candidate, "Legacy Runtime Host service binding", [
+        "profile",
+        "service",
+        "state",
+      ]);
+      const service = requireExactRecord(binding.service, "Managed Runtime Host service", [
+        "id",
+        "operatorPath",
+        "rootPath",
+      ]);
+      const operatorPath = requirePosixOperatorPath(service.operatorPath);
       return {
-        profile: binding.profile,
-        deployment: { id: service.id, rootPath: service.rootPath },
-        control: { kind: "ssh_operator", operatorPath: service.operatorPath },
+        profile: migrateRuntimeHostProfileOperatorCommand(binding.profile),
+        deployment: {
+          id: requireHostRootId(service.id),
+          rootPath: requirePath(service.rootPath, "Managed Runtime Host State Root"),
+        },
+        control: {
+          kind: "ssh_operator",
+          operator: createRuntimeHostLegacyPosixOperatorCommand(operatorPath),
+        },
         state: binding.state,
       };
     }),
@@ -509,19 +569,15 @@ function decodeSshControlRoute(value: unknown): DesktopRuntimeHostSshControlRout
   const record = requireExactRecord(
     value,
     "Managed Runtime Host control route",
-    ["kind", "operatorPath"],
+    ["kind", "operator"],
   );
   if (record.kind !== "ssh_operator") {
     throw new Error("Managed Runtime Host control route is invalid");
   }
-  const operatorPath = requirePath(
-    record.operatorPath,
-    "Managed Runtime Host operator path",
-  );
-  if (!operatorPath.startsWith("/")) {
-    throw new Error("Managed Runtime Host operator path must be absolute");
-  }
-  return Object.freeze({ kind: "ssh_operator", operatorPath });
+  return Object.freeze({
+    kind: "ssh_operator",
+    operator: decodeRuntimeHostOperatorCommand(record.operator),
+  });
 }
 
 function decodeBinding(
@@ -542,34 +598,6 @@ function decodeBinding(
   }
   const control = decodeSshControlRoute(value.control);
   return Object.freeze({ profile, deployment, control });
-}
-
-function decodeLegacyService(value: unknown): {
-  readonly id: string;
-  readonly rootPath: string;
-  readonly operatorPath: string;
-} {
-  const record = requireExactRecord(
-    value,
-    "Managed Runtime Host service",
-    ["id", "operatorPath", "rootPath"],
-  );
-  const rootPath = requirePath(
-    record.rootPath,
-    "Managed Runtime Host State Root",
-  );
-  const operatorPath = requirePath(
-    record.operatorPath,
-    "Managed Runtime Host operator path",
-  );
-  if (!operatorPath.startsWith("/")) {
-    throw new Error("Managed Runtime Host operator path must be absolute");
-  }
-  return Object.freeze({
-    id: requireHostRootId(record.id),
-    rootPath,
-    operatorPath,
-  });
 }
 
 function requireDeploymentId(value: unknown): string {
@@ -594,6 +622,14 @@ function requirePath(value: unknown, label: string): string {
     throw new Error(`${label} is invalid`);
   }
   return value;
+}
+
+function requirePosixOperatorPath(value: unknown): string {
+  const path = requirePath(value, "Managed Runtime Host operator path");
+  if (!path.startsWith("/")) {
+    throw new Error("Managed Runtime Host operator path must be absolute");
+  }
+  return path;
 }
 
 function requireExactRecord(
@@ -632,7 +668,7 @@ function sameBindingTarget(
   }
   return (
     isDesktopRuntimeHostManagedSshServiceBinding(right) &&
-    left.control.operatorPath === right.control.operatorPath
+    JSON.stringify(left.control.operator) === JSON.stringify(right.control.operator)
   );
 }
 
@@ -642,7 +678,9 @@ function sameManagedProfileTarget(
 ): boolean {
   return (
     left.id === right.id &&
-    sameResolvedRuntimeHostProfileTarget({ profile: left }, { profile: right })
+    (left.kind === "environment" && right.kind === "environment"
+      ? sameEnvironmentRuntimeHostDeployment(left, right)
+      : sameResolvedRuntimeHostProfileTarget({ profile: left }, { profile: right }))
   );
 }
 

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { offerableCatalogEntries } from '@maka/core/llm-connections';
+import { deriveConnectionSlug, offerableCatalogEntries } from '@maka/core/llm-connections';
 import type { RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot } from '@maka/runtime-host/client';
 import {
   readRuntimeHostConnectionCatalog,
@@ -130,6 +130,7 @@ export function projectRuntimeHostConnectionIdentities(
 
 export function projectProviders(catalog: ConnectionCatalogSnapshot): OnboardingProviderEntry[] {
   const entries: OnboardingProviderEntry[] = [];
+  const existingSlugs = catalog.connections.map((connection) => connection.slug);
   for (const provider of listApiKeyOnboardableProviders()) {
     for (const connection of catalog.connections) {
       if (connection.providerType !== provider.providerType) continue;
@@ -145,6 +146,7 @@ export function projectProviders(catalog: ConnectionCatalogSnapshot): Onboarding
       ...provider,
       target: { kind: 'create', providerType: provider.providerType },
       label: provider.label,
+      suggestedSlug: deriveConnectionSlug(provider.providerType, existingSlugs),
       enabledModelIds: [],
     });
   }

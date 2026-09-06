@@ -121,6 +121,46 @@ test('OAuth login protocol binds attempt identity and closes terminal projection
   );
 });
 
+test('OAuth enrollment query carries the provider and its Host gate answer', () => {
+  assert.deepEqual(
+    decodeClientFrame({
+      requestId: 'request',
+      operation: 'oauth.enrollment.query',
+      input: { provider: 'github-copilot' },
+    }),
+    {
+      requestId: 'request',
+      operation: 'oauth.enrollment.query',
+      input: { provider: 'github-copilot' },
+    },
+  );
+  assert.deepEqual(
+    decodeHostFrame({
+      requestId: 'request',
+      operation: 'oauth.enrollment.query',
+      ok: true,
+      result: { provider: 'github-copilot', enabled: false },
+    }),
+    {
+      requestId: 'request',
+      operation: 'oauth.enrollment.query',
+      ok: true,
+      result: { provider: 'github-copilot', enabled: false },
+    },
+  );
+  // A missing or non-boolean `enabled` is refused rather than coerced.
+  assert.throws(
+    () =>
+      decodeHostFrame({
+        requestId: 'request',
+        operation: 'oauth.enrollment.query',
+        ok: true,
+        result: { provider: 'github-copilot' },
+      }),
+    (error: unknown) => error instanceof RuntimeHostProtocolError,
+  );
+});
+
 test('OAuth account usage is no longer an operation on the wire', () => {
   // Reporting subscription usage required the retired provider's own client
   // identity, so the operation went with it rather than staying as a call that

@@ -53,6 +53,7 @@ import type {
   ShellRunUpdate,
 } from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
 import type { PermissionMode } from '@maka/core/permission';
 import type { CollaborationMode } from '@maka/core/collaboration';
@@ -70,12 +71,16 @@ import type { SessionChangedEvent, SessionSummary, TurnRecord } from '@maka/core
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type {
+  AppUpdateInstallRequest,
+  AppUpdateInstallResult,
+  AppUpdateStatus,
+} from '../shared/app-update.js';
+import type {
   GitReviewReadResult,
   GitReviewSource,
 } from '@maka/core/git-review';
 import type {
   ArtifactBinaryReadResult,
-  ArtifactChangedEvent,
   ArtifactDescriptor,
   ArtifactSaveResult,
   ArtifactTextReadResult,
@@ -272,50 +277,11 @@ export type PermissionOverlayStartResult =
       message?: string;
     };
 
-export type AppUpdateStatus =
-  | { state: 'idle'; currentVersion: string }
-  | { state: 'checking'; currentVersion: string }
-  | { state: 'not-available'; currentVersion: string; latestVersion?: string }
-  | {
-      state: 'available';
-      currentVersion: string;
-      latestVersion: string;
-    }
-  | {
-      state: 'downloading';
-      currentVersion: string;
-      latestVersion: string;
-      progress: {
-        percent: number;
-        bytesPerSecond?: number;
-        transferred?: number;
-        total?: number;
-      };
-    }
-  | { state: 'verifying'; currentVersion: string; latestVersion: string }
-  | {
-      state: 'downloaded';
-      currentVersion: string;
-      latestVersion: string;
-    }
-  | { state: 'installing'; currentVersion: string; latestVersion: string }
-  | {
-      state: 'error';
-      currentVersion: string;
-      message: string;
-      operation: 'check' | 'download' | 'install';
-      latestVersion?: string;
-    };
-
-export type AppUpdateInstallRequest = {
-  /** User consent from the trusted desktop renderer; this is a UX boundary, not a security boundary. */
-  allowInterruptActiveTasks: boolean;
-};
-
-export type AppUpdateInstallResult =
-  | { ok: true }
-  | { ok: false; reason: 'active_tasks' }
-  | { ok: false; reason: 'not_downloaded' | 'install_failed' };
+export type {
+  AppUpdateInstallRequest,
+  AppUpdateInstallResult,
+  AppUpdateStatus,
+} from '../shared/app-update.js';
 
 export interface DesktopRuntimeHostProfileEntry {
   readonly profile: RuntimeHostProfile;
@@ -380,7 +346,7 @@ export type DesktopOAuthLoginTarget =
 export interface DesktopOAuthConnectionIdentity {
   readonly connectionId: string;
   readonly slug: string;
-  readonly providerType: 'openai-codex' | 'xai-oauth';
+  readonly providerType: 'openai-codex' | 'xai-oauth' | 'github-copilot';
 }
 
 export type DesktopOAuthAuthorizationStartResult =
@@ -595,6 +561,9 @@ export interface DesktopRuntimeHostManagementProgress {
     | import('@maka/runtime-host/operator').RuntimeHostServiceUpdatePhase;
 }
 
+export type DesktopRuntimeHostResources =
+  import('@maka/runtime-host/protocol').HostResourcesResult;
+
 export interface DesktopRuntimeHostDirectPeerSnapshot {
   readonly state: 'unsupported' | 'not_configured' | 'disabled' | 'enabled';
   readonly peerId?: string;
@@ -748,6 +717,7 @@ export interface MakaBridge {
       allowInsecure?: boolean,
     ): Promise<DesktopSessionCollaborationPrepareResult>;
     getAccess(sessionId: string): Promise<CollaborationAccessQueryResult>;
+    renamePrincipal(sessionId: string, principalId: string, displayName: string): Promise<{ readonly renamed: boolean }>;
     revokeGrant(
       sessionId: string,
       grantId: string,
@@ -765,7 +735,10 @@ export interface MakaBridge {
     /** Reads only after the user invokes the invitation paste action. */
     readInvitationClipboard(): Promise<string>;
     listMounts(): Promise<readonly DesktopGuestSessionMountSummary[]>;
+    subscribeMountChanges(handler: () => void): () => void;
     removeMount(mountId: string): Promise<void>;
+    retryMount(mountId: string): Promise<void>;
+    renameMount(mountId: string, name: string): Promise<void>;
     requestTurn(
       sessionId: string,
       input:
@@ -875,6 +848,7 @@ export interface MakaBridge {
       policy: import('@maka/runtime-host/operator').RuntimeHostManagedUpdatePolicy,
     ): Promise<DesktopRuntimeHostUpdatePolicySnapshot>;
     reconcileUpdate(profileId: string): Promise<DesktopRuntimeHostUpdateReconciliationResponse>;
+    getResources(profileId: string): Promise<DesktopRuntimeHostResources | undefined>;
     getDirectPeer(profileId: string): Promise<DesktopRuntimeHostDirectPeerSnapshot>;
     configureDirectPeer(
       profileId: string,
@@ -1034,11 +1008,6 @@ export interface MakaBridge {
   workHub: {
     /** Resolve the active Runtime Host's stable coordination conversation. */
     resolveCoordinationSession(): Promise<string>;
-    /** Answer an ordinary question inside the persistent Coordination Session. */
-    answer(
-      coordinationSessionId: string,
-      input: { turnId: string; text: string },
-    ): Promise<{ turnId: string }>;
     /** Persist one deterministic clarification or routing summary. */
     record(
       coordinationSessionId: string,
@@ -1053,11 +1022,6 @@ export interface MakaBridge {
       coordinationSessionId: string,
       input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
     ): Promise<OperationOutcome<'workhub.coordination.act'>>;
-    /** Create an ordinary Session on the exact Host owning the resolved conversation. */
-    createSession(
-      coordinationSessionId: string,
-      input: { name: string },
-    ): Promise<DesktopSessionSummary>;
   };
   sessions: {
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]>;
@@ -1218,6 +1182,7 @@ export interface MakaBridge {
       response: ClientCapabilityResponse,
     ): Promise<void>;
     respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void>;
+    respondToUserForm(sessionId: string, response: InteractionFormResponse): Promise<void>;
     saveConversationToFile(input: {
       markdown: string;
       defaultName: string;
@@ -1548,7 +1513,6 @@ export interface MakaBridge {
     >;
   };
   openAiCodex: {
-    isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean>;
     getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget): Promise<DesktopOAuthAuthorizationStartResult>;
     openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<DesktopOAuthAuthorizationResult>;
@@ -1570,6 +1534,7 @@ export interface MakaBridge {
         }
       | Exclude<SubscriptionActionResult, { readonly ok: true }>
     >;
+    getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }>;
     refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
     logout(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
   };
@@ -1592,18 +1557,45 @@ export interface MakaBridge {
         }
       | Exclude<SubscriptionActionResult, { readonly ok: true }>
     >;
+    getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }>;
     refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
     logout(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
   };
   githubCopilotSubscription: {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
-    getAccountState(host?: DesktopRuntimeHostRef): Promise<{
-      provider: 'github-copilot';
-      runtimeState: 'not_logged_in' | 'authenticated' | 'refreshing' | 'refresh_failed' | 'storage_failed';
-      errorMessage?: string;
-    }>;
-    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
-    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    getAuthUrl(
+      host: DesktopRuntimeHostRef | undefined,
+      target: DesktopOAuthLoginTarget,
+    ): Promise<DesktopOAuthAuthorizationStartResult>;
+    openAuthUrl(
+      authRequestId: string,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<SubscriptionActionResult>;
+    completeAuthorization(
+      authRequestId: string,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<DesktopOAuthAuthorizationResult>;
+    cancelAuthorization(
+      authRequestId?: string,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<{ ok: true }>;
+    getAccountState(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<
+      | {
+          provider: 'github-copilot';
+          runtimeState:
+            | 'not_logged_in'
+            | 'authorizing'
+            | 'authenticated'
+            | 'refreshing'
+            | 'refresh_failed'
+            | 'storage_failed';
+          errorMessage?: string;
+        }
+      | Exclude<SubscriptionActionResult, { readonly ok: true }>
+    >;
+    getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }>;
+    refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
+    logout(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
   };
   scheduledTasks: {
     list(host?: DesktopRuntimeHostRef): Promise<ScheduledTask[]>;
@@ -1786,11 +1778,10 @@ export interface MakaBridge {
     getState(): Promise<E2eFixtureState | null>;
   };
   artifacts: {
-    list(sessionId: string, opts?: { includeDeleted?: boolean }): Promise<ArtifactDescriptor[]>;
+    list(sessionId: string): Promise<ArtifactDescriptor[]>;
     readText(sessionId: string, artifactId: string): Promise<ArtifactTextReadResult>;
     readBinary(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
     delete(sessionId: string, artifactId: string): Promise<void>;
-    subscribeChanges(handler: (event: ArtifactChangedEvent) => void): () => void;
   };
   skills: {
     list(host?: DesktopRuntimeHostRef): Promise<SkillEntry[]>;

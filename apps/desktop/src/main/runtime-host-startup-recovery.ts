@@ -18,6 +18,7 @@
  */
 
 import { RuntimeHostStartupError } from "@maka/runtime-host/client";
+import { OperationalStateMigrationBlockedError } from '@maka/storage/operational-state-store';
 
 export type DesktopRuntimeHostStartupRepairResult =
   | { readonly kind: "repaired" }
@@ -121,6 +122,9 @@ export async function startDesktopRuntimeHostWithRecovery<T>(input: {
 }
 
 export function canRepairManagedRuntimeHostStartup(error: Error): boolean {
+  if (error instanceof OperationalStateMigrationBlockedError) {
+    return error.reason === 'requires_host_migration';
+  }
   return (
     error instanceof RuntimeHostStartupError &&
     (error.reason === "managed_root_requires_operator" ||

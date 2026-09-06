@@ -17,26 +17,18 @@
  * under the License.
  */
 
-import { createContext, useContext, useSyncExternalStore, type ReactNode } from 'react';
+import { useSyncExternalStore, type ReactNode } from 'react';
+import { createServicesContext } from '../../application/contracts/feature-services.js';
 import type { ApiKeyOnboardingBridge, ConnectionSettingsServices } from './ports.js';
 
-const ConnectionSettingsServicesContext = createContext<ConnectionSettingsServices | null>(null);
+const { Provider, useServices } = createServicesContext<ConnectionSettingsServices>(
+  'ConnectionSettingsServicesProvider',
+);
 
-export function ConnectionSettingsServicesProvider(props: {
-  readonly services: ConnectionSettingsServices;
-  readonly children?: ReactNode;
-}) {
-  return (
-    <ConnectionSettingsServicesContext.Provider value={props.services}>
-      {props.children}
-    </ConnectionSettingsServicesContext.Provider>
-  );
-}
+export const ConnectionSettingsServicesProvider = Provider;
 
 export function useConnectionSettingsServices(): ConnectionSettingsServices {
-  const services = useContext(ConnectionSettingsServicesContext);
-  if (!services) throw new Error('ConnectionSettingsServicesProvider is missing');
-  return services;
+  return useServices();
 }
 
 export function ConnectionSettingsServicesConsumer(props: {

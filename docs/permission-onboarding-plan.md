@@ -23,6 +23,8 @@ Status: **Stage 1 built** (`apps/desktop/src/main/permission-overlay/`,
 `apps/desktop/src/overlay/permission-overlay.*`). Stage 2 is still a proposal.
 Written 2026-07-27 for maka.
 
+Tracking: [macOS permission onboarding Stage 2 #4328](https://github.com/apache/maka/issues/4328)
+
 ## The problem
 
 macOS gates Accessibility and Screen Recording behind TCC, and the stock

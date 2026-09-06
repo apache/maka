@@ -52,6 +52,7 @@ import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import { isRuntimeHostTerminalTurn as isTerminalTurn } from '@maka/runtime-host/adapter';
 import type { DirectRequestOperationKey, RuntimeHostConnection } from '@maka/runtime-host/client';
@@ -588,6 +589,23 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       sessionId,
       interactionId: response.requestId,
       answer: { kind: 'question', answers: response.answers },
+    });
+    if (pending) this.#channel?.publishInteractionAnswer(answered, pending);
+  }
+
+  async respondToUserForm(response: InteractionFormResponse): Promise<void> {
+    const sessionId = this.#requireSession('respond to a user form');
+    const pending = this.#channel?.pendingInteraction(response.requestId);
+    if (pending && pending.request.kind !== 'form') {
+      throw new Error('Interaction is not a form request');
+    }
+    const answered = await this.#request('interaction.answer', {
+      sessionId,
+      interactionId: response.requestId,
+      answer:
+        response.action === 'accept'
+          ? { kind: 'form', action: 'accept', values: response.values }
+          : { kind: 'form', action: response.action },
     });
     if (pending) this.#channel?.publishInteractionAnswer(answered, pending);
   }

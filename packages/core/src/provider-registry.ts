@@ -153,6 +153,13 @@ export interface ProviderDefaults {
   catalogGroup?: ProviderCatalogGroup;
   signupUrl?: string;
   catalogOrder?: number;
+  /**
+   * Position in the catalog's 推荐 shortlist. Only for the providers a new
+   * user can finish setting up without leaving Maka: no key to buy, no
+   * endpoint to know — a free tier, a plan, or an account sign-in. The
+   * account sign-ins reach the shortlist through their OAuth cards, so the
+   * keyed providers here are the free-tier ones.
+   */
   recommendedOrder?: number;
 }
 
@@ -353,6 +360,7 @@ const volcengineCodingPlanModelIds = [
 const volcengineAgentPlanModelIds = [
   'ark-code-latest',
   'glm-5.3',
+  'glm-5.3-flash',
   'doubao-seed-2.0-mini',
   'doubao-seed-2.0-lite',
   'deepseek-v4-flash',
@@ -764,7 +772,6 @@ const providerRegistry = {
     catalogGroup: 'api',
     signupUrl: 'https://console.anthropic.com/settings/keys',
     catalogOrder: 9,
-    recommendedOrder: 3,
   },
   'kimi-coding-plan': {
     label: 'Kimi Coding Plan',
@@ -782,7 +789,6 @@ const providerRegistry = {
     catalogGroup: 'plans',
     signupUrl: 'https://www.kimi.com/code/console',
     catalogOrder: 1,
-    recommendedOrder: 5,
   },
   'minimax-coding-plan': {
     label: 'MiniMax Coding Plan',
@@ -865,7 +871,6 @@ const providerRegistry = {
     catalogGroup: 'api',
     signupUrl: 'https://platform.openai.com/api-keys',
     catalogOrder: 10,
-    recommendedOrder: 2,
   },
   google: {
     label: 'Google Gemini',
@@ -885,7 +890,6 @@ const providerRegistry = {
     catalogGroup: 'api',
     signupUrl: 'https://aistudio.google.com/app/apikey',
     catalogOrder: 11,
-    recommendedOrder: 4,
   },
   deepseek: {
     label: 'DeepSeek',
@@ -910,7 +914,6 @@ const providerRegistry = {
     catalogGroup: 'api',
     signupUrl: 'https://platform.deepseek.com/api_keys',
     catalogOrder: 3,
-    recommendedOrder: 6,
   },
   moonshot: {
     label: 'Moonshot',
@@ -1509,7 +1512,6 @@ const providerRegistry = {
     category: 'local',
     catalogGroup: 'local',
     catalogOrder: 16,
-    recommendedOrder: 7,
   },
   'lm-studio': {
     label: 'LM Studio',
@@ -1547,7 +1549,6 @@ const providerRegistry = {
     category: 'custom',
     catalogGroup: 'aggregators',
     catalogOrder: 18,
-    recommendedOrder: 7.5,
   },
   'openai-responses-compatible': {
     label: 'Custom relay (OpenAI Responses)',
@@ -1561,7 +1562,6 @@ const providerRegistry = {
     category: 'custom',
     catalogGroup: 'aggregators',
     catalogOrder: 18.1,
-    recommendedOrder: 7.6,
   },
   'anthropic-compatible': {
     label: 'Custom relay (Anthropic)',
@@ -1574,7 +1574,6 @@ const providerRegistry = {
     category: 'custom',
     catalogGroup: 'aggregators',
     catalogOrder: 18.2,
-    recommendedOrder: 7.7,
   },
   'github-copilot': {
     label: githubCopilot.name,

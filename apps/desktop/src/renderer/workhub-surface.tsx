@@ -27,20 +27,20 @@ import {
 import { Button } from '@astryxdesign/core/Button';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { ChatSurfaceLayout, Composer } from '@maka/ui';
-import type {
-  WorkHubController,
-  WorkHubCoordinationTurn,
-  WorkHubDelegationLinkState,
-  WorkHubProjection,
-  WorkHubSessionSummary,
-  WorkHubSubmission,
-  WorkHubSubmitInput,
+import {
+  type WorkHubController,
+  type WorkHubCoordinationTurn,
+  type WorkHubDelegationLinkState,
+  type WorkHubProjection,
+  type WorkHubSessionSummary,
+  type WorkHubSubmission,
+  type WorkHubSubmitInput,
 } from './workhub-controller.js';
+import { WorkHubCoordinationFailure } from './workhub-coordination-port.js';
 import {
   WorkHubSendLease,
   type WorkHubSendAttempt,
 } from './workhub-send-lease.js';
-import { WorkHubCoordinationFailure } from './workhub-coordination-port.js';
 
 export interface WorkHubConversationTurn {
   requestId: string;
@@ -134,14 +134,17 @@ export function visibleWorkHubConversation(
       const localTurn = localByRequestId.get(turn.turnId);
       return !localTurn ||
         localTurn.outcome?.kind === 'discussion' ||
-        localTurn.outcome?.kind === 'submitted';
+        localTurn.outcome?.kind === 'submitted' ||
+        localTurn.outcome?.kind === 'stop' || localTurn.outcome?.kind === 'resume';
     },
   );
   const coordinationTurnIds = new Set(coordination.map(({ turnId }) => turnId));
   const visibleLocal = local.filter(
     (turn) =>
       !coordinationTurnIds.has(turn.requestId) ||
-      (turn.outcome?.kind !== 'discussion' && turn.outcome?.kind !== 'submitted'),
+      (turn.outcome?.kind !== 'discussion' &&
+        turn.outcome?.kind !== 'submitted' &&
+        turn.outcome?.kind !== 'stop' && turn.outcome?.kind !== 'resume'),
   );
   return { coordination: visibleCoordination, local: visibleLocal };
 }
@@ -172,7 +175,8 @@ export async function submitAndRecordWorkHubSurfaceInput(input: {
   if (
     result.kind === 'discussion' ||
     result.kind === 'waiting' ||
-    result.kind === 'submitted'
+    result.kind === 'submitted' ||
+    result.kind === 'stop'
   ) {
     return result;
   }
@@ -316,7 +320,8 @@ export function WorkHubSurface(props: {
             ? { ...turn, state: 'settled', outcome: result }
             : turn,
         ));
-        if (result.kind === 'submitted') await refresh();
+        if (result.kind === 'submitted' || result.kind === 'stop' || result.kind === 'resume')
+          await refresh();
         return result;
       } catch (error) {
         if (isTerminalWorkHubSurfaceFailure(error)) {
@@ -564,16 +569,38 @@ export function WorkHubCoordinationTurnView(props: {
         (candidate) => candidate.target.sessionId === assignment.targetSessionId,
       )
     : undefined;
+  const stoppedSession = props.turn.stop
+    ? props.projection.sessions.find(
+        (candidate) => candidate.target.sessionId === props.turn.stop!.targetSessionId,
+      )
+    : undefined;
   return (
     <WorkHubMessageFrame
       text={props.turn.text}
-      state={assignment?.linkState === 'active'
+      state={props.turn.stop?.outcome ?? (assignment?.linkState === 'active'
         ? assignment.feedbackState
-        : assignment?.linkState ?? props.turn.state}
+        : assignment?.linkState ?? props.turn.state)}
       linkState={assignment?.linkState}
       projected
     >
-      {assignment ? (
+      {props.turn.stop ? (
+        <SubmittedWorkView
+          session={stoppedSession}
+          targetSessionId={props.turn.stop.targetSessionId}
+          fallbackName={props.turn.stop.targetSessionName}
+          heading={props.turn.stop.outcome
+            ? copy.stopOutcomes[props.turn.stop.outcome]
+            : copy.stoppingWork}
+          state={props.turn.stop.outcome === 'not_owned'
+            ? copy.openSessionToStop
+            : props.turn.stop.outcome
+              ? copy.stopRecorded
+              : copy.stopping}
+          result={undefined}
+          copy={copy}
+          onOpenSession={props.onOpenSession}
+        />
+      ) : assignment ? (
         <SubmittedWorkView
           session={session}
           targetSessionId={assignment.targetSessionId}
@@ -599,18 +626,47 @@ export function WorkHubCoordinationTurnView(props: {
   );
 }
 
+/**
+ * A stop clarification has to say what WorkHub could not decide. Every reason
+ * here is a distinct dead end for the user — an unnamed target, a name that
+ * fits several Sessions, and a Session the Host will not stop because it owns
+ * no single delegation a stop can reach.
+ */
+function workHubClarificationPrompt(
+  reason: Extract<WorkHubSubmission, { kind: 'clarification' }>['reason'],
+  copy: ReturnType<typeof workHubCopy>,
+): string | undefined {
+  if (reason === 'ambiguous_command') return copy.confirmCommand;
+  if (reason === 'stop_target_required') return copy.stopTargetRequired;
+  if (reason === 'stop_target_ambiguous') return copy.stopTargetAmbiguous;
+  if (reason === 'stop_target_unavailable') return copy.stopTargetUnavailable;
+  if (reason === 'resume_target_required') return copy.resumeTargetRequired;
+  if (reason === 'resume_target_ambiguous') return copy.resumeTargetAmbiguous;
+  if (reason === 'resume_target_unavailable') return copy.resumeTargetUnavailable;
+  if (reason === 'resume_operation_unavailable') return copy.resumeOperationUnavailable;
+  if (reason === 'resume_host_recovering') return copy.resumeHostRecovering;
+  return undefined;
+}
+
 export function workHubCoordinationSummary(
   result: Exclude<WorkHubSubmission, { kind: 'discussion' }>,
   projection: WorkHubProjection,
   copy: ReturnType<typeof workHubCopy>,
 ): string {
   if (result.kind === 'clarification') {
-    if (result.reason === 'ambiguous_command') return copy.confirmCommand;
+    const prompt = workHubClarificationPrompt(result.reason, copy);
+    if (prompt) {
+      return result.options.length > 0
+        ? `${prompt} ${result.options.map(({ sessionName }) => sessionName).join('、')}`
+        : prompt;
+    }
     return `${copy.chooseWork} ${result.options.map(({ sessionName }) => sessionName).join('、')}`;
   }
   if (result.kind === 'waiting') {
     return `${copy.waitingForDecision} ${copy.requestNotSent}`;
   }
+  if (result.kind === 'stop') return copy.stopOutcomes[result.outcome];
+  if (result.kind === 'resume') return copy.resumeRequested;
   const target = projection.sessions.find(
     (session) => session.target.sessionId === result.target.sessionId,
   );
@@ -633,6 +689,8 @@ function WorkHubTurnView(props: {
 }) {
   const { turn, copy } = props;
   const submitted = turn.outcome?.kind === 'submitted' ? turn.outcome : undefined;
+  const stopped = turn.outcome?.kind === 'stop' ? turn.outcome : undefined;
+  const resumed = turn.outcome?.kind === 'resume' ? turn.outcome : undefined;
   const target = submitted
     ? props.projection.sessions.find((session) => session.target.sessionId === submitted.target.sessionId)
     : undefined;
@@ -647,9 +705,7 @@ function WorkHubTurnView(props: {
             </p>
           ) : turn.outcome?.kind === 'clarification' ? (
             <>
-              <p>{turn.outcome.reason === 'ambiguous_command'
-                ? copy.confirmCommand
-                : copy.chooseWork}</p>
+              <p>{workHubClarificationPrompt(turn.outcome.reason, copy) ?? copy.chooseWork}</p>
               {turn.outcome.options.length > 0 ? (
                 <div className="workhub-clarification" aria-label={copy.clarification}>
                   {turn.outcome.options.map((option) => (
@@ -679,6 +735,30 @@ function WorkHubTurnView(props: {
               <p>{copy.waitingForDecision}</p>
               <small>{copy.requestNotSent}</small>
             </div>
+          ) : stopped ? (
+            <SubmittedWorkView
+              session={props.projection.sessions.find(
+                (session) => session.target.sessionId === stopped.target.sessionId,
+              )}
+              targetSessionId={stopped.target.sessionId}
+              heading={copy.stopOutcomes[stopped.outcome]}
+              state={stopped.outcome === 'not_owned' ? copy.openSessionToStop : copy.stopRecorded}
+              result={undefined}
+              copy={copy}
+              onOpenSession={props.onOpenSession}
+            />
+          ) : resumed ? (
+            <SubmittedWorkView
+              session={props.projection.sessions.find(
+                (session) => session.target.sessionId === resumed.target.sessionId,
+              )}
+              targetSessionId={resumed.target.sessionId}
+              heading={copy.resumeOutcomes[resumed.outcome]}
+              state=""
+              result={undefined}
+              copy={copy}
+              onOpenSession={props.onOpenSession}
+            />
           ) : submitted ? (
             <SubmittedWorkView
               session={target}
@@ -759,13 +839,17 @@ function SubmittedWorkView(props: {
 }
 
 export function workHubAmbiguousCommandPrompt(locale: UiLocale): string {
-  return locale === 'zh'
-    ? '没有开始新工作。如果需要我直接执行，请给出明确指令，例如“修复登录”。'
-    : 'I did not start new work. If you want me to do it, give a direct instruction, for example “Fix login”.';
+  if (locale === 'zh-CN') {
+    return '没有开始新工作。如果需要我直接执行，请给出明确指令，例如“修复登录”。';
+  }
+  if (locale === 'zh-TW') {
+    return '沒有開始新工作。如果需要我直接執行，請給出明確指令，例如「修復登入」。';
+  }
+  return 'I did not start new work. If you want me to do it, give a direct instruction, for example “Fix login”.';
 }
 
 function workHubCopy(locale: UiLocale) {
-  if (locale === 'zh') {
+  if (locale === 'zh-CN') {
     return {
       locale,
       subtitle: '在一个入口里继续、创建和查看普通 Session',
@@ -776,11 +860,32 @@ function workHubCopy(locale: UiLocale) {
       workCount: (count: number) => `${count} 项工作`, clarification: '选择工作',
       chooseWork: '这条输入可能与多项工作有关，请选择目标：',
       confirmCommand: workHubAmbiguousCommandPrompt(locale),
+      stopTargetRequired: '请明确说出要停止的工作名称，例如“停止 支付任务”。',
+      stopTargetAmbiguous: '这个名称对应多项工作；请打开具体的 Session 停止对应委托。',
+      stopTargetUnavailable: '这项工作现在没有可以停止的单个 WorkHub 委托；请打开该 Session 查看。',
       discussionStayed: '这条内容暂时保留在 WorkHub，没有创建或改动 Session。',
       discussionHint: '提出明确的执行目标后，我会把它交给对应的 Session。',
       answering: '正在回答…',
       choseWork: (name: string) => `选择“${name}”`,
       sentTo: '已交给：', createdWork: '已创建新工作：', accepted: '已接收', sessionFallback: '普通 Session',
+      stoppingWork: '正在请求停止：', stopping: '正在处理', stopRecorded: '结果已记录',
+      openSessionToStop: '这个 Turn 不由该委托独占；请打开 Session 处理',
+      stopOutcomes: {
+        cancelled_pending: '已取消尚未开始的工作：',
+        stop_delivered: '已向运行中的工作发出停止请求：',
+        already_terminal: '这项工作已经结束：',
+        not_owned: '未停止共享或用户拥有的 Turn：',
+      },
+      resumeRequested: '已请求恢复；当前进度请查看目标 Session。',
+      resumeOutcomes: {
+        resume_started: '已让中断的工作继续：',
+        already_running: '这项工作还在跑，不需要恢复：',
+      },
+      resumeTargetRequired: '请明确说出要继续的工作名称，例如“恢复 支付任务”。',
+      resumeTargetAmbiguous: '这个名称对应多项工作；请打开具体的 Session 继续它。',
+      resumeTargetUnavailable: '这项工作当前没有可恢复的单个 WorkHub 委派。',
+      resumeOperationUnavailable: '当前 Runtime Host 未启用安全边界恢复；请打开原 Session 继续处理。',
+      resumeHostRecovering: 'Runtime Host 仍在恢复；请稍后重试。',
       waitingForDecision: '这项工作正在等待你的决定。',
       requestNotSent: '新请求尚未发送；处理原 Session 中的交互后可以再次发送。',
       routing: '正在判断应该交给哪个 Session…', loadFailed: '无法读取已有工作。',
@@ -810,8 +915,81 @@ function workHubCopy(locale: UiLocale) {
         active: (execution: string) => `关联有效 · ${execution}`,
         superseded: '已被更正',
         aborted: '更正已中止',
+        stopped: '已停止关联',
       },
       turnStates: { running: '进行中', completed: '已完成', aborted: '已中止', failed: '失败' },
+    } as const;
+  }
+  if (locale === 'zh-TW') {
+    return {
+      locale,
+      subtitle: '在一個入口繼續、建立和檢視一般 Session',
+      emptyTitle: '從這裡繼續所有工作',
+      emptyBody: (count: number) => count > 0
+        ? `WorkHub 會根據現有 ${count} 個 Session 判斷目標；不確定時會先詢問你。`
+        : '提出一個明確目標，WorkHub 會建立一般 Session 並將結果帶回這裡。',
+      workCount: (count: number) => `${count} 項工作`, clarification: '選擇工作',
+      chooseWork: '這則輸入可能與多項工作有關，請選擇目標：',
+      confirmCommand: workHubAmbiguousCommandPrompt(locale),
+      discussionStayed: '這則內容暫時保留在 WorkHub，沒有建立或變更 Session。',
+      discussionHint: '提出明確的執行目標後，我會將它交給對應的 Session。',
+      answering: '正在回答…',
+      choseWork: (name: string) => `選擇「${name}」`,
+      sentTo: '已交給：', createdWork: '已建立新工作：', accepted: '已接收', sessionFallback: '一般 Session',
+      stopTargetRequired: '請明確說出要停止的工作名稱，例如「停止 支付任務」。',
+      stopTargetAmbiguous: '這個名稱對應多項工作；請開啟具體的 Session 停止對應委派。',
+      stopTargetUnavailable: '這項工作現在沒有可以停止的單一 WorkHub 委派；請開啟該 Session 檢視。',
+      waitingForDecision: '這項工作正在等待你的決定。',
+      requestNotSent: '新請求尚未傳送；處理原 Session 中的互動後可以再次傳送。',
+      routing: '正在判斷應該交給哪個 Session…', loadFailed: '無法讀取現有工作。',
+      loading: '正在讀取現有工作…',
+      preparing: '正在準備 WorkHub…', unavailable: '暫時無法使用',
+      coordinationFailedTitle: 'WorkHub 暫時無法啟動',
+      coordinationFailedBody: '請檢查目前 Runtime Host 的預設模型設定，然後重試。',
+      retry: '重試',
+      stoppingWork: '正在請求停止：', stopping: '正在處理', stopRecorded: '結果已記錄',
+      openSessionToStop: '這個 Turn 不由該委派獨佔；請開啟 Session 處理',
+      stopOutcomes: {
+        cancelled_pending: '已取消尚未開始的工作：',
+        stop_delivered: '已向執行中的工作發出停止請求：',
+        already_terminal: '這項工作已經結束：',
+        not_owned: '未停止共享或使用者擁有的 Turn：',
+      },
+      resumeRequested: '已請求恢復；目前進度請查看目標 Session。',
+      resumeOutcomes: {
+        resume_started: '已讓中斷的工作繼續：',
+        already_running: '這項工作仍在執行，不需要恢復：',
+      },
+      resumeTargetRequired: '請明確說出要繼續的工作名稱，例如「恢復 支付任務」。',
+      resumeTargetAmbiguous: '這個名稱對應多項工作；請開啟具體的 Session 繼續它。',
+      resumeTargetUnavailable: '這項工作目前沒有可恢復的單一 WorkHub 委派。',
+      resumeOperationUnavailable: '目前 Runtime Host 未啟用安全邊界恢復；請開啟原 Session 繼續處理。',
+      resumeHostRecovering: 'Runtime Host 仍在恢復；請稍後重試。',
+      submitFailures: {
+        candidates_changed: '工作清單已變更，請重新傳送以使用最新目標。',
+        linked_correction_unavailable: '跨 Session 更正將於持久委派關聯完成後開放；請先開啟原 Session 並停止目前工作。',
+        target_waiting: '目標 Session 正在等待你的處理；請先開啟並完成該互動。',
+        action_changed: '這次操作已變更，請重新傳送。',
+        delivery_failed: '輸入未能送達，請重試。',
+      },
+      scrollToBottom: '捲動到底部', archived: '已封存',
+      states: { active: '使用中', running: '進行中', waiting_for_user: '等待你', blocked: '受阻', aborted: '已中止' },
+      delegationStates: {
+        accepted: '已接收',
+        running: '進行中',
+        waiting_for_user: '等待你',
+        completed: '已完成',
+        failed: '失敗',
+        aborted: '已中止',
+        recovering: '正在恢復',
+      },
+      assignmentLinkStates: {
+        active: (execution: string) => `關聯有效 · ${execution}`,
+        superseded: '已被更正',
+        aborted: '更正已中止',
+        stopped: '已停止關聯',
+      },
+      turnStates: { running: '進行中', completed: '已完成', aborted: '已中止', failed: '失敗' },
     } as const;
   }
   return {
@@ -824,11 +1002,37 @@ function workHubCopy(locale: UiLocale) {
     workCount: (count: number) => `${count} work item${count === 1 ? '' : 's'}`, clarification: 'Choose work',
     chooseWork: 'This input may relate to more than one task. Choose a target:',
     confirmCommand: workHubAmbiguousCommandPrompt(locale),
+    stopTargetRequired: 'Name the work explicitly, for example “Stop Payments”.',
+    stopTargetAmbiguous:
+      'That name matches more than one work item. Open the exact Session to stop its delegation.',
+    stopTargetUnavailable:
+      'This work has no single WorkHub delegation to stop right now. Open its Session to see what is running.',
     discussionStayed: 'This stayed in WorkHub without creating or changing a Session.',
     discussionHint: 'State an executable goal and I will hand it to the owning Session.',
     answering: 'Answering…',
     choseWork: (name: string) => `Choose “${name}”`,
     sentTo: 'Sent to:', createdWork: 'Created new work:', accepted: 'Accepted', sessionFallback: 'Ordinary Session',
+    stoppingWork: 'Requesting stop:', stopping: 'Stopping', stopRecorded: 'Result recorded',
+    openSessionToStop: 'This Turn is shared or user-owned. Open the Session to stop it.',
+    stopOutcomes: {
+      cancelled_pending: 'Cancelled work that had not started:',
+      stop_delivered: 'Asked the running work to stop:',
+      already_terminal: 'This work had already ended:',
+      not_owned: 'Did not stop a shared or user-owned Turn:',
+    },
+    resumeRequested: 'Resume requested. See the target Session for current progress.',
+    resumeOutcomes: {
+      resume_started: 'Carried on the interrupted work:',
+      already_running: 'This work is still running, so there was nothing to resume:',
+    },
+    resumeTargetRequired: 'Name the work explicitly, for example “Resume Payments”.',
+    resumeTargetAmbiguous:
+      'That name matches more than one work item. Open the exact Session to resume it.',
+    resumeTargetUnavailable:
+      'This work has no single WorkHub delegation that can be resumed.',
+    resumeOperationUnavailable:
+      'Safe-boundary resume is not enabled on this Runtime Host. Open the original Session to continue.',
+    resumeHostRecovering: 'The Runtime Host is still recovering. Try again shortly.',
     waitingForDecision: 'This work is waiting for your decision.',
     requestNotSent: 'The new request was not sent. Resolve the interaction in its Session, then send again.',
     routing: 'Choosing the right Session…', loadFailed: 'Could not read existing work.',
@@ -858,6 +1062,7 @@ function workHubCopy(locale: UiLocale) {
       active: (execution: string) => `Active link · ${execution}`,
       superseded: 'Superseded link',
       aborted: 'Aborted replacement',
+      stopped: 'Stopped link',
     },
     turnStates: { running: 'Running', completed: 'Completed', aborted: 'Aborted', failed: 'Failed' },
   } as const;

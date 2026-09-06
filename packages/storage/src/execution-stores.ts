@@ -17,21 +17,19 @@
  * under the License.
  */
 
-import type {
-  AgentRunEvent,
-  AgentRunEventType,
-  AgentRunHeader,
-  AgentRunProjectionKey,
-} from '@maka/core/agent-run';
+import type { AgentRunEvent, AgentRunEventType, AgentRunProjectionKey } from '@maka/core/agent-run';
 import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
 import type { RuntimeContinuationAuthorityStore } from '@maka/core/runtime-event-store';
+import type {
+  RuntimeInvocationPageInput,
+  RuntimeInvocationPageResult,
+  RuntimeInvocationRecord,
+  RuntimeInvocationSearchResult,
+} from '@maka/core/runtime-invocation';
 import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { SessionListFilter } from '@maka/core/runtime-inputs';
 import {
   createSqliteAgentRunStore,
-  type AgentRunIdentitySearchResult,
-  type AgentRunPageInput,
-  type AgentRunPageResult,
   type AdmitRootTurnInput,
   type AdmitRootTurnResult,
   type CommitRootTurnStartRejectionInput,
@@ -95,9 +93,6 @@ export {
 } from './sqlite-session-metadata-store.js';
 
 export type {
-  AgentRunIdentitySearchResult,
-  AgentRunPageInput,
-  AgentRunPageResult,
   AdmitRootTurnInput,
   AdmitRootTurnResult,
   CommitRootTurnStartRejectionInput,
@@ -181,10 +176,6 @@ export interface ExecutionSessionReader {
 }
 
 export interface ExecutionAgentRunReader {
-  readRun(sessionId: string, runId: string): Promise<AgentRunHeader>;
-  listSessionRuns(sessionId: string): Promise<AgentRunHeader[]>;
-  listSessionRunsBounded(sessionId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
-  listSessionRunsPage(sessionId: string, input: AgentRunPageInput): Promise<AgentRunPageResult>;
   readEvents(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
   readEventsBounded(
     sessionId: string,
@@ -202,6 +193,11 @@ export interface ExecutionAgentRunReader {
     type: AgentRunProjectionKey,
   ): Promise<AgentRunEvent | null | undefined>;
   readRootTurnAdmission(sessionId: string, turnId: string): Promise<RootTurnAdmission | undefined>;
+  readRootTurnContinuationAdmission(
+    sessionId: string,
+    sourceTurnId: string,
+    sourceRunId: string,
+  ): Promise<RootTurnAdmission | undefined>;
   readRootTurnSourceMessageReceipt(
     sessionId: string,
     sourceMessageId: string,
@@ -209,6 +205,22 @@ export interface ExecutionAgentRunReader {
 }
 
 export interface ExecutionRuntimeEventReader {
+  /**
+   * A Session's run inventory, read from its canonical events. This is the
+   * definition of the inventory, not a cache of it, so nothing writes or
+   * repairs it.
+   */
+  listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  readRunInvocation(sessionId: string, runId: string): Promise<RuntimeInvocationRecord | undefined>;
+  listSessionInvocationsBounded(
+    sessionId: string,
+    limit: number,
+  ): Promise<RuntimeInvocationSearchResult>;
+  listSessionInvocationsPage(
+    sessionId: string,
+    input: RuntimeInvocationPageInput,
+  ): Promise<RuntimeInvocationPageResult>;
+  readInvocation(sessionId: string, invocationId: string): Promise<RuntimeInvocationRecord>;
   readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readRuntimeEventsBounded(
     sessionId: string,
@@ -363,12 +375,26 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.createStableSession(request, initialBoundary)),
       assignWorkHubMessage: (request) => run(() => sessionStore.assignWorkHubMessage(request)),
       readWorkHubAssignment: (actionId) => run(() => sessionStore.readWorkHubAssignment(actionId)),
+      readActiveWorkHubAssignmentsByTarget: (targetSessionIds, maxAssignmentsPerTarget) =>
+        run(() =>
+          sessionStore.readActiveWorkHubAssignmentsByTarget(
+            targetSessionIds,
+            maxAssignmentsPerTarget,
+          ),
+        ),
       readWorkHubReplacement: (delegationId) =>
         run(() => sessionStore.readWorkHubReplacement(delegationId)),
       readWorkHubReplacementAbort: (delegationId) =>
         run(() => sessionStore.readWorkHubReplacementAbort(delegationId)),
       readWorkHubSupersession: (delegationId) =>
         run(() => sessionStore.readWorkHubSupersession(delegationId)),
+      readWorkHubStopRequest: (delegationId) =>
+        run(() => sessionStore.readWorkHubStopRequest(delegationId)),
+      readWorkHubStopResolution: (delegationId) =>
+        run(() => sessionStore.readWorkHubStopResolution(delegationId)),
+      claimWorkHubAction: (claim) => run(() => sessionStore.claimWorkHubAction(claim)),
+      readWorkHubActionClaim: (actionId) =>
+        run(() => sessionStore.readWorkHubActionClaim(actionId)),
       discardStableConversationCopy: (sessionId, requestFingerprint) =>
         run(() => sessionStore.discardStableConversationCopy(sessionId, requestFingerprint)),
       createSubagent: (input, initialBoundary) =>
@@ -437,6 +463,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.readMessageAdmission(sessionId, messageId)),
       hasCancelledMessageAdmission: (sessionId, messageId) =>
         run(() => sessionStore.hasCancelledMessageAdmission(sessionId, messageId)),
+      claimMessageAdmissionCancellation: (sessionId, messageId, claimId) =>
+        run(() => sessionStore.claimMessageAdmissionCancellation(sessionId, messageId, claimId)),
       listMessageAdmissions: (sessionId) =>
         run(() => sessionStore.listMessageAdmissions(sessionId)),
       markMessagesHandedOff: (input) => run(() => sessionStore.markMessagesHandedOff(input)),
@@ -483,17 +511,6 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         })()),
     },
     agentRunStore: {
-      createRun: (header, options) => run(() => agentRunStore.createRun(header, options)),
-      updateRun: (sessionId, runId, patch, options) =>
-        run(() => agentRunStore.updateRun(sessionId, runId, patch, options)),
-      readRun: (sessionId, runId) => run(() => agentRunStore.readRun(sessionId, runId)),
-      listSessionRuns: (sessionId) => run(() => agentRunStore.listSessionRuns(sessionId)),
-      listSessionRunsBounded: (sessionId, limit) =>
-        run(() => agentRunStore.listSessionRunsBounded(sessionId, limit)),
-      listSessionRunsPage: (sessionId, input) =>
-        run(() => agentRunStore.listSessionRunsPage(sessionId, input)),
-      listSessionRunsForRecovery: (sessionId) =>
-        run(() => agentRunStore.listSessionRunsForRecovery(sessionId)),
       appendEvent: (sessionId, runId, event, options) =>
         run(() => agentRunStore.appendEvent(sessionId, runId, event, options)),
       readEvents: (sessionId, runId) => run(() => agentRunStore.readEvents(sessionId, runId)),
@@ -515,6 +532,10 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => agentRunStore.admitRootTurn(input)),
       readRootTurnAdmission: (sessionId, turnId) =>
         run(() => agentRunStore.readRootTurnAdmission(sessionId, turnId)),
+      readRootTurnContinuationAdmission: (sessionId, sourceTurnId, sourceRunId) =>
+        run(() =>
+          agentRunStore.readRootTurnContinuationAdmission(sessionId, sourceTurnId, sourceRunId),
+        ),
       readRootTurnStartRejection: (sessionId, turnId) =>
         run(() => agentRunStore.readRootTurnStartRejection(sessionId, turnId)),
       commitRootTurnStartRejection: (input: CommitRootTurnStartRejectionInput) =>
@@ -546,6 +567,16 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => runtimeEventStore.readImmutableRuntimeEvents(sessionId, runId)),
       readImmutableRuntimePrefix: (input) =>
         run(() => runtimeEventStore.readImmutableRuntimePrefix(input)),
+      listSessionInvocations: (sessionId) =>
+        run(() => runtimeEventStore.listSessionInvocations(sessionId)),
+      readRunInvocation: (sessionId, runId) =>
+        run(() => runtimeEventStore.readRunInvocation(sessionId, runId)),
+      listSessionInvocationsBounded: (sessionId, limit) =>
+        run(() => runtimeEventStore.listSessionInvocationsBounded(sessionId, limit)),
+      listSessionInvocationsPage: (sessionId, input) =>
+        run(() => runtimeEventStore.listSessionInvocationsPage(sessionId, input)),
+      readInvocation: (sessionId, invocationId) =>
+        run(() => runtimeEventStore.readInvocation(sessionId, invocationId)),
       readSessionRuntimeEvents: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
       readSessionRuntimeEventEntries: (sessionId) =>
@@ -632,12 +663,6 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
         }),
     },
     agentRunStore: {
-      readRun: (sessionId, runId) => run(() => agentRunStore.readRun(sessionId, runId)),
-      listSessionRuns: (sessionId) => run(() => agentRunStore.listSessionRuns(sessionId)),
-      listSessionRunsBounded: (sessionId, limit) =>
-        run(() => agentRunStore.listSessionRunsBounded(sessionId, limit)),
-      listSessionRunsPage: (sessionId, input) =>
-        run(() => agentRunStore.listSessionRunsPage(sessionId, input)),
       readEvents: (sessionId, runId) => run(() => agentRunStore.readEvents(sessionId, runId)),
       readEventsBounded: (sessionId, runId, budget) =>
         run(() => agentRunStore.readEventsBounded(sessionId, runId, budget)),
@@ -647,6 +672,10 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
         run(() => agentRunStore.readEventProjection(sessionId, type)),
       readRootTurnAdmission: (sessionId, turnId) =>
         run(() => agentRunStore.readRootTurnAdmission(sessionId, turnId)),
+      readRootTurnContinuationAdmission: (sessionId, sourceTurnId, sourceRunId) =>
+        run(() =>
+          agentRunStore.readRootTurnContinuationAdmission(sessionId, sourceTurnId, sourceRunId),
+        ),
       readRootTurnSourceMessageReceipt: (sessionId, sourceMessageId) =>
         run(() => agentRunStore.readRootTurnSourceMessageReceipt(sessionId, sourceMessageId)),
     },
@@ -657,6 +686,16 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
         run(() => runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, budget)),
       readImmutableRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readImmutableRuntimeEvents(sessionId, runId)),
+      listSessionInvocations: (sessionId) =>
+        run(() => runtimeEventStore.listSessionInvocations(sessionId)),
+      readRunInvocation: (sessionId, runId) =>
+        run(() => runtimeEventStore.readRunInvocation(sessionId, runId)),
+      listSessionInvocationsBounded: (sessionId, limit) =>
+        run(() => runtimeEventStore.listSessionInvocationsBounded(sessionId, limit)),
+      listSessionInvocationsPage: (sessionId, input) =>
+        run(() => runtimeEventStore.listSessionInvocationsPage(sessionId, input)),
+      readInvocation: (sessionId, invocationId) =>
+        run(() => runtimeEventStore.readInvocation(sessionId, invocationId)),
       readSessionRuntimeEvents: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
     },

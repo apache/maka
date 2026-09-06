@@ -26,6 +26,7 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { CreateSessionInput, TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type {
@@ -165,6 +166,7 @@ export interface MakaSessionDriver {
   retractQueued?(): Promise<MakaRetractedMessages>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;
+  respondToUserForm?(response: InteractionFormResponse): Promise<void>;
   setModel(model: string, connectionSlug?: string, connectionId?: string): Promise<void>;
   setThinkingLevel(level: ThinkingLevel | undefined): Promise<void>;
   setPermissionMode(mode: PermissionMode): Promise<void>;

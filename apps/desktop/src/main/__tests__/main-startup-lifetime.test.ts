@@ -60,8 +60,17 @@ test('retains process lifetime before a standalone startup dialog can close', ()
   );
   assert.match(
     windowAllClosed,
-    /process\.platform !== "darwin" && !isBrowserMessageBoxPresentationActive\(\)/u,
+    /process\.platform !== "darwin" && !isBrowserMessageBoxPresentationActive\(\) &&\s*!isDesktopStartupInProgress\(\)/u,
   );
+});
+
+test('presents startup before Host boot and hands off only when the main window is shown', () => {
+  const ready = mainSource.indexOf("console.log('[startup] app ready')");
+  const presentation = mainSource.indexOf('showDesktopStartupProgress(', ready);
+  const hostBoot = mainSource.indexOf("import('./runtime-host-boot.js')", ready);
+  assert.ok(ready >= 0 && presentation > ready && hostBoot > presentation);
+  assert.match(bootSource, /onShow: closeDesktopStartupProgress/u);
+  assert.match(mainWindowSource, /mainWindow\.once\('show', \(\) => deps\.onShow\?\.\(\)\)/u);
 });
 
 test('resolves persisted locale before first post-settings recovery prompt', () => {
@@ -86,6 +95,31 @@ test('resolves persisted locale before first post-settings recovery prompt', () 
   assert.doesNotMatch(rendererRecovery, /desktopLocale\.current\(\)/u);
   assert.doesNotMatch(hostRecovery, /desktopLocale\.current\(\)/u);
   assert.doesNotMatch(defaultHostRecovery, /resolveSystemUiLocale/u);
+});
+
+test('lets the Runtime Host migrate its State Root before Desktop opens shared tables', () => {
+  const hostStart = bootSource.indexOf(
+    'runtimeHostManager = await startDesktopRuntimeHostWithRecovery',
+  );
+  const workBoardOpen = bootSource.indexOf(
+    'store: createWorkBoardStore(workspaceRoot',
+  );
+  const sessionCopyOpen = bootSource.indexOf(
+    'createSessionCopyCleanupAuthority({',
+  );
+
+  assert.notEqual(hostStart, -1);
+  assert.notEqual(workBoardOpen, -1);
+  assert.notEqual(sessionCopyOpen, -1);
+  assert.ok(hostStart < workBoardOpen);
+  assert.match(
+    bootSource.slice(workBoardOpen, bootSource.indexOf('});', workBoardOpen)),
+    /schemaMigration: 'require_current'/u,
+  );
+  assert.match(
+    bootSource.slice(sessionCopyOpen, bootSource.indexOf('}),', sessionCopyOpen)),
+    /schemaMigration: 'require_current'/u,
+  );
 });
 
 test('routes the first-paint IPC only to the active Renderer recovery listener', () => {

@@ -17,24 +17,13 @@
  * under the License.
  */
 
-import { createContext, useContext, type ReactNode } from 'react';
+import { createServicesContext } from '../../application/contracts/feature-services.js';
 import type { SessionSettingsServices } from './ports.js';
 
-const SessionSettingsServicesContext = createContext<SessionSettingsServices | null>(null);
+const { Provider, useServices } = createServicesContext<SessionSettingsServices>('SessionSettingsServicesProvider');
 
-export function SessionSettingsServicesProvider(props: {
-  readonly services: SessionSettingsServices;
-  readonly children?: ReactNode;
-}) {
-  return (
-    <SessionSettingsServicesContext.Provider value={props.services}>
-      {props.children}
-    </SessionSettingsServicesContext.Provider>
-  );
-}
+export const SessionSettingsServicesProvider = Provider;
 
 export function useSessionSettingsServices(): SessionSettingsServices {
-  const services = useContext(SessionSettingsServicesContext);
-  if (!services) throw new Error('SessionSettingsServicesProvider is missing');
-  return services;
+  return useServices();
 }

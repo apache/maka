@@ -23,6 +23,11 @@ import {
   type ModelCallAttempt,
 } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { readRunInvocation } from '@maka/core/runtime-event-store';
+import type {
+  RuntimeInvocationPageCursor,
+  RuntimeInvocationRecord,
+} from '@maka/core/runtime-invocation';
 import { inspectAgentRunDocument, inspectSessionDocument } from '@maka/runtime/execution-inspect';
 import { projectSessionTrace } from '@maka/runtime/session-trace-projection';
 import {
@@ -53,14 +58,16 @@ interface InspectStores {
   readonly sessionStore: Pick<ExecutionSessionWriter, 'readHeaderSnapshot'>;
   readonly agentRunStore: Pick<
     ExecutionAgentRunReader,
-    | 'readRun'
-    | 'listSessionRunsBounded'
-    | 'listSessionRunsPage'
-    | 'readEventsBounded'
-    | 'readEventsByTypeBounded'
-    | 'readRootTurnAdmission'
+    'readEventsBounded' | 'readEventsByTypeBounded' | 'readRootTurnAdmission'
   >;
-  readonly runtimeEventStore: Pick<ExecutionRuntimeEventReader, 'readRuntimeEventsBounded'>;
+  readonly runtimeEventStore: Pick<
+    ExecutionRuntimeEventReader,
+    | 'readRuntimeEventsBounded'
+    | 'listSessionInvocations'
+    | 'listSessionInvocationsBounded'
+    | 'listSessionInvocationsPage'
+    | 'readInvocation'
+  >;
 }
 
 /** Host-owned, payload-safe read model for live Interactive execution evidence. */
@@ -118,19 +125,20 @@ export class HostExecutionInspectCoordinator {
     sessionId: string,
     agentRunId: string,
   ): Promise<ExecutionInspectQueryResult | undefined> {
-    let header;
+    let invocation;
     try {
-      header = await this.#stores.agentRunStore.readRun(sessionId, agentRunId);
+      invocation = await readRunInvocation(this.#stores.runtimeEventStore, sessionId, agentRunId);
     } catch (error) {
       if (isMissing(error)) return undefined;
       throw error;
     }
+    if (!invocation) return undefined;
     const document: AgentRunInspectDocument = await inspectAgentRunDocument(
       ...this.#budgetedReaders('AgentRun'),
       {
         sessionId,
         agentRunId,
-        header,
+        invocation,
         isFatalReadError: isInspectQueryTooLargeError,
       },
     );
@@ -145,7 +153,7 @@ export class HostExecutionInspectCoordinator {
       if (isMissing(error)) return undefined;
       throw error;
     }
-    const runPage = await this.#stores.agentRunStore.listSessionRunsBounded(
+    const runPage = await this.#stores.runtimeEventStore.listSessionInvocationsBounded(
       sessionId,
       EXECUTION_INSPECT_SESSION_MAX_RUNS,
     );
@@ -157,15 +165,12 @@ export class HostExecutionInspectCoordinator {
     const readers = this.#budgetedReaders('Session');
     const document: SessionInspectDocument = await inspectSessionDocument(
       { readHeader: (id) => this.#stores.sessionStore.readHeaderSnapshot(id) },
-      {
-        ...readers[0],
-        listSessionRuns: async () => [...runPage.runs],
-      },
+      readers[0],
       readers[1],
       sessionId,
       {
         header,
-        runHeaders: runPage.runs,
+        invocations: runPage.invocations,
         isFatalReadError: isInspectQueryTooLargeError,
       },
     );
@@ -186,17 +191,20 @@ export class HostExecutionInspectCoordinator {
     }
     const before =
       input.kind === 'session_trace_continue' ? decodeTraceCursor(input.cursor) : undefined;
-    const runPage = await this.#stores.agentRunStore.listSessionRunsPage(input.sessionId, {
-      ...(before ? { before } : {}),
-      limit: EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS,
-    });
+    const runPage = await this.#stores.runtimeEventStore.listSessionInvocationsPage(
+      input.sessionId,
+      {
+        ...(before ? { before } : {}),
+        limit: EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS,
+      },
+    );
     const budget = new InspectEvidenceBudget('Session');
     const runtimeEvents: RuntimeEvent[] = [];
     const modelCallAttempts: ModelCallAttempt[] = [];
     let unreadableRecords = 0;
     let includedRuns = 0;
     let acceptedPage: ExecutionInspectQueryResult | undefined;
-    for (const run of runPage.runs) {
+    for (const run of runPage.invocations) {
       let evidence: {
         readonly runtimeEvents: RuntimeEvent[];
         readonly modelCallAttempts: ModelCallAttempt[];
@@ -209,7 +217,7 @@ export class HostExecutionInspectCoordinator {
         if (includedRuns > 0) break;
         return oversizedTracePage(
           input.sessionId,
-          tracePageCursorAfter(runPage.runs, 1, runPage.nextCursor),
+          tracePageCursorAfter(runPage.invocations, 1, runPage.nextCursor),
         );
       }
       const candidateRuntimeEvents = [...runtimeEvents, ...evidence.runtimeEvents];
@@ -227,7 +235,11 @@ export class HostExecutionInspectCoordinator {
       const candidatePage: ExecutionInspectQueryResult = {
         kind: 'session_trace_page',
         ...candidateTrace,
-        nextCursor: tracePageCursorAfter(runPage.runs, candidateRunCount, runPage.nextCursor),
+        nextCursor: tracePageCursorAfter(
+          runPage.invocations,
+          candidateRunCount,
+          runPage.nextCursor,
+        ),
       };
       if (
         candidateTrace.turns.length > EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS ||
@@ -236,7 +248,7 @@ export class HostExecutionInspectCoordinator {
         if (includedRuns === 0) {
           return oversizedTracePage(
             input.sessionId,
-            tracePageCursorAfter(runPage.runs, 1, runPage.nextCursor),
+            tracePageCursorAfter(runPage.invocations, 1, runPage.nextCursor),
           );
         }
         break;
@@ -255,7 +267,7 @@ export class HostExecutionInspectCoordinator {
           runtimeEvents: [],
           modelCallAttempts: [],
         }),
-        nextCursor: tracePageCursorAfter(runPage.runs, 0, runPage.nextCursor),
+        nextCursor: tracePageCursorAfter(runPage.invocations, 0, runPage.nextCursor),
       }
     );
   }
@@ -272,14 +284,16 @@ export class HostExecutionInspectCoordinator {
     }
     const admission = await this.#stores.agentRunStore.readRootTurnAdmission(sessionId, turnId);
     if (!admission) return undefined;
+    let run;
     try {
-      const run = await this.#stores.agentRunStore.readRun(sessionId, admission.runId);
-      if (run.turnId !== turnId) {
-        throw new InspectQueryInvalidError('Turn trace admission does not match its AgentRun');
-      }
+      run = await readRunInvocation(this.#stores.runtimeEventStore, sessionId, admission.runId);
     } catch (error) {
       if (isMissing(error)) return undefined;
       throw error;
+    }
+    if (!run) return undefined;
+    if (run.turnId !== turnId) {
+      throw new InspectQueryInvalidError('Turn trace admission does not match its AgentRun');
     }
     const evidence = await this.#readRunTraceEvidence(
       sessionId,
@@ -344,8 +358,6 @@ export class HostExecutionInspectCoordinator {
     const budget = new InspectEvidenceBudget(label);
     return [
       {
-        readRun: (sessionId: string, runId: string) =>
-          this.#stores.agentRunStore.readRun(sessionId, runId),
         readEvents: (sessionId: string, runId: string) =>
           budget.read((remaining) =>
             this.#stores.agentRunStore.readEventsBounded(sessionId, runId, remaining),
@@ -356,6 +368,10 @@ export class HostExecutionInspectCoordinator {
           budget.read((remaining) =>
             this.#stores.runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, remaining),
           ),
+        listSessionInvocations: (sessionId: string) =>
+          this.#stores.runtimeEventStore.listSessionInvocations(sessionId),
+        readInvocation: (sessionId: string, invocationId: string) =>
+          this.#stores.runtimeEventStore.readInvocation(sessionId, invocationId),
       },
     ] as const;
   }
@@ -416,21 +432,23 @@ function oversizedTracePage(
 }
 
 function tracePageCursorAfter(
-  runs: readonly { readonly runId: string; readonly createdAt: number }[],
+  invocations: readonly RuntimeInvocationRecord[],
   includedRuns: number,
-  sourceNextCursor: { readonly createdAt: number; readonly runId: string } | null,
+  sourceNextCursor: RuntimeInvocationPageCursor | null,
 ): string | null {
-  const last = runs[includedRuns - 1];
+  const last = invocations[includedRuns - 1];
   if (!last) return null;
-  const hasMore = includedRuns < runs.length || sourceNextCursor !== null;
-  return hasMore ? encodeTraceCursor({ createdAt: last.createdAt, runId: last.runId }) : null;
+  const hasMore = includedRuns < invocations.length || sourceNextCursor !== null;
+  return hasMore
+    ? encodeTraceCursor({ openedAt: last.openedAt, invocationId: last.invocationId })
+    : null;
 }
 
-function encodeTraceCursor(cursor: { readonly createdAt: number; readonly runId: string }): string {
+function encodeTraceCursor(cursor: RuntimeInvocationPageCursor): string {
   return Buffer.from(JSON.stringify({ v: 1, ...cursor }), 'utf8').toString('base64url');
 }
 
-function decodeTraceCursor(cursor: string): { readonly createdAt: number; readonly runId: string } {
+function decodeTraceCursor(cursor: string): RuntimeInvocationPageCursor {
   try {
     const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<
       string,
@@ -438,15 +456,15 @@ function decodeTraceCursor(cursor: string): { readonly createdAt: number; readon
     >;
     if (
       value.v !== 1 ||
-      typeof value.createdAt !== 'number' ||
-      !Number.isFinite(value.createdAt) ||
-      typeof value.runId !== 'string' ||
-      !/^[A-Za-z0-9_-]{1,128}$/.test(value.runId) ||
+      typeof value.openedAt !== 'number' ||
+      !Number.isFinite(value.openedAt) ||
+      typeof value.invocationId !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(value.invocationId) ||
       Object.keys(value).length !== 3
     ) {
       throw new Error('invalid cursor');
     }
-    return { createdAt: value.createdAt, runId: value.runId };
+    return { openedAt: value.openedAt, invocationId: value.invocationId };
   } catch {
     throw new InspectQueryInvalidError('Session trace continuation cursor is invalid');
   }

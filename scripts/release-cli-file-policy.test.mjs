@@ -61,7 +61,11 @@ describe('CLI release file policy', () => {
         './test-only/client-capability-host',
         './test-only/execution-candidate-e2e-main',
       ],
-      runtime: ['./test-only/fake-backend', './test-only/observation-text-reader'],
+      runtime: [
+        './test-only/fake-backend',
+        './test-only/observation-text-reader',
+        './test-only/invocation-fixture',
+      ],
     })) {
       const manifestPath = join(repoRoot, 'packages', directory, 'package.json');
       const source = JSON.parse(readFileSync(manifestPath, 'utf8'));

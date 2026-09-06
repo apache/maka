@@ -31,7 +31,10 @@ import {
   type RuntimeHostManagedDeploymentConfig,
   type RuntimeHostSupervisorProvider,
 } from '@maka/runtime-host/operator';
-import type { connectExistingRuntimeHost } from '@maka/runtime-host/client';
+import {
+  RuntimeHostOperationError,
+  type connectExistingRuntimeHost,
+} from '@maka/runtime-host/client';
 import { resolveStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
 import type {
   RuntimeHostLifecycleProvider,
@@ -40,6 +43,7 @@ import type {
 import { assertRuntimeHostManagedOperatorConfig } from '../runtime-host-managed-deployment.js';
 import {
   applyRuntimeHostLifecycleTransition,
+  convergeRuntimeHostLifecycleControlProjection,
   recoverRuntimeHostLifecycleTransition,
   replaceRuntimeHostLifecycle,
   resolveRecoverableRuntimeHostManagedDeployment,
@@ -52,6 +56,42 @@ import {
 
 const INTEGRITY = `sha512-${Buffer.alloc(64, 7).toString('base64')}`;
 const UPDATED_INTEGRITY = `sha512-${Buffer.alloc(64, 8).toString('base64')}`;
+
+test('control projection repair leaves the running Host supervisor untouched', async () => {
+  const current = config('/workspace', 'a'.repeat(64), 1, 'launch_agent');
+  const calls: string[] = [];
+  const provider = new FakeLifecycleProvider('launch_agent', 'launch_agent_timer');
+  const originalActivate = provider.reconciliationTrigger.activate;
+  provider.reconciliationTrigger.activate = async () => {
+    calls.push('scheduler.activate');
+    await originalActivate();
+  };
+
+  await convergeRuntimeHostLifecycleControlProjection(current, {
+    convergeOperator: async (from, to) => {
+      assert.deepEqual(from, current);
+      assert.deepEqual(to, current);
+      calls.push('operator.converge');
+    },
+    verifyOperator: async () => undefined,
+    resolveProvider: () => ({
+      ...provider,
+      supervisor: {
+        ...provider.supervisor,
+        converge: async () => assert.fail('the running supervisor must not be replaced'),
+      },
+      reconciliationTrigger: {
+        ...provider.reconciliationTrigger,
+        converge: async (definition) => {
+          calls.push('scheduler.converge');
+          await provider.reconciliationTrigger.converge(definition);
+        },
+      },
+    }),
+  });
+
+  assert.deepEqual(calls, ['operator.converge', 'scheduler.converge', 'scheduler.activate']);
+});
 
 test('one authority record recovers provider cutover failures without a journal', async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-root-'));
@@ -94,7 +134,10 @@ test('one authority record recovers provider cutover failures without a journal'
     verifyOperator: async (expected: RuntimeHostManagedDeploymentConfig) => {
       assert.deepEqual(operatorProjection.launch, expected.launch);
     },
-    resolveProvider: (provider: RuntimeHostSupervisorProvider) => providers.get(provider)!,
+    resolveProvider: (deployment: RuntimeHostManagedDeploymentConfig) => {
+      assert.equal(deployment.lifecycle.mode, 'supervised');
+      return providers.get(deployment.lifecycle.provider)!;
+    },
   };
   const firstOwner = await tryAcquireStateRootOwner(capability);
   assert.ok(firstOwner);
@@ -531,6 +574,80 @@ test('does not consume replacement consent after the supervised Host exits', asy
     { code: 'owner_changed' },
   );
   assert.equal(retired, false);
+});
+
+test('requires explicit interruption authority when a supervised Host drains before diagnostics', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-diagnostics-drain-'));
+  t.after(() => rm(stateRoot, { recursive: true, force: true }));
+  const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+  let owner: Awaited<ReturnType<typeof tryAcquireStateRootOwner>> =
+    await tryAcquireStateRootOwner(capability);
+  assert.ok(owner);
+  t.after(async () => owner?.close());
+  const events: string[] = [];
+  const connectExisting = (async () => {
+    events.push('connect');
+    return {
+      kind: 'connected',
+      registration: { hostEpoch: 'host-a', pid: 42 },
+      connection: {
+        request: async (operation: string) => {
+          events.push(operation);
+          throw new RuntimeHostOperationError(
+            'host.diagnostics.query',
+            'host_draining',
+            'Runtime Host is draining',
+          );
+        },
+        close: async () => {
+          events.push('close');
+        },
+      },
+    } as unknown as Awaited<ReturnType<typeof connectExistingRuntimeHost>>;
+  }) as typeof connectExistingRuntimeHost;
+  const supervisor = {
+    status: async () => {
+      events.push('status');
+      return { active: true, pid: 42 };
+    },
+    retire: async () => {
+      events.push('retire');
+      await owner?.close();
+      owner = undefined;
+    },
+  };
+
+  assert.deepEqual(
+    await retireRuntimeHostLifecycleOwner({
+      rootPath: capability.canonicalPath,
+      rootId: capability.rootId,
+      connectExisting,
+      expectedOwner: { hostEpoch: 'host-a', pid: 42 },
+      supervisor,
+    }),
+    { kind: 'active_tasks' },
+  );
+  const retired = await retireRuntimeHostLifecycleOwner({
+    rootPath: capability.canonicalPath,
+    rootId: capability.rootId,
+    connectExisting,
+    expectedOwner: { hostEpoch: 'host-a', pid: 42 },
+    supervisor,
+    allowInterruptActiveTasks: true,
+  });
+  assert.equal(retired.kind, 'retired');
+  if (retired.kind === 'retired') await retired.owner.close();
+  assert.deepEqual(events, [
+    'connect',
+    'status',
+    'host.diagnostics.query',
+    'close',
+    'connect',
+    'status',
+    'host.diagnostics.query',
+    'retire',
+    'close',
+  ]);
 });
 
 test('requires explicit interruption authority to recover an unreachable supervised transition', async (t) => {

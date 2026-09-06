@@ -56,6 +56,7 @@ test("settings usage stats use the canonical model-call total and load every act
               cacheHitRequests: 10,
               cacheCreateRequests: 5,
               errorRequests: 2,
+              totalDurationMs: 0,
             },
             provenance: provenance(),
           } satisfies UsageQueryResult;
@@ -176,6 +177,7 @@ test("settings usage stats reject a non-advancing activity page", async () => {
               cacheHitRequests: 0,
               cacheCreateRequests: 0,
               errorRequests: 0,
+              totalDurationMs: 0,
             },
             provenance: provenance(),
           } satisfies UsageQueryResult;
@@ -243,6 +245,7 @@ test("settings usage stats degrade instead of erroring when logs disagree with t
               cacheHitRequests: 0,
               cacheCreateRequests: 0,
               errorRequests: 0,
+              totalDurationMs: 0,
             },
             provenance: provenance(),
           } satisfies UsageQueryResult;
@@ -316,6 +319,7 @@ test("settings usage stats group the provider breakdown by connection", async ()
               cacheHitRequests: 0,
               cacheCreateRequests: 0,
               errorRequests: 0,
+              totalDurationMs: 0,
             },
             provenance: provenance(),
           } satisfies UsageQueryResult;
@@ -394,6 +398,7 @@ test("settings usage stats truncate the activity log at the cap instead of error
               cacheHitRequests: 0,
               cacheCreateRequests: 0,
               errorRequests: 0,
+              totalDurationMs: 0,
             },
             provenance: provenance(),
           } satisfies UsageQueryResult;
@@ -467,6 +472,7 @@ test("settings usage stats name each row from the Host-resolved session title", 
               cacheHitRequests: 0,
               cacheCreateRequests: 0,
               errorRequests: 0,
+              totalDurationMs: 0,
             },
             provenance: provenance(),
           } satisfies UsageQueryResult;

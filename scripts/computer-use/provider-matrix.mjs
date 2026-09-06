@@ -29,13 +29,13 @@ const EVIDENCE_CLASSES = new Set([
   'static-contract',
 ]);
 const REAL_REPORT_PRODUCERS = new Set(['computer-use/real-model', 'computer-use/real-ax']);
-const ACTIONS_WITHOUT_TARGET_OWNERSHIP = new Set(['list_apps', 'wait', 'cursor_position']);
+const ACTIONS_WITHOUT_TARGET_OWNERSHIP = new Set(['list_apps', 'launch_app', 'wait']);
 const ACTIONS_WITHOUT_OBSERVATION_LINEAGE = new Set([
   'list_apps',
+  'launch_app',
   'observe',
   'screenshot',
   'wait',
-  'cursor_position',
 ]);
 
 function optionValue(argv, names) {
@@ -397,7 +397,7 @@ export function validateRealReport(report, provider, scenario) {
   const mutationActions = actions.filter(
     (action) =>
       action.success === true &&
-      !['list_apps', 'observe', 'screenshot', 'cursor_position', 'wait'].includes(action.type),
+      !['list_apps', 'launch_app', 'observe', 'screenshot', 'wait'].includes(action.type),
   );
   if (mutationActions.length > 0) {
     const traces = Array.isArray(report.driverTraces) ? report.driverTraces : [];

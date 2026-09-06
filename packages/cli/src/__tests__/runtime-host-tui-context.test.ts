@@ -35,7 +35,12 @@ const ENVIRONMENT_PROFILE: RuntimeHostProfile = {
   kind: 'environment',
   provider: { kind: 'wsl', distribution: 'Ubuntu' },
   rootId: 'b'.repeat(64),
-  operatorPath: '/opt/maka/operator',
+  operator: {
+    kind: 'node',
+    platform: 'posix',
+    nodePath: '/usr/bin/node',
+    modulePath: '/opt/maka/operator.mjs',
+  },
 };
 const HOST_WORKSPACE_PROFILES = [REMOTE_PROFILE, ENVIRONMENT_PROFILE] as const;
 

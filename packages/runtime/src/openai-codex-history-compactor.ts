@@ -30,16 +30,18 @@ import {
 } from './history-compact-checkpoint.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ModelMessage } from './model-protocol.js';
-import { fitHistoryCompactMessages } from './history-compact-input-fit.js';
 import {
   admitProviderReasoningReplayItems,
   buildRuntimeEventModelReplayPlan,
+  buildRuntimeEventReplayTimeline,
   compatibleProviderReasoningReplayEventIds,
-  type RuntimeEventModelReplayItem,
+  type RuntimeEventReplayTimelineEntry,
+  type RuntimeEventReplayToolCallItem,
+  type RuntimeEventReplayToolResultItem,
 } from './model-history.js';
 import { withProviderStreamTracking } from './provider-request-telemetry.js';
 import { effectiveReplayToolResultOutput } from './durable-tool-result-projection.js';
-import { providerFailureDiagnostic } from './provider-error-classification.js';
+import { classifyError, providerFailureDiagnostic } from './provider-error-classification.js';
 
 export interface BuildOpenAiCodexHistoryCompactorOptions {
   resolveModel: () => unknown;
@@ -79,7 +81,7 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
         : input.source.foldedRuntimeEvents;
       const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
         events,
-        input.source.runHeaders,
+        input.source.invocations,
         options.providerStateIdentity,
         options.modelId,
         input.runId,
@@ -91,10 +93,9 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
       if (canContinuePrevious) {
         projectedMessages.unshift(historyCompactCheckpointToModelMessage(previous));
       }
-      const messages = fitHistoryCompactMessages(projectedMessages, {
-        maxInputEstimatedTokens: input.inputBudget?.maxEstimatedTokens,
-        charsPerToken: input.inputBudget?.charsPerToken,
-      });
+      // Whether this input fits the compaction endpoint is its own answer;
+      // nothing is trimmed on a local estimate beforehand (#4559).
+      const messages = projectedMessages;
 
       const providerRequestTracker = input.providerRequestTracker;
       const ai = await loadAiSdkModule();
@@ -133,6 +134,9 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
       return state;
     } catch (error) {
       if (error instanceof HistoryCompactSummarizerError) throw error;
+      if (classifyError(error) === 'ContextLength') {
+        throw new HistoryCompactSummarizerError('input_too_large', { cause: error });
+      }
       throw new HistoryCompactSummarizerError('provider_error', { cause: error });
     }
   };
@@ -193,59 +197,14 @@ function openAiCodexCompactionMessages(
   events: readonly RuntimeEvent[],
   providerReasoningReplayEventIds: ReadonlySet<string>,
 ): ModelMessage[] {
-  type ToolCall = Extract<RuntimeEventModelReplayItem, { kind: 'tool_call' }>;
-  type ToolResult = Extract<RuntimeEventModelReplayItem, { kind: 'tool_result' }>;
-  type Thinking = Extract<RuntimeEventModelReplayItem, { kind: 'thinking' }>;
-  type Text = Extract<RuntimeEventModelReplayItem, { kind: 'text' }>;
-  type Step = {
-    calls: ToolCall[];
-    reasoning: Thinking[];
-    text?: Text;
-  };
-  type TimelineEntry =
-    | { kind: 'step'; stepId: string }
-    | { kind: 'legacy_call'; call: ToolCall }
-    | { kind: 'text'; item: Text }
-    | { kind: 'thinking'; item: Thinking };
-
   const items = admitProviderReasoningReplayItems(
     buildRuntimeEventModelReplayPlan(events).items,
     providerReasoningReplayEventIds,
   );
-  const results = new Map<string, ToolResult>();
-  for (const item of items) {
-    if (item.kind === 'tool_result') results.set(item.toolCallId, item);
-  }
-
-  const steps = new Map<string, Step>();
-  const timeline: TimelineEntry[] = [];
-  const step = (stepId: string): Step => {
-    let value = steps.get(stepId);
-    if (!value) {
-      value = { calls: [], reasoning: [] };
-      steps.set(stepId, value);
-      timeline.push({ kind: 'step', stepId });
-    }
-    return value;
-  };
-  for (const item of items) {
-    if (item.kind === 'tool_result') continue;
-    if (item.kind === 'tool_call') {
-      if (item.stepId) step(item.stepId).calls.push(item);
-      else timeline.push({ kind: 'legacy_call', call: item });
-      continue;
-    }
-    if (item.kind === 'thinking') {
-      if (item.stepId) step(item.stepId).reasoning.push(item);
-      else timeline.push({ kind: 'thinking', item });
-      continue;
-    }
-    if (item.role === 'assistant' && item.stepId) step(item.stepId).text = item;
-    else timeline.push({ kind: 'text', item });
-  }
+  const timeline = buildRuntimeEventReplayTimeline(items);
 
   const messages: ModelMessage[] = [];
-  const pushToolResult = (result: ToolResult) => {
+  const pushToolResult = (result: RuntimeEventReplayToolResultItem) => {
     messages.push({
       role: 'tool',
       content: [
@@ -258,7 +217,10 @@ function openAiCodexCompactionMessages(
       ],
     });
   };
-  const toolCallPart = (call: ToolCall, providerExecuted = call.providerExecuted) => ({
+  const toolCallPart = (
+    call: RuntimeEventReplayToolCallItem,
+    providerExecuted = call.providerExecuted,
+  ) => ({
     type: 'tool-call' as const,
     toolCallId: call.toolCallId,
     toolName: call.toolName,
@@ -266,7 +228,9 @@ function openAiCodexCompactionMessages(
     ...(call.providerOptions ? { providerOptions: call.providerOptions } : {}),
     ...(providerExecuted !== undefined ? { providerExecuted } : {}),
   });
-  const pushStep = (value: Step) => {
+  const pushStep = (
+    value: Extract<RuntimeEventReplayTimelineEntry, { kind: 'assistant_step' }>,
+  ) => {
     const earlyContent: Array<Record<string, unknown>> = [];
     for (const reasoning of value.reasoning) {
       earlyContent.push({
@@ -276,24 +240,21 @@ function openAiCodexCompactionMessages(
       });
     }
     const providerCalls = value.calls.filter(
-      (call) =>
-        call.providerExecuted === true && results.get(call.toolCallId)?.providerExecuted === true,
+      ({ call, result }) => call.providerExecuted === true && result?.providerExecuted === true,
     );
     // OpenAI's Responses converter omits hosted calls and results when
     // `store:false`. For a compaction request they are historical evidence,
     // so lower each settled pair to an ordinary function call/result instead.
     // This preserves the provider step order without creating a dangling
     // function_call_output or silently dropping the available tool evidence.
-    for (const call of providerCalls) {
+    for (const { call } of providerCalls) {
       earlyContent.push(toolCallPart(call, false));
     }
     if (providerCalls.length > 0 && earlyContent.length > 0) {
       messages.push({ role: 'assistant', content: earlyContent } as ModelMessage);
     }
-    for (const call of providerCalls) {
-      const result = results.get(call.toolCallId)!;
-      results.delete(call.toolCallId);
-      pushToolResult(result);
+    for (const { result } of providerCalls) {
+      pushToolResult(result!);
     }
     const lateContent: Array<Record<string, unknown>> =
       providerCalls.length === 0 ? earlyContent : [];
@@ -304,26 +265,22 @@ function openAiCodexCompactionMessages(
         ...(value.text.providerOptions ? { providerOptions: value.text.providerOptions } : {}),
       });
     }
-    for (const call of value.calls) {
+    for (const { call } of value.calls) {
       if (call.providerExecuted !== true) lateContent.push(toolCallPart(call));
     }
     if (lateContent.length > 0) {
       messages.push({ role: 'assistant', content: lateContent } as ModelMessage);
     }
-    for (const call of value.calls) {
+    for (const { call, result } of value.calls) {
       if (call.providerExecuted === true) continue;
-      const result = results.get(call.toolCallId);
       if (!result || result.providerExecuted === true) continue;
-      results.delete(call.toolCallId);
       pushToolResult(result);
     }
   };
 
   for (const entry of timeline) {
-    if (entry.kind === 'step') {
-      pushStep(steps.get(entry.stepId)!);
-    } else if (entry.kind === 'legacy_call') {
-      pushStep({ calls: [entry.call], reasoning: [] });
+    if (entry.kind === 'assistant_step') {
+      pushStep(entry);
     } else if (entry.kind === 'thinking') {
       messages.push({
         role: 'assistant',

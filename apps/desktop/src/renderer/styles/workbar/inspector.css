@@ -352,6 +352,170 @@
   background: light-dark(oklch(0.66 0.15 75), oklch(0.78 0.13 75));
 }
 
+/* The session-wide token and time rings. The palette is defined once on the
+   panel so the legend swatches and each ring's inline conic-gradient read the
+   same five values, and a hue keeps one meaning inside the panel: green is
+   cache, violet is uncached input, blue is output — the duration ring reuses
+   blue/green for model/tool, matching the token ring's output/cache pairing
+   rather than inventing two more hues. */
+.maka-inspector-panel {
+  --_usage-cache-read: light-dark(oklch(0.61 0.14 165), oklch(0.75 0.12 165));
+  --_usage-cache-miss: light-dark(oklch(0.62 0.16 315), oklch(0.74 0.13 315));
+  --_usage-output: light-dark(oklch(0.62 0.18 255), oklch(0.72 0.15 255));
+  --_usage-model: light-dark(oklch(0.62 0.18 255), oklch(0.72 0.15 255));
+  --_usage-tool: light-dark(oklch(0.61 0.14 165), oklch(0.75 0.12 165));
+}
+
+/* Ring left, legend right. The ring is an SVG — one muted track under one
+   path per segment — because hover linking needs each segment to be its own
+   element; a conic-gradient disc is one box and cannot be pointed at. Fill
+   colours come from the panel palette above, so no hue is duplicated here. */
+.maka-inspector-usage-ring-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.maka-inspector-usage-ring {
+  position: relative;
+  width: 7rem;
+  height: 7rem;
+  flex: 0 0 auto;
+}
+
+.maka-inspector-usage-ring-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.maka-inspector-usage-ring-track {
+  fill: none;
+  stroke: var(--muted);
+  /* outer radius minus inner: the band the arcs paint into. */
+  stroke-width: 18;
+}
+
+.maka-inspector-usage-ring-path {
+  transition: opacity 120ms ease;
+}
+
+.maka-inspector-usage-ring-path[data-dimmed='true'] {
+  opacity: 0.3;
+}
+
+.maka-inspector-usage-ring-center {
+  /* Confined well inside the hole the mask cuts (64% of the ring), so the
+     label wraps as a clear of the band instead of touching it. */
+  position: absolute;
+  inset: 24%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  text-align: center;
+  text-wrap: balance;
+  /* The figure sits in the donut's hole; it must not swallow the hovers
+     meant for the arcs around it. */
+  pointer-events: none;
+}
+
+.maka-inspector-usage-ring-value {
+  font: var(--maka-text-body);
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.maka-inspector-usage-ring-label {
+  font: var(--maka-text-supporting);
+  color: var(--muted-foreground);
+}
+
+.maka-inspector-usage-legend {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* The two-way linking, legend side: the row the pointer (or an arc) holds
+   gains weight, everything else drops back. Colour ranks carry it — the same
+   three inks the panel already uses, no new tiers. */
+.maka-inspector-usage-legend .maka-inspector-usage-swatch {
+  transition: opacity 120ms ease;
+}
+
+.maka-inspector-usage-legend .maka-inspector-grid-row[data-active] dt,
+.maka-inspector-usage-legend .maka-inspector-grid-row[data-active] dd {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.maka-inspector-usage-legend .maka-inspector-grid-row[data-dimmed='true'] dt,
+.maka-inspector-usage-legend .maka-inspector-grid-row[data-dimmed='true'] dd,
+.maka-inspector-usage-legend .maka-inspector-grid-row[data-dimmed='true'] .maka-inspector-usage-swatch {
+  color: var(--muted-foreground);
+  opacity: 0.4;
+}
+
+/* Below this width the legend rows would starve beside the ring, so the ring
+   moves above them instead. */
+@container maka-inspector (max-width: 26rem) {
+  .maka-inspector-usage-ring-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+.maka-inspector-usage-swatch {
+  width: var(--space-1-5);
+  height: var(--space-1-5);
+  border-radius: var(--radius-pill);
+  flex: 0 0 auto;
+}
+
+.maka-inspector-usage-swatch[data-usage='token-cacheRead'] {
+  background: var(--_usage-cache-read);
+}
+
+.maka-inspector-usage-swatch[data-usage='token-cacheMiss'] {
+  background: var(--_usage-cache-miss);
+}
+
+.maka-inspector-usage-swatch[data-usage='token-output'] {
+  background: var(--_usage-output);
+}
+
+.maka-inspector-usage-swatch[data-usage='duration-model'] {
+  background: var(--_usage-model);
+}
+
+.maka-inspector-usage-swatch[data-usage='duration-tool'] {
+  background: var(--_usage-tool);
+}
+
+/* Arcs key on the bare kind — kinds are unique across both rings. */
+.maka-inspector-usage-ring-path[data-usage='cacheRead'] {
+  fill: var(--_usage-cache-read);
+}
+
+.maka-inspector-usage-ring-path[data-usage='cacheMiss'] {
+  fill: var(--_usage-cache-miss);
+}
+
+.maka-inspector-usage-ring-path[data-usage='output'] {
+  fill: var(--_usage-output);
+}
+
+.maka-inspector-usage-ring-path[data-usage='model'] {
+  fill: var(--_usage-model);
+}
+
+.maka-inspector-usage-ring-path[data-usage='tool'] {
+  fill: var(--_usage-tool);
+}
+
 /* The context window drawn as bands. Colour is the join between the track and
    its legend, so both read it from the same `data-segment` rules below and a
    band can never mean one thing in the bar and another in the list. */

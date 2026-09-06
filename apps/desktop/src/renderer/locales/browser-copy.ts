@@ -45,7 +45,7 @@ export type BrowserCopy = {
 };
 
 const BROWSER_COPY = {
-  zh: {
+  'zh-CN': {
     unsupportedScheme: '嵌入式浏览器只支持打开 HTTP/HTTPS 网页地址。',
     invalidUrl: '这个地址无法识别，请检查网址后重试。',
     openFailed: '无法打开地址',
@@ -68,6 +68,30 @@ const BROWSER_COPY = {
     close: '关闭页面',
     title: '嵌入式浏览器',
     description: '输入网址打开页面，或让助手帮你导航并操作。',
+  },
+  'zh-TW': {
+    unsupportedScheme: '嵌入式瀏覽器只支援開啟 HTTP/HTTPS 網頁地址。',
+    invalidUrl: '這個地址無法識別，請檢查網址後重試。',
+    openFailed: '無法開啟地址',
+    navigationFailed: '瀏覽器導航失敗',
+    navigationFailedDetail: '頁面暫時無法開啟，請稍後重試。',
+    panelAria: '嵌入式瀏覽器',
+    panelAriaWithTitle: (title) => `嵌入式瀏覽器：${title}`,
+    insecure: '這個站點用 HTTP 傳輸，連線未加密。',
+    backAria: '瀏覽器後退',
+    back: '後退',
+    forwardAria: '瀏覽器前進',
+    forward: '前進',
+    stopAria: '停止載入頁面',
+    refreshAria: '重新整理頁面',
+    stop: '停止',
+    refresh: '重新整理',
+    addressAria: '瀏覽器地址',
+    addressPlaceholder: '輸入網址並回車',
+    closeAria: '關閉瀏覽器頁面',
+    close: '關閉頁面',
+    title: '嵌入式瀏覽器',
+    description: '輸入網址開啟頁面，或讓助手幫你導航並操作。',
   },
   en: {
     unsupportedScheme: 'The embedded browser only supports HTTP and HTTPS addresses.',

@@ -49,7 +49,7 @@ test('a retired connection reads as broken rather than repairable', () => {
   // Nothing else in the list marks this row, so without a status the only
   // signal that it has to go is on the detail page the user has no reason to
   // open.
-  assert.deepEqual(connectionChipStatus(retired, 'zh'), {
+  assert.deepEqual(connectionChipStatus(retired, 'zh-CN'), {
     label: '已停用 · 请删除',
     tone: 'error',
   });
@@ -69,7 +69,7 @@ test('retirement outranks every repairable state', () => {
     { enabled: false },
   ]) {
     assert.deepEqual(
-      connectionChipStatus({ ...retired, ...overrides }, 'zh'),
+      connectionChipStatus({ ...retired, ...overrides }, 'zh-CN'),
       { label: '已停用 · 请删除', tone: 'error' },
       `retirement must win over ${JSON.stringify(overrides)}`,
     );
@@ -77,12 +77,12 @@ test('retirement outranks every repairable state', () => {
 });
 
 test('a live connection keeps its existing statuses', () => {
-  assert.equal(connectionChipStatus(connection({ lastTestStatus: 'verified' }), 'zh'), null);
-  assert.deepEqual(connectionChipStatus(connection({ lastTestStatus: 'needs_reauth' }), 'zh'), {
+  assert.equal(connectionChipStatus(connection({ lastTestStatus: 'verified' }), 'zh-CN'), null);
+  assert.deepEqual(connectionChipStatus(connection({ lastTestStatus: 'needs_reauth' }), 'zh-CN'), {
     label: '需要重新登录',
     tone: 'attention',
   });
-  assert.deepEqual(connectionChipStatus(connection({ enabled: false }), 'zh'), {
+  assert.deepEqual(connectionChipStatus(connection({ enabled: false }), 'zh-CN'), {
     label: '暂不可用',
     tone: 'neutral',
   });

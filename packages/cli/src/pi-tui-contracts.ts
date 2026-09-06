@@ -64,10 +64,24 @@ export interface OnboardableProvider {
   requiresBaseUrl: boolean;
 }
 
+export type OnboardingIdentityChoice = {
+  /** Caller-chosen slug; null keeps the Host-derived identity. */
+  readonly slug: string | null;
+  /** Caller-chosen display name; null keeps the provider label. */
+  readonly name: string | null;
+};
+
 export type OnboardingProviderEntry = OnboardableProvider &
   (
     | {
         target: Extract<ConnectionOnboardingTarget, { readonly kind: 'create' }>;
+        /**
+         * The identity the Host would derive, shown as the prefilled default
+         * on the identity step. Submitting it unchanged (or submitting
+         * nothing) keeps the wire target free of slug/name so any Host
+         * vintage accepts the save.
+         */
+        suggestedSlug: string;
         enabledModelIds: readonly string[];
       }
     | {

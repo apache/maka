@@ -23,16 +23,39 @@ interface SettingIntent<Value> {
   desired: Value;
   committed?: Value;
   committedAtCatalogRevision?: number;
+  committedAtSessionRevision?: number;
   inFlight: boolean;
   completion: Promise<boolean>;
   resolveCompletion(succeeded: boolean): void;
 }
 
-export interface SessionSettingIntentChannel<Value> {
+export interface SessionSettingIntentRevisionWriteResult {
+  readonly committed: boolean;
+  readonly sessionRevision: number;
+}
+
+export type SessionSettingIntentWriteResult =
+  | boolean
+  | SessionSettingIntentRevisionWriteResult;
+
+interface SessionSettingIntentChannelBase<Value> {
   isEqual?(left: Value, right: Value): boolean;
-  write(sessionId: string, value: Value): Promise<boolean>;
   onWriteError(sessionId: string, error: unknown, attempted: Value): void;
 }
+
+export type SessionSettingIntentChannel<Value> = SessionSettingIntentChannelBase<Value> & (
+  | {
+      write(sessionId: string, value: Value): Promise<boolean>;
+      catalogSessionRevision?: never;
+    }
+  | {
+      write(
+        sessionId: string,
+        value: Value,
+      ): Promise<SessionSettingIntentRevisionWriteResult>;
+      catalogSessionRevision(sessionId: string): number | undefined;
+    }
+);
 
 export interface SessionSettingIntentOptions<Values extends object> {
   catalogRevision: number;
@@ -71,6 +94,9 @@ function createIntent<Value>(
     ...(previous?.committed !== undefined ? { committed: previous.committed } : {}),
     ...(previous?.committedAtCatalogRevision !== undefined
       ? { committedAtCatalogRevision: previous.committedAtCatalogRevision }
+      : {}),
+    ...(previous?.committedAtSessionRevision !== undefined
+      ? { committedAtSessionRevision: previous.committedAtSessionRevision }
       : {}),
     inFlight: true,
     completion,
@@ -132,7 +158,19 @@ export function useSessionSettingIntent<Values extends object>(
     const channelIntents = intentsRef.current.get(channel);
     const intent = channelIntents?.get(sessionId);
     if (!intent || intent.inFlight || intent.committedAtCatalogRevision === undefined) return;
-    if (optionsRef.current.catalogRevision <= intent.committedAtCatalogRevision) return;
+    if (intent.committedAtSessionRevision !== undefined) {
+      const observedRevision = optionsRef.current.channels[channel].catalogSessionRevision?.(
+        sessionId,
+      );
+      if (
+        observedRevision === undefined ||
+        observedRevision < intent.committedAtSessionRevision
+      ) {
+        return;
+      }
+    } else if (optionsRef.current.catalogRevision <= intent.committedAtCatalogRevision) {
+      return;
+    }
     channelIntents?.delete(sessionId);
     setOverlay(channel, sessionId, undefined);
   }, [setOverlay]);
@@ -187,9 +225,16 @@ export function useSessionSettingIntent<Values extends object>(
       while (mountedRef.current && typedIntents.get(sessionId) === intent) {
         const attempted = intent.desired;
         let committed = false;
+        let committedSessionRevision: number | undefined;
         let writeError: unknown;
         try {
-          committed = await optionsRef.current.channels[channel].write(sessionId, attempted);
+          const result = await optionsRef.current.channels[channel].write(sessionId, attempted);
+          if (typeof result === 'boolean') {
+            committed = result;
+          } else {
+            committed = result.committed;
+            committedSessionRevision = result.sessionRevision;
+          }
         } catch (error) {
           writeError = error;
         }
@@ -198,6 +243,7 @@ export function useSessionSettingIntent<Values extends object>(
         if (committed) {
           intent.committed = attempted;
           intent.committedAtCatalogRevision = optionsRef.current.catalogRevision;
+          intent.committedAtSessionRevision = committedSessionRevision;
           if (isEqual(channel, intent.desired, attempted)) {
             setOverlay(channel, sessionId, attempted);
           }

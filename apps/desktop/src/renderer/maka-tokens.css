@@ -881,6 +881,13 @@
      everything already standing between it and that edge. Two literals would be
      two chances to change one of them. */
   --maka-titlebar-gutter-left: max(var(--space-6), var(--maka-titlebar-area-x));
+  /* Shared by the titlebar strip and the workbar's bar, which hold one collapse
+     toggle to the same x. Deliberately not the left gutter's `--space-6`
+     floor: the left is a safe area under the traffic lights, the right is the
+     bar's own inset. */
+  --maka-titlebar-gutter-right: calc(
+    var(--space-2) + var(--maka-titlebar-overlay-right-width)
+  );
   --maka-titlebar-gap: var(--space-2);
   /* What the strip keeps for itself. This window has no OS title bar, so the
      strip IS the drag handle, and the session breadcrumb is a grid item that
@@ -1321,8 +1328,11 @@
        this line. */
     font: var(--maka-text-body);
     color: var(--foreground);
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
+    /* Astryx's reset puts `antialiased` on `:where(body)`, which strips the
+       stroke dilation macOS applies and thins 14px Han glyphs. Maka is
+       CJK-first, so the platform default wins here, for the whole document. */
+    -webkit-font-smoothing: auto;
+    -moz-osx-font-smoothing: auto;
     overflow: hidden;          /* main shell handles its own scrolling */
   }
 

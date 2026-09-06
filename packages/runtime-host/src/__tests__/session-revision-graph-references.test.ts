@@ -19,7 +19,8 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import { testInvocationRecord } from '@maka/runtime/test-only/invocation-fixture';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import { collectConversationCopyLinkedChildReferences } from '@maka/runtime/conversation-copy';
@@ -199,22 +200,12 @@ test('Agent Graph revision references reject incomplete or mismatched provenance
     },
     {
       name: 'active child Run',
-      input: { runs: [agentRun({ status: 'running', completedAt: undefined })] },
+      input: { runs: [agentRun({ status: 'running' })] },
       code: 'session_busy',
     },
     {
       name: 'wrong Artifact turn',
       input: { artifactTurnId: 'other-turn' },
-      code: 'operation_unavailable',
-    },
-    {
-      name: 'deleted Artifact',
-      input: { artifactStatus: 'deleted' },
-      code: 'operation_unavailable',
-    },
-    {
-      name: 'missing Artifact',
-      input: { artifactMissing: true },
       code: 'operation_unavailable',
     },
     {
@@ -228,6 +219,18 @@ test('Agent Graph revision references reject incomplete or mismatched provenance
     assert.equal(outcome.ok, false, policyCase.name);
     if (!outcome.ok) assert.equal(outcome.code, policyCase.code, policyCase.name);
   }
+});
+
+test('Agent Graph revision references outlive the Artifacts they name', async () => {
+  // A child result lists every Artifact its turn held, in a ledger that can
+  // never be rewritten -- so an id in it outlives what it named. The retired
+  // provider-request captures are reclaimed on their own, and a user may
+  // delete a child's Artifact; neither may cost the Session its ability to
+  // take a revision. What this checks is that a reference does not reach
+  // outside its own child and lineage, which `wrong Artifact turn` above
+  // still fails on.
+  const reclaimed = await prepare({ artifactMissing: true });
+  assert.equal(reclaimed.ok, true);
 });
 
 test('Agent Graph revision references reject invalid ownership boundaries', async () => {
@@ -321,11 +324,10 @@ interface PrepareOverrides {
   readonly messages?: readonly StoredMessage[];
   readonly archivedResults?: readonly string[];
   readonly sessionHeaders?: readonly SessionHeader[];
-  readonly runs?: readonly AgentRunHeader[];
+  readonly runs?: readonly RuntimeInvocationRecord[];
   readonly sessionGraphState?: 'absent' | 'live' | 'terminal';
   readonly graphState?: 'absent' | 'live' | 'terminal';
   readonly artifactTurnId?: string;
-  readonly artifactStatus?: 'live' | 'deleted';
   readonly artifactMissing?: boolean;
   readonly childActive?: boolean;
 }
@@ -347,8 +349,8 @@ async function prepare(overrides: PrepareOverrides = {}) {
       }),
     },
     {
-      agentRunStore: {
-        listSessionRuns: async () => overrides.runs ?? [agentRun()],
+      runtimeEventStore: {
+        listSessionInvocations: async () => overrides.runs ?? [agentRun()],
       },
       artifacts: {
         getInSession: async (sessionId, artifactId) => ({
@@ -364,7 +366,7 @@ async function prepare(overrides: PrepareOverrides = {}) {
                 kind: 'file',
                 relativePath: 'result.txt',
                 sizeBytes: 1,
-                status: overrides.artifactStatus ?? 'live',
+                source: 'tool_result',
               },
         }),
       },
@@ -508,22 +510,30 @@ function childHeader(
   };
 }
 
-function agentRun(overrides: Partial<AgentRunHeader> = {}): AgentRunHeader {
-  return {
-    runId: CHILD_RUN_ID,
-    invocationId: 'child-invocation',
-    sessionId: CHILD_SESSION_ID,
-    turnId: CHILD_TURN_ID,
-    status: 'completed',
-    backendKind: 'fake',
-    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-    llmConnectionSlug: 'fake',
-    modelId: 'fake-model',
-    cwd: '/workspace',
-    permissionMode: 'ask',
-    createdAt: 1,
-    updatedAt: 2,
-    completedAt: 2,
-    ...overrides,
+function agentRun(
+  overrides: {
+    runId?: string;
+    turnId?: string;
+    status?: 'completed' | 'failed' | 'cancelled' | 'running';
+    resumedFromRunId?: string;
+    retriedFromRunId?: string;
+  } = {},
+): RuntimeInvocationRecord {
+  const status = overrides.status ?? 'completed';
+  const lineage = {
+    ...(overrides.resumedFromRunId ? { resumedFromRunId: overrides.resumedFromRunId } : {}),
+    ...(overrides.retriedFromRunId ? { retriedFromRunId: overrides.retriedFromRunId } : {}),
   };
+  return testInvocationRecord({
+    sessionId: CHILD_SESSION_ID,
+    runId: overrides.runId ?? CHILD_RUN_ID,
+    turnId: overrides.turnId ?? CHILD_TURN_ID,
+    invocationId: overrides.runId ?? 'child-invocation',
+    openedAt: 1,
+    closedAt: 2,
+    ...(status === 'running'
+      ? {}
+      : { outcome: status === 'cancelled' ? ('aborted' as const) : status }),
+    ...(Object.keys(lineage).length > 0 ? { opening: { lineage } } : {}),
+  });
 }

@@ -347,6 +347,18 @@ export class RuntimeHostSessionObserver {
     });
   }
 
+  async loadTranscriptAfter(
+    request: DesktopTranscriptRangeRequest,
+    targetId?: number,
+  ): Promise<void> {
+    await this.#runTranscriptRangeOperation(request, targetId, (replica) =>
+      replica.loadAfter(
+        request.anchorSequence,
+        requireTranscriptRangeBytes(request.maxBytes),
+      ),
+    );
+  }
+
   async #runTranscriptRangeOperation(
     request: DesktopTranscriptRangeRequest,
     targetId: number | undefined,
@@ -552,6 +564,11 @@ export class RuntimeHostSessionObserver {
     if (answered.outcome.kind === "question_answer") {
       this.#broadcast(answered.sessionId, {
         type: "user_question_answer_ack",
+        ...base,
+      });
+    } else if (answered.outcome.kind === "form_answer") {
+      this.#broadcast(answered.sessionId, {
+        type: "form_answer_ack",
         ...base,
       });
     } else if (answered.outcome.kind === "sandbox_boundary_decision") {

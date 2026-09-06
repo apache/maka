@@ -202,7 +202,7 @@ async function seedE2eConnection(userDataDir: string): Promise<void> {
   }
 }
 
-async function seedE2eLocale(userDataDir: string, locale: 'zh' | 'en'): Promise<void> {
+async function seedE2eLocale(userDataDir: string, locale: 'zh-CN' | 'zh-TW' | 'en'): Promise<void> {
   const workspaceRoot = path.join(userDataDir, 'workspaces', 'default');
   await createSettingsStore(workspaceRoot).update({
     personalization: { uiLocale: locale },
@@ -416,7 +416,6 @@ async function withE2eWindow(
     locale,
     platform,
     showWindow,
-    scrollMotion,
     invocableSkills,
     gitReviewExtraFiles,
     parentRemovalSessions,
@@ -426,9 +425,7 @@ async function withE2eWindow(
     seed: boolean;
     readinessSelector: string;
     e2eFixtureScenario?: string;
-    locale?: 'zh' | 'en';
-    /** Opt this window back into animated scrolling; see `scroll-motion-policy`. */
-    scrollMotion?: 'auto' | 'smooth';
+    locale?: 'zh-CN' | 'zh-TW' | 'en';
     /** #1312: force app:info's platform so the window boots natively into that platform's `data-os` cascade. */
     platform?: 'darwin' | 'win32' | 'linux';
     /** Show fixtures whose contract depends on compositor-paced frames. */
@@ -473,7 +470,6 @@ async function withE2eWindow(
         scenario: e2eFixtureScenario,
         locale,
         platform,
-        scrollMotion,
         showWindow: visibleWindow,
       }),
     });
@@ -519,91 +515,25 @@ async function withE2eWindow(
   }
 }
 
-interface PromptRailWorker {
-  app: ElectronApplication;
-  page: Page;
-  viewport: { width: number; height: number };
-}
-
-async function setPromptRailWindowVisible(
-  worker: PromptRailWorker,
-  visible: boolean,
-): Promise<void> {
-  await worker.app.evaluate(({ BrowserWindow }, shouldShow) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (!window) throw new Error('the prompt-rail BrowserWindow is missing');
-    // showInactive, not show: this worker window is re-revealed between every
-    // test in the file, and show() activates the app each time — a suite run
-    // would yank the developer's foreground away a dozen times over. The
-    // window still needs to be on screen for the compositor.
-    if (shouldShow) window.showInactive();
-    else window.hide();
-  }, visible);
-}
-
-async function resetPromptRailWindow(worker: PromptRailWorker): Promise<void> {
-  await worker.page.evaluate(async () => {
-    const controls = (
-      window as typeof window & {
-        makaE2eLatch?: {
-          releaseRendererObservations(): Promise<void>;
-        };
-      }
-    ).makaE2eLatch;
-    if (!controls) throw new Error('the isolated E2E controls are unavailable');
-    await controls.releaseRendererObservations();
-    localStorage.clear();
-    sessionStorage.clear();
-  });
-  await worker.page.setViewportSize(worker.viewport);
-  await worker.page.reload();
-  await worker.page.waitForSelector('[data-turn-id]', { timeout: 20_000 });
-}
-
 type E2eTestFixtures = {
   window: Page;
-  agentGraphWindow: Page;
-  onboardingWindow: Page;
   gitReviewWindow: { page: Page; projectRoot: string };
   invocableSkillsWindow: Page;
-  linkColorWindow: Page;
   projectSidebarWindow: Page;
   parentRemovalWindow: Page;
   railRenderWindow: Page;
   promptRailWindow: Page;
   partialHistoryWindow: Page;
-  promptRailMotionWindow: Page;
   requestHeaderRowWindow: Page;
   newTaskTargetWindow: Page;
   directoryReferenceWindow: { page: Page; folder: string };
   accessibilityNarrativeWindow: Page;
 };
 
-type E2eWorkerFixtures = {
-  isolatedDisplay: void;
-  promptRailWorker: PromptRailWorker;
-};
-
-export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
-  isolatedDisplay: [async ({}, use, workerInfo) => {
-    const base = process.env.MAKA_E2E_X_DISPLAY_BASE;
-    if (base === undefined) {
-      await use();
-      return;
-    }
-    if (!/^\d+$/.test(base)) throw new Error(`Invalid E2E X display base: ${base}`);
-    const previous = process.env.DISPLAY;
-    process.env.DISPLAY = `:${Number(base) + workerInfo.parallelIndex}`;
-    try {
-      await use();
-    } finally {
-      if (previous === undefined) delete process.env.DISPLAY;
-      else process.env.DISPLAY = previous;
-    }
-  }, { scope: 'worker', auto: true }],
+export const test = base.extend<E2eTestFixtures>({
   directoryReferenceWindow: async ({}, use) => {
     await withE2eWindow(
-      { seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh', showWindow: true },
+      { seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh-CN', showWindow: true },
       async (page, { userDataDir, app }) => {
         const folder = path.join(userDataDir, 'referenced-source');
         await mkdir(path.join(folder, 'nested'), { recursive: true });
@@ -620,34 +550,14 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
   },
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
-    await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh' }, use);
-  },
-  agentGraphWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        readinessSelector: '.maka-agent-graph-panel',
-        e2eFixtureScenario: 'agent-graph-layout',
-        locale: 'zh',
-        showWindow: true,
-      },
-      use,
-    );
-  },
-  onboardingWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      readinessSelector: '[data-maka-contract="onboarding-card"]',
-      locale: 'zh',
-      showWindow: true,
-    }, use);
+    await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh-CN' }, use);
   },
   gitReviewWindow: async ({}, use) => {
     await withE2eWindow(
       {
         seed: true,
         readinessSelector: COMPOSER_INPUT,
-        locale: 'zh',
+        locale: 'zh-CN',
         gitReviewExtraFiles: 0,
       },
       async (page, context) => {
@@ -663,15 +573,8 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
     await withE2eWindow({
       seed: true,
       readinessSelector: COMPOSER_INPUT,
-      locale: 'zh',
+      locale: 'zh-CN',
       invocableSkills: true,
-    }, use);
-  },
-  linkColorWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      readinessSelector: '.settingsBotConfigDocLink',
-      e2eFixtureScenario: 'settings-bots-onboarding',
     }, use);
   },
   // Seeded connection so the composer is ready, plus one registered Project so
@@ -680,7 +583,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
     await withE2eWindow({
       seed: true,
       readinessSelector: COMPOSER_INPUT,
-      locale: 'zh',
+      locale: 'zh-CN',
       newTaskProject: true,
       showWindow: true,
     }, use);
@@ -694,7 +597,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       seed: false,
       readinessSelector: '[data-maka-contract="search-modal"][open]',
       e2eFixtureScenario: 'sidebar-search-modal-open',
-      locale: 'zh',
+      locale: 'zh-CN',
     }, use);
   },
   parentRemovalWindow: async ({}, use) => {
@@ -702,7 +605,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       {
         seed: true,
         readinessSelector: COMPOSER_INPUT,
-        locale: 'zh',
+        locale: 'zh-CN',
         parentRemovalSessions: true,
       },
       use,
@@ -713,16 +616,16 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       {
         seed: true,
         readinessSelector: COMPOSER_INPUT,
-        locale: 'zh',
+        locale: 'zh-CN',
         railRenderSessions: true,
       },
       use,
     );
   },
-  // Keep this scenario's real Electron + Host composition warm for the worker,
-  // while the test-scoped wrapper below restores Host and renderer state
-  // between tests. Tests on it may run a Turn, so the reset is not read-only.
-  promptRailWorker: [async ({}, use) => {
+  // A multi-prompt transcript. Each cost assertion gets an isolated Host and
+  // renderer so observation state cannot bleed between tests. The window is
+  // shown because these cases drive the real compositor through CDP.
+  promptRailWindow: async ({}, use) => {
     await withE2eWindow({
       seed: false,
       // A rendered turn, deliberately not the rail: Playwright treats a
@@ -734,23 +637,9 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       // Every other fixture window names its locale; without one the renderer
       // takes the host's, so any test that reaches a control by its label
       // passes on a Chinese desktop and cannot find it on an English CI runner.
-      locale: 'zh',
+      locale: 'zh-CN',
       showWindow: true,
-    }, async (page, { app }) => {
-      const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
-      await use({ app, page, viewport });
-    });
-  }, { scope: 'worker' }],
-  // A multi-prompt transcript for the prompt anchor rail. Shown, because every
-  // assertion in prompt-rail.spec.ts is geometry the compositor has to settle.
-  promptRailWindow: async ({ promptRailWorker }, use) => {
-    await setPromptRailWindowVisible(promptRailWorker, true);
-    try {
-      await resetPromptRailWindow(promptRailWorker);
-      await use(promptRailWorker.page);
-    } finally {
-      await setPromptRailWindowVisible(promptRailWorker, false);
-    }
+    }, use);
   },
   // A transcript larger than the bounded Desktop range. Clicking an unloaded
   // prompt exercises the real load-around path and its partial-history UI.
@@ -759,30 +648,8 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       seed: false,
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'chat-partial-history',
-      locale: 'zh',
+      locale: 'zh-CN',
       showWindow: true,
-    }, use);
-  },
-  // The same transcript, scrolling the way the shipped app scrolls. Separate
-  // from `promptRailWindow` because it is only the jump that needs a scroll
-  // still in flight, and paying for one everywhere costs several seconds per
-  // window and settles less predictably.
-  promptRailMotionWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      // The transcript and the fixture attributes arrive on two unordered
-      // async paths: `runDeferredStartupRefreshes` fires `refreshSessions()`
-      // and `applyE2eFixture()` side by side, and only the second one — after
-      // its `e2eFixture.getState()` IPC resolves — writes
-      // `data-maka-scroll-motion`. A turn can therefore paint while the
-      // document still says nothing about scroll motion. Requiring both in one
-      // selector is what makes "this window scrolls smoothly" true by the time
-      // a test body reads it.
-      readinessSelector: 'html[data-maka-scroll-motion="smooth"] [data-turn-id]',
-      e2eFixtureScenario: 'chat-prompt-rail',
-      locale: 'zh',
-      showWindow: true,
-      scrollMotion: 'smooth',
     }, use);
   },
   // Settings → 模型, where `no-models` is the seeded openai-compatible relay —
@@ -794,19 +661,19 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       seed: false,
       readinessSelector: '.settingsSurface',
       e2eFixtureScenario: 'settings-models',
-      locale: 'zh',
+      locale: 'zh-CN',
       showWindow: true,
     }, use);
   },
-  // A data-backed conversation with settled tool evidence and a populated
-  // task ledger. Shown because the accessibility journey follows real native
+  // A data-backed conversation with settled tool evidence and the workbar open
+  // beside it. Shown because the accessibility journey follows real native
   // focus order through the transcript into the composer controls.
   accessibilityNarrativeWindow: async ({}, use) => {
     await withE2eWindow({
       seed: false,
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'turn-narrative',
-      locale: 'zh',
+      locale: 'zh-CN',
       showWindow: true,
     }, use);
   },

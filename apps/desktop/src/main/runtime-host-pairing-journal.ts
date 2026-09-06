@@ -19,6 +19,7 @@
 
 import {
   decodeRemoteRuntimeHostProfile,
+  migrateRuntimeHostProfileOperatorCommand,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
   sameResolvedRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,
@@ -186,7 +187,9 @@ function decodePairingTarget(
 ): DesktopRuntimeHostPairingIntent['target'] {
   const record = requireExactRecord(value, ['profile', 'credential']);
   return {
-    profile: decodeRemoteRuntimeHostProfile(record.profile),
+    profile: decodeRemoteRuntimeHostProfile(
+      migrateRuntimeHostProfileOperatorCommand(record.profile),
+    ),
     credential: requireCredential(record.credential),
   };
 }

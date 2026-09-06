@@ -32,10 +32,19 @@ export * from './model/workbar-tool-definitions.js';
 export * from './tools/artifacts/artifact-list-keyboard.js';
 export * from './tools/artifacts/artifact-visibility.js';
 export * from './tools/inspector/session-inspector-panel-model.js';
-export { compactNumberFormatter, InspectorCompositionSection } from './tools/inspector/session-inspector-panel.js';
+export {
+  compactNumberFormatter,
+  InspectorCompositionSection,
+  RING_ACTIVE_MIN_SWEEP,
+  RING_MIN_SWEEP,
+  usageRingArcs,
+} from './tools/inspector/session-inspector-panel.js';
 export * from './tools/inspector/session-inspector-overview-model.js';
+export * from './tools/inspector/session-trace-refresh.js';
+export * from './tools/inspector/live-context-usage.js';
 export * from './tools/side-chat/quote-companion-panel-state.js';
 export * from './tools/side-chat/quote-companion-core.js';
+export * from './tools/side-chat/quote-companion-context-compaction.js';
 export * from './tools/side-chat/quote-companion-visibility.js';
 export {
   useQuoteCompanion,
@@ -75,10 +84,6 @@ export function createFakeWorkbarServices(
       subscribePtyData: noopSubscription,
       subscribeResync: noopSubscription,
     },
-    todo: {
-      read: async () => [],
-      subscribeChanges: noopSubscription,
-    },
     browser: {
       setActiveSession: () => undefined,
       setViewport: () => undefined,
@@ -97,7 +102,6 @@ export function createFakeWorkbarServices(
       readText: async () => ({ ok: false, reason: 'not_found' }),
       readBinary: async () => ({ ok: false, reason: 'not_found' }),
       delete: async () => undefined,
-      subscribeChanges: noopSubscription,
       openPath: async () => ({ ok: false, reason: 'missing' }),
       saveAs: async () => ({ ok: false, reason: 'canceled' }),
     },
@@ -128,6 +132,9 @@ export function createFakeWorkbarServices(
       },
       cleanupSessionCopy: async () => undefined,
       abandonSessionCopy: async () => undefined,
+      compact: async () => {
+        throw new Error('Fake sideChat.compact is not configured');
+      },
       send: async () => ({ ok: false, reason: 'not configured' }),
       stop: async () => undefined,
       steer: async () => {
@@ -140,6 +147,7 @@ export function createFakeWorkbarServices(
       respondToSandboxBoundary: async () => undefined,
       respondToClientCapability: async () => undefined,
       respondToUserQuestion: async () => undefined,
+      respondToUserForm: async () => undefined,
       subscribeEvents: (_sessionId, _handler, onSeeded) => {
         onSeeded?.();
         return noopSubscription();

@@ -17,20 +17,20 @@
  * under the License.
  */
 
-import type {
-  AgentRunEvent,
-  AgentRunHeader,
-  AgentRunStore,
-  EmittedAgentRunEvent,
-} from '@maka/core/agent-run';
-import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { AgentRunEvent, AgentRunStore, EmittedAgentRunEvent } from '@maka/core/agent-run';
+import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
+import {
+  buildInvocationOpenedEvent,
+  isSessionInlineInvocation,
+} from '@maka/core/runtime-invocation';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import { type StorageRef, type ToolResultContent } from '@maka/core/events';
 import { parseAttachmentResourceRef } from '@maka/core/attachments';
 import { markPersisted } from '@maka/core/persisted-value';
 import type { StoredMessage } from '@maka/core/session';
 import { decodePersistedToolResultContent } from '@maka/core/tool-result-record-schema';
-import { isEmittedAgentRunEventType, isSessionInlineRun } from '@maka/core/agent-run';
+import { isEmittedAgentRunEventType } from '@maka/core/agent-run';
 import {
   decodeModelCallAttempt,
   MODEL_CALL_ATTEMPT_EVENT_TYPE,
@@ -154,7 +154,7 @@ export interface ConversationRuntimeLedgerCopyPlan {
   readonly copyTurnIds: readonly string[];
   readonly inlineRuntimeEvents: readonly RuntimeEvent[];
   readonly runs: readonly {
-    readonly run: AgentRunHeader;
+    readonly run: RuntimeInvocationRecord;
     readonly runtimeEvents: readonly RuntimeEvent[];
     readonly operationalEvents: readonly AgentRunEvent[];
   }[];
@@ -319,10 +319,13 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
   readonly sourceSessionId: string;
   readonly sourceEvents: readonly RuntimeEvent[];
   readonly copiedMessages: readonly StoredMessage[];
-  readonly runStore: Pick<AgentRunStore, 'listSessionRuns' | 'readEvents'>;
-  readonly runtimeEventStore: Pick<RuntimeEventStore, 'readRuntimeEvents'>;
+  readonly runStore: Pick<AgentRunStore, 'readEvents'>;
+  readonly runtimeEventStore: Pick<
+    RuntimeEventStore,
+    'readRuntimeEvents' | 'listSessionInvocations'
+  >;
 }): Promise<ConversationRuntimeLedgerCopyPlan> {
-  const sourceRuns = await input.runStore.listSessionRuns(input.sourceSessionId);
+  const sourceRuns = await input.runtimeEventStore.listSessionInvocations(input.sourceSessionId);
   const transcriptTurnIds = [
     ...new Set(
       input.copiedMessages.map(messageTurnId).filter((turnId): turnId is string => !!turnId),
@@ -338,21 +341,31 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
   const runs = await Promise.all(
     selectedRunEvents.map(async ({ run, events }) => {
       const operationalEvents = await input.runStore.readEvents(run.sessionId, run.runId);
-      if (events.length === 0) {
-        throw new Error(`Cannot copy AgentRun ${run.runId} without RuntimeEvent facts`);
-      }
       const terminal = classifyTerminalRuntimeLedger(run, events);
-      if (isTerminalRunStatus(run.status) && terminal.kind !== 'fact') {
+      if (run.terminalEvent && terminal.kind !== 'fact') {
         throw new Error(`Cannot copy terminal AgentRun ${run.runId} without one terminal fact`);
       }
       return { run, runtimeEvents: events, operationalEvents };
     }),
   );
   await rebuildCopiedProjectionTransitions(input.sourceSessionId, sourceRuns, runs, input.runStore);
+  // A restored opening takes the place the migration could not give it: right
+  // before the first event of its run in the Session's order.
+  const restoredOpenings = new Map(
+    selectedRunEvents.flatMap(({ run, restoredOpening }) =>
+      restoredOpening ? [[run.runId, restoredOpening] as const] : [],
+    ),
+  );
+  const inlineRuntimeEvents = input.sourceEvents.flatMap((event) => {
+    const opening = restoredOpenings.get(event.runId);
+    if (!opening) return [event];
+    restoredOpenings.delete(event.runId);
+    return [opening, event];
+  });
   const plan = {
     sourceSessionId: input.sourceSessionId,
     copyTurnIds,
-    inlineRuntimeEvents: [...input.sourceEvents],
+    inlineRuntimeEvents,
     runs,
   };
   assertConversationRuntimeLedgerCopySupported(plan);
@@ -376,15 +389,18 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
  */
 async function rebuildCopiedProjectionTransitions(
   sessionId: string,
-  sourceRuns: readonly AgentRunHeader[],
+  sourceRuns: readonly RuntimeInvocationRecord[],
   runs: readonly {
-    readonly run: AgentRunHeader;
+    readonly run: RuntimeInvocationRecord;
     readonly runtimeEvents: readonly RuntimeEvent[];
     readonly operationalEvents: AgentRunEvent[];
   }[],
   runStore: Pick<AgentRunStore, 'readEvents'>,
 ): Promise<void> {
-  const owningRun = new Map<string, { run: AgentRunHeader; operationalEvents: AgentRunEvent[] }>();
+  const owningRun = new Map<
+    string,
+    { run: RuntimeInvocationRecord; operationalEvents: AgentRunEvent[] }
+  >();
   const copiedRuntimeEvents: RuntimeEvent[] = [];
   for (const { run, runtimeEvents, operationalEvents } of runs) {
     for (const event of runtimeEvents) {
@@ -453,7 +469,8 @@ function assertConversationRuntimeLedgerCopySupported(
 ): void {
   const unsupported = plan.runs.some(
     ({ run, runtimeEvents }) =>
-      run.continuationSource !== undefined || runtimeEvents.some(isContinuationStartRuntimeEvent),
+      run.opening.source.kind === 'continuation' ||
+      runtimeEvents.some(isContinuationStartRuntimeEvent),
   );
   if (!unsupported) return;
 
@@ -480,8 +497,12 @@ export async function cloneConversationRuntimeLedger(
     flattenedPlans,
     input.plan.inlineRuntimeEvents,
   );
+  // One physical execution attempt, one identity: a copied run and its copied
+  // invocation get the same fresh value rather than two independent ones.
   const runIds = new Map(flattenedPlans.map(({ run }) => [run.runId, input.newId()]));
-  const targetInvocationIds = new Map(flattenedPlans.map(({ run }) => [run.runId, input.newId()]));
+  const targetInvocationIds = new Map(
+    flattenedPlans.map(({ run }) => [run.runId, runIds.get(run.runId)!]),
+  );
   const invocationIds = new Map(
     flattenedPlans.flatMap(({ run }) =>
       run.invocationId ? [[run.invocationId, targetInvocationIds.get(run.runId)!] as const] : [],
@@ -548,7 +569,6 @@ export async function cloneConversationRuntimeLedger(
   >();
   const preparedPlans = flattenedPlans.map((plan) => {
     const runId = runIds.get(plan.run.runId)!;
-    const invocationId = targetInvocationIds.get(plan.run.runId)!;
     const clonedOperationalEvents = plan.operationalEvents.flatMap((event) => {
       const clonedEvent = cloneAgentRunEvent(
         event,
@@ -563,29 +583,21 @@ export async function cloneConversationRuntimeLedger(
         checkpointIds,
         transitionIds,
         transitionState,
-        operationalEventIds,
         providerTraceIds,
         logicalCallIds,
       );
       return clonedEvent ? [clonedEvent] : [];
     });
     const terminalEvent =
-      plan.terminal.kind === 'fact' && isTerminalRunStatus(plan.run.status)
+      plan.terminal.kind === 'fact'
         ? clonedEventBySourceId.get(plan.terminal.fact.terminalEvent.id)
         : undefined;
-    if (plan.terminal.kind === 'fact' && isTerminalRunStatus(plan.run.status) && !terminalEvent) {
+    if (plan.terminal.kind === 'fact' && !terminalEvent) {
       throw new Error(`Copied AgentRun ${plan.run.runId} lost its terminal RuntimeEvent`);
     }
     return {
       plan,
       runId,
-      clonedRun: cloneRunHeader(
-        plan.run,
-        input.referenceMap.targetSessionId,
-        runId,
-        invocationId,
-        references,
-      ),
       clonedOperationalEvents,
       terminalEvent,
     };
@@ -593,10 +605,6 @@ export async function cloneConversationRuntimeLedger(
   const copiedMessages = input.copiedMessages.map((message) =>
     rewriteConversationCopyMessage(message, references),
   );
-
-  for (const { clonedRun } of preparedPlans) {
-    await input.runStore.createRun(clonedRun);
-  }
 
   const importedSourceEventIds = new Set<string>();
   const orderedBatches = input.plan.inlineRuntimeEvents.flatMap((event) => {
@@ -624,9 +632,8 @@ export async function cloneConversationRuntimeLedger(
       await input.runStore.appendEvent(input.referenceMap.targetSessionId, runId, clonedEvent);
     }
 
-    if (plan.terminal.kind === 'fact' && isTerminalRunStatus(plan.run.status) && terminalEvent) {
+    if (plan.terminal.kind === 'fact' && terminalEvent) {
       await commitTerminalRunWithRuntimeFact({
-        runStore: input.runStore,
         runtimeEventStore: input.runtimeEventStore,
         newId: input.newId,
         sessionId: input.referenceMap.targetSessionId,
@@ -638,14 +645,7 @@ export async function cloneConversationRuntimeLedger(
         ...(plan.terminal.fact.failureClass
           ? { failureClass: plan.terminal.fact.failureClass }
           : {}),
-        ...(plan.run.failureMessage ? { failureMessage: plan.run.failureMessage } : {}),
         ...(plan.terminal.fact.abortSource ? { abortSource: plan.terminal.fact.abortSource } : {}),
-        runEventData: {
-          recovered: true,
-          recoveryReason: 'conversation_runtime_ledger_clone',
-          sourceSessionId: plan.run.sessionId,
-          sourceRunId: plan.run.runId,
-        },
       });
     }
   }
@@ -660,12 +660,20 @@ export async function cloneConversationRuntimeLedger(
 }
 
 interface ConversationCopyRunEvents {
-  readonly run: AgentRunHeader;
+  readonly run: RuntimeInvocationRecord;
+  /** The run's events, beginning with its opening. */
   readonly events: readonly RuntimeEvent[];
+  /**
+   * The opening as an event, when the run's own events did not carry one:
+   * the migration shelved openings of runs that already owned an immutable
+   * sequence, and a copy is where such a run gets its opening back as event
+   * one, because the copy is a fresh sequence.
+   */
+  readonly restoredOpening?: RuntimeEvent;
 }
 
 async function loadConversationCopyRunEvents(
-  sourceRuns: readonly AgentRunHeader[],
+  sourceRuns: readonly RuntimeInvocationRecord[],
   sourceEvents: readonly RuntimeEvent[],
   copyTurnIds: readonly string[],
   runtimeEventStore: Pick<RuntimeEventStore, 'readRuntimeEvents'>,
@@ -682,7 +690,18 @@ async function loadConversationCopyRunEvents(
           projectedEvents.length > 0
             ? projectedEvents
             : runtimeEventStore.readRuntimeEvents(run.sessionId, run.runId),
-        ).then((events) => ({ run, events })),
+        ).then((events) => {
+          if (events.some((event) => event.content?.kind === 'invocation_opened')) {
+            return { run, events };
+          }
+          const restoredOpening = buildInvocationOpenedEvent({
+            id: `invocation_opened:${run.runId}`,
+            run,
+            openedAt: run.openedAt,
+            opening: run.opening,
+          });
+          return { run, events: [restoredOpening, ...events], restoredOpening };
+        }),
       ];
     }),
   );
@@ -854,7 +873,6 @@ function cloneAgentRunEvent(
   checkpointIds: Map<string, string>,
   transitionIds: Map<string, string>,
   transitionState: Map<string, { projection: DurableToolResultProjection; transitionId: string }>,
-  operationalEventIds: ReadonlyMap<string, string>,
   providerTraceIds: ReadonlyMap<string, string>,
   logicalCallIds: ReadonlyMap<string, string>,
 ): EmittedAgentRunEvent | null {
@@ -867,17 +885,7 @@ function cloneAgentRunEvent(
   }
 
   let data = event.data;
-  if (event.type === 'provider_request_captured') {
-    data = rewriteProviderRequestCapture(event, ids.eventId, references, providerTraceIds);
-  } else if (event.type === 'provider_request_attempt_recorded') {
-    data = rewriteProviderRequestAttempt(
-      event,
-      ids.eventId,
-      references,
-      operationalEventIds,
-      providerTraceIds,
-    );
-  } else if (event.type === MODEL_CALL_ATTEMPT_EVENT_TYPE) {
+  if (event.type === MODEL_CALL_ATTEMPT_EVENT_TYPE) {
     data = rewriteModelCallAttempt(
       event,
       { sessionId: ids.sessionId, runId: ids.runId, attemptId: ids.eventId },
@@ -901,16 +909,10 @@ function cloneAgentRunEvent(
     if (match.reason) return null;
     // Copy is an admission seam for the sectioned summary contract: a marked
     // checkpoint whose summary no longer satisfies the COMPLETE predicate —
-    // including the size floor, re-runnable here because the matched covered
-    // span is in hand — must not propagate into a fresh session. Unmarked
-    // legacy summaries stay copyable under the truncation-only load policy
-    // and keep their unmarked identity in the target.
-    if (
-      sourceCheckpoint.summaryFormat !== undefined &&
-      findCheckpointSummaryDefect(sourceCheckpoint.summary, {
-        coveredRuntimeEvents: match.coveredRuntimeEvents,
-      }) !== undefined
-    ) {
+    // re-runnable here on structure and truncation (the size floor needs the
+    // summarizer call's usage, which a copy does not have) — must not
+    // propagate into a fresh session.
+    if (findCheckpointSummaryDefect(sourceCheckpoint.summary) !== undefined) {
       throw new Error(`Cannot copy invalid history compact checkpoint ${event.id}`);
     }
     const coveredRuntimeEvents = match.coveredRuntimeEvents.map((sourceEvent) => {
@@ -935,7 +937,6 @@ function cloneAgentRunEvent(
       sessionId: references.targetSessionId,
       coveredRuntimeEvents,
       summary: sourceCheckpoint.summary,
-      summaryFormat: sourceCheckpoint.summaryFormat ?? 'legacy_freeform',
       highWaterName: sourceCheckpoint.highWaterName,
       highWaterSeq: sourceCheckpoint.highWaterSeq,
       now: sourceCheckpoint.createdAt,
@@ -1046,46 +1047,6 @@ function cloneModelProjectionTransition(
   return transition;
 }
 
-function rewriteProviderRequestCapture(
-  event: AgentRunEvent,
-  eventId: string,
-  references: ConversationCopyReferenceMap,
-  providerTraceIds: ReadonlyMap<string, string>,
-): Record<string, unknown> {
-  const data = providerRequestCapture(event);
-  return {
-    ...data,
-    traceId: requiredMappedId(providerTraceIds, data.traceId, 'provider trace'),
-    captureId: eventId,
-    artifactId: rewriteOwnedArtifactId(data.artifactId, references),
-  };
-}
-
-function rewriteProviderRequestAttempt(
-  event: AgentRunEvent,
-  eventId: string,
-  references: ConversationCopyReferenceMap,
-  operationalEventIds: ReadonlyMap<string, string>,
-  providerTraceIds: ReadonlyMap<string, string>,
-): Record<string, unknown> {
-  const data = providerRequestAttempt(event);
-  return {
-    ...data,
-    traceId: requiredMappedId(providerTraceIds, data.traceId, 'provider trace'),
-    attemptId: eventId,
-    ...(data.captureId !== undefined && data.captureArtifactId !== undefined
-      ? {
-          captureId: requiredMappedId(
-            operationalEventIds,
-            data.captureId,
-            'provider request capture',
-          ),
-          captureArtifactId: rewriteOwnedArtifactId(data.captureArtifactId, references),
-        }
-      : {}),
-  };
-}
-
 function rewriteModelCallAttempt(
   event: AgentRunEvent,
   ids: {
@@ -1115,7 +1076,9 @@ function rewriteModelCallAttempt(
   // nested identity is repaired rather than trusted and the *output* still
   // satisfies the `event.id === attemptId` contract. `decodeModelCallAttempt`
   // still rejects a schema-invalid payload.
-  const attempt = decodeModelCallAttempt(event.data);
+  // The join key is dropped by leaving it out of the spread: a conditional
+  // spread of `{}` cannot remove a key the spread above already placed.
+  const { captureArtifactId, ...attempt } = decodeModelCallAttempt(event.data);
   return {
     ...attempt,
     sessionId: ids.sessionId,
@@ -1123,58 +1086,7 @@ function rewriteModelCallAttempt(
     attemptId: ids.attemptId,
     logicalCallId: requiredMappedId(logicalCallIds, attempt.logicalCallId, 'logical model call'),
     traceId: requiredMappedId(providerTraceIds, attempt.traceId, 'provider trace'),
-    ...(attempt.captureArtifactId !== undefined
-      ? { captureArtifactId: rewriteOwnedArtifactId(attempt.captureArtifactId, references) }
-      : {}),
-  };
-}
-
-function providerRequestCapture(event: AgentRunEvent): Record<string, unknown> & {
-  readonly traceId: string;
-  readonly captureId: string;
-  readonly artifactId: string;
-} {
-  const data = event.data;
-  if (
-    !data ||
-    data.captureId !== event.id ||
-    typeof data.traceId !== 'string' ||
-    typeof data.artifactId !== 'string'
-  ) {
-    throw new Error(`Cannot copy invalid provider request capture ${event.id}`);
-  }
-  return {
-    ...data,
-    traceId: data.traceId,
-    captureId: data.captureId,
-    artifactId: data.artifactId,
-  };
-}
-
-function providerRequestAttempt(event: AgentRunEvent): Record<string, unknown> & {
-  readonly traceId: string;
-  readonly attemptId: string;
-  readonly captureId?: string;
-  readonly captureArtifactId?: string;
-} {
-  const data = event.data;
-  const hasCaptureId = typeof data?.captureId === 'string';
-  const hasArtifactId = typeof data?.captureArtifactId === 'string';
-  if (
-    !data ||
-    data.attemptId !== event.id ||
-    typeof data.traceId !== 'string' ||
-    hasCaptureId !== hasArtifactId
-  ) {
-    throw new Error(`Cannot copy invalid provider request attempt ${event.id}`);
-  }
-  return {
-    ...data,
-    traceId: data.traceId,
-    attemptId: data.attemptId,
-    ...(hasCaptureId && hasArtifactId
-      ? { captureId: data.captureId as string, captureArtifactId: data.captureArtifactId as string }
-      : {}),
+    ...(captureArtifactId !== undefined ? capturedArtifactJoin(captureArtifactId, references) : {}),
   };
 }
 
@@ -1196,8 +1108,46 @@ function rewriteOwnedArtifactId(
   return rewriteOwnedId(sourceArtifactId, references.artifactIds, 'Artifact');
 }
 
+/**
+ * A reference whose target may have been reclaimed, mapped or dropped.
+ *
+ * An Artifact reference normally throws on a missing target, because the bytes
+ * and the record naming them are removed together and a copy that lost one has
+ * lost something a reader will ask for. These references are the exception:
+ * they live in an append-only ledger that outlives what it names, and the
+ * retired provider-request captures are reclaimed from disk on their own. A
+ * copy carries what is still there and drops the rest, because failing would
+ * make a whole Session uncopyable over a byte nothing reads.
+ */
+function reclaimableArtifactReference(
+  sourceArtifactId: string,
+  references: ConversationCopyArtifactReferenceMap,
+): string | undefined {
+  if (references.mode === 'preserve_external') return sourceArtifactId;
+  return references.artifactIds.get(sourceArtifactId);
+}
+
+/** The `captureArtifactId` join, or nothing when its Artifact is gone. */
+function capturedArtifactJoin(
+  sourceArtifactId: string,
+  references: ConversationCopyArtifactReferenceMap,
+): { captureArtifactId?: string } {
+  const targetArtifactId = reclaimableArtifactReference(sourceArtifactId, references);
+  return targetArtifactId === undefined ? {} : { captureArtifactId: targetArtifactId };
+}
+
 function rewriteOwnedId(sourceId: string, ids: ReadonlyMap<string, string>, kind: string): string {
   return requiredMappedId(ids, sourceId, kind);
+}
+
+const PROVIDER_TRACE_BEARING_EVENT_TYPES: ReadonlySet<string> = new Set([
+  MODEL_CALL_ATTEMPT_EVENT_TYPE,
+  'provider_request_captured',
+  'provider_request_attempt_recorded',
+]);
+
+function isProviderTraceBearingEventType(type: string): boolean {
+  return PROVIDER_TRACE_BEARING_EVENT_TYPES.has(type);
 }
 
 function providerTraceIdMap(
@@ -1207,13 +1157,11 @@ function providerTraceIdMap(
   const result = new Map<string, string>();
   for (const { operationalEvents } of plans) {
     for (const event of operationalEvents) {
-      if (
-        event.type !== 'provider_request_captured' &&
-        event.type !== 'provider_request_attempt_recorded' &&
-        event.type !== MODEL_CALL_ATTEMPT_EVENT_TYPE
-      ) {
-        continue;
-      }
+      // Harvest from retired writers too. Their rows are not copied, but a
+      // copied RuntimeEvent may still point at a trace only they recorded, and
+      // carrying the source's trace id into the target would be worse than
+      // pointing at a fresh one nothing describes.
+      if (!isProviderTraceBearingEventType(event.type)) continue;
       const traceId = event.data?.traceId;
       if (typeof traceId === 'string' && !result.has(traceId)) result.set(traceId, newId());
     }
@@ -1228,7 +1176,11 @@ function logicalModelCallIdMap(
   const result = new Map<string, string>();
   for (const { operationalEvents } of plans) {
     for (const event of operationalEvents) {
-      if (event.type !== MODEL_CALL_ATTEMPT_EVENT_TYPE) continue;
+      // Harvest from retired writers too. Their rows are not copied, but a
+      // copied RuntimeEvent may still point at a trace only they recorded, and
+      // carrying the source's trace id into the target would be worse than
+      // pointing at a fresh one nothing describes.
+      if (!isProviderTraceBearingEventType(event.type)) continue;
       const logicalCallId = event.data?.logicalCallId;
       if (typeof logicalCallId === 'string' && !result.has(logicalCallId)) {
         result.set(logicalCallId, newId());
@@ -1240,7 +1192,7 @@ function logicalModelCallIdMap(
 
 function toolOperationIdMap(
   plans: readonly {
-    readonly run: AgentRunHeader;
+    readonly run: RuntimeInvocationRecord;
     readonly events: readonly RuntimeEvent[];
   }[],
   targetInvocationIds: ReadonlyMap<string, string>,
@@ -1271,12 +1223,7 @@ function isCopiedAgentRunEvent(event: AgentRunEvent): event is EmittedAgentRunEv
   // into the target with source identities intact. The ledger's `type` is open, so such an event
   // may predate a retired writer or postdate this build entirely (#1942).
   if (!isEmittedAgentRunEventType(event.type)) return false;
-  return (
-    event.type !== 'run_completed' &&
-    event.type !== 'run_failed' &&
-    event.type !== 'run_cancelled' &&
-    event.type !== 'event_corrupt'
-  );
+  return event.type !== 'event_corrupt';
 }
 
 function cloneRuntimeEvent(
@@ -1323,60 +1270,52 @@ function cloneRuntimeEvent(
   return cloned;
 }
 
-function cloneRunHeader(
-  source: AgentRunHeader,
-  targetSessionId: string,
-  runId: string,
-  invocationId: string,
+/**
+ * Rewrite the lineage a copied invocation's opening fact carries.
+ *
+ * The opening is an ordinary RuntimeEvent, so the copy rewrites its owned ids
+ * the way it rewrites every other reference. Its `source` needs no rewriting:
+ * a copy that contains a continuation is refused before it gets this far.
+ */
+function rewriteInvocationOpening(
+  opening: RuntimeEventInvocationOpenedContent,
   references: ConversationCopyReferenceMap,
-): AgentRunHeader {
-  const cloned: AgentRunHeader = {
-    ...source,
-    invocationId,
-    sessionId: targetSessionId,
-    runId,
-    ...(source.parentRunId
-      ? { parentRunId: rewriteOwnedId(source.parentRunId, references.runIds, 'AgentRun') }
-      : {}),
-    ...(source.resumedFromRunId
+): RuntimeEventInvocationOpenedContent {
+  const lineage = opening.lineage;
+  return {
+    ...opening,
+    ...(lineage
       ? {
-          resumedFromRunId: rewriteOwnedId(source.resumedFromRunId, references.runIds, 'AgentRun'),
-        }
-      : {}),
-    ...(source.retriedFromRunId
-      ? {
-          retriedFromRunId: rewriteOwnedId(source.retriedFromRunId, references.runIds, 'AgentRun'),
-        }
-      : {}),
-    ...(source.parentSessionId === references.sourceSessionId
-      ? { parentSessionId: targetSessionId }
-      : {}),
-    ...(source.continuationSource
-      ? {
-          continuationSource: {
-            ...source.continuationSource,
-            sourceInvocationId: rewriteOwnedId(
-              source.continuationSource.sourceInvocationId,
-              references.invocationIds,
-              'invocation',
-            ),
-            sourceRunId: rewriteOwnedId(
-              source.continuationSource.sourceRunId,
-              references.runIds,
-              'AgentRun',
-            ),
+          lineage: {
+            ...lineage,
+            ...(lineage.parentRunId
+              ? { parentRunId: rewriteOwnedId(lineage.parentRunId, references.runIds, 'AgentRun') }
+              : {}),
+            ...(lineage.resumedFromRunId
+              ? {
+                  resumedFromRunId: rewriteOwnedId(
+                    lineage.resumedFromRunId,
+                    references.runIds,
+                    'AgentRun',
+                  ),
+                }
+              : {}),
+            ...(lineage.retriedFromRunId
+              ? {
+                  retriedFromRunId: rewriteOwnedId(
+                    lineage.retriedFromRunId,
+                    references.runIds,
+                    'AgentRun',
+                  ),
+                }
+              : {}),
+            ...(lineage.parentSessionId === references.sourceSessionId
+              ? { parentSessionId: references.targetSessionId }
+              : {}),
           },
         }
       : {}),
   };
-  if (isTerminalRunStatus(source.status)) {
-    cloned.status = 'running';
-    delete cloned.completedAt;
-    delete cloned.failureClass;
-    delete cloned.failureMessage;
-    delete cloned.abortSource;
-  }
-  return cloned;
 }
 
 function rewriteRuntimeEventReferences(
@@ -1412,7 +1351,9 @@ function rewriteRuntimeEventReferences(
                 }
               : {}),
           }
-        : event.content;
+        : event.content?.kind === 'invocation_opened'
+          ? rewriteInvocationOpening(event.content, references)
+          : event.content;
   const refs = event.refs
     ? (() => {
         const {
@@ -1661,7 +1602,10 @@ function rewriteArtifactIds(
   artifactIds: readonly string[],
   references: ConversationCopyArtifactReferenceMap,
 ): readonly string[] {
-  return artifactIds.map((artifactId) => rewriteOwnedArtifactId(artifactId, references));
+  return artifactIds.flatMap((artifactId) => {
+    const targetArtifactId = reclaimableArtifactReference(artifactId, references);
+    return targetArtifactId === undefined ? [] : [targetArtifactId];
+  });
 }
 
 function validatedExternalChildReferences(
@@ -1691,9 +1635,10 @@ function rewriteSnapshotArtifactIds(
   if (references.mode !== 'exact' || references.linkedChildren.mode !== 'snapshot') {
     return artifactIds;
   }
-  return artifactIds.map((artifactId) =>
-    requiredMappedId(references.artifactIds, artifactId, 'linked Artifact'),
-  );
+  return artifactIds.flatMap((artifactId) => {
+    const targetArtifactId = references.artifactIds.get(artifactId);
+    return targetArtifactId === undefined ? [] : [targetArtifactId];
+  });
 }
 
 function rewriteArchivedSnapshot(
@@ -1891,7 +1836,7 @@ function messageTurnId(message: StoredMessage): string | undefined {
 }
 
 function conversationCopyTurnClosure(
-  runs: readonly AgentRunHeader[],
+  runs: readonly RuntimeInvocationRecord[],
   retainedTurnIds: readonly string[],
 ): string[] {
   const result = [...new Set(retainedTurnIds)];
@@ -1903,9 +1848,9 @@ function conversationCopyTurnClosure(
     changed = false;
     for (const run of runs) {
       if (
-        isSessionInlineRun(run) ||
-        !run.parentRunId ||
-        !includedRunIds.has(run.parentRunId) ||
+        isSessionInlineInvocation(run.opening) ||
+        !run.opening.lineage?.parentRunId ||
+        !includedRunIds.has(run.opening.lineage.parentRunId) ||
         includedRunIds.has(run.runId)
       ) {
         continue;
@@ -1923,7 +1868,7 @@ function conversationCopyTurnClosure(
 
 function sourceCompactableEventsByRunId(
   plans: readonly {
-    readonly run: AgentRunHeader;
+    readonly run: RuntimeInvocationRecord;
     readonly events: readonly RuntimeEvent[];
   }[],
   sessionEvents: readonly RuntimeEvent[],
@@ -1933,7 +1878,7 @@ function sourceCompactableEventsByRunId(
   const result = new Map<string, readonly RuntimeEvent[]>();
 
   for (const plan of plans) {
-    if (isSessionInlineRun(plan.run)) {
+    if (isSessionInlineInvocation(plan.run.opening)) {
       result.set(plan.run.runId, inlineEvents);
       continue;
     }
@@ -1949,7 +1894,7 @@ function sourceCompactableEventsByRunId(
       }
       visited.add(cursor.run.runId);
       reverseChain.push(cursor);
-      const sourceRunId = cursor.run.resumedFromRunId;
+      const sourceRunId = cursor.run.opening.lineage?.resumedFromRunId;
       if (!sourceRunId) break;
       cursor = plansByRunId.get(sourceRunId);
       if (!cursor) {
@@ -1968,8 +1913,4 @@ function sourceCompactableEventsByRunId(
   }
 
   return result;
-}
-
-function isTerminalRunStatus(status: AgentRunHeader['status']): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled';
 }

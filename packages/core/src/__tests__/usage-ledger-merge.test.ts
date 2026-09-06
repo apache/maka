@@ -20,7 +20,12 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { MODEL_CALL_ATTEMPT_SCHEMA_VERSION, type ModelCallAttempt } from '../model-call-attempt.js';
+import { EMPTY_MODEL_CALL_COVERAGE } from '../usage-ledger-merge.js';
+import type {
+  ModelCallUsageBuckets,
+  ModelCallUsageLogs,
+  ModelCallUsageSummary,
+} from '../model-call-usage-projection.js';
 import {
   EMPTY_USAGE_PROVENANCE,
   estimatedUsageCost,
@@ -37,31 +42,61 @@ import type { UsageBucket, UsageLogRow, UsageSummaryV2 } from '../usage-stats/ty
 // and silently fall outside the `all` range, which starts at 0.
 const NOW = 1_750_000_000_000;
 
-function attempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallAttempt {
+/**
+ * A canonical answer as the ledger returns it: already aggregated, with what
+ * qualifies it. The merge's job is to add two answers and record where each
+ * half came from; how the canonical half was computed is the ledger's.
+ */
+function canonical<T>(
+  projection: T,
+  overrides: { unreadableRecords?: number; pendingRepairs?: number } = {},
+): { projection: T; unreadableRecords: number; pendingRepairs: number } {
+  return { projection, unreadableRecords: 0, pendingRepairs: 0, ...overrides };
+}
+
+function canonicalSummary(overrides: Partial<ModelCallUsageSummary> = {}): ModelCallUsageSummary {
   return {
-    schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
-    logicalCallId: 'call-1',
-    attemptId: 'attempt-1',
-    traceId: 'trace-1',
-    sessionId: 'session-1',
-    runId: 'run-1',
-    turnId: 'turn-1',
-    step: 0,
-    attempt: 0,
-    callKind: 'main',
-    providerId: 'anthropic',
-    modelId: 'claude-opus-5',
-    startedAt: NOW - 1_000,
-    completedAt: NOW - 500,
-    latencyMs: 500,
-    status: 'completed',
-    usageBasis: 'reported',
-    inputTokens: 100,
-    outputTokens: 20,
-    costBasis: 'priced',
-    costUsd: 0.004,
+    range: { from: 0, to: NOW },
+    totalRequests: 1,
+    totalCostUsd: 0.004,
+    totalDurationMs: 500,
+    totalTokens: {
+      input: 100,
+      output: 20,
+      cacheMiss: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      reasoning: 0,
+      total: 120,
+    },
+    cacheHitRequests: 0,
+    cacheCreateRequests: 0,
+    errorRequests: 0,
+    coverage: { ...EMPTY_MODEL_CALL_COVERAGE, attempts: 1, pricedAttempts: 1 },
     ...overrides,
   };
+}
+
+function canonicalBuckets(buckets: UsageBucket[]): ModelCallUsageBuckets {
+  return {
+    buckets,
+    coverage: {
+      ...EMPTY_MODEL_CALL_COVERAGE,
+      attempts: buckets.reduce((total, bucket) => total + bucket.requests, 0),
+    },
+  };
+}
+
+function canonicalLogs(rows: UsageLogRow[]): ModelCallUsageLogs {
+  return {
+    rows,
+    total: rows.length,
+    coverage: { ...EMPTY_MODEL_CALL_COVERAGE, attempts: rows.length },
+  };
+}
+
+function canonicalLog(id: string, ts: number, overrides: Partial<UsageLogRow> = {}): UsageLogRow {
+  return { ...legacyLog(id, ts), costBasis: 'priced', costUsd: 0.004, ...overrides };
 }
 
 function legacySummary(overrides: Partial<UsageSummaryV2> = {}): UsageSummaryV2 {
@@ -81,6 +116,7 @@ function legacySummary(overrides: Partial<UsageSummaryV2> = {}): UsageSummaryV2 
     cacheHitRequests: 0,
     cacheCreateRequests: 0,
     errorRequests: 1,
+    totalDurationMs: 0,
     ...overrides,
   };
 }
@@ -125,12 +161,7 @@ function legacyBucket(overrides: Partial<UsageBucket> = {}): UsageBucket {
 
 describe('usage ledger merge', () => {
   test('sums both sources and reports how much came from the frozen table', () => {
-    const merged = mergeUsageSummary(
-      legacySummary(),
-      { attempts: [attempt({ attemptId: 'a' })], unreadableRecords: 0, pendingRepairs: 0 },
-      { range: 'all' },
-      NOW,
-    );
+    const merged = mergeUsageSummary(legacySummary(), canonical(canonicalSummary()));
 
     assert.equal(merged.totalRequests, 3);
     assert.equal(merged.totalCostUsd, 0.01 + 0.004);
@@ -144,16 +175,31 @@ describe('usage ledger merge', () => {
     assert.equal(merged.provenance.coverage.pricedAttempts, 1);
   });
 
+  test('merges recorded call time from both ledgers', () => {
+    const merged = mergeUsageSummary(
+      legacySummary({ totalDurationMs: 700 }),
+      canonical(canonicalSummary({ totalDurationMs: 500 })),
+    );
+    assert.equal(merged.totalDurationMs, 1_200);
+
+    // The projection always measures the attempts it counts; a legacy store
+    // with no recorded time simply contributes a zero to the sum.
+    const canonicalOnly = mergeUsageSummary(
+      legacySummary(),
+      canonical(canonicalSummary({ totalDurationMs: 500 })),
+    );
+    assert.equal(canonicalOnly.totalDurationMs, 500);
+  });
+
   test('unpriced canonical spend stays out of the total and is reported instead', () => {
     const merged = mergeUsageSummary(
       legacySummary({ totalRequests: 0, totalCostUsd: 0, errorRequests: 0 }),
-      {
-        attempts: [attempt({ attemptId: 'a', costBasis: 'unpriced', costUsd: undefined })],
-        unreadableRecords: 0,
-        pendingRepairs: 0,
-      },
-      { range: 'all' },
-      NOW,
+      canonical(
+        canonicalSummary({
+          totalCostUsd: 0,
+          coverage: { ...EMPTY_MODEL_CALL_COVERAGE, attempts: 1, unpricedAttempts: 1 },
+        }),
+      ),
     );
 
     assert.equal(merged.totalCostUsd, 0);
@@ -165,9 +211,7 @@ describe('usage ledger merge', () => {
   test('records that could not be decoded are reported, not silently dropped', () => {
     const merged = mergeUsageSummary(
       legacySummary(),
-      { attempts: [], unreadableRecords: 3, pendingRepairs: 0 },
-      { range: 'all' },
-      NOW,
+      canonical(canonicalSummary(), { unreadableRecords: 3 }),
     );
 
     assert.equal(merged.provenance.unreadableRecords, 3);
@@ -176,17 +220,19 @@ describe('usage ledger merge', () => {
   test('buckets sharing a key combine, re-weighting the per-request means', () => {
     const merged = mergeUsageBuckets(
       [legacyBucket()],
-      {
-        attempts: [
-          attempt({ attemptId: 'a', latencyMs: 800, status: 'completed' }),
-          attempt({ attemptId: 'b', latencyMs: 800, status: 'failed' }),
-        ],
-        unreadableRecords: 0,
-        pendingRepairs: 0,
-      },
-      { range: 'all' },
-      'model',
-      NOW,
+      canonical(
+        canonicalBuckets([
+          legacyBucket({
+            requests: 2,
+            costUsd: 0.008,
+            avgLatencyMs: 800,
+            errorRate: 0.5,
+            inputTokens: 200,
+            outputTokens: 40,
+            totalTokens: 240,
+          }),
+        ]),
+      ),
     );
 
     assert.equal(merged.buckets.length, 1);
@@ -203,10 +249,7 @@ describe('usage ledger merge', () => {
   test('buckets with no counterpart in the other source pass through intact', () => {
     const merged = mergeUsageBuckets(
       [legacyBucket({ key: 'openai:gpt-5', label: 'openai:gpt-5' })],
-      { attempts: [attempt({ attemptId: 'a' })], unreadableRecords: 0, pendingRepairs: 0 },
-      { range: 'all' },
-      'model',
-      NOW,
+      canonical(canonicalBuckets([legacyBucket({ requests: 1 })])),
     );
 
     assert.deepEqual(merged.buckets.map((bucket) => bucket.key).sort(), [
@@ -217,41 +260,21 @@ describe('usage ledger merge', () => {
 
   test('log pages interleave both sources newest first and page across the boundary', () => {
     const legacyRows = [legacyLog('legacy-new', NOW - 100), legacyLog('legacy-old', NOW - 900)];
-    const canonical = {
-      attempts: [
-        attempt({ attemptId: 'canonical-mid', logicalCallId: 'c-mid', completedAt: NOW - 400 }),
-        attempt({
-          attemptId: 'canonical-oldest',
-          logicalCallId: 'c-old',
-          completedAt: NOW - 1_200,
-        }),
-      ],
-      unreadableRecords: 0,
-      pendingRepairs: 0,
-    };
-
-    const first = mergeUsageLogs(
-      { rows: legacyRows, total: 2 },
-      canonical,
-      { range: 'all' },
-      NOW,
-      0,
-      2,
+    const canonicalPage = canonical(
+      canonicalLogs([
+        canonicalLog('canonical-mid', NOW - 400),
+        canonicalLog('canonical-oldest', NOW - 1_200),
+      ]),
     );
+
+    const first = mergeUsageLogs({ rows: legacyRows, total: 2 }, canonicalPage, 0, 2);
     assert.deepEqual(
       first.rows.map((row) => row.id),
       ['legacy-new', 'canonical-mid'],
     );
     assert.equal(first.total, 4);
 
-    const second = mergeUsageLogs(
-      { rows: legacyRows, total: 2 },
-      canonical,
-      { range: 'all' },
-      NOW,
-      2,
-      2,
-    );
+    const second = mergeUsageLogs({ rows: legacyRows, total: 2 }, canonicalPage, 2, 2);
     assert.deepEqual(
       second.rows.map((row) => row.id),
       ['legacy-old', 'canonical-oldest'],
@@ -260,14 +283,7 @@ describe('usage ledger merge', () => {
   });
 
   test('a page beyond both sources is empty rather than throwing', () => {
-    const merged = mergeUsageLogs(
-      { rows: [], total: 0 },
-      { attempts: [], unreadableRecords: 0, pendingRepairs: 0 },
-      { range: 'all' },
-      NOW,
-      0,
-      10,
-    );
+    const merged = mergeUsageLogs({ rows: [], total: 0 }, canonical(canonicalLogs([])), 0, 10);
 
     assert.deepEqual(merged.rows, []);
     assert.equal(merged.total, 0);

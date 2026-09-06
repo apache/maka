@@ -67,6 +67,7 @@ export interface DesktopTranscriptRangeRequest {
 
 export interface DesktopTranscriptHandle extends DesktopTranscriptOpenResult {
   loadBefore(anchorSequence: number | null, maxBytes?: number): Promise<void>;
+  loadAfter(anchorSequence: number | null, maxBytes?: number): Promise<void>;
   loadAround(sequence: number, maxBytes?: number): Promise<void>;
   close(): Promise<void>;
 }

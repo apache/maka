@@ -85,6 +85,17 @@ const projectActions: ProjectRowActions = {
   onRestore: () => undefined,
 };
 
+/** The list's top-level `SideNavSection`s, in document order, by their title. */
+function readSections(document: Document): Array<{ title: string; element: Element }> {
+  return [...document.querySelectorAll('.maka-session-list > [role="group"]')].map((element) => {
+    const labelId = element.getAttribute('aria-labelledby');
+    return {
+      title: (labelId ? document.getElementById(labelId)?.textContent : undefined) ?? '',
+      element,
+    };
+  });
+}
+
 function assertNoNestedButtons(markup: string): void {
   // Structural check. A real regression here moves the action menu inside the
   // navigation control, and the menu always ships wrapped in
@@ -301,6 +312,89 @@ test('renders collapsible project navigation and row actions as sibling controls
   assert.ok(navigation.getAttribute('aria-describedby'));
   assertDescriptionReferencesResolve(markup);
   assertNoNestedButtons(markup);
+});
+
+test('renders pinned tasks once above project groups', () => {
+  const pinnedSession: SessionSummary = {
+    ...session,
+    id: 'session-pinned',
+    name: 'Pinned task',
+    isFlagged: true,
+  };
+  const projectSession: SessionSummary = {
+    ...session,
+    id: 'session-project',
+    name: 'Project task',
+  };
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail
+        sessions={[pinnedSession, projectSession]}
+        groups={[
+          {
+            id: project.id,
+            label: project.name,
+            project,
+            sessions: [pinnedSession, projectSession],
+          },
+        ]}
+        groupVariant="project"
+      />
+    </LocaleProvider>,
+  );
+
+  const { document } = parseHTML(markup);
+  const sections = readSections(document);
+  assert.deepEqual(
+    sections.map((section) => section.title),
+    ['Pinned', 'Projects'],
+    'pinned tasks and project rows are sibling sections, not a section beside bare items',
+  );
+  const [pinned, projects] = sections;
+  assert.ok(pinned && projects);
+  assert.equal(markup.match(/Pinned task/g)?.length, 1);
+  assert.match(pinned.element.textContent, /Pinned task/);
+  assert.doesNotMatch(projects.element.textContent, /Pinned task/);
+  const projectRow = projects.element.querySelector('.maka-project-row');
+  assert.ok(projectRow, 'project rows are items inside the Projects section');
+  assert.match(projectRow.textContent, /Project task/);
+});
+
+test('a project whose only task is pinned describes itself as empty', () => {
+  const pinnedSession: SessionSummary = {
+    ...session,
+    id: 'session-pinned',
+    name: 'Pinned task',
+    isFlagged: true,
+  };
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail
+        sessions={[pinnedSession]}
+        groups={[{ id: project.id, label: project.name, project, sessions: [pinnedSession] }]}
+        groupVariant="project"
+        projectActions={projectActions}
+      />
+    </LocaleProvider>,
+  );
+
+  const { document } = parseHTML(markup);
+  const projectRow = document.querySelector('.maka-project-row');
+  assert.ok(projectRow);
+  const navigation = projectRow.querySelector<HTMLButtonElement>(':scope > div > button');
+  assert.ok(navigation);
+  assert.equal(navigation.getAttribute('aria-controls'), null, 'no disclosure without a subtree');
+  const describedBy = navigation.getAttribute('aria-describedby');
+  assert.ok(describedBy);
+  const description = document.getElementById(describedBy);
+  assert.ok(description);
+  assert.match(
+    description.getAttribute('aria-label') ?? '',
+    /\b0 tasks\b/,
+    'the hover description counts what the row actually shows',
+  );
+  const action = document.querySelector('button[aria-label="Maka project actions"]');
+  assert.ok(action);
 });
 
 test('keeps project running totals aligned with renderer-local task streaming', () => {

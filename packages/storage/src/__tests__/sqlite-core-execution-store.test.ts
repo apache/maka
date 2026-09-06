@@ -23,7 +23,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import type { AgentRunHeader, EmittedAgentRunEvent } from '@maka/core/agent-run';
+import type { EmittedAgentRunEvent } from '@maka/core/agent-run';
+import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
+import type { RunCompositionSnapshot } from '@maka/core/run-composition';
 import {
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
   decodeModelCallAttempt,
@@ -43,22 +45,22 @@ import {
   removeTrackedControlDirectories,
   trackControlDirectory,
 } from './fixtures/control-directory-hygiene.js';
+import { openInvocation } from './fixtures/invocation-opening.js';
 
 // The control directory of each resolved root lives outside that root, so a
 // temporary root's removal leaves it behind; reclaim the recorded rootIds here.
 after(removeTrackedControlDirectories);
 
 describe('SQLite core execution stores', () => {
-  test('persists AgentRun header and events', async () => {
+  test('persists AgentRun events against the invocation that opened them', async () => {
     await withRoot(async (root) => {
+      await openRun(root);
       const store = createSqliteAgentRunStore(root);
-      await store.createRun(runHeader());
       await store.appendEvent('session-1', 'run-1', runEvent());
       store.close?.();
 
       const reopened = createSqliteAgentRunStore(root);
       try {
-        assert.equal((await reopened.readRun('session-1', 'run-1')).runId, 'run-1');
         assert.equal((await reopened.readEvents('session-1', 'run-1'))[0]?.id, 'event-1');
       } finally {
         reopened.close?.();
@@ -66,53 +68,23 @@ describe('SQLite core execution stores', () => {
     });
   });
 
-  test('folds retired AgentRun values only when reading persisted rows', async () => {
+  test('refuses to hang an event on a run no invocation ever opened', async () => {
     await withRoot(async (root) => {
       const store = createSqliteAgentRunStore(root);
-      await store.createRun(runHeader());
-      await assert.rejects(
-        () =>
-          store.createRun({
-            ...runHeader({ runId: 'run-retired', turnId: 'turn-retired' }),
-            permissionMode: 'execute',
-          } as unknown as AgentRunHeader),
-        /Invalid AgentRun header schema/,
-      );
-      store.close?.();
-
-      const database = new DatabaseSync(join(root, 'runtime.sqlite'));
       try {
-        const row = database
-          .prepare("SELECT record_json AS recordJson FROM core_agent_runs WHERE run_id = 'run-1'")
-          .get() as { recordJson: string };
-        const retired = JSON.parse(row.recordJson) as Record<string, unknown>;
-        retired.status = 'waiting_permission';
-        retired.permissionMode = 'execute';
-        retired.automationId = 'automation-1';
-        database
-          .prepare("UPDATE core_agent_runs SET record_json = ? WHERE run_id = 'run-1'")
-          .run(JSON.stringify(retired));
+        await assert.rejects(store.appendEvent('session-1', 'run-missing', runEvent()), {
+          code: 'ENOENT',
+        });
       } finally {
-        database.close();
-      }
-
-      const reopened = createSqliteAgentRunStore(root);
-      try {
-        const decoded = await reopened.readRun('session-1', 'run-1');
-        assert.equal(decoded.status, 'waiting_for_user');
-        assert.equal(decoded.permissionMode, 'ask');
-        assert.equal(decoded.legacyAutomationId, 'automation-1');
-        assert.equal(Object.hasOwn(decoded, 'automationId'), false);
-      } finally {
-        reopened.close?.();
+        store.close?.();
       }
     });
   });
 
   test('advances the model-call high-water index with the authority append', async () => {
     await withRoot(async (root) => {
+      await openRun(root);
       const store = createSqliteAgentRunStore(root);
-      await store.createRun(runHeader());
       await store.appendEvent('session-1', 'run-1', runEvent());
       await store.appendEvent('session-1', 'run-1', {
         ...runEvent(),
@@ -142,8 +114,8 @@ describe('SQLite core execution stores', () => {
 
   test('commits canonical authority without guessing a malformed projection order', async () => {
     await withRoot(async (root) => {
+      await openRun(root);
       const store = createSqliteAgentRunStore(root);
-      await store.createRun(runHeader());
       await store.appendEvent(
         'session-1',
         'run-1',
@@ -254,8 +226,8 @@ describe('SQLite core execution stores', () => {
 
   test('does not repair a malformed projection from a stale ledger revision', async () => {
     await withRoot(async (root) => {
+      await openRun(root);
       const store = createSqliteAgentRunStore(root);
-      await store.createRun(runHeader());
       await store.appendEvent('session-1', 'run-1', runEvent());
       await store.repairEventProjection(
         'session-1',
@@ -321,8 +293,8 @@ describe('SQLite core execution stores', () => {
 
   test('rejects a projection repair without a canonical ledger revision', async () => {
     await withRoot(async (root) => {
+      await openRun(root);
       const store = createSqliteAgentRunStore(root);
-      await store.createRun(runHeader());
       await store.appendEvent('session-1', 'run-1', runEvent());
       const before = await store.readEventProjection(
         'session-1',
@@ -349,8 +321,8 @@ describe('SQLite core execution stores', () => {
 
   test('backfills the model-call high-water when upgrading existing AgentRun rows', async () => {
     await withRoot(async (root) => {
+      await openRun(root);
       const store = createSqliteAgentRunStore(root);
-      await store.createRun(runHeader());
       await store.appendEvent('session-1', 'run-1', {
         ...runEvent(),
         id: 'legacy-model-call-event',
@@ -456,58 +428,10 @@ describe('SQLite core execution stores', () => {
     });
   });
 
-  test('pages AgentRuns by stable creation and run identity order', async () => {
-    await withRoot(async (root) => {
-      const store = createSqliteAgentRunStore(root);
-      try {
-        await store.createRun(runHeader({ runId: 'run-a', turnId: 'turn-a', createdAt: 1 }));
-        await store.createRun(runHeader({ runId: 'run-b', turnId: 'turn-b', createdAt: 2 }));
-        await store.createRun(runHeader({ runId: 'run-c', turnId: 'turn-c', createdAt: 2 }));
-
-        const first = await store.listSessionRunsPage('session-1', { limit: 2 });
-        assert.deepEqual(
-          first.runs.map((run) => run.runId),
-          ['run-c', 'run-b'],
-        );
-        assert.deepEqual(first.nextCursor, { createdAt: 2, runId: 'run-b' });
-
-        await store.createRun(runHeader({ runId: 'run-d', turnId: 'turn-d', createdAt: 3 }));
-        const older = await store.listSessionRunsPage('session-1', {
-          limit: 2,
-          before: first.nextCursor ?? undefined,
-        });
-        assert.deepEqual(
-          older.runs.map((run) => run.runId),
-          ['run-a'],
-        );
-        assert.equal(older.nextCursor, null);
-      } finally {
-        store.close?.();
-      }
-    });
-  });
-
-  test('rejects a non-finite AgentRun page cursor', async () => {
-    await withRoot(async (root) => {
-      const store = createSqliteAgentRunStore(root);
-      try {
-        await assert.rejects(
-          store.listSessionRunsPage('session-1', {
-            limit: 1,
-            before: { createdAt: Number.NaN, runId: 'run-1' },
-          }),
-          /Invalid AgentRun page cursor/u,
-        );
-      } finally {
-        store.close?.();
-      }
-    });
-  });
-
   test('preserves provider failure diagnostics in the AgentRun authority after reopen', async () => {
     await withRoot(async (root) => {
+      await openRun(root);
       const store = createSqliteAgentRunStore(root);
-      await store.createRun(runHeader());
       await store.appendEvent('session-1', 'run-1', {
         type: 'model_call_attempt_recorded',
         id: 'attempt-1',
@@ -555,15 +479,21 @@ describe('SQLite core execution stores', () => {
 
   test('commits one immutable Run Composition snapshot', async () => {
     await withRoot(async (root) => {
+      await openRun(root);
       const store = createSqliteAgentRunStore(root);
       try {
-        await store.createRun(runHeader());
         const composition = runComposition('1');
-        await store.updateRun('session-1', 'run-1', { runComposition: composition });
-        await store.updateRun('session-1', 'run-1', { runComposition: composition });
-        assert.deepEqual((await store.readRun('session-1', 'run-1')).runComposition, composition);
+        await store.appendEvent('session-1', 'run-1', compositionEvent('event-1', composition));
+        await store.appendEvent('session-1', 'run-1', compositionEvent('event-2', composition));
+        const events = await store.readEvents('session-1', 'run-1');
+        assert.deepEqual(agentRunCompositionFromEvents(events), composition);
+        assert.equal(
+          events.filter((event) => event.type === 'run_composition_recorded').length,
+          1,
+          'an identical re-append is the writer retrying, not a second composition',
+        );
         await assert.rejects(
-          store.updateRun('session-1', 'run-1', { runComposition: runComposition('2') }),
+          store.appendEvent('session-1', 'run-1', compositionEvent('event-3', runComposition('2'))),
           /AgentRun Run Composition is immutable/u,
         );
       } finally {
@@ -574,8 +504,8 @@ describe('SQLite core execution stores', () => {
 
   test('reads an AgentRun event type this build does not write', async () => {
     await withRoot(async (root) => {
+      await openRun(root);
       const store = createSqliteAgentRunStore(root);
-      await store.createRun(runHeader());
       await store.appendEvent('session-1', 'run-1', runEvent());
       store.close?.();
 
@@ -675,26 +605,13 @@ async function withRoot(run: (root: string) => Promise<void>): Promise<void> {
   }
 }
 
-function runHeader(overrides: Partial<AgentRunHeader> = {}): AgentRunHeader {
-  return {
-    runId: 'run-1',
-    sessionId: 'session-1',
-    turnId: 'turn-1',
-    status: 'created',
-    backendKind: 'fake',
-    llmConnectionSlug: 'fake',
-    modelId: 'fake-model',
-    cwd: '/tmp/cwd',
-    permissionMode: 'ask',
-    createdAt: 1,
-    updatedAt: 1,
-    ...overrides,
-  };
+function openRun(root: string): Promise<void> {
+  return openInvocation(root, { sessionId: 'session-1', runId: 'run-1', turnId: 'turn-1' });
 }
 
 function runEvent(): EmittedAgentRunEvent {
   return {
-    type: 'run_started',
+    type: 'turn_started',
     id: 'event-1',
     runId: 'run-1',
     sessionId: 'session-1',
@@ -730,7 +647,19 @@ function modelCallAttempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallA
   };
 }
 
-function runComposition(seed: string): NonNullable<AgentRunHeader['runComposition']> {
+function compositionEvent(id: string, composition: RunCompositionSnapshot): EmittedAgentRunEvent {
+  return {
+    type: 'run_composition_recorded',
+    id,
+    runId: 'run-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    ts: 5,
+    data: { runComposition: composition },
+  };
+}
+
+function runComposition(seed: string): RunCompositionSnapshot {
   return {
     schemaVersion: 1,
     composerId: 'maka.interactive',

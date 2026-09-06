@@ -111,6 +111,17 @@ export function applyMermaidRenderBudget(source: string): string {
   return lines.join('\n');
 }
 
+// Whether the prose (not code) of a markdown source is written in Han script.
+// The document `lang` is the UI locale, which says nothing about what the
+// model wrote, so the CSS that styles Han-specific runs (emphasis has no
+// italic in Han faces) keys on this instead.
+export function hasHanProse(source: string): boolean {
+  const prose = source
+    .replace(/^( {0,3})(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n {0,3}\2[ \t]*$/gm, '')
+    .replace(/`[^`\n]*`/g, '');
+  return /\p{Script=Han}/u.test(prose);
+}
+
 const MARKDOWN_COMPONENTS = {
   default: {
     ...BASE_MARKDOWN_COMPONENTS,
@@ -152,6 +163,7 @@ export function MarkdownBody(props: {
   return (
     <div
       data-maka-contract="markdown"
+      data-maka-script={hasHanProse(props.text) ? 'han' : undefined}
       // Migration-only identity wrapper. `display: contents` gives the
       // contract harness a stable declared subtree without adding a layout
       // box or interfering with Astryx's document root.

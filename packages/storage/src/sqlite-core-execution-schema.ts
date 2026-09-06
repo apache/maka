@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_CORE_EXECUTION_SCHEMA_VERSION = 6;
+export const SQLITE_CORE_EXECUTION_SCHEMA_VERSION = 8;
 
 export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
   db.exec(`
@@ -27,7 +27,6 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
       session_id TEXT NOT NULL,
       run_id TEXT NOT NULL,
       created_at INTEGER NOT NULL,
-      record_json TEXT NOT NULL,
       latest_model_call_sequence INTEGER CHECK (latest_model_call_sequence >= 0),
       PRIMARY KEY (session_id, run_id)
     );
@@ -148,6 +147,9 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
     'latest_model_call_sequence',
     'INTEGER CHECK (latest_model_call_sequence >= 0)',
   );
+  // The runtime migration runs first and has already turned every stored Run header into an
+  // invocation opening fact, so the row keeps only what the ledger needs to hang its events on.
+  dropColumn(db, 'core_agent_runs', 'record_json');
   db.exec(`
     UPDATE core_agent_runs
     SET latest_model_call_sequence = (
@@ -170,6 +172,16 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
       ON core_agent_runs(session_id, latest_model_call_sequence, run_id)
       WHERE latest_model_call_sequence IS NOT NULL;
 
+    DROP INDEX IF EXISTS core_root_turn_continuation_source;
+
+    CREATE INDEX IF NOT EXISTS core_root_turn_continuation_source_v2
+      ON core_root_turn_admissions(
+        session_id,
+        json_extract(record_json, '$.execution.sourceTurnId'),
+        json_extract(record_json, '$.execution.sourceRunId')
+      )
+      WHERE json_extract(record_json, '$.execution.kind') = 'safe_boundary_continuation';
+
     DROP INDEX IF EXISTS core_agent_runs_identity;
 
     DROP TABLE IF EXISTS core_message_receipts;
@@ -181,4 +193,10 @@ function ensureColumn(db: DatabaseSync, table: string, column: string, definitio
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown }>;
   if (columns.some((candidate) => candidate.name === column)) return;
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+function dropColumn(db: DatabaseSync, table: string, column: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown }>;
+  if (!columns.some((candidate) => candidate.name === column)) return;
+  db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
 }

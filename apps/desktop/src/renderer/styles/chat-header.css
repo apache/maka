@@ -201,21 +201,6 @@
   overscroll-behavior: contain;
 }
 
-/*
- * Compatibility with Astryx #2573 until its fixed ChatLayout ships in a
- * stable package. Published 0.2.0 gives the message area min-height: 100%,
- * then adds the in-flow dock below it, creating a dock-height phantom range.
- * These are the upstream flex contracts and can be removed on that upgrade.
- */
-.maka-chat-layout > :first-child {
-  min-height: 0;
-  flex: 1 0 auto;
-}
-
-.maka-chat-layout > :last-child {
-  flex-shrink: 0;
-}
-
 .maka-chat-shell {
   position: relative;
   min-height: 0;

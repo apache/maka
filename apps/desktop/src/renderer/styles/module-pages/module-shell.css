@@ -65,18 +65,6 @@
   background: var(--muted);
 }
 
-/* The ResizeHandle's wider hit area is absolutely positioned with a vendor
-   bug: it gets the pill's translateY(-50%) centering without the pill's
-   top:50%, so the full-height strip lands shifted half its height upward —
-   over the page header, where it swallows the toolbar's clicks (技能 / MCP
-   with the inspector open; 定时任务 has the same latent strip). Drop the
-   stray translate. The !important is load-bearing: the vendor injects the
-   transform unlayered with :not(#\#) escalation, which beats any layered
-   product rule. */
-.maka-module-page .astryx-resize-handle > :not(.astryx-resize-handle-pill) {
-  transform: none !important;
-}
-
 /* The page's one control bar: module switch on the left, this page's view +
    filters on the right. It is the last row of the Layout header.
 

@@ -17,13 +17,15 @@
  * under the License.
  */
 
-import { useCallback, useEffect, useRef, type ComponentProps } from 'react';
+import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import {
   ChatView,
   ChatSurfaceLayout,
   Composer,
   ClientCapabilityPrompt,
+  finalAssistantReplyText,
+  FormInteractionPrompt,
   SandboxBoundaryPrompt,
   UserQuestionPrompt,
   useToast,
@@ -32,6 +34,7 @@ import {
   type ComposerHandle,
 } from '@maka/ui';
 import type { SessionSummary } from '@maka/core/session';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { useQuoteCompanion } from './use-quote-companion';
 import { useComposerAttachments } from '../../../../use-composer-attachments';
 import { useComposerMentionsContext } from '../../../../composer-mentions.js';
@@ -39,6 +42,11 @@ import { preflightAttachmentItems } from '../../../../attachment-preflight';
 import { toComposerIngestItems } from '../../../../composer-attachments';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
 import { deriveTurnFooterActions } from '../../../../turn-footer-actions';
+import {
+  createQuoteCompanionCompactionPresentation,
+  dispatchQuoteCompanionInput,
+  presentQuoteCompanionCompactionResult,
+} from './quote-companion-context-compaction.js';
 import type {
   CompanionQuoteTarget,
   CompanionQuoteSnapshot,
@@ -47,6 +55,28 @@ import type {
 import type { CompanionForkVisibilityEvent } from './quote-companion-visibility';
 import { readScrollMotionBehavior } from '../../../../scroll-motion-policy';
 import { useWorkbarServices } from '../../services-context.js';
+
+const RUNNING_STATUS_DELAY_MS = 200;
+
+/**
+ * A boolean that turns true only after `condition` has held for `delayMs`, and
+ * false the moment it drops — the rising-edge delay that keeps a fast turn from
+ * flashing the running-status line. A feature-local copy of the shell's
+ * useDelayedFlag: the renderer-legacy original is walled off from feature code
+ * by the architecture budget, and this is only a few lines of timer plumbing.
+ */
+function useDelayedFlag(condition: boolean, delayMs: number): boolean {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (!condition) {
+      setVisible(false);
+      return;
+    }
+    const handle = window.setTimeout(() => setVisible(true), delayMs);
+    return () => window.clearTimeout(handle);
+  }, [condition, delayMs]);
+  return visible;
+}
 
 /**
  * The side-conversation workbar tab: a transient read-only fork of the main session.
@@ -83,6 +113,22 @@ export function QuoteCompanionPanel(props: {
   const copy = getDesktopConversationCopy(locale).quoteCompanion;
   const composerRef = useRef<ComposerHandle>(null);
   const initialPromptStartedRef = useRef(false);
+  const contextCompactionPresentationRef = useRef<
+    ReturnType<typeof createQuoteCompanionCompactionPresentation>
+  >(undefined);
+  if (!contextCompactionPresentationRef.current) {
+    contextCompactionPresentationRef.current = createQuoteCompanionCompactionPresentation({
+      toastApi: toast,
+      copyForLocale: (nextLocale) => getDesktopConversationCopy(nextLocale).quoteCompanion,
+      presentTerminal(sessionId, notice) {
+        if (notice.level === 'error') {
+          toast.error(notice.title, notice.description, undefined, { sessionId });
+        } else {
+          toast[notice.level](notice.title, notice.description);
+        }
+      },
+    });
+  }
   const draftKey = `quote-companion:${props.panelId}`;
   const {
     pendingAttachments,
@@ -104,10 +150,57 @@ export function QuoteCompanionPanel(props: {
     onQuotesConsumed: props.onQuotesConsumed,
     confirmBypass: props.confirmBypass,
     onForkVisibilityChange: props.onForkVisibilityChange,
+    onContextCompactionResult: (sessionId, result) => {
+      presentQuoteCompanionCompactionResult(
+        contextCompactionPresentationRef.current!,
+        sessionId,
+        result,
+        locale,
+      );
+    },
+    onContextCompactionOutcome: (sessionId, turnId, outcome) => {
+      contextCompactionPresentationRef.current!.finished(
+        sessionId,
+        turnId,
+        outcome,
+        locale,
+      );
+    },
+    onContextCompactionError: (sessionId, error) => {
+      if (isWorkspaceUnavailableError(error)) {
+        toast.error(
+          getDesktopConversationCopy(locale).quoteCompanion.workspaceUnavailableTitle,
+          getDesktopConversationCopy(locale).quoteCompanion.workspaceUnavailableDescription,
+          undefined,
+          { sessionId },
+        );
+        return;
+      }
+      const compactCopy = getDesktopConversationCopy(locale).quoteCompanion;
+      toast.error(
+        compactCopy.compactErrorTitle,
+        generalizedErrorMessageForLocale(error, compactCopy.compactErrorFallback, locale),
+        undefined,
+        { sessionId },
+      );
+    },
   });
   useEffect(() => {
     props.onContentStateChange?.(props.panelId, companion.hasContent);
   }, [companion.hasContent, props.onContentStateChange, props.panelId]);
+  // The transcript's running-status line ("正在琢磨… · Ns"). Like the main chat
+  // (useShellLiveTurn → showRunningStatus) it rides the whole active turn, not
+  // just the pre-first-token wait, with the same rising-edge delay so a fast
+  // turn never flashes it. The companion's `processing` only covers the wait
+  // window, which is why the side panel used to show almost no progress cue.
+  // `transientMessages` covers the first-send window BEFORE the fork commits and
+  // the admission is armed: the optimistic bubble is on screen but `streaming`
+  // is still false, and the cue must already be up (the admission is deliberately
+  // armed late so the Stop button never appears before `stop()` can act on it).
+  const showRunningStatus = useDelayedFlag(
+    companion.streaming || companion.transientMessages.length > 0,
+    RUNNING_STATUS_DELAY_MS,
+  );
   useEffect(() => {
     props.onActivityStateChange?.(
       props.panelId,
@@ -175,7 +268,8 @@ export function QuoteCompanionPanel(props: {
   const activeInteraction =
     companion.activeSandboxBoundary ??
     companion.activeClientCapability ??
-    companion.activeQuestion;
+    companion.activeQuestion ??
+    companion.activeForm;
   const deriveTurnPresentation = useCallback<
     NonNullable<ComponentProps<typeof ChatView>['deriveTurnPresentation']>
   >(
@@ -186,7 +280,7 @@ export function QuoteCompanionPanel(props: {
           deriveTurnFooterActions({
             status: turn.status,
             locale,
-            hasContent: Boolean(turn.assistant?.text?.trim()),
+            hasContent: finalAssistantReplyText(turn).trim().length > 0,
             ...(companion.regeneratePendingTurnId === turn.turnId
               ? { pendingActions: new Set(['regenerate'] as const) }
               : {}),
@@ -213,7 +307,8 @@ export function QuoteCompanionPanel(props: {
             )}
             {(companion.activeSandboxBoundary ||
               companion.activeClientCapability ||
-              companion.activeQuestion) && (
+              companion.activeQuestion ||
+              companion.activeForm) && (
               <div className="maka-composer-interaction-slot">
                 {companion.activeSandboxBoundary && (
                   <SandboxBoundaryPrompt
@@ -234,35 +329,46 @@ export function QuoteCompanionPanel(props: {
                     onStop={() => void companion.stop()}
                   />
                 )}
+                {companion.activeForm && (
+                  <FormInteractionPrompt
+                    request={companion.activeForm}
+                    onRespond={companion.respondToUserForm}
+                  />
+                )}
               </div>
             )}
             <Composer
               ref={composerRef}
-              onSend={async (text) => {
-                // Mid-turn the same submit is steering — the side chat has no
-                // slash commands, so the split is just the turn's state.
-                if (companion.streaming) return companion.steer(text);
-                try {
-                  preflightAttachmentItems(pendingAttachments, locale);
-                } catch (error) {
-                  toast.error(
-                    copy.errors.sendRejected,
-                    error instanceof Error ? error.message : String(error),
-                  );
-                  return false;
-                }
-                const accepted = await companion.send(
+              onSend={(text) =>
+                dispatchQuoteCompanionInput({
                   text,
-                  pendingAttachments.length > 0
-                    ? toComposerIngestItems(pendingAttachments)
-                    : undefined,
-                );
-                if (accepted) {
-                  props.onPromptAccepted?.(props.panelId, text);
-                }
-                if (accepted) clearSubmittedAttachments(pendingAttachments);
-                return accepted;
-              }}
+                  streaming: companion.streaming,
+                  compact: companion.compact,
+                  steer: companion.steer,
+                  send: async () => {
+                    try {
+                      preflightAttachmentItems(pendingAttachments, locale);
+                    } catch (error) {
+                      toast.error(
+                        copy.errors.sendRejected,
+                        error instanceof Error ? error.message : String(error),
+                      );
+                      return false;
+                    }
+                    const accepted = await companion.send(
+                      text,
+                      pendingAttachments.length > 0
+                        ? toComposerIngestItems(pendingAttachments)
+                        : undefined,
+                    );
+                    if (accepted) {
+                      props.onPromptAccepted?.(props.panelId, text);
+                    }
+                    if (accepted) clearSubmittedAttachments(pendingAttachments);
+                    return accepted;
+                  },
+                })
+              }
               onStop={() => void companion.stop()}
               hidden={Boolean(activeInteraction)}
               streaming={companion.streaming}
@@ -305,9 +411,10 @@ export function QuoteCompanionPanel(props: {
       >
         <ChatView
           messages={companion.messages}
+          transientMessages={companion.transientMessages}
           scrollBehavior={readScrollMotionBehavior()}
           liveTurn={companion.liveTurn}
-          runningStatus={companion.processing}
+          runningStatus={showRunningStatus}
           activeSession={companion.companionSession}
           onReadAttachmentBytes={attachments.readBytes}
           deriveTurnPresentation={deriveTurnPresentation}
@@ -321,5 +428,15 @@ export function QuoteCompanionPanel(props: {
         />
       </ChatSurfaceLayout>
     </div>
+  );
+}
+
+function isWorkspaceUnavailableError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const value = error as { code?: unknown; message?: unknown };
+  return (
+    value.code === 'SESSION_WORKSPACE_UNAVAILABLE' ||
+    (typeof value.message === 'string' &&
+      value.message.includes('SESSION_WORKSPACE_UNAVAILABLE:'))
   );
 }

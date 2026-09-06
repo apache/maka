@@ -42,6 +42,7 @@ async fn authenticated_signaling_yields_a_libp2p_stream() {
     let (signaling_a, signaling_b) = tokio::io::duplex(256 * 1024);
     let options = UpgradeOptions {
         deadline: Duration::from_secs(10),
+        udp_bind_addresses: crate::engine::default_webrtc_bind_addresses(),
         ..UpgradeOptions::default()
     };
 

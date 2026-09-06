@@ -27,10 +27,13 @@ import {
   useSessionSettingIntent,
   type InteractionQueues,
   type LiveTurnProjection,
+  type TransientUserMessageProjection,
 } from '@maka/ui';
 import type {
   SandboxBoundaryRequestEvent,
   ClientCapabilityRequestEvent,
+  ContextCompactionOutcome,
+  FormRequestEvent,
   QuoteRef,
   SessionEvent,
   UserQuestionRequestEvent,
@@ -42,6 +45,8 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { InteractionFormResponse } from '@maka/core/interaction';
+import type { ContextCompactResult } from '@maka/runtime-host/protocol';
 import { useWorkbarServices } from '../../services-context.js';
 import type { WorkbarIngestInput } from '../../ports.js';
 import {
@@ -57,6 +62,7 @@ import {
   type CompanionErrorCode,
   type EnsureCompanionForkResult,
 } from './quote-companion-core.js';
+import { isExactCompactCommand } from './quote-companion-context-compaction.js';
 import { mergeSettledMessages } from '../../../../settled-message-merge.js';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
 import {
@@ -74,6 +80,14 @@ type PendingAdmission = {
   consumeOnAdmission?: () => void;
   stopPromise?: Promise<'confirmed' | 'unknown'>;
 };
+
+type PendingCompactionTerminal =
+  | { kind: 'outcome'; turnId: string; outcome: ContextCompactionOutcome }
+  | { kind: 'error'; turnId: string; error: unknown };
+
+function readMutableRef<T>(ref: { current: T }): T {
+  return ref.current;
+}
 
 type AdmissionOutcome =
   | { kind: 'admitted'; turnId: string }
@@ -119,6 +133,15 @@ export interface UseQuoteCompanionInput {
   /** Reports creation and authoritative cleanup so the host can keep every
    *  ephemeral fork hidden for its complete lifetime. */
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
+  /** Presents the immediate result of an explicit companion compaction. */
+  onContextCompactionResult?: (sessionId: string, result: ContextCompactResult) => void;
+  /** Presents the terminal event for an asynchronous companion compaction. */
+  onContextCompactionOutcome?: (
+    sessionId: string,
+    turnId: string,
+    outcome: ContextCompactionOutcome,
+  ) => void;
+  onContextCompactionError?: (sessionId: string, error: unknown) => void;
 }
 
 export async function requestPermissionModeWithConfirmation(
@@ -138,6 +161,10 @@ export interface UseQuoteCompanionResult {
    *  the model but stays hidden from this side transcript (separate transcript,
    *  like Codex /side), so the panel isn't a duplicate of the main conversation. */
   messages: StoredMessage[];
+  /** Optimistic, renderer-only user bubbles shown the instant a send dispatches,
+   *  before the durable transcript echoes them back. Reconciled away once the
+   *  durable message with the same id lands. Pass straight to `ChatView`. */
+  transientMessages: readonly TransientUserMessageProjection[];
   liveTurn: LiveTurnProjection | undefined;
   streaming: boolean;
   processing: boolean;
@@ -149,10 +176,13 @@ export interface UseQuoteCompanionResult {
   error: string | null;
   /** The model the companion inherited from the source (shown read-only). */
   activeModel: { llmConnectionSlug: string; model: string } | undefined;
-  /** Pending sandbox-boundary / user-question prompt raised by the companion's run. */
+  /** Pending sandbox-boundary / question / form prompt raised by the companion's run. */
   activeSandboxBoundary: SandboxBoundaryRequestEvent | undefined;
   activeClientCapability: ClientCapabilityRequestEvent | undefined;
   activeQuestion: UserQuestionRequestEvent | undefined;
+  activeForm: FormRequestEvent | undefined;
+  /** Runs `/compact` against the committed companion fork when it is idle. */
+  compact: () => Promise<boolean>;
   /** Returns whether the send was accepted; false leaves the draft + staged
    *  quotes in place so the user can retry. */
   send: (text: string, attachmentItems?: WorkbarIngestInput[]) => Promise<boolean>;
@@ -164,6 +194,7 @@ export interface UseQuoteCompanionResult {
   respondToSandboxBoundary: (response: SandboxBoundaryResponse) => Promise<void>;
   respondToClientCapability: (response: ClientCapabilityResponse) => Promise<void>;
   respondToUserQuestion: (response: UserQuestionResponse) => Promise<void>;
+  respondToUserForm: (response: InteractionFormResponse) => Promise<void>;
 }
 
 /** The last streamed assistant message id of a turn — the settlement anchor. */
@@ -197,6 +228,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     pendingQuotes,
     onQuotesConsumed,
     onForkVisibilityChange,
+    onContextCompactionResult,
+    onContextCompactionOutcome,
+    onContextCompactionError,
   } = input;
   const copy = getDesktopConversationCopy(locale).quoteCompanion;
   const [companion, setCompanion] = useState<SessionSummary | undefined>(undefined);
@@ -225,12 +259,30 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const settlingTurnIdsRef = useRef<Set<string>>(new Set());
   const onForkVisibilityChangeRef = useRef(onForkVisibilityChange);
   onForkVisibilityChangeRef.current = onForkVisibilityChange;
+  const onContextCompactionResultRef = useRef(onContextCompactionResult);
+  onContextCompactionResultRef.current = onContextCompactionResult;
+  const onContextCompactionOutcomeRef = useRef(onContextCompactionOutcome);
+  onContextCompactionOutcomeRef.current = onContextCompactionOutcome;
+  const onContextCompactionErrorRef = useRef(onContextCompactionError);
+  onContextCompactionErrorRef.current = onContextCompactionError;
   const localeRef = useRef(locale);
   localeRef.current = locale;
   const copyRef = useRef(copy);
   copyRef.current = copy;
   const ownTurnIdsRef = useRef<Set<string>>(new Set());
+  const compactionRequestInFlightRef = useRef(false);
+  const compactionTurnIdRef = useRef<string | null>(null);
+  const pendingCompactionTerminalRef = useRef<PendingCompactionTerminal | null>(null);
   const [allMessages, setAllMessages] = useState<StoredMessage[]>([]);
+  // Renderer-only user bubble shown the instant a send dispatches. The durable
+  // transcript only echoes the just-sent question back mid-turn on a single
+  // best-effort refresh (and otherwise not until the turn settles), so without
+  // this the user's message stays invisible until the whole answer completes.
+  // Mirrors the main chat's optimistic `transientMessages`; reconciled away once
+  // the durable message with the same id lands in `allMessages`.
+  const [pendingUserMessages, setPendingUserMessages] = useState<
+    TransientUserMessageProjection[]
+  >([]);
   const [liveTurn, setLiveTurn] = useState<LiveTurnProjection | undefined>(undefined);
   const liveTurnRef = useRef(liveTurn);
   liveTurnRef.current = liveTurn;
@@ -310,8 +362,40 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     submitLockRef.current = locked;
   }, []);
 
+  // Retire the optimistic bubble for a message id. Called when a send is
+  // retracted/abandoned; the success path retires it implicitly by reconciling
+  // against the durable transcript (see the `transientMessages` derivation).
+  const dropOptimisticUserMessage = useCallback((messageId: string) => {
+    setPendingUserMessages((current) => {
+      const next = current.filter((message) => message.id !== messageId);
+      return next.length === current.length ? current : next;
+    });
+  }, []);
+
   const applyOwnedEvent = useCallback(
     (forkId: string, event: SessionEvent) => {
+      const terminal: PendingCompactionTerminal | undefined =
+        event.type === 'complete' && event.contextCompactionOutcome
+          ? { kind: 'outcome', turnId: event.turnId, outcome: event.contextCompactionOutcome }
+          : event.type === 'abort' || (event.type === 'error' && !event.recoverable)
+            ? { kind: 'error', turnId: event.turnId, error: event }
+            : undefined;
+      if (terminal) {
+        if (compactionTurnIdRef.current === terminal.turnId) {
+          compactionTurnIdRef.current = null;
+          compactionRequestInFlightRef.current = false;
+          if (terminal.kind === 'outcome') {
+            onContextCompactionOutcomeRef.current?.(forkId, terminal.turnId, terminal.outcome);
+          } else {
+            onContextCompactionErrorRef.current?.(forkId, terminal.error);
+          }
+        } else if (compactionRequestInFlightRef.current) {
+          // The Host can publish the terminal event before the compact RPC
+          // returns its turn identity. Keep it fenced until the response
+          // proves that this event belongs to the pending compaction.
+          pendingCompactionTerminalRef.current = terminal;
+        }
+      }
       const effect = companionRunEventEffect(
         event,
         activeTurnIdRef.current,
@@ -418,11 +502,14 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     (admission: PendingAdmission, message?: string) => {
       if (pendingAdmissionRef.current !== admission) return;
       setPendingAdmission(null);
+      // The send is being abandoned (retracted / failed): the optimistic bubble
+      // would otherwise linger with no turn to reconcile it away.
+      dropOptimisticUserMessage(admission.messageId);
       if (stopRequestRef.current === admission.stopPromise) stopRequestRef.current = null;
       if (!activeTurnIdRef.current) setLiveTurn(undefined);
       if (message) setError(message);
     },
-    [setPendingAdmission],
+    [dropOptimisticUserMessage, setPendingAdmission],
   );
 
   const resolveAdmission = useCallback(
@@ -702,16 +789,75 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     };
   }, [panelId, sideChat]);
 
+  const compact = useCallback(async (): Promise<boolean> => {
+    const fork = companionRef.current;
+    if (
+      !mountedRef.current ||
+      !fork ||
+      fork.isArchived ||
+      !sessionHasExactModelChoice(fork, modelChoicesRef.current) ||
+      compactionRequestInFlightRef.current ||
+      submitLockRef.current ||
+      pendingAdmissionRef.current ||
+      activeTurnIdRef.current ||
+      (fork.runningTurnIds?.length ?? 0) > 0
+    ) {
+      return false;
+    }
+    compactionRequestInFlightRef.current = true;
+    pendingCompactionTerminalRef.current = null;
+    let awaitingTerminal = false;
+    try {
+      const result = await sideChat.compact(fork.id);
+      if (!mountedRef.current) return false;
+      awaitingTerminal = result.kind === 'started';
+      compactionTurnIdRef.current = result.turn.turnId;
+      onContextCompactionResultRef.current?.(fork.id, result);
+      const pendingTerminal = readMutableRef(pendingCompactionTerminalRef);
+      if (pendingTerminal?.turnId === result.turn.turnId) {
+        pendingCompactionTerminalRef.current = null;
+        compactionRequestInFlightRef.current = false;
+        compactionTurnIdRef.current = null;
+        if (result.kind === 'started') {
+          if (pendingTerminal.kind === 'outcome') {
+            onContextCompactionOutcomeRef.current?.(
+              fork.id,
+              pendingTerminal.turnId,
+              pendingTerminal.outcome,
+            );
+          } else {
+            onContextCompactionErrorRef.current?.(fork.id, pendingTerminal.error);
+          }
+        }
+      } else if (result.kind === 'finished') {
+        pendingCompactionTerminalRef.current = null;
+        compactionRequestInFlightRef.current = false;
+        compactionTurnIdRef.current = null;
+      }
+      return result.kind === 'started' || result.outcome.kind !== 'failed';
+    } catch (error) {
+      onContextCompactionErrorRef.current?.(fork.id, error);
+      return false;
+    } finally {
+      if (!mountedRef.current || !awaitingTerminal) {
+        compactionRequestInFlightRef.current = false;
+        if (!awaitingTerminal) compactionTurnIdRef.current = null;
+      }
+    }
+  }, [mountedRef, sideChat]);
+
   const send = useCallback(
     async (
       text: string,
       attachmentItems?: WorkbarIngestInput[],
     ): Promise<boolean> => {
       const trimmed = text.trim();
+      if (isExactCompactCommand(trimmed)) return compact();
       if (
         !mountedRef.current ||
         !trimmed ||
         submitLockRef.current ||
+        compactionRequestInFlightRef.current ||
         activeTurnIdRef.current ||
         pendingAdmissionRef.current ||
         !sourceSession
@@ -724,9 +870,46 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       const turnId = crypto.randomUUID();
       const quoteSnapshot = snapshotCompanionQuotes(panelId, pendingQuotes);
       const label = (quoteSnapshot.quotes[0]?.text ?? trimmed).slice(0, 24);
+      // Show the user's question IMMEDIATELY as an optimistic bubble, before the
+      // fork exists. On a first send `ensureFork` makes a Host round trip, and the
+      // main chat renders the question the instant Send is pressed; the side panel
+      // must match rather than stay blank until the fork materializes. The bubble
+      // ALSO lights the running-status line — the panel derives it from
+      // `streaming || transientMessages.length > 0` — so the "working" cue rises
+      // in this same window WITHOUT arming the admission early. Arming it here
+      // would flip `streaming` on and render the Composer's Stop button while
+      // `stop()` is still a no-op (`companionIdRef` is only set at commitFork): a
+      // visible-but-dead control for the whole fork round trip. So the admission
+      // and live turn are armed in `onBeforeSend`, once the fork can actually be
+      // stopped; the double-submit window stays closed by `submitLockRef`.
+      // `abandonOptimisticSend` retires the bubble if setup fails before the send.
+      const admission: PendingAdmission = {
+        messageId: turnId,
+        events: [],
+        consumeOnAdmission: () => onQuotesConsumed(quoteSnapshot),
+      };
+      setPendingUserMessages((current) => [
+        ...current.filter((message) => message.id !== turnId),
+        {
+          id: turnId,
+          text: trimmed,
+          ts: Date.now(),
+          transientPlacement: 'current_turn',
+          ...(quoteSnapshot.quotes.length > 0 ? { quotes: quoteSnapshot.quotes } : {}),
+        },
+      ]);
+      // Setup can still fail before the send is in flight (fork unavailable,
+      // fail-closed permission write, or a lost subscription). Retire the
+      // optimistic bubble and release the lock so a failed first send never
+      // strands a question with no turn to reconcile it away. The admission and
+      // live turn are not armed until `onBeforeSend`, so nothing else to unwind.
+      const abandonOptimisticSend = () => {
+        dropOptimisticUserMessage(turnId);
+        setSubmitLocked(false);
+      };
       const fork = await ensureFork(`${copyRef.current.namePrefix}${label}`);
       if (fork.status !== 'ready') {
-        setSubmitLocked(false);
+        abandonOptimisticSend();
         return false;
       }
       // A permission mode picked before the fork existed is applied now, before
@@ -747,12 +930,12 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           applied = false;
         }
         if (!mountedRef.current) {
-          setSubmitLocked(false);
+          abandonOptimisticSend();
           return false;
         }
         if (!applied) {
           setError(copyRef.current.errors.respondFailed);
-          setSubmitLocked(false);
+          abandonOptimisticSend();
           return false;
         }
       }
@@ -766,14 +949,13 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           subscriptionReadyRef.current = subscribeToFork(fork.session.id);
           setError(copyRef.current.errors.sendFailed);
         }
-        setSubmitLocked(false);
+        abandonOptimisticSend();
         return false;
       }
       if (!mountedRef.current) {
-        setSubmitLocked(false);
+        abandonOptimisticSend();
         return false;
       }
-      let sendAdmission: PendingAdmission | undefined;
       const result = await performCompanionTurn({
         api: sideChat,
         sourceSession,
@@ -792,23 +974,18 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
             sessionId,
           }),
         onForkCommitted: () => {},
-        // Arm the optimistic live turn right before the send.
+        // The send is now in flight against a committed fork, so the Stop button
+        // can finally stop something: arm the admission (flips `streaming` on)
+        // and the live turn, and release the submit lock. The optimistic bubble
+        // is already on screen from before `ensureFork`.
         onBeforeSend: () => {
           stopRequestRef.current = null;
-          const admission: PendingAdmission = {
-            messageId: turnId,
-            events: [],
-            consumeOnAdmission: () => onQuotesConsumed(quoteSnapshot),
-          };
-          sendAdmission = admission;
           setPendingAdmission(admission);
           setSubmitLocked(false);
           setLiveTurn(armLiveTurn(turnId));
         },
       });
       if (result.status === 'sent' || result.status === 'pending') {
-        const admission = sendAdmission;
-        if (!admission) return false;
         if (result.status === 'pending') {
           const outcome = resolveAdmission(result.forkId, admission, result.messageId);
           if (outcome?.kind === 'retracted') {
@@ -824,9 +1001,21 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         }
         if ((await admission.stopPromise) === 'confirmed') return false;
         setHasContent(true);
-        // Surface the just-sent user message immediately, and reflect any
-        // automatic connection/model rebound in the read-only model label.
-        void sideChat.readSettledMessages(result.forkId)
+        // Surface the just-sent user message, and reflect any automatic
+        // connection/model rebound in the read-only model label. Wait for THIS
+        // message to be durable (requiredAssistantMessageId gates on any message
+        // id) rather than returning the first ready snapshot: on a follow-up the
+        // transcript store is already "ready" from the prior turn, so an
+        // unqualified read returns stale and the new turn never lands in
+        // `messages`. Without the turn, the running-status line ("正在推敲…") has
+        // nothing to attach to and only appears once the answer starts settling.
+        // The Host mints the user message id from the reserved turn id (`const
+        // messageId = turnId`), so a pending/steered `result.messageId` equals
+        // `turnId` — one identity across every path.
+        void sideChat
+          .readSettledMessages(result.forkId, {
+            requiredAssistantMessageId: turnId,
+          })
           .then(({ messages: next }) => {
             if (mountedRef.current) {
               setAllMessages((current) => mergeSettledMessages(current, next));
@@ -856,7 +1045,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         };
         setError(byCode[result.code]);
         activeTurnIdRef.current = null;
-        if (sendAdmission) releaseAdmission(sendAdmission);
+        releaseAdmission(admission);
         setLiveTurn(undefined);
       }
       // 'disposed' → the panel unmounted mid-create; nothing to update.
@@ -872,6 +1061,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       mountedRef,
       sideChat,
       bindAdmittedTurn,
+      compact,
+      dropOptimisticUserMessage,
       releaseAdmission,
       resolveAdmission,
       setPendingAdmission,
@@ -1081,10 +1272,32 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     [mountedRef, sideChat],
   );
 
+  const respondToUserForm = useCallback(
+    async (response: InteractionFormResponse): Promise<void> => {
+      const id = companionIdRef.current;
+      if (!mountedRef.current || !id) return;
+      try {
+        await sideChat.respondToUserForm(id, response);
+      } catch {
+        if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
+      }
+    },
+    [mountedRef, sideChat],
+  );
+
   // Only the companion's own turns render; the forked parent history stays as
   // hidden model context.
   const messages = allMessages.filter(
     (message) => message.turnId !== undefined && ownTurnIdsRef.current.has(message.turnId),
+  );
+  // Drop the optimistic bubble only once its durable twin will actually RENDER,
+  // i.e. it is in `messages` (own-turn filtered) — not merely settled into
+  // `allMessages`. Building this from `allMessages` could retire the transient on
+  // an `outcome_unknown` settle while the durable message is still filtered out of
+  // the render, blinking the question away until `reconcileUnknownAdmission` binds.
+  const durableMessageIds = new Set(messages.map((message) => message.id));
+  const transientMessages = pendingUserMessages.filter(
+    (message) => !durableMessageIds.has(message.id),
   );
   // Inherited model (read-only): the fork's once created, else the source's.
   const activeModel = companion
@@ -1110,11 +1323,13 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     activeInteraction?.type === 'client_capability_request' ? activeInteraction : undefined;
   const activeQuestion =
     activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
+  const activeForm = activeInteraction?.type === 'form_request' ? activeInteraction : undefined;
 
   return {
     companionSession: companion,
     hasContent,
     messages,
+    transientMessages,
     liveTurn,
     streaming,
     processing,
@@ -1126,6 +1341,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     activeSandboxBoundary,
     activeClientCapability,
     activeQuestion,
+    activeForm,
+    compact,
     send,
     steer,
     setPermissionMode,
@@ -1134,5 +1351,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     respondToSandboxBoundary,
     respondToClientCapability,
     respondToUserQuestion,
+    respondToUserForm,
   };
 }

@@ -42,6 +42,11 @@ import type {
 import type { HealthSignal, HealthSnapshot } from '@maka/core/health';
 import type { DesktopExternalSessionCatalogItem } from '../../src/preload/external-session-catalog';
 import type { AppUpdateStatus } from '../../src/preload/bridge-contract';
+import {
+  AppUpdateProvider,
+  AppUpdateServicesProvider,
+  type AppUpdateServices,
+} from '../../src/renderer/features/app-update/index.js';
 import type { SessionSummary } from '@maka/core/session';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
 import type {
@@ -85,7 +90,7 @@ import { getUsageSettingsCopy } from '../../src/renderer/locales/settings-usage-
  * function, so CI could not tell us. A story that drives the UI by its visible
  * text has to source that text where the UI does.
  */
-const DAILY_REVIEW_DEFAULT_MODEL_LABEL = getDailyReviewSettingsCopy('zh').defaultModel;
+const DAILY_REVIEW_DEFAULT_MODEL_LABEL = getDailyReviewSettingsCopy('zh-CN').defaultModel;
 /** A 1×1 transparent PNG: the picker needs a valid data URL, not real art. */
 const STORY_ICON_PREVIEW =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
@@ -146,7 +151,7 @@ const generationStoryConnections = [
   generationStoryCopilotConnection,
 ];
 
-const connectionsBridge: ConnectionsBridge = {
+const connectionsBridge: Omit<ConnectionsBridge, 'oauth'> = {
   async getSnapshot() {
     return {
       connections,
@@ -590,16 +595,6 @@ const capabilitySnapshot: CapabilitySnapshotCollection = {
 
 const healthSignals: HealthSignal[] = [
   {
-    id: 'app:config',
-    label: '应用配置',
-    scope: 'app',
-    layer: 'configuration',
-    status: 'ok',
-    source: 'settings',
-    checkedAt: NOW - 60_000,
-    message: '配置文件可读写，schema 版本为最新。',
-  },
-  {
     id: 'conn:zai-live',
     label: 'Z.AI Live',
     scope: 'llm_connection',
@@ -607,8 +602,8 @@ const healthSignals: HealthSignal[] = [
     status: 'ok',
     source: 'connection_test',
     checkedAt: NOW - 12 * 60_000,
-    message: '连接测试通过，延迟 210ms。',
-    detail: '验证通过只代表凭据可用，实际可用性仍需运行态探测确认。',
+    message: 'validation_passed',
+    detail: { kind: 'validation_scope_note' },
   },
   {
     id: 'conn:openai-review',
@@ -618,8 +613,8 @@ const healthSignals: HealthSignal[] = [
     status: 'error',
     source: 'connection_test',
     checkedAt: NOW - 3 * 60_000,
-    message: '连接测试失败：HTTP 401 invalid_api_key。',
-    detail: '凭据已失效或被吊销，请在「模型」页重新填写 API Key 后再次测试。',
+    message: 'needs_reauth',
+    detail: { kind: 'last_test_message' },
     blocksSend: true,
   },
   {
@@ -630,7 +625,7 @@ const healthSignals: HealthSignal[] = [
     status: 'info',
     source: 'capability_snapshot',
     checkedAt: NOW - 60_000,
-    message: '功能已开启，但仍以逐次审批模式运行。',
+    message: 'capability_paused',
     relatedCapabilityId: 'computer_use',
   },
   {
@@ -641,20 +636,10 @@ const healthSignals: HealthSignal[] = [
     status: 'warning',
     source: 'runtime_probe',
     checkedAt: NOW - 5 * 60_000,
-    message: '探测超时，已回落到只读观察模式。',
-    detail: 'maka-cu 未在 3000ms 内完成握手；下一次探测会在功能被调用时自动触发。',
+    message: 'capability_degraded',
+    detail: { kind: 'capability_reason', reason: 'maka-cu service 启动失败、已退出或已停止。' },
     relatedCapabilityId: 'computer_use',
     blocksCapability: true,
-  },
-  {
-    id: 'storage:sessions',
-    label: '会话存储',
-    scope: 'storage',
-    layer: 'storage',
-    status: 'ok',
-    source: 'storage',
-    checkedAt: NOW - 60_000,
-    message: 'SQLite 库可写，WAL 检查点正常。',
   },
 ];
 
@@ -835,12 +820,15 @@ const makaBridge = {
       email: 'codex@example.com',
       plan: 'Plus',
     }),
+    getEnrollmentState: async () => ({ enabled: true }),
   },
   githubCopilotSubscription: {
     getAccountState: async () => ({ runtimeState: 'not_logged_in' }),
+    getEnrollmentState: async () => ({ enabled: true }),
   },
   xaiOAuth: {
     getAccountState: async () => ({ runtimeState: 'not_logged_in' }),
+    getEnrollmentState: async () => ({ enabled: true }),
   },
   app: {
     info: async () => ({
@@ -968,6 +956,24 @@ const makaBridge = {
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
 
 /**
+ * What the production App Update provider reads inside `SettingsStory`. Each
+ * call goes to `window.maka.app` at call time rather than capturing the shared
+ * fixture: a story's decorator installs its scoped bridge in a layout effect,
+ * after this module evaluated, and the channel stories below override
+ * `updateStatus` there. Capturing `makaBridge.app` here would show every About
+ * story the shared idle status.
+ */
+const settingsAppUpdateServices: AppUpdateServices = {
+  appUpdate: {
+    updateStatus: () => window.maka.app.updateStatus(),
+    checkForUpdates: () => window.maka.app.checkForUpdates(),
+    retryUpdateDownload: () => window.maka.app.retryUpdateDownload(),
+    installUpdate: (input) => window.maka.app.installUpdate(input),
+    subscribeUpdateStatus: (handler) => window.maka.app.subscribeUpdateStatus(handler),
+  },
+};
+
+/**
  * A PACKAGED install, which the shared fixture cannot be: it is a dev checkout,
  * and `buildMode` short-circuits the About lead before `updateChannel` is ever
  * read. Only these two facts move — everything else stays the shared bridge, so
@@ -1032,13 +1038,13 @@ const withGeneralCachedRevalidationBridge = withScopedMakaBridge({
 let generationStoryCatalogPending = false;
 let generationStoryRuntimeHostProfiles = runtimeHostProfiles;
 let generationStoryConnectionsPending = false;
-let generationStoryCopilotEmail = 'old-generation@example.com';
-let generationStoryCopilotAccountReads = 0;
+let generationStoryCopilotEnrollmentEnabled = true;
+let generationStoryCopilotEnrollmentReads = 0;
 let generationStoryOpenedAuthIds: string[] = [];
 let generationStoryCancelledAuthIds: string[] = [];
-let generationStoryCopilotImportAttempts = 0;
+let generationStoryCopilotLoginAttempts = 0;
 let generationStoryCopilotSecretReads = 0;
-let generationStoryCopilotImportResolve:
+let generationStoryCopilotLoginResolve:
   | ((result: { ok: true }) => void)
   | undefined;
 let generationStoryProfileListener:
@@ -1051,13 +1057,13 @@ function resetGenerationStoryBridge(
   generationStoryCatalogPending = false;
   generationStoryRuntimeHostProfiles = snapshot;
   generationStoryConnectionsPending = false;
-  generationStoryCopilotEmail = 'old-generation@example.com';
-  generationStoryCopilotAccountReads = 0;
+  generationStoryCopilotEnrollmentEnabled = true;
+  generationStoryCopilotEnrollmentReads = 0;
   generationStoryOpenedAuthIds = [];
   generationStoryCancelledAuthIds = [];
-  generationStoryCopilotImportAttempts = 0;
+  generationStoryCopilotLoginAttempts = 0;
   generationStoryCopilotSecretReads = 0;
-  generationStoryCopilotImportResolve = undefined;
+  generationStoryCopilotLoginResolve = undefined;
   generationStoryProfileListener = undefined;
 }
 
@@ -1094,13 +1100,9 @@ const withModelsOAuthGenerationRevalidationBridge = withScopedMakaBridge({
   runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
   githubCopilotSubscription: {
     ...makaBridge.githubCopilotSubscription,
-    getAccountState: async () => {
-      generationStoryCopilotAccountReads += 1;
-      return {
-        runtimeState: 'authenticated' as const,
-        email: generationStoryCopilotEmail,
-        plan: 'Plus',
-      };
+    getEnrollmentState: async () => {
+      generationStoryCopilotEnrollmentReads += 1;
+      return { enabled: generationStoryCopilotEnrollmentEnabled };
     },
   },
 } satisfies Record<string, unknown>);
@@ -1144,7 +1146,7 @@ const withModelsOAuthAuthorizationGenerationBridge = withScopedMakaBridge({
   },
 } satisfies Record<string, unknown>);
 
-const withModelsCopilotReimportGenerationBridge = withScopedMakaBridge({
+const withModelsCopilotReloginGenerationBridge = withScopedMakaBridge({
   ...makaBridge,
   runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
   connections: {
@@ -1161,15 +1163,28 @@ const withModelsCopilotReimportGenerationBridge = withScopedMakaBridge({
   },
   githubCopilotSubscription: {
     ...makaBridge.githubCopilotSubscription,
-    connectExistingLogin: () => {
-      generationStoryCopilotImportAttempts += 1;
-      if (generationStoryCopilotImportAttempts > 1) {
+    getAccountState: async () => ({ runtimeState: 'authenticated' as const }),
+    getAuthUrl: async () => {
+      generationStoryCopilotLoginAttempts += 1;
+      return {
+        authRequestId: `copilot-from-generation-${generationStoryCopilotLoginAttempts}`,
+        stateHint: 'GEN1-CODE',
+      };
+    },
+    openAuthUrl: async () => ({ ok: true as const }),
+    // The Host polls GitHub for the whole device window, so the first attempt
+    // stays unsettled until this story releases it — after the replacement Host
+    // has already taken over.
+    completeAuthorization: () => {
+      if (generationStoryCopilotLoginAttempts > 1) {
         return Promise.resolve({ ok: true as const });
       }
       return new Promise<{ ok: true }>((resolve) => {
-        generationStoryCopilotImportResolve = resolve;
+        generationStoryCopilotLoginResolve = resolve;
       });
     },
+    cancelAuthorization: async () => ({ ok: true as const }),
+    logout: async () => ({ ok: true as const }),
   },
 } satisfies Record<string, unknown>);
 
@@ -1363,6 +1378,7 @@ function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedT
   const [sessions, setSessions] = useState<DesktopSessionSummary[]>(() =>
     seed.map((session) => ({
       ...session,
+      revision: 1,
       runtimeHostId: 'storybook-local',
       profileId: 'local',
       profileName: 'Local',
@@ -1621,6 +1637,36 @@ function makeBotAttentionBridge(settings: AppSettings) {
 
 const withBotAttentionBridge = withScopedMakaBridge(makeBotAttentionBridge(botAttentionSettings));
 
+function renderedLinkColors(renderedLink: HTMLElement) {
+  const root = document.documentElement;
+  renderedLink.style.setProperty('transition', 'none', 'important');
+  root.setAttribute('data-maka-theme', 'tokyo-night');
+
+  const resolve = (value: string) => {
+    const probe = document.createElement('span');
+    probe.style.setProperty('color', value, 'important');
+    renderedLink.parentElement?.appendChild(probe);
+    const color = getComputedStyle(probe).color;
+    probe.remove();
+    return color;
+  };
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) throw new Error('Link color canvas is unavailable');
+  const rgba = (value: string) => {
+    context.clearRect(0, 0, 1, 1);
+    context.fillStyle = value;
+    context.fillRect(0, 0, 1, 1);
+    return [...context.getImageData(0, 0, 1, 1).data];
+  };
+  return {
+    link: rgba(resolve('var(--link)')),
+    solid: rgba(resolve('var(--accent-solid)')),
+    accent: rgba(resolve('var(--accent)')),
+    rendered: rgba(getComputedStyle(renderedLink).color),
+  };
+}
+
 type SettingsStoryProps = {
   section: SettingsSection;
   connections?: LlmConnection[];
@@ -1630,7 +1676,33 @@ type SettingsStoryProps = {
   /** Seeds 已归档任务. Empty for every story that is not about that page. */
   archivedTaskSessions?: readonly SessionSummary[];
   seedSnapshotCache?(cache: SettingsSnapshotCache): void;
+  frameHeight?: number | string;
+  frameMinHeight?: number;
+  frameWidth?: number | string;
 };
+
+async function tabTo(target: HTMLElement, limit = 120) {
+  for (let index = 0; index < limit; index += 1) {
+    await userEvent.tab();
+    if (document.activeElement === target) return;
+  }
+  throw new Error('Tab order never reached the target control');
+}
+
+function focusedRowOutline() {
+  const active = document.activeElement as HTMLElement | null;
+  const row = active?.closest<HTMLElement>('.astryx-item');
+  if (!row) return null;
+  const style = getComputedStyle(row);
+  return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
+}
+
+function fieldChrome(element: HTMLElement) {
+  const field = element.parentElement;
+  if (!field) throw new Error('Settings field chrome is missing');
+  const style = getComputedStyle(field);
+  return `${style.borderColor} | ${style.boxShadow}`;
+}
 
 /**
  * The provider has to sit above the body: 已归档任务's story bridge confirms
@@ -1640,7 +1712,11 @@ type SettingsStoryProps = {
 function SettingsStory(props: SettingsStoryProps) {
   return (
     <ToastProvider>
-      <SettingsStoryFrame {...props} />
+      <AppUpdateServicesProvider services={settingsAppUpdateServices}>
+        <AppUpdateProvider>
+          <SettingsStoryFrame {...props} />
+        </AppUpdateProvider>
+      </AppUpdateServicesProvider>
     </ToastProvider>
   );
 }
@@ -1679,8 +1755,9 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
         data-maka-e2e-fixture="true"
         style={{
           background: 'var(--surface-canvas)',
-          height: '100dvh',
-          minHeight: 640,
+          height: props.frameHeight ?? '100dvh',
+          minHeight: props.frameMinHeight ?? 640,
+          width: props.frameWidth ?? '100%',
         }}
       >
         <ConnectionSettingsServicesProvider services={connectionSettingsServices}>
@@ -1784,6 +1861,91 @@ export const General: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
 };
+// Real path: 设置 → 通用 → 默认模型. The popover remains a DOM descendant
+// of its Item after entering the top layer, so focused search must not ring
+// the whole settings row.
+export const GeneralPickerOpenFocusRing: Story = {
+  decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="general" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const trigger = await canvas.findByRole('button', { name: '默认模型' });
+    await userEvent.click(trigger);
+    await waitFor(() => {
+      const active = document.activeElement as HTMLElement | null;
+      expect(document.querySelector('[popover]:popover-open')).not.toBeNull();
+      expect(active?.closest('[popover]:popover-open')).not.toBeNull();
+    });
+    const active = document.activeElement as HTMLElement;
+    const row = active.closest<HTMLElement>('.astryx-item');
+    expect(row).not.toBeNull();
+    expect(row ? getComputedStyle(row).outlineStyle : null).toBe('none');
+  },
+};
+
+// Real path: keyboard navigation through 设置 → 通用. The field carries the
+// visible focus treatment; its containing Item does not add a second ring.
+export const GeneralKeyboardFocusRing: Story = {
+  decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="general" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
+    const trigger = canvas.getByRole('button', { name: '默认模型' });
+    const resting = fieldChrome(trigger);
+    tone.focus();
+    await tabTo(trigger);
+    expect(focusedRowOutline()?.outlineStyle).toBe('none');
+    await waitFor(() => expect(fieldChrome(trigger)).not.toBe(resting));
+  },
+};
+
+// Real path: Windows High Contrast keyboard navigation through 设置 → 通用.
+// The field loses its own paint there, so the Item retains the focus ring.
+export const GeneralForcedColorsFocusRing: Story = {
+  decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="general" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
+    const trigger = canvas.getByRole('button', { name: '默认模型' });
+    const resting = fieldChrome(trigger);
+    tone.focus();
+    await tabTo(trigger);
+    expect(fieldChrome(trigger)).toBe(resting);
+    expect(focusedRowOutline()?.outlineStyle).toBe('solid');
+  },
+};
+// Real path: 设置 → 通用 in a wide, short Desktop window. The main pane owns
+// overflow even when the pointer is over its blank right gutter.
+export const GeneralWideShort: Story = {
+  decorators: [withSettingsBridge],
+  render: () => (
+    <SettingsStory
+      section="general"
+      frameHeight={520}
+      frameMinHeight={0}
+      frameWidth={1600}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole('textbox', { name: '助手语气偏好' });
+    const pane = canvasElement.querySelector<HTMLElement>('.settingsMainPane');
+    const content = pane?.querySelector<HTMLElement>('.settingsPageStack');
+    const layoutContent = pane?.querySelector<HTMLElement>('.astryx-layout-content');
+    if (!pane || !content || !layoutContent) throw new Error('Settings layout is incomplete');
+    const paneRect = pane.getBoundingClientRect();
+    const contentRect = content.getBoundingClientRect();
+    expect(paneRect.right - contentRect.right).toBeGreaterThan(40);
+    expect(pane.scrollHeight).toBeGreaterThan(pane.clientHeight);
+    expect(getComputedStyle(layoutContent).overflowY).not.toBe('auto');
+    expect(getComputedStyle(pane).overflowY).toBe('auto');
+    pane.scrollTop = 600;
+    await waitFor(() => expect(pane.scrollTop).toBeGreaterThan(0));
+    expect(content.getBoundingClientRect().width).toBeGreaterThan(0);
+  },
+};
 // Cold path: Desktop-owned preferences are ready while the selected Runtime
 // Host settings read is still pending. The complete page topology stays
 // visible as neutral row placeholders, without treating hydration as a warning.
@@ -1839,7 +2001,7 @@ export const GeneralCachedRevalidation: Story = {
     await expect(
       canvas.getByRole('switch', { name: '完成时发送系统通知' }),
     ).toBeEnabled();
-    await expect(canvas.getByRole('radio', { name: '中文' })).toBeEnabled();
+    await expect(canvas.getByRole('combobox', { name: '界面语言' })).toBeEnabled();
     const mixedBoundary = canvasElement.querySelector<HTMLElement>(
       '.settingsRuntimeHostInteractionBoundary',
     );
@@ -1896,7 +2058,7 @@ export const GeneralHostGenerationRevalidation: Story = {
     await expect(
       canvas.getByRole('switch', { name: '完成时发送系统通知' }),
     ).toBeEnabled();
-    await expect(canvas.getByRole('radio', { name: '中文' })).toBeEnabled();
+    await expect(canvas.getByRole('combobox', { name: '界面语言' })).toBeEnabled();
     const mixedBoundary = canvasElement.querySelector<HTMLElement>(
       '.settingsRuntimeHostInteractionBoundary',
     );
@@ -1961,7 +2123,7 @@ export const GeneralBackgroundHostReconnectThenSelect: Story = {
     await expect(
       canvas.getByRole('switch', { name: '完成时发送系统通知' }),
     ).toBeEnabled();
-    await expect(canvas.getByRole('radio', { name: '中文' })).toBeEnabled();
+    await expect(canvas.getByRole('combobox', { name: '界面语言' })).toBeEnabled();
   },
 };
 // Error is a real signal rather than a loading state. Desktop-owned controls
@@ -2046,7 +2208,26 @@ export const GeneralGitBash: Story = {
 // Real path: 设置 → 外观.
 export const Appearance: Story = {
   decorators: [withSettingsBridge],
+  globals: { locale: 'en' },
   render: () => <SettingsStory section="appearance" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole('heading', { name: 'App icon' });
+    for (const name of ['Azure', 'Classic']) {
+      const input = await canvas.findByRole('checkbox', { name });
+      const card = input.parentElement;
+      const content = card ? [...card.children].find((child) => child.tagName !== 'INPUT') : null;
+      if (!(card instanceof HTMLElement) || !(content instanceof HTMLElement)) {
+        throw new Error(`Appearance card ${name} is incomplete`);
+      }
+      const cardRect = card.getBoundingClientRect();
+      const contentRect = content.getBoundingClientRect();
+      expect(cardRect.height).toBeGreaterThan(contentRect.height);
+      expect(
+        Math.abs((contentRect.top - cardRect.top) - (cardRect.bottom - contentRect.bottom)),
+      ).toBeLessThanOrEqual(1);
+    }
+  },
 };
 /** #1362: proxy + auth enabled so the full form-grid stack renders. */
 // Real path: 设置 → 使用统计 → 供应商统计, before any usage has been recorded.
@@ -2070,8 +2251,10 @@ export const UsageLongTail: Story = {
   render: () => <SettingsStory section="usage" />,
   play: async ({ canvasElement, globals }) => {
     const canvas = within(canvasElement);
-    const usageCopy = getUsageSettingsCopy(globals.locale === 'en' ? 'en' : 'zh');
-    expect(
+    const usageCopy = getUsageSettingsCopy(
+      globals.locale === 'en' ? 'en' : globals.locale === 'zh-TW' ? 'zh-TW' : 'zh-CN',
+    );
+      expect(
       await canvas.findByText(usageCopy.totalRequests, {
         selector: '[data-slot="stat-tile-label"]',
       }),
@@ -2212,6 +2395,44 @@ export const WebSearch: Story = {
 export const BotChatNeedsAttention: Story = {
   decorators: [withBotAttentionBridge],
   render: () => <SettingsStory section="bot-chat" />,
+  play: async ({ canvasElement }) => {
+    const dingtalk = await waitForStoryButton(
+      canvasElement,
+      (button) => button.closest('.settingsRemoteAccessCatalogRow')?.textContent?.includes('钉钉') === true,
+    );
+    await userEvent.click(dingtalk);
+    await waitForStoryCondition(
+      () => canvasElement.querySelector('.settingsBotConfigDocLink') !== null,
+      'Bot configuration documentation link did not render',
+    );
+    const link = canvasElement.querySelector<HTMLElement>('.settingsBotConfigDocLink');
+    if (!link) throw new Error('Bot configuration documentation link did not render');
+    const colors = renderedLinkColors(link);
+    expect(colors.link).toEqual(colors.solid);
+    expect(colors.link).not.toEqual(colors.accent);
+    expect(colors.rendered).toEqual(colors.link);
+  },
+};
+// Real path: keyboard navigation through 设置 → 远程接入. A catalog Item owns
+// its invisible tab stop, so the row ring is the focus indicator and remains.
+export const BotChatCatalogRowFocusRing: Story = {
+  decorators: [withBotAttentionBridge],
+  render: () => <SettingsStory section="bot-chat" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const nav = canvas.getByRole('button', { name: '远程接入' });
+    await waitForStoryCondition(
+      () => canvasElement.querySelector('.settingsRemoteAccessCatalogRow > button') !== null,
+      'Remote Access catalog row did not render',
+    );
+    nav.focus();
+    for (let index = 0; index < 120; index += 1) {
+      await userEvent.tab();
+      if (document.activeElement?.matches('.settingsRemoteAccessCatalogRow > button')) break;
+    }
+    expect(document.activeElement?.matches('.settingsRemoteAccessCatalogRow > button')).toBe(true);
+    expect(focusedRowOutline()).toEqual({ outlineStyle: 'solid', outlineWidth: '2px' });
+  },
 };
 // Real path: 设置 → 每日回顾.
 export const DailyReview: Story = {
@@ -2345,10 +2566,9 @@ export const ModelsConnectionsHostGenerationRevalidation: Story = {
 };
 
 // A ready event can replace the Runtime Host without changing
-// profileId:hostId. The catalog route stays mounted, but Copilot's singleton
-// import state belongs to the Host generation and must be read again before
-// the previous account can be presented as current. Codex and xAI instead
-// project their Connection counts from the connection catalog.
+// profileId:hostId. The active setup route stays mounted, but enrollment
+// availability belongs to the selected Host generation and must be re-read
+// before its sign-in action can remain enabled.
 export const ModelsOAuthHostGenerationRevalidation: Story = {
   decorators: [withModelsOAuthGenerationRevalidationBridge],
   render: () => {
@@ -2363,12 +2583,20 @@ export const ModelsOAuthHostGenerationRevalidation: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText('old-generation@example.com');
-    const readsBeforeReplacement = generationStoryCopilotAccountReads;
+    await userEvent.click(await canvas.findByRole('button', {
+      name: /添加账号连接：GitHub Copilot/,
+    }));
+    const signIn = await canvas.findByRole('button', { name: '使用 GitHub 登录' });
+    await waitForStoryCondition(
+      () => generationStoryCopilotEnrollmentReads > 0,
+      'Initial Copilot enrollment availability was not read',
+    );
+    await expect(signIn).not.toHaveAttribute('aria-disabled', 'true');
+    const readsBeforeReplacement = generationStoryCopilotEnrollmentReads;
     const listener = generationStoryProfileListener;
     if (!listener) throw new Error('Runtime Host generation listener did not subscribe');
 
-    generationStoryCopilotEmail = 'new-generation@example.com';
+    generationStoryCopilotEnrollmentEnabled = false;
     listener({
       epoch: 'storybook-generation-2',
       profileId: 'local',
@@ -2380,11 +2608,14 @@ export const ModelsOAuthHostGenerationRevalidation: Story = {
       isDefault: true,
     });
 
-    await canvas.findByText('new-generation@example.com');
-    await expect(canvas.queryByText('old-generation@example.com')).not.toBeInTheDocument();
-    await expect(generationStoryCopilotAccountReads).toBeGreaterThan(readsBeforeReplacement);
+    await waitForStoryCondition(
+      () => generationStoryCopilotEnrollmentReads > readsBeforeReplacement,
+      'Replacement Host generation did not re-read Copilot enrollment availability',
+    );
+    await expect(await canvas.findByRole('button', { name: '使用 GitHub 登录' }))
+      .toHaveAttribute('aria-disabled', 'true');
     await expect(
-      canvasElement.querySelector('[data-maka-contract="provider-catalog"]'),
+      canvasElement.querySelector('[data-maka-contract="provider-setup"]'),
     ).toBeInTheDocument();
   },
 };
@@ -2442,12 +2673,14 @@ export const ModelsOAuthAuthorizationHostGenerationRevalidation: Story = {
   },
 };
 
-// The connection-detail Copilot import owns an action guard and a late
+// The connection-detail Copilot sign-in owns an action guard and a late
 // success callback independently of the catalog login panel. A same-key Host
 // replacement retires that controller without throwing away the detail route
-// or its surrounding Settings state.
-export const ModelsCopilotReimportHostGenerationRevalidation: Story = {
-  decorators: [withModelsCopilotReimportGenerationBridge],
+// or its surrounding Settings state. The detail surface offers the device
+// sign-in rather than a local import: the Host owns enrollment, and Desktop
+// discovers an existing credential from the catalog panel instead.
+export const ModelsCopilotReloginHostGenerationRevalidation: Story = {
+  decorators: [withModelsCopilotReloginGenerationBridge],
   render: () => {
     resetGenerationStoryBridge();
     return (
@@ -2460,11 +2693,11 @@ export const ModelsCopilotReimportHostGenerationRevalidation: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const firstImport = await canvas.findByRole('button', { name: '重新导入' });
-    await userEvent.click(firstImport);
+    const firstLogin = await canvas.findByRole('button', { name: '重新登录' });
+    await userEvent.click(firstLogin);
     await waitForStoryCondition(
-      () => generationStoryCopilotImportAttempts === 1,
-      'GitHub Copilot reimport did not start',
+      () => generationStoryCopilotLoginAttempts === 1,
+      'GitHub Copilot sign-in did not start',
     );
 
     const listener = generationStoryProfileListener;
@@ -2481,22 +2714,22 @@ export const ModelsCopilotReimportHostGenerationRevalidation: Story = {
     });
 
     await waitForStoryCondition(
-      () => canvas.queryByRole('button', { name: '重新导入' })?.hasAttribute('disabled') === false,
-      'Replacement Host kept the previous generation import guard',
+      () => canvas.queryByRole('button', { name: '重新登录' })?.hasAttribute('disabled') === false,
+      'Replacement Host kept the previous generation sign-in guard',
     );
     const readsAfterReplacement = generationStoryCopilotSecretReads;
-    generationStoryCopilotImportResolve?.({ ok: true });
+    generationStoryCopilotLoginResolve?.({ ok: true });
     await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
     await expect(generationStoryCopilotSecretReads).toBe(readsAfterReplacement);
 
-    await userEvent.click(canvas.getByRole('button', { name: '重新导入' }));
+    await userEvent.click(canvas.getByRole('button', { name: '重新登录' }));
     await waitForStoryCondition(
-      () => generationStoryCopilotImportAttempts === 2,
-      'Replacement Host could not start a fresh GitHub Copilot reimport',
+      () => generationStoryCopilotLoginAttempts === 2,
+      'Replacement Host could not start a fresh GitHub Copilot sign-in',
     );
     await waitForStoryCondition(
       () => generationStoryCopilotSecretReads > readsAfterReplacement,
-      'Replacement Host reimport did not refresh the current credential state',
+      'Replacement Host sign-in did not refresh the current credential state',
     );
     await expect(
       canvasElement.querySelector('[data-maka-contract="connection-detail"]'),
@@ -2582,6 +2815,35 @@ export const PermissionCenterDiagnosticsExpanded: Story = {
         canvasElement.querySelector('[data-readiness] button[aria-expanded="true"]') !== null,
       'Permission Center story did not expand a capability row',
     );
+    const row = canvasElement.querySelector<HTMLElement>('[data-readiness]');
+    if (!row) throw new Error('Permission Center capability row did not render');
+    const firstTextMetrics = (root: HTMLElement) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node && !node.textContent?.trim()) node = walker.nextNode();
+      if (!node?.parentElement) throw new Error('Metadata cell has no text');
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      return {
+        bottom: range.getBoundingClientRect().bottom,
+        fontSize: getComputedStyle(node.parentElement).fontSize,
+      };
+    };
+    const grids = row.querySelectorAll<HTMLElement>('.settingsCapabilityMetadata > dl');
+    expect(grids.length).toBeGreaterThan(0);
+    for (const grid of grids) {
+      const terms = [...grid.querySelectorAll<HTMLElement>(':scope > dt')];
+      const values = [...grid.querySelectorAll<HTMLElement>(':scope > dd')];
+      expect(values).toHaveLength(terms.length);
+      for (const [index, term] of terms.entries()) {
+        const value = values[index];
+        if (!value) throw new Error('Permission metadata value is missing');
+        const labelMetrics = firstTextMetrics(term);
+        const valueMetrics = firstTextMetrics(value);
+        expect(Math.abs(labelMetrics.bottom - valueMetrics.bottom)).toBeLessThanOrEqual(1);
+        expect(valueMetrics.fontSize).toBe(labelMetrics.fontSize);
+      }
+    }
   },
 };
 // Real path: 设置 → 健康 (also reachable from the topbar health action), with probes
@@ -2598,8 +2860,8 @@ export const HealthCenter: Story = {
       expect(errorFilter).toHaveAttribute('aria-pressed', 'true');
       expect(canvas.getByText('OpenAI Review')).toBeInTheDocument();
       expect(canvas.queryByText('Z.AI Live')).not.toBeInTheDocument();
-      expect(canvas.getByText('全部健康信号中，1/6 条会阻塞发送')).toBeInTheDocument();
-      expect(canvas.getByText('全部健康信号中，1/6 条会阻塞能力')).toBeInTheDocument();
+      expect(canvas.getByText('全部健康信号中，1/4 条会阻塞发送')).toBeInTheDocument();
+      expect(canvas.getByText('全部健康信号中，1/4 条会阻塞能力')).toBeInTheDocument();
     });
     await userEvent.click(errorFilter);
     await waitFor(() => {
@@ -2612,6 +2874,31 @@ export const HealthCenter: Story = {
 export const About: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="about" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // The lead row is the version with the channel sentence under it; a dev
+    // checkout says it does not update and gets no update row at all.
+    await expect(canvas.findByText(/^Maka v\d/)).resolves.toBeTruthy();
+    await expect(canvas.findByText('本地开发构建，不检查更新。')).resolves.toBeTruthy();
+    await expect(canvas.queryByRole('button', { name: '检查更新' })).not.toBeInTheDocument();
+    // Support lives outside the info conditional; each control is named by its
+    // row, not by the verb on its face. Actions are buttons, navigation a link.
+    await expect(
+      canvas.findByRole('heading', { name: '支持' }),
+    ).resolves.toBeTruthy();
+    await expect(
+      canvas.findByRole('button', { name: '复制诊断信息' }),
+    ).resolves.toBeEnabled();
+    await expect(canvas.findByRole('link', { name: '报告问题' })).resolves.toBeTruthy();
+    await expect(
+      canvas.findByRole('button', { name: '键盘快捷键' }),
+    ).resolves.toBeEnabled();
+    // Provenance is one static line, rendered whatever `app.info` did.
+    await expect(
+      canvas.findByText('Apache Maka (incubating) · Apache License 2.0', { exact: false }),
+    ).resolves.toBeTruthy();
+    await expect(canvas.findByRole('link', { name: '源码' })).resolves.toBeTruthy();
+  },
 };
 
 // Real path: the same page inside a packaged Nightly. Nightly publishes daily
@@ -2644,6 +2931,51 @@ export const AboutRelease: Story = {
     }),
   ],
   render: () => <SettingsStory section="about" />,
+};
+
+// Real path: a packaged install whose auto-download failed. The row names the
+// failed step and offers 检查更新, which re-fetches the release the updater
+// already knows about.
+export const AboutUpdateFailed: Story = {
+  decorators: [
+    withPackagedChannelBridge({
+      updateChannel: 'release',
+      appVersion: '0.2.0',
+      updateStatus: {
+        state: 'error',
+        currentVersion: '0.2.0',
+        latestVersion: '0.2.1',
+        operation: 'download',
+        message: 'net::ERR_CONNECTION_RESET',
+      },
+    }),
+  ],
+  render: () => <SettingsStory section="about" />,
+};
+
+// Interaction: 检查更新 on a packaged release that has not checked yet. The
+// button issues the App Update feature's guarded command — the page itself
+// never touches the bridge — and the row's label moves from 尚未检查更新 to
+// 已是最新版本 once the check returns `not-available`. A dev checkout has no
+// row to click, which is why this is not the `About` story's play.
+export const AboutCheckForUpdates: Story = {
+  decorators: [
+    withPackagedChannelBridge({
+      updateChannel: 'release',
+      appVersion: '0.2.0',
+      updateStatus: { state: 'idle', currentVersion: '0.2.0' },
+    }),
+  ],
+  render: () => <SettingsStory section="about" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const check = await canvas.findByRole('button', { name: '检查更新' });
+    expect(check).toBeEnabled();
+    await userEvent.click(check);
+    await waitFor(() => {
+      expect(canvas.getByText('已是最新版本')).toBeInTheDocument();
+    });
+  },
 };
 
 // Real path: 设置 → 已归档任务, after archiving tasks from the rail's row menu.

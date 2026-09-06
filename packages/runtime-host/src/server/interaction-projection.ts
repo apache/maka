@@ -27,6 +27,7 @@ import {
 import type { SandboxBoundaryRequest } from '@maka/core/sandbox-boundary';
 import {
   RuntimeInteractionInvariantError,
+  type RuntimeFormOutcome,
   type RuntimeUserQuestionOutcome,
 } from '@maka/runtime/interaction-authority';
 import type {
@@ -176,6 +177,20 @@ export function clientCapabilityCanonicalOutcome(
   return { kind: 'client_capability_decision', decision: answer.decision, committedAt };
 }
 
+export function formCanonicalOutcome(
+  answer: Extract<InteractionAnswer, { kind: 'form' }>,
+  committedAt: number,
+): Extract<InteractionCanonicalOutcome, { kind: 'form_answer' }> {
+  return answer.action === 'accept'
+    ? {
+        kind: 'form_answer',
+        action: 'accept',
+        values: structuredClone(answer.values),
+        committedAt,
+      }
+    : { kind: 'form_answer', action: answer.action, committedAt };
+}
+
 export function runtimeQuestionOutcome(
   outcome: InteractionCanonicalOutcome,
 ): RuntimeUserQuestionOutcome {
@@ -186,11 +201,28 @@ export function runtimeQuestionOutcome(
     return { kind: 'closure', reason: outcome.reason };
   }
   if (outcome.kind !== 'question_answer') {
-    throw new RuntimeInteractionInvariantError(
-      'Question Interaction resolved with a permission answer',
-    );
+    throw new RuntimeInteractionInvariantError('Question Interaction resolved with another answer');
   }
   return { kind: 'question_answer', answer: { answers: [...outcome.answers] } };
+}
+
+export function runtimeFormOutcome(outcome: InteractionCanonicalOutcome): RuntimeFormOutcome {
+  if (outcome.kind === 'closure') {
+    if (outcome.reason === 'timed_out') {
+      throw new RuntimeInteractionInvariantError('Form Interaction resolved with a timeout');
+    }
+    return { kind: 'closure', reason: outcome.reason };
+  }
+  if (outcome.kind !== 'form_answer') {
+    throw new RuntimeInteractionInvariantError('Form Interaction resolved with another answer');
+  }
+  return {
+    kind: 'form_answer',
+    answer:
+      outcome.action === 'accept'
+        ? { action: 'accept', values: structuredClone(outcome.values) }
+        : { action: outcome.action },
+  };
 }
 
 export function answerOutcome(
@@ -234,6 +266,7 @@ function canonicalOutcomeForHistoricalAnswer(
   if (answer.kind === 'question') {
     return questionCanonicalOutcome(answer, committedAt);
   }
+  if (answer.kind === 'form') return formCanonicalOutcome(answer, committedAt);
   if (answer.kind === 'sandbox_boundary') {
     throw new RuntimeInteractionInvariantError(
       'Sandbox boundary answers require their canonical boundary settlement',

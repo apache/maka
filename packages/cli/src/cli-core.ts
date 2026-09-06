@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { deriveMakaDataRoots, resolveMakaDataRoots } from './workspace-root.js';
 import {
   configureRuntimeHostPeerClient,
-  resolveRuntimeHostPeerNativePath,
+  resolveRuntimeHostNativePath,
 } from './runtime-host-peer-artifact.js';
 import {
   parseRuntimeHostCommand,
@@ -323,6 +323,12 @@ export async function runMakaCli(
           config.deploymentRoot,
           config.launch.package.integrity,
         );
+        if (process.platform === 'win32') {
+          const { ownWindowsRuntimeHostProcessTree } = await import(
+            './runtime-host-windows-service.js'
+          );
+          await ownWindowsRuntimeHostProcessTree(packageLayout.cliPath);
+        }
         return runRuntimeHostServiceCli({
           rootPath: config.root.path,
           json: command.json,
@@ -335,7 +341,7 @@ export async function runMakaCli(
           ...(peer
             ? {
                 peer: {
-                  nativePath: await resolveRuntimeHostPeerNativePath(packageLayout.cliPath),
+                  nativePath: await resolveRuntimeHostNativePath(packageLayout.cliPath),
                   keyPath: peer.keyPath,
                   expectedPeerId: peer.peerId,
                   listenAddresses: peer.listenAddresses,
@@ -782,7 +788,7 @@ export async function runMakaCli(
             id: command.id,
             name: command.name,
             distribution: command.distribution,
-            operatorPath: command.operatorPath,
+            operator: command.operator,
             expectedRootId: command.expectedRootId,
           },
           {},

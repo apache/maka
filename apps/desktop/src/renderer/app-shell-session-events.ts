@@ -365,9 +365,7 @@ export function createAppShellSessionEventHandlers(options: {
         });
         break;
       case 'message_admission':
-        if (event.outcome === 'retracted') {
-          removeTransientMessage?.(sessionId, event.messageId);
-        }
+        if (event.outcome === 'retracted') removeTransientMessage?.(sessionId, event.messageId);
         break;
       case 'steering_message':
         // The live Turn projection now renders this same messageId in place.
@@ -379,9 +377,7 @@ export function createAppShellSessionEventHandlers(options: {
           const queue = current[sessionId];
           if (!queue?.entries.some((entry) => entry.messageId === event.messageId)) return current;
           const entries = queue.entries.filter((entry) => entry.messageId !== event.messageId);
-          if (entries.length > 0) {
-            return { ...current, [sessionId]: { ...queue, entries } };
-          }
+          if (entries.length > 0) return { ...current, [sessionId]: { ...queue, entries } };
           const next = { ...current };
           delete next[sessionId];
           return next;
@@ -393,6 +389,7 @@ export function createAppShellSessionEventHandlers(options: {
       case 'sandbox_boundary_request':
       case 'client_capability_request':
       case 'user_question_request':
+      case 'form_request':
         onInteractionChanged?.(sessionId);
         break;
       // The runtime drops its owner on this ack, not on the tool result that
@@ -400,6 +397,7 @@ export function createAppShellSessionEventHandlers(options: {
       // same point its boundary sibling settles on, below.
       case 'user_question_answer_ack':
       case 'client_capability_decision_ack':
+      case 'form_answer_ack':
         onInteractionChanged?.(sessionId);
         break;
       case 'sandbox_boundary_decision_ack':
@@ -446,9 +444,8 @@ export function createAppShellSessionEventHandlers(options: {
       case 'complete': {
         onInteractionChanged?.(sessionId);
         setInteractionBySession((current) => clearInteractions(current, sessionId));
-        if (event.contextCompactionOutcome) {
+        if (event.contextCompactionOutcome)
           onContextCompactionOutcome?.(sessionId, event.turnId, event.contextCompactionOutcome);
-        }
         if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens') {
           const body = [...(before?.steps ?? [])].reverse().find((step) => step.text?.text)?.text?.text;
           notifyRunEnded?.({ kind: 'completed', sessionId, body });

@@ -92,6 +92,9 @@ import {
   type SessionHeaderPatch,
   type StoredMessage,
   type SubagentSessionParent,
+  type WorkHubActionClaim,
+  type WorkHubActionClaimOutcome,
+  type WorkHubActionOperation,
   type WorkHubDelegationAssignedMessage,
   type WorkHubDelegationSupersededMessage,
   WORKHUB_COORDINATION_SESSION_ID,
@@ -106,6 +109,7 @@ import {
   normalizeProvenSteeringMessageHandoff,
   samePendingMessageAdmission,
   type MarkMessagesHandedOffInput,
+  type MessageAdmissionCancellationClaimOutcome,
   type PendingMessageAdmission,
   type ProvenRootMessageHandoff,
   type ProvenSteeringMessageHandoff,
@@ -174,6 +178,9 @@ const SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE = 256;
 const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_MESSAGES = 1_024;
 const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 const SQLITE_TURN_LANDMARK_LEGACY_NEIGHBOR_MESSAGES = 32;
+// Each target Session binds three parameters in the linkage query. Stay well
+// inside SQLite's bound-parameter limit.
+const WORKHUB_TARGET_LINKAGE_MAX_SESSIONS = 256;
 
 function decodeStoredMessage(value: unknown): StoredMessage {
   return decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
@@ -1819,6 +1826,23 @@ export class SqliteSessionMetadataStore {
           .update(assignment.replacesDelegationId)
           .digest('hex')
           .slice(0, 48);
+        const stopRequest = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `whq_${abortSuffix}`,
+        );
+        if (stopRequest) {
+          const stopResolution = this.readMessageByIdSync(
+            WORKHUB_COORDINATION_SESSION_ID,
+            `whz_${abortSuffix}`,
+          );
+          if (
+            stopResolution?.type !== 'workhub_coordination' ||
+            stopResolution.kind !== 'delegation_stop_resolved' ||
+            stopResolution.outcome !== 'not_owned'
+          ) {
+            throw new SessionMetadataConflictError('WorkHub delegation already has a stop claim');
+          }
+        }
         const existingAbort = this.readMessageByIdSync(
           WORKHUB_COORDINATION_SESSION_ID,
           `whb_${abortSuffix}`,
@@ -1955,6 +1979,137 @@ export class SqliteSessionMetadataStore {
     });
   }
 
+  /**
+   * Binds one WorkHub action identity to one exact operation, for good.
+   *
+   * Every other durable WorkHub record is keyed by what it is about, so none of
+   * them can see an action id that moved to a second delegation or a second
+   * disposition. This row is the global owner that rejects both, and it is
+   * written before the action's effect so a rejected or recovering attempt can
+   * never leak its identity into a different operation.
+   */
+  async claimWorkHubAction(claim: WorkHubActionClaim): Promise<WorkHubActionClaimOutcome> {
+    this.assertOpen();
+    assertSafeSessionId(claim.actionId);
+    assertSafeSessionId(claim.subject);
+    if (!/^sha256:[a-f0-9]{64}$/u.test(claim.actionFingerprint)) {
+      throw new SessionMetadataConflictError('Invalid WorkHub action fingerprint');
+    }
+    return this.transaction(() => {
+      const existing = this.readWorkHubActionClaimSync(claim.actionId);
+      if (existing) {
+        return existing.operation === claim.operation &&
+          existing.actionFingerprint === claim.actionFingerprint &&
+          existing.subject === claim.subject
+          ? 'same_claim'
+          : 'conflict';
+      }
+      this.db
+        .prepare(
+          `
+          INSERT INTO workhub_action_claims(
+            action_id, operation, action_fingerprint, subject, claimed_at
+          ) VALUES (?, ?, ?, ?, ?)
+        `,
+        )
+        .run(claim.actionId, claim.operation, claim.actionFingerprint, claim.subject, this.now());
+      return 'claimed';
+    });
+  }
+
+  async readWorkHubActionClaim(actionId: string): Promise<WorkHubActionClaim | undefined> {
+    this.assertOpen();
+    assertSafeSessionId(actionId);
+    return this.readTransaction(() => this.readWorkHubActionClaimSync(actionId));
+  }
+
+  private readWorkHubActionClaimSync(actionId: string): WorkHubActionClaim | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT operation, action_fingerprint, subject FROM workhub_action_claims WHERE action_id = ?',
+      )
+      .get(actionId) as
+      | { operation?: unknown; action_fingerprint?: unknown; subject?: unknown }
+      | undefined;
+    if (!row) return undefined;
+    if (
+      !isWorkHubActionOperation(row.operation) ||
+      typeof row.action_fingerprint !== 'string' ||
+      !/^sha256:[a-f0-9]{64}$/u.test(row.action_fingerprint) ||
+      typeof row.subject !== 'string'
+    ) {
+      throw new SessionMetadataConflictError('Invalid WorkHub action claim row');
+    }
+    return {
+      actionId,
+      operation: row.operation,
+      actionFingerprint: row.action_fingerprint as `sha256:${string}`,
+      subject: row.subject,
+    };
+  }
+
+  async claimMessageAdmissionCancellation(
+    sessionId: string,
+    messageId: string,
+    claimId: string,
+  ): Promise<MessageAdmissionCancellationClaimOutcome> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSafeSessionId(messageId);
+    assertSafeSessionId(claimId);
+    return this.transaction(() => {
+      const cancelled = this.db
+        .prepare(
+          'SELECT cancellation_claim_id FROM cancelled_message_admissions WHERE session_id = ? AND message_id = ?',
+        )
+        .get(sessionId, messageId) as { cancellation_claim_id?: unknown } | undefined;
+      if (cancelled) {
+        return cancelled.cancellation_claim_id === claimId ? 'same_claim' : 'already_cancelled';
+      }
+      const admission = this.db
+        .prepare(
+          `
+          SELECT submitted_content_digest, submitted_placement
+          FROM message_admissions
+          WHERE session_id = ? AND message_id = ?
+        `,
+        )
+        .get(sessionId, messageId) as
+        | { submitted_content_digest?: unknown; submitted_placement?: unknown }
+        | undefined;
+      if (
+        typeof admission?.submitted_content_digest !== 'string' ||
+        (admission.submitted_placement !== 'current_turn' &&
+          admission.submitted_placement !== 'next_turn')
+      ) {
+        throw new SessionMetadataConflictError('Message admission cancellation identity conflict');
+      }
+      this.db
+        .prepare(
+          `
+          INSERT INTO cancelled_message_admissions(
+            session_id, message_id, submitted_content_digest, submitted_placement,
+            cancellation_claim_id
+          ) VALUES (?, ?, ?, ?, ?)
+        `,
+        )
+        .run(
+          sessionId,
+          messageId,
+          admission.submitted_content_digest,
+          admission.submitted_placement,
+          claimId,
+        );
+      const deleted = this.db
+        .prepare('DELETE FROM message_admissions WHERE session_id = ? AND message_id = ?')
+        .run(sessionId, messageId);
+      if (deleted.changes !== 1) {
+        throw new SessionMetadataConflictError('Message admission cancellation identity conflict');
+      }
+      return 'cancelled_by_claim';
+    });
+  }
+
   async listMessageAdmissions(sessionId: string): Promise<readonly PendingMessageAdmission[]> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
@@ -1973,6 +2128,143 @@ export class SqliteSessionMetadataStore {
         .all(sessionId) as MessageAdmissionRow[];
       return rows.map((row) => decodeMessageAdmissionRow(sessionId, row));
     });
+  }
+
+  async readActiveWorkHubAssignmentsByTarget(
+    targetSessionIds: readonly string[],
+    maxAssignmentsPerTarget?: number,
+  ): Promise<readonly WorkHubDelegationAssignedMessage[]> {
+    this.assertOpen();
+    for (const sessionId of targetSessionIds) assertSafeSessionId(sessionId);
+    if (targetSessionIds.length > WORKHUB_TARGET_LINKAGE_MAX_SESSIONS) {
+      throw new Error('Invalid WorkHub target Session count');
+    }
+    if (
+      maxAssignmentsPerTarget !== undefined &&
+      (!Number.isSafeInteger(maxAssignmentsPerTarget) ||
+        maxAssignmentsPerTarget < 1 ||
+        maxAssignmentsPerTarget > 256)
+    ) {
+      throw new Error('Invalid WorkHub target Message limit');
+    }
+    const targets = [...new Set(targetSessionIds)];
+    if (targets.length === 0) return [];
+    return this.readTransaction(() => {
+      type Row = { session_id?: unknown; message_id?: unknown };
+      const list = targets.map(() => '?').join(', ');
+      // One Message moves between these lifecycle tables. Combine every target's
+      // identities once, then resolve activity from the canonical Coordination
+      // ledger in this same read transaction. That avoids rebuilding the target
+      // set once per page or once per candidate, without introducing another
+      // durable representation.
+      const rows = this.db
+        .prepare(
+          `
+          WITH target_messages(session_id, message_id) AS (
+            SELECT session_id, message_id
+            FROM message_admissions
+            WHERE session_id IN (${list})
+              AND message_id GLOB 'whm_*'
+              AND length(message_id) = 52
+            UNION
+            SELECT session_id, message_id
+            FROM session_messages
+            WHERE session_id IN (${list})
+              AND message_id GLOB 'whm_*'
+              AND length(message_id) = 52
+            UNION
+            SELECT session_id, message_id
+            FROM cancelled_message_admissions
+            WHERE session_id IN (${list})
+              AND message_id GLOB 'whm_*'
+              AND length(message_id) = 52
+          )
+          SELECT target.session_id, target.message_id
+          FROM target_messages AS target
+          CROSS JOIN session_messages AS assignment INDEXED BY session_messages_by_identity
+          WHERE assignment.session_id = ?
+            AND assignment.message_id = 'wha_' || substr(target.message_id, 5)
+          ORDER BY assignment.sequence DESC
+        `,
+        )
+        .iterate(
+          ...targets,
+          ...targets,
+          ...targets,
+          WORKHUB_COORDINATION_SESSION_ID,
+        ) as Iterable<Row>;
+      const assignments: WorkHubDelegationAssignedMessage[] = [];
+      const acceptedPerTarget = new Map<string, number>();
+      for (const row of rows) {
+        if (typeof row.message_id !== 'string' || typeof row.session_id !== 'string') {
+          throw new SessionMetadataConflictError('Invalid WorkHub target Message identity');
+        }
+        const targetSessionId = row.session_id;
+        if (
+          maxAssignmentsPerTarget !== undefined &&
+          (acceptedPerTarget.get(targetSessionId) ?? 0) >= maxAssignmentsPerTarget
+        ) {
+          continue;
+        }
+        const assignment = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `wha_${row.message_id.slice('whm_'.length)}`,
+        );
+        if (
+          assignment?.type !== 'workhub_coordination' ||
+          assignment.kind !== 'delegation_assigned' ||
+          assignment.targetSessionId !== targetSessionId ||
+          assignment.targetMessageId !== row.message_id
+        ) {
+          continue;
+        }
+        const terminalSuffix = createHash('sha256')
+          .update(assignment.delegationId, 'utf8')
+          .digest('hex')
+          .slice(0, 48);
+        const supersession = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `whx_${terminalSuffix}`,
+        );
+        if (
+          supersession?.type === 'workhub_coordination' &&
+          supersession.kind === 'delegation_superseded'
+        ) {
+          continue;
+        }
+        const replacementAbort = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `whb_${terminalSuffix}`,
+        );
+        if (
+          replacementAbort?.type === 'workhub_coordination' &&
+          replacementAbort.kind === 'delegation_replacement_aborted'
+        ) {
+          continue;
+        }
+        const stopResolution = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `whz_${terminalSuffix}`,
+        );
+        if (
+          stopResolution?.type === 'workhub_coordination' &&
+          stopResolution.kind === 'delegation_stop_resolved' &&
+          stopResolution.outcome !== 'not_owned'
+        ) {
+          continue;
+        }
+        assignments.push(assignment);
+        acceptedPerTarget.set(targetSessionId, (acceptedPerTarget.get(targetSessionId) ?? 0) + 1);
+      }
+      return assignments;
+    });
+  }
+
+  async readMessageById(sessionId: string, messageId: string): Promise<StoredMessage | undefined> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSafeSessionId(messageId);
+    return this.readTransaction(() => this.readMessageByIdSync(sessionId, messageId));
   }
 
   async markMessagesHandedOff(input: MarkMessagesHandedOffInput): Promise<void> {
@@ -6898,6 +7190,17 @@ function readStoredMessageRecordJson(
     recordJson = data.toString('utf8');
   }
   return recordJson;
+}
+
+function isWorkHubActionOperation(value: unknown): value is WorkHubActionOperation {
+  return (
+    value === 'answer_here' ||
+    value === 'clarify' ||
+    value === 'delegate_existing' ||
+    value === 'create_new' ||
+    value === 'replace' ||
+    value === 'stop'
+  );
 }
 
 function sameWorkHubAssignmentRequest(

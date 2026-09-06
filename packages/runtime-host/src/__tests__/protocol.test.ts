@@ -211,6 +211,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 38);
   });
 
+  test('publishes a new compatibility epoch for nested Client Capability interactions', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 81);
+  });
+
   test('publishes a new compatibility epoch for onboarding endpoint overrides', () => {
     // Epoch 44 peers reject the required `baseUrl` and `connectionId` on
     // onboarding inputs, and the `base_url_not_configured` /
@@ -246,6 +250,13 @@ describe('Runtime Host bootstrap protocol', () => {
     // Side Conversation adds another closed branch-copy input and therefore
     // needs its own later handshake boundary.
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 47);
+  });
+
+  test('publishes a new compatibility epoch for GitHub Copilot logins', () => {
+    // Main is at 101 and open PRs already claim 102. The new OAuth provider,
+    // enrollment query, and onboarding credential shape change the closed wire
+    // vocabulary, so this branch re-derives the first unclaimed epoch.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 102);
   });
 
   test('publishes a new compatibility epoch for context-budget failure detail', () => {
@@ -424,6 +435,12 @@ describe('Runtime Host bootstrap protocol', () => {
 
   test('publishes a new compatibility epoch for the optional conversation-copy sourceTurnId', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 99);
+  });
+
+  test('publishes a new compatibility epoch for external Session import failure reasons', () => {
+    // model_unavailable / source_unreadable let the shell classify import
+    // failures by stable code; older peers cannot decode the new codes.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 117);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {
@@ -2208,6 +2225,7 @@ describe('Runtime Host bootstrap protocol', () => {
         connections: 1,
         activeOperations: 0,
         activeResidencies: 0,
+        upgradeBlockingActivity: true,
         protocolVersion: 0,
         compatibilityEpoch: 9,
         pid: 42,
@@ -2219,6 +2237,44 @@ describe('Runtime Host bootstrap protocol', () => {
         logs,
       }),
     );
+  });
+
+  test('decodes the required upgrade blocking activity fact in diagnostics', () => {
+    const base = {
+      hostEpoch: 'epoch-1',
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
+      compositionModules: ['interactive'],
+      residencies: [],
+      state: 'ready',
+      connections: 1,
+      activeOperations: 0,
+      activeResidencies: 0,
+      upgradeBlockingActivity: false,
+      protocolVersion: 0,
+      compatibilityEpoch: 9,
+      pid: 42,
+      processUptimeSeconds: 1,
+      nodeVersion: '22.0.0',
+      platform: 'linux',
+      arch: 'x64',
+      osRelease: '6.6.0',
+      logs: [],
+    };
+    const spec = HOST_BOOTSTRAP_OPERATION_SPECS['host.diagnostics.query'];
+
+    assert.deepEqual(spec.decodeOutput(base), { ...base });
+    assert.deepEqual(spec.decodeOutput({ ...base, upgradeBlockingActivity: true }), {
+      ...base,
+      upgradeBlockingActivity: true,
+    });
+    assert.throws(
+      () => spec.decodeOutput({ ...base, upgradeBlockingActivity: 'yes' }),
+      isInvalidFrame,
+    );
+    const missing = { ...base } as Record<string, unknown>;
+    delete missing.upgradeBlockingActivity;
+    assert.throws(() => spec.decodeOutput(missing), isInvalidFrame);
   });
 
   test('rejects terminal snapshots with fields from another terminal variant', () => {
@@ -2334,6 +2390,44 @@ test('Client Capability tool descriptors preserve only known activity kinds', ()
       }),
     isInvalidFrame,
   );
+});
+
+test('Client Capability tuple schemas accept only boolean or schema additionalItems', () => {
+  const input = (additionalItems: unknown) => ({
+    registrationId: 'registration-1',
+    offers: [
+      {
+        offerId: 'desktop_computer_use',
+        version: '0',
+        affinity: 'session',
+        hostPathAccess: 'cwd',
+        label: 'Computer Use',
+        tools: [
+          {
+            serverId: 'desktop_computer_use',
+            name: 'maka_computer',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                position: {
+                  type: 'array',
+                  items: [{ type: 'number' }, { type: 'number' }],
+                  additionalItems,
+                },
+              },
+            },
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.deepEqual(decodeClientCapabilityReplaceInput(input(false)), input(false));
+  assert.deepEqual(
+    decodeClientCapabilityReplaceInput(input({ type: 'number' })),
+    input({ type: 'number' }),
+  );
+  assert.throws(() => decodeClientCapabilityReplaceInput(input('no')), isInvalidFrame);
 });
 
 test('Client Capability progress frames require bounded monotonic coordinates', () => {

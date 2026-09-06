@@ -30,8 +30,14 @@ export interface SubscriptionModelFetchInput {
   sessionId: string;
   modelId: string;
   fetchFn?: typeof fetch;
-  /** Force-refreshes a remotely invalidated OAuth token for one safe 401 replay. */
-  refreshOAuthAccessToken?: () => Promise<string | null>;
+  /**
+   * Force-refreshes a remotely invalidated OAuth token for one safe 401 replay.
+   *
+   * Receives the request's own signal: a caller who cancels during the refresh
+   * is released then, instead of waiting out the refresh timeout for a replay
+   * that will never be sent.
+   */
+  refreshOAuthAccessToken?: (signal?: AbortSignal | null) => Promise<string | null>;
 }
 
 export function buildSubscriptionModelFetch(
@@ -45,7 +51,12 @@ export function buildSubscriptionModelFetch(
     );
   }
   if (input.connection.providerType === 'github-copilot') {
-    return buildGitHubCopilotFetch(input.fetchFn ?? fetch);
+    const copilotFetch = buildGitHubCopilotFetch(input.fetchFn ?? fetch);
+    // The editor headers stay innermost so a replayed request carries them
+    // exactly as the first attempt did.
+    return input.refreshOAuthAccessToken
+      ? buildOAuth401ReplayFetch(copilotFetch, input.refreshOAuthAccessToken)
+      : copilotFetch;
   }
   if (input.connection.providerType === 'xai-oauth' && input.refreshOAuthAccessToken) {
     return buildOAuth401ReplayFetch(input.fetchFn ?? fetch, input.refreshOAuthAccessToken);
@@ -117,7 +128,7 @@ function containsGitHubCopilotImage(value: unknown): boolean {
 function buildOpenAiCodexFetch(
   sessionId: string,
   fetchFn: typeof fetch,
-  refreshOAuthAccessToken?: () => Promise<string | null>,
+  refreshOAuthAccessToken?: (signal?: AbortSignal | null) => Promise<string | null>,
 ): typeof fetch {
   return async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const headers = new Headers(init?.headers);
@@ -175,7 +186,7 @@ async function checkedOpenAiCodexFetch(
   fetchFn: typeof fetch,
   url: Parameters<typeof fetch>[0],
   init?: Parameters<typeof fetch>[1],
-  refreshOAuthAccessToken?: () => Promise<string | null>,
+  refreshOAuthAccessToken?: (signal?: AbortSignal | null) => Promise<string | null>,
 ): Promise<Response> {
   const edgeRetryDelaysMs = [2_000, 10_000, 30_000] as const;
   let authorizationReplayUsed = false;
@@ -195,7 +206,17 @@ async function checkedOpenAiCodexFetch(
       isReplayableOpenAiCodexRequest(url, requestInit)
     ) {
       authorizationReplayUsed = true;
-      const accessToken = await refreshOAuthAccessToken().catch(() => null);
+      const refreshSignal = effectiveOpenAiCodexRequestSignal(url, requestInit);
+      let accessToken: string | null;
+      try {
+        accessToken = await refreshOAuthAccessToken(refreshSignal);
+      } catch (error) {
+        // Same rule as the shared replay path: an abandoned turn is cancelled,
+        // not reported as a provider rejection.
+        if (refreshSignal?.aborted) await abandonForCaller(response, refreshSignal);
+        accessToken = null;
+      }
+      if (refreshSignal?.aborted) await abandonForCaller(response, refreshSignal);
       if (accessToken) {
         await response.body?.cancel().catch(() => undefined);
         requestInit = withRefreshedOAuthAuthorization(requestInit, accessToken, true);
@@ -225,16 +246,39 @@ async function checkedOpenAiCodexFetch(
 
 function buildOAuth401ReplayFetch(
   fetchFn: typeof fetch,
-  refreshOAuthAccessToken: () => Promise<string | null>,
+  refreshOAuthAccessToken: (signal?: AbortSignal | null) => Promise<string | null>,
 ): typeof fetch {
   return async (url, init) => {
     const response = await fetchFn(url, init);
     if (response.status !== 401 || !isReplayableOpenAiCodexRequest(url, init)) return response;
-    const accessToken = await refreshOAuthAccessToken().catch(() => null);
+    const signal = effectiveOpenAiCodexRequestSignal(url, init);
+    // A caller who gave up is cancelled, not told their credential was
+    // rejected: once the turn is abandoned the 401 answers nothing, and
+    // reporting it would read as an auth failure the user has to act on.
+    if (signal?.aborted) await abandonForCaller(response, signal);
+    let accessToken: string | null;
+    try {
+      accessToken = await refreshOAuthAccessToken(signal);
+    } catch (error) {
+      if (signal?.aborted) await abandonForCaller(response, signal);
+      throw error;
+    }
+    if (signal?.aborted) await abandonForCaller(response, signal);
     if (!accessToken) return response;
     await response.body?.cancel().catch(() => undefined);
     return fetchFn(url, withRefreshedOAuthAuthorization(init, accessToken, false));
   };
+}
+
+/**
+ * Ends a request the caller abandoned: releases the provider body, then throws
+ * the abort reason so the turn settles as cancelled rather than as whatever
+ * status happened to be in flight.
+ */
+async function abandonForCaller(response: Response, signal: AbortSignal): Promise<never> {
+  await response.body?.cancel().catch(() => undefined);
+  signal.throwIfAborted();
+  throw new DOMException('Request aborted', 'AbortError');
 }
 
 function withRefreshedOAuthAuthorization(

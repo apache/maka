@@ -149,6 +149,7 @@ test('MCP capability publication freezes an accepted callable tool snapshot', as
       accept: async () => {
         accepted = true;
       },
+      requestInteraction: async () => assert.fail('Unexpected provider interaction'),
     },
   );
   assert.deepEqual(result, { content: [{ type: 'text', text: '{"path":"README.md"}' }] });

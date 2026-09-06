@@ -28,6 +28,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 export const COVERED_FILES = [
   'packages/cli/src/pi-tui-transcript-viewer.ts',
   'packages/cli/src/pi-tui-turn.ts',
+  'packages/cli/src/pi-tui-form-interaction.ts',
   'packages/cli/src/pi-tui-runner.ts',
   'packages/cli/src/pi-tui-mcp-status.ts',
   'packages/cli/src/pi-transcript.ts',
@@ -48,6 +49,7 @@ export const EXCLUDED_TUI_FILES = [
   'packages/cli/src/tui-ansi.ts',
   'packages/cli/src/tui-autocomplete-layout.ts',
   'packages/cli/src/tui-clipboard.ts',
+  'packages/cli/src/tui-context-refresh.ts',
   'packages/cli/src/tui-copy-catalog.ts',
   'packages/cli/src/tui-diff.ts',
   'packages/cli/src/tui-mcp-control.ts',

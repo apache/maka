@@ -23,7 +23,6 @@ import { isPersistedWorkbarTool } from './workbar-tool-definitions.js';
 export type SessionWorkbarTabKind =
   | 'review'
   | 'terminal'
-  | 'tasks'
   | 'work-board'
   | 'browser'
   | 'files'
@@ -35,8 +34,6 @@ export interface SessionWorkbarTab {
   kind: SessionWorkbarTabKind;
   /** Transient display title for dynamic tabs. Never persisted. */
   title?: string;
-  /** Replaceable tab until the user pins or interacts with it. */
-  preview?: boolean;
   /** Stable creation number for repeated tab kinds such as Terminal and Side chat. */
   ordinal?: number;
   resourceRef?: string;
@@ -63,21 +60,8 @@ export type WorkbarPanelsAction =
   | { type: 'open'; placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }
   | { type: 'activate'; placement: SessionWorkbarPlacement; tabId: string }
   | { type: 'close'; placement: SessionWorkbarPlacement; tabIds: readonly string[] }
-  | {
-      type: 'reorder';
-      placement: SessionWorkbarPlacement;
-      tabId: string;
-      targetTabId: string;
-    }
-  | {
-      type: 'move';
-      placement: SessionWorkbarPlacement;
-      tabId: string;
-      direction: 'left' | 'right';
-    }
   | { type: 'move-to-panel'; tabId: string; target: SessionWorkbarPlacement }
   | { type: 'title'; tabId: string; title: string }
-  | { type: 'pin'; tabId: string }
   | { type: 'open-launcher'; placement: SessionWorkbarPlacement };
 
 /** The single topology transition boundary used by the Workbar controller. */
@@ -92,26 +76,10 @@ export function reduceWorkbarPanels(
       return activateSessionWorkbarPanelTab(state, action.placement, action.tabId);
     case 'close':
       return closeSessionWorkbarPanelTabs(state, action.placement, action.tabIds);
-    case 'reorder':
-      return reorderSessionWorkbarPanelTab(
-        state,
-        action.placement,
-        action.tabId,
-        action.targetTabId,
-      );
-    case 'move':
-      return moveSessionWorkbarPanelTab(
-        state,
-        action.placement,
-        action.tabId,
-        action.direction,
-      );
     case 'move-to-panel':
       return moveSessionWorkbarTabToPanel(state, action.tabId, action.target);
     case 'title':
       return titleSessionWorkbarPanelTab(state, action.tabId, action.title);
-    case 'pin':
-      return pinSessionWorkbarPanelTab(state, action.tabId);
     case 'open-launcher':
       return openSessionWorkbarPanelLauncher(state, action.placement);
   }
@@ -133,7 +101,6 @@ export interface PersistedSessionWorkbarPanels {
 const STATIC_TAB_IDS: Record<Exclude<SessionWorkbarTabKind, 'side-chat'>, string> = {
   review: 'workbar:review',
   terminal: 'workbar:terminal',
-  tasks: 'workbar:tasks',
   'work-board': 'workbar:work-board',
   browser: 'workbar:browser',
   files: 'workbar:files',
@@ -257,17 +224,6 @@ export function titleSessionWorkbarPanelTab(
   );
 }
 
-export function pinSessionWorkbarPanelTab(
-  state: SessionWorkbarPanelsState,
-  tabId: string,
-): SessionWorkbarPanelsState {
-  const placement = findSessionWorkbarTabPlacement(state, tabId);
-  if (!placement) return state;
-  return updateSessionWorkbarPanel(state, placement, (panel) =>
-    pinSessionWorkbarTab(panel, tabId),
-  );
-}
-
 export function openSessionWorkbarPanelLauncher(
   state: SessionWorkbarPanelsState,
   placement: SessionWorkbarPlacement,
@@ -301,30 +257,6 @@ export function closeSessionWorkbarPanelTabs(
   return next;
 }
 
-export function reorderSessionWorkbarPanelTab(
-  state: SessionWorkbarPanelsState,
-  placement: SessionWorkbarPlacement,
-  tabId: string,
-  targetTabId: string,
-): SessionWorkbarPanelsState {
-  const next = updateSessionWorkbarPanel(state, placement, (panel) =>
-    reorderSessionWorkbarTab(panel, tabId, targetTabId),
-  );
-  return next === state ? state : { ...next, focusedPanel: placement };
-}
-
-export function moveSessionWorkbarPanelTab(
-  state: SessionWorkbarPanelsState,
-  placement: SessionWorkbarPlacement,
-  tabId: string,
-  direction: 'left' | 'right',
-): SessionWorkbarPanelsState {
-  const next = updateSessionWorkbarPanel(state, placement, (panel) =>
-    moveSessionWorkbarTab(panel, tabId, direction),
-  );
-  return next === state ? state : { ...next, focusedPanel: placement };
-}
-
 export function moveSessionWorkbarTabToPanel(
   state: SessionWorkbarPanelsState,
   tabId: string,
@@ -347,15 +279,7 @@ export function openSessionWorkbarTab(
 ): SessionWorkbarTabsState {
   const existing = state.tabs.find((candidate) => candidate.id === tab.id);
   if (existing) {
-    const preview =
-      existing.preview === true && tab.preview !== true
-        ? false
-        : existing.preview === true;
-    const next = {
-      ...existing,
-      ...tab,
-      ...(preview ? { preview: true } : { preview: false }),
-    };
+    const next = { ...existing, ...tab };
     return {
       ...state,
       tabs: state.tabs.map((candidate) =>
@@ -369,18 +293,14 @@ export function openSessionWorkbarTab(
       ),
     };
   }
-  const replaced = tab.preview
-    ? state.tabs.find((candidate) => candidate.preview === true)
-    : undefined;
-  const base = replaced
-    ? closeSessionWorkbarTab(state, replaced.id)
-    : state;
+  // New faces land at the end of the strip. Nothing reorders them afterwards,
+  // so the strip's order is the order they were opened in.
   return {
-    tabs: [...base.tabs, tab],
+    tabs: [...state.tabs, tab],
     activeTabId: tab.id,
     launcherOpen: false,
     activationHistory: recordSessionWorkbarActivation(
-      sessionWorkbarActivationHistory(base),
+      sessionWorkbarActivationHistory(state),
       tab.id,
     ),
   };
@@ -428,31 +348,11 @@ export function titleSessionWorkbarTab(
   return changed ? { ...state, tabs } : state;
 }
 
-export function pinSessionWorkbarTab(
-  state: SessionWorkbarTabsState,
-  tabId: string,
-): SessionWorkbarTabsState {
-  let changed = false;
-  const tabs = state.tabs.map((tab) => {
-    if (tab.id !== tabId || tab.preview !== true) return tab;
-    changed = true;
-    return { ...tab, preview: false };
-  });
-  return changed ? { ...state, tabs } : state;
-}
-
 export function openSessionWorkbarLauncher(
   state: SessionWorkbarTabsState,
 ): SessionWorkbarTabsState {
   if (state.launcherOpen) return state;
   return { ...state, launcherOpen: true };
-}
-
-export function closeSessionWorkbarTab(
-  state: SessionWorkbarTabsState,
-  tabId: string,
-): SessionWorkbarTabsState {
-  return closeSessionWorkbarTabs(state, [tabId]);
 }
 
 export function closeSessionWorkbarTabs(
@@ -501,55 +401,11 @@ export function closeSessionWorkbarTabs(
   };
 }
 
-export function sessionWorkbarTabsExcept(
-  state: SessionWorkbarTabsState,
-  tabId: string,
-): SessionWorkbarTab[] {
-  return state.tabs.filter((tab) => tab.id !== tabId);
-}
-
-export function sessionWorkbarTabsToRight(
-  state: SessionWorkbarTabsState,
-  tabId: string,
-): SessionWorkbarTab[] {
-  const index = state.tabs.findIndex((tab) => tab.id === tabId);
-  return index < 0 ? [] : state.tabs.slice(index + 1);
-}
-
-export function reorderSessionWorkbarTab(
-  state: SessionWorkbarTabsState,
-  tabId: string,
-  targetTabId: string,
-): SessionWorkbarTabsState {
-  const sourceIndex = state.tabs.findIndex((tab) => tab.id === tabId);
-  const targetIndex = state.tabs.findIndex((tab) => tab.id === targetTabId);
-  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
-    return state;
-  }
-  const tabs = [...state.tabs];
-  const [tab] = tabs.splice(sourceIndex, 1);
-  if (!tab) return state;
-  tabs.splice(targetIndex, 0, tab);
-  return { ...state, tabs };
-}
-
-export function moveSessionWorkbarTab(
-  state: SessionWorkbarTabsState,
-  tabId: string,
-  direction: 'left' | 'right',
-): SessionWorkbarTabsState {
-  const index = state.tabs.findIndex((tab) => tab.id === tabId);
-  if (index < 0) return state;
-  const targetIndex = direction === 'left' ? index - 1 : index + 1;
-  const target = state.tabs[targetIndex];
-  return target ? reorderSessionWorkbarTab(state, tabId, target.id) : state;
-}
-
 export function persistableSessionWorkbarTabs(
   state: SessionWorkbarTabsState,
 ): PersistedSessionWorkbarTabs {
   const tabs = state.tabs
-    .filter((tab) => isPersistedWorkbarTool(tab.kind) && tab.preview !== true)
+    .filter((tab) => isPersistedWorkbarTool(tab.kind))
     .map(({ id, kind }) => ({ id, kind }));
   return {
     version: 2,
@@ -617,7 +473,6 @@ export function isSessionWorkbarTabKind(value: unknown): value is SessionWorkbar
   return (
     value === 'review' ||
     value === 'terminal' ||
-    value === 'tasks' ||
     value === 'work-board' ||
     value === 'browser' ||
     value === 'files' ||

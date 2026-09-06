@@ -34,6 +34,7 @@ import {
   providerAuthSupportsApiKey,
   reconcileConnectionAfterModelFetch,
   validateConnectionBaseUrl,
+  validateSlug,
   type IdentifiedLlmConnection,
   type ProviderType,
 } from '../llm-connections.js';
@@ -57,6 +58,17 @@ function chatModelChoicesFor(
     })),
   );
 }
+
+test('slug validation returns stable issues and preserves format and length boundaries', () => {
+  for (const slug of ['', '  ']) assert.equal(validateSlug(slug), 'required');
+  for (const slug of ['A-slug', 'with space', '-slug', 'slug-', 'a']) {
+    assert.equal(validateSlug(slug), 'format', slug);
+  }
+  assert.equal(validateSlug('a'.repeat(65)), 'too_long');
+  for (const slug of ['ab', 'valid-slug-1', 'a'.repeat(64)]) {
+    assert.equal(validateSlug(slug), null, slug);
+  }
+});
 
 test('connection base URLs allow HTTP(S) and reject unsafe or malformed inputs', () => {
   assert.equal(validateConnectionBaseUrl(undefined), null);
@@ -284,6 +296,39 @@ test('chat model choices project exact vision support for attachment composition
     [
       { model: 'text-model', supportsVision: false },
       { model: 'vision-model', supportsVision: true },
+    ],
+  );
+});
+
+test('chat model choices keep provider metadata separate from user context declarations', () => {
+  const choices = chatModelChoicesFor([
+    {
+      connectionId: 'connection-context',
+      slug: 'openai-compatible',
+      name: 'OpenAI compatible',
+      providerType: 'openai-compatible',
+      enabled: true,
+      defaultModel: 'declared-model',
+      enabledModelIds: ['declared-model', 'reported-model'],
+      models: [
+        { id: 'declared-model', contextWindow: 64_000, inputLimit: 48_000 },
+        { id: 'reported-model', contextWindow: 128_000 },
+      ],
+      relayModelProfiles: { 'declared-model': { contextWindow: 32_000 } },
+      createdAt: 1,
+      updatedAt: 1,
+    },
+  ]);
+
+  assert.deepEqual(
+    choices.map(({ model, contextWindow, declaredContextWindow }) => ({
+      model,
+      contextWindow,
+      declaredContextWindow,
+    })),
+    [
+      { model: 'declared-model', contextWindow: 64_000, declaredContextWindow: 32_000 },
+      { model: 'reported-model', contextWindow: 128_000, declaredContextWindow: undefined },
     ],
   );
 });

@@ -22,6 +22,7 @@ import test from 'node:test';
 import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
   RuntimeHostOperationError,
+  RuntimeHostPeerError,
   RuntimeHostPermanentReconnectError,
   RuntimeHostRequestInterruptedError,
   type RuntimeHostSpawnedProcess,
@@ -215,6 +216,64 @@ test('waits through a reconnect gap before quiescing Host retirement', async () 
   await owner.close();
 });
 
+test('does not treat an in-flight replacement as retired after admission times out', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const first = candidateHarness({
+    ownedProcess: {
+      pid: 42,
+      exited: Promise.resolve({ code: 1, signal: null, stderr: '', stderrTruncated: false }),
+    },
+  });
+  const replacement = candidateHarness();
+  let starts = 0;
+  let reportReconnectStart!: () => void;
+  let releaseReconnect!: () => void;
+  const reconnectStarted = new Promise<void>((resolve) => {
+    reportReconnectStart = resolve;
+  });
+  const reconnectReleased = new Promise<void>((resolve) => {
+    releaseReconnect = resolve;
+  });
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async (input) => {
+      starts += 1;
+      if (starts === 1) return ready(first.candidate);
+      reportReconnectStart();
+      const signal = input.signal;
+      assert.ok(signal);
+      await Promise.race([
+        reconnectReleased,
+        new Promise<never>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+      ]);
+      return ready(replacement.candidate);
+    },
+    reconnectBackoff: { minMs: 0, maxMs: 0 },
+    waitForHostExit: async () => {},
+  });
+
+  first.disconnect();
+  await reconnectStarted;
+  const retirement = owner.retireOwnedLocalHost('interrupt_active_work');
+  t.mock.timers.tick(5_000);
+  await assert.rejects(
+    retirement,
+    (error: unknown) =>
+      error instanceof DesktopLocalHostRetirementError &&
+      error.facts.pid === undefined,
+  );
+
+  releaseReconnect();
+  await owner.waitUntilReady('local');
+  assert.equal(
+    (await owner.retireOwnedLocalHost('interrupt_active_work')).kind,
+    'retired',
+  );
+  assert.equal(replacement.prepareRetirementCalls, 1);
+  await owner.close();
+});
+
 test('retires the owned ephemeral Host before Desktop quit', async () => {
   const events: string[] = [];
   const current = candidateHarness({
@@ -249,8 +308,54 @@ test('retires the owned ephemeral Host before Desktop quit', async () => {
     'wait:42',
   ]);
   await owner.close();
-  assert.equal(events.at(-1), 'release-launches');
+  assert.ok(!events.includes('release-launches'));
   assert.ok(!events.includes('resume-launches'));
+});
+
+test('probes owned Host activity for the quit consent dialog without retiring it', async () => {
+  const active = candidateHarness({ upgradeBlockingActivity: true });
+  const owner = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    { startCandidate: async () => ready(active.candidate) },
+  );
+
+  assert.deepEqual(await owner.probeOwnedLocalHostActivity(), { kind: 'active_tasks' });
+  assert.equal(active.prepareRetirementCalls, 0);
+  await owner.close();
+});
+
+test('probe treats an idle activity report as clear and never retires', async () => {
+  const current = candidateHarness({ upgradeBlockingActivity: false });
+  const owner = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    { startCandidate: async () => ready(current.candidate) },
+  );
+
+  assert.deepEqual(await owner.probeOwnedLocalHostActivity(), { kind: 'clear' });
+  assert.equal(current.prepareRetirementCalls, 0);
+  await owner.close();
+});
+
+test('probe reports not_owned for a Host this Desktop does not own', async () => {
+  const external = candidateHarness({ ownership: 'external' });
+  const owner = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    { startCandidate: async () => ready(external.candidate) },
+  );
+
+  assert.deepEqual(await owner.probeOwnedLocalHostActivity(), { kind: 'not_owned' });
+  await owner.close();
+});
+
+test('probe failure never blocks quit', async () => {
+  const wedged = candidateHarness({ diagnosticsError: new Error('connection lost') });
+  const owner = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    { startCandidate: async () => ready(wedged.candidate) },
+  );
+
+  assert.deepEqual(await owner.probeOwnedLocalHostActivity(), { kind: 'clear' });
+  await owner.close();
 });
 
 test('does not retire the local Host twice when an update handoff triggers quit', async () => {
@@ -402,7 +507,7 @@ test('retires unadopted candidates before draining the tracked Host', async () =
   if (retirement.kind === 'retired') retirement.resume();
   assert.equal(events.at(-1), 'resume-launches');
   await owner.close();
-  assert.equal(events.at(-1), 'release-launches');
+  assert.ok(!events.includes('release-launches'));
 });
 
 test('resumes candidate launches when active tasks block the update', async () => {
@@ -427,7 +532,7 @@ test('resumes candidate launches when active tasks block the update', async () =
   });
   assert.deepEqual(events, ['pause', 'retire', 'resume']);
   await owner.close();
-  assert.equal(events.at(-1), 'release');
+  assert.ok(!events.includes('release'));
 });
 
 test('preserves Host facts when authorized retirement is refused', async () => {
@@ -605,8 +710,8 @@ test('keeps independent shared-session credentials active for the same Host', as
     { startCandidate: async () => ready(candidates.shift()!) },
   );
 
-  await manager.mountGuest(remoteTarget('shared-one', 'shared', 'session_guest'));
-  await manager.mountGuest(remoteTarget('shared-two', 'shared', 'session_guest'));
+  await manager.mountGuest(remoteTarget('shared-one', 'shared', 'session_guest'), () => undefined);
+  await manager.mountGuest(remoteTarget('shared-two', 'shared', 'session_guest'), () => undefined);
   await manager.enable(remoteTarget('owner', 'shared'));
 
   assert.deepEqual(manager.entries().map(({ target }) => target.profile.id), [
@@ -642,6 +747,7 @@ test('aborts an in-flight Guest mount without publishing a late target', async (
   const abort = new AbortController();
   const mounting = manager.mountGuest(
     remoteTarget('shared-cancelled', 'shared', 'session_guest'),
+    () => undefined,
     abort.signal,
   );
   await started;
@@ -711,6 +817,54 @@ test('reconnects after a pairing candidate becomes bound to this Client', async 
   await manager.close();
 });
 
+test('reports Guest admission capacity instead of retrying the initial mount', async () => {
+  const local = candidateHarness();
+  const capacity = new RuntimeHostPeerError('peer_capacity_exceeded', 'Host connection capacity is full');
+  let starts = 0;
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => {
+        starts += 1;
+        if (starts === 1) return ready(local.candidate);
+        throw capacity;
+      },
+    },
+  );
+  try {
+    await assert.rejects(
+      manager.mountGuest(peerGuestTarget('shared-full'), () => undefined),
+      (error: unknown) => error === capacity,
+    );
+    assert.equal(starts, 2);
+    assert.equal(manager.current('shared-full'), undefined);
+  } finally {
+    await manager.close();
+  }
+});
+
+test('Guest finalization does not claim a commit while the peer path is unavailable', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const failure = new RuntimeHostPeerError('direct_path_unavailable', 'No direct path');
+  const manager = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async (input) => {
+      if (!input.profileTarget) return ready(local.candidate);
+      throw failure;
+    },
+    reconnectBackoff: { minMs: 50, maxMs: 50 },
+    pairingFinalizationTimeoutMs: 10,
+  });
+  try {
+    await manager.mountGuest(peerGuestTarget('shared-offline'), () => undefined);
+    let dispatched = false;
+    await assert.rejects(manager.finalizeGuestAccess('shared-offline', undefined, assert.fail,
+      () => { dispatched = true; }), (error) => error === failure);
+    assert.equal(dispatched, false);
+  } finally {
+    await manager.close();
+  }
+});
+
 test('completes Guest import at credential activation while reconnect continues', async () => {
   const local = candidateHarness({ hostId: 'host-a' });
   const remoteHostId = 'a'.repeat(64);
@@ -746,6 +900,7 @@ test('completes Guest import at credential activation while reconnect continues'
   );
   await manager.mountGuest(
     peerGuestTarget('shared-session'),
+    () => undefined,
     undefined,
     (phase) => phases.push(phase),
   );
@@ -1382,6 +1537,62 @@ test('waits passively for a Host that cannot be taken over', async () => {
   await owner.close();
 });
 
+test('offers to stop an exact local ephemeral Host before retrying startup', async () => {
+  const observed = incompatibleHost('blocked_by_residency');
+  const conflict = {
+    ...observed,
+    registration: { ...observed.registration, lifecycleMode: 'ephemeral' as const },
+    processIdentity: {
+      startIdentity: 'darwin:1700000000:123456',
+    },
+    handshake: {
+      ...observed.handshake,
+      activity: {
+        connections: 0,
+        activeOperations: 0,
+        processUptimeSeconds: 60,
+        residencies: [],
+      },
+    },
+  };
+  const replacement = candidateHarness();
+  let starts = 0;
+  let prompts = 0;
+  let terminations = 0;
+  const owner = await startRuntimeHostDesktopManager(
+    { rootPath: '/workspace' } as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => {
+        starts += 1;
+        return starts === 1 ? conflict : ready(replacement.candidate);
+      },
+      upgradePrompts: {
+        restartable: async () => assert.fail('incompatible Host used restart prompt'),
+        nonRestartable: async (_conflict, action) => {
+          prompts += 1;
+          assert.equal(action, 'replace_may_interrupt_work');
+          return 'replace';
+        },
+      },
+      forceTerminateObservedHost: async (identity, authority) => {
+        terminations += 1;
+        assert.deepEqual(identity, {
+          rootPath: '/workspace',
+          registration: conflict.registration,
+        });
+        assert.deepEqual(authority.processIdentity, conflict.processIdentity);
+        assert.equal(authority.isCurrent(), true);
+        return true;
+      },
+    },
+  );
+
+  assert.equal(prompts, 1, 'even an idle snapshot must not authorize a forced stop');
+  assert.equal(terminations, 1);
+  assert.equal(starts, 2);
+  await owner.close();
+});
+
 test('silently replaces an idle non-restartable Local Host and retries', async () => {
   const observed = upgradeRequired(true);
   const conflict = {
@@ -1555,7 +1766,7 @@ test('lets the user cancel startup when an incompatible Host owns the root', asy
 
 function incompatibleHost(
   replacement: 'wait_for_idle_exit' | 'blocked_by_residency',
-): DesktopRuntimeHostCandidateStartResult {
+): Extract<DesktopRuntimeHostCandidateStartResult, { kind: 'incompatible' }> {
   return {
     kind: 'incompatible',
     registration: hostRegistration({ compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1 }),
@@ -1644,6 +1855,8 @@ function candidateHarness(
     delayDisconnect?: boolean;
     disconnectOnPrepare?: boolean;
     activeTasks?: boolean | 'always';
+    upgradeBlockingActivity?: boolean;
+    diagnosticsError?: Error;
     ownership?: 'owned_ephemeral' | 'supervised' | 'external';
     ownedProcess?: RuntimeHostSpawnedProcess;
     hostId?: string;
@@ -1678,7 +1891,10 @@ function candidateHarness(
         return lifecycleState;
       },
       async queryHostDiagnostics() {
-        return { pid: 42 };
+        if (options.diagnosticsError) throw options.diagnosticsError;
+        // Mirrors the production decoder contract: the field is required on
+        // the wire, so the harness always returns a valid payload.
+        return { pid: 42, upgradeBlockingActivity: options.upgradeBlockingActivity ?? false };
       },
       async prepareHostRetirement(mode: string) {
         prepareRetirementCalls += 1;

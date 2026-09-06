@@ -70,6 +70,7 @@ import {
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { getSessionHoverCardCopy } from './session-hover-card-copy.js';
+import { deriveTitlebarProjectName } from './titlebar-session-identity.js';
 
 type SessionRowActionId = 'flag' | 'archive' | 'rename';
 type ProjectRowActionId = 'new' | 'relink' | 'rename' | 'archive' | 'restore';
@@ -352,7 +353,8 @@ function SessionListGroups(props: {
   }>;
 }) {
   const rail = useSessionRailData();
-  const copy = getConversationCopy(useUiLocale()).sessions;
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale).sessions;
   const [renameTarget, setRenameTarget] = useState<SessionRenameTarget | null>(null);
   /**
    * The control the rename was started from, so focus can go back to it.
@@ -441,6 +443,10 @@ function SessionListGroups(props: {
           streaming={rail.streamingSessionIds?.has(session.id) ?? false}
           stale={rail.staleSessionIds?.has(session.id) ?? false}
           worktree={rail.worktreeSessionIds?.has(session.id) ?? false}
+          projectName={
+            rail.sessionProjectName?.(session) ??
+            deriveTitlebarProjectName({ projectPath: session.cwd })
+          }
           meta={rail.sessionMeta?.(session)}
           sessionBadge={rail.sessionBadge}
           onSelectSession={rail.onSelectSession}
@@ -470,18 +476,26 @@ function SessionListGroups(props: {
   if (rail.groupVariant === 'project') {
     const activeGroups = props.groups.filter((group) => group.project?.archivedAt === undefined);
     const archivedGroups = props.groups.filter((group) => group.project?.archivedAt !== undefined);
+    const pinnedGroup = groupSessionsForHistory(
+      activeGroups.flatMap((group) => group.sessions),
+      locale,
+    ).find((group) => group.id === 'pinned');
 
     function renderProjectGroup(
       group: (typeof props.groups)[number],
+      includePinned = false,
     ): ReactNode {
       const project = group.project;
+      const sessions = includePinned
+        ? group.sessions
+        : group.sessions.filter((session) => !session.isFlagged);
       return (
         <ProjectNavRow
           key={group.key}
           groupKey={group.key}
           label={group.label}
           project={project}
-          sessions={group.sessions}
+          sessions={sessions}
           streamingSessionIds={rail.streamingSessionIds}
           projectActions={rail.projectActions}
           onStartRename={(opener) => {
@@ -494,23 +508,37 @@ function SessionListGroups(props: {
       );
     }
 
+    // Two sibling sections, the same shape the time view has. A section groups
+    // items; it is not one of them. Putting the pinned section next to bare
+    // project rows would make the same level hold both a group heading and
+    // navigation items, and the pinned zone would be the only one there without
+    // a folder icon, a disclosure or a row menu.
     return (
       <>
         {renameDialog}
-        {activeGroups.map(renderProjectGroup)}
-        {archivedGroups.length > 0 && (
-          <SideNavItem
-            label={copy.archivedProjects}
-            collapsible={{
-              isCollapsed: !archivedExpanded,
-              onCollapsedChange: (collapsed) => setArchivedExpanded(!collapsed),
-            }}
-          >
-            {/* Always mount children: Astryx derives collapsible chrome from
-                !!children. Nulling on collapse removes the chevron and makes
-                the controlled isCollapsed prop a no-op. */}
-            {archivedGroups.map(renderProjectGroup)}
-          </SideNavItem>
+        {pinnedGroup && (
+          <SideNavSection title={pinnedGroup.label} className="maka-session-group">
+            {pinnedGroup.sessions.map((session) => renderSessionRow(session))}
+          </SideNavSection>
+        )}
+        {(activeGroups.length > 0 || archivedGroups.length > 0) && (
+          <SideNavSection title={copy.projects} className="maka-session-group">
+            {activeGroups.map((group) => renderProjectGroup(group))}
+            {archivedGroups.length > 0 && (
+              <SideNavItem
+                label={copy.archivedProjects}
+                collapsible={{
+                  isCollapsed: !archivedExpanded,
+                  onCollapsedChange: (collapsed) => setArchivedExpanded(!collapsed),
+                }}
+              >
+                {/* Always mount children: Astryx derives collapsible chrome from
+                    !!children. Nulling on collapse removes the chevron and makes
+                    the controlled isCollapsed prop a no-op. */}
+                {archivedGroups.map((group) => renderProjectGroup(group, true))}
+              </SideNavItem>
+            )}
+          </SideNavSection>
         )}
       </>
     );
@@ -552,6 +580,10 @@ function ProjectNavRow(props: {
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const hoverDescriptionId = useId();
+  // The same list the row draws its subtree from. A summary counting rows that
+  // were hoisted into the pinned section describes a project row that has no
+  // disclosure and no children, and puts its menu somewhere else than the count
+  // implies.
   const hoverSummary = useMemo(
     () =>
       createProjectHoverCardSummary(
@@ -653,6 +685,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   streaming: boolean;
   stale: boolean;
   worktree: boolean;
+  projectName?: string;
   meta?: string;
   sessionBadge?: SessionRailData['sessionBadge'];
   onSelectSession(sessionId: string): void;
@@ -797,12 +830,14 @@ const SessionNavRow = memo(function SessionNavRow(props: {
         id={hoverDescriptionId}
         session={props.session}
         status={previewStatus}
+        projectName={props.projectName}
         locale={locale}
       />
       <SessionHoverCardLayer
         containerRef={containerRef}
         session={props.session}
         status={previewStatus}
+        projectName={props.projectName}
         locale={locale}
       />
       {props.actions && (
@@ -823,6 +858,7 @@ const SessionHoverCardLayer = memo(function SessionHoverCardLayer(props: {
   containerRef: RefObject<HTMLElement | null>;
   session: SessionSummary;
   status: string;
+  projectName?: string;
   locale: UiLocale;
 }) {
   const copy = getSessionHoverCardCopy(props.locale);
@@ -840,6 +876,7 @@ const SessionHoverCardLayer = memo(function SessionHoverCardLayer(props: {
     <SessionHoverCardContent
       session={props.session}
       status={props.status}
+      projectName={props.projectName}
       locale={props.locale}
     />,
   );
@@ -849,6 +886,7 @@ function SessionHoverCardDescription(props: {
   id: string;
   session: SessionSummary;
   status: string;
+  projectName?: string;
   locale: UiLocale;
 }) {
   const conversationCopy = getConversationCopy(props.locale);
@@ -860,7 +898,7 @@ function SessionHoverCardDescription(props: {
     session.lastMessagePreview || copy.noMessages,
     session.model,
     permission,
-    session.cwd,
+    props.projectName,
     session.lastMessageAt
       ? `${copy.updated} ${formatAbsoluteTimestamp(session.lastMessageAt, props.locale)}`
       : undefined,
@@ -874,6 +912,7 @@ function SessionHoverCardDescription(props: {
 function SessionHoverCardContent(props: {
   session: SessionSummary;
   status: string;
+  projectName?: string;
   locale: UiLocale;
 }) {
   const conversationCopy = getConversationCopy(props.locale);
@@ -897,9 +936,9 @@ function SessionHoverCardContent(props: {
         <span aria-hidden="true">·</span>
         <span>{permission}</span>
       </span>
-      {session.cwd ? (
-        <span className="maka-sidebar-hover-card-path" title={session.cwd}>
-          {session.cwd}
+      {props.projectName ? (
+        <span className="maka-sidebar-hover-card-project" title={session.cwd}>
+          {props.projectName}
         </span>
       ) : null}
       {session.lastMessageAt ? (

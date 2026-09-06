@@ -623,7 +623,7 @@ describe('RuntimeEvent actions', () => {
     }
   });
 
-  test('permission and user-question interactions are first-class actions', () => {
+  test('permission, question, and form interactions are first-class actions', () => {
     const actions: RuntimeEventActions = {
       permissionRequest: {
         kind: 'tool_permission',
@@ -638,6 +638,14 @@ describe('RuntimeEvent actions', () => {
       permissionDecision: { requestId: 'pr-1', decision: 'deny' },
       permissionAnswerAccepted: { requestId: 'hosted-pr-1' },
       userQuestionAnswerAccepted: { requestId: 'question-1' },
+      formRequest: {
+        requestId: 'form-1',
+        toolUseId: 'tc-1',
+        message: 'Choose settings',
+        requester: { name: 'deploy' },
+        fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+      },
+      formAnswerAccepted: { requestId: 'form-1' },
     };
     assert.strictEqual(actions.permissionRequest?.category, 'shell_unsafe');
     assert.strictEqual(actions.permissionDecision?.decision, 'deny');
@@ -649,6 +657,7 @@ describe('RuntimeEvent actions', () => {
     for (const [accepted, requestId] of [
       [decodedActions?.permissionAnswerAccepted, 'hosted-pr-1'],
       [decodedActions?.userQuestionAnswerAccepted, 'question-1'],
+      [decodedActions?.formAnswerAccepted, 'form-1'],
     ] as const) {
       assert.deepEqual(accepted, { requestId });
       assert.ok(accepted);
@@ -659,8 +668,17 @@ describe('RuntimeEvent actions', () => {
     for (const invalidAcceptedAction of [
       { permissionAnswerAccepted: { requestId: 'pr-1', extra: true } },
       { userQuestionAnswerAccepted: { requestId: 'question-1', extra: true } },
+      { formAnswerAccepted: { requestId: 'form-1', extra: true } },
       { permissionAnswerAccepted: Object.create({ requestId: 'inherited-pr-1' }) },
       { userQuestionAnswerAccepted: { requestId: 'x'.repeat(257) } },
+      {
+        formRequest: {
+          ...actions.formRequest,
+          fields: [
+            { kind: 'boolean', name: 'confirm', label: 'Confirm', required: true, extra: true },
+          ],
+        },
+      },
     ]) {
       assert.throws(() =>
         decodeRuntimeEvent({

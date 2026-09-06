@@ -278,7 +278,7 @@ describe('Boundary decisions notify the read model', () => {
   function handlersWithRecorder() {
     const boundaryChanges: string[] = [];
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-a' },
       liveTurnBySessionRef: { current: {} },
       refreshMessages: async () => true,

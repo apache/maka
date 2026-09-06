@@ -75,6 +75,7 @@ export * from './configuration-change.js';
 export * from './connection-catalog-change.js';
 export * from './goal.js';
 export * from './hosted-execution.js';
+export * from './host-resources.js';
 export * from './plan.js';
 export * from './peer-mesh.js';
 export * from './project-catalog.js';
@@ -100,7 +101,64 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 101 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 121 as const;
+// 121: Host diagnostics report `upgradeBlockingActivity`, the Host's
+// authoritative activity answer for maintenance probes, computed by the same
+// authority that gates `host.upgrade.prepare`. Older Clients reject the
+// unknown key when decoding diagnostics, so the pair must refuse each other
+// at the handshake.
+// 120: WorkHub admits named resume proposals with an explicit resumesActionId
+// and returns a transient resume outcome. Older peers cannot decode this action.
+// 119: Session Guest principals expose optional display names and an owner-only
+// rename command. Older peers reject named principal projections.
+// 118: External-session import publishes distinct `model_unavailable` and
+// `source_unreadable` error codes so the shell classifies failures by code
+// instead of the redacted message. Older peers cannot decode the new codes.
+// 117: WorkHub exposes only one correction linkage per bounded candidate and
+// no longer returns the Host's complete active-link set.
+// 116: User deletion rejects workflow-owned Artifacts with operation_conflict.
+// 115: Artifact creation requires explicit source ownership.
+// 114: Artifacts are physically deleted and no longer expose tombstone status.
+// 113: Client Capability tool schemas add `patternProperties` and draft-07 tuple
+// `additionalItems`; validation and projection share one per-keyword shape table.
+// Older peers reject these keywords and fail the handshake.
+
+// 112: Owners can query the Host execution environment through an extensible,
+// bounded resource-envelope contract. Older Hosts do not implement the query.
+// 111: Client Capability tool schemas may use draft-07 tuple additionalItems.
+// Older Hosts reject the keyword, so peers must agree before capabilities are admitted.
+// 110: Runtime Host is the sole schema-migration authority for its State Root.
+// Epoch 109 Desktop builds could migrate the event-only AgentRun schema while
+// an older service Host still held the root, leaving that Host querying a
+// removed column. Reject the affected mixed generation before either process
+// admits domain work; the installation owner can then replace the Host.
+// 109: accepted Client Capability invocations may carry one bounded nested form
+// Interaction request/result round trip.
+// 108: Session Interaction snapshots, forwarded Runtime events, and Agent Graph
+// activity may carry the provider-neutral `form` request/answer contract.
+// 107: `token_usage` anchors record the model and connection that produced
+// them. The record decodes against a closed allowlist, so an older client
+// rejects the two new keys and, with them, the Session that carries them.
+// 106: Session transcripts gain five `system_note` kinds
+// (`context_provider_dropping`, `context_window_suggestion`,
+// `context_window_overrun`, `context_reported_window_exceeded`,
+// `context_overflow_after_compaction`) and
+// `token_usage` records reshape `lastRequestAnchor` to
+// `{ inputTokens, outputTokens }`, all behind closed allowlists in
+// @maka/core. An older client that handshakes would fail
+// `decodeStoredMessage` on the first transcript carrying them, so the pair
+// must refuse each other at the handshake instead (#4559).
+// 105: Usage summaries may carry the recorded call-time total and per-Session
+// tool-invocation totals. Older Clients reject the unknown fields, so a newer
+// Host's usage summary is unreadable to them.
+// 104: WorkHub Coordination actions add closed direct-stop proposals,
+// confirmations, expected-state preconditions, and outcomes. Older peers
+// reject these strict shapes.
+// 103: `github-copilot` joins `OAUTH_LOGIN_PROVIDERS`, the Host answers the
+// closed `oauth.enrollment.query`, and `connection.onboarding.save` admits
+// canonical OAuth material with an empty enable-all-discovered selection.
+// Older peers reject these wire values, so incompatible pairs must fail the
+// handshake. Re-derived from current `main`; epoch 102 is claimed by open PRs.
 // 101: Session Turn requests can carry regeneration intents and Guests can
 // atomically withdraw pending requests. Older peers do not share this command
 // vocabulary or the expanded Guest operation grant.

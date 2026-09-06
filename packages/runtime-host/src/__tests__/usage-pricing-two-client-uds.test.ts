@@ -367,6 +367,45 @@ test('usage logs carry the Host-resolved session title and tolerate unreadable s
   });
 });
 
+test('a connection-scoped summary omits the tool split instead of sending an unscoped one', async () => {
+  await withUsageAuthority('summary-slug-omission', async ({ stores }) => {
+    await Promise.all([
+      stores.telemetry.recordLlmCall({
+        ...usageRecord('llm-slug', 30, 'openai', 'gpt-a'),
+        connectionSlug: 'openai',
+      }),
+      stores.telemetry.recordToolInvocation(toolRecord('tool-slug', 31)),
+    ]);
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {},
+      new RuntimePolicyActivationGate(),
+      () => {},
+      async () => undefined,
+    );
+
+    // Tool rows predate connection attribution, so a connectionSlug-filtered
+    // query cannot scope them; the summary omits the split rather than let the
+    // tool ring quietly contradict the model totals beside it.
+    const scoped = await coordinator.handlers['usage.query'](
+      { kind: 'summary', query: { range: 'all', connectionSlug: 'openai' } },
+      CONNECTION_CONTEXT,
+    );
+    assert.ok(scoped.ok);
+    if (scoped.result.kind !== 'summary') throw new Error('expected summary');
+    assert.equal(scoped.result.summary.toolUsage, undefined);
+    assert.equal(scoped.result.summary.totalRequests, 1);
+
+    const unscoped = await coordinator.handlers['usage.query'](
+      { kind: 'summary', query: { range: 'all' } },
+      CONNECTION_CONTEXT,
+    );
+    assert.ok(unscoped.ok);
+    if (unscoped.result.kind !== 'summary') throw new Error('expected summary');
+    assert.deepEqual(unscoped.result.summary.toolUsage, { requests: 1, durationMs: 12 });
+  });
+});
+
 test('a non–not-found title read failure propagates out of usage.query instead of blanking the row', async () => {
   await withUsageAuthority('session-title-failure', async ({ stores }) => {
     await stores.telemetry.recordLlmCall({

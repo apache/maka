@@ -224,7 +224,11 @@ function decodeIdentity(value: unknown): InteractiveOAuthConnectionIdentity {
 
 function decodeOAuthProvider(value: unknown): InteractiveOAuthLoginProvider {
   const providerType = decodePersistedDomain(() => decodeProviderType(value));
-  if (providerType !== 'openai-codex' && providerType !== 'xai-oauth') {
+  if (
+    providerType !== 'openai-codex' &&
+    providerType !== 'xai-oauth' &&
+    providerType !== 'github-copilot'
+  ) {
     throw codecError('invalid_document', 'OAuth login receipt provider is invalid');
   }
   return providerType;

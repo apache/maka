@@ -17,17 +17,18 @@
  * under the License.
  */
 
-import type { AgentRunHeader } from '@maka/core/agent-run';
 import { type ContextCompactionOutcome } from '@maka/core/events';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
+import { readRunInvocation } from '@maka/core/runtime-event-store';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import { classifyTerminalRuntimeLedger } from '@maka/runtime/terminal-run-commit';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
 import { TURN_FAILURE_MESSAGE_MAX_BYTES, type TurnSnapshot } from '../protocol/index.js';
 
 type CanonicalTurnStores = Pick<
   ExecutionStoresWriter<'interactive'>,
-  'agentRunStore' | 'runtimeEventStore'
+  'runtimeEventStore' | 'interactionStore' | 'sessionStore'
 >;
 
 export interface CanonicalTurnIdentity {
@@ -39,19 +40,16 @@ export interface CanonicalTurnIdentity {
 export async function readCanonicalTurnSnapshot(
   stores: CanonicalTurnStores,
   identity: CanonicalTurnIdentity,
-  knownRun?: AgentRunHeader,
+  knownRun?: RuntimeInvocationRecord,
 ): Promise<TurnSnapshot> {
   const { sessionId, turnId, runId } = identity;
-  const run = knownRun ?? (await readRunIfPresent(stores, sessionId, runId));
+  const run = knownRun ?? (await readInvocationIfPresent(stores, sessionId, runId));
   if (!run) return { sessionId, turnId, runId, status: 'admitted' };
   if (run.turnId !== turnId) {
-    throw new Error('Admitted Turn identity does not match its Run header');
+    throw new Error('Admitted Turn identity does not match its invocation');
   }
 
-  const [runEvents, runtimeEvents] = await Promise.all([
-    stores.agentRunStore.readEvents(sessionId, runId),
-    stores.runtimeEventStore.readImmutableRuntimeEvents(sessionId, runId),
-  ]);
+  const runtimeEvents = await stores.runtimeEventStore.readImmutableRuntimeEvents(sessionId, runId);
   const terminal = classifyTerminalRuntimeLedger(run, runtimeEvents);
   if (terminal.kind === 'fact') {
     const fact = terminal.fact;
@@ -101,13 +99,26 @@ export async function readCanonicalTurnSnapshot(
   if (terminal.kind !== 'none') {
     throw new Error('Runtime ledger does not contain one canonical terminal fact');
   }
-  if (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled') {
-    throw new Error('Terminal Run header has no canonical terminal RuntimeEvent');
-  }
-  if (run.status !== 'created' && !runEvents.some((event) => event.type === 'run_started')) {
-    throw new Error('Non-created Run has no durable start fact');
-  }
-  return { sessionId, turnId, runId, status: run.status };
+  // No terminal event means the run is still open. Whether it is parked is the
+  // pending-interaction store's answer, not something the run restates.
+  const parked = await hasPendingInteraction(stores, sessionId, runId);
+  return { sessionId, turnId, runId, status: parked ? 'waiting_for_user' : 'running' };
+}
+
+/** Is this run waiting on a request the user has not answered? */
+async function hasPendingInteraction(
+  stores: CanonicalTurnStores,
+  sessionId: string,
+  runId: string,
+): Promise<boolean> {
+  const [interactions, boundaries] = await Promise.all([
+    stores.interactionStore.listSessionPending(sessionId),
+    stores.sessionStore.listPendingSandboxBoundaryRequests(sessionId),
+  ]);
+  return (
+    interactions.some((request) => request.runId === runId) ||
+    boundaries.some((request) => request.runId === runId)
+  );
 }
 
 function readContextCompactionOutcome(value: unknown): ContextCompactionOutcome | undefined {
@@ -136,13 +147,13 @@ export function worstCaseFailedTurnSnapshot(identity: CanonicalTurnIdentity): Tu
   };
 }
 
-async function readRunIfPresent(
+async function readInvocationIfPresent(
   stores: CanonicalTurnStores,
   sessionId: string,
   runId: string,
-): Promise<AgentRunHeader | undefined> {
+): Promise<RuntimeInvocationRecord | undefined> {
   try {
-    return await stores.agentRunStore.readRun(sessionId, runId);
+    return await readRunInvocation(stores.runtimeEventStore, sessionId, runId);
   } catch (error) {
     if (isMissingFile(error)) return undefined;
     throw error;

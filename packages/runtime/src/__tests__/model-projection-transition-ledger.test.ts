@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import type { AgentRunEvent, AgentRunHeader } from '@maka/core/agent-run';
+import type { AgentRunEvent } from '@maka/core/agent-run';
 import {
   buildModelProjectionTransition,
   durableToolResultProjectionDigest,
@@ -437,8 +437,6 @@ describe('transition ledger reads', () => {
       data,
     });
     const runStore = {
-      listSessionRuns: async () =>
-        [{ runId: 'run-1' }, { runId: 'run-2' }] as unknown as AgentRunHeader[],
       readEvents: async (_sessionId: string, runId: string): Promise<AgentRunEvent[]> =>
         runId === 'run-1'
           ? [
@@ -453,7 +451,10 @@ describe('transition ledger reads', () => {
           : [ledgerEvent(`${transition.transitionId}-replay`, { transition })],
     };
 
-    const loaded = await loadModelProjectionTransitionsFromRunLedger(runStore, 'session-1');
+    const loaded = await loadModelProjectionTransitionsFromRunLedger(runStore, 'session-1', [
+      'run-1',
+      'run-2',
+    ]);
 
     assert.deepEqual(
       loaded.transitions.map((entry) => entry.transitionId),

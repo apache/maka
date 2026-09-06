@@ -32,6 +32,7 @@ export interface DesktopTranscriptRangeController {
   ready(): Promise<void>;
   waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean>;
   loadBefore(maxBytes?: number, anchorTurnId?: string): Promise<void>;
+  loadAfter(maxBytes?: number, anchorTurnId?: string): Promise<void>;
   loadAround(sequence: number): Promise<void>;
   loadLatest(): Promise<void>;
   reload(): Promise<void>;
@@ -71,6 +72,16 @@ export function createDesktopTranscriptRangeController(
     async loadAround(sequence) {
       await (await current()).loadAround(sequence);
     },
+    async loadAfter(maxBytes, anchorTurnId) {
+      const range = store.range();
+      if (!range.hasNewer) return;
+      await (await current()).loadAfter(
+        anchorTurnId === undefined
+          ? range.newestSequence
+          : store.sequenceForTurn(anchorTurnId, 'last') ?? range.newestSequence,
+        maxBytes,
+      );
+    },
     async loadLatest() {
       const range = store.range();
       if (!range.hasNewer || range.durableThrough === null) return;
@@ -94,6 +105,101 @@ export function createDesktopTranscriptRangeController(
       closed = true;
       openController.abort();
       await handle.then((value) => value.close()).catch(() => undefined);
+    },
+  };
+}
+
+export interface DesktopTranscriptReconnectRecovery {
+  transcriptFailed(error: unknown): void;
+  observationChanged(phase: 'pending' | 'ready'): void;
+  close(): void;
+}
+
+export function createDesktopTranscriptReconnectRecovery(options: {
+  reload(): Promise<void>;
+  onError(error: unknown): void;
+}): DesktopTranscriptReconnectRecovery {
+  let closed = false;
+  let observationReady = false;
+  let readinessGeneration = 0;
+  let needsRecovery = false;
+  let recoveryTask: Promise<void> | undefined;
+
+  const recover = () => {
+    if (closed || !observationReady || !needsRecovery || recoveryTask) return;
+    const admittedReadinessGeneration = readinessGeneration;
+    needsRecovery = false;
+    const task = Promise.resolve().then(async () => {
+      try {
+        if (closed) return;
+        await options.reload();
+      } catch (error) {
+        if (closed) return;
+        needsRecovery = true;
+        options.onError(error);
+      }
+    });
+    recoveryTask = task;
+    const settle = () => {
+      if (recoveryTask !== task) return;
+      recoveryTask = undefined;
+      if (
+        needsRecovery
+        && observationReady
+        && readinessGeneration > admittedReadinessGeneration
+      ) recover();
+    };
+    void task.then(settle, settle);
+  };
+
+  return {
+    transcriptFailed(error) {
+      if (closed) return;
+      needsRecovery = true;
+      options.onError(error);
+      recover();
+    },
+    observationChanged(phase) {
+      if (closed) return;
+      if (phase === 'pending') {
+        observationReady = false;
+        return;
+      }
+      if (!observationReady) readinessGeneration += 1;
+      observationReady = true;
+      recover();
+    },
+    close() {
+      closed = true;
+      observationReady = false;
+    },
+  };
+}
+
+export interface RecoveringDesktopTranscriptRangeController
+  extends DesktopTranscriptRangeController {
+  observationChanged(phase: 'pending' | 'ready'): void;
+}
+
+export function createRecoveringDesktopTranscriptRangeController(
+  store: DesktopTranscriptRangeStore,
+  open: (signal: AbortSignal) => Promise<DesktopTranscriptHandle>,
+  options: {
+    onError(error: unknown): void;
+  },
+): RecoveringDesktopTranscriptRangeController {
+  const controller = createDesktopTranscriptRangeController(store, open);
+  const recovery = createDesktopTranscriptReconnectRecovery({
+    reload: controller.reload,
+    ...options,
+  });
+  void controller.ready().catch(recovery.transcriptFailed);
+  return {
+    ...controller,
+    observationChanged: recovery.observationChanged,
+    async close() {
+      recovery.close();
+      await controller.close();
     },
   };
 }
@@ -250,11 +356,9 @@ export class DesktopTranscriptRangeStore {
     return this.#newestUserSequence;
   }
 
-  sequenceForTurn(turnId: string): number | null {
-    for (const sequence of this.#durableOrder) {
-      if (this.#durable.get(sequence)?.message.turnId === turnId) return sequence;
-    }
-    return null;
+  sequenceForTurn(turnId: string, edge: 'first' | 'last' = 'first'): number | null {
+    const order = edge === 'first' ? this.#durableOrder : [...this.#durableOrder].reverse();
+    return order.find((sequence) => this.#durable.get(sequence)?.message.turnId === turnId) ?? null;
   }
 
   waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean> {

@@ -35,6 +35,13 @@ import {
   runDesktopRuntimeHostWslSetup,
 } from '../runtime-host-wsl-controller.js';
 
+const OPERATOR = {
+  kind: 'node' as const,
+  platform: 'posix' as const,
+  nodePath: '/usr/bin/node',
+  modulePath: '/home/operator/.local/share/maka/operator.mjs',
+};
+
 test('WSL management invokes the stable operator directly with the exact deployment target', async () => {
   let launch:
     | { readonly executable: string; readonly args: readonly string[]; readonly environment: NodeJS.ProcessEnv }
@@ -58,7 +65,7 @@ test('WSL management invokes the stable operator directly with the exact deploym
   });
   const result = await runDesktopRuntimeHostWslManagement({
     distribution: 'Ubuntu',
-    operatorPath: '/home/operator/.local/share/maka/operator',
+    operator: OPERATOR,
     action: 'configure',
     expectedTarget: {
       serviceId: 'a'.repeat(64),
@@ -90,11 +97,12 @@ test('WSL management invokes the stable operator directly with the exact deploym
   });
 
   assert.equal(launch?.executable, 'wsl.exe');
-  assert.deepEqual(launch?.args.slice(0, 5), [
+  assert.deepEqual(launch?.args.slice(0, 6), [
     '--distribution',
     'Ubuntu',
     '--exec',
-    '/home/operator/.local/share/maka/operator',
+    '/usr/bin/node',
+    '/home/operator/.local/share/maka/operator.mjs',
     'configure',
   ]);
   assert.ok(launch?.args.includes('--expected-deployment-id'));
@@ -136,7 +144,7 @@ test('WSL setup forwards the development archive and its exact evidence', async 
           version: '0.2.0-development',
           serviceId: 'b'.repeat(64),
           deploymentId: '00000000-0000-4000-8000-000000000001',
-          operatorPath: '/tmp/maka/operator',
+          operator: { ...OPERATOR, modulePath: '/tmp/maka/operator.mjs' },
           rootPath: '/tmp/maka/root',
           rootId: 'a'.repeat(64),
           endpoint: 'ws://127.0.0.1:7443/runtime-host',

@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildDefaultContextBudgetPolicy,
+  resolveDeclaredContextWindow,
   resolveSelectedModelContextWindow,
 } from '../context-budget-policy.js';
 
@@ -33,7 +34,8 @@ test('context budgeting prefers a model input limit over its context window', ()
   };
 
   assert.equal(resolveSelectedModelContextWindow(connection, undefined), 600);
-  assert.equal(buildDefaultContextBudgetPolicy(connection)?.maxHistoryEstimatedTokens, 450);
+  assert.equal(resolveDeclaredContextWindow(connection, undefined), undefined);
+  assert.deepEqual(buildDefaultContextBudgetPolicy().historyCompact?.midTurn, { enabled: true });
 });
 
 test('invalid zero input limits do not disable the context-window fallback', () => {
@@ -76,4 +78,17 @@ test('a model-facts context window is the authoritative user declaration', () =>
   };
 
   assert.equal(resolveSelectedModelContextWindow(connection, undefined), 200_000);
+  assert.equal(resolveDeclaredContextWindow(connection, undefined), 200_000);
+});
+
+test('a reported model context window is metadata, not a Maka declaration', () => {
+  const connection = {
+    slug: 'openai',
+    providerType: 'openai' as const,
+    defaultModel: 'reported-model',
+    models: [{ id: 'reported-model', contextWindow: 100_000 }],
+  };
+
+  assert.equal(resolveSelectedModelContextWindow(connection, undefined), 100_000);
+  assert.equal(resolveDeclaredContextWindow(connection, undefined), undefined);
 });

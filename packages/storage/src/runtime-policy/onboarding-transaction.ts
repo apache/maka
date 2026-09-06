@@ -23,6 +23,7 @@ import {
   decodeProviderType,
   decodeCanonicalConnectionCatalogEntry,
   decodeCredentialVersionBasis,
+  decodeConnectionName,
   decodeConnectionSlug,
   decodeRuntimePolicyEntityId,
   normalizeCatalogConnectionBaseUrl,
@@ -60,6 +61,8 @@ export interface ConnectionOnboardingTransactionInput {
   readonly connectionId: unknown;
   readonly slug: unknown;
   readonly providerType: unknown;
+  /** Optional caller-chosen display name; absent/null keeps the provider default. */
+  readonly name?: unknown;
   readonly suppliedSecret: unknown;
   readonly baseUrl: unknown;
   readonly enabledModelIds: unknown;
@@ -73,6 +76,12 @@ export interface ConnectionOnboardingIntent {
   /** Absent only while replaying a schema-v1 identity-first intent. */
   readonly slug: string | null;
   readonly providerType: ProviderType;
+  /**
+   * Caller-chosen display name pinned into the durable intent; null falls
+   * back to the provider label at upsert. Absent in intents journaled before
+   * this field existed — they decode to null and behave exactly as before.
+   */
+  readonly name: string | null;
   readonly suppliedSecret: string | null;
   readonly baseUrl: string | null;
   readonly enabledModelIds: readonly string[];
@@ -108,13 +117,13 @@ export function prepareConnectionOnboardingIntent(
 ): CurrentConnectionOnboardingIntent {
   const decode = source === 'persisted' ? decodePersistedDomain : decodeConnectionInput;
   const providerType = decode(() => decodeProviderType(input.providerType));
-  if (!providerAuthSupportsApiKey(providerType)) {
+  const definition = PROVIDER_REGISTRY[providerType];
+  if (!providerAuthSupportsApiKey(providerType) && definition.authKind !== 'oauth_token') {
     throw codecError(
       source === 'persisted' ? 'invalid_document' : 'invalid_connection_input',
-      'Onboarding requires an API-key provider',
+      'Onboarding requires a provider with a connection credential',
     );
   }
-  const definition = PROVIDER_REGISTRY[providerType];
   const discovery = decode(() => normalizeConnectionModelDiscoveryResult(input.discovery));
   // Non-empty is the requirement; `source` is write provenance, not a
   // quality bar. A provider without a model-list endpoint runs discovery by
@@ -170,6 +179,10 @@ export function prepareConnectionOnboardingIntent(
     connectionId: decode(() => decodeRuntimePolicyEntityId(input.connectionId)),
     slug: decode(() => decodeConnectionSlug(input.slug)),
     providerType,
+    name:
+      input.name === undefined || input.name === null
+        ? null
+        : decode(() => decodeConnectionName(input.name)),
     suppliedSecret,
     baseUrl,
     enabledModelIds: normalized.enabledModelIds,
@@ -199,6 +212,7 @@ export async function readConnectionOnboardingIntent(
       'connectionId',
       'slug',
       'providerType',
+      'name',
       'suppliedSecret',
       'baseUrl',
       'enabledModelIds',
@@ -220,6 +234,7 @@ export async function readConnectionOnboardingIntent(
       'connectionId',
       'slug',
       'providerType',
+      'name',
       'suppliedSecret',
       'baseUrl',
       'enabledModelIds',
@@ -245,6 +260,7 @@ export async function readConnectionOnboardingIntent(
       connectionId: raw.connectionId,
       slug:
         raw.schemaVersion === 1 ? deriveLegacyIntentPlaceholderSlug(raw.providerType) : raw.slug,
+      name: raw.name,
       suppliedSecret: raw.suppliedSecret,
       baseUrl: raw.baseUrl,
       enabledModelIds: raw.enabledModelIds,
@@ -381,7 +397,11 @@ function decodeOAuthTarget(value: unknown): InteractiveOAuthLoginTarget {
 function isOAuthProvider(
   providerType: ProviderType,
 ): providerType is InteractiveOAuthLoginProvider {
-  return providerType === 'openai-codex' || providerType === 'xai-oauth';
+  return (
+    providerType === 'openai-codex' ||
+    providerType === 'xai-oauth' ||
+    providerType === 'github-copilot'
+  );
 }
 
 function decodeOAuthAttemptId(

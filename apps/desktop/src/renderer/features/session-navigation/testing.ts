@@ -20,6 +20,7 @@
 import type { SessionNavigationServices } from './ports.js';
 
 export type {
+  SessionNavigationPorts,
   SessionNavigationServices,
   SessionNavigationSession,
   SessionNavigationSessionService,
@@ -33,7 +34,6 @@ export { createSessionOpenCommand } from './controller/session-open-command.js';
 export {
   useSessionNavigationController,
   type SessionNavigationController,
-  type SessionNavigationPorts,
   type UseSessionNavigationControllerInput,
 } from './controller/use-session-navigation-controller.js';
 export { useSessionSelection } from './controller/use-session-selection.js';
@@ -51,8 +51,6 @@ export {
 } from './model/session-selection.js';
 export {
   readSessionListViewMode,
-  SESSION_LIST_EXPANDED_MAX_WIDTH,
-  SESSION_LIST_EXPANDED_MIN_WIDTH,
   writeSessionListViewMode,
 } from './model/session-list-layout.js';
 export { createSessionRailLayoutStore } from './model/session-rail-layout-store.js';

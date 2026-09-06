@@ -305,6 +305,16 @@ export type ConnectionOnboardingTarget =
   | {
       readonly kind: 'create';
       readonly providerType: ProviderType;
+      /**
+       * Optional caller-requested identity. When absent, the Host derives the
+       * slug (`openai`, `openai-2`, …) and display name as before. When
+       * present, the Host validates the slug against the catalog and rejects
+       * the save with `slug_taken` on collision rather than silently deriving
+       * a different identity. A surface talking to an older Host must omit
+       * both keys — the wire decoder there rejects unknown fields.
+       */
+      readonly slug?: string;
+      readonly name?: string;
     }
   | {
       readonly kind: 'existing';

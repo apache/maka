@@ -27,6 +27,10 @@ import { generalizedErrorMessage } from '@maka/core/redaction';
 import { emptyPlanSessionState } from '@maka/core/plan';
 import type { PermissionMode } from '@maka/core/permission';
 import {
+  runtimeInvocationOutcome,
+  type RuntimeInvocationRecord,
+} from '@maka/core/runtime-invocation';
+import {
   isDeepResearchSession,
   type SessionHeader,
   WORKHUB_COORDINATION_SESSION_ID,
@@ -37,6 +41,7 @@ import { AgentGraphSupervisorWakeCoordinator } from '@maka/runtime/agent-graph-s
 import {
   BackendRegistry,
   SessionManager,
+  workHubDirectStopAbortSource,
   type BackendFactory,
   type BackendPreparationContext,
 } from '@maka/runtime/session-manager';
@@ -73,6 +78,7 @@ import {
 } from '@maka/runtime/shell-detect';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
+import { isHostedExecutionTerminal } from './hosted-execution-authority.js';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { createArtifactAttachmentResourceReader } from '@maka/storage/artifact-stores';
 import { createReadImageSnapshotStore } from '@maka/storage/read-image-snapshot-store';
@@ -175,7 +181,10 @@ import type { TurnOperationHandlerMap } from './operation-dispatcher.js';
 import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
 import { HostWebSearchCoordinator } from './web-search-coordinator.js';
 import { HostWorkHubCoordinationCoordinator } from './workhub-coordination-coordinator.js';
-import { WorkHubActionEffectFailure } from './workhub-coordination-action-gate.js';
+import {
+  WorkHubActionEffectFailure,
+  workHubResumedTurnId,
+} from './workhub-coordination-action-gate.js';
 
 type ExecutionConnectionRef = Parameters<
   RuntimePolicyStoresWriter['operations']['resolveExecutionConnection']
@@ -409,6 +418,8 @@ export async function createExecutionRuntimeHostComposition(
     const executionArtifacts = createHostExecutionArtifactServices({
       artifacts: openedArtifactStore,
       requestDrain: context.requestDrain,
+      sessionAdmission,
+      sessions: stores.sessionStore,
     });
     const builtinTools = {
       shellRuns: runtimeResources,
@@ -557,6 +568,8 @@ export async function createExecutionRuntimeHostComposition(
     let deepResearch: HostDeepResearchCoordinator | undefined;
     let dailyReview: HostDailyReviewCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
+      readLatestRootTurnLineage: (identity) =>
+        requireRootCoordinator(rootCoordinator).readLatestRootTurnLineage(identity),
       readSessionHeader: (sessionId) =>
         requireRootCoordinator(rootCoordinator).readSessionHeader(sessionId),
       readRootState: (sessionId) =>
@@ -699,10 +712,18 @@ export async function createExecutionRuntimeHostComposition(
           stores.runtimeEventStore.readSessionRuntimeEventEntries(sessionId),
       },
       historyCompaction: {
-        readLatestCheckpoint: (sessionId) =>
-          loadLatestHistoryCompactCheckpointFromRunLedger(stores.agentRunStore, sessionId),
-        readCheckpoints: (sessionId) =>
-          loadHistoryCompactCheckpointsFromRunLedger(stores.agentRunStore, sessionId),
+        readLatestCheckpoint: async (sessionId) =>
+          loadLatestHistoryCompactCheckpointFromRunLedger(
+            stores.agentRunStore,
+            sessionId,
+            await sessionRunIds(stores.runtimeEventStore, sessionId),
+          ),
+        readCheckpoints: async (sessionId) =>
+          loadHistoryCompactCheckpointsFromRunLedger(
+            stores.agentRunStore,
+            sessionId,
+            await sessionRunIds(stores.runtimeEventStore, sessionId),
+          ),
       },
       model: createHostMemoryExtractionModel({
         runtimePolicy: runtimePolicyStores,
@@ -949,7 +970,6 @@ export async function createExecutionRuntimeHostComposition(
         requestDrain: context.requestDrain,
       }),
       readModel: new RuntimeReadModel({
-        runStore: stores.agentRunStore,
         runtimeEventStore: stores.runtimeEventStore,
         projectionCache: stores.sessionStore,
         canonicalPermissionOutcomes,
@@ -1014,7 +1034,7 @@ export async function createExecutionRuntimeHostComposition(
             graph.hasLiveSessionState(sessionId),
             hasLiveLinkedDescendantState(
               requireSessionManager(manager),
-              stores.agentRunStore,
+              stores.runtimeEventStore,
               sessionId,
               async (descendantSessionId) =>
                 (await runtimeResources!.hasLiveSessionResources(descendantSessionId)) ||
@@ -1047,18 +1067,7 @@ export async function createExecutionRuntimeHostComposition(
       worktreeChildExecutor,
       listArtifactsForTurn: (sessionId, turnId) =>
         openedArtifactStore.listTurnArtifacts(sessionId, turnId),
-      publishChildWorkspacePatch: ({ sessionId, turnId, binding, patch }) =>
-        openedArtifactStore.create({
-          id: subagentWritebackArtifactId(sessionId, turnId),
-          sessionId,
-          turnId,
-          name: 'workspace.patch',
-          kind: 'diff',
-          content: patch,
-          mimeType: 'text/x-diff; charset=utf-8',
-          source: 'subagent_writeback',
-          summary: `Workspace changes relative to ${binding.baseCommit}.`,
-        }),
+      publishChildWorkspacePatch: executionArtifacts.publishChildWorkspacePatch,
       assertChildWorkspaceQuiescent: async (sessionId) => {
         if (await runtimeResources!.hasLiveSessionResources(sessionId)) {
           throw new Error(
@@ -1069,7 +1078,6 @@ export async function createExecutionRuntimeHostComposition(
     });
     graphCoordinator = new AgentGraphCoordinator({
       sessionStore: stores.sessionStore,
-      runStore: stores.agentRunStore,
       runtimeEventStore: stores.runtimeEventStore,
       controlStore: openedGraphControlStore,
       epochStore: openedGraphControlStore,
@@ -1261,15 +1269,24 @@ export async function createExecutionRuntimeHostComposition(
       startTurn: (sessionId, input, _activity, abortSignal, isCurrent) =>
         graphExecutions.run(sessionId, input, abortSignal, isCurrent),
       inspectAttempt: async (rootSessionId, attemptId, turnId) => {
-        const runs = (await stores.agentRunStore.listSessionRuns(rootSessionId)).filter(
-          (run) => run.agentGraphWakeAttemptId === attemptId && run.turnId === turnId,
+        const runs = (await stores.runtimeEventStore.listSessionInvocations(rootSessionId)).filter(
+          (run) => {
+            const root = run.opening.root;
+            return (
+              root.kind === 'agent_graph_supervisor_wake' &&
+              root.attemptId === attemptId &&
+              run.turnId === turnId
+            );
+          },
         );
         if (runs.length > 1) {
           throw new Error(
             `Agent graph supervisor wake attempt ${attemptId} has multiple AgentRuns`,
           );
         }
-        return runs[0]?.status ?? 'missing';
+        const attempt = runs[0];
+        if (!attempt) return 'missing';
+        return runtimeInvocationOutcome(attempt) ?? 'running';
       },
       recoverContextOverflow: (rootSessionId, { abortSignal }) =>
         graphExecutions.recoverContextOverflow(rootSessionId, randomUUID(), abortSignal),
@@ -1347,50 +1364,157 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       executions: coordinator,
       sessionActions: {
-        readDelegationRetirement: async (assignment) => {
-          const disposition = await messages.readMessageExecutionDisposition(
-            assignment.targetSessionId,
-            assignment.targetMessageId,
-          );
+        readDelegationRetirement: async (assignment, admission) => {
+          const disposition = admission
+            ? await messages.readMessageExecutionDispositionAdmitted(
+                assignment.targetSessionId,
+                assignment.targetMessageId,
+                admission,
+              )
+            : await messages.readMessageExecutionDisposition(
+                assignment.targetSessionId,
+                assignment.targetMessageId,
+              );
           if (disposition.kind === 'recovering') return 'recovering';
           if (disposition.kind === 'pending') return 'not_retired';
           if (disposition.kind === 'cancelled' || disposition.kind === 'shared_turn') {
             return 'retired';
           }
-          const rootState = coordinator.readRootState(assignment.targetSessionId);
-          return rootState.kind === 'active' &&
-            rootState.turnId === disposition.turnId &&
-            rootState.runId === disposition.runId
-            ? 'not_retired'
-            : 'retired';
+          const identity = {
+            sessionId: assignment.targetSessionId,
+            turnId: disposition.turnId,
+            runId: disposition.runId,
+          };
+          const latest = await coordinator.readLatestRootTurnLineage(identity);
+          if (isActiveWorkHubRoot(coordinator, latest)) return 'not_retired';
+          // The same restart window as `stopOwnedWorkHubRoot`: an unregistered
+          // root is not evidence that its work ended.
+          const snapshot = await coordinator.read(latest);
+          return isHostedExecutionTerminal(snapshot) ? 'retired' : 'recovering';
         },
-        retireDelegation: async (assignment) => {
-          const disposition = await messages.cancelMessageIfPending(
+        // Resolve and resume only the execution lineage owned by this
+        // delegation. A Session-wide latest-failure query could otherwise
+        // continue unrelated work started directly in the same Session.
+        resumeDelegation: async (assignment, context, actionId) => {
+          const disposition = await messages.readMessageExecutionDisposition(
             assignment.targetSessionId,
             assignment.targetMessageId,
           );
           if (disposition.kind === 'recovering') {
             throw new WorkHubActionEffectFailure(
-              'operation_unavailable',
-              'WorkHub is still resolving the delegated Message owner',
+              'host_not_ready',
+              'WorkHub is still recovering the delegated execution',
             );
           }
-          if (disposition.kind === 'shared_turn') return;
+          if (disposition.kind !== 'owned_root') {
+            throw new WorkHubActionEffectFailure(
+              'operation_conflict',
+              'WorkHub delegated execution is not resumable',
+            );
+          }
+          const source = await coordinator.readLatestRootTurnLineage({
+            sessionId: assignment.targetSessionId,
+            turnId: disposition.turnId,
+            runId: disposition.runId,
+          });
+          if (isActiveWorkHubRoot(coordinator, source)) {
+            return { outcome: 'already_running' as const };
+          }
+          const snapshot = await coordinator.read(source);
+          if (!isHostedExecutionTerminal(snapshot)) {
+            throw new WorkHubActionEffectFailure(
+              'host_not_ready',
+              'WorkHub is still recovering the delegated execution',
+            );
+          }
+          if (snapshot.status !== 'failed' && snapshot.status !== 'cancelled') {
+            throw new WorkHubActionEffectFailure(
+              'operation_conflict',
+              'WorkHub delegated execution is not resumable',
+            );
+          }
+          const plan = await coordinator.handlers['turn.resume.query'](
+            { sessionId: assignment.targetSessionId, sourceRunId: source.runId },
+            context,
+          );
+          if (!plan.ok) throw new WorkHubActionEffectFailure(plan.error.code, plan.error.message);
+          if (plan.result.disposition === 'parked') {
+            throw new WorkHubActionEffectFailure(
+              plan.result.reason === 'resume_feature_disabled'
+                ? 'operation_unavailable'
+                : 'operation_conflict',
+              plan.result.reason === 'resume_feature_disabled'
+                ? 'Safe-boundary resume is disabled for this Runtime Host'
+                : 'WorkHub delegated execution is not resumable',
+            );
+          }
+          if (
+            plan.result.sourceRunId !== source.runId ||
+            plan.result.sourceTurnId !== source.turnId
+          ) {
+            throw new WorkHubActionEffectFailure(
+              'operation_conflict',
+              'WorkHub resume source lineage changed during planning',
+            );
+          }
+          const targetTurnId = workHubResumedTurnId(actionId);
+          const started = await coordinator.handlers['turn.resume.start'](
+            {
+              sessionId: assignment.targetSessionId,
+              turnId: targetTurnId,
+              sourceRunId: plan.result.sourceRunId,
+              sourceRuntimeEventHighWater: plan.result.sourceRuntimeEventHighWater,
+            },
+            context,
+          );
+          if (!started.ok) {
+            throw new WorkHubActionEffectFailure(started.error.code, started.error.message);
+          }
+          if (started.result.kind === 'parked') {
+            throw new WorkHubActionEffectFailure(
+              started.result.plan.reason === 'resume_feature_disabled'
+                ? 'operation_unavailable'
+                : 'operation_conflict',
+              started.result.plan.reason === 'resume_feature_disabled'
+                ? 'Safe-boundary resume is disabled for this Runtime Host'
+                : 'WorkHub delegated execution is not resumable',
+            );
+          }
+          return {
+            outcome: 'resume_started' as const,
+            targetTurnId: started.result.turn.turnId,
+          };
+        },
+        retireDelegation: async (assignment, retirement) => {
+          const disposition = await messages.cancelMessageIfPending(
+            assignment.targetSessionId,
+            assignment.targetMessageId,
+            retirement.cancellationClaimId,
+          );
+          if (disposition.kind === 'recovering') {
+            return { outcome: 'recovering' as const };
+          }
+          if (disposition.kind === 'cancelled') {
+            return { outcome: 'already_terminal' as const };
+          }
+          if (disposition.kind === 'cancelled_pending') {
+            return { outcome: 'cancelled_pending' as const };
+          }
+          if (disposition.kind === 'shared_turn') {
+            return { outcome: 'not_owned' as const, targetTurnId: disposition.turnId };
+          }
           if (disposition.kind === 'owned_root') {
-            const rootState = coordinator.readRootState(assignment.targetSessionId);
-            if (
-              rootState.kind !== 'active' ||
-              rootState.turnId !== disposition.turnId ||
-              rootState.runId !== disposition.runId
-            ) {
-              return;
-            }
-            await coordinator.stopRoot({
+            const identity = await coordinator.readLatestRootTurnLineage({
               sessionId: assignment.targetSessionId,
               turnId: disposition.turnId,
               runId: disposition.runId,
             });
+            return retirement.cause === 'direct_stop'
+              ? stopOwnedWorkHubRoot(coordinator, identity, retirement.cancellationClaimId)
+              : stopReplacedWorkHubRoot(coordinator, identity);
           }
+          disposition satisfies never;
+          throw new Error('Unhandled WorkHub Message retirement disposition');
         },
         assign: async (input) => {
           const durable = await stores.sessionStore.readWorkHubAssignment(input.actionId);
@@ -1522,7 +1646,7 @@ export async function createExecutionRuntimeHostComposition(
       },
       resolveCreateTarget: async () => {
         const { projectId: _projectId, ...target } =
-          await sessionCatalog.resolveExternalSessionImportTarget();
+          await sessionCatalog.resolveDefaultCreateTarget();
         return { ...target, permissionMode: 'explore' };
       },
       requestDrain: context.requestDrain,
@@ -1730,7 +1854,15 @@ export async function createExecutionRuntimeHostComposition(
         recovery: {
           state: async () => {
             await skills.recover();
-            await openedArtifactStore.recover();
+            try {
+              await openedArtifactStore.reclaimUpgradeResidue();
+            } catch (error) {
+              // Leftover bytes are not worth refusing to start over; the next
+              // start tries again.
+              console.error(
+                `[runtime-host] upgrade residue could not be reclaimed: ${generalizedErrorMessage(error)}`,
+              );
+            }
           },
         },
         drain: [
@@ -1991,6 +2123,74 @@ export async function createExecutionRuntimeHostComposition(
   }
 }
 
+/**
+ * Confirmed direct stop. The action-derived abort source is written onto the
+ * exact root Turn so a retry after a crash can tell WorkHub's own delivery
+ * apart from an earlier or concurrent manual Stop.
+ */
+export async function stopOwnedWorkHubRoot(
+  coordinator: Pick<RootTurnCoordinator, 'readRootState' | 'read' | 'stopRoot'>,
+  identity: { readonly sessionId: string; readonly turnId: string; readonly runId: string },
+  actionId: string,
+): Promise<{
+  readonly outcome: 'stop_delivered' | 'already_terminal' | 'recovering';
+  readonly targetTurnId: string;
+}> {
+  if (isActiveWorkHubRoot(coordinator, identity)) {
+    await coordinator.stopRoot(identity, {
+      source: 'workhub_direct_stop',
+      workHubActionId: actionId,
+    });
+  }
+  const terminal = await coordinator.read(identity);
+  if (
+    terminal.status === 'cancelled' &&
+    terminal.abortSource === workHubDirectStopAbortSource(actionId)
+  ) {
+    return { outcome: 'stop_delivered', targetTurnId: identity.turnId };
+  }
+  // Registration is in-memory, so between Host restart and execution recovery
+  // this root looks inactive while it is still running. `already_terminal` is
+  // committed as an immutable fact, so only a durably terminal snapshot may
+  // claim it; anything else is still resolving.
+  return isHostedExecutionTerminal(terminal)
+    ? { outcome: 'already_terminal', targetTurnId: identity.turnId }
+    : { outcome: 'recovering', targetTurnId: identity.turnId };
+}
+
+/**
+ * Route correction retiring the root it is replacing. It carries its own
+ * cancellation claim, but it is not a direct stop: recording direct-stop
+ * provenance here would let replay mistake a correction for one, so the
+ * retirement keeps the neutral Stop source ordinary supersession has always
+ * used.
+ */
+export async function stopReplacedWorkHubRoot(
+  coordinator: Pick<RootTurnCoordinator, 'readRootState' | 'read' | 'stopRoot'>,
+  identity: { readonly sessionId: string; readonly turnId: string; readonly runId: string },
+): Promise<{
+  readonly outcome: 'stop_delivered' | 'already_terminal';
+  readonly targetTurnId: string;
+}> {
+  if (!isActiveWorkHubRoot(coordinator, identity)) {
+    return { outcome: 'already_terminal', targetTurnId: identity.turnId };
+  }
+  await coordinator.stopRoot(identity);
+  return { outcome: 'stop_delivered', targetTurnId: identity.turnId };
+}
+
+function isActiveWorkHubRoot(
+  coordinator: Pick<RootTurnCoordinator, 'readRootState'>,
+  identity: { readonly sessionId: string; readonly turnId: string; readonly runId: string },
+): boolean {
+  const rootState = coordinator.readRootState(identity.sessionId);
+  return (
+    rootState.kind === 'active' &&
+    rootState.turnId === identity.turnId &&
+    rootState.runId === identity.runId
+  );
+}
+
 function sessionExecutionConnectionRef(
   header: Pick<SessionHeader, 'llmConnectionId' | 'llmConnectionSlug'>,
 ): ExecutionConnectionRef {
@@ -2040,17 +2240,6 @@ function adaptWorkspaceFilesystemWorker(
       }
     },
   };
-}
-
-function subagentWritebackArtifactId(sessionId: string, turnId: string): string {
-  const digest = createHash('sha256')
-    .update('maka-subagent-writeback-v1\0')
-    .update(sessionId)
-    .update('\0')
-    .update(turnId)
-    .digest('hex')
-    .slice(0, 32);
-  return `subagent_writeback_${digest}`;
 }
 
 function requireContinuity(
@@ -2159,11 +2348,23 @@ function requireGoal(coordinator: HostGoalCoordinator | undefined): HostGoalCoor
   return coordinator;
 }
 
+/** Every run this Session has opened, named by the event spine that defines it. */
+async function sessionRunIds(
+  runtimeEventStore: SessionInvocationLister,
+  sessionId: string,
+): Promise<string[]> {
+  return (await runtimeEventStore.listSessionInvocations(sessionId)).map(
+    (invocation) => invocation.runId,
+  );
+}
+
+interface SessionInvocationLister {
+  listSessionInvocations(sessionId: string): Promise<readonly RuntimeInvocationRecord[]>;
+}
+
 async function hasLiveLinkedDescendantState(
   manager: SessionManager,
-  runStore: {
-    listSessionRuns(sessionId: string): Promise<readonly { status: string }[]>;
-  },
+  runtimeEventStore: SessionInvocationLister,
   rootSessionId: string,
   hasLiveSessionState: (sessionId: string) => Promise<boolean>,
 ): Promise<boolean> {
@@ -2177,20 +2378,12 @@ async function hasLiveLinkedDescendantState(
       seen.add(child.id);
       pending.push(child.id);
       const [runs, liveState] = await Promise.all([
-        runStore.listSessionRuns(child.id),
+        runtimeEventStore.listSessionInvocations(child.id),
         hasLiveSessionState(child.id),
       ]);
       if (liveState) return true;
-      if (
-        runs.some(
-          (run) =>
-            run.status === 'created' ||
-            run.status === 'running' ||
-            run.status === 'waiting_for_user',
-        )
-      ) {
-        return true;
-      }
+      // A run whose events never closed it is still live.
+      if (runs.some((run) => runtimeInvocationOutcome(run) === undefined)) return true;
     }
   }
   return false;

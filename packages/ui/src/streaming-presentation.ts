@@ -31,7 +31,7 @@ const FROZEN_HOST_SELECTOR = '[data-maka-e2e-fixture="true"],[data-maka-reduced-
 
 /**
  * The same gate, for UI driven by the clock rather than by a stream: the live
- * turn's elapsed counter and its rotating working phrase.
+ * turn's elapsed counter.
  *
  * Progressive streaming re-renders because tokens arrive, so freezing it just
  * means "print the whole buffer at once". These two re-render because time

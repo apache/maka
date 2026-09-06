@@ -47,7 +47,11 @@ export interface SessionCollaborationServices {
   cancelImport(operationId: string): Promise<SessionCollaborationCancelResult>;
   readInvitationClipboard(): Promise<string>;
   listMounts(): Promise<readonly SessionCollaborationMountSummary[]>;
+  subscribeMountChanges(handler: () => void): () => void;
   removeMount(mountId: string): Promise<void>;
+  retryMount(mountId: string): Promise<void>;
+  renameMount(mountId: string, name: string): Promise<void>;
+  renamePrincipal(sessionId: string, principalId: string, displayName: string): Promise<{ readonly renamed: boolean }>;
   requestTurn(
     sessionId: string,
     input:

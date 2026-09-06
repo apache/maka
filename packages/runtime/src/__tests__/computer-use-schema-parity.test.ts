@@ -20,11 +20,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import {
-  computerUseApprovalSummary,
-  COMPUTER_USE_SEMANTIC_ACTIONS,
-  CU_ACTION_TYPES,
-} from '@maka/core/computer-use';
+import { computerUseApprovalSummary, CU_TOOL_ACTION_TYPES } from '@maka/core/computer-use';
 import { computerParams } from '../computer-use-codec.js';
 import { computerWireParams } from '../computer-use-tools.js';
 
@@ -169,7 +165,7 @@ describe('the two argument schemas describe the same tool', () => {
     // reads an approval for an action that did not happen, and the model reads
     // its own history as proof that the name works.
     const wire = new Set(wireActions());
-    const catalog = new Set<string>([...COMPUTER_USE_SEMANTIC_ACTIONS, ...CU_ACTION_TYPES]);
+    const catalog = new Set<string>(CU_TOOL_ACTION_TYPES);
 
     assert.deepEqual(
       catalogNotOnWire(catalog, wire),
@@ -181,5 +177,29 @@ describe('the two argument schemas describe the same tool', () => {
       [],
       'the wire carries actions the approval catalog records as "unknown"',
     );
+  });
+
+  test('coordinate mutation names are absent from every action catalog', () => {
+    const removed = [
+      'cursor_position',
+      'mouse_move',
+      'left_click',
+      'right_click',
+      'middle_click',
+      'double_click',
+      'triple_click',
+      'left_mouse_down',
+      'left_mouse_up',
+      'left_click_drag',
+      'scroll',
+      'zoom',
+    ];
+    const wire = new Set(wireActions());
+    const union = new Set(unionArms().map(({ action }) => action));
+    for (const action of removed) {
+      assert.equal(wire.has(action), false, `${action} remains on the wire`);
+      assert.equal(union.has(action), false, `${action} remains in the strict union`);
+      assert.equal(computerUseApprovalSummary({ action }).action, 'unknown');
+    }
   });
 });

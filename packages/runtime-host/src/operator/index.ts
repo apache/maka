@@ -75,6 +75,7 @@ export {
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   decodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostServiceManagementFrame,
+  type RuntimeHostServiceErrorCode,
   type RuntimeHostServiceManagementAction,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostManagedUpdatePolicy,
@@ -94,6 +95,20 @@ export {
   type RuntimeHostSetupFrame,
   type RuntimeHostSetupPhase,
 } from './setup-frame.js';
+export {
+  createRuntimeHostOperatorCommand,
+  createRuntimeHostLegacyPosixOperatorCommand,
+  decodeRuntimeHostOperatorCommand,
+  decodeRuntimeHostPosixOperatorCommand,
+  runtimeHostManagedOperatorCommand,
+  runtimeHostManagedOperatorModulePath,
+  runtimeHostOperatorInvocation,
+  type RuntimeHostOperatorCommand,
+  type RuntimeHostOperatorPlatform,
+  type RuntimeHostPosixOperatorCommand,
+  type RuntimeHostLegacyPosixOperatorCommand,
+  type RuntimeHostNodeOperatorCommand,
+} from './operator-command.js';
 export {
   RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
   compareProductReleaseVersions,

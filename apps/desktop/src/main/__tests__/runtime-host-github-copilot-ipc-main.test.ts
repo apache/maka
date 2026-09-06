@@ -21,113 +21,50 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { IpcMainInvokeEvent } from 'electron';
 import type {
-  CredentialStatus,
-} from '@maka/core/runtime-policy';
-import type {
   RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
   RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
-} from '@maka/runtime-host/client';import {
+} from '@maka/runtime-host/client';
+import {
   registerRuntimeHostGitHubCopilotIpc,
   type RuntimeHostGitHubCopilotIpcDeps,
 } from '../runtime-host-github-copilot-ipc-main.js';
 
 const CONNECTION_ID = '00000000-0000-4000-8000-000000000001';
-const CREDENTIAL_ID = '00000000-0000-4000-8000-000000000002';
 
-test('imports a local GitHub credential through the shared Host account path', async () => {
+// Public seam: the Desktop IPC discovers local material, while one Host command
+// owns provider discovery, generation checks, and the credential/catalog commit.
+test('delegates local credential adoption to one Host onboarding command', async () => {
   const handlers = new Map<
     string,
     Parameters<RuntimeHostGitHubCopilotIpcDeps['ipcMain']['handle']>[1]
   >();
-  const importedSecret = 'serialized-account-credential';
+  const importedSecret = '{"access_token":"gho_local","token_type":"Bearer"}';
   const discoveredModelId = 'account-discovered-model';
-  let storedSecret: string | undefined;
-  let credential: CredentialStatus | null = null;
   let changed = 0;
+  let adoptionCalls = 0;
   let catalog: ConnectionCatalogSnapshot = {
     revision: 1,
     defaultTarget: null,
-    connections: [],
+    connections: [connectionFixture()],
   };
+
   const client: RuntimeHostGitHubCopilotIpcDeps['client'] = {
     loadConnectionCatalog: async () => catalog,
-    createConnection: async (expectedCatalogRevision, draft) => {
-      assert.equal(expectedCatalogRevision, catalog.revision);
-      assert.deepEqual(draft.enabledModelIds, [discoveredModelId]);
-      const connection: ConnectionCatalogEntry = {
-        ...draft,
-        connectionId: CONNECTION_ID,
-        revision: 1,
-        catalogEntries: [],
-        models: [],
-      };
-      catalog = {
-        revision: catalog.revision + 1,
-        defaultTarget: null,
-        connections: [connection],
-      };
-      return {
-        kind: 'committed',
-        catalogRevision: catalog.revision,
-        connection: { connectionId: CONNECTION_ID, revision: 1 },
-      };
-    },
-    updateConnection: async (expected, changes) => {
-      const current = catalog.connections[0];
-      assert.ok(current);
-      assert.deepEqual(expected, {
-        connectionId: current.connectionId,
-        revision: current.revision,
+    saveConnectionOnboarding: async (input) => {
+      adoptionCalls += 1;
+      assert.deepEqual(input, {
+        target: { kind: 'existing', connectionId: CONNECTION_ID },
+        apiKey: importedSecret,
+        baseUrl: null,
+        // Empty means the Host adopts the non-empty model set it verifies.
+        enabledModelIds: [],
       });
-      const { relayModelProfiles, requestBodyOverlay, ...restChanges } = changes;
-      const updated: ConnectionCatalogEntry = {
-        ...current,
-        ...restChanges,
-        ...(relayModelProfiles === null ? {} : { relayModelProfiles }),
-        ...(requestBodyOverlay === null ? {} : { requestBodyOverlay }),
-        revision: current.revision + 1,
-      };
-      catalog = {
-        ...catalog,
-        revision: catalog.revision + 1,
-        connections: [updated],
-      };
-      return {
-        kind: 'committed',
-        catalogRevision: catalog.revision,
-        connection: { connectionId: updated.connectionId, revision: updated.revision },
-      };
-    },
-    queryCredential: async () => credential,
-    setCredential: async ({ locator, secret }) => {
-      storedSecret = secret;
-      credential = {
-        locator,
-        configured: true,
-        credentialId: CREDENTIAL_ID,
-        revision: 1,
-        updatedAt: 1,
-      };
-      return { kind: 'committed', vaultRevision: 1, status: credential };
-    },
-    deleteCredential: async ({ expected }) => {
-      storedSecret = undefined;
-      credential = {
-        locator: expected.locator,
-        configured: false,
-        credentialId: null,
-        revision: null,
-        updatedAt: null,
-      };
-      return { kind: 'committed', vaultRevision: 2, status: credential };
-    },
-    fetchConnectionModels: async (connectionId) => {
       const current = catalog.connections[0];
       assert.ok(current);
-      assert.equal(connectionId, current.connectionId);
       const updated: ConnectionCatalogEntry = {
         ...current,
         revision: current.revision + 1,
+        enabledModelIds: [discoveredModelId],
         models: [{ id: discoveredModelId }],
         modelSource: 'fetched',
       };
@@ -137,12 +74,13 @@ test('imports a local GitHub credential through the shared Host account path', a
         connections: [updated],
       };
       return {
-        kind: 'committed',
-        catalogRevision: catalog.revision,
-        connection: { connectionId: updated.connectionId, revision: updated.revision },
-        modelCount: 1,
-        source: 'fetched',
-        fetchedAt: 1,
+        kind: 'saved',
+        connection: {
+          connectionId: updated.connectionId,
+          revision: updated.revision,
+          slug: updated.slug,
+          providerType: updated.providerType,
+        },
       };
     },
     setDefaultConnectionTarget: async (expectedCatalogRevision, target) => {
@@ -163,7 +101,7 @@ test('imports a local GitHub credential through the shared Host account path', a
       changed += 1;
     },
     importExistingLogin: async () => ({
-      result: { ok: true, models: [{ id: discoveredModelId }] },
+      result: { ok: true },
       secret: importedSecret,
     }),
   });
@@ -171,22 +109,28 @@ test('imports a local GitHub credential through the shared Host account path', a
   const connected = await invoke(handlers, 'github-copilot:connect-existing-login');
   assert.deepEqual(connected, { ok: true });
   assert.equal(JSON.stringify(connected).includes(importedSecret), false);
-  assert.equal(storedSecret, importedSecret);
+  assert.equal(adoptionCalls, 1);
   assert.deepEqual(catalog.defaultTarget, {
     connectionId: CONNECTION_ID,
     modelId: discoveredModelId,
   });
-  assert.deepEqual(await invoke(handlers, 'github-copilot:get-account-state'), {
-    provider: 'github-copilot',
-    runtimeState: 'authenticated',
-  });
-
-  assert.deepEqual(await invoke(handlers, 'github-copilot:refresh-tokens'), { ok: true });
-  assert.deepEqual(await invoke(handlers, 'github-copilot:logout'), { ok: true });
-  assert.equal(storedSecret, undefined);
-  assert.equal(catalog.connections[0]?.enabled, false);
-  assert.equal(changed, 3);
+  assert.equal(changed, 1);
+  assert.deepEqual([...handlers.keys()], ['github-copilot:connect-existing-login']);
 });
+
+function connectionFixture(): ConnectionCatalogEntry {
+  return {
+    connectionId: CONNECTION_ID,
+    revision: 1,
+    slug: 'github-copilot',
+    name: 'GitHub Copilot',
+    providerType: 'github-copilot',
+    enabled: true,
+    enabledModelIds: ['copilot-fallback'],
+    catalogEntries: [],
+    models: [],
+  };
+}
 
 async function invoke(
   handlers: ReadonlyMap<

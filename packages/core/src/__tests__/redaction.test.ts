@@ -22,7 +22,7 @@ import { formatWithOptions } from 'node:util';
 import { describe, test } from 'node:test';
 import {
   generalizedErrorMessage,
-  generalizedErrorMessageChinese,
+  generalizedErrorMessageForLocale,
   redactSecrets,
 } from '../redaction.js';
 
@@ -296,6 +296,18 @@ describe('redactSecrets', () => {
   });
 });
 
+describe('generalizedErrorMessageForLocale', () => {
+  test('renders the same classification in each locale and the fallback when none matches', () => {
+    const timeout = new Error('request timeout after 30s');
+    assert.equal(generalizedErrorMessageForLocale(timeout, 'fallback', 'en'), 'Request timed out');
+    assert.equal(generalizedErrorMessageForLocale(timeout, 'fallback', 'zh-CN'), '请求超时');
+    assert.equal(
+      generalizedErrorMessageForLocale(new Error('unclassified'), '操作失败', 'zh-CN'),
+      '操作失败',
+    );
+  });
+});
+
 describe('generalizedErrorMessage', () => {
   test('classifies provider failures without exposing secret-bearing input', () => {
     for (const [raw, expected] of [
@@ -333,7 +345,7 @@ describe('generalizedErrorMessage', () => {
   });
 });
 
-describe('generalizedErrorMessageChinese', () => {
+describe('generalizedErrorMessageForLocale zh-CN', () => {
   test('maps provider failures to Chinese categories without leaking secrets', () => {
     for (const [raw, expected] of [
       ['Request timeout after 30s', '请求超时'],
@@ -353,19 +365,23 @@ describe('generalizedErrorMessageChinese', () => {
       ['something weird happened', '操作失败'],
       ['401 Authorization: Bearer sk-live-secret-token-value', '鉴权失败'],
     ]) {
-      const message = generalizedErrorMessageChinese(new Error(raw));
+      const message = generalizedErrorMessageForLocale(new Error(raw), '操作失败', 'zh-CN');
       assert.equal(message, expected);
       assert.match(message, /[一-鿿]/);
       assert.doesNotMatch(message, /sk-live-secret-token-value/);
     }
-    assert.equal(generalizedErrorMessageChinese('non-Error string input'), '操作失败');
+    assert.equal(
+      generalizedErrorMessageForLocale('non-Error string input', '操作失败', 'zh-CN'),
+      '操作失败',
+    );
   });
 
   test('uses a caller-supplied Chinese fallback for unknown errors', () => {
     assert.equal(
-      generalizedErrorMessageChinese(
+      generalizedErrorMessageForLocale(
         new Error('something weird happened'),
         '会话已创建但发送失败，请重试。',
+        'zh-CN',
       ),
       '会话已创建但发送失败，请重试。',
     );
@@ -373,11 +389,47 @@ describe('generalizedErrorMessageChinese', () => {
 
   test('does not mistake runtime authority errors for authentication failures', () => {
     assert.equal(
-      generalizedErrorMessageChinese(
+      generalizedErrorMessageForLocale(
         new Error('Conversation copy contains durable runtime authority facts'),
         '无法基于该上下文创建新会话。',
+        'zh-CN',
       ),
       '无法基于该上下文创建新会话。',
+    );
+  });
+});
+
+describe('localized generalized error messages', () => {
+  test('routes one shared classification through each locale catalog', () => {
+    const error = new Error('HTTP 503 from provider');
+    assert.equal(
+      generalizedErrorMessageForLocale(error, 'fallback', 'en'),
+      'Provider returned an error',
+    );
+    assert.equal(generalizedErrorMessageForLocale(error, '後備', 'zh-CN'), '模型服务返回错误');
+    assert.equal(generalizedErrorMessageForLocale(error, '備援', 'zh-TW'), '模型服務傳回錯誤');
+  });
+
+  test('uses Taiwan terminology for Traditional Chinese categories', () => {
+    for (const [raw, expected] of [
+      ['Request timeout after 30s', '請求逾時'],
+      ['HTTP 429 Too Many Requests', '已達模型速率限制'],
+      ['401 Unauthorized', '驗證失敗'],
+      ['HTTP 500 Internal Server Error', '模型服務傳回錯誤'],
+      ['network unreachable', '網路錯誤'],
+      ['something weird happened', '操作失敗'],
+    ]) {
+      assert.equal(generalizedErrorMessageForLocale(new Error(raw), '操作失敗', 'zh-TW'), expected);
+    }
+  });
+
+  test('routes each resolved locale without changing the supplied fallback', () => {
+    const error = new Error('something weird happened');
+    assert.equal(generalizedErrorMessageForLocale(error, '简中后备', 'zh-CN'), '简中后备');
+    assert.equal(generalizedErrorMessageForLocale(error, '繁中備援', 'zh-TW'), '繁中備援');
+    assert.equal(
+      generalizedErrorMessageForLocale(error, 'English fallback', 'en'),
+      'English fallback',
     );
   });
 });

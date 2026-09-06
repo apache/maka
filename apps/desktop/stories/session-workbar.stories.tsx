@@ -17,22 +17,22 @@
  * under the License.
  */
 
-import type { CSSProperties } from 'react';
+import { useState, type CSSProperties } from 'react';
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { BrowserState } from '@maka/core/browser';
 import type { GitReviewReadResult, GitReviewSnapshot } from '@maka/core/git-review';
 import type { SessionSummary } from '@maka/core/session';
-import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ToastProvider } from '@maka/ui';
-import { WorkbarServicesProvider } from '../src/renderer/features/workbar';
+import { WorkbarServicesProvider, WorkbarTitlebarActions } from '../src/renderer/features/workbar';
 import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
+  activateSessionWorkbarTab,
   createSessionWorkbarTabsState,
   openStaticSessionWorkbarTab,
   terminalSessionWorkbarTabId,
@@ -54,9 +54,8 @@ import {
 //
 // What this group cannot show: the seam. The workbar's surface tone only reads
 // as a seam against the conversation plate it stands beside, and the plate is
-// two levels up in the shell — as is the titlebar clearance the surface bleeds
-// through. Both are pinned by computed-style assertions in
-// e2e/session-workbar.spec.ts instead.
+// two levels up in the shell — as is the titlebar band the collapse toggle
+// moves into. Those belong to app-shell.stories.tsx, which mounts the shell.
 //
 // Read these at a canvas of 990px or wider. The app's own breakpoint is on the
 // viewport, and Storybook's canvas IS the viewport, so a narrower window puts
@@ -147,21 +146,6 @@ const RICH_TERMINAL_BUFFER = [
 
 // ---- ledgers -------------------------------------------------------------
 
-// The long item is deliberate: it is what proves a long subject still wraps
-// instead of pushing the panel sideways.
-const tasks: SessionTodoItem[] = [
-  { content: '完成会话任务台账升级', status: 'in_progress' },
-  { content: '验证 SQLite authority 与并发短 key 分配', status: 'completed' },
-  { content: '检查窄窗口下的任务树布局', status: 'pending' },
-  {
-    content:
-      '核对深层缩进、超长任务描述、owner 与阻塞原因在窄窗口中仍可完整换行且不遮挡后续内容',
-    status: 'pending',
-  },
-  { content: '同步生命周期文档与边界说明', status: 'pending' },
-  { content: '验证 Goal 一次提醒门禁', status: 'completed' },
-];
-
 const artifacts: ArtifactRecord[] = [
   {
     id: 'artifact-patch',
@@ -174,7 +158,6 @@ const artifacts: ArtifactRecord[] = [
     sizeBytes: 4_812,
     mimeType: 'text/x-diff',
     source: 'tool_result',
-    status: 'live',
   },
   {
     id: 'artifact-notes',
@@ -187,7 +170,6 @@ const artifacts: ArtifactRecord[] = [
     sizeBytes: 1_284,
     mimeType: 'text/markdown',
     source: 'tool_result',
-    status: 'live',
   },
 ];
 
@@ -705,6 +687,7 @@ const emptyUsageSummary: WorkbarSessionUsageSummary = {
   range: { from: NOW, to: NOW },
   totalRequests: 0,
   totalCostUsd: 0,
+  totalDurationMs: 0,
   totalTokens: {
     input: 0,
     output: 0,
@@ -736,6 +719,7 @@ const populatedUsageSummary: WorkbarSessionUsageSummary = {
   range: { from: NOW, to: NOW + 43_600 },
   totalRequests: 3,
   totalCostUsd: 0.0243,
+  totalDurationMs: 38_400,
   totalTokens: {
     input: 81_300,
     output: 740,
@@ -774,8 +758,6 @@ const unsubscribe = () => () => undefined;
  * varies, and everything else stays on the populated default.
  */
 function bridge(options: {
-  tasks?: SessionTodoItem[];
-  tasksFail?: boolean;
   trace?: SessionTrace;
   traceNextCursor?: string;
   traceFail?: boolean;
@@ -797,19 +779,11 @@ function bridge(options: {
 } = {}): Decorator {
   const browserState = options.browserState ?? EMPTY_BROWSER_STATE;
   const services = createFakeWorkbarServices({
-    todo: {
-      read: async () => {
-        if (options.tasksFail) throw new Error('读取任务失败');
-        return options.tasks ?? tasks;
-      },
-      subscribeChanges: unsubscribe,
-    },
     artifacts: {
       list: async () => artifacts,
       readText: async (_sessionId: string, id: string) => ({ ok: true, text: artifactText[id] ?? '' }),
       readBinary: async () => ({ ok: false, reason: 'unsupported_mime' }),
       delete: async () => undefined,
-      subscribeChanges: unsubscribe,
       openPath: async () => ({ ok: true, opened: 'artifact-patch' }),
       saveAs: async () => ({ ok: true, saved: 'slice-9-conversation.diff' }),
     },
@@ -901,6 +875,21 @@ function bridge(options: {
       branchFromTurn: async () => ({ ok: true, session: SIDE_CHAT_SESSION }),
       cleanupSessionCopy: async () => undefined,
       abandonSessionCopy: async () => undefined,
+      compact: async () => ({
+        kind: 'finished' as const,
+        turn: {
+          sessionId: SIDE_CHAT_SESSION.id,
+          turnId: 'story-side-chat-compact-turn',
+          runId: 'story-side-chat-compact-run',
+          status: 'completed' as const,
+          terminalEventId: 'story-side-chat-compact-complete',
+          contextCompactionOutcome: {
+            kind: 'unchanged' as const,
+            reason: 'already_current',
+          },
+        },
+        outcome: { kind: 'unchanged' as const, reason: 'already_current' },
+      }),
       send: async () => ({ ok: true, turnId: 'story-side-chat-turn' }),
       stop: async () => undefined,
       steer: async () => ({ kind: 'started', turnId: 'story-side-chat-turn' }),
@@ -912,6 +901,7 @@ function bridge(options: {
       respondToSandboxBoundary: async () => undefined,
       respondToClientCapability: async () => undefined,
       respondToUserQuestion: async () => undefined,
+      respondToUserForm: async () => undefined,
       subscribeEvents: (_sessionId, _handler, onSeeded) => {
         onSeeded?.();
         return unsubscribe();
@@ -932,10 +922,18 @@ function bridge(options: {
  */
 function Workbar(props: {
   tab?: SessionWorkbarTabKind;
+  /** Extra faces opened after `tab`, so the strip can be seen with several. */
+  alsoOpen?: readonly Exclude<SessionWorkbarTabKind, 'side-chat' | 'terminal'>[];
   sourceSession?: SessionSummary;
   /** Overrides the restored column width, the way the resize handle does. */
   width?: number;
+  /**
+   * Lets the column's own collapse toggle and the titlebar's restore
+   * affordance drive `rightCollapsed`, the way the app's reducer does.
+   */
+  collapsible?: boolean;
 }) {
+  const [collapsed, setCollapsed] = useState(false);
   const emptyTabsState = createSessionWorkbarTabsState();
   let tab: SessionWorkbarTab | undefined;
   let quotes: QuoteCompanionPanelState[] | undefined;
@@ -961,11 +959,22 @@ function Workbar(props: {
       },
     ];
   }
-  const tabsState = tab
+  const openedFirst = tab
     ? createSessionWorkbarTabsState([tab], tab.id)
     : props.tab && props.tab !== 'side-chat'
       ? openStaticSessionWorkbarTab(emptyTabsState, props.tab)
       : emptyTabsState;
+  // Opening a face activates it, so after the extras land the requested face
+  // is re-activated: the strip shows several tabs with `props.tab` selected
+  // and the rest unselected, which is the only arrangement where a hovered
+  // unselected tab can be told apart from the selected one.
+  const withExtras = (props.alsoOpen ?? []).reduce<typeof openedFirst>(
+    (state, kind) => openStaticSessionWorkbarTab(state, kind),
+    openedFirst,
+  );
+  const tabsState = openedFirst.activeTabId
+    ? activateSessionWorkbarTab(withExtras, openedFirst.activeTabId)
+    : withExtras;
   return (
     <ToastProvider>
       <div
@@ -974,24 +983,33 @@ function Workbar(props: {
           // Fill the preview viewport like AppShell fills the window; a fixed
           // height pushes the stacked workbar below the fold in short windows.
           height: '100dvh',
+          // AppShell declares this on the frame that holds the plates, and the
+          // workbar's own grid reserves its first row with it. Without it the
+          // strip's row collapses and the bar floats mid-panel, so the story
+          // stops showing the shell it exists to pin.
+          '--maka-plate-titlebar-clearance': 'calc(var(--h-titlebar) - var(--agents-content-area-gap))',
           ...(props.width ? { '--maka-session-workbar-width': `${props.width}px` } : {}),
         } as CSSProperties}
       >
-        <div className="mainColumn" />
+        <div className="mainColumn">
+          {props.collapsible && (
+            <WorkbarTitlebarActions
+              available
+              collapsed={collapsed}
+              onToggle={() => setCollapsed(false)}
+            />
+          )}
+        </div>
         <WorkbarSurface
           sessionId={SESSION_ID}
           hidden={false}
-          onDismissPanel={noop}
+          onDismissPanel={props.collapsible ? () => setCollapsed(true) : noop}
           panelsState={createSessionWorkbarPanelsState(tabsState)}
-          rightCollapsed={false}
+          rightCollapsed={collapsed}
           bottomOpen={false}
           onActivateTab={noop}
           onCloseTab={noop}
           onCloseTabs={noop}
-          onReorderTab={noop}
-          onMoveTab={noop}
-          onMoveTabToPanel={noop}
-          onPinTab={noop}
           onOpenLauncher={noop}
           onRequestOpenTab={noop}
           confirmBypass={async () => true}
@@ -1022,12 +1040,85 @@ export const ToolPicker: Story = {
   render: () => <Workbar sourceSession={TOOL_PICKER_SOURCE_SESSION} />,
 };
 
+// The picker at the column's 320px floor. Every shortcut hint has to stay
+// inside the column: the launcher rows lay the label and the `kbd` on one line,
+// so the first thing a too-narrow column does is push the hints past the edge.
+export const ToolPickerAtColumnFloor: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar sourceSession={TOOL_PICKER_SOURCE_SESSION} width={320} />,
+  play: async ({ canvasElement }) => {
+    const launcher = await within(canvasElement).findByRole('list', { name: '打开工具' });
+    const column = launcher.closest<HTMLElement>('.maka-session-workbar');
+    if (!column) throw new Error('workbar column is missing');
+    const panelBox = column.getBoundingClientRect();
+    const shortcuts = [...launcher.querySelectorAll('kbd')];
+
+    expect(shortcuts.length).toBeGreaterThan(0);
+    for (const shortcut of shortcuts) {
+      const box = shortcut.getBoundingClientRect();
+      expect(box.left).toBeGreaterThanOrEqual(panelBox.left);
+      expect(box.right).toBeLessThanOrEqual(panelBox.right);
+    }
+  },
+};
+
 // Real path: 任务工作栏 → 变更, showing the live branch comparison from the
 // session cwd. The panel is Git-backed; no message or tool-result fixture is
 // involved in this story.
 export const Changes: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="review" />,
+};
+
+// Real path: 变更 open, then 浏览器 and 生成文件 opened from [+]. Faces are added to
+// the right of the strip and never reordered, so this is what three of them
+// look like — one selected, two not, which is the only arrangement where the
+// selected marker can be told apart from a hover. (Work Board is not among
+// them: this story group's bridge stubs no `workBoard` service, and the panel
+// subscribes to it on mount.)
+export const SeveralFaces: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar tab="review" alsoOpen={['browser', 'files']} />,
+};
+
+// The same three at the panel's floor, where the strip has to scroll inside
+// itself rather than push [+] and the collapse toggle off the edge.
+export const SeveralFacesAtColumnFloor: Story = {
+  decorators: [bridge()],
+  render: () => (
+    <Workbar tab="review" alsoOpen={['browser', 'files']} width={320} />
+  ),
+};
+
+// Below 991px the column stacks under the conversation at full width. The
+// wide-window ease (app-shell.stories.tsx holds that contract) must not reach
+// it: the face spans the row, and collapsing removes the row instead of
+// leaving an empty band. The smoke lane sizes stories named `narrow` to 720px.
+export const CollapseNarrowStack: Story = {
+  parameters: { viewport: { options: STACKED_WINDOW_VIEWPORT } },
+  globals: { viewport: { value: 'makaStackedWindow', isRotated: false } },
+  decorators: [bridge()],
+  render: () => <Workbar tab="review" collapsible />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const frame = canvasElement.querySelector<HTMLElement>(
+      '.maka-session-workbar[data-placement="right"]',
+    )!;
+    const panel = canvasElement.querySelector<HTMLElement>(
+      '.maka-session-workbar-panel[data-overlay][data-placement="right"]',
+    )!;
+    const toolbar = frame.querySelector<HTMLElement>('.maka-session-workbar-toolbar')!;
+    await canvas.findByRole('region', { name: 'Git 变更' });
+    expect(window.innerWidth).toBeLessThanOrEqual(990);
+    expect(toolbar.getBoundingClientRect().width).toBe(frame.getBoundingClientRect().width);
+    expect(panel.firstElementChild!.getBoundingClientRect().width).toBe(
+      panel.getBoundingClientRect().width,
+    );
+
+    await userEvent.click(canvas.getByRole('button', { name: '收起任务工作栏' }));
+    await waitFor(() => expect(getComputedStyle(frame).display).toBe('none'));
+    expect(getComputedStyle(panel).display).toBe('none');
+  },
 };
 
 // Real path: 任务工作栏 → 变更 on a session whose branch matches its base. The
@@ -1172,26 +1263,6 @@ export const TerminalWriteFailed: Story = {
   },
 };
 
-// Real path: sidebar → a session → 展开任务工作栏, landing on the tab the app
-// restored. Tasks is the default: an in-progress root, a child claimed and
-// blocked by a subagent, and the finished ones folded into 最近结束.
-export const Tasks: Story = {
-  decorators: [bridge()],
-  render: () => <Workbar tab="tasks" />,
-};
-
-// Real path: 任务工作栏 → 任务 on a session whose agent never wrote a task.
-export const TasksEmpty: Story = {
-  decorators: [bridge({ tasks: [] })],
-  render: () => <Workbar tab="tasks" />,
-};
-
-// Real path: 任务工作栏 → 任务 when `tasks.list` rejects; 重试 re-runs the read.
-export const TasksLoadFailed: Story = {
-  decorators: [bridge({ tasksFail: true })],
-  render: () => <Workbar tab="tasks" />,
-};
-
 // Storybook cannot host the native WebContentsView, so these pin what the panel
 // itself draws — chrome and empty state — inside the real workbar shell.
 export const BrowserEmpty: Story = {
@@ -1221,16 +1292,35 @@ export const BrowserInsecure: Story = {
   render: () => <Workbar tab="browser" />,
 };
 
-// The column's 320px floor — the least room the toolbar row ever gets.
-export const BrowserAtColumnFloor: Story = {
+// #2188: the address field, not the nav buttons, absorbs the column's free
+// width. The rule reaches into Astryx Toolbar's slot div, so an upstream
+// slot-wrapper change regresses it silently. This is also the floor's pixel
+// story: the play leaves the column at 320px, the least room the toolbar row
+// ever gets.
+export const BrowserAddressFieldTracksColumnWidth: Story = {
   decorators: [bridge({ browserState: LOADED_BROWSER_STATE })],
-  render: () => <Workbar tab="browser" width={320} />,
-};
+  render: () => <Workbar tab="browser" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const address = await canvas.findByRole('textbox', { name: '浏览器地址' });
+    const frame = canvasElement.querySelector<HTMLElement>('.maka-detail-with-artifacts');
+    // The face's content lives in the overlay panel beside the workbar frame,
+    // so the panel is what carries the column width, not `.maka-session-workbar`.
+    const column = address.closest<HTMLElement>('.maka-session-workbar-panel');
+    if (!frame || !column) throw new Error('workbar panel is missing');
+    const widthAt = async (columnWidth: number) => {
+      frame.style.setProperty('--maka-session-workbar-width', `${columnWidth}px`);
+      await waitFor(() => {
+        expect(column.getBoundingClientRect().width).toBeCloseTo(columnWidth, 0);
+      });
+      return address.getBoundingClientRect().width;
+    };
 
-// The width the resize handle lands on most often, between the floor and default.
-export const BrowserAt400: Story = {
-  decorators: [bridge({ browserState: LOADED_BROWSER_STATE })],
-  render: () => <Workbar tab="browser" width={400} />,
+    expect(await widthAt(480)).toBeGreaterThan(250);
+    const atFloor = await widthAt(320);
+    expect(atFloor).toBeLessThan(220);
+    expect(atFloor).toBeGreaterThan(100);
+  },
 };
 
 // Below 990px the grid stacks the same right-placement column under the
@@ -1313,6 +1403,52 @@ export const Files: Story = {
 export const SideChat: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="side-chat" />,
+};
+
+// Real path: 侧边对话 at the column's 320px floor, under a long model label.
+export const SideChatAtColumnFloor: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar tab="side-chat" width={320} />,
+  play: async ({ canvasElement }) => {
+    const companion = await waitFor(() => {
+      const found = canvasElement.querySelector<HTMLElement>('.maka-quote-companion');
+      if (!found?.querySelector('.maka-composer-astryx')) {
+        throw new Error('side chat companion is missing');
+      }
+      return found;
+    });
+    const card = companion.querySelector<HTMLElement>('.maka-composer-astryx')!;
+
+    expect(getComputedStyle(card).overflow).toBe('visible');
+
+    // The plate has to round the same as a bubble does; a side-only
+    // `--_chat-composer-radius` is what split the dock from the bubble in
+    // #3452. Measure a probe the token paints instead of reading the token
+    // back — ink-ladder-contract.test.ts forbids the latter.
+    const plate = card.firstElementChild;
+    if (!plate) throw new Error('composer plate is missing');
+    const probe = document.createElement('div');
+    probe.style.borderRadius = 'var(--radius-chat)';
+    card.append(probe);
+    const bubbleRadius = getComputedStyle(probe).borderTopLeftRadius;
+    probe.remove();
+    expect(bubbleRadius).not.toBe('0px');
+    expect(getComputedStyle(plate).borderTopLeftRadius).toBe(bubbleRadius);
+
+    // Written here rather than in the fixture: the fixture's default model is
+    // shared by every other story.
+    const label = companion.querySelector<HTMLElement>('.maka-composer-model-chip-text');
+    if (!label) throw new Error('side chat model chip is missing');
+    label.textContent = 'Nemotron 3 Ultra Long Context Model';
+
+    const send = within(companion).getByRole('button', { name: '发送' });
+    await waitFor(() => {
+      const cardBox = card.getBoundingClientRect();
+      const sendBox = send.getBoundingClientRect();
+      expect(sendBox.left).toBeGreaterThanOrEqual(cardBox.left);
+      expect(sendBox.right).toBeLessThanOrEqual(cardBox.right);
+    });
+  },
 };
 
 // Real path: 任务工作栏 → 追踪, on a session that has run turns — the overview

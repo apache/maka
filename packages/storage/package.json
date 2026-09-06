@@ -69,6 +69,6 @@
   },
   "dependencies": {
     "@maka/core": "0.1.0",
-    "fs-native-extensions": "^1.5.0"
+    "fs-native-extensions": "^1.5.1"
   }
 }

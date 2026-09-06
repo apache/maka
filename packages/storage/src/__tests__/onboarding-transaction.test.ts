@@ -81,3 +81,45 @@ test('a journal written before the baseUrl field replays as no override', async 
   assert.equal(replayed?.baseUrl, null);
   assert.deepEqual(replayed?.enabledModelIds, ['relay/model']);
 });
+
+test('a caller-chosen display name round-trips through the journal', async () => {
+  const directory = await root();
+  const intent = prepareConnectionOnboardingIntent({
+    ...BASE,
+    name: 'Work Relay',
+    baseUrl: 'https://relay.example.test/v1',
+  });
+  assert.equal(intent.name, 'Work Relay');
+  await writeConnectionOnboardingIntent(directory, intent);
+  assert.deepEqual(await readConnectionOnboardingIntent(directory), intent);
+});
+
+test('a journal written before the name field replays with the provider default', async () => {
+  const directory = await root();
+  // Schema v2 predates `name`: the key is simply absent on crash replay.
+  const { slug: _slug, ...legacyBase } = BASE;
+  await writeFile(
+    join(directory, 'runtime-policy-onboarding.json'),
+    JSON.stringify({
+      schemaVersion: 2,
+      slug: 'openai-compatible-2',
+      baseUrl: null,
+      ...legacyBase,
+    }),
+  );
+  const replayed = await readConnectionOnboardingIntent(directory);
+  assert.equal(replayed?.schemaVersion, 2);
+  assert.equal(replayed?.name, null);
+});
+
+test('a malformed requested display name fails input decode, never the journal', async () => {
+  assert.throws(
+    () =>
+      prepareConnectionOnboardingIntent({
+        ...BASE,
+        name: 42,
+        baseUrl: null,
+      }),
+    /connection name/,
+  );
+});

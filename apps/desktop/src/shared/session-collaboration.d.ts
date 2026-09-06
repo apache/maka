@@ -17,6 +17,9 @@
  * under the License.
  */
 
+import type { RuntimeHostPeerConnectionPath } from '@maka/runtime-host/client';
+import type { SharedSessionCatalogProjection } from '@maka/runtime-host/protocol';
+
 export type SessionCollaborationImportResult =
   | { readonly kind: 'connected'; readonly mountId: string }
   | { readonly kind: 'recovering'; readonly mountId: string }
@@ -26,6 +29,7 @@ export type SessionCollaborationImportResult =
         | 'invalid_code'
         | 'insecure_confirmation_required'
         | 'peer_path_unavailable'
+        | 'incompatible_host'
         | 'connection_failed';
       readonly message?: string;
     };
@@ -44,4 +48,16 @@ export type SessionCollaborationCancelResult = 'cancelled' | 'settling';
 export interface SessionCollaborationMountSummary {
   readonly mountId: string;
   readonly name: string;
+  readonly hostId: string;
+  readonly readiness: 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
+  readonly failure?: SessionCollaborationMountFailure;
+  readonly peerPath?: RuntimeHostPeerConnectionPath;
+  readonly session?: SharedSessionCatalogProjection;
 }
+
+export type SessionCollaborationMountFailure =
+  | 'credential_rejected'
+  | 'session_unavailable'
+  | 'peer_path_unavailable'
+  | 'incompatible_host'
+  | 'connection_failed';

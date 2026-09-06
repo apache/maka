@@ -132,8 +132,7 @@ async function maintainReachability(
   while (!signal.aborted) {
     try {
       await publisher.refresh();
-      const observed = await client.watchReachability(generation, REACHABILITY_WATCH_TIMEOUT_MS);
-      generation = observed.generation;
+      generation = await client.watchReachability(generation, REACHABILITY_WATCH_TIMEOUT_MS);
     } catch (error) {
       if (signal.aborted) return;
       if (

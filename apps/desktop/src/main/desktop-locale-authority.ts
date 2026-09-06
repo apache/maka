@@ -18,6 +18,7 @@
  */
 
 import {
+  normalizeUiLocalePreference,
   resolveSystemUiLocale,
   resolveUiLocale,
   type UiLocale,
@@ -65,7 +66,7 @@ export function createDesktopLocaleAuthority(input: {
   };
   const observe = (settings: LocaleSettings): UiLocale => {
     observation += 1;
-    preference = settings.personalization.uiLocale;
+    preference = normalizeUiLocalePreference(settings.personalization.uiLocale);
     return publish();
   };
   return Object.freeze({
@@ -79,7 +80,9 @@ export function createDesktopLocaleAuthority(input: {
       const request = ++observation;
       try {
         const settings = await input.readSettings();
-        if (request === observation) preference = settings.personalization.uiLocale;
+        if (request === observation) {
+          preference = normalizeUiLocalePreference(settings.personalization.uiLocale);
+        }
       } catch {
         // Locale presentation must not block startup or an unrelated native action.
       }

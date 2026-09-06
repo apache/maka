@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import type {
+  FormRequestEvent,
   SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
 } from '@maka/core/events';
@@ -61,6 +62,20 @@ function question(requestId: string): UserQuestionRequestEvent {
     toolUseId: `call_${requestId}`,
     turnId: 'turn_1',
     questions: [{ question: 'Choose', options: [{ label: 'A' }] }],
+  };
+}
+
+function form(requestId: string): FormRequestEvent {
+  return {
+    type: 'form_request',
+    id: `evt_${requestId}`,
+    turnId: 'turn_1',
+    ts: 0,
+    requestId,
+    toolUseId: `call_${requestId}`,
+    message: 'Choose settings',
+    requester: { name: 'deploy' },
+    fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
   };
 }
 
@@ -146,5 +161,24 @@ describe('composer interaction queue', () => {
 
     assert.equal(activeInteractionFor(reconciled, 's')?.type, 'user_question_request');
     assert.equal(activeInteractionFor(reconciled, 's')?.requestId, 'missed');
+  });
+
+  test('form requests enter and leave the shared queue', () => {
+    let queues = reduceInteractionQueues({}, 's', form('form-1'));
+
+    assert.equal(activeInteractionFor(queues, 's')?.type, 'form_request');
+    queues = reduceInteractionQueues(queues, 's', {
+      type: 'form_answer_ack',
+      id: 'evt_form_ack',
+      turnId: 'turn_1',
+      ts: 1,
+      requestId: 'form-1',
+      toolUseId: 'call_form-1',
+    });
+    assert.equal(activeInteractionFor(queues, 's'), undefined);
+
+    queues = reconcileInteractions({}, 's', [form('rehydrated-form')]);
+
+    assert.equal(activeInteractionFor(queues, 's')?.requestId, 'rehydrated-form');
   });
 });

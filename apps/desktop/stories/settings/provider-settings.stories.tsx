@@ -34,9 +34,14 @@ import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import { ProvidersPanel, type ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
 import { RuntimeHostSettingsTarget } from '../../src/renderer/settings/runtime-host-settings-target';
 import { SettingsPage } from '../../src/renderer/settings/settings-section';
-import type { ApiKeyOnboardingBridge } from '../../src/renderer/features/connection-settings';
+import type {
+  ApiKeyOnboardingBridge,
+  ConnectionOAuthBridge,
+} from '../../src/renderer/features/connection-settings';
+import { getProviderSettingsCopy } from '../../src/renderer/features/connection-settings';
 
 const NOW = Date.parse('2026-07-01T08:00:00Z');
+const detailCopy = getProviderSettingsCopy('zh-CN').detail;
 
 // Fidelity convention (#1433): every story below names the real app path
 // that reaches it. See apps/desktop/stories/FIDELITY.md.
@@ -261,6 +266,7 @@ function createBridge(input: {
   let defaultSlug: string | null = input.defaultSlug ?? connections[0]?.slug ?? null;
 
   return {
+    oauth: storyOAuthBridge(),
     addFixtureConnection(connection) {
       connections = [...connections, connection];
       defaultSlug ??= connection.slug;
@@ -501,12 +507,16 @@ function createOAuthSuccessLifecycleFixture() {
   };
 }
 
-function installSubscriptionFixtures(onOAuthComplete?: () => void) {
-  const target = window as unknown as {
-    maka?: Record<string, unknown>;
+function storyOAuthBridge(onOAuthComplete?: () => void): ConnectionOAuthBridge {
+  const githubCopilotSubscription = {
+    ...browserSubscriptionFixture(
+      { runtimeState: 'not_logged_in' },
+      undefined,
+      'github-copilot',
+    ),
+    connectExistingLogin: async () => ({ ok: true as const }),
   };
-  target.maka = {
-    ...(target.maka ?? {}),
+  return {
     openAiCodex: browserSubscriptionFixture(
       {
         runtimeState: 'authenticated',
@@ -514,10 +524,9 @@ function installSubscriptionFixtures(onOAuthComplete?: () => void) {
         plan: 'Plus',
       },
       onOAuthComplete,
+      'openai-codex',
     ),
-    githubCopilotSubscription: browserSubscriptionFixture({
-      runtimeState: 'not_logged_in',
-    }),
+    githubCopilotSubscription,
     xaiOAuth: xaiDeviceSubscriptionFixture(),
   };
 }
@@ -530,35 +539,41 @@ function xaiDeviceSubscriptionFixture() {
   };
   return {
     getAccountState: async () => ({ provider: 'xai-oauth', runtimeState: 'authorizing' }),
+    getEnrollmentState: async () => ({ enabled: true }),
     getAuthUrl: async () => ({ authRequestId: 'storybook-xai', stateHint: 'ABCD-EFGH', connection }),
-    openAuthUrl: async () => ({ ok: true }),
+    openAuthUrl: async () => ({ ok: true as const }),
     completeAuthorization: async () => new Promise<never>(() => undefined),
-    cancelAuthorization: async () => ({ ok: true }),
-    logout: async () => ({ ok: true }),
+    cancelAuthorization: async () => ({ ok: true as const }),
+    logout: async () => ({ ok: true as const }),
   };
 }
 
-function browserSubscriptionFixture(state: {
-  runtimeState: string;
-  email?: string;
-  plan?: string;
-  errorMessage?: string;
-}, onComplete?: () => void) {
+function browserSubscriptionFixture(
+  state: {
+    runtimeState: string;
+    email?: string;
+    plan?: string;
+    errorMessage?: string;
+  },
+  onComplete?: () => void,
+  providerType: 'openai-codex' | 'github-copilot' = 'openai-codex',
+) {
   const connection = {
-    connectionId: 'connection-openai-codex-4',
-    slug: 'openai-codex-4',
-    providerType: 'openai-codex' as const,
+    connectionId: `connection-${providerType}-4`,
+    slug: `${providerType}-4`,
+    providerType,
   };
   return {
     getAccountState: async () => state,
+    getEnrollmentState: async () => ({ enabled: true }),
     getAuthUrl: async () => ({ authRequestId: 'storybook-oauth', stateHint: 'storybook', connection }),
-    openAuthUrl: async () => ({ ok: true }),
+    openAuthUrl: async () => ({ ok: true as const }),
     completeAuthorization: async () => {
       onComplete?.();
       return { ok: true as const, connection };
     },
-    cancelAuthorization: async () => ({ ok: true }),
-    logout: async () => ({ ok: true }),
+    cancelAuthorization: async () => ({ ok: true as const }),
+    logout: async () => ({ ok: true as const }),
   };
 }
 
@@ -570,10 +585,6 @@ function ProviderStoryFrame(props: {
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const clickedRef = useRef(false);
-
-  useEffect(() => {
-    installSubscriptionFixtures(props.onOAuthComplete);
-  }, [props.onOAuthComplete]);
 
   useEffect(() => {
     const autoOpen = props.autoOpen;
@@ -628,7 +639,10 @@ function ProviderStoryFrame(props: {
               <LayoutContent padding={6} isScrollable={false}>
                 <SettingsPage className="settingsModelsPage">
                   <ProvidersPanel
-                    bridge={props.bridge}
+                    bridge={{
+                      ...props.bridge,
+                      oauth: storyOAuthBridge(props.onOAuthComplete),
+                    }}
                     apiKeyOnboardingBridge={props.apiKeyOnboardingBridge}
                   />
                 </SettingsPage>
@@ -743,6 +757,18 @@ export const ProblemConnections: Story = {
   render: () => <ProviderStory bridge={createBridge({ connections: problemConnections, defaultSlug: 'zai-live' })} />,
 };
 
+// Real path: first run — no connection yet, so the list offers the recommended
+// providers as rows, one click from a provider's form.
+export const EmptyProviders: Story = {
+  render: () => <ProviderStory bridge={createBridge({ connections: [] })} />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      expect(canvasElement.querySelector('.providerCatalogRow[data-provider="opencode-free"]')).not.toBeNull();
+    }, { timeout: 5_000 });
+    expect(canvasElement.querySelector('[data-maka-contract="provider-catalog"]')).toBeNull();
+  },
+};
+
 // Real path: 设置 → 模型 → click a connection row — the detail page it routes to.
 export const ConnectionDetailPage: Story = {
   render: () => (
@@ -769,8 +795,8 @@ export const AlibabaConnectionDetailPage: Story = {
 };
 
 // Real path: 设置 → 模型 → click a connection whose provider has no model-list
-// endpoint — 添加模型 stands where 更新模型目录 would, and the capability section
-// lists the models Maka's bundled metadata cannot describe.
+// endpoint — 添加模型 stands where 更新模型目录 would, and the models Maka's
+// bundled metadata cannot describe carry a 配置参数 editor on their row.
 export const StaticCatalogConnectionDetail: Story = {
   render: () => (
     <ProviderStory
@@ -780,10 +806,11 @@ export const StaticCatalogConnectionDetail: Story = {
   ),
 };
 
-// Real path: 设置 → 模型 → click a custom relay — the capability section with
-// several enabled models, where 批量设置思考档位 sits above the per-model rows it
-// writes into. Opening its menu shows each level's coverage across the table:
-// `low` and `high` on 1 of 4, everything else on none.
+// Real path: 设置 → 模型 → click a custom relay — several enabled models, each
+// with a 配置参数 editor, and 批量设置思考档位 in the section's action cluster
+// writing into all of them at once. Opening its menu shows each level's
+// coverage across the table: `low` and `high` on 1 of 4, everything else on
+// none.
 export const RelayConnectionDetail: Story = {
   render: () => (
     <ProviderStory
@@ -816,6 +843,30 @@ export const RelayConnectionDetail: Story = {
     await expect(none).toHaveAttribute('aria-checked', 'false');
     await expect(partial).toHaveAttribute('aria-description', '1/4 个模型');
     await expect(none).toHaveAttribute('aria-description', '全部未声明');
+
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(
+      body.getByRole('button', {
+        name: `${detailCopy.edit}: ${detailCopy.requestHeaders}`,
+      }),
+    );
+    await userEvent.click(body.getByRole('button', { name: detailCopy.addHeader }));
+    await waitFor(() => {
+      expect(canvasElement.querySelectorAll('.requestHeaderRow')).toHaveLength(1);
+    });
+    const row = canvasElement.querySelector<HTMLElement>('.requestHeaderRow');
+    const field = row?.querySelector<HTMLElement>('.requestHeaderName');
+    const cell = row?.querySelector<HTMLElement>('.requestHeaderRemove');
+    const button = cell?.querySelector<HTMLButtonElement>('button');
+    if (!field || !cell || !button) throw new Error('Request header row is incomplete');
+    const centre = (element: Element) => {
+      const box = element.getBoundingClientRect();
+      return box.top + box.height / 2;
+    };
+    expect(Math.abs(centre(button) - centre(field))).toBeLessThanOrEqual(1);
+    expect(cell.getBoundingClientRect().height).toBeLessThanOrEqual(
+      field.getBoundingClientRect().height + 1,
+    );
   },
 };
 
@@ -891,7 +942,7 @@ export const OAuthCreateAdoptsExactConnection: Story = {
       '[data-connection-id="connection-openai-codex-4"]',
     );
     await expect(createdRow).not.toBeNull();
-    await expect(within(createdRow!).getByRole('button')).toHaveFocus();
+    await waitFor(() => expect(within(createdRow!).getByRole('button')).toHaveFocus());
   },
 };
 
@@ -937,6 +988,13 @@ export const ApiKeyOnboardingModels: Story = {
     await userEvent.click(await canvas.findByRole('button', { name: '验证并选择模型' }));
     await expect(canvas.findByText('选择此连接使用的模型')).resolves.toBeTruthy();
     await expect(canvas.findByRole('button', { name: '添加连接' })).resolves.toBeTruthy();
+    // The step that replaced the key form has to take the focus the pressed
+    // button left behind, or a keyboard user restarts from the top of Settings.
+    await waitFor(() => {
+      expect(document.activeElement?.getAttribute('data-maka-contract')).toBe(
+        'api-key-onboarding-models',
+      );
+    });
   },
 };
 

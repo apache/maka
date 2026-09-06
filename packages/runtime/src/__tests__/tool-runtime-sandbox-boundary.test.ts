@@ -219,6 +219,12 @@ describe('ToolRuntime session sandbox boundary', () => {
       admitUserQuestionRequest: async () => {
         throw new Error('Unexpected user question');
       },
+      admitFormRequest: async () => {
+        throw new Error('Unexpected user form');
+      },
+      withdrawFormRequest: async () => {
+        throw new Error('Unexpected user form withdrawal');
+      },
       admitSandboxBoundaryRequest: async ({ request, settlement }) => {
         admittedRequest = request;
         captured = settlement;

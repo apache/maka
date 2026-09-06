@@ -22,6 +22,7 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
   decodeCanonicalConnectionCatalogEntry,
+  decodeConnectionName,
   decodeConnectionSlug,
   decodeConnectionTarget,
   decodeConnectionTestSummary,
@@ -519,6 +520,7 @@ export class ConnectionCatalogDocumentOwner {
     rawConnectionId: string,
     rawSlug: string,
     rawProviderType: unknown,
+    rawName: string | null,
     rawBaseUrl: string | null,
     rawEnabledModelIds: readonly string[],
     rawResult: ConnectionModelDiscoveryResult,
@@ -530,6 +532,8 @@ export class ConnectionCatalogDocumentOwner {
     const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
     const slug = decodeConnectionInput(() => decodeConnectionSlug(rawSlug));
     const providerType = decodeConnectionInput(() => decodeProviderType(rawProviderType));
+    const requestedName =
+      rawName === null ? null : decodeConnectionInput(() => decodeConnectionName(rawName));
     const definition = PROVIDER_REGISTRY[providerType];
     // Identity first: the intent's connectionId names the connection being
     // edited, whatever slug it lives under — a relay created in Desktop under
@@ -568,7 +572,9 @@ export class ConnectionCatalogDocumentOwner {
     const changes = decodeConnectionInput(() =>
       normalizeConnectionCatalogEntryUpdateForProvider(
         {
-          name: previous?.name ?? definition.label,
+          // An edit keeps the stored name; a create takes the caller's choice
+          // when the wizard collected one, else the provider label.
+          name: previous?.name ?? requestedName ?? definition.label,
           ...(effectiveBaseUrl ? { baseUrl: effectiveBaseUrl } : {}),
           enabled: true,
           enabledModelIds: rawEnabledModelIds,
@@ -612,6 +618,9 @@ export class ConnectionCatalogDocumentOwner {
     const { relayModelProfiles: _staleProfiles, ...baseWithoutProfiles } = base;
     const finalized: ConnectionCatalogEntry = {
       ...baseWithoutProfiles,
+      // `changes.name` carries the edit-preserving / create-requested / provider
+      // -label resolution — `base` alone would keep the provider label forever.
+      name: changes.name,
       ...(relayModelProfiles ? { relayModelProfiles } : {}),
       ...(changes.baseUrl !== undefined ? { baseUrl: changes.baseUrl } : {}),
       revision: previous ? nextRevision(previous.revision) : 1,

@@ -23,7 +23,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import type { AgentRunEvent, EmittedAgentRunEvent, AgentRunHeader } from '@maka/core/agent-run';
+import type { AgentRunEvent, EmittedAgentRunEvent } from '@maka/core/agent-run';
+import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
+import { runtimeInvocationFailureClass } from '../runtime-event-read-model.js';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import {
@@ -34,6 +36,7 @@ import { createSessionStore, type SessionAuthorityStore } from '@maka/storage/se
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 /**
  * Restart behaviour against the canonical SQLite stores. Memory stores can
@@ -45,7 +48,7 @@ describe('sandbox boundary restart recovery on durable stores', () => {
   it('attributes a closure whose RuntimeEvent never reached the ledger', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-boundary-restart-'));
     try {
-      const session = await withStores(root, async ({ sessions, runs }) => {
+      const session = await withStores(root, async ({ sessions, runs, runtimeEvents }) => {
         const header = await sessions.create(sessionInput(root));
         await sessions.createSandboxBoundaryRequest({
           sessionId: header.id,
@@ -55,7 +58,7 @@ describe('sandbox boundary restart recovery on durable stores', () => {
           expansion: { network: { enabled: true } },
           justification: 'Fetch a dependency.',
         });
-        await seedInterruptedTurn(sessions, runs, header.id);
+        await seedInterruptedTurn(sessions, runs, runtimeEvents, header.id);
         // Deliberately no boundary RuntimeEvent: the process died in the
         // fail-open window between the row commit and the event append.
         return header;
@@ -65,14 +68,17 @@ describe('sandbox boundary restart recovery on durable stores', () => {
         await manager(stores).recoverInterruptedSessions();
       });
 
-      await withStores(root, async ({ sessions, runs }) => {
+      await withStores(root, async ({ sessions, runtimeEvents }) => {
         assert.deepEqual(await sessions.listPendingSandboxBoundaryRequests(session.id), []);
         const [turn] = await sessions.listTurns(session.id);
         assert.equal(turn?.status, 'failed');
         assert.equal(turn?.errorClass, 'sandbox_boundary_closed_by_restart');
-        const [run] = await runs.listSessionRuns(session.id);
-        assert.equal(run?.status, 'failed');
-        assert.equal(run?.failureClass, 'sandbox_boundary_closed_by_restart');
+        const [invocation] = await runtimeEvents.listSessionInvocations(session.id);
+        assert.equal(invocation?.terminalEvent?.status, 'failed');
+        assert.equal(
+          invocation && runtimeInvocationFailureClass(invocation),
+          'sandbox_boundary_closed_by_restart',
+        );
       });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -82,7 +88,7 @@ describe('sandbox boundary restart recovery on durable stores', () => {
   it('re-reads a closure across a recovery interrupted before the terminal commit', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-boundary-restart-twice-'));
     try {
-      const session = await withStores(root, async ({ sessions, runs }) => {
+      const session = await withStores(root, async ({ sessions, runs, runtimeEvents }) => {
         const header = await sessions.create(sessionInput(root));
         await sessions.createSandboxBoundaryRequest({
           sessionId: header.id,
@@ -100,7 +106,7 @@ describe('sandbox boundary restart recovery on durable stores', () => {
           decision: 'deny',
           closureReason: 'host_restarted',
         });
-        await seedInterruptedTurn(sessions, runs, header.id);
+        await seedInterruptedTurn(sessions, runs, runtimeEvents, header.id);
         assert.deepEqual(await sessions.listPendingSandboxBoundaryRequests(header.id), []);
         return header;
       });
@@ -109,11 +115,14 @@ describe('sandbox boundary restart recovery on durable stores', () => {
         await manager(stores).recoverInterruptedSessions();
       });
 
-      const failedStatesAfterFirst = await withStores(root, async ({ sessions, runs }) => {
+      const failedStatesAfterFirst = await withStores(root, async ({ sessions, runtimeEvents }) => {
         const [turn] = await sessions.listTurns(session.id);
         assert.equal(turn?.errorClass, 'sandbox_boundary_closed_by_restart');
-        const [run] = await runs.listSessionRuns(session.id);
-        assert.equal(run?.failureClass, 'sandbox_boundary_closed_by_restart');
+        const [invocation] = await runtimeEvents.listSessionInvocations(session.id);
+        assert.equal(
+          invocation && runtimeInvocationFailureClass(invocation),
+          'sandbox_boundary_closed_by_restart',
+        );
         return countFailedTurnStates(await sessions.readMessages(session.id));
       });
 
@@ -123,15 +132,18 @@ describe('sandbox boundary restart recovery on durable stores', () => {
         await manager(stores).recoverInterruptedSessions();
       });
 
-      await withStores(root, async ({ sessions, runs }) => {
+      await withStores(root, async ({ sessions, runtimeEvents }) => {
         const [turn] = await sessions.listTurns(session.id);
         assert.equal(turn?.errorClass, 'sandbox_boundary_closed_by_restart');
         assert.equal(
           countFailedTurnStates(await sessions.readMessages(session.id)),
           failedStatesAfterFirst,
         );
-        const [run] = await runs.listSessionRuns(session.id);
-        assert.equal(run?.failureClass, 'sandbox_boundary_closed_by_restart');
+        const [invocation] = await runtimeEvents.listSessionInvocations(session.id);
+        assert.equal(
+          invocation && runtimeInvocationFailureClass(invocation),
+          'sandbox_boundary_closed_by_restart',
+        );
         const closures = await sessions.listSandboxBoundaryRestartClosures(session.id);
         assert.deepEqual(
           closures.map((closure) => [closure.requestId, closure.turnId, closure.runId]),
@@ -199,6 +211,7 @@ function manager(stores: DurableStores): SessionManager {
 async function seedInterruptedTurn(
   sessions: SessionAuthorityStore,
   runs: DurableAgentRunStore,
+  runtimeEvents: DurableRuntimeEventStore,
   sessionId: string,
 ): Promise<void> {
   await sessions.appendMessages(sessionId, [
@@ -213,7 +226,7 @@ async function seedInterruptedTurn(
     },
   ]);
   await sessions.updateHeader(sessionId, { status: 'waiting_for_user' });
-  await runs.createRun(runHeader(sessionId));
+  await runtimeEvents.appendRuntimeEvent(sessionId, 'run-1', openingEvent(sessionId));
   await runs.appendEvent(sessionId, 'run-1', runEvent(sessionId));
 }
 
@@ -222,26 +235,28 @@ function countFailedTurnStates(messages: readonly StoredMessage[]): number {
     .length;
 }
 
-function runHeader(sessionId: string): AgentRunHeader {
-  return {
-    runId: 'run-1',
-    sessionId,
-    turnId: 'turn-1',
-    status: 'waiting_for_user',
-    backendKind: 'fake',
-    llmConnectionSlug: 'fake',
-    modelId: 'fake-model',
-    cwd: '/tmp/cwd',
-    permissionMode: 'ask',
-    createdAt: 10,
-    updatedAt: 10,
-  };
+function openingEvent(sessionId: string) {
+  return buildInvocationOpenedEvent({
+    id: 'run-1-open',
+    run: { sessionId, invocationId: 'run-1', runId: 'run-1', turnId: 'turn-1' },
+    openedAt: 10,
+    opening: testInvocationOpening({
+      route: {
+        provenance: 'runtime',
+        backendKind: 'fake',
+        llmConnectionId: 'fake-connection',
+        llmConnectionSlug: 'fake',
+        modelId: 'fake-model',
+      },
+      configuration: { cwd: '/tmp/cwd' },
+    }),
+  });
 }
 
 function runEvent(sessionId: string): EmittedAgentRunEvent {
   return {
-    type: 'run_started',
-    id: 'run-1-run_started-11',
+    type: 'turn_started',
+    id: 'run-1-turn_started-11',
     runId: 'run-1',
     sessionId,
     turnId: 'turn-1',
