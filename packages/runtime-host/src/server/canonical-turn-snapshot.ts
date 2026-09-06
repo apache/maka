@@ -70,7 +70,8 @@ export async function readCanonicalTurnSnapshot(
       if (!fact.failureClass) throw new Error('Failed terminal fact has no failure class');
       const failureMessage =
         fact.terminalEvent.content?.kind === 'error'
-          ? providerFailureSummaryFromRuntimeEvent(fact.terminalEvent)
+          ? providerFailureSummaryFromRuntimeEvent(fact.terminalEvent) ??
+            fact.terminalEvent.content.message
           : undefined;
       return {
         sessionId,
