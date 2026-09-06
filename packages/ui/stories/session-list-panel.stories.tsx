@@ -672,9 +672,14 @@ export const ProjectGroups: Story = {
     await expect(action).toHaveFocus();
     await userEvent.keyboard('{Enter}');
     await userEvent.click(page.getByRole('menuitem', { name: '重命名' }));
-    await expect(page.getByRole('dialog', { name: '重命名项目' })).toBeVisible();
+    // The menu close and the dialog mount are one frame apart (#4884); query
+    // by waiting for the dialog rather than racing the handover.
+    await expect(await page.findByRole('dialog', { name: '重命名项目' })).toBeVisible();
     await userEvent.click(page.getByRole('button', { name: '关闭' }));
-    await expect(action).toHaveFocus();
+    // Focus returns to the opener on the frame after the dialog unmounts
+    // (#4884): while the modal is up, everything outside it is inert and a
+    // focus() there is refused. This matcher checks once, not until it passes.
+    await waitFor(() => expect(action).toHaveFocus());
 
     await userEvent.hover(taskControl);
     const taskCard = await page.findByText('正在把侧栏交互契约迁移到浏览器 story。');
