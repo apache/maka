@@ -26,9 +26,10 @@ import { ensureSidebarExpanded, expect, test } from './fixtures';
 // only the user's custom rows, and the ~1.4k built-in catalog is reached only
 // through the Add flow's Typeahead picker (never rendered as a table, so nothing
 // heavy renders). This exercises #2015 acceptance #2 (the tab is not time-scoped:
-// the Usage date range/summary toolbar is gone) and #11 (the editor returns focus
-// to the trigger that opened it — real Electron focus the linkedom harness cannot
-// honestly exercise), plus the overrides-only shape and the picker/manual Add UI.
+// the Usage date range/summary toolbar is gone) and #11 (dialogs return focus to
+// a stable control, including when reset/delete removes the opening row action —
+// real Electron focus the linkedom harness cannot honestly exercise), plus the
+// overrides-only shape and the picker/manual Add UI.
 test('pricing tab is overrides-only with a catalog-picker Add flow, is not time-scoped, and restores focus', async ({
   window: page,
 }) => {
@@ -72,5 +73,25 @@ test('pricing tab is overrides-only with a catalog-picker Add flow, is not time-
   // #2015 acceptance #11: closing the editor returns focus to the trigger.
   await editor.getByRole('button', { name: '取消' }).click();
   await expect(editor).toHaveCount(0);
+  await expect(addButton).toBeFocused();
+
+  // A successful delete removes the row action that opened its dialog. Focus
+  // must land on the stable Add control instead of falling back to <body>.
+  const focusModelKey = `e2e:pricing-focus-${Date.now()}`;
+  await addButton.click();
+  const addEditor = page.getByRole('dialog', { name: '添加定价' });
+  await addEditor.getByRole('button', { name: '模型不在列表中？手动输入' }).click();
+  await addEditor.getByRole('textbox', { name: /模型键/ }).fill(focusModelKey);
+  await addEditor.getByRole('spinbutton', { name: /输入价格/ }).fill('1');
+  await addEditor.getByRole('spinbutton', { name: /输出价格/ }).fill('2');
+  await addEditor.getByRole('button', { name: '保存' }).click();
+  await expect(addEditor).toHaveCount(0);
+  await expect(page.getByText(focusModelKey, { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: `删除「${focusModelKey}」定价` }).click();
+  const deleteDialog = page.getByRole('alertdialog', { name: '删除定价' });
+  await deleteDialog.getByRole('button', { name: '删除', exact: true }).click();
+  await expect(deleteDialog).toHaveCount(0);
+  await expect(page.getByText(focusModelKey, { exact: true })).toHaveCount(0);
   await expect(addButton).toBeFocused();
 });

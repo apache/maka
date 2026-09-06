@@ -17,9 +17,8 @@
  * under the License.
  */
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { EmptyState, Heading, Skeleton, Text } from '@astryxdesign/core';
-import { AlertDialog } from '@astryxdesign/core/AlertDialog';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
@@ -44,6 +43,7 @@ export function PricingEditor(props: {
     target: props.target,
   });
   const { copy } = c;
+  const addButtonRef = useRef<HTMLButtonElement>(null);
 
   const columns: UsageColumn[] = [
     { header: copy.headers[0], width: 300 },
@@ -75,7 +75,7 @@ export function PricingEditor(props: {
       copy={copy}
       disabled={c.writesBlocked}
       onEdit={(trigger) => c.openEdit(row, trigger)}
-      onReset={(trigger) => c.openReset(row, trigger)}
+      onReset={(trigger) => c.openReset(row, trigger, addButtonRef.current)}
     />,
   ]);
 
@@ -98,6 +98,7 @@ export function PricingEditor(props: {
             icon={<RefreshCcw size={ICON_SIZE.control} aria-hidden="true" />}
           />
           <Button
+            ref={addButtonRef}
             variant="primary"
             size="sm"
             icon={<Plus size={ICON_SIZE.control} aria-hidden="true" />}
@@ -115,10 +116,16 @@ export function PricingEditor(props: {
         </HStack>
       </div>
 
-      {/* Panel-level write notice — visible when no editor is open (e.g. a reset
-          produced a conflict/uncertain outcome and closed its dialog). */}
-      {c.editor === null ? (
-        <PricingWriteNotice writeState={c.writeState} latestEntry={c.conflictLatestEntry} copy={copy} />
+      {/* Keep notices inside whichever modal owns the pending intent. The panel
+          notice is only for a blocked state with no open editor/reset dialog. */}
+      {c.editor === null && c.resetTarget === null ? (
+        <PricingWriteNotice
+          writeState={c.writeState}
+          latestEntry={c.conflictLatestEntry}
+          copy={copy}
+          onRefresh={() => void c.reload()}
+          refreshBusy={c.loading}
+        />
       ) : null}
 
       <div aria-live="polite">
@@ -151,24 +158,7 @@ export function PricingEditor(props: {
 
       {c.editor !== null ? <PricingEditorDialog controller={c} /> : null}
 
-      <AlertDialog
-        isOpen={c.resetTarget !== null}
-        onOpenChange={(open) => {
-          if (!open) c.cancelReset();
-        }}
-        title={c.resetTarget?.resetEffect === 'become_unpriced' ? copy.deleteTitle : copy.resetTitle}
-        description={
-          c.resetTarget
-            ? c.resetTarget.resetEffect === 'become_unpriced'
-              ? copy.deleteBody(c.resetTarget.modelKey)
-              : copy.resetBody(c.resetTarget.modelKey)
-            : ''
-        }
-        actionLabel={c.resetTarget?.resetEffect === 'become_unpriced' ? copy.confirmDelete : copy.confirmReset}
-        cancelLabel={copy.cancel}
-        isActionLoading={c.resetBusy}
-        onAction={() => void c.confirmReset()}
-      />
+      {c.resetTarget !== null ? <PricingResetDialog controller={c} /> : null}
     </div>
   );
 }
@@ -214,6 +204,79 @@ function PricingRowActions(props: {
         onClick={(event) => props.onReset(event.currentTarget)}
       />
     </HStack>
+  );
+}
+
+function PricingResetDialog(props: {
+  controller: ReturnType<typeof usePricingController>;
+}) {
+  const c = props.controller;
+  const { copy, resetTarget } = c;
+  const descriptionId = useId();
+  if (resetTarget === null) return null;
+  const isDelete = resetTarget.resetEffect === 'become_unpriced';
+  const hasConflict = c.writeState.kind === 'conflict';
+
+  return (
+    <Dialog
+      isOpen
+      onOpenChange={(open) => {
+        if (!open) c.cancelReset();
+      }}
+      role="alertdialog"
+      aria-describedby={descriptionId}
+      purpose="form"
+      width={400}
+    >
+      <Layout
+        header={<DialogHeader title={isDelete ? copy.deleteTitle : copy.resetTitle} />}
+        content={
+          <LayoutContent padding={4}>
+            <VStack gap={3}>
+              <Text id={descriptionId} type="body" color="secondary">
+                {isDelete ? copy.deleteBody(resetTarget.modelKey) : copy.resetBody(resetTarget.modelKey)}
+              </Text>
+              <PricingWriteNotice
+                writeState={c.writeState}
+                latestEntry={c.conflictLatestEntry}
+                copy={copy}
+                onRefresh={() => void c.reload()}
+                refreshBusy={c.loading}
+              />
+            </VStack>
+          </LayoutContent>
+        }
+        footer={
+          <LayoutFooter>
+            <HStack gap={2} justify="end">
+              <Button
+                variant="ghost"
+                label={copy.cancel}
+                isDisabled={c.resetBusy}
+                onClick={c.cancelReset}
+                data-autofocus
+              />
+              <Button
+                variant="destructive"
+                label={
+                  hasConflict
+                    ? isDelete
+                      ? copy.reviewDelete
+                      : copy.reviewReset
+                    : isDelete
+                      ? copy.confirmDelete
+                      : copy.confirmReset
+                }
+                isLoading={c.resetBusy}
+                isDisabled={c.writesBlocked}
+                tooltip={c.writesBlocked ? copy.writeBlockedReason : undefined}
+                onClick={() => void c.confirmReset()}
+              />
+            </HStack>
+          </LayoutFooter>
+        }
+      />
+    </Dialog>
   );
 }
 
@@ -334,7 +397,7 @@ function PricingEditorDialog(props: {
                   </HStack>
                 </VStack>
               ) : (
-                // Manual fallback: paste the exact Runtime lookup key.
+                // Manual fallback: paste the exact runtime lookup key.
                 <VStack gap={1}>
                   <TextInput
                     value={draft.modelKey}
@@ -416,7 +479,13 @@ function PricingEditorDialog(props: {
                   />
                 </VStack>
               </Collapsible>
-              <PricingWriteNotice writeState={c.writeState} latestEntry={c.conflictLatestEntry} copy={copy} />
+              <PricingWriteNotice
+                writeState={c.writeState}
+                latestEntry={c.conflictLatestEntry}
+                copy={copy}
+                onRefresh={() => void c.reload()}
+                refreshBusy={c.loading}
+              />
               {c.needsReview ? (
                 <Banner
                   status="warning"
@@ -461,6 +530,8 @@ function PricingWriteNotice(props: {
   writeState: ReturnType<typeof usePricingController>['writeState'];
   latestEntry: PricingRowView | null;
   copy: PricingSettingsCopy;
+  onRefresh(): void;
+  refreshBusy: boolean;
 }) {
   const { writeState, latestEntry, copy } = props;
   switch (writeState.kind) {
@@ -487,9 +558,25 @@ function PricingWriteNotice(props: {
       );
     }
     case 'refresh_failed':
-      return <Banner status="warning" role="status" title={copy.refreshFailedTitle} description={copy.refreshFailedBody} />;
+      return (
+        <Banner
+          status="warning"
+          role="status"
+          title={copy.refreshFailedTitle}
+          description={copy.refreshFailedBody}
+          endContent={<Button variant="secondary" size="sm" label={copy.refresh} isLoading={props.refreshBusy} onClick={props.onRefresh} />}
+        />
+      );
     case 'reconcile_unavailable':
-      return <Banner status="warning" role="status" title={copy.reconcileTitle} description={copy.reconcileBody} />;
+      return (
+        <Banner
+          status="warning"
+          role="status"
+          title={copy.reconcileTitle}
+          description={copy.reconcileBody}
+          endContent={<Button variant="secondary" size="sm" label={copy.refresh} isLoading={props.refreshBusy} onClick={props.onRefresh} />}
+        />
+      );
     case 'idle':
       return null;
   }
