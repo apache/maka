@@ -292,6 +292,28 @@ describe('builtin Bash projection and shell execution', () => {
     assert.deepStrictEqual(schemaKeys(false), ['command', 'timeout_ms']);
   });
 
+  test('executor Bash strips historical boundary keys only when declarations are disabled', () => {
+    const input = { command: 'pwd', boundary_intent: 'out-of-scope', required_boundary: {} };
+    for (const declareSandboxBoundary of [false, true]) {
+      const bash = buildBuiltinTools({ declareSandboxBoundary }).find(
+        ({ name }) => name === 'Bash',
+      )!;
+      const schema = bash.parameters as z.ZodTypeAny;
+      if (declareSandboxBoundary) {
+        assert.equal(schema.safeParse(input).success, false);
+        assert.equal(schema.safeParse({ command: 'pwd' }).success, true);
+      } else {
+        assert.deepEqual(schema.parse(input), { command: 'pwd' });
+        assert.equal(schema.safeParse({ ...input, unexpected: true }).success, false);
+        assert.deepEqual(input, {
+          command: 'pwd',
+          boundary_intent: 'out-of-scope',
+          required_boundary: {},
+        });
+      }
+    }
+  });
+
   test('executor Bash executes with the same shell it declares', async () => {
     // /bin/echo stands in for pwsh.exe: if the shell reaches the local
     // executor's spawn, stdout echoes the PowerShell flags and wrapper instead
@@ -520,6 +542,32 @@ describe('builtin Bash streaming output', () => {
       'run_in_background',
       'pty',
     ]);
+  });
+
+  test('managed Bash strips historical boundary keys only when declarations are disabled', () => {
+    const shellRuns: ShellRunLauncher = {
+      runForegroundBash: () => Promise.reject(new Error('not used')),
+      runBackgroundBash: () => Promise.reject(new Error('not used')),
+    };
+    const input = { command: 'pwd', boundary_intent: 'out-of-scope', required_boundary: {} };
+    for (const declareSandboxBoundary of [false, true]) {
+      const bash = buildBuiltinTools({ shellRuns, declareSandboxBoundary }).find(
+        ({ name }) => name === 'Bash',
+      )!;
+      const schema = bash.parameters as z.ZodTypeAny;
+      if (declareSandboxBoundary) {
+        assert.equal(schema.safeParse(input).success, false);
+        assert.equal(schema.safeParse({ command: 'pwd' }).success, true);
+      } else {
+        assert.deepEqual(schema.parse(input), { command: 'pwd' });
+        assert.equal(schema.safeParse({ ...input, unexpected: true }).success, false);
+        assert.deepEqual(input, {
+          command: 'pwd',
+          boundary_intent: 'out-of-scope',
+          required_boundary: {},
+        });
+      }
+    }
   });
 
   test('background-capable Bash stays foreground unless explicitly requested', async () => {

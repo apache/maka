@@ -282,7 +282,16 @@ export function buildManagedBashTool(
             .superRefine(refineManagedBash)
             .superRefine(refineBashBoundaryDeclaration),
         )
-      : z.object(managedBashFields).strict().superRefine(refineManagedBash),
+      : z.preprocess((input) => {
+          // Historical calls may retain boundary fields after a session mode switch.
+          if (typeof input !== 'object' || input === null || Array.isArray(input)) return input;
+          const {
+            boundary_intent: _intent,
+            required_boundary: _boundary,
+            ...fields
+          } = input as Record<string, unknown>;
+          return fields;
+        }, z.object(managedBashFields).strict().superRefine(refineManagedBash)),
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     ...(options.executionFacts ? { executionFacts: options.executionFacts } : {}),
     impl: async (input, ctx) => {

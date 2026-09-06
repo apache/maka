@@ -95,6 +95,7 @@ const CHILD_INSTRUCTION_BOUNDARY = [
 
 export interface InteractiveRunComposerInput {
   readonly runtimePolicy: RuntimePolicySnapshot;
+  readonly permissionMode?: PermissionMode;
   readonly skills: HostSkillCatalogCoordinator;
   readonly pluginSkills?: PluginSkillService;
   readonly memory: HostMemoryCoordinator;
@@ -164,7 +165,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
         input.scheduledTaskTool,
         input.goalTools,
         input.parentAgentTools,
-        input.plan?.permissionMode,
+        input.permissionMode ?? input.plan?.permissionMode,
         input.plan,
         input.deepResearch?.tools,
       );
@@ -452,6 +453,7 @@ export function createInteractiveRunComposerFactory(
       const { hostTools, boundTools, parentAgentTools } = toolSurface;
       const composer = createInteractiveRunComposer({
         runtimePolicy,
+        permissionMode: backendContext.header.permissionMode,
         skills: input.skills,
         ...(input.pluginSkills ? { pluginSkills: input.pluginSkills } : {}),
         memory: input.memory,
