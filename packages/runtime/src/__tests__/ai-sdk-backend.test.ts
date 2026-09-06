@@ -32,6 +32,7 @@ import type { AttachmentByteReader } from '@maka/core/attachments';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
+import type { PermissionRules } from '@maka/core/runtime-policy';
 import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { SessionHeader } from '@maka/core/session';
 import type { StorageRef } from '@maka/core/events';
@@ -163,6 +164,124 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     assert.equal(names.includes('apply_patch'), false);
     assert.equal(names.includes('Write'), true);
     assert.equal(names.includes('Edit'), true);
+  });
+
+  test('hides native apply_patch when persistent path denies are active', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: { ...connection(), slug: 'openai', providerType: 'openai' },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => model,
+      tools: [
+        nativeApplyPatchTool(),
+        testTool('Write', z.object({})),
+        testTool('Edit', z.object({})),
+      ],
+      permissionRules: {
+        denyCommands: [],
+        denyPaths: [{ path: '/mnt', scope: 'subtree' }],
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(backend.send({ turnId: 'turn-1', text: 'edit', context: [] }));
+
+    const names = modelToolNames(model);
+    assert.equal(names.includes('apply_patch'), false);
+    assert.equal(names.includes('Write'), true);
+    assert.equal(names.includes('Edit'), true);
+  });
+
+  test('refreshes native apply_patch routing when live path rules change', async () => {
+    const durable = durableTurnHarness('turn-live-apply-patch', 'edit');
+    let rules: PermissionRules = {
+      denyCommands: [],
+      denyPaths: [],
+    };
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        if (streamCalls === 1) {
+          // The first request was already shaped under the empty snapshot.
+          // The next provider step must observe this update.
+          rules = {
+            denyCommands: [],
+            denyPaths: [{ path: '/blocked', scope: 'subtree' as const }],
+          };
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'read-live-rules',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ],
+              initialDelayInMs: null,
+              chunkDelayInMs: null,
+            }),
+          };
+        }
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: emptyUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: { ...connection(), slug: 'openai', providerType: 'openai' },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => model,
+      tools: [
+        nativeApplyPatchTool(),
+        testTool('Write', z.object({})),
+        testTool('Edit', z.object({})),
+        testTool('Read', z.object({ path: z.string() })),
+      ],
+      readPermissionRules: () => rules,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(streamCalls, 2);
+    const firstNames = modelToolNamesAt(model, 0);
+    const secondNames = modelToolNamesAt(model, 1);
+    assert.equal(firstNames.includes('apply_patch'), true);
+    assert.equal(firstNames.includes('Write'), false);
+    assert.equal(firstNames.includes('Edit'), false);
+    assert.equal(secondNames.includes('apply_patch'), false);
+    assert.equal(secondNames.includes('Write'), true);
+    assert.equal(secondNames.includes('Edit'), true);
   });
 
   test('replays a durable apply_patch failure as native provider JSON', async () => {
@@ -15988,11 +16107,15 @@ function compactPrompt(model: MockLanguageModelV4): unknown {
 }
 
 function modelToolNames(model: MockLanguageModelV4): string[] {
-  return sortedModelToolNames(Object.keys(modelTools(model)));
+  return modelToolNamesAt(model, 0);
 }
 
-function modelTools(model: MockLanguageModelV4): Record<string, unknown> {
-  const call = model.doStreamCalls[0] as unknown as Record<string, unknown> | undefined;
+function modelToolNamesAt(model: MockLanguageModelV4, callIndex: number): string[] {
+  return sortedModelToolNames(Object.keys(modelTools(model, callIndex)));
+}
+
+function modelTools(model: MockLanguageModelV4, callIndex = 0): Record<string, unknown> {
+  const call = model.doStreamCalls[callIndex] as unknown as Record<string, unknown> | undefined;
   const tools = call?.tools;
   if (!tools) return {};
   if (Array.isArray(tools)) {

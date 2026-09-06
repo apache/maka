@@ -20,7 +20,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { pathWithinRoot, samePath, trimTrailingPathSeparators } from '../absolute-path.js';
+import {
+  isNormalizedAbsolutePath,
+  pathWithinRoot,
+  samePath,
+  trimTrailingPathSeparators,
+} from '../absolute-path.js';
 import { canonicalWindowsPath } from '../windows-path.js';
 
 describe('absolute path comparison', () => {
@@ -29,6 +34,12 @@ describe('absolute path comparison', () => {
     assert.equal(pathWithinRoot('/Workspace/src', '/workspace'), false);
     assert.equal(samePath('C:\\Workspace\\Project', 'c:\\workspace\\project'), true);
     assert.equal(samePath('/Workspace/project', '/workspace/project'), false);
+  });
+
+  it('treats the POSIX root as a normalized root for containment checks', () => {
+    assert.equal(isNormalizedAbsolutePath('/'), true);
+    assert.equal(pathWithinRoot('/mnt', '/'), true);
+    assert.equal(pathWithinRoot('/', '/mnt'), false);
   });
 });
 

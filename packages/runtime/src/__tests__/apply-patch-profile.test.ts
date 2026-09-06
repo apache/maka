@@ -68,6 +68,26 @@ describe('ApplyPatch profile routing', () => {
     );
   });
 
+  test('keeps client-side file tools when persistent path denies are active', () => {
+    const tool = (name: string, providerTool?: MakaTool['providerTool']): MakaTool => ({
+      name,
+      description: name,
+      parameters: {},
+      providerTool,
+      impl: async () => undefined,
+    });
+    const routed = routeApplyPatchTools(
+      [tool('Write'), tool('Edit'), tool('apply_patch', { kind: 'openai-apply-patch' })],
+      { kind: 'openai-structured' },
+      false,
+    );
+
+    assert.deepEqual(
+      routed.map(({ name }) => name),
+      ['Write', 'Edit'],
+    );
+  });
+
   test('does not expose the dormant Codex V4A freeform target path', () => {
     assert.equal(
       resolveApplyPatchProfile(

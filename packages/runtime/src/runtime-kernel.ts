@@ -94,6 +94,7 @@ import type {
 } from './session-manager.js';
 import type { TurnShellPlan } from './shell-detect.js';
 import type { ShellRunProcessManager } from './shell-run-manager.js';
+import type { PermissionRuntimeState } from './tool-runtime.js';
 import {
   buildStatusPatch,
   buildTurnStateMessage,
@@ -271,6 +272,7 @@ export interface RuntimeKernelDeps {
   childTools?: readonly MakaTool[];
   resolveChildTools?: (sessionId: string) => Promise<ResolvedChildToolActivation>;
   shellRuns?: ShellRunProcessManager;
+  permissionRuntimeState?: PermissionRuntimeState;
   cleanupHistoryCompactArtifacts?: (input: HistoryCompactCleanupRequest) => Promise<void>;
   inspectContinuationSafety?: (sessionId: string) => Promise<RuntimeContinuationSafetyObservation>;
   safeBoundaryResumeEnabled?: boolean;
@@ -2433,6 +2435,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           sessionId,
         }),
         allowMidTurnHistoryCompaction: Boolean(this.deps.runtimeEventStore),
+        permissionRuntimeState: this.deps.permissionRuntimeState,
       });
       await this.rejectCancelledBackendActivation(backend, header, execution);
       const generation = this.createBackendGeneration(

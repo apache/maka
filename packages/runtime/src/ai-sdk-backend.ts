@@ -33,6 +33,8 @@ import type {
   BackendSendInput,
   HostedInteractionBridge,
 } from '@maka/core/backend-types';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { PermissionRules } from '@maka/core/runtime-policy';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { EffectiveOrchestration } from '@maka/core/orchestration';
@@ -73,7 +75,7 @@ import {
   type MemoryExtractionTrigger,
 } from './memory-extraction.js';
 import { modelUsesNativeOpenAiResponses, resolveModelRuntime } from './model-runtime.js';
-import { routeApplyPatchTools } from './apply-patch-profile.js';
+import { isNativeApplyPatchAllowed, type ApplyPatchProfile } from './apply-patch-profile.js';
 import { bindToolResultArchiveDecoder } from './tool-result-archive-capability.js';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
 export {
@@ -120,6 +122,12 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   readExecutionBoundary: ToolRuntimeInput['readExecutionBoundary'];
   createSandboxBoundaryRequest?: ToolRuntimeInput['createSandboxBoundaryRequest'];
   settleSandboxBoundaryRequest?: ToolRuntimeInput['settleSandboxBoundaryRequest'];
+  /** Host-owned persistent deny rules used when no live provider is supplied. */
+  permissionRules?: PermissionRules;
+  /** Reads the current Host-owned deny rules before each local tool dispatch. */
+  readPermissionRules?: ToolRuntimeInput['readPermissionRules'];
+  /** Session-scoped state retained when the Host rebuilds this backend. */
+  permissionRuntimeState?: ToolRuntimeInput['permissionRuntimeState'];
 
   // ── Process-singleton deps ─────────────────────────────────────────────
   /** Canonical-named tools available this session. */
@@ -262,6 +270,7 @@ export class AiSdkBackend implements AgentBackend {
   private readonly maxSteps: number | undefined;
   private readonly providerRetrySleep: (delayMs: number, signal: AbortSignal) => Promise<void>;
   private readonly modelAdapter: ModelAdapter;
+  private readonly applyPatchProfile: ApplyPatchProfile | null;
   private readonly messageProjection: AiSdkMessageProjection;
   private readonly providerTelemetry: ProviderRequestTelemetry;
   private readonly resolvedProviderOptions: Record<string, unknown>;
@@ -345,10 +354,11 @@ export class AiSdkBackend implements AgentBackend {
       beforeRunProviderDispatch: input.beforeRunProviderDispatch,
     });
     const runtime = resolveModelRuntime(input.connection, input.modelId);
-    const applyPatchProfile = runtime.applyPatchProfile;
+    this.applyPatchProfile = runtime.applyPatchProfile;
     this.messageProjection = new AiSdkMessageProjection({
       modelAdapter: this.modelAdapter,
-      applyPatchProfile,
+      applyPatchProfile: this.applyPatchProfile,
+      readApplyPatchProfile: () => this.currentApplyPatchProfile(),
       supportsVision: input.supportsVision,
       readAttachmentBytes: input.readAttachmentBytes,
       maxProviderImageRequestBytes: input.maxProviderImageRequestBytes,
@@ -399,14 +409,18 @@ export class AiSdkBackend implements AgentBackend {
             : {}),
         })
       : [];
-    const modelTools = routeApplyPatchTools(input.tools, applyPatchProfile);
     this.toolAvailabilityRuntime = new ToolAvailabilityRuntime(
       // The archive decoder is a runtime protocol tool, not a host binding:
       // this session's placeholders name it, so this session advertises it.
-      bindToolResultArchiveDecoder([...modelTools, ...memoryTools], input.toolResultArchive),
+      bindToolResultArchiveDecoder([...input.tools, ...memoryTools], input.toolResultArchive),
       input.toolAvailability,
       buildInvalidMakaTool(),
     );
+  }
+
+  private currentApplyPatchProfile(): ApplyPatchProfile | null {
+    const rules = this.input.readPermissionRules?.() ?? this.input.permissionRules;
+    return isNativeApplyPatchAllowed(rules) ? this.applyPatchProfile : null;
   }
 
   private memorySourceSnapshot(
@@ -448,6 +462,9 @@ export class AiSdkBackend implements AgentBackend {
       readExecutionBoundary: input.readExecutionBoundary,
       createSandboxBoundaryRequest: input.createSandboxBoundaryRequest,
       settleSandboxBoundaryRequest: input.settleSandboxBoundaryRequest,
+      permissionRules: input.permissionRules,
+      readPermissionRules: input.readPermissionRules,
+      permissionRuntimeState: input.permissionRuntimeState,
       newId: this.newId,
       now: this.now,
       getPermissionPauseTarget: () => identity.scope().watchdog,
@@ -488,6 +505,7 @@ export class AiSdkBackend implements AgentBackend {
         providerTelemetry: this.providerTelemetry,
         compaction: this.compaction,
         toolAvailabilityRuntime: this.toolAvailabilityRuntime,
+        readApplyPatchProfile: () => this.currentApplyPatchProfile(),
         codeCellAdmission: this.codeCellAdmission,
         resolvedProviderOptions: this.resolvedProviderOptions,
         session: this.turnSessionState,

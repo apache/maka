@@ -18,6 +18,7 @@
  */
 
 import type { ApplyPatchProtocol } from '@maka/core/llm-connections';
+import type { PermissionRules } from '@maka/core/runtime-policy';
 import { parseCodexV4aPatch } from './codex-v4a-patch.js';
 import type { ApplyPatchOperation } from './filesystem-executor.js';
 import type { ModelRuntimeWire } from './model-runtime.js';
@@ -29,6 +30,11 @@ export type ApplyPatchProfile = { readonly kind: 'openai-structured' };
 export interface ApplyPatchProfileRuntime {
   readonly wire: ModelRuntimeWire;
   readonly applyPatchProtocol?: ApplyPatchProtocol;
+}
+
+/** Native ApplyPatch cannot be guarded by ToolRuntime while path denies exist. */
+export function isNativeApplyPatchAllowed(rules: PermissionRules | undefined): boolean {
+  return rules === undefined || rules.denyPaths.length === 0;
 }
 
 /** Resolve the exact provider/model/wire contract; unknown combinations fail closed. */
@@ -48,10 +54,14 @@ export function resolveApplyPatchProfile(
 export function routeApplyPatchTools(
   tools: readonly MakaTool[],
   profile: ApplyPatchProfile | null,
+  nativeApplyPatchAllowed = true,
 ): MakaTool[] {
   const applyPatchTool = tools.find((tool) => tool.providerTool?.kind === 'openai-apply-patch');
   if (!applyPatchTool) return [...tools];
-  if (!profile) return tools.filter((tool) => tool !== applyPatchTool);
+  // Native Apply Patch executes at the provider, so it cannot be guarded by
+  // ToolRuntime's persistent path rules. Fall back to the client-side file
+  // tools whenever a path deny is active; those tools settle through Runtime.
+  if (!profile || !nativeApplyPatchAllowed) return tools.filter((tool) => tool !== applyPatchTool);
 
   return tools.filter((tool) => tool.name !== 'Write' && tool.name !== 'Edit');
 }

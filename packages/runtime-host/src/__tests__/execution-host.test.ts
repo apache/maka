@@ -522,6 +522,35 @@ test('two UDS Clients share one Runtime Policy authority and CAS winner', async 
   });
 });
 
+test('transports and persists permission-rule mutations through the Runtime Host protocol', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    try {
+      const initial = await client.request('runtime.policy.query', {});
+      const committed = await client.request('runtime.policy.mutate', {
+        expectedRevision: initial.revision,
+        operation: {
+          kind: 'set_permission_rules',
+          value: {
+            denyCommands: ['git commit *'],
+            denyPaths: [{ path: '/mnt', scope: 'subtree' }],
+          },
+        },
+      });
+      assert.deepEqual(committed, { kind: 'committed', revision: initial.revision + 1 });
+      const queried = await client.request('runtime.policy.query', {});
+      assert.deepEqual(queried.policy.permissionRules, {
+        denyCommands: ['git commit *'],
+        denyPaths: [{ path: '/mnt', scope: 'subtree' }],
+      });
+    } finally {
+      await client.close();
+      await fixture.stopHost(host);
+    }
+  });
+});
+
 test('two UDS Clients serialize same-provider account creation through one Host lane', async () => {
   const provider = await startConnectionEffectProvider({ responseDelayMs: 50 });
   try {

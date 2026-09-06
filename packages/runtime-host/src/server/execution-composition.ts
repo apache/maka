@@ -26,6 +26,7 @@ import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { emptyPlanSessionState } from '@maka/core/plan';
 import type { PermissionMode } from '@maka/core/permission';
+import { EMPTY_PERMISSION_RULES, type PermissionRules } from '@maka/core/runtime-policy';
 import {
   runtimeInvocationOutcome,
   type RuntimeInvocationRecord,
@@ -264,6 +265,11 @@ export async function createExecutionRuntimeHostComposition(
     );
   }
   const stores = storage.execution;
+  let currentPermissionRules: PermissionRules = EMPTY_PERMISSION_RULES;
+  const readPermissionRules = (): PermissionRules => currentPermissionRules;
+  const updatePermissionRules = (rules: PermissionRules): void => {
+    currentPermissionRules = rules;
+  };
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
   let sessionEffects: HostSessionEffectCoordinator | undefined;
@@ -768,6 +774,8 @@ export async function createExecutionRuntimeHostComposition(
       ),
       runtimeCommitSink: stores.runtimeEventStore,
       requestDrain: context.requestDrain,
+      readPermissionRules,
+      updatePermissionRules,
     });
     backends.register(
       'ai-sdk',
@@ -1327,6 +1335,8 @@ export async function createExecutionRuntimeHostComposition(
     });
     async function applyRuntimePolicyMutationEffects(): Promise<void> {
       try {
+        const snapshot = await runtimePolicyStores.runtimePolicy.getSnapshot();
+        updatePermissionRules(snapshot.policy.permissionRules);
         await requireMemory(memory).refreshAfterPolicyMutation();
       } catch (error) {
         context.requestDrain();

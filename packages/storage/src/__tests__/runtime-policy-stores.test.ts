@@ -65,7 +65,11 @@ const execFileAsync = promisify(execFile);
 describe('runtime policy stores', () => {
   test('upgrades schema v2 with the automatic Host shell default', async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
-      const { shell: _shell, ...policyV2 } = createDefaultRuntimePolicy();
+      const {
+        shell: _shell,
+        permissionRules: _permissionRules,
+        ...policyV2
+      } = createDefaultRuntimePolicy();
       await writeFile(
         join(root, 'runtime-policy.json'),
         `${JSON.stringify({ schemaVersion: 2, revision: 4, policy: policyV2 })}\n`,
@@ -82,7 +86,41 @@ describe('runtime policy stores', () => {
       const persisted = JSON.parse(await readFile(join(root, 'runtime-policy.json'), 'utf8')) as {
         schemaVersion: number;
       };
-      assert.equal(persisted.schemaVersion, 3);
+      assert.equal(persisted.schemaVersion, 4);
+    });
+  });
+
+  test('upgrades schema v3 with empty persistent permission rules', async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const { permissionRules: _permissionRules, ...policyV3 } = createDefaultRuntimePolicy();
+      await writeFile(
+        join(root, 'runtime-policy.json'),
+        `${JSON.stringify({ schemaVersion: 3, revision: 7, policy: policyV3 })}\n`,
+      );
+
+      const snapshot = await stores.runtimePolicy.getSnapshot();
+      assert.equal(snapshot.revision, 7);
+      assert.deepEqual(snapshot.policy.permissionRules, { denyCommands: [], denyPaths: [] });
+      const committed = await stores.runtimePolicy.mutate({
+        expectedRevision: 7,
+        operation: {
+          kind: 'set_permission_rules',
+          value: {
+            denyCommands: ['git push *'],
+            denyPaths: [{ path: '/etc/wsl.conf', scope: 'exact' }],
+          },
+        },
+      });
+      assert.equal(committed.kind, 'committed');
+      const persisted = JSON.parse(await readFile(join(root, 'runtime-policy.json'), 'utf8')) as {
+        schemaVersion: number;
+        policy: { permissionRules: unknown };
+      };
+      assert.equal(persisted.schemaVersion, 4);
+      assert.deepEqual(persisted.policy.permissionRules, {
+        denyCommands: ['git push *'],
+        denyPaths: [{ path: '/etc/wsl.conf', scope: 'exact' }],
+      });
     });
   });
 
