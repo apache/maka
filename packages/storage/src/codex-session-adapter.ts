@@ -131,24 +131,12 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
 
     const rolloutPath = await this.resolveRolloutPath(catalogEntry.rolloutPath, sessionId);
     if (!rolloutPath) throw new Error(`Codex rollout is unavailable: ${sessionId}`);
-    const converted = await convertCodexRollout(
-      rolloutPath,
-      sessionId,
-      catalogEntry.name,
-      catalogEntry.cwd,
-      {
-        maxRolloutBytes: this.maxRolloutBytes,
-        maxRecordBytes: this.maxRecordBytes,
-        maxConvertedBytes: this.maxConvertedBytes,
-        maxMessages: this.maxMessages,
-      },
-    );
-
-    return {
-      sourceSessionId: sessionId,
-      metadata: converted.metadata,
-      messages: converted.messages,
-    };
+    return convertCodexRollout(rolloutPath, sessionId, catalogEntry.name, catalogEntry.cwd, {
+      maxRolloutBytes: this.maxRolloutBytes,
+      maxRecordBytes: this.maxRecordBytes,
+      maxConvertedBytes: this.maxConvertedBytes,
+      maxMessages: this.maxMessages,
+    });
   }
 
   private async listCatalog(query: ExternalSessionQuery): Promise<CodexCatalogEntry[]> {
@@ -631,45 +619,50 @@ async function* readCodexRolloutRecords(
     const snapshotBytes = metadata.size;
     const pending: Buffer[] = [];
     let pendingBytes = 0;
-    let position = 0;
+    let observedBytes = 0;
     let line = 0;
-    while (position < snapshotBytes) {
-      const buffer = Buffer.allocUnsafe(
-        Math.min(CODEX_ROLLOUT_READ_BYTES, snapshotBytes - position),
-      );
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
-      if (bytesRead === 0) {
-        throw new Error('Codex rollout changed while being read');
-      }
-      position += bytesRead;
-      const chunk = buffer.subarray(0, bytesRead);
-      let start = 0;
-      for (;;) {
-        const newline = chunk.indexOf(0x0a, start);
-        if (newline === -1) break;
-        const segment = chunk.subarray(start, newline);
-        assertCodexRecordSize(pendingBytes + segment.byteLength, limits.maxRecordBytes, line + 1);
-        line += 1;
-        const record = parseCodexRolloutLine(
-          pending.length === 0
-            ? segment
-            : Buffer.concat([...pending, segment], pendingBytes + segment.byteLength),
-          sessionId,
-          line,
-          false,
-        );
-        if (record) yield record;
-        pending.length = 0;
-        pendingBytes = 0;
-        start = newline + 1;
-      }
-      if (start < chunk.byteLength) {
-        const segment = chunk.subarray(start);
-        assertCodexRecordSize(pendingBytes + segment.byteLength, limits.maxRecordBytes, line + 1);
-        pending.push(segment);
-        pendingBytes += segment.byteLength;
+    if (snapshotBytes > 0) {
+      for await (const value of handle.createReadStream({
+        autoClose: false,
+        emitClose: false,
+        start: 0,
+        end: snapshotBytes - 1,
+        highWaterMark: CODEX_ROLLOUT_READ_BYTES,
+      })) {
+        const chunk = Buffer.from(value);
+        observedBytes += chunk.byteLength;
+        if (observedBytes > snapshotBytes) {
+          throw new Error('Codex rollout changed while being read');
+        }
+        let start = 0;
+        for (;;) {
+          const newline = chunk.indexOf(0x0a, start);
+          if (newline === -1) break;
+          const segment = chunk.subarray(start, newline);
+          assertCodexRecordSize(pendingBytes + segment.byteLength, limits.maxRecordBytes, line + 1);
+          line += 1;
+          const record = parseCodexRolloutLine(
+            pending.length === 0
+              ? segment
+              : Buffer.concat([...pending, segment], pendingBytes + segment.byteLength),
+            sessionId,
+            line,
+            false,
+          );
+          if (record) yield record;
+          pending.length = 0;
+          pendingBytes = 0;
+          start = newline + 1;
+        }
+        if (start < chunk.byteLength) {
+          const segment = chunk.subarray(start);
+          assertCodexRecordSize(pendingBytes + segment.byteLength, limits.maxRecordBytes, line + 1);
+          pending.push(segment);
+          pendingBytes += segment.byteLength;
+        }
       }
     }
+    if (observedBytes !== snapshotBytes) throw new Error('Codex rollout changed while being read');
 
     if (pendingBytes > 0) {
       line += 1;
