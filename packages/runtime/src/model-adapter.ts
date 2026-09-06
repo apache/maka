@@ -124,7 +124,7 @@ export interface ModelAdapterStreamInput {
   messages: ModelMessage[];
   tools: ModelToolSet;
   activeTools: string[];
-  /** Observe each successfully pulled SDK stream part before semantic translation. */
+  /** Observe SDK activity, excluding insignificant JSON tool-argument whitespace. */
   onStreamActivity: () => void;
   system?: string;
   abortSignal: AbortSignal;
@@ -385,9 +385,34 @@ export class ModelAdapter {
         let streamedFinishReason: string | undefined;
         let streamedRawFinishReason: string | undefined;
         let sawUnfinalizedPlaintextSummary = false;
+        const toolInputStates = new Map<unknown, { inString: boolean; escapeNext: boolean }>();
         try {
           for await (const chunk of sdk.stream as AsyncIterable<AiSdkStreamChunk>) {
-            onStreamActivity();
+            let hasActivity = true;
+            if (chunk.type === 'tool-input-start') {
+              toolInputStates.set(chunk.id, { inString: false, escapeNext: false });
+            } else if (chunk.type === 'tool-input-end') {
+              toolInputStates.delete(chunk.id);
+            } else if (chunk.type === 'tool-input-delta') {
+              const state = toolInputStates.get(chunk.id);
+              if (state) {
+                hasActivity = false;
+                // JSON permits only these four whitespace characters outside
+                // strings. Preserve string/escape state across delta boundaries.
+                for (const char of chunk.delta ?? '') {
+                  if (state.inString) {
+                    hasActivity = true;
+                    if (state.escapeNext) state.escapeNext = false;
+                    else if (char === '\\') state.escapeNext = true;
+                    else if (char === '"') state.inString = false;
+                  } else if (char !== ' ' && char !== '\n' && char !== '\r' && char !== '\t') {
+                    hasActivity = true;
+                    if (char === '"') state.inString = true;
+                  }
+                }
+              }
+            }
+            if (hasActivity) onStreamActivity();
             if (
               chunk.type === 'finish' ||
               chunk.type === 'finish-step' ||
