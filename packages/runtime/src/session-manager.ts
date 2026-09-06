@@ -153,7 +153,7 @@ import {
   type RuntimeReadModelSessionView,
 } from './runtime-read-model.js';
 import { inspectAgentRunReadModel, type AgentRunInspectModel } from './agent-run-inspect.js';
-import { RuntimeLedgerRepair } from './runtime-ledger-repair.js';
+import { isTranscriptLedgerInvocation, RuntimeLedgerRepair } from './runtime-ledger-repair.js';
 import {
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
@@ -903,7 +903,6 @@ export class SessionManager {
       this.runtimeLedgerRepair = new RuntimeLedgerRepair({
         runtimeEventStore: deps.runtimeEventStore,
         readMessages: (sessionId) => deps.store.readMessages(sessionId),
-        now: deps.now,
       });
     }
     this.runtimeKernel = deps.runtimeKernel ?? new RuntimeKernel({ ...deps });
@@ -4383,7 +4382,11 @@ export class SessionManager {
   ): Promise<{ hasLedger: boolean; recovered: boolean }> {
     if (!this.deps.runStore || !this.deps.runtimeEventStore)
       return { hasLedger: false, recovered: false };
-    const runs = await this.listInvocations(sessionId);
+    // The importer may have committed only a prefix before a restart. Sealing
+    // that prefix here would make the next read skip the unconverted history.
+    const runs = (await this.listInvocations(sessionId)).filter(
+      (run) => !isTranscriptLedgerInvocation(run),
+    );
     if (runs.length === 0) return { hasLedger: false, recovered: false };
     const continuationAuthority = runtimeContinuationAuthority(this.deps.runtimeEventStore);
     const claimOwnedUnsettledRunIds = new Set<string>();

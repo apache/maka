@@ -39,7 +39,6 @@ export interface RuntimeLedgerRepairDeps {
   runtimeEventStore: RuntimeEventStore;
   /** The legacy transcript this converter reads; nothing writes back to it. */
   readMessages(sessionId: string): Promise<StoredMessage[]>;
-  now: () => number;
 }
 
 export class RuntimeLedgerRepair {
@@ -107,7 +106,9 @@ export class RuntimeLedgerRepair {
             // whole: its tool calls are the ones it would replay.
             modelHistory: header.externalOrigin ? 'conversation_text' : 'full',
             newId: transcriptEventIds(runId),
-            now: this.deps.now,
+            // The payload must be as repeatable as its id: SQLite dedupes
+            // complete events, including the backfill provenance timestamps.
+            now: () => openedAt,
           }).events,
         ];
         for (const event of events) {
@@ -139,6 +140,13 @@ export class RuntimeLedgerRepair {
       }
     }
   }
+}
+
+/** Synthetic conversion runs belong to the importer, never execution recovery. */
+export function isTranscriptLedgerInvocation(
+  invocation: Pick<RuntimeInvocationRecord, 'sessionId' | 'turnId' | 'runId'>,
+): boolean {
+  return invocation.runId === transcriptRunId(invocation.sessionId, invocation.turnId);
 }
 
 function transcriptRunId(sessionId: string, turnId: string): string {
