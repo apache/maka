@@ -275,9 +275,11 @@ jobs:
         if: steps.plan.outputs.code == 'true'
         run: npx knip --workspace packages/ui
 
+      # No config hints: a filtered run judges every ignore* entry unused and
+      # tells you to delete it. An unfiltered run emits none of those hints.
       - name: Knip (unlisted dependencies, all workspaces)
         if: steps.plan.outputs.code == 'true'
-        run: npx knip --include unlisted
+        run: npx knip --include unlisted --no-config-hints
 
       - name: Linux sandbox smoke
         if: steps.plan.outputs.runtime_sandbox == 'true'
