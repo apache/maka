@@ -512,9 +512,9 @@ describe('HostInteractionCoordinator', () => {
         await binding.close('turn_terminal');
         binding.release();
         let closeSettled = false;
-          const closing = coordinator.close().then(() => {
-            closeSettled = true;
-          });
+        const closing = coordinator.close().then(() => {
+          closeSettled = true;
+        });
         await new Promise<void>((resolve) => setImmediate(resolve));
         assert.equal(closeSettled, false, 'close must wait for detached graph wake notification');
         releaseWake.resolve();
