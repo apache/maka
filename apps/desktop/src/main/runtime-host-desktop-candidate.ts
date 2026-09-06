@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import type { IpcMain } from "electron";
 import type { ActiveInteractionRequestEvent } from '@maka/core/events';
 import { redactSecrets } from '@maka/core/redaction';
@@ -344,6 +345,10 @@ export async function startDesktopRuntimeHostCandidate(
   if (connection.kind !== "connected") return connection;
   observeLocalRuntimeHostProcess(connection.spawnedProcess);
   try {
+    // A resident managed Host can speak this protocol while still using an
+    // older storage schema. Validate the shared local database before exposing
+    // any candidate services, so startup recovery can update its owning Host.
+    acquireOperationalStateDatabase(input.rootPath, { schemaMigration: 'require_current' }).close();
     return {
       kind: "ready",
       candidate: await createDesktopRuntimeHostCandidate(
