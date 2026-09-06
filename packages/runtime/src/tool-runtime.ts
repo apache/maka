@@ -146,6 +146,13 @@ import {
 import { realpathAllowMissing } from './path-containment.js';
 
 const MAX_PENDING_PTY_COMMAND_INPUT_CHARS = 64 * 1024;
+const MAX_PERMISSION_PATH_CANDIDATES = 128;
+
+interface ResolvedPermissionRules {
+  readonly rules: PermissionRules;
+  /** Original configured spellings, aligned with rules.denyPaths. */
+  readonly displayPaths: readonly string[];
+}
 
 export interface ResolvedMakaToolCall {
   tool: MakaTool;
@@ -3332,18 +3339,24 @@ export class ToolRuntime {
   ): Promise<string | undefined> {
     const configuredRules = this.input.readPermissionRules?.() ?? this.input.permissionRules;
     if (!configuredRules) return undefined;
-    const rules = permissionRulesForCurrentHost(configuredRules);
-    const matcher = compilePermissionRules(rules);
+    let resolvedRules: ResolvedPermissionRules;
+    try {
+      resolvedRules = await this.resolvePermissionRules(configuredRules);
+    } catch {
+      return `${tool.name} was denied by a persistent permission rule because its paths could not be verified safely.`;
+    }
+    const { rules } = resolvedRules;
 
     if (tool.name === 'Bash' && isRecord(args) && typeof args.command === 'string') {
-      const match = matcher.match({ command: args.command });
-      if (match?.kind === 'command') {
-        return `Tool Bash was denied by a persistent permission rule matching ${JSON.stringify(match.pattern)}.`;
+      const match = matchPermissionCommandFragments(rules, args.command);
+      if (match !== undefined) {
+        return `Tool Bash was denied by a persistent permission rule matching ${JSON.stringify(match)}.`;
       }
       const pathDenial = await this.findPersistentPathDenial(
         tool.name,
         commandPathCandidates(args.command),
         rules,
+        resolvedRules.displayPaths,
       );
       if (pathDenial !== undefined) return pathDenial;
     }
@@ -3364,6 +3377,7 @@ export class ToolRuntime {
           tool.name,
           commandPathCandidates(`${prior}${input.text}`),
           rules,
+          resolvedRules.displayPaths,
         );
         if (pathDenial !== undefined) return pathDenial;
         if (inspection.pending.length > MAX_PENDING_PTY_COMMAND_INPUT_CHARS) {
@@ -3379,7 +3393,12 @@ export class ToolRuntime {
 
     const paths = permissionPathsForTool(tool.name, args, this.input.header.cwd);
     if (paths.length === 0) return undefined;
-    const pathDenial = await this.findPersistentPathDenial(tool.name, paths, rules);
+    const pathDenial = await this.findPersistentPathDenial(
+      tool.name,
+      paths,
+      rules,
+      resolvedRules.displayPaths,
+    );
     if (pathDenial !== undefined) return pathDenial;
     if (rules.denyPaths.length === 0) return undefined;
     if (tool.name === 'Glob' || tool.name === 'Grep') {
@@ -3396,7 +3415,7 @@ export class ToolRuntime {
             permissionPathWithinRoot(canonicalRoot, rule.path) ||
             permissionPathWithinRoot(rule.path, canonicalRoot)
           ) {
-            return `${tool.name} was denied by a persistent permission rule because its search scope includes ${rule.scope} path ${JSON.stringify(rule.path)}.`;
+            return `${tool.name} was denied by a persistent permission rule because its search scope includes ${rule.scope} path ${JSON.stringify(resolvedRules.displayPaths[rules.denyPaths.indexOf(rule)] ?? rule.path)}.`;
           }
         }
       }
@@ -3408,22 +3427,52 @@ export class ToolRuntime {
     toolName: string,
     paths: readonly string[],
     rules: PermissionRules,
+    displayPaths: readonly string[],
   ): Promise<string | undefined> {
     if (rules.denyPaths.length === 0) return undefined;
+    const candidates = [...new Set(paths)].filter((path) => path.length > 0);
+    if (candidates.length > MAX_PERMISSION_PATH_CANDIDATES) {
+      return `${toolName} was denied by a persistent permission rule because too many paths were supplied to verify safely.`;
+    }
     const matcher = compilePermissionRules(rules);
-    for (const path of paths) {
-      let canonicalPath: string;
-      try {
-        canonicalPath = await this.resolvePermissionPath(path);
-      } catch {
-        return `${toolName} was denied by a persistent permission rule because its path could not be verified safely.`;
-      }
+    let canonicalPaths: string[];
+    try {
+      canonicalPaths = await Promise.all(
+        candidates.map((path) => this.resolvePermissionPath(path)),
+      );
+    } catch {
+      return `${toolName} was denied by a persistent permission rule because its path could not be verified safely.`;
+    }
+    for (const canonicalPath of canonicalPaths) {
       const match = matcher.match({ path: canonicalPath });
       if (match?.kind === 'path') {
-        return `${toolName} was denied by a persistent permission rule for ${match.rule.scope} path ${JSON.stringify(match.rule.path)}.`;
+        const index = rules.denyPaths.indexOf(match.rule);
+        return `${toolName} was denied by a persistent permission rule for ${match.rule.scope} path ${JSON.stringify(displayPaths[index] ?? match.rule.path)}.`;
       }
     }
     return undefined;
+  }
+
+  private async resolvePermissionRules(rules: PermissionRules): Promise<ResolvedPermissionRules> {
+    const hostRules = permissionRulesForCurrentHost(rules);
+    if (hostRules.denyPaths.length === 0) {
+      return { rules: hostRules, displayPaths: hostRules.denyPaths.map((rule) => rule.path) };
+    }
+    const displayPaths = hostRules.denyPaths.map(
+      (_rule, index) => rules.denyPaths[index]?.path ?? hostRules.denyPaths[index]!.path,
+    );
+    const denyPaths = await Promise.all(
+      hostRules.denyPaths.map(async (rule) =>
+        Object.freeze({ ...rule, path: await this.resolvePermissionPath(rule.path) }),
+      ),
+    );
+    return {
+      rules: Object.freeze({
+        denyCommands: hostRules.denyCommands,
+        denyPaths: Object.freeze(denyPaths),
+      }),
+      displayPaths,
+    };
   }
 
   private async resolvePermissionPath(path: string): Promise<string> {
@@ -3610,10 +3659,38 @@ function matchPermissionCommandFragments(
   rules: PermissionRules,
   input: string,
 ): string | undefined {
-  const value = input.trim();
-  if (value.length === 0) return undefined;
+  // This deliberately remains a fragment splitter, not a shell parser. Bash
+  // and PTY enforcement must agree on the conservative command boundaries,
+  // while expansion, substitution, and other shell grammar stay outside this
+  // matcher’s contract.
+  // PTY calls this helper after every keystroke. Its pending buffer has
+  // already removed separators, so keep that hot path linear in the current
+  // fragment instead of rescanning and splitting the whole buffer each time.
+  const fragments = /[\r\n;|&]/.test(input) ? input.split(/[\r\n;|&]/) : [input];
+  for (const fragment of fragments) {
+    const value = fragment.trim();
+    if (value.length === 0) continue;
+    const match = matchPermissionCommandValue(rules, value);
+    if (match !== undefined) return match;
+  }
+  return undefined;
+}
+
+function matchPermissionCommandValue(rules: PermissionRules, value: string): string | undefined {
   const match = matchPermissionRules(rules, { command: value });
-  return match?.kind === 'command' ? match.pattern : undefined;
+  if (match?.kind === 'command') return match.pattern;
+
+  // A rule normally names the executable (`git push *`), while a shell may
+  // invoke it through an absolute path (`/usr/bin/git push ...`). Match one
+  // basename-normalized variant without attempting to interpret shell syntax.
+  const executableMatch = /^(?:"([^"]*)"|'([^']*)'|([^\s;|&]+))/.exec(value);
+  const executable = executableMatch?.[1] ?? executableMatch?.[2] ?? executableMatch?.[3];
+  if (!executable || !/[\\/]/.test(executable)) return undefined;
+  const basename = executable.replace(/^.*[\\/]/, '');
+  if (basename.length === 0 || basename === executable) return undefined;
+  const basenameVariant = `${basename}${value.slice(executableMatch![0].length)}`;
+  const basenameMatch = matchPermissionRules(rules, { command: basenameVariant });
+  return basenameMatch?.kind === 'command' ? basenameMatch.pattern : undefined;
 }
 
 function globPatternBase(pattern: string): string {

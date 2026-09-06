@@ -63,6 +63,7 @@ import { toolResultOutput } from './tool-result-output.js';
 export interface AiSdkMessageProjectionInput {
   modelAdapter: ModelAdapter;
   applyPatchProfile: ApplyPatchProfile | null;
+  readApplyPatchProfile?: () => ApplyPatchProfile | null;
   supportsVision?: boolean;
   readAttachmentBytes?: AttachmentByteReader;
   maxProviderImageRequestBytes?: number;
@@ -144,6 +145,12 @@ export class AiSdkMessageProjection {
   private readonly memoryReplayMessageEvents = new WeakMap<ModelMessage, readonly string[]>();
 
   constructor(private readonly input: AiSdkMessageProjectionInput) {}
+
+  private currentApplyPatchProfile(): ApplyPatchProfile | null {
+    return this.input.readApplyPatchProfile
+      ? this.input.readApplyPatchProfile()
+      : this.input.applyPatchProfile;
+  }
 
   canReplayProviderNative(plan: RuntimeEventModelReplayPlan): boolean {
     const support = this.input.modelAdapter.runtimeEventReplaySupport();
@@ -485,7 +492,7 @@ export class AiSdkMessageProjection {
           continue;
         }
         const replayInput = normalizeApplyPatchReplayInput(
-          this.input.applyPatchProfile,
+          this.currentApplyPatchProfile(),
           call.toolCallId,
           call.input,
         );

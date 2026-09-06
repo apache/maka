@@ -74,6 +74,30 @@ test('reuses the compiled matcher for one immutable permission-rule snapshot', (
   assert.equal(first.match({ path: '/mnt/worktree/file.txt' })?.kind, 'path');
 });
 
+test('accepts Unicode command patterns and rejects unsupported character classes', () => {
+  const rules = normalizePermissionRules({
+    denyCommands: ['运行脚本 *'],
+    denyPaths: [],
+  });
+  assert.equal(matchPermissionRules(rules, { command: '运行脚本 部署' })?.kind, 'command');
+  assert.throws(
+    () =>
+      normalizePermissionRules({
+        denyCommands: ['git push [a-z]'],
+        denyPaths: [],
+      }),
+    /only supports \* and \?/i,
+  );
+  assert.throws(
+    () =>
+      normalizePermissionRules({
+        denyCommands: ['git\u0007push'],
+        denyPaths: [],
+      }),
+    /control characters/i,
+  );
+});
+
 test('normalizes permission-rule mutations and rejects unsafe path rules', () => {
   const mutation = normalizeRuntimePolicyMutation({
     expectedRevision: 0,

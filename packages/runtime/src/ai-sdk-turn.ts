@@ -154,6 +154,7 @@ import { renderSwarmModePrompt } from './swarm-mode.js';
 import { renderGraphModePrompt } from './graph-mode.js';
 import type { MemoryExtractionSourceSnapshot } from './memory-extraction.js';
 import { modelUsesNativeOpenAiResponses } from './model-runtime.js';
+import { routeApplyPatchTools, type ApplyPatchProfile } from './apply-patch-profile.js';
 import {
   applyRuntimeEventContextBudget,
   buildContextBudgetDiagnosticShell,
@@ -191,6 +192,7 @@ export interface AiSdkTurnDependencies {
   providerTelemetry: ProviderRequestTelemetry;
   compaction: AiSdkCompaction;
   toolAvailabilityRuntime: ToolAvailabilityRuntime;
+  readApplyPatchProfile: () => ApplyPatchProfile | null;
   codeCellAdmission: AdmissionLimiter;
   resolvedProviderOptions: Record<string, unknown>;
   session: AiSdkSessionState;
@@ -453,6 +455,30 @@ function projectToolModePlan(
             baseChars + (diagnostic.toolSchemaCharReduction ?? 0)) + execSchemaChars,
       };
     },
+  };
+}
+
+/** Re-project the provider tool surface when the Host changes live path rules. */
+function routeApplyPatchToolPlan(
+  plan: ToolAvailabilityPlan,
+  profile: ApplyPatchProfile | null,
+): ToolAvailabilityPlan {
+  const providerTools = routeApplyPatchTools(plan.providerTools, profile);
+  const visibleNames = new Set(providerTools.map((tool) => tool.name));
+  const filterNames = (names: readonly string[]): string[] =>
+    names.filter((name) => visibleNames.has(name));
+  return {
+    ...plan,
+    providerTools,
+    activeTools: filterNames(plan.activeTools),
+    ...(plan.projectActiveTools
+      ? {
+          projectActiveTools: (options) => ({
+            activeTools: filterNames(plan.projectActiveTools!(options).activeTools),
+          }),
+        }
+      : {}),
+    currentRepairToolNames: () => filterNames(plan.currentRepairToolNames()),
   };
 }
 
@@ -1098,7 +1124,6 @@ export class AiSdkTurn {
       toolMode,
       codeModeExecTool,
     );
-    const providerTools = plan.providerTools;
     let activeToolResultPruneDiagnosticPatch: ActiveToolResultPruneDiagnosticPatch = {};
     let midTurnCompactDiagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined;
     // Tool names the repair path matches a mis-cased call against — follows the
@@ -1110,20 +1135,12 @@ export class AiSdkTurn {
         ? names.filter((name) => name !== REQUEST_SANDBOX_BOUNDARY_TOOL_NAME)
         : [...names];
     };
-    const currentRepairToolNames = () => boundaryAwareToolNames(plan.currentRepairToolNames());
+    const currentRepairToolNames = () =>
+      boundaryAwareToolNames(
+        routeApplyPatchToolPlan(plan, this.deps.readApplyPatchProfile()).currentRepairToolNames(),
+      );
     if (plan.gating) {
       toolRuntime.setGating(plan.gating);
-    }
-
-    const modelTools: ModelToolSet = {};
-    for (const t of providerTools) {
-      modelTools[t.name] = t.providerTool
-        ? { kind: 'provider', providerTool: t.providerTool }
-        : {
-            kind: 'function',
-            description: t.description,
-            inputSchema: t.parameters,
-          };
     }
 
     // Resolve the stable Provider envelope before automatic Compaction freezes
@@ -1264,7 +1281,11 @@ export class AiSdkTurn {
           this.watchdog = next;
           next.start();
         };
-        const activeTools = plan.activeTools;
+        const initialProviderPlan = routeApplyPatchToolPlan(
+          plan,
+          this.deps.readApplyPatchProfile(),
+        );
+        const activeTools = initialProviderPlan.activeTools;
         const currentUserContent = input.continuation
           ? undefined
           : await this.deps.messageProjection.buildCurrentUserContent(
@@ -1362,8 +1383,9 @@ export class AiSdkTurn {
         // terminal trace is refined against the final active set below.
         contextBudgetForTelemetry = priorReplay.contextBudget;
         const computeToolAvailability = (active: readonly string[]) => {
-          const toolSchemaChars = toolSchemaCharsForDiagnostics(providerTools, active);
-          return plan.diagnostics(active, toolSchemaChars);
+          const providerPlan = routeApplyPatchToolPlan(plan, this.deps.readApplyPatchProfile());
+          const toolSchemaChars = toolSchemaCharsForDiagnostics(providerPlan.providerTools, active);
+          return providerPlan.diagnostics(active, toolSchemaChars);
         };
         toolAvailabilityForTelemetry = computeToolAvailability(activeTools);
         trace.modelStreamStarted(activeTools, {
@@ -1383,7 +1405,7 @@ export class AiSdkTurn {
           turnId,
           midTurnState,
           queue,
-          providerTools,
+          initialProviderPlan.providerTools,
           onMidTurnDiagnosticPatch,
           this,
           this.automaticMemoryCompactionSupported()
@@ -1409,7 +1431,12 @@ export class AiSdkTurn {
           },
         );
         const shapedProjection = composeRequestProjection(
-          plan.projectActiveTools,
+          plan.projectActiveTools
+            ? (context) => ({
+                activeTools: routeApplyPatchToolPlan(plan, this.deps.readApplyPatchProfile())
+                  .projectActiveTools!(context).activeTools,
+              })
+            : undefined,
           midTurnCapacityHook,
           activeToolResultPruneHook,
         );
@@ -1458,6 +1485,19 @@ export class AiSdkTurn {
           if (sandboxBoundaryFinalizationStep) {
             toolRuntime.forceSandboxBoundaryFinalization();
           }
+          const providerPlan = routeApplyPatchToolPlan(plan, this.deps.readApplyPatchProfile());
+          const providerTools = providerPlan.providerTools;
+          const modelTools: ModelToolSet = {};
+          for (const t of providerTools) {
+            modelTools[t.name] = t.providerTool
+              ? { kind: 'provider', providerTool: t.providerTool }
+              : {
+                  kind: 'function',
+                  description: t.description,
+                  inputSchema: t.parameters,
+                };
+          }
+          const providerToolNames = new Set(providerTools.map((tool) => tool.name));
           const requestSystemPrompt = joinPromptFragments([
             systemPrompt,
             finalChildSummaryStep ? CHILD_STEP_BUDGET_FINALIZATION_PROMPT : undefined,
@@ -1471,7 +1511,11 @@ export class AiSdkTurn {
             activeTools:
               finalChildSummaryStep || sandboxBoundaryFinalizationStep
                 ? []
-                : boundaryAwareToolNames(active ?? plan.currentRepairToolNames()),
+                : boundaryAwareToolNames(
+                    (active ?? providerPlan.currentRepairToolNames()).filter((name) =>
+                      providerToolNames.has(name),
+                    ),
+                  ),
           });
           const shaped = requestProjection
             ? await requestProjection({

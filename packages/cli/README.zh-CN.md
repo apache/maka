@@ -108,9 +108,14 @@ maka permissions list
 ```
 
 删除规则时，使用相同值和 scope 的 `remove-command` 或 `remove-path`。路径必须是绝对路径；
-命令模式使用 glob 匹配（`*` 和 `?`），不是正则表达式。没有匹配规则的操作继续遵循当前
-Session 的 permission mode 和 sandbox。要管理其他本地或远程 Runtime Host，可传入
-`--root <path>`，并在需要时传入 `--host <profile-id>`。
+命令模式使用分片级 glob 匹配（`*` 和 `?`），不是正则表达式；不支持字符类，但支持 Unicode
+命令文本。Bash 和 PTY 输入会在换行及 `;|&` 处分片；这不是完整的 shell parser，因此展开和
+命令替换不在规则保证范围内。文件系统规则会使用 Runtime Host 实际文件系统的语义进行
+canonicalize，包括 macOS 的大小写敏感性和符号链接。存在路径拒绝规则时，provider-side 的
+原生 `apply_patch` 会隐藏；已有 backend 会在下一次 provider 请求前刷新该路由。MCP 任意工具
+参数不会被当作文件系统路径提取，MCP server 需要自行执行路径权限控制。没有匹配规则的操作
+继续遵循当前 Session 的 permission mode 和 sandbox。要管理其他本地或远程 Runtime Host，
+可传入 `--root <path>`，并在需要时传入 `--host <profile-id>`。
 
 ## 升级
 

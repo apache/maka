@@ -115,7 +115,14 @@ maka permissions list
 ```
 
 Use `remove-command` or `remove-path` with the same value and scope to remove a rule. Paths must be
-absolute. Command patterns use glob matching (`*` and `?`), not regular expressions. Unmatched
+absolute. Command patterns use fragment-level glob matching (`*` and `?`), not regular expressions;
+character classes are not supported, and Unicode command text is allowed. Bash and PTY input are
+split conservatively at newlines and `;|&`; this is not a full shell parser, so expansion and command
+substitution are outside the rule's guarantee. Filesystem rules are canonicalized using the Runtime
+Host's actual filesystem semantics, including macOS case sensitivity and symlinks. A native
+provider-side `apply_patch` is hidden whenever path denies are active, and an existing backend
+refreshes that routing before the next provider request. Arbitrary MCP tool arguments are not
+treated as filesystem paths; MCP servers must enforce their own path permissions. Unmatched
 operations continue to use the Session permission mode and sandbox. To manage a different local or
 remote Runtime Host, pass `--root <path>` and, where applicable, `--host <profile-id>`.
 

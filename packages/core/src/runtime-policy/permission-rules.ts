@@ -162,9 +162,14 @@ function normalizeCommandPattern(value: unknown, index: number): string {
   if (pattern.length === 0) {
     throw domainError(`permission rules denyCommands[${index}] must not be empty`);
   }
-  if (/[^\x20-\x7e]/.test(pattern)) {
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(pattern)) {
     throw domainError(
-      `permission rules denyCommands[${index}] must contain printable characters only`,
+      `permission rules denyCommands[${index}] must not contain control characters`,
+    );
+  }
+  if (pattern.includes('[')) {
+    throw domainError(
+      `permission rules denyCommands[${index}] only supports * and ? glob wildcards`,
     );
   }
   return pattern;
@@ -204,17 +209,6 @@ function compileGlob(pattern: string): RegExp {
       source += '[\\s\\S]*';
     } else if (character === '?') {
       source += '[\\s\\S]';
-    } else if (character === '[') {
-      const close = pattern.indexOf(']', index + 1);
-      if (close > index + 1) {
-        const body = pattern.slice(index + 1, close);
-        if (/^[^\\\]]+$/.test(body)) {
-          source += `[${body.replace(/[-^]/g, '\\$&')}]`;
-          index = close;
-          continue;
-        }
-      }
-      source += '\\[';
     } else {
       source += escapeRegExp(character);
     }

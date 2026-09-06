@@ -19,7 +19,9 @@
 
 import { nextId } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
-import { resolve } from 'node:path';
+import { lstat, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 
 import { type LlmConnection } from '@maka/core/llm-connections';
@@ -446,6 +448,50 @@ test('persistent path denies cover literal paths used by Bash', async () => {
   }
 });
 
+test('persistent path denies canonicalize case-insensitive macOS paths', {
+  skip: process.platform !== 'darwin',
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-permission-case-'));
+  const actualPath = join(root, 'Secret.txt');
+  const differentlyCasedPath = join(root, 'secret.txt');
+  try {
+    await writeFile(actualPath, 'secret');
+    // Keep this assertion scoped to a case-insensitive volume. A case-sensitive
+    // macOS volume must continue treating the differently cased path as a
+    // distinct (and currently missing) path.
+    if (
+      !(await lstat(differentlyCasedPath).then(
+        () => true,
+        () => false,
+      ))
+    )
+      return;
+    const h = harness();
+    const runtime = createTestToolRuntime({
+      ...runtimeInput(h),
+      permissionRules: normalizePermissionRules({
+        denyCommands: [],
+        denyPaths: [{ path: differentlyCasedPath, scope: 'exact' }],
+      }),
+    });
+    const tool: MakaTool = {
+      name: 'Read',
+      description: 'test',
+      parameters: z.object({ path: z.string() }),
+      impl: async () => assert.fail('case-insensitive path deny must prevent execution'),
+    };
+    const { result } = await settle(
+      h,
+      tool,
+      { path: actualPath },
+      { runtime, toolCallId: 'call_macos_case_path' },
+    );
+    assert.match((result as { error: string }).error, /persistent permission rule/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('an existing ToolRuntime reads updated persistent rules before the next dispatch', async () => {
   const h = harness();
   let rules = normalizePermissionRules({ denyCommands: [], denyPaths: [] });
@@ -522,6 +568,31 @@ test('persistent path denies cover recursive Glob and Grep search scopes', async
   }
 });
 
+test('persistent path denies fail closed when command candidate count is unbounded', async () => {
+  const h = harness();
+  const runtime = createTestToolRuntime({
+    ...runtimeInput(h),
+    permissionRules: normalizePermissionRules({
+      denyCommands: [],
+      denyPaths: [{ path: resolve('/workspace', 'blocked.txt'), scope: 'exact' }],
+    }),
+  });
+  const tool: MakaTool = {
+    name: 'Bash',
+    description: 'test',
+    parameters: z.object({ command: z.string() }),
+    impl: async () => assert.fail('unbounded path candidates must prevent execution'),
+  };
+  const command = Array.from({ length: 129 }, (_, index) => `value-${index}.txt`).join(' ');
+  const { result } = await settle(
+    h,
+    tool,
+    { command },
+    { runtime, toolCallId: 'call_too_many_path_candidates' },
+  );
+  assert.match((result as { error: string }).error, /too many paths/);
+});
+
 test('persistent command denies cover split and action-based PTY input', async () => {
   const h = harness();
   let implementationCalls = 0;
@@ -595,6 +666,56 @@ test('persistent command denies cover split and action-based PTY input', async (
   );
   assert.match((pathResult.result as { error: string }).error, /persistent permission rule/);
   assert.equal(implementationCalls, 1);
+});
+
+test('persistent command denies use the same fragment matching for Bash and PTY', async () => {
+  const commands = ['  true && git push origin main', 'echo x; /usr/bin/git push origin main'];
+  for (const [index, command] of commands.entries()) {
+    const bashHarness = harness();
+    const bashRuntime = createTestToolRuntime({
+      ...runtimeInput(bashHarness),
+      permissionRules: normalizePermissionRules({
+        denyCommands: ['git push *'],
+        denyPaths: [],
+      }),
+    });
+    const bashTool: MakaTool = {
+      name: 'Bash',
+      description: 'test',
+      parameters: z.object({ command: z.string() }),
+      impl: async () => assert.fail('Bash command deny must prevent execution'),
+    };
+    const bashResult = await settle(
+      bashHarness,
+      bashTool,
+      { command },
+      { runtime: bashRuntime, toolCallId: `call_bash_fragment_${index}` },
+    );
+    assert.match((bashResult.result as { error: string }).error, /persistent permission rule/);
+
+    const ptyHarness = harness();
+    const ptyRuntime = createTestToolRuntime({
+      ...runtimeInput(ptyHarness),
+      permissionRules: normalizePermissionRules({
+        denyCommands: ['git push *'],
+        denyPaths: [],
+      }),
+      permissionRuntimeState: createPermissionRuntimeState(),
+    });
+    const ptyTool: MakaTool = {
+      name: 'WriteStdin',
+      description: 'test',
+      parameters: z.object({ ref: z.string(), input: z.string().optional() }),
+      impl: async () => assert.fail('PTY command deny must prevent execution'),
+    };
+    const ptyResult = await settle(
+      ptyHarness,
+      ptyTool,
+      { ref: `pty-${index}`, input: `${command}\n` },
+      { runtime: ptyRuntime, toolCallId: `call_pty_fragment_${index}` },
+    );
+    assert.match((ptyResult.result as { error: string }).error, /persistent permission rule/);
+  }
 });
 
 test('persistent PTY rules fail closed for cursor editing and oversized fragments', async () => {
