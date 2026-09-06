@@ -702,17 +702,28 @@ export class AiSdkCompaction {
         this.input.modelId,
       )
     ) {
-      if (this.checkpointEffectiveCoverageMatches(loadedCheckpoint, effective.events)) {
+      // Raw identity first: a coverage miss keeps the apply-stage path, whose
+      // matcher reports the real identity reason (coverage_miss and friends).
+      // This gate is only for the case where the raw identity matches but a
+      // projection transition committed after the fold changed the effective
+      // view the summary (or provider state) was built from (#4845 review).
+      const rawIdentityMatch = matchHistoryCompactCheckpointPrefix(
+        loadedCheckpoint,
+        runtimeContext.filter(isHistoryCompactContentEvent),
+      );
+      if (rawIdentityMatch.reason) {
+        nextPolicy = {
+          ...nextPolicy,
+          historyCompact: { ...nextPolicy.historyCompact!, checkpoint: loadedCheckpoint },
+        };
+      } else if (this.checkpointEffectiveCoverageMatches(loadedCheckpoint, effective.events)) {
         nextPolicy = {
           ...nextPolicy,
           historyCompact: { ...nextPolicy.historyCompact!, checkpoint: loadedCheckpoint },
         };
       } else {
-        // The raw identity still matches, but a projection transition
-        // committed after the fold changed the effective view the summary (or
-        // provider state) was built from. Rejecting keeps the stale block from
-        // restoring what the transition removed; the next fold re-summarizes
-        // (#4845 review).
+        // Rejecting keeps the stale block from restoring what the transition
+        // removed; the next fold re-summarizes (#4845 review).
         diagnosticPatch = mergeContextBudgetDiagnosticPatches(
           diagnosticPatch,
           compactionDecisionDiagnosticPatch({
