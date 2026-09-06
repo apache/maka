@@ -155,6 +155,33 @@ class SqliteArtifactMetadataRepository {
     });
   }
 
+  readUpgradeOrphanPaths(): string[] {
+    this.assertOpen();
+    const rows = this.#lease.database
+      .prepare('SELECT relative_path FROM artifact_upgrade_orphan_paths ORDER BY relative_path')
+      .all() as Array<{ relative_path: string }>;
+    return rows.map((row) => row.relative_path);
+  }
+
+  isRelativePathClaimed(relativePath: string): boolean {
+    this.assertOpen();
+    return Boolean(
+      this.#lease.database
+        .prepare('SELECT 1 FROM artifact_records WHERE relative_path = ? LIMIT 1')
+        .get(relativePath),
+    );
+  }
+
+  forgetUpgradeOrphanPaths(relativePaths: readonly string[]): void {
+    this.assertOpen();
+    this.#lease.transaction('write', () => {
+      const forget = this.#lease.database.prepare(
+        'DELETE FROM artifact_upgrade_orphan_paths WHERE relative_path = ?',
+      );
+      for (const relativePath of relativePaths) forget.run(relativePath);
+    });
+  }
+
   close(): void {
     if (this.#closed) return;
     this.#closed = true;

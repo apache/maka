@@ -1755,6 +1755,15 @@ export async function createExecutionRuntimeHostComposition(
         recovery: {
           state: async () => {
             await skills.recover();
+            try {
+              await openedArtifactStore.reclaimUpgradeResidue();
+            } catch (error) {
+              // Leftover bytes are not worth refusing to start over; the next
+              // start tries again.
+              console.error(
+                `[runtime-host] upgrade residue could not be reclaimed: ${generalizedErrorMessage(error)}`,
+              );
+            }
           },
         },
         drain: [

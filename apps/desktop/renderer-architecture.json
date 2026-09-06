@@ -441,7 +441,7 @@
           "window.maka.e2eFixture.getState": 1
         },
         "environmentCapabilities": {
-          "document.documentElement.setAttribute": 4
+          "document.documentElement.setAttribute": 3
         },
         "hookCalls": {},
         "lifecycleMethods": {},
@@ -453,7 +453,7 @@
           "./theme": 1
         },
         "importSpecifiers": 1,
-        "nonTriviaTokens": 666
+        "nonTriviaTokens": 642
       },
       "src/renderer/app-shell-effects.ts": {
         "importDeclarations": 11,
@@ -899,7 +899,7 @@
           "react": 1
         },
         "importSpecifiers": 124,
-        "nonTriviaTokens": 15588
+        "nonTriviaTokens": 15563
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -1642,7 +1642,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/settings-daily-review-copy.ts": {
         "bridgePaths": {},
@@ -1743,7 +1745,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "@maka/core/ui-locale": 1
+        }
       },
       "src/renderer/locales/settings-usage-copy.ts": {
         "bridgePaths": {},
@@ -2115,7 +2119,6 @@
           "document.documentElement": 2,
           "document.documentElement.dataset.makaE2eFixture": 1,
           "document.documentElement.dataset.makaReducedMotion": 1,
-          "document.documentElement.dataset.makaScrollMotion": 5,
           "window.matchMedia": 2
         },
         "hookCalls": {},
@@ -2310,7 +2313,6 @@
           "./settings-skeleton.js": 1,
           "./use-action-guard.js": 1,
           "@astryxdesign/core": 1,
-          "@astryxdesign/core/Kbd": 1,
           "@maka/ui": 1,
           "react": 1
         }
@@ -2702,6 +2704,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../locales/settings-bot-copy": 1,
           "../locales/settings-health-copy": 1,
           "./runtime-host-settings-target.js": 1,
           "./settings-error-copy": 1,
@@ -2910,6 +2913,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "../locales/permission-center-copy": 1,
+          "../locales/settings-bot-copy": 1,
           "./runtime-host-settings-target.js": 1,
           "./settings-error-copy": 1,
           "./settings-section": 1,

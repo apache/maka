@@ -352,6 +352,7 @@ export function ToolTrow({
         <ChatToolCalls
           key={segment.key}
           className="maka-tool-activity-card"
+          data-maka-transcript-boundary="large"
           calls={segment.calls}
         />
       ) : (
@@ -429,7 +430,7 @@ function LinkedAgentList(props: {
   const activityCopy = getToolActivityCopy(props.locale);
   const copy = activityCopy.agent;
   return (
-    <List density="compact">
+    <List density="compact" data-maka-transcript-boundary="large">
       {props.rows.map((row) => {
         const childSessionId = row.childSessionId;
         const open = childSessionId && props.onOpenLinkedSession

@@ -92,8 +92,7 @@ interface ChatMessageSurfaceProps extends Omit<
   hasOlderHistory: boolean;
   hasNewerHistory: boolean;
   historyLoadPending: boolean;
-  onLoadEarlierHistory: (anchorTurnId?: string) => Promise<void> | void;
-  onReturnToLatestHistory: () => Promise<void> | void;
+  onLoadHistory: (target: 'earlier' | 'later' | 'latest', anchorTurnId?: string) => Promise<void> | void;
 }
 
 function captureLiveContent(liveTurn: LiveTurnProjection | undefined) {
@@ -129,8 +128,7 @@ export function ChatMessageSurface({
   hasOlderHistory,
   hasNewerHistory,
   historyLoadPending,
-  onLoadEarlierHistory,
-  onReturnToLatestHistory,
+  onLoadHistory,
   ...chatViewRest
 }: ChatMessageSurfaceProps) {
   const locale = useUiLocale();
@@ -248,12 +246,14 @@ export function ChatMessageSurface({
             emptyOverride={emptyOverride}
             goalIndicator={goalProjection.goalIndicator}
             hasOlderHistory={hasOlderHistory}
-            onLoadEarlierHistory={onLoadEarlierHistory}
+            onLoadEarlierHistory={(anchorTurnId) => onLoadHistory('earlier', anchorTurnId)}
+            hasNewerHistory={hasNewerHistory}
+            onLoadLaterHistory={(anchorTurnId) => onLoadHistory('later', anchorTurnId)}
             returnToLatest={hasNewerHistory ? {
               title: transcriptCopy.partialHistoryTitle,
               label: transcriptCopy.returnLatest,
               isPending: historyLoadPending,
-              onClick: onReturnToLatestHistory,
+              onClick: () => onLoadHistory('latest'),
             } : undefined}
           />
         )}

@@ -135,6 +135,114 @@ describe('interactive artifact store authority', () => {
     });
   });
 
+  test('reclaims the bytes the v1 upgrade orphaned, including a user-deleted upload', async () => {
+    await withInteractiveOwner(async (owner, root, track) => {
+      const initial = await openInteractiveArtifactStoreForWrite(owner.lease);
+      initial.close();
+      const db = new DatabaseSync(join(root, 'runtime.sqlite'));
+      db.exec(`
+        DROP TABLE artifact_records;
+        CREATE TABLE artifact_records (
+          storage_key TEXT PRIMARY KEY, artifact_id TEXT NOT NULL,
+          session_id TEXT NOT NULL, created_at INTEGER NOT NULL CHECK(created_at >= 0),
+          status TEXT NOT NULL CHECK(status IN ('live', 'deleted')),
+          relative_path TEXT NOT NULL, record_json TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX artifact_records_relative_path ON artifact_records(relative_path);
+        UPDATE operational_schema_migrations SET version = 1 WHERE scope = 'artifact';
+      `);
+      // One row per reason the upgrade drops one, each with bytes on disk.
+      const rows = [
+        { id: 'live', name: 'quarterly numbers.csv', status: 'live', source: 'user_upload' },
+        { id: 'erased', name: 'passport scan.pdf', status: 'deleted', source: 'user_upload' },
+        {
+          id: 'retired',
+          name: 'provider-request-step-4-cap.json',
+          status: 'live',
+          source: 'provider_request_capture',
+        },
+        { id: 'sourceless', name: 'recap-request.json', status: 'live', source: undefined },
+        { id: 'broken', name: 'unreadable.txt', status: 'live', source: 'tool_result' },
+        { id: 'mismatched', name: 'inconsistent.txt', status: 'live', source: 'tool_result' },
+        // Sorts first, and a directory cannot be unlinked, so it stands in for
+        // any leftover the store cannot remove.
+        { id: 'aborted', name: 'stuck', status: 'live', source: 'provider_request_capture' },
+      ];
+      await mkdir(join(root, 'artifacts', 'session-1'), { recursive: true });
+      for (const row of rows) {
+        const relativePath = `session-1/${row.id}-${row.name}`;
+        if (row.id === 'aborted') await mkdir(join(root, 'artifacts', relativePath));
+        else await writeFile(join(root, 'artifacts', relativePath), `bytes of ${row.id}`);
+        db.prepare('INSERT INTO artifact_records VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+          row.id,
+          row.id,
+          'session-1',
+          1,
+          row.status,
+          relativePath,
+          row.id === 'broken'
+            ? '{'
+            : JSON.stringify({
+                id: row.id === 'mismatched' ? 'other-id' : row.id,
+                sessionId: 'session-1',
+                turnId: 'turn-1',
+                createdAt: 1,
+                name: row.name,
+                kind: 'file',
+                sizeBytes: `bytes of ${row.id}`.length,
+                relativePath,
+                ...(row.source ? { source: row.source } : {}),
+                status: row.status,
+              }),
+        );
+      }
+      db.close();
+
+      const store = track(await openInteractiveArtifactStoreForWrite(owner.lease));
+      // Re-creating a dropped record's exact path before the reclamation runs
+      // must keep the new bytes, not honour the note.
+      await store.create({
+        id: 'erased',
+        sessionId: 'session-1',
+        turnId: 'turn-2',
+        name: 'passport scan.pdf',
+        kind: 'file',
+        content: 'uploaded again',
+        source: 'user_upload',
+      });
+      await store.reclaimUpgradeResidue();
+      await store.reclaimUpgradeResidue();
+
+      const path = (id: string) =>
+        join(root, 'artifacts', `session-1/${id}-${rows.find((row) => row.id === id)!.name}`);
+      for (const id of ['retired', 'sourceless', 'broken', 'mismatched']) {
+        await assert.rejects(() => stat(path(id)), { code: 'ENOENT' });
+      }
+      assert.deepEqual(await store.readTextInSession('session-1', 'live'), {
+        ok: true,
+        text: 'bytes of live',
+      });
+      assert.deepEqual(await store.readTextInSession('session-1', 'erased'), {
+        ok: true,
+        text: 'uploaded again',
+      });
+      assert.equal((await stat(path('aborted'))).isDirectory(), true);
+      store.close();
+
+      // Everything behind the one that would not go was still reclaimed, and
+      // only its own note survives for a later attempt.
+      const remaining = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      assert.deepEqual(
+        remaining
+          .prepare('SELECT relative_path FROM artifact_upgrade_orphan_paths')
+          .all()
+          .map((row) => (row as { relative_path: string }).relative_path),
+        ['session-1/aborted-stuck'],
+      );
+      remaining.close();
+    });
+  });
+
   test('requires authentic leases and writer facades', async () => {
     await assert.rejects(
       () =>

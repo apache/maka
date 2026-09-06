@@ -78,6 +78,7 @@ import {
   isTaskSubmissionHardBlocked,
   resolveTaskReadinessModelTarget,
   transcriptReadingPosition,
+  type TranscriptHistoryGates,
 } from './features/conversation';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { LiveTurnReconciler } from './live-turn-reconciler';
@@ -454,7 +455,7 @@ function AppShellContent({
   // reads. A scroller can ask twice in one task — two scroll events before
   // React has re-rendered anything — and a state read is still the old value
   // for both of them.
-  const historyLoadPendingRef = useRef(false);
+  const historyLoadGatesRef = useRef<TranscriptHistoryGates>(new WeakMap());
   const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<{
     sessionId: string;
     throughSequence: number | null;
@@ -2537,24 +2538,19 @@ function AppShellContent({
       setAnchor: sessionUiController.setTranscriptReadingAnchor,
     });
   }
-  async function loadTranscriptHistory(target: 'earlier' | 'latest', anchorTurnId?: string) {
+  function loadTranscriptHistory(target: 'earlier' | 'later' | 'latest', anchorTurnId?: string) {
     const controller = transcriptRangeRef.current;
     const sessionId = activeId;
-    if (!controller || !sessionId || historyLoadPendingRef.current) return;
-    historyLoadPendingRef.current = true;
-    setHistoryLoadPendingSessionId(sessionId);
-    try {
-      if (target === 'earlier') {
-        await controller.loadBefore(DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES, anchorTurnId);
-      } else await controller.loadLatest();
-    } catch (error) {
-      if (
-        activeIdRef.current !== sessionId ||
-        transcriptRangeRef.current !== controller
-      ) {
-        return;
-      }
-      showSessionError(
+    if (!controller || !sessionId) return;
+    return transcriptReadingPosition.loadHistory({
+      gates: historyLoadGatesRef.current,
+      request: { target, anchorTurnId },
+      controller,
+      maxBytes: DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES,
+      isCurrent: () => activeIdRef.current === sessionId && transcriptRangeRef.current === controller,
+      setPending: (pending) => setHistoryLoadPendingSessionId((current) =>
+        pending ? sessionId : current === sessionId ? undefined : current),
+      onError: (error) => showSessionError(
         sessionId,
         desktopConversationCopy.actions.messageReadFailedTitle,
         localizedShellErrorMessage(
@@ -2562,11 +2558,8 @@ function AppShellContent({
           desktopConversationCopy.actions.operationFailedFallback,
           uiLocale,
         ),
-      );
-    } finally {
-      historyLoadPendingRef.current = false;
-      setHistoryLoadPendingSessionId((current) => current === sessionId ? undefined : current);
-    }
+      ),
+    });
   }
   const homeSurfaceActive =
     navSelection.section === 'sessions' &&
@@ -3057,9 +3050,7 @@ function AppShellContent({
                 hasOlderHistory={activeTranscriptRange?.hasOlder === true}
                 hasNewerHistory={activeTranscriptRange?.hasNewer === true}
                 historyLoadPending={historyLoadPendingSessionId === activeId}
-                onLoadEarlierHistory={(anchorTurnId) =>
-                  loadTranscriptHistory('earlier', anchorTurnId)}
-                onReturnToLatestHistory={() => loadTranscriptHistory('latest')}
+                onLoadHistory={loadTranscriptHistory}
                 liveContentSeedRevision={liveContent.liveContentSeedRevision(activeEventSeed, activeId)}
                 messages={messages}
                 transientMessages={transientMessages}

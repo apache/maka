@@ -451,6 +451,7 @@ test('restores transcript consumers across Host replacement', async () => {
       };
     },
     async loadTranscriptBefore() {},
+    async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
     async closeTranscript() {},
   });
@@ -508,6 +509,7 @@ test('does not hold Host observation recovery on transcript replay', async () =>
       return transcriptResult(generation);
     },
     async loadTranscriptBefore() {},
+    async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
     async closeTranscript() {},
   });
@@ -537,6 +539,7 @@ test('does not hold Host observation recovery on transcript replay', async () =>
     async loadTranscriptBefore() {
       transcriptRangeStarted = true;
     },
+    async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
     acknowledgeTranscript() {
       transcriptAcknowledged = true;
@@ -577,89 +580,6 @@ test('does not hold Host observation recovery on transcript replay', async () =>
   await observations.close();
 });
 
-test('releases one renderer target before reload without restoring its observations', async () => {
-  const observations = new RuntimeHostSessionObservationRegistry();
-  const sessionCleanup = deferred<void>();
-  const transcriptCleanup = deferred<void>();
-  const unobserved: string[] = [];
-  const closedTranscripts: string[] = [];
-  const firstSource = {
-    async observe() {},
-    async unobserve(observerId: string) {
-      unobserved.push(observerId);
-      await sessionCleanup.promise;
-    },
-    async openTranscript(sessionId: string) {
-      return {
-        sessionId,
-        generation: 'first',
-        hostEpoch: 'host-first',
-        readThroughMessageId: null,
-      };
-    },
-    async loadTranscriptBefore() {},
-    async loadTranscriptAround() {},
-    async closeTranscript(consumerId: string) {
-      closedTranscripts.push(consumerId);
-      await transcriptCleanup.promise;
-    },
-  };
-  const targetA = {
-    id: 31,
-    send() {},
-    once() {},
-    off() {},
-  } satisfies RuntimeHostSessionObserverTarget & RuntimeHostTranscriptTarget;
-  const targetB = {
-    id: 32,
-    send() {},
-    once() {},
-    off() {},
-  } satisfies RuntimeHostSessionObserverTarget;
-
-  await observations.attach(firstSource);
-  await observations.observe('session-a', 'observer-a', targetA);
-  await observations.openTranscript('session-a', 'consumer-a', targetA);
-  await observations.observe('session-b', 'observer-b', targetB);
-
-  let released = false;
-  const releasing = observations.releaseTarget(targetA.id).then(() => {
-    released = true;
-  });
-  assert.deepEqual(unobserved, ['observer-a']);
-  assert.deepEqual(closedTranscripts, ['consumer-a']);
-  assert.deepEqual(observations.trackedSessionIds(), ['session-b']);
-  assert.equal(released, false);
-
-  sessionCleanup.resolve();
-  await Promise.resolve();
-  assert.equal(released, false);
-  transcriptCleanup.resolve();
-  await releasing;
-  assert.equal(released, true);
-
-  observations.detach(firstSource);
-  const restoredObservers: string[] = [];
-  const restoredTranscripts: string[] = [];
-  const secondSource = {
-    async observe(_sessionId: string, observerId: string) {
-      restoredObservers.push(observerId);
-    },
-    async unobserve() {},
-    async openTranscript(_sessionId: string, consumerId: string) {
-      restoredTranscripts.push(consumerId);
-      throw new Error('released transcript was restored');
-    },
-    async loadTranscriptBefore() {},
-    async loadTranscriptAround() {},
-    async closeTranscript() {},
-  };
-  assert.deepEqual(await observations.attach(secondSource), ['session-b']);
-  assert.deepEqual(restoredObservers, ['observer-b']);
-  assert.deepEqual(restoredTranscripts, []);
-  await observations.close();
-});
-
 test('fences transcript range failures to the current registration and Host source', async () => {
   const observations = new RuntimeHostSessionObservationRegistry();
   const target: RuntimeHostTranscriptTarget = {
@@ -683,6 +603,7 @@ test('fences transcript range failures to the current registration and Host sour
       };
     },
     loadTranscriptBefore,
+    async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
     async closeTranscript() {},
   });

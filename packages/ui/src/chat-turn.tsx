@@ -1189,6 +1189,7 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
   return (
     <ChatMessageBubble
       variant="ghost"
+      data-maka-transcript-boundary="default"
       // Astryx's own seam for a bubble that spans the message column: it sets
       // the width and drops the default max(80%, 280px) cap in one prop.
       width="100%"
@@ -1293,7 +1294,10 @@ function ProcessingBlock(props: {
 }) {
   const { entries } = props;
   return (
-    <div className="maka-processing-sequence">
+    <div
+      className="maka-processing-sequence"
+      data-maka-transcript-boundary="large"
+    >
       {entries.map((entry, index) => (
         <TurnTimelineEntry
           key={timelineEntryKey(entry, index)}
@@ -1313,6 +1317,7 @@ function DeepThinking(props: { text: string; live: boolean; settledText?: string
   return (
     <ChatReasoning
       className="maka-deep-thinking"
+      data-maka-transcript-boundary="large"
       label={label}
       previewText={reasoningPreviewText(props.text)}
       isStreaming={props.live}

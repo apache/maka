@@ -54,9 +54,8 @@ import {
 //
 // What this group cannot show: the seam. The workbar's surface tone only reads
 // as a seam against the conversation plate it stands beside, and the plate is
-// two levels up in the shell — as is the titlebar clearance the surface bleeds
-// through. Both are pinned by computed-style assertions in
-// e2e/session-workbar.spec.ts instead.
+// two levels up in the shell — as is the titlebar band the collapse toggle
+// moves into. Those belong to app-shell.stories.tsx, which mounts the shell.
 //
 // Read these at a canvas of 990px or wider. The app's own breakpoint is on the
 // viewport, and Storybook's canvas IS the viewport, so a narrower window puts
@@ -1027,6 +1026,28 @@ export const ToolPicker: Story = {
   render: () => <Workbar sourceSession={TOOL_PICKER_SOURCE_SESSION} />,
 };
 
+// The picker at the column's 320px floor. Every shortcut hint has to stay
+// inside the column: the launcher rows lay the label and the `kbd` on one line,
+// so the first thing a too-narrow column does is push the hints past the edge.
+export const ToolPickerAtColumnFloor: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar sourceSession={TOOL_PICKER_SOURCE_SESSION} width={320} />,
+  play: async ({ canvasElement }) => {
+    const launcher = await within(canvasElement).findByRole('list', { name: '打开工具' });
+    const column = launcher.closest<HTMLElement>('.maka-session-workbar');
+    if (!column) throw new Error('workbar column is missing');
+    const panelBox = column.getBoundingClientRect();
+    const shortcuts = [...launcher.querySelectorAll('kbd')];
+
+    expect(shortcuts.length).toBeGreaterThan(0);
+    for (const shortcut of shortcuts) {
+      const box = shortcut.getBoundingClientRect();
+      expect(box.left).toBeGreaterThanOrEqual(panelBox.left);
+      expect(box.right).toBeLessThanOrEqual(panelBox.right);
+    }
+  },
+};
+
 // Real path: 任务工作栏 → 变更, showing the live branch comparison from the
 // session cwd. The panel is Git-backed; no message or tool-result fixture is
 // involved in this story.
@@ -1226,16 +1247,35 @@ export const BrowserInsecure: Story = {
   render: () => <Workbar tab="browser" />,
 };
 
-// The column's 320px floor — the least room the toolbar row ever gets.
-export const BrowserAtColumnFloor: Story = {
+// #2188: the address field, not the nav buttons, absorbs the column's free
+// width. The rule reaches into Astryx Toolbar's slot div, so an upstream
+// slot-wrapper change regresses it silently. This is also the floor's pixel
+// story: the play leaves the column at 320px, the least room the toolbar row
+// ever gets.
+export const BrowserAddressFieldTracksColumnWidth: Story = {
   decorators: [bridge({ browserState: LOADED_BROWSER_STATE })],
-  render: () => <Workbar tab="browser" width={320} />,
-};
+  render: () => <Workbar tab="browser" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const address = await canvas.findByRole('textbox', { name: '浏览器地址' });
+    const frame = canvasElement.querySelector<HTMLElement>('.maka-detail-with-artifacts');
+    // The face's content lives in the overlay panel beside the workbar frame,
+    // so the panel is what carries the column width, not `.maka-session-workbar`.
+    const column = address.closest<HTMLElement>('.maka-session-workbar-panel');
+    if (!frame || !column) throw new Error('workbar panel is missing');
+    const widthAt = async (columnWidth: number) => {
+      frame.style.setProperty('--maka-session-workbar-width', `${columnWidth}px`);
+      await waitFor(() => {
+        expect(column.getBoundingClientRect().width).toBeCloseTo(columnWidth, 0);
+      });
+      return address.getBoundingClientRect().width;
+    };
 
-// The width the resize handle lands on most often, between the floor and default.
-export const BrowserAt400: Story = {
-  decorators: [bridge({ browserState: LOADED_BROWSER_STATE })],
-  render: () => <Workbar tab="browser" width={400} />,
+    expect(await widthAt(480)).toBeGreaterThan(250);
+    const atFloor = await widthAt(320);
+    expect(atFloor).toBeLessThan(220);
+    expect(atFloor).toBeGreaterThan(100);
+  },
 };
 
 // Below 990px the grid stacks the same right-placement column under the
@@ -1318,6 +1358,52 @@ export const Files: Story = {
 export const SideChat: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="side-chat" />,
+};
+
+// Real path: 侧边对话 at the column's 320px floor, under a long model label.
+export const SideChatAtColumnFloor: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar tab="side-chat" width={320} />,
+  play: async ({ canvasElement }) => {
+    const companion = await waitFor(() => {
+      const found = canvasElement.querySelector<HTMLElement>('.maka-quote-companion');
+      if (!found?.querySelector('.maka-composer-astryx')) {
+        throw new Error('side chat companion is missing');
+      }
+      return found;
+    });
+    const card = companion.querySelector<HTMLElement>('.maka-composer-astryx')!;
+
+    expect(getComputedStyle(card).overflow).toBe('visible');
+
+    // The plate has to round the same as a bubble does; a side-only
+    // `--_chat-composer-radius` is what split the dock from the bubble in
+    // #3452. Measure a probe the token paints instead of reading the token
+    // back — ink-ladder-contract.test.ts forbids the latter.
+    const plate = card.firstElementChild;
+    if (!plate) throw new Error('composer plate is missing');
+    const probe = document.createElement('div');
+    probe.style.borderRadius = 'var(--radius-chat)';
+    card.append(probe);
+    const bubbleRadius = getComputedStyle(probe).borderTopLeftRadius;
+    probe.remove();
+    expect(bubbleRadius).not.toBe('0px');
+    expect(getComputedStyle(plate).borderTopLeftRadius).toBe(bubbleRadius);
+
+    // Written here rather than in the fixture: the fixture's default model is
+    // shared by every other story.
+    const label = companion.querySelector<HTMLElement>('.maka-composer-model-chip-text');
+    if (!label) throw new Error('side chat model chip is missing');
+    label.textContent = 'Nemotron 3 Ultra Long Context Model';
+
+    const send = within(companion).getByRole('button', { name: '发送' });
+    await waitFor(() => {
+      const cardBox = card.getBoundingClientRect();
+      const sendBox = send.getBoundingClientRect();
+      expect(sendBox.left).toBeGreaterThanOrEqual(cardBox.left);
+      expect(sendBox.right).toBeLessThanOrEqual(cardBox.right);
+    });
+  },
 };
 
 // Real path: 任务工作栏 → 追踪, on a session that has run turns — the overview

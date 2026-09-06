@@ -67,15 +67,28 @@ export interface BotOnboardingSnapshot {
     displayName?: string;
   };
   error?: string;
+  /** Stable machine code for a terminal `error` state; presenters own copy. */
+  errorCode?: BotOnboardingErrorCode;
   /**
    * Set on a `connected` snapshot when the channel was saved successfully but
    * the live bridge did not reach a running/healthy state within the commit
-   * window. The saved channel is valid and persisted; this is an honest,
-   * redacted notice (never carries provider credentials) that the connection
-   * still needs to be (re)established — never a hard failure of onboarding.
+   * window. The saved channel is valid and persisted; this is an honest notice
+   * that the connection still needs to be (re)established — never a hard
+   * failure of onboarding.
    */
-  warning?: string;
+  warningCode?: 'saved_not_connected';
+  /** Redacted live-bridge failure reason (external text), rendered verbatim. */
+  warningDetail?: string;
 }
+
+export type BotOnboardingErrorCode =
+  | 'cancelled'
+  | 'timeout'
+  | 'rate_limited'
+  | 'auth_failed'
+  | 'provider_error'
+  | 'network_error'
+  | 'unavailable';
 
 export function isBotOnboardingProvider(value: unknown): value is BotOnboardingProvider {
   return (

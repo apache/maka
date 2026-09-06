@@ -123,6 +123,44 @@
   gap: var(--space-1);
 }
 
+/* A transcript range is bounded by complete Turns, so one unusually large
+   Turn can still be much taller than the scrollport. The outer Turn's
+   content-visibility boundary stops helping as soon as any part of that Turn
+   becomes relevant. Keep the stable timeline blocks inside it independently
+   skippable so Chromium does not lay out and paint every Markdown, reasoning,
+   and tool subtree while the reader crosses one nearby block.
+
+   Renderers apply the marker at the source of each timeline block, including
+   the children of a Processing fold. `auto` retains the measured block size
+   after first paint, preserving native scroll
+   anchoring when a skipped block leaves and re-enters the viewport. */
+.maka-chat-message-list [data-maka-transcript-boundary] {
+  content-visibility: auto;
+  /* First-paint intrinsic-size ESTIMATE for scroll-anchor stability, not a
+     fixed height: `auto <n>px` still grows to the block's real size after
+     paint. 96px is the single-line answer baseline; tall multi-line blocks
+     override it below. */
+  contain-intrinsic-block-size: auto 96px;
+}
+
+/* Container blocks — a Processing sequence, a linked-agent list — hold many
+   entries, so their first-paint estimate stays multi-line. It remains an
+   estimate rather than a clamp: the block grows to its measured size after
+   paint. */
+.maka-chat-message-list [data-maka-transcript-boundary="large"] {
+  contain-intrinsic-block-size: auto 320px;
+}
+
+/* Collapsed disclosures are the exception among the "large" sites: a folded
+   reasoning run or tool/activity card renders as one summary row measuring
+   24–32px, and a 320px estimate materializes as a ~290px collapse under a
+   reader scrolling up cold — the anchor-jump the cold-scroll story gates.
+   Estimate them at their collapsed height; `auto` still remembers the real
+   expanded size once a reader opens one. */
+.maka-chat-message-list :is(.maka-deep-thinking, .maka-tool-activity-card)[data-maka-transcript-boundary='large'] {
+  contain-intrinsic-block-size: auto 32px;
+}
+
 /* Expanded activity headers stay reachable while their own detail is being
    read. Native sticky positioning keeps the header in the transcript flow,
    so it leaves naturally at the card boundary and does not disturb ChatLayout

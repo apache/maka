@@ -170,7 +170,7 @@
   );
   /* The right pad is the window titlebar strip's own gutter, not this bar's:
      the collapse toggle is one control that moves between the two bands, and
-     `session-workbar.spec.ts` holds it to the same x in both. Narrowing this to
+     `app-shell.stories.tsx` holds it to the same x in both. Narrowing this to
      the bar's own gutter would slide it 16px on every collapse. On top of it,
      the caption buttons where the platform draws them on the right (Windows);
      macOS puts them on the left, over the sidebar, and reports 0 here. */
