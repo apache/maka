@@ -58,3 +58,14 @@ test("renders provider rate limits consistently from the stable status code", ()
     "This account or model service is rate-limited. Try again later.",
   );
 });
+
+test("rejects raw backend prose for Traditional Chinese subscription errors", () => {
+  assert.equal(
+    subscriptionResultMessage("GitHub Copilot 登录已过期。", "請重新登入。", "zh-TW"),
+    "請重新登入。",
+  );
+  assert.equal(
+    subscriptionResultMessage("network unreachable", "請重新登入。", "zh-TW"),
+    "網路錯誤",
+  );
+});
