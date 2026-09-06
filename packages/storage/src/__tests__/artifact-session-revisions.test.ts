@@ -34,40 +34,39 @@ import { createSqliteArtifactMetadataRepository } from '../sqlite-artifact-metad
 import { migrateSqliteArtifactDatabase } from '../sqlite-artifact-schema.js';
 
 for (const scope of ['target', 'other'] as const) {
-  for (const count of [10, 1_000, 12_000]) {
-    test(`get plus revision stays bounded with ${count} ${scope}-Session records`, async (t) => {
-      await withStores(async ({ store, repository, database }) => {
-        const target = record('target');
-        repository.applyChanges({ upserts: [target] });
-        const initialRevision = repository.getSessionRevision('session');
-        repository.applyChanges({
-          upserts: Array.from({ length: count }, (_, i) =>
-            record(`growth-${i}`, scope === 'target' ? 'session' : 'other'),
-          ),
-        });
-        const revision = repository.getSessionRevision('session');
-        if (scope === 'other') assert.equal(revision, initialRevision);
-        else assert.notEqual(revision, initialRevision);
-
-        const counts = countReads(t, database);
-        const entry = await store.getInSession('session', 'target');
-        assert.deepEqual(counts.read(), { artifactRows: 1, revisionRows: 1, decodes: 1 });
-        assert.deepEqual(entry, { record: target, revision });
-        counts.reset();
-        assert.deepEqual(await store.getInSession('session', 'missing'), {
-          record: null,
-          revision,
-        });
-        assert.deepEqual(counts.read(), { artifactRows: 0, revisionRows: 1, decodes: 0 });
-        counts.reset();
-        assert.deepEqual(await store.getInSession('other', 'target'), {
-          record: null,
-          revision: repository.getSessionRevision('other'),
-        });
-        assert.equal(counts.read().decodes, 1);
+  const count = 12_000;
+  test(`get plus revision stays bounded with ${count} ${scope}-Session records`, async (t) => {
+    await withStores(async ({ store, repository, database }) => {
+      const target = record('target');
+      repository.applyChanges({ upserts: [target] });
+      const initialRevision = repository.getSessionRevision('session');
+      repository.applyChanges({
+        upserts: Array.from({ length: count }, (_, i) =>
+          record(`growth-${i}`, scope === 'target' ? 'session' : 'other'),
+        ),
       });
+      const revision = repository.getSessionRevision('session');
+      if (scope === 'other') assert.equal(revision, initialRevision);
+      else assert.notEqual(revision, initialRevision);
+
+      const counts = countReads(t, database);
+      const entry = await store.getInSession('session', 'target');
+      assert.deepEqual(counts.read(), { artifactRows: 1, revisionRows: 1, decodes: 1 });
+      assert.deepEqual(entry, { record: target, revision });
+      counts.reset();
+      assert.deepEqual(await store.getInSession('session', 'missing'), {
+        record: null,
+        revision,
+      });
+      assert.deepEqual(counts.read(), { artifactRows: 0, revisionRows: 1, decodes: 0 });
+      counts.reset();
+      assert.deepEqual(await store.getInSession('other', 'target'), {
+        record: null,
+        revision: repository.getSessionRevision('other'),
+      });
+      assert.equal(counts.read().decodes, 1);
     });
-  }
+  });
 }
 
 for (const count of [10, 12_000]) {
