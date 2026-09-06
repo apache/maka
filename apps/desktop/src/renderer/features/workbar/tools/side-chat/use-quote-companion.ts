@@ -48,10 +48,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { InteractionFormResponse } from '@maka/core/interaction';
-import {
-  MESSAGE_QUEUE_MAX_ENTRIES,
-  type ContextCompactResult,
-} from '@maka/runtime-host/protocol';
+import type { ContextCompactResult } from '@maka/runtime-host/protocol';
 import { useWorkbarServices } from '../../services-context.js';
 import type { WorkbarIngestInput } from '../../ports.js';
 import {
@@ -304,12 +301,10 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   >([]);
   const pendingUserMessagesRef = useRef(pendingUserMessages);
   pendingUserMessagesRef.current = pendingUserMessages;
-  const [queuedMessages, setQueuedMessages] = useState<MessageQueueEntryProjection[]>([]);
-  const queuedMessagesRef = useRef(queuedMessages);
-  queuedMessagesRef.current = queuedMessages;
-  const [queuedMessageRevision, setQueuedMessageRevision] = useState<number | undefined>(
-    undefined,
-  );
+  const [messageQueue, setMessageQueue] = useState<{
+    readonly entries: readonly MessageQueueEntryProjection[];
+    readonly queueRevision?: number;
+  }>({ entries: [] });
   const [liveTurn, setLiveTurn] = useState<LiveTurnProjection | undefined>(undefined);
   const liveTurnRef = useRef(liveTurn);
   liveTurnRef.current = liveTurn;
@@ -401,10 +396,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   }, []);
 
   const dropQueuedMessage = useCallback((messageId: string) => {
-    setQueuedMessages((current) => {
-      const next = current.filter((entry) => entry.messageId !== messageId);
-      queuedMessagesRef.current = next;
-      return next.length === current.length ? current : next;
+    setMessageQueue((current) => {
+      const entries = current.entries.filter((entry) => entry.messageId !== messageId);
+      return entries.length === current.entries.length ? current : { ...current, entries };
     });
   }, []);
 
@@ -422,9 +416,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const projectMessageQueue = useCallback(
     (event: Extract<SessionEvent, { type: 'queue_update' }>) => {
       const queue = deriveMessageQueueProjection(event);
-      queuedMessagesRef.current = [...queue.entries];
-      setQueuedMessages([...queue.entries]);
-      setQueuedMessageRevision(event.queueRevision);
+      setMessageQueue({ entries: queue.entries, queueRevision: event.queueRevision });
 
       const queued = queue.transientMessages;
       if (queued.length === 0) return;
@@ -440,38 +432,28 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   );
 
   const retireCancelledOptimisticMessages = useCallback(async (forkId: string) => {
-    const messageIds = [
-      ...new Set([
-        ...pendingUserMessagesRef.current.map((message) => message.id),
-        ...queuedMessagesRef.current.map((entry) => entry.messageId),
-      ]),
-    ];
+    // Every manageable queue entry is also a transient transcript row, so this
+    // projection is the complete set of renderer-owned message identities.
+    const messageIds = pendingUserMessagesRef.current.map((message) => message.id);
     if (messageIds.length === 0) return;
     try {
-      const cancelledIds: string[] = [];
-      for (let from = 0; from < messageIds.length; from += MESSAGE_QUEUE_MAX_ENTRIES) {
-        const result = await sideChat.queryCancelledMessages(
-          forkId,
-          messageIds.slice(from, from + MESSAGE_QUEUE_MAX_ENTRIES),
-        );
-        cancelledIds.push(...result.cancelledMessageIds);
-      }
+      const { cancelledMessageIds } = await sideChat.queryCancelledMessages(forkId, messageIds);
       if (
         !mountedRef.current
         || companionIdRef.current !== forkId
-        || cancelledIds.length === 0
+        || cancelledMessageIds.length === 0
       ) {
         return;
       }
-      const cancelled = new Set(cancelledIds);
+      const cancelled = new Set(cancelledMessageIds);
       pendingUserMessagesRef.current = pendingUserMessagesRef.current.filter(
         (message) => !cancelled.has(message.id),
       );
       setPendingUserMessages(pendingUserMessagesRef.current);
-      queuedMessagesRef.current = queuedMessagesRef.current.filter(
-        (entry) => !cancelled.has(entry.messageId),
-      );
-      setQueuedMessages(queuedMessagesRef.current);
+      setMessageQueue((current) => ({
+        ...current,
+        entries: current.entries.filter((entry) => !cancelled.has(entry.messageId)),
+      }));
     } catch {
       // A failed proof query leaves presentation intact until canonical proof arrives.
     }
@@ -821,10 +803,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           setCompanion(undefined);
           setAllMessages([]);
           pendingUserMessagesRef.current = [];
-          queuedMessagesRef.current = [];
           setPendingUserMessages([]);
-          setQueuedMessages([]);
-          setQueuedMessageRevision(undefined);
+          setMessageQueue({ entries: [] });
           onForkVisibilityChangeRef.current?.({
             type: 'cleanup-succeeded',
             sessionId: existing.id,
@@ -1409,11 +1389,11 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   );
   const deleteQueuedEntry = useCallback(
     async (entryId: string): Promise<void> => {
-      const messageId = queuedMessages.find((entry) => entry.entryId === entryId)?.messageId;
+      const messageId = messageQueue.entries.find((entry) => entry.entryId === entryId)?.messageId;
       await runQueueEntryAction((id) => sideChat.retractQueueEntry(id, entryId));
       if (messageId) dropOptimisticUserMessage(messageId);
     },
-    [dropOptimisticUserMessage, queuedMessages, runQueueEntryAction, sideChat],
+    [dropOptimisticUserMessage, messageQueue.entries, runQueueEntryAction, sideChat],
   );
   const reorderQueuedEntries = useCallback(
     (entryIds: readonly string[]) =>
@@ -1577,8 +1557,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     hasContent,
     messages,
     transientMessages,
-    queuedMessages,
-    queuedMessageRevision,
+    queuedMessages: messageQueue.entries,
+    queuedMessageRevision: messageQueue.queueRevision,
     liveTurn,
     streaming,
     processing,

@@ -1990,7 +1990,8 @@ test('keeps the settled prior turn visible while a queued successor is running',
     settled: boolean;
   }>();
   const pendingFollowUp = deferred<{ kind: 'started'; turnId: string }>();
-  const { container, emit, send, queue } = await renderOwnershipProbe({
+  let stoppedTarget: SideChatStopTarget;
+  const { container, emit, send, queue, stop } = await renderOwnershipProbe({
     send: async (_sessionId, command) => {
       firstMessageId = command.turnId;
       return { ok: true as const, turnId: 'old-turn' };
@@ -2004,6 +2005,9 @@ test('keeps the settled prior turn visible while a queued successor is running',
       options?.requiredAssistantMessageId === 'assistant-message'
         ? oldTurnSettlement.promise
         : { messages: [], settled: true },
+    stop: async (_sessionId, target) => {
+      stoppedTarget = target;
+    },
   });
 
   await act(async () => {
@@ -2053,6 +2057,12 @@ test('keeps the settled prior turn visible while a queued successor is running',
     () => container.firstElementChild?.getAttribute('data-message-texts') === 'initial prompt|old answer',
   );
   assert.equal(container.firstElementChild?.getAttribute('data-live-turn-id'), 'new-turn');
+  assert.equal(container.firstElementChild?.getAttribute('data-streaming'), 'true');
+  await act(async () => {
+    await stop();
+    await Promise.resolve();
+  });
+  assert.deepEqual(stoppedTarget, { kind: 'turn', turnId: 'new-turn' });
 });
 
 test('retires a cancelled queued Side Conversation message after observation reseeds', async () => {

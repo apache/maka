@@ -2306,8 +2306,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./new-task-reload-intent.js": 1,
-          "./transient-message-projection.js": 1,
-          "@maka/runtime-host/protocol": 1
+          "./transient-message-projection.js": 1
         }
       },
       "src/renderer/session-workspace-errors.ts": {

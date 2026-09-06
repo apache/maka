@@ -775,14 +775,18 @@ test("submits an ordinary composer message once under its stable message identit
 
 test('returns Host-owned cancellation proof to the renderer', async () => {
   const ipc = ipcHarness();
+  const queriedMessageIds: string[][] = [];
   registerExecutionIpc(
     {
       client: executionClient({
-        queryMessages: async (input) => ({
-          cancelledMessageIds: input.messageIds.filter(
+        queryMessages: async (input) => {
+          queriedMessageIds.push([...input.messageIds]);
+          return {
+            cancelledMessageIds: input.messageIds.filter(
             (messageId) => messageId === 'message-cancelled',
-          ),
-        }),
+            ),
+          };
+        },
       }),
     },
     ipc,
@@ -794,6 +798,109 @@ test('returns Host-owned cancellation proof to the renderer', async () => {
       'message-cancelled',
     ]),
     { cancelledMessageIds: ['message-cancelled'] },
+  );
+  assert.deepEqual(queriedMessageIds, [['message-accepted', 'message-cancelled']]);
+});
+
+test('batches cancellation proof queries at the Runtime Host protocol boundary', async () => {
+  const ipc = ipcHarness();
+  const queriedMessageIds: string[][] = [];
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryMessages: async (input) => {
+          queriedMessageIds.push([...input.messageIds]);
+          return { cancelledMessageIds: input.messageIds.slice(-1) };
+        },
+      }),
+    },
+    ipc,
+  );
+  const messageIds = Array.from({ length: 65 }, (_, index) => `message-${index}`);
+
+  assert.deepEqual(
+    await ipc.invoke('sessions:queryCancelledMessages', 'session-1', messageIds),
+    { cancelledMessageIds: ['message-63', 'message-64'] },
+  );
+  assert.deepEqual(queriedMessageIds.map((ids) => ids.length), [64, 1]);
+});
+
+test('rejects duplicate cancellation proof identities across protocol batches', async () => {
+  const ipc = ipcHarness();
+  let queryCount = 0;
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryMessages: async () => {
+          queryCount += 1;
+          return { cancelledMessageIds: [] };
+        },
+      }),
+    },
+    ipc,
+  );
+  const messageIds = Array.from({ length: 65 }, (_, index) => `message-${index}`);
+  messageIds[64] = messageIds[0] as string;
+
+  await assert.rejects(
+    ipc.invoke('sessions:queryCancelledMessages', 'session-1', messageIds),
+    /Duplicate Message identities/u,
+  );
+  assert.equal(queryCount, 0);
+});
+
+test('rejects invalid or unbounded Desktop cancellation proof queries before dispatch', async () => {
+  const ipc = ipcHarness();
+  let queryCount = 0;
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryMessages: async () => {
+          queryCount += 1;
+          return { cancelledMessageIds: [] };
+        },
+      }),
+    },
+    ipc,
+  );
+
+  await assert.rejects(
+    ipc.invoke('sessions:queryCancelledMessages', 'session-1', ['valid-message', 42]),
+    /Invalid Message identity/u,
+  );
+  await assert.rejects(
+    ipc.invoke('sessions:queryCancelledMessages', 'session-1', ['not a protocol identity']),
+    /Invalid Message identity/u,
+  );
+  await assert.rejects(
+    ipc.invoke(
+      'sessions:queryCancelledMessages',
+      'session-1',
+      Array.from({ length: 4_097 }, (_, index) => `message-${index}`),
+    ),
+    /Invalid Message identities/u,
+  );
+  assert.equal(queryCount, 0);
+});
+
+test('rejects duplicate cancellation proofs returned across protocol batches', async () => {
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryMessages: async () => ({ cancelledMessageIds: ['message-0'] }),
+      }),
+    },
+    ipc,
+  );
+
+  await assert.rejects(
+    ipc.invoke(
+      'sessions:queryCancelledMessages',
+      'session-1',
+      Array.from({ length: 65 }, (_, index) => `message-${index}`),
+    ),
+    /Duplicate cancelled Message identities/u,
   );
 });
 

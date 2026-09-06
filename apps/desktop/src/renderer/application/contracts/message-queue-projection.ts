@@ -33,14 +33,14 @@ export function deriveMessageQueueProjection(
   event: QueueUpdateEvent,
 ): MessageQueueProjection {
   const entries = [
-    ...(event.steeringEntries ?? []).filter((entry) => entry.state === 'queued'),
+    ...(event.steeringEntries ?? []),
     ...(event.followupEntries ?? []),
-  ].map((entry) => structuredClone(entry));
+  ]
+    .filter((entry) => entry.state === 'queued')
+    .map((entry) => structuredClone(entry));
   return {
     entries,
-    transientMessages: entries
-      .filter((entry) => entry.state === 'queued')
-      .map((entry) => ({
+    transientMessages: entries.map((entry) => ({
         id: entry.messageId,
         transientPlacement: entry.placement,
         ...(entry.placement === 'current_turn' && { hostTurnId: event.turnId }),
