@@ -111,7 +111,7 @@ jobs:
       - name: Test Storybook audit contracts
         run: node --test scripts/ax-tree-audit.test.mjs scripts/storybook-visual-smoke.test.mjs
       - name: Test Computer Use script contracts
-        run: node --test scripts/ax-tree-audit.test.mjs scripts/computer-use/lab-root.test.mjs
+        run: node --test scripts/computer-use/lab-root.test.mjs
 
       - name: Test script entrypoint contracts
         run: node --test scripts/script-entrypoints.test.mjs
