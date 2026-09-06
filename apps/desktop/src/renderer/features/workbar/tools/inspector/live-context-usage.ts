@@ -50,8 +50,11 @@ export interface LiveContextUsage {
  *
  * "Used" is `inputTokens` — the prompt of the most recent settled request.
  * That is deliberately NOT input+output: the snapshot does not carry output,
- * and the inspector's context bar reads the same field, so both indicators in
- * the window draw one number from one row and cannot disagree mid-turn.
+ * and the inspector's context bar reads the same field. The frozen
+ * `contextWindow` travels with the tokens, so the gauge can divide one row's
+ * numerator by the same row's denominator exactly as the inspector's bar
+ * does — a window from the live catalog could disagree with the metered
+ * request, while a user-declared override still wins by design.
  */
 export function liveContextUsageFromDiagnostics(
   diagnostics: ContextDiagnosticsResult | undefined,
@@ -79,6 +82,22 @@ export interface LiveContextUsageTarget {
   readonly route: LiveContextRoute;
 }
 
+/**
+ * Identity, not reference: two targets answer the same question when their
+ * session and route match field by field.
+ */
+function sameLiveContextUsageTarget(
+  left: LiveContextUsageTarget | undefined,
+  right: LiveContextUsageTarget | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return (
+    left.sessionId === right.sessionId &&
+    left.route.model === right.route.model &&
+    left.route.providerType === right.route.providerType
+  );
+}
+
 export interface LiveContextUsageTracker {
   /** Aims the tracker at a session, or at nothing. Reads immediately. */
   setTarget(target: LiveContextUsageTarget | undefined): void;
@@ -100,7 +119,11 @@ export interface LiveContextUsageTracker {
  * trace-relevant live events, coalesced — with the three protections the
  * inspector proved out: a revision counter drops reads that answer an older
  * question, a failed read keeps the last value standing, and a target change
- * discards whatever is still in flight.
+ * clears that value first and discards whatever is still in flight. The last
+ * two compose rather than collide: the value kept standing is only ever the
+ * CURRENT target's, because switching targets clears the previous target's
+ * reading before the first read on the new one — a rejected first read must
+ * not pin the old target's number in place.
  *
  * Framework-free on purpose: the timer and the query are injected, so the
  * policy is testable without a DOM, and the hook in
@@ -143,14 +166,21 @@ export function createLiveContextUsageTracker(input: {
     setTarget(next) {
       // Any target change — another session, another route, or none — makes
       // the current reading unanswerable until the next read lands, and
-      // invalidates every read already in flight.
+      // invalidates every read already in flight. A changed target clears the
+      // reading on screen BEFORE the first read on the new one: that reading
+      // answers the previous target's question, and a rejected first read
+      // would otherwise pin it there indefinitely. Re-aiming at the SAME
+      // target does not clear — the standing value still answers it, and
+      // blanking it would flicker.
       revision += 1;
+      const changed = !sameLiveContextUsageTarget(target, next);
       target = next;
       coalescer.cancel();
       if (!next) {
         input.onChange(undefined);
         return;
       }
+      if (changed) input.onChange(undefined);
       refresh();
     },
     observe(event) {

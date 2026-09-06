@@ -28,6 +28,7 @@ import {
   acquireOperationalStateDatabase,
   OperationalStateMigrationBlockedError,
 } from '../operational-state-store.js';
+import { SQLITE_ARTIFACT_SCHEMA_VERSION } from '../sqlite-artifact-schema.js';
 import { SQLITE_RUNTIME_SCHEMA_VERSION } from '../sqlite-runtime-schema.js';
 import { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from '../sqlite-session-metadata-schema.js';
 import { SQLITE_USAGE_SCHEMA_VERSION } from '../sqlite-usage-schema.js';
@@ -160,6 +161,76 @@ test('a non-owner rejects an older schema without migrating it behind the Runtim
     } finally {
       hostOwned.close();
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves live supported v1 Artifacts when opening existing Sessions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-artifact-v1-retirement-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  try {
+    const lease = acquireOperationalStateDatabase(root);
+    const metadata = createSqliteSessionMetadataStore(databasePath, { databaseLease: lease });
+    await metadata.create(sessionHeader());
+    metadata.close();
+    lease.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      DROP TABLE artifact_records;
+      CREATE TABLE artifact_records (
+        storage_key TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL CHECK (created_at >= 0),
+        status TEXT NOT NULL CHECK (status IN ('live', 'deleted')),
+        relative_path TEXT NOT NULL,
+        record_json TEXT NOT NULL
+      );
+      CREATE INDEX artifact_records_session_order
+        ON artifact_records(session_id, created_at, storage_key);
+      CREATE UNIQUE INDEX artifact_records_relative_path
+        ON artifact_records(relative_path);
+      INSERT INTO artifact_records VALUES (
+        'legacy-key',
+        'legacy-artifact',
+        'session-1',
+        1,
+        'live',
+        'session-1/legacy-artifact-result.txt',
+        '{"id":"legacy-artifact","sessionId":"session-1","turnId":"turn-1","createdAt":1,"name":"result.txt","kind":"file","sizeBytes":4,"relativePath":"session-1/legacy-artifact-result.txt","source":"tool_result_archive","status":"live"}'
+      );
+      UPDATE operational_schema_migrations SET version = 1 WHERE scope = 'artifact';
+    `);
+    legacy.close();
+
+    const reopened = acquireOperationalStateDatabase(root);
+    assert.equal(
+      (
+        reopened.database
+          .prepare("SELECT COUNT(*) AS count FROM session_metadata WHERE session_id = 'session-1'")
+          .get() as { count: number }
+      ).count,
+      1,
+    );
+    assert.equal(
+      (
+        reopened.database.prepare('SELECT COUNT(*) AS count FROM artifact_records').get() as {
+          count: number;
+        }
+      ).count,
+      1,
+    );
+    assert.equal(
+      (
+        reopened.database
+          .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'artifact'")
+          .get() as { version: number }
+      ).version,
+      SQLITE_ARTIFACT_SCHEMA_VERSION,
+    );
+    reopened.close();
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -977,7 +1048,7 @@ for (const { name, mutation } of [
         DROP INDEX artifact_records_relative_path;
         CREATE UNIQUE INDEX artifact_records_relative_path
           ON artifact_records(relative_path)
-          WHERE status = 'live';
+          WHERE relative_path <> '';
       `),
   },
   {
@@ -986,12 +1057,10 @@ for (const { name, mutation } of [
       database.exec(`
         DROP TABLE artifact_records;
         CREATE TABLE artifact_records (
-          storage_key TEXT PRIMARY KEY,
-          artifact_id TEXT NOT NULL,
+          artifact_id TEXT PRIMARY KEY,
           session_id TEXT NOT NULL,
           created_at INTEGER NOT NULL CHECK (created_at >= 0),
-          status TEXT NOT NULL CHECK (status IN ('LIVE', 'DELETED')),
-          relative_path TEXT NOT NULL,
+          relative_path TEXT NOT NULL CHECK (relative_path <> ''),
           record_json TEXT NOT NULL
         );
       `),

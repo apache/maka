@@ -90,24 +90,13 @@ export const ARTIFACT_SOURCES = [
   'tool_result',
   'tool_result_projection',
   'tool_result_archive',
-  'synthesis_cache_block',
-  'history_compact_block',
-  'history_compact_source',
-  'provider_request_capture',
   'subagent_writeback',
   'deep_research',
   'user_upload',
-  'export',
-  'snapshot',
   'session_effect',
-  'fixture',
 ] as const;
 
 export type ArtifactSource = (typeof ARTIFACT_SOURCES)[number];
-
-export const ARTIFACT_STATUSES = ['live', 'deleted'] as const;
-
-export type ArtifactStatus = (typeof ARTIFACT_STATUSES)[number];
 
 export const ARTIFACT_ENTITY_ID_MAX_CHARS = 128;
 export const ARTIFACT_TURN_KEY_MAX_CHARS = 512;
@@ -138,9 +127,8 @@ export interface ArtifactDescriptor {
   kind: ArtifactKind;
   sizeBytes: number;
   mimeType?: string;
-  source?: ArtifactSource;
+  source: ArtifactSource;
   summary?: string;
-  status: ArtifactStatus;
 }
 
 export interface ArtifactRecord extends ArtifactDescriptor {
@@ -163,48 +151,37 @@ const ARTIFACT_SOURCE_POLICIES = {
   tool_result: { userDeletable: true, userVisible: false, sharedReadable: true },
   tool_result_projection: { userDeletable: false, userVisible: false, sharedReadable: true },
   tool_result_archive: { userDeletable: false, userVisible: false, sharedReadable: false },
-  synthesis_cache_block: { userDeletable: true, userVisible: false, sharedReadable: false },
-  history_compact_block: { userDeletable: true, userVisible: false, sharedReadable: false },
-  history_compact_source: { userDeletable: true, userVisible: false, sharedReadable: false },
-  // Historical only: nothing produces these any more. The policy stays so the
-  // records already on disk keep decoding and stay deletable.
-  provider_request_capture: { userDeletable: true, userVisible: false, sharedReadable: false },
   subagent_writeback: { userDeletable: false, userVisible: true, sharedReadable: false },
   deep_research: { userDeletable: false, userVisible: true, sharedReadable: false },
   user_upload: { userDeletable: true, userVisible: false, sharedReadable: true },
-  export: { userDeletable: true, userVisible: true, sharedReadable: false },
-  snapshot: { userDeletable: true, userVisible: true, sharedReadable: false },
   session_effect: { userDeletable: false, userVisible: false, sharedReadable: false },
-  fixture: { userDeletable: true, userVisible: true, sharedReadable: false },
 } as const satisfies Record<ArtifactSource, ArtifactSourcePolicy>;
 
-export function canUserDeleteArtifact(record: Pick<ArtifactRecord, 'source'>): boolean {
-  return record.source === undefined || ARTIFACT_SOURCE_POLICIES[record.source].userDeletable;
-}
+const CHILD_RESULT_OUTPUT_SOURCES = new Set<ArtifactSource>([
+  'tool_result',
+  'tool_result_projection',
+  'subagent_writeback',
+  'deep_research',
+]);
 
 export function isArtifactUserVisible(record: Pick<ArtifactRecord, 'source'>): boolean {
-  return record.source === undefined || ARTIFACT_SOURCE_POLICIES[record.source].userVisible;
+  return ARTIFACT_SOURCE_POLICIES[record.source].userVisible;
+}
+
+/** Visibility does not grant permission to destroy evidence owned by a runtime workflow. */
+export function canUserDeleteArtifact(record: Pick<ArtifactRecord, 'source'>): boolean {
+  return ARTIFACT_SOURCE_POLICIES[record.source].userDeletable;
 }
 
 export function isArtifactSharedSessionReadable(record: Pick<ArtifactRecord, 'source'>): boolean {
-  return record.source !== undefined && ARTIFACT_SOURCE_POLICIES[record.source].sharedReadable;
+  return ARTIFACT_SOURCE_POLICIES[record.source].sharedReadable;
 }
 
-export type ArtifactChangedReason = 'created' | 'deleted' | 'purged';
-
-export interface ArtifactChangedEvent {
-  reason: ArtifactChangedReason;
-  artifactId: string;
-  sessionId: string;
-  ts: number;
+export function isArtifactChildResultOutput(record: Pick<ArtifactRecord, 'source'>): boolean {
+  return CHILD_RESULT_OUTPUT_SOURCES.has(record.source);
 }
 
-export type ArtifactReadFailureReason =
-  | 'not_found'
-  | 'too_large'
-  | 'read_failed'
-  | 'not_allowed'
-  | 'deleted';
+export type ArtifactReadFailureReason = 'not_found' | 'too_large' | 'read_failed' | 'not_allowed';
 
 export type ArtifactBinaryReadFailureReason = ArtifactReadFailureReason | 'unsupported_mime';
 
@@ -216,12 +193,7 @@ export type ArtifactBinaryReadResult =
   | { ok: true; base64: string; mimeType: string }
   | { ok: false; reason: ArtifactBinaryReadFailureReason };
 
-export type ArtifactSaveFailureReason =
-  | 'canceled'
-  | 'not_found'
-  | 'not_allowed'
-  | 'deleted'
-  | 'write_failed';
+export type ArtifactSaveFailureReason = 'canceled' | 'not_found' | 'not_allowed' | 'write_failed';
 
 export type ArtifactSaveResult =
   | { ok: true; saved: string }

@@ -108,6 +108,8 @@ export interface WorkHubCoordinationCandidate {
   readonly workspace: WorkspaceProjection;
   readonly state: WorkHubCoordinationCandidateState;
   readonly updatedAt: number;
+  /** Latest durable linkage for compare-and-swap correction; never model-facing. */
+  readonly latestDelegationActionId?: string;
 }
 
 export type WorkHubCoordinationCandidatesInput = Record<string, never>;
@@ -520,14 +522,12 @@ export function decodeWorkHubCoordinationActResult(value: unknown): WorkHubCoord
 }
 
 function decodeWorkHubCoordinationCandidate(value: unknown): WorkHubCoordinationCandidate {
-  const candidate = requireExactRecord(value, 'WorkHub Coordination candidate', [
-    'candidateRef',
-    'sessionId',
-    'sessionName',
-    'workspace',
-    'state',
-    'updatedAt',
-  ]);
+  const candidate = requireShapedRecord(
+    value,
+    'WorkHub Coordination candidate',
+    ['candidateRef', 'sessionId', 'sessionName', 'workspace', 'state', 'updatedAt'],
+    ['latestDelegationActionId'],
+  );
   return {
     candidateRef: requireEntityId(candidate.candidateRef, 'WorkHub candidate ref'),
     sessionId: requireEntityId(candidate.sessionId, 'WorkHub candidate Session id'),
@@ -535,6 +535,14 @@ function decodeWorkHubCoordinationCandidate(value: unknown): WorkHubCoordination
     workspace: decodeWorkspaceProjection(candidate.workspace),
     state: candidateState(candidate.state),
     updatedAt: requireCount(candidate.updatedAt, 'WorkHub candidate update time'),
+    ...(candidate.latestDelegationActionId === undefined
+      ? {}
+      : {
+          latestDelegationActionId: requireEntityId(
+            candidate.latestDelegationActionId,
+            'WorkHub latest delegation action id',
+          ),
+        }),
   };
 }
 

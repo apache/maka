@@ -416,7 +416,6 @@ async function withE2eWindow(
     locale,
     platform,
     showWindow,
-    scrollMotion,
     invocableSkills,
     gitReviewExtraFiles,
     parentRemovalSessions,
@@ -427,8 +426,6 @@ async function withE2eWindow(
     readinessSelector: string;
     e2eFixtureScenario?: string;
     locale?: 'zh-CN' | 'zh-TW' | 'en';
-    /** Opt this window back into animated scrolling; see `scroll-motion-policy`. */
-    scrollMotion?: 'auto' | 'smooth';
     /** #1312: force app:info's platform so the window boots natively into that platform's `data-os` cascade. */
     platform?: 'darwin' | 'win32' | 'linux';
     /** Show fixtures whose contract depends on compositor-paced frames. */
@@ -473,7 +470,6 @@ async function withE2eWindow(
         scenario: e2eFixtureScenario,
         locale,
         platform,
-        scrollMotion,
         showWindow: visibleWindow,
       }),
     });
@@ -483,9 +479,7 @@ async function withE2eWindow(
     });
     let page: Page;
     try {
-      // Parallel CI workers and cold Windows hosts can finish process launch
-      // before the first BrowserWindow crosses Playwright's 30s default.
-      page = await app.firstWindow({ timeout: 60_000 });
+      page = await app.firstWindow();
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const logs = mainLogs.length > 0 ? `\nElectron main console:\n${mainLogs.join('\n')}` : '';
@@ -516,73 +510,21 @@ async function withE2eWindow(
     try {
       if (app) await closeElectronApplication(app, 5_000);
     } finally {
-      await rm(userDataDir, {
-        recursive: true,
-        force: true,
-        maxRetries: 5,
-        retryDelay: 100,
-      });
+      await rm(userDataDir, { recursive: true, force: true });
     }
   }
 }
 
-interface PromptRailWorker {
-  app: ElectronApplication;
-  page: Page;
-  viewport: { width: number; height: number };
-}
-
-async function setPromptRailWindowVisible(
-  worker: PromptRailWorker,
-  visible: boolean,
-): Promise<void> {
-  await worker.app.evaluate(({ BrowserWindow }, shouldShow) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (!window) throw new Error('the prompt-rail BrowserWindow is missing');
-    // showInactive, not show: this worker window is re-revealed between every
-    // test in the file, and show() activates the app each time — a suite run
-    // would yank the developer's foreground away a dozen times over. The
-    // window still needs to be on screen for the compositor.
-    if (shouldShow) window.showInactive();
-    else window.hide();
-  }, visible);
-}
-
-async function resetPromptRailWindow(worker: PromptRailWorker): Promise<void> {
-  await worker.page.evaluate(async () => {
-    const controls = (
-      window as typeof window & {
-        makaE2eLatch?: {
-          releaseRendererObservations(): Promise<void>;
-        };
-      }
-    ).makaE2eLatch;
-    if (!controls) throw new Error('the isolated E2E controls are unavailable');
-    await controls.releaseRendererObservations();
-    localStorage.clear();
-    sessionStorage.clear();
-  });
-  await worker.page.setViewportSize(worker.viewport);
-  await worker.page.reload();
-  await worker.page.waitForSelector('[data-turn-id]', { timeout: 20_000 });
-}
-
 type E2eTestFixtures = {
   window: Page;
-  agentGraphWindow: Page;
-  onboardingWindow: Page;
   gitReviewWindow: { page: Page; projectRoot: string };
   invocableSkillsWindow: Page;
-  linkColorWindow: Page;
   projectSidebarWindow: Page;
   parentRemovalWindow: Page;
   railRenderWindow: Page;
   promptRailWindow: Page;
   threadSearchWindow: Page;
-  partialHistoryWindow: Page;
-  oversizedTurnWindow: Page;
   requestHeaderRowWindow: Page;
-  permissionCenterWindow: Page;
   newTaskTargetWindow: Page;
   directoryReferenceWindow: { page: Page; folder: string };
   accessibilityNarrativeWindow: Page;
@@ -590,7 +532,6 @@ type E2eTestFixtures = {
 
 type E2eWorkerFixtures = {
   isolatedDisplay: void;
-  promptRailWorker: PromptRailWorker;
 };
 
 export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
@@ -631,26 +572,6 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh-CN' }, use);
   },
-  agentGraphWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        readinessSelector: '.maka-agent-graph-panel',
-        e2eFixtureScenario: 'agent-graph-layout',
-        locale: 'zh-CN',
-        showWindow: true,
-      },
-      use,
-    );
-  },
-  onboardingWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      readinessSelector: '[data-maka-contract="onboarding-card"]',
-      locale: 'zh-CN',
-      showWindow: true,
-    }, use);
-  },
   gitReviewWindow: async ({}, use) => {
     await withE2eWindow(
       {
@@ -674,13 +595,6 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       readinessSelector: COMPOSER_INPUT,
       locale: 'zh-CN',
       invocableSkills: true,
-    }, use);
-  },
-  linkColorWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      readinessSelector: '.settingsBotConfigDocLink',
-      e2eFixtureScenario: 'settings-bots-onboarding',
     }, use);
   },
   // Seeded connection so the composer is ready, plus one registered Project so
@@ -728,10 +642,10 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       use,
     );
   },
-  // Keep this scenario's real Electron + Host composition warm for the worker,
-  // while the test-scoped wrapper below restores Host and renderer state
-  // between tests. Tests on it may run a Turn, so the reset is not read-only.
-  promptRailWorker: [async ({}, use) => {
+  // A multi-prompt transcript. Each cost assertion gets an isolated Host and
+  // renderer so observation state cannot bleed between tests. The window is
+  // shown because these cases drive the real compositor through CDP.
+  promptRailWindow: async ({}, use) => {
     await withE2eWindow({
       seed: false,
       // A rendered turn, deliberately not the rail: Playwright treats a
@@ -745,22 +659,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       // passes on a Chinese desktop and cannot find it on an English CI runner.
       locale: 'zh-CN',
       showWindow: true,
-    }, async (page, { app }) => {
-      const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
-      await use({ app, page, viewport });
-    });
-  }, { scope: 'worker' }],
-  // A multi-prompt transcript. Shown, because the perf suite that measures it
-  // reads real frame pacing, and a throttled compositor paces nothing a user
-  // would see.
-  promptRailWindow: async ({ promptRailWorker }, use) => {
-    await setPromptRailWindowVisible(promptRailWorker, true);
-    try {
-      await resetPromptRailWindow(promptRailWorker);
-      await use(promptRailWorker.page);
-    } finally {
-      await setPromptRailWindowVisible(promptRailWorker, false);
-    }
+    }, use);
   },
   // The same seeded transcript, on a window of its own. Search reads the Host
   // through the bridge and renders nothing, so it needs neither the warm
@@ -772,28 +671,6 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'chat-prompt-rail',
       locale: 'zh-CN',
-    }, use);
-  },
-  // A transcript larger than the bounded Desktop range. Clicking an unloaded
-  // prompt exercises the real load-around path and its partial-history UI.
-  partialHistoryWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      readinessSelector: '[data-turn-id]',
-      e2eFixtureScenario: 'chat-partial-history',
-      locale: 'zh-CN',
-      showWindow: true,
-    }, use);
-  },
-  // One Turn larger than the transcript byte budget. Shown because the test
-  // reads Chromium's actual content-visibility state while crossing it.
-  oversizedTurnWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      readinessSelector: '[data-turn-id="turn-oversized-fixture"]',
-      e2eFixtureScenario: 'chat-oversized-turn',
-      locale: 'zh',
-      showWindow: true,
     }, use);
   },
   // Settings → 模型, where `no-models` is the seeded openai-compatible relay —
@@ -809,17 +686,8 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       showWindow: true,
     }, use);
   },
-  permissionCenterWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      readinessSelector: '.settingsCapabilityGroup',
-      e2eFixtureScenario: 'settings-permissions',
-      locale: 'zh-CN',
-      showWindow: true,
-    }, use);
-  },
-  // A data-backed conversation with settled tool evidence and a populated
-  // task ledger. Shown because the accessibility journey follows real native
+  // A data-backed conversation with settled tool evidence and the workbar open
+  // beside it. Shown because the accessibility journey follows real native
   // focus order through the transcript into the composer controls.
   accessibilityNarrativeWindow: async ({}, use) => {
     await withE2eWindow({

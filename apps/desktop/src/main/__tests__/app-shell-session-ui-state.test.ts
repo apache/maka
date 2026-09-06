@@ -281,6 +281,34 @@ describe('app shell session UI state controller', () => {
     assert.equal(notifications, 2);
   });
 
+  it('clears Owner landmarks and ignores their late response when the active Session becomes a Guest', async () => {
+    let resolveOwner!: (value: { throughSequence: number; landmarks: string[] }) => void;
+    let index: { sessionId: string; throughSequence: number | null; turns: readonly string[] } | undefined = {
+      sessionId: 'owner-session', throughSequence: 0, turns: ['previous-owner-turn'],
+    };
+    const dispose = transcriptReadingPosition.refreshLandmarks({
+      sessionId: 'owner-session',
+      newestDurablePromptSequence: 1,
+      list: () => new Promise<{ throughSequence: number; landmarks: string[] }>((resolve) => {
+        resolveOwner = resolve;
+      }),
+      isCurrent: () => true,
+      setIndex: (value) => { index = value; },
+    });
+    // The shell cleans up the Owner effect and passes no ownerActiveId for Guests.
+    dispose?.();
+    transcriptReadingPosition.refreshLandmarks<string>({
+      sessionId: undefined,
+      newestDurablePromptSequence: 1,
+      list: async () => assert.fail('Guests cannot query Owner turn landmarks'),
+      isCurrent: () => true,
+      setIndex: (value) => { index = value; },
+    });
+    resolveOwner({ throughSequence: 1, landmarks: ['owner-turn'] });
+    await Promise.resolve();
+    assert.equal(index, undefined);
+  });
+
   it('enriches a Turn-only reading anchor when its range sequence arrives later', () => {
     let anchor: { turnId: string; sequence?: number } | undefined;
     transcriptReadingPosition.restoreRange({

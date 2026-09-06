@@ -189,7 +189,7 @@ function systemNoteLabel(kind: string, data: unknown, locale: UiLocale): string 
 
 export function materializeChat(
   messages: readonly StoredMessage[],
-  locale: UiLocale = "en",
+  locale: UiLocale,
 ): ChatItem[] {
   const items: ChatItem[] = [];
   for (const message of messages) {
@@ -703,7 +703,7 @@ const SHELL_RUN_PRESENTATION_STATUS = {
  */
 export function materializeTurns(
   messages: readonly StoredMessage[],
-  locale: UiLocale = "en",
+  locale: UiLocale,
 ): TurnViewModel[] {
   const turnRecords = deriveTurnRecords(messages);
   const turnRecordById = new Map(

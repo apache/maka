@@ -647,7 +647,6 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
   let runtime = createSqliteRuntimeStore(runtimePath);
   try {
     artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await artifacts.recover();
     await runtime.appendRuntimeEvent(sessionId, runId, head);
     backend = await createHostAiSdkBackend(
       backendCreationFixture({
@@ -737,7 +736,6 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
     assert.ok(owner);
     if (!owner) return;
     artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await artifacts.recover();
     runtime = createSqliteRuntimeStore(runtimePath);
     const recoveredEvents = await runtime.readRuntimeEvents(sessionId, runId);
     backend = await createHostAiSdkBackend(

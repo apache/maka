@@ -63,7 +63,6 @@ function attachmentReadHandler(
       streamArtifact,
     } as never,
     mainWindowController: {} as never,
-    sendToRenderer() {},
     showItemInFolder() {},
   });
   const handler = handlers.get("attachments:readBytes");
@@ -78,7 +77,6 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
   const content = Buffer.alloc(70 * 1024, 5);
   const handlers = new Map<string, Handler>();
   const opened: string[] = [];
-  const events: unknown[] = [];
   const artifact = {
     id: "artifact-1",
     sessionId: "session-1",
@@ -105,7 +103,7 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
       return { ok: false, reason: "unsupported_mime" };
     },
     async deleteArtifact() {
-      return { kind: "deleted", artifact: { ...artifact, status: "deleted" } };
+      return { kind: "deleted" };
     },
     async streamArtifact(
       _sessionId: string,
@@ -128,7 +126,6 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
       mainWindowController: {
         showSaveDialog: async () => ({ canceled: false, filePath: savedPath }),
       } as never,
-      sendToRenderer: (_channel, event) => events.push(event),
       showItemInFolder: (path) => opened.push(path),
       presentationRoot,
     });
@@ -159,7 +156,6 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
     assert.deepEqual(await readFile(opened[0]!), content);
 
     await handlers.get("artifacts:delete")?.({}, "session-1", "artifact-1");
-    assert.equal((events[0] as { reason: string }).reason, "deleted");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

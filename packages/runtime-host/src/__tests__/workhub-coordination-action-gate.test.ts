@@ -2573,10 +2573,11 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     async readAssignment(actionId: string) {
       return assignmentRecords.get(actionId);
     },
-    async listActiveAssignments() {
+    async listActiveAssignments(targetSessionId) {
       return [...assignmentRecords.values()].filter((assignment) => {
         const stopOutcome = stopResolutions.get(assignment.delegationId)?.outcome;
         return (
+          assignment.targetSessionId === targetSessionId &&
           !supersessions.has(assignment.delegationId) &&
           !replacementAborts.has(assignment.delegationId) &&
           (stopOutcome === undefined || stopOutcome === 'not_owned')

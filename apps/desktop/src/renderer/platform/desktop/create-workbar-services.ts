@@ -31,7 +31,6 @@ export type DesktopWorkbarBridge = Pick<
   | 'inspector'
   | 'sessions'
   | 'shellRuns'
-  | 'todo'
   | 'transcripts'
 >;
 
@@ -55,7 +54,6 @@ export function createDesktopWorkbarServices(
         bridge.sessions.subscribeEvents(sessionId, handler),
     },
     terminal: bridge.shellRuns,
-    todo: bridge.todo,
     browser: {
       setActiveSession: (sessionId) => bridge.browser.setActiveSession(sessionId),
       setViewport: (input) => bridge.browser.setViewport(input),
@@ -70,14 +68,13 @@ export function createDesktopWorkbarServices(
       subscribeLive: (handler) => bridge.browser.onLive(handler),
     },
     artifacts: {
-      list: (sessionId, options) => bridge.artifacts.list(sessionId, options),
+      list: (sessionId) => bridge.artifacts.list(sessionId),
       readText: (sessionId, artifactId) =>
         bridge.artifacts.readText(sessionId, artifactId),
       readBinary: (sessionId, artifactId) =>
         bridge.artifacts.readBinary(sessionId, artifactId),
       delete: (sessionId, artifactId) =>
         bridge.artifacts.delete(sessionId, artifactId),
-      subscribeChanges: (handler) => bridge.artifacts.subscribeChanges(handler),
       openPath: (sessionId, artifactId) =>
         bridge.app.openArtifactPath(sessionId, artifactId),
       saveAs: (sessionId, artifactId) =>

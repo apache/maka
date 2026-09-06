@@ -29,6 +29,7 @@ import { BrowserViewManager } from './browser/view-manager.js';
 import type { E2eFixture } from './e2e-fixture.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
 import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
+import { clearDevRendererHttpCache } from './main-renderer-dev-cache.js';
 import {
   type MainRendererFrameIdentity,
   observeMainRendererProcessGone,
@@ -521,6 +522,11 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         : { ...mainWindow.getBounds(), isMaximized: false };
       void writeSavedBounds(workspaceRoot, final);
     });
+
+    // Dev-server cache hygiene (issue #4775) — see main-renderer-dev-cache.ts
+    // for why a stale immutable dep-chunk graph must never survive into a new
+    // dev session (duplicate React instances → null hook dispatcher crash).
+    await clearDevRendererHttpCache(mainWindow.webContents.session, rendererEntry);
 
     await loadMainRenderer(mainWindow, rendererEntry);
 

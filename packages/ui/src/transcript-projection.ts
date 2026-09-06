@@ -60,7 +60,7 @@ export interface TranscriptProjectionInput {
    * turn is only reused when its value matches.
    */
   sessionId?: string;
-  locale?: UiLocale;
+  locale: UiLocale;
   messages: readonly StoredMessage[];
   liveTurn?: LiveTurnProjection;
   shellRunUpdates?: readonly ShellRunUpdate[];

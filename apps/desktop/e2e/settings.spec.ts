@@ -26,23 +26,6 @@ interface SettingsChunkLatchWindow extends Window {
   };
 }
 
-async function choiceContentGeometry(card: import('@playwright/test').Locator) {
-  return card.evaluate((element) => {
-    const content = Array.from(element.children).find((child) => child.tagName !== 'INPUT');
-    if (!(content instanceof HTMLElement)) {
-      throw new Error('SelectableCard content is missing');
-    }
-    const cardRect = element.getBoundingClientRect();
-    const contentRect = content.getBoundingClientRect();
-    return {
-      cardHeight: cardRect.height,
-      contentHeight: contentRect.height,
-      topGap: contentRect.top - cardRect.top,
-      bottomGap: cardRect.bottom - contentRect.bottom,
-    };
-  });
-}
-
 test('Settings loading surface owns unmodified Escape', async ({ window: page }) => {
   const latchInstalled = await page.evaluate(() => {
     const e2eLatch = (window as unknown as SettingsChunkLatchWindow).makaE2eLatch;
@@ -123,13 +106,15 @@ test('settings hides expanded workbar chrome and restores it on close', async ({
   const workbar = page.locator('.maka-session-workbar[data-placement="right"]');
   const workbarToolbar = workbar.getByRole('toolbar', { name: '任务工作栏标签' });
   await expect(workbarToolbar).toBeVisible();
-  await expect(workbarToolbar.getByRole('button', { name: '打开工作栏标签' })).toBeVisible();
+  await expect(
+    workbarToolbar.getByRole('button', { name: '打开或关闭工作栏的面' }),
+  ).toBeVisible();
   await expect(workbarToolbar.getByRole('button', { name: '收起任务工作栏' })).toBeVisible();
   await page
-    .getByRole('button', { name: /待办.*查看和维护这个任务的待办台账/ })
+    .getByRole('button', { name: /变更.*查看当前 Git 工作区变化/ })
     .click();
-  const taskTab = workbarToolbar.getByRole('tab', { name: '待办' });
-  await expect(taskTab).toBeVisible();
+  const openFaceTab = workbarToolbar.getByRole('tab', { name: '变更' });
+  await expect(openFaceTab).toBeVisible();
 
   await ensureSidebarExpanded(page);
   await page.getByRole('button', { name: '设置' }).click();
@@ -138,67 +123,7 @@ test('settings hides expanded workbar chrome and restores it on close', async ({
 
   await page.keyboard.press('Escape');
   await expect(workbarToolbar).toBeVisible();
-  await expect(taskTab).toBeVisible();
-});
-
-test('wide settings gutters scroll the whole main pane', async ({ window: page }) => {
-  await page.setViewportSize({ width: 1600, height: 520 });
-  await ensureSidebarExpanded(page);
-  await page.getByRole('button', { name: '设置' }).click();
-  await page.getByRole('button', { name: '通用', exact: true }).click();
-  await expect(page.getByRole('textbox', { name: '助手语气偏好' })).toBeEnabled();
-
-  const pane = page.locator('.settingsMainPane');
-  const content = pane.locator('.settingsPageStack').first();
-  const geometry = await pane.evaluate((element) => {
-    const paneRect = element.getBoundingClientRect();
-    const contentElement = element.querySelector('.settingsPageStack');
-    const contentRect = contentElement?.getBoundingClientRect();
-    const layoutContent = element.querySelector('.astryx-layout-content');
-    if (!contentRect || !layoutContent) throw new Error('Settings layout is incomplete');
-    return {
-      blankRight: paneRect.right - contentRect.right,
-      clientHeight: element.clientHeight,
-      contentOverflowY: getComputedStyle(layoutContent).overflowY,
-      paneOverflowY: getComputedStyle(element).overflowY,
-      scrollHeight: element.scrollHeight,
-      wheelPoint: {
-        x: Math.floor((contentRect.right + paneRect.right) / 2),
-        y: Math.floor(Math.min(contentRect.top + 120, paneRect.bottom - 40)),
-      },
-    };
-  });
-
-  expect(geometry.blankRight).toBeGreaterThan(40);
-  expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight);
-  expect(geometry.contentOverflowY).not.toBe('auto');
-  expect(geometry.paneOverflowY).toBe('auto');
-
-  await page.mouse.move(geometry.wheelPoint.x, geometry.wheelPoint.y);
-  await page.mouse.wheel(0, 600);
-  await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-  await expect(content).toBeVisible();
-});
-
-test('appearance choice content stays vertically centered in stretched grid rows', async ({ window: page }) => {
-  await page.evaluate(async () => {
-    await window.maka.settings.update({ personalization: { uiLocale: 'en' } });
-  });
-  await page.reload();
-  await page.waitForSelector(COMPOSER_INPUT);
-  await page.setViewportSize({ width: 1650, height: 992 });
-  await ensureSidebarExpanded(page);
-  await page.getByRole('button', { name: 'Settings' }).click();
-  await page.getByRole('button', { name: 'Appearance', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'App icon' })).toBeVisible();
-
-  for (const name of ['Azure', 'Classic']) {
-    const card = page.getByRole('checkbox', { name, exact: true }).locator('..');
-    await expect(card).toBeVisible();
-    const geometry = await choiceContentGeometry(card);
-    expect(geometry.cardHeight).toBeGreaterThan(geometry.contentHeight);
-    expect(Math.abs(geometry.topGap - geometry.bottomGap)).toBeLessThanOrEqual(1);
-  }
+  await expect(openFaceTab).toBeVisible();
 });
 
 test('reopening settings keeps the last-ready General page stable while refreshing', async ({

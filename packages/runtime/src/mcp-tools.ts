@@ -36,6 +36,10 @@ import type { MakaTool } from './tool-runtime.js';
 
 const MAX_PROVIDER_TOOL_NAME = 64;
 const HASH_CHARS = 10;
+
+function normalizeMcpInputSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  return Object.hasOwn(schema, 'type') ? schema : { ...schema, type: 'object' };
+}
 const MAX_NATIVE_IMAGE_BASE64_CHARS = 20_000_000;
 const MAX_NATIVE_IMAGES = 4;
 const MAX_MODEL_TEXT_CHARS = 200_000;
@@ -107,10 +111,6 @@ export function buildMcpTools(
   return buildMcpToolsWithIdentities(provider, options).map(({ tool }) => tool);
 }
 
-/**
- * Build the proxy tools together with each tool's source MCP identity, read
- * from a single snapshot so the pairing can never drift across a reconnect.
- */
 export function buildMcpToolsWithIdentities(
   provider: McpToolProvider,
   options: BuildMcpToolsOptions = {},
@@ -118,6 +118,7 @@ export function buildMcpToolsWithIdentities(
   const names = new Map<string, string>();
   const snapshot = provider.toolSnapshot();
   return snapshot.tools.map(({ descriptor, binding }) => {
+    const inputSchema = normalizeMcpInputSchema(descriptor.inputSchema);
     const identity = `${descriptor.serverId}\0${descriptor.name}`;
     const name = mcpProxyToolName(descriptor.serverId, descriptor.name);
     const collision = names.get(name);
@@ -141,7 +142,9 @@ export function buildMcpToolsWithIdentities(
         categoryHint: options.categoryHint ?? 'network_send',
         ...(options.hostAdmission ? { hostAdmission: options.hostAdmission } : {}),
         ...(options.recoveryMode ? { recoveryMode: options.recoveryMode } : {}),
-        parameters: jsonSchema(descriptor.inputSchema),
+        // The MCP server remains the sole authority for the complete JSON
+        // Schema. Runtime only carries the declaration to the AI SDK.
+        parameters: jsonSchema(inputSchema),
         ...(provider.prepareTool
           ? {
               prepareExecution: async (args: unknown, context) => {

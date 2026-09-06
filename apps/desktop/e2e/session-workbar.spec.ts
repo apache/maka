@@ -324,9 +324,16 @@ test('titlebar workbar action restores an existing tool instead of the picker', 
   const safeAreaToggleBox = await collapseButton.boundingBox();
   expect(safeAreaToggleBox).not.toBeNull();
 
-  await page.getByRole('button', { name: '打开工作栏标签' }).click();
+  // [+] is a menu over the panel now, not a swap to the launcher: the face you
+  // are reading stays on screen while you pick another one.
+  await page.getByRole('button', { name: '打开或关闭工作栏的面' }).click();
+  const faceMenu = page.getByRole('menu');
+  await expect(faceMenu).toBeVisible();
+  await expect(panel).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(faceMenu).toBeHidden();
   const picker = page.getByRole('list', { name: '打开工具' });
-  await expect(picker).toBeVisible();
+  await expect(picker).not.toBeVisible();
 
   await collapseButton.click();
   const expandButton = workspaceActions.getByRole('button', { name: '展开任务工作栏' });
@@ -440,19 +447,22 @@ test('Side Chat survives collapse, confirms close, and cleans up on source switc
   await page.getByRole('button', { name: '展开任务工作栏' }).click();
   await expect(companion).toBeVisible();
 
-  const workbarToolbar = page.getByRole('toolbar', { name: '任务工作栏标签' }).first();
-  const closeActiveSideChat = () =>
-    workbarToolbar
-      .getByRole('tab', { selected: true })
-      .locator('..')
-      .getByRole('button', { name: /^关闭/ });
-  await closeActiveSideChat().click();
+  // Closing is the same [+] menu that opens: the face already on screen carries
+  // a checkmark, and picking it again asks to close it.
+  const closeActiveSideChat = async () => {
+    await page.getByRole('button', { name: '打开或关闭工作栏的面' }).first().click();
+    await page
+      .getByRole('menu')
+      .getByRole('menuitem', { name: '侧边对话', exact: true })
+      .click();
+  };
+  await closeActiveSideChat();
   const confirmation = page.getByRole('dialog');
   await expect(confirmation).toContainText('这个临时侧边对话会被永久删除');
   await confirmation.getByRole('button', { name: '取消' }).click();
   await expect(companion).toBeVisible();
 
-  await closeActiveSideChat().click();
+  await closeActiveSideChat();
   await confirmation.getByRole('button', { name: '关闭侧边对话' }).click();
   await expect(companion).toHaveCount(0);
   await expect

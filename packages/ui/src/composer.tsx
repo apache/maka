@@ -402,6 +402,12 @@ export const Composer = forwardRef<
     contextUsage?: {
       usageTokens?: number;
       declaredContextWindow?: number;
+      /**
+       * The window the usage number was metered against, frozen at call time.
+       * When present it outranks the metadata window, so a live reading keeps
+       * its numerator and denominator from the same request.
+       */
+      meteredContextWindow?: number;
       metadataContextWindow?: number;
       /** Open the Host-owned trace surface for this readout. */
       onOpen(): void;
@@ -2247,16 +2253,20 @@ export const Composer = forwardRef<
 function ContextUsageAction(props: {
   usageTokens?: number;
   declaredContextWindow?: number;
+  meteredContextWindow?: number;
   metadataContextWindow?: number;
   onOpen(): void;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  // A window from either source is enough to show a share: the user's
-  // declaration when there is one, otherwise the model's reported window. The
-  // distinction matters for the compaction threshold, which only a declaration
-  // arms, not for reading a number off the screen. With no window at all the
-  // usage stands on its own.
-  const window = props.declaredContextWindow ?? props.metadataContextWindow;
+  // A window from any source is enough to show a share, and the order is a
+  // claim about which window the number was earned against: the user's
+  // declaration first — it is the user's intent, and the only one that arms
+  // the compaction threshold — then the metered window frozen alongside the
+  // usage, so a live reading keeps its numerator and denominator from the
+  // same request, and only then the model's reported metadata. With no window
+  // at all the usage stands on its own.
+  const window =
+    props.declaredContextWindow ?? props.meteredContextWindow ?? props.metadataContextWindow;
   const label =
     props.usageTokens !== undefined && window !== undefined && window > 0
       ? `${Math.round((props.usageTokens / window) * 100)}%`

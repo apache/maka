@@ -680,6 +680,29 @@ test('WorkHub creates new work through the production assignment composition', a
       const session = (await manager.listSessions()).find(({ id }) => id === targetSessionId);
       assert.equal(session?.name, 'Login stability');
       assert.equal(session?.llmConnectionId, connectionId);
+
+      const current = await composition.handlers['workhub.coordination.candidates']({}, context);
+      assert.equal(current.ok, true);
+      if (!current.ok) return;
+      assert.equal(
+        current.result.candidates.find(({ sessionId }) => sessionId === targetSessionId)
+          ?.latestDelegationActionId,
+        'workhub-create-action',
+      );
+      const stopped = await composition.handlers['workhub.coordination.act'](
+        {
+          actionId: 'workhub-create-stop-action',
+          userText: 'Stop Login stability',
+          confirmation: { kind: 'user_stop' },
+          proposal: {
+            disposition: 'stop_work',
+            expects: { targetSessionId },
+          },
+        },
+        context,
+      );
+      assert.equal(stopped.ok, true, JSON.stringify(stopped));
+      if (stopped.ok) assert.equal(stopped.result.disposition, 'stop_work');
     } finally {
       await composition.close();
     }
@@ -770,6 +793,10 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
         );
         return proof.ok && proof.result.resolutions[0]?.state === 'owned';
       });
+      assert.deepEqual(
+        await stores.sessionStore.readActiveWorkHubAssignmentsByTarget([source.id]),
+        [assignment],
+      );
 
       const stopped = await composition.handlers['workhub.coordination.act'](
         {

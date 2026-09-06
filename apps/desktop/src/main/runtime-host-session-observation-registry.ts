@@ -248,35 +248,6 @@ export class RuntimeHostSessionObservationRegistry {
     }
   }
 
-  async releaseTarget(targetId: number): Promise<void> {
-    const source = this.#source;
-    const observations = [...this.#registrations].filter(
-      ([, registration]) => registration.target.id === targetId,
-    );
-    const transcripts = [...this.#transcripts].filter(
-      ([, registration]) => registration.target.id === targetId,
-    );
-    for (const [observerId, registration] of observations) {
-      this.#deleteRegistration(observerId, registration);
-    }
-    for (const [consumerId, registration] of transcripts) {
-      this.#deleteTranscript(consumerId, registration);
-    }
-    if (!source) return;
-
-    const cleanup = await Promise.allSettled([
-      ...observations.map(([observerId]) => source.unobserve(observerId)),
-      ...transcripts.map(([consumerId]) => source.closeTranscript?.(consumerId, targetId)),
-    ]);
-    const errors = cleanup
-      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-      .map((result) => result.reason);
-    if (errors.length === 1) throw errors[0];
-    if (errors.length > 1) {
-      throw new AggregateError(errors, 'Failed to release renderer Session observations');
-    }
-  }
-
   detach(source: SessionObservationSource): void {
     if (this.#source === source) {
       this.#source = undefined;

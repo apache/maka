@@ -21,33 +21,61 @@ import type { OperationResidency } from './operation-dispatcher.js';
 
 const RESIDENCY_LABEL_PATTERN = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
 
+/**
+ * Residencies answer two different questions and the kinds must not be
+ * conflated:
+ *
+ * - `drain` residencies mark real work in flight. They block idle exit and
+ *   must settle before a graceful close completes.
+ * - `idle` residencies only block idle exit. A marker such as
+ *   process-retention is not work: it must not stall a drain or count as
+ *   activity that blocks a maintenance probe.
+ */
+export type HostResidencyKind = 'drain' | 'idle';
+
 export interface HostResidencySnapshot {
   readonly label: string;
   readonly count: number;
 }
 
+interface HostResidencyCounts {
+  total: number;
+  drain: number;
+}
+
 export class HostResidencyRegistry {
-  readonly #counts = new Map<string, number>();
+  readonly #counts = new Map<string, HostResidencyCounts>();
   readonly #drainWaiters = new Set<{
     readonly excludedLabel: string | undefined;
     readonly resolve: () => void;
   }>();
   #activeCount = 0;
+  #drainCount = 0;
 
+  /** Residencies of either kind keep the process alive against idle exit. */
   get activeCount(): number {
     return this.#activeCount;
   }
 
-  acquire(label: string): OperationResidency {
+  /** Only drain-kind residencies block maintenance probes and graceful close. */
+  get drainCount(): number {
+    return this.#drainCount;
+  }
+
+  acquire(label: string, kind: HostResidencyKind = 'drain'): OperationResidency {
     requireResidencyLabel(label);
     this.#activeCount += 1;
-    this.#counts.set(label, (this.#counts.get(label) ?? 0) + 1);
+    if (kind === 'drain') this.#drainCount += 1;
+    const counts = this.#counts.get(label) ?? { total: 0, drain: 0 };
+    counts.total += 1;
+    if (kind === 'drain') counts.drain += 1;
+    this.#counts.set(label, counts);
     let active = true;
     return {
       release: () => {
         if (!active) return;
         active = false;
-        this.#release(label);
+        this.#release(label, kind);
       },
     };
   }
@@ -55,41 +83,45 @@ export class HostResidencyRegistry {
   snapshot(): readonly HostResidencySnapshot[] {
     return [...this.#counts]
       .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-      .map(([label, count]) => Object.freeze({ label, count }));
+      .map(([label, counts]) => Object.freeze({ label, count: counts.total }));
   }
 
   waitForEmpty(): Promise<void> {
-    return this.#waitForEmptyExcept(undefined);
+    return this.#waitForDrainEmptyExcept(undefined);
   }
 
   waitForEmptyExcept(excludedLabel: string): Promise<void> {
     requireResidencyLabel(excludedLabel);
-    return this.#waitForEmptyExcept(excludedLabel);
+    return this.#waitForDrainEmptyExcept(excludedLabel);
   }
 
-  #release(label: string): void {
-    const count = this.#counts.get(label);
-    if (count === undefined || count === 0 || this.#activeCount === 0) {
+  #release(label: string, kind: HostResidencyKind): void {
+    const counts = this.#counts.get(label);
+    if (counts === undefined || counts.total === 0 || this.#activeCount === 0) {
       throw new Error('Runtime Host residency underflow');
     }
-    if (count === 1) this.#counts.delete(label);
-    else this.#counts.set(label, count - 1);
+    counts.total -= 1;
+    if (kind === 'drain') {
+      counts.drain -= 1;
+      this.#drainCount -= 1;
+    }
     this.#activeCount -= 1;
+    if (counts.total === 0) this.#counts.delete(label);
     for (const waiter of this.#drainWaiters) {
-      if (!this.#isEmptyExcept(waiter.excludedLabel)) continue;
+      if (!this.#isDrainEmptyExcept(waiter.excludedLabel)) continue;
       this.#drainWaiters.delete(waiter);
       waiter.resolve();
     }
   }
 
-  #waitForEmptyExcept(excludedLabel: string | undefined): Promise<void> {
-    if (this.#isEmptyExcept(excludedLabel)) return Promise.resolve();
+  #waitForDrainEmptyExcept(excludedLabel: string | undefined): Promise<void> {
+    if (this.#isDrainEmptyExcept(excludedLabel)) return Promise.resolve();
     return new Promise((resolve) => this.#drainWaiters.add({ excludedLabel, resolve }));
   }
 
-  #isEmptyExcept(excludedLabel: string | undefined): boolean {
-    for (const [label, count] of this.#counts) {
-      if (count > 0 && label !== excludedLabel) return false;
+  #isDrainEmptyExcept(excludedLabel: string | undefined): boolean {
+    for (const [label, counts] of this.#counts) {
+      if (counts.drain > 0 && label !== excludedLabel) return false;
     }
     return true;
   }

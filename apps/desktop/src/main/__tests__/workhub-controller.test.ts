@@ -245,11 +245,7 @@ test('conversation acknowledges a durable assignment before projecting target ex
     sessions,
     coordination: {
       open: async (handler) => {
-        handler([assignment], [{
-          actionId: assignment.assignment!.actionId,
-          targetSessionId: assignment.assignment!.targetSessionId,
-          sequence: 0,
-        }]);
+        handler([assignment]);
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
@@ -294,11 +290,7 @@ test('conversation feedback never lets an older refresh overwrite newer target s
     coordination: {
       open: async (handler) => {
         const assignment = coordinationAssignmentTurn();
-        handler([assignment], [{
-          actionId: assignment.assignment!.actionId,
-          targetSessionId: assignment.assignment!.targetSessionId,
-          sequence: 0,
-        }]);
+        handler([assignment]);
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
@@ -340,11 +332,7 @@ test('direct stop bypasses routing candidates and preserves a not_owned delegati
     sessions,
     coordination: {
       open: async (handler) => {
-        handler([coordinationAssignmentTurn()], [{
-          actionId: 'action-1',
-          targetSessionId: 'payments',
-          sequence: 0,
-        }]);
+        handler([coordinationAssignmentTurn()]);
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
@@ -400,7 +388,7 @@ test('an anaphoric stop asks for a fresh named imperative without offering a rou
     sessions,
     coordination: {
       open: async (handler) => {
-        handler([], [{ actionId: 'action-1', targetSessionId: 'payments', sequence: 0 }]);
+        handler([]);
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
@@ -430,7 +418,7 @@ test('a named stop reports the Gate refusal instead of judging the target itself
     sessions,
     coordination: {
       open: async (handler) => {
-        handler([], []);
+        handler([]);
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
@@ -464,7 +452,7 @@ test('a stop that fails for any other reason is a fault, not a clarification', a
     sessions,
     coordination: {
       open: async (handler) => {
-        handler([], []);
+        handler([]);
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
@@ -494,7 +482,7 @@ test('stop-shaped ordinary work routes normally instead of looping on clarificat
       sessions,
       coordination: {
         open: async (handler) => {
-          handler([], [{ actionId: 'action-1', targetSessionId: 'payments', sequence: 0 }]);
+          handler([]);
           return { close: async () => undefined };
         },
         record: async (input) => ({ turnId: input.turnId }),
@@ -1785,6 +1773,7 @@ test('production natural-language corrections retain the prior delegation link',
     }),
   ]);
   const candidateSetId = `sha256:${'e'.repeat(64)}`;
+  const latestActionIdBySessionId = new Map<string, string>();
   const candidates = [
     {
       candidateRef: 'candidate-login',
@@ -1814,7 +1803,15 @@ test('production natural-language corrections retain the prior delegation link',
     coordination: {
       open: async () => ({ close: async () => undefined }),
       record: async (input) => ({ turnId: input.turnId }),
-      candidates: async () => ({ candidateSetId, candidates }),
+      candidates: async () => ({
+        candidateSetId,
+        candidates: candidates.map((candidate) => {
+          const latestDelegationActionId = latestActionIdBySessionId.get(candidate.sessionId);
+          return latestDelegationActionId
+            ? { ...candidate, latestDelegationActionId }
+            : candidate;
+        }),
+      }),
       act: async (input) => {
         actions.push(input);
         if (input.proposal.disposition === 'replace') {
@@ -1826,6 +1823,10 @@ test('production natural-language corrections retain the prior delegation link',
               targetTurnId: `turn-${input.actionId}`,
             };
           }
+          latestActionIdBySessionId.set(
+            input.proposal.target.candidateRef === 'candidate-login' ? 'login' : 'payment',
+            input.actionId,
+          );
           return {
             disposition: 'replace',
             replacementDisposition: 'delegate_existing',
@@ -1838,6 +1839,10 @@ test('production natural-language corrections retain the prior delegation link',
         if (input.proposal.disposition !== 'delegate_existing') {
           throw new Error('unexpected test disposition');
         }
+        latestActionIdBySessionId.set(
+          input.proposal.candidateRef === 'candidate-login' ? 'login' : 'payment',
+          input.actionId,
+        );
         return {
           disposition: 'delegate_existing',
           targetSessionId: input.proposal.candidateRef === 'candidate-login'

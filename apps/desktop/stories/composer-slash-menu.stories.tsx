@@ -33,7 +33,7 @@
  * that exists without a real Selection.
  */
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { slashCommandsForSurface } from '@maka/core/slash-command-catalog';
@@ -78,6 +78,8 @@ const invocableSkills = [
 let publishSessionUpdate: (() => void) | undefined;
 /** Projection loads served so far, so a story can wait for one to land. */
 let projectionLoads = 0;
+let holdNextProjection = false;
+let releaseHeldProjection: (() => void) | undefined;
 
 /**
  * The bridge `useComposerMentions` reads. A fresh array per call on purpose:
@@ -86,6 +88,13 @@ let projectionLoads = 0;
  */
 const loadProjection = async () => {
   projectionLoads += 1;
+  if (holdNextProjection) {
+    holdNextProjection = false;
+    await new Promise<void>((resolve) => {
+      releaseHeldProjection = resolve;
+    });
+    releaseHeldProjection = undefined;
+  }
   return invocableSkills.map((skill) => ({ ...skill }));
 };
 
@@ -157,6 +166,35 @@ function SlashMenuHarness({
       >
         <SlashMenuComposer hasSession={hasSession} streaming={streaming} />
       </ComposerMentionsProvider>
+    </div>
+  );
+}
+
+function ContextSwitchHarness(): React.ReactElement {
+  const [hasSession, setHasSession] = useState(true);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: 520, padding: 24 }}>
+      <button
+        type="button"
+        onClick={() => {
+          holdNextProjection = true;
+          setHasSession(false);
+        }}
+      >
+        Switch to new task
+      </button>
+      <div style={{ display: 'flex', flex: 1, alignItems: 'flex-end' }}>
+        <ComposerMentionsProvider
+          skillCatalogRevision={0}
+          sessionId={hasSession ? SESSION_ID : undefined}
+          projectPath="/workspace/maka-agent"
+          newTaskTarget={hasSession
+            ? undefined
+            : { profileId: 'profile-local', hostId: 'host-local', projectId: 'project-maka' }}
+        >
+          <SlashMenuComposer hasSession={hasSession} streaming={false} />
+        </ComposerMentionsProvider>
+      </div>
     </div>
   );
 }
@@ -376,5 +414,44 @@ export const SurvivesASameContentProjectionRefresh: Story = {
     await expect(removals).toEqual({ menu: 0, skillsGroup: 0 });
     await expect(menu.isConnected).toBe(true);
     await expect(skillsGroup.isConnected).toBe(true);
+  },
+};
+
+// Real path: leaving an existing Session for a new-task composer. The previous
+// Session's populated Skill projection must stop being actionable in the same
+// render; the new surface stays busy until its own projection resolves.
+export const ContextSwitchStartsWithALoadingCatalog: Story = {
+  render: () => <ContextSwitchHarness />,
+  play: async ({ canvasElement }) => {
+    const page = overlay();
+    await waitFor(() => expect(projectionLoads).toBeGreaterThan(0));
+    await userEvent.click(within(canvasElement).getByRole('button', {
+      name: 'Switch to new task',
+    }));
+    await userEvent.click(page.getByRole('button', { name: '添加上下文' }));
+    const menu = page.getByRole('menu', { name: '添加上下文' });
+    const skillsRow = within(menu).getByRole('menuitem', { name: /选择技能/ });
+
+    await waitFor(() => expect(skillsRow).toHaveAttribute('aria-busy', 'true'));
+    await expect(skillsRow).not.toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(skillsRow);
+    await expect(menu).toBeVisible();
+    await expect(editor(canvasElement)).toHaveTextContent('');
+    await expect(page.queryByRole('listbox', { name: /技能/ })).not.toBeInTheDocument();
+
+    releaseHeldProjection?.();
+    await waitFor(() => {
+      const settledRow = within(
+        page.getByRole('menu', { name: '添加上下文' }),
+      ).getByRole('menuitem', { name: /选择技能/ });
+      expect(settledRow).not.toHaveAttribute('aria-busy');
+    });
+    const settledRow = within(
+      page.getByRole('menu', { name: '添加上下文' }),
+    ).getByRole('menuitem', { name: /选择技能/ });
+    await userEvent.click(settledRow);
+    await expect(await page.findByRole('listbox', { name: /技能/ }, {
+      timeout: 5_000,
+    })).toBeVisible();
   },
 };

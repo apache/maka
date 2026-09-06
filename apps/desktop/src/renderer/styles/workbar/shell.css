@@ -128,6 +128,33 @@
   align-items: center;
   min-width: 0;
   box-sizing: border-box;
+  /* The rail belongs to the bar, not to the tab strip. `TabList hasDivider`
+     draws it on the strip's own box, which ends where the tabs do, so it ran
+     out from under `[+]` and the collapse toggle and read as a line beneath
+     half a row. This is the second idiom Astryx's `Tab` names for the rail
+     ("TabList `hasDivider` or a Toolbar with a bottom divider"): the bar
+     carries it, and hands the tabs `--_tab-indicator-bottom` so the selected
+     indicator drops through the bar's own gap and lands on it.
+
+     It is an `::after` rather than a border because the bar's height is the
+     titlebar clearance it stands in; a border would take a pixel out of that
+     and leave the 28px controls centred on a half pixel. Each placement
+     declares `--maka-workbar-rail-gap`: the distance from a control's bottom
+     edge down to the rail, which is what the indicator has to travel. Astryx's
+     own Toolbar adds a border width on top of that, because its rail is a
+     border and so sits outside the box the padding measures to; ours is inside
+     it, so the gap alone lands the indicator's bottom edge on the rail. */
+  --_tab-indicator-bottom: calc(-1 * var(--maka-workbar-rail-gap));
+}
+
+.maka-session-workbar-toolbar::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  block-size: var(--border-width);
+  background: var(--color-border);
+  pointer-events: none;
 }
 
 .maka-session-workbar[data-placement="right"] > .maka-session-workbar-toolbar {
@@ -136,6 +163,17 @@
      above that hit-test surface while its empty space remains draggable. */
   z-index: calc(var(--z-titlebar) + 1);
   height: var(--maka-plate-titlebar-clearance);
+  /* The controls are centred in the bar, so half of what the clearance leaves
+     over an `sm` control sits under them. */
+  --maka-workbar-rail-gap: calc(
+    (var(--maka-plate-titlebar-clearance) - var(--size-element-sm)) / 2
+  );
+  /* The right pad is the window titlebar strip's own gutter, not this bar's:
+     the collapse toggle is one control that moves between the two bands, and
+     `session-workbar.spec.ts` holds it to the same x in both. Narrowing this to
+     the bar's own gutter would slide it 16px on every collapse. On top of it,
+     the caption buttons where the platform draws them on the right (Windows);
+     macOS puts them on the left, over the sidebar, and reports 0 here. */
   padding-inline: var(--space-2)
     calc(var(--space-6) + var(--maka-titlebar-overlay-right-width));
   -webkit-app-region: drag;
@@ -149,6 +187,8 @@
 
 .maka-session-workbar[data-placement="bottom"] > .maka-session-workbar-toolbar {
   padding: var(--space-2) var(--space-4);
+  /* Height is content here, so the gap under a control is the block padding. */
+  --maka-workbar-rail-gap: var(--space-2);
 }
 
 .maka-session-workbar > .maka-lazy-fallback {
@@ -158,129 +198,26 @@
 .maka-workbar-tab-strip {
   display: flex;
   align-items: center;
+  gap: var(--space-1);
   width: 100%;
   min-width: 0;
   flex: 0 0 auto;
+  /* The bar's height comes from the titlebar clearance it stands in, never from
+     the strip: letting the strip set it would move the whole panel the moment
+     its content changed height. */
+  height: 100%;
 }
 
+/* A flex item defaults to `min-width: auto`, so without this reset the strip
+   refuses to shrink: it spills past the panel and pushes [+] and the collapse
+   toggle off the edge instead of scrolling inside itself. */
 .maka-workbar-tab-list {
-  display: flex;
-  align-items: center;
   flex: 1 1 auto;
-  gap: var(--space-1);
   min-width: 0;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scroll-padding-inline: var(--space-1);
-  scrollbar-width: none;
-}
-
-.maka-workbar-tab-list::-webkit-scrollbar {
-  display: none;
-}
-
-.maka-workbar-tab-context {
-  flex: 0 0 auto;
-  min-width: 0;
-}
-
-.maka-workbar-tab {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  min-width: 0;
-  height: var(--size-element-sm);
-  border-radius: var(--radius-element);
-  color: var(--muted-foreground);
-  touch-action: none;
-  user-select: none;
-  transition:
-    background var(--duration-quick) var(--ease-out-strong),
-    color var(--duration-quick) var(--ease-out-strong);
-}
-
-.maka-workbar-tab:hover,
-.maka-workbar-tab[data-active] {
-  background: var(--state-hover-bg);
-  color: var(--foreground);
-}
-
-.maka-workbar-tab[data-active]::after {
-  position: absolute;
-  right: var(--space-2);
-  bottom: -1px;
-  left: var(--space-2);
-  height: 2px;
-  border-radius: var(--radius-full);
-  background: var(--color-accent);
-  content: "";
-}
-
-.maka-workbar-tab[data-dragging] {
-  z-index: 2;
-  opacity: 0.72;
-  box-shadow: var(--shadow-low);
-}
-
-.maka-workbar-tab-icon {
-  width: var(--icon-control);
-  height: var(--icon-control);
-  flex: 0 0 auto;
 }
 
 .maka-workbar-tab-spinner {
   animation: maka-spin 1s linear infinite;
-}
-
-.maka-workbar-tab-select {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-width: 0;
-  min-height: 0;
-  height: 100%;
-  padding: 0 var(--space-1) 0 var(--space-3);
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  font: var(--maka-text-supporting);
-  box-shadow: none;
-}
-
-.maka-workbar-tab[data-active] .maka-workbar-tab-select {
-  font-weight: var(--font-weight-semibold);
-}
-
-.maka-workbar-tab-select:focus-visible {
-  border-radius: var(--radius-element);
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: calc(-1 * var(--focus-ring-width));
-}
-
-.maka-workbar-tab[data-preview] .maka-workbar-tab-label {
-  font-style: italic;
-}
-
-.maka-workbar-tab-label {
-  overflow: hidden;
-  max-width: 112px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-workbar-tab-close {
-  position: relative;
-  z-index: 1;
-  flex: 0 0 auto;
-  margin-right: 1px;
-}
-
-.maka-workbar-new-tab {
-  flex: 0 0 auto;
-  margin-left: var(--space-1);
 }
 
 .maka-workbar-panel-toggle {

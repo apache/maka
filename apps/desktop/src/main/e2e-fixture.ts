@@ -20,10 +20,6 @@
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { E2eFixtureScenario, E2eFixtureState } from '@maka/core/e2e-fixture';
-import type { AgentGraphClientSnapshot } from '@maka/runtime/stream-graph-read-model';
-import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
-import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
-import { AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION } from '@maka/core/agent-graph-client-projection';
 import { MODEL_CALL_ATTEMPT_EVENT_TYPE } from '@maka/core/model-call-attempt';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
@@ -33,30 +29,21 @@ import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
-import { openInteractiveSessionTodoStoreForWrite } from '@maka/storage/session-todo-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import {
   E2E_FIXTURE_NOW,
   LONG_SIDEBAR_PROJECT_ID,
   LONG_SIDEBAR_PROJECT_NAME,
   LONG_SIDEBAR_SESSION_PREFIX,
-  OVERSIZED_TURN_SESSION_ID,
-  PARTIAL_HISTORY_SESSION_ID,
   PROMPT_RAIL_SESSION_ID,
-  AGENT_GRAPH_SESSION_ID,
   TURN_SESSION_ID,
   writeSession,
 } from './e2e-fixture/seed-helpers.js';
 import {
-  partialHistoryMessages,
-  partialHistorySession,
-  oversizedTurnMessages,
-  oversizedTurnSession,
   promptRailMessages,
   promptRailSession,
   turnMessages,
   turnSession,
-  agentGraphSession,
 } from './e2e-fixture/scenarios-chat.js';
 import { seedMcpFixture, seedSkillsMarketFixture } from './e2e-fixture/scenarios-modules.js';
 import { longSidebarSessions } from './e2e-fixture/scenarios-sessions.js';
@@ -73,8 +60,6 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'turn-narrative',
   'turn-narrative-browser',
   'chat-prompt-rail',
-  'chat-partial-history',
-  'chat-oversized-turn',
   'settings-data',
   'settings-bots-onboarding',
   'settings-general',
@@ -84,7 +69,6 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'module-mcp',
   'module-daily-review',
   'scheduled-tasks',
-  'agent-graph-layout',
   'sidebar-search-modal-open',
 ]);
 
@@ -96,7 +80,6 @@ export interface E2eFixture {
   locale: UiLocale | null;
   timezone: string | null;
   platform: 'darwin' | 'win32' | 'linux' | null;
-  scrollMotion: 'auto' | 'smooth' | null;
 }
 
 export function resolveE2eFixture(
@@ -107,7 +90,6 @@ export function resolveE2eFixture(
   rawLocale: string | undefined = undefined,
   rawTimezone: string | undefined = undefined,
   rawPlatform: string | undefined = undefined,
-  rawScrollMotion: string | undefined = undefined,
 ): E2eFixture | null {
   if (!rawScenario) return null;
   if (isPackaged) throw new Error('MAKA_E2E_FIXTURE is only available in dev/test builds.');
@@ -123,13 +105,7 @@ export function resolveE2eFixture(
     locale: parseLocaleFlag(rawLocale),
     timezone: parseTimezoneFlag(rawTimezone),
     platform: parsePlatformFlag(rawPlatform),
-    scrollMotion: parseScrollMotionFlag(rawScrollMotion),
   };
-}
-
-function parseScrollMotionFlag(raw: string | undefined): 'auto' | 'smooth' | null {
-  const normalized = raw?.trim().toLowerCase();
-  return normalized === 'auto' || normalized === 'smooth' ? normalized : null;
 }
 
 function parseThemeFlag(raw: string | undefined): 'light' | 'dark' | 'auto' | null {
@@ -178,25 +154,21 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
     ...(fixture.theme ? { theme: fixture.theme } : {}),
     ...(fixture.locale ? { locale: fixture.locale } : {}),
     ...(fixture.timezone ? { timezone: fixture.timezone } : {}),
-    ...(fixture.scrollMotion ? { scrollMotion: fixture.scrollMotion } : {}),
   };
   switch (fixture.scenario) {
     case 'settings-models':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'models' };
     case 'turn-narrative':
-      return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'tasks' };
+      // Any open face will do — the scenario is about focus order through the
+      // transcript, and the workbar is here only so the panel is on screen.
+      // This was the Task face until it was retired.
+      return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'review' };
     case 'turn-narrative-browser':
       return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'browser' };
     case 'chat-prompt-rail':
       // Workbar collapsed: the rail lives on the chat scrollport's right edge,
-      // and the panel would take the width the measurements are about. Whether
-      // this window scrolls smoothly is a per-launch choice (`scrollMotion`),
-      // because only the jump case needs it and it costs seconds of settling.
+      // and the panel would take the width the measurements are about.
       return { ...state, activeSessionId: PROMPT_RAIL_SESSION_ID, workbarCollapsed: true };
-    case 'chat-partial-history':
-      return { ...state, activeSessionId: PARTIAL_HISTORY_SESSION_ID, workbarCollapsed: true };
-    case 'chat-oversized-turn':
-      return { ...state, activeSessionId: OVERSIZED_TURN_SESSION_ID, workbarCollapsed: true };
     case 'settings-data':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'data' };
     case 'settings-bots-onboarding':
@@ -220,8 +192,6 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'daily-review', sidebarCollapsed: false };
     case 'scheduled-tasks':
       return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'automations', sidebarCollapsed: false };
-    case 'agent-graph-layout':
-      return { ...state, activeSessionId: AGENT_GRAPH_SESSION_ID };
     case 'sidebar-search-modal-open':
       return {
         ...state,
@@ -247,47 +217,12 @@ export async function seedE2eFixture(input: {
   await writeConnections(input.workspaceRoot, now, scenario);
   await writeSession(
     input.workspaceRoot,
-    scenario === 'agent-graph-layout' ? agentGraphSession(now) : turnSession(now),
+    turnSession(now),
     turnMessages(now),
   );
 
-  if (scenario === 'agent-graph-layout') await seedAgentGraphLayout(input.workspaceRoot, now);
-
-  if (scenario === 'turn-narrative' || scenario === 'turn-narrative-browser') {
-    const owner = await tryAcquireInteractiveRootOwner(storageRoot);
-    if (!owner) throw new Error('Unable to acquire the E2E fixture SessionTodo root');
-    try {
-      const todos = await openInteractiveSessionTodoStoreForWrite(owner.lease);
-      try {
-        await todos.replaceAll(TURN_SESSION_ID, [
-          { content: '补齐桌面端无障碍覆盖', status: 'in_progress' },
-          { content: '核对模型选择器的键盘路径', status: 'pending' },
-          { content: '确认工具结果可以展开阅读', status: 'completed' },
-        ]);
-      } finally {
-        todos.close();
-      }
-    } finally {
-      await owner.close();
-    }
-  }
-
   if (scenario === 'chat-prompt-rail') {
     await writeSession(input.workspaceRoot, promptRailSession(now), promptRailMessages(now));
-  }
-  if (scenario === 'chat-partial-history') {
-    await writeSession(
-      input.workspaceRoot,
-      partialHistorySession(now),
-      partialHistoryMessages(now),
-    );
-  }
-  if (scenario === 'chat-oversized-turn') {
-    await writeSession(
-      input.workspaceRoot,
-      oversizedTurnSession(now),
-      oversizedTurnMessages(now),
-    );
   }
   if (scenario === 'sidebar-search-modal-open') {
     for (const seed of longSidebarSessions(now)) {
@@ -350,88 +285,5 @@ export async function seedE2eFixture(input: {
       await usage.close();
       await owner.close();
     }
-  }
-}
-
-async function seedAgentGraphLayout(workspaceRoot: string, now: number): Promise<void> {
-  const graphId = agentGraphIdForRootSession(AGENT_GRAPH_SESSION_ID);
-  const operators: AgentGraphClientSnapshot['operators'] = Array.from(
-    { length: 24 },
-    (_, index) => ({
-      operatorId: `operator-${index + 1}`,
-      childSessionId: `child-session-${index + 1}`,
-      provisionId: `provision-${index + 1}`,
-      agentId: `agent-${index + 1}`,
-      provisionedAt: now - (24 - index) * 1_000,
-      status: 'completed' as const,
-      inboundEdgeIds: [],
-      outboundEdgeIds: [],
-      scheduledWorkIds: [`work-${index + 1}`],
-      readiness: [],
-      omitted: {
-        inboundEdgeIds: 0,
-        outboundEdgeIds: 0,
-        scheduledWorkIds: 0,
-        readiness: 0,
-        readinessWaits: 0,
-      },
-    }),
-  );
-  const snapshot: AgentGraphClientSnapshot = {
-    schemaVersion: 1,
-    rootSessionId: AGENT_GRAPH_SESSION_ID,
-    graphId,
-    orchestrationMode: 'graph',
-    snapshotVersion: `sha256:${'a'.repeat(64)}`,
-    status: 'active',
-    scheduleRevision: 1,
-    topologyFingerprint: `sha256:${'b'.repeat(64)}`,
-    closed: false,
-    latestEventTime: now,
-    operators,
-    edges: [],
-    work: operators.map((operator, index) => ({
-      workId: `work-${index + 1}`,
-      target: { kind: 'agent' as const, agentId: operator.agentId },
-      inputIds: [],
-      status: 'requested' as const,
-      instructionPreview: `布局回归 operator ${index + 1}`,
-      instructionTruncated: false,
-      revision: 1,
-      committedAt: now - (24 - index) * 1_000,
-    })),
-    reconciliationFailures: [],
-    stoppedTargets: [],
-    claims: [],
-    recentControlDecisions: [],
-    recentActivity: [],
-    terminalHistory: { records: [] },
-    omitted: {
-      operators: 0,
-      edges: 0,
-      work: 0,
-      reconciliationFailures: 0,
-      stoppedTargets: 0,
-      claims: 0,
-      controlDecisions: 0,
-      recentActivity: 0,
-    },
-  };
-  const controlStore = createAgentGraphControlStore(workspaceRoot);
-  try {
-    await controlStore.commitAgentGraphClientProjection({
-      schemaVersion: AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION,
-      graphId,
-      rootSessionId: AGENT_GRAPH_SESSION_ID,
-      expectedSnapshotVersion: null,
-      snapshotVersion: snapshot.snapshotVersion,
-      snapshot,
-      replaceOperators: true,
-      operators: [],
-      terminalActivities: [],
-      activityRecords: [],
-    });
-  } finally {
-    controlStore.close();
   }
 }

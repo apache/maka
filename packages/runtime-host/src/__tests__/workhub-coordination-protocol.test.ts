@@ -190,6 +190,7 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
 });
 
 test('WorkHub Coordination candidates are bounded and carry opaque proposal identities', () => {
+  assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 110);
   const result = decodeWorkHubCoordinationCandidatesResult({
     candidateSetId: `sha256:${'a'.repeat(64)}`,
     candidates: [
@@ -203,10 +204,12 @@ test('WorkHub Coordination candidates are bounded and carry opaque proposal iden
         },
         state: 'active',
         updatedAt: 7,
+        latestDelegationActionId: 'action-a',
       },
     ],
   });
   assert.equal(result.candidates[0]?.candidateRef, 'candidate_a');
+  assert.equal(result.candidates[0]?.latestDelegationActionId, 'action-a');
   assert.equal(HOST_OPERATION_SPECS['workhub.coordination.candidates'].mode, 'query');
   assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.candidates'), true);
   assert.throws(

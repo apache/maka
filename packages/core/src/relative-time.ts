@@ -94,7 +94,7 @@ function getAbsoluteFormat(uiLocale: UiLocale): Intl.DateTimeFormat {
  * reading a relative label falls back to and a tooltip shows; `@maka/ui` had
  * its own uncached copy of the same `Intl` options until this became public.
  */
-export function formatAbsoluteTimestamp(ts: number, locale: UiLocale = 'zh-CN'): string {
+export function formatAbsoluteTimestamp(ts: number, locale: UiLocale): string {
   return getAbsoluteFormat(locale).format(new Date(ts));
 }
 
@@ -103,11 +103,7 @@ export function formatAbsoluteTimestamp(ts: number, locale: UiLocale = 'zh-CN'):
  * absolute date string. `now` is injectable so tests pin a deterministic clock;
  * future timestamps (clock skew) snap to the just-now label.
  */
-export function formatRelativeTimestamp(
-  ts: number,
-  now: number = Date.now(),
-  locale: UiLocale = 'zh-CN',
-): string {
+export function formatRelativeTimestamp(ts: number, now: number, locale: UiLocale): string {
   const diffMs = relativeAgeMs(ts, now);
   if (diffMs < JUST_NOW_MS) {
     return JUST_NOW[locale];
@@ -156,11 +152,7 @@ function getCompactFormats(uiLocale: UiLocale): {
  * Compact variant for wider list rows: relative inside the seven-day horizon,
  * then a localized date-only label.
  */
-export function formatCompactTimestamp(
-  ts: number,
-  now: number = Date.now(),
-  locale: UiLocale = 'zh-CN',
-): string {
+export function formatCompactTimestamp(ts: number, now: number, locale: UiLocale): string {
   const diffMs = relativeAgeMs(ts, now);
   if (diffMs <= RELATIVE_HORIZON_MS) return formatRelativeTimestamp(ts, now, locale);
   const { sameYear, otherYear } = getCompactFormats(locale);
@@ -176,11 +168,7 @@ export function formatCompactTimestamp(
  * Unit tokens stay deliberately locale-neutral so the trailing column remains
  * stable across UI languages: "46min", "13h", "17d", "1mo", "1y".
  */
-export function formatSidebarTimestamp(
-  ts: number,
-  now: number = Date.now(),
-  locale: UiLocale = 'zh-CN',
-): string {
+export function formatSidebarTimestamp(ts: number, now: number, locale: UiLocale): string {
   const diffMs = relativeAgeMs(ts, now);
   if (diffMs < JUST_NOW_MS) return JUST_NOW[locale];
   const bucket = sidebarTimeBucket(diffMs);

@@ -53,6 +53,7 @@ import type {
 } from '../protocol/index.js';
 import { WORKHUB_COORDINATION_CANDIDATE_MAX_ITEMS } from '../protocol/index.js';
 import type { ConnectionContext } from './operation-dispatcher.js';
+import type { SessionAdmissionLease } from './session-admission-gate.js';
 
 const SIDE_CONVERSATION_LABEL = 'mode:side_conversation';
 const ACTION_REPLAY_MAX_ITEMS = 256;
@@ -99,7 +100,9 @@ export interface WorkHubActionGateEffects {
    */
   probeTargetRemoval(sessionId: string): Promise<'present' | 'removed' | 'absent'>;
   readAssignment(actionId: string): Promise<WorkHubDelegationAssignedMessage | undefined>;
-  listActiveAssignments(): Promise<readonly WorkHubDelegationAssignedMessage[]>;
+  listActiveAssignments(
+    targetSessionId: string,
+  ): Promise<readonly WorkHubDelegationAssignedMessage[]>;
   readReplacement(
     delegationId: string,
   ): Promise<WorkHubDelegationReplacementRequestedMessage | undefined>;
@@ -136,6 +139,7 @@ export interface WorkHubActionGateEffects {
   ): Promise<WorkHubDelegationStopResolvedMessage>;
   readDelegationRetirement(
     assignment: WorkHubDelegationAssignedMessage,
+    admission?: SessionAdmissionLease,
   ): Promise<'not_retired' | 'retired' | 'recovering'>;
   retireDelegation(
     assignment: WorkHubDelegationAssignedMessage,
@@ -564,8 +568,7 @@ export class WorkHubCoordinationActionGate {
         return claimed;
       }
     }
-    const active = await this.#effects.listActiveAssignments();
-    const onTarget = active.filter((assignment) => assignment.targetSessionId === targetSessionId);
+    const onTarget = await this.#effects.listActiveAssignments(targetSessionId);
     if (onTarget.length === 0) {
       throw new WorkHubActionGateFailure(
         'action_conflict',

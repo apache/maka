@@ -2331,13 +2331,13 @@ function AppShellContent({
     activeId,
   );
   useEffect(() => transcriptReadingPosition.refreshLandmarks({
-    sessionId: activeId,
+    sessionId: ownerActiveId,
     newestDurablePromptSequence,
     current: transcriptTurnIndex,
     list: (sessionId) => window.maka.sessions.listTurnLandmarks(sessionId),
     isCurrent: (sessionId) => activeIdRef.current === sessionId,
     setIndex: setTranscriptTurnIndex,
-  }), [activeId, activeIdRef, newestDurablePromptSequence, transcriptTurnIndex]);
+  }), [ownerActiveId, activeIdRef, newestDurablePromptSequence, transcriptTurnIndex]);
   useEffect(() => transcriptReadingPosition.restoreRange({
     sessionId: activeId,
     searchTarget: searchScrollTarget,
