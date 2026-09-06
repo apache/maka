@@ -1223,6 +1223,72 @@ test('TUI MCP keeps the new endpoint when synchronization fails after credential
   await controller.close();
 });
 
+test('TUI MCP marks configuration out of sync when persistence fails after credential retirement', async () => {
+  const initial = {
+    version: 3,
+    mcpServers: {
+      docs: { url: 'https://old.example/mcp', oauth: { clientId: 'client' } },
+    },
+  } satisfies McpConfigFile;
+  let credentialRetired = false;
+  const store = {
+    get: async () => structuredClone(initial),
+    transform: async (
+      apply: (current: McpConfigFile) => McpConfigFile | Promise<McpConfigFile>,
+    ) => {
+      await apply(structuredClone(initial));
+      const error = new Error('config write failed');
+      Object.assign(error, { code: 'ENOSPC' });
+      throw error;
+    },
+  };
+  const manager = managementManager([], {
+    forgetServerCredentials: async (_serverId, _config, options) => {
+      options?.onCommitStarted?.();
+      credentialRetired = true;
+    },
+  }).manager;
+  (manager.statuses() as McpServerStatus[]).push({
+    serverId: 'docs',
+    state: 'connected',
+    transport: 'streamable-http',
+    negotiatedProtocol: { era: 'modern', revision: '2025-11-25' },
+    toolCount: 0,
+    tools: [],
+    updatedAt: 1,
+  });
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connectionHarness().connection },
+    { configStore: store, manager, createProvider: () => undefined },
+  );
+  await waitFor(
+    () => controller.snapshot().initialization === 'ready',
+    'TUI MCP initialization before post-retirement persistence failure',
+  );
+  assert.equal(controller.snapshot().configuration, 'ready');
+  assert.equal(controller.snapshot().servers[0]?.synchronized, true);
+  const edit = controller.configForEdit('docs');
+  assert.ok(edit);
+
+  assert.deepEqual(
+    await controller.execute({
+      kind: 'edit',
+      serverId: 'docs',
+      expectedRevision: edit.revision,
+      config: { url: 'https://new.example/mcp', oauth: { clientId: 'client' } },
+    }),
+    { status: 'failed', reason: 'persist-failed' },
+  );
+  assert.equal(credentialRetired, true);
+  const persisted = await store.get();
+  const docs = persisted.mcpServers.docs;
+  assert.ok(docs && 'url' in docs);
+  assert.equal(docs.url, 'https://old.example/mcp');
+  assert.equal(controller.snapshot().configuration, 'out_of_sync');
+  assert.equal(controller.snapshot().servers[0]?.synchronized, false);
+  await controller.close();
+});
+
 test('TUI MCP bounds an uncooperative credential retirement after cancellation', async () => {
   const initial = {
     version: 3,

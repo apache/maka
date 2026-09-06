@@ -690,6 +690,11 @@ class TuiMcpControllerImpl implements TuiMcpController {
           };
         }
       } else {
+        if (credentialRetirementStarted) {
+          this.#publicationSuppressed = false;
+          this.#updateSnapshot({ configuration: 'out_of_sync' });
+          this.#refreshManagerSnapshot();
+        }
         return { status: 'failed', reason: 'persist-failed' };
       }
     }
