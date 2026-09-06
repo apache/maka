@@ -1247,21 +1247,11 @@ export const BrowserInsecure: Story = {
   render: () => <Workbar tab="browser" />,
 };
 
-// The column's 320px floor — the least room the toolbar row ever gets.
-export const BrowserAtColumnFloor: Story = {
-  decorators: [bridge({ browserState: LOADED_BROWSER_STATE })],
-  render: () => <Workbar tab="browser" width={320} />,
-};
-
-// The width the resize handle lands on most often, between the floor and default.
-export const BrowserAt400: Story = {
-  decorators: [bridge({ browserState: LOADED_BROWSER_STATE })],
-  render: () => <Workbar tab="browser" width={400} />,
-};
-
 // #2188: the address field, not the nav buttons, absorbs the column's free
 // width. The rule reaches into Astryx Toolbar's slot div, so an upstream
-// slot-wrapper change regresses it silently.
+// slot-wrapper change regresses it silently. This is also the floor's pixel
+// story: the play leaves the column at 320px, the least room the toolbar row
+// ever gets.
 export const BrowserAddressFieldTracksColumnWidth: Story = {
   decorators: [bridge({ browserState: LOADED_BROWSER_STATE })],
   render: () => <Workbar tab="browser" />,

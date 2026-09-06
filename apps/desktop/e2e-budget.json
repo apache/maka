@@ -35,7 +35,7 @@
     },
     "settings.spec.ts": {
       "tests": 4,
-      "electron": "the preload makaE2eLatch holds the settings chunk mid-load, and the rename it commits is a Host write"
+      "electron": "the preload makaE2eLatch holds the settings chunk mid-load, and the rename it commits is a Host write; the workbar-chrome test rides along on that window and would move to a story the day app-shell.tsx's settings wiring has one"
     },
     "sidebar-project-reload.spec.ts": {
       "tests": 1,

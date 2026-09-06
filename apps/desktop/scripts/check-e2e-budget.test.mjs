@@ -39,14 +39,7 @@ test('refuses a top-level form whose test count it cannot read', () => {
   );
 });
 
-test('reports a spec that is missing from the budget', () => {
-  deepEqual(
-    compare({ specs: {} }, { 'new.spec.ts': 1 }),
-    ['new.spec.ts: not in the budget (1 test(s)) -- add it with a reason it needs a real window'],
-  );
-});
-
-test('reports a drifted count, an empty reason, and a deleted spec', () => {
+test('reports every way the tier and the budget can disagree', () => {
   deepEqual(
     compare(
       {
@@ -56,11 +49,12 @@ test('reports a drifted count, an empty reason, and a deleted spec', () => {
           'gone.spec.ts': { tests: 1, electron: 'needs a window' },
         },
       },
-      { 'drifted.spec.ts': 2, 'blank.spec.ts': 1 },
+      { 'drifted.spec.ts': 2, 'blank.spec.ts': 1, 'new.spec.ts': 1 },
     ),
     [
       'drifted.spec.ts: budget records 1 test(s), the file has 2',
       'blank.spec.ts: no reason recorded for needing a real Electron window',
+      'new.spec.ts: not in the budget (1 test(s)) -- add it with a reason it needs a real window',
       'gone.spec.ts: in the budget but no longer on disk',
     ],
   );
