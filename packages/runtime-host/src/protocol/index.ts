@@ -101,7 +101,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 117 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 118 as const;
+// 118: External-session import publishes distinct `model_unavailable` and
+// `source_unreadable` error codes so the shell classifies failures by code
+// instead of the redacted message. Older peers cannot decode the new codes.
 // 117: WorkHub exposes only one correction linkage per bounded candidate and
 // no longer returns the Host's complete active-link set.
 // 116: User deletion rejects workflow-owned Artifacts with operation_conflict.
