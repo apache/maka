@@ -1016,7 +1016,6 @@ export class AiSdkTurn {
         !contextCompactionFailedOpenNoteWritten &&
         shouldAppendContextCompactionFailedOpenNote(contextBudget)
       ) {
-        contextCompactionFailedOpenNoteWritten = true;
         // The most recent stage that refused the fold: a send can carry both a
         // priorReplay and an activeStep refusal after a diagnostic merge, and
         // array order would pin the stale one.
@@ -1034,10 +1033,14 @@ export class AiSdkTurn {
           kind: 'context_compaction_failed_open',
           ...(failOpenReason !== undefined ? { data: { failOpenReason } } : {}),
         };
-        await this.deps.backend.appendMessage(note).catch(() => {});
+        // Mark written only after the append lands: a failed write must leave
+        // the flag down so the settlement fallback can still record the note.
+        contextCompactionFailedOpenNoteWritten = await this.deps.backend
+          .appendMessage(note)
+          .then(() => true)
+          .catch(() => false);
       }
       if (!contextCompactedNoteWritten && shouldAppendContextCompactedNote(contextBudget)) {
-        contextCompactedNoteWritten = true;
         const note: SystemNoteMessage = {
           type: 'system_note',
           id: this.deps.newId(),
@@ -1045,7 +1048,10 @@ export class AiSdkTurn {
           ts: this.deps.now(),
           kind: 'context_compacted',
         };
-        await this.deps.backend.appendMessage(note).catch(() => {});
+        contextCompactedNoteWritten = await this.deps.backend
+          .appendMessage(note)
+          .then(() => true)
+          .catch(() => false);
       }
     };
     // Request index (0-based) at which the active prune last rewrote the

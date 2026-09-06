@@ -5683,6 +5683,75 @@ describe('AiSdkBackend model history', () => {
     assert.equal(notes.length, 1, 'the settlement fallback must not duplicate the early note');
   });
 
+  test('a failed decision-time note write still leaves the settlement fallback armed (#4850)', async () => {
+    // The per-send flag must rise only after the append lands: a failed
+    // decision-time write falls through to settlement instead of losing the
+    // note for the whole send.
+    const model = completionModel();
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [
+        runtimeTextEvent({
+          id: 'fallback-unrelated-covered',
+          turnId: 'turn-unrelated',
+          role: 'user',
+          author: 'user',
+          text: 'FALLBACK_UNRELATED_COVERED '.repeat(50),
+        }),
+      ],
+      summary: structuredSummary('FALLBACK_STALE_CHECKPOINT_SENTINEL'),
+    });
+    const isFailOpenNote = (message: { type: string; kind?: string }): boolean =>
+      message.type === 'system_note' && message.kind === 'context_compaction_failed_open';
+    const persisted: Array<{ type: string; kind?: string }> = [];
+    let noteWriteAttempts = 0;
+    let failNextNoteWrite = true;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message: StoredMessage) => {
+        const candidate = message as unknown as { type: string; kind?: string };
+        if (isFailOpenNote(candidate)) {
+          noteWriteAttempts += 1;
+          if (failNextNoteWrite) {
+            failNextNoteWrite = false;
+            throw new Error('storage hiccup');
+          }
+        }
+        persisted.push(candidate);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: { historyCompact: { enabled: true } },
+      loadHistoryCompactCheckpoint: () => checkpoint,
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-1',
+        text: 'hi',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-fallback-history',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            text: 'FALLBACK_REAL_HISTORY '.repeat(60),
+          }),
+        ],
+      }),
+    );
+
+    assert.equal(noteWriteAttempts, 2, 'the failed early write must be retried at settlement');
+    assert.equal(persisted.filter(isFailOpenNote).length, 1);
+  });
+
   test('after-step stop preserves the current provider step usage and prevents another step', async () => {
     const loop = countingToolLoopModel();
     const durable = durableTurnHarness('turn-1', 'hi');
