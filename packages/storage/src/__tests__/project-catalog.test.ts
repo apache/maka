@@ -110,7 +110,7 @@ test('an incomplete enclosing .git directory does not turn a nested folder into 
     await mkdir(join(base, '.git', 'gk'), { recursive: true });
     await mkdir(folder);
 
-    assert.deepEqual(await resolveProjectLocationWithoutGit(folder), {
+    assert.deepEqual(await resolveProjectLocation({ path: folder }), {
       canonicalPath: await realpath(folder),
       identity: `folder:${await realpath(folder)}`,
       kind: 'folder',
@@ -138,6 +138,14 @@ test('broken ancestor Git metadata does not turn a nested folder into a reposito
         },
         shape,
       );
+      const catalog = createProjectCatalog(join(root, 'state'));
+      const project = await catalog.register(folder);
+      assert.deepEqual(
+        project.locations,
+        [{ path: await realpath(folder), isWorktree: false }],
+        shape,
+      );
+      assert.deepEqual(await catalog.list(), [project]);
     }
   } finally {
     await rm(base, { recursive: true, force: true });
@@ -156,6 +164,7 @@ test('a folder nested inside a repository resolves to that repository', async ()
 
     assert.equal(resolved.kind, 'git');
     assert.equal(resolved.git?.worktreeRoot, await realpath(repository));
+    await assert.rejects(resolveProjectLocationWithoutGit(nested));
   } finally {
     await rm(base, { recursive: true, force: true });
   }
