@@ -1492,6 +1492,9 @@ export const PlanAndSwarmModeOn: Story = {
   ),
 };
 
+/** Settles the Skill refresh the Plan toggle below started. */
+let releaseSkillRefresh: (() => void) | undefined;
+
 function PlusMenuRefreshHarness() {
   const [planModeActive, setPlanModeActive] = useState(false);
   const [skillsLoading, setSkillsLoading] = useState(false);
@@ -1506,7 +1509,7 @@ function PlusMenuRefreshHarness() {
         onPlanModeChange(active) {
           setPlanModeActive(active);
           setSkillsLoading(true);
-          window.setTimeout(() => setSkillsLoading(false), 150);
+          releaseSkillRefresh = () => setSkillsLoading(false);
         },
       }}
     />
@@ -1535,7 +1538,7 @@ export const PlusMenuDuringSkillRefresh: Story = {
     expect(Math.abs(menu.getBoundingClientRect().height - height)).toBeLessThanOrEqual(0.5);
 
     await userEvent.click(skillsRow);
-    await expect(menu).toBeVisible();
+    await waitFor(() => expect(menu).toBeVisible(), { timeout: 5_000 });
     const editor = canvasElement.querySelector<HTMLElement>(
       '.maka-composer-editor [contenteditable="true"]',
     );
@@ -1543,6 +1546,7 @@ export const PlusMenuDuringSkillRefresh: Story = {
     await expect(editor).toHaveTextContent('');
     await expect(page.queryByRole('listbox', { name: /技能/ })).not.toBeInTheDocument();
 
+    releaseSkillRefresh?.();
     await waitFor(() => {
       const settledRow = within(
         page.getByRole('menu', { name: '添加上下文' }),
@@ -1553,9 +1557,10 @@ export const PlusMenuDuringSkillRefresh: Story = {
       page.getByRole('menu', { name: '添加上下文' }),
     ).getByRole('menuitem', { name: /选择技能/ });
     await userEvent.click(settledRow);
-    await expect(await page.findByRole('listbox', { name: /技能/ }, {
-      timeout: 5_000,
-    })).toBeVisible();
+    await waitFor(
+      () => expect(page.getByRole('listbox', { name: /技能/ })).toBeVisible(),
+      { timeout: 5_000 },
+    );
   },
 };
 
