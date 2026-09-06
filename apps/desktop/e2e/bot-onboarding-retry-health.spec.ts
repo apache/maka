@@ -21,7 +21,7 @@ import { expect, test } from './fixtures';
 import { getBotSettingsCopy } from '../src/renderer/locales/settings-bot-copy';
 
 test('bot onboarding shows bounded retry health while preserving the QR', async ({
-  window: page,
+  botOnboardingWindow: page,
 }, testInfo) => {
   const status = page.locator('.settingsBotOnboardingStatus');
   const expectedStatuses = (['zh-CN', 'en'] as const).map((locale) =>

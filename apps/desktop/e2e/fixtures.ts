@@ -517,6 +517,7 @@ async function withE2eWindow(
 
 type E2eTestFixtures = {
   window: Page;
+  botOnboardingWindow: Page;
   gitReviewWindow: { page: Page; projectRoot: string };
   invocableSkillsWindow: Page;
   projectSidebarWindow: Page;
@@ -550,6 +551,14 @@ export const test = base.extend<E2eTestFixtures>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh-CN' }, use);
+  },
+  botOnboardingWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '.settingsSurface',
+      e2eFixtureScenario: 'settings-bots-onboarding',
+      locale: 'zh-CN',
+    }, use);
   },
   gitReviewWindow: async ({}, use) => {
     await withE2eWindow(
