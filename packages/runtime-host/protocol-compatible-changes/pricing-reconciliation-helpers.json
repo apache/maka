@@ -1,0 +1,5 @@
+{
+  "epoch": 121,
+  "files": ["packages/runtime-host/src/protocol/usage-pricing.ts"],
+  "reason": "Adds shared pure pricing reconciliation types and helpers without changing any protocol codec, validation rule, operation payload, or wire message shape. Older and newer peers exchange identical pricing frames."
+}

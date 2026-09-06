@@ -1416,11 +1416,11 @@ export interface MakaBridge {
     testBotChannel(provider: BotProvider): Promise<SettingsTestResult>;
     usageStats(range?: UsageRange, host?: DesktopRuntimeHostRef): Promise<UsageStats>;
     pricing: {
-      load(host?: DesktopRuntimeHostRef): Promise<DesktopPricingSnapshot>;
+      load(host: DesktopRuntimeHostRef): Promise<DesktopPricingSnapshot>;
       mutate(
         base: DesktopPricingSnapshot,
         mutation: PricingMutation,
-        host?: DesktopRuntimeHostRef,
+        host: DesktopRuntimeHostRef,
       ): Promise<DesktopPricingMutationOutcome>;
     };
     bots: {

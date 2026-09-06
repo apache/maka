@@ -32,8 +32,8 @@ import type {
 import {
   DesktopRuntimeHostClient,
   DesktopRuntimeHostClientError,
-  type DesktopPricingSnapshot,
 } from '../runtime-host-client.js';
+import type { DesktopPricingSnapshot } from '../../shared/desktop-pricing.js';
 
 test('restarts a paginated Pricing read instead of mixing revisions', async () => {
   const stale = builtin('provider:stale', 1);

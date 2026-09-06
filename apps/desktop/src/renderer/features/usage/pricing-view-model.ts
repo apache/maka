@@ -20,24 +20,17 @@
 /**
  * Pure derivations for the Pricing Settings panel — no React, no IPC — so the
  * row projection and the editor validation are unit-testable without a
- * renderer. The Host already returns entries as the canonical built-in ∪
- * overrides union in key order; this only maps them to display rows (re-sorting
- * defensively) and mirrors the Host's `normalizePricingConfig` rules per-field.
+ * renderer. The Host adapter already validates the canonical built-in ∪
+ * overrides order; this maps entries to display rows and mirrors the Host's
+ * `normalizePricingConfig` rules per-field.
  */
 
-import {
-  comparePricingModelKeys,
-  normalizePricingModelKey,
-  pricingModelKey,
-} from '@maka/core/usage-stats/pricing';
+import { normalizePricingModelKey } from '@maka/core/usage-stats/pricing';
 import type { PricingConfig } from '@maka/core/usage-stats/types';
 import type { EffectivePricingEntry } from '@maka/runtime-host/protocol';
 
 export interface PricingRowView {
   readonly modelKey: string;
-  /** Display-only split of `modelKey` on its first colon. */
-  readonly provider: string;
-  readonly model: string;
   readonly source: 'builtin' | 'custom';
   /** null for a built-in row; the delete consequence for a custom row. */
   readonly resetEffect: 'restore_builtin' | 'become_unpriced' | null;
@@ -51,25 +44,7 @@ export interface PricingRowView {
 export function derivePricingRows(
   entries: readonly EffectivePricingEntry[],
 ): PricingRowView[] {
-  return [...entries]
-    .sort((left, right) =>
-      comparePricingModelKeys(left.pricing.modelKey, right.pricing.modelKey),
-    )
-    .map((entry) => {
-      const key = entry.pricing.modelKey;
-      const separator = key.indexOf(':');
-      return {
-        modelKey: key,
-        provider: separator < 0 ? '' : key.slice(0, separator),
-        model: separator < 0 ? key : key.slice(separator + 1),
-        source: entry.source,
-        resetEffect: entry.source === 'custom' ? entry.resetEffect : null,
-        inputUsdPer1M: entry.pricing.inputUsdPer1M,
-        outputUsdPer1M: entry.pricing.outputUsdPer1M,
-        cacheReadUsdPer1M: entry.pricing.cacheReadUsdPer1M,
-        cacheWriteUsdPer1M: entry.pricing.cacheWriteUsdPer1M,
-      };
-    });
+  return entries.map(pricingRowFromEntry);
 }
 
 /** The derived row for `modelKey` within a snapshot's entries, or null. */
@@ -77,12 +52,24 @@ export function findPricingRow(
   entries: readonly EffectivePricingEntry[],
   modelKey: string,
 ): PricingRowView | null {
-  return derivePricingRows(entries).find((row) => row.modelKey === modelKey) ?? null;
+  const entry = entries.find(({ pricing }) => pricing.modelKey === modelKey);
+  return entry ? pricingRowFromEntry(entry) : null;
+}
+
+function pricingRowFromEntry(entry: EffectivePricingEntry): PricingRowView {
+  return {
+    modelKey: entry.pricing.modelKey,
+    source: entry.source,
+    resetEffect: entry.source === 'custom' ? entry.resetEffect : null,
+    inputUsdPer1M: entry.pricing.inputUsdPer1M,
+    outputUsdPer1M: entry.pricing.outputUsdPer1M,
+    cacheReadUsdPer1M: entry.pricing.cacheReadUsdPer1M,
+    cacheWriteUsdPer1M: entry.pricing.cacheWriteUsdPer1M,
+  };
 }
 
 export interface PricingDraft {
-  readonly provider: string;
-  readonly model: string;
+  readonly modelKey: string;
   /** `null` = the field is empty (a cleared NumberInput). */
   readonly input: number | null;
   readonly output: number | null;
@@ -101,8 +88,7 @@ export function draftFromRow(row: PricingRowView): {
 } {
   return {
     draft: {
-      provider: row.provider,
-      model: row.model,
+      modelKey: row.modelKey,
       input: row.inputUsdPer1M,
       output: row.outputUsdPer1M,
       cacheRead: row.cacheReadUsdPer1M ?? null,
@@ -116,8 +102,7 @@ export type PricingRateErrorCode = 'required' | 'invalid_rate';
 export type PricingKeyErrorCode = 'required' | 'key_too_long' | 'duplicate';
 
 export interface PricingDraftErrors {
-  provider?: 'required';
-  model?: PricingKeyErrorCode;
+  modelKey?: PricingKeyErrorCode;
   input?: PricingRateErrorCode;
   output?: PricingRateErrorCode;
   cacheRead?: 'invalid_rate';
@@ -146,19 +131,13 @@ export function validatePricingDraft(
   if (options.mode === 'edit') {
     modelKey = options.lockedModelKey ?? null;
   } else {
-    const provider = draft.provider.trim();
-    const model = draft.model.trim();
-    if (provider === '') errors.provider = 'required';
-    if (model === '') errors.model = 'required';
-    if (provider !== '' && model !== '') {
-      const normalized = normalizePricingModelKey(pricingModelKey(provider, model));
-      if (!normalized.ok) {
-        errors.model = 'key_too_long';
-      } else if (options.existingKeys.includes(normalized.value)) {
-        errors.model = 'duplicate';
-      } else {
-        modelKey = normalized.value;
-      }
+    const normalized = normalizePricingModelKey(draft.modelKey);
+    if (!normalized.ok) {
+      errors.modelKey = draft.modelKey.trim() === '' ? 'required' : 'key_too_long';
+    } else if (options.existingKeys.includes(normalized.value)) {
+      errors.modelKey = 'duplicate';
+    } else {
+      modelKey = normalized.value;
     }
   }
 

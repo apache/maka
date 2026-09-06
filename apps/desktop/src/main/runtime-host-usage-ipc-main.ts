@@ -39,7 +39,6 @@ import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 interface RuntimeHostUsageIpcDeps {
   readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: DesktopRuntimeHostClient;
-  readonly sendToRenderer: (channel: string, ...args: unknown[]) => void;
 }
 
 const MAX_ACTIVITY_RECORDS = 50_000;

@@ -1723,7 +1723,6 @@ function registerHostClientIpc(
   registerRuntimeHostUsageIpc({
     ipcMain: scopedIpc,
     client,
-    sendToRenderer,
   });
   registerRuntimeHostPricingIpc({ ipcMain: scopedIpc, client });
   registerRuntimeHostWorkspaceIpc({

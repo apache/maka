@@ -20,12 +20,9 @@
 import { createServicesContext } from '../../application/contracts/feature-services.js';
 import type { UsagePricingServices } from './pricing-ports.js';
 
-// The pricing services are Host-agnostic at this seam: the platform adapter
-// targets the settings-selected Runtime Host inside the preload bridge, so a
-// single app-root provider serves every mount. A Host/generation change is
-// surfaced to the pricing controller via the Usage scope's `targetKey` (threaded
-// as `generationKey`), which drives the reload — not by remounting a keyed
-// provider.
+// One app-root provider supplies the transport adapter. Each operation receives
+// the settings-selected Host explicitly; the controller separately receives its
+// generation key so it can fence stale work without remounting the provider.
 const { Provider, useServices } =
   createServicesContext<UsagePricingServices>('UsagePricingServicesProvider');
 

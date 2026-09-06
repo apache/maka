@@ -26,9 +26,9 @@ import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Typeahead, createStaticSource, type SearchableItem } from '@astryxdesign/core/Typeahead';
 import { Banner, Button, HStack, NumberInput, TextInput, VStack } from '@maka/ui';
 import { ICON_SIZE, BarChart3, Pencil, Plus, RefreshCcw, RotateCcw, Search, Trash2 } from '@maka/ui/icons';
-import type { PricingSettingsCopy } from '../pricing-copy.js';
+import type { PricingSettingsCopy } from '../../../locales/settings-pricing-copy.js';
 import { usePricingController } from '../controller/pricing-controller.js';
-import type { UsageHostRef } from '../ports.js';
+import type { UsagePricingTarget } from '../pricing-ports.js';
 import type { PricingDraftErrors, PricingRowView } from '../pricing-view-model.js';
 import { UsageStatsTable, type UsageColumn } from './usage-stats-table.js';
 
@@ -37,13 +37,11 @@ type CatalogItem = SearchableItem<{ row: PricingRowView }>;
 
 export function PricingEditor(props: {
   readonly describeError: (error: unknown) => string;
-  readonly runtimeHost: UsageHostRef | undefined;
-  readonly generationKey: string;
+  readonly target: UsagePricingTarget | null;
 }) {
   const c = usePricingController({
     describeError: props.describeError,
-    runtimeHost: props.runtimeHost,
-    generationKey: props.generationKey,
+    target: props.target,
   });
   const { copy } = c;
 
@@ -132,7 +130,7 @@ export function PricingEditor(props: {
             actions={<Button variant="secondary" size="sm" label={copy.retry} onClick={() => void c.reload()} />}
             className="settingsUsageEmpty"
           />
-        ) : c.loading && c.rows.length === 0 ? (
+        ) : c.loading && c.overrideRows.length === 0 ? (
           // Reserve the ready table geometry with skeleton rows so the real
           // rows land with zero layout shift (DESIGN.md §Loading).
           <UsageStatsTable
@@ -142,16 +140,12 @@ export function PricingEditor(props: {
             empty={{ Icon: BarChart3, title: copy.emptyTitle, body: copy.emptyBody }}
           />
         ) : (
-          // After an uncertain/refresh-failed outcome the loaded list may be
-          // out of date; dim it and mark it stale until a fresh snapshot loads.
-          <div className={c.writesBlocked ? 'settingsPricingStale' : undefined}>
-            <UsageStatsTable
-              ariaLabel={copy.tableAria}
-              columns={columns}
-              rows={rows}
-              empty={{ Icon: BarChart3, title: copy.emptyTitle, body: copy.emptyBody }}
-            />
-          </div>
+          <UsageStatsTable
+            ariaLabel={copy.tableAria}
+            columns={columns}
+            rows={rows}
+            empty={{ Icon: BarChart3, title: copy.emptyTitle, body: copy.emptyBody }}
+          />
         )}
       </div>
 
@@ -289,22 +283,13 @@ function PricingEditorDialog(props: {
             <VStack as="form" gap={3} onSubmit={(event) => { event.preventDefault(); submit(); }}>
               {isEdit ? (
                 // Editing an existing override: the key is fixed, shown read-only.
-                <>
-                  <TextInput
-                    value={draft.provider}
-                    onChange={(value) => c.setField('provider', value)}
-                    label={copy.providerLabel}
-                    isReadOnly
-                    width="100%"
-                  />
-                  <TextInput
-                    value={draft.model}
-                    onChange={(value) => c.setField('model', value)}
-                    label={copy.modelLabel}
-                    isReadOnly
-                    width="100%"
-                  />
-                </>
+                <TextInput
+                  value={draft.modelKey}
+                  onChange={(value) => c.setField('modelKey', value)}
+                  label={copy.modelKeyLabel}
+                  isReadOnly
+                  width="100%"
+                />
               ) : addMode === 'catalog' ? (
                 // Add via the built-in catalog: Typeahead renders only the top
                 // matches (never the ~1.4k-row list), and a pick pre-fills the
@@ -319,8 +304,7 @@ function PricingEditorDialog(props: {
                       if (item) {
                         c.pickCatalogModel(item.auxiliaryData!.row);
                       } else {
-                        c.setField('provider', '');
-                        c.setField('model', '');
+                        c.clearModel();
                       }
                     }}
                     placeholder={copy.catalogPickerPlaceholder}
@@ -331,7 +315,7 @@ function PricingEditorDialog(props: {
                     maxMenuItems={12}
                     hasClear
                     width="100%"
-                    status={fieldStatus(errorMessage(validation.errors.model))}
+                    status={fieldStatus(errorMessage(validation.errors.modelKey))}
                   />
                   {picked ? (
                     <Text type="supporting" color="secondary">{copy.builtinPrefillHint}</Text>
@@ -343,35 +327,25 @@ function PricingEditorDialog(props: {
                       label={copy.manualEntryToggle}
                       onClick={() => {
                         setPicked(null);
-                        c.setField('provider', '');
-                        c.setField('model', '');
+                        c.clearModel();
                         setAddMode('manual');
                       }}
                     />
                   </HStack>
                 </VStack>
               ) : (
-                // Manual fallback: an arbitrary key for a model not in the catalog.
+                // Manual fallback: paste the exact Runtime lookup key.
                 <VStack gap={1}>
                   <TextInput
-                    value={draft.provider}
-                    onChange={(value) => c.setField('provider', value)}
-                    label={copy.providerLabel}
-                    placeholder={copy.providerPlaceholder}
+                    value={draft.modelKey}
+                    onChange={(value) => c.setField('modelKey', value)}
+                    label={copy.modelKeyLabel}
+                    placeholder={copy.modelKeyPlaceholder}
+                    description={copy.keyHelp}
                     isRequired
                     hasAutoFocus
                     width="100%"
-                    status={fieldStatus(errorMessage(validation.errors.provider))}
-                  />
-                  <TextInput
-                    value={draft.model}
-                    onChange={(value) => c.setField('model', value)}
-                    label={copy.modelLabel}
-                    placeholder={copy.modelPlaceholder}
-                    description={copy.keyHelp}
-                    isRequired
-                    width="100%"
-                    status={fieldStatus(errorMessage(validation.errors.model))}
+                    status={fieldStatus(errorMessage(validation.errors.modelKey))}
                   />
                   <HStack justify="end">
                     <Button
@@ -379,10 +353,9 @@ function PricingEditorDialog(props: {
                       size="sm"
                       label={copy.catalogToggle}
                       onClick={() => {
-                        // Clear the manually-typed key so switching back to the
-                        // catalog can't leave a hidden provider/model in the draft.
-                        c.setField('provider', '');
-                        c.setField('model', '');
+                        // Clear the manually-typed key and its rates so catalog
+                        // mode cannot save values hidden behind the picker.
+                        c.clearModel();
                         setAddMode('catalog');
                       }}
                     />
@@ -444,6 +417,23 @@ function PricingEditorDialog(props: {
                 </VStack>
               </Collapsible>
               <PricingWriteNotice writeState={c.writeState} latestEntry={c.conflictLatestEntry} copy={copy} />
+              {c.needsReview ? (
+                <Banner
+                  status="warning"
+                  role="status"
+                  title={copy.hostChangedTitle}
+                  description={copy.hostChangedBody}
+                  endContent={
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      label={copy.reviewHostChange}
+                      isDisabled={!c.hasAuthority}
+                      onClick={c.reviewHostChange}
+                    />
+                  }
+                />
+              ) : null}
             </VStack>
           </LayoutContent>
         }
@@ -479,7 +469,13 @@ function PricingWriteNotice(props: {
       // change — it must not be described as one.
       const uncertain = writeState.reason === 'outcome_unknown';
       const latest = latestEntry
-        ? ` ${copy.conflictLatest(formatUsd(latestEntry.inputUsdPer1M), formatUsd(latestEntry.outputUsdPer1M))}`
+        ? ` ${copy.conflictLatest(
+            pricingSourceLabel(latestEntry, copy),
+            formatUsd(latestEntry.inputUsdPer1M),
+            formatUsd(latestEntry.outputUsdPer1M),
+            formatCache(latestEntry.cacheReadUsdPer1M, copy),
+            formatCache(latestEntry.cacheWriteUsdPer1M, copy),
+          )}`
         : '';
       return (
         <Banner
@@ -511,8 +507,7 @@ function pricingSkeletonRows(columnCount: number): Array<Array<ReactNode>> {
 }
 
 function pricingSourceLabel(row: PricingRowView, copy: PricingSettingsCopy): string {
-  // Overrides-only: `row` is always a custom override here (the built-in catalog
-  // is never rendered as table rows), so the label is only the fallback split.
+  if (row.source === 'builtin') return copy.sourceBuiltin;
   return row.resetEffect === 'restore_builtin' ? copy.sourceCustomFallback : copy.sourceCustomOnly;
 }
 

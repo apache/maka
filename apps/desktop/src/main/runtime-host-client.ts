@@ -38,11 +38,7 @@ import type {
   RuntimePolicy,
   RuntimePolicyMutation,
 } from "@maka/core/runtime-policy";
-import {
-  canonicalPricingConfigsEqual,
-  comparePricingModelKeys,
-} from "@maka/core/usage-stats/pricing";
-import type { PricingConfig } from "@maka/core/usage-stats/types";
+import { comparePricingModelKeys } from "@maka/core/usage-stats/pricing";
 import {
   type ClientCapabilityProvider,
   type DecodedSessionTranscriptPage,
@@ -67,6 +63,7 @@ import {
 } from "@maka/runtime-host/client";
 import {
   ARTIFACT_INGEST_CHUNK_MAX_BYTES,
+  createPricingReconciliationTarget,
   decodePricingMutateInput,
   type ArtifactBinaryPreview,
   type ArtifactProjection,
@@ -90,8 +87,9 @@ import {
   type OperationOutput,
   type PlanProjectionItem,
   type PlanQueryResult,
-  type PricingMutation,
   type PricingQueryResult,
+  pricingReconciliationTargetMatches,
+  type PricingReconciliationTarget,
   type ProjectCatalogMutateInput,
   type ProjectCatalogMutateResult,
   type ProjectCatalogProject,
@@ -154,6 +152,11 @@ import {
   type TurnMessageSubmitResult,
   type WorkspaceProjection,
 } from "@maka/runtime-host/protocol";
+import type {
+  DesktopPricingMutationInput,
+  DesktopPricingMutationOutcome,
+  DesktopPricingSnapshot,
+} from "../shared/desktop-pricing.js";
 
 const decodeStoredMessage = (value: unknown): StoredMessage =>
   decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
@@ -227,52 +230,12 @@ export interface DesktopRuntimeHostSession {
   close(): Promise<void>;
 }
 
-export interface DesktopPricingSnapshot {
-  readonly hostEpoch: string;
-  readonly connectionId: string;
-  readonly revision: number;
-  readonly entries: readonly EffectivePricingEntry[];
-}
-
 export interface DesktopSkillCatalogSnapshot {
   readonly revision: SkillCatalogRevision;
   readonly view: SkillCatalogView;
   readonly items: readonly SkillCatalogPageItem[];
   readonly workspace: WorkspaceProjection;
 }
-
-export interface DesktopPricingMutationInput {
-  readonly base: DesktopPricingSnapshot;
-  readonly mutation: PricingMutation;
-}
-
-export type DesktopPricingMutationOutcome =
-  | {
-      readonly kind: "saved";
-      readonly disposition: "committed" | "unchanged";
-      readonly snapshot: DesktopPricingSnapshot;
-    }
-  | {
-      readonly kind: "saved_refresh_failed";
-      readonly disposition: "committed" | "unchanged";
-    }
-  | {
-      readonly kind: "synchronized" | "review_required";
-      readonly reason: "revision_conflict" | "outcome_unknown";
-      readonly snapshot: DesktopPricingSnapshot;
-    }
-  | {
-      readonly kind: "reconciliation_unavailable";
-      readonly reason: "revision_conflict" | "outcome_unknown";
-    };
-
-type PricingReconciliationTarget =
-  | { readonly kind: "upsert"; readonly pricing: Readonly<PricingConfig> }
-  | {
-      readonly kind: "delete";
-      readonly modelKey: string;
-      readonly expected: "builtin" | "unpriced" | "no_override";
-    };
 
 export class DesktopRuntimeHostClient {
   readonly #sessions = new Set<DesktopSessionHandle>();
@@ -657,7 +620,7 @@ export class DesktopRuntimeHostClient {
       mutation: input.mutation,
     });
     const reconciliationTarget = createPricingReconciliationTarget(
-      input.base,
+      input.base.entries,
       request.mutation,
     );
     let result: OperationOutput<"pricing.mutate">;
@@ -711,7 +674,7 @@ export class DesktopRuntimeHostClient {
       expectedRevision: input.base.revision,
       mutation: input.mutation,
     });
-    const target = createPricingReconciliationTarget(input.base, request.mutation);
+    const target = createPricingReconciliationTarget(input.base.entries, request.mutation);
     return this.#reconcilePricingMutation(target, reason);
   }
 
@@ -1760,7 +1723,7 @@ export class DesktopRuntimeHostClient {
     try {
       const snapshot = await this.loadPricingSnapshot();
       return {
-        kind: pricingTargetMatchesSnapshot(target, snapshot)
+        kind: pricingReconciliationTargetMatches(target, snapshot.entries)
           ? "synchronized"
           : "review_required",
         reason,
@@ -2012,51 +1975,6 @@ function unstableProjection(
     "projection_unstable",
     `Runtime Host ${name} kept changing while Desktop read Session ${sessionId}`,
   );
-}
-
-function createPricingReconciliationTarget(
-  base: DesktopPricingSnapshot,
-  mutation: PricingMutation,
-): PricingReconciliationTarget {
-  if (mutation.kind === "upsert")
-    return { kind: "upsert", pricing: mutation.pricing };
-  const baseEntry = base.entries.find(
-    ({ pricing }) => pricing.modelKey === mutation.modelKey,
-  );
-  const expected =
-    baseEntry?.source === "custom"
-      ? baseEntry.resetEffect === "restore_builtin"
-        ? "builtin"
-        : "unpriced"
-      : "no_override";
-  return { kind: "delete", modelKey: mutation.modelKey, expected };
-}
-
-function pricingTargetMatchesSnapshot(
-  target: PricingReconciliationTarget,
-  snapshot: DesktopPricingSnapshot,
-): boolean {
-  const current = snapshot.entries.find(
-    ({ pricing }) => pricing.modelKey === pricingTargetModelKey(target),
-  );
-  if (target.kind === "upsert") {
-    return (
-      current?.source === "custom" &&
-      canonicalPricingConfigsEqual(current.pricing, target.pricing)
-    );
-  }
-  switch (target.expected) {
-    case "builtin":
-      return current?.source === "builtin";
-    case "unpriced":
-      return current === undefined;
-    case "no_override":
-      return current === undefined || current.source === "builtin";
-  }
-}
-
-function pricingTargetModelKey(target: PricingReconciliationTarget): string {
-  return target.kind === "upsert" ? target.pricing.modelKey : target.modelKey;
 }
 
 function pricingEntriesAreCanonical(

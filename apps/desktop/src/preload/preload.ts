@@ -3276,7 +3276,7 @@ const makaBridge = {
     pricing: {
       // Load one complete effective snapshot (built-in ∪ overrides), stamped to
       // its Host connection/revision; the renderer round-trips it as the CAS base.
-      async load(host?: DesktopRuntimeHostRef): Promise<DesktopPricingSnapshot> {
+      async load(host: DesktopRuntimeHostRef): Promise<DesktopPricingSnapshot> {
         const result = await invokeSelectedRuntimeHost<Result<DesktopPricingSnapshot>>(
           host,
           'usage:pricing:load',
@@ -3289,7 +3289,7 @@ const makaBridge = {
       async mutate(
         base: DesktopPricingSnapshot,
         mutation: PricingMutation,
-        host?: DesktopRuntimeHostRef,
+        host: DesktopRuntimeHostRef,
       ): Promise<DesktopPricingMutationOutcome> {
         const result = await invokeSelectedRuntimeHost<Result<DesktopPricingMutationOutcome>>(
           host,

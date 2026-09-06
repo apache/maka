@@ -26,8 +26,9 @@ export type DesktopUsagePricingBridge = Pick<MakaBridge, 'settings'>;
 // `window.maka.settings.pricing` bridge access, keeping it in the platform zone
 // so no new bridge path lands in a frozen legacy-closure file. The `host` is the
 // settings-selected Runtime Host threaded from the feature, so pricing reads and
-// writes target the same Host as the rest of the settings page (not the app's
-// active Host, which `bridge.settings.pricing.load(undefined)` would resolve).
+// writes target the same Host as the rest of the settings page. The pricing
+// bridge requires that Host explicitly, so this path cannot fall back to the
+// app's active Host.
 export function createDesktopUsagePricingServices(
   bridge: DesktopUsagePricingBridge = window.maka,
 ): UsagePricingServices {

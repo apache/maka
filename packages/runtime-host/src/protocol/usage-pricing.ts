@@ -18,6 +18,7 @@
  */
 
 import {
+  canonicalPricingConfigsEqual,
   comparePricingModelKeys,
   normalizePricingModelKey,
   validateCanonicalPricingConfig,
@@ -297,6 +298,57 @@ export type PricingQueryResult =
 export type PricingMutation =
   | { readonly kind: 'upsert'; readonly pricing: PricingConfig }
   | { readonly kind: 'delete'; readonly modelKey: string };
+
+export type PricingReconciliationTarget =
+  | { readonly kind: 'upsert'; readonly pricing: Readonly<PricingConfig> }
+  | {
+      readonly kind: 'delete';
+      readonly modelKey: string;
+      readonly expected: 'builtin' | 'unpriced' | 'no_override';
+    };
+
+/** Capture the intended end state before dispatch, while the CAS base is known. */
+export function createPricingReconciliationTarget(
+  baseEntries: readonly EffectivePricingEntry[],
+  mutation: PricingMutation,
+): PricingReconciliationTarget {
+  if (mutation.kind === 'upsert') return { kind: 'upsert', pricing: mutation.pricing };
+  const baseEntry = baseEntries.find(({ pricing }) => pricing.modelKey === mutation.modelKey);
+  const expected =
+    baseEntry?.source === 'custom'
+      ? baseEntry.resetEffect === 'restore_builtin'
+        ? 'builtin'
+        : 'unpriced'
+      : 'no_override';
+  return { kind: 'delete', modelKey: mutation.modelKey, expected };
+}
+
+/** Compare a later authoritative projection with a previously captured target. */
+export function pricingReconciliationTargetMatches(
+  target: PricingReconciliationTarget,
+  entries: readonly EffectivePricingEntry[],
+): boolean {
+  const current = entries.find(
+    ({ pricing }) => pricing.modelKey === pricingReconciliationTargetModelKey(target),
+  );
+  if (target.kind === 'upsert') {
+    return (
+      current?.source === 'custom' && canonicalPricingConfigsEqual(current.pricing, target.pricing)
+    );
+  }
+  switch (target.expected) {
+    case 'builtin':
+      return current?.source === 'builtin';
+    case 'unpriced':
+      return current === undefined;
+    case 'no_override':
+      return current === undefined || current.source === 'builtin';
+  }
+}
+
+export function pricingReconciliationTargetModelKey(target: PricingReconciliationTarget): string {
+  return target.kind === 'upsert' ? target.pricing.modelKey : target.modelKey;
+}
 
 export interface PricingMutateInput {
   readonly expectedRevision: number;

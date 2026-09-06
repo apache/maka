@@ -19,6 +19,7 @@
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
+/** User-visible copy for the editable Pricing settings surface. */
 export type PricingSettingsCopy = {
   title: string;
   subtitle: string;
@@ -54,10 +55,8 @@ export type PricingSettingsCopy = {
   // editor
   addTitle: string;
   editTitle: string;
-  providerLabel: string;
-  providerPlaceholder: string;
-  modelLabel: string;
-  modelPlaceholder: string;
+  modelKeyLabel: string;
+  modelKeyPlaceholder: string;
   keyHelp: string;
   inputLabel: string;
   outputLabel: string;
@@ -80,8 +79,17 @@ export type PricingSettingsCopy = {
   conflictTitleUnknown: string;
   conflictBody: string;
   conflictBodyUnknown: string;
-  conflictLatest(input: string, output: string): string;
+  conflictLatest(
+    source: string,
+    input: string,
+    output: string,
+    cacheRead: string,
+    cacheWrite: string,
+  ): string;
   reviewSave: string;
+  hostChangedTitle: string;
+  hostChangedBody: string;
+  reviewHostChange: string;
   refreshFailedTitle: string;
   refreshFailedBody: string;
   reconcileTitle: string;
@@ -96,7 +104,6 @@ export type PricingSettingsCopy = {
   confirmReset: string;
   confirmDelete: string;
   resetFailed: string;
-  resetDone: string;
 };
 
 const SETTINGS_PRICING_COPY = {
@@ -134,11 +141,9 @@ const SETTINGS_PRICING_COPY = {
     deleteAria: (modelKey: string) => `删除「${modelKey}」定价`,
     addTitle: '添加定价',
     editTitle: '编辑定价',
-    providerLabel: '供应商',
-    providerPlaceholder: '例如 anthropic',
-    modelLabel: '模型',
-    modelPlaceholder: '例如 claude-sonnet-4-5',
-    keyHelp: '这是运行时的精确查找键，需与用量记录中的供应商与模型 ID 完全一致（区分大小写，不要用连接别名）。',
+    modelKeyLabel: '模型键',
+    modelKeyPlaceholder: '例如 anthropic:claude-sonnet-4-5',
+    keyHelp: '粘贴用量记录中的精确 Runtime 查找键（区分大小写，不要用连接别名）。',
     inputLabel: '输入价格',
     outputLabel: '输出价格',
     rateHelp: '美元 / 每百万 token；0 表示免费（如本地模型）。',
@@ -158,8 +163,12 @@ const SETTINGS_PRICING_COPY = {
     conflictTitleUnknown: '无法确认上次修改的结果',
     conflictBody: '该模型的价格已被其他修改更新。请核对最新值后，基于最新版本再次保存。',
     conflictBodyUnknown: '上次修改可能已生效、也可能未生效。请核对最新值后，再决定是否基于最新版本重新保存。',
-    conflictLatest: (input: string, output: string) => `当前最新：输入 ${input} / 输出 ${output}`,
+    conflictLatest: (source, input, output, cacheRead, cacheWrite) =>
+      `当前最新：${source}；输入 ${input} / 输出 ${output} / 缓存读 ${cacheRead} / 缓存写 ${cacheWrite}`,
     reviewSave: '核对并保存',
+    hostChangedTitle: '运行时主机已变化',
+    hostChangedBody: '草稿已保留。请等待新主机的定价加载完成，核对后再继续保存。',
+    reviewHostChange: '已核对新主机定价',
     refreshFailedTitle: '已保存，但无法加载最新定价',
     refreshFailedBody: '保存已完成，但未能读取最新定价。请刷新后再进行修改。',
     reconcileTitle: '无法确认结果',
@@ -174,7 +183,6 @@ const SETTINGS_PRICING_COPY = {
     confirmReset: '重置',
     confirmDelete: '删除',
     resetFailed: '操作失败',
-    resetDone: '已更新定价',
   },
   'zh-TW': {
     title: '定價設定',
@@ -210,11 +218,9 @@ const SETTINGS_PRICING_COPY = {
     deleteAria: (modelKey: string) => `刪除「${modelKey}」定價`,
     addTitle: '新增定價',
     editTitle: '編輯定價',
-    providerLabel: '供應商',
-    providerPlaceholder: '例如 anthropic',
-    modelLabel: '模型',
-    modelPlaceholder: '例如 claude-sonnet-4-5',
-    keyHelp: '這是執行階段的精確查找鍵，需與用量記錄中的供應商與模型 ID 完全一致（區分大小寫，請勿使用連線別名）。',
+    modelKeyLabel: '模型鍵',
+    modelKeyPlaceholder: '例如 anthropic:claude-sonnet-4-5',
+    keyHelp: '貼上用量記錄中的精確 Runtime 查找鍵（區分大小寫，請勿使用連線別名）。',
     inputLabel: '輸入價格',
     outputLabel: '輸出價格',
     rateHelp: '美元 / 每百萬 token；0 表示免費（如本機模型）。',
@@ -234,8 +240,12 @@ const SETTINGS_PRICING_COPY = {
     conflictTitleUnknown: '無法確認上次修改的結果',
     conflictBody: '該模型的價格已被其他修改更新。請核對最新值後，基於最新版本再次儲存。',
     conflictBodyUnknown: '上次修改可能已生效，也可能未生效。請核對最新值後，再決定是否基於最新版本重新儲存。',
-    conflictLatest: (input: string, output: string) => `目前最新：輸入 ${input} / 輸出 ${output}`,
+    conflictLatest: (source, input, output, cacheRead, cacheWrite) =>
+      `目前最新：${source}；輸入 ${input} / 輸出 ${output} / 快取讀 ${cacheRead} / 快取寫 ${cacheWrite}`,
     reviewSave: '核對並儲存',
+    hostChangedTitle: 'Runtime Host 已變更',
+    hostChangedBody: '草稿已保留。請等待新 Host 的定價載入完成，核對後再繼續儲存。',
+    reviewHostChange: '已核對新 Host 定價',
     refreshFailedTitle: '已儲存，但無法載入最新定價',
     refreshFailedBody: '儲存已完成，但無法讀取最新定價。請重新整理後再進行修改。',
     reconcileTitle: '無法確認結果',
@@ -250,7 +260,6 @@ const SETTINGS_PRICING_COPY = {
     confirmReset: '重設',
     confirmDelete: '刪除',
     resetFailed: '操作失敗',
-    resetDone: '已更新定價',
   },
   en: {
     title: 'Pricing',
@@ -287,12 +296,10 @@ const SETTINGS_PRICING_COPY = {
     deleteAria: (modelKey: string) => `Delete pricing for ${modelKey}`,
     addTitle: 'Add price',
     editTitle: 'Edit price',
-    providerLabel: 'Provider',
-    providerPlaceholder: 'e.g. anthropic',
-    modelLabel: 'Model',
-    modelPlaceholder: 'e.g. claude-sonnet-4-5',
+    modelKeyLabel: 'Model key',
+    modelKeyPlaceholder: 'e.g. anthropic:claude-sonnet-4-5',
     keyHelp:
-      'This is the exact Runtime lookup key. Match the provider and model IDs from your usage records exactly (case-sensitive; not the connection slug).',
+      'Paste the exact Runtime lookup key from your usage records (case-sensitive; not the connection slug).',
     inputLabel: 'Input price',
     outputLabel: 'Output price',
     rateHelp: 'USD per 1M tokens; 0 means free (e.g. local models).',
@@ -312,8 +319,12 @@ const SETTINGS_PRICING_COPY = {
     conflictTitleUnknown: "Couldn't confirm the last change",
     conflictBody: "This model's price was changed elsewhere. Review the latest value, then save again against the latest revision.",
     conflictBodyUnknown: 'The last change may or may not have applied. Review the latest value, then decide whether to save again against the latest revision.',
-    conflictLatest: (input: string, output: string) => `Latest: input ${input} / output ${output}`,
+    conflictLatest: (source, input, output, cacheRead, cacheWrite) =>
+      `Latest: ${source}; input ${input} / output ${output} / cache read ${cacheRead} / cache write ${cacheWrite}`,
     reviewSave: 'Review & save',
+    hostChangedTitle: 'Runtime Host changed',
+    hostChangedBody: 'Your draft was preserved. Wait for pricing from the new Host, then review it before saving.',
+    reviewHostChange: 'Reviewed new Host pricing',
     refreshFailedTitle: 'Saved, but the latest pricing could not be loaded',
     refreshFailedBody: 'The save completed but the latest prices could not be loaded. Refresh before changing pricing again.',
     reconcileTitle: "Couldn't confirm the result",
@@ -328,7 +339,6 @@ const SETTINGS_PRICING_COPY = {
     confirmReset: 'Reset',
     confirmDelete: 'Delete',
     resetFailed: 'Action failed',
-    resetDone: 'Pricing updated',
   },
 } satisfies UiCatalog<PricingSettingsCopy>;
 

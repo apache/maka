@@ -39,6 +39,15 @@ to a thin wrapper).
 - `ports.ts` — `UsageServices`: `loadUsageStats(range)` and
   `updateUsageSettings(patch)`. Both narrow — the feature consumes only
   `UsageSettings`/`UsageStats`, never the whole `AppSettings`.
+- `pricing-ports.ts` + `pricing-services-context.tsx` — the two Host-backed
+  Pricing capabilities: load one complete effective snapshot and apply one CAS
+  mutation against the settings-selected Host.
+- `controller/pricing-controller.ts` — Pricing authority, draft, conflict, and
+  Host-generation fencing. A Host change preserves an open draft, discards its
+  old mutation base, reloads authority, and requires explicit review before the
+  next save. If reconciliation was temporarily unavailable, it retains the
+  exact mutation intent and compares it with the next successful snapshot via
+  the shared pure reconciliation rules in `@maka/runtime-host/protocol`.
 - `services-context.tsx` — `UsageFeatureScope`, the persistent state owner
   (single tagged `{ range, value }` snapshot, reload ticket, unmount isolation,
   Host/generation invalidation, load-failure toast), plus `useUsageServices()`
@@ -50,13 +59,12 @@ to a thin wrapper).
 - `ui/usage-stats-table.tsx`, `ui/metric-card.tsx`, `controller/*` — feature-owned
   presentational + framework helpers (external-only deps).
 
-## Wiring (one deviation from the composition-feature pattern, forced by the ratchet)
+## Wiring
 
-Unlike the composition-wired features, `settings-surface.tsx` is itself a frozen
+Usage stats remain a transitional exception because `settings-surface.tsx` is a frozen
 legacy closure file, so it cannot import the feature or a `platform/` adapter, and
 usage stats are scoped to the *settings-selected* Runtime Host (a settings concept
-the app-global composition root does not have). So there is **no `platform/desktop`
-adapter / no composition registration — a transitional seam.** `settings-surface.tsx`
+the app-global composition root does not have). `settings-surface.tsx`
 builds a host-bound `loadUsageStats` (via its existing `window.maka.settings.usageStats`
 call) plus an `updateUsageSettings` that projects the app-settings update down to
 `UsageSettings`, bundles them as `UsageServices`, and mounts the legacy shim
@@ -69,9 +77,14 @@ via context. The scope takes a `host:epoch` `targetKey` as a **prop** (not a Rea
 so a Host change never remounts the rest of the Settings surface. The Host-change
 handler also calls the scope's imperative `fenceTarget()` *synchronously* (alongside
 the other Host-scoped resources), rejecting an in-flight old-Host load before React
-re-renders the new target. When #4425's composition step lands, only this mounting
-seam moves to `composition/desktop-feature-services.tsx` + a stateless
-`platform/desktop` adapter — the scope stays feature-owned.
+re-renders the new target. That same fence is exposed to the Pricing controller as
+an `isCurrent` witness, so an old-Host mutation result cannot land in the event-to-
+render gap. Pricing itself is already composition-wired through
+`platform/desktop/create-usage-pricing-services.ts` and
+`composition/desktop-feature-services.tsx`; only the selected Host is threaded
+from the settings surface. When #4425's remaining composition step lands, only
+the Usage-stats mounting seam moves to composition plus a stateless Desktop
+adapter; the scope stays feature-owned.
 
 Copy is **not** a deviation: the view imports `getUsageSettingsCopy` +
 `UsageSettingsCopy` from `locales/settings-usage-copy.ts` directly. A feature import
@@ -91,8 +104,6 @@ shim, since `settings-error-copy` is not a copy catalog.
   obligations are exactly what a stale head had regressed with every test green, so
   a surface-level test guarding them is the real coverage; it is deferred to keep
   this extraction PR contained.
-- Add the editable pricing tab (#2015 / PR #4164) as a feature-internal tab,
-  replacing the read-only pricing tab preserved here.
 - De-duplicate the controllers. `controller/action-guard.ts` and
   `controller/optimistic-settings-draft.ts` are feature-local copies of the legacy
   `settings/` helpers (which keep ~9 consumers and their own tests). They are
