@@ -19,7 +19,11 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { collapseHomePath, DiagnosticLogBuffer } from '../diagnostic-log.js';
+import {
+  collapseHomePath,
+  DiagnosticLogBuffer,
+  providerFailureSummaryFromDetails,
+} from '../diagnostic-log.js';
 
 test('keeps a bounded redacted tail of diagnostic logs', () => {
   const buffer = new DiagnosticLogBuffer({
@@ -57,4 +61,15 @@ test('collapses the home path belonging to the process that captured the logs', 
     ),
     'file:///~/.maka/logs',
   );
+});
+
+test('preserves structured provider metadata in a bounded summary', () => {
+  const summary = providerFailureSummaryFromDetails({
+    providerSummary: `${'x'.repeat(2_000)} (code=rate_limit, status=429, requestId=req-123)`,
+  });
+  assert.ok(summary);
+  assert.ok(Buffer.byteLength(summary, 'utf8') <= 256);
+  assert.match(summary, /code=rate_limit/);
+  assert.match(summary, /status=429/);
+  assert.match(summary, /requestId=req-123/);
 });

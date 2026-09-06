@@ -26,8 +26,19 @@ export function providerFailureSummaryFromDetails(details: unknown): string | un
   if (!details || Array.isArray(details) || typeof details !== 'object') return undefined;
   const summary = (details as { providerSummary?: unknown }).providerSummary;
   return typeof summary === 'string' && summary.length > 0
-    ? truncateUtf8(redactSecrets(summary), TURN_FAILURE_MESSAGE_MAX_BYTES, '…')
+    ? truncateProviderFailureSummary(redactSecrets(summary))
     : undefined;
+}
+
+function truncateProviderFailureSummary(summary: string): string {
+  if (new TextEncoder().encode(summary).byteLength <= TURN_FAILURE_MESSAGE_MAX_BYTES) return summary;
+  const suffixStart = summary.lastIndexOf(' (code=');
+  if (suffixStart < 0) return truncateUtf8(summary, TURN_FAILURE_MESSAGE_MAX_BYTES, '…');
+  const suffix = summary.slice(suffixStart);
+  const budget = TURN_FAILURE_MESSAGE_MAX_BYTES - new TextEncoder().encode(suffix).byteLength;
+  return budget <= 1
+    ? truncateUtf8(suffix, TURN_FAILURE_MESSAGE_MAX_BYTES)
+    : `${truncateUtf8(summary.slice(0, suffixStart), budget - 1)}…${suffix}`;
 }
 
 export type DiagnosticLogLevel = 'debug' | 'info' | 'log' | 'warn' | 'error';

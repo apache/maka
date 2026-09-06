@@ -18,8 +18,7 @@
  */
 
 import { type ContextCompactionOutcome } from '@maka/core/events';
-import { providerFailureSummaryFromDetails, truncateUtf8 } from '@maka/core/diagnostic-log';
-import { redactSecrets } from '@maka/core/redaction';
+import { providerFailureSummaryFromDetails } from '@maka/core/diagnostic-log';
 import { readRunInvocation } from '@maka/core/runtime-event-store';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
@@ -71,14 +70,7 @@ export async function readCanonicalTurnSnapshot(
       if (!fact.failureClass) throw new Error('Failed terminal fact has no failure class');
       const failureMessage =
         fact.terminalEvent.content?.kind === 'error'
-          ? truncateUtf8(
-              redactSecrets(
-                providerFailureSummaryFromRuntimeEvent(fact.terminalEvent) ??
-                  fact.terminalEvent.content.message,
-              ),
-              TURN_FAILURE_MESSAGE_MAX_BYTES,
-              '…',
-            )
+          ? providerFailureSummaryFromRuntimeEvent(fact.terminalEvent)
           : undefined;
       return {
         sessionId,

@@ -101,7 +101,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 113 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 118 as const;
+// 118: Failed-turn provider summaries retain their structured metadata suffix
+// through canonical snapshot and legacy backfill paths.
 // 113: Session Turn projections carry bounded provider failure summaries for
 // live and reloaded failed-turn diagnostics. Older peers cannot preserve or
 // render this additional failure context safely.
