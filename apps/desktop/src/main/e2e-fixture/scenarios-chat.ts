@@ -19,6 +19,8 @@
 
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import {
+  AGENT_GRAPH_SESSION_ID,
+  PARTIAL_HISTORY_SESSION_ID,
   header,
   PROMPT_RAIL_PROMPT_COUNT,
   PROMPT_RAIL_SESSION_ID,
@@ -107,6 +109,58 @@ export function turnMessages(now: number): StoredMessage[] {
       costUsd: 0.0042,
     },
   ];
+}
+
+export function partialHistorySession(now: number): SessionHeader {
+  return header({
+    id: PARTIAL_HISTORY_SESSION_ID,
+    name: '部分历史记录示例',
+    connection: 'zai-live',
+    model: 'glm-5.1',
+    now,
+    lastMessageAt: now - 60_000,
+  });
+}
+
+export function partialHistoryMessages(now: number): StoredMessage[] {
+  const messages: StoredMessage[] = [];
+  const turnCount = 120;
+  for (let index = 1; index <= turnCount; index += 1) {
+    const turnId = `turn-partial-history-${index}`;
+    const ts = now - (turnCount - index + 1) * 60_000;
+    messages.push(
+      {
+        type: 'user',
+        id: `msg-partial-history-user-${index}`,
+        turnId,
+        ts,
+        text: `第 ${index} 个历史问题：请说明当前任务的进展。`,
+      },
+      {
+        type: 'assistant',
+        id: `msg-partial-history-assistant-${index}`,
+        turnId,
+        ts: ts + 1_000,
+        text: `第 ${index} 个历史回答：任务仍在处理中。`,
+        modelId: 'glm-5.1',
+      },
+    );
+  }
+  return messages;
+}
+
+export function agentGraphSession(now: number): SessionHeader {
+  return {
+    ...header({
+      id: AGENT_GRAPH_SESSION_ID,
+      name: 'Agent Graph 布局示例',
+      connection: 'zai-live',
+      model: 'glm-5.1',
+      now,
+      lastMessageAt: now - 60_000,
+    }),
+    orchestrationMode: 'graph',
+  };
 }
 
 export function providerFailureMessages(now: number): StoredMessage[] {
