@@ -276,10 +276,16 @@ export class DesktopTranscriptReplica {
       const completedOverlayMessageIds = this.#installDurable(decoded.messages);
       if (direction === 'older') this.#hasOlder = decoded.nextCursor !== null;
       else this.#hasNewer = decoded.nextCursor !== null;
+      const anchorTurnId = anchor === null ? undefined : this.#durable.get(anchor)?.message.turnId;
+      const towardEdge = direction === 'older' ? [...decoded.messages].reverse() : decoded.messages;
+      const adjacent = towardEdge.find(({ message }) =>
+        messageTurnId(message) !== undefined && messageTurnId(message) !== anchorTurnId,
+      ) ?? towardEdge.at(-1);
       const evictedDurableSequences = this.#evictToBudget(
         undefined,
         direction === 'older' ? 'newest' : 'oldest',
         anchor ?? undefined,
+        adjacent?.identity,
       );
       this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
     });
@@ -572,6 +578,7 @@ export class DesktopTranscriptReplica {
     budget: number | undefined = undefined,
     edge: 'oldest' | 'newest' = 'oldest',
     protectedSequence?: number,
+    protectedThroughSequence = protectedSequence,
   ): number[] {
     const residentBudget = budget ?? this.#maxResidentBytes + this.#overlayBytes;
     const evicted: number[] = [];
@@ -589,22 +596,24 @@ export class DesktopTranscriptReplica {
     let oldestIndex = 0;
     let newestIndex = orderedTurns.length - 1;
     let residentTurns = orderedTurns.length;
-    const protectedEntry = protectedSequence === undefined
-      ? undefined
-      : this.#durable.get(protectedSequence);
-    const protectedTurnKey = protectedEntry === undefined
-      ? undefined
-      : residentTurnKey(protectedEntry);
-    const protectedIndex = protectedTurnKey === undefined
-      ? -1
-      : orderedTurns.findIndex(([turnKey]) => turnKey === protectedTurnKey);
+    const protectedIndices = [protectedSequence, protectedThroughSequence].flatMap((sequence) => {
+      const entry = sequence === undefined ? undefined : this.#durable.get(sequence);
+      return entry === undefined ? [] : [orderedTurns.findIndex(([key]) => key === residentTurnKey(entry))];
+    });
+    const protectedStart = Math.min(...protectedIndices);
+    const protectedEnd = Math.max(...protectedIndices);
+    // A single oversized Turn already outranks the per-range soft budget.
+    // Adjacent navigation needs the same exception for the minimal span from
+    // the reader to the next Turn; otherwise that Turn is evicted on arrival
+    // and every subsequent scroll reloads it without making progress. Global
+    // pressure calls trimDurable without protection and still reclaims it.
     const take = (
       candidateEdge: 'oldest' | 'newest',
     ): readonly [string, number[]] | undefined => {
       const index = candidateEdge === 'oldest' ? oldestIndex : newestIndex;
       if (oldestIndex > newestIndex) return undefined;
       const turn = orderedTurns[index];
-      if (!turn || turn[0] === protectedTurnKey) return undefined;
+      if (!turn || (index >= protectedStart && index <= protectedEnd)) return undefined;
       if (candidateEdge === 'oldest') oldestIndex += 1;
       else newestIndex -= 1;
       return turn;
@@ -613,16 +622,16 @@ export class DesktopTranscriptReplica {
       this.#residentBytes > residentBudget
       || residentTurns > this.#maxResidentTurns
     ) {
-      let evictionEdge = protectedIndex < 0
+      let evictionEdge = protectedIndices.length === 0
         ? edge
-        : protectedIndex - oldestIndex > newestIndex - protectedIndex
+        : protectedStart - oldestIndex > newestIndex - protectedEnd
           ? 'oldest'
-          : protectedIndex - oldestIndex < newestIndex - protectedIndex
+          : protectedStart - oldestIndex < newestIndex - protectedEnd
             ? 'newest'
             : edge;
       let turn = take(evictionEdge);
       if (turn === undefined) {
-        evictionEdge = edge === 'oldest' ? 'newest' : 'oldest';
+        evictionEdge = evictionEdge === 'oldest' ? 'newest' : 'oldest';
         turn = take(evictionEdge);
       }
       if (turn === undefined) break;

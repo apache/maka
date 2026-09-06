@@ -575,22 +575,29 @@ test('retains the reading anchor while an older page replaces the far edges', as
   assert.equal(snapshot.hasNewer, true);
 });
 
-for (const coverage of ['complete', 'projected'] as const) {
-  test(`scrolls both ways through bounded ${coverage} history without losing the reading turn`, async () => {
+for (const { coverage, textBytes } of (['complete', 'projected'] as const).flatMap((coverage) =>
+  [0, 300 * 1024, 600 * 1024].map((textBytes) => ({ coverage, textBytes })),
+)) {
+  test(`scrolls both ways through bounded ${coverage} history with ${textBytes}-byte Turns`, async () => {
     const stride = coverage === 'projected' ? 3 : 1;
     const messages = Array.from({ length: 40 }, (_, index) => ({
       identity: index * stride,
-      message: { ...assistantMessage(String(index), `assistant-${index}`), turnId: `turn-${index}` },
+      message: { ...assistantMessage('x'.repeat(textBytes), `assistant-${index}`), turnId: `turn-${index}` },
     }));
+    const largestTurnBytes = Math.max(...messages.map(({ message }) =>
+      Buffer.byteLength(JSON.stringify(message), 'utf8'),
+    ));
+    const maxNavigationBytes = Math.max(DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES, 2 * largestTurnBytes);
+    const pageTurns = textBytes === 0 ? 10 : 1;
     const through = 39 * stride;
     const pages = new Map<object, { messages: typeof messages; nextCursor: string | null }>();
     const makePage = (direction: 'older' | 'newer', anchor: number | null) => {
       const candidates = messages.filter(({ identity }) => anchor === null
         || (direction === 'older' ? identity < anchor : identity > anchor));
-      const nextCursor = candidates.length > 10 ? 'more' : null;
+      const nextCursor = candidates.length > pageTurns ? 'more' : null;
       const page = transcriptPage(direction, nextCursor, through);
       pages.set(page, {
-        messages: direction === 'older' ? candidates.slice(-10) : candidates.slice(0, 10),
+        messages: direction === 'older' ? candidates.slice(-pageTurns) : candidates.slice(0, pageTurns),
         nextCursor,
       });
       return page;
@@ -639,7 +646,12 @@ for (const coverage of ['complete', 'projected'] as const) {
         const after = replica.snapshot();
         assert.ok(after.durable.some(({ sequence }) => sequence === anchor.sequence));
         assert.ok(after.durable.length <= DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS);
-        assert.ok(replica.residentBytes <= DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES);
+        assert.ok(replica.residentBytes <= maxNavigationBytes,
+          'only the reading Turn and one adjacent Turn may exceed the soft range budget');
+        assert.ok(direction === 'older'
+          ? after.durable[0]!.sequence < before.durable[0]!.sequence
+          : after.durable.at(-1)!.sequence > before.durable.at(-1)!.sequence,
+          'every adjacent edge load must make progress');
         for (let i = 1; i < after.durable.length; i++) {
           assert.equal(after.durable[i]!.sequence - after.durable[i - 1]!.sequence, stride);
         }
@@ -647,6 +659,10 @@ for (const coverage of ['complete', 'projected'] as const) {
       assert.equal(direction === 'older' ? store.range().oldestSequence : store.range().newestSequence,
         direction === 'older' ? 0 : through);
     }
+    // Global pressure may reclaim the range even after navigation used the
+    // atomic-Turn exception; the protection is local to that operation.
+    replica.trimDurable(128 * 1024);
+    assert.ok(replica.residentBytes <= 128 * 1024);
     await controller.close();
   });
 }
