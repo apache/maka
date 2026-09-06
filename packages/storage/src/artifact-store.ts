@@ -487,18 +487,33 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       const recorded = this.metadataRepository.readUpgradeOrphanPaths();
       if (recorded.length === 0) return;
       const claimed = new Set(this.records.map((record) => record.relativePath));
+      const claimedEntries = await this.resolveRemovalEntriesUnlocked(this.records);
+      const claimedIdentities = new Set(
+        claimedEntries.flatMap((entry) => (entry ? [entry.comparisonIdentity] : [])),
+      );
       const directories = new Set<string>();
       const discharged: string[] = [];
+      let realArtifactRoot: string | undefined;
       try {
         for (const relativePath of recorded) {
           if (claimed.has(relativePath) || !isSafeRelativeArtifactPath(relativePath)) {
             discharged.push(relativePath);
             continue;
           }
-          const target = join(this.artifactRoot, relativePath);
+          const entry = await resolveArtifactRemovalEntry(this.artifactRoot, relativePath);
+          if (!entry) {
+            discharged.push(relativePath);
+            continue;
+          }
+          realArtifactRoot ??= await ensureRealDirectory(this.artifactRoot);
+          if (!isInsideOrSamePath(realArtifactRoot, dirname(entry.unlinkPath))) continue;
+          if (claimedIdentities.has(entry.comparisonIdentity)) {
+            discharged.push(relativePath);
+            continue;
+          }
           try {
-            await unlink(target);
-            directories.add(dirname(target));
+            await unlink(entry.unlinkPath);
+            directories.add(dirname(entry.unlinkPath));
           } catch (error) {
             if (!isNotFound(error)) continue;
           }

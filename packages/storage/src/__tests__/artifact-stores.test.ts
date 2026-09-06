@@ -18,11 +18,11 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after, describe, test } from 'node:test';
+import { after, describe, test, type TestContext } from 'node:test';
 import {
   authenticateInteractiveArtifactStoreWriter,
   openInteractiveArtifactStoreForWrite,
@@ -243,6 +243,137 @@ describe('interactive artifact store authority', () => {
     });
   });
 
+  test('does not follow a replaced parent directory while reclaiming upgrade residue', async (t) => {
+    const outsideRoot = await mkdtemp(join(tmpdir(), 'maka-artifact-upgrade-outside-'));
+    try {
+      await withInteractiveOwner(async (owner, root, track) => {
+        const initial = await openInteractiveArtifactStoreForWrite(owner.lease);
+        initial.close();
+        const relativePath = 'session-1/retired-payload.txt';
+        const db = new DatabaseSync(join(root, 'runtime.sqlite'));
+        db.exec(`
+          DROP TABLE artifact_records;
+          CREATE TABLE artifact_records (
+            storage_key TEXT PRIMARY KEY, artifact_id TEXT NOT NULL,
+            session_id TEXT NOT NULL, created_at INTEGER NOT NULL CHECK(created_at >= 0),
+            status TEXT NOT NULL CHECK(status IN ('live', 'deleted')),
+            relative_path TEXT NOT NULL, record_json TEXT NOT NULL
+          );
+          CREATE UNIQUE INDEX artifact_records_relative_path ON artifact_records(relative_path);
+          UPDATE operational_schema_migrations SET version = 1 WHERE scope = 'artifact';
+        `);
+        db.prepare('INSERT INTO artifact_records VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+          'retired',
+          'retired',
+          'session-1',
+          1,
+          'live',
+          relativePath,
+          JSON.stringify({
+            id: 'retired',
+            sessionId: 'session-1',
+            turnId: 'turn-1',
+            createdAt: 1,
+            name: 'payload.txt',
+            kind: 'file',
+            sizeBytes: 8,
+            relativePath,
+            source: 'provider_request_capture',
+            status: 'live',
+          }),
+        );
+        db.close();
+
+        const artifactRoot = join(root, 'artifacts');
+        const sessionRoot = join(artifactRoot, 'session-1');
+        await mkdir(sessionRoot, { recursive: true });
+        await writeFile(join(artifactRoot, relativePath), 'original', 'utf8');
+        const store = track(await openInteractiveArtifactStoreForWrite(owner.lease));
+        const displacedSessionRoot = join(artifactRoot, 'displaced-session-1');
+        await rename(sessionRoot, displacedSessionRoot);
+        const outsidePath = join(outsideRoot, 'retired-payload.txt');
+        await writeFile(outsidePath, 'external', 'utf8');
+        if (!(await createSymlinkOrSkip(t, outsideRoot, sessionRoot))) return;
+
+        await store.reclaimUpgradeResidue();
+
+        assert.equal(await readFile(outsidePath, 'utf8'), 'external');
+        assert.equal(
+          await readFile(join(displacedSessionRoot, 'retired-payload.txt'), 'utf8'),
+          'original',
+        );
+        assert.deepEqual(readUpgradeOrphanPaths(root), [relativePath]);
+      });
+    } finally {
+      await rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('does not reclaim an upgrade orphan path that aliases a live artifact', async (t) => {
+    await withInteractiveOwner(async (owner, root, track) => {
+      if (!(await isCaseInsensitiveFilesystem(root))) {
+        t.skip('requires a case-insensitive filesystem');
+        return;
+      }
+
+      const initial = await openInteractiveArtifactStoreForWrite(owner.lease);
+      initial.close();
+      const liveRelativePath = 'session-1/shared-Payload.txt';
+      const orphanRelativePath = 'session-1/shared-payload.txt';
+      const db = new DatabaseSync(join(root, 'runtime.sqlite'));
+      db.exec(`
+        DROP TABLE artifact_records;
+        CREATE TABLE artifact_records (
+          storage_key TEXT PRIMARY KEY, artifact_id TEXT NOT NULL,
+          session_id TEXT NOT NULL, created_at INTEGER NOT NULL CHECK(created_at >= 0),
+          status TEXT NOT NULL CHECK(status IN ('live', 'deleted')),
+          relative_path TEXT NOT NULL, record_json TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX artifact_records_relative_path ON artifact_records(relative_path);
+        UPDATE operational_schema_migrations SET version = 1 WHERE scope = 'artifact';
+      `);
+      for (const [storageKey, status, relativePath, name] of [
+        ['live', 'live', liveRelativePath, 'Payload.txt'],
+        ['retired', 'deleted', orphanRelativePath, 'payload.txt'],
+      ] as const) {
+        db.prepare('INSERT INTO artifact_records VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+          storageKey,
+          'shared',
+          'session-1',
+          1,
+          status,
+          relativePath,
+          JSON.stringify({
+            id: 'shared',
+            sessionId: 'session-1',
+            turnId: 'turn-1',
+            createdAt: 1,
+            name,
+            kind: 'file',
+            sizeBytes: 10,
+            relativePath,
+            source: 'user_upload',
+            status,
+          }),
+        );
+      }
+      db.close();
+
+      await mkdir(join(root, 'artifacts', 'session-1'), { recursive: true });
+      await writeFile(join(root, 'artifacts', liveRelativePath), 'live bytes', 'utf8');
+      const store = track(await openInteractiveArtifactStoreForWrite(owner.lease));
+      assert.deepEqual(readUpgradeOrphanPaths(root), [orphanRelativePath]);
+
+      await store.reclaimUpgradeResidue();
+
+      assert.deepEqual(await store.readTextInSession('session-1', 'shared'), {
+        ok: true,
+        text: 'live bytes',
+      });
+      assert.deepEqual(readUpgradeOrphanPaths(root), []);
+    });
+  });
+
   test('requires authentic leases and writer facades', async () => {
     await assert.rejects(
       () =>
@@ -405,3 +536,46 @@ async function withTemporaryRoot(
 }
 
 type TrackArtifactWriter = <T extends { close(): void }>(writer: T) => T;
+
+async function createSymlinkOrSkip(t: TestContext, target: string, path: string): Promise<boolean> {
+  try {
+    await symlink(target, path, process.platform === 'win32' ? 'junction' : 'dir');
+    return true;
+  } catch (error) {
+    const code = (error as { code?: unknown }).code;
+    if (process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES')) {
+      t.skip('Windows symlink creation requires elevated privileges or Developer Mode');
+      return false;
+    }
+    throw error;
+  }
+}
+
+function readUpgradeOrphanPaths(root: string): string[] {
+  const database = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+  try {
+    return database
+      .prepare('SELECT relative_path FROM artifact_upgrade_orphan_paths ORDER BY relative_path')
+      .all()
+      .map((row) => (row as { relative_path: string }).relative_path);
+  } finally {
+    database.close();
+  }
+}
+
+async function isCaseInsensitiveFilesystem(directory: string): Promise<boolean> {
+  const probe = join(directory, '.maka-case-sensitivity-probe');
+  const alias = join(directory, '.MAKA-CASE-SENSITIVITY-PROBE');
+  await writeFile(probe, 'probe', { flag: 'wx' });
+  try {
+    return await stat(alias).then(
+      () => true,
+      (error: unknown) => {
+        if ((error as { code?: unknown }).code === 'ENOENT') return false;
+        throw error;
+      },
+    );
+  } finally {
+    await rm(probe, { force: true });
+  }
+}
