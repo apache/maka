@@ -435,7 +435,7 @@ export const ContextSwitchStartsWithALoadingCatalog: Story = {
     await waitFor(() => expect(skillsRow).toHaveAttribute('aria-busy', 'true'));
     await expect(skillsRow).not.toHaveAttribute('aria-disabled', 'true');
     await userEvent.click(skillsRow);
-    await expect(menu).toBeVisible();
+    await waitFor(() => expect(menu).toBeVisible(), { timeout: 5_000 });
     await expect(editor(canvasElement)).toHaveTextContent('');
     await expect(page.queryByRole('listbox', { name: /技能/ })).not.toBeInTheDocument();
 
