@@ -289,13 +289,6 @@ export class ExecutionFixture {
     }
   }
 
-  /**
-   * A source run whose last model event is a `function_call` that never crossed
-   * the durable tool dispatch boundary: the opening event carries the tool
-   * boundary protocol marker, and the call has neither a dispatch fact nor a
-   * response. The Runtime planner records the `tool_not_dispatched` diagnostic
-   * for it, which is the strongest evidence available that the call never ran.
-   */
   async seedUndispatchedToolCallContinuationSource(requiredToolName: string): Promise<{
     sourceRunId: string;
     sourceTurnId: string;
@@ -337,8 +330,6 @@ export class ExecutionFixture {
           },
         },
       });
-      // Only the run's first event may carry the marker, and only its presence
-      // separates "provably not dispatched" from the legacy unknown case.
       const sourceRun = {
         sessionId: this.sessionId,
         invocationId: sourceInvocationId,
@@ -398,7 +389,6 @@ export class ExecutionFixture {
       return {
         sourceRunId,
         sourceTurnId,
-        // Opening fact, user event, the unpaired call, and the terminal event.
         sourceRuntimeEventHighWater: 4,
       };
     } finally {

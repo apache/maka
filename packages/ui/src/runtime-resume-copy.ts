@@ -24,16 +24,6 @@ export interface ResumeParkToastCopy {
   description: string;
 }
 
-/**
- * The park reasons a Client can actually receive: the Host's
- * `TurnResumeParkReason` wire union minus `resume_candidate_missing`, which
- * takes its own title/description pair below. Runtime-internal
- * `ResumeRejectionReason` values never reach a Client — the Host projects them
- * into this union first — so copy for them would be unreachable.
- *
- * `@maka/ui` cannot import the Host protocol, so the desktop renderer pins the
- * two unions in sync; see `resume-park-copy-contract.test.ts` there.
- */
 type ResumeParkReasonKey =
   | 'source_run_unreadable'
   | 'safety_check_failed'

@@ -23,13 +23,6 @@ import { UI_LOCALES } from '@maka/core/ui-locale';
 import { TURN_RESUME_PARK_REASONS } from '@maka/runtime-host/protocol';
 import { resumeParkToastCopy } from '@maka/ui/runtime-resume-copy';
 
-/*
- * `sessions:resumeLatest` hands the renderer a `TurnResumeParkReason` straight
- * off the wire, and the toast looks it up in the copy map. `@maka/ui` cannot
- * import the Host protocol to type-link the two, so this is where the contract
- * is pinned: every reason the Host can park with must resolve to real copy in
- * every locale, or the user sees the generic fallback instead of a reason.
- */
 describe('resume park copy covers the Host wire union', () => {
   for (const locale of UI_LOCALES) {
     it(`resolves every TurnResumeParkReason in ${locale}`, () => {

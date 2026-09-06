@@ -285,12 +285,6 @@ test('a source run whose tool call never dispatched resumes instead of parking',
     const host = await fixture.startHost();
     const client = await connectClient(fixture.root);
     try {
-      // The Host planner always supplies a composite continuation replay plan,
-      // so buildSafeBoundaryContinuationPlan never consults the tool-ledger
-      // diagnostics, and the composite replay trims a call that never crossed
-      // the dispatch boundary as an interrupted suffix. Nothing ran, so nothing
-      // is dangling and the continuation is safe. This is the end-to-end reason
-      // no tool-ledger rejection reason can reach a Client through the Host.
       assert.deepEqual(
         await client.request('turn.resume.query', {
           sessionId: fixture.sessionId,
