@@ -1217,6 +1217,7 @@ export class ToolRuntime {
     };
     const callEventFacts = {
       type: 'tool_start' as const,
+      toolUseId,
       // One recipe, two invocations: each output receives its own args and
       // providerOptions clones, so a consumer mutating one record can never
       // reach into the other.

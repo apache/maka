@@ -255,6 +255,11 @@ export interface ToolActivityIdentityFields {
 export interface ToolCallCommonFieldsInput extends ToolActivityIdentityFields {
   turnId: string;
   ts: number;
+  /**
+   * The call id. It is NOT emitted into the common fields: the event carries
+   * it as `toolUseId`, the message as `id`, and the persisted message schema
+   * rejects unknown keys — each record names it at its own site.
+   */
   toolUseId: string;
   toolName: string;
   activityKind?: ToolActivityKind | undefined;
@@ -268,7 +273,6 @@ export interface ToolCallCommonFieldsInput extends ToolActivityIdentityFields {
 export interface ToolCallCommonFields extends ToolActivityIdentityFields {
   turnId: string;
   ts: number;
-  toolUseId: string;
   toolName: string;
   activityKind?: ToolActivityKind | undefined;
   displayName?: string | undefined;
@@ -288,7 +292,6 @@ export function buildToolCallCommonFields(input: ToolCallCommonFieldsInput): Too
   return {
     turnId: input.turnId,
     ts: input.ts,
-    toolUseId: input.toolUseId,
     toolName: input.toolName,
     ...(input.origin !== undefined ? { origin: input.origin } : {}),
     ...(input.modelVisibility !== undefined ? { modelVisibility: input.modelVisibility } : {}),
