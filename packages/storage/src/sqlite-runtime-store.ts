@@ -129,23 +129,17 @@ import {
 import type { OperationalStateDatabaseLease } from './operational-state-store.js';
 import { immutableSteeringMessageId, isRuntimeStorageSafeId } from './runtime-event-invariants.js';
 import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-authority.js';
+import {
+  RuntimeTranscriptQuery,
+  TERMINAL_RUNTIME_EVENT_SQL,
+  type RuntimeTranscriptPosition,
+  type RuntimeTranscriptSource,
+  type RuntimeTranscriptTurn,
+} from './runtime-transcript-query.js';
 
 export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
 
 export type { ToolRecoveryMode } from '@maka/core/runtime-event';
-
-/**
- * `isTerminalRuntimeEvent` asked in SQL.
- *
- * The TypeScript predicate stays the authority; this only lets a query find the
- * terminal event without decoding every row it passes over. Both have to say the
- * same thing, so the SQL half is written once here instead of at each query.
- */
-const TERMINAL_RUNTIME_EVENT_SQL = `(
-            json_extract(payload_json, '$.actions.endInvocation') = 1
-            OR json_extract(payload_json, '$.status')
-              IN ('completed', 'failed', 'aborted', 'cancelled')
-          )`;
 
 const RUNTIME_EVENT_SCAN_BATCH_SIZE = 128;
 const RUNTIME_PARTIAL_SEGMENT_TARGET_BYTES = 64 * 1024;
@@ -548,6 +542,52 @@ export class SqliteRuntimeStore
     return this.readRuntimeEventsSync(sessionId, runId);
   }
 
+  private transcriptQuery(): RuntimeTranscriptQuery {
+    return new RuntimeTranscriptQuery(this.db, (sessionId, runId) => {
+      const opening = this.readInvocationOpeningsSync(sessionId, { direction: 'asc', runId }).at(0);
+      if (!opening) throw new Error(`Transcript invocation ${runId} is missing`);
+      return this.completeInvocationRecordSync(opening);
+    });
+  }
+
+  async readTranscriptSourceHighWater(sessionId: string): Promise<number | null> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    return this.readTransaction(() => this.transcriptQuery().highWater(sessionId));
+  }
+
+  async readTranscriptSource(
+    sessionId: string,
+    request: RuntimeTranscriptPosition,
+  ): Promise<RuntimeTranscriptSource | null> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    return this.readTransaction(() => this.transcriptQuery().source(sessionId, request));
+  }
+
+  async readTranscriptTurns(
+    sessionId: string,
+    throughOrdinal: number,
+    position: number,
+    limit: number,
+  ): Promise<RuntimeTranscriptTurn[]> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    assertInvocationSearchLimit(limit);
+    return this.readTransaction(() =>
+      this.transcriptQuery().turns(sessionId, throughOrdinal, position, limit),
+    );
+  }
+
+  async readTranscriptLandmarks(
+    sessionId: string,
+    throughOrdinal: number,
+    limit: number,
+  ): Promise<RuntimeTranscriptTurn[]> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    assertInvocationSearchLimit(limit);
+    return this.readTransaction(() =>
+      this.transcriptQuery().landmarks(sessionId, throughOrdinal, limit),
+    );
+  }
+
   /**
    * Enumerate a Session's invocations: the opening fact names each one, and its
    * highest-sequence event says whether it ended.
@@ -688,6 +728,8 @@ export class SqliteRuntimeStore
             1 AS from_events
           FROM runtime_events
           WHERE session_id = :sessionId AND event_kind = 'invocation_opened'
+            ${options.runId === undefined ? '' : 'AND run_id = :runId'}
+            ${options.invocationId === undefined ? '' : 'AND invocation_id = :invocationId'}
           UNION ALL
           SELECT
             NULL,
@@ -699,6 +741,8 @@ export class SqliteRuntimeStore
             0
           FROM runtime_legacy_invocation_openings AS legacy
           WHERE legacy.session_id = :sessionId
+            ${options.runId === undefined ? '' : 'AND legacy.run_id = :runId'}
+            ${options.invocationId === undefined ? '' : 'AND legacy.invocation_id = :invocationId'}
             AND NOT EXISTS (
               SELECT 1 FROM runtime_events
               WHERE runtime_events.invocation_id = legacy.invocation_id

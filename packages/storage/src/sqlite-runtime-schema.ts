@@ -26,11 +26,17 @@ import {
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import {
+  TERMINAL_RUNTIME_EVENT_SQL,
+  TRANSCRIPT_MESSAGE_KEY_SQL,
+  TRANSCRIPT_OUTPUT_SHAPE_SQL,
+  TRANSCRIPT_STORED_ID_SQL,
+} from './runtime-transcript-query.js';
+import {
   buildInvocationOpenedEvent,
   buildSyntheticTerminalRuntimeEvent,
 } from '@maka/core/runtime-invocation';
 
-export const SQLITE_RUNTIME_SCHEMA_VERSION = 16;
+export const SQLITE_RUNTIME_SCHEMA_VERSION = 17;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION = 1;
 export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY = 'runtime_continuation_authority';
@@ -578,6 +584,17 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     DROP TABLE runtime_continuation_claims;
     ALTER TABLE runtime_continuation_claims_v16 RENAME TO runtime_continuation_claims;
     `,
+  ],
+  [
+    17,
+    `
+    CREATE INDEX IF NOT EXISTS runtime_events_transcript_message ON runtime_events(invocation_id, (${TRANSCRIPT_MESSAGE_KEY_SQL}), event_seq);
+    CREATE INDEX IF NOT EXISTS runtime_events_transcript_output ON runtime_events(invocation_id, (${TRANSCRIPT_OUTPUT_SHAPE_SQL}), event_seq);
+    CREATE INDEX IF NOT EXISTS runtime_events_transcript_request ON runtime_events(invocation_id, json_extract(payload_json, '$.actions.permissionRequest.requestId'), event_seq);
+    CREATE INDEX IF NOT EXISTS runtime_events_transcript_tool ON runtime_events(invocation_id, json_extract(payload_json, '$.content.id'), event_seq);
+    CREATE INDEX IF NOT EXISTS runtime_events_terminal ON runtime_events(invocation_id, event_seq) WHERE ${TERMINAL_RUNTIME_EVENT_SQL};
+    CREATE INDEX IF NOT EXISTS runtime_events_transcript_stored_id ON runtime_events(session_id, (${TRANSCRIPT_STORED_ID_SQL}));
+  `,
   ],
 ]);
 

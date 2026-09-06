@@ -26,6 +26,9 @@ import { seedInvocation, testInvocationOpening } from '@maka/runtime/test-only/i
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { StoredMessage } from '@maka/core/session';
+import { projectRuntimeEventsToStoredMessages } from '@maka/runtime/runtime-event-read-model';
+import { foldTurnContribution } from '@maka/storage/session-message-projection';
+import type { SessionTurnContribution } from '@maka/storage/execution-stores';
 import {
   type ExecutionStoresWriter,
   openInteractiveExecutionStoresForWrite,
@@ -251,7 +254,8 @@ test('keeps durable history separate from the canonical active overlay', async (
       maxBytes: 1024,
       maxMessages: 10,
     });
-    assert.equal(durable.throughSequence, 1);
+    assert.equal(durable.throughSequence, await read.readDurableHighWater(session.id));
+    assert.ok(durable.throughSequence !== null);
     assert.deepEqual(
       durable.fragments.map((fragment) => {
         const message = JSON.parse(fragment.data.toString('utf8')) as StoredMessage;
@@ -262,6 +266,285 @@ test('keeps durable history separate from the canonical active overlay', async (
         { type: 'user', id: 'user-0' },
       ],
     );
+  } finally {
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('pages the ledger without materializing off-page Turns or messages', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-transcript-seek-'));
+  const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  try {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const expected: StoredMessage[] = [];
+    for (let turn = 0; turn < 5; turn++) {
+      const runId = `run-${turn}`;
+      const turnId = `turn-${turn}`;
+      await seedInvocation(stores.runtimeEventStore, {
+        sessionId: session.id,
+        runId,
+        turnId,
+        openedAt: turn,
+      });
+      let count = 0;
+      const append = (overrides: Partial<RuntimeEvent>) =>
+        stores.runtimeEventStore.appendRuntimeEvent(
+          session.id,
+          runId,
+          runtimeEvent(session.id, {
+            id: `${runId}-event-${count++}`,
+            invocationId: runId,
+            runId,
+            turnId,
+            ...overrides,
+          }),
+        );
+      await append({
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: `prompt ${turn}` },
+      });
+      if (turn === 4) {
+        // More than 5 MiB in a single Turn, outside a tiny head/tail page.
+        for (let index = 0; index < 180; index++) {
+          await append({
+            role: 'model',
+            author: 'agent',
+            content: { kind: 'text', text: 'x'.repeat(32 * 1024) },
+          });
+        }
+        await append({
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'function_call', id: 'tool-1', name: 'Read', args: {} },
+          refs: { toolCallId: 'tool-1', stepId: 'assistant-final' },
+        });
+        await append({
+          actions: {
+            permissionRequest: {
+              kind: 'tool_permission',
+              requestId: 'request-1',
+              toolUseId: 'tool-1',
+              toolName: 'Read',
+              category: 'read',
+              reason: 'custom',
+              args: {},
+              rememberForTurnAllowed: true,
+              hint: 'original permission hint',
+            },
+          },
+        });
+        await append({
+          actions: {
+            permissionDecision: {
+              requestId: 'request-1',
+              decision: 'allow',
+              rememberForTurn: true,
+            },
+          },
+          refs: { toolCallId: 'tool-1' },
+        });
+        await append({
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'tool-1',
+            name: 'Read',
+            result: { kind: 'text', text: 'result' },
+            isError: true,
+          },
+        });
+        await append({
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'thinking', text: 'before text' },
+          refs: { providerEventId: 'assistant-final' },
+        });
+        await append({
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text: 'final answer 中文' },
+          refs: { storedMessageId: 'assistant-final' },
+        });
+        await append({
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'thinking', text: ' after text' },
+          refs: { providerEventId: 'assistant-final', storedMessageId: 'usage-final' },
+          actions: { tokenUsage: { input: 100, output: 25 } },
+        });
+        await append({ content: { kind: 'system_note', note: 'step_limit' } });
+      } else {
+        await append({
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text: '\u3000\u00a0' },
+        });
+      }
+      await append({
+        status: 'failed',
+        actions: { endInvocation: true, stateDelta: { failureClass: 'tool_step_cap_reached' } },
+      });
+      const invocation = await stores.runtimeEventStore.readRunInvocation(session.id, runId);
+      assert.ok(invocation);
+      const projection = projectRuntimeEventsToStoredMessages(
+        await stores.runtimeEventStore.readRuntimeEvents(session.id, runId),
+        { invocations: [invocation] },
+      );
+      assert.deepEqual(projection.diagnostics, []);
+      expected.push(...projection.messages);
+    }
+    const read = createSessionTranscriptReader({
+      stores,
+      canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+    });
+    // Measure actual JSON decoded, not only the eventual response size. Neither
+    // a small page, the Turn index, nor a lookup miss may decode the 5 MiB Turn.
+    let decodedBytes = 0;
+    const parse = JSON.parse;
+    const measured = t.mock.method(JSON, 'parse', (...args: Parameters<typeof JSON.parse>) => {
+      decodedBytes += Buffer.byteLength(args[0]);
+      return parse(...args);
+    });
+    const through = await read.readDurableHighWater(session.id);
+    const tail = await read.readDurablePage(session.id, {
+      direction: 'older',
+      maxBytes: 1024,
+      maxMessages: 1,
+    });
+    assert.equal(JSON.parse(tail.fragments[0]!.data.toString()).type, 'system_note');
+    const head = await read.readDurablePage(session.id, {
+      direction: 'newer',
+      maxBytes: 1024,
+      maxMessages: 1,
+    });
+    assert.equal(JSON.parse(head.fragments[0]!.data.toString()).text, 'prompt 0');
+    assert.deepEqual(
+      await read.readDurableMessagesById(session.id, {
+        throughSequence: through,
+        messageIds: ['missing-stream'],
+        maxBytes: 1024,
+        maxMessages: 1,
+      }),
+      [],
+    );
+    const landmarks = await read.readDurableTurnLandmarks(session.id, 3);
+    assert.deepEqual(
+      landmarks.landmarks.map((item) => item.label),
+      ['prompt 0', 'prompt 2', 'prompt 4'],
+    );
+    const contributions: SessionTurnContribution[] = [];
+    let contributionPosition = 0;
+    for (;;) {
+      const page = await read.readDurableTurnContributions(
+        session.id,
+        through,
+        contributionPosition,
+        2,
+      );
+      contributions.push(...page.contributions);
+      if (page.nextPosition === null) break;
+      contributionPosition = page.nextPosition;
+    }
+    assert.ok(decodedBytes < 512 * 1024, `decoded ${decodedBytes} bytes for bounded reads`);
+    measured.mock.restore();
+
+    const records: Array<{ sequence: number; message: StoredMessage }> = [];
+    let position = 0;
+    for (;;) {
+      const page = await read.readDurableRecords(session.id, {
+        direction: 'newer',
+        throughSequence: through,
+        position,
+        maxMessages: 2,
+        maxStoredBytes: 128 * 1024,
+      });
+      records.push(...page.records);
+      if (page.nextPosition === null) break;
+      position = page.nextPosition;
+    }
+    assert.deepEqual(
+      records.map((record) => record.message),
+      expected,
+    );
+    const folded = new Map<string, SessionTurnContribution>();
+    for (const record of records) {
+      if (!('turnId' in record.message) || !record.message.turnId) continue;
+      const turnId = record.message.turnId;
+      folded.set(
+        turnId,
+        foldTurnContribution(folded.get(turnId), turnId, record.sequence, record.message),
+      );
+    }
+    assert.deepEqual(contributions, [...folded.values()]);
+    const assistant = records.find((record) => record.message.id === 'assistant-final');
+    assert.ok(assistant);
+    assert.deepEqual(
+      await read.readDurableMessagesById(session.id, {
+        throughSequence: through,
+        messageIds: ['assistant-final'],
+        maxBytes: 4096,
+        maxMessages: 1,
+      }),
+      [assistant.message],
+    );
+    // Reassemble the same multibyte message in either direction, inside one row.
+    for (const direction of ['older', 'newer'] as const) {
+      let byteOffset: number | undefined;
+      const chunks: Buffer[] = [];
+      for (;;) {
+        const page = await read.readDurablePage(session.id, {
+          direction,
+          throughSequence: through,
+          position: assistant.sequence,
+          ...(byteOffset === undefined ? {} : { byteOffset }),
+          maxBytes: 37,
+          maxMessages: 1,
+        });
+        chunks.push(page.fragments[0]!.data);
+        if (page.next?.position !== assistant.sequence) break;
+        assert.notEqual(page.next.byteOffset, null);
+        byteOffset = page.next.byteOffset!;
+      }
+      if (direction === 'older') chunks.reverse();
+      assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString()), assistant.message);
+    }
+    // A later sealed Turn must not alter a previously issued snapshot.
+    await seedInvocation(stores.runtimeEventStore, {
+      sessionId: session.id,
+      runId: 'later',
+      turnId: 'later',
+      openedAt: 99,
+    });
+    await stores.runtimeEventStore.appendRuntimeEvent(
+      session.id,
+      'later',
+      runtimeEvent(session.id, {
+        id: 'later-terminal',
+        invocationId: 'later',
+        runId: 'later',
+        turnId: 'later',
+        status: 'completed',
+      }),
+    );
+    const frozen = await read.readDurablePage(session.id, {
+      direction: 'older',
+      throughSequence: through,
+      maxBytes: 1024,
+      maxMessages: 1,
+    });
+    assert.deepEqual(frozen.fragments, tail.fragments);
   } finally {
     await owner.close();
     await rm(base, { recursive: true, force: true });

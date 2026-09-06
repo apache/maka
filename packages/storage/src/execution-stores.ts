@@ -20,6 +20,7 @@
 import type { AgentRunEvent, AgentRunEventType, AgentRunProjectionKey } from '@maka/core/agent-run';
 import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
 import type { RuntimeContinuationAuthorityStore } from '@maka/core/runtime-event-store';
+import type { RuntimeTranscriptQueries } from './runtime-transcript-query.js';
 import type {
   RuntimeInvocationPageInput,
   RuntimeInvocationPageResult,
@@ -135,8 +136,10 @@ export type {
 } from './session-store.js';
 
 export type ExecutionSessionWriter = SessionAuthorityStore;
+export type { RuntimeTranscriptSource, RuntimeTranscriptTurn } from './runtime-transcript-query.js';
 export type ExecutionAgentRunWriter = DurableAgentRunStore;
 export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
+  RuntimeTranscriptQueries &
   RuntimeContinuationAuthorityStore & {
     readonly toolBoundaryProtocol: ToolBoundaryProtocol;
     commitToolPrepared(input: CommitToolPreparedInput): Promise<ToolCommitResult>;
@@ -569,6 +572,16 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
       readSessionRuntimeEventEntries: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEventEntries(sessionId)),
+      readTranscriptSourceHighWater: (sessionId) =>
+        run(() => runtimeEventStore.readTranscriptSourceHighWater(sessionId)),
+      readTranscriptSource: (sessionId, request) =>
+        run(() => runtimeEventStore.readTranscriptSource(sessionId, request)),
+      readTranscriptTurns: (sessionId, throughOrdinal, position, limit) =>
+        run(() =>
+          runtimeEventStore.readTranscriptTurns(sessionId, throughOrdinal, position, limit),
+        ),
+      readTranscriptLandmarks: (sessionId, throughOrdinal, limit) =>
+        run(() => runtimeEventStore.readTranscriptLandmarks(sessionId, throughOrdinal, limit)),
       claimContinuation: (input) => run(() => runtimeEventStore.claimContinuation(input)),
       readContinuationClaimByBoundary: (boundaryDigest) =>
         run(() => runtimeEventStore.readContinuationClaimByBoundary(boundaryDigest)),

@@ -462,7 +462,7 @@ describe('invocation opening fact backfill', () => {
           'INSERT INTO core_agent_runs(session_id, run_id, created_at, record_json) VALUES (?, ?, ?, ?)',
         ).run(corrupt.sessionId, corrupt.runId, corrupt.createdAt, JSON.stringify(corrupt));
         assert.throws(() => migrateSqliteRuntimeDatabase(db), /session-1\/run-corrupt-root/);
-        assert.equal(readUserVersion(db), SQLITE_RUNTIME_SCHEMA_VERSION - 1);
+        assert.equal(readUserVersion(db), 15);
         const openings = db
           .prepare(
             "SELECT COUNT(*) AS total FROM runtime_events WHERE event_kind = 'invocation_opened'",
@@ -509,7 +509,8 @@ function rewindToHeaderEra(db: DatabaseSync): void {
     'ALTER TABLE runtime_continuation_claims RENAME COLUMN target_opening_json TO target_run_header_json',
   );
   db.exec('ALTER TABLE core_agent_runs ADD COLUMN record_json TEXT');
-  db.exec(`PRAGMA user_version = ${SQLITE_RUNTIME_SCHEMA_VERSION - 1}`);
+  // Opening facts were introduced in v16, regardless of the current version.
+  db.exec('PRAGMA user_version = 15');
 }
 
 function readUserVersion(db: DatabaseSync): number {

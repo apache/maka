@@ -152,6 +152,15 @@ export interface ProjectRuntimeEventsToStoredMessagesOptions {
     | readonly RuntimeInvocationRecord[]
     | Readonly<Record<string, RuntimeInvocationRecord>>;
   canonicalPermissionOutcomes?: ReadonlyMap<string, CanonicalPermissionOutcomeRecord>;
+  /** Facts read by indexed lookup when projecting one durable message. */
+  context?: {
+    messageId: string;
+    contentOrder?: readonly AssistantStepContentKind[];
+    permissionRequest?: RuntimeEvent;
+    toolName?: string;
+    toolUseId?: string;
+    hasRetainedOutput: boolean;
+  };
 }
 
 export interface ArchivedToolResultReadModelStatus {
@@ -204,6 +213,7 @@ interface ProjectionState {
    */
   thinkingByMessageId: Map<string, PendingThinking[]>;
   contentOrderByMessageId: Map<string, AssistantStepContentKind[]>;
+  hasRetainedOutput?: boolean;
 }
 
 interface PendingThinking {
@@ -227,6 +237,29 @@ export function projectRuntimeEventsToStoredMessages(
     contentOrderByMessageId: new Map(),
   };
   const messages: StoredMessage[] = [];
+
+  const context = options.context;
+  if (context) {
+    state.hasRetainedOutput = context.hasRetainedOutput;
+    if (context.contentOrder)
+      state.contentOrderByMessageId.set(context.messageId, [...context.contentOrder]);
+    if (context.toolName && context.toolUseId)
+      state.toolNameByUseId.set(context.toolUseId, context.toolName);
+    const requestEvent = context.permissionRequest;
+    const request = requestEvent?.actions?.permissionRequest;
+    if (request && requestEvent) {
+      state.permissionRequestById.set(request.requestId, {
+        requestId: request.requestId,
+        toolUseId: request.toolUseId,
+        toolName: request.toolName,
+        sessionId: requestEvent.sessionId,
+        runId: requestEvent.runId,
+        turnId: requestEvent.turnId,
+        ...(request.hint !== undefined ? { hint: request.hint } : {}),
+      });
+      state.toolNameByUseId.set(request.toolUseId, request.toolName);
+    }
+  }
 
   for (const event of events) {
     recordStepContentOrder(event, state);
@@ -1240,12 +1273,14 @@ function projectTerminalTurnState(
   }
   const abortSource = status === 'aborted' ? abortSourceFromRuntime(event) : undefined;
   const failureClass = status === 'failed' ? failureClassFromRuntimeEvent(event) : undefined;
-  const partialOutputRetained = messages.some(
-    (message) =>
-      message.turnId === event.turnId &&
-      ((message.type === 'assistant' && message.text.trim().length > 0) ||
-        message.type === 'tool_result'),
-  );
+  const partialOutputRetained =
+    state.hasRetainedOutput ??
+    messages.some(
+      (message) =>
+        message.turnId === event.turnId &&
+        ((message.type === 'assistant' && message.text.trim().length > 0) ||
+          message.type === 'tool_result'),
+    );
   messages.push({
     type: 'turn_state',
     id: stableMessageId(event, state, 'turn_state'),
