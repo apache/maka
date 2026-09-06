@@ -24,6 +24,8 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   buildRiveCommand,
+  redactRiveText,
+  redactRiveValue,
   runRiveCli,
   RiveCliError,
 } from '../rive-cli.js';
@@ -240,6 +242,24 @@ describe('RiveWorkflow tool and CLI bridge', { concurrency: false }, () => {
           return true;
         },
       );
+    });
+  });
+
+  it('uses the core redaction coverage for token forms and sensitive keys', () => {
+    const text = redactRiveText(
+      'ghp_12345678901234567890 AIza12345678901234567890 xoxb-1234567890',
+    );
+    assert.equal(text.includes('ghp_12345678901234567890'), false);
+    assert.equal(text.includes('AIza12345678901234567890'), false);
+    assert.equal(text.includes('xoxb-1234567890'), false);
+
+    const value = redactRiveValue({
+      apiKey: 'plain-value',
+      nested: [{ authorization: 'Bearer plain-value' }],
+    });
+    assert.deepEqual(value, {
+      apiKey: '[redacted]',
+      nested: [{ authorization: '[redacted]' }],
     });
   });
 
