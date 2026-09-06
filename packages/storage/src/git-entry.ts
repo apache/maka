@@ -17,38 +17,25 @@
  * under the License.
  */
 
-import { lstat, readFile, stat } from 'node:fs/promises';
-import { join, parse, resolve } from 'node:path';
+import { execFile } from 'node:child_process';
+import { lstat } from 'node:fs/promises';
+import { join, parse } from 'node:path';
+import { promisify } from 'node:util';
 
-const GITDIR_PREFIX = 'gitdir: ';
-const HEAD_REF_PREFIX = 'ref: ';
-// HEAD holds a 40-char SHA-1 object id, or 64 chars for SHA-256 repositories.
-const HEAD_OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+const execFileAsync = promisify(execFile);
 
 export async function hasEnclosingGitEntry(path: string): Promise<boolean> {
   let current = path;
   while (true) {
     const gitPath = join(current, '.git');
     try {
-      // lstat does not follow symlinks, so a dangling `.git` symlink still
-      // counts as an existing entry. The selected directory fails closed
-      // downstream when its own Git metadata is damaged; an ancestor only
-      // counts when it is structurally valid.
-      const entry = await lstat(gitPath);
+      await lstat(gitPath);
+      // Keep failures in the selected directory's own metadata visible.
       if (current === path) return true;
-      const gitStat = entry.isSymbolicLink() ? await stat(gitPath) : entry;
-      if (gitStat.isDirectory()) return isGitDirectory(gitPath);
-      if (gitStat.isFile()) {
-        const content = (await readFile(gitPath, 'utf8')).trim();
-        if (!content.startsWith(GITDIR_PREFIX)) return false;
-        const target = content.slice(GITDIR_PREFIX.length).trim();
-        if (!target) return false;
-        return isGitDirectory(resolve(current, target));
-      }
-      return false;
+      return isGitEntry(gitPath);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT' && code !== 'ENOTDIR') return current === path;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
     }
     const parent = parse(current).dir;
     if (parent === current) return false;
@@ -56,47 +43,26 @@ export async function hasEnclosingGitEntry(path: string): Promise<boolean> {
   }
 }
 
-/**
- * Checks the minimum Git directory contract git-rev-parse relies on: a
- * readable regular HEAD holding either a symref or an object id, plus the
- * objects and refs directories. Anything else would make the downstream Git
- * commands fail closed instead of being treated as an enclosing repository.
- */
-async function isGitDirectory(gitDir: string): Promise<boolean> {
+async function isGitEntry(gitPath: string): Promise<boolean> {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  delete env.GIT_INDEX_FILE;
+  delete env.GIT_COMMON_DIR;
   try {
-    // readFile fails closed on a missing, unreadable, or directory HEAD.
-    const head = (await readFile(join(gitDir, 'HEAD'), 'utf8')).trim();
-    // A symref must target a ref under refs/; git itself rejects any other
-    // target (e.g. `ref: gk`) with exit 128 even when objects/ and refs/ exist.
-    const validHead = head.startsWith(HEAD_REF_PREFIX)
-      ? head.slice(HEAD_REF_PREFIX.length).trim().startsWith('refs/')
-      : HEAD_OBJECT_ID.test(head);
-    if (!validHead) return false;
-  } catch {
-    return false;
-  }
-  // Linked worktrees keep HEAD locally but share objects/refs with the
-  // common dir named by their commondir file.
-  return (
-    (await hasGitSubdirectory(gitDir, 'objects')) && (await hasGitSubdirectory(gitDir, 'refs'))
-  );
-}
-
-async function hasGitSubdirectory(gitDir: string, name: string): Promise<boolean> {
-  if (await isDirectory(join(gitDir, name))) return true;
-  try {
-    const commonDir = (await readFile(join(gitDir, 'commondir'), 'utf8')).trim();
-    return commonDir !== '' && (await isDirectory(resolve(gitDir, commonDir, name)));
-  } catch {
-    // No commondir file: a plain Git directory.
-    return false;
-  }
-}
-
-async function isDirectory(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isDirectory();
-  } catch {
-    return false;
+    // Let Git validate directories and gitfiles, including linked worktrees.
+    await execFileAsync('git', ['rev-parse', '--resolve-git-dir', gitPath], {
+      env,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024,
+      timeout: 3_000,
+      windowsHide: true,
+    });
+    return true;
+  } catch (error) {
+    // This probe exits 128 for invalid Git metadata. Execution failures must
+    // still surface so a missing Git executable cannot downgrade a repository.
+    if ((error as { code?: unknown }).code === 128) return false;
+    throw error;
   }
 }

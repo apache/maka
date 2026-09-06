@@ -208,7 +208,7 @@ test('a malformed ancestor .git directory does not block a workspace marker', as
     await mkdir(join(base, '.git', 'gk'), { recursive: true });
     await mkdir(workspace);
 
-    await resolveWorkspaceIdentityWithoutGit(workspace);
+    await resolveWorkspaceIdentity({ path: workspace });
 
     await access(join(workspace, WORKSPACE_MARKER_FILE));
   } finally {
