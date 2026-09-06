@@ -20,6 +20,7 @@
 import {
   captureTranscriptReadingAnchor,
   currentTranscriptRange,
+  loadTranscriptHistory,
   newestDurablePromptSequence,
   refreshTranscriptTurnLandmarks,
   restoreSessionTranscriptRange,
@@ -28,11 +29,13 @@ import {
 export const transcriptReadingPosition = {
   captureAnchor: captureTranscriptReadingAnchor,
   currentRange: currentTranscriptRange,
+  loadHistory: loadTranscriptHistory,
   newestDurablePromptSequence,
   refreshLandmarks: refreshTranscriptTurnLandmarks,
   restoreRange: restoreSessionTranscriptRange,
 };
 
+export type { TranscriptHistoryGates } from './controller/transcript-reading-position.js';
 export {
   deriveTaskReadinessNotice,
   isTaskSubmissionHardBlocked,

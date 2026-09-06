@@ -99,6 +99,60 @@ export function refreshTranscriptTurnLandmarks<T>(options: {
   };
 }
 
+export interface TranscriptHistoryRequest {
+  readonly target: 'earlier' | 'later' | 'latest';
+  readonly anchorTurnId?: string;
+}
+
+export interface TranscriptHistoryGate {
+  pending: boolean;
+  queued?: TranscriptHistoryRequest;
+}
+
+/** One gate per controller: the shell rebuilds the controller per Session, so
+ *  keying by it keeps Sessions from queuing behind each other's loads. */
+export type TranscriptHistoryGates = WeakMap<object, TranscriptHistoryGate>;
+
+export async function loadTranscriptHistory(options: {
+  readonly gates: TranscriptHistoryGates;
+  readonly request: TranscriptHistoryRequest;
+  readonly controller: {
+    loadBefore(maxBytes: number, anchorTurnId?: string): Promise<void>;
+    loadAfter(maxBytes: number, anchorTurnId?: string): Promise<void>;
+    loadLatest(): Promise<void>;
+  };
+  readonly maxBytes: number;
+  readonly isCurrent: () => boolean;
+  readonly setPending: (pending: boolean) => void;
+  readonly onError: (error: unknown) => void;
+}): Promise<void> {
+  const { gates, controller, request } = options;
+  let gate = gates.get(controller) ?? { pending: false };
+  gates.set(controller, gate);
+  if (gate.pending) {
+    // The scroller asks on every reader movement; dropping the request behind
+    // an in-flight load strands the reader until they move again.
+    if (request.target === 'latest' || gate.queued?.target !== 'latest') gate.queued = request;
+    return;
+  }
+  gate.pending = true;
+  options.setPending(true);
+  try {
+    if (request.target === 'latest') await controller.loadLatest();
+    else await controller[request.target === 'earlier' ? 'loadBefore' : 'loadAfter'](
+      options.maxBytes, request.anchorTurnId,
+    );
+  } catch (error) {
+    if (options.isCurrent()) options.onError(error);
+  } finally {
+    gate.pending = false;
+    options.setPending(false);
+    const queued = gate.queued;
+    gate.queued = undefined;
+    if (queued && options.isCurrent()) void loadTranscriptHistory({ ...options, request: queued });
+  }
+}
+
 export function restoreSessionTranscriptRange<Message>(options: {
   readonly sessionId?: string;
   readonly searchTarget?: SearchTarget | null;
