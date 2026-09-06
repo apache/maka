@@ -453,6 +453,45 @@ test('footer copy preserves raw text, blocks overlapping writes and resets succe
   assert.equal(button.hasAttribute('data-copy-feedback'), false);
 });
 
+test('footer copy cancels the previous reset and restarts feedback after another copy', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pending = Promise.withResolvers<void>();
+  const writeText = t.mock.fn(async (_text: string): Promise<void> => {});
+  const { button } = await renderCopyFooter(writeText);
+  await act(async () => button.click());
+  assert.equal(button.getAttribute('data-copy-feedback'), 'copied');
+  await act(async () => t.mock.timers.tick(500));
+
+  writeText.mock.mockImplementation(() => pending.promise);
+  await act(async () => button.click());
+  assert.equal(writeText.mock.callCount(), 2);
+  await act(async () => t.mock.timers.tick(900));
+  assert.equal(button.getAttribute('data-copy-feedback'), 'pending', 'the first reset must not clear the second write');
+
+  await act(async () => pending.resolve());
+  assert.equal(button.getAttribute('data-copy-feedback'), 'copied');
+  await act(async () => t.mock.timers.tick(1399));
+  assert.equal(button.getAttribute('data-copy-feedback'), 'copied');
+  await act(async () => t.mock.timers.tick(1));
+  assert.equal(button.hasAttribute('data-copy-feedback'), false);
+});
+
+test('footer copy cancels its active reset timer on unmount', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { root, button } = await renderCopyFooter(async () => {});
+  const setTimeout = t.mock.method(window, 'setTimeout');
+  await act(async () => button.click());
+  assert.equal(button.getAttribute('data-copy-feedback'), 'copied');
+  const reset = setTimeout.mock.calls.find((call) => call.arguments[1] === 1400);
+  assert.ok(reset, 'successful copying schedules a feedback reset');
+  await act(async () => t.mock.timers.tick(500));
+
+  const clearTimeout = t.mock.method(window, 'clearTimeout');
+  await act(async () => root.unmount());
+  mountedRoots.splice(mountedRoots.indexOf(root), 1);
+  assert.ok(clearTimeout.mock.calls.some((call) => call.arguments[0] === reset.result), 'unmount cancels the scheduled reset');
+});
+
 test('footer copy reports clipboard failure and allows a successful retry', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const writeText = t.mock.fn(async (_text: string): Promise<void> => {
