@@ -969,11 +969,10 @@ export const WideAssistantProse: Story = {
     const turnRect = turn.getBoundingClientRect();
     expect(turnRect.width).toBeGreaterThan(680);
     expect(turnRect.right - paragraph.getBoundingClientRect().right).toBeLessThanOrEqual(1);
-    // `content-visibility: auto` implies paint containment. CJK glyph ink can
-    // extend a fraction past its line box, so a flush-left answer needs a
-    // small clip margin or Chromium shaves the first glyph on every line.
+    // `content-visibility: auto` implies paint containment, which clips to the
+    // rounded padding box: a boundary with a radius shaves the corner glyphs.
     expect(getComputedStyle(boundary).contentVisibility).toBe('auto');
-    expect(Number.parseFloat(getComputedStyle(boundary).overflowClipMargin)).toBeGreaterThanOrEqual(2);
+    expect(getComputedStyle(boundary).borderTopLeftRadius).toBe('0px');
   },
 };
 

@@ -112,8 +112,13 @@
   white-space: pre-wrap;
 }
 
+/* The ghost bubble has no fill or border, so its inherited 28px radius paints
+   nothing. It is also a transcript boundary below, and paint containment clips
+   to the rounded padding box, so the invisible corners became clip arcs that
+   shaved the first glyph of the first line and the last. Square it. */
 .maka-chat-message-bubble-assistant {
   padding: var(--space-0-5) 0 0;
+  border-radius: 0;
 }
 
 .maka-processing-sequence {
@@ -136,12 +141,6 @@
    anchoring when a skipped block leaves and re-enters the viewport. */
 .maka-chat-message-list [data-maka-transcript-boundary] {
   content-visibility: auto;
-  /* `content-visibility` supplies paint containment as well as skipping.
-     Assistant ghost bubbles are deliberately flush-left, and Chromium can
-     rasterize the first CJK glyph a fraction outside that content box; at a
-     zero-width clip edge it then shaves the glyph's leading stroke. Preserve
-     a tiny paint apron while keeping the boundary independently skippable. */
-  overflow-clip-margin: 2px;
   /* First-paint intrinsic-size ESTIMATE for scroll-anchor stability, not a
      fixed height: `auto <n>px` still grows to the block's real size after
      paint. 96px is the single-line answer baseline; tall multi-line blocks
