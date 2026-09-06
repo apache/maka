@@ -40,6 +40,7 @@ import { getSessionCollaborationCopy } from './locales/session-collaboration-cop
 import {
   describeTurnRequestIntent,
   turnRequestStateLabel,
+  SessionGuestAliasAction,
 } from './features/session-collaboration';
 
 type Props = {
@@ -336,7 +337,7 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
                   return (
                     <div className="sessionCollaborationAccessRow" key={principal.principalId}>
                       <div>
-                        <Text type="body">{guestIdentityLabel(principal.principalId, copy.guest)}</Text>
+                        <Text type="body">{principal.displayName ?? guestIdentityLabel(principal.principalId, copy.guest)}</Text>
                         <Text type="supporting" color="secondary">
                           {principal.status === 'pending' ? copy.pending : copy.active}
                           {' · '}
@@ -344,6 +345,8 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
                         </Text>
                       </div>
                       <div className="sessionCollaborationAccessActions">
+                        <SessionGuestAliasAction sessionId={props.sessionId} principalId={principal.principalId}
+                          displayName={principal.displayName} disabled={working || authorityState !== 'available'} onChanged={refresh} />
                         {requestGrant ? (
                           <Button
                             variant="ghost"
@@ -376,7 +379,8 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
                         {describeTurnRequestIntent(request.intent, copy.regenerateRequest)}
                       </Text>
                       <Text type="supporting" color="secondary">
-                        {guestIdentityLabel(request.principalId, copy.guest)}
+                        {access?.principals.find((principal) => principal.principalId === request.principalId)?.displayName
+                          ?? guestIdentityLabel(request.principalId, copy.guest)}
                         {' · '}
                         {turnRequestStateLabel(request, copy)}
                       </Text>

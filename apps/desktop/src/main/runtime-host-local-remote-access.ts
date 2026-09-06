@@ -32,6 +32,7 @@ import {
   decodeRuntimeHostOperatorCommand,
   resolveRuntimeHostManagedDeploymentAuthority,
   type RuntimeHostOperatorCommand,
+  type RuntimeHostServiceUpdatePhase,
 } from '@maka/runtime-host/operator';
 import type { HostPeerEndpoint, HostRegistration } from '@maka/runtime-host/protocol';
 import type {
@@ -182,6 +183,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
     signal?: AbortSignal,
   ) => DesktopRuntimeHostSetupPackage | Promise<DesktopRuntimeHostSetupPackage>;
   readonly operator: DesktopRuntimeHostLocalOperator;
+  readonly onUpdateProgress?: (phase: RuntimeHostServiceUpdatePhase | 'restart') => void;
   readonly resolveManagedDeploymentAuthority?: (
     rootId: string,
   ) => Promise<LocalManagedDeploymentAuthority | undefined>;
@@ -761,7 +763,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
                   : {}),
                 signal,
               },
-              () => undefined,
+              (phase) => input.onUpdateProgress?.(phase),
             );
             if (frame.kind === 'error') {
               if (frame.error.code === 'active_tasks') return 'active_tasks';
@@ -797,6 +799,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         if (lifecycle?.state !== 'managed') return { kind: 'unavailable' };
 
         const setupPackage = await input.resolveSetupPackage(signal);
+        input.onUpdateProgress?.('checking');
         const frame = await input.operator.runUpdate(
           {
             setupPackage,
@@ -807,7 +810,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
               : {}),
             signal,
           },
-          () => undefined,
+          (phase) => input.onUpdateProgress?.(phase),
         );
         if (frame.kind === 'error') {
           if (frame.error.code === 'active_tasks') return { kind: 'active_tasks' };
@@ -819,6 +822,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         if (frame.update.kind === 'active_tasks') return { kind: 'active_tasks' };
 
         if (frame.update.kind === 'already_current') {
+          input.onUpdateProgress?.('restart');
           const restarted = await input.operator.runService({
             operator: lifecycle.operator,
             action: 'restart',

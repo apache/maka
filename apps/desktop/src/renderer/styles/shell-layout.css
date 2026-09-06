@@ -267,13 +267,11 @@
      --background right). Windows titleBarOverlay still samples --background
      for the OS caption strip on the content side. */
   background: transparent;
-  /* One gutter rule per side: our own `--space-6` of breathing room, or the
-     platform's native-control safe area when that is wider. Nothing here knows
-     which platform it is on or how wide any control is — `max()` picks whichever
-     the OS reports (macOS: traffic lights on the left; Windows: caption buttons
-     on the right; Linux: neither, so the design floor stands). */
+  /* One gutter rule per side, both resolved in maka-tokens.css from what the
+     OS reports (macOS: traffic lights on the left; Windows: caption buttons on
+     the right; Linux: neither, so the design floors stand). */
   padding-left: var(--maka-titlebar-gutter-left);
-  padding-right: calc(var(--space-6) + var(--maka-titlebar-overlay-right-width));
+  padding-right: var(--maka-titlebar-gutter-right);
   -webkit-app-region: drag;
 
   /* Three columns, not a flex row, because the middle one has to line up with

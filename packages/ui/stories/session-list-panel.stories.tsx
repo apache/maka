@@ -672,9 +672,9 @@ export const ProjectGroups: Story = {
     await expect(action).toHaveFocus();
     await userEvent.keyboard('{Enter}');
     await userEvent.click(page.getByRole('menuitem', { name: '重命名' }));
-    await expect(page.getByRole('dialog', { name: '重命名项目' })).toBeVisible();
+    await expect(await page.findByRole('dialog', { name: '重命名项目' })).toBeVisible();
     await userEvent.click(page.getByRole('button', { name: '关闭' }));
-    await expect(action).toHaveFocus();
+    await waitFor(() => expect(action).toHaveFocus());
 
     await userEvent.hover(taskControl);
     const taskCard = await page.findByText('正在把侧栏交互契约迁移到浏览器 story。');

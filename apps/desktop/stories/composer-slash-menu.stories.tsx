@@ -435,7 +435,7 @@ export const ContextSwitchStartsWithALoadingCatalog: Story = {
     await waitFor(() => expect(skillsRow).toHaveAttribute('aria-busy', 'true'));
     await expect(skillsRow).not.toHaveAttribute('aria-disabled', 'true');
     await userEvent.click(skillsRow);
-    await expect(menu).toBeVisible();
+    await waitFor(() => expect(menu).toBeVisible(), { timeout: 5_000 });
     await expect(editor(canvasElement)).toHaveTextContent('');
     await expect(page.queryByRole('listbox', { name: /技能/ })).not.toBeInTheDocument();
 
@@ -450,8 +450,9 @@ export const ContextSwitchStartsWithALoadingCatalog: Story = {
       page.getByRole('menu', { name: '添加上下文' }),
     ).getByRole('menuitem', { name: /选择技能/ });
     await userEvent.click(settledRow);
-    await expect(await page.findByRole('listbox', { name: /技能/ }, {
-      timeout: 5_000,
-    })).toBeVisible();
+    await waitFor(
+      () => expect(page.getByRole('listbox', { name: /技能/ })).toBeVisible(),
+      { timeout: 5_000 },
+    );
   },
 };

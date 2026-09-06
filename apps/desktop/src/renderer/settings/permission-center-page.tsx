@@ -54,6 +54,7 @@ import { RelativeTime, StatusDot, useMountedRef, useUiLocale } from '@maka/ui';
 import { SettingsPage, SettingsSection } from './settings-section';
 import { getPermissionCenterCopy, type PermissionCenterCopy } from '../locales/permission-center-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
+import { botStatusReasonCopy } from '../locales/settings-bot-copy';
 import {
   useRuntimeHostSettingsErrorReporter,
   useRuntimeHostSettingsTarget,
@@ -421,10 +422,10 @@ function CapabilityRow(props: {
   const { copy, locale } = props;
   const readinessCopy = copy.readiness[capability.readiness];
   const capabilityLabel = localizedCapabilityLabel(capability, locale);
-  const featureReason = localizedSnapshotText(capability.feature.reason, locale);
-  const configurationReason = localizedSnapshotText(capability.configuration.reason, locale);
-  const runtimeReason = localizedSnapshotText(capability.runtimeProbe.reason, locale);
-  const guidance = localizedCapabilityGuidance(capability, locale, copy);
+  const featureReason = capabilityReasonText(capability.feature.reason, capability.id, locale);
+  const configurationReason = capabilityReasonText(capability.configuration.reason, capability.id, locale);
+  const runtimeReason = capabilityReasonText(capability.runtimeProbe.reason, capability.id, locale);
+  const guidance = localizedCapabilityGuidance(capability, locale);
 
   const layers: Array<{ label: string; value: string; reason?: string }> = [
     {
@@ -704,6 +705,21 @@ function localizedCapabilityLabel(capability: CapabilitySnapshot, locale: UiLoca
   return capability.label;
 }
 
+// Bot capabilities carry bridge status codes; other producers still emit prose
+// until the capability snapshot codes them.
+function capabilityReasonText(
+  value: string | undefined,
+  capabilityId: CapabilityId,
+  locale: UiLocale,
+): string | undefined {
+  if (!value) return undefined;
+  if (capabilityId.startsWith('bot:')) {
+    const botReason = botStatusReasonCopy(value, locale);
+    if (botReason) return botReason;
+  }
+  return localizedSnapshotText(value, locale);
+}
+
 function localizedSnapshotText(value: string | undefined, locale: UiLocale): string | undefined {
   if (!value || (locale !== 'zh-CN' && /[\u3400-\u9fff]/u.test(value))) return undefined;
   return value;
@@ -712,7 +728,6 @@ function localizedSnapshotText(value: string | undefined, locale: UiLocale): str
 function localizedCapabilityGuidance(
   capability: CapabilitySnapshot,
   locale: UiLocale,
-  copy: PermissionCenterCopy,
 ): readonly string[] {
   return capability.guidance.filter((item) => locale === 'zh-CN' || !/[\u3400-\u9fff]/u.test(item));
 }

@@ -193,7 +193,16 @@ export type ArtifactBinaryReadResult =
   | { ok: true; base64: string; mimeType: string }
   | { ok: false; reason: ArtifactBinaryReadFailureReason };
 
-export type ArtifactSaveFailureReason = 'canceled' | 'not_found' | 'not_allowed' | 'write_failed';
+export type ArtifactSaveFailureReason =
+  | 'canceled'
+  | 'not_found'
+  | 'not_allowed'
+  | 'write_failed'
+  | 'deleted'
+  | 'source_failed'
+  | 'size_mismatch'
+  | 'target_write_failed'
+  | 'replace_failed';
 
 export type ArtifactSaveResult =
   | { ok: true; saved: string }

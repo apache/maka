@@ -451,6 +451,7 @@ test('restores transcript consumers across Host replacement', async () => {
       };
     },
     async loadTranscriptBefore() {},
+    async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
     async closeTranscript() {},
   });
@@ -508,6 +509,7 @@ test('does not hold Host observation recovery on transcript replay', async () =>
       return transcriptResult(generation);
     },
     async loadTranscriptBefore() {},
+    async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
     async closeTranscript() {},
   });
@@ -537,6 +539,7 @@ test('does not hold Host observation recovery on transcript replay', async () =>
     async loadTranscriptBefore() {
       transcriptRangeStarted = true;
     },
+    async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
     acknowledgeTranscript() {
       transcriptAcknowledged = true;
@@ -600,6 +603,7 @@ test('fences transcript range failures to the current registration and Host sour
       };
     },
     loadTranscriptBefore,
+    async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
     async closeTranscript() {},
   });

@@ -1399,6 +1399,10 @@ const makaBridge = {
         principalId,
       );
     },
+    async renamePrincipal(sessionId, principalId, displayName) {
+      const session = await runtimeHostSessionRef(sessionId);
+      return ipcRenderer.invoke('session-collaboration:renamePrincipal', session.scope, principalId, displayName);
+    },
     async revokeGrant(sessionId, grantId) {
       const session = await runtimeHostSessionRef(sessionId);
       return ipcRenderer.invoke(
@@ -1441,6 +1445,12 @@ const makaBridge = {
     },
     removeMount(mountId) {
       return ipcRenderer.invoke('session-collaboration:mount:remove', mountId);
+    },
+    retryMount(mountId) {
+      return ipcRenderer.invoke('session-collaboration:mount:retry', mountId);
+    },
+    renameMount(mountId, name) {
+      return ipcRenderer.invoke('session-collaboration:mount:rename', mountId, name);
     },
     async requestTurn(sessionId, input) {
       const session = await runtimeHostSessionRef(sessionId);
@@ -2507,7 +2517,7 @@ const makaBridge = {
       if (closed) throw new Error('Desktop transcript open was cancelled');
       identity ??= { generation: opened.generation, hostEpoch: opened.hostEpoch };
       const range = (
-        operation: 'sessions:transcript:load-before' | 'sessions:transcript:load-around',
+        operation: 'sessions:transcript:load-before' | 'sessions:transcript:load-after' | 'sessions:transcript:load-around',
         anchorSequence: number | null,
         maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
       ): Promise<void> => {
@@ -2528,6 +2538,8 @@ const makaBridge = {
         sessionId,
         loadBefore: (anchorSequence, maxBytes) =>
           range('sessions:transcript:load-before', anchorSequence, maxBytes),
+        loadAfter: (anchorSequence, maxBytes) =>
+          range('sessions:transcript:load-after', anchorSequence, maxBytes),
         loadAround: (sequence, maxBytes) =>
           range('sessions:transcript:load-around', sequence, maxBytes),
         async close() {

@@ -17,10 +17,13 @@
  * under the License.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode, type RefObject } from 'react';
 import { Link, Text } from '@astryxdesign/core';
-import { Banner, Button, useMountedRef, useToast, useUiLocale } from '@maka/ui';
-import type { AppUpdateStatus } from '../../preload/bridge-contract.js';
+import { Banner, Button, useMountedRef, useToast, useUiLocale, type ToastApi } from '@maka/ui';
+import {
+  AppUpdateAboutProjectionConsumer,
+  type AppUpdateAboutProjection,
+} from '../features/app-update/index.js';
 import { SettingsPage, SettingsRow, SettingsSection } from './settings-section.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
 import { SettingsSkeletonStack } from './settings-skeleton.js';
@@ -57,16 +60,76 @@ const RELEASES_URL = `${REPOSITORY_URL}/releases`;
 /* The ghost `sm` button pads its label by one spacing step; without the same
    inset the link's text sits 12px further right than the buttons' text. */
 const linkInRowEnd = { paddingInline: 'var(--spacing-3)' } as const;
+type AboutCopy = ReturnType<typeof getSettingsPreferencesCopy>['about'];
+
+/**
+ * The updater's row, rendered only for a packaged install. Update state is not
+ * this page's to own: the App Update feature holds the renderer's sole updater
+ * subscription above AppShell and publishes About's projection, so the row
+ * reads status from the consumer and issues the feature's guarded check
+ * instead of touching the bridge. A component rather than the consumer's
+ * render callback because the action guard is a hook.
+ */
+function AboutUpdateStatusRow(props: {
+  readonly update: AppUpdateAboutProjection;
+  readonly copy: AboutCopy;
+  readonly locale: ReturnType<typeof useUiLocale>;
+  readonly toast: ToastApi;
+  readonly mountedRef: RefObject<boolean>;
+}) {
+  const { update, copy, locale, toast, mountedRef } = props;
+  const checkUpdateGuard = useActionGuard<'check'>();
+  const row = aboutUpdateRow(update.status, copy, {
+    errorDetail: (message) => settingsActionErrorMessage(message, locale),
+  });
+
+  async function checkForUpdates() {
+    if (!checkUpdateGuard.begin('check')) return;
+    try {
+      const status = await update.checkForUpdates();
+      if (status.state === 'error') {
+        toast.error(
+          copy.updateFailed[status.operation],
+          settingsActionErrorMessage(status.message, locale),
+        );
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(copy.updateFailed.check, settingsActionErrorMessage(error, locale));
+      }
+    } finally {
+      checkUpdateGuard.finish();
+    }
+  }
+
+  return (
+    <SettingsRow
+      label={row.label}
+      description={row.description ?? undefined}
+      end={row.action === 'none' ? undefined : (
+        /* Secondary, not primary: the page has no task to complete, and the
+           one action the update flow cannot do without (the restart) lives in
+           the sidebar reminder. Not ghost either: unlike 复制 and 查看 below,
+           this changes the updater's state. */
+        <Button
+          variant="secondary"
+          size="sm"
+          isLoading={update.checking || row.action === 'checking'}
+          onClick={() => void checkForUpdates()}
+          label={copy.checkForUpdates}
+        />
+      )}
+    />
+  );
+}
+
 export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).about;
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [infoError, setInfoError] = useState<string | null>(null);
   const [copyingDiagnostics, setCopyingDiagnostics] = useState(false);
-  const [updateStatus, setUpdateStatus] = useState<AppUpdateStatus | null>(null);
-  const [checkingUpdate, setCheckingUpdate] = useState(false);
   const diagnosticCopyGuard = useActionGuard<'copy'>();
-  const checkUpdateGuard = useActionGuard<'check'>();
   const aboutPageMountedRef = useMountedRef();
   const toast = useToast();
 
@@ -96,23 +159,6 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
     };
   }, [copy.loadFailed, locale, toast]);
 
-  useEffect(() => {
-    let cancelled = false;
-    window.maka.app
-      .updateStatus()
-      .then((status) => {
-        if (!cancelled) setUpdateStatus(status);
-      })
-      .catch(() => undefined);
-    const unsubscribe = window.maka.app.subscribeUpdateStatus((status) => {
-      if (!cancelled) setUpdateStatus(status);
-    });
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, []);
-
   async function copyDiagnostics() {
     if (!diagnosticCopyGuard.begin('copy')) return;
     setCopyingDiagnostics(true);
@@ -126,28 +172,6 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
     } finally {
       diagnosticCopyGuard.finish();
       if (aboutPageMountedRef.current) setCopyingDiagnostics(false);
-    }
-  }
-
-  async function checkForUpdates() {
-    if (!checkUpdateGuard.begin('check')) return;
-    setCheckingUpdate(true);
-    try {
-      const status = await window.maka.app.checkForUpdates();
-      if (aboutPageMountedRef.current) setUpdateStatus(status);
-      if (status.state === 'error') {
-        toast.error(
-          copy.updateFailed[status.operation],
-          settingsActionErrorMessage(status.message, locale),
-        );
-      }
-    } catch (error) {
-      if (aboutPageMountedRef.current) {
-        toast.error(copy.updateFailed.check, settingsActionErrorMessage(error, locale));
-      }
-    } finally {
-      checkUpdateGuard.finish();
-      if (aboutPageMountedRef.current) setCheckingUpdate(false);
     }
   }
 
@@ -172,9 +196,6 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
       </SettingsSection>
     );
   } else {
-    const update = aboutUpdateRow(updateStatus, copy, {
-      errorDetail: (message) => settingsActionErrorMessage(message, locale),
-    });
     identity = (
       /* The two facts a user opens this page for, as the unlabeled lead group:
          which build this is, and whether it is current. Unlabeled because the
@@ -188,23 +209,17 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
       <SettingsSection>
         <SettingsRow label={`Maka v${info.appVersion}`} description={aboutChannelSummary(info, copy)} />
         {info.buildMode === 'dev' ? null : (
-          <SettingsRow
-            label={update.label}
-            description={update.description ?? undefined}
-            end={update.action === 'none' ? undefined : (
-              /* Secondary, not primary: the page has no task to complete, and
-                 the one action the update flow cannot do without (the restart)
-                 lives in the sidebar reminder. Not ghost either: unlike 复制
-                 and 查看 below, this changes the updater's state. */
-              <Button
-                variant="secondary"
-                size="sm"
-                isLoading={checkingUpdate || update.action === 'checking'}
-                onClick={() => void checkForUpdates()}
-                label={copy.checkForUpdates}
+          <AppUpdateAboutProjectionConsumer>
+            {(update) => (
+              <AboutUpdateStatusRow
+                update={update}
+                copy={copy}
+                locale={locale}
+                toast={toast}
+                mountedRef={aboutPageMountedRef}
               />
             )}
-          />
+          </AppUpdateAboutProjectionConsumer>
         )}
       </SettingsSection>
     );

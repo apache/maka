@@ -14,6 +14,8 @@ apps/desktop/src/renderer/composer-mentions.tsx
 apps/desktop/src/renderer/composition/desktop-feature-services.tsx
 apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
+apps/desktop/src/renderer/features/app-update/services-context.tsx
+apps/desktop/src/renderer/features/app-update/ui/app-update-provider.tsx
 apps/desktop/src/renderer/features/connection-settings/onboarding-step-form.tsx
 apps/desktop/src/renderer/features/connection-settings/services-context.tsx
 apps/desktop/src/renderer/features/goals/services-context.tsx
@@ -33,7 +35,9 @@ apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-profi
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-resource-dialog.tsx
 apps/desktop/src/renderer/features/session-collaboration/services-context.tsx
 apps/desktop/src/renderer/features/session-collaboration/turn-request-inbox-context.tsx
+apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-alias-action.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-join-dialog.tsx
+apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-navigation.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-guest-turn-actions.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-approval.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-badge.tsx
@@ -43,6 +47,7 @@ apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-prov
 apps/desktop/src/renderer/features/session-settings/services-context.tsx
 apps/desktop/src/renderer/features/task-entry/services-context.tsx
 apps/desktop/src/renderer/features/task-entry/ui/task-entry-host.tsx
+apps/desktop/src/renderer/features/task-entry/ui/task-entry-provider.tsx
 apps/desktop/src/renderer/features/usage/services-context.tsx
 apps/desktop/src/renderer/features/usage/ui/metric-card.tsx
 apps/desktop/src/renderer/features/usage/ui/usage-settings-view.tsx

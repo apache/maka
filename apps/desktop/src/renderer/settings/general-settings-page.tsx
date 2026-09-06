@@ -667,7 +667,6 @@ function GeneralDefaultsCard(props: {
               renderProviderMark={(type) => <ProviderBrandMark type={type} />}
               ariaLabel={copy.defaultModel}
               disabled={saving || !props.connectionsInteractive}
-              loading={saving}
               triggerClassName="settingsModelPickerTrigger"
               onValueChange={persistDefault}
             />

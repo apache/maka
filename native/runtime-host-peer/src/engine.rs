@@ -863,7 +863,7 @@ async fn run_endpoint_async(
                     }
                     let _ = result.send(());
                 }
-                Some(EngineCommand::Connect { options, stream_kind, result }) => {
+                Some(EngineCommand::Connect { mut options, stream_kind, result }) => {
                     if direct.pending.contains_key(&options.request_id)
                         || direct.pending.values().any(|connect| connect.peer_id == options.peer_id
                             && connect.stream_kind == stream_kind && connect.result.is_some())
@@ -873,6 +873,20 @@ async fn run_endpoint_async(
                             "a connection request with this identity is already in progress",
                         )));
                         continue;
+                    }
+                    if stream_kind == StreamKind::MeshControl {
+                        // A connected member may have no retained Mesh lease.
+                        // Reuse only live paths through still-approved transit
+                        // peers; this must not promote public coordination relays.
+                        for relay_peer in mesh_control
+                            .eligible_connections(options.peer_id, &direct.retiring_connections, &transit.approved_relays)
+                            .into_iter()
+                            .filter_map(|(_, path)| path.relay_peer_id())
+                        {
+                            if !options.transit_relay_peers.contains(&relay_peer) {
+                                options.transit_relay_peers.push(relay_peer);
+                            }
+                        }
                     }
                     if stream_kind == StreamKind::MeshControl
                         && options.route_hints.is_empty()
@@ -2814,9 +2828,7 @@ fn reconcile_pending_transit_connects(
     let mut unavailable = Vec::new();
     let mut retired_dials = HashMap::new();
     for (request_id, waiter) in &mut direct.pending {
-        if waiter.stream_kind != StreamKind::Application
-            || waiter.transit_relay_peers.is_disjoint(revoked_relays)
-        {
+        if waiter.transit_relay_peers.is_disjoint(revoked_relays) {
             continue;
         }
         waiter
@@ -4939,6 +4951,54 @@ mod tests {
                 .expect("expired route read failed"),
             b"after-route-expiry",
         );
+
+        // The mesh has forgotten the expired routes, but the application is
+        // still connected through an approved transit. Recover its signed
+        // evidence over that exact path without supplying the relay again.
+        let (result, response) = oneshot::channel();
+        source
+            .commands
+            .send(EngineCommand::Connect {
+                options: ConnectOptions {
+                    request_id: 11,
+                    peer_id: target.peer_id,
+                    route_hints: Vec::new(),
+                    coordination_relays: Vec::new(),
+                    transit_relay_peers: Vec::new(),
+                    deadline: Duration::from_secs(5),
+                },
+                stream_kind: StreamKind::MeshControl,
+                result,
+            })
+            .await
+            .expect("send Mesh recovery over live transit");
+        let recovered_mesh = tokio::time::timeout(Duration::from_secs(5), response)
+            .await
+            .expect("Mesh recovery timeout")
+            .expect("Mesh recovery response")
+            .expect("Mesh recovery failed");
+        assert_eq!(
+            recovered_mesh.path,
+            PeerConnectionPath::Transit {
+                relay_peer_id: relay.peer_id
+            },
+        );
+        let mut recovered_target =
+            tokio::time::timeout(Duration::from_secs(5), target.mesh_incoming.recv())
+                .await
+                .expect("recovered Mesh inbound timeout")
+                .expect("recovered Mesh inbound stream");
+        write_test_stream(&recovered_mesh, b"recover-mesh-routes").await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), recovered_target.incoming.recv())
+                .await
+                .expect("recovered Mesh read timeout")
+                .expect("Mesh ended")
+                .expect("Mesh read failed"),
+            b"recover-mesh-routes",
+        );
+        close_test_stream(recovered_mesh).await;
+        close_test_stream(recovered_target).await;
         configure_test_transit_with_reservations(
             &source,
             HashSet::new(),
@@ -4985,15 +5045,34 @@ mod tests {
             },
         )
         .await;
-        configure_test_transit(&source, HashSet::new()).await;
-        let result = tokio::time::timeout(Duration::from_secs(2), response)
+        let (result, mesh_response) = oneshot::channel();
+        source
+            .commands
+            .send(EngineCommand::Connect {
+                options: ConnectOptions {
+                    request_id: 12,
+                    peer_id: PeerId::random(),
+                    route_hints: Vec::new(),
+                    coordination_relays: Vec::new(),
+                    transit_relay_peers: vec![relay.peer_id],
+                    deadline: Duration::from_secs(10),
+                },
+                stream_kind: StreamKind::MeshControl,
+                result,
+            })
             .await
-            .expect("revoked pending connect timeout")
-            .expect("revoked pending connect response");
-        let Err(error) = result else {
-            panic!("revoked pending transit connect succeeded");
-        };
-        assert_eq!(error.code, "transit_unavailable");
+            .expect("send pending Mesh transit connect");
+        configure_test_transit(&source, HashSet::new()).await;
+        for response in [response, mesh_response] {
+            let result = tokio::time::timeout(Duration::from_secs(2), response)
+                .await
+                .expect("revoked pending connect timeout")
+                .expect("revoked pending connect response");
+            let Err(error) = result else {
+                panic!("revoked pending transit connect succeeded");
+            };
+            assert_eq!(error.code, "transit_unavailable");
+        }
         configure_test_transit(&relay, HashSet::from([target.peer_id])).await;
 
         close_test_stream(source_stream).await;

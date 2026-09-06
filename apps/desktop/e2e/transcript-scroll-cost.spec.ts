@@ -165,7 +165,7 @@ async function moveToTail(page: Page): Promise<void> {
  */
 async function returnToLatest(page: Page): Promise<void> {
   const returnLatest = page.getByRole('button', {
-    name: /^(?:返回最新消息|Return to latest)$/,
+    name: /^(?:滚动主对话到底部|Scroll main conversation to bottom)$/,
   });
   await expect(returnLatest).toBeVisible();
   await returnLatest.click();
@@ -268,7 +268,7 @@ test('paging back through the whole history keeps the mounted range bounded', as
   // Coming back from the far end is a range reload, not a scroll: the Host
   // resolves a new window around the tail and the renderer mounts it. The
   // suite's 10s expect timeout is sized for UI that is already on screen, and
-  // this step measured past it on a CI runner with four workers competing.
+  // this step measured past it on a loaded CI runner.
   await returnToLatest(page);
   await expect(page.locator(`[data-turn-id="turn-prompt-rail-${PROMPT_RAIL_PROMPT_COUNT}"]`))
     .toHaveCount(1, { timeout: 30_000 });

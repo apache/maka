@@ -75,6 +75,7 @@ export interface CollaborationAccessQueryInput {
 }
 
 export interface SessionGuestPrincipalProjection {
+  readonly displayName?: string;
   readonly principalId: string;
   readonly status: 'pending' | 'active';
   readonly createdAt: string;
@@ -100,6 +101,15 @@ export interface CollaborationPrincipalRevokeInput {
 
 export interface CollaborationPrincipalRevokeResult {
   readonly revoked: boolean;
+}
+
+export interface CollaborationPrincipalRenameInput {
+  readonly principalId: string;
+  readonly displayName: string;
+}
+
+export interface CollaborationPrincipalRenameResult {
+  readonly renamed: boolean;
 }
 
 export type SessionTurnAccessRequestState =
@@ -225,6 +235,28 @@ export const SESSION_COLLABORATION_OPERATION_SPECS = {
     errors: COLLABORATION_ERRORS,
     decodeInput: decodeCollaborationGrantRevokeInput,
     decodeOutput: decodeCollaborationGrantRevokeResult,
+  }),
+  'collaboration.principal.rename': defineOperation<
+    CollaborationPrincipalRenameInput,
+    CollaborationPrincipalRenameResult,
+    (typeof COLLABORATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: COLLABORATION_ERRORS,
+    decodeInput(value) {
+      const record = requireExactRecord(value, 'Guest alias', ['principalId', 'displayName']);
+      return {
+        principalId: decodePrincipalId(record.principalId),
+        displayName: decodeCollaborationDisplayName(record.displayName),
+      };
+    },
+    decodeOutput(value) {
+      const record = requireExactRecord(value, 'Guest alias result', ['renamed']);
+      if (typeof record.renamed !== 'boolean')
+        throw invalidProtocolFrame('Invalid Guest alias result');
+      return { renamed: record.renamed };
+    },
   }),
   'collaboration.principal.revoke': defineOperation<
     CollaborationPrincipalRevokeInput,
@@ -399,7 +431,7 @@ function decodeSessionGuestPrincipal(value: unknown): SessionGuestPrincipalProje
     value,
     'Session Guest principal',
     ['principalId', 'status', 'createdAt'],
-    ['expiresAt'],
+    ['expiresAt', 'displayName'],
   );
   if (record.status !== 'pending' && record.status !== 'active') {
     throw invalidProtocolFrame('Invalid Session Guest principal status');
@@ -407,11 +439,20 @@ function decodeSessionGuestPrincipal(value: unknown): SessionGuestPrincipalProje
   return {
     principalId: decodePrincipalId(record.principalId),
     status: record.status,
+    ...(record.displayName === undefined
+      ? {}
+      : { displayName: decodeCollaborationDisplayName(record.displayName) }),
     createdAt: decodeIsoTimestamp(record.createdAt, 'createdAt'),
     ...(record.expiresAt === undefined
       ? {}
       : { expiresAt: decodeIsoTimestamp(record.expiresAt, 'expiresAt') }),
   };
+}
+
+export function decodeCollaborationDisplayName(value: unknown): string {
+  const name = requireUtf8String(value, 'Guest alias', 256).trim();
+  if (!name) throw invalidProtocolFrame('Guest alias must not be blank');
+  return name;
 }
 
 function decodeCollaborationGrantRevokeInput(value: unknown): CollaborationGrantRevokeInput {

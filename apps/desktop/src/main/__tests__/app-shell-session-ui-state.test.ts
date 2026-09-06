@@ -31,7 +31,11 @@ import {
   createInitialAppShellSessionUiState,
   type AppShellSessionUiState,
 } from '../../renderer/app-shell-session-ui-state.js';
-import { transcriptReadingPosition } from '../../renderer/features/conversation/index.js';
+import {
+  transcriptReadingPosition,
+  type TranscriptHistoryGates,
+  type TranscriptHistoryPending,
+} from '../../renderer/features/conversation/index.js';
 
 function boundaryRequest(requestId: string): SandboxBoundaryRequestEvent {
   return {
@@ -58,6 +62,93 @@ function healthSnapshot(sessionId: string): SessionEventStreamSnapshot {
  *  looks like once its turn has produced a single event. */
 function answeredArm(turnId: string) {
   return confirmLiveTurn(armLiveTurn(turnId), turnId)!;
+}
+
+function deferred() {
+  let resolve!: () => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function deferredHistoryController() {
+  const before = deferred();
+  const after = deferred();
+  const latest = deferred();
+  const calls: string[] = [];
+  return {
+    controller: {
+      loadBefore: () => {
+        calls.push('before');
+        return before.promise;
+      },
+      loadAfter: (maxBytes: number, anchorTurnId?: string) => {
+        calls.push(`after:${maxBytes}:${anchorTurnId}`);
+        return after.promise;
+      },
+      loadLatest: () => {
+        calls.push('latest');
+        return latest.promise;
+      },
+    },
+    calls,
+    settleBefore: before.resolve,
+    settleAfter: after.resolve,
+    settleLatest: latest.resolve,
+    failBefore: before.reject,
+  };
+}
+
+function crossSessionGateScenario() {
+  type HistoryRequest = Parameters<typeof transcriptReadingPosition.loadHistory>[0]['request'];
+  const gates: TranscriptHistoryGates = new WeakMap();
+  const sessionIds = { a: 'session', b: 'session:a' } as const;
+  const sides = {
+    a: deferredHistoryController(),
+    b: deferredHistoryController(),
+  };
+  let active: 'a' | 'b' = 'a';
+  let range: object = sides.a.controller;
+  let currentPending: TranscriptHistoryPending | undefined;
+  const pending = {
+    a: [] as Array<Pick<HistoryRequest, 'target'> | undefined>,
+    b: [] as Array<Pick<HistoryRequest, 'target'> | undefined>,
+  };
+  const errors = { a: [] as unknown[], b: [] as unknown[] };
+  return {
+    sides,
+    pending,
+    errors,
+    currentPending: () => currentPending,
+    switchTo(id: 'a' | 'b') {
+      active = id;
+      range = sides[id].controller;
+    },
+    load(
+      id: 'a' | 'b',
+      request: { target: 'earlier' | 'later' | 'latest'; anchorTurnId?: string },
+    ) {
+      const side = sides[id];
+      return transcriptReadingPosition.loadHistory({
+        gates,
+        sessionId: sessionIds[id],
+        request,
+        controller: side.controller,
+        maxBytes: 4096,
+        isCurrent: () => active === id && range === side.controller,
+        setPending: (update) => {
+          currentPending = update(currentPending);
+          pending[id].push(currentPending?.sessionId === sessionIds[id]
+            ? { target: currentPending.target }
+            : undefined);
+        },
+        onError: (error) => errors[id].push(error),
+      });
+    },
+  };
 }
 
 function seededState(): AppShellSessionUiState {
@@ -440,6 +531,155 @@ describe('app shell session UI state controller', () => {
     assert.deepEqual(messages, [{ id: 'latest' }]);
     assert.deepEqual(anchorWrites, [undefined]);
     assert.deepEqual(unavailable, { sessionId: 'session', turnId: 'removed' });
+  });
+
+  it('starts another Session history load without waiting behind an in-flight load elsewhere', async () => {
+    const scenario = crossSessionGateScenario();
+    const stale = scenario.load('a', { target: 'earlier' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(scenario.sides.a.calls, ['before']);
+    assert.deepEqual(scenario.pending.a, [{ target: 'earlier' }]);
+
+    scenario.switchTo('b');
+    const navigation = scenario.load('b', { target: 'latest' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(scenario.sides.b.calls, ['latest']);
+    assert.deepEqual(scenario.pending.b, [{ target: 'latest' }]);
+
+    scenario.sides.a.settleBefore();
+    await stale;
+    assert.deepEqual(scenario.currentPending(), { sessionId: 'session:a', target: 'latest' });
+    scenario.sides.b.settleLatest();
+    await navigation;
+  });
+
+  it('leaves the switched-to Session untouched when a stale Session load settles late', async () => {
+    const scenario = crossSessionGateScenario();
+    const stale = scenario.load('a', { target: 'earlier' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    scenario.switchTo('b');
+    const navigation = scenario.load('b', { target: 'latest' });
+    scenario.sides.b.settleLatest();
+    await navigation;
+    assert.deepEqual(scenario.pending.b, [{ target: 'latest' }, undefined]);
+    assert.deepEqual(scenario.sides.b.calls, ['latest']);
+
+    scenario.sides.a.settleBefore();
+    await stale;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(scenario.pending.b, [{ target: 'latest' }, undefined]);
+    assert.deepEqual(scenario.sides.b.calls, ['latest']);
+    assert.deepEqual(scenario.errors.b, []);
+  });
+
+  it('reports a late history load failure to its own Session alone', async () => {
+    const scenario = crossSessionGateScenario();
+    const stale = scenario.load('a', { target: 'earlier' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    scenario.switchTo('b');
+    scenario.sides.a.failBefore(new Error('earlier read failed'));
+    await stale;
+    assert.deepEqual(scenario.errors.a, []);
+    assert.deepEqual(scenario.pending.a, [{ target: 'earlier' }, undefined]);
+    assert.deepEqual(scenario.pending.b, []);
+  });
+
+  it('replays the queued latest load once after an in-flight load settles on the same Session', async () => {
+    const scenario = crossSessionGateScenario();
+    const inFlight = scenario.load('a', { target: 'earlier' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const queuedEarlier = scenario.load('a', { target: 'earlier', anchorTurnId: 'turn-anchor' });
+    const queuedLatest = scenario.load('a', { target: 'latest' });
+    assert.deepEqual(scenario.sides.a.calls, ['before']);
+
+    scenario.sides.a.settleBefore();
+    await inFlight;
+    assert.deepEqual(scenario.sides.a.calls, ['before', 'latest']);
+    scenario.sides.a.settleLatest();
+    await Promise.allSettled([queuedEarlier, queuedLatest]);
+    assert.deepEqual(scenario.pending.a, [
+      { target: 'earlier' },
+      undefined,
+      { target: 'latest' },
+      undefined,
+    ]);
+  });
+
+  it('replays a queued forward load with its reading anchor after a backward load settles', async () => {
+    const scenario = crossSessionGateScenario();
+    const inFlight = scenario.load('a', { target: 'earlier' });
+    const queued = scenario.load('a', { target: 'later', anchorTurnId: 'turn-anchor' });
+    assert.deepEqual(scenario.sides.a.calls, ['before']);
+
+    scenario.sides.a.settleBefore();
+    await inFlight;
+    assert.deepEqual(scenario.sides.a.calls, ['before', 'after:4096:turn-anchor']);
+    scenario.sides.a.settleAfter();
+    await queued;
+    assert.deepEqual(scenario.pending.a, [
+      { target: 'earlier' },
+      undefined,
+      { target: 'later' },
+      undefined,
+    ]);
+  });
+
+  it('keeps the queued latest load when adjacent requests arrive after it', async () => {
+    const scenario = crossSessionGateScenario();
+    const inFlight = scenario.load('a', { target: 'earlier' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const queuedLatest = scenario.load('a', { target: 'latest' });
+    const queuedEarlier = scenario.load('a', { target: 'earlier', anchorTurnId: 'turn-anchor' });
+    const queuedLater = scenario.load('a', { target: 'later', anchorTurnId: 'turn-anchor' });
+    assert.deepEqual(scenario.sides.a.calls, ['before']);
+
+    scenario.sides.a.settleBefore();
+    await inFlight;
+    assert.deepEqual(scenario.sides.a.calls, ['before', 'latest']);
+    scenario.sides.a.settleLatest();
+    await Promise.allSettled([queuedLatest, queuedEarlier, queuedLater]);
+    assert.deepEqual(scenario.pending.a, [
+      { target: 'earlier' },
+      undefined,
+      { target: 'latest' },
+      undefined,
+    ]);
+  });
+
+  it('does not replay a settled load after its Session range was replaced', async () => {
+    const scenario = crossSessionGateScenario();
+    const inFlight = scenario.load('a', { target: 'earlier' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const queued = scenario.load('a', { target: 'latest' });
+    scenario.switchTo('b');
+    scenario.sides.a.settleBefore();
+    await inFlight;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(scenario.sides.a.calls, ['before']);
+    assert.deepEqual(scenario.sides.b.calls, []);
+    assert.deepEqual(scenario.pending.a, [{ target: 'earlier' }, undefined]);
+    scenario.sides.a.settleLatest();
+    await queued;
+  });
+
+  it('replays a queued load through its own Session callbacks', async () => {
+    const scenario = crossSessionGateScenario();
+    const inFlight = scenario.load('a', { target: 'earlier' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const queued = scenario.load('a', { target: 'latest' });
+    scenario.sides.a.settleBefore();
+    await inFlight;
+    assert.deepEqual(scenario.sides.a.calls, ['before', 'latest']);
+    scenario.sides.a.settleLatest();
+    await queued;
+    assert.deepEqual(scenario.pending.a, [
+      { target: 'earlier' },
+      undefined,
+      { target: 'latest' },
+      undefined,
+    ]);
+    assert.deepEqual(scenario.pending.b, []);
+    assert.deepEqual(scenario.sides.b.calls, []);
   });
 
   it('keeps the synchronous live-turn ref aligned with reducer updates', () => {

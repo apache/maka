@@ -59,4 +59,5 @@ exec mitmdump \
   --set block_global=false \
   --set rawtcp=false \
   --set confdir="$STATE_DIR" \
-  --scripts /opt/maka-eval/egress_filter.py
+  --scripts /opt/maka-eval/egress_filter.py \
+  "$@"

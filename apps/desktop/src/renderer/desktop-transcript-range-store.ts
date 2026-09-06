@@ -32,6 +32,7 @@ export interface DesktopTranscriptRangeController {
   ready(): Promise<void>;
   waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean>;
   loadBefore(maxBytes?: number, anchorTurnId?: string): Promise<void>;
+  loadAfter(maxBytes?: number, anchorTurnId?: string): Promise<void>;
   loadAround(sequence: number): Promise<void>;
   loadLatest(): Promise<void>;
   reload(): Promise<void>;
@@ -70,6 +71,16 @@ export function createDesktopTranscriptRangeController(
     },
     async loadAround(sequence) {
       await (await current()).loadAround(sequence);
+    },
+    async loadAfter(maxBytes, anchorTurnId) {
+      const range = store.range();
+      if (!range.hasNewer) return;
+      await (await current()).loadAfter(
+        anchorTurnId === undefined
+          ? range.newestSequence
+          : store.sequenceForTurn(anchorTurnId, 'last') ?? range.newestSequence,
+        maxBytes,
+      );
     },
     async loadLatest() {
       const range = store.range();
@@ -345,11 +356,9 @@ export class DesktopTranscriptRangeStore {
     return this.#newestUserSequence;
   }
 
-  sequenceForTurn(turnId: string): number | null {
-    for (const sequence of this.#durableOrder) {
-      if (this.#durable.get(sequence)?.message.turnId === turnId) return sequence;
-    }
-    return null;
+  sequenceForTurn(turnId: string, edge: 'first' | 'last' = 'first'): number | null {
+    const order = edge === 'first' ? this.#durableOrder : [...this.#durableOrder].reverse();
+    return order.find((sequence) => this.#durable.get(sequence)?.message.turnId === turnId) ?? null;
   }
 
   waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean> {
