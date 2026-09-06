@@ -62,7 +62,10 @@ export type PricingWriteState =
       readonly reason: 'revision_conflict' | 'outcome_unknown';
       readonly intent: PricingReconciliationTarget;
     }
-  | { readonly kind: 'refresh_failed' }
+  | {
+      readonly kind: 'refresh_failed';
+      readonly intent: PricingReconciliationTarget;
+    }
   | {
       readonly kind: 'reconcile_unavailable';
       readonly reason: 'revision_conflict' | 'outcome_unknown';
@@ -101,6 +104,7 @@ export function usePricingController(props: {
   const [resetTarget, setResetTarget] = useState<PricingRowView | null>(null);
   const [resetBusy, setResetBusy] = useState(false);
   const triggerRef = useRef<HTMLElement | null>(null);
+  const focusFallbackRef = useRef<HTMLElement | null>(null);
 
   const guard = useActionGuard<string>();
   const mountedRef = useRef(false);
@@ -164,8 +168,10 @@ export function usePricingController(props: {
 
   async function reload(): Promise<void> {
     const host = props.target?.host;
-    const pendingReconciliation =
-      writeState.kind === 'reconcile_unavailable' ? writeState : undefined;
+    const pendingWrite =
+      writeState.kind === 'refresh_failed' || writeState.kind === 'reconcile_unavailable'
+        ? writeState
+        : undefined;
     const lifecycle = lifecycleRef.current;
     const epoch = generationEpochRef.current;
     const ticket = ++reloadTicketRef.current;
@@ -187,19 +193,22 @@ export function usePricingController(props: {
       if (!isCurrent(lifecycle, epoch) || ticket !== reloadTicketRef.current) return;
       setSnapshot(next);
       setLoadError(null);
-      if (pendingReconciliation) {
-        if (pricingReconciliationTargetMatches(pendingReconciliation.intent, next.entries)) {
+      if (pendingWrite) {
+        if (pricingReconciliationTargetMatches(pendingWrite.intent, next.entries)) {
           setWriteState({ kind: 'idle' });
-          finishReconciledIntent(pendingReconciliation.intent);
+          finishReconciledIntent(pendingWrite.intent);
           toast.success(copy.synchronized);
         } else {
           setWriteState({
             kind: 'conflict',
             latest: next,
-            reason: pendingReconciliation.reason,
-            intent: pendingReconciliation.intent,
+            reason:
+              pendingWrite.kind === 'reconcile_unavailable'
+                ? pendingWrite.reason
+                : 'revision_conflict',
+            intent: pendingWrite.intent,
           });
-          restoreReconciledIntent(pendingReconciliation.intent, next);
+          restoreReconciledIntent(pendingWrite.intent, next);
         }
       } else {
         setWriteState({ kind: 'idle' });
@@ -265,7 +274,12 @@ export function usePricingController(props: {
   function restoreTriggerFocus() {
     const trigger = triggerRef.current;
     triggerRef.current = null;
-    if (trigger?.isConnected) requestAnimationFrame(() => trigger.focus());
+    const fallback = focusFallbackRef.current;
+    focusFallbackRef.current = null;
+    requestAnimationFrame(() => {
+      if (trigger?.isConnected) trigger.focus();
+      else if (fallback?.isConnected) fallback.focus();
+    });
   }
 
   function openAdd(trigger: HTMLElement | null) {
@@ -274,6 +288,7 @@ export function usePricingController(props: {
     // must not open. The Add control is disabled for the same reason.
     if (writesBlocked || snapshot === null) return;
     triggerRef.current = trigger;
+    focusFallbackRef.current = trigger;
     setDraft(EMPTY_DRAFT);
     setCacheOpen(false);
     setEditor({ mode: 'add' });
@@ -282,6 +297,7 @@ export function usePricingController(props: {
   function openEdit(row: PricingRowView, trigger: HTMLElement | null) {
     if (writesBlocked) return;
     triggerRef.current = trigger;
+    focusFallbackRef.current = trigger;
     const prefill = draftFromRow(row);
     setDraft(prefill.draft);
     setCacheOpen(prefill.cacheOpen);
@@ -392,9 +408,10 @@ export function usePricingController(props: {
       case 'saved_refresh_failed':
         // The write committed but the post-commit reload failed — the loaded list
         // is now definitely stale. Drop it (#2015: show no speculative final
-        // list); the draft is retained and writes stay blocked until a refresh.
+        // list); retain both the draft and intended end state so an in-dialog
+        // refresh can confirm the committed write without replaying it.
         setSnapshot(null);
-        setWriteState({ kind: 'refresh_failed' });
+        setWriteState({ kind: 'refresh_failed', intent });
         return;
       case 'reconciliation_unavailable':
         setWriteState({ kind: 'reconcile_unavailable', reason: outcome.reason, intent });
@@ -442,9 +459,14 @@ export function usePricingController(props: {
     }
   }
 
-  function openReset(row: PricingRowView, trigger: HTMLElement | null) {
+  function openReset(
+    row: PricingRowView,
+    trigger: HTMLElement | null,
+    focusFallback: HTMLElement | null,
+  ) {
     if (writesBlocked) return;
     triggerRef.current = trigger;
+    focusFallbackRef.current = focusFallback;
     setResetTarget(row);
   }
 
@@ -475,14 +497,6 @@ export function usePricingController(props: {
       });
       // A conflict keeps the confirm dialog open for an explicit second
       // confirm against fresh authority (mutationBase() now returns `latest`).
-      // An uncertain outcome blocks writes — close the dialog; the panel notice
-      // explains the next step.
-      if (
-        outcome.kind === 'saved_refresh_failed' ||
-        outcome.kind === 'reconciliation_unavailable'
-      ) {
-        setResetTarget(null);
-      }
     } catch (error) {
       if (isCurrent(lifecycle, epoch, pricingTarget)) {
         toast.error(copy.resetFailed, describeError(error));

@@ -103,6 +103,8 @@ export type PricingSettingsCopy = {
   deleteBody(modelKey: string): string;
   confirmReset: string;
   confirmDelete: string;
+  reviewReset: string;
+  reviewDelete: string;
   resetFailed: string;
 };
 
@@ -143,7 +145,7 @@ const SETTINGS_PRICING_COPY = {
     editTitle: '编辑定价',
     modelKeyLabel: '模型键',
     modelKeyPlaceholder: '例如 anthropic:claude-sonnet-4-5',
-    keyHelp: '粘贴用量记录中的精确 Runtime 查找键（区分大小写，不要用连接别名）。',
+    keyHelp: '粘贴用量记录中的精确运行时查找键（区分大小写，不要用连接别名）。',
     inputLabel: '输入价格',
     outputLabel: '输出价格',
     rateHelp: '美元 / 每百万 token；0 表示免费（如本地模型）。',
@@ -182,6 +184,8 @@ const SETTINGS_PRICING_COPY = {
       `将删除「${modelKey}」的定价；新激活的调用将变为未定价（不计入 Maka 的费用估算，与显式填 0 不同），进行中的运行沿用其开始时的快照。`,
     confirmReset: '重置',
     confirmDelete: '删除',
+    reviewReset: '核对并重置',
+    reviewDelete: '核对并删除',
     resetFailed: '操作失败',
   },
   'zh-TW': {
@@ -193,7 +197,7 @@ const SETTINGS_PRICING_COPY = {
     addNeedsSnapshot: '需先載入定價後才能新增。',
     loading: '正在載入定價…',
     loadFailedTitle: '無法載入定價',
-    loadFailedBody: '讀取 Runtime Host 的定價快照失敗，請重試。',
+    loadFailedBody: '讀取執行時主機的定價快照失敗，請重試。',
     retry: '重試',
     emptyTitle: '暫無自訂定價',
     emptyBody: '尚未覆寫任何模型價格。點選「新增定價」，從內建目錄中選擇一個模型。',
@@ -220,7 +224,7 @@ const SETTINGS_PRICING_COPY = {
     editTitle: '編輯定價',
     modelKeyLabel: '模型鍵',
     modelKeyPlaceholder: '例如 anthropic:claude-sonnet-4-5',
-    keyHelp: '貼上用量記錄中的精確 Runtime 查找鍵（區分大小寫，請勿使用連線別名）。',
+    keyHelp: '貼上用量記錄中的精確執行時查找鍵（區分大小寫，請勿使用連線別名）。',
     inputLabel: '輸入價格',
     outputLabel: '輸出價格',
     rateHelp: '美元 / 每百萬 token；0 表示免費（如本機模型）。',
@@ -243,9 +247,9 @@ const SETTINGS_PRICING_COPY = {
     conflictLatest: (source, input, output, cacheRead, cacheWrite) =>
       `目前最新：${source}；輸入 ${input} / 輸出 ${output} / 快取讀 ${cacheRead} / 快取寫 ${cacheWrite}`,
     reviewSave: '核對並儲存',
-    hostChangedTitle: 'Runtime Host 已變更',
-    hostChangedBody: '草稿已保留。請等待新 Host 的定價載入完成，核對後再繼續儲存。',
-    reviewHostChange: '已核對新 Host 定價',
+    hostChangedTitle: '執行時主機已變更',
+    hostChangedBody: '草稿已保留。請等待新主機的定價載入完成，核對後再繼續儲存。',
+    reviewHostChange: '已核對新主機定價',
     refreshFailedTitle: '已儲存，但無法載入最新定價',
     refreshFailedBody: '儲存已完成，但無法讀取最新定價。請重新整理後再進行修改。',
     reconcileTitle: '無法確認結果',
@@ -259,6 +263,8 @@ const SETTINGS_PRICING_COPY = {
       `將刪除「${modelKey}」的定價；新啟用的呼叫將變為未定價（不計入 Maka 的費用估算，與明確填入 0 不同），進行中的執行沿用其開始時的快照。`,
     confirmReset: '重設',
     confirmDelete: '刪除',
+    reviewReset: '核對並重設',
+    reviewDelete: '核對並刪除',
     resetFailed: '操作失敗',
   },
   en: {
@@ -338,6 +344,8 @@ const SETTINGS_PRICING_COPY = {
       `This deletes pricing for ${modelKey}; newly activated work becomes unpriced (excluded from Maka's cost estimates — distinct from an explicit $0), while an active run keeps its starting snapshot.`,
     confirmReset: 'Reset',
     confirmDelete: 'Delete',
+    reviewReset: 'Review & reset',
+    reviewDelete: 'Review & delete',
     resetFailed: 'Action failed',
   },
 } satisfies UiCatalog<PricingSettingsCopy>;

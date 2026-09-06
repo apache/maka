@@ -217,6 +217,29 @@ describe('PricingEditor', () => {
     await act(async () => harness.root.unmount());
   });
 
+  it('moves focus to Add after a successful reset removes its trigger row', async () => {
+    const committed: DesktopPricingSnapshot = { ...SNAPSHOT, revision: 6, entries: [SNAPSHOT.entries[0]!] };
+    const harness = await renderEditor({
+      load: async () => SNAPSHOT,
+      mutate: async () => ({ kind: 'saved', disposition: 'committed', snapshot: committed }),
+    });
+    const resetButton = buttonByLabel(harness.doc, copy.resetAria('anthropic:claude'));
+    const addButton = buttonByText(harness.doc, copy.add);
+    assert.ok(resetButton);
+    assert.ok(addButton);
+    let focused: HTMLElement | null = null;
+    resetButton.focus = () => { focused = resetButton; };
+    addButton.focus = () => { focused = addButton; };
+
+    await click(resetButton);
+    await click(buttonByText(harness.doc, copy.confirmReset));
+    await flushAnimationFrame();
+
+    assert.equal(resetButton.isConnected, false, 'the reset trigger leaves with its override row');
+    assert.equal(focused, addButton, 'focus falls back to the stable Add action');
+    await act(async () => harness.root.unmount());
+  });
+
   it('a saved-but-refresh-failed outcome disables further writes', async () => {
     const harness = await renderEditor({
       load: async () => SNAPSHOT,
@@ -229,13 +252,78 @@ describe('PricingEditor', () => {
     // #2015: the committed-but-unrefreshed list is now stale — it must not be
     // shown as authoritative, so the previously-listed override is cleared until
     // a successful refresh.
-    assert.doesNotMatch(harness.container.textContent ?? '', /anthropic:claude/);
+    assert.doesNotMatch(
+      harness.container.querySelector('table')?.textContent ?? '',
+      /anthropic:claude/,
+    );
     const addButton = buttonByText(harness.doc, copy.add);
     assert.ok(addButton);
     // A disabled control that carries its reason via tooltip stays focusable and
     // marks itself with aria-disabled rather than the native disabled attribute
     // (DESIGN.md §Fields), so the write-block reason stays discoverable.
     assert.equal(addButton.getAttribute('aria-disabled'), 'true');
+    await act(async () => harness.root.unmount());
+  });
+
+  it('keeps a saved reset reachable from its dialog until pricing refreshes', async () => {
+    const harness = await renderEditor({
+      load: async () => SNAPSHOT,
+      mutate: async () => ({ kind: 'saved_refresh_failed', disposition: 'committed' }),
+    });
+    await click(buttonByLabel(harness.doc, copy.resetAria('anthropic:claude')));
+    await click(buttonByText(harness.doc, copy.confirmReset));
+
+    const dialog = openDialog(harness.doc);
+    assert.ok(dialog, 'the pending reset stays reachable after refresh failure');
+    assert.match(dialog.textContent ?? '', new RegExp(copy.refreshFailedTitle));
+    assert.ok(buttonByText(dialog, copy.refresh), 'recovery is available inside the modal focus trap');
+    assertButtonDisabled(buttonByText(dialog, copy.confirmReset));
+    await act(async () => harness.root.unmount());
+  });
+
+  it('keeps an upsert draft reachable and refreshes from inside the editor', async () => {
+    const committed: DesktopPricingSnapshot = {
+      ...SNAPSHOT,
+      revision: 6,
+      entries: [
+        ...SNAPSHOT.entries,
+        {
+          source: 'custom',
+          resetEffect: 'become_unpriced',
+          pricing: { modelKey: 'acme:draft', inputUsdPer1M: 1, outputUsdPer1M: 2 },
+        },
+      ],
+    };
+    let loadCall = 0;
+    const harness = await renderEditor({
+      load: async () => {
+        loadCall += 1;
+        return loadCall === 1 ? SNAPSHOT : committed;
+      },
+      mutate: async () => ({ kind: 'saved_refresh_failed', disposition: 'committed' }),
+    });
+    await click(buttonByText(harness.doc, copy.add));
+    await click(buttonByText(harness.doc, copy.manualEntryToggle));
+    await setInput(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder), 'acme:draft');
+    const rateInputs = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('input')).filter(
+      (input) => !input.getAttribute('placeholder'),
+    );
+    await setInput(rateInputs[0], '1');
+    await setInput(rateInputs[1], '2');
+    await click(buttonByText(harness.doc, copy.save));
+
+    const dialog = openDialog(harness.doc);
+    assert.ok(dialog, 'the draft stays open after the committed refresh failure');
+    assert.match(dialog.textContent ?? '', new RegExp(copy.refreshFailedTitle));
+    assert.equal(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder)?.value, 'acme:draft');
+    const refresh = buttonByText(dialog, copy.refresh);
+    assert.ok(refresh, 'recovery is available inside the modal focus trap');
+    await click(refresh);
+
+    assert.equal(openDialog(harness.doc), undefined, 'a successful refresh completes the saved draft');
+    assert.match(harness.container.textContent ?? '', /acme:draft/);
+    assert.equal(harness.loadCalls(), 2);
+    assert.equal(harness.mutations.length, 1, 'refresh never replays the upsert');
     await act(async () => harness.root.unmount());
   });
 
@@ -254,11 +342,14 @@ describe('PricingEditor', () => {
     await click(buttonByLabel(harness.doc, copy.resetAria('anthropic:claude')));
     await click(buttonByText(harness.doc, copy.confirmReset));
 
-    // The conflict is surfaced and the confirm dialog stays open for an explicit
-    // second confirm — the mutation is never replayed blindly.
-    assert.match(harness.container.textContent ?? '', new RegExp(copy.conflictTitle));
-    const confirmAgain = buttonByText(harness.doc, copy.confirmReset);
-    assert.ok(confirmAgain, 'reset dialog stays open on conflict');
+    // The conflict is surfaced inside the modal focus trap and the action label
+    // changes before an explicit second confirm — the mutation is never replayed
+    // blindly while the warning sits behind the dialog.
+    const dialog = openDialog(harness.doc);
+    assert.ok(dialog, 'reset dialog stays open on conflict');
+    assert.match(dialog.textContent ?? '', new RegExp(copy.conflictTitle));
+    const confirmAgain = buttonByText(dialog, copy.reviewReset);
+    assert.ok(confirmAgain, 'the reset action calls out the required review');
     await click(confirmAgain);
 
     assert.equal(calls, 2);
@@ -311,7 +402,9 @@ describe('PricingEditor', () => {
     await click(buttonByText(harness.doc, copy.confirmReset));
     assert.match(harness.container.textContent ?? '', new RegExp(copy.reconcileTitle));
 
-    await click(buttonByLabel(harness.doc, copy.refresh));
+    const dialog = openDialog(harness.doc);
+    assert.ok(dialog, 'the unreconciled draft stays open');
+    await click(buttonByText(dialog, copy.refresh));
 
     const text = harness.container.textContent ?? '';
     assert.match(text, new RegExp(copy.conflictTitleUnknown));
@@ -348,7 +441,9 @@ describe('PricingEditor', () => {
     });
     await selectCatalogModel(harness.doc, 'openai:gpt-4o');
     await click(buttonByText(harness.doc, copy.save));
-    await click(buttonByLabel(harness.doc, copy.refresh));
+    const dialog = openDialog(harness.doc);
+    assert.ok(dialog, 'the unreconciled draft stays open');
+    await click(buttonByText(dialog, copy.refresh));
 
     assert.equal(openDialog(harness.doc), undefined, 'the matched draft is complete');
     assert.equal(harness.mutations.length, 1, 'reconciliation never replays the upsert');
@@ -601,6 +696,7 @@ describe('PricingEditor', () => {
     assert.equal(calls, 2, 'the second save was allowed');
     assert.equal(harness.mutations.length, 2);
     assert.equal(harness.mutations[0]!.mutation.kind, 'upsert');
+    assert.deepEqual(harness.mutations[1]!.base, conflictLatest);
     const second = harness.mutations[1]!.mutation as { kind: 'upsert'; pricing: { modelKey: string } };
     assert.equal(second.pricing.modelKey, 'acme:new');
     await act(async () => harness.root.unmount());
@@ -835,6 +931,12 @@ async function clickElement(element: HTMLElement | undefined) {
   });
 }
 
+async function flushAnimationFrame(): Promise<void> {
+  await act(async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  });
+}
+
 async function selectCatalogModel(doc: Document, modelKey: string): Promise<void> {
   await click(buttonByText(doc, copy.add));
   await setInput(inputByPlaceholder(doc, copy.catalogPickerPlaceholder), modelKey);
@@ -890,8 +992,8 @@ async function setInput(input: HTMLInputElement | undefined, value: string): Pro
   });
 }
 
-function buttonByText(doc: Document, text: string): HTMLButtonElement | undefined {
-  return Array.from(doc.querySelectorAll<HTMLButtonElement>('button')).find(
+function buttonByText(root: ParentNode, text: string): HTMLButtonElement | undefined {
+  return Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find(
     (button) => (button.textContent ?? '').trim() === text,
   );
 }
