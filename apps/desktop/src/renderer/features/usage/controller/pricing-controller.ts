@@ -19,11 +19,16 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useToast, useUiLocale } from '@maka/ui';
-import type { PricingMutation } from '@maka/runtime-host/protocol';
+import {
+  createPricingReconciliationTarget,
+  pricingReconciliationTargetMatches,
+  pricingReconciliationTargetModelKey,
+  type PricingMutation,
+  type PricingReconciliationTarget,
+} from '@maka/runtime-host/protocol';
 import { useUsagePricingServices } from '../pricing-services-context.js';
-import type { UsagePricingServices } from '../pricing-ports.js';
-import type { UsageHostRef } from '../ports.js';
-import { getPricingSettingsCopy } from '../pricing-copy.js';
+import type { UsagePricingServices, UsagePricingTarget } from '../pricing-ports.js';
+import { getPricingSettingsCopy } from '../../../locales/settings-pricing-copy.js';
 import { useActionGuard } from './action-guard.js';
 import {
   derivePricingRows,
@@ -34,9 +39,8 @@ import {
   type PricingRowView,
 } from '../pricing-view-model.js';
 
-// Desktop pricing shapes derive from the `UsagePricingServices` port (whose
-// types come from the global `window.maka.settings.pricing` bridge), so the
-// feature names them without importing the preload/`shared` Desktop types.
+// Derive the controller's authority/outcome types from its injected port so the
+// port remains the test seam even though it is expressed with shared contracts.
 type DesktopPricingSnapshot = Awaited<ReturnType<UsagePricingServices['loadPricing']>>;
 type DesktopPricingMutationOutcome = Awaited<ReturnType<UsagePricingServices['mutatePricing']>>;
 
@@ -56,13 +60,17 @@ export type PricingWriteState =
       readonly kind: 'conflict';
       readonly latest: DesktopPricingSnapshot;
       readonly reason: 'revision_conflict' | 'outcome_unknown';
+      readonly intent: PricingReconciliationTarget;
     }
   | { readonly kind: 'refresh_failed' }
-  | { readonly kind: 'reconcile_unavailable'; readonly reason: 'revision_conflict' | 'outcome_unknown' };
+  | {
+      readonly kind: 'reconcile_unavailable';
+      readonly reason: 'revision_conflict' | 'outcome_unknown';
+      readonly intent: PricingReconciliationTarget;
+    };
 
 const EMPTY_DRAFT: PricingDraft = {
-  provider: '',
-  model: '',
+  modelKey: '',
   input: null,
   output: null,
   cacheRead: null,
@@ -72,22 +80,8 @@ const EMPTY_DRAFT: PricingDraft = {
 /** Owns the Host-backed Pricing snapshot, the editor draft, and every outcome. */
 export function usePricingController(props: {
   readonly describeError: (error: unknown) => string;
-  /**
-   * The settings-*selected* Runtime Host (threaded as a prop from the legacy
-   * surface, not resolved at the bridge). Pricing overrides are per-Host, so the
-   * Pricing tab must read/write the same Host as the rest of the settings page —
-   * the app's *active* Host (what an omitted bridge arg would resolve) can differ
-   * because the settings surface has its own Host selector.
-   */
-  readonly runtimeHost: UsageHostRef | undefined;
-  /**
-   * The Usage scope's `targetKey` (`host:epoch`). Pricing services come from a
-   * single app-root provider (not a Host-keyed one), so a Host/generation change
-   * does not remount this controller; instead this key changes and the reload
-   * effect below re-fetches against the fresh Host — mirroring the previous
-   * surface's reload-on-generation behaviour.
-   */
-  readonly generationKey: string;
+  /** Settings-selected Host plus its lifecycle generation (`host:epoch`). */
+  readonly target: UsagePricingTarget | null;
 }) {
   const services = useUsagePricingServices();
   const { describeError } = props;
@@ -102,6 +96,7 @@ export function usePricingController(props: {
   const [draft, setDraft] = useState<PricingDraft>(EMPTY_DRAFT);
   const [cacheOpen, setCacheOpen] = useState(false);
   const [writeState, setWriteState] = useState<PricingWriteState>({ kind: 'idle' });
+  const [needsReview, setNeedsReview] = useState(false);
   const [saving, setSaving] = useState(false);
   const [resetTarget, setResetTarget] = useState<PricingRowView | null>(null);
   const [resetBusy, setResetBusy] = useState(false);
@@ -121,6 +116,27 @@ export function usePricingController(props: {
   // changed while it was in flight — an old-generation save must never write
   // back onto a freshly loaded snapshot.
   const generationEpochRef = useRef(0);
+  const targetKey = props.target?.generationKey ?? 'no-host';
+  const [renderedTargetKey, setRenderedTargetKey] = useState(targetKey);
+
+  // Fence a changed Host during render, before an old asynchronous result can
+  // land in the event-to-effect gap. React immediately restarts this component
+  // with the new target key. Keep the editor draft, but discard all authority
+  // and require review after the replacement snapshot arrives.
+  if (targetKey !== renderedTargetKey) {
+    setRenderedTargetKey(targetKey);
+    generationEpochRef.current += 1;
+    reloadTicketRef.current += 1;
+    setSnapshot(null);
+    setLoading(true);
+    setLoadError(null);
+    setWriteState({ kind: 'idle' });
+    setNeedsReview(editor !== null);
+    setResetTarget(null);
+    setSaving(false);
+    setResetBusy(false);
+    guard.finish();
+  }
 
   useEffect(() => {
     lifecycleRef.current += 1;
@@ -133,16 +149,23 @@ export function usePricingController(props: {
     };
   }, []);
 
-  function isCurrent(lifecycle: number, epoch: number): boolean {
+  function isCurrent(
+    lifecycle: number,
+    epoch: number,
+    target = props.target,
+  ): boolean {
     return (
       mountedRef.current &&
       lifecycleRef.current === lifecycle &&
-      generationEpochRef.current === epoch
+      generationEpochRef.current === epoch &&
+      (target === null || target.isCurrent())
     );
   }
 
   async function reload(): Promise<void> {
-    const host = props.runtimeHost;
+    const host = props.target?.host;
+    const pendingReconciliation =
+      writeState.kind === 'reconcile_unavailable' ? writeState : undefined;
     const lifecycle = lifecycleRef.current;
     const epoch = generationEpochRef.current;
     const ticket = ++reloadTicketRef.current;
@@ -164,7 +187,23 @@ export function usePricingController(props: {
       if (!isCurrent(lifecycle, epoch) || ticket !== reloadTicketRef.current) return;
       setSnapshot(next);
       setLoadError(null);
-      setWriteState({ kind: 'idle' });
+      if (pendingReconciliation) {
+        if (pricingReconciliationTargetMatches(pendingReconciliation.intent, next.entries)) {
+          setWriteState({ kind: 'idle' });
+          finishReconciledIntent(pendingReconciliation.intent);
+          toast.success(copy.synchronized);
+        } else {
+          setWriteState({
+            kind: 'conflict',
+            latest: next,
+            reason: pendingReconciliation.reason,
+            intent: pendingReconciliation.intent,
+          });
+          restoreReconciledIntent(pendingReconciliation.intent, next);
+        }
+      } else {
+        setWriteState({ kind: 'idle' });
+      }
     } catch (error) {
       if (!isCurrent(lifecycle, epoch) || ticket !== reloadTicketRef.current) return;
       setLoadError(describeError(error));
@@ -175,32 +214,15 @@ export function usePricingController(props: {
 
   // Load on mount and whenever the selected Host generation changes. Pricing
   // services come from a single app-root provider, so a Host change does not
-  // remount this controller; the `generationKey` prop (the Usage scope's
+  // remount this controller; the target's `generationKey` (the Usage scope's
   // `host:epoch`) changes instead, which resets the snapshot and reloads —
   // replacing the previous surface's generation-key remount. A generation bump
-  // also fences any in-flight mutation from an older Host (`isCurrent`). The
-  // draft is intentionally dropped on a generation change.
+  // also fences any in-flight mutation from an older Host (`isCurrent`). An
+  // open draft is intentionally retained on a generation change.
   useEffect(() => {
-    generationEpochRef.current += 1;
-    // A Host generation change is a fresh authority/list. Fence any in-flight
-    // reload, drop the snapshot, and reset ALL transient interaction state:
-    // close the editor and clear the draft (so an old-Host draft can't be saved
-    // onto the new authority), clear the reset target, and release both busy
-    // latches + the action guard (so a mutation whose `finally` no longer runs
-    // — its epoch changed — can't leave a dialog stuck saving/resetting).
-    reloadTicketRef.current += 1;
-    setSnapshot(null);
-    setWriteState({ kind: 'idle' });
-    setEditor(null);
-    setDraft(EMPTY_DRAFT);
-    setCacheOpen(false);
-    setResetTarget(null);
-    setSaving(false);
-    setResetBusy(false);
-    guard.finish();
     void reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.generationKey]);
+  }, [targetKey]);
 
   const rows = useMemo(() => derivePricingRows(snapshot?.entries ?? []), [snapshot]);
   // Overrides-only surface (#2015 / maintainer direction on #2218): the table
@@ -227,22 +249,18 @@ export function usePricingController(props: {
   );
 
   const writesBlocked =
-    writeState.kind === 'refresh_failed' || writeState.kind === 'reconcile_unavailable';
+    needsReview ||
+    writeState.kind === 'refresh_failed' ||
+    writeState.kind === 'reconcile_unavailable';
 
   // On a conflict, the fresh-authority row for whatever the user is editing or
   // resetting — so the notice can show the latest value beside their draft
   // rather than only claiming one exists.
   const conflictLatestEntry = useMemo<PricingRowView | null>(() => {
     if (writeState.kind !== 'conflict') return null;
-    const key =
-      editor?.mode === 'edit'
-        ? editor.row.modelKey
-        : editor?.mode === 'add'
-          ? (validation.config?.modelKey ?? null)
-          : (resetTarget?.modelKey ?? null);
-    if (!key) return null;
+    const key = pricingReconciliationTargetModelKey(writeState.intent);
     return findPricingRow(writeState.latest.entries, key);
-  }, [writeState, editor, resetTarget, validation]);
+  }, [writeState]);
 
   function restoreTriggerFocus() {
     const trigger = triggerRef.current;
@@ -282,19 +300,58 @@ export function usePricingController(props: {
     setCacheOpen(prefill.cacheOpen);
   }
 
+  function clearModel() {
+    setDraft((current) => ({
+      ...current,
+      modelKey: '',
+      input: null,
+      output: null,
+      cacheRead: null,
+      cacheWrite: null,
+    }));
+    setCacheOpen(false);
+  }
+
+  function reviewHostChange() {
+    if (needsReview && snapshot !== null) setNeedsReview(false);
+  }
+
   function closeEditor() {
     if (saving) return;
     setEditor(null);
-    if (writeState.kind === 'conflict') setWriteState({ kind: 'idle' });
+    setNeedsReview(false);
+    if (writeState.kind === 'conflict' && snapshot === writeState.latest) {
+      setWriteState({ kind: 'idle' });
+    }
     restoreTriggerFocus();
   }
 
   const setField = <K extends keyof PricingDraft>(key: K, value: PricingDraft[K]) =>
     setDraft((current) => ({ ...current, [key]: value }));
 
+  function finishReconciledIntent(intent: PricingReconciliationTarget): void {
+    if (intent.kind === 'upsert') setEditor(null);
+    else setResetTarget(null);
+    restoreTriggerFocus();
+  }
+
+  function restoreReconciledIntent(
+    intent: PricingReconciliationTarget,
+    latest: DesktopPricingSnapshot,
+  ): void {
+    if (intent.kind === 'upsert') {
+      const latestRow = findPricingRow(latest.entries, intent.pricing.modelKey);
+      if (editor?.mode === 'add' && latestRow) setEditor({ mode: 'edit', row: latestRow });
+      return;
+    }
+    const latestRow = findPricingRow(latest.entries, intent.modelKey);
+    if (latestRow?.source === 'custom') setResetTarget(latestRow);
+  }
+
   /** Map a settled outcome to state; `onCommitted` runs on saved/synchronized. */
   function applyOutcome(
     outcome: DesktopPricingMutationOutcome,
+    intent: PricingReconciliationTarget,
     onCommitted: () => void,
     attemptedKey?: string,
   ): void {
@@ -321,7 +378,7 @@ export function usePricingController(props: {
         // Adopt fresh authority into the list so it is no longer speculative,
         // keep the draft, and require an explicit second save against `latest`.
         setSnapshot(outcome.snapshot);
-        setWriteState({ kind: 'conflict', latest: outcome.snapshot, reason: outcome.reason });
+        setWriteState({ kind: 'conflict', latest: outcome.snapshot, reason: outcome.reason, intent });
         // If this was an Add and the fresh authority now already has that key
         // (added elsewhere), the duplicate check would leave `validation.config`
         // null and silently block the required second save. Convert the Add into
@@ -340,7 +397,7 @@ export function usePricingController(props: {
         setWriteState({ kind: 'refresh_failed' });
         return;
       case 'reconciliation_unavailable':
-        setWriteState({ kind: 'reconcile_unavailable', reason: outcome.reason });
+        setWriteState({ kind: 'reconcile_unavailable', reason: outcome.reason, intent });
         return;
     }
   }
@@ -353,17 +410,20 @@ export function usePricingController(props: {
   async function save() {
     const config = validation.config;
     const base = mutationBase();
-    if (!config || !base || saving) return;
+    const target = props.target;
+    const host = target?.host;
+    if (!config || !base || !host || saving) return;
     if (!guard.begin('write')) return;
     const lifecycle = lifecycleRef.current;
     const epoch = generationEpochRef.current;
     setSaving(true);
     try {
       const mutation: PricingMutation = { kind: 'upsert', pricing: config };
-      const outcome = await services.mutatePricing(props.runtimeHost, base, mutation);
-      if (!isCurrent(lifecycle, epoch)) return;
+      const outcome = await services.mutatePricing(host, base, mutation);
+      if (!isCurrent(lifecycle, epoch, target)) return;
       applyOutcome(
         outcome,
+        createPricingReconciliationTarget(base.entries, mutation),
         () => {
           setEditor(null);
           restoreTriggerFocus();
@@ -371,12 +431,14 @@ export function usePricingController(props: {
         config.modelKey,
       );
     } catch (error) {
-      if (isCurrent(lifecycle, epoch)) {
+      if (isCurrent(lifecycle, epoch, target)) {
         toast.error(copy.saveFailed, describeError(error));
       }
     } finally {
-      guard.finish();
-      if (isCurrent(lifecycle, epoch)) setSaving(false);
+      if (isCurrent(lifecycle, epoch, target)) {
+        guard.finish();
+        setSaving(false);
+      }
     }
   }
 
@@ -395,19 +457,21 @@ export function usePricingController(props: {
   async function confirmReset() {
     const target = resetTarget;
     const base = mutationBase();
-    if (!target || !base || resetBusy) return;
+    const pricingTarget = props.target;
+    const host = pricingTarget?.host;
+    if (!target || !base || !host || resetBusy) return;
     if (!guard.begin('write')) return;
     const lifecycle = lifecycleRef.current;
     const epoch = generationEpochRef.current;
     setResetBusy(true);
     try {
       const mutation: PricingMutation = { kind: 'delete', modelKey: target.modelKey };
-      const outcome = await services.mutatePricing(props.runtimeHost, base, mutation);
-      if (!isCurrent(lifecycle, epoch)) return;
-      applyOutcome(outcome, () => {
+      const intent = createPricingReconciliationTarget(base.entries, mutation);
+      const outcome = await services.mutatePricing(host, base, mutation);
+      if (!isCurrent(lifecycle, epoch, pricingTarget)) return;
+      applyOutcome(outcome, intent, () => {
         setResetTarget(null);
         restoreTriggerFocus();
-        toast.success(copy.resetDone);
       });
       // A conflict keeps the confirm dialog open for an explicit second
       // confirm against fresh authority (mutationBase() now returns `latest`).
@@ -420,12 +484,14 @@ export function usePricingController(props: {
         setResetTarget(null);
       }
     } catch (error) {
-      if (isCurrent(lifecycle, epoch)) {
+      if (isCurrent(lifecycle, epoch, pricingTarget)) {
         toast.error(copy.resetFailed, describeError(error));
       }
     } finally {
-      guard.finish();
-      if (isCurrent(lifecycle, epoch)) setResetBusy(false);
+      if (isCurrent(lifecycle, epoch, pricingTarget)) {
+        guard.finish();
+        setResetBusy(false);
+      }
     }
   }
 
@@ -437,11 +503,11 @@ export function usePricingController(props: {
     // a load pending/failed) the Add flow is disabled rather than silently
     // no-opping on save.
     hasAuthority: snapshot !== null,
-    rows,
     // Overrides-only table + catalog picker for the Add flow.
     overrideRows,
     catalogRows,
     pickCatalogModel,
+    clearModel,
     editor,
     draft,
     setField,
@@ -449,7 +515,9 @@ export function usePricingController(props: {
     setCacheOpen,
     validation,
     writeState,
+    needsReview,
     writesBlocked,
+    reviewHostChange,
     conflictLatestEntry,
     saving,
     resetTarget,

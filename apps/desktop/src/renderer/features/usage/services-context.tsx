@@ -53,6 +53,8 @@ interface UsageScopeValue {
   /** The current Host generation (`host:epoch`); changes when the target does. */
   readonly targetKey: string;
   reload(range: UsageRange): Promise<void>;
+  /** True only while the rendered Host generation is still authoritative. */
+  isCurrentTarget(): boolean;
 }
 
 const UsageScopeContext = createContext<UsageScopeValue | null>(null);
@@ -93,7 +95,13 @@ export const UsageFeatureScope = forwardRef<
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [renderedTargetKey, setRenderedTargetKey] = useState(props.targetKey);
   const reloadTicketRef = useRef(0);
+  const targetCurrentRef = useRef(true);
+  const renderedTargetKeyRef = useRef(props.targetKey);
   const { targetKey, services, loadErrorTitle, describeError } = props;
+  const isCurrentTarget = useCallback(
+    () => targetCurrentRef.current && renderedTargetKeyRef.current === targetKey,
+    [targetKey],
+  );
 
   // Reset on a target (Host generation) change without remounting the subtree:
   // drop the previous Host's snapshot and invalidate its in-flight load so it
@@ -101,8 +109,10 @@ export const UsageFeatureScope = forwardRef<
   // render" pattern; it runs once because `renderedTargetKey` then matches.
   if (targetKey !== renderedTargetKey) {
     setRenderedTargetKey(targetKey);
+    renderedTargetKeyRef.current = targetKey;
     setSnapshot(null);
     reloadTicketRef.current += 1;
+    targetCurrentRef.current = true;
   }
 
   // Last-write-wins across concurrent reloads: a superseded (newer reload or a
@@ -136,6 +146,7 @@ export const UsageFeatureScope = forwardRef<
     () => ({
       fenceTarget: () => {
         reloadTicketRef.current += 1;
+        targetCurrentRef.current = false;
         setSnapshot(null);
       },
     }),
@@ -143,8 +154,14 @@ export const UsageFeatureScope = forwardRef<
   );
 
   const value = useMemo<UsageScopeValue>(
-    () => ({ services, snapshot, targetKey, reload }),
-    [services, snapshot, targetKey, reload],
+    () => ({
+      services,
+      snapshot,
+      targetKey,
+      reload,
+      isCurrentTarget,
+    }),
+    [services, snapshot, targetKey, reload, isCurrentTarget],
   );
 
   return <UsageScopeContext.Provider value={value}>{props.children}</UsageScopeContext.Provider>;
@@ -173,8 +190,9 @@ export function useUsageStats(range: UsageRange): {
   readonly stats: UsageStats | null;
   readonly targetKey: string;
   reload(range: UsageRange): Promise<void>;
+  isCurrentTarget(): boolean;
 } {
-  const { snapshot, targetKey, reload } = useUsageScope();
+  const { snapshot, targetKey, reload, isCurrentTarget } = useUsageScope();
   const stats = snapshot && snapshot.range === range ? snapshot.value : null;
-  return { stats, targetKey, reload };
+  return { stats, targetKey, reload, isCurrentTarget };
 }

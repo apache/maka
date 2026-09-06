@@ -18,6 +18,7 @@
  */
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { userEvent, within } from 'storybook/test';
 import { ToastProvider } from '@maka/ui';
 import {
   PricingEditor,
@@ -106,8 +107,7 @@ function PricingTabPanel(props: { services: UsagePricingServices }) {
           <div className="settingsUsageTabPanel">
             <PricingEditor
               describeError={describeError}
-              runtimeHost={STORY_HOST}
-              generationKey={GENERATION_KEY}
+              target={{ host: STORY_HOST, generationKey: GENERATION_KEY, isCurrent: () => true }}
             />
           </div>
         </div>
@@ -158,4 +158,18 @@ export const LoadFailed: Story = {
       })}
     />
   ),
+};
+
+// Real path: Add price → manual fallback. The form accepts the exact Runtime
+// lookup key as one copy/paste-safe value instead of making the user reconstruct
+// it from separate provider/model fields.
+export const ManualExactKey: Story = {
+  render: () => <PricingTabPanel services={pricingServices(async () => MIXED_SNAPSHOT)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole('button', { name: '添加定价' }));
+    const dialog = within(await canvas.findByRole('dialog', { name: '添加定价' }));
+    await userEvent.click(dialog.getByRole('button', { name: '模型不在列表中？手动输入' }));
+    await userEvent.type(dialog.getByRole('textbox', { name: '模型键' }), 'acme:coder-v3');
+  },
 };

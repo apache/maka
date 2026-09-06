@@ -56,7 +56,6 @@ test("pricing IPC registers the two capabilities and fences the legacy handlers"
   registerRuntimeHostUsageIpc({
     ipcMain,
     client: {} as unknown as DesktopRuntimeHostClient,
-    sendToRenderer: () => undefined,
   });
   registerRuntimeHostPricingIpc({ ipcMain, client: {} as unknown as DesktopRuntimeHostClient });
 

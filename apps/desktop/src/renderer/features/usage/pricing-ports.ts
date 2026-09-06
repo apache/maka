@@ -29,11 +29,19 @@
 // what keeps a new bridge path out of the frozen legacy-AppShell closure files
 // (the renderer-architecture ratchet forbids growing their bridge paths).
 //
-// Types derive from the global `window.maka.settings.pricing` bridge as a
-// type-only reference (no runtime bridge access, so no bridge path is recorded
-// for this feature file) — the feature names the Host-scoped snapshot/outcome
-// shapes without importing the preload/`shared` Desktop types.
+import type { PricingMutation } from '@maka/runtime-host/protocol';
+import type {
+  DesktopPricingMutationOutcome,
+  DesktopPricingSnapshot,
+} from '../../../shared/desktop-pricing.js';
 import type { UsageHostRef } from './ports.js';
+
+export interface UsagePricingTarget {
+  readonly host: UsageHostRef;
+  readonly generationKey: string;
+  /** True only while this exact Host generation remains authoritative. */
+  readonly isCurrent: () => boolean;
+}
 
 export interface UsagePricingServices {
   /**
@@ -43,13 +51,11 @@ export interface UsagePricingServices {
    * so the Pricing tab must read/write the same Host as the rest of the settings
    * page. The renderer round-trips the snapshot as the CAS base for a mutation.
    */
-  loadPricing(
-    host: UsageHostRef | undefined,
-  ): Promise<Awaited<ReturnType<typeof window.maka.settings.pricing.load>>>;
+  loadPricing(host: UsageHostRef): Promise<DesktopPricingSnapshot>;
   /** Apply one pricing upsert/delete against the viewed snapshot (the CAS base). */
   mutatePricing(
-    host: UsageHostRef | undefined,
-    base: Parameters<typeof window.maka.settings.pricing.mutate>[0],
-    mutation: Parameters<typeof window.maka.settings.pricing.mutate>[1],
-  ): Promise<Awaited<ReturnType<typeof window.maka.settings.pricing.mutate>>>;
+    host: UsageHostRef,
+    base: DesktopPricingSnapshot,
+    mutation: PricingMutation,
+  ): Promise<DesktopPricingMutationOutcome>;
 }

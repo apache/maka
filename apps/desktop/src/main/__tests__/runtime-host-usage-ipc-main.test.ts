@@ -88,7 +88,6 @@ test("settings usage stats use the canonical model-call total and load every act
         } satisfies UsageQueryResult;
       },
     } as unknown as DesktopRuntimeHostClient,
-    sendToRenderer: () => undefined,
   });
 
   const handler = handlers.get("settings:usageStats");
@@ -185,7 +184,6 @@ test("settings usage stats reject a non-advancing activity page", async () => {
         entries: [],
       }),
     } as unknown as DesktopRuntimeHostClient,
-    sendToRenderer: () => undefined,
   });
 
   const handler = handlers.get("settings:usageStats");
@@ -253,7 +251,6 @@ test("settings usage stats degrade instead of erroring when logs disagree with t
         entries: [],
       }),
     } as unknown as DesktopRuntimeHostClient,
-    sendToRenderer: () => undefined,
   });
 
   const handler = handlers.get("settings:usageStats");
@@ -331,7 +328,6 @@ test("settings usage stats group the provider breakdown by connection", async ()
         entries: [],
       }),
     } as unknown as DesktopRuntimeHostClient,
-    sendToRenderer: () => undefined,
   });
 
   const handler = handlers.get("settings:usageStats");
@@ -410,7 +406,6 @@ test("settings usage stats truncate the activity log at the cap instead of error
         entries: [],
       }),
     } as unknown as DesktopRuntimeHostClient,
-    sendToRenderer: () => undefined,
   });
 
   const handler = handlers.get("settings:usageStats");
@@ -495,7 +490,6 @@ test("settings usage stats name each row from the Host-resolved session title", 
         entries: [],
       }),
     } as unknown as DesktopRuntimeHostClient,
-    sendToRenderer: () => undefined,
   });
 
   const handler = handlers.get("settings:usageStats");

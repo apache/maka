@@ -67,7 +67,7 @@ test('pricing tab is overrides-only with a catalog-picker Add flow, is not time-
   const editor = page.getByRole('dialog', { name: '添加定价' });
   await expect(editor).toBeVisible();
   await editor.getByRole('button', { name: '模型不在列表中？手动输入' }).click();
-  await expect(editor.getByRole('textbox', { name: '供应商' })).toBeVisible();
+  await expect(editor.getByRole('textbox', { name: '模型键' })).toBeVisible();
 
   // #2015 acceptance #11: closing the editor returns focus to the trigger.
   await editor.getByRole('button', { name: '取消' }).click();

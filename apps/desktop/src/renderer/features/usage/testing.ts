@@ -31,4 +31,4 @@ export { PricingEditor, formatCache, formatUsd } from './ui/pricing-editor.js';
 export { UsagePricingServicesProvider } from './pricing-services-context.js';
 export type { UsagePricingServices } from './pricing-ports.js';
 export type { UsageHostRef } from './ports.js';
-export { getPricingSettingsCopy } from './pricing-copy.js';
+export { getPricingSettingsCopy } from '../../locales/settings-pricing-copy.js';

@@ -83,7 +83,7 @@ describe('PricingEditor', () => {
     // The built-in is NOT rendered as a table row — it is reachable only through
     // the Add flow's catalog picker — nor does the 内置 source label appear.
     assert.doesNotMatch(harness.container.textContent ?? '', /openai:gpt-4o/);
-    assert.doesNotMatch(harness.container.textContent ?? '', new RegExp(copy.sourceBuiltin));
+    assert.doesNotMatch(harness.container.textContent ?? '', /Built-in/);
     assert.equal(harness.loadCalls(), 1);
     // The Pricing tab loads against the settings-SELECTED Host it was handed —
     // not the app's active Host (an omitted arg) — so it stays in lockstep with
@@ -95,21 +95,80 @@ describe('PricingEditor', () => {
   it('the Add dialog offers a catalog picker with a manual-entry fallback', async () => {
     const harness = await renderEditor({ load: async () => SNAPSHOT });
     await click(buttonByText(harness.doc, copy.add));
-    // Catalog mode is the default: no free-text provider input, plus a toggle to
+    // Catalog mode is the default: no free-text model-key input, plus a toggle to
     // manual entry (inferred without depending on the Typeahead's internal DOM).
     assert.equal(
-      inputByPlaceholder(harness.doc, copy.providerPlaceholder),
+      inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder),
       undefined,
-      'no free-text provider input in catalog mode',
+      'no free-text model-key input in catalog mode',
     );
     const toManual = buttonByText(harness.doc, copy.manualEntryToggle);
     assert.ok(toManual, 'manual-entry toggle present in catalog mode');
-    // Switching to manual reveals the free-text provider/model inputs + a toggle
+    // Switching to manual reveals one exact model-key input + a toggle
     // back to the catalog.
     await click(toManual);
-    assert.ok(inputByPlaceholder(harness.doc, copy.providerPlaceholder), 'manual provider input');
-    assert.ok(inputByPlaceholder(harness.doc, copy.modelPlaceholder), 'manual model input');
+    assert.ok(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder), 'manual model-key input');
     assert.ok(buttonByText(harness.doc, copy.catalogToggle), 'catalog toggle present in manual mode');
+    await act(async () => harness.root.unmount());
+  });
+
+  it('selecting a built-in catalog model saves an override', async () => {
+    const committed: DesktopPricingSnapshot = {
+      ...SNAPSHOT,
+      revision: 6,
+      entries: [
+        {
+          source: 'custom',
+          resetEffect: 'restore_builtin',
+          pricing: {
+            modelKey: 'openai:gpt-4o',
+            inputUsdPer1M: 2.5,
+            outputUsdPer1M: 10,
+          },
+        },
+        SNAPSHOT.entries[1]!,
+      ],
+    };
+    const harness = await renderEditor({
+      load: async () => SNAPSHOT,
+      mutate: async () => ({ kind: 'saved', disposition: 'committed', snapshot: committed }),
+    });
+    await click(buttonByText(harness.doc, copy.add));
+    await setInput(inputByPlaceholder(harness.doc, copy.catalogPickerPlaceholder), 'openai');
+    const option = Array.from(harness.doc.querySelectorAll<HTMLElement>('[role="option"]')).find(
+      (item) => item.textContent?.includes('openai:gpt-4o'),
+    );
+    assert.ok(option, 'catalog search exposes the built-in model');
+    await clickElement(option);
+    await click(buttonByText(harness.doc, copy.save));
+
+    assert.equal(harness.mutations.length, 1);
+    assert.deepEqual(harness.mutations[0]?.mutation, {
+      kind: 'upsert',
+      pricing: {
+        modelKey: 'openai:gpt-4o',
+        inputUsdPer1M: 2.5,
+        outputUsdPer1M: 10,
+      },
+    });
+    await act(async () => harness.root.unmount());
+  });
+
+  it('switching entry modes clears values that would otherwise be hidden', async () => {
+    const harness = await renderEditor({ load: async () => SNAPSHOT });
+    await click(buttonByText(harness.doc, copy.add));
+    await click(buttonByText(harness.doc, copy.manualEntryToggle));
+    await setInput(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder), 'acme:hidden');
+    const rateInputs = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('input')).filter(
+      (input) => !input.getAttribute('placeholder'),
+    );
+    await setInput(rateInputs[0], '1');
+    await setInput(rateInputs[1], '2');
+    await click(buttonByText(harness.doc, copy.catalogToggle));
+    await click(buttonByText(harness.doc, copy.save));
+
+    assert.match(harness.container.textContent ?? '', new RegExp(copy.errorRequired));
+    assert.equal(harness.mutations.length, 0);
     await act(async () => harness.root.unmount());
   });
 
@@ -208,7 +267,7 @@ describe('PricingEditor', () => {
     await act(async () => harness.root.unmount());
   });
 
-  it('an uncertain outcome blocks writes and dims the possibly-stale list', async () => {
+  it('an uncertain outcome blocks writes and explains the required recovery', async () => {
     const harness = await renderEditor({
       load: async () => SNAPSHOT,
       mutate: async () => ({ kind: 'reconciliation_unavailable', reason: 'outcome_unknown' }),
@@ -218,10 +277,100 @@ describe('PricingEditor', () => {
 
     assert.match(harness.container.textContent ?? '', new RegExp(copy.reconcileTitle));
     assert.equal(buttonByText(harness.doc, copy.add)?.getAttribute('aria-disabled'), 'true');
-    assert.ok(
-      harness.container.querySelector('.settingsPricingStale'),
-      'the possibly-stale list is dimmed while writes are blocked',
-    );
+    await act(async () => harness.root.unmount());
+  });
+
+  it('reconciles an unavailable reset against the next authoritative refresh', async () => {
+    const latest: DesktopPricingSnapshot = {
+      ...SNAPSHOT,
+      revision: 6,
+      entries: [
+        SNAPSHOT.entries[0]!,
+        {
+          source: 'custom',
+          resetEffect: 'restore_builtin',
+          pricing: {
+            modelKey: 'anthropic:claude',
+            inputUsdPer1M: 7,
+            outputUsdPer1M: 8,
+            cacheReadUsdPer1M: 0,
+            cacheWriteUsdPer1M: 0.4,
+          },
+        },
+      ],
+    };
+    let loadCall = 0;
+    const harness = await renderEditor({
+      load: async () => {
+        loadCall += 1;
+        return loadCall === 1 ? SNAPSHOT : latest;
+      },
+      mutate: async () => ({ kind: 'reconciliation_unavailable', reason: 'outcome_unknown' }),
+    });
+    await click(buttonByLabel(harness.doc, copy.resetAria('anthropic:claude')));
+    await click(buttonByText(harness.doc, copy.confirmReset));
+    assert.match(harness.container.textContent ?? '', new RegExp(copy.reconcileTitle));
+
+    await click(buttonByLabel(harness.doc, copy.refresh));
+
+    const text = harness.container.textContent ?? '';
+    assert.match(text, new RegExp(copy.conflictTitleUnknown));
+    assert.match(text, new RegExp(copy.sourceCustomFallback));
+    for (const value of ['$7', '$8', '$0', '$0.4']) assert.ok(text.includes(value));
+    assert.equal(harness.mutations.length, 1, 'refresh reconciles without replaying the reset');
+    await act(async () => harness.root.unmount());
+  });
+
+  it('finishes an unavailable upsert when the refreshed authority matches exactly', async () => {
+    const committed: DesktopPricingSnapshot = {
+      ...SNAPSHOT,
+      revision: 6,
+      entries: [
+        {
+          source: 'custom',
+          resetEffect: 'restore_builtin',
+          pricing: {
+            modelKey: 'openai:gpt-4o',
+            inputUsdPer1M: 2.5,
+            outputUsdPer1M: 10,
+          },
+        },
+        SNAPSHOT.entries[1]!,
+      ],
+    };
+    let loadCall = 0;
+    const harness = await renderEditor({
+      load: async () => {
+        loadCall += 1;
+        return loadCall === 1 ? SNAPSHOT : committed;
+      },
+      mutate: async () => ({ kind: 'reconciliation_unavailable', reason: 'outcome_unknown' }),
+    });
+    await selectCatalogModel(harness.doc, 'openai:gpt-4o');
+    await click(buttonByText(harness.doc, copy.save));
+    await click(buttonByLabel(harness.doc, copy.refresh));
+
+    assert.equal(openDialog(harness.doc), undefined, 'the matched draft is complete');
+    assert.equal(harness.mutations.length, 1, 'reconciliation never replays the upsert');
+    await act(async () => harness.root.unmount());
+  });
+
+  it('does not mistake equal built-in rates for a reconciled custom override', async () => {
+    let loadCall = 0;
+    const harness = await renderEditor({
+      load: async () => {
+        loadCall += 1;
+        return SNAPSHOT;
+      },
+      mutate: async () => ({ kind: 'reconciliation_unavailable', reason: 'outcome_unknown' }),
+    });
+    await selectCatalogModel(harness.doc, 'openai:gpt-4o');
+    await click(buttonByText(harness.doc, copy.save));
+    await click(buttonByLabel(harness.doc, copy.refresh));
+
+    assert.match(harness.container.textContent ?? '', new RegExp(copy.conflictTitleUnknown));
+    assert.ok(openDialog(harness.doc), 'the draft remains open for explicit review');
+    assert.equal(harness.mutations.length, 1);
     await act(async () => harness.root.unmount());
   });
 
@@ -247,16 +396,132 @@ describe('PricingEditor', () => {
     await act(async () => harness.root.unmount());
   });
 
-  it('a Host generation change closes the editor and reloads fresh authority (P1.1)', async () => {
-    const harness = await renderEditor({ load: async () => SNAPSHOT });
+  it('a Host generation change preserves the draft and requires review after reloading authority (P1.1)', async () => {
+    const nextSnapshot: DesktopPricingSnapshot = { ...SNAPSHOT, hostEpoch: 'epoch-2', revision: 1 };
+    let loadCall = 0;
+    const harness = await renderEditor({
+      load: async () => {
+        loadCall += 1;
+        return loadCall === 1 ? SNAPSHOT : nextSnapshot;
+      },
+      mutate: async () => ({ kind: 'saved', disposition: 'committed', snapshot: nextSnapshot }),
+    });
     await click(buttonByText(harness.doc, copy.add));
-    assert.ok(buttonByText(harness.doc, copy.save), 'the Add dialog is open');
+    await click(buttonByText(harness.doc, copy.manualEntryToggle));
+    await setInput(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder), 'acme:new');
+    const rateInputs = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('input')).filter(
+      (input) => !input.getAttribute('placeholder'),
+    );
+    await setInput(rateInputs[0], '1');
+    await setInput(rateInputs[1], '2');
     // A Host generation bump (new epoch) re-renders with a new generationKey.
     await harness.rerender(`${TEST_RUNTIME_HOST.profileId}:${TEST_RUNTIME_HOST.hostId}:e2`);
-    // The open editor is dropped (so a stale draft can't be saved onto the new
-    // authority) and a fresh reload runs.
-    assert.equal(buttonByText(harness.doc, copy.save), undefined, 'the editor is closed');
+    // The draft remains visible, but the old mutation base is discarded. Even
+    // after the fresh snapshot loads, save stays disabled until explicit review.
+    assert.equal(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder)?.value, 'acme:new');
     assert.equal(harness.loadCalls(), 2, 'a fresh authority reload ran');
+    assert.match(harness.container.textContent ?? '', new RegExp(copy.hostChangedTitle));
+    assertButtonDisabled(buttonByText(harness.doc, copy.save));
+    await click(buttonByText(harness.doc, copy.reviewHostChange));
+    assertButtonEnabled(buttonByText(harness.doc, copy.save));
+    await click(buttonByText(harness.doc, copy.save));
+    assert.equal(harness.mutations.length, 1);
+    assert.deepEqual(harness.mutations[0]?.base, nextSnapshot);
+    await act(async () => harness.root.unmount());
+  });
+
+  it('does not allow Host-change review until fresh authority loads', async () => {
+    const secondLoad = deferred<DesktopPricingSnapshot>();
+    let loadCall = 0;
+    const harness = await renderEditor({
+      load: async () => {
+        loadCall += 1;
+        return loadCall === 1 ? SNAPSHOT : secondLoad.promise;
+      },
+    });
+    await click(buttonByText(harness.doc, copy.add));
+    await click(buttonByText(harness.doc, copy.manualEntryToggle));
+    await setInput(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder), 'acme:new');
+    await harness.rerender(`${TEST_RUNTIME_HOST.profileId}:${TEST_RUNTIME_HOST.hostId}:e2`);
+
+    assert.match(
+      harness.container.querySelector('table')?.getAttribute('aria-label') ?? '',
+      new RegExp(copy.loading),
+      'the replacement authority renders as loading immediately',
+    );
+    assertButtonDisabled(buttonByText(harness.doc, copy.reviewHostChange));
+    assertButtonDisabled(buttonByText(harness.doc, copy.save));
+    await act(async () => {
+      secondLoad.resolve({ ...SNAPSHOT, hostEpoch: 'epoch-2', revision: 1 });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assertButtonEnabled(buttonByText(harness.doc, copy.reviewHostChange));
+    assertButtonDisabled(buttonByText(harness.doc, copy.save));
+    await act(async () => harness.root.unmount());
+  });
+
+  it('ignores an old-Host save result after the generation changes', async () => {
+    const pendingSave = deferred<DesktopPricingMutationOutcome>();
+    let loadCall = 0;
+    const harness = await renderEditor({
+      load: async () => {
+        loadCall += 1;
+        return loadCall === 1
+          ? SNAPSHOT
+          : { ...SNAPSHOT, hostEpoch: 'epoch-2', revision: 1 };
+      },
+      mutate: async () => pendingSave.promise,
+    });
+    await click(buttonByLabel(harness.doc, copy.editAria('anthropic:claude')));
+    const rateInputs = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('input')).filter(
+      (input) => !input.getAttribute('placeholder'),
+    );
+    await setInput(rateInputs[0], '3');
+    await click(buttonByText(harness.doc, copy.save));
+    await harness.rerender(`${TEST_RUNTIME_HOST.profileId}:${TEST_RUNTIME_HOST.hostId}:e2`);
+    await act(async () => {
+      pendingSave.resolve({
+        kind: 'saved',
+        disposition: 'committed',
+        snapshot: { ...SNAPSHOT, revision: 6 },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.match(harness.container.textContent ?? '', new RegExp(copy.hostChangedTitle));
+    assert.equal(buttonByText(harness.doc, copy.save)?.textContent, copy.save);
+    assertButtonDisabled(buttonByText(harness.doc, copy.save));
+    await act(async () => harness.root.unmount());
+  });
+
+  it('ignores an old-Host save result when the Host event fences it before React re-renders', async () => {
+    const pendingSave = deferred<DesktopPricingMutationOutcome>();
+    const harness = await renderEditor({
+      load: async () => SNAPSHOT,
+      mutate: async () => pendingSave.promise,
+    });
+    await click(buttonByLabel(harness.doc, copy.editAria('anthropic:claude')));
+    await clickWithoutSettling(buttonByText(harness.doc, copy.save));
+    assert.equal(harness.mutations.length, 1, 'the save is in flight before the Host fence');
+    assert.ok(buttonByText(harness.doc, copy.cancel), 'the edit dialog starts open');
+
+    // The settings Host event arrives before React can commit the replacement
+    // generation. Its synchronous fence must already make the in-flight result
+    // stale; otherwise this old Host can close the draft and claim success.
+    harness.fenceTarget();
+    await act(async () => {
+      pendingSave.resolve({
+        kind: 'saved',
+        disposition: 'committed',
+        snapshot: { ...SNAPSHOT, revision: 6 },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.ok(buttonByText(harness.doc, copy.cancel), 'the old-Host result must not close the preserved draft');
     await act(async () => harness.root.unmount());
   });
 
@@ -320,8 +585,7 @@ describe('PricingEditor', () => {
     // Add a brand-new key via the manual fallback.
     await click(buttonByText(harness.doc, copy.add));
     await click(buttonByText(harness.doc, copy.manualEntryToggle));
-    await setInput(inputByPlaceholder(harness.doc, copy.providerPlaceholder), 'acme');
-    await setInput(inputByPlaceholder(harness.doc, copy.modelPlaceholder), 'new');
+    await setInput(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder), 'acme:new');
     // Fill the two required rate NumberInputs (the placeholder-less inputs).
     const rateInputs = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('input')).filter(
       (input) => !input.getAttribute('placeholder'),
@@ -365,8 +629,7 @@ describe('PricingEditor', () => {
     // built-in ∪ overrides union check would wrongly block it).
     await click(buttonByText(harness.doc, copy.add));
     await click(buttonByText(harness.doc, copy.manualEntryToggle));
-    await setInput(inputByPlaceholder(harness.doc, copy.providerPlaceholder), 'openai');
-    await setInput(inputByPlaceholder(harness.doc, copy.modelPlaceholder), 'gpt-4o');
+    await setInput(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder), 'openai:gpt-4o');
     const rateInputs = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('input')).filter(
       (input) => !input.getAttribute('placeholder'),
     );
@@ -388,8 +651,7 @@ describe('PricingEditor', () => {
     await click(buttonByText(harness.doc, copy.manualEntryToggle));
     // 'anthropic:claude' already has a custom override row — re-adding it is a
     // duplicate; the user is told to edit the existing row instead.
-    await setInput(inputByPlaceholder(harness.doc, copy.providerPlaceholder), 'anthropic');
-    await setInput(inputByPlaceholder(harness.doc, copy.modelPlaceholder), 'claude');
+    await setInput(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder), 'anthropic:claude');
     const rateInputs = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('input')).filter(
       (input) => !input.getAttribute('placeholder'),
     );
@@ -462,8 +724,8 @@ async function renderEditor(options: {
 
   const runtimeHost = options.host === null ? undefined : options.host ?? TEST_RUNTIME_HOST;
   let loadCalls = 0;
-  const loadHosts: Array<UsageHostRef | undefined> = [];
-  const mutateHosts: Array<UsageHostRef | undefined> = [];
+  const loadHosts: UsageHostRef[] = [];
+  const mutateHosts: UsageHostRef[] = [];
   const mutations: DesktopPricingMutationInput[] = [];
   // Host resolution lives in the preload/adapter for the *selected* Host, threaded
   // to the feature as a prop — so the feature-facing services take the Host as
@@ -502,11 +764,18 @@ async function renderEditor(options: {
   const defaultGenerationKey = runtimeHost
     ? `${runtimeHost.profileId}:${runtimeHost.hostId}:e1`
     : 'no-host';
+  let currentGenerationKey: string | null = defaultGenerationKey;
   function renderTree(generationKey: string): void {
+    currentGenerationKey = generationKey;
     const editor = createElement(PricingEditor, {
       describeError: (error: unknown) => (error instanceof Error ? error.message : String(error)),
-      runtimeHost,
-      generationKey,
+      target: runtimeHost
+        ? {
+            host: runtimeHost,
+            generationKey,
+            isCurrent: () => currentGenerationKey === generationKey,
+          }
+        : null,
     });
     const provided = createElement(UsagePricingServicesProvider, { services, children: editor });
     const toasted = createElement(ToastProvider, { children: provided });
@@ -530,6 +799,9 @@ async function renderEditor(options: {
     container,
     root: root as Root,
     rerender,
+    fenceTarget: () => {
+      currentGenerationKey = null;
+    },
     loadCalls: () => loadCalls,
     loadHosts,
     mutateHosts,
@@ -544,6 +816,32 @@ async function click(button: HTMLButtonElement | undefined) {
     await Promise.resolve();
     await Promise.resolve();
   });
+}
+
+async function clickWithoutSettling(button: HTMLButtonElement | undefined) {
+  assert.ok(button, 'expected a clickable button');
+  await act(async () => {
+    button.click();
+    await Promise.resolve();
+  });
+}
+
+async function clickElement(element: HTMLElement | undefined) {
+  assert.ok(element, 'expected a clickable element');
+  await act(async () => {
+    element.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+async function selectCatalogModel(doc: Document, modelKey: string): Promise<void> {
+  await click(buttonByText(doc, copy.add));
+  await setInput(inputByPlaceholder(doc, copy.catalogPickerPlaceholder), modelKey);
+  const option = Array.from(doc.querySelectorAll<HTMLElement>('[role="option"]')).find(
+    (item) => item.textContent?.includes(modelKey),
+  );
+  await clickElement(option);
 }
 
 interface Deferred<T> {
@@ -602,4 +900,19 @@ function buttonByLabel(doc: Document, label: string): HTMLButtonElement | undefi
   return (
     doc.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`) ?? undefined
   );
+}
+
+function openDialog(doc: Document): HTMLDialogElement | undefined {
+  return Array.from(doc.querySelectorAll<HTMLDialogElement>('dialog')).find((dialog) => dialog.open);
+}
+
+function assertButtonDisabled(button: HTMLButtonElement | undefined): void {
+  assert.ok(button, 'expected button');
+  assert.ok(button.disabled || button.getAttribute('aria-disabled') === 'true');
+}
+
+function assertButtonEnabled(button: HTMLButtonElement | undefined): void {
+  assert.ok(button, 'expected button');
+  assert.equal(button.disabled, false);
+  assert.notEqual(button.getAttribute('aria-disabled'), 'true');
 }

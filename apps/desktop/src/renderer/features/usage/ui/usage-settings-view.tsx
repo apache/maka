@@ -71,7 +71,7 @@ export function UsageSettingsView(props: {
   // switch. `stats` is non-null only when the scope's snapshot was loaded for the
   // persisted range — during a range switch (or after a late/failed load) the
   // panels read `null` (loading/empty) rather than the previous range's numbers.
-  const { stats, reload, targetKey } = useUsageStats(persistedUsage.range);
+  const { stats, reload, targetKey, isCurrentTarget } = useUsageStats(persistedUsage.range);
   const [refreshing, setRefreshing] = useState(false);
   const usageRefreshGuard = useActionGuard<'refresh'>();
   const {
@@ -259,8 +259,9 @@ export function UsageSettingsView(props: {
           <div className="settingsUsageTabPanel">
             <PricingEditor
               describeError={props.describeError}
-              runtimeHost={props.runtimeHost}
-              generationKey={targetKey}
+              target={props.runtimeHost
+                ? { host: props.runtimeHost, generationKey: targetKey, isCurrent: isCurrentTarget }
+                : null}
             />
           </div>
         ) : null}

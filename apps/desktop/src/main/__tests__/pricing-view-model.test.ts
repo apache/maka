@@ -27,20 +27,24 @@ import {
 } from "../../renderer/features/usage/testing.js";
 
 const EMPTY: PricingDraft = {
-  provider: "",
-  model: "",
+  modelKey: "",
   input: null,
   output: null,
   cacheRead: null,
   cacheWrite: null,
 };
 
-test("derivePricingRows maps source, split, and cache presence", () => {
+test("derivePricingRows maps source and cache presence", () => {
   const entries: EffectivePricingEntry[] = [
     {
       source: "custom",
       resetEffect: "become_unpriced",
       pricing: { modelKey: "acme:coder-v2", inputUsdPer1M: 0.8, outputUsdPer1M: 2.4 },
+    },
+    {
+      source: "custom",
+      resetEffect: "restore_builtin",
+      pricing: { modelKey: "anthropic:claude", inputUsdPer1M: 2, outputUsdPer1M: 12 },
     },
     {
       source: "builtin",
@@ -51,23 +55,16 @@ test("derivePricingRows maps source, split, and cache presence", () => {
         cacheReadUsdPer1M: 0,
       },
     },
-    {
-      source: "custom",
-      resetEffect: "restore_builtin",
-      pricing: { modelKey: "anthropic:claude", inputUsdPer1M: 2, outputUsdPer1M: 12 },
-    },
   ];
 
   const rows = derivePricingRows(entries);
 
-  // Canonical key order, not input order.
+  // The adapter-provided canonical key order is preserved.
   assert.deepEqual(
     rows.map((row) => row.modelKey),
     ["acme:coder-v2", "anthropic:claude", "openai:gpt-4o"],
   );
   const acme = rows[0]!;
-  assert.equal(acme.provider, "acme");
-  assert.equal(acme.model, "coder-v2");
   assert.equal(acme.source, "custom");
   assert.equal(acme.resetEffect, "become_unpriced");
 
@@ -82,10 +79,9 @@ test("derivePricingRows maps source, split, and cache presence", () => {
   assert.equal(openai.cacheWriteUsdPer1M, undefined);
 });
 
-test("validatePricingDraft add flags empty provider/model", () => {
+test("validatePricingDraft add flags an empty model key", () => {
   const result = validatePricingDraft(EMPTY, { mode: "add", existingKeys: [] });
-  assert.equal(result.errors.provider, "required");
-  assert.equal(result.errors.model, "required");
+  assert.equal(result.errors.modelKey, "required");
   assert.equal(result.errors.input, "required");
   assert.equal(result.errors.output, "required");
   assert.equal(result.hasErrors, true);
@@ -93,19 +89,18 @@ test("validatePricingDraft add flags empty provider/model", () => {
 });
 
 test("validatePricingDraft add flags a duplicate key against existing rows", () => {
-  const draft: PricingDraft = { ...EMPTY, provider: "openai", model: "gpt-4o", input: 1, output: 2 };
+  const draft: PricingDraft = { ...EMPTY, modelKey: "openai:gpt-4o", input: 1, output: 2 };
   const result = validatePricingDraft(draft, {
     mode: "add",
     existingKeys: ["openai:gpt-4o"],
   });
-  assert.equal(result.errors.model, "duplicate");
+  assert.equal(result.errors.modelKey, "duplicate");
   assert.equal(result.config, null);
 });
 
 test("validatePricingDraft add builds a canonical config; blank cache is omitted", () => {
   const draft: PricingDraft = {
-    provider: "acme",
-    model: "coder-v2",
+    modelKey: "  DeepInfra:org/Model:Preview  ",
     input: 0.8,
     output: 2.4,
     cacheRead: null,
@@ -114,7 +109,7 @@ test("validatePricingDraft add builds a canonical config; blank cache is omitted
   const result = validatePricingDraft(draft, { mode: "add", existingKeys: [] });
   assert.equal(result.hasErrors, false);
   assert.deepEqual(result.config, {
-    modelKey: "acme:coder-v2",
+    modelKey: "DeepInfra:org/Model:Preview",
     inputUsdPer1M: 0.8,
     outputUsdPer1M: 2.4,
   });
@@ -123,8 +118,7 @@ test("validatePricingDraft add builds a canonical config; blank cache is omitted
 
 test("validatePricingDraft keeps an explicit 0 cache rate distinct from blank", () => {
   const draft: PricingDraft = {
-    provider: "acme",
-    model: "coder-v2",
+    modelKey: "acme:coder-v2",
     input: 1,
     output: 2,
     cacheRead: 0,
@@ -136,16 +130,15 @@ test("validatePricingDraft keeps an explicit 0 cache rate distinct from blank", 
 });
 
 test("validatePricingDraft rejects a negative rate", () => {
-  const draft: PricingDraft = { ...EMPTY, provider: "a", model: "b", input: -1, output: 2 };
+  const draft: PricingDraft = { ...EMPTY, modelKey: "a:b", input: -1, output: 2 };
   const result = validatePricingDraft(draft, { mode: "add", existingKeys: [] });
   assert.equal(result.errors.input, "invalid_rate");
   assert.equal(result.config, null);
 });
 
-test("validatePricingDraft edit locks the key and ignores provider/model", () => {
+test("validatePricingDraft edit locks the key and ignores the draft key", () => {
   const draft: PricingDraft = {
-    provider: "ignored",
-    model: "ignored",
+    modelKey: "ignored",
     input: 3,
     output: 4,
     cacheRead: null,

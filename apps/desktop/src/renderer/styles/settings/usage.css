@@ -118,12 +118,6 @@
   min-width: 0;
 }
 
-/* Writes are blocked after an uncertain/refresh-failed outcome: dim the possibly
-   stale list until a fresh snapshot loads, so it does not read as authoritative. */
-.settingsPricingStale {
-  opacity: 0.6;
-}
-
 /* 任务 column: the session-name link truncates inside its fixed column width and
    surfaces the full name via the button tooltip. StyleX owns the button's own
    layout; these rules only cap its width and ellipsis the label text (descendant
