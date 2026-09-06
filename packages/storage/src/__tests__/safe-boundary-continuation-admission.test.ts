@@ -111,31 +111,29 @@ test('safe-boundary continuation admission is indexed by its source execution', 
       admittedAt: 20,
     });
     assert.equal(continuation.kind, 'admitted');
-    await assert.rejects(
-      store.admitRootTurn({
-        sessionId: 'session',
-        turnId: 'competing-continuation-turn',
-        proposedRunId: 'competing-continuation-run',
-        proposedUserMessageId: null,
-        execution: {
-          kind: 'safe_boundary_continuation',
-          sourceInvocationId: 'source-invocation',
-          sourceRunId: 'source-run',
-          sourceTurnId: 'source-turn',
-          sourceRuntimeEventHighWater: 7,
-          claimId: 'competing-continuation-claim',
-          boundaryDigest: `sha256:${'d'.repeat(64)}`,
-          providerReplayDigest: `sha256:${'e'.repeat(64)}`,
-          safetyDigest: `sha256:${'f'.repeat(64)}`,
-          targetInvocationId: 'competing-continuation-invocation',
-        },
-        previousRootTurnId: 'source-turn',
-        normalizedInput: null,
-        sourceMessages: [],
-        admittedAt: 30,
-      }),
-      /already has continuation continuation-turn/,
-    );
+    const competing = await store.admitRootTurn({
+      sessionId: 'session',
+      turnId: 'competing-continuation-turn',
+      proposedRunId: 'competing-continuation-run',
+      proposedUserMessageId: null,
+      execution: {
+        kind: 'safe_boundary_continuation',
+        sourceInvocationId: 'source-invocation',
+        sourceRunId: 'source-run',
+        sourceTurnId: 'source-turn',
+        sourceRuntimeEventHighWater: 7,
+        claimId: 'competing-continuation-claim',
+        boundaryDigest: `sha256:${'d'.repeat(64)}`,
+        providerReplayDigest: `sha256:${'e'.repeat(64)}`,
+        safetyDigest: `sha256:${'f'.repeat(64)}`,
+        targetInvocationId: 'competing-continuation-invocation',
+      },
+      previousRootTurnId: 'source-turn',
+      normalizedInput: null,
+      sourceMessages: [],
+      admittedAt: 30,
+    });
+    assert.deepEqual(competing, { kind: 'conflict', admission: continuation.admission });
 
     assert.deepEqual(
       await store.readRootTurnContinuationAdmission('session', 'source-turn', 'source-run'),
@@ -146,6 +144,82 @@ test('safe-boundary continuation admission is indexed by its source execution', 
       undefined,
     );
     store.close?.();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('historical continuation forks resolve to the earliest durable admission', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-continuation-fork-'));
+  try {
+    const store = createSqliteAgentRunStore(root);
+    const source = await store.admitRootTurn({
+      sessionId: 'session',
+      turnId: 'source-turn',
+      proposedRunId: 'source-run',
+      proposedUserMessageId: 'source-message',
+      execution: { kind: 'external_message' },
+      previousRootTurnId: null,
+      normalizedInput: { text: 'Start work' },
+      sourceMessages: [],
+      admittedAt: 10,
+    });
+    const first = await store.admitRootTurn({
+      sessionId: 'session',
+      turnId: 'continuation-a',
+      proposedRunId: 'continuation-run-a',
+      proposedUserMessageId: null,
+      execution: {
+        kind: 'safe_boundary_continuation',
+        sourceInvocationId: 'source-invocation',
+        sourceRunId: source.admission.runId,
+        sourceTurnId: source.admission.turnId,
+        sourceRuntimeEventHighWater: 7,
+        claimId: 'continuation-claim-a',
+        boundaryDigest: `sha256:${'a'.repeat(64)}`,
+        providerReplayDigest: `sha256:${'b'.repeat(64)}`,
+        safetyDigest: `sha256:${'c'.repeat(64)}`,
+        targetInvocationId: 'continuation-invocation-a',
+      },
+      previousRootTurnId: source.admission.turnId,
+      normalizedInput: null,
+      sourceMessages: [],
+      admittedAt: 20,
+    });
+    store.close?.();
+
+    const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+    try {
+      const fork = {
+        ...first.admission,
+        turnId: 'continuation-b',
+        runId: 'continuation-run-b',
+        admittedAt: 30,
+        execution: {
+          ...first.admission.execution,
+          claimId: 'continuation-claim-b',
+          targetInvocationId: 'continuation-invocation-b',
+        },
+      };
+      database
+        .prepare(`
+          INSERT INTO core_root_turn_admissions(session_id, turn_id, admitted_at, record_json)
+          VALUES (?, ?, ?, ?)
+        `)
+        .run(fork.sessionId, fork.turnId, fork.admittedAt, JSON.stringify(fork));
+    } finally {
+      database.close();
+    }
+
+    const reopened = createSqliteAgentRunStore(root);
+    try {
+      assert.deepEqual(
+        await reopened.readRootTurnContinuationAdmission('session', 'source-turn', 'source-run'),
+        first.admission,
+      );
+    } finally {
+      reopened.close?.();
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

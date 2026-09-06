@@ -174,7 +174,7 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
 
     DROP INDEX IF EXISTS core_root_turn_continuation_source;
 
-    CREATE INDEX core_root_turn_continuation_source
+    CREATE INDEX IF NOT EXISTS core_root_turn_continuation_source_v2
       ON core_root_turn_admissions(
         session_id,
         json_extract(record_json, '$.execution.sourceTurnId'),

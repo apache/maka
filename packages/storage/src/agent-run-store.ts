@@ -602,6 +602,7 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
               AND json_extract(record_json, '$.execution.sourceTurnId') = ?
               AND json_extract(record_json, '$.execution.sourceRunId') = ?
               AND json_extract(record_json, '$.execution.kind') = 'safe_boundary_continuation'
+            ORDER BY admitted_at, turn_id
             LIMIT 1
           `)
           .get(
@@ -609,8 +610,14 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
             admission.execution.sourceTurnId,
             admission.execution.sourceRunId,
           ) as { turn_id?: unknown } | undefined;
-        if (sourceOwner) {
-          throw new Error(`Root execution already has continuation ${String(sourceOwner.turn_id)}`);
+        if (typeof sourceOwner?.turn_id === 'string') {
+          const owner = readSqliteRootTurnAdmission(
+            this.#lease.database,
+            admission.sessionId,
+            sourceOwner.turn_id,
+          );
+          if (!owner) throw new Error('Root continuation index has no durable admission');
+          return { kind: 'conflict', admission: owner };
         }
       }
       for (const source of admission.sourceMessages) {
@@ -668,7 +675,7 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(sourceTurnId, 'Invalid source turn id');
     assertSafeId(sourceRunId, 'Invalid source run id');
-    const rows = this.#lease.database
+    const row = this.#lease.database
       .prepare(`
         SELECT turn_id, record_json
         FROM core_root_turn_admissions
@@ -677,17 +684,15 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
           AND json_extract(record_json, '$.execution.sourceRunId') = ?
           AND json_extract(record_json, '$.execution.kind') = 'safe_boundary_continuation'
         ORDER BY admitted_at, turn_id
-        LIMIT 2
+        LIMIT 1
       `)
-      .all(sessionId, sourceTurnId, sourceRunId) as Array<{
-      turn_id?: unknown;
-      record_json?: unknown;
-    }>;
-    if (rows.length === 0) return undefined;
-    if (rows.length > 1) {
-      throw new Error('Root execution has multiple durable continuation admissions');
-    }
-    const row = rows[0]!;
+      .get(sessionId, sourceTurnId, sourceRunId) as
+      | {
+          turn_id?: unknown;
+          record_json?: unknown;
+        }
+      | undefined;
+    if (!row) return undefined;
     if (typeof row.turn_id !== 'string' || typeof row.record_json !== 'string') {
       throw new Error('Invalid SQLite root turn continuation admission row');
     }
@@ -696,13 +701,6 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       sessionId,
       row.turn_id,
     );
-    if (
-      admission.execution.kind !== 'safe_boundary_continuation' ||
-      admission.execution.sourceTurnId !== sourceTurnId ||
-      admission.execution.sourceRunId !== sourceRunId
-    ) {
-      throw new Error('Root turn continuation index disagrees with its durable admission');
-    }
     return admission;
   }
 

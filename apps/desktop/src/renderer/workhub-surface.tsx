@@ -135,7 +135,8 @@ export function visibleWorkHubConversation(
       return !localTurn ||
         localTurn.outcome?.kind === 'discussion' ||
         localTurn.outcome?.kind === 'submitted' ||
-        localTurn.outcome?.kind === 'stop';
+        localTurn.outcome?.kind === 'stop' ||
+        localTurn.outcome?.kind === 'resume';
     },
   );
   const coordinationTurnIds = new Set(coordination.map(({ turnId }) => turnId));
@@ -144,7 +145,8 @@ export function visibleWorkHubConversation(
       !coordinationTurnIds.has(turn.requestId) ||
       (turn.outcome?.kind !== 'discussion' &&
         turn.outcome?.kind !== 'submitted' &&
-        turn.outcome?.kind !== 'stop'),
+        turn.outcome?.kind !== 'stop' &&
+        turn.outcome?.kind !== 'resume'),
   );
   return { coordination: visibleCoordination, local: visibleLocal };
 }
@@ -897,7 +899,7 @@ function workHubCopy(locale: UiLocale) {
         resume_started: '已让中断的工作继续：',
         already_running: '这项工作还在跑，不需要恢复：',
       },
-      resumeRecorded: '结果已记录',
+      resumeRecorded: '恢复结果已记录',
       resumeTargetRequired: '请明确说出要继续的工作名称，例如“恢复 支付任务”。',
       resumeTargetAmbiguous: '这个名称对应多项工作；请打开具体的 Session 继续它。',
       resumeTargetUnavailable: '这项工作当前没有可恢复的单个 WorkHub 委派。',
@@ -976,7 +978,7 @@ function workHubCopy(locale: UiLocale) {
         resume_started: '已讓中斷的工作繼續：',
         already_running: '這項工作仍在執行，不需要恢復：',
       },
-      resumeRecorded: '結果已記錄',
+      resumeRecorded: '恢復結果已記錄',
       resumeTargetRequired: '請明確說出要繼續的工作名稱，例如「恢復 支付任務」。',
       resumeTargetAmbiguous: '這個名稱對應多項工作；請開啟具體的 Session 繼續它。',
       resumeTargetUnavailable: '這項工作目前沒有可恢復的單一 WorkHub 委派。',
@@ -1041,7 +1043,7 @@ function workHubCopy(locale: UiLocale) {
       resume_started: 'Carried on the interrupted work:',
       already_running: 'This work is still running, so there was nothing to resume:',
     },
-    resumeRecorded: 'Result recorded',
+    resumeRecorded: 'Resume result recorded',
     resumeTargetRequired: 'Name the work explicitly, for example “Resume Payments”.',
     resumeTargetAmbiguous:
       'That name matches more than one work item. Open the exact Session to resume it.',

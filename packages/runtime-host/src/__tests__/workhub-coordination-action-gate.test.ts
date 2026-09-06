@@ -516,6 +516,30 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(call.source.actionId, 'second-action');
   });
 
+  test('resume retries cannot move a claimed action identity to another delegation', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    delegatedTo(effects, 'payments');
+    effects.actionClaims.set('resume-retry', {
+      actionId: 'resume-retry',
+      operation: 'resume',
+      actionFingerprint: `sha256:${'a'.repeat(64)}`,
+      subject: 'delegation-that-is-no-longer-active',
+    });
+
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        {
+          actionId: 'resume-retry',
+          userText: 'Resume Payments',
+          proposal: resumeProposal('payments'),
+        },
+        CONTEXT,
+      ),
+      /resume identity is already bound to a different delegation/u,
+    );
+    assert.equal(effects.resumeCalls.length, 0);
+  });
+
   test('resume reports when the delegated work is already running', async () => {
     const effects = fakeEffects([session('payments', { name: 'Payments' })]);
     delegatedTo(effects, 'payments');

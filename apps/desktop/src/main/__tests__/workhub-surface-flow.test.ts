@@ -350,6 +350,66 @@ test('surface replaces a submitted placeholder with its durable assignment state
   });
 });
 
+test('surface replaces live stop and resume placeholders with their durable records', () => {
+  const local = [
+    {
+      requestId: 'stop-action',
+      text: 'Stop Payments',
+      state: 'settled' as const,
+      outcome: {
+        kind: 'stop' as const,
+        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+        requestId: 'stop-action',
+        target: { sessionId: 'payments' },
+        outcome: 'stop_delivered' as const,
+      },
+    },
+    {
+      requestId: 'resume-action',
+      text: 'Resume Payments',
+      state: 'settled' as const,
+      outcome: {
+        kind: 'resume' as const,
+        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+        requestId: 'resume-action',
+        target: { sessionId: 'payments' },
+        outcome: 'resume_started' as const,
+      },
+    },
+  ];
+  const durable: WorkHubCoordinationTurn[] = [
+    {
+      messageId: 'stop-record',
+      turnId: 'stop-action',
+      text: 'Stop Payments',
+      state: 'completed',
+      stop: {
+        targetSessionId: 'payments',
+        targetSessionName: 'Payments',
+        outcome: 'stop_delivered',
+      },
+      updatedAt: 10,
+    },
+    {
+      messageId: 'resume-record',
+      turnId: 'resume-action',
+      text: 'Resume Payments',
+      state: 'completed',
+      resume: {
+        targetSessionId: 'payments',
+        targetSessionName: 'Payments',
+        outcome: 'resume_started',
+      },
+      updatedAt: 20,
+    },
+  ];
+
+  assert.deepEqual(visibleWorkHubConversation(durable, local), {
+    coordination: durable,
+    local: [],
+  });
+});
+
 test('surface keeps clarification and successful routing in WorkHub', async () => {
   const submissions: WorkHubSubmitInput[] = [];
   const controller: WorkHubController = {

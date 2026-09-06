@@ -219,7 +219,6 @@ export type WorkHubSubmission = (
       requestId: string;
       target: WorkHubSessionTarget;
       outcome: Extract<WorkHubCoordinationActResult, { disposition: 'resume_work' }>['outcome'];
-      targetTurnId?: string;
     }
 ) & { strategyId: WorkHubRoutingStrategyId };
 
@@ -370,7 +369,6 @@ export function createWorkHubController(deps: {
           ...result,
           kind: 'resume',
           outcome: admitted.outcome,
-          ...(admitted.targetTurnId ? { targetTurnId: admitted.targetTurnId } : {}),
         };
       }
       if (kind === 'stop' && admitted.disposition === 'stop_work') {
@@ -400,6 +398,11 @@ export function createWorkHubController(deps: {
         };
       }
       if (error instanceof WorkHubCoordinationFailure && error.code === 'operation_conflict') {
+        if (!/no active durable delegation|does not identify one active durable delegation/iu.test(
+          error.message,
+        )) {
+          throw error;
+        }
         return {
           kind: 'clarification',
           strategyId: WORKHUB_ROUTING_STRATEGY_ID,

@@ -449,7 +449,6 @@ test('a named resume submits and reports what the Host did', async () => {
     requestId: 'resume-1',
     target: { sessionId: 'payments' },
     outcome: 'resume_started',
-    targetTurnId: 'resumed-turn',
   });
   // The proposal names the Session and carries no confirmation: resume ends
   // nothing, so it needs no authority a delegation did not already grant.
@@ -516,6 +515,34 @@ test('a resume the Host will not admit becomes its clarification', async () => {
     options: [],
     reason: 'resume_target_unavailable',
   });
+  await handle.close();
+});
+
+test('a resume identity conflict is not mislabeled as a missing target', async () => {
+  const conflict = new WorkHubCoordinationFailure(
+    'operation_conflict',
+    'WorkHub action identity already owns a different operation',
+  );
+  const controller = createGatedWorkHubController({
+    sessions: port([session('payments', { sessionName: 'Payments' })]),
+    coordination: {
+      open: async (handler) => {
+        handler([]);
+        return { close: async () => undefined };
+      },
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => assert.fail('a resume must not read route candidates'),
+      act: async () => {
+        throw conflict;
+      },
+    },
+  });
+  const handle = await controller.openConversation(() => undefined, () => undefined);
+
+  await assert.rejects(
+    controller.submit({ requestId: 'resume-conflict', text: 'Resume Payments' }),
+    (error) => error === conflict,
+  );
   await handle.close();
 });
 

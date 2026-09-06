@@ -576,7 +576,7 @@ export class HostWorkHubCoordinationCoordinator {
         return {
           ok: false,
           error: {
-            code: error.code === 'unauthorized' ? 'operation_unavailable' : error.code,
+            code: error.code,
             message: error.message,
           },
         };

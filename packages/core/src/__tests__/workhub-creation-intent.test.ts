@@ -1135,6 +1135,8 @@ test('a resume names one Session, and reads like a stop everywhere else', () => 
     ['Resume Payments', 'Payments'],
     ['恢复支付任务', '支付任务'],
     ['接着跑支付任务', '支付任务'],
+    ['恢復支付任務', '支付任務'],
+    ['接著跑支付任務', '支付任務'],
   ] as const) {
     assert.deepEqual(
       readWorkHubRequestIntent(text).resume,

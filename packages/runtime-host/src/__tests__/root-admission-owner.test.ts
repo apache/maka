@@ -100,6 +100,26 @@ test('recovery installs the validated tip and the successor extends it', async (
   });
 });
 
+test('a competing continuation is a classified conflict and does not poison the Session', async () => {
+  await withStore(async (store) => {
+    const owner = new RootAdmissionOwner(store);
+    await owner.recoverSession('session');
+    const source = await owner.admitRootTurn(admitInput('session', 'source-turn', 10));
+    const continuation = await owner.admitRootTurn(
+      continuationAdmitInput('session', 'continuation-turn', source.admission, 20),
+    );
+
+    const competing = await owner.admitRootTurn(
+      continuationAdmitInput('session', 'competing-turn', source.admission, 30),
+    );
+    assert.deepEqual(competing, { kind: 'conflict', admission: continuation.admission });
+
+    const successor = await owner.admitRootTurn(admitInput('session', 'successor-turn', 40));
+    assert.equal(successor.kind, 'admitted');
+    assert.equal(successor.admission.previousRootTurnId, continuation.admission.turnId);
+  });
+});
+
 test('recovers the original submitted placement for a promoted source after SQLite reopen', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-root-admission-placement-'));
   try {
@@ -401,6 +421,35 @@ function admitInput(sessionId: string, turnId: string, admittedAt: number) {
     proposedUserMessageId: `message-${turnId}`,
     execution: { kind: 'external_message' as const },
     normalizedInput: { text: `text-${turnId}` },
+    sourceMessages: [],
+    admittedAt,
+  };
+}
+
+function continuationAdmitInput(
+  sessionId: string,
+  turnId: string,
+  source: RootTurnAdmission,
+  admittedAt: number,
+) {
+  return {
+    sessionId,
+    turnId,
+    proposedRunId: `run-${turnId}`,
+    proposedUserMessageId: null,
+    execution: {
+      kind: 'safe_boundary_continuation' as const,
+      sourceInvocationId: `invocation-${source.turnId}`,
+      sourceRunId: source.runId,
+      sourceTurnId: source.turnId,
+      sourceRuntimeEventHighWater: 7,
+      claimId: `claim-${turnId}`,
+      boundaryDigest: `sha256:${'a'.repeat(64)}` as const,
+      providerReplayDigest: `sha256:${'b'.repeat(64)}` as const,
+      safetyDigest: `sha256:${'c'.repeat(64)}` as const,
+      targetInvocationId: `invocation-${turnId}`,
+    },
+    normalizedInput: null,
     sourceMessages: [],
     admittedAt,
   };

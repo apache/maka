@@ -446,7 +446,7 @@ export class WorkHubCoordinationActionGate {
           'WorkHub resume requires an explicit named command in trusted user text',
         );
       }
-      const source = await this.#resumeSource(proposal.expects.targetSessionId);
+      const source = await this.#resumeSource(input.actionId, proposal.expects.targetSessionId);
       const sessions = await this.#effects.listSessions();
       const currentTargetName = sessions.find(({ id }) => id === source.targetSessionId)?.name;
       if (
@@ -574,8 +574,19 @@ export class WorkHubCoordinationActionGate {
     );
   }
 
-  async #resumeSource(targetSessionId: string): Promise<WorkHubDelegationAssignedMessage> {
-    return this.#soleWorkingDelegation(targetSessionId, 'resume');
+  async #resumeSource(
+    actionId: string,
+    targetSessionId: string,
+  ): Promise<WorkHubDelegationAssignedMessage> {
+    const claim = await this.#effects.readActionClaim(actionId);
+    const resolved = await this.#soleWorkingDelegation(targetSessionId, 'resume');
+    if (claim?.operation === 'resume' && resolved.delegationId !== claim.subject) {
+      throw new WorkHubActionGateFailure(
+        'action_conflict',
+        'WorkHub resume identity is already bound to a different delegation',
+      );
+    }
+    return resolved;
   }
 
   /**
@@ -1188,9 +1199,6 @@ function resumeActionFingerprint(
   input: WorkHubCoordinationActInput,
   source: WorkHubDelegationAssignedMessage,
 ): `sha256:${string}` {
-  if (input.proposal.disposition !== 'resume_work') {
-    throw new WorkHubActionGateFailure('action_conflict', 'Invalid WorkHub resume replay');
-  }
   return digest({
     userText: input.userText,
     disposition: 'resume_work',

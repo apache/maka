@@ -1990,6 +1990,14 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             sourceMessages: [],
             admittedAt: Date.now(),
           });
+          if (admitted.kind === 'conflict') {
+            return {
+              kind: 'complete',
+              outcome: operationConflict(
+                'This root execution already has a different continuation Turn',
+              ),
+            };
+          }
           if (
             admitted.admission.runId !== continuation.runId ||
             !isDeepStrictEqual(admitted.admission.execution, execution)

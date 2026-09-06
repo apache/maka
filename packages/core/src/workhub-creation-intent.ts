@@ -113,8 +113,8 @@ const DIRECT_CHINESE_STOP_REQUEST =
 const DIRECT_RESUME_REQUEST =
   /^\s*(?:(?:please|kindly)\s+)?resume\s+(?:(?:the|this)\s+)?(?:(?:session|work|task|job)\s+)?(.+?)\s*[.!。！]?\s*$/iu;
 const DIRECT_CHINESE_RESUME_REQUEST =
-  /^\s*(?:(?:请|请帮我|帮我|麻烦你?)\s*)?(?:恢复|接着跑)\s*(?:(?:这个|该)?(?:会话|工作|任务)\s*)?(.+?)\s*[。！]?\s*$/iu;
-const UNSAFE_STOP_TARGET =
+  /^\s*(?:(?:请|请帮我|帮我|麻烦你?)\s*)?(?:恢复|恢復|接着跑|接著跑)\s*(?:(?:这个|该)?(?:会话|工作|任务)\s*)?(.+?)\s*[。！]?\s*$/iu;
+const UNSAFE_NAMED_ACTION_TARGET =
   /^(?:it|this|that|one|everything|all|current|session|work|task|job|(?:this|that|current)\s+(?:session|work|task|job)|它|这个|那个|全部|当前|会话|工作|任务|(?:这个|那个|当前)(?:会话|工作|任务))$/iu;
 
 /**
@@ -526,7 +526,7 @@ function directWorkHubNamedAction(
   const rawTarget = match?.[1]?.trim();
   if (!rawTarget) return { cue: Boolean(match) };
   const target = stripMatchingActionQuotes(rawTarget.replace(/[.!。！]+\s*$/u, '').trim());
-  return !target || UNSAFE_STOP_TARGET.test(target) ? { cue: true } : { cue: true, target };
+  return !target || UNSAFE_NAMED_ACTION_TARGET.test(target) ? { cue: true } : { cue: true, target };
 }
 
 function stripMatchingActionQuotes(value: string): string {

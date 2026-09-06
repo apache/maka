@@ -593,6 +593,51 @@ describe('Host WorkHub Coordination coordinator', () => {
     }
   });
 
+  test('preserves unauthorized action failures for the client', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-unauthorized-'));
+    const store = createSessionStore(root);
+    try {
+      await store.create({
+        cwd: root,
+        name: 'Payments',
+        llmConnectionSlug: 'test-connection',
+        model: 'test-model',
+        permissionMode: 'ask',
+      });
+      const workhub = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
+        assign: async () => {
+          throw new WorkHubActionEffectFailure('unauthorized', 'Target permission denied');
+        },
+      });
+      assert.equal((await workhub.handlers['workhub.coordination.resolve']({}, CONTEXT)).ok, true);
+      const candidates = await workhub.handlers['workhub.coordination.candidates']({}, CONTEXT);
+      assert.equal(candidates.ok, true);
+      if (!candidates.ok) return;
+
+      assert.deepEqual(
+        await workhub.handlers['workhub.coordination.act'](
+          {
+            actionId: 'permission-rejected',
+            userText: 'Continue payments',
+            candidateSetId: candidates.result.candidateSetId,
+            proposal: {
+              disposition: 'delegate_existing',
+              candidateRef: candidates.result.candidates[0]!.candidateRef,
+            },
+          },
+          CONTEXT,
+        ),
+        {
+          ok: false,
+          error: { code: 'unauthorized', message: 'Target permission denied' },
+        },
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('reads current linkage only through the bounded candidate target', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-active-ledger-'));
     const store = createSessionStore(root);
