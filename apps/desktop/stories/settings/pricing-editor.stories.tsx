@@ -170,6 +170,6 @@ export const ManualExactKey: Story = {
     await userEvent.click(await canvas.findByRole('button', { name: '添加定价' }));
     const dialog = within(await canvas.findByRole('dialog', { name: '添加定价' }));
     await userEvent.click(dialog.getByRole('button', { name: '模型不在列表中？手动输入' }));
-    await userEvent.type(dialog.getByRole('textbox', { name: '模型键' }), 'acme:coder-v3');
+    await userEvent.type(dialog.getByRole('textbox', { name: /^模型键/ }), 'acme:coder-v3');
   },
 };
