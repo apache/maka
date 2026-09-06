@@ -29,6 +29,7 @@ export type SessionCollaborationImportResult =
         | 'invalid_code'
         | 'insecure_confirmation_required'
         | 'peer_path_unavailable'
+        | 'incompatible_host'
         | 'connection_failed';
       readonly message?: string;
     };
@@ -58,4 +59,5 @@ export type SessionCollaborationMountFailure =
   | 'credential_rejected'
   | 'session_unavailable'
   | 'peer_path_unavailable'
+  | 'incompatible_host'
   | 'connection_failed';

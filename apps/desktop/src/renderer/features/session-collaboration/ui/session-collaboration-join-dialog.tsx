@@ -35,6 +35,7 @@ import { SessionCollaborationAliasAction } from './session-collaboration-alias-a
 import { useSessionCollaborationServices } from '../services-context.js';
 import type {
   SessionCollaborationImportPhase,
+  SessionCollaborationImportResult,
   SessionCollaborationMountSummary,
 } from '../ports.js';
 
@@ -75,6 +76,7 @@ export interface SessionCollaborationJoinCopy {
   readonly retryConnection: string;
   readonly accessRejected: string;
   readonly sessionUnavailable: string;
+  readonly incompatibleHost: string;
 }
 
 export function SessionCollaborationJoinDialog(props: {
@@ -401,6 +403,7 @@ function mountFailureLabel(copy: SessionCollaborationJoinCopy, mount: SessionCol
   switch (mount.failure) {
     case 'credential_rejected': return copy.accessRejected;
     case 'session_unavailable': return copy.sessionUnavailable;
+    case 'incompatible_host': return copy.incompatibleHost;
     case 'peer_path_unavailable': return copy.directPathUnavailable;
     case 'connection_failed': return copy.connectionFailed;
     default: return undefined;
@@ -447,16 +450,13 @@ function abbreviatePeerId(peerId: string): string {
 
 function importError(
   copy: SessionCollaborationJoinCopy,
-  reason:
-    | 'invalid_code'
-    | 'insecure_confirmation_required'
-    | 'peer_path_unavailable'
-    | 'connection_failed',
+  reason: Extract<SessionCollaborationImportResult, { kind: 'error' }>['reason'],
   message?: string,
 ): string {
   if (reason === 'invalid_code') return copy.invalidCode;
   if (reason === 'insecure_confirmation_required') return copy.insecureBody;
   if (reason === 'peer_path_unavailable') return copy.directPathUnavailable;
+  if (reason === 'incompatible_host') return copy.incompatibleHost;
   return message ?? copy.connectionFailed;
 }
 

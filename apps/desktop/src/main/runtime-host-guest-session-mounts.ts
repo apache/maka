@@ -24,6 +24,7 @@ import {
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
   RuntimeHostPermanentReconnectError,
   RuntimeHostProfileConnectionError,
+  RuntimeHostRemoteCompatibilityError,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostConnectionPhase,
   type RuntimeHostPeerConnectionPath,
@@ -692,7 +693,8 @@ export function createDesktopGuestSessionMountService(input: {
         ? { kind: 'recovering', mountId: mount.mountId }
         : {
             kind: 'error',
-            reason: isPeerPathUnavailable(error) ? 'peer_path_unavailable' : 'connection_failed',
+            reason: error instanceof RuntimeHostRemoteCompatibilityError ? 'incompatible_host'
+              : isPeerPathUnavailable(error) ? 'peer_path_unavailable' : 'connection_failed',
             message: asError(error).message,
           };
     } finally {
@@ -1008,6 +1010,7 @@ function decodeAccessFailure(value: unknown): NonNullable<GuestSessionMount['acc
 }
 
 function connectionFailure(error: Error): SessionCollaborationMountFailure {
+  if (error instanceof RuntimeHostRemoteCompatibilityError) return 'incompatible_host';
   return isRejectedAccessFailure(error) ? 'credential_rejected'
     : isPeerPathUnavailable(error) ? 'peer_path_unavailable' : 'connection_failed';
 }

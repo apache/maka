@@ -186,9 +186,7 @@ test('identifies a retained shared task and its selected peer transport', async 
   let retried: string | undefined;
   let opened: string | undefined;
   const services: SessionCollaborationServices = {
-    importInvitation: async () => {
-      throw new Error('unused');
-    },
+    importInvitation: async () => ({ kind: 'error', reason: 'incompatible_host', message: 'raw compatibility details' }),
     cancelImport: async () => 'settling',
     readInvitationClipboard: async () => '',
     listMounts: async () => [{
@@ -212,6 +210,9 @@ test('identifies a retained shared task and its selected peer transport', async 
     }, {
       mountId: 'revoked', name: 'Old access', hostId: 'a'.repeat(64),
       readiness: 'unavailable', failure: 'credential_rejected',
+    }, {
+      mountId: 'incompatible', name: 'Old version', hostId: 'a'.repeat(64),
+      readiness: 'unavailable', failure: 'incompatible_host',
     }],
     subscribeMountChanges: () => () => undefined,
     removeMount: async () => undefined,
@@ -262,9 +263,15 @@ test('identifies a retained shared task and its selected peer transport', async 
   assert.match(document.body.textContent, /Waiting for Mac/u);
   assert.match(document.body.textContent, /directPathUnavailable/u);
   assert.match(document.body.textContent, /accessRejected/u);
-  assert.equal([...document.querySelectorAll('button')].filter((button) => button.textContent === 'retryConnection').length, 1);
+  assert.match(document.body.textContent, /incompatibleHost/u);
+  assert.equal([...document.querySelectorAll('button')].filter((button) => button.textContent === 'retryConnection').length, 2);
   await clickButton(document, 'retryConnection');
   assert.equal(retried, 'offline');
+
+  await setTextArea(document, 'invitation');
+  await clickButton(document, 'join');
+  assert.ok(document.body.textContent.split('incompatibleHost').length - 1 > 1);
+  assert.doesNotMatch(document.body.textContent, /raw compatibility details/u);
   await clickButton(document, 'openTask');
   assert.equal(opened, 'session-1');
 

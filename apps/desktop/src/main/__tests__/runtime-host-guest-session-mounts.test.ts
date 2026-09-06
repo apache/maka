@@ -22,10 +22,14 @@ import test from 'node:test';
 import {
   RuntimeHostPermanentReconnectError,
   RuntimeHostProfileConnectionError,
+  RuntimeHostRemoteCompatibilityError,
   type ResolvedRuntimeHostProfile,
 } from '@maka/runtime-host/client';
 import {
   encodeCollaborationInvitationCode,
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
+  RUNTIME_HOST_PROTOCOL_VERSION,
   type HostPeerEndpoint,
   type SharedSessionCatalogProjection,
 } from '@maka/runtime-host/protocol';
@@ -330,6 +334,40 @@ test('removes failed activation desire instead of creating recoverable profile s
   assert.deepEqual(result.kind === 'error' ? result.reason : result.kind, 'peer_path_unavailable');
   assert.deepEqual(await store.read(), []);
   assert.equal(unmounted.length, 1);
+});
+
+test('reports incompatible hosts without losing retained access or treating a failed import as committed', async () => {
+  const error = new RuntimeHostRemoteCompatibilityError('shared-incompatible', {
+    kind: 'incompatible',
+    hostEpoch: 'host-epoch',
+    protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+    protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+    compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+    compositionRevision: 'host-revision',
+    state: 'ready',
+    replacement: 'blocked_by_residency',
+  });
+  const store = serializedStore();
+  const retained = { ...retainedMount('shared-incompatible'), session: sharedSession() };
+  await store.write([retained]);
+  const phases: string[] = [];
+  const mounts = service(store, {
+    inspect: () => ({ readiness: 'unavailable', error }),
+    finalizeAccess: async () => { throw error; },
+  });
+  await mounts.connectionChanged(retained.mountId, error);
+  const [visible] = await mounts.list();
+  assert.equal(visible?.failure, 'incompatible_host');
+  assert.deepEqual(visible?.session, sharedSession());
+  assert.deepEqual(await store.read(), [retained]);
+
+  const result = await mounts.importInvitation(invitation('incompatible-new'), false, 'incompatible-new',
+    (phase) => phases.push(phase));
+  assert.equal(result.kind === 'error' ? result.reason : result.kind, 'incompatible_host');
+  assert.equal(phases.includes('finalizing_access'), false);
+  assert.deepEqual(await store.read(), [retained]);
+  await mounts.close();
 });
 
 test('does not retry a startup mount whose reachability recovery is exhausted', async () => {
