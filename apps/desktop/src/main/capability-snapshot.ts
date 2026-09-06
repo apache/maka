@@ -168,7 +168,6 @@ function staticCapability(input: {
   actionApproval: CapabilityActionApprovalSignal;
   memoryAcceptance: CapabilityMemoryAcceptanceSignal;
   runtimeProbe: CapabilityRuntimeProbeSignal;
-  guidance?: string[];
 }): CapabilitySnapshot {
   const configuration: CapabilityConfigurationSignal = { state: 'not_required', source: 'not_applicable' };
   return {
@@ -188,7 +187,6 @@ function staticCapability(input: {
     runtimeProbe: input.runtimeProbe,
     canRevoke: false,
     canPause: input.feature.state === 'enabled',
-    guidance: input.guidance ?? [],
     auditEvents: [],
     updatedAt: input.now,
   };
@@ -232,7 +230,6 @@ function botCapability(
     runtimeProbe,
     canRevoke: channel.enabled || hasConfig,
     canPause: channel.enabled,
-    guidance: [],
     auditEvents: [],
     updatedAt: now,
   };

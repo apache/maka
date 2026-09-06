@@ -408,7 +408,7 @@ function permissionActionFailureCopy(reason: string, message: string | undefined
  * One capability row — a Collapsible whose trigger is the row and whose content
  * is that capability's diagnostics.
  *
- * The four-layer breakdown, the required-permission list and the guidance list
+ * The four-layer breakdown and the required-permission list
  * used to be a `<dl>` and two `<ul>`s with ~180 lines of CSS giving them label
  * columns, tone colors and spacing. They are all "label → value" readouts, so
  * they are Astryx `MetadataList` now.

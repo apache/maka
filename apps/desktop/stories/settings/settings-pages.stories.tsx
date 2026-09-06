@@ -557,7 +557,6 @@ function makeCapability(input: Partial<CapabilitySnapshot> & Pick<CapabilitySnap
     runtimeProbe: { state: 'healthy', source: 'runtime_probe', lastCheckedAt: NOW - 60_000 },
     canRevoke: false,
     canPause: false,
-    guidance: [],
     auditEvents: [],
     updatedAt: NOW - 60_000,
     ...input,
@@ -582,7 +581,6 @@ const capabilitySnapshot: CapabilitySnapshotCollection = {
         { id: 'screen_recording', required: true, status: 'not_determined' },
       ],
       actionApproval: { state: 'required_per_action', source: 'capability_policy' },
-      guidance: [],
     }),
     makeCapability({
       id: 'memory_write',
