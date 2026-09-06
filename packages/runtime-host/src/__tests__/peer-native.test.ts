@@ -323,6 +323,37 @@ module.exports = {
     assert.equal(connectivityWakeups, 1);
     unsubscribeConnectivity();
 
+    const connectedPeers: string[] = [];
+    const detachRecovery = client.attachRouteResolver({
+      prepareRoutes: async () => {},
+      resolveRoutes: () => ({
+        state: 'exhausted',
+        routeHints: [],
+        coordinationRelays: [],
+        transitRelayPeerIds: [],
+      }),
+      subscribeRoutes: () => () => {},
+      peerConnected: (peerId) => {
+        connectedPeers.push(peerId);
+        if (peerId === 'restored') throw new Error('recovery observer failed');
+      },
+    });
+    assert.deepEqual(connectedPeers, ['restored'], 'attachment observes an already connected peer');
+    native.default.establishPeer('ready');
+    await waitForImmediate();
+    assert.deepEqual(connectedPeers, ['restored', 'ready']);
+    native.default.establishPeer('ready');
+    await waitForImmediate();
+    assert.deepEqual(
+      connectedPeers,
+      ['restored', 'ready'],
+      'snapshot refreshes are not new connections',
+    );
+    detachRecovery();
+    native.default.establishPeer('detached');
+    await waitForImmediate();
+    assert.deepEqual(connectedPeers, ['restored', 'ready']);
+
     native.default.failEndpoint();
     await waitForImmediate();
     await assert.rejects(
