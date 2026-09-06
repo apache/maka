@@ -12,6 +12,7 @@
     "./assistant-stream": "./dist/assistant-stream.js",
     "./icons": "./dist/icons.js",
     "./maka-uri": "./dist/maka-uri.js",
+    "./runtime-resume-copy": "./dist/runtime-resume-copy.js",
     "./styles.css": "./src/styles.css"
   },
   "scripts": {
