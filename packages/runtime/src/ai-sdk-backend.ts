@@ -41,6 +41,7 @@ import { pricingModelKey } from '@maka/core/usage-stats/pricing';
 import type { PricingConfig, ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
+import { resolveSideConversationPromptCacheSessionId } from '@maka/core/side-conversation';
 
 import { AdmissionLimiter } from './admission-limiter.js';
 import {
@@ -312,6 +313,11 @@ export class AiSdkBackend implements AgentBackend {
       buildProviderOptions(input.connection, input.modelId, input.header.thinkingLevel);
     this.modelAdapter = new ModelAdapter({
       sessionId: input.sessionId,
+      promptCacheSessionId: resolveSideConversationPromptCacheSessionId({
+        sessionId: input.sessionId,
+        labels: input.header.labels,
+        parentSessionId: input.header.parentSessionId,
+      }),
       connection: input.connection,
       apiKey: input.apiKey,
       modelId: input.modelId,
