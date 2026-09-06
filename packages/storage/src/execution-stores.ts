@@ -392,7 +392,6 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.readWorkHubStopRequest(delegationId)),
       readWorkHubStopResolution: (delegationId) =>
         run(() => sessionStore.readWorkHubStopResolution(delegationId)),
-      readWorkHubResume: (actionId) => run(() => sessionStore.readWorkHubResume(actionId)),
       claimWorkHubAction: (claim) => run(() => sessionStore.claimWorkHubAction(claim)),
       readWorkHubActionClaim: (actionId) =>
         run(() => sessionStore.readWorkHubActionClaim(actionId)),

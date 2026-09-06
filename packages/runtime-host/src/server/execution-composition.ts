@@ -568,6 +568,8 @@ export async function createExecutionRuntimeHostComposition(
     let deepResearch: HostDeepResearchCoordinator | undefined;
     let dailyReview: HostDailyReviewCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
+      readLatestRootTurnLineage: (identity) =>
+        requireRootCoordinator(rootCoordinator).readLatestRootTurnLineage(identity),
       readSessionHeader: (sessionId) =>
         requireRootCoordinator(rootCoordinator).readSessionHeader(sessionId),
       readRootState: (sessionId) =>
@@ -1393,7 +1395,7 @@ export async function createExecutionRuntimeHostComposition(
         // Resolve and resume only the execution lineage owned by this
         // delegation. A Session-wide latest-failure query could otherwise
         // continue unrelated work started directly in the same Session.
-        resumeDelegation: async (assignment, context) => {
+        resumeDelegation: async (assignment, context, actionId) => {
           const disposition = await messages.readMessageExecutionDisposition(
             assignment.targetSessionId,
             assignment.targetMessageId,
@@ -1455,10 +1457,7 @@ export async function createExecutionRuntimeHostComposition(
               'WorkHub resume source lineage changed during planning',
             );
           }
-          const targetTurnId = workHubResumedTurnId(
-            assignment.delegationId,
-            plan.result.sourceRunId,
-          );
+          const targetTurnId = workHubResumedTurnId(actionId);
           const started = await coordinator.handlers['turn.resume.start'](
             {
               sessionId: assignment.targetSessionId,

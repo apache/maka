@@ -712,7 +712,7 @@ test('WorkHub creates new work through the production assignment composition', a
 test('WorkHub Stop retires the running continuation after Resume', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const connectionId = await configureFakeDefaultTarget(owner);
-    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+    let { composition, manager } = await createCapturedExecutionComposition(owner, {
       safeBoundaryResume: true,
     });
     const context = {
@@ -721,6 +721,8 @@ test('WorkHub Stop retires the running continuation after Resume', async () => {
       principal: 'local_os_user' as const,
       acquireResidency: () => ({ release() {} }),
     };
+    let closed = false;
+    let restartedOwner: InteractiveRootOwner | undefined;
     let continuation: { turnId: string; runId: string } | undefined;
     let targetSessionId: string | undefined;
     try {
@@ -774,6 +776,7 @@ test('WorkHub Stop retires the running continuation after Resume', async () => {
           userText: 'Resume Payments',
           proposal: {
             disposition: 'resume_work',
+            resumesActionId: 'workhub-resume-stop-delegation',
             expects: { targetSessionId: target.id },
           },
         },
@@ -794,6 +797,76 @@ test('WorkHub Stop retires the running continuation after Resume', async () => {
       if (!resumedTurn.ok) return;
       continuation = { turnId: resumedTurn.result.turnId, runId: resumedTurn.result.runId };
       assert.equal(resumedTurn.result.status, 'running');
+
+      // Lose the response, interrupt the continuation, then discard all
+      // in-memory Gate replay state by reopening the production composition.
+      await composition.handlers['turn.stop']({ sessionId: target.id, ...continuation }, context);
+      await composition.close();
+      closed = true;
+      await owner.close();
+      restartedOwner = await tryAcquireInteractiveRootOwner(
+        await resolveStorageRoot({ path: root, kind: 'interactive' }),
+      );
+      assert.ok(restartedOwner);
+      owner = restartedOwner;
+      ({ composition } = await createCapturedExecutionComposition(owner, {
+        safeBoundaryResume: true,
+      }));
+      const retry = {
+        actionId: 'workhub-resume-stop-resume',
+        userText: 'Resume Payments',
+        proposal: {
+          disposition: 'resume_work' as const,
+          resumesActionId: 'workhub-resume-stop-delegation',
+          expects: { targetSessionId: target.id },
+        },
+      };
+      const replayed = await composition.handlers['workhub.coordination.act'](retry, context);
+      assert.equal(replayed.ok, false, JSON.stringify(replayed));
+      if (!replayed.ok) assert.equal(replayed.error.code, 'operation_conflict');
+      const fresh = await composition.handlers['workhub.coordination.act'](
+        { ...retry, actionId: 'workhub-resume-again' },
+        context,
+      );
+      assert.equal(fresh.ok, true, JSON.stringify(fresh));
+      if (!fresh.ok || fresh.result.disposition !== 'resume_work' || !fresh.result.targetTurnId)
+        return;
+      const freshTurn = await composition.handlers['turn.query'](
+        { sessionId: target.id, turnId: fresh.result.targetTurnId },
+        context,
+      );
+      assert.equal(freshTurn.ok, true);
+      if (!freshTurn.ok) return;
+      assert.equal(freshTurn.result.status, 'running');
+      assert.notEqual(freshTurn.result.turnId, continuation.turnId);
+      continuation = { turnId: freshTurn.result.turnId, runId: freshTurn.result.runId };
+
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const assignment = await stores.sessionStore.readWorkHubAssignment(
+        'workhub-resume-stop-delegation',
+      );
+      assert.ok(assignment);
+      // The existing Desktop card query must resolve the resumed execution,
+      // rather than keep projecting the original interrupted Turn.
+      const feedback = await composition.handlers['turn.message.execution.query'](
+        {
+          sessionId: target.id,
+          messageIds: [assignment.targetMessageId],
+        },
+        context,
+      );
+      assert.deepEqual(feedback, {
+        ok: true,
+        result: {
+          resolutions: [
+            {
+              messageId: assignment.targetMessageId,
+              state: 'owned',
+              ...continuation,
+            },
+          ],
+        },
+      });
 
       const stopped = await composition.handlers['workhub.coordination.act'](
         {
@@ -823,13 +896,14 @@ test('WorkHub Stop retires the running continuation after Resume', async () => {
       assert.equal(terminal.ok, true);
       if (terminal.ok) assert.equal(terminal.result.status, 'cancelled');
     } finally {
-      if (continuation && targetSessionId) {
+      if (!closed && continuation && targetSessionId) {
         await composition.handlers['turn.stop'](
           { sessionId: targetSessionId, ...continuation },
           context,
         );
       }
-      await composition.close();
+      if (!closed) await composition.close();
+      await restartedOwner?.close();
     }
   });
 });
@@ -896,6 +970,7 @@ test('WorkHub does not record resume while safe-boundary resume is disabled', as
           userText: 'Resume Payments',
           proposal: {
             disposition: 'resume_work',
+            resumesActionId: 'workhub-disabled-resume-delegation',
             expects: { targetSessionId: target.id },
           },
         },
@@ -910,7 +985,7 @@ test('WorkHub does not record resume while safe-boundary resume is disabled', as
       });
       await composition.close();
       const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-      assert.equal(await stores.sessionStore.readWorkHubResume(actionId), undefined);
+      assert.equal(await stores.sessionStore.readWorkHubActionClaim(actionId), undefined);
     } finally {
       await composition.close();
     }

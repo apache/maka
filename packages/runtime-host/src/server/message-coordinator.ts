@@ -194,6 +194,11 @@ export type HostMessageExecutionDisposition =
 
 /** Root execution operations that must share the message coordinator's Session gate. */
 export interface HostMessageRootPort {
+  readLatestRootTurnLineage(identity: {
+    sessionId: string;
+    turnId: string;
+    runId: string;
+  }): Promise<{ turnId: string; runId: string }>;
   readSessionHeader(sessionId: string): Promise<HostMessageSessionHeader | null>;
   readRootState(sessionId: string): Promise<HostMessageRootState> | HostMessageRootState;
   claimStopFence(
@@ -470,11 +475,18 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     for (const messageId of input.messageIds) {
       const disposition = await this.#resolveMessageExecution(input.sessionId, messageId);
       if (disposition.kind === 'owned_root' || disposition.kind === 'shared_turn') {
+        // This read projects current execution, including safe-boundary
+        // continuations. The Message's durable admission ownership is unchanged.
+        const latest = await this.#root.readLatestRootTurnLineage({
+          sessionId: input.sessionId,
+          turnId: disposition.turnId,
+          runId: disposition.runId,
+        });
         resolutions.push({
           messageId,
           state: 'owned',
-          turnId: disposition.turnId,
-          runId: disposition.runId,
+          turnId: latest.turnId,
+          runId: latest.runId,
         });
         continue;
       }

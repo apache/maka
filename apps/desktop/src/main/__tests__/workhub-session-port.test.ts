@@ -317,27 +317,6 @@ test('direct-stop projection is retryable until resolved and preserves not_owned
   );
 });
 
-test('resume projection survives reload and exposes its durable outcome', () => {
-  const resumed: StoredMessage = {
-    type: 'workhub_coordination', id: 'resume', turnId: 'resume-action', ts: 3,
-    schemaVersion: 4, kind: 'delegation_resume', actionId: 'resume-action',
-    actionFingerprint: `sha256:${'b'.repeat(64)}`, coordinationTurnId: 'resume-action',
-    resumesActionId: 'source-action', resumesDelegationId: 'payments-delegation',
-    targetSessionId: 'payments',
-    targetSessionName: 'Payments', userText: 'Resume Payments', outcome: 'resume_started',
-    targetTurnId: 'resumed-turn',
-  };
-
-  assert.deepEqual(projectWorkHubCoordinationTurns([resumed]), [{
-    messageId: 'resume', turnId: 'resume-action', text: 'Resume Payments',
-    state: 'completed',
-    resume: {
-      targetSessionId: 'payments', targetSessionName: 'Payments', outcome: 'resume_started',
-    },
-    updatedAt: 3,
-  }]);
-});
-
 test('durable supersession terminalizes only the replaced linkage', () => {
   const source: StoredMessage = {
     type: 'workhub_coordination',

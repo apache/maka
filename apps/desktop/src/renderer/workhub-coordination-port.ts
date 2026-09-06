@@ -39,7 +39,6 @@ import type {
 import { boundedWorkHubTimelineText, WorkHubCoordinationFailure } from './workhub-controller.js';
 
 export { WorkHubCoordinationFailure };
-
 import type { WorkHubDesktopTranscriptBridge } from './workhub-session-port.js';
 
 const WORKHUB_COORDINATION_TURN_LIMIT = 40;
@@ -174,21 +173,6 @@ export function projectWorkHubCoordinationTurns(
   }
 
   for (const message of messages) {
-    if (message.type === 'workhub_coordination' && message.kind === 'delegation_resume') {
-      turns.push({
-        messageId: message.id,
-        turnId: message.coordinationTurnId,
-        text: boundedWorkHubTimelineText(message.userText),
-        state: 'completed',
-        resume: {
-          targetSessionId: message.targetSessionId,
-          targetSessionName: message.targetSessionName,
-          outcome: message.outcome,
-        },
-        updatedAt: message.ts,
-      });
-      continue;
-    }
     if (message.type === 'workhub_coordination' && message.kind === 'delegation_stop_requested') {
       const resolution = stopResolutionByDelegationId.get(message.stopsDelegationId);
       turns.push({

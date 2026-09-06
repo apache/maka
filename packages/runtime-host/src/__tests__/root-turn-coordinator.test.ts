@@ -2659,6 +2659,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     let drainRequested = false;
     let stopClosureSignal: ReturnType<typeof deferred<void>> | undefined;
     const rootPort: HostMessageRootPort = {
+      readLatestRootTurnLineage: async (identity) => identity,
       readSessionHeader: (sessionId) =>
         requireCoordinator(coordinator).readSessionHeader(sessionId),
       readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
@@ -5230,6 +5231,7 @@ async function createFailureFixture(options: {
   let interactions: HostInteractionCoordinator | undefined;
   let fallbackRunClosureClaims = 0;
   const rootPort: HostMessageRootPort = {
+    readLatestRootTurnLineage: async (identity) => identity,
     readSessionHeader: (sessionId) => requireCoordinator(coordinator).readSessionHeader(sessionId),
     readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
     claimStopFence: (input, commitQueueFence, admission) =>

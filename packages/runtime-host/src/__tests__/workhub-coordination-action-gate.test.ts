@@ -330,7 +330,8 @@ describe('WorkHub Coordination Action Gate', () => {
     expects: { targetSessionId },
   });
 
-  const resumeProposal = (targetSessionId: string) => ({
+  const resumeProposal = (targetSessionId: string, resumesActionId = 'source-action') => ({
+    resumesActionId,
     disposition: 'resume_work' as const,
     expects: { targetSessionId },
   });
@@ -375,8 +376,7 @@ describe('WorkHub Coordination Action Gate', () => {
     const resumeCall = effects.resumeCalls[0];
     assert.ok(resumeCall);
     assert.equal(resumeCall.source.actionId, 'source-action');
-    // Resume claims like every other disposition, so the identity is spent.
-    assert.equal(effects.actionClaims.get('resume-action')?.operation, 'resume');
+    assert.equal(effects.actionClaims.has('resume-action'), false);
   });
 
   test('resume binds the trusted named target to the proposed Session', async () => {
@@ -505,7 +505,7 @@ describe('WorkHub Coordination Action Gate', () => {
       {
         actionId: 'resume-one-live',
         userText: 'Resume Payments',
-        proposal: resumeProposal('payments'),
+        proposal: resumeProposal('payments', 'second-action'),
       },
       CONTEXT,
     );
@@ -516,26 +516,20 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(call.source.actionId, 'second-action');
   });
 
-  test('resume retries cannot move a claimed action identity to another delegation', async () => {
+  test('resume retries cannot move an explicitly named assignment to another delegation', async () => {
     const effects = fakeEffects([session('payments', { name: 'Payments' })]);
     delegatedTo(effects, 'payments');
-    effects.actionClaims.set('resume-retry', {
-      actionId: 'resume-retry',
-      operation: 'resume',
-      actionFingerprint: `sha256:${'a'.repeat(64)}`,
-      subject: 'delegation-that-is-no-longer-active',
-    });
 
     await assert.rejects(
       new WorkHubCoordinationActionGate(effects).act(
         {
           actionId: 'resume-retry',
           userText: 'Resume Payments',
-          proposal: resumeProposal('payments'),
+          proposal: resumeProposal('payments', 'retired-assignment'),
         },
         CONTEXT,
       ),
-      /resume identity is already bound to a different delegation/u,
+      /resume target delegation changed/u,
     );
     assert.equal(effects.resumeCalls.length, 0);
   });

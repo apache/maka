@@ -1123,7 +1123,7 @@ describe('Host WorkHub Coordination coordinator', () => {
     }
   });
 
-  test('persists one resume result after the Host starts the continuation', async () => {
+  test('returns the Host resume result without a durable resume record', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-resume-'));
     let store = createSessionStore(root);
     let targetId = '';
@@ -1132,6 +1132,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       userText: 'Resume Payments',
       proposal: {
         disposition: 'resume_work' as const,
+        resumesActionId: 'source-action',
         expects: { targetSessionId: targetId },
       },
     });
@@ -1177,6 +1178,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         true,
       );
 
+      const transcript = await store.readMessagesSnapshot(WORKHUB_COORDINATION_SESSION_ID);
       const resumed = await workhub.handlers['workhub.coordination.act'](resumeInput(), CONTEXT);
       assert.deepEqual(resumed, {
         ok: true,
@@ -1188,12 +1190,11 @@ describe('Host WorkHub Coordination coordinator', () => {
         },
       });
       assert.equal(resumeCalls, 1);
-      const durable = await store.readWorkHubResume('resume-action');
-      assert.equal(durable?.kind, 'delegation_resume');
-      assert.equal(durable?.resumesActionId, 'source-action');
-      assert.equal(durable?.targetSessionId, target.id);
-      assert.equal(durable?.outcome, 'resume_started');
-      assert.equal(durable?.targetTurnId, 'resumed-turn');
+      assert.equal(await store.readWorkHubActionClaim('resume-action'), undefined);
+      assert.deepEqual(
+        await store.readMessagesSnapshot(WORKHUB_COORDINATION_SESSION_ID),
+        transcript,
+      );
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });
@@ -1251,6 +1252,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         userText: 'Resume Payments',
         proposal: {
           disposition: 'resume_work' as const,
+          resumesActionId: 'source-action',
           expects: { targetSessionId: target.id },
         },
       };
@@ -1261,7 +1263,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           message: 'WorkHub is still recovering the delegated execution',
         },
       });
-      assert.equal(await store.readWorkHubResume(input.actionId), undefined);
+      assert.equal(await store.readWorkHubActionClaim(input.actionId), undefined);
 
       recovering = false;
       const retried = await workhub.handlers['workhub.coordination.act'](input, CONTEXT);

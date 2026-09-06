@@ -427,7 +427,10 @@ test('a named resume submits and reports what the Host did', async () => {
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
-      candidates: async () => assert.fail('a resume must not read route candidates'),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'e'.repeat(64)}`,
+        candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
+      }),
       act: async (input) => {
         actions.push(input);
         return {
@@ -455,7 +458,7 @@ test('a named resume submits and reports what the Host did', async () => {
   assert.deepEqual(actions, [{
     actionId: 'resume-1',
     userText: 'Resume Payments',
-    proposal: { disposition: 'resume_work', expects: { targetSessionId: 'payments' } },
+    proposal: { disposition: 'resume_work', resumesActionId: 'source-action', expects: { targetSessionId: 'payments' } },
   }]);
   await handle.close();
 });
@@ -496,7 +499,10 @@ test('a resume the Host will not admit becomes its clarification', async () => {
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
-      candidates: async () => assert.fail('a resume must not read route candidates'),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'e'.repeat(64)}`,
+        candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
+      }),
       act: async () => {
         throw new WorkHubCoordinationFailure(
           'operation_conflict',
@@ -531,7 +537,10 @@ test('a resume identity conflict is not mislabeled as a missing target', async (
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
-      candidates: async () => assert.fail('a resume must not read route candidates'),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'e'.repeat(64)}`,
+        candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
+      }),
       act: async () => {
         throw conflict;
       },
@@ -555,7 +564,10 @@ test('a Runtime Host without safe-boundary resume explains why it cannot resume'
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
-      candidates: async () => assert.fail('a resume must not read route candidates'),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'e'.repeat(64)}`,
+        candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
+      }),
       act: async () => {
         throw new WorkHubCoordinationFailure(
           'operation_unavailable',
@@ -586,7 +598,10 @@ test('a recovering Runtime Host tells the user to retry resume', async () => {
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
-      candidates: async () => assert.fail('a resume must not read route candidates'),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'e'.repeat(64)}`,
+        candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
+      }),
       act: async () => {
         throw new WorkHubCoordinationFailure('host_not_ready', 'Runtime Host is recovering');
       },

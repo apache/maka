@@ -196,6 +196,7 @@ test('WorkHub Coordination resume has closed input and outcome shapes', () => {
       userText: 'Resume Payments',
       proposal: {
         disposition: 'resume_work',
+        resumesActionId: 'source-action',
         expects: { targetSessionId: 'payments' },
       },
     }),
@@ -204,6 +205,7 @@ test('WorkHub Coordination resume has closed input and outcome shapes', () => {
       userText: 'Resume Payments',
       proposal: {
         disposition: 'resume_work',
+        resumesActionId: 'source-action',
         expects: { targetSessionId: 'payments' },
       },
     },
@@ -226,6 +228,7 @@ test('WorkHub Coordination resume has closed input and outcome shapes', () => {
       userText: 'Resume Payments',
       proposal: {
         disposition: 'resume_work',
+        resumesActionId: 'source-action',
         expects: { targetSessionId: 'payments' },
         targetSessionId: 'injected',
       },

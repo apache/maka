@@ -135,8 +135,7 @@ export function visibleWorkHubConversation(
       return !localTurn ||
         localTurn.outcome?.kind === 'discussion' ||
         localTurn.outcome?.kind === 'submitted' ||
-        localTurn.outcome?.kind === 'stop' ||
-        localTurn.outcome?.kind === 'resume';
+        localTurn.outcome?.kind === 'stop' || localTurn.outcome?.kind === 'resume';
     },
   );
   const coordinationTurnIds = new Set(coordination.map(({ turnId }) => turnId));
@@ -145,8 +144,7 @@ export function visibleWorkHubConversation(
       !coordinationTurnIds.has(turn.requestId) ||
       (turn.outcome?.kind !== 'discussion' &&
         turn.outcome?.kind !== 'submitted' &&
-        turn.outcome?.kind !== 'stop' &&
-        turn.outcome?.kind !== 'resume'),
+        turn.outcome?.kind !== 'stop' && turn.outcome?.kind !== 'resume'),
   );
   return { coordination: visibleCoordination, local: visibleLocal };
 }
@@ -178,8 +176,7 @@ export async function submitAndRecordWorkHubSurfaceInput(input: {
     result.kind === 'discussion' ||
     result.kind === 'waiting' ||
     result.kind === 'submitted' ||
-    result.kind === 'stop' ||
-    result.kind === 'resume'
+    result.kind === 'stop'
   ) {
     return result;
   }
@@ -577,15 +574,10 @@ export function WorkHubCoordinationTurnView(props: {
         (candidate) => candidate.target.sessionId === props.turn.stop!.targetSessionId,
       )
     : undefined;
-  const resumedSession = props.turn.resume
-    ? props.projection.sessions.find(
-        (candidate) => candidate.target.sessionId === props.turn.resume!.targetSessionId,
-      )
-    : undefined;
   return (
     <WorkHubMessageFrame
       text={props.turn.text}
-      state={props.turn.stop?.outcome ?? props.turn.resume?.outcome ?? (assignment?.linkState === 'active'
+      state={props.turn.stop?.outcome ?? (assignment?.linkState === 'active'
         ? assignment.feedbackState
         : assignment?.linkState ?? props.turn.state)}
       linkState={assignment?.linkState}
@@ -604,17 +596,6 @@ export function WorkHubCoordinationTurnView(props: {
             : props.turn.stop.outcome
               ? copy.stopRecorded
               : copy.stopping}
-          result={undefined}
-          copy={copy}
-          onOpenSession={props.onOpenSession}
-        />
-      ) : props.turn.resume ? (
-        <SubmittedWorkView
-          session={resumedSession}
-          targetSessionId={props.turn.resume.targetSessionId}
-          fallbackName={props.turn.resume.targetSessionName}
-          heading={copy.resumeOutcomes[props.turn.resume.outcome]}
-          state={copy.resumeRecorded}
           result={undefined}
           copy={copy}
           onOpenSession={props.onOpenSession}
@@ -685,7 +666,7 @@ export function workHubCoordinationSummary(
     return `${copy.waitingForDecision} ${copy.requestNotSent}`;
   }
   if (result.kind === 'stop') return copy.stopOutcomes[result.outcome];
-  if (result.kind === 'resume') return copy.resumeOutcomes[result.outcome];
+  if (result.kind === 'resume') return copy.resumeRequested;
   const target = projection.sessions.find(
     (session) => session.target.sessionId === result.target.sessionId,
   );
@@ -773,7 +754,7 @@ function WorkHubTurnView(props: {
               )}
               targetSessionId={resumed.target.sessionId}
               heading={copy.resumeOutcomes[resumed.outcome]}
-              state={copy.resumeRecorded}
+              state=""
               result={undefined}
               copy={copy}
               onOpenSession={props.onOpenSession}
@@ -895,11 +876,11 @@ function workHubCopy(locale: UiLocale) {
         already_terminal: '这项工作已经结束：',
         not_owned: '未停止共享或用户拥有的 Turn：',
       },
+      resumeRequested: '已请求恢复；当前进度请查看目标 Session。',
       resumeOutcomes: {
         resume_started: '已让中断的工作继续：',
         already_running: '这项工作还在跑，不需要恢复：',
       },
-      resumeRecorded: '恢复结果已记录',
       resumeTargetRequired: '请明确说出要继续的工作名称，例如“恢复 支付任务”。',
       resumeTargetAmbiguous: '这个名称对应多项工作；请打开具体的 Session 继续它。',
       resumeTargetUnavailable: '这项工作当前没有可恢复的单个 WorkHub 委派。',
@@ -974,11 +955,11 @@ function workHubCopy(locale: UiLocale) {
         already_terminal: '這項工作已經結束：',
         not_owned: '未停止共享或使用者擁有的 Turn：',
       },
+      resumeRequested: '已請求恢復；目前進度請查看目標 Session。',
       resumeOutcomes: {
         resume_started: '已讓中斷的工作繼續：',
         already_running: '這項工作仍在執行，不需要恢復：',
       },
-      resumeRecorded: '恢復結果已記錄',
       resumeTargetRequired: '請明確說出要繼續的工作名稱，例如「恢復 支付任務」。',
       resumeTargetAmbiguous: '這個名稱對應多項工作；請開啟具體的 Session 繼續它。',
       resumeTargetUnavailable: '這項工作目前沒有可恢復的單一 WorkHub 委派。',
@@ -1039,11 +1020,11 @@ function workHubCopy(locale: UiLocale) {
       already_terminal: 'This work had already ended:',
       not_owned: 'Did not stop a shared or user-owned Turn:',
     },
+    resumeRequested: 'Resume requested. See the target Session for current progress.',
     resumeOutcomes: {
       resume_started: 'Carried on the interrupted work:',
       already_running: 'This work is still running, so there was nothing to resume:',
     },
-    resumeRecorded: 'Resume result recorded',
     resumeTargetRequired: 'Name the work explicitly, for example “Resume Payments”.',
     resumeTargetAmbiguous:
       'That name matches more than one work item. Open the exact Session to resume it.',

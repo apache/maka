@@ -133,11 +133,6 @@ export interface WorkHubCoordinationTurn {
     readonly targetSessionName: string;
     readonly outcome?: Extract<WorkHubCoordinationActResult, { disposition: 'stop_work' }>['outcome'];
   };
-  resume?: {
-    readonly targetSessionId: string;
-    readonly targetSessionName: string;
-    readonly outcome: Extract<WorkHubCoordinationActResult, { disposition: 'resume_work' }>['outcome'];
-  };
   updatedAt: number;
 }
 
@@ -350,13 +345,30 @@ export function createWorkHubController(deps: {
     }
     const { target } = decision;
     try {
+      const candidates = kind === 'resume' ? await coordination.candidates() : undefined;
+      const resumesActionId = candidates?.candidates.find(
+        (candidate) => candidate.sessionId === target.sessionId,
+      )?.latestDelegationActionId;
+      if (kind === 'resume' && !resumesActionId) {
+        return {
+          kind: 'clarification',
+          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+          requestId: input.requestId,
+          text: input.text,
+          options: [],
+          reason: 'resume_target_unavailable',
+        };
+      }
       const admitted = await coordination.act({
         actionId: input.requestId,
         userText: input.text,
-        proposal: {
-          disposition: kind === 'resume' ? 'resume_work' : 'stop_work',
-          expects: { targetSessionId: target.sessionId },
-        },
+        proposal: kind === 'resume'
+          ? {
+              disposition: 'resume_work',
+              expects: { targetSessionId: target.sessionId },
+              resumesActionId: resumesActionId!,
+            }
+          : { disposition: 'stop_work', expects: { targetSessionId: target.sessionId } },
         ...(kind === 'stop' ? { confirmation: { kind: 'user_stop' as const } } : {}),
       });
       const result = {

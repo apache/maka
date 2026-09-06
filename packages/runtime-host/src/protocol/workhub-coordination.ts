@@ -151,12 +151,8 @@ export type WorkHubCoordinationProposal =
     }
   | {
       readonly disposition: 'resume_work';
-      /**
-       * Resume names the Session it resolved and nothing else, for the same
-       * reason a stop does: which delegation is live is the Host's to know.
-       * The Gate revalidates it, so a resolution that has gone stale fails
-       * closed instead of restarting work the user never named.
-       */
+      /** Bound reference from candidate discovery; the Gate checks current ownership. */
+      readonly resumesActionId: string;
       readonly expects: WorkHubCoordinationStopPreconditions;
     };
 
@@ -680,9 +676,11 @@ function decodeWorkHubCoordinationProposal(value: unknown): WorkHubCoordinationP
     const exact = requireExactRecord(proposal, 'WorkHub resume proposal', [
       'disposition',
       'expects',
+      'resumesActionId',
     ]);
     return {
       disposition: 'resume_work',
+      resumesActionId: requireEntityId(exact.resumesActionId, 'WorkHub resume assignment'),
       expects: decodeWorkHubCoordinationStopPreconditions(exact.expects),
     };
   }

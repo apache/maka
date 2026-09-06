@@ -3706,6 +3706,7 @@ function createFixture(
   const terminal = deferred<TurnSnapshot>();
   let coordinator: HostMessageCoordinator;
   const root: HostMessageRootPort = {
+    readLatestRootTurnLineage: async (identity) => identity,
     readSessionHeader: async () => {
       return { isArchived: false };
     },

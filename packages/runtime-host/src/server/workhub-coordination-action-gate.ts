@@ -166,10 +166,7 @@ export interface WorkHubDelegationRetirementClaim {
 
 export interface WorkHubDelegationResumeInput {
   readonly actionId: string;
-  readonly actionFingerprint: `sha256:${string}`;
   readonly source: WorkHubDelegationAssignedMessage;
-  readonly targetSessionName: string;
-  readonly userText: string;
 }
 
 export interface WorkHubRetirementResult {
@@ -315,9 +312,9 @@ export class WorkHubCoordinationActionGate {
     const action = { requestFingerprint, result };
     this.#actions.set(input.actionId, action);
     // Successful actions remain a Host-lifetime fast path. Rejections release
-    // the slot so a pre-assignment admission can retry; the durable action
-    // claim, not this map, is what owns the identity across that retry and
-    // across restarts.
+    // the slot so admission can retry. Durable identity belongs to the
+    // owning operation: action claims for coordination writes, Host Turn
+    // admission for resume.
     void result.catch(() => {
       if (this.#actions.get(input.actionId) === action) {
         this.#actions.delete(input.actionId);
@@ -446,9 +443,24 @@ export class WorkHubCoordinationActionGate {
           'WorkHub resume requires an explicit named command in trusted user text',
         );
       }
-      const source = await this.#resumeSource(input.actionId, proposal.expects.targetSessionId);
-      const sessions = await this.#effects.listSessions();
-      const currentTargetName = sessions.find(({ id }) => id === source.targetSessionId)?.name;
+      const candidates = await this.candidates();
+      const target = candidates.candidates.find(
+        (candidate) => candidate.sessionId === proposal.expects.targetSessionId,
+      );
+      if (!target)
+        throw new WorkHubActionGateFailure(
+          'candidate_unavailable',
+          'WorkHub resume target is unavailable',
+        );
+      this.#assertTarget(target);
+      const source = await this.#soleWorkingDelegation(target.sessionId, 'resume');
+      if (source.actionId !== proposal.resumesActionId) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub resume target delegation changed',
+        );
+      }
+      const currentTargetName = target.sessionName;
       if (
         !currentTargetName ||
         !workHubNamedDelegationActionTargetsSession(requestIntent.resume, currentTargetName)
@@ -458,18 +470,7 @@ export class WorkHubCoordinationActionGate {
           'WorkHub resume target is not affirmed in trusted user text',
         );
       }
-      const resumeFingerprint = resumeActionFingerprint(input, source);
-      await this.#claimAction(input.actionId, 'resume', resumeFingerprint, source.delegationId);
-      return this.#effects.resume(
-        {
-          actionId: input.actionId,
-          actionFingerprint: resumeFingerprint,
-          source,
-          targetSessionName: currentTargetName,
-          userText: input.userText,
-        },
-        context,
-      );
+      return this.#effects.resume({ actionId: input.actionId, source }, context);
     }
 
     if (proposal.disposition === 'create_new') {
@@ -572,21 +573,6 @@ export class WorkHubCoordinationActionGate {
       delegationAssignment(input, fingerprint, target.sessionId, target.sessionName),
       context,
     );
-  }
-
-  async #resumeSource(
-    actionId: string,
-    targetSessionId: string,
-  ): Promise<WorkHubDelegationAssignedMessage> {
-    const claim = await this.#effects.readActionClaim(actionId);
-    const resolved = await this.#soleWorkingDelegation(targetSessionId, 'resume');
-    if (claim?.operation === 'resume' && resolved.delegationId !== claim.subject) {
-      throw new WorkHubActionGateFailure(
-        'action_conflict',
-        'WorkHub resume identity is already bound to a different delegation',
-      );
-    }
-    return resolved;
   }
 
   /**
@@ -1120,8 +1106,10 @@ function workHubCreatedSessionId(actionId: string): string {
   return `whs_${hash(`create\0${actionId}`).slice(0, 48)}`;
 }
 
-export function workHubResumedTurnId(delegationId: string, sourceRunId: string): string {
-  return `wht_${hash(`resume\0${delegationId}\0${sourceRunId}`).slice(0, 48)}`;
+// One request cannot resume a later interruption after a lost response and restart.
+// Host admission rejects reuse of this Turn id for a different source boundary.
+export function workHubResumedTurnId(actionId: string): string {
+  return `wht_${hash(`resume\0${actionId}`).slice(0, 48)}`;
 }
 
 function workspaceProjection(session: WorkHubActionGateSession): WorkspaceProjection {
@@ -1192,20 +1180,6 @@ function replacementActionFingerprint(
         ? { title: input.proposal.target.title, workspace: input.create?.workspace }
         : {}),
     },
-  });
-}
-
-function resumeActionFingerprint(
-  input: WorkHubCoordinationActInput,
-  source: WorkHubDelegationAssignedMessage,
-): `sha256:${string}` {
-  return digest({
-    userText: input.userText,
-    disposition: 'resume_work',
-    resumesActionId: source.actionId,
-    resumesDelegationId: source.delegationId,
-    targetSessionId: source.targetSessionId,
-    targetMessageId: source.targetMessageId,
   });
 }
 

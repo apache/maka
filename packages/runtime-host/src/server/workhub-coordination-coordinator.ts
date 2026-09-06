@@ -28,7 +28,6 @@ import {
   WORKHUB_COORDINATION_SESSION_ROLE,
   WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION,
   WORKHUB_COORDINATION_STOP_SCHEMA_VERSION,
-  WORKHUB_COORDINATION_RESUME_SCHEMA_VERSION,
   isWorkHubCoordinationSession,
   isWorkHubCoordinationSessionId,
   type SessionHeader,
@@ -38,7 +37,6 @@ import {
   type WorkHubDelegationReplacementRequestedMessage,
   type WorkHubDelegationStopRequestedMessage,
   type WorkHubDelegationStopResolvedMessage,
-  type WorkHubDelegationResumeMessage,
 } from '@maka/core/session';
 import type { SessionAuthorityStore, SessionHeaderSnapshot } from '@maka/storage/session-store';
 import type {
@@ -65,7 +63,6 @@ import {
   WorkHubActionGateFailure,
   WorkHubCoordinationActionGate,
   type WorkHubActionGateEffects,
-  type WorkHubDelegationResumeInput,
 } from './workhub-coordination-action-gate.js';
 
 const CREATE_FINGERPRINT = `sha256:${createHash('sha256')
@@ -104,7 +101,6 @@ type CoordinationStores = Pick<
   | 'readWorkHubSupersession'
   | 'readWorkHubStopRequest'
   | 'readWorkHubStopResolution'
-  | 'readWorkHubResume'
   | 'readTranscriptHighWaterSnapshot'
   | 'readTranscriptMessagesSnapshot'
   | 'updateHeaderVersioned'
@@ -129,6 +125,7 @@ type CoordinationSessionActions = Pick<
   resumeDelegation(
     assignment: WorkHubDelegationAssignedMessage,
     context: ConnectionContext,
+    actionId: string,
   ): Promise<WorkHubResumeResult>;
 };
 
@@ -222,7 +219,11 @@ export class HostWorkHubCoordinationCoordinator {
       resolveStop: (input) => this.#resolveStop(input),
       readDelegationRetirement: options.sessionActions.readDelegationRetirement,
       retireDelegation: options.sessionActions.retireDelegation,
-      resume: (input, context) => this.#resume(input, context, options.sessionActions),
+      resume: async (input, context) => ({
+        disposition: 'resume_work',
+        targetSessionId: input.source.targetSessionId,
+        ...(await options.sessionActions.resumeDelegation(input.source, context, input.actionId)),
+      }),
     });
   }
 
@@ -402,56 +403,6 @@ export class HostWorkHubCoordinationCoordinator {
       },
       unknownOutcomeMessage: 'WorkHub stop resolution outcome is unknown',
     });
-  }
-
-  async #resume(
-    input: WorkHubDelegationResumeInput,
-    context: ConnectionContext,
-    actions: CoordinationSessionActions,
-  ): Promise<Extract<WorkHubCoordinationActResult, { disposition: 'resume_work' }>> {
-    const existing = await this.#stores.readWorkHubResume(input.actionId);
-    if (existing) return coordinationResumeResult(existing);
-    const resumed = await actions.resumeDelegation(input.source, context);
-    const suffix = createHash('sha256').update(input.actionId, 'utf8').digest('hex').slice(0, 48);
-    const resolution = await this.#commitCoordinationFact({
-      admissionSessionIds: [WORKHUB_COORDINATION_SESSION_ID, input.source.targetSessionId],
-      read: () => this.#stores.readWorkHubResume(input.actionId),
-      build: (durable) => ({
-        type: 'workhub_coordination',
-        id: `whn_${suffix}`,
-        turnId: input.actionId,
-        ts: durable?.ts ?? Date.now(),
-        schemaVersion: WORKHUB_COORDINATION_RESUME_SCHEMA_VERSION,
-        kind: 'delegation_resume',
-        actionId: input.actionId,
-        actionFingerprint: input.actionFingerprint,
-        coordinationTurnId: input.actionId,
-        resumesActionId: input.source.actionId,
-        resumesDelegationId: input.source.delegationId,
-        targetSessionId: input.source.targetSessionId,
-        targetSessionName: input.targetSessionName,
-        userText: input.userText,
-        outcome: resumed.outcome,
-        ...(resumed.outcome === 'resume_started' ? { targetTurnId: resumed.targetTurnId } : {}),
-      }),
-      conflictMessage: 'WorkHub resume already has a different resolution',
-      beforeAppend: async () => {
-        const source = (
-          await this.#stores.readActiveWorkHubAssignmentsByTarget([input.source.targetSessionId])
-        ).find(
-          ({ actionId, delegationId }) =>
-            actionId === input.source.actionId && delegationId === input.source.delegationId,
-        );
-        if (!source || source.targetSessionId !== input.source.targetSessionId) {
-          throw new WorkHubActionGateFailure(
-            'action_conflict',
-            'WorkHub resume source is no longer active',
-          );
-        }
-      },
-      unknownOutcomeMessage: 'WorkHub resume resolution outcome is unknown',
-    });
-    return coordinationResumeResult(resolution);
   }
 
   #abortReplacement(
@@ -891,17 +842,6 @@ function validCoordinationHeader(header: SessionHeader): boolean {
 
 function digest(value: unknown): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
-}
-
-function coordinationResumeResult(
-  resolution: WorkHubDelegationResumeMessage,
-): Extract<WorkHubCoordinationActResult, { disposition: 'resume_work' }> {
-  return {
-    disposition: 'resume_work',
-    outcome: resolution.outcome,
-    targetSessionId: resolution.targetSessionId,
-    ...(resolution.targetTurnId ? { targetTurnId: resolution.targetTurnId } : {}),
-  };
 }
 
 function workHubDestructiveClaimIdentitySuffix(delegationId: string): string {

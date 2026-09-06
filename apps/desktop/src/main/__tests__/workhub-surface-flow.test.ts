@@ -350,7 +350,7 @@ test('surface replaces a submitted placeholder with its durable assignment state
   });
 });
 
-test('surface replaces live stop and resume placeholders with their durable records', () => {
+test('surface replaces resume feedback with the ordinary coordination acknowledgement', () => {
   const local = [
     {
       requestId: 'stop-action',
@@ -395,11 +395,6 @@ test('surface replaces live stop and resume placeholders with their durable reco
       turnId: 'resume-action',
       text: 'Resume Payments',
       state: 'completed',
-      resume: {
-        targetSessionId: 'payments',
-        targetSessionName: 'Payments',
-        outcome: 'resume_started',
-      },
       updatedAt: 20,
     },
   ];
@@ -841,6 +836,28 @@ test('successful delegated submission needs no renderer summary write', async ()
   });
   assert.equal(result.kind, 'submitted');
   assert.equal(records, 0);
+});
+
+test('resume records ordinary conversation text without persisting execution fields', async () => {
+  const records: unknown[] = [];
+  const controller = fakeController({
+    submit: async (input) => ({
+      kind: 'resume', strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+      requestId: input.requestId, target: { sessionId: 'payments' }, outcome: 'resume_started',
+    }),
+    record: async (input) => { records.push(input); return { turnId: input.turnId }; },
+  });
+  await submitAndRecordWorkHubSurfaceInput({
+    controller,
+    request: { requestId: 'resume-1', text: 'Resume Payments' },
+    recordedUserText: 'Resume Payments',
+    summary: () => 'Resume requested. See the target Session for current progress.',
+    onSummaryError: () => assert.fail('conversation write must succeed'),
+  });
+  assert.deepEqual(records, [{
+    turnId: 'resume-1', userText: 'Resume Payments',
+    assistantText: 'Resume requested. See the target Session for current progress.', disposition: 'summary',
+  }]);
 });
 
 test('lease retires only after an acknowledged submission', async () => {
