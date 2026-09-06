@@ -2225,6 +2225,7 @@ describe('Runtime Host bootstrap protocol', () => {
         connections: 1,
         activeOperations: 0,
         activeResidencies: 0,
+        upgradeBlockingActivity: true,
         protocolVersion: 0,
         compatibilityEpoch: 9,
         pid: 42,
@@ -2236,6 +2237,44 @@ describe('Runtime Host bootstrap protocol', () => {
         logs,
       }),
     );
+  });
+
+  test('decodes the required upgrade blocking activity fact in diagnostics', () => {
+    const base = {
+      hostEpoch: 'epoch-1',
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
+      compositionModules: ['interactive'],
+      residencies: [],
+      state: 'ready',
+      connections: 1,
+      activeOperations: 0,
+      activeResidencies: 0,
+      upgradeBlockingActivity: false,
+      protocolVersion: 0,
+      compatibilityEpoch: 9,
+      pid: 42,
+      processUptimeSeconds: 1,
+      nodeVersion: '22.0.0',
+      platform: 'linux',
+      arch: 'x64',
+      osRelease: '6.6.0',
+      logs: [],
+    };
+    const spec = HOST_BOOTSTRAP_OPERATION_SPECS['host.diagnostics.query'];
+
+    assert.deepEqual(spec.decodeOutput(base), { ...base });
+    assert.deepEqual(spec.decodeOutput({ ...base, upgradeBlockingActivity: true }), {
+      ...base,
+      upgradeBlockingActivity: true,
+    });
+    assert.throws(
+      () => spec.decodeOutput({ ...base, upgradeBlockingActivity: 'yes' }),
+      isInvalidFrame,
+    );
+    const missing = { ...base } as Record<string, unknown>;
+    delete missing.upgradeBlockingActivity;
+    assert.throws(() => spec.decodeOutput(missing), isInvalidFrame);
   });
 
   test('rejects terminal snapshots with fields from another terminal variant', () => {
