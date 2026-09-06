@@ -46,9 +46,9 @@ are not measured here; they require separate accessibility testing.
 
 The Storybook catalog is exhaustive for its source-defined entries and the
 smoke runner carries a required Computer Use story manifest for critical
-runtime boundaries. The Electron accessibility test dynamically enumerates
-settings navigation, then covers modules, global overlays, conversations and
-all workbar entry points.
+runtime boundaries. Storybook AX smoke covers settings navigation, modules,
+global overlays, conversations and workbar entry points; this is not a live
+Electron e2e AX enumerator.
 
 ## AX completion gates
 

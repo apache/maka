@@ -49,8 +49,10 @@ Maka keeps the same separation:
 
 - `maka_computer` is the primary model-facing path;
 - semantic element actions and verified AX/CDP value updates are retained;
-- coordinate click, scroll, drag, key input, and pixel fallback are described
-  as disabled and fail closed;
+- coordinate click, scroll, drag, and pixel fallback remain disabled and fail
+  closed; keyboard is capability-dependent (`press_key` is semantic; `type`/`key`
+  are implemented in `maka-cu-backend.run` and must bind to the observed target
+  or a verified focus owner);
 - provider adapters use the same `maka_computer` contract rather than a
   separate native Computer Use loop.
 

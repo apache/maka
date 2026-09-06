@@ -111,16 +111,19 @@ Maka 自己的 Electron renderer 也是 Computer Use 的目标。它不能依赖
 1. TypeScript 与 Storybook 构建保证语义属性、文案契约和非默认状态 fixture 能随产品 API
    一起演进。不要重新引入基于正则的 JSX 源码扫描器；它无法可靠理解组件语义，主干已用
    真实 AX 验证取代这类检查。
-2. `scripts/ax-tree-audit.mjs` 是 Storybook 与 Electron E2E 共用的测试侧 AX 规则源，
+2. `scripts/ax-tree-audit.mjs` 是 Storybook AX smoke 的规则源，由
+   `scripts/storybook-visual-smoke.mjs` 与 `scripts/ax-tree-audit.test.mjs` 引用，
    拒绝无名或同一语义作用域内歧义的可操作 node、多 `main`、无名 dialog，以及缺少
-   checked/selected/expanded/value 的状态控件。
-3. `apps/desktop/e2e/accessibility-coverage.spec.ts` 读取真实 Electron Chromium AX tree，
-   从运行时设置导航枚举所有设置页，并覆盖模块页、全局弹窗、会话页和 7 个工作栏面板。
-4. `scripts/storybook-visual-smoke.mjs` 对 Storybook 全目录读取 AX tree，执行 `play`
-   函数到最终态，并验证 modal 焦点、隐藏/惰性 surface 和关键 Computer Use story
-   inventory；名字含 `narrow` 的故事必须在窄视口运行。独立 WebContentsView 由
-   `apps/desktop/scripts/browser-observe-act-smoke.mjs` 走真实 observe → semantic ref →
-   act → effect 闭环，不能伪装成 renderer tree 的一部分。
+   checked/selected/expanded/value 的状态控件。它不与 Electron E2E 共用。
+3. 设置、模块、overlay、会话和 workbar 覆盖来自 Storybook 目录、
+   `scripts/storybook-visual-smoke.mjs`（`REQUIRED_COMPUTER_USE_STORY_IDS`）以及
+   `apps/desktop/stories/accessibility-runtime-surfaces.stories.tsx`。该脚本对
+   Storybook 全目录读取 AX tree，执行 `play` 函数到最终态，并验证 modal 焦点、
+   隐藏/惰性 surface 和关键 Computer Use story inventory；名字含 `narrow` 的故事
+   必须在窄视口运行。
+4. 独立 WebContentsView 由 `apps/desktop/scripts/browser-observe-act-smoke.mjs`
+   走真实 observe → semantic ref → act → effect 闭环，不能伪装成 renderer tree
+   的一部分。
 
 完整页面、状态、动作与性能边界清单见 `docs/computer-use-ui-coverage.md`。
 
@@ -141,7 +144,7 @@ Maka 自己的 Electron renderer 也是 Computer Use 的目标。它不能依赖
 | Occlusion、no foreground/pixel fallback | PASS | coordinate/semantic occlusion 与 fail-closed tests | real-window safety sentinel |
 | Fresh postcondition、effect verification | PARTIAL | mutation 后 fresh observation；5 轮 primary oracle=1、slider 业务值/readback=42、scroll tree delta + oracle=76 | 继续补 secondary action 与跨窗口业务 oracle |
 | Per-session queue、generation lease | PARTIAL | session queue/frame claim；lease 修复尚在本地 | concurrent-session 与 intervention-before-dispatch tests |
-| Physical intervention、lock、stop | FAIL | 有状态机原型，无 Desktop production event producer | 真实 host wiring 与 transition tests |
+| Physical intervention、lock、stop | PARTIAL | Desktop producer 已接线：`createDesktopPhysicalInputGuard`（idle-time，via `powerMonitor.getSystemIdleTime`，装配于 `desktop-native-capability-assembly.ts`）、`createComputerUseScreenLockGuard`；`maka-cu-backend` 映射 `user_intervened` / `screen_locked`。仍无可归因的 macOS event-tap producer | 真实 host wiring 与 transition tests |
 | Service recovery、unknown outcome | PARTIAL | 本地 service abstraction 与 unit tests | restart reset、attestation、child-crash、cleanup E2E |
 | Approval semantics | FAIL | 旧实现是整 turn scope | 分级 lease、脱敏 permission event、sensitive-target tests |
 | Privacy、telemetry | FAIL | 旧 observation/tool args 可含敏感内容 | persistence/redaction tests；allowlist report schema |

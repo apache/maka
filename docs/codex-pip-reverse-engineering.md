@@ -235,5 +235,6 @@ It needs no accessibility and no unlocked screen — it drives Electron windows
 only — which makes it the one real-machine check that keeps working when the
 rest cannot run.
 
-The physics and the anchor scoring are covered exactly, without a desktop, in
-`apps/desktop/src/main/__tests__/computer-use-pip-motion.test.ts`.
+The physics and the anchor scoring live in
+`apps/desktop/src/main/computer-use/pip-motion.ts`. The real-machine check
+remains `scripts/pip-interaction-smoke.mjs`.
