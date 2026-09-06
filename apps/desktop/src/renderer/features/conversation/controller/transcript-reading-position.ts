@@ -109,8 +109,12 @@ export interface TranscriptHistoryGate {
   queued?: TranscriptHistoryRequest;
 }
 
+/** One gate per controller: the shell rebuilds the controller per Session, so
+ *  keying by it keeps Sessions from queuing behind each other's loads. */
+export type TranscriptHistoryGates = WeakMap<object, TranscriptHistoryGate>;
+
 export async function loadTranscriptHistory(options: {
-  readonly gate: TranscriptHistoryGate;
+  readonly gates: TranscriptHistoryGates;
   readonly request: TranscriptHistoryRequest;
   readonly controller: {
     loadBefore(maxBytes: number, anchorTurnId?: string): Promise<void>;
@@ -121,7 +125,9 @@ export async function loadTranscriptHistory(options: {
   readonly setPending: (pending: boolean) => void;
   readonly onError: (error: unknown) => void;
 }): Promise<void> {
-  const { gate, request } = options;
+  const { gates, controller, request } = options;
+  let gate = gates.get(controller) ?? { pending: false };
+  gates.set(controller, gate);
   if (gate.pending) {
     // The scroller asks on every reader movement; dropping the request behind
     // an in-flight load strands the reader until they move again.

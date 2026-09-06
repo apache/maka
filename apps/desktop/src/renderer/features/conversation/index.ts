@@ -35,7 +35,7 @@ export const transcriptReadingPosition = {
   restoreRange: restoreSessionTranscriptRange,
 };
 
-export type { TranscriptHistoryGate } from './controller/transcript-reading-position.js';
+export type { TranscriptHistoryGates } from './controller/transcript-reading-position.js';
 export {
   deriveTaskReadinessNotice,
   isTaskSubmissionHardBlocked,

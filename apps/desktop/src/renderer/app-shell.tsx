@@ -78,7 +78,7 @@ import {
   isTaskSubmissionHardBlocked,
   resolveTaskReadinessModelTarget,
   transcriptReadingPosition,
-  type TranscriptHistoryGate,
+  type TranscriptHistoryGates,
 } from './features/conversation';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { LiveTurnReconciler } from './live-turn-reconciler';
@@ -455,7 +455,7 @@ function AppShellContent({
   // reads. A scroller can ask twice in one task — two scroll events before
   // React has re-rendered anything — and a state read is still the old value
   // for both of them.
-  const historyLoadGateRef = useRef<TranscriptHistoryGate>({ pending: false });
+  const historyLoadGatesRef = useRef<TranscriptHistoryGates>(new WeakMap());
   const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<{
     sessionId: string;
     throughSequence: number | null;
@@ -2543,7 +2543,7 @@ function AppShellContent({
     const sessionId = activeId;
     if (!controller || !sessionId) return;
     return transcriptReadingPosition.loadHistory({
-      gate: historyLoadGateRef.current,
+      gates: historyLoadGatesRef.current,
       request: { target, anchorTurnId },
       controller,
       maxBytes: DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES,
