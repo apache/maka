@@ -28,7 +28,7 @@ import type {
   HealthSignalStatus,
 } from '@maka/core/health';
 
-import { type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 /**
  * Health signals carry their own severity ladder — error > warning > info > ok

@@ -1669,9 +1669,7 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {
-          "@maka/core/ui-locale": 1
-        }
+        "dependencyPaths": {}
       },
       "src/renderer/locales/settings-memory-copy.ts": {
         "bridgePaths": {},
