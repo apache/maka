@@ -118,8 +118,7 @@ function crossSessionGateScenario() {
       request: { target: 'earlier' | 'latest'; anchorTurnId?: string },
     ) {
       const side = sides[id];
-      // Detached: a late rejection belongs to its Session, not this await.
-      void transcriptReadingPosition.loadHistory({
+      return transcriptReadingPosition.loadHistory({
         gates,
         request,
         controller: side.controller,
@@ -127,7 +126,7 @@ function crossSessionGateScenario() {
         isCurrent: () => active === id && range === side.controller,
         setPending: (value) => pending[id].push(value),
         onError: (error) => errors[id].push(error),
-      }).catch(() => undefined);
+      });
     },
   };
 }
@@ -522,10 +521,15 @@ describe('app shell session UI state controller', () => {
     assert.deepEqual(scenario.pending.a, [true]);
 
     scenario.switchTo('b');
-    scenario.load('b', { target: 'latest' });
+    const navigation = scenario.load('b', { target: 'latest' });
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.deepEqual(scenario.sides.b.calls, ['latest']);
     assert.deepEqual(scenario.pending.b, [true]);
+
+    scenario.sides.b.settleLatest();
+    scenario.sides.a.settleBefore();
+    await navigation;
+    await stale;
   });
 
   it('leaves the switched-to Session untouched when a stale Session load settles late', async () => {
@@ -533,9 +537,9 @@ describe('app shell session UI state controller', () => {
     const stale = scenario.load('a', { target: 'earlier' });
     await new Promise<void>((resolve) => setImmediate(resolve));
     scenario.switchTo('b');
-    scenario.load('b', { target: 'latest' });
+    const navigation = scenario.load('b', { target: 'latest' });
     scenario.sides.b.settleLatest();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await navigation;
     assert.deepEqual(scenario.pending.b, [true, false]);
     assert.deepEqual(scenario.sides.b.calls, ['latest']);
 
@@ -561,59 +565,62 @@ describe('app shell session UI state controller', () => {
 
   it('replays the queued latest load once after an in-flight load settles on the same Session', async () => {
     const scenario = crossSessionGateScenario();
-    scenario.load('a', { target: 'earlier' });
+    const inFlight = scenario.load('a', { target: 'earlier' });
     await new Promise<void>((resolve) => setImmediate(resolve));
-    scenario.load('a', { target: 'earlier', anchorTurnId: 'turn-anchor' });
-    scenario.load('a', { target: 'latest' });
+    const queuedEarlier = scenario.load('a', { target: 'earlier', anchorTurnId: 'turn-anchor' });
+    const queuedLatest = scenario.load('a', { target: 'latest' });
     assert.deepEqual(scenario.sides.a.calls, ['before']);
 
     scenario.sides.a.settleBefore();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await inFlight;
     assert.deepEqual(scenario.sides.a.calls, ['before', 'latest']);
     scenario.sides.a.settleLatest();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await Promise.allSettled([queuedEarlier, queuedLatest]);
     assert.deepEqual(scenario.pending.a, [true, false, true, false]);
   });
 
   it('keeps the queued latest load when an earlier request arrives after it', async () => {
     const scenario = crossSessionGateScenario();
-    scenario.load('a', { target: 'earlier' });
+    const inFlight = scenario.load('a', { target: 'earlier' });
     await new Promise<void>((resolve) => setImmediate(resolve));
-    scenario.load('a', { target: 'latest' });
-    scenario.load('a', { target: 'earlier', anchorTurnId: 'turn-anchor' });
+    const queuedLatest = scenario.load('a', { target: 'latest' });
+    const queuedEarlier = scenario.load('a', { target: 'earlier', anchorTurnId: 'turn-anchor' });
     assert.deepEqual(scenario.sides.a.calls, ['before']);
 
     scenario.sides.a.settleBefore();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await inFlight;
     assert.deepEqual(scenario.sides.a.calls, ['before', 'latest']);
     scenario.sides.a.settleLatest();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await Promise.allSettled([queuedLatest, queuedEarlier]);
     assert.deepEqual(scenario.pending.a, [true, false, true, false]);
   });
 
   it('does not replay a settled load after its Session range was replaced', async () => {
     const scenario = crossSessionGateScenario();
-    scenario.load('a', { target: 'earlier' });
+    const inFlight = scenario.load('a', { target: 'earlier' });
     await new Promise<void>((resolve) => setImmediate(resolve));
-    scenario.load('a', { target: 'latest' });
+    const queued = scenario.load('a', { target: 'latest' });
     scenario.switchTo('b');
     scenario.sides.a.settleBefore();
+    await inFlight;
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.deepEqual(scenario.sides.a.calls, ['before']);
     assert.deepEqual(scenario.sides.b.calls, []);
     assert.deepEqual(scenario.pending.a, [true, false]);
+    scenario.sides.a.settleLatest();
+    await queued;
   });
 
   it('replays a queued load through its own Session callbacks', async () => {
     const scenario = crossSessionGateScenario();
-    scenario.load('a', { target: 'earlier' });
+    const inFlight = scenario.load('a', { target: 'earlier' });
     await new Promise<void>((resolve) => setImmediate(resolve));
-    scenario.load('a', { target: 'latest' });
+    const queued = scenario.load('a', { target: 'latest' });
     scenario.sides.a.settleBefore();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    scenario.sides.a.settleLatest();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await inFlight;
     assert.deepEqual(scenario.sides.a.calls, ['before', 'latest']);
+    scenario.sides.a.settleLatest();
+    await queued;
     assert.deepEqual(scenario.pending.a, [true, false, true, false]);
     assert.deepEqual(scenario.pending.b, []);
     assert.deepEqual(scenario.sides.b.calls, []);
