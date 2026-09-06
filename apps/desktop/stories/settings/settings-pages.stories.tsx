@@ -42,6 +42,11 @@ import type {
 import type { HealthSignal, HealthSnapshot } from '@maka/core/health';
 import type { DesktopExternalSessionCatalogItem } from '../../src/preload/external-session-catalog';
 import type { AppUpdateStatus } from '../../src/preload/bridge-contract';
+import {
+  AppUpdateProvider,
+  AppUpdateServicesProvider,
+  type AppUpdateServices,
+} from '../../src/renderer/features/app-update/index.js';
 import type { SessionSummary } from '@maka/core/session';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
 import type {
@@ -951,6 +956,24 @@ const makaBridge = {
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
 
 /**
+ * What the production App Update provider reads inside `SettingsStory`. Each
+ * call goes to `window.maka.app` at call time rather than capturing the shared
+ * fixture: a story's decorator installs its scoped bridge in a layout effect,
+ * after this module evaluated, and the channel stories below override
+ * `updateStatus` there. Capturing `makaBridge.app` here would show every About
+ * story the shared idle status.
+ */
+const settingsAppUpdateServices: AppUpdateServices = {
+  appUpdate: {
+    updateStatus: () => window.maka.app.updateStatus(),
+    checkForUpdates: () => window.maka.app.checkForUpdates(),
+    retryUpdateDownload: () => window.maka.app.retryUpdateDownload(),
+    installUpdate: (input) => window.maka.app.installUpdate(input),
+    subscribeUpdateStatus: (handler) => window.maka.app.subscribeUpdateStatus(handler),
+  },
+};
+
+/**
  * A PACKAGED install, which the shared fixture cannot be: it is a dev checkout,
  * and `buildMode` short-circuits the About lead before `updateChannel` is ever
  * read. Only these two facts move — everything else stays the shared bridge, so
@@ -1689,7 +1712,11 @@ function fieldChrome(element: HTMLElement) {
 function SettingsStory(props: SettingsStoryProps) {
   return (
     <ToastProvider>
-      <SettingsStoryFrame {...props} />
+      <AppUpdateServicesProvider services={settingsAppUpdateServices}>
+        <AppUpdateProvider>
+          <SettingsStoryFrame {...props} />
+        </AppUpdateProvider>
+      </AppUpdateServicesProvider>
     </ToastProvider>
   );
 }
@@ -2924,6 +2951,31 @@ export const AboutUpdateFailed: Story = {
     }),
   ],
   render: () => <SettingsStory section="about" />,
+};
+
+// Interaction: 检查更新 on a packaged release that has not checked yet. The
+// button issues the App Update feature's guarded command — the page itself
+// never touches the bridge — and the row's label moves from 尚未检查更新 to
+// 已是最新版本 once the check returns `not-available`. A dev checkout has no
+// row to click, which is why this is not the `About` story's play.
+export const AboutCheckForUpdates: Story = {
+  decorators: [
+    withPackagedChannelBridge({
+      updateChannel: 'release',
+      appVersion: '0.2.0',
+      updateStatus: { state: 'idle', currentVersion: '0.2.0' },
+    }),
+  ],
+  render: () => <SettingsStory section="about" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const check = await canvas.findByRole('button', { name: '检查更新' });
+    expect(check).toBeEnabled();
+    await userEvent.click(check);
+    await waitFor(() => {
+      expect(canvas.getByText('已是最新版本')).toBeInTheDocument();
+    });
+  },
 };
 
 // Real path: 设置 → 已归档任务, after archiving tasks from the rail's row menu.

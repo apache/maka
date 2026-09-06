@@ -476,15 +476,6 @@ type ShellCopy = {
     resizeConversationList: string;
     skipErrorTitle: string;
     tryAgainLater: string;
-    updateInstallFailedTitle: string;
-    updateInstallFailedFallback: string;
-    updateInstallManualFallback: string;
-    updateActiveTasksTitle: string;
-    updateActiveTasksDescription: string;
-    updateActiveTasksConfirm: string;
-    updateActiveTasksCancel: string;
-    updateRetryFailedTitle: string;
-    updateRetryFailedFallback: string;
     loading: string;
     goToModels: string;
     boundaryUnreadableTitle: string;
@@ -1214,15 +1205,6 @@ const SHELL_COPY_BY_LOCALE = {
       resizeConversationList: '调整任务列表宽度',
       skipErrorTitle: '跳过失败',
       tryAgainLater: '请稍后重试。',
-      updateInstallFailedTitle: '无法安装更新',
-      updateInstallFailedFallback: '请稍后重试。',
-      updateInstallManualFallback: '请稍后重试，或手动下载最新版本。',
-      updateActiveTasksTitle: '仍有任务正在运行',
-      updateActiveTasksDescription: '仍有任务正在运行。更新会中断这些任务，是否继续？',
-      updateActiveTasksConfirm: '仍然更新',
-      updateActiveTasksCancel: '取消',
-      updateRetryFailedTitle: '无法重新下载更新',
-      updateRetryFailedFallback: '请稍后重试，或手动下载最新版本。',
       loading: '加载中',
       goToModels: '去模型',
       boundaryUnreadableTitle: '暂时读不到这个任务的权限',
@@ -1716,15 +1698,6 @@ const SHELL_COPY_BY_LOCALE = {
       resizeConversationList: '調整任務列表寬度',
       skipErrorTitle: '跳過失敗',
       tryAgainLater: '請稍後重試。',
-      updateInstallFailedTitle: '無法安裝更新',
-      updateInstallFailedFallback: '請稍後重試。',
-      updateInstallManualFallback: '請稍後重試，或手動下載最新版本。',
-      updateActiveTasksTitle: '仍有任務正在執行',
-      updateActiveTasksDescription: '仍有任務正在執行。更新會中斷這些任務，是否繼續？',
-      updateActiveTasksConfirm: '仍然更新',
-      updateActiveTasksCancel: '取消',
-      updateRetryFailedTitle: '無法重新下載更新',
-      updateRetryFailedFallback: '請稍後重試，或手動下載最新版本。',
       loading: '載入中',
       goToModels: '去模型',
       boundaryUnreadableTitle: '暫時讀不到這個任務的權限',
@@ -2264,15 +2237,6 @@ const SHELL_COPY_BY_LOCALE = {
       resizeConversationList: 'Resize task list',
       skipErrorTitle: 'Could not skip onboarding',
       tryAgainLater: 'Try again later.',
-      updateInstallFailedTitle: 'Could not install update',
-      updateInstallFailedFallback: 'Try again later.',
-      updateInstallManualFallback: 'Try again later, or download the latest version manually.',
-      updateActiveTasksTitle: 'Tasks are still running',
-      updateActiveTasksDescription: 'Tasks are still running. Updating will interrupt them. Continue?',
-      updateActiveTasksConfirm: 'Update anyway',
-      updateActiveTasksCancel: 'Cancel',
-      updateRetryFailedTitle: 'Could not retry update download',
-      updateRetryFailedFallback: 'Try again later, or download the latest version manually.',
       loading: 'Loading',
       goToModels: 'Go to Models',
       boundaryUnreadableTitle: 'Could not read this task’s permissions',
