@@ -21,19 +21,18 @@ import { deepEqual, equal, throws } from 'node:assert/strict';
 import { test } from 'node:test';
 import { compare, countSpecTests } from './check-e2e-budget.mjs';
 
-test('counts the test-creating forms and ignores the configuring ones', () => {
+test('counts the top-level tests and nothing nested inside them', () => {
   const source = [
     "import { test } from './fixtures';",
-    'test.setTimeout(120_000);',
     "test('one', async () => {});",
-    "test.skip('two', async () => {});",
-    '  test("nested call inside a body", 1);',
-    "test.only('three', async () => {});",
+    '  test.setTimeout(120_000);',
+    '  await expect.poll(() => test(1));',
+    "test('two', async () => {});",
   ].join('\n');
-  equal(countSpecTests(source, 'sample.spec.ts'), 3);
+  equal(countSpecTests(source, 'sample.spec.ts'), 2);
 });
 
-test('refuses a form whose test count cannot be read off the top level', () => {
+test('refuses a top-level form whose test count it cannot read', () => {
   throws(
     () => countSpecTests("test.describe('group', () => {});", 'sample.spec.ts'),
     /unrecognised top-level `test\.describe\(`/u,
@@ -43,7 +42,7 @@ test('refuses a form whose test count cannot be read off the top level', () => {
 test('reports a spec that is missing from the budget', () => {
   deepEqual(
     compare({ specs: {} }, { 'new.spec.ts': 1 }),
-    ['new.spec.ts: not in the budget -- add it with a reason it needs a real window'],
+    ['new.spec.ts: not in the budget (1 test(s)) -- add it with a reason it needs a real window'],
   );
 });
 

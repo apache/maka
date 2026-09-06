@@ -1,10 +1,8 @@
 {
-  "version": 1,
   "policy": [
     "A test belongs in this tier only when it needs a real Electron window: an OS dialog, a main-process round trip, input released outside the window, persistence across a renderer reload, or a cross-process lifecycle.",
     "Layout geometry, renderer state machines and pure CSS go to a Storybook play function; main-process logic goes to node --test. See #4761.",
-    "Every spec below records the Electron-owned mechanism it needs. If you cannot name one, the test does not belong here.",
-    "Counts are regenerated with `npm run check:e2e-budget:write` -- the reason has to be written by hand."
+    "Every spec below records the Electron-owned mechanism it needs. If you cannot name one, the test does not belong here."
   ],
   "specs": {
     "composer-directory-reference.spec.ts": {
