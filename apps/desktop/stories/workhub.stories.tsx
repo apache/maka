@@ -134,5 +134,21 @@ export const SubmittedWorkKeepsTargetMetadataInside: Story = {
     expect(button.getBoundingClientRect().bottom).toBeGreaterThanOrEqual(
       project.getBoundingClientRect().bottom,
     );
+
+    // #4914: WorkHub's conversation is one surface — the user bubble rounds
+    // like the composer plate beneath it, both resolving Astryx's
+    // `--radius-chat`. `density="compact"` on WorkHub's chat primitives had
+    // pinned the bubble to `--radius-container` (12px) while the composer
+    // stayed 28px, splitting a transcript and a dock on the same surface by
+    // more than 2x. Compared against the real composer plate, not a literal,
+    // so an upstream `--radius-chat` change moves both or fails here.
+    const bubble = canvasElement.querySelector<HTMLElement>(
+      '.workhub-projected-turn .workhub-user-bubble',
+    );
+    const plate = canvasElement.querySelector('.maka-composer-astryx')?.firstElementChild;
+    if (!bubble || !plate) throw new Error('WorkHub bubble or composer plate is missing');
+    const bubbleRadius = getComputedStyle(bubble).borderTopLeftRadius;
+    expect(bubbleRadius).not.toBe('0px');
+    expect(bubbleRadius).toBe(getComputedStyle(plate).borderTopLeftRadius);
   },
 };

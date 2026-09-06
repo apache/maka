@@ -74,24 +74,6 @@ test('WorkHub rebuilds delegated execution feedback after navigating away and ba
     page.locator('.workhub-projected-turn', { hasText: routedPrompt })
       .locator('.workhub-submitted-state'),
   ).toHaveText('关联有效 · 已完成');
-
-  // #4914: WorkHub's conversation is one surface — the user bubble rounds like
-  // the composer plate beneath it, both resolving Astryx's `--radius-chat`.
-  // `density="compact"` on WorkHub's chat primitives had pinned the bubble to
-  // `--radius-container` (12px) while the composer stayed 28px. Compared against
-  // the real composer plate rather than a literal, so an upstream `--radius-chat`
-  // change moves both or fails here.
-  const bubbleRadii = await page.evaluate(() => {
-    const round = (element: Element | null) =>
-      element ? getComputedStyle(element).borderTopLeftRadius : null;
-    return {
-      bubble: round(document.querySelector('.workhub-projected-turn .workhub-user-bubble')),
-      composerPlate: round(document.querySelector('.workhub-surface .maka-composer-astryx > *')),
-    };
-  });
-  expect(bubbleRadii.bubble).toBeTruthy();
-  expect(bubbleRadii.bubble).not.toBe('0px');
-  expect(bubbleRadii.bubble).toBe(bubbleRadii.composerPlate);
 });
 
 test('WorkHub replaces the exact linked delegation across Sessions', async ({
