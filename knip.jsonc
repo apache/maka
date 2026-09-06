@@ -2,6 +2,7 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "ignoreExportsUsedInFile": true,
   "tags": ["-knipignore"],
+  // patch-package is used dynamically via createRequire, invisible to knip's static analysis.
   "ignoreDependencies": ["patch-package"],
   "workspaces": {
     "apps/desktop": {

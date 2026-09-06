@@ -114,7 +114,7 @@ const DURABLE_STATE_DECODER_FILES = new Set([
 const TYPECHECK_ONLY_FILES = new Set([
   'biome.jsonc',
   'components.json',
-  'knip.json',
+  'knip.jsonc',
   'tsconfig.base.json',
   'tsconfig.lib.json',
 ]);
