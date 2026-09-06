@@ -27,6 +27,7 @@ const execFileAsync = promisify(execFile);
 export const BROKEN_GIT_SHAPES = [
   'head-directory',
   'head-garbage',
+  'head-symref-no-refs-prefix',
   'gitfile-garbage-head',
   'missing-objects-and-refs',
 ] as const;
@@ -47,6 +48,13 @@ export async function createBrokenGitMetadata(root: string, shape: BrokenGitShap
       await writeFile(join(root, '.git'), 'gitdir: stub\n', 'utf8');
       await mkdir(join(root, 'stub'), { recursive: true });
       await writeFile(join(root, 'stub', 'HEAD'), 'gk\n', 'utf8');
+      return;
+    case 'head-symref-no-refs-prefix':
+      // Valid objects/ and refs/ plus a symref whose target is not under
+      // refs/: passes naive checks but git rev-parse exits 128.
+      await mkdir(join(root, '.git', 'objects'), { recursive: true });
+      await mkdir(join(root, '.git', 'refs'), { recursive: true });
+      await writeFile(join(root, '.git', 'HEAD'), 'ref: gk\n', 'utf8');
       return;
     case 'missing-objects-and-refs':
       await mkdir(join(root, '.git'), { recursive: true });
