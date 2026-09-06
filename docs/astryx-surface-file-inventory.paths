@@ -35,7 +35,9 @@ apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-profi
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-resource-dialog.tsx
 apps/desktop/src/renderer/features/session-collaboration/services-context.tsx
 apps/desktop/src/renderer/features/session-collaboration/turn-request-inbox-context.tsx
+apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-alias-action.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-join-dialog.tsx
+apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-navigation.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-guest-turn-actions.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-approval.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-badge.tsx
