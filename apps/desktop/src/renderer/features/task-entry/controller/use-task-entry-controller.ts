@@ -32,6 +32,7 @@ import {
 import {
   getConversationCopy,
   type WorkspacePickerModel,
+  useToast,
   useUiLocale,
 } from '@maka/ui';
 import {
@@ -58,6 +59,13 @@ import type { TaskEntryHostModel } from '../ui/task-entry-host.js';
 export interface UseTaskEntryControllerInput {
   reportError(error: TaskEntryError): void;
   manageProjects(profileId: string): void;
+  /** Defaults to the app toast confirm dialog; injected in tests. */
+  confirm?(input: {
+    title: string;
+    description?: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+  }): Promise<boolean>;
 }
 
 export interface TaskEntryControllerSelectors {
@@ -130,6 +138,7 @@ export function useTaskEntryController(
   input: UseTaskEntryControllerInput,
 ): TaskEntryController {
   const locale = useUiLocale();
+  const toast = useToast();
   const copy = getShellCopy(locale).projectActions;
   const conversationCopy = getConversationCopy(locale).workspace;
   const reportError = input.reportError;
@@ -289,19 +298,23 @@ export function useTaskEntryController(
     projectMutationPendingRef.current = true;
     setPending(true);
     try {
-      let result: TaskEntryProjectMutationResult;
-      try {
-        result = await service.addProject({
-          profileId: host.profile.id,
-          hostId: host.hostId,
+      let result: TaskEntryProjectMutationResult = await service.addProject({
+        profileId: host.profile.id,
+        hostId: host.hostId,
+      });
+      if (!result.ok && result.reason === 'archived') {
+        const confirmed = await (input.confirm ?? toast.confirm)({
+          title: copy.archivedProjectTitle,
+          description: copy.archivedProjectDescription,
+          confirmLabel: copy.archivedProjectRestore,
+          cancelLabel: copy.archivedProjectCancel,
         });
-      } catch (cause) {
-        reportError({
-          title: copy.selectDirectoryFailedTitle,
-          description: localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale),
-          profileId: host.profile.id,
-        });
-        return;
+        if (!confirmed) return;
+        result = await service.restoreProject(
+          { profileId: host.profile.id, hostId: host.hostId },
+          result.projectId,
+        );
+        if (!result.ok) return;
       }
       if (!result.ok) return;
       setSelectedProfileId(host.profile.id);
@@ -309,11 +322,17 @@ export function useTaskEntryController(
         new Map(current).set(host.profile.id, result.project.id),
       );
       await refreshAfterProjectMutation(host.profile.id);
+    } catch (cause) {
+      reportError({
+        title: copy.selectDirectoryFailedTitle,
+        description: localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale),
+        profileId: host.profile.id,
+      });
     } finally {
       projectMutationPendingRef.current = false;
       setPending(false);
     }
-  }, [copy.readPathFailedFallback, copy.selectDirectoryFailedTitle, locale, refreshAfterProjectMutation, reportError, service]);
+  }, [copy.archivedProjectCancel, copy.archivedProjectDescription, copy.archivedProjectRestore, copy.archivedProjectTitle, copy.readPathFailedFallback, copy.selectDirectoryFailedTitle, locale, refreshAfterProjectMutation, reportError, service, toast]);
 
   const chooseProjectForProfile = useCallback(async (profileId: string): Promise<void> => {
     let next: TaskEntryCatalog | undefined;

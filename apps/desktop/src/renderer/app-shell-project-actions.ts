@@ -53,6 +53,13 @@ type ToastApi = {
     diagnosticDetails?: string,
     diagnosticTarget?: { sessionId: string } | { profileId: string },
   ): void;
+  confirm(input: {
+    title: string;
+    description?: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    destructive?: boolean;
+  }): Promise<boolean>;
 };
 
 export interface AppShellProjectActions {
@@ -160,6 +167,18 @@ export function createAppShellProjectActions(deps: {
     try {
       const result = await runOnDefaultRuntimeHost(async (host) => {
         const added = await window.maka.projects.add(host);
+        if (!added.ok && added.reason === 'archived') {
+          const confirmed = await toastApi.confirm({
+            title: copy.archivedProjectTitle,
+            description: copy.archivedProjectDescription,
+            confirmLabel: copy.archivedProjectRestore,
+            cancelLabel: copy.archivedProjectCancel,
+          });
+          if (!confirmed) return added;
+          const restored = await window.maka.projects.restore(added.projectId, host);
+          await applySelectedProject(restored, restored.preferredPath ?? '', true, host);
+          return { ok: true as const, project: restored, path: restored.preferredPath ?? '' };
+        }
         if (!added.ok) return added;
         await applySelectedProject(added.project, added.path, true, host);
         return added;

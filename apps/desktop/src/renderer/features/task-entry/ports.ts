@@ -87,13 +87,15 @@ export interface TaskEntryCatalog {
 
 export type TaskEntryProjectMutationResult =
   | { readonly ok: true; readonly project: ProjectRecord }
-  | { readonly ok: false; readonly reason: 'cancelled' };
+  | { readonly ok: false; readonly reason: 'cancelled' }
+  | { readonly ok: false; readonly reason: 'archived'; readonly projectId: string };
 
 /** The minimum environment capability needed by Task Entry / Workspace. */
 export interface TaskEntryCatalogService {
   getCatalog(): Promise<TaskEntryCatalog>;
   subscribeChanges(handler: () => void): TaskEntryUnsubscribe;
   addProject(host: TaskEntryHostRef): Promise<TaskEntryProjectMutationResult>;
+  restoreProject(host: TaskEntryHostRef, projectId: string): Promise<TaskEntryProjectMutationResult>;
   relinkProject(
     host: TaskEntryHostRef,
     projectId: string,

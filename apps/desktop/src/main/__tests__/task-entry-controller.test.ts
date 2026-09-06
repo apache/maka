@@ -21,7 +21,7 @@ import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement } from 'react';
-import { LocaleProvider } from '@maka/ui';
+import { LocaleProvider, ToastProvider } from '@maka/ui';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   createFakeTaskEntryServices,
@@ -97,10 +97,14 @@ function catalog(host: TaskEntryHost = readyHost()): TaskEntryCatalog {
 }
 let latestController: TaskEntryController | undefined;
 
-function ControllerProbe(props: { reportError(error: unknown): void }) {
+function ControllerProbe(props: {
+  reportError(error: unknown): void;
+  confirm?(input: { title: string }): Promise<boolean>;
+}) {
   latestController = useTaskEntryController({
     reportError: props.reportError,
     manageProjects() {},
+    ...(props.confirm ? { confirm: props.confirm } : {}),
   });
   return null;
 }
@@ -114,16 +118,22 @@ function renderController(
   root: ReturnType<typeof installReactRenderer>['root'],
   services: TaskEntryServices,
   errors: unknown[] = [],
+  confirm?: (input: { title: string }) => Promise<boolean>,
 ) {
   root.render(
     createElement(LocaleProvider, {
       locale: 'en',
       children: createElement(
+        ToastProvider,
+        null,
+        createElement(
         TaskEntryServicesProvider,
         { services },
         createElement(ControllerProbe, {
           reportError: (error: unknown) => errors.push(error),
+          confirm,
         }),
+      ),
       ),
     }),
   );
@@ -270,6 +280,84 @@ describe('useTaskEntryController', () => {
     await act(async () => added.resolve({ ok: true, project: project('project-b') }));
     assert.equal(controller().selectors.target?.projectId, 'project-b');
     assert.equal(controller().selectors.workspacePicker.pending, false);
+  });
+
+  it('prompts to restore an archived Project and selects it after confirmation', async () => {
+    const { root } = installReactRenderer();
+    let reads = 0;
+    let restoreCalls = 0;
+    const refreshedHost = readyHost({
+      projects: [project('project-a'), project('project-b')],
+      selectedProjectId: 'project-a',
+    });
+    const services = createFakeTaskEntryServices({
+      catalog: {
+        ...createFakeTaskEntryServices().catalog,
+        getCatalog: async () =>
+          catalog(++reads === 1 ? readyHost() : refreshedHost),
+        addProject: async () => ({
+          ok: false as const,
+          reason: 'archived' as const,
+          projectId: 'project-a',
+        }),
+        restoreProject: async () => {
+          restoreCalls += 1;
+          return { ok: true as const, project: project('project-a') };
+        },
+      },
+    });
+
+    await act(async () => renderController(root, services, [], async () => true));
+    await act(async () => {
+      controller().commands.addProject();
+      await Promise.resolve();
+    });
+    await act(async () => {});
+
+    assert.equal(restoreCalls, 1);
+    assert.equal(controller().selectors.target?.projectId, 'project-a');
+  });
+
+  it('reports restore failure and releases the pending state so the user can retry', async () => {
+    const { root } = installReactRenderer();
+    const restoration = deferred<{ ok: true; project: ReturnType<typeof project> }>();
+    const errors: unknown[] = [];
+    let restoreCalls = 0;
+    const services = createFakeTaskEntryServices({
+      catalog: {
+        ...createFakeTaskEntryServices().catalog,
+        getCatalog: async () => catalog(),
+        addProject: async () => ({
+          ok: false,
+          reason: 'archived',
+          projectId: 'project-b',
+        }),
+        restoreProject: async () => {
+          restoreCalls += 1;
+          return restoreCalls === 1
+            ? restoration.promise
+            : { ok: false, reason: 'cancelled' };
+        },
+      },
+    });
+
+    await act(async () => renderController(root, services, errors, async () => true));
+    await act(async () => controller().commands.addProject());
+    assert.equal(controller().selectors.workspacePicker.pending, true);
+
+    await act(async () => restoration.reject(new Error('restore failed')));
+
+    assert.deepEqual(errors, [{
+      title: 'Could not select working directory',
+      description: 'The project path is temporarily unavailable. Try again later.',
+      profileId: 'local',
+    }]);
+    assert.equal(controller().selectors.target?.projectId, 'project-a');
+    assert.equal(controller().selectors.workspacePicker.pending, false);
+
+    await act(async () => controller().commands.addProject());
+    assert.equal(restoreCalls, 2);
+    assert.equal(errors.length, 1);
   });
 
   it('deduplicates relink requests and selects the returned Project before refreshing', async () => {

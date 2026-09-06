@@ -1808,8 +1808,17 @@ const makaBridge = {
         { select: false },
       ) as
         | { ok: true; project: ProjectRecord; path: string }
-        | { ok: false; reason: 'cancelled' };
+        | { ok: false; reason: 'cancelled' }
+        | { ok: false; reason: 'archived'; projectId: string };
       return result.ok ? { ok: true as const, project: result.project } : result;
+    },
+    async restoreProject(host: DesktopNewTaskHostRef, projectId: string) {
+      const project = await ipcRenderer.invoke(
+        'projects:restore',
+        await runtimeHostScope(host),
+        projectId,
+      ) as ProjectRecord;
+      return { ok: true as const, project };
     },
     async relinkProject(host: DesktopNewTaskHostRef, projectId: string) {
       return ipcRenderer.invoke(

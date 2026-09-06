@@ -272,6 +272,18 @@ export function ProjectsSettingsPage(props: {
                 : async () => {
                     if (!props.runtimeHostTargetVerified) return;
                     const result = await window.maka.projects.add(host);
+                    if (!result.ok && result.reason === 'archived') {
+                      const ok = await toast.confirm({
+                        title: copy.archivedProjectTitle,
+                        description: copy.archivedProjectDescription,
+                        confirmLabel: copy.archivedProjectRestore,
+                        cancelLabel: copy.archivedProjectCancel,
+                      });
+                      if (!ok) return;
+                      await window.maka.projects.restore(result.projectId, host);
+                      await reload();
+                      return;
+                    }
                     if (result.ok) await reload();
                   }}
             />
