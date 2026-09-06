@@ -32,6 +32,8 @@ export const en: Copy = {
   positioning:
     'Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did.',
   theme: { toDark: 'Switch to dark mode', toLight: 'Switch to light mode' },
+  sceneAlt:
+    'One turn of RuntimeEvents: the model speaks, runs a command, asks permission, you approve, it gets the result, edits a file, the turn ends.',
   nav: {
     docs: 'Docs',
     downloads: 'Downloads',

@@ -287,6 +287,11 @@ export class RuntimeHostConnectionSession {
 
   #ensureClientCapabilities(): ClientCapabilityConnection | undefined {
     if (this.#closed || this.#inputClosed) return;
+    // Guests observe and submit approval requests; they cannot provide Client
+    // Capabilities or directly admit a Turn. In particular, their pending and
+    // finalized connections may overlap while the credential becomes bound to
+    // the Client. Neither connection owns a capability-provider registration.
+    if (this.#options.connection.authority.principalKind === 'session_guest') return;
     const service = this.#options.resolveClientCapabilities?.();
     if (!service) return;
     if (this.#clientCapabilityService && this.#clientCapabilityService !== service) {

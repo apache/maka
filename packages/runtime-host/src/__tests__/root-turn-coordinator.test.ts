@@ -1268,6 +1268,8 @@ test('idle Skill admission persists a canonical draft without history before roo
         throw new Error('injected root admission failure');
       },
       readRootTurnAdmission: (sessionId, turnId) => store.readRootTurnAdmission(sessionId, turnId),
+      readRootTurnContinuationAdmission: (sessionId, sourceTurnId, sourceRunId) =>
+        store.readRootTurnContinuationAdmission(sessionId, sourceTurnId, sourceRunId),
       readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
         store.readRootTurnSourceMessageReceipt(sessionId, messageId),
       listRootTurnAdmissionsForRecovery: (sessionId) =>
@@ -2657,6 +2659,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     let drainRequested = false;
     let stopClosureSignal: ReturnType<typeof deferred<void>> | undefined;
     const rootPort: HostMessageRootPort = {
+      readLatestRootTurnLineage: async (identity) => identity,
       readSessionHeader: (sessionId) =>
         requireCoordinator(coordinator).readSessionHeader(sessionId),
       readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
@@ -3195,6 +3198,8 @@ test('successor admission failure retains the terminal transition and its confir
         return store.admitRootTurn(input);
       },
       readRootTurnAdmission: (sessionId, turnId) => store.readRootTurnAdmission(sessionId, turnId),
+      readRootTurnContinuationAdmission: (sessionId, sourceTurnId, sourceRunId) =>
+        store.readRootTurnContinuationAdmission(sessionId, sourceTurnId, sourceRunId),
       readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
         store.readRootTurnSourceMessageReceipt(sessionId, messageId),
       listRootTurnAdmissionsForRecovery: (sessionId) =>
@@ -3303,6 +3308,8 @@ test('shutdown contains a successor backend start rejected by Interaction drain'
         return store.admitRootTurn(input);
       },
       readRootTurnAdmission: (sessionId, turnId) => store.readRootTurnAdmission(sessionId, turnId),
+      readRootTurnContinuationAdmission: (sessionId, sourceTurnId, sourceRunId) =>
+        store.readRootTurnContinuationAdmission(sessionId, sourceTurnId, sourceRunId),
       readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
         store.readRootTurnSourceMessageReceipt(sessionId, messageId),
       listRootTurnAdmissionsForRecovery: (sessionId) =>
@@ -5175,7 +5182,6 @@ async function createFailureFixture(options: {
   const artifacts = options.withArtifacts
     ? await openInteractiveArtifactStoreForWrite(owner.lease)
     : undefined;
-  await artifacts?.recover();
   const session = await stores.sessionStore.create({
     cwd: capability.canonicalPath,
     ...(options.legacyConnectionIdentity
@@ -5225,6 +5231,7 @@ async function createFailureFixture(options: {
   let interactions: HostInteractionCoordinator | undefined;
   let fallbackRunClosureClaims = 0;
   const rootPort: HostMessageRootPort = {
+    readLatestRootTurnLineage: async (identity) => identity,
     readSessionHeader: (sessionId) => requireCoordinator(coordinator).readSessionHeader(sessionId),
     readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
     claimStopFence: (input, commitQueueFence, admission) =>

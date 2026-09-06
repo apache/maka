@@ -91,6 +91,12 @@ jobs:
       - name: Check Windows test inventory
         run: npm run windows:inventory
 
+      # Deliberately here and not in the e2e job: that job is conditional, and a
+      # tier this guard only checks when the tier already ran is a guard that
+      # grows back (#4761). Pure Node, no build -- it reads the spec sources.
+      - name: Check Electron e2e budget
+        run: npm run check:e2e-budget
+
       # Runs on the PR merge result: after a sibling protocol change lands on
       # main with the same epoch text, the silently merged tree still carries
       # the current base parent's epoch and this fails instead of shipping two
@@ -105,7 +111,7 @@ jobs:
       - name: Test Storybook audit contracts
         run: node --test scripts/ax-tree-audit.test.mjs scripts/storybook-visual-smoke.test.mjs
       - name: Test Computer Use script contracts
-        run: node --test scripts/ax-tree-audit.test.mjs scripts/computer-use/lab-root.test.mjs
+        run: node --test scripts/computer-use/lab-root.test.mjs
 
       - name: Test script entrypoint contracts
         run: node --test scripts/script-entrypoints.test.mjs
@@ -133,6 +139,21 @@ jobs:
       # the other install-free checks.
       - name: Check ASF source headers
         run: npm run check:asf-headers
+
+      # Locale hygiene ratchet (node built-ins only, so it runs install-free): a new UI locale must only ever mean a new
+      # UiCatalog key, so locale-literal branches, silent locale defaults,
+      # and payload sniffing may shrink but never grow.
+      - name: Check locale hygiene
+        if: steps.plan.outputs.code == 'true'
+        env:
+          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
+        run: |
+          node --test scripts/check-locale-hygiene.test.mjs
+          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
+            npm run check:locale-hygiene -- --base "$BASE_SHA"
+          else
+            npm run check:locale-hygiene
+          fi
 
       # Everything below this line may need an installed toolchain, so each
       # step names the selections it belongs to. `setup-node` itself is
@@ -342,37 +363,7 @@ jobs:
 
       - name: Desktop e2e
         if: steps.plan.outputs.e2e == 'true'
-        run: |
-          set -euo pipefail
-          display_base=90
-          worker_count=4
-          xvfb_pids=()
-          cleanup() {
-            kill "${xvfb_pids[@]}" 2>/dev/null || true
-            wait "${xvfb_pids[@]}" 2>/dev/null || true
-          }
-          trap cleanup EXIT
-          for ((index = 0; index < worker_count; index += 1)); do
-            display=$((display_base + index))
-            Xvfb ":$display" -screen 0 1280x1024x24 -nolisten tcp \
-              >"$RUNNER_TEMP/xvfb-$display.log" 2>&1 &
-            xvfb_pids+=("$!")
-          done
-          for ((index = 0; index < worker_count; index += 1)); do
-            display=$((display_base + index))
-            for _ in {1..50}; do
-              [[ -S "/tmp/.X11-unix/X$display" ]] && break
-              kill -0 "${xvfb_pids[$index]}" 2>/dev/null || break
-              sleep 0.1
-            done
-            if [[ ! -S "/tmp/.X11-unix/X$display" ]]; then
-              cat "$RUNNER_TEMP/xvfb-$display.log"
-              exit 1
-            fi
-          done
-          MAKA_E2E_X_DISPLAY_BASE="$display_base" \
-            npm exec -w @maka/desktop -- playwright test \
-              --config e2e/playwright.config.ts --workers="$worker_count"
+        run: xvfb-run -a npm exec -w @maka/desktop -- playwright test --config e2e/playwright.config.ts
 
       # Playwright keeps a trace, a video and a screenshot for every failed
       # test. Without this they die with the runner, and an e2e flake can only

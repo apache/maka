@@ -1168,7 +1168,13 @@ export interface SystemNoteMessage {
     | 'step_limit'
     | 'error'
     | 'abort';
-  /** Shape depends on `kind`. */
+  /**
+   * Shape depends on `kind`. `context_compaction_failed_open` carries
+   * `{ failOpenReason?: string }` — the reason the fold was refused (e.g.
+   * `coverage_miss`, `source_hash_mismatch`); when a turn is stopped before
+   * settlement, this note is the only durable record of the reason, because
+   * the `token_usage` diagnostic is never written (#4850).
+   */
   data?: unknown;
 }
 

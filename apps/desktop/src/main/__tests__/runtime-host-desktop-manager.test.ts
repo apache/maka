@@ -22,6 +22,7 @@ import test from 'node:test';
 import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
   RuntimeHostOperationError,
+  RuntimeHostPeerError,
   RuntimeHostPermanentReconnectError,
   RuntimeHostRequestInterruptedError,
   type RuntimeHostSpawnedProcess,
@@ -820,6 +821,54 @@ test('reconnects after a pairing candidate becomes bound to this Client', async 
   assert.equal(candidate.closeCalls, 1);
   assert.equal(manager.current('office')?.candidate, claimed.candidate);
   await manager.close();
+});
+
+test('reports Guest admission capacity instead of retrying the initial mount', async () => {
+  const local = candidateHarness();
+  const capacity = new RuntimeHostPeerError('peer_capacity_exceeded', 'Host connection capacity is full');
+  let starts = 0;
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => {
+        starts += 1;
+        if (starts === 1) return ready(local.candidate);
+        throw capacity;
+      },
+    },
+  );
+  try {
+    await assert.rejects(
+      manager.mountGuest(peerGuestTarget('shared-full'), () => undefined),
+      (error: unknown) => error === capacity,
+    );
+    assert.equal(starts, 2);
+    assert.equal(manager.current('shared-full'), undefined);
+  } finally {
+    await manager.close();
+  }
+});
+
+test('Guest finalization does not claim a commit while the peer path is unavailable', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const failure = new RuntimeHostPeerError('direct_path_unavailable', 'No direct path');
+  const manager = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async (input) => {
+      if (!input.profileTarget) return ready(local.candidate);
+      throw failure;
+    },
+    reconnectBackoff: { minMs: 50, maxMs: 50 },
+    pairingFinalizationTimeoutMs: 10,
+  });
+  try {
+    await manager.mountGuest(peerGuestTarget('shared-offline'), () => undefined);
+    let dispatched = false;
+    await assert.rejects(manager.finalizeGuestAccess('shared-offline', undefined, assert.fail,
+      () => { dispatched = true; }), (error) => error === failure);
+    assert.equal(dispatched, false);
+  } finally {
+    await manager.close();
+  }
 });
 
 test('completes Guest import at credential activation while reconnect continues', async () => {

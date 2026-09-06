@@ -25,6 +25,7 @@ import {
   forceTerminateRegisteredRuntimeHost,
   RuntimeHostOperationError,
   RuntimeHostPermanentReconnectError,
+  RuntimeHostPeerError,
   RuntimeHostRequestInterruptedError,
   runtimeHostStartupError,
   LOCAL_RUNTIME_HOST_PROFILE,
@@ -86,9 +87,10 @@ export interface RuntimeHostDesktopManager {
     mountId: string,
     signal?: AbortSignal,
     onAccessActivated?: () => void,
+    onFinalizationStarted?: () => void,
   ): Promise<RuntimeHostGuestAccessFinalization>;
   unmountGuest(mountId: string): Promise<void>;
-  wakePeerRecovery(): void;
+  wakePeerRecovery(profileId?: string): void;
   disable(profileId: string): Promise<void>;
   waitUntilReady(
     profileId: string,
@@ -116,6 +118,7 @@ export type RuntimeHostDesktopTargetState =
       readonly target: ResolvedRuntimeHostProfile;
       readonly readiness: 'connecting' | 'reconnecting';
       readonly hostId?: string;
+      readonly error?: Error;
     }
   | {
       readonly epoch: string;
@@ -382,9 +385,10 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     mountId: string,
     signal?: AbortSignal,
     onAccessActivated?: () => void,
+    onFinalizationStarted?: () => void,
   ): Promise<RuntimeHostGuestAccessFinalization> {
     return this.#mutateTarget(mountId, () =>
-      this.#finalizeAccessCredential(mountId, 'activation', signal, onAccessActivated),
+      this.#finalizeAccessCredential(mountId, 'activation', signal, onAccessActivated, onFinalizationStarted),
     );
   }
 
@@ -393,6 +397,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     completion: 'activation' | 'ready',
     externalSignal?: AbortSignal,
     onAccessActivated?: () => void,
+    onFinalizationStarted?: () => void,
   ): Promise<RuntimeHostGuestAccessFinalization> {
     const target = this.#requireTarget(profileId);
     if (target.target.profile.kind !== 'remote') {
@@ -410,6 +415,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       timeout.signal,
       ...(externalSignal ? [externalSignal] : []),
     ]);
+    let finalizationStarted = false;
     try {
       let candidate = await this.#waitForReadyCandidate(lifecycle, undefined, signal);
       while (true) {
@@ -420,6 +426,8 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         try {
           const remainingMs = deadline - Date.now();
           if (remainingMs <= 0) throw new RuntimeHostPairingFinalizationInterruptedError();
+          onFinalizationStarted?.();
+          finalizationStarted = true;
           const finalized = await abortable(
             () => candidate.client.finalizeAccessCredential(remainingMs),
             signal,
@@ -457,6 +465,12 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
           candidate = await this.#waitForReadyCandidate(lifecycle, candidate, signal);
         }
       }
+    } catch (error) {
+      if (!finalizationStarted && timeout.signal.aborted && completion === 'activation') {
+        throw (target.state.readiness !== 'ready' && target.state.error)
+          || new Error('Unable to connect to the sharing host before the deadline');
+      }
+      throw error;
     } finally {
       clearTimeout(timer);
     }
@@ -670,10 +684,11 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     });
   }
 
-  wakePeerRecovery(): void {
+  wakePeerRecovery(profileId?: string): void {
     for (const target of this.#targets.values()) {
       if (
         target.valid &&
+        (profileId === undefined || target.target.profile.id === profileId) &&
         target.target.profile.kind === 'remote' &&
         target.target.profile.transport.kind === 'libp2p-direct'
       ) {
@@ -1009,10 +1024,15 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
             first ? target.input.onConnectionPhase : undefined,
           );
         },
-        retryInitialFailure,
+        retryInitialFailure: retryInitialFailure
+          ? (error) => !(error instanceof RuntimeHostPeerError && error.code === 'peer_capacity_exceeded')
+          : false,
         ...(initialSignal ? { initialSignal } : {}),
         onReconnectError: (error) => {
           console.warn('[runtime-host] reconnect attempt failed:', error);
+          if (target.valid && target.state.readiness !== 'ready') {
+            this.#publishState(target, { ...target.state, error });
+          }
         },
         onFatalError: (error) => {
           if (starting) {
@@ -1064,6 +1084,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     };
     while (true) {
       let result: DesktopRuntimeHostCandidateStartResult;
+      const ipcMain = this.#ipcMain.createTarget(target.epoch);
       try {
         result = await this.startCandidate(
           {
@@ -1077,7 +1098,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
                   },
                 }
               : {}),
-            ipcMain: this.#ipcMain.createTarget(target.epoch),
+            ipcMain,
             isTargetActive: () => this.#ipcMain.isActive(target.epoch),
             isTargetValid: () => target.valid,
             // Import progress belongs to the initial connection only. Override
@@ -1097,6 +1118,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         throw error;
       }
       if (result.kind === 'ready') {
+        ipcMain.completeRegistration();
         target.hostId = result.candidate.client.hostId;
         const previous = target.lastCandidate;
         const retainedOwnedProcess =
@@ -1421,6 +1443,11 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     target: DesktopRuntimeHostTargetGeneration,
     state: RuntimeHostDesktopTargetState,
   ): void {
+    // A retry starting is not evidence of recovery. Keep its last failure until
+    // a connection succeeds (or a newer failure replaces it).
+    if (state.readiness === 'reconnecting' && !state.error && target.state.readiness !== 'ready') {
+      state = { ...state, ...(target.state.error ? { error: target.state.error } : {}) };
+    }
     target.state = state;
     try {
       this.onTargetStateChanged?.(state);

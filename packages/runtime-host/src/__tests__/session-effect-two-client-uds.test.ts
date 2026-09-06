@@ -88,7 +88,7 @@ test('two Clients share one durable Session recap effect', async () => {
           ...coordinator.handlers,
         },
         beginDrain: () => coordinator.beginDrain(),
-        recover: () => artifacts.recover(),
+        recover: async () => {},
         close: async () => {
           await coordinator.close();
           artifacts.close();

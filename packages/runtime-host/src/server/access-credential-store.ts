@@ -27,6 +27,7 @@ import {
   operationAllowsRemoteOwner,
   type SessionCollaborationGrant,
   decodeSessionTurnAccessRequest,
+  decodeCollaborationDisplayName,
   type SessionTurnAccessRequest,
   type OperationKey,
 } from '../protocol/index.js';
@@ -113,6 +114,7 @@ export const CAPABILITY_PROVIDER_OPERATION_GRANTS = Object.freeze([
 ] as const satisfies readonly OperationKey[]);
 
 export interface StoredAccessCredential {
+  readonly displayName?: string;
   readonly credentialId: string;
   readonly credentialHash: string;
   readonly principalId: string;
@@ -313,6 +315,7 @@ function encodeAccessCredentialFile(file: AccessCredentialFile): unknown {
     schemaVersion: file.schemaVersion,
     credentials: file.credentials.map((credential) => ({
       credentialId: credential.credentialId,
+      ...(credential.displayName === undefined ? {} : { displayName: credential.displayName }),
       credentialHash: credential.credentialHash,
       principalId: credential.principalId,
       principalKind: credential.principalKind,
@@ -496,6 +499,9 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
     ...(typeof clientInstanceId === 'string' ? { clientInstanceId } : {}),
     ...(typeof expiresAt === 'string' ? { expiresAt } : {}),
     ...(revokedAt === undefined ? {} : { revokedAt }),
+    ...(value.displayName === undefined
+      ? {}
+      : { displayName: decodeCollaborationDisplayName(value.displayName) }),
   };
 }
 

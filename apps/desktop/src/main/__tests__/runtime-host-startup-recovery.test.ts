@@ -20,6 +20,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runtimeHostStartupError } from "@maka/runtime-host/client";
+import { OperationalStateMigrationBlockedError } from '@maka/storage/operational-state-store';
 import { startDesktopRuntimeHostWithRecovery } from "../runtime-host-startup-recovery.js";
 
 test("repairs a managed Host once and resumes startup without asking the user", async () => {
@@ -55,7 +56,10 @@ test("repairs a managed Host once and resumes startup without asking the user", 
   assert.equal(prompts, 0);
 });
 
-test("separates manual update consent from active-work interruption", async () => {
+for (const failure of [
+  runtimeHostStartupError('managed_root_requires_operator'),
+  new OperationalStateMigrationBlockedError(new Error('Host migration required'), 'requires_host_migration'),
+]) test(`separates manual update consent from active-work interruption: ${failure.name}`, async () => {
   let starts = 0;
   const repairModes: Array<{
     readonly allowManualUpdate: boolean;
@@ -67,7 +71,7 @@ test("separates manual update consent from active-work interruption", async () =
     start: async () => {
       starts += 1;
       if (starts === 1)
-        throw runtimeHostStartupError("managed_root_requires_operator");
+        throw failure;
       return "ready";
     },
     repair: async (authority) => {
@@ -92,8 +96,10 @@ test("separates manual update consent from active-work interruption", async () =
   assert.deepEqual(prompts, [false, true]);
 });
 
-test("does not offer managed repair for an unrelated startup failure", async () => {
-  const failure = new Error("renderer prerequisites failed");
+for (const failure of [
+  new Error('renderer prerequisites failed'),
+  new OperationalStateMigrationBlockedError(new Error('unsupported newer schema')),
+]) test(`does not offer managed repair for an unrelated startup failure: ${failure.name}`, async () => {
   let repairs = 0;
   let prompts = 0;
 

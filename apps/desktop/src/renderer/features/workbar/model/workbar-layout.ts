@@ -26,6 +26,7 @@ import {
   readSessionWorkbarPanels,
   reduceWorkbarPanels,
   type SessionWorkbarPanelsState,
+  type SessionWorkbarPlacement,
   type WorkbarPanelsAction,
 } from './workbar-tabs.js';
 
@@ -49,7 +50,8 @@ export const SESSION_BOTTOM_PANEL_MAX_HEIGHT = 520;
 
 export interface WorkbarLayoutState {
   panels: SessionWorkbarPanelsState;
-  rightCollapsed: boolean;
+  activeSessionId: string | undefined;
+  collapsedBySession: Record<string, boolean>;
   bottomOpen: boolean;
   rightWidth: number;
   bottomHeight: number;
@@ -57,6 +59,13 @@ export interface WorkbarLayoutState {
 
 export type WorkbarLayoutAction =
   | WorkbarPanelsAction
+  | {
+      type: 'remove-stale';
+      placement: SessionWorkbarPlacement;
+      tabIds: readonly string[];
+    }
+  | { type: 'activate-session'; sessionId: string | undefined }
+  | { type: 'retain-sessions'; sessionIds: ReadonlySet<string> }
   | {
       type: 'collapse';
       placement: 'right' | 'bottom';
@@ -90,11 +99,31 @@ export function readSessionWorkbarWidth(): number {
   return Number.isFinite(stored) && stored > 0 ? Math.round(stored) : SESSION_WORKBAR_DEFAULT_WIDTH;
 }
 
-export function readSessionWorkbarCollapsed(): boolean {
-  const stored = safeLocalStorageGet('maka-session-workbar-collapsed-v1');
-  if (stored === 'false') return false;
-  if (stored === 'true') return true;
-  return true;
+const SESSION_COLLAPSE_KEY = 'maka-session-workbar-collapsed-v2';
+
+function readSessionWorkbarCollapsed(): Record<string, boolean> {
+  try {
+    const stored: unknown = JSON.parse(safeLocalStorageGet(SESSION_COLLAPSE_KEY) ?? '{}');
+    if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return {};
+    return Object.fromEntries(
+      Object.entries(stored).filter(([, value]) => typeof value === 'boolean'),
+    );
+  } catch {
+    return {};
+  }
+}
+
+export function isSessionWorkbarCollapsed(state: WorkbarLayoutState): boolean {
+  const id = state.activeSessionId;
+  return id !== undefined && Object.hasOwn(state.collapsedBySession, id)
+    ? state.collapsedBySession[id]!
+    : true;
+}
+
+function withRightCollapsed(state: WorkbarLayoutState, collapsed: boolean): WorkbarLayoutState {
+  const id = state.activeSessionId;
+  if (id === undefined || isSessionWorkbarCollapsed(state) === collapsed) return state;
+  return { ...state, collapsedBySession: { ...state.collapsedBySession, [id]: collapsed } };
 }
 
 export function readSessionBottomPanelHeight(): number {
@@ -108,10 +137,11 @@ export function readSessionBottomPanelOpen(): boolean {
   return safeLocalStorageGet('maka-session-bottom-panel-open-v1') === 'true';
 }
 
-export function loadWorkbarLayout(): WorkbarLayoutState {
+export function loadWorkbarLayout(activeSessionId?: string): WorkbarLayoutState {
   return {
     panels: readSessionWorkbarPanels(),
-    rightCollapsed: readSessionWorkbarCollapsed(),
+    activeSessionId,
+    collapsedBySession: readSessionWorkbarCollapsed(),
     bottomOpen: readSessionBottomPanelOpen(),
     rightWidth: clampSize(
       readSessionWorkbarWidth(),
@@ -138,9 +168,16 @@ export function persistWorkbarLayout(
   }
   if (target === 'all' || target === 'right-visibility') {
     safeLocalStorageSet(
-      'maka-session-workbar-collapsed-v1',
-      state.rightCollapsed ? 'true' : 'false',
+      SESSION_COLLAPSE_KEY,
+      JSON.stringify(state.collapsedBySession),
     );
+    // The old global preference has no Session owner and cannot be migrated
+    // without giving an unrelated conversation its expanded state.
+    try {
+      localStorage.removeItem('maka-session-workbar-collapsed-v1');
+    } catch {
+      // Storage may be unavailable in restricted renderer contexts.
+    }
   }
   if (target === 'all' || target === 'bottom-visibility') {
     safeLocalStorageSet(
@@ -166,11 +203,22 @@ export function reduceWorkbarLayout(
   state: WorkbarLayoutState,
   action: WorkbarLayoutAction,
 ): WorkbarLayoutState {
+  if (action.type === 'activate-session') {
+    return state.activeSessionId === action.sessionId
+      ? state
+      : { ...state, activeSessionId: action.sessionId };
+  }
+  if (action.type === 'retain-sessions') {
+    const entries = Object.entries(state.collapsedBySession).filter(
+      ([id]) => id === state.activeSessionId || action.sessionIds.has(id),
+    );
+    return entries.length === Object.keys(state.collapsedBySession).length
+      ? state
+      : { ...state, collapsedBySession: Object.fromEntries(entries) };
+  }
   if (action.type === 'collapse') {
     if (action.placement === 'right') {
-      return state.rightCollapsed === action.collapsed
-        ? state
-        : { ...state, rightCollapsed: action.collapsed };
+      return withRightCollapsed(state, action.collapsed);
     }
     const bottomOpen = !action.collapsed;
     return state.bottomOpen === bottomOpen
@@ -198,9 +246,14 @@ export function reduceWorkbarLayout(
       : { ...state, bottomHeight };
   }
 
-  const panels = reduceWorkbarPanels(state.panels, action);
+  const panels = reduceWorkbarPanels(
+    state.panels,
+    action.type === 'remove-stale'
+      ? { type: 'close', placement: action.placement, tabIds: action.tabIds }
+      : action,
+  );
   if (panels === state.panels) return state;
-  let rightCollapsed = state.rightCollapsed;
+  let rightCollapsed = isSessionWorkbarCollapsed(state);
   let bottomOpen = state.bottomOpen;
   if (action.type === 'open' || action.type === 'open-launcher') {
     if (action.placement === 'right') rightCollapsed = false;
@@ -208,7 +261,10 @@ export function reduceWorkbarLayout(
   } else if (action.type === 'move-to-panel') {
     if (action.target === 'right') rightCollapsed = false;
     else bottomOpen = true;
-  } else if (action.type === 'close') {
+  } else if (
+    action.type === 'close' ||
+    (action.type === 'remove-stale' && action.placement === 'bottom')
+  ) {
     if (
       state.panels[action.placement].tabs.length > 0 &&
       panels[action.placement].tabs.length === 0
@@ -217,5 +273,5 @@ export function reduceWorkbarLayout(
       else bottomOpen = false;
     }
   }
-  return { ...state, panels, rightCollapsed, bottomOpen };
+  return withRightCollapsed({ ...state, panels, bottomOpen }, rightCollapsed);
 }

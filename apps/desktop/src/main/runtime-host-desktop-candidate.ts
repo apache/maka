@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import type { IpcMain } from "electron";
 import type { ActiveInteractionRequestEvent } from '@maka/core/events';
 import { redactSecrets } from '@maka/core/redaction';
@@ -137,7 +138,6 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly completeComputerUseTurn: (
     sessionId: string,
   ) => void | Promise<void>;
-  readonly enableE2eControls?: boolean;
   readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
   readonly renderer?: {
     send(channel: string, scope: DesktopTargetScope, payload: unknown): void;
@@ -345,6 +345,10 @@ export async function startDesktopRuntimeHostCandidate(
   if (connection.kind !== "connected") return connection;
   observeLocalRuntimeHostProcess(connection.spawnedProcess);
   try {
+    // A resident managed Host can speak this protocol while still using an
+    // older storage schema. Validate the shared local database before exposing
+    // any candidate services, so startup recovery can update its owning Host.
+    acquireOperationalStateDatabase(input.rootPath, { schemaMigration: 'require_current' }).close();
     return {
       kind: "ready",
       candidate: await createDesktopRuntimeHostCandidate(
@@ -672,7 +676,6 @@ export async function createDesktopRuntimeHostCandidate(
         },
       },
       ipc,
-      deps.enableE2eControls === true,
     );
     if (target.access === 'session_guest') {
       const trackedSessionIds = sessionObservations.trackedSessionIds();

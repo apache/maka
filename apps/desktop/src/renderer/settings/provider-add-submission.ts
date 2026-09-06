@@ -26,7 +26,11 @@ import {
   type ModelInfo,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import type { CreateConnectionInput, IdentifiedLlmConnection } from '@maka/core/llm-connections';
+import type {
+  CreateConnectionInput,
+  IdentifiedLlmConnection,
+  SlugValidationIssue,
+} from '@maka/core/llm-connections';
 export type ApiKeyOnboardingRoute =
   | { readonly kind: 'host' }
   | {
@@ -97,7 +101,7 @@ export function initialOnboardingModelIds(
 export type AddProviderField = 'slug' | 'apiKey' | 'accountId' | 'baseUrl' | 'form';
 
 export type AddProviderIssue =
-  | { readonly field: 'slug'; readonly reason: 'invalid'; readonly detail: string }
+  | { readonly field: 'slug'; readonly reason: 'invalid'; readonly detail: SlugValidationIssue }
   | { readonly field: 'slug'; readonly reason: 'duplicate' }
   | { readonly field: 'apiKey'; readonly reason: 'required' }
   | { readonly field: 'accountId'; readonly reason: 'required' }

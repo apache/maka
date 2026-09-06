@@ -258,6 +258,12 @@ import {
 } from "./startup-context.js";
 import { resolveDesktopStorageRoot } from "./storage-root-startup.js";
 import { startupStep } from "./startup-step.js";
+import {
+  closeDesktopStartupProgress,
+  desktopStartupProgressWindow,
+  isDesktopStartupInProgress,
+  updateDesktopStartupProgress,
+} from './startup-presentation.js';
 import { registerWorkspaceSearchIpc } from "./workspace-search-ipc-main.js";
 import {
   parseDesktopSessionResourceKey,
@@ -366,7 +372,7 @@ const desktopDiagnostics: DesktopDiagnosticsDeps = {
   resolveRuntimeHost: resolveRuntimeHostDiagnostics,
   writeClipboard: (report) => clipboard.writeText(report),
 };
-let resolveBrowserDialogParent = (): BrowserWindow | undefined => undefined;
+let resolveBrowserDialogParent = desktopStartupProgressWindow;
 let resolveBrowserDialogAppearance = async (): Promise<BrowserMessageBoxAppearance> => ({
   locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
   palette: "default",
@@ -414,6 +420,7 @@ const resolveLocalStorageRoot = () =>
           confirmRepair: () => confirmDesktopStorageRootRepair(workspaceRoot),
         }),
       );
+updateDesktopStartupProgress('storage');
 const startupLocalStorageRoot =
   await resolveLocalStorageRoot();
 if (!startupLocalStorageRoot) {
@@ -489,6 +496,7 @@ const mainWindowController = createMainWindowController({
   settingsStore,
   revealMode,
   onClose: () => onMainWindowClose(),
+  onShow: closeDesktopStartupProgress,
   onRendererProcessGone: async (details) => {
     const diagnosticInput = createDesktopMainRendererDiagnosticInput({
       title: "Maka main Renderer process exited unexpectedly",
@@ -512,7 +520,10 @@ const mainWindowController = createMainWindowController({
     app.quit();
   },
 });
-resolveBrowserDialogParent = () => mainWindowController.browserWindow();
+resolveBrowserDialogParent = () => {
+  const main = mainWindowController.browserWindow();
+  return main?.isVisible() ? main : desktopStartupProgressWindow();
+};
 const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
   ipcMain,
   send: (channel, event) => mainWindowController.send(channel, event),
@@ -530,7 +541,13 @@ const localRuntimeHostRemoteAccess = createDesktopLocalRuntimeHostRemoteAccess({
   rootId: startupLocalStorageRoot.rootId,
   directPeerAvailable: runtimeHostDirectPeerAvailable,
   manager: () => runtimeHostManager,
-  resolveSetupPackage: (signal) => runtimeHostSetupPackage.resolveForThisDesktop(signal),
+  resolveSetupPackage: async (signal) => {
+    updateDesktopStartupProgress('package');
+    const result = await runtimeHostSetupPackage.resolveForThisDesktop(signal);
+    updateDesktopStartupProgress('checking');
+    return result;
+  },
+  onUpdateProgress: updateDesktopStartupProgress,
   operator: localRuntimeHostOperator,
 });
 const native = assembleDesktopNativeCapabilities({
@@ -631,9 +648,9 @@ const guestSessionMountService = createDesktopGuestSessionMountService({
       },
     );
   },
-  finalizeAccess: async (mountId, signal, onAccessActivated) => {
+  finalizeAccess: async (mountId, signal, onAccessActivated, onFinalizationStarted) => {
     if (!runtimeHostManager) throw new Error('Runtime Host manager is unavailable');
-    return runtimeHostManager.finalizeGuestAccess(mountId, signal, onAccessActivated);
+    return runtimeHostManager.finalizeGuestAccess(mountId, signal, onAccessActivated, onFinalizationStarted);
   },
   getSharedSession: async (mountId) => {
     const current = runtimeHostManager?.current(mountId);
@@ -649,12 +666,14 @@ const guestSessionMountService = createDesktopGuestSessionMountService({
     if (!state) return undefined;
     return {
       readiness: state.readiness,
+      ...(state.readiness !== 'ready' && state.error ? { error: state.error } : {}),
       ...(state.readiness === 'ready' && state.candidate.client.peerPath
         ? { peerPath: state.candidate.client.peerPath }
         : {}),
     };
   },
   onMountsChanged: notifyGuestSessionMountsChanged,
+  wakeConnection: (mountId) => runtimeHostManager?.wakePeerRecovery(mountId),
   unmount: async (mountId) => {
     if (!runtimeHostManager) return;
     await runtimeHostManager.unmountGuest(mountId);
@@ -1099,7 +1118,6 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
     },
     emitSessionsChanged,
     completeComputerUseTurn,
-    enableE2eControls: isE2e,
     createSessionCopyCleanup: ({ removeSession, resumeSessionCopy }) =>
       createSessionCopyCleanupAuthority({
         workspaceRoot,
@@ -1238,10 +1256,12 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
 );
 runtimeHostManager = await startDesktopRuntimeHostWithRecovery({
   start: async () => {
+    updateDesktopStartupProgress('connect');
     await localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart();
     return startLocalRuntimeHostManager();
   },
   repair: async ({ allowManualUpdate, allowInterruptActiveTasks }) => {
+    updateDesktopStartupProgress('package');
     console.warn('[runtime-host] repairing the managed Local Host before startup');
     const result = await localRuntimeHostRemoteAccess.repairManagedStartup({
       allowManualUpdate,
@@ -1251,6 +1271,7 @@ runtimeHostManager = await startDesktopRuntimeHostWithRecovery({
     return result;
   },
   prompt: async (input) => {
+    updateDesktopStartupProgress('attention');
     console.error('[runtime-host] managed Local Host startup recovery requires attention:', {
       startupError: input.startupError,
       repairError: input.repairError,
@@ -1292,6 +1313,7 @@ const workBoardIpc = registerWorkBoardIpc({
   mainWindowController,
   store: createWorkBoardStore(workspaceRoot, { schemaMigration: 'require_current' }),
 });
+updateDesktopStartupProgress('renderer');
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
 await guestSessionMountService.start().catch((error: unknown) => {
@@ -1499,7 +1521,6 @@ function registerHostClientIpc(
     ipcMain: scopedIpc,
     client,
     mainWindowController,
-    sendToRenderer,
     showItemInFolder: (path) => shell.showItemInFolder(path),
   });
   registerRuntimeHostOAuthIpc({
@@ -1955,11 +1976,8 @@ function wireLifecycle(): void {
     resumeQuit: () => app.quit(),
   });
   installDesktopShellPresentation({
-    revealMode,
     mainWindowController,
     focusOrCreateWindow: quitCoordinator.focusOrCreateWindow,
-    onIconError: (error) =>
-      console.error("[icon] failed to set dock icon:", error),
   });
   app.on("second-instance", quitCoordinator.focusOrCreateWindow);
   app.on("activate", quitCoordinator.focusOrCreateWindow);
@@ -1969,7 +1987,8 @@ function wireLifecycle(): void {
   app.on("window-all-closed", () => {
     native.computerUseOverlay.destroyAll();
     native.computerUsePip.destroyAll();
-    if (process.platform !== "darwin" && !isBrowserMessageBoxPresentationActive()) app.quit();
+    if (process.platform !== "darwin" && !isBrowserMessageBoxPresentationActive() &&
+      !isDesktopStartupInProgress()) app.quit();
   });
   app.on("before-quit", quitCoordinator.handleBeforeQuit);
   powerMonitor.on("resume", wakePeerRecoveryAfterResume);
@@ -2056,7 +2075,6 @@ function resolveDesktopE2eFixture(): ReturnType<typeof resolveE2eFixture> {
       process.env.MAKA_E2E_FIXTURE_LOCALE,
       process.env.MAKA_E2E_FIXTURE_TIMEZONE,
       process.env.MAKA_E2E_FIXTURE_PLATFORM,
-      process.env.MAKA_E2E_FIXTURE_SCROLL_MOTION,
     );
   } catch (error) {
     if (!process.env.MAKA_E2E_FIXTURE) throw error;

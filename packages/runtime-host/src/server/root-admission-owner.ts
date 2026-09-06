@@ -86,6 +86,13 @@ export class RootAdmissionOwner {
         previousRootTurnId: current?.turnId ?? null,
       });
       const admission = result.admission;
+      if (result.kind === 'conflict') {
+        const known = this.#admissionsBySession.get(input.sessionId)?.get(admission.turnId);
+        if (!known || !sameRootAdmission(known, admission)) {
+          throw new Error('Durable Root Turn conflict is outside the owned chain');
+        }
+        return Object.freeze({ kind: 'conflict', admission: known });
+      }
       if (
         admission.sessionId !== input.sessionId ||
         admission.turnId !== input.turnId ||

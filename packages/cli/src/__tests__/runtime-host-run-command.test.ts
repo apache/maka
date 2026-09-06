@@ -313,6 +313,50 @@ describe('Runtime Host maka run adapter', () => {
     );
   });
 
+  test('keeps the boundary unresolved when a later same-named call succeeds (live)', async () => {
+    const fixture = runFixture({
+      turnEvents: sandboxBoundaryEvents('turn-1', 'step-1', 'step-2', 'Partial answer', 'Read'),
+    });
+
+    const exitCode = await runFixtureCommand(fixture, ['accept same-name different target']);
+
+    assert.equal(exitCode, 1);
+  });
+
+  test('keeps the boundary unresolved when a later same-named call succeeds (durable)', async () => {
+    const fixture = runFixture({
+      graph: true,
+      finalMessages: sandboxBoundaryMessages('step-1', 'step-2', 'Read'),
+    });
+
+    const exitCode = await runFixtureCommand(fixture, [
+      'accept durable same-name different target',
+      '--graph',
+    ]);
+
+    assert.equal(exitCode, 1);
+  });
+
+  test('returns exit code 1 when a denied widening precedes any later tool success', async () => {
+    const stderr: string[] = [];
+    const fixture = runFixture({
+      turnEvents: deniedWideningEvents('turn-1'),
+    });
+
+    const exitCode = await runFixtureCommand(
+      fixture,
+      ['accept post-denial success'],
+      () => {},
+      (text) => stderr.push(text),
+    );
+
+    assert.equal(exitCode, 1);
+    assert.equal(
+      stderr.join(''),
+      'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
+    );
+  });
+
   test('returns exit code 1 when reconnect restores a missed sandbox failure', async () => {
     let publishReplacement = () => {};
     const fixture = runFixture({
@@ -351,18 +395,26 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(stdout.join(''), 'Final graph answer\n');
   });
 
-  test('returns exit code 0 when a root Graph boundary failure recovers', async () => {
+  test('keeps a root Graph boundary failure unresolved even when a later same-named call succeeds', async () => {
     const stdout: string[] = [];
+    const stderr: string[] = [];
     const fixture = runFixture({
       graph: true,
       turnEvents: sandboxBoundaryEvents('turn-1', 'step-1', 'step-2', 'Recovered answer'),
     });
-    const exitCode = await runFixtureCommand(fixture, ['recover once', '--graph'], (text) =>
-      stdout.push(text),
+    const exitCode = await runFixtureCommand(
+      fixture,
+      ['recover once', '--graph'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
     );
 
-    assert.equal(exitCode, 0);
-    assert.equal(stdout.join(''), 'Final graph answer\n');
+    assert.equal(exitCode, 1);
+    assert.equal(stdout.join(''), '');
+    assert.equal(
+      stderr.join(''),
+      'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
+    );
   });
 
   test('returns exit code 1 when a same-step Graph sibling succeeds after a sandbox failure', async () => {
@@ -465,7 +517,7 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(observed.at(-1)?.finalOutput, 'Final graph answer');
   });
 
-  test('reports a recovered sandbox boundary from live and durable Turns', async () => {
+  test('keeps the sandbox boundary unresolved across live and durable Turns', async () => {
     const live = await observeFixtureOutcome({
       turnEvents: sandboxBoundaryEvents('turn-1', 'step-1', 'step-2', 'Recovered answer'),
     });
@@ -474,8 +526,8 @@ describe('Runtime Host maka run adapter', () => {
       finalMessages: sandboxBoundaryMessages('step-1', 'step-2'),
     });
 
-    assert.equal(live.sandboxBoundary, 'recovered');
-    assert.equal(durable.sandboxBoundary, 'recovered');
+    assert.equal(live.sandboxBoundary, 'unresolved');
+    assert.equal(durable.sandboxBoundary, 'unresolved');
   });
 
   test('leaves sandbox failures unresolved when their provider steps are unavailable', async () => {
@@ -491,7 +543,7 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(durable.sandboxBoundary, 'unresolved');
   });
 
-  test('returns a recovered boundary to unresolved after a later sandbox failure', async () => {
+  test('keeps the boundary unresolved across interleaved successes and a later sandbox failure', async () => {
     const outcome = await observeFixtureOutcome({
       turnEvents: sandboxFailureAfterRecoveryEvents('turn-1'),
     });
@@ -1562,14 +1614,28 @@ async function* sandboxBoundaryEvents(
   successToolName = 'Read',
 ): AsyncIterable<SessionEvent> {
   const sameStep = failureStepId !== undefined && failureStepId === successStepId;
-  if (failureStepId !== undefined) yield toolStart(turnId, 'tool-1', failureStepId, 1);
-  if (sameStep) yield toolStart(turnId, 'tool-2', successStepId, 2, successToolName);
+  if (failureStepId !== undefined) {
+    yield toolStart(turnId, 'tool-1', failureStepId, 1);
+  }
+  if (sameStep) {
+    yield toolStart(turnId, 'tool-2', successStepId, 2, successToolName);
+  }
   yield sandboxFailureToolResult(turnId, 3);
   if (successStepId !== undefined && !sameStep) {
     yield toolStart(turnId, 'tool-2', successStepId, 4, successToolName);
   }
   yield successfulToolResult(turnId, 5);
   yield* eventsFor(turnId, text, 6);
+}
+
+async function* deniedWideningEvents(turnId: string): AsyncIterable<SessionEvent> {
+  yield toolStart(turnId, 'tool-1', 'step-1', 1);
+  yield sandboxFailureToolResult(turnId, 2);
+  yield toolStart(turnId, 'tool-2', 'step-2', 3, 'request_sandbox_boundary');
+  yield successfulToolResult(turnId, 4, 'tool-2');
+  yield toolStart(turnId, 'tool-3', 'step-3', 5);
+  yield successfulToolResult(turnId, 6, 'tool-3');
+  yield* eventsFor(turnId, 'Recovered answer', 7);
 }
 
 async function* projectedSameStepSandboxFailureEvents(turnId: string): AsyncIterable<SessionEvent> {

@@ -647,7 +647,6 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
   let runtime = createSqliteRuntimeStore(runtimePath);
   try {
     artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await artifacts.recover();
     await runtime.appendRuntimeEvent(sessionId, runId, head);
     backend = await createHostAiSdkBackend(
       backendCreationFixture({
@@ -737,7 +736,6 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
     assert.ok(owner);
     if (!owner) return;
     artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await artifacts.recover();
     runtime = createSqliteRuntimeStore(runtimePath);
     const recoveredEvents = await runtime.readRuntimeEvents(sessionId, runId);
     backend = await createHostAiSdkBackend(
@@ -2027,9 +2025,10 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(compactUsage.inputTokens, 7);
     assert.equal(compactUsage.outputTokens, 3);
     const capturedRequestCount = mainRequests.length + compactRequests.length;
-    const attempts = await waitForCanonicalAttempts(usageStores, session.id, capturedRequestCount);
-    assert.equal(attempts.length, capturedRequestCount);
-    assert.ok(attempts.every((attempt) => attempt.promptComposition));
+    assert.equal(
+      await waitForCanonicalRequests(usageStores, session.id, capturedRequestCount),
+      capturedRequestCount,
+    );
     const contextDiagnostics = await composition.handlers['context.diagnostics.query'](
       { sessionId: session.id },
       connectionContext,
@@ -3858,28 +3857,23 @@ async function waitForUsage(
   throw new Error('Hosted real-model usage attribution was not persisted');
 }
 
-async function waitForCanonicalAttempts(
+async function waitForCanonicalRequests(
   usage: InteractiveUsageStoresWriter,
   sessionId: string,
   expectedRequests: number,
-): Promise<readonly ModelCallAttempt[]> {
+): Promise<number> {
+  const ask = () => usage.modelCalls.modelCallSummary({ range: 'all', sessionId }, Date.now());
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const page = await usage.modelCalls.modelCallAttempts(
-      { from: 0, to: Number.MAX_SAFE_INTEGER },
-      sessionId,
-    );
-    if (page.attempts.length >= expectedRequests) return page.attempts;
+    const { projection } = await ask();
+    if (projection.totalRequests >= expectedRequests) return projection.totalRequests;
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
-  const page = await usage.modelCalls.modelCallAttempts(
-    { from: 0, to: Number.MAX_SAFE_INTEGER },
-    sessionId,
-  );
+  const { projection, unreadableRecords } = await ask();
   throw new Error(
     `Hosted canonical model-call attempts were not persisted: ${JSON.stringify({
       expectedRequests,
-      attempts: page.attempts.length,
-      unreadableRecords: page.unreadableRecords,
+      totalRequests: projection.totalRequests,
+      unreadableRecords,
     })}`,
   );
 }

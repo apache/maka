@@ -24,6 +24,7 @@ import type { WorkHubCoordinationActInput } from '@maka/runtime-host/protocol';
 import {
   createWorkHubController as createGatedWorkHubController,
   WORKHUB_ROUTING_STRATEGY_ID,
+  WorkHubCoordinationFailure,
   type WorkHubSessionFacts,
   type WorkHubSessionPort,
   type WorkHubCoordinationTurn,
@@ -32,7 +33,6 @@ import {
   createWorkHubRoutePolicy,
   workHubNewSessionName,
 } from '../../renderer/workhub-route-policy.js';
-import { WorkHubCoordinationFailure } from '../../renderer/workhub-coordination-port.js';
 
 const appShellUrl = [
   new URL('../../renderer/app-shell.tsx', import.meta.url),
@@ -193,6 +193,14 @@ function createWorkHubController({ sessions }: { sessions: TestSessionPort }) {
             targetSessionId: input.proposal.expects.targetSessionId,
           };
         }
+        if (input.proposal.disposition === 'resume_work') {
+          return {
+            disposition: 'resume_work',
+            outcome: 'resume_started',
+            targetSessionId: input.proposal.expects.targetSessionId,
+            targetTurnId: 'resumed-turn',
+          };
+        }
         const target = candidateByRef.get(input.proposal.candidateRef);
         if (!target) throw new Error('unknown test candidate');
         const admitted = await sessions.submit(target.target, input.userText, input.actionId);
@@ -245,11 +253,7 @@ test('conversation acknowledges a durable assignment before projecting target ex
     sessions,
     coordination: {
       open: async (handler) => {
-        handler([assignment], [{
-          actionId: assignment.assignment!.actionId,
-          targetSessionId: assignment.assignment!.targetSessionId,
-          sequence: 0,
-        }]);
+        handler([assignment]);
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
@@ -294,11 +298,7 @@ test('conversation feedback never lets an older refresh overwrite newer target s
     coordination: {
       open: async (handler) => {
         const assignment = coordinationAssignmentTurn();
-        handler([assignment], [{
-          actionId: assignment.assignment!.actionId,
-          targetSessionId: assignment.assignment!.targetSessionId,
-          sequence: 0,
-        }]);
+        handler([assignment]);
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
@@ -340,11 +340,7 @@ test('direct stop bypasses routing candidates and preserves a not_owned delegati
     sessions,
     coordination: {
       open: async (handler) => {
-        handler([coordinationAssignmentTurn()], [{
-          actionId: 'action-1',
-          targetSessionId: 'payments',
-          sequence: 0,
-        }]);
+        handler([coordinationAssignmentTurn()]);
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
@@ -400,7 +396,7 @@ test('an anaphoric stop asks for a fresh named imperative without offering a rou
     sessions,
     coordination: {
       open: async (handler) => {
-        handler([], [{ actionId: 'action-1', targetSessionId: 'payments', sequence: 0 }]);
+        handler([]);
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
@@ -420,6 +416,205 @@ test('an anaphoric stop asks for a fresh named imperative without offering a rou
   await handle.close();
 });
 
+test('a named resume submits and reports what the Host did', async () => {
+  const sessions = port([session('payments', { sessionName: 'Payments' })]);
+  const actions: WorkHubCoordinationActInput[] = [];
+  const controller = createGatedWorkHubController({
+    sessions,
+    coordination: {
+      open: async (handler) => {
+        handler([]);
+        return { close: async () => undefined };
+      },
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'e'.repeat(64)}`,
+        candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
+      }),
+      act: async (input) => {
+        actions.push(input);
+        return {
+          disposition: 'resume_work',
+          outcome: 'resume_started',
+          targetSessionId: 'payments',
+          targetTurnId: 'resumed-turn',
+        };
+      },
+    },
+  });
+  const handle = await controller.openConversation(() => undefined, () => undefined);
+
+  const result = await controller.submit({ requestId: 'resume-1', text: 'Resume Payments' });
+
+  assert.deepEqual(result, {
+    kind: 'resume',
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+    requestId: 'resume-1',
+    target: { sessionId: 'payments' },
+    outcome: 'resume_started',
+  });
+  // The proposal names the Session and carries no confirmation: resume ends
+  // nothing, so it needs no authority a delegation did not already grant.
+  assert.deepEqual(actions, [{
+    actionId: 'resume-1',
+    userText: 'Resume Payments',
+    proposal: { disposition: 'resume_work', resumesActionId: 'source-action', expects: { targetSessionId: 'payments' } },
+  }]);
+  await handle.close();
+});
+
+test('an anaphoric resume asks for a named work item', async () => {
+  const controller = createGatedWorkHubController({
+    sessions: port([session('payments', { sessionName: 'Payments' })]),
+    coordination: {
+      open: async (handler) => {
+        handler([]);
+        return { close: async () => undefined };
+      },
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => assert.fail('resume clarification must not read route candidates'),
+      act: async () => assert.fail('anaphoric resume must not reach the Action Gate'),
+    },
+  });
+  const handle = await controller.openConversation(() => undefined, () => undefined);
+
+  assert.deepEqual(await controller.submit({ requestId: 'resume-it', text: 'Resume it' }), {
+    kind: 'clarification',
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+    requestId: 'resume-it',
+    text: 'Resume it',
+    options: [],
+    reason: 'resume_target_required',
+  });
+  await handle.close();
+});
+
+test('a resume the Host will not admit becomes its clarification', async () => {
+  const sessions = port([session('payments', { sessionName: 'Payments' })]);
+  const controller = createGatedWorkHubController({
+    sessions,
+    coordination: {
+      open: async (handler) => {
+        handler([]);
+        return { close: async () => undefined };
+      },
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'e'.repeat(64)}`,
+        candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
+      }),
+      act: async () => {
+        throw new WorkHubCoordinationFailure(
+          'operation_conflict',
+          'WorkHub has no active durable delegation to resume on that Session',
+        );
+      },
+    },
+  });
+  const handle = await controller.openConversation(() => undefined, () => undefined);
+
+  assert.deepEqual(await controller.submit({ requestId: 'resume-2', text: 'Resume Payments' }), {
+    kind: 'clarification',
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+    requestId: 'resume-2',
+    text: 'Resume Payments',
+    options: [],
+    reason: 'resume_target_unavailable',
+  });
+  await handle.close();
+});
+
+test('a resume identity conflict is not mislabeled as a missing target', async () => {
+  const conflict = new WorkHubCoordinationFailure(
+    'operation_conflict',
+    'WorkHub action identity already owns a different operation',
+  );
+  const controller = createGatedWorkHubController({
+    sessions: port([session('payments', { sessionName: 'Payments' })]),
+    coordination: {
+      open: async (handler) => {
+        handler([]);
+        return { close: async () => undefined };
+      },
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'e'.repeat(64)}`,
+        candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
+      }),
+      act: async () => {
+        throw conflict;
+      },
+    },
+  });
+  const handle = await controller.openConversation(() => undefined, () => undefined);
+
+  await assert.rejects(
+    controller.submit({ requestId: 'resume-conflict', text: 'Resume Payments' }),
+    (error) => error === conflict,
+  );
+  await handle.close();
+});
+
+test('a Runtime Host without safe-boundary resume explains why it cannot resume', async () => {
+  const controller = createGatedWorkHubController({
+    sessions: port([session('payments', { sessionName: 'Payments' })]),
+    coordination: {
+      open: async (handler) => {
+        handler([]);
+        return { close: async () => undefined };
+      },
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'e'.repeat(64)}`,
+        candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
+      }),
+      act: async () => {
+        throw new WorkHubCoordinationFailure(
+          'operation_unavailable',
+          'Safe-boundary resume is disabled for this Runtime Host',
+        );
+      },
+    },
+  });
+  const handle = await controller.openConversation(() => undefined, () => undefined);
+
+  assert.deepEqual(await controller.submit({ requestId: 'resume-disabled', text: 'Resume Payments' }), {
+    kind: 'clarification',
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+    requestId: 'resume-disabled',
+    text: 'Resume Payments',
+    options: [],
+    reason: 'resume_operation_unavailable',
+  });
+  await handle.close();
+});
+
+test('a recovering Runtime Host tells the user to retry resume', async () => {
+  const controller = createGatedWorkHubController({
+    sessions: port([session('payments', { sessionName: 'Payments' })]),
+    coordination: {
+      open: async (handler) => {
+        handler([]);
+        return { close: async () => undefined };
+      },
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'e'.repeat(64)}`,
+        candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
+      }),
+      act: async () => {
+        throw new WorkHubCoordinationFailure('host_not_ready', 'Runtime Host is recovering');
+      },
+    },
+  });
+  const handle = await controller.openConversation(() => undefined, () => undefined);
+
+  const result = await controller.submit({ requestId: 'resume-recovering', text: 'Resume Payments' });
+  assert.equal(result.kind, 'clarification');
+  if (result.kind === 'clarification') assert.equal(result.reason, 'resume_host_recovering');
+  await handle.close();
+});
+
 test('a named stop reports the Gate refusal instead of judging the target itself', async () => {
   // The renderer no longer decides whether a Session can be stopped, so it
   // submits and lets the Gate answer. Its refusal is the clarification, which
@@ -430,7 +625,7 @@ test('a named stop reports the Gate refusal instead of judging the target itself
     sessions,
     coordination: {
       open: async (handler) => {
-        handler([], []);
+        handler([]);
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
@@ -464,7 +659,7 @@ test('a stop that fails for any other reason is a fault, not a clarification', a
     sessions,
     coordination: {
       open: async (handler) => {
-        handler([], []);
+        handler([]);
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
@@ -494,7 +689,7 @@ test('stop-shaped ordinary work routes normally instead of looping on clarificat
       sessions,
       coordination: {
         open: async (handler) => {
-          handler([], [{ actionId: 'action-1', targetSessionId: 'payments', sequence: 0 }]);
+          handler([]);
           return { close: async () => undefined };
         },
         record: async (input) => ({ turnId: input.turnId }),
@@ -1785,6 +1980,7 @@ test('production natural-language corrections retain the prior delegation link',
     }),
   ]);
   const candidateSetId = `sha256:${'e'.repeat(64)}`;
+  const latestActionIdBySessionId = new Map<string, string>();
   const candidates = [
     {
       candidateRef: 'candidate-login',
@@ -1814,7 +2010,15 @@ test('production natural-language corrections retain the prior delegation link',
     coordination: {
       open: async () => ({ close: async () => undefined }),
       record: async (input) => ({ turnId: input.turnId }),
-      candidates: async () => ({ candidateSetId, candidates }),
+      candidates: async () => ({
+        candidateSetId,
+        candidates: candidates.map((candidate) => {
+          const latestDelegationActionId = latestActionIdBySessionId.get(candidate.sessionId);
+          return latestDelegationActionId
+            ? { ...candidate, latestDelegationActionId }
+            : candidate;
+        }),
+      }),
       act: async (input) => {
         actions.push(input);
         if (input.proposal.disposition === 'replace') {
@@ -1826,6 +2030,10 @@ test('production natural-language corrections retain the prior delegation link',
               targetTurnId: `turn-${input.actionId}`,
             };
           }
+          latestActionIdBySessionId.set(
+            input.proposal.target.candidateRef === 'candidate-login' ? 'login' : 'payment',
+            input.actionId,
+          );
           return {
             disposition: 'replace',
             replacementDisposition: 'delegate_existing',
@@ -1838,6 +2046,10 @@ test('production natural-language corrections retain the prior delegation link',
         if (input.proposal.disposition !== 'delegate_existing') {
           throw new Error('unexpected test disposition');
         }
+        latestActionIdBySessionId.set(
+          input.proposal.candidateRef === 'candidate-login' ? 'login' : 'payment',
+          input.actionId,
+        );
         return {
           disposition: 'delegate_existing',
           targetSessionId: input.proposal.candidateRef === 'candidate-login'

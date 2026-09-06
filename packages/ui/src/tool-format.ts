@@ -88,17 +88,11 @@ export function describeLoadToolResult(
     };
   }
 
-  const label = suppliedLabel ?? (locale === 'en' ? 'Tools' : '工具');
-  const enableLabel = locale === 'en' ? 'Enable' : locale === 'zh-CN' ? '启用' : '啟用';
-  const enabledLabel = locale === 'en' ? 'enabled' : locale === 'zh-CN' ? '已启用' : '已啟用';
+  const label = suppliedLabel ?? copy.fallbackLabel;
   return {
     kind,
-    actionLabel: suppliedLabel
-      ? `${enableLabel} ${suppliedLabel}`
-      : copy.genericAction,
-    title: suppliedLabel
-      ? `${suppliedLabel} ${enabledLabel}`
-      : copy.genericTitle,
+    actionLabel: suppliedLabel ? copy.namedAction(suppliedLabel) : copy.genericAction,
+    title: suppliedLabel ? copy.namedTitle(suppliedLabel) : copy.genericTitle,
     description: suppliedDescription ?? copy.genericDescription,
     label,
     countLabel: copy.count(n),

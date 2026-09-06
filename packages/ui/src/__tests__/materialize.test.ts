@@ -27,10 +27,8 @@ import {
   overlayLiveTurn,
   type TurnTimelineItem,
 } from "../materialize.js";
-import {
-  applyLiveTurnEvent,
-  armLiveTurn,
-} from "../live-turn-projection.js";
+import { applyLiveTurnEvent } from './live-turn-zh.js';
+import { armLiveTurn } from "../live-turn-projection.js";
 
 const originalUser = {
   type: "user" as const,
