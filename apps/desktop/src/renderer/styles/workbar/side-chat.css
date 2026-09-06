@@ -64,7 +64,7 @@
    bubble; a side-only radius token forked the pair the moment the bubbles moved
    to the primitive's default. The wrapper is also left unclipped — `overflow:
    hidden` here would hide the body's hover/focus shadow against the white side
-   panel, and `session-workbar.spec.ts` asserts `overflow: visible`. */
+   panel, and `session-workbar.stories.tsx` asserts `overflow: visible`. */
 
 .maka-session-workbar-panel[data-placement="right"]
   .maka-quote-companion

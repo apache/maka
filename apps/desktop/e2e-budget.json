@@ -1,0 +1,73 @@
+{
+  "policy": [
+    "A test belongs in this tier only when it needs a real Electron window: an OS dialog, a main-process round trip, input released outside the window, persistence across a renderer reload, or a cross-process lifecycle.",
+    "Layout geometry, renderer state machines and pure CSS go to a Storybook play function; main-process logic goes to node --test. See #4761.",
+    "Every spec below records the Electron-owned mechanism it needs. If you cannot name one, the test does not belong here."
+  ],
+  "specs": {
+    "composer-directory-reference.spec.ts": {
+      "tests": 1,
+      "electron": "the folder reference has to survive a renderer reload and still agree with the Host's session record"
+    },
+    "context-window-save.spec.ts": {
+      "tests": 1,
+      "electron": "the saved window is read back from the Host's connection snapshot, not from renderer state"
+    },
+    "new-task-reload.spec.ts": {
+      "tests": 1,
+      "electron": "renderer reload is the whole contract: an explicit new task must not reopen history"
+    },
+    "proxy-password-editing.spec.ts": {
+      "tests": 1,
+      "electron": "the password never reaches the renderer; only the Host can report passwordConfigured and authenticate offline"
+    },
+    "quote-window-boundary.spec.ts": {
+      "tests": 1,
+      "electron": "a pointer capture released outside the window -- there is no window edge to leave in a browser tab"
+    },
+    "session-draft-focus.spec.ts": {
+      "tests": 1,
+      "electron": "needs a second real Session (Host round trip) to switch to; the focus and draft-restore halves alone would not earn a window"
+    },
+    "session-workbar.spec.ts": {
+      "tests": 5,
+      "electron": "Git changes re-read on window focus, terminal PTY ownership across Sessions, Side Chat's fork lifecycle, and a first send that has to reach the Host; the composer-usage test is renderer-only and rides along on those windows until app-shell.tsx's composer-to-workbar wiring has a story host"
+    },
+    "settings.spec.ts": {
+      "tests": 4,
+      "electron": "the preload makaE2eLatch holds the settings chunk mid-load, and the rename it commits is a Host write; the workbar-chrome test rides along on that window and would move to a story the day app-shell.tsx's settings wiring has one"
+    },
+    "sidebar-project-reload.spec.ts": {
+      "tests": 1,
+      "electron": "rail grouping has to be rebuilt from persisted project state after a renderer reload"
+    },
+    "skill-draft-lifecycle.spec.ts": {
+      "tests": 2,
+      "electron": "revision retry and cancel are Host-owned draft transitions across a parent and a child Session"
+    },
+    "slash-command-compact.spec.ts": {
+      "tests": 1,
+      "electron": "/compact is a Host round trip that ends in a real terminal Turn state"
+    },
+    "streaming-remount.spec.ts": {
+      "tests": 4,
+      "electron": "observation seeding, reconnect and settle are Host subscriptions surviving a renderer remount"
+    },
+    "transcript-scroll-cost.spec.ts": {
+      "tests": 3,
+      "electron": "the perf budget is measured from CDP wheel input and the browser's own render skipping"
+    },
+    "workhub-layout.spec.ts": {
+      "tests": 1,
+      "electron": "Coordination startup failure comes from the Host, and recovery needs a default model written back to it"
+    },
+    "workhub-reconstruction.spec.ts": {
+      "tests": 2,
+      "electron": "delegation linkage is rebuilt by the Host across navigation and across Sessions"
+    },
+    "zh-tw-locale.spec.ts": {
+      "tests": 1,
+      "electron": "the locale is a persisted Host setting and only takes effect through a renderer reload"
+    }
+  }
+}

@@ -523,34 +523,13 @@ type E2eTestFixtures = {
   parentRemovalWindow: Page;
   railRenderWindow: Page;
   promptRailWindow: Page;
-  threadSearchWindow: Page;
   requestHeaderRowWindow: Page;
   newTaskTargetWindow: Page;
   directoryReferenceWindow: { page: Page; folder: string };
   accessibilityNarrativeWindow: Page;
 };
 
-type E2eWorkerFixtures = {
-  isolatedDisplay: void;
-};
-
-export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
-  isolatedDisplay: [async ({}, use, workerInfo) => {
-    const base = process.env.MAKA_E2E_X_DISPLAY_BASE;
-    if (base === undefined) {
-      await use();
-      return;
-    }
-    if (!/^\d+$/.test(base)) throw new Error(`Invalid E2E X display base: ${base}`);
-    const previous = process.env.DISPLAY;
-    process.env.DISPLAY = `:${Number(base) + workerInfo.parallelIndex}`;
-    try {
-      await use();
-    } finally {
-      if (previous === undefined) delete process.env.DISPLAY;
-      else process.env.DISPLAY = previous;
-    }
-  }, { scope: 'worker', auto: true }],
+export const test = base.extend<E2eTestFixtures>({
   directoryReferenceWindow: async ({}, use) => {
     await withE2eWindow(
       { seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh-CN', showWindow: true },
@@ -659,18 +638,6 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       // passes on a Chinese desktop and cannot find it on an English CI runner.
       locale: 'zh-CN',
       showWindow: true,
-    }, use);
-  },
-  // The same seeded transcript, on a window of its own. Search reads the Host
-  // through the bridge and renders nothing, so it needs neither the warm
-  // window's compositor nor its between-test reset — and taking it off the
-  // reused window is what retires the readiness gate's cross-test bleed (#4707).
-  threadSearchWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      readinessSelector: '[data-turn-id]',
-      e2eFixtureScenario: 'chat-prompt-rail',
-      locale: 'zh-CN',
     }, use);
   },
   // Settings → 模型, where `no-models` is the seeded openai-compatible relay —
