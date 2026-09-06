@@ -329,13 +329,13 @@ export const PROVIDER_DISPLAY_COPY = {
     en: { name: 'Alibaba Coding Plan', description: 'Alibaba Cloud Model Studio Coding Plan for interactive coding tools.', badge: 'Plan' },
   },
   'alibaba-token-plan-cn': {
-    'zh-CN': { name: 'Alibaba Token Plan（团队版）', description: '阿里云百炼 Token Plan 订阅，交互式智能体与编码工具 · 北京', badge: 'Token' },
-    'zh-TW': { name: 'Alibaba Token Plan（團隊版）', description: '阿里雲百鍊 Token Plan 訂閱，互動式智慧體與編碼工具 · 北京', badge: 'Token' },
+    'zh-CN': { name: 'Alibaba Token Plan 中国站', description: '阿里云百炼 Token Plan 订阅，交互式智能体与编码工具 · 北京', badge: 'Token' },
+    'zh-TW': { name: 'Alibaba Token Plan 中國站', description: '阿里雲百鍊 Token Plan 訂閱，互動式智慧體與編碼工具 · 北京', badge: 'Token' },
     en: { name: 'Alibaba Token Plan (China)', description: 'Alibaba Cloud Model Studio Token Plan for interactive agents and coding tools, Beijing region.', badge: 'Token' },
   },
   'alibaba-token-plan': {
-    'zh-CN': { name: 'Alibaba Token Plan（团队版）', description: '阿里云百炼 Token Plan 订阅，交互式智能体与编码工具 · 新加坡', badge: 'Token' },
-    'zh-TW': { name: 'Alibaba Token Plan（團隊版）', description: '阿里雲百鍊 Token Plan 訂閱，互動式智慧體與編碼工具 · 新加坡', badge: 'Token' },
+    'zh-CN': { name: 'Alibaba Token Plan 国际站', description: '阿里云百炼 Token Plan 订阅，交互式智能体与编码工具 · 新加坡', badge: 'Token' },
+    'zh-TW': { name: 'Alibaba Token Plan 國際站', description: '阿里雲百鍊 Token Plan 訂閱，互動式智慧體與編碼工具 · 新加坡', badge: 'Token' },
     en: { name: 'Alibaba Token Plan', description: 'Alibaba Cloud Model Studio Token Plan for interactive agents and coding tools, Singapore region.', badge: 'Token' },
   },
   // OAuth account providers (not in CATALOG_PROVIDER_TYPES; shown in the
