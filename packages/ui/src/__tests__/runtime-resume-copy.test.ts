@@ -27,7 +27,6 @@ const CJK = /[\u3400-\u9fff]/u;
 test('resolves English park copy for every known reason with no Chinese (#4489)', () => {
   const reasons = [
     'dangling_tool_state',
-    'tool_not_dispatched',
     'runtime_offset_mismatch',
     'pending_permission',
     'workspace_identity_mismatch',

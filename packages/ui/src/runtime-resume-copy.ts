@@ -31,7 +31,6 @@ export interface ResumeParkToastCopy {
  */
 type ResumeParkReasonKey =
   | 'dangling_tool_state'
-  | 'tool_not_dispatched'
   | 'runtime_offset_mismatch'
   | 'pending_permission'
   | 'workspace_identity_mismatch'
@@ -83,7 +82,6 @@ const RESUME_PARK_COPY = {
     missingCandidateDescription: '任务已是最新状态。',
     reasons: {
       dangling_tool_state: '上次工具执行中断，记录已保留，暂时不能自动继续。',
-      tool_not_dispatched: '上次工具调用还没有开始执行，这一轮尚未结束，暂时不能自动继续。',
       runtime_offset_mismatch: '上次运行记录的位置与当前检查点不一致。',
       pending_permission: '上次执行仍在等待权限确认。',
       background_operation_pending: '仍有后台操作没有结束，暂时不能继续。',
@@ -125,7 +123,6 @@ const RESUME_PARK_COPY = {
     missingCandidateDescription: '任務已是最新狀態。',
     reasons: {
       dangling_tool_state: '上次工具執行中斷，記錄已保留，暫時不能自動繼續。',
-      tool_not_dispatched: '上次工具呼叫還沒有開始執行，這一輪尚未結束，暫時不能自動繼續。',
       runtime_offset_mismatch: '上次執行記錄的位置與目前檢查點不一致。',
       pending_permission: '上次執行仍在等待權限確認。',
       background_operation_pending: '仍有後台操作沒有結束，暫時不能繼續。',
@@ -168,8 +165,6 @@ const RESUME_PARK_COPY = {
     reasons: {
       dangling_tool_state:
         'The previous tool run was interrupted; its records are preserved, so it cannot continue automatically yet.',
-      tool_not_dispatched:
-        'The previous tool call never started executing; this round is incomplete, so it cannot continue automatically yet.',
       runtime_offset_mismatch: "The previous run's recorded position does not match the current checkpoint.",
       pending_permission: 'The previous run is still waiting for a permission approval.',
       background_operation_pending: 'Background operations are still running, so this round cannot continue yet.',

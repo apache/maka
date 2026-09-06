@@ -855,7 +855,6 @@ They record identities, reason codes, and error classes—not prompts, tool argu
 Stable rejection codes include:
 
 - `dangling_tool_state`
-- `tool_not_dispatched`
 - `runtime_offset_mismatch`
 - `pending_permission`
 - `workspace_identity_mismatch`

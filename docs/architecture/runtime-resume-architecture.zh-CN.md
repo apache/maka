@@ -884,7 +884,6 @@ Continuation 已有这些 lifecycle event：
 稳定 machine code 比自由文本更重要。常见拒绝包括：
 
 - `dangling_tool_state`
-- `tool_not_dispatched`
 - `runtime_offset_mismatch`
 - `pending_permission`
 - `workspace_identity_mismatch`

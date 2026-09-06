@@ -277,6 +277,41 @@ test('startup parks a provider-indeterminate continuation when resume is disable
   });
 });
 
+test('a source run whose tool call never dispatched resumes instead of parking', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const source = await fixture.seedUndispatchedToolCallContinuationSource(
+      mcpProxyToolName('resume_fixture', 'inspect'),
+    );
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    try {
+      // The Host planner always supplies a composite continuation replay plan,
+      // so buildSafeBoundaryContinuationPlan never consults the tool-ledger
+      // diagnostics, and the composite replay trims a call that never crossed
+      // the dispatch boundary as an interrupted suffix. Nothing ran, so nothing
+      // is dangling and the continuation is safe. This is the end-to-end reason
+      // no tool-ledger rejection reason can reach a Client through the Host.
+      assert.deepEqual(
+        await client.request('turn.resume.query', {
+          sessionId: fixture.sessionId,
+          sourceRunId: source.sourceRunId,
+          expectedRuntimeEventHighWater: source.sourceRuntimeEventHighWater,
+        }),
+        {
+          sessionId: fixture.sessionId,
+          disposition: 'ready',
+          sourceRunId: source.sourceRunId,
+          sourceTurnId: source.sourceTurnId,
+          sourceRuntimeEventHighWater: source.sourceRuntimeEventHighWater,
+        },
+      );
+    } finally {
+      await client.close();
+      await fixture.stopHost(host);
+    }
+  });
+});
+
 test('startup parks a pre-claim continuation whose Client Capability is absent', async () => {
   await withExecutionRoot(async (fixture) => {
     const requiredToolName = mcpProxyToolName('resume_fixture', 'inspect');
