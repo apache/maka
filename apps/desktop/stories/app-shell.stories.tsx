@@ -19,7 +19,7 @@
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
-import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useReducer, useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
@@ -29,11 +29,24 @@ import {
   Composer,
   deriveTitlebarProjectName,
   TitlebarSessionIdentity,
+  ToastProvider,
 } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode, TurnViewModel } from '@maka/ui';
 import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
 import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions';
-import { WorkbarTitlebarActions } from '../src/renderer/features/workbar';
+import {
+  WorkbarServicesProvider,
+  WorkbarTitlebarActions,
+} from '../src/renderer/features/workbar';
+import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
+import {
+  createFakeWorkbarServices,
+  createSessionWorkbarPanelsState,
+  reduceWorkbarLayout,
+  SESSION_BOTTOM_PANEL_DEFAULT_HEIGHT,
+  SESSION_WORKBAR_DEFAULT_WIDTH,
+  type WorkbarLayoutState,
+} from '../src/renderer/features/workbar/testing';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { deriveAppShellTurnPresentation } from '../src/renderer/app-shell-turn-view-model';
 import {
@@ -341,6 +354,8 @@ function ComposedShell(props: {
   frameHeight?: number | string;
   /** Drives the footer's update action; `undefined` is the silent phase. */
   updateReminder?: SessionListPanelProps['updateReminder'];
+  workbarCollapsed?: boolean;
+  onToggleWorkbar?: () => void;
 }) {
   const [collapsed, setCollapsed] = useState(props.sidebarCollapsed ?? false);
   const [viewMode, setViewMode] = useState<SessionViewMode>(props.initialViewMode ?? 'conversation');
@@ -413,8 +428,8 @@ function ComposedShell(props: {
         )}
         <WorkbarTitlebarActions
           available
-          collapsed={false}
-          onToggle={noop}
+          collapsed={props.workbarCollapsed ?? false}
+          onToggle={props.onToggleWorkbar ?? noop}
         />
       </header>
       <AstryxAppShell
@@ -2809,5 +2824,149 @@ export const RailStaysOnTheVisiblePrompt: Story = {
       currentCounts.every((count) => count === 1),
       `current tick count over time: ${currentCounts.join(',')}`,
     ).toBe(true);
+  },
+};
+
+// What the real `open` action leaves behind, rather than a hand-written topology.
+const workbarLayoutWithOneFace: WorkbarLayoutState = reduceWorkbarLayout(
+  {
+    panels: createSessionWorkbarPanelsState(),
+    rightCollapsed: true,
+    bottomOpen: false,
+    rightWidth: SESSION_WORKBAR_DEFAULT_WIDTH,
+    bottomHeight: SESSION_BOTTOM_PANEL_DEFAULT_HEIGHT,
+  },
+  { type: 'open', placement: 'right', tab: { id: 'workbar:files', kind: 'files' } },
+);
+
+function WorkbarInShell() {
+  const [layout, dispatch] = useReducer(reduceWorkbarLayout, workbarLayoutWithOneFace);
+  const collapseRight = (collapsed: boolean) =>
+    dispatch({ type: 'collapse', placement: 'right', collapsed });
+  return (
+    <ToastProvider>
+      <WorkbarServicesProvider services={createFakeWorkbarServices()}>
+        <ComposedShell
+          workbarCollapsed={layout.rightCollapsed}
+          onToggleWorkbar={() => collapseRight(!layout.rightCollapsed)}
+          detailChildren={
+            <div
+              className="maka-detail-with-artifacts"
+              style={
+                { '--maka-session-workbar-width': `${layout.rightWidth}px` } as CSSProperties
+              }
+            >
+              <div className="mainColumn" />
+              <WorkbarSurface
+                sessionId="session-active"
+                hidden={false}
+                onDismissPanel={() => collapseRight(true)}
+                panelsState={layout.panels}
+                rightCollapsed={layout.rightCollapsed}
+                bottomOpen={layout.bottomOpen}
+                onActivateTab={(placement, tabId) =>
+                  dispatch({ type: 'activate', placement, tabId })
+                }
+                onCloseTab={(placement, tab) =>
+                  dispatch({ type: 'close', placement, tabIds: [tab.id] })
+                }
+                onCloseTabs={(placement, tabs) =>
+                  dispatch({ type: 'close', placement, tabIds: tabs.map((tab) => tab.id) })
+                }
+                onOpenLauncher={(placement) => dispatch({ type: 'open-launcher', placement })}
+                onRequestOpenTab={(placement, kind) =>
+                  dispatch({
+                    type: 'open',
+                    placement,
+                    tab: { id: `workbar:${kind}`, kind },
+                  })
+                }
+                confirmBypass={async () => true}
+              />
+            </div>
+          }
+        />
+      </WorkbarServicesProvider>
+    </ToastProvider>
+  );
+}
+
+// Real path: 展开任务工作栏 → 文件 → 收起 → 从标题栏再展开.
+//
+// The collapse toggle is one control that moves between two bands — the
+// workbar's own bar and the titlebar's right cluster — and `workbar/shell.css`
+// pads the bar with the titlebar strip's gutter precisely so it lands on the
+// same x in both. Only a story that mounts both bands can hold it there, which
+// is why this lives beside the shell rather than with the workbar's own
+// stories.
+export const WorkbarCollapseKeepsOneToggleInPlace: Story = {
+  render: () => <WorkbarInShell />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const frame = canvasElement.querySelector<HTMLElement>(
+      '[data-maka-contract="session-workbar-right"]',
+    );
+    if (!frame) throw new Error('the right workbar is missing');
+    const bar = within(frame.querySelector<HTMLElement>('.maka-session-workbar-toolbar')!);
+    const collapse = bar.getByRole('button', { name: '收起任务工作栏' });
+    // The launcher stays mounted behind the face, so "not the picker" is a
+    // claim about reachability: `queryByRole` skips the inactive panel.
+    const pickerIsShowing = () =>
+      canvas.queryByRole('list', { name: '打开工具' }) !== null;
+    const face = await bar.findByRole('tab', { selected: true });
+    const faceLabel = face.textContent;
+
+    expect(canvas.queryByRole('toolbar', { name: '工作区辅助操作' })).toBeNull();
+    expect(pickerIsShowing()).toBe(false);
+
+    const faceBox = face.getBoundingClientRect();
+    const openToggleBox = collapse.getBoundingClientRect();
+    expect(
+      Math.abs(
+        faceBox.y + faceBox.height / 2 - (openToggleBox.y + openToggleBox.height / 2),
+      ),
+    ).toBeLessThanOrEqual(1);
+
+    // Windows draws its caption buttons over the right of the strip and reports
+    // their width here; macOS reports 0. The bar has to give that width back.
+    const captionWidth = 80;
+    canvasElement.style.setProperty(
+      '--maka-titlebar-overlay-right-width',
+      `${captionWidth}px`,
+    );
+    await waitFor(() => {
+      expect(collapse.getBoundingClientRect().x).toBeCloseTo(
+        openToggleBox.x - captionWidth,
+        0,
+      );
+    });
+    const parked = collapse.getBoundingClientRect();
+
+    // [+] is a menu over the panel, not a swap to the launcher: the face you
+    // are reading stays on screen while you pick another one.
+    await userEvent.click(bar.getByRole('button', { name: '打开或关闭工作栏的面' }));
+    const menu = await within(document.body).findByRole('menu');
+    expect(frame).toBeVisible();
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(menu).not.toBeVisible());
+    expect(pickerIsShowing()).toBe(false);
+
+    await userEvent.click(collapse);
+    const restore = await canvas.findByRole('button', { name: '展开任务工作栏' });
+    await waitFor(() => expect(frame).not.toBeVisible());
+    const restoreBox = restore.getBoundingClientRect();
+    expect(Math.abs(restoreBox.x - parked.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(restoreBox.y - parked.y)).toBeLessThanOrEqual(1);
+
+    await userEvent.click(restore);
+    await waitFor(() => expect(frame).toBeVisible());
+    expect(pickerIsShowing()).toBe(false);
+    const restoredFace = bar.getByRole('tab', { selected: true });
+    expect(restoredFace.textContent).toBe(faceLabel);
+    const restoredToggleBox = bar
+      .getByRole('button', { name: '收起任务工作栏' })
+      .getBoundingClientRect();
+    expect(Math.abs(restoredToggleBox.x - parked.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(restoredToggleBox.y - parked.y)).toBeLessThanOrEqual(1);
   },
 };

@@ -54,9 +54,8 @@ import {
 //
 // What this group cannot show: the seam. The workbar's surface tone only reads
 // as a seam against the conversation plate it stands beside, and the plate is
-// two levels up in the shell — as is the titlebar clearance the surface bleeds
-// through. Both are pinned by computed-style assertions in
-// e2e/session-workbar.spec.ts instead.
+// two levels up in the shell — as is the titlebar band the collapse toggle
+// moves into. Those belong to app-shell.stories.tsx, which mounts the shell.
 //
 // Read these at a canvas of 990px or wider. The app's own breakpoint is on the
 // viewport, and Storybook's canvas IS the viewport, so a narrower window puts
