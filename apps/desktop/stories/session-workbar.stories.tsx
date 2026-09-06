@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { CSSProperties } from 'react';
+import { useState, type CSSProperties } from 'react';
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
@@ -27,7 +27,7 @@ import type { SessionSummary } from '@maka/core/session';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ToastProvider } from '@maka/ui';
-import { WorkbarServicesProvider } from '../src/renderer/features/workbar';
+import { WorkbarServicesProvider, WorkbarTitlebarActions } from '../src/renderer/features/workbar';
 import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
@@ -927,7 +927,13 @@ function Workbar(props: {
   sourceSession?: SessionSummary;
   /** Overrides the restored column width, the way the resize handle does. */
   width?: number;
+  /**
+   * Lets the column's own collapse toggle and the titlebar's restore
+   * affordance drive `rightCollapsed`, the way the app's reducer does.
+   */
+  collapsible?: boolean;
 }) {
+  const [collapsed, setCollapsed] = useState(false);
   const emptyTabsState = createSessionWorkbarTabsState();
   let tab: SessionWorkbarTab | undefined;
   let quotes: QuoteCompanionPanelState[] | undefined;
@@ -985,13 +991,21 @@ function Workbar(props: {
           ...(props.width ? { '--maka-session-workbar-width': `${props.width}px` } : {}),
         } as CSSProperties}
       >
-        <div className="mainColumn" />
+        <div className="mainColumn">
+          {props.collapsible && (
+            <WorkbarTitlebarActions
+              available
+              collapsed={collapsed}
+              onToggle={() => setCollapsed(false)}
+            />
+          )}
+        </div>
         <WorkbarSurface
           sessionId={SESSION_ID}
           hidden={false}
-          onDismissPanel={noop}
+          onDismissPanel={props.collapsible ? () => setCollapsed(true) : noop}
           panelsState={createSessionWorkbarPanelsState(tabsState)}
-          rightCollapsed={false}
+          rightCollapsed={collapsed}
           bottomOpen={false}
           onActivateTab={noop}
           onCloseTab={noop}
@@ -1074,6 +1088,37 @@ export const SeveralFacesAtColumnFloor: Story = {
   render: () => (
     <Workbar tab="review" alsoOpen={['browser', 'files']} width={320} />
   ),
+};
+
+// Below 991px the column stacks under the conversation at full width. The
+// wide-window ease (app-shell.stories.tsx holds that contract) must not reach
+// it: the face spans the row, and collapsing removes the row instead of
+// leaving an empty band. The smoke lane sizes stories named `narrow` to 720px.
+export const CollapseNarrowStack: Story = {
+  parameters: { viewport: { options: STACKED_WINDOW_VIEWPORT } },
+  globals: { viewport: { value: 'makaStackedWindow', isRotated: false } },
+  decorators: [bridge()],
+  render: () => <Workbar tab="review" collapsible />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const frame = canvasElement.querySelector<HTMLElement>(
+      '.maka-session-workbar[data-placement="right"]',
+    )!;
+    const panel = canvasElement.querySelector<HTMLElement>(
+      '.maka-session-workbar-panel[data-overlay][data-placement="right"]',
+    )!;
+    const toolbar = frame.querySelector<HTMLElement>('.maka-session-workbar-toolbar')!;
+    await canvas.findByRole('region', { name: 'Git 变更' });
+    expect(window.innerWidth).toBeLessThanOrEqual(990);
+    expect(toolbar.getBoundingClientRect().width).toBe(frame.getBoundingClientRect().width);
+    expect(panel.firstElementChild!.getBoundingClientRect().width).toBe(
+      panel.getBoundingClientRect().width,
+    );
+
+    await userEvent.click(canvas.getByRole('button', { name: '收起任务工作栏' }));
+    await waitFor(() => expect(getComputedStyle(frame).display).toBe('none'));
+    expect(getComputedStyle(panel).display).toBe('none');
+  },
 };
 
 // Real path: 任务工作栏 → 变更 on a session whose branch matches its base. The

@@ -387,7 +387,6 @@
   .maka-session-workbar-panel[data-overlay][data-placement] {
     width: 100%;
     min-width: 0;
-    max-width: none;
     min-height: min(220px, 42dvh);
     max-height: min(42dvh, 360px);
     height: min(42dvh, 360px);

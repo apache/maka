@@ -2995,6 +2995,7 @@ function WorkbarInShell() {
     <ToastProvider>
       <WorkbarServicesProvider services={createFakeWorkbarServices()}>
         <ComposedShell
+          motionEnabled
           workbarCollapsed={rightCollapsed}
           onToggleWorkbar={() => collapseRight(!rightCollapsed)}
           detailChildren={
@@ -3047,9 +3048,12 @@ function WorkbarInShell() {
 // The collapse toggle is one control that moves between two bands — the
 // workbar's own bar and the titlebar's right cluster — and `workbar/shell.css`
 // pads the bar with the titlebar strip's gutter precisely so it lands on the
-// same x in both. Only a story that mounts both bands can hold it there, which
-// is why this lives beside the shell rather than with the workbar's own
-// stories.
+// same x in both, one `--space-2` in from the plate's edge on a platform that
+// draws nothing there. Only a story that mounts both bands can hold it there,
+// which is why this lives beside the shell rather than with the workbar's own
+// stories. The column eases shut and open the way the sidebar does, and the
+// face and the toggle keep their x through every frame of it: the box's left
+// edge sweeps over content that is already where it will rest.
 export const WorkbarCollapseKeepsOneToggleInPlace: Story = {
   render: () => <WorkbarInShell />,
   play: async ({ canvasElement }) => {
@@ -3071,6 +3075,49 @@ export const WorkbarCollapseKeepsOneToggleInPlace: Story = {
     const pickerIsShowing = () =>
       canvas.queryByRole('list', { name: '打开工具' }) !== null;
     const face = await bar.findByRole('tab', { selected: true });
+    expect(
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+      'a reduced-motion browser collapses in one frame and this story stops testing the ease',
+    ).toBe(false);
+    // Frames around a click. The runner may be too slow to land the 280ms ease
+    // inside the window, so the resting state is awaited separately.
+    const faceContent = facePanel.firstElementChild!;
+    const sample = () =>
+      new Promise<{
+        frame: number[];
+        panel: number[];
+        faceRight: number[];
+        toggleX: number[];
+        eased: boolean;
+      }>((resolve) => {
+        const out = {
+          frame: [] as number[],
+          panel: [] as number[],
+          faceRight: [] as number[],
+          toggleX: [] as number[],
+          eased: false,
+        };
+        const start = performance.now();
+        const tick = () => {
+          const frameBox = frame.getBoundingClientRect();
+          out.frame.push(Math.round(frameBox.width));
+          out.panel.push(Math.round(facePanel.getBoundingClientRect().width));
+          out.faceRight.push(Math.round(faceContent.getBoundingClientRect().right - frameBox.right));
+          out.toggleX.push(Math.round(collapse.getBoundingClientRect().x));
+          out.eased ||= frame
+            .getAnimations()
+            .some((animation) => (animation as CSSTransition).transitionProperty === 'width');
+          if (performance.now() - start < 500) requestAnimationFrame(tick);
+          else resolve(out);
+        };
+        requestAnimationFrame(tick);
+      });
+    const eased = (sampled: Awaited<ReturnType<typeof sample>>, toggleX: number) => {
+      expect(sampled.eased).toBe(true);
+      expect(sampled.panel).toEqual(sampled.frame);
+      expect(new Set(sampled.faceRight)).toEqual(new Set([0]));
+      expect(new Set(sampled.toggleX)).toEqual(new Set([Math.round(toggleX)]));
+    };
 
     expect(canvas.queryByRole('toolbar', { name: '工作区辅助操作' })).toBeNull();
     expect(pickerIsShowing()).toBe(false);
@@ -3082,46 +3129,57 @@ export const WorkbarCollapseKeepsOneToggleInPlace: Story = {
         faceBox.y + faceBox.height / 2 - (openToggleBox.y + openToggleBox.height / 2),
       ),
     ).toBeLessThanOrEqual(1);
+    expect(frame.getBoundingClientRect().right - openToggleBox.right).toBe(8);
 
     // Windows draws its caption buttons over the right of the strip and reports
     // their width here; macOS reports 0. The bar has to give that width back.
+    // The root is where `maka-tokens.css` reads it into the gutter, so the
+    // override goes there, the way `env()` would report it.
     const captionWidth = 80;
-    canvasElement.style.setProperty(
+    document.documentElement.style.setProperty(
       '--maka-titlebar-overlay-right-width',
       `${captionWidth}px`,
     );
-    await waitFor(() => {
-      expect(collapse.getBoundingClientRect().x).toBeCloseTo(
-        openToggleBox.x - captionWidth,
-        0,
-      );
-    });
-    const parked = collapse.getBoundingClientRect();
+    try {
+      await waitFor(() => {
+        expect(collapse.getBoundingClientRect().x).toBeCloseTo(
+          openToggleBox.x - captionWidth,
+          0,
+        );
+      });
+      const parked = collapse.getBoundingClientRect();
 
-    // [+] is a menu over the panel, not a swap to the launcher: the face you
-    // are reading stays on screen while you pick another one.
-    await userEvent.click(bar.getByRole('button', { name: '打开或关闭工作栏的面' }));
-    const menu = await within(document.body).findByRole('menu');
-    await userEvent.keyboard('{Escape}');
-    await waitFor(() => expect(menu).not.toBeVisible());
-    expect(pickerIsShowing()).toBe(false);
+      // [+] is a menu over the panel, not a swap to the launcher: the face you
+      // are reading stays on screen while you pick another one.
+      await userEvent.click(bar.getByRole('button', { name: '打开或关闭工作栏的面' }));
+      const menu = await within(document.body).findByRole('menu');
+      await userEvent.keyboard('{Escape}');
+      await waitFor(() => expect(menu).not.toBeVisible());
+      expect(pickerIsShowing()).toBe(false);
 
-    await userEvent.click(collapse);
-    const restore = await canvas.findByRole('button', { name: '展开任务工作栏' });
-    await waitFor(() => expect(frame).not.toBeVisible());
-    expect(facePanel).not.toBeVisible();
-    const restoreBox = restore.getBoundingClientRect();
-    expect(Math.abs(restoreBox.x - parked.x)).toBeLessThanOrEqual(1);
-    expect(Math.abs(restoreBox.y - parked.y)).toBeLessThanOrEqual(1);
+      let sampling = sample();
+      await userEvent.click(collapse);
+      const restore = await canvas.findByRole('button', { name: '展开任务工作栏' });
+      eased(await sampling, parked.x);
+      await waitFor(() => expect(frame).not.toBeVisible());
+      expect(facePanel).not.toBeVisible();
+      const restoreBox = restore.getBoundingClientRect();
+      expect(Math.abs(restoreBox.x - parked.x)).toBeLessThanOrEqual(1);
+      expect(Math.abs(restoreBox.y - parked.y)).toBeLessThanOrEqual(1);
 
-    await userEvent.click(restore);
-    await waitFor(() => expect(frame).toBeVisible());
-    expect(facePanel).toBeVisible();
-    expect(pickerIsShowing()).toBe(false);
-    const restoredToggleBox = bar
-      .getByRole('button', { name: '收起任务工作栏' })
-      .getBoundingClientRect();
-    expect(Math.abs(restoredToggleBox.x - parked.x)).toBeLessThanOrEqual(1);
-    expect(Math.abs(restoredToggleBox.y - parked.y)).toBeLessThanOrEqual(1);
+      sampling = sample();
+      await userEvent.click(restore);
+      eased(await sampling, parked.x);
+      await waitFor(() => expect(frame).toBeVisible());
+      expect(facePanel).toBeVisible();
+      expect(pickerIsShowing()).toBe(false);
+      const restoredToggleBox = bar
+        .getByRole('button', { name: '收起任务工作栏' })
+        .getBoundingClientRect();
+      expect(Math.abs(restoredToggleBox.x - parked.x)).toBeLessThanOrEqual(1);
+      expect(Math.abs(restoredToggleBox.y - parked.y)).toBeLessThanOrEqual(1);
+    } finally {
+      document.documentElement.style.removeProperty('--maka-titlebar-overlay-right-width');
+    }
   },
 };
