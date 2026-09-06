@@ -66,8 +66,10 @@ async function isGitDirectory(gitDir: string): Promise<boolean> {
   try {
     // readFile fails closed on a missing, unreadable, or directory HEAD.
     const head = (await readFile(join(gitDir, 'HEAD'), 'utf8')).trim();
+    // A symref must target a ref under refs/; git itself rejects any other
+    // target (e.g. `ref: gk`) with exit 128 even when objects/ and refs/ exist.
     const validHead = head.startsWith(HEAD_REF_PREFIX)
-      ? head.slice(HEAD_REF_PREFIX.length).trim() !== ''
+      ? head.slice(HEAD_REF_PREFIX.length).trim().startsWith('refs/')
       : HEAD_OBJECT_ID.test(head);
     if (!validHead) return false;
   } catch {
