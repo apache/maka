@@ -20,7 +20,7 @@
 import type { StatusSemantic } from '@maka/ui';
 import type { BotProvider, BotReadinessState } from '@maka/core/bot-chat-settings';
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { lookupCopy, type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
 
 type WidenCopy<T> = T extends string
   ? string
