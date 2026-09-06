@@ -494,7 +494,7 @@ describe('applyLiveTurnEvent', () => {
 
     assert.equal(projection.steps.flatMap((step) => step.tools).length, 1);
     assert.deepEqual(
-      overlayLiveTurn([], projection)[0]?.timeline.map((item) =>
+      overlayLiveTurn([], projection, 'en')[0]?.timeline.map((item) =>
         item.kind === 'user' ? `user:${item.message.text}` : item.kind),
       ['user:before tool', 'text', 'tools', 'user:after tool'],
     );
@@ -521,7 +521,7 @@ describe('applyLiveTurnEvent', () => {
       ts: 101,
     });
 
-    const timeline = overlayLiveTurn([], withLateThinking)[0]?.timeline;
+    const timeline = overlayLiveTurn([], withLateThinking, 'en')[0]?.timeline;
     assert.deepEqual(timeline?.map((item) => item.kind), ['tools', 'thinking']);
   });
 
@@ -1036,7 +1036,7 @@ describe('tool_result_preview live projection', () => {
       isError: false, content: { kind: 'text', text: '' }, ts: 5,
     });
 
-    assert.deepEqual(overlayLiveTurn(turns, settled)[0]?.tools[0]?.result, {
+    assert.deepEqual(overlayLiveTurn(turns, settled, 'en')[0]?.tools[0]?.result, {
       kind: 'text',
       text: '',
     });
@@ -1073,3 +1073,108 @@ function previewedSubagentTurn(): LiveTurnProjection {
     ts: 101,
   });
 }
+
+describe('context-compaction live row', () => {
+  it('arms a rootExecutionKind projection from a context_compaction_started event', () => {
+    const projection = applyLiveTurnEvent(undefined, {
+      type: 'context_compaction_started',
+      id: 'compaction-started-1',
+      turnId: 'turn-compact',
+      ts: 1,
+    });
+    assert.ok(projection);
+    assert.equal(projection.turnId, 'turn-compact');
+    assert.equal(projection.rootExecutionKind, 'context_compact');
+    assert.equal(projection.steps.length, 0);
+  });
+
+  it('overlays exactly one localized "compacting" system row while running', () => {
+    const projection = applyLiveTurnEvent(undefined, {
+      type: 'context_compaction_started',
+      id: 'compaction-started-1',
+      turnId: 'turn-compact',
+      ts: 1,
+    });
+    const turns = overlayLiveTurn([], projection, 'en');
+    assert.equal(turns.length, 1);
+    assert.equal(turns[0]?.turnId, 'turn-compact');
+    assert.equal(turns[0]?.status, 'running');
+    assert.equal(turns[0]?.notes.length, 1);
+    assert.equal(
+      turns[0]?.notes[0]?.text,
+      getConversationCopy('en').messages.systemNotes.contextCompacting,
+    );
+  });
+
+  it('merges the compacting note into an already-persisted running turn', () => {
+    // Production persists a `turn_state:running` row for the compaction turn, so
+    // materializeTurns yields an empty running turn before the live row arrives.
+    const settled = [
+      {
+        turnId: 'turn-compact',
+        status: 'running' as const,
+        statusSource: 'recorded' as const,
+        partialOutputRetained: false,
+        tools: [],
+        notes: [],
+        timeline: [],
+        startedAt: 5,
+      },
+    ];
+    const projection = applyLiveTurnEvent(undefined, {
+      type: 'context_compaction_started',
+      id: 'compaction-started-1',
+      turnId: 'turn-compact',
+      ts: 7,
+    });
+    const turns = overlayLiveTurn(settled, projection, 'en');
+    assert.equal(turns.length, 1);
+    assert.equal(turns[0]?.turnId, 'turn-compact');
+    assert.equal(turns[0]?.notes.length, 1);
+    assert.equal(
+      turns[0]?.notes[0]?.text,
+      getConversationCopy('en').messages.systemNotes.contextCompacting,
+    );
+    assert.equal(turns[0]?.notes[0]?.id, 'context-compaction:turn-compact');
+    // Deterministic ts (no Date.now()): the note borrows the settled turn's start.
+    assert.equal(turns[0]?.notes[0]?.ts, 5);
+    // Idempotent across reprojection — no duplicate note.
+    const again = overlayLiveTurn(turns, projection, 'en');
+    assert.equal(again[0]?.notes.length, 1);
+  });
+
+  it('localizes the compacting row per locale', () => {
+    const projection = applyLiveTurnEvent(undefined, {
+      type: 'context_compaction_started',
+      id: 'compaction-started-1',
+      turnId: 'turn-compact',
+      ts: 1,
+    });
+    assert.equal(
+      overlayLiveTurn([], projection, 'zh-CN')[0]?.notes[0]?.text,
+      getConversationCopy('zh-CN').messages.systemNotes.contextCompacting,
+    );
+    assert.notEqual(
+      getConversationCopy('zh-CN').messages.systemNotes.contextCompacting,
+      getConversationCopy('en').messages.systemNotes.contextCompacting,
+    );
+  });
+
+  it('drops the row when the compaction turn completes with no content', () => {
+    let projection = applyLiveTurnEvent(undefined, {
+      type: 'context_compaction_started',
+      id: 'compaction-started-1',
+      turnId: 'turn-compact',
+      ts: 1,
+    });
+    projection = applyLiveTurnEvent(projection, {
+      type: 'complete',
+      id: 'complete-1',
+      turnId: 'turn-compact',
+      ts: 2,
+      stopReason: 'end_turn',
+    });
+    assert.equal(projection, undefined);
+    assert.deepEqual(overlayLiveTurn([], projection, 'en'), []);
+  });
+});

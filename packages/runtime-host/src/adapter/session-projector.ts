@@ -18,7 +18,11 @@
  */
 
 import { isDeepStrictEqual } from 'node:util';
-import type { ActiveInteractionRequestEvent, SessionEvent } from '@maka/core/events';
+import type {
+  ActiveInteractionRequestEvent,
+  ContextCompactionStartedEvent,
+  SessionEvent,
+} from '@maka/core/events';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import type {
   InteractionPendingSnapshot,
@@ -172,6 +176,11 @@ export class RuntimeHostSessionProjector {
       );
     }
     if (isRuntimeHostTerminalTurn(root)) return events;
+    // Re-derive the running compaction row on reconnect / restart: the Host keeps
+    // the compaction Turn alive, so a reconnecting client learns of it here.
+    if (root.rootExecutionKind === 'context_compact') {
+      events.push(contextCompactionStartedEvent(root, this.#now()));
+    }
     let seededAssistantText = false;
     if (includeAssistantText) {
       for (const accumulator of this.#accumulators.values()) {
@@ -437,6 +446,20 @@ export class RuntimeHostSessionProjector {
       events.push(projectQueueUpdate(next.queue, root.turnId, this.#now()));
     }
     if (startedTurn) this.#accumulators.clear();
+    // Emit the presentation-only compaction-started event when the root Turn
+    // FIRST becomes a `context_compact` run, not only when the runId changes.
+    // The real lifecycle is `admitted (no rootExecutionKind) → running/
+    // context_compact` at the SAME runId, so gating on startedTurn would miss
+    // the live transition and only surface the row on reconnect via seedActive.
+    const rootIsCompaction =
+      !!root && !isRuntimeHostTerminalTurn(root) && root.rootExecutionKind === 'context_compact';
+    const previousWasCompaction =
+      !!previousRoot &&
+      !isRuntimeHostTerminalTurn(previousRoot) &&
+      previousRoot.rootExecutionKind === 'context_compact';
+    if (root && rootIsCompaction && !previousWasCompaction) {
+      events.push(contextCompactionStartedEvent(root, this.#now()));
+    }
     const retry = liveProviderRetryEvent(previousRoot, root, this.#now());
     if (retry) events.push(retry);
     const terminalTurn =
@@ -473,6 +496,10 @@ export class RuntimeHostSessionProjector {
         turnId: root.turnId,
         ts: this.#now(),
         stopReason: 'end_turn',
+        // Forward the typed compaction outcome already carried by the canonical
+        // Turn snapshot so the renderer can settle the running toast and show the
+        // terminal state. This projects an existing snapshot field (no turn-state
+        // persistence), so checkpointId stays a string.
         ...(root.contextCompactionOutcome
           ? { contextCompactionOutcome: root.contextCompactionOutcome }
           : {}),
@@ -539,6 +566,24 @@ function projectMessageRetractionEvents(
       messageId: entry.messageId,
       outcome: 'retracted' as const,
     }));
+}
+
+/**
+ * Presentation-only event that drives the renderer's live "compacting" row.
+ * Emitted on both the live transition (`accept`) and reconnect (`seedActive`)
+ * with a deterministic id keyed on the run, so a reconnect re-emits it
+ * idempotently.
+ */
+function contextCompactionStartedEvent(
+  turn: { runId: string; turnId: string },
+  now: number,
+): ContextCompactionStartedEvent {
+  return {
+    type: 'context_compaction_started',
+    id: `host-compaction-started:${turn.runId}`,
+    turnId: turn.turnId,
+    ts: now,
+  };
 }
 
 export function projectRuntimeHostInteractionRequest(

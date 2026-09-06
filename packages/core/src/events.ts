@@ -580,7 +580,8 @@ export type SessionEvent =
   | ProviderRetryEvent
   | ErrorEvent
   | CompleteEvent
-  | AbortEvent;
+  | AbortEvent
+  | ContextCompactionStartedEvent;
 
 export interface TextDeltaEvent extends BaseEvent {
   type: 'text_delta';
@@ -1294,6 +1295,16 @@ export function failureClassFromCompleteStopReason(
 export interface AbortEvent extends BaseEvent {
   type: 'abort';
   reason: 'user_stop' | 'redirect' | 'timeout' | 'crash';
+}
+
+/**
+ * A host-owned explicit context-compaction Turn has started. Synthesized by the
+ * Runtime Host session projector (not the kernel) purely so a client can render
+ * a "compacting" transcript row while the Turn is in flight; it carries no
+ * durable state and is excluded from `BackendSessionEvent` like `queue_update`.
+ */
+export interface ContextCompactionStartedEvent extends BaseEvent {
+  type: 'context_compaction_started';
 }
 
 // ============================================================================
