@@ -50,6 +50,7 @@ class WindowPage extends Page {
 export class DesktopAssistantUi {
   private cursor?: { x: number; y: number };
   private readonly surface = new DesktopAssistantSurface();
+  dispatchedInputs = 0;
   constructor(
     private readonly window: () => WebContents,
     private readonly readSettings: () => Promise<AppSettings>,
@@ -116,16 +117,19 @@ export class DesktopAssistantUi {
         await wc.executeJavaScript(`window.dispatchEvent(new CustomEvent('maka-assistant:input', { detail: { key: ${JSON.stringify(action.key === 'Space' ? ' ' : action.key)} } }))`);
         signal.throwIfAborted();
         const keyCode = action.key.replace('Arrow', '');
+        this.dispatchedInputs++;
         wc.sendInputEvent({ type: 'keyDown', keyCode });
         wc.sendInputEvent({ type: 'keyUp', keyCode });
         await delay(150, signal);
       } else {
         const point = await this.move(target.css, signal, validate, action.kind === 'hover');
-        await wc.executeJavaScript(`window.dispatchEvent(new CustomEvent('maka-assistant:input', { detail: ${JSON.stringify({ ...point, ...(action.kind === 'scroll' ? { wheel: true } : {}) })} }))`);
-        signal.throwIfAborted();
-        wc.sendInputEvent({ type: 'mouseMove', ...point });
-        if (action.kind === 'scroll') wc.sendInputEvent({ type: 'mouseWheel', ...point, deltaX: 0, deltaY: -action.deltaY, canScroll: true, hasPreciseScrollingDeltas: true });
-        await delay(200, signal);
+        await this.nativeInput(async () => {
+          await wc.executeJavaScript(`window.dispatchEvent(new CustomEvent('maka-assistant:input', { detail: ${JSON.stringify({ ...point, ...(action.kind === 'scroll' ? { wheel: true } : {}) })} }))`);
+          signal.throwIfAborted();
+          wc.sendInputEvent({ type: 'mouseMove', ...point });
+          if (action.kind === 'scroll') wc.sendInputEvent({ type: 'mouseWheel', ...point, deltaX: 0, deltaY: -action.deltaY, canScroll: true, hasPreciseScrollingDeltas: true });
+          await delay(200, signal);
+        });
       }
       return { verified: false, dispatched: true };
     }
@@ -175,13 +179,14 @@ export class DesktopAssistantUi {
     if (!await focused()) throw new Error('Text input did not receive focus');
     signal.throwIfAborted();
     wc.selectAll();
-    if (text.length === 0) { wc.delete(); await delay(45, signal); }
+    if (text.length === 0) { this.dispatchedInputs++; wc.delete(); await delay(45, signal); }
     // insertText uses Chromium's native editing path (including IME text), so
     // React receives genuine input events instead of a bypassed value setter.
     for (const character of text) {
       signal.throwIfAborted();
       await validate?.();
       if (!await focused()) throw new Error('Text input lost focus; typing stopped');
+      this.dispatchedInputs++;
       await wc.insertText(character);
       await delay(45, signal);
     }
@@ -200,9 +205,13 @@ export class DesktopAssistantUi {
       if (!e || e.closest(${JSON.stringify(ASSISTANT_EXCLUDED)}) || e.closest('[inert]') || e.matches(':disabled,[aria-disabled="true"]')) return null;
       const r = e.getBoundingClientRect();
       const x = Math.round(r.x + r.width / 2), y = Math.round(r.y + r.height / 2);
-      const hit = document.elementFromPoint(x, y);
-      if (r.width < 1 || r.height < 1 || !hit || hit.closest(${JSON.stringify(ASSISTANT_EXCLUDED)}) || (!${hover} && !e.contains(hit))) return null;
-      return { x, y };
+      const root = document.documentElement, passing = root.classList.contains('desktopAssistantInput');
+      root.classList.add('desktopAssistantInput');
+      try {
+        const hit = document.elementFromPoint(x, y);
+        if (r.width < 1 || r.height < 1 || !hit || hit.closest(${JSON.stringify(ASSISTANT_EXCLUDED)}) || (!${hover} && !e.contains(hit))) return null;
+        return { x, y };
+      } finally { if (!passing) root.classList.remove('desktopAssistantInput'); }
     })()`);
   }
 
@@ -224,22 +233,33 @@ export class DesktopAssistantUi {
   private async click(css: string, signal: AbortSignal, validate?: () => Promise<void>) {
     const current = await this.move(css, signal, validate, true);
     const wc = this.window();
-    // Await the renderer's synchronous ownership marker before Chromium
-    // delivers native input; IPC send and input delivery have different queues.
-    await wc.executeJavaScript(`window.dispatchEvent(new CustomEvent('maka-assistant:input', { detail: ${JSON.stringify(current)} }))`);
-    signal.throwIfAborted();
-    wc.sendInputEvent({ type: 'mouseMove', ...current });
-    // Task-row actions appear on hover. Move the native pointer first, then
-    // require the actual control to own the hit point before pressing it.
-    await delay(120, signal);
-    const hit = await this.point(css);
-    if (!hit || hit.x !== current.x || hit.y !== current.y) throw new Error('Control is covered or moved; action stopped');
-    await validate?.();
-    await wc.executeJavaScript(`window.dispatchEvent(new CustomEvent('maka-assistant:input', { detail: ${JSON.stringify(current)} }))`);
-    signal.throwIfAborted();
-    this.update({ cursor: { ...current, clicking: true, durationMs: 0 } });
-    wc.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...current });
-    wc.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...current });
-    await delay(150, signal);
+    await this.nativeInput(async () => {
+      // Await the renderer's synchronous ownership marker before Chromium
+      // delivers native input; IPC send and input delivery use different queues.
+      await wc.executeJavaScript(`window.dispatchEvent(new CustomEvent('maka-assistant:input', { detail: ${JSON.stringify(current)} }))`);
+      signal.throwIfAborted();
+      wc.sendInputEvent({ type: 'mouseMove', ...current });
+      // Task-row actions appear on hover. Reveal them before pressing.
+      await delay(120, signal);
+      const hit = await this.point(css);
+      if (!hit || hit.x !== current.x || hit.y !== current.y) throw new Error('Control is covered or moved; action stopped');
+      await validate?.();
+      await wc.executeJavaScript(`document.documentElement.classList.add('desktopAssistantInput'); window.dispatchEvent(new CustomEvent('maka-assistant:input', { detail: ${JSON.stringify(current)} }))`);
+      signal.throwIfAborted();
+      this.update({ cursor: { ...current, clicking: true, durationMs: 0 } });
+      this.dispatchedInputs++;
+      wc.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...current });
+      wc.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...current });
+      await delay(150, signal);
+    });
+  }
+
+  private async nativeInput(send: () => Promise<void>) {
+    const wc = this.window();
+    await wc.executeJavaScript(`document.documentElement.classList.add('desktopAssistantInput')`);
+    try { await send(); }
+    finally {
+      if (!wc.isDestroyed()) await wc.executeJavaScript(`document.documentElement.classList.remove('desktopAssistantInput')`);
+    }
   }
 }

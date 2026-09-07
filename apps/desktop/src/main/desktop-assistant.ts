@@ -19,6 +19,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { setTimeout as wait } from 'node:timers/promises';
 import type { IpcMain, WebContents } from 'electron';
 import { z } from 'zod';
 import { SETTINGS_SECTIONS, type AppSettings } from '@maka/core/settings';
@@ -36,6 +37,7 @@ import type { DesktopAssistantAction, DesktopAssistantSnapshot } from '../shared
 
 /** Product paths are stable; coordinates are resolved afresh for every action. */
 const PRODUCT_MAP = {
+  asynchronousResults: 'Task creation and replies may take time. After sending, observe with waitMs: 2000 while the task loads or runs, up to 30 seconds. A transient read error immediately after creation is not a final failure. Never resend while waiting. If the interface remains unchanged or failed after that bound, report the blocker.',
   app: { newTask: 'New task from the sidebar', extensions: 'Skills and MCP extensions from the sidebar', automations: 'Scheduled tasks from the sidebar', app: 'Return from Settings to the application. Tasks are in the sidebar; task actions are in each task menu. Project selection is in the top bar; task files, review and activity are in the workbar.' },
   interaction: 'Use controls[].ref from the latest observation for click, hover, type, key or scroll. Numeric refs in accessibility text are informational only. Execute one referenced action at a time, then inspect the new observation. Generic dispatch is not proof that the user goal succeeded. Terminal, embedded browser, external browser links and secret fields are excluded. Execute the user-requested actions directly, including existing application confirmation dialogs. Do not add a confirmation question for work the user already requested.',
   settings: SETTINGS_SECTIONS.map((section) => ({
@@ -85,6 +87,7 @@ export function createDesktopAssistant(deps: AssistantDeps) {
   let controlBusy = false;
   let selectingModel = false;
   let actionFailure: string | undefined;
+  let consecutiveFailures = 0;
   let undo: { action: DesktopAssistantAction; expected: string } | undefined;
   const watchedWindows = new WeakSet<WebContents>();
   const update = (patch: Partial<DesktopAssistantSnapshot>) => {
@@ -157,6 +160,7 @@ export function createDesktopAssistant(deps: AssistantDeps) {
     if (selectingModel) throw new Error('Wait for the model selection to finish');
     if (run) throw new Error('Stop the current request before sending another');
     actionFailure = undefined;
+    consecutiveFailures = 0;
     const active = new AbortController();
     run = active;
     const window = deps.window();
@@ -197,24 +201,29 @@ export function createDesktopAssistant(deps: AssistantDeps) {
   const tool: MakaTool = {
     name: 'control',
     description: 'Observe and operate the Maka application through current control references or known navigation paths. Terminal, embedded browser, external links and secret fields are excluded. Use one referenced action per call and inspect the returned observation; dispatch alone does not verify success. Execute requested actions directly, including application confirmation dialogs. Input uses real controls with a visible cursor. Visual returns a cropped visible language/theme control.',
-    parameters: z.object({ operation: z.enum(['observe', 'visual', 'act']), actions: z.array(actionSchema).max(8).optional() }).strict(),
+    parameters: z.object({ operation: z.enum(['observe', 'visual', 'act']), actions: z.array(actionSchema).max(8).optional(), waitMs: z.number().int().min(0).max(5000).optional().describe('For observe only: wait before reading asynchronous UI results. Never repeats input.') }).strict(),
     impl: async (input, ctx) => {
       if (controlBusy) throw new Error('Another Desktop control call is still running; wait for its result');
       controlBusy = true;
       try {
       if (!run || ctx.sessionId !== sessionId || !host || !deps.isCurrent(host.client)) throw new Error('No active request owns this Desktop window');
-      const args = z.object({ operation: z.enum(['observe', 'visual', 'act']), actions: z.array(actionSchema).max(8).optional() }).strict().parse(input);
+      const args = z.object({ operation: z.enum(['observe', 'visual', 'act']), actions: z.array(actionSchema).max(8).optional(), waitMs: z.number().int().min(0).max(5000).optional() }).strict().parse(input);
       const signal = AbortSignal.any([run.signal, ctx.abortSignal]);
       signal.throwIfAborted();
-      if (args.operation === 'observe') return ui.observe();
+      if (args.operation === 'observe') {
+        if (args.waitMs) await wait(args.waitMs, undefined, { signal });
+        signal.throwIfAborted();
+        return ui.observe();
+      }
       if (args.operation === 'visual') {
         if (snapshot.model?.supportsVision !== true) return { unavailable: 'The selected model does not accept images. Use the accessibility observation.' };
         return { image: await ui.visual() };
       }
       if (!args.actions?.length) throw new Error('Provide at least one action');
       if (args.actions.some((action) => 'ref' in action) && args.actions.length !== 1) throw new Error('Observe after each referenced action before choosing the next control');
-      if (actionFailure) return { interrupted: true, error: actionFailure, requiresNewRequest: true };
+      if (consecutiveFailures >= 3) return { interrupted: true, error: actionFailure, requiresNewRequest: true };
       const completed = [];
+      let inputBeforeAction = ui.dispatchedInputs;
       try {
         update({ phase: 'acting', expanded: false });
         if (!snapshot.cursor) await ui.begin(signal);
@@ -222,6 +231,7 @@ export function createDesktopAssistant(deps: AssistantDeps) {
           signal.throwIfAborted();
           if (!deps.isCurrent(host.client)) throw new Error('Runtime Host changed');
           update({ action });
+          inputBeforeAction = ui.dispatchedInputs;
           const result = await ui.execute(action, signal);
           completed.push(result);
           if (action.kind === 'set' && result.previous !== undefined) {
@@ -229,11 +239,23 @@ export function createDesktopAssistant(deps: AssistantDeps) {
             update({ canUndo: true });
           }
         }
-        return { completed, observation: await ui.observe() };
+        const observation = await ui.observe();
+        actionFailure = undefined;
+        consecutiveFailures = 0;
+        return { completed, observation };
       } catch (error) {
         actionFailure = error instanceof Error ? error.message : String(error);
-        update({ cursor: undefined });
-        return { completed, interrupted: true, error: actionFailure };
+        consecutiveFailures++;
+        const recoverable = !signal.aborted && deps.isCurrent(host.client) && consecutiveFailures < 3;
+        if (!recoverable) update({ cursor: undefined });
+        const inputDispatched = ui.dispatchedInputs > inputBeforeAction;
+        return {
+          completed, interrupted: !recoverable, error: actionFailure, recoverable, inputDispatched,
+          retry: recoverable ? inputDispatched
+            ? 'Input was dispatched. Inspect the fresh observation before continuing; do not repeat a send or delete unless the interface proves it did not take effect.'
+            : 'No click or text input was dispatched for the failed action. Use the fresh observation to retry with a current control reference.' : 'Do not retry this request.',
+          ...(recoverable ? { observation: await ui.observe().catch(() => undefined) } : {}),
+        };
       } finally { if (!signal.aborted) update({ phase: 'thinking' }); }
       } finally { controlBusy = false; }
     },

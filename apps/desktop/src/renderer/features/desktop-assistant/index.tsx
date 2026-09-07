@@ -69,6 +69,8 @@ export function DesktopAssistantRoot() {
       if (expected?.key === event.key && performance.now() <= expected.until) { expected = undefined; return; }
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'k') { event.preventDefault(); event.stopPropagation(); if (!event.repeat) { if (state.current.open) call(bridge.close()); else open(); } return; }
       if (event.key === 'Escape' && state.current.open) { event.preventDefault(); call(state.current.phase === 'acting' || state.current.phase === 'thinking' ? bridge.stop() : bridge.close()); return; }
+      // Real keyboards deliver modifier keydowns before the toggle chord.
+      if (['Meta', 'Control', 'Shift', 'Alt'].includes(event.key)) return;
       if (state.current.phase === 'acting') call(bridge.stop());
     };
     const takeover = (event: Event) => {
@@ -79,6 +81,15 @@ export function DesktopAssistantRoot() {
       if (event instanceof PointerEvent && expected && performance.now() <= expected.until && Math.abs(event.clientX - (expected.x ?? NaN)) <= 1 && Math.abs(event.clientY - (expected.y ?? NaN)) <= 1) {
         if (event.type === 'pointermove' && !expected.moved) { expected.moved = true; return; }
         if (event.type === 'pointerdown') { expected = undefined; return; }
+      }
+      // Restore ordinary hit testing immediately when the real user takes
+      // over during the brief native-input pass-through window.
+      if (document.documentElement.classList.contains('desktopAssistantInput')) {
+        document.documentElement.classList.remove('desktopAssistantInput');
+        if (event instanceof PointerEvent && event.type === 'pointerdown') {
+          const button = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLButtonElement>('.desktopAssistant button,.desktopAssistantLauncher button');
+          if (button) { event.preventDefault(); event.stopImmediatePropagation(); button.click(); return; }
+        }
       }
       if (panel.current?.contains(event.target as Node) && event.type === 'pointermove') return;
       call(bridge.stop());

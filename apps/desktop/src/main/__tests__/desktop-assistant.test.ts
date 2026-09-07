@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,6 +29,9 @@ import type { SessionCatalogProjection } from '@maka/runtime-host/protocol';
 import { createDesktopAssistant } from '../desktop-assistant.js';
 import { ASSISTANT_RETENTION_MS, DesktopAssistantState } from '../desktop-assistant-state.js';
 import { DesktopAssistantSurface } from '../desktop-assistant-surface.js';
+import { DesktopAssistantUi } from '../desktop-assistant-ui.js';
+import { RuntimeHostSessionObserver } from '../runtime-host-session-observer.js';
+import type { DesktopRuntimeHostClient } from '../runtime-host-client.js';
 
 test('assistant retention removes only expired owned sessions on the connected Host', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-assistant-'));
@@ -132,4 +136,87 @@ test('observations exclude browser, terminal and secret descendants and reject r
   preparing = true;
   await surface.prepare(wc);
   await assert.rejects(surface.resolve(wc, 'fresh', 'click'), /Stale/);
+});
+
+test('hiding keeps ownership; recovery is bounded, reports dispatched input, and stops on takeover', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-assistant-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let command!: Parameters<IpcMain['handle']>[1];
+  let sessionId = '';
+  let stops = 0;
+  let attempts = 0;
+  let mode: 'before' | 'after' | 'success' = 'before';
+  const frame = {};
+  const window = Object.assign(new EventEmitter(), { id: 1, mainFrame: frame, isDestroyed: () => false, send() {} }) as unknown as WebContents;
+  const client = {
+    hostId: 'host',
+    loadConnectionCatalog: async () => ({ revision: 1, defaultTarget: { connectionId: 'c', modelId: 'm' }, connections: [{ connectionId: 'c', revision: 1, slug: 'provider', name: 'Provider', providerType: 'openai-compatible', enabled: true, enabledModelIds: ['m'], models: [{ id: 'm' }], catalogEntries: [{ id: 'm', canUseAsChatDefault: true, isDefault: true, thinkingLevels: [] }] }] }),
+    createSession: async (input: { sessionId: string }) => { sessionId = input.sessionId; },
+    submitMessage: async () => ({ disposition: 'accepted' }),
+  } as unknown as DesktopRuntimeHostClient;
+  t.mock.method(DesktopAssistantUi.prototype, 'observe', async () => ({ section: null, language: 'en', theme: 'light', accessibility: '', controls: [] }));
+  t.mock.method(DesktopAssistantUi.prototype, 'begin', async () => {});
+  t.mock.method(RuntimeHostSessionObserver.prototype, 'observe', async () => {});
+  t.mock.method(DesktopAssistantUi.prototype, 'execute', async function(this: DesktopAssistantUi) {
+    attempts++;
+    if (mode === 'after') this.dispatchedInputs++;
+    if (mode !== 'success') throw new Error('Control changed');
+    return { verified: false, dispatched: true };
+  });
+  const assistant = createDesktopAssistant({
+    ipcMain: { handle: (_channel: string, handler: typeof command) => { command = handler; } } as IpcMain,
+    statePath: join(directory, 'state.json'), window: () => window, readSettings: async () => createDefaultSettings(),
+    host: async () => ({ client, workspace: { kind: 'host_path', path: directory }, stop: async () => { stops++; } }), clients: () => [], isCurrent: () => true,
+  });
+  t.after(() => assistant.close());
+  const event = { sender: window, senderFrame: frame } as Electron.IpcMainInvokeEvent;
+  await command(event, 'submit', 'Operate the app');
+  assert.ok(sessionId);
+  await command(event, 'close');
+  assert.equal(stops, 0);
+  const entry = assistant.group.tools[0]!;
+  const tool = 'tool' in entry ? entry.tool : entry;
+  const act = async () => await tool.impl({ operation: 'act', actions: [{ kind: 'click', ref: 'current' }] }, { sessionId, turnId: 'turn', toolCallId: 'call', cwd: directory, abortSignal: new AbortController().signal, emitOutput() {} }) as { recoverable?: boolean; inputDispatched?: boolean; requiresNewRequest?: boolean };
+  assert.deepEqual(await act().then(({ recoverable, inputDispatched }) => ({ recoverable, inputDispatched })), { recoverable: true, inputDispatched: false });
+  assert.equal(attempts, 1, 'the controller must not blindly repeat an action');
+  mode = 'after';
+  assert.equal((await act()).inputDispatched, true);
+  mode = 'success';
+  await act();
+  mode = 'before';
+  assert.equal((await act()).recoverable, true);
+  assert.equal((await act()).recoverable, true);
+  assert.equal((await act()).recoverable, false);
+  const exhausted = attempts;
+  assert.equal((await act()).requiresNewRequest, true);
+  assert.equal(attempts, exhausted);
+  assert.equal((await command(event, 'snapshot')).open, false);
+  await command(event, 'stop');
+  assert.equal(stops, 1);
+  await assert.rejects(act(), /No active request owns/);
+  await command(event, 'submit', 'Wait for the task reply');
+  const waiting = assert.rejects(async () => tool.impl({ operation: 'observe', waitMs: 5000 }, { sessionId, turnId: 'turn', toolCallId: 'wait', cwd: directory, abortSignal: new AbortController().signal, emitOutput() {} }), /abort/i);
+  await command(event, 'stop');
+  await waiting;
+  assert.equal(attempts, exhausted, 'waiting and cancellation must not dispatch more input');
+});
+
+test('native input passes through only the assistant and restores hit testing after failure', async () => {
+  let passing = false;
+  const wc = {
+    isDestroyed: () => false,
+    executeJavaScript: async (script: string) => {
+      if (script.includes('getBoundingClientRect')) return { x: 20, y: 20 };
+      if (script.startsWith('!!document.querySelector')) return true;
+      if (script.includes("classList.add('desktopAssistantInput')")) passing = true;
+      if (script.includes("classList.remove('desktopAssistantInput')")) passing = false;
+    },
+    sendInputEvent: (event: { type: string }) => {
+      assert.equal(passing, true);
+      if (event.type === 'mouseDown') throw new Error('Injected input failure');
+    },
+  } as unknown as WebContents;
+  const ui = new DesktopAssistantUi(() => wc, async () => createDefaultSettings(), () => {}, async () => '');
+  await assert.rejects(ui.execute({ kind: 'navigate', section: 'general' }, new AbortController().signal), /Injected input failure/);
+  assert.equal(passing, false);
 });

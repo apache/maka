@@ -18,7 +18,7 @@
  */
 
 .desktopAssistant {
-  position: fixed; z-index: 1200; bottom: 32px; left: 50%; transform: translateX(-50%);
+  position: fixed; z-index: 1400; bottom: 32px; left: 50%; transform: translateX(-50%);
   width: min(580px, calc(100vw - 48px)); border: 1px solid var(--border-soft);
   border-radius: 20px; padding: 12px; color: var(--foreground);
   background: color-mix(in oklab, var(--surface-overlay) 96%, transparent);
@@ -43,7 +43,8 @@
 .desktopAssistantError { color: var(--destructive-text); font-size: 12px; padding: 0 8px; }
 .desktopAssistantCompact { width: min(410px, calc(100vw - 48px)); bottom: 16px; border-radius: 40px; }
 .desktopAssistantCompact .desktopAssistantHeader { padding-bottom: 0; }
-.desktopAssistantLauncher { position: fixed; z-index: 1100; bottom: 18px; right: 20px; display: flex; align-items: center; gap: 6px; padding: 4px; border-radius: 14px; color: var(--foreground); background: var(--surface-overlay); -webkit-app-region: no-drag; }
+.desktopAssistantLauncher { position: fixed; z-index: 1400; bottom: 18px; right: 20px; display: flex; align-items: center; gap: 6px; padding: 4px; border-radius: 14px; color: var(--foreground); background: var(--surface-overlay); -webkit-app-region: no-drag; }
+.desktopAssistantInput .desktopAssistant, .desktopAssistantInput .desktopAssistant *, .desktopAssistantInput .desktopAssistantLauncher, .desktopAssistantInput .desktopAssistantLauncher * { pointer-events: none !important; }
 .desktopAssistantCursor { position: fixed; z-index: 1300; top: 0; left: 0; pointer-events: none; color: var(--accent-solid); filter: drop-shadow(0 2px 4px #0005) drop-shadow(0 0 6px #0002); will-change: transform; }
 .desktopAssistantCursorHeading { position: absolute; transform-origin: 0 0; will-change: transform; }
 .desktopAssistantCursorArrow { position: absolute; left: -25.5px; top: -15px; width: 36px; height: 30px; overflow: visible; transform-origin: 25.5px 15px; }

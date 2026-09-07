@@ -50,7 +50,7 @@ export class DesktopAssistantSurface {
       for (const e of candidates) {
         if (e.closest(excluded) || e.closest('[hidden],[inert],[aria-hidden="true"]') || e.matches(':disabled,[aria-disabled="true"]')) continue;
         const r = e.getBoundingClientRect(), style = getComputedStyle(e);
-        if (!r.width || !r.height || r.bottom <= 0 || r.right <= 0 || r.top >= innerHeight || r.left >= innerWidth || style.visibility === 'hidden') continue;
+        if (r.width <= 1 || r.height <= 1 || r.bottom <= 0 || r.right <= 0 || r.top >= innerHeight || r.left >= innerWidth || style.visibility === 'hidden' || style.opacity === '0') continue;
         const label = e.getAttribute('aria-label') || e.labels?.[0]?.textContent || e.getAttribute('placeholder') || e.getAttribute('title') || '';
         if (e.matches('input,textarea,[contenteditable]') && privateField.test(label + ' ' + (e.getAttribute('name') || '') + ' ' + (e.getAttribute('autocomplete') || ''))) continue;
         const ref = ${JSON.stringify(prefix)} + '-' + result.length;
