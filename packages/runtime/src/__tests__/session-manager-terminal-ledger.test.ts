@@ -1239,7 +1239,6 @@ describe('SessionManager terminal ledger invariants', () => {
       sessionId: session.id,
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
-      store,
       runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
