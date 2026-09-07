@@ -682,6 +682,40 @@ export class SqliteSessionMetadataStore {
     });
   }
 
+  async hasExplicitSandboxBoundaryDenial(
+    identities: readonly { sessionId: string; runId: string; turnId: string }[],
+  ): Promise<boolean> {
+    this.assertOpen();
+    const query = this.db.prepare(`
+      SELECT
+        MAX(CASE WHEN outcome_reason = 'client_denied' THEN 1 ELSE 0 END) AS explicit,
+        MAX(CASE WHEN outcome_reason IN ('client_denied', 'turn_stopped', 'turn_terminal', 'host_restarted')
+          THEN 0 ELSE 1 END) AS ambiguous
+      FROM sandbox_boundary_log
+      WHERE session_id = ? AND run_id = ? AND turn_id = ?
+        AND entry_kind = 'expansion_request' AND status = 'denied'
+    `);
+    let denied = false;
+    for (const identity of identities) {
+      assertSafeSessionId(identity.sessionId);
+      assertSandboxBoundaryProvenanceId(identity.runId, 'run id');
+      assertSandboxBoundaryProvenanceId(identity.turnId, 'turn id');
+      const evidence = query.get(identity.sessionId, identity.runId, identity.turnId) as {
+        explicit: number | null;
+        ambiguous: number | null;
+      };
+      // Legacy NULL also meant internal cleanup. Do not invent a user decision
+      // or erase a possible denial; ambiguous provenance blocks this continuation.
+      if (evidence.ambiguous === 1) {
+        throw new Error(
+          'Historical sandbox denial cannot be attributed safely; start a new user Turn.',
+        );
+      }
+      denied ||= evidence.explicit === 1;
+    }
+    return denied;
+  }
+
   async settleSandboxBoundaryRequest(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement> {
@@ -714,7 +748,7 @@ export class SqliteSessionMetadataStore {
           sessionId: input.sessionId,
           requestId: input.requestId,
           status: 'denied',
-          ...(input.closureReason ? { outcomeReason: input.closureReason } : {}),
+          outcomeReason: input.closureReason ?? 'client_denied',
           settledAt,
         });
         return {

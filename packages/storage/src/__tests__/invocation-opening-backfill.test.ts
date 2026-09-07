@@ -495,8 +495,8 @@ function headerEraComposition() {
 }
 
 /**
- * Put the database back the way the header era left it: runtime schema one step
- * behind, no opening facts, and a `core_agent_runs` row that still carries the
+ * Put the database back the way the header era left it: runtime schema v15,
+ * no opening facts, and a `core_agent_runs` row that still carries the
  * header the migration under test has to read.
  */
 function rewindToHeaderEra(db: DatabaseSync): void {

@@ -606,6 +606,7 @@ function createMessages(
     hostEpoch: 'epoch-1',
     root,
     durableProof: {
+      readLogicalExecution: async () => undefined,
       readRootTurnSourceMessageReceipt: (requestedSessionId, messageId) =>
         stores.agentRunStore.readRootTurnSourceMessageReceipt(requestedSessionId, messageId),
       readImmutableSteeringMessageProof: (requestedSessionId, messageId) =>

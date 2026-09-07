@@ -173,3 +173,15 @@ export interface MakaForeignSessionReader {
 }
 
 export type MakaPiTuiTurnActivitySurface = MakaPiTuiTurnActivity;
+
+/** The TUI requests owner actions; its connection never grants installation authority. */
+export interface MakaPiTuiHostControl {
+  status(): Promise<string>;
+  prepare(
+    input: {
+      action: 'stop' | 'restart' | 'update';
+      target?: string;
+    },
+    confirm: (detail: string) => Promise<'cancel' | 'safe' | 'interrupt'>,
+  ): Promise<boolean>;
+}

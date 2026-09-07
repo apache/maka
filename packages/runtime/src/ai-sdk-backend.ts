@@ -438,6 +438,7 @@ export class AiSdkBackend implements AgentBackend {
    * long after its step still resolves this turn's watchdog, trace, and run.
    */
   private createToolRuntime(identity: {
+    inheritedSandboxBoundaryDenied: boolean;
     turnId: string;
     runId: string | undefined;
     invocationId: string | undefined;
@@ -447,6 +448,7 @@ export class AiSdkBackend implements AgentBackend {
   }): ToolRuntime {
     const input = this.input;
     return new ToolRuntime({
+      inheritedSandboxBoundaryDenied: identity.inheritedSandboxBoundaryDenied,
       sessionId: input.sessionId,
       header: input.header,
       connection: input.connection,
@@ -485,6 +487,13 @@ export class AiSdkBackend implements AgentBackend {
   // send()
   // --------------------------------------------------------------------------
 
+  async prepareRunComposition(input: { runId: string; turnId: string }): Promise<void> {
+    if (!this.input.beforeRunProviderDispatch) {
+      throw new Error('Backend has no durable Run Composition preparation authority');
+    }
+    await this.input.beforeRunProviderDispatch({ sessionId: this.sessionId, ...input });
+  }
+
   private openTurnScope(input: BackendSendInput): AiSdkTurn {
     const turn = new AiSdkTurn(
       {
@@ -503,6 +512,7 @@ export class AiSdkBackend implements AgentBackend {
         providerRetrySleep: this.providerRetrySleep,
         createToolRuntime: (owner) =>
           this.createToolRuntime({
+            inheritedSandboxBoundaryDenied: input.continuation?.sandboxBoundaryDenied === true,
             turnId: owner.turnId,
             runId: owner.runId,
             invocationId: input.invocationId ?? input.runId,

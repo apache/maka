@@ -2555,6 +2555,119 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
+  test('projects only explicit denials from exact trusted continuation identities', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      await store.create(fullHeader());
+      for (const reason of [
+        'client_denied',
+        'turn_stopped',
+        'turn_terminal',
+        'host_restarted',
+      ] as const) {
+        await store.createSandboxBoundaryRequest({
+          sessionId: 'session-1',
+          requestId: reason,
+          turnId: 'turn-1',
+          runId: reason,
+          expansion: { network: { enabled: true } },
+          justification: 'Fetch a dependency.',
+        });
+        const settlement = await store.settleSandboxBoundaryRequest({
+          sessionId: 'session-1',
+          requestId: reason,
+          decision: 'deny',
+          ...(reason === 'client_denied' ? {} : { closureReason: reason }),
+        });
+        assert.equal(settlement.request.outcomeReason, reason);
+        assert.equal(
+          await store.hasExplicitSandboxBoundaryDenial([
+            { sessionId: 'session-1', runId: reason, turnId: 'turn-1' },
+          ]),
+          reason === 'client_denied',
+        );
+      }
+      for (const identity of [
+        {
+          sessionId: 'other-session',
+          runId: 'client_denied',
+          turnId: 'turn-1',
+        },
+        { sessionId: 'session-1', runId: 'other-run', turnId: 'turn-1' },
+        {
+          sessionId: 'session-1',
+          runId: 'client_denied',
+          turnId: 'other-turn',
+        },
+      ])
+        assert.equal(await store.hasExplicitSandboxBoundaryDenial([identity]), false);
+      assert.equal(await store.hasExplicitSandboxBoundaryDenial([]), false);
+      assert.equal(
+        await store.hasExplicitSandboxBoundaryDenial([
+          { sessionId: 'session-1', runId: 'turn_stopped', turnId: 'turn-1' },
+          { sessionId: 'session-1', runId: 'client_denied', turnId: 'turn-1' },
+        ]),
+        true,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('ambiguous legacy denial blocks only its trusted chain, even after an explicit denial', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maka-legacy-denial-'));
+    const path = join(directory, 'runtime.sqlite');
+    const store = createSqliteSessionMetadataStore(path);
+    try {
+      await store.create(fullHeader());
+      for (const runId of ['explicit', 'legacy', 'unknown']) {
+        await store.createSandboxBoundaryRequest({
+          sessionId: 'session-1',
+          requestId: runId,
+          turnId: 'turn-1',
+          runId,
+          expansion: { network: { enabled: true } },
+          justification: 'Use the network.',
+        });
+        await store.settleSandboxBoundaryRequest({
+          sessionId: 'session-1',
+          requestId: runId,
+          decision: 'deny',
+        });
+      }
+      const legacy = new DatabaseSync(path);
+      try {
+        legacy
+          .prepare("UPDATE sandbox_boundary_log SET outcome_reason = NULL WHERE run_id = 'legacy'")
+          .run();
+        legacy
+          .prepare(
+            "UPDATE sandbox_boundary_log SET outcome_reason = 'unknown_reason' WHERE run_id = 'unknown'",
+          )
+          .run();
+      } finally {
+        legacy.close();
+      }
+      const identity = (runId: string) => ({ sessionId: 'session-1', runId, turnId: 'turn-1' });
+      assert.equal(await store.hasExplicitSandboxBoundaryDenial([identity('unrelated')]), false);
+      assert.equal(await store.hasExplicitSandboxBoundaryDenial([identity('explicit')]), true);
+      for (const runId of ['legacy', 'unknown']) {
+        for (const chain of [
+          [identity('explicit'), identity(runId)],
+          [identity(runId), identity('explicit')],
+        ]) {
+          await assert.rejects(
+            store.hasExplicitSandboxBoundaryDenial(chain),
+            /cannot be attributed safely/,
+          );
+        }
+      }
+    } finally {
+      store.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   test('does not invent revisions for denial or an already-contained approval', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {

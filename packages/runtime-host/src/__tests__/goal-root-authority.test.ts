@@ -588,6 +588,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     hostEpoch,
     root: rootPort,
     durableProof: {
+      readLogicalExecution: async () => undefined,
       readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
         stores.agentRunStore.readRootTurnSourceMessageReceipt(sessionId, messageId),
       readImmutableSteeringMessageProof: (sessionId, messageId) =>

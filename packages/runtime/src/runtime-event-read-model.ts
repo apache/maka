@@ -374,6 +374,11 @@ export function projectRuntimeEventsToStoredMessages(
       projected = true;
     }
 
+    if (event.actions?.handoffPause) {
+      // Physical pause is not a logical Turn outcome or a chat message.
+      projected = true;
+    }
+
     if (event.actions?.runtimeProtocol) {
       // The protocol marker records which runtime contracts were live from a
       // run's first event. RecoveryResolver reads it; it has no chat row.
@@ -407,7 +412,7 @@ export function projectRuntimeEventsToStoredMessages(
       projected = projectTokenUsage(event, state, messages) || projected;
     }
 
-    if (isTerminalRuntimeEvent(event)) {
+    if (isTerminalRuntimeEvent(event) && !event.actions?.handoffPause) {
       projected = projectTerminalTurnState(event, state, messages) || projected;
     }
 

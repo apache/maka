@@ -46,6 +46,53 @@ import { SandboxCommandError } from '../sandbox/errors.js';
 import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
 
 describe('ToolRuntime session sandbox boundary', () => {
+  test('inherits explicit denial without inheriting correction budgets or replacing live authority', async () => {
+    let reads = 0;
+    const create = (inheritedSandboxBoundaryDenied = false): ToolRuntime =>
+      new ToolRuntime({
+        inheritedSandboxBoundaryDenied,
+        turnId: 'turn-1',
+        sessionId: 'session-1',
+        header: header(),
+        connection: { providerType: 'openai', slug: 'test' } as never,
+        modelId: 'test',
+        readExecutionBoundary: async () => {
+          reads += 1;
+          return {
+            kind: 'managed',
+            profile: createWorkspaceWritePermissionProfile(),
+            revision: 7,
+          };
+        },
+        newId: nextId(),
+        now: () => 1,
+        getPermissionPauseTarget: () => null,
+      });
+    const continued = create(true);
+    assert.equal(continued.hasSandboxBoundaryDenial(), true);
+    assert.equal(continued.shouldFinalizeSandboxBoundary(), false);
+    await settle(
+      continued,
+      {
+        name: 'Read',
+        description: 'Read within current authority',
+        parameters: {},
+        impl: (_args, context) => {
+          assert.equal(context.executionBoundary?.revision, 7);
+          return 'read';
+        },
+      },
+      'allowed-read',
+    );
+    assert.equal(reads, 1);
+    assert.equal(continued.shouldFinalizeSandboxBoundary(), false);
+    await continued.endTurn();
+    const fresh = create();
+    assert.equal(fresh.hasSandboxBoundaryDenial(), false);
+    assert.equal(fresh.shouldFinalizeSandboxBoundary(), false);
+    await fresh.endTurn();
+  });
+
   test('rejects an embedding without explicit execution boundary authority', () => {
     assert.throws(
       () =>
@@ -797,6 +844,7 @@ describe('ToolRuntime session sandbox boundary', () => {
         createdAt: 1,
       }),
       settleSandboxBoundaryRequest: async (input) => {
+        assert.equal(input.closureReason, 'turn_stopped');
         settlements.push(input.decision);
         return {
           request: {

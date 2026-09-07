@@ -313,6 +313,51 @@ export class HostGoalCoordinator {
     }
   }
 
+  holdForHandoff():
+    | {
+        settled(): Promise<void>;
+        residencies(
+          executions: readonly { sessionId: string; turnId: string; runId: string }[],
+        ): Promise<readonly RuntimeHostResidency[] | undefined>;
+        release(): void;
+      }
+    | undefined {
+    if (this.#draining) return undefined;
+    const hold = this.continuation.holdForHandoff();
+    if (!hold) return undefined;
+    const settled = async () => {
+      await hold.settled();
+      await this.#flushGoalState();
+    };
+    return {
+      settled,
+      release: hold.release,
+      residencies: async (executions) => {
+        await settled();
+        if (this.#draining) return undefined;
+        for (const [sessionId] of this.#residencies) {
+          const authority = this.#authorityBySession.get(sessionId);
+          if (!authority) return undefined;
+          const current = authority.record.currentExecution;
+          const paused = executions.find((execution) => execution.sessionId === sessionId);
+          // An observed external turn is not a durable Goal execution. Its
+          // in-memory completion registration cannot be silently discarded.
+          if (
+            paused &&
+            (!current ||
+              current.execution.turnId !== paused.turnId ||
+              current.execution.runId !== paused.runId)
+          )
+            return undefined;
+          if (current && !paused) return undefined;
+          if (current && !this.matchesActive(sessionId, current.checkpoint, current.controlLease))
+            return undefined;
+        }
+        return [...this.#residencies.values()];
+      },
+    };
+  }
+
   beginDrain(): void {
     if (this.#draining) return;
     this.#draining = true;

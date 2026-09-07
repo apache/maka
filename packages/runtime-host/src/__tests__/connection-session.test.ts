@@ -661,78 +661,91 @@ test('a connection accepted before composition exists resolves ready handlers wi
   }
 });
 
-test('connection reset while operation admission is pending does not execute the handler', async () => {
-  const pair = await openTransportPair();
-  const admissionEntered = deferred();
-  const releaseAdmission = deferred();
-  const teardownObserved = deferred();
-  let handlerCalls = 0;
-  let finishCalls = 0;
-  const handlers: OperationHandlerMap = {
-    'host.status': async () => ({
-      ok: true,
-      result: {
-        hostEpoch: 'host-epoch',
-        compositionId: 'maka.interactive',
-        compositionRevision: '1',
-        state: 'ready',
-        connections: 1,
-        activeOperations: 1,
-        activeResidencies: 0,
-      },
-    }),
-    ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-    ...createUnavailableHostCoreOperationHandlers(),
-    ...createHandlers(async (input) => {
-      handlerCalls += 1;
-      return {
+for (const closure of ['reset', 'eof'] as const) {
+  test(`connection ${closure} during operation admission preserves closure evidence`, async () => {
+    const pair = await openTransportPair();
+    const admissionEntered = deferred();
+    const releaseAdmission = deferred();
+    const teardownObserved = deferred();
+    let handlerCalls = 0;
+    let finishCalls = 0;
+    const handlers: OperationHandlerMap = {
+      'host.status': async () => ({
         ok: true,
-        result: runningSnapshot(input.sessionId, input.turnId),
-      };
-    }),
-  };
-  const session = new RuntimeHostConnectionSession({
-    transport: pair.serverTransport,
-    connection: acceptedConnection('pending-admission'),
-    resolveHandlers: () => handlers,
-    resolveContinuity: () => undefined,
-    beginOperation: async () => {
-      admissionEntered.resolve();
-      await releaseAdmission.promise;
-      return {
-        acquireResidency: () => ({ release() {} }),
-        seal() {},
-        finish() {
-          finishCalls += 1;
+        result: {
+          hostEpoch: 'host-epoch',
+          compositionId: 'maka.interactive',
+          compositionRevision: '1',
+          state: 'ready',
+          connections: 1,
+          activeOperations: 1,
+          activeResidencies: 0,
         },
-      };
-    },
-    onTeardown: () => teardownObserved.resolve(),
-  });
-  const run = session.run();
-  try {
-    await writeProtocolFrame(pair.clientTransport, {
-      requestId: 'pending-request',
-      operation: 'turn.query',
-      input: { sessionId: 'session', turnId: 'turn' },
+      }),
+      ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+      ...createUnavailableHostCoreOperationHandlers(),
+      ...createHandlers(async (input, context) => {
+        handlerCalls += 1;
+        assert.equal(context.inputClosedSignal?.aborted, true);
+        return {
+          ok: true,
+          result: runningSnapshot(input.sessionId, input.turnId),
+        };
+      }),
+    };
+    const session = new RuntimeHostConnectionSession({
+      transport: pair.serverTransport,
+      connection: acceptedConnection('pending-admission'),
+      resolveHandlers: () => handlers,
+      resolveContinuity: () => undefined,
+      beginOperation: async () => {
+        admissionEntered.resolve();
+        await releaseAdmission.promise;
+        return {
+          acquireResidency: () => ({ release() {} }),
+          seal() {},
+          finish() {
+            finishCalls += 1;
+          },
+        };
+      },
+      onTeardown: () => teardownObserved.resolve(),
     });
-    await withTimeout(admissionEntered.promise, 1_000, 'operation did not enter admission');
-    pair.clientTransport.socket.resetAndDestroy();
-    await withTimeout(
-      teardownObserved.promise,
-      1_000,
-      'connection did not tear down while admission was pending',
-    );
-    releaseAdmission.resolve();
-    await withTimeout(run, 1_000, 'connection did not settle after admission completed');
-    assert.equal(handlerCalls, 0);
-    assert.equal(finishCalls, 1);
-  } finally {
-    releaseAdmission.resolve();
-    pair.clientTransport.abort();
-    await Promise.allSettled([run, pair.close()]);
-  }
-});
+    const run = session.run();
+    try {
+      await writeProtocolFrame(pair.clientTransport, {
+        requestId: 'pending-request',
+        operation: 'turn.query',
+        input: { sessionId: 'session', turnId: 'turn' },
+      });
+      await withTimeout(admissionEntered.promise, 1_000, 'operation did not enter admission');
+      if (closure === 'reset') {
+        pair.clientTransport.socket.resetAndDestroy();
+        await withTimeout(
+          teardownObserved.promise,
+          1_000,
+          'connection did not tear down while admission was pending',
+        );
+      } else {
+        const readEnded = onceSocketEnd(pair.serverTransport.socket);
+        pair.clientTransport.socket.end();
+        await withTimeout(readEnded, 1_000, 'Host did not observe EOF during admission');
+      }
+      releaseAdmission.resolve();
+      if (closure === 'eof') {
+        const response = decodeHostFrame(await pair.clientTransport.read(1_000));
+        assert.ok(!('kind' in response) && response.ok);
+      }
+      await withTimeout(run, 1_000, 'connection did not settle after admission completed');
+      assert.equal(handlerCalls, closure === 'reset' ? 0 : 1);
+      assert.equal(finishCalls, 1);
+    } finally {
+      releaseAdmission.resolve();
+      pair.clientTransport.abort();
+      await Promise.allSettled([run, pair.close()]);
+    }
+  });
+}
 
 test('a ready composition attaches the authenticated Client identity once', async () => {
   const pair = await openTransportPair();

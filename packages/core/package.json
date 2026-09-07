@@ -11,6 +11,8 @@
     "./model-projection-transition": "./dist/model-projection-transition.js",
     "./canonical-runtime-event": "./dist/canonical-runtime-event.js",
     "./runtime-boundary": "./dist/runtime-boundary.js",
+    "./runtime-handoff": "./dist/runtime-handoff.js",
+    "./runtime-logical-execution": "./dist/runtime-logical-execution.js",
     "./runtime-event": "./dist/runtime-event.js",
     "./tool-args-identity": "./dist/tool-args-identity.js",
     "./tool-ledger-scanner": "./dist/tool-ledger-scanner.js",

@@ -101,6 +101,8 @@ import { executionBoundaryContains } from '@maka/core/sandbox-boundary';
 import { failureClassFromCompleteStopReason } from '@maka/core/events';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
+import { runtimeHandoffPause, type RuntimeHandoffIntent } from '@maka/core/runtime-handoff';
+import { readLogicalRuntimeExecutionForRun } from '@maka/core/runtime-logical-execution';
 import {
   buildInvocationOpenedEvent,
   isSessionInlineInvocation,
@@ -291,6 +293,7 @@ export type PlanSafeBoundaryContinuationInput = Omit<
 >;
 
 export interface PlanAuthoritativeSafeBoundaryContinuationInput {
+  purpose?: 'handoff';
   sourceRunId: string;
   expectedRuntimeEventHighWater?: number;
 }
@@ -594,6 +597,9 @@ export interface SessionStore {
   ): Promise<SandboxBoundaryRequest>;
   listPendingSandboxBoundaryRequests?(sessionId: string): Promise<SandboxBoundaryRequest[]>;
   listSandboxBoundaryRestartClosures?(sessionId: string): Promise<SandboxBoundaryRequest[]>;
+  hasExplicitSandboxBoundaryDenial?(
+    identities: readonly { sessionId: string; runId: string; turnId: string }[],
+  ): Promise<boolean>;
   settleSandboxBoundaryRequest?(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement>;
@@ -1446,14 +1452,6 @@ export class SessionManager {
           );
         }
       }
-      if (this.deps.planStore) {
-        const planRecovery = await recoverOr(
-          policy,
-          () => this.deps.planStore!.interruptActiveExecution(session.id, 'runtime_recovery'),
-          null,
-        );
-        if (planRecovery) recovered.add(session.id);
-      }
       if (this.deps.shellRuns) {
         const recoveredShellRuns = await recoverOr(
           policy,
@@ -1485,6 +1483,36 @@ export class SessionManager {
           continue;
         }
         if (continuationClaimRecovered) recovered.add(session.id);
+      }
+
+      if (this.deps.planStore) {
+        const preservesHandoff = await recoverOr(
+          policy,
+          async () => {
+            if (!continuationAuthority) return false;
+            const latest = latestInvocation(
+              (await this.listInvocations(session.id)).filter((run) =>
+                isSessionInlineInvocation(run.opening),
+              ),
+            );
+            if (!latest) return false;
+            // Only the current logical execution may preserve a session-owned Plan.
+            // Read after claim repair: an abandoned successor now has a real failure.
+            return Boolean(
+              (await readLogicalRuntimeExecutionForRun(continuationAuthority, latest))
+                ?.pendingHandoff,
+            );
+          },
+          false,
+        );
+        if (!preservesHandoff) {
+          const planRecovery = await recoverOr(
+            policy,
+            () => this.deps.planStore!.interruptActiveExecution(session.id, 'runtime_recovery'),
+            null,
+          );
+          if (planRecovery) recovered.add(session.id);
+        }
       }
 
       if (this.deps.runStore) {
@@ -1988,6 +2016,7 @@ export class SessionManager {
   async planSafeBoundaryContinuation(
     sessionId: string,
     input: PlanSafeBoundaryContinuationInput,
+    preview?: RuntimeEvent,
   ): Promise<SafeBoundaryContinuationPlan> {
     let admissionRoute: RuntimeContinuationPlannerInput['admissionRoute'];
     try {
@@ -2048,7 +2077,7 @@ export class SessionManager {
         return (await this.listInvocations(targetSessionId)).find((run) => {
           const source = run.opening.source;
           return (
-            source.kind === 'continuation' &&
+            source.kind !== 'fresh' &&
             source.sourceRunId === sourceRunId &&
             source.sourceRuntimeEventHighWater === sourceRuntimeEventHighWater
           );
@@ -2056,16 +2085,20 @@ export class SessionManager {
       },
       newId: this.deps.newId,
     });
-    const plan = await planner.plan({ sessionId, admissionRoute, ...input });
-    this.recordContinuationPlan(sessionId, input.sourceRunId, plan);
+    const plannerInput = { sessionId, admissionRoute, ...input };
+    const plan = preview
+      ? await planner.previewHandoff(plannerInput, preview)
+      : await planner.plan(plannerInput);
+    if (!preview) this.recordContinuationPlan(sessionId, input.sourceRunId, plan);
     return plan;
   }
 
   async planAuthoritativeSafeBoundaryContinuation(
     sessionId: string,
     input: PlanAuthoritativeSafeBoundaryContinuationInput,
+    preview?: RuntimeEvent,
   ): Promise<SafeBoundaryContinuationPlan> {
-    if (this.deps.safeBoundaryResumeEnabled !== true) {
+    if (input.purpose !== 'handoff' && this.deps.safeBoundaryResumeEnabled !== true) {
       const plan = resumeFeatureDisabledPlan();
       this.recordContinuationPlan(sessionId, input.sourceRunId, plan);
       return plan;
@@ -2130,20 +2163,25 @@ export class SessionManager {
       this.recordContinuationPlan(sessionId, input.sourceRunId, plan);
       return plan;
     }
-    return this.planSafeBoundaryContinuation(sessionId, {
-      sourceRunId: input.sourceRunId,
-      currentCwd: header.cwd,
-      sourceWorkspaceIdentity: sourceRun.opening.configuration.workspaceIdentity,
-      currentWorkspaceIdentity: observation.workspaceIdentity,
-      backgroundOperationsSettled: observation.backgroundOperationsSettled,
-      availableToolNames: observation.availableToolNames,
-      ...(input.expectedRuntimeEventHighWater !== undefined
-        ? { expectedRuntimeEventHighWater: input.expectedRuntimeEventHighWater }
-        : {}),
-      ...(observation.workspaceCheckpoint
-        ? { workspaceCheckpoint: observation.workspaceCheckpoint }
-        : {}),
-    });
+    return this.planSafeBoundaryContinuation(
+      sessionId,
+      {
+        ...(input.purpose ? { purpose: input.purpose } : {}),
+        sourceRunId: input.sourceRunId,
+        currentCwd: header.cwd,
+        sourceWorkspaceIdentity: sourceRun.opening.configuration.workspaceIdentity,
+        currentWorkspaceIdentity: observation.workspaceIdentity,
+        backgroundOperationsSettled: observation.backgroundOperationsSettled,
+        availableToolNames: observation.availableToolNames,
+        ...(input.expectedRuntimeEventHighWater !== undefined
+          ? { expectedRuntimeEventHighWater: input.expectedRuntimeEventHighWater }
+          : {}),
+        ...(observation.workspaceCheckpoint
+          ? { workspaceCheckpoint: observation.workspaceCheckpoint }
+          : {}),
+      },
+      preview,
+    );
   }
 
   async planLatestAuthoritativeSafeBoundaryContinuation(
@@ -2194,6 +2232,43 @@ export class SessionManager {
     return this.planAuthoritativeSafeBoundaryContinuation(sessionId, {
       sourceRunId: candidate.runId,
     });
+  }
+
+  requestRunHandoff(
+    sessionId: string,
+    runId: string,
+    intent: RuntimeHandoffIntent,
+    signal: AbortSignal,
+  ) {
+    const request = this.runtimeKernel.requestRunHandoff?.(sessionId, runId, intent, signal);
+    if (!request) return undefined;
+    let verified = false;
+    const ready = request.ready.then(async (held) => {
+      if (!held) return false;
+      try {
+        const assessment = await this.planAuthoritativeSafeBoundaryContinuation(
+          sessionId,
+          { sourceRunId: runId, purpose: 'handoff' },
+          request.preview(),
+        );
+        request.preview(); // Cancellation or Stop may have released the gate during inspection.
+        verified = assessment.disposition === 'continue' && !signal.aborted;
+        if (!verified) request.cancel();
+        return verified;
+      } catch {
+        request.cancel();
+        return false;
+      }
+    });
+    return {
+      ready,
+      sealed: request.sealed,
+      commit: () => verified && request.commit(),
+      cancel: () => {
+        verified = false;
+        request.cancel();
+      },
+    };
   }
 
   async *resumeSafeBoundaryContinuation(
@@ -4459,6 +4534,14 @@ export class SessionManager {
         )
       ) {
         throw new Error(`AgentRun event ledger is unreadable for run ${run.runId}`);
+      }
+      if (run.terminalEvent && runtimeHandoffPause(run.terminalEvent)) {
+        if (inspected.runtimeEvents.at(-1)?.id !== run.terminalEvent.id) {
+          throw new Error(`Handoff source has events after its seal: ${run.runId}`);
+        }
+        // The original Root admission owns this logical execution. Generic
+        // restart repair must neither replay its tools nor manufacture failure.
+        continue;
       }
       if (
         claimOwnedUnsettledRunIds.has(run.runId) &&

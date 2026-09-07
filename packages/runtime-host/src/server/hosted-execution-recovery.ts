@@ -18,6 +18,7 @@
  */
 
 import { isDeepStrictEqual } from 'node:util';
+import { readLogicalRuntimeExecution } from '@maka/core/runtime-logical-execution';
 import {
   runtimeInvocationOutcome,
   type RootExecutionDescriptor,
@@ -85,6 +86,12 @@ export async function prepareHostedExecutionRecovery(
     const pendingRecoveryClosures: PendingRecoveryClosure[] = [];
     for (const admission of admissions) {
       const run = runsById.get(admission.runId);
+      const logical =
+        run && (await readLogicalRuntimeExecution(input.stores.runtimeEventStore, admission, run));
+      if (logical?.pendingHandoff) {
+        replayAdmissions.push(admission);
+        rootReplayAdmissions.push(admission);
+      }
       const admittedMessageId = admittedPromptEventId(admission.runId, admission.userMessageId);
       // Whether the prompt is on the ledger is a question about the Turn, not
       // about the id it landed under: a Run written by an older build derived
@@ -99,7 +106,7 @@ export async function prepareHostedExecutionRecovery(
       const executionContract = recoveryExecutionContract(admission.execution);
       if (
         admission.execution.kind === 'scheduled_task' &&
-        (!run || runtimeInvocationOutcome(run) === undefined)
+        (!logical || runtimeInvocationOutcome(logical.tip) === undefined)
       ) {
         if (!input.assertScheduledTaskAdmission) {
           throw new RuntimeMessageAuthorityInvariantError(

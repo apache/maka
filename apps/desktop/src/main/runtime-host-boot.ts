@@ -134,7 +134,6 @@ import {
   defaultRuntimeHostRecoveryDialog,
   showMainRendererProcessGoneDialog,
   showMessageBoxWithDiagnostics,
-  showRuntimeHostStartupRecoveryDialog,
 } from "./native-diagnostic-dialog.js";
 import { getNativeDiagnosticDialogCopy } from "./native-diagnostic-dialog-copy.js";
 import {
@@ -189,15 +188,10 @@ import {
   type RuntimeHostDesktopManager,
 } from "./runtime-host-desktop-manager.js";
 import {
-  canRepairManagedRuntimeHostStartup,
-  DesktopRuntimeHostStartupRecoveryCancelledError,
-  startDesktopRuntimeHostWithRecovery,
-} from "./runtime-host-startup-recovery.js";
-import {
   buildRuntimeHostActiveQuitDialog,
 } from "./runtime-host-quit-copy.js";
 import { prepareRuntimeHostQuit } from "./runtime-host-quit.js";
-import { createRuntimeHostUpgradePrompts } from "./runtime-host-upgrade-dialog.js";
+import { createDesktopHostHandoffSurface } from './startup-presentation.js';
 import { registerRuntimeHostMemoryIpc } from "./runtime-host-memory-ipc-main.js";
 import {
   createDesktopRuntimeHostProfileService,
@@ -1137,10 +1131,7 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
       runtimeHostProfileService.resolveCollaborationConnectionTarget(profile),
   },
   {
-    upgradePrompts: createRuntimeHostUpgradePrompts(
-      () => desktopLocale.resolve(),
-      showStartupDiagnosticDialog,
-    ),
+    handoffSurface: createDesktopHostHandoffSurface(() => desktopLocale.resolve()),
     onTargetStateChanged: (state) => {
       const profileAccess = runtimeHostProfileAccess(state.target.profile);
       const hostId = state.readiness === "ready"
@@ -1236,14 +1227,13 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
       });
     },
     recoverLocalHost: (signal) => localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart(signal),
+    resolveStartupRepair: (error, signal) => localRuntimeHostRemoteAccess.resolveStartupRepair(error, signal),
     resolveLocalHostReplacement: (registration, signal) =>
       localRuntimeHostRemoteAccess.resolveConflictingHostReplacement(registration, signal),
     onFatalError: (error, target) => {
-      if (
-        !runtimeHostManager &&
-        target.profile.kind === "local" &&
-        canRepairManagedRuntimeHostStartup(error)
-      ) return;
+      // Initial failure is handled after manager.start() has closed its own
+      // observations. Do not quit before startup-owned resources are drained.
+      if (!runtimeHostManager) return;
       if (error instanceof RuntimeHostUpgradeCancelledError) {
         if (target.profile.kind === "local") app.quit();
         return;
@@ -1253,51 +1243,32 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
     },
   },
 );
-runtimeHostManager = await startDesktopRuntimeHostWithRecovery({
-  start: async () => {
-    updateDesktopStartupProgress('connect');
-    await localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart();
-    return startLocalRuntimeHostManager();
+let workBoardIpc: ReturnType<typeof registerWorkBoardIpc> | undefined;
+let runtimeHostDesktopShutdown: Promise<void> | undefined;
+// The first Host handoff can be cancelled before the main window exists.
+// Install the same cleanup owner used by normal quit before that handoff.
+const quitCoordinator = createAppQuitCoordinator({
+  prepareToQuit: prepareRuntimeHostDesktopQuit,
+  cleanup: closeRuntimeHostDesktop,
+  focusOrCreateWindow: (signal) => {
+    if (!runtimeHostManager) return;
+    if (mainWindowController.hasOpenWindows()) mainWindowController.focus();
+    else return mainWindowController.createWindow(signal);
   },
-  repair: async ({ allowManualUpdate, allowInterruptActiveTasks }) => {
-    updateDesktopStartupProgress('package');
-    console.warn('[runtime-host] repairing the managed Local Host before startup');
-    const result = await localRuntimeHostRemoteAccess.repairManagedStartup({
-      allowManualUpdate,
-      allowInterruptActiveTasks,
-    });
-    console.log(`[runtime-host] managed Local Host repair result: ${result.kind}`);
-    return result;
+  onPreparationError: (error) => {
+    console.error("[runtime-host] quit retirement failed:", error);
   },
-  prompt: async (input) => {
-    updateDesktopStartupProgress('attention');
-    console.error('[runtime-host] managed Local Host startup recovery requires attention:', {
-      startupError: input.startupError,
-      repairError: input.repairError,
-      activeTasks: input.activeTasks,
-    });
-    const locale = await desktopLocale.resolve();
-    return showRuntimeHostStartupRecoveryDialog(input, {
-      locale,
-      showMessageBox: (options) => showDesktopMessageBox(options, { locale }),
-      copyDiagnostics: () =>
-        copyDesktopDiagnosticReport(
-          desktopDiagnostics,
-          createDesktopStartupDiagnosticInput({
-            title: 'Runtime Host startup recovery',
-            description: input.startupError.message,
-            details: [input.startupError.stack, input.repairError?.stack]
-              .filter(Boolean)
-              .join('\n\n'),
-          }),
-        ),
-    });
-  },
-}).catch((error: unknown) => {
-  if (
-    error instanceof RuntimeHostUpgradeCancelledError ||
-    error instanceof DesktopRuntimeHostStartupRecoveryCancelledError
-  ) {
+  onCleanupError: (error) =>
+    console.error("[runtime-host] shutdown failed:", error),
+  onWindowCreationError: (error) =>
+    console.error("[window] creation failed:", error),
+  resumeQuit: () => app.quit(),
+});
+app.on("before-quit", quitCoordinator.handleBeforeQuit);
+updateDesktopStartupProgress('connect');
+runtimeHostManager = await startLocalRuntimeHostManager().catch(async (error: unknown) => {
+  await closeRuntimeHostDesktop();
+  if (error instanceof RuntimeHostUpgradeCancelledError) {
     app.quit();
     return new Promise<never>(() => undefined);
   }
@@ -1306,7 +1277,7 @@ runtimeHostManager = await startDesktopRuntimeHostWithRecovery({
 // Runtime Host is the only schema-migration authority for its State Root.
 // Work Board remains a Desktop-owned table, but it opens only after the Host is
 // ready and verifies the schema instead of changing it behind a resident Host.
-const workBoardIpc = registerWorkBoardIpc({
+workBoardIpc = registerWorkBoardIpc({
   ipcMain,
   workspaceRoot,
   mainWindowController,
@@ -1958,22 +1929,6 @@ function emitSessionsChanged(
 }
 
 function wireLifecycle(): void {
-  const quitCoordinator = createAppQuitCoordinator({
-    prepareToQuit: prepareRuntimeHostDesktopQuit,
-    cleanup: closeRuntimeHostDesktop,
-    focusOrCreateWindow: (signal) => {
-      if (mainWindowController.hasOpenWindows()) mainWindowController.focus();
-      else return mainWindowController.createWindow(signal);
-    },
-    onPreparationError: (error) => {
-      console.error("[runtime-host] quit retirement failed:", error);
-    },
-    onCleanupError: (error) =>
-      console.error("[runtime-host] shutdown failed:", error),
-    onWindowCreationError: (error) =>
-      console.error("[window] creation failed:", error),
-    resumeQuit: () => app.quit(),
-  });
   installDesktopShellPresentation({
     mainWindowController,
     focusOrCreateWindow: quitCoordinator.focusOrCreateWindow,
@@ -1989,7 +1944,6 @@ function wireLifecycle(): void {
     if (process.platform !== "darwin" && !isBrowserMessageBoxPresentationActive() &&
       !isDesktopStartupInProgress()) app.quit();
   });
-  app.on("before-quit", quitCoordinator.handleBeforeQuit);
   powerMonitor.on("resume", wakePeerRecoveryAfterResume);
   quitCoordinator.focusOrCreateWindow();
 }
@@ -2007,7 +1961,11 @@ async function prepareRuntimeHostDesktopQuit(): Promise<'ready' | 'cancelled'> {
   return preparation;
 }
 
-async function closeRuntimeHostDesktop(): Promise<void> {
+function closeRuntimeHostDesktop(): Promise<void> {
+  return runtimeHostDesktopShutdown ??= disposeRuntimeHostDesktop();
+}
+
+async function disposeRuntimeHostDesktop(): Promise<void> {
   powerMonitor.off("resume", wakePeerRecoveryAfterResume);
   clientSettingsWatcher.stop();
   updateService.dispose();
@@ -2037,7 +1995,7 @@ async function closeRuntimeHostDesktop(): Promise<void> {
     runtimeHostOnboarding.close(),
     localRuntimeHostRemoteAccess.close(),
     runtimeHostSetupPackage.close(),
-    Promise.resolve().then(() => workBoardIpc.close()),
+    Promise.resolve().then(() => workBoardIpc?.close()),
     runtimeHostSshTerminal.close(),
     botRegistry.stopAll(),
     mcpManager.close(),

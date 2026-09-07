@@ -19,6 +19,9 @@
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { readRunInvocation } from '@maka/core/runtime-event-store';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import { runtimeHandoffPause } from '@maka/core/runtime-handoff';
+import { readLogicalRuntimeExecution } from '@maka/core/runtime-logical-execution';
 import { WORKHUB_COORDINATION_SESSION_ID, type StoredMessage } from '@maka/core/session';
 import {
   activePresentationRuntimeEvents,
@@ -116,12 +119,49 @@ export function createSessionTranscriptReader(input: {
     readActiveOverlay: async (sessionId, rootTurn) => {
       if (!rootTurn || isTerminalTurn(rootTurn)) return [];
 
-      const invocation = await readRunInvocation(
-        input.stores.runtimeEventStore,
-        sessionId,
-        rootTurn.runId,
-      );
-      const events = await readActiveProjectionEvents(input.stores, sessionId, rootTurn.runId);
+      const store = input.stores.runtimeEventStore;
+      const root = await readRunInvocation(store, sessionId, rootTurn.runId);
+      if (!root) return [];
+      const budget = { events: 0, bytes: 0 };
+      const scanned = new Map<string, RuntimeEvent[]>();
+      const invocations = new Map<string, RuntimeInvocationRecord>([[root.runId, root]]);
+      const readEvents = async (runId: string): Promise<RuntimeEvent[]> => {
+        const cached = scanned.get(runId);
+        if (cached) return cached;
+        const events = await readActiveRuntimeEvents(input.stores, sessionId, runId, budget);
+        scanned.set(runId, events);
+        return events;
+      };
+      let runIds: readonly string[] = [root.runId];
+      if (root.terminalEvent && runtimeHandoffPause(root.terminalEvent)) {
+        const logical = await readLogicalRuntimeExecution(
+          {
+            ...store,
+            readRunInvocation: async (id, runId) => {
+              const run = await readRunInvocation(store, id, runId);
+              if (run) invocations.set(runId, run);
+              return run;
+            },
+            // Authenticate only after the same bounded scan used for presentation.
+            // Sealed prefixes cannot grow between this check and digest verification.
+            readImmutableRuntimeEvents: async (_id, runId) =>
+              (await readEvents(runId)).filter((event) => !event.partial),
+            readImmutableRuntimePrefix: async (prefix) => {
+              await readEvents(prefix.runId);
+              return store.readImmutableRuntimePrefix(prefix);
+            },
+          },
+          { sessionId, turnId: rootTurn.turnId, runId: rootTurn.runId },
+          root,
+        );
+        if (!logical) return [];
+        runIds = logical.runIds;
+      }
+      const events: RuntimeEvent[] = [];
+      for (const runId of runIds)
+        events.push(
+          ...(await readEvents(runId)).filter(affectsRuntimeEventStoredMessageProjection),
+        );
       const canonicalPermissionOutcomes = await readCanonicalPermissionOutcomes(
         events,
         input.canonicalPermissionOutcomes,
@@ -129,7 +169,7 @@ export function createSessionTranscriptReader(input: {
       const projected = projectRuntimeEventsToStoredMessages(
         activePresentationRuntimeEvents(events),
         {
-          invocations: invocation ? [invocation] : [],
+          invocations: runIds.map((runId) => invocations.get(runId)!),
           canonicalPermissionOutcomes,
         },
       );
@@ -644,14 +684,13 @@ async function readCanonicalPermissionOutcomes(
   return outcomes;
 }
 
-async function readActiveProjectionEvents(
+async function readActiveRuntimeEvents(
   stores: ExecutionStoresWriter<'interactive'>,
   sessionId: string,
   runId: string,
+  budget: { events: number; bytes: number },
 ): Promise<RuntimeEvent[]> {
   const events: RuntimeEvent[] = [];
-  let retainedEvents = 0;
-  let retainedBytes = 0;
   const result = await stores.runtimeEventStore.scanRuntimeEvents(
     sessionId,
     runId,
@@ -664,18 +703,17 @@ async function readActiveProjectionEvents(
       maxPartialBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
     },
     (batch) => {
-      const relevant = batch.filter(affectsRuntimeEventStoredMessageProjection);
-      for (const event of relevant) {
-        retainedEvents += 1;
-        retainedBytes += Buffer.byteLength(JSON.stringify(event), 'utf8');
-        if (retainedEvents > ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS) {
+      for (const event of batch) {
+        budget.events += 1;
+        budget.bytes += Buffer.byteLength(JSON.stringify(event), 'utf8');
+        if (budget.events > ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS) {
           throw new Error('Active RuntimeEvent transcript exceeds its event limit');
         }
-        if (retainedBytes > ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES) {
+        if (budget.bytes > ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES) {
           throw new Error('Active RuntimeEvent transcript exceeds its byte limit');
         }
       }
-      events.push(...relevant);
+      events.push(...batch);
     },
   );
   if (result.status === 'limit_exceeded') {

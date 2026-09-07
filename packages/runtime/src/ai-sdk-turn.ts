@@ -164,6 +164,7 @@ import {
 import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
+  historyCompactSourceDigest,
   isProviderHistoryCompactCheckpoint,
   matchHistoryCompactCheckpointPrefix,
   projectHistoryCompactCheckpointReplay,
@@ -638,6 +639,7 @@ export class AiSdkTurn {
   aborted = false;
   loopStopRequested = false;
   loopStopReason: CompleteEvent['stopReason'] | undefined;
+  private handoffPaused = false;
   watchdog: StreamWatchdog | null = null;
   runTrace: RunTrace | null = null;
   readonly imageBudget: ProviderImageBudget = { used: 0, decisions: new Map() };
@@ -874,7 +876,7 @@ export class AiSdkTurn {
 
   private async *runWithinScope(input: BackendSendInput): AsyncIterable<SessionEvent> {
     const turnId = input.turnId;
-    const maxSteps = input.maxSteps ?? this.deps.maxSteps;
+    const maxSteps = input.maxSteps === null ? undefined : (input.maxSteps ?? this.deps.maxSteps);
     const toolRuntime = this.toolRuntime;
     const turnAbortController = this.abortController;
 
@@ -1326,6 +1328,7 @@ export class AiSdkTurn {
               ]
             : turnEvents;
           let replayEvents = rawProjectionEvents;
+          let effectiveProjectionCheckpoint = projectionCheckpoint;
           if (projectionCheckpoint) {
             const checkpointMatch = matchHistoryCompactCheckpointPrefix(
               projectionCheckpoint,
@@ -1334,11 +1337,27 @@ export class AiSdkTurn {
             if (checkpointMatch.reason) {
               throw new Error(`durable checkpoint projection mismatch: ${checkpointMatch.reason}`);
             }
-            replayEvents = projectHistoryCompactCheckpointReplay(
-              projectionCheckpoint,
+            // Content-currency guard: the raw identity still matches, but a
+            // transition committed after this fold (e.g. an active-turn prune
+            // in this very send) changed the effective view the block was
+            // built from. Replay without the stale block — the provider
+            // decides fit and overflow recovery re-folds (#4845 review).
+            const pinnedEffectiveDigest = projectionCheckpoint.coverage.effectiveSourceDigest;
+            const coveredEffective = await this.deps.compaction.foldEffectiveModelHistory(
               checkpointMatch.coveredRuntimeEvents,
-              checkpointMatch.successorRuntimeEvents,
             );
+            if (
+              pinnedEffectiveDigest === undefined ||
+              historyCompactSourceDigest(coveredEffective) !== pinnedEffectiveDigest
+            ) {
+              effectiveProjectionCheckpoint = undefined;
+            } else {
+              replayEvents = projectHistoryCompactCheckpointReplay(
+                projectionCheckpoint,
+                checkpointMatch.coveredRuntimeEvents,
+                checkpointMatch.successorRuntimeEvents,
+              );
+            }
             // The checkpoint was capacity-validated before it was persisted.
             // Do not re-run that gate against a later, larger successor tail:
             // the active-step shaper must see that growth so it can roll the
@@ -1367,7 +1386,7 @@ export class AiSdkTurn {
             await this.deps.messageProjection.materializeRuntimeReplayPlan(
               replayPlan,
               this.imageBudget,
-              projectionCheckpoint,
+              effectiveProjectionCheckpoint,
               compatibleProviderReasoningReplayEventIds(
                 replayEvents,
                 input.runtimeContextInvocations,
@@ -1376,7 +1395,7 @@ export class AiSdkTurn {
                 this.runId,
               ),
             );
-          return projectionCheckpoint
+          return effectiveProjectionCheckpoint
             ? currentTurnMessages
             : [...priorReplay.messages, ...currentTurnMessages];
         };
@@ -2341,6 +2360,16 @@ export class AiSdkTurn {
           }
           const mayTakeAnotherStep = !stepLimitReached && !this.loopStopRequested && !this.aborted;
           if (returnedToolCalls.length > 0 && mayTakeAnotherStep) {
+            if (
+              (await input.handoffBoundary?.(
+                turnAbortController.signal,
+                maxSteps === undefined ? null : maxSteps - runtimeSteps,
+              )) === 'pause'
+            ) {
+              this.handoffPaused = true;
+              break agentLoop;
+            }
+            if (this.aborted || this.loopStopRequested) break agentLoop;
             currentStepMessageId = this.deps.newId();
             continue agentLoop;
           }
@@ -2371,6 +2400,17 @@ export class AiSdkTurn {
               !this.loopStopRequested &&
               !this.aborted
             ) {
+              await queue.waitUntilConsumedThroughCurrent();
+              if (
+                (await input.handoffBoundary?.(
+                  turnAbortController.signal,
+                  maxSteps === undefined ? null : maxSteps - runtimeSteps,
+                )) === 'pause'
+              ) {
+                this.handoffPaused = true;
+                break agentLoop;
+              }
+              if (this.aborted || this.loopStopRequested) break agentLoop;
               currentStepMessageId = this.deps.newId();
               continue agentLoop;
             }
@@ -2491,6 +2531,9 @@ export class AiSdkTurn {
         // win even when it arrives during post-stream usage persistence.
         if (this.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
         if (terminalProviderError) throw terminalProviderError;
+        // Usage above still belongs to this physical attempt. Its Runtime owner
+        // seals the drained stream; no complete/abort event ends the logical Turn.
+        if (this.handoffPaused) return;
         const stopReason =
           this.loopStopReason ??
           (maxSteps !== undefined && finishReason === 'tool-calls'
@@ -2775,9 +2818,11 @@ export class AiSdkTurn {
         diagnostics: [],
       };
     }
-    const rawPriorRuntimeContext = input.runtimeContext.filter(
-      (event) => event.turnId !== input.turnId,
-    );
+    // A handoff changes the physical Run, not the logical Turn. Its admitted
+    // replay is all predecessor history, including events with this turnId.
+    const rawPriorRuntimeContext = input.continuation
+      ? input.runtimeContext
+      : input.runtimeContext.filter((event) => event.turnId !== input.turnId);
     // Everything below reads EFFECTIVE model history: raw events folded through
     // the durable projection-transition reducer (#4283). Replay, budgeting and
     // compaction share one input, so no RuntimeEvent replay path can resurrect
@@ -2794,8 +2839,18 @@ export class AiSdkTurn {
       this.deps.backend.modelId,
     );
     let contextBudget = preparedContextBudget.policy;
-    const budgeted = applyRuntimeEventContextBudget(priorRuntimeContext, contextBudget);
-    let runtimeContext = budgeted?.events ?? priorRuntimeContext;
+    // Match the durable checkpoint against the RAW ledger prefix: every
+    // creation path (standalone compactHistory and the mid-turn state) pins
+    // its coverage digest on raw events, so matching the folded view here
+    // lets any durable projection transition inside the covered prefix orphan
+    // the checkpoint and silently fail open into a full-history replay
+    // (#4842). The projected [block, tail] is then folded through the
+    // transition reducer before it becomes messages, so a committed
+    // transition still cannot resurrect content for the model (#4283).
+    const budgeted = applyRuntimeEventContextBudget(rawPriorRuntimeContext, contextBudget);
+    let runtimeContext = await this.deps.compaction.foldEffectiveModelHistory(
+      budgeted?.events ?? rawPriorRuntimeContext,
+    );
     let contextBudgetDiagnostic = budgeted?.diagnostic;
     let projectedHistoryCompactCheckpoint = budgeted?.historyCompactCheckpoint;
     if (preparedContextBudget.diagnosticPatch) {

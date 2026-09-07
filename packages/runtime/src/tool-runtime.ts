@@ -367,6 +367,8 @@ function composeChildAbortSignal(
 }
 
 export interface ToolRuntimeInput {
+  /** Runtime-owned projection of explicit denials in authenticated continuation ancestors. */
+  inheritedSandboxBoundaryDenied?: boolean;
   sessionId: string;
   header: SessionHeader;
   connection: RuntimeExecutionConnection;
@@ -614,6 +616,7 @@ export class ToolRuntime {
     this.turnId = input.turnId;
     this.hostedInteraction = hosted;
     this.readExecutionBoundary = input.readExecutionBoundary;
+    this.sandboxBoundaryDenied = input.inheritedSandboxBoundaryDenied === true;
   }
 
   async endTurn(reason: 'completed' | 'aborted' = 'completed'): Promise<void> {
@@ -639,6 +642,7 @@ export class ToolRuntime {
               sessionId: this.input.sessionId,
               requestId,
               decision: 'deny',
+              closureReason: reason === 'aborted' ? 'turn_stopped' : 'turn_terminal',
             });
           }),
         );
@@ -2942,6 +2946,7 @@ export class ToolRuntime {
             sessionId: this.input.sessionId,
             requestId,
             decision: 'deny',
+            closureReason: 'turn_stopped',
           }).then(() => undefined),
         );
       }

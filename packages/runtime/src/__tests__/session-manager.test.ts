@@ -4632,11 +4632,10 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(run?.opening.configuration.workspaceIdentity, undefined);
   });
 
-  test('does not inspect continuation safety on normal turns while resume is disabled', async () => {
+  test('records handoff workspace identity even while manual resume is disabled', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const backends = new BackendRegistry();
-    let inspectionCalls = 0;
     backends.register('ai-sdk', (ctx) => new FinalTextTestBackend(ctx));
     const manager = new SessionManager({
       store,
@@ -4644,9 +4643,8 @@ describe('SessionManager permission mode updates', () => {
       runtimeEventStore: runStore,
       backends,
       inspectContinuationSafety: async () => {
-        inspectionCalls += 1;
         return {
-          workspaceIdentity: 'workspace-should-not-be-read',
+          workspaceIdentity: 'workspace-for-handoff',
           backgroundOperationsSettled: true,
           availableToolNames: [],
         };
@@ -4663,9 +4661,12 @@ describe('SessionManager permission mode updates', () => {
       }),
     );
 
-    assert.strictEqual(inspectionCalls, 0);
     const [run] = await runStore.listSessionInvocations(session.id);
-    assert.strictEqual(run?.opening.configuration.workspaceIdentity, undefined);
+    assert.strictEqual(run?.opening.configuration.workspaceIdentity, 'workspace-for-handoff');
+    const plan = await manager.planAuthoritativeSafeBoundaryContinuation(session.id, {
+      sourceRunId: run!.runId,
+    });
+    assert.deepEqual(plan.rejectionReasons, ['resume_feature_disabled']);
   });
 
   test('declares the T1 protocol for an AiSdk run when the host wires the durable boundary', async () => {
@@ -5303,6 +5304,118 @@ describe('SessionManager permission mode updates', () => {
     );
     assert.partialDeepStrictEqual(events.at(-1), { type: 'complete', stopReason: 'step_limit' });
   });
+
+  for (const decision of [
+    'client_denied',
+    'turn_stopped',
+    'turn_terminal',
+    'host_restarted',
+    'missing_reader',
+  ] as const) {
+    test(`manual continuation preserves sandbox denial authority: ${decision}`, async () => {
+      const store = new MemorySessionStore();
+      const runStore = new MemoryAgentRunStore();
+      const backends = new BackendRegistry();
+      let backend: FinalTextTestBackend | undefined;
+      backends.register('ai-sdk', (ctx) => {
+        backend = new FinalTextTestBackend(ctx);
+        return backend;
+      });
+      const manager = new SessionManager({
+        store,
+        runStore,
+        runtimeEventStore: runStore,
+        backends,
+        inspectContinuationSafety: inspectStableContinuationSafety,
+        newId: nextId(),
+        now: nextNow(6_549),
+      });
+      const session = await manager.createSession(makeInput());
+      const source = {
+        sessionId: session.id,
+        runId: 'denied-source-run',
+        turnId: 'denied-source-turn',
+      };
+      await seedRuntimeRun(
+        runStore,
+        makeRunHeader({
+          ...source,
+          status: 'failed',
+          failureClass: 'runtime_interrupted',
+          cwd: session.cwd,
+          createdAt: 1,
+          updatedAt: 2,
+          completedAt: 2,
+        }),
+        [
+          runtimeEvent({
+            ...source,
+            id: 'denied-source-user',
+            ts: 1,
+            role: 'user',
+            author: 'user',
+            content: { kind: 'text', text: 'continue safely' },
+          }),
+          runtimeEvent({
+            ...source,
+            id: 'denied-source-terminal',
+            ts: 2,
+            status: 'failed',
+            actions: { endInvocation: true, stateDelta: { failureClass: 'runtime_interrupted' } },
+          }),
+        ],
+      );
+      // An unrelated Run's explicit answer never belongs to this source.
+      for (const runId of [source.runId, 'unrelated-run']) {
+        await store.createSandboxBoundaryRequest({
+          ...source,
+          runId,
+          requestId: `boundary-${runId}`,
+          expansion: { network: { enabled: true } },
+          justification: 'Fetch a dependency.',
+        });
+        await store.settleSandboxBoundaryRequest({
+          sessionId: source.sessionId,
+          requestId: `boundary-${runId}`,
+          decision: 'deny',
+          ...(runId === source.runId &&
+          decision !== 'client_denied' &&
+          decision !== 'missing_reader'
+            ? { closureReason: decision }
+            : {}),
+        });
+      }
+      const plan = await manager.planSafeBoundaryContinuation(session.id, {
+        sourceRunId: source.runId,
+        currentCwd: session.cwd!,
+        sourceWorkspaceIdentity: 'workspace-1',
+        currentWorkspaceIdentity: 'workspace-1',
+        backgroundOperationsSettled: true,
+        availableToolNames: [],
+      });
+      assert.ok(plan.continuation);
+      if (decision === 'missing_reader') {
+        Object.defineProperty(store, 'hasExplicitSandboxBoundaryDenial', { value: undefined });
+        await assert.rejects(
+          collectSessionEvents(manager.resumeSafeBoundaryContinuation(plan.continuation)),
+          /authoritative sandbox boundary decision lookup/,
+        );
+        assert.equal(backend?.sendInputs.length ?? 0, 0);
+        await assert.rejects(
+          readInvocation(runStore, session.id, plan.continuation.runId),
+          /Unknown run/,
+        );
+      } else {
+        await collectSessionEvents(manager.resumeSafeBoundaryContinuation(plan.continuation));
+        assert.ok(backend);
+        assert.equal(backend.sendInputs.length, 1);
+        assert.equal(
+          backend.sendInputs[0]?.continuation?.sandboxBoundaryDenied,
+          decision === 'client_denied',
+        );
+      }
+    });
+  }
 
   test('executes an approved continuation after a path move without another user message', async () => {
     const store = new MemorySessionStore();
@@ -12878,6 +12991,22 @@ class MemorySessionStore implements SessionStore {
     );
   }
 
+  async hasExplicitSandboxBoundaryDenial(
+    identities: readonly { sessionId: string; runId: string; turnId: string }[],
+  ): Promise<boolean> {
+    return [...this.sandboxBoundaryRequests.values()].some(
+      (request) =>
+        request.status === 'denied' &&
+        request.outcomeReason === 'client_denied' &&
+        identities.some(
+          (identity) =>
+            identity.sessionId === request.sessionId &&
+            identity.runId === request.runId &&
+            identity.turnId === request.turnId,
+        ),
+    );
+  }
+
   async settleSandboxBoundaryRequest(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement> {
@@ -12890,7 +13019,9 @@ class MemorySessionStore implements SessionStore {
             ...request,
             status: input.decision === 'allow' ? ('approved' as const) : ('denied' as const),
             settledAt: 2,
-            ...(input.closureReason ? { outcomeReason: input.closureReason } : {}),
+            ...(input.decision === 'deny'
+              ? { outcomeReason: input.closureReason ?? 'client_denied' }
+              : {}),
           }
         : request;
     this.sandboxBoundaryRequests.set(key, settled);
