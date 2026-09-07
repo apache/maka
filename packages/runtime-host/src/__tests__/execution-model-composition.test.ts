@@ -3982,15 +3982,23 @@ async function waitForCanonicalRequests(
         message: `Hosted model call attempts did not reach ${expectedRequests}`,
       },
     );
-  } catch {
-    const { projection, unreadableRecords } = await ask();
-    throw new Error(
-      `Hosted canonical model-call attempts were not persisted: ${JSON.stringify({
+  } catch (cause) {
+    // The diagnostic re-read must not swallow the original failure: if the
+    // summary read itself threw, re-throw that instead of the payload dump.
+    let diagnostic: string;
+    try {
+      const { projection, unreadableRecords } = await ask();
+      diagnostic = JSON.stringify({
         expectedRequests,
         totalRequests: projection.totalRequests,
         unreadableRecords,
-      })}`,
-    );
+      });
+    } catch (readError) {
+      diagnostic = `diagnostic read failed: ${readError instanceof Error ? readError.message : String(readError)}`;
+    }
+    throw new Error(`Hosted canonical model-call attempts were not persisted: ${diagnostic}`, {
+      cause,
+    });
   }
   return totalRequests;
 }
