@@ -272,7 +272,7 @@ test('keeps durable history separate from the canonical active overlay', async (
   }
 });
 
-test('pages the ledger without materializing off-page Turns or messages', async (t) => {
+test('pages the ledger without materializing Turns it takes no rows from', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-transcript-seek-'));
   const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -409,37 +409,52 @@ test('pages the ledger without materializing off-page Turns or messages', async 
       stores,
       canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
     });
-    // Measure actual JSON decoded, not only the eventual response size. Neither
-    // a small page, the Turn index, nor a lookup miss may decode the 5 MiB Turn.
+    // Measure actual JSON decoded, not only the eventual response size.
+    //
+    // A read decodes the Turns it takes rows from, and no others. That bound is
+    // per Turn rather than per row: a Turn is projected whole because a row's
+    // meaning depends on the rest of its Turn. What must still hold is that no
+    // read walks the Session — so a page at one end must not touch the 5 MiB
+    // Turn at the other, and a Turn index page must cost only its own Turns.
+    const SMALL_TURN_BUDGET = 512 * 1024;
+    const ONE_BIG_TURN_BUDGET = 8 * 1024 * 1024;
     let decodedBytes = 0;
     const parse = JSON.parse;
     const measured = t.mock.method(JSON, 'parse', (...args: Parameters<typeof JSON.parse>) => {
       decodedBytes += Buffer.byteLength(args[0]);
       return parse(...args);
     });
+    const decoding = async <T>(label: string, budget: number, run: () => Promise<T>) => {
+      decodedBytes = 0;
+      const result = await run();
+      assert.ok(decodedBytes < budget, `${label} decoded ${decodedBytes} bytes`);
+      return result;
+    };
     const through = await read.readDurableHighWater(session.id);
-    const tail = await read.readDurablePage(session.id, {
-      direction: 'older',
-      maxBytes: 1024,
-      maxMessages: 1,
-    });
+    const tail = await decoding('tail page', ONE_BIG_TURN_BUDGET, () =>
+      read.readDurablePage(session.id, { direction: 'older', maxBytes: 1024, maxMessages: 1 }),
+    );
     assert.equal(JSON.parse(tail.fragments[0]!.data.toString()).type, 'system_note');
-    const head = await read.readDurablePage(session.id, {
-      direction: 'newer',
-      maxBytes: 1024,
-      maxMessages: 1,
-    });
+    // The discriminating read: the first Turn is small and sits at the far end
+    // of the Session from the 5 MiB one, so serving it may not decode that Turn.
+    const head = await decoding('head page', SMALL_TURN_BUDGET, () =>
+      read.readDurablePage(session.id, { direction: 'newer', maxBytes: 1024, maxMessages: 1 }),
+    );
     assert.equal(JSON.parse(head.fragments[0]!.data.toString()).text, 'prompt 0');
     assert.deepEqual(
-      await read.readDurableMessagesById(session.id, {
-        throughSequence: through,
-        messageIds: ['missing-stream'],
-        maxBytes: 1024,
-        maxMessages: 1,
-      }),
+      await decoding('lookup miss', ONE_BIG_TURN_BUDGET, () =>
+        read.readDurableMessagesById(session.id, {
+          throughSequence: through,
+          messageIds: ['missing-stream'],
+          maxBytes: 1024,
+          maxMessages: 1,
+        }),
+      ),
       [],
     );
-    const landmarks = await read.readDurableTurnLandmarks(session.id, 3);
+    const landmarks = await decoding('landmarks', SMALL_TURN_BUDGET, () =>
+      read.readDurableTurnLandmarks(session.id, 3),
+    );
     assert.deepEqual(
       landmarks.landmarks.map((item) => item.label),
       ['prompt 0', 'prompt 2', 'prompt 4'],
@@ -447,17 +462,13 @@ test('pages the ledger without materializing off-page Turns or messages', async 
     const contributions: SessionTurnContribution[] = [];
     let contributionPosition = 0;
     for (;;) {
-      const page = await read.readDurableTurnContributions(
-        session.id,
-        through,
-        contributionPosition,
-        2,
+      const page = await decoding('turn index page', ONE_BIG_TURN_BUDGET, () =>
+        read.readDurableTurnContributions(session.id, through, contributionPosition, 2),
       );
       contributions.push(...page.contributions);
       if (page.nextPosition === null) break;
       contributionPosition = page.nextPosition;
     }
-    assert.ok(decodedBytes < 512 * 1024, `decoded ${decodedBytes} bytes for bounded reads`);
     measured.mock.restore();
 
     const records: Array<{ sequence: number; message: StoredMessage }> = [];

@@ -48,26 +48,43 @@ test('keeps a full sampled landmark index inside its encoded result budget', () 
   assert.doesNotThrow(() => decodeSessionTurnLandmarksQueryResult(result));
 });
 
-test('keeps legacy assistant presence distinct from retained output', () => {
-  assert.deepEqual(
+test('publishes no Turn until its recorded state is on the page', () => {
+  assert.strictEqual(
     projectSessionTurnContribution({
       turnId: 'turn-1',
       firstSequence: 0,
       latestState: null,
       userPromptPreview: 'hello',
-      hasAssistantMessage: true,
-      hasAssistantOutput: false,
-      hasToolResult: false,
-      hasFailedToolResult: true,
-      hasAbortNote: false,
+    }),
+    undefined,
+  );
+});
+
+test('takes retained output from the recorded turn state', () => {
+  assert.deepEqual(
+    projectSessionTurnContribution({
+      turnId: 'turn-1',
+      firstSequence: 0,
+      latestState: {
+        sequence: 4,
+        message: {
+          type: 'turn_state',
+          id: 'state-1',
+          turnId: 'turn-1',
+          ts: 1,
+          status: 'failed',
+          partialOutputRetained: true,
+        },
+      },
+      userPromptPreview: 'hello',
     }),
     {
       turnId: 'turn-1',
       firstSequence: 0,
       userPromptPreview: 'hello',
-      status: 'completed',
-      statusSource: 'inferred',
-      partialOutputRetained: false,
+      status: 'failed',
+      statusSource: 'recorded',
+      partialOutputRetained: true,
     },
   );
 });
@@ -89,11 +106,6 @@ test('bounds turn diagnostics before publishing a contribution', () => {
       },
     },
     userPromptPreview: 'hello',
-    hasAssistantMessage: false,
-    hasAssistantOutput: false,
-    hasToolResult: false,
-    hasFailedToolResult: false,
-    hasAbortNote: false,
   });
 
   assert.ok(
@@ -128,11 +140,6 @@ test('rejects invalid turn-state references before publishing a contribution', (
         },
       },
       userPromptPreview: null,
-      hasAssistantMessage: false,
-      hasAssistantOutput: false,
-      hasToolResult: false,
-      hasFailedToolResult: false,
-      hasAbortNote: false,
     }),
   );
 });

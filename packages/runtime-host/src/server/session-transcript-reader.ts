@@ -43,7 +43,7 @@ import type {
   SessionTurnContributionPage,
   SessionTurnLandmark,
   SessionTurnLandmarkSnapshot,
-  RuntimeTranscriptSource,
+  RuntimeTranscriptInvocation,
 } from '@maka/storage/execution-stores';
 import { foldTurnContribution } from '@maka/storage/session-message-projection';
 import { SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES, type TurnSnapshot } from '../protocol/index.js';
@@ -55,6 +55,22 @@ export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES = SESSION_TRANSCRIPT_OVERLAY
 export const ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES = 16 * 1024 * 1024;
 const ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS = ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES * 2;
 const ACTIVE_TRANSCRIPT_SCAN_BATCH_MAX_BYTES = 256 * 1024;
+/**
+ * What one durable page may read of a Turn, matching the bound the live
+ * overlay already holds for a run. A Turn past it is refused rather than
+ * half-projected: a prefix of a Turn is not a smaller transcript of it.
+ */
+const DURABLE_TRANSCRIPT_TURN_MAX_EVENTS = ACTIVE_TRANSCRIPT_SOURCE_MAX_EVENTS;
+const DURABLE_TRANSCRIPT_TURN_MAX_BYTES = ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES;
+/** Turns per storage round trip: one, so a page loads no Turn it cannot use. */
+const TRANSCRIPT_TURN_SCAN_LIMIT = 1;
+/**
+ * How far back the live-to-durable handoff looks for a message id. The ids come
+ * from assistant streams the subscriber is still watching, so they are in the
+ * newest Turn or the one it continued from; an id that is in neither is treated
+ * as absent rather than searched for down the Session.
+ */
+const TRANSCRIPT_LOOKUP_MAX_TURNS = 2;
 
 export function createSessionTranscriptReader(input: {
   stores: ExecutionStoresWriter<'interactive'>;
@@ -160,10 +176,12 @@ export interface SessionTranscriptReader {
 }
 
 /**
- * Pages seek immutable Session event ordinals before decoding payloads. Each
- * event is projected with just its indexed message context, so neither a long
- * Session nor a long Turn has to be loaded to serve a page. The low sequence
- * bits distinguish the few rows one event can emit.
+ * Pages seek immutable Session event ordinals before decoding payloads. One
+ * Turn is projected at a time, so a page costs one Turn rather than the
+ * Session. The low sequence bits distinguish the few rows one event emits.
+ *
+ * What an event becomes is asked only of the read model. Storage selects Turns
+ * by ordinal and hands over their events; it never classifies one.
  */
 function createDurableLedgerTranscriptReader(input: {
   stores: ExecutionStoresWriter<'interactive'>;
@@ -171,36 +189,51 @@ function createDurableLedgerTranscriptReader(input: {
 }) {
   const store = input.stores.runtimeEventStore;
   const highWater = async (sessionId: string): Promise<number | null> => {
-    const ordinal = await store.readTranscriptSourceHighWater(sessionId);
+    const ordinal = await store.readTranscriptHighWater(sessionId);
     return ordinal === null ? null : ordinal * EVENT_SEQUENCE_STRIDE + EVENT_SEQUENCE_STRIDE - 1;
   };
-  const projectSource = async (
-    source: RuntimeTranscriptSource,
-  ): Promise<readonly StoredMessage[]> => {
-    const event = source.event;
-    const projected = projectRuntimeEventsToStoredMessages(source.events, {
-      invocations: [source.invocation],
+
+  /** One Turn's rows, each at the sequence its own event sits at. */
+  const projectTurn = async (
+    turn: RuntimeTranscriptInvocation,
+  ): Promise<{ sequence: number; message: StoredMessage }[]> => {
+    const events = turn.events.map((entry) => entry.event);
+    const projected = projectRuntimeEventsToStoredMessages(events, {
+      invocations: [turn.invocation],
       canonicalPermissionOutcomes: await readCanonicalPermissionOutcomes(
-        source.events,
+        events,
         input.canonicalPermissionOutcomes,
       ),
-      context: {
-        messageId: event.refs?.storedMessageId ?? event.refs?.providerEventId ?? event.id,
-        ...(source.contentOrder ? { contentOrder: source.contentOrder } : {}),
-        ...(source.permissionRequest ? { permissionRequest: source.permissionRequest } : {}),
-        ...(source.toolName ? { toolName: source.toolName } : {}),
-        ...(event.refs?.toolCallId ? { toolUseId: event.refs.toolCallId } : {}),
-        hasRetainedOutput: source.hasRetainedOutput,
-      },
     });
     if (projected.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)) {
       throw new Error('Durable RuntimeEvent transcript projection is incomplete');
     }
-    if (projected.messages.length > EVENT_SEQUENCE_STRIDE) {
-      throw new Error('RuntimeEvent exceeds its transcript sequence stride');
-    }
-    return projected.messages;
+    const ordinals = new Map(turn.events.map((entry) => [entry.event.id, entry.ordinal]));
+    const emitted = new Map<number, number>();
+    return projected.messages.map((message, index) => {
+      const ordinal = ordinals.get(projected.sourceEventIds[index]!);
+      if (ordinal === undefined) {
+        throw new Error('Durable transcript message has no source RuntimeEvent');
+      }
+      const offset = emitted.get(ordinal) ?? 0;
+      if (offset >= EVENT_SEQUENCE_STRIDE) {
+        throw new Error('RuntimeEvent exceeds its transcript sequence stride');
+      }
+      emitted.set(ordinal, offset + 1);
+      return { sequence: ordinal * EVENT_SEQUENCE_STRIDE + offset, message };
+    });
   };
+
+  const readTurns = async (
+    sessionId: string,
+    request: { direction: 'older' | 'newer'; throughOrdinal: number; position: number },
+  ): Promise<RuntimeTranscriptInvocation[]> =>
+    store.readTranscriptInvocations(sessionId, {
+      ...request,
+      limit: TRANSCRIPT_TURN_SCAN_LIMIT,
+      maxEvents: DURABLE_TRANSCRIPT_TURN_MAX_EVENTS,
+      maxBytes: DURABLE_TRANSCRIPT_TURN_MAX_BYTES,
+    });
 
   const scan = async function* (
     sessionId: string,
@@ -208,34 +241,37 @@ function createDurableLedgerTranscriptReader(input: {
       direction: 'older' | 'newer';
       throughSequence?: number | null;
       position?: number;
+      /** Stops the walk after this many Turns, for a read that may find nothing. */
+      maxTurns?: number;
     },
   ): AsyncGenerator<{ sequence: number; message: StoredMessage }> {
     const throughSequence =
       request.throughSequence === undefined ? await highWater(sessionId) : request.throughSequence;
     if (throughSequence === null) return;
     const position = request.position ?? (request.direction === 'older' ? throughSequence : 0);
+    const throughOrdinal = ordinalOf(throughSequence);
     let ordinal = ordinalOf(position);
-    while (ordinal >= 0 && ordinal <= ordinalOf(throughSequence)) {
-      const source = await store.readTranscriptSource(sessionId, {
+    let walked = 0;
+    while (ordinal >= 0 && ordinal <= throughOrdinal) {
+      const turns = await readTurns(sessionId, {
         direction: request.direction,
-        throughOrdinal: ordinalOf(throughSequence),
+        throughOrdinal,
         position: ordinal,
       });
-      if (!source) return;
-      const messages = await projectSource(source);
-      const records = messages
-        .map((message, index) => ({
-          sequence: source.ordinal * EVENT_SEQUENCE_STRIDE + index,
-          message,
-        }))
-        .filter(
+      if (turns.length === 0) return;
+      for (const turn of turns) {
+        if (request.maxTurns !== undefined && walked >= request.maxTurns) return;
+        walked += 1;
+        const records = (await projectTurn(turn)).filter(
           ({ sequence }) =>
             sequence <= throughSequence &&
             (request.direction === 'older' ? sequence <= position : sequence >= position),
         );
-      if (request.direction === 'older') records.reverse();
-      yield* records;
-      ordinal = source.ordinal + (request.direction === 'older' ? -1 : 1);
+        if (request.direction === 'older') records.reverse();
+        yield* records;
+      }
+      const edge = turns.at(-1)!;
+      ordinal = request.direction === 'older' ? edge.firstOrdinal - 1 : edge.lastOrdinal + 1;
     }
   };
 
@@ -324,7 +360,7 @@ function createDurableLedgerTranscriptReader(input: {
       return { throughSequence, records, nextPosition };
     },
 
-    /** Fold indexed Turn facts, loading only the prompt and terminal payloads. */
+    /** One row per Turn, folded from the Turn's own projected messages. */
     async readTurnContributions(
       sessionId: string,
       throughSequence: number | null,
@@ -335,54 +371,29 @@ function createDurableLedgerTranscriptReader(input: {
       if (watermark === null) {
         return { throughSequence: null, contributions: [], nextPosition: null };
       }
-      const turns = await store.readTranscriptTurns(
-        sessionId,
-        ordinalOf(watermark),
-        ordinalOf(position),
-        maxContributions + 1,
-      );
+      const turns = await store.readTranscriptInvocations(sessionId, {
+        direction: 'newer',
+        throughOrdinal: ordinalOf(watermark),
+        position: ordinalOf(position),
+        limit: maxContributions + 1,
+        maxEvents: DURABLE_TRANSCRIPT_TURN_MAX_EVENTS,
+        maxBytes: DURABLE_TRANSCRIPT_TURN_MAX_BYTES,
+      });
       const contributions: SessionTurnContribution[] = [];
       for (const turn of turns.slice(0, maxContributions)) {
-        let contribution: SessionTurnContribution = {
-          turnId: turn.invocation.turnId,
-          firstSequence: Math.max(position, turn.firstOrdinal * EVENT_SEQUENCE_STRIDE),
-          latestState: null,
-          userPromptPreview: null,
-          hasAssistantMessage: turn.hasAssistantMessage,
-          hasAssistantOutput: turn.hasAssistantOutput,
-          hasToolResult: turn.hasToolResult,
-          hasFailedToolResult: turn.hasFailedToolResult,
-          hasAbortNote: turn.hasAbortNote,
-        };
-        if (turn.user) {
-          const user = projectRuntimeEventUserMessage(turn.user.event, turn.user.event.id);
-          if (user)
-            contribution = foldTurnContribution(
-              contribution,
-              turn.invocation.turnId,
-              turn.user.ordinal * EVENT_SEQUENCE_STRIDE,
-              user,
-            );
+        // Folded from the Turn's own rows, so `firstSequence` lands on its first
+        // row rather than on the opening fact, which has no row at all.
+        let contribution: SessionTurnContribution | undefined;
+        for (const { sequence, message } of await projectTurn(turn)) {
+          if (sequence < position || sequence > watermark) continue;
+          contribution = foldTurnContribution(
+            contribution,
+            turn.invocation.turnId,
+            sequence,
+            message,
+          );
         }
-        const source = await store.readTranscriptSource(sessionId, {
-          direction: 'newer',
-          throughOrdinal: ordinalOf(watermark),
-          position: turn.terminalOrdinal,
-        });
-        if (source?.ordinal === turn.terminalOrdinal) {
-          const messages = await projectSource(source);
-          for (const [index, message] of messages.entries()) {
-            const sequence = source.ordinal * EVENT_SEQUENCE_STRIDE + index;
-            if (sequence < position || sequence > watermark) continue;
-            contribution = foldTurnContribution(
-              contribution,
-              turn.invocation.turnId,
-              sequence,
-              message,
-            );
-          }
-        }
-        contributions.push(contribution);
+        if (contribution) contributions.push(contribution);
       }
       const next = turns[maxContributions];
       return {
@@ -406,43 +417,47 @@ function createDurableLedgerTranscriptReader(input: {
       );
       const landmarks: SessionTurnLandmark[] = [];
       for (const turn of turns) {
-        if (!turn.user) continue;
-        const message = projectRuntimeEventUserMessage(turn.user.event, turn.user.event.id);
+        if (!turn.prompt) continue;
+        const message = projectRuntimeEventUserMessage(turn.prompt.event, turn.prompt.event.id);
         const label = (message?.displayText ?? message?.text ?? '').trim();
         if (!label) continue;
         landmarks.push({
           turnId: turn.invocation.turnId,
-          sequence: turn.user.ordinal * EVENT_SEQUENCE_STRIDE,
+          sequence: turn.prompt.ordinal * EVENT_SEQUENCE_STRIDE,
           label,
         });
       }
       return { throughSequence, landmarks };
     },
 
+    /**
+     * The durable rows behind a set of message ids.
+     *
+     * The ids come from the assistant streams a subscriber is still watching,
+     * so they belong to the Session's newest Turns. The scan walks back from
+     * the watermark a Turn at a time and stops as soon as every id is found,
+     * rather than keeping an index from message id to event. An id that is not
+     * there stops the walk after the newest Turns instead of reading the
+     * Session: the handoff shows what the tail holds, not everything it could.
+     */
     async readMessagesById(
       sessionId: string,
       request: SessionTranscriptMessageLookupRequest,
     ): Promise<StoredMessage[]> {
       if (request.throughSequence === null || request.messageIds.length === 0) return [];
+      const wanted = new Set(request.messageIds);
       const found: Array<{ sequence: number; message: StoredMessage }> = [];
       let bytes = 0;
-      for (const messageId of new Set(request.messageIds)) {
-        const source = await store.readTranscriptSource(sessionId, {
-          direction: 'older',
-          throughOrdinal: ordinalOf(request.throughSequence),
-          position: ordinalOf(request.throughSequence),
-          messageId,
-        });
-        if (!source) continue;
-        for (const [index, message] of (await projectSource(source)).entries()) {
-          const sequence = source.ordinal * EVENT_SEQUENCE_STRIDE + index;
-          if (message.id !== messageId || sequence > request.throughSequence) continue;
-          bytes += Buffer.byteLength(JSON.stringify(message), 'utf8');
-          if (found.length >= request.maxMessages || bytes > request.maxBytes) {
-            return found.sort((a, b) => a.sequence - b.sequence).map((record) => record.message);
-          }
-          found.push({ sequence, message });
-        }
+      for await (const record of scan(sessionId, {
+        direction: 'older',
+        throughSequence: request.throughSequence,
+        maxTurns: TRANSCRIPT_LOOKUP_MAX_TURNS,
+      })) {
+        if (!wanted.delete(record.message.id)) continue;
+        bytes += Buffer.byteLength(JSON.stringify(record.message), 'utf8');
+        if (found.length >= request.maxMessages || bytes > request.maxBytes) break;
+        found.push(record);
+        if (wanted.size === 0) break;
       }
       return found.sort((a, b) => a.sequence - b.sequence).map((record) => record.message);
     },

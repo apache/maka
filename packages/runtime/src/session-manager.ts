@@ -613,8 +613,6 @@ export interface SessionStore {
   ): Promise<ProvisionAgentGraphOperatorResult>;
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
   readHeader(sessionId: string): Promise<SessionHeader>;
-  /** The legacy transcript, read only to convert it onto the ledger. */
-  readMessages(sessionId: string): Promise<StoredMessage[]>;
   /** One forward page of the legacy rows the transcript converter lifts. */
   readMessagesAfter(
     sessionId: string,

@@ -26,7 +26,6 @@ import { runtimeEventHasModelVisibleContent } from '@maka/core/runtime-event';
 import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import { deriveTurnRecords } from '@maka/core/session';
 import {
-  compareRuntimeReadModelMessages,
   isHardRuntimeEventReadModelDiagnostic,
   isUnclaimedRuntimeEventDiagnostic,
   projectRuntimeEventsToStoredMessages,
@@ -349,17 +348,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
         displayText: typed,
       },
     ]);
-    const compare = compareRuntimeReadModelMessages(out.messages, [
-      {
-        type: 'user',
-        id: 'user-skill',
-        turnId,
-        ts: ts + 1,
-        text: envelope,
-        displayText: typed,
-      },
-    ]);
-    assert.deepStrictEqual(compare.diagnostics, []);
   });
 
   test('full RuntimeEvent turn projects legacy-compatible rows', () => {
@@ -1388,7 +1376,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
 
     assert.deepStrictEqual(out.messages, legacy);
     assert.deepStrictEqual(out.diagnostics, []);
-    assert.strictEqual(compareRuntimeReadModelMessages(out.messages, legacy).compatible, true);
   });
 
   test('per-step thinking pairs each step assistant row by its own message id', () => {
@@ -2197,84 +2184,8 @@ describe('RuntimeEventActions projection coverage', () => {
   }
 });
 
-describe('compareRuntimeReadModelMessages', () => {
-  test('treats nested JSON with different property order as compatible', () => {
-    const projected = projectRuntimeEventsToStoredMessages(
-      [
-        ev({
-          id: 'evt-tool-call-json',
-          role: 'model',
-          author: 'agent',
-          content: {
-            kind: 'function_call',
-            id: 'tool-json',
-            name: 'JsonTool',
-            args: { beta: 2, alpha: { z: 3, a: 1 } },
-          },
-        }),
-        ev({
-          id: 'evt-tool-result-json',
-          role: 'tool',
-          author: 'tool',
-          content: {
-            kind: 'function_response',
-            id: 'tool-json',
-            name: 'JsonTool',
-            result: { kind: 'json', value: { outer: { y: 2, x: 1 }, list: [{ b: 2, a: 1 }] } },
-          },
-        }),
-      ],
-      { invocations: [invocation] },
-    );
-    const legacy: StoredMessage[] = [
-      {
-        type: 'tool_call',
-        id: 'tool-json',
-        turnId,
-        ts,
-        toolName: 'JsonTool',
-        args: { alpha: { a: 1, z: 3 }, beta: 2 },
-      },
-      {
-        type: 'tool_result',
-        id: 'different-result-id',
-        turnId,
-        ts,
-        toolUseId: 'tool-json',
-        isError: false,
-        content: { kind: 'json', value: { list: [{ a: 1, b: 2 }], outer: { x: 1, y: 2 } } },
-      },
-    ];
-
-    const result = compareRuntimeReadModelMessages(projected.messages, legacy);
-
-    assert.strictEqual(result.compatible, true);
-    assert.deepStrictEqual(result.diagnostics, []);
-  });
-
-  test('rejects a mismatched tool activity kind', () => {
-    const projected: StoredMessage[] = [
-      {
-        type: 'tool_call',
-        id: 'tool-kind',
-        turnId,
-        ts,
-        toolName: 'CustomTool',
-        activityKind: 'read',
-        args: {},
-      },
-    ];
-    const legacy: StoredMessage[] = [
-      {
-        ...(projected[0] as Extract<StoredMessage, { type: 'tool_call' }>),
-        activityKind: 'command',
-      },
-    ];
-
-    assert.strictEqual(compareRuntimeReadModelMessages(projected, legacy).compatible, false);
-  });
-
-  test('carries the cross-turn request anchor both ways and compares on it', () => {
+describe('token usage projection', () => {
+  test('carries the cross-turn request anchor both ways', () => {
     const lastRequestAnchor = { inputTokens: 120, outputTokens: 30 };
     const anchored = ev({
       id: 'evt-token-anchor',
@@ -2306,65 +2217,6 @@ describe('compareRuntimeReadModelMessages', () => {
       backfilled.events.find((event) => event.actions?.tokenUsage)?.actions?.tokenUsage
         ?.lastRequestAnchor,
       lastRequestAnchor,
-    );
-
-    assert.strictEqual(
-      compareRuntimeReadModelMessages(
-        [usage as StoredMessage],
-        [
-          {
-            ...(usage as Extract<StoredMessage, { type: 'token_usage' }>),
-            lastRequestAnchor: undefined,
-          },
-        ],
-      ).compatible,
-      false,
-    );
-  });
-
-  test('rejects mismatched replay-critical token usage fields', () => {
-    const usage: Extract<StoredMessage, { type: 'token_usage' }> = {
-      type: 'token_usage',
-      id: 'usage-1',
-      turnId,
-      ts,
-      input: 100,
-      output: 25,
-      runtimeSteps: 3,
-      contextRemaining: 9000,
-      providerRequestTraceId: 'provider-trace-1',
-    };
-
-    assert.strictEqual(
-      compareRuntimeReadModelMessages([usage], [{ ...usage, runtimeSteps: 4 }]).compatible,
-      false,
-    );
-    assert.strictEqual(
-      compareRuntimeReadModelMessages([usage], [{ ...usage, contextRemaining: 8000 }]).compatible,
-      false,
-    );
-    assert.strictEqual(
-      compareRuntimeReadModelMessages(
-        [usage],
-        [{ ...usage, providerRequestTraceId: 'provider-trace-2' }],
-      ).compatible,
-      false,
-    );
-  });
-
-  test('rejects missing tool result and assistant text cases', () => {
-    const projected = projectRuntimeEventsToStoredMessages(baseEvents(), {
-      invocations: [invocation],
-    });
-    const missing = projected.messages.filter(
-      (message) => message.type !== 'tool_result' && message.type !== 'assistant',
-    );
-    const result = compareRuntimeReadModelMessages(missing, equivalentLegacyMessages());
-
-    assert.strictEqual(result.compatible, false);
-    assert.deepStrictEqual(
-      result.diagnostics.map((diag) => diag.code),
-      ['missing_legacy_message', 'missing_legacy_message'],
     );
   });
 });

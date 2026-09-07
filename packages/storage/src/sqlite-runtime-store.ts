@@ -132,9 +132,9 @@ import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-author
 import {
   RuntimeTranscriptQuery,
   TERMINAL_RUNTIME_EVENT_SQL,
-  type RuntimeTranscriptPosition,
-  type RuntimeTranscriptSource,
-  type RuntimeTranscriptTurn,
+  type RuntimeTranscriptInvocation,
+  type RuntimeTranscriptInvocationRequest,
+  type RuntimeTranscriptLandmark,
 } from './runtime-transcript-query.js';
 
 export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
@@ -550,37 +550,25 @@ export class SqliteRuntimeStore
     });
   }
 
-  async readTranscriptSourceHighWater(sessionId: string): Promise<number | null> {
+  async readTranscriptHighWater(sessionId: string): Promise<number | null> {
     assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
     return this.readTransaction(() => this.transcriptQuery().highWater(sessionId));
   }
 
-  async readTranscriptSource(
+  async readTranscriptInvocations(
     sessionId: string,
-    request: RuntimeTranscriptPosition,
-  ): Promise<RuntimeTranscriptSource | null> {
+    request: RuntimeTranscriptInvocationRequest,
+  ): Promise<RuntimeTranscriptInvocation[]> {
     assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
-    return this.readTransaction(() => this.transcriptQuery().source(sessionId, request));
-  }
-
-  async readTranscriptTurns(
-    sessionId: string,
-    throughOrdinal: number,
-    position: number,
-    limit: number,
-  ): Promise<RuntimeTranscriptTurn[]> {
-    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
-    assertInvocationSearchLimit(limit);
-    return this.readTransaction(() =>
-      this.transcriptQuery().turns(sessionId, throughOrdinal, position, limit),
-    );
+    assertInvocationSearchLimit(request.limit);
+    return this.readTransaction(() => this.transcriptQuery().invocations(sessionId, request));
   }
 
   async readTranscriptLandmarks(
     sessionId: string,
     throughOrdinal: number,
     limit: number,
-  ): Promise<RuntimeTranscriptTurn[]> {
+  ): Promise<RuntimeTranscriptLandmark[]> {
     assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
     assertInvocationSearchLimit(limit);
     return this.readTransaction(() =>

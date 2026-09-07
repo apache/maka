@@ -25,12 +25,7 @@ import {
 } from './legacy-run-header.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
-import {
-  TERMINAL_RUNTIME_EVENT_SQL,
-  TRANSCRIPT_MESSAGE_KEY_SQL,
-  TRANSCRIPT_OUTPUT_SHAPE_SQL,
-  TRANSCRIPT_STORED_ID_SQL,
-} from './runtime-transcript-query.js';
+import { TERMINAL_RUNTIME_EVENT_SQL } from './runtime-transcript-query.js';
 import {
   buildInvocationOpenedEvent,
   buildSyntheticTerminalRuntimeEvent,
@@ -588,12 +583,7 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
     17,
     `
-    CREATE INDEX IF NOT EXISTS runtime_events_transcript_message ON runtime_events(invocation_id, (${TRANSCRIPT_MESSAGE_KEY_SQL}), event_seq);
-    CREATE INDEX IF NOT EXISTS runtime_events_transcript_output ON runtime_events(invocation_id, (${TRANSCRIPT_OUTPUT_SHAPE_SQL}), event_seq);
-    CREATE INDEX IF NOT EXISTS runtime_events_transcript_request ON runtime_events(invocation_id, json_extract(payload_json, '$.actions.permissionRequest.requestId'), event_seq);
-    CREATE INDEX IF NOT EXISTS runtime_events_transcript_tool ON runtime_events(invocation_id, json_extract(payload_json, '$.content.id'), event_seq);
     CREATE INDEX IF NOT EXISTS runtime_events_terminal ON runtime_events(invocation_id, event_seq) WHERE ${TERMINAL_RUNTIME_EVENT_SQL};
-    CREATE INDEX IF NOT EXISTS runtime_events_transcript_stored_id ON runtime_events(session_id, (${TRANSCRIPT_STORED_ID_SQL}));
   `,
   ],
 ]);

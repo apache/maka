@@ -623,7 +623,6 @@ function memoryStore(): SessionStore {
     },
     list: async () => [],
     readHeader: async () => header,
-    readMessages: async () => [...messages],
     readMessagesAfter: async (
       _sessionId: string,
       request: { afterSequence?: number; maxMessages: number },

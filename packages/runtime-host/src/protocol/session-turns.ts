@@ -72,11 +72,6 @@ export interface SessionTurnContribution {
     readonly message: TurnStateMessage;
   } | null;
   readonly userPromptPreview: string | null;
-  readonly hasAssistantMessage: boolean;
-  readonly hasAssistantOutput: boolean;
-  readonly hasToolResult: boolean;
-  readonly hasFailedToolResult: boolean;
-  readonly hasAbortNote: boolean;
 }
 
 export interface SessionTurnsQueryInput {
@@ -109,11 +104,6 @@ export function mergeSessionTurnContributions(
         ? next.latestState
         : current.latestState,
     userPromptPreview: current.userPromptPreview ?? next.userPromptPreview,
-    hasAssistantMessage: current.hasAssistantMessage || next.hasAssistantMessage,
-    hasAssistantOutput: current.hasAssistantOutput || next.hasAssistantOutput,
-    hasToolResult: current.hasToolResult || next.hasToolResult,
-    hasFailedToolResult: current.hasFailedToolResult || next.hasFailedToolResult,
-    hasAbortNote: current.hasAbortNote || next.hasAbortNote,
   };
 }
 
@@ -135,11 +125,6 @@ export function projectSessionTurnContributionForWire(
       contribution.userPromptPreview === null
         ? null
         : truncateUtf8(contribution.userPromptPreview, SESSION_TURN_PROMPT_PREVIEW_MAX_BYTES),
-    hasAssistantMessage: contribution.hasAssistantMessage,
-    hasAssistantOutput: contribution.hasAssistantOutput,
-    hasToolResult: contribution.hasToolResult,
-    hasFailedToolResult: contribution.hasFailedToolResult,
-    hasAbortNote: contribution.hasAbortNote,
   };
 }
 
@@ -183,46 +168,36 @@ function projectTurnStateMessageForWire(message: TurnStateMessage): TurnStateMes
   };
 }
 
-export function projectSessionTurnContribution(contribution: SessionTurnContribution): TurnRecord {
+/**
+ * The Turn a contribution describes, or nothing when its ending is not on the
+ * page yet.
+ *
+ * A Turn's status is read off the `turn_state` its terminal projects; a
+ * contribution without one has not been folded up to its ending, and a status
+ * guessed from the rows that did arrive is one no reader trusts anyway.
+ */
+export function projectSessionTurnContribution(
+  contribution: SessionTurnContribution,
+): TurnRecord | undefined {
   const state = contribution.latestState?.message;
-  const partialOutputRetained = contribution.hasAssistantOutput || contribution.hasToolResult;
-  if (state) {
-    return {
-      turnId: contribution.turnId,
-      firstSequence: contribution.firstSequence,
-      ...(contribution.userPromptPreview
-        ? { userPromptPreview: contribution.userPromptPreview }
-        : {}),
-      status: state.status,
-      statusSource: 'recorded',
-      ...(state.parentTurnId ? { parentTurnId: state.parentTurnId } : {}),
-      ...(state.retriedFromTurnId ? { retriedFromTurnId: state.retriedFromTurnId } : {}),
-      ...(state.regeneratedFromTurnId
-        ? { regeneratedFromTurnId: state.regeneratedFromTurnId }
-        : {}),
-      ...(state.branchOfTurnId ? { branchOfTurnId: state.branchOfTurnId } : {}),
-      ...(state.parentSessionId ? { parentSessionId: state.parentSessionId } : {}),
-      ...(state.abortedAt !== undefined ? { abortedAt: state.abortedAt } : {}),
-      ...(state.abortSource ? { abortSource: state.abortSource } : {}),
-      ...(state.errorClass ? { errorClass: state.errorClass } : {}),
-      partialOutputRetained: state.partialOutputRetained || partialOutputRetained,
-    };
-  }
+  if (!state) return undefined;
   return {
     turnId: contribution.turnId,
     firstSequence: contribution.firstSequence,
     ...(contribution.userPromptPreview
       ? { userPromptPreview: contribution.userPromptPreview }
       : {}),
-    status: contribution.hasAbortNote
-      ? 'aborted'
-      : contribution.hasAssistantMessage
-        ? 'completed'
-        : contribution.hasFailedToolResult
-          ? 'failed'
-          : 'completed',
-    statusSource: 'inferred',
-    partialOutputRetained,
+    status: state.status,
+    statusSource: 'recorded',
+    ...(state.parentTurnId ? { parentTurnId: state.parentTurnId } : {}),
+    ...(state.retriedFromTurnId ? { retriedFromTurnId: state.retriedFromTurnId } : {}),
+    ...(state.regeneratedFromTurnId ? { regeneratedFromTurnId: state.regeneratedFromTurnId } : {}),
+    ...(state.branchOfTurnId ? { branchOfTurnId: state.branchOfTurnId } : {}),
+    ...(state.parentSessionId ? { parentSessionId: state.parentSessionId } : {}),
+    ...(state.abortedAt !== undefined ? { abortedAt: state.abortedAt } : {}),
+    ...(state.abortSource ? { abortSource: state.abortSource } : {}),
+    ...(state.errorClass ? { errorClass: state.errorClass } : {}),
+    partialOutputRetained: state.partialOutputRetained,
   };
 }
 
@@ -394,11 +369,6 @@ function decodeSessionTurnContribution(value: unknown): SessionTurnContribution 
     'firstSequence',
     'latestState',
     'userPromptPreview',
-    'hasAssistantMessage',
-    'hasAssistantOutput',
-    'hasToolResult',
-    'hasFailedToolResult',
-    'hasAbortNote',
   ]);
   let latestState: SessionTurnContribution['latestState'] = null;
   if (contribution.latestState !== null) {
@@ -441,15 +411,5 @@ function decodeSessionTurnContribution(value: unknown): SessionTurnContribution 
             'Session turn prompt preview',
             SESSION_TURN_PROMPT_PREVIEW_MAX_BYTES,
           ),
-    hasAssistantMessage: requireBoolean(contribution.hasAssistantMessage),
-    hasAssistantOutput: requireBoolean(contribution.hasAssistantOutput),
-    hasToolResult: requireBoolean(contribution.hasToolResult),
-    hasFailedToolResult: requireBoolean(contribution.hasFailedToolResult),
-    hasAbortNote: requireBoolean(contribution.hasAbortNote),
   };
-}
-
-function requireBoolean(value: unknown): boolean {
-  if (typeof value !== 'boolean') throw invalidProtocolFrame('Invalid Session turn contribution');
-  return value;
 }

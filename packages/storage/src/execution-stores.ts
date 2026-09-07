@@ -136,7 +136,10 @@ export type {
 } from './session-store.js';
 
 export type ExecutionSessionWriter = SessionAuthorityStore;
-export type { RuntimeTranscriptSource, RuntimeTranscriptTurn } from './runtime-transcript-query.js';
+export type {
+  RuntimeTranscriptInvocation,
+  RuntimeTranscriptLandmark,
+} from './runtime-transcript-query.js';
 export type ExecutionAgentRunWriter = DurableAgentRunStore;
 export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
   RuntimeTranscriptQueries &
@@ -574,14 +577,10 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
       readSessionRuntimeEventEntries: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEventEntries(sessionId)),
-      readTranscriptSourceHighWater: (sessionId) =>
-        run(() => runtimeEventStore.readTranscriptSourceHighWater(sessionId)),
-      readTranscriptSource: (sessionId, request) =>
-        run(() => runtimeEventStore.readTranscriptSource(sessionId, request)),
-      readTranscriptTurns: (sessionId, throughOrdinal, position, limit) =>
-        run(() =>
-          runtimeEventStore.readTranscriptTurns(sessionId, throughOrdinal, position, limit),
-        ),
+      readTranscriptHighWater: (sessionId) =>
+        run(() => runtimeEventStore.readTranscriptHighWater(sessionId)),
+      readTranscriptInvocations: (sessionId, request) =>
+        run(() => runtimeEventStore.readTranscriptInvocations(sessionId, request)),
       readTranscriptLandmarks: (sessionId, throughOrdinal, limit) =>
         run(() => runtimeEventStore.readTranscriptLandmarks(sessionId, throughOrdinal, limit)),
       claimContinuation: (input) => run(() => runtimeEventStore.claimContinuation(input)),

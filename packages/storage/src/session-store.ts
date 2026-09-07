@@ -297,11 +297,6 @@ export interface SessionTurnContribution {
     readonly message: TurnStateMessage;
   } | null;
   readonly userPromptPreview: string | null;
-  readonly hasAssistantMessage: boolean;
-  readonly hasAssistantOutput: boolean;
-  readonly hasToolResult: boolean;
-  readonly hasFailedToolResult: boolean;
-  readonly hasAbortNote: boolean;
 }
 
 export interface SessionTurnContributionPage {

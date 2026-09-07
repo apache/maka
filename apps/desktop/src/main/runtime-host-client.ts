@@ -1648,7 +1648,7 @@ export class DesktopRuntimeHostClient {
     }
     return [...contributions.values()]
       .sort((left, right) => left.firstSequence - right.firstSequence)
-      .map(projectSessionTurnContribution);
+      .flatMap((contribution) => projectSessionTurnContribution(contribution) ?? []);
   }
 
   async listSessionTurnLandmarks(
