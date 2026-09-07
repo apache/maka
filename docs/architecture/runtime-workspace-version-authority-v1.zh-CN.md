@@ -19,8 +19,8 @@
 
 # Workspace Version Authority v1：Baseline 事实权威
 
-- 状态：authority foundation 已合并；当前 schema 15 继续支持 baseline facts、root binding、successor/mutation facts 与 projection reader/rebuild，仍没有生产 baseline 或 mutation consumer
-- 更新日期：2026-09-04
+- 状态：authority foundation 已合并；当前 schema 17 继续支持 baseline facts、root binding、successor/mutation facts 与 projection reader/rebuild，仍没有生产 baseline 或 mutation consumer
+- 更新日期：2026-09-07
 - 主要不变量：经专用 writer 提交的一个 workspace epoch，其 baseline canonical facts 与三个 SQLite projection 对外只能全可见或全不可见
 - 事实权威：immutable RuntimeEvents
 - artifact owner：后续 Gitoxide data plane；本切片不执行 Git 命令
@@ -71,7 +71,7 @@ policy hash 都不构成证据。
 | 正常失败 | exact retry 返回 existing；payload/identity drift 返回 conflict |
 | 损坏失败 | malformed fact、orphan、projection mismatch、partial snapshot 污染全部 fail closed |
 | 运行时回滚 | 事务未提交时五部分全部回滚；已提交时五部分全部可读 |
-| 版本回滚 | 当前 schema 15 数据库不能由只支持旧 schema 的 binary 打开；降级必须使用升级前备份 |
+| 版本回滚 | 当前 schema 17 数据库不能由只支持旧 schema 的 binary 打开；降级必须使用升级前备份 |
 
 逻辑回滚可以停止调用本 writer，但必须保留 schema 7/9 及后续 reader/migration；不能通过删除 capability marker
 伪装成旧格式。
@@ -199,13 +199,13 @@ event，因此 caller 没有机会夹带另一条 semantic lane。该 seam 所�
 
 ## 6. Baseline writer 状态
 
-`commitWorkspaceBaselineInternal` 继续作为当前 schema 15 中 root-bound baseline authority 的
+`commitWorkspaceBaselineInternal` 继续作为当前 schema 17 中 root-bound baseline authority 的
 storage-internal 测试 seam，用于证明
 atomic bundle、exact retry、conflict、crash rollback 与 projection rebuild。旧 Git executable receipt →
 writer composition 已删除；后续 Gitoxide producer 必须重新建立 artifact admission，不能复用或恢复旧
 owner、receipt 或 worktree materialization path。
 
-## 7. Schema 7–15 与 projection
+## 7. Schema 7–17 与 projection
 
 Schema 7 从 schema 6 增加 workspace authority facts/projections 并写入 capability：
 
@@ -225,8 +225,8 @@ runtime_workspace_version_authority @ 1
 
 Schema 9 增加 `runtime_storage_root_binding(singleton=1, root_id, protocol_version=1)`。当时 schema 8 仍含
 旧 Eval harness 的 event table；schema 12 已删除该表。Schema 13 扩展 version projection 以接受
-`tool_mutation` successor，schema 14 增加 `changed_paths_json` 与 durable mutation reservation，schema 15
-只扩展 continuation projection，不改变 workspace fact 合同。Baseline writer 在任何
+`tool_mutation` successor，schema 14 增加 `changed_paths_json` 与 durable mutation reservation；schema 15–17
+只演进 continuation/invocation authority 与 projection，不改变 workspace fact 合同。Baseline writer 在任何
 workspace fact 写入前，通过 storage-internal binder 将它绑定到 authenticated root owner 的 durable
 `rootId`；已绑定数据库只接受 exact rootId。没有 binding 但已经含任何 Session、RuntimeEvent、claim 或
 workspace fact 等逻辑数据的实验数据库必须显式 adopt/清理，不能自动认领；只有除 schema/capability metadata
