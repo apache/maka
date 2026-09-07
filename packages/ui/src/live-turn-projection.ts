@@ -192,17 +192,17 @@ export function confirmLiveTurn(
 export function applyLiveTurnEvent(
   current: LiveTurnProjection | undefined,
   event: LiveTurnContentEvent,
-  locale?: UiLocale,
+  locale: UiLocale,
 ): LiveTurnProjection;
 export function applyLiveTurnEvent(
   current: LiveTurnProjection | undefined,
   event: SessionEvent,
-  locale?: UiLocale,
+  locale: UiLocale,
 ): LiveTurnProjection | undefined;
 export function applyLiveTurnEvent(
   current: LiveTurnProjection | undefined,
   event: SessionEvent,
-  locale: UiLocale = 'zh',
+  locale: UiLocale,
 ): LiveTurnProjection | undefined {
   if (event.type === 'steering_message') {
     const prior = current?.turnId === event.turnId

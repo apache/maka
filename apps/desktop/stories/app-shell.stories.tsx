@@ -18,8 +18,8 @@
  */
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, waitFor } from 'storybook/test';
-import { useState, type CSSProperties, type ReactNode } from 'react';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
+import { useEffect, useReducer, useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
@@ -29,11 +29,25 @@ import {
   Composer,
   deriveTitlebarProjectName,
   TitlebarSessionIdentity,
+  ToastProvider,
 } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode, TurnViewModel } from '@maka/ui';
 import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
 import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions';
-import { WorkbarTitlebarActions } from '../src/renderer/features/workbar';
+import {
+  WorkbarServicesProvider,
+  WorkbarTitlebarActions,
+} from '../src/renderer/features/workbar';
+import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
+import {
+  createFakeWorkbarServices,
+  createSessionWorkbarPanelsState,
+  isSessionWorkbarCollapsed,
+  reduceWorkbarLayout,
+  SESSION_BOTTOM_PANEL_DEFAULT_HEIGHT,
+  SESSION_WORKBAR_DEFAULT_WIDTH,
+  type WorkbarLayoutState,
+} from '../src/renderer/features/workbar/testing';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { deriveAppShellTurnPresentation } from '../src/renderer/app-shell-turn-view-model';
 import {
@@ -271,6 +285,7 @@ const baseComposerProps: ComposerProps = {
 
 function ShellFrame(props: {
   children: ReactNode;
+  height?: number | string;
   motionEnabled?: boolean;
   sidebarCollapsed?: boolean;
 }) {
@@ -287,6 +302,7 @@ function ShellFrame(props: {
       style={
         {
           minHeight: 640,
+          height: props.height,
           /* Same publication point as production, for the same reason as
              `data-sidebar-state` above: the titlebar's first grid track is a
              `calc()` on this variable, and an unset variable makes the whole
@@ -336,8 +352,11 @@ function ComposedShell(props: {
    * supplying the relatives, not by hand-writing what the helpers would return.
    */
   relatedSessions?: SessionSummary[];
+  frameHeight?: number | string;
   /** Drives the footer's update action; `undefined` is the silent phase. */
   updateReminder?: SessionListPanelProps['updateReminder'];
+  workbarCollapsed?: boolean;
+  onToggleWorkbar?: () => void;
 }) {
   const [collapsed, setCollapsed] = useState(props.sidebarCollapsed ?? false);
   const [viewMode, setViewMode] = useState<SessionViewMode>(props.initialViewMode ?? 'conversation');
@@ -370,7 +389,7 @@ function ComposedShell(props: {
     deriveAppShellTurnPresentation(turns, {
       activeId: active?.id,
       pendingTurnActions: new Set<string>(),
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
     });
   const projectGroups: SessionGroup[] = catalogProjects.map((item) => ({
     id: `project:${item.id}`,
@@ -380,7 +399,11 @@ function ComposedShell(props: {
   }));
 
   return (
-    <ShellFrame motionEnabled={props.motionEnabled} sidebarCollapsed={collapsed}>
+    <ShellFrame
+      height={props.frameHeight}
+      motionEnabled={props.motionEnabled}
+      sidebarCollapsed={collapsed}
+    >
       <header className="maka-window-titlebar">
         <AppShellTopbarActions
           sidebarCollapsed={collapsed}
@@ -406,8 +429,8 @@ function ComposedShell(props: {
         )}
         <WorkbarTitlebarActions
           available
-          collapsed={false}
-          onToggle={noop}
+          collapsed={props.workbarCollapsed ?? false}
+          onToggle={props.onToggleWorkbar ?? noop}
         />
       </header>
       <AstryxAppShell
@@ -490,6 +513,22 @@ function ComposedShell(props: {
 // messages (sidebar expanded, composer ready).
 export const DefaultLayout: Story = {
   render: () => <ComposedShell />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const sidebar = canvas.getByRole('navigation', { name: '任务列表' });
+    const actions = canvasElement.querySelector<HTMLElement>(
+      '[data-maka-contract="shell-topbar-rail"]',
+    );
+    if (!actions) throw new Error('Shell topbar rail did not render');
+    await expect(sidebar).toBeVisible();
+    await expect(actions).toBeVisible();
+    const sidebarBox = sidebar.getBoundingClientRect();
+    const actionsBox = actions.getBoundingClientRect();
+    const trailingInset = sidebarBox.right - actionsBox.right;
+    expect(trailingInset).toBeGreaterThanOrEqual(0);
+    expect(trailingInset).toBeLessThanOrEqual(16);
+    expect(getComputedStyle(actions).columnGap).toBe('4px');
+  },
 };
 
 // Real path: the updater finishes downloading in the background (autoDownload
@@ -512,6 +551,21 @@ export const UpdateDownloadedCollapsed: Story = {
   render: () => (
     <ComposedShell sidebarCollapsed updateReminder={{ state: 'downloaded', latestVersion: '0.1.7' }} />
   ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const sidebar = canvasElement.querySelector<HTMLElement>('nav.maka-session-panel');
+    const motion = canvasElement.querySelector<HTMLElement>('.maka-sidenav-motion');
+    if (!sidebar || !motion) throw new Error('Collapsed sidebar did not render');
+    await expect(sidebar).not.toBeVisible();
+    expect(getComputedStyle(motion).width).toBe('0px');
+    const expand = canvas.getByRole('button', { name: '展开侧边栏' });
+    await expect(expand).toBeVisible();
+    expand.click();
+    await waitFor(() => {
+      expect(canvas.getByRole('navigation', { name: '任务列表' })).toBeVisible();
+    });
+    expect(canvas.getByRole('button', { name: '收起侧边栏' })).toBeVisible();
+  },
 };
 
 // Real path: send a message → the turn is streaming (composer shows the
@@ -733,9 +787,26 @@ export const FailedTurnWithToolError: Story = {
   },
 };
 
-// Real path: the provider rate-limits the request and the turn settles failed.
-// The failed Banner carries the rate-limit guidance — the settled provider
-// error a bare transcript never shows.
+export const ProviderStreamTruncated: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ lastMessageAt: NOW - 3 * 60_000 }}
+      chat={{ messages: [
+        user('msg-st-1', 'turn-st', 4, '检查项目的构建结果。'),
+        { type: 'assistant', id: 'msg-st-answer', turnId: 'turn-st', ts: NOW - 199_000, text: '构建已完成，我继续检查输出。', modelId: 'claude-sonnet-4-5' },
+        { type: 'turn_state', id: 'state-st-failed', turnId: 'turn-st', ts: NOW - 198_000, status: 'failed', errorClass: 'stream_truncated', retry: { decision: 'declined', because: 'side_effects' }, partialOutputRetained: true },
+      ] }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      const banner = canvasElement.querySelector('.maka-turn-failed-banner');
+      expect(banner?.textContent).toContain('响应中途断开');
+      expect(banner?.textContent).toContain('为避免重复操作，未自动重试');
+    });
+  },
+};
+
 export const ProviderRateLimited: Story = {
   render: () => (
     <ComposedShell
@@ -848,6 +919,107 @@ export const ManyTurns: Story = {
       }}
     />
   ),
+};
+
+// Real path: enough task history to overflow the sidebar. The rail owns the
+// scrollport while its footer remains inside the fixed shell frame.
+export const OverflowingSidebar: Story = {
+  render: () => (
+    <ComposedShell
+      frameHeight={680}
+      relatedSessions={Array.from({ length: 60 }, (_, index) =>
+        makeSession({
+          id: `session-overflow-${index}`,
+          name: `历史任务 ${String(index + 1).padStart(2, '0')}`,
+          lastMessageAt: NOW - (index + 20) * 60_000,
+          projectId: 'project-maka',
+          cwd: '/workspace/maka-agent',
+        }))}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const nav = canvasElement.querySelector<HTMLElement>('nav.maka-session-panel');
+    const wrapper = canvasElement.querySelector<HTMLElement>('.maka-sidenav-motion');
+    const footer = canvasElement.querySelector<HTMLElement>('.maka-session-panel-footer');
+    if (!nav || !wrapper || !footer) throw new Error('Overflowing sidebar is incomplete');
+    const scrollOwner = [nav, ...nav.querySelectorAll<HTMLElement>('*')].find(
+      (element) =>
+        element.scrollHeight - element.clientHeight > 4 &&
+        getComputedStyle(element).overflowY !== 'visible',
+    );
+    expect(scrollOwner).toBeDefined();
+    const frameBottom = canvasElement.querySelector<HTMLElement>('.appFrame')?.getBoundingClientRect().bottom;
+    if (frameBottom === undefined) throw new Error('Shell frame did not render');
+    expect(wrapper.getBoundingClientRect().bottom).toBeLessThanOrEqual(frameBottom + 1);
+    expect(footer.getBoundingClientRect().bottom).toBeLessThanOrEqual(frameBottom + 1);
+  },
+};
+
+// Real path: an assistant response in a wide conversation. Maka's prose owns
+// the full turn column instead of inheriting Astryx's 680px text cap.
+export const WideAssistantProse: Story = {
+  render: () => (
+    <ComposedShell
+      chat={{
+        messages: [
+          user('msg-wide-u', 'turn-wide', 2, '检查宽屏回答的阅读列。'),
+          assistant(
+            'msg-wide-a',
+            'turn-wide',
+            1,
+            '这段回答故意保持为普通段落，用来验证文本会抵达 Maka 自己的转录列边缘，而不是停在上游组件的旧宽度上限。',
+          ),
+        ],
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const answers = await canvas.findAllByRole('article', { name: 'Maka 的回答' });
+    const answer = answers.at(-1);
+    if (!answer) throw new Error('Wide assistant answer did not render');
+    const paragraph = await within(answer).findByRole('paragraph');
+    const turn = paragraph.closest<HTMLElement>('.maka-turn');
+    if (!turn) throw new Error('Wide assistant paragraph did not render inside a turn');
+    const boundary = paragraph.closest<HTMLElement>('[data-maka-transcript-boundary]');
+    if (!boundary) throw new Error('Wide assistant paragraph has no paint-containment boundary');
+    const turnRect = turn.getBoundingClientRect();
+    expect(turnRect.width).toBeGreaterThan(680);
+    expect(turnRect.right - paragraph.getBoundingClientRect().right).toBeLessThanOrEqual(1);
+    expect(getComputedStyle(boundary).contentVisibility).toBe('auto');
+    // Paint containment (`content-visibility: auto`, `contain: paint`,
+    // `overflow` other than visible) clips to the rounded padding box, and
+    // headless Chromium does not reproduce that clip, so pin the geometry:
+    // every clipping ancestor up to the scroller is square, or its padding
+    // keeps the prose out of its corners.
+    const scroller = paragraph.closest<HTMLElement>('[data-chat-scroll-container="true"]');
+    if (!scroller) throw new Error('Wide assistant paragraph did not render inside the transcript scroller');
+    for (let ancestor = paragraph.parentElement; ancestor && ancestor !== scroller; ancestor = ancestor.parentElement) {
+      const style = getComputedStyle(ancestor);
+      const clips =
+        style.contentVisibility === 'auto' ||
+        style.contain.includes('paint') ||
+        style.contain === 'strict' ||
+        style.contain === 'content' ||
+        style.overflow !== 'visible';
+      if (!clips) continue;
+      const radius = Math.max(
+        ...[
+          style.borderTopLeftRadius,
+          style.borderTopRightRadius,
+          style.borderBottomLeftRadius,
+          style.borderBottomRightRadius,
+        ].map(Number.parseFloat),
+      );
+      const inset = Math.min(
+        ...[style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft].map(Number.parseFloat),
+      );
+      expect(
+        inset,
+        `${ancestor.tagName.toLowerCase()}.${ancestor.className} clips with a ${radius}px corner but only ${inset}px of padding`,
+      ).toBeGreaterThanOrEqual(radius);
+    }
+  },
 };
 
 // Real path: Desktop Computer Use is exposed through the Runtime Host Client
@@ -1372,6 +1544,78 @@ export const PlanAndSwarmModeOn: Story = {
   ),
 };
 
+/** Settles the Skill refresh the Plan toggle below started. */
+let releaseSkillRefresh: (() => void) | undefined;
+
+function PlusMenuRefreshHarness() {
+  const [planModeActive, setPlanModeActive] = useState(false);
+  const [skillsLoading, setSkillsLoading] = useState(false);
+
+  return (
+    <ComposedShell
+      composer={{
+        planModeActive,
+        mentionSkills: skillsLoading ? [] : baseComposerProps.mentionSkills,
+        mentionSkillsUnavailable: false,
+        mentionSkillsLoading: skillsLoading,
+        onPlanModeChange(active) {
+          setPlanModeActive(active);
+          setSkillsLoading(true);
+          releaseSkillRefresh = () => setSkillsLoading(false);
+        },
+      }}
+    />
+  );
+}
+
+// Real path: toggling Plan while the Runtime invocable-Skill projection is
+// refreshing. The settled presentation stays in place, but activation is held
+// until the new catalog arrives, so the open panel neither jumps nor writes a
+// stray slash into the composer.
+export const PlusMenuDuringSkillRefresh: Story = {
+  render: () => <PlusMenuRefreshHarness />,
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await userEvent.click(page.getByRole('button', { name: '添加上下文' }));
+    const menu = page.getByRole('menu', { name: '添加上下文' });
+    const planRow = within(menu).getByRole('menuitemcheckbox', { name: 'Plan' });
+    const skillsRow = within(menu).getByRole('menuitem', { name: /选择技能/ });
+    const height = menu.getBoundingClientRect().height;
+
+    await userEvent.click(planRow);
+    await expect(planRow).toHaveAttribute('aria-checked', 'true');
+    await expect(skillsRow).toHaveAttribute('aria-busy', 'true');
+    await expect(skillsRow).not.toHaveAttribute('aria-disabled', 'true');
+    await expect(menu).not.toHaveTextContent('当前没有可用技能');
+    expect(Math.abs(menu.getBoundingClientRect().height - height)).toBeLessThanOrEqual(0.5);
+
+    await userEvent.click(skillsRow);
+    await waitFor(() => expect(menu).toBeVisible(), { timeout: 5_000 });
+    const editor = canvasElement.querySelector<HTMLElement>(
+      '.maka-composer-editor [contenteditable="true"]',
+    );
+    if (!editor) throw new Error('composer editor is missing');
+    await expect(editor).toHaveTextContent('');
+    await expect(page.queryByRole('listbox', { name: /技能/ })).not.toBeInTheDocument();
+
+    releaseSkillRefresh?.();
+    await waitFor(() => {
+      const settledRow = within(
+        page.getByRole('menu', { name: '添加上下文' }),
+      ).getByRole('menuitem', { name: /选择技能/ });
+      expect(settledRow).not.toHaveAttribute('aria-busy');
+    });
+    const settledRow = within(
+      page.getByRole('menu', { name: '添加上下文' }),
+    ).getByRole('menuitem', { name: /选择技能/ });
+    await userEvent.click(settledRow);
+    await waitFor(
+      () => expect(page.getByRole('listbox', { name: /技能/ })).toBeVisible(),
+      { timeout: 5_000 },
+    );
+  },
+};
+
 // Real path: a mode is on AND context is staged for the next send. The point of
 // the story is the split: the drawer badge counts the two attachments only,
 // while Plan reads off the footer — the mode is not something the send consumes.
@@ -1429,4 +1673,1563 @@ export const GoalDialogOpen: Story = {
       />
     </>
   ),
+};
+
+/**
+ * Transcript geometry.
+ *
+ * Assert positions against the scroller's own end, never as a pixel delta: a
+ * delta is satisfiable by two wrongs, where the content grew by as much as the
+ * view moved.
+ */
+const TAIL_SCROLLER = '[data-chat-scroll-container="true"]';
+
+// Enough to push the transcript past a viewport twice, few enough that a
+// stream of them ends while a story is still settling.
+const TAIL_LINES = Array.from(
+  { length: 60 },
+  (_, index) => `第 ${index} 行：这一段用来把转录推过滚动视口的高度。`,
+);
+
+function tailScroller(): HTMLElement {
+  const root = document.querySelector<HTMLElement>(TAIL_SCROLLER);
+  if (!root) throw new Error('the chat scroll container is missing');
+  return root;
+}
+
+/** The distance to the tail plus the three numbers it came from. */
+function tailMetrics(): {
+  distance: number;
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+} {
+  const root = tailScroller();
+  return {
+    distance: Math.round(root.scrollHeight - root.scrollTop - root.clientHeight),
+    scrollTop: Math.round(root.scrollTop),
+    scrollHeight: root.scrollHeight,
+    clientHeight: root.clientHeight,
+  };
+}
+
+/**
+ * Samples every frame while the answer grows: a tail slipping away *while*
+ * content arrives is indistinguishable, afterwards, from a view dragged back
+ * at the last delta. Stops on the content; the budget is only a fuse.
+ */
+function measureTailLag(frameBudget: number): Promise<{
+  worstLag: number;
+  worstFrameGrowth: number;
+  grewBy: number;
+  viewportHeight: number;
+}> {
+  return new Promise((resolve) => {
+    const root = tailScroller();
+    const startedAt = root.scrollHeight;
+    let previousScrollHeight = startedAt;
+    let worstLag = 0;
+    let worstFrameGrowth = 0;
+    let left = frameBudget;
+    const tick = (): void => {
+      const settledTail = previousScrollHeight - root.clientHeight;
+      worstLag = Math.max(worstLag, Math.abs(root.scrollTop - settledTail));
+      worstFrameGrowth = Math.max(worstFrameGrowth, root.scrollHeight - previousScrollHeight);
+      previousScrollHeight = root.scrollHeight;
+      const enough = root.scrollHeight - startedAt > root.clientHeight;
+      if (enough || --left <= 0) {
+        resolve({
+          worstLag: Math.round(worstLag),
+          worstFrameGrowth: Math.round(worstFrameGrowth),
+          grewBy: Math.round(root.scrollHeight - startedAt),
+          viewportHeight: root.clientHeight,
+        });
+      } else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
+/** Waits out the frames a layout change needs to commit and paint. */
+function painted(frames = 3): Promise<void> {
+  return new Promise((resolve) => {
+    const tick = (left: number): void => {
+      if (left <= 0) resolve();
+      else requestAnimationFrame(() => tick(left - 1));
+    };
+    tick(frames);
+  });
+}
+
+function messageList(): HTMLElement {
+  const list = tailScroller().querySelector<HTMLElement>('.maka-chat-message-list');
+  if (!list) throw new Error('the transcript content box is missing');
+  return list;
+}
+
+function turnTop(turnId: string): number {
+  const turn = document.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
+  if (!turn) throw new Error(`turn ${turnId} is not mounted`);
+  return Math.round(turn.getBoundingClientRect().top);
+}
+
+function firstResidentTurnId(): string | null {
+  return document
+    .querySelector('[data-transcript-turn-id]')
+    ?.getAttribute('data-transcript-turn-id') ?? null;
+}
+
+/**
+ * The dock affordance is always in the DOM — Astryx toggles opacity and
+ * pointer-events — so presence proves nothing and a visibility check passes on
+ * the transparent one. `dockOffered` is the real question.
+ */
+function dockButton(): HTMLButtonElement {
+  const button = [...document.querySelectorAll('button')].find((candidate) =>
+    /底部|to bottom/i.test(
+      `${candidate.getAttribute('aria-label') ?? ''} ${candidate.textContent ?? ''}`,
+    ),
+  );
+  if (!button) throw new Error('the scroll-to-bottom affordance is missing');
+  return button;
+}
+
+function dockOffered(): boolean {
+  const style = getComputedStyle(dockButton());
+  return style.pointerEvents !== 'none' && Number(style.opacity) > 0.5;
+}
+
+/**
+ * The rule this drives reads `composedPath()` and the overflow of what the
+ * wheel crossed — DOM state — so a dispatched wheel takes the same branch a
+ * real one does. What it cannot do is scroll, so cases that need the reader to
+ * move set `scrollTop` themselves.
+ */
+function wheelUp(target: Element): void {
+  target.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+}
+
+/** A scroller inside the transcript, standing in for a tool-output box. */
+function injectNestedScroller(parent: Element): HTMLElement {
+  const box = document.createElement('div');
+  box.dataset.nestedScroller = 'true';
+  box.style.cssText = 'height:120px;overflow-y:auto';
+  const filler = document.createElement('div');
+  filler.style.height = '2000px';
+  box.append(filler);
+  parent.append(box);
+  // Away from both ends, so scrolling up inside it never reaches a boundary.
+  box.scrollTop = 600;
+  return box;
+}
+
+/** Answered turns, oldest first. `from` may go negative as history loads. */
+function transcriptTurns(from: number, count: number): StoredMessage[] {
+  return Array.from({ length: count }, (_, offset) => {
+    const index = from + offset;
+    const turnId = `turn-scroll-${index}`;
+    return [
+      user(`msg-scroll-${index}-u`, turnId, 500 - index * 2, `第 ${index} 个问题`),
+      assistant(
+        `msg-scroll-${index}-a`,
+        turnId,
+        499 - index * 2,
+        TAIL_LINES.slice(0, 4).join('\n\n'),
+      ),
+    ];
+  }).flat();
+}
+
+const PARTIAL_HISTORY_INDEX = Array.from({ length: 8 }, (_, index) => ({
+  turnId: `turn-scroll-${index + 1}`,
+  sequence: index + 1,
+  label: `第 ${index + 1} 个问题`,
+}));
+
+function PartialHistoryHarness() {
+  const [readingEarlier, setReadingEarlier] = useState(false);
+  return (
+    <ComposedShell
+      frameHeight={720}
+      chat={{
+        messages: readingEarlier ? transcriptTurns(1, 4) : transcriptTurns(5, 4),
+        transcriptTurnIndex: PARTIAL_HISTORY_INDEX,
+        onLoadTranscriptTurn: () => setReadingEarlier(true),
+        hasOlderHistory: !readingEarlier,
+        hasNewerHistory: readingEarlier,
+        onLoadLaterHistory: () => setReadingEarlier(false),
+      }}
+    />
+  );
+}
+
+function historyGapPresentation(gap: HTMLElement) {
+  const style = getComputedStyle(gap);
+  const box = gap.getBoundingClientRect();
+  const composer = document.querySelector<HTMLElement>('.maka-composer-astryx');
+  const frame = gap.closest<HTMLElement>('.appFrame');
+  if (!composer || !frame) throw new Error('The shell geometry is incomplete');
+  const composerBox = composer.getBoundingClientRect();
+  const frameBox = frame.getBoundingClientRect();
+  return {
+    backgroundColor: style.backgroundColor,
+    borderWidths: [
+      style.borderTopWidth,
+      style.borderRightWidth,
+      style.borderBottomWidth,
+      style.borderLeftWidth,
+    ],
+    display: style.display,
+    flexWrap: style.flexWrap,
+    justifyContent: style.justifyContent,
+    widthDelta: Math.abs(box.width - composerBox.width),
+    centerDelta: Math.abs(
+      (box.left + box.right) / 2 - (composerBox.left + composerBox.right) / 2,
+    ),
+    fitsFrame: box.left >= frameBox.left && box.right <= frameBox.right,
+    clientWidth: gap.clientWidth,
+    scrollWidth: gap.scrollWidth,
+    hasHorizontalOverflow: gap.scrollWidth > gap.clientWidth,
+  };
+}
+
+// Real path: selecting a prompt outside the loaded transcript range, then
+// loading the newer range. Each boundary stays a quiet reading-column
+// control and every inactive prompt-rail tick uses one neutral treatment.
+export const PartialHistoryNotice: Story = {
+  render: () => <PartialHistoryHarness />,
+  play: async ({ canvasElement }) => {
+    expect(canvasElement.querySelector('[data-transcript-gap="older"]')).not.toBeNull();
+    expect(canvasElement.querySelector('[data-transcript-gap="newer"]')).toBeNull();
+    const firstPrompt = canvasElement.querySelector<HTMLButtonElement>(
+      '.maka-prompt-rail-tick[data-prompt-turn-id="turn-scroll-1"]',
+    );
+    if (!firstPrompt) throw new Error('The first historical prompt tick did not render');
+    firstPrompt.click();
+
+    await waitFor(() => {
+      expect(canvasElement.querySelector('[data-transcript-gap="newer"]')).not.toBeNull();
+    });
+    const gap = canvasElement.querySelector<HTMLElement>('[data-transcript-gap="newer"]');
+    if (!gap) throw new Error('The newer transcript gap did not render');
+    expect(gap.textContent).toContain('下方还有未加载的较新消息');
+    expect(gap.textContent).toContain('加载较新消息');
+
+    const regular = historyGapPresentation(gap);
+    expect(regular.backgroundColor).toBe('rgba(0, 0, 0, 0)');
+    expect(regular.borderWidths).toEqual(['0px', '0px', '0px', '0px']);
+    expect(regular.display).toBe('flex');
+    expect(regular.flexWrap).toBe('wrap');
+    expect(regular.justifyContent).toBe('center');
+    expect(regular.widthDelta).toBeLessThanOrEqual(1);
+    expect(regular.centerDelta).toBeLessThanOrEqual(1);
+    expect(regular.hasHorizontalOverflow, JSON.stringify(regular)).toBe(false);
+
+    const neutralPaint = [
+      ...canvasElement.querySelectorAll<HTMLElement>('.maka-prompt-rail-tick'),
+    ]
+      .filter((tick) => tick.dataset.active !== 'true' && !tick.matches(':hover'))
+      .map((tick) => {
+        const bar = tick.querySelector<HTMLElement>('.maka-prompt-rail-tick-bar');
+        if (!bar) throw new Error('A prompt rail tick is missing its bar');
+        const barStyle = getComputedStyle(bar);
+        return JSON.stringify({
+          backgroundColor: barStyle.backgroundColor,
+          borderStyle: barStyle.borderStyle,
+          borderWidth: barStyle.borderWidth,
+          boxShadow: barStyle.boxShadow,
+        });
+      });
+    expect(neutralPaint.length).toBeGreaterThan(1);
+    expect(new Set(neutralPaint).size).toBe(1);
+    expect(canvasElement.querySelectorAll('[data-resident]')).toHaveLength(0);
+    expect(
+      [...document.styleSheets].flatMap((sheet) =>
+        [...sheet.cssRules].filter((rule) => rule.cssText.includes('data-resident'))),
+    ).toHaveLength(0);
+
+    const frame = canvasElement.querySelector<HTMLElement>('.appFrame');
+    if (!frame) throw new Error('Shell frame did not render');
+    frame.style.width = '520px';
+    await painted(2);
+    const narrow = historyGapPresentation(gap);
+    expect(narrow.centerDelta).toBeLessThanOrEqual(1);
+    expect(narrow.fitsFrame).toBe(true);
+    expect(narrow.hasHorizontalOverflow, JSON.stringify(narrow)).toBe(false);
+
+    const loadNewerButton = within(gap).getByRole('button', { name: '加载较新消息' });
+    loadNewerButton.click();
+    await waitFor(() => {
+      expect(canvasElement.querySelector('[data-transcript-gap="newer"]')).toBeNull();
+      expect(canvasElement.querySelector('[data-turn-id="turn-scroll-8"]')).not.toBeNull();
+    });
+  },
+};
+
+/** Stops the harness below, so the tail can be read against a settled transcript. */
+let stopTailStream: (() => void) | undefined;
+
+/** Streams one line per frame into a live Turn. */
+function StreamingTailHarness() {
+  const [lines, setLines] = useState(1);
+  useEffect(() => {
+    // Paced by frames, not by the clock, so it stays in step with the
+    // per-frame sampler on a slow runner.
+    let frame = 0;
+    let stopped = false;
+    const tick = (): void => {
+      if (stopped) return;
+      setLines((count) => (count >= TAIL_LINES.length ? count : count + 1));
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    const stop = (): void => {
+      stopped = true;
+      cancelAnimationFrame(frame);
+    };
+    stopTailStream = stop;
+    return () => {
+      stop();
+      stopTailStream = undefined;
+    };
+  }, []);
+  return (
+    <ComposedShell
+      session={{ status: 'running', streaming: true }}
+      chat={{
+        runningStatus: true,
+        messages: [
+          user('msg-tail-1', 'turn-tail', 3, '把转录推过一屏，看看尾巴还跟不跟得住。'),
+          {
+            type: 'turn_state',
+            id: 'state-tail',
+            turnId: 'turn-tail',
+            ts: NOW - 30_000,
+            status: 'running',
+            partialOutputRetained: false,
+          },
+        ],
+        liveTurn: {
+          turnId: 'turn-tail',
+          phase: 'streamed',
+          steps: [{
+            stepId: 'msg-assistant-tail',
+            text: {
+              // Paragraph breaks, not single newlines: Markdown folds those
+              // back into one block and the transcript stops growing by rows.
+              text: TAIL_LINES.slice(0, lines).join('\n\n'),
+              truncated: false,
+              complete: false,
+            },
+            tools: [],
+          }],
+        },
+      }}
+    />
+  );
+}
+
+export const StreamingTailFollow: Story = {
+  render: () => <StreamingTailHarness />,
+  play: async () => {
+    // The fuse runs out inside the smoke's per-story budget, so a stalled
+    // stream fails saying so instead of timing the story out.
+    const lag = await measureTailLag(600);
+
+    // The samples have to have covered more than a viewport of real growth, or
+    // every reading above is a stationary transcript and proves nothing.
+    expect(lag.grewBy).toBeGreaterThan(lag.viewportHeight);
+    expect(lag.worstLag).toBeLessThanOrEqual(lag.worstFrameGrowth + 8);
+
+    // Settle against a transcript that stopped growing, or the reading only
+    // says the sampler caught a frame between deltas.
+    stopTailStream?.();
+    await waitFor(
+      () => {
+        const settled = tailMetrics();
+        expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+      },
+      { timeout: 5_000 },
+    );
+
+    // A reader the tail never left has nothing to dock to.
+    expect(dockOffered()).toBe(false);
+  },
+};
+
+/** Lets a play function drive props React owns. One story renders per page. */
+let appendTurn: (() => void) | undefined;
+
+/** Every `onLoadEarlierHistory` the transcript asked for, anchor turn first. */
+const historyLoads: string[] = [];
+
+const HISTORY_BATCH = 4;
+
+// More than any story here consumes. Running the history out retires the
+// "earlier history" notice, and that removal is a height change above the
+// reader with no arrival to explain it.
+const HISTORY_BATCHES_AVAILABLE = 8;
+
+/** A settled transcript with a turn the play function can make arrive. */
+function SettledTranscriptHarness({ turns }: { turns: number }) {
+  const [extra, setExtra] = useState(0);
+  useEffect(() => {
+    appendTurn = () => setExtra((count) => count + 1);
+    return () => {
+      appendTurn = undefined;
+    };
+  }, []);
+  return <ComposedShell chat={{ messages: transcriptTurns(0, turns + extra) }} />;
+}
+
+/** The history seam is two props: `hasOlderHistory`, and a loader that prepends. */
+function HistoryHarness({ turns }: { turns: number }) {
+  const [range, setRange] = useState({ from: 0, count: turns });
+  useEffect(() => {
+    historyLoads.length = 0;
+  }, []);
+  return (
+    <ComposedShell
+      chat={{
+        messages: transcriptTurns(range.from, range.count),
+        hasOlderHistory: range.from > -HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE,
+        onLoadEarlierHistory: (anchorTurnId) => {
+          historyLoads.push(anchorTurnId ?? '(none)');
+          setRange((current) => ({
+            from: current.from - HISTORY_BATCH,
+            count: current.count + HISTORY_BATCH,
+          }));
+        },
+      }}
+    />
+  );
+}
+
+/** The band inside which the transcript treats a reader move as asking. */
+function loadBand(): number {
+  return Math.max(640, tailScroller().clientHeight * 2);
+}
+
+export const TailFollowsGrowthOutsideTurns: Story = {
+  render: () => <SettledTranscriptHarness turns={12} />,
+  play: async () => {
+    await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
+
+    const grown = document.createElement('div');
+    grown.dataset.outsideTurnGrowth = 'true';
+    grown.style.height = '600px';
+    messageList().append(grown);
+    // Outside a wrapper is what makes this the uncovered path: growth inside
+    // one is what every other story here already exercises.
+    expect(
+      grown.closest('[data-transcript-turn-id]'),
+      'the injected box landed inside a turn wrapper',
+    ).toBe(null);
+
+    await painted(6);
+    await waitFor(() => {
+      const settled = tailMetrics();
+      expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+    });
+  },
+};
+
+export const ReaderScrolledUpIsNotPulledBack: Story = {
+  render: () => <SettledTranscriptHarness turns={12} />,
+  play: async () => {
+    const root = tailScroller();
+    await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
+
+    root.scrollTop -= 500;
+    await painted(6);
+    const before = tailMetrics().distance;
+    expect(before, JSON.stringify(tailMetrics())).toBeGreaterThan(100);
+    await waitFor(() => expect(dockOffered()).toBe(true));
+
+    const viewport = root.getBoundingClientRect();
+    const anchorTurnId = [...root.querySelectorAll<HTMLElement>('[data-transcript-turn-id]')]
+      .find((turn) => {
+        const bounds = turn.getBoundingClientRect();
+        return bounds.bottom > viewport.top && bounds.top < viewport.bottom;
+      })?.dataset.transcriptTurnId;
+    if (!anchorTurnId) throw new Error('the transcript has no visible turn');
+    const anchorTop = turnTop(anchorTurnId);
+
+    appendTurn?.();
+
+    // Track the first visible turn. The first mounted turn can be thousands
+    // of pixels above the reader; native anchoring correctly moves that turn
+    // when intervening content-visibility estimates resolve while holding the
+    // reader still. Keep both checks together as the arriving turn settles.
+    await waitFor(() => {
+      expect(tailMetrics().distance).toBeGreaterThan(before);
+      const afterTop = turnTop(anchorTurnId);
+      expect(
+        Math.abs(afterTop - anchorTop),
+        JSON.stringify({ anchorTurnId, anchorTop, afterTop, ...tailMetrics() }),
+      ).toBeLessThanOrEqual(4);
+    });
+  },
+};
+
+export const DockAffordanceReturnsToTail: Story = {
+  render: () => <SettledTranscriptHarness turns={12} />,
+  play: async () => {
+    await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
+
+    tailScroller().scrollTop = 0;
+    await painted(6);
+    // Offered at all is the assertion: with Astryx's scroll layer off, its
+    // `isScrolledUp` never updates again, so the stock button would stay
+    // transparent forever. This one reads Maka's pin.
+    await waitFor(() => expect(dockOffered()).toBe(true));
+
+    dockButton().click();
+    await waitFor(() => {
+      const settled = tailMetrics();
+      expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+    });
+    expect(dockOffered()).toBe(false);
+  },
+};
+
+export const NestedScrollerNearHistoryBoundaryAsksForNothing: Story = {
+  render: () => <HistoryHarness turns={7} />,
+  play: async () => {
+    await waitFor(() => {
+      const settled = tailMetrics();
+      expect(settled.scrollTop, JSON.stringify(settled)).toBeLessThanOrEqual(loadBand());
+      expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+    });
+
+    const nested = injectNestedScroller(messageList());
+    await painted(6);
+    historyLoads.length = 0;
+
+    wheelUp(nested);
+    await painted(6);
+    // The gesture crossed a scroller that could act on it, so it was never the
+    // reader asking for what is above the transcript.
+    expect(historyLoads).toEqual([]);
+    expect(nested.scrollTop).toBe(600);
+  },
+};
+
+export const TailFollowDoesNotAskForHistory: Story = {
+  render: () => <HistoryHarness turns={7} />,
+  play: async () => {
+    const before = firstResidentTurnId();
+    // A transcript shorter than about three viewports has its tail inside the
+    // band that asks for earlier history, so "near the start" cannot mean the
+    // reader wants it.
+    await waitFor(() => {
+      const settled = tailMetrics();
+      expect(settled.scrollTop, JSON.stringify(settled)).toBeLessThanOrEqual(loadBand());
+      expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+    });
+
+    await painted(12);
+    // Nothing arrived that the reader did not ask for.
+    expect(historyLoads).toEqual([]);
+    expect(firstResidentTurnId()).toBe(before);
+  },
+};
+
+// #4256: one Turn taller than several viewports, its reasoning / answer / tool
+// blocks each carrying a `data-maka-transcript-boundary` marker so sub-turn
+// content-visibility bounds them. Reasoning stays mounted while folded, so it is
+// real layout, not free collapsed bytes.
+function oversizedTurnMessages(): StoredMessage[] {
+  const turnId = 'turn-oversized';
+  const out: StoredMessage[] = [
+    user('msg-oversized-user', turnId, 30, '逐项检查一组独立的合成步骤，并给出简短结果。'),
+  ];
+  const prose = '这一段只包含确定性的合成文本，用于测量长对话的滚动渲染。'.repeat(8);
+  const reasoning = '先确认输入边界（空 / 超长 / 并发），再对合成输出做一次去抖动检查，确保占位高度不随展开态漂移。'.repeat(4);
+  for (let step = 1; step <= 24; step += 1) {
+    const ts = NOW - (25 - step) * 20_000;
+    out.push({
+      type: 'assistant',
+      id: `msg-oversized-a-${step}`,
+      turnId,
+      ts,
+      text: `### 合成步骤 ${step}\n\n${prose}`,
+      // The first line becomes the disclosure button's accessible name, so it
+      // carries the step number — identical names across materialized steps
+      // read as indistinguishable controls to the AX audit.
+      thinking: { text: `第 ${step} 组边界检查\n\n${reasoning}\n\n${reasoning}` },
+      modelId: 'claude-sonnet-4-5',
+    });
+    out.push({
+      type: 'tool_call',
+      id: `tool-oversized-${step}`,
+      turnId,
+      ts: ts + 1_000,
+      toolName: 'Bash',
+      displayName: `合成检查 ${step}`,
+      intent: `读取第 ${step} 组固定测试数据`,
+      stepId: `msg-oversized-a-${step}`,
+      args: { cmd: `fixture-check --step ${step}` },
+    });
+    out.push({
+      type: 'tool_result',
+      id: `tool-oversized-r-${step}`,
+      turnId,
+      ts: ts + 2_000,
+      toolUseId: `tool-oversized-${step}`,
+      isError: false,
+      durationMs: 100 + step,
+      content: { kind: 'text', text: `第 ${step} 组：确定性、可重放，无回归。` },
+    });
+  }
+  return out;
+}
+
+const oversizedTurn = oversizedTurnMessages();
+
+export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
+  render: () => <ComposedShell chat={{ messages: oversizedTurn }} />,
+  play: async () => {
+    const root = tailScroller();
+    await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
+    // A single Turn taller than several viewports is the point; without the
+    // overflow the rest proves nothing.
+    expect(
+      root.scrollHeight,
+      JSON.stringify(tailMetrics()),
+    ).toBeGreaterThan(root.clientHeight * 3);
+    // The containment claim itself, in the same Chromium the app ships:
+    // offscreen timeline blocks are genuinely skipped, not merely marked.
+    // (This carries the deleted Electron spec's assertion — #4825 moved this
+    // tier of coverage below Electron.)
+    const skipped = [...root.querySelectorAll<HTMLElement>('[data-maka-transcript-boundary]')]
+      .filter((element) => !element.checkVisibility({ contentVisibilityAuto: true }))
+      .length;
+    expect(skipped, 'no offscreen boundary is skipped').toBeGreaterThan(0);
+
+    // The visible block nearest the middle of the scrollport, re-chosen each
+    // step so it is always one the reader can actually see.
+    const visibleAnchor = (): HTMLElement => {
+      const rootRect = root.getBoundingClientRect();
+      const center = (rootRect.top + rootRect.bottom) / 2;
+      const anchor = [...root.querySelectorAll<HTMLElement>('[data-maka-transcript-boundary]')]
+        .filter((element) => {
+          const rect = element.getBoundingClientRect();
+          return rect.bottom > rootRect.top && rect.top < rootRect.bottom;
+        })
+        .sort((left, right) => {
+          const leftRect = left.getBoundingClientRect();
+          const rightRect = right.getBoundingClientRect();
+          return Math.abs((leftRect.top + leftRect.bottom) / 2 - center)
+            - Math.abs((rightRect.top + rightRect.bottom) / 2 - center);
+        })[0];
+      if (!anchor) throw new Error('no visible reading anchor');
+      return anchor;
+    };
+
+    // Cold: no warmup pass has rendered the blocks above, so each upward step
+    // materializes first-paint intrinsic-size estimates. The criterion is what
+    // the reader sees, so it is measured in viewport space: an anchor they were
+    // reading should move down by exactly the step they asked for. Native
+    // `overflow-anchor` compensates the materialization by adjusting
+    // `scrollTop`, so neither document-space growth nor the scrollTop delta may
+    // be the yardstick — comparing against either reports the (allowed)
+    // correction itself as a jump. Only `|viewport move − intended step|` is a
+    // jump the reader experiences.
+    let worstUnexpected = 0;
+    const steps: Array<Record<string, number>> = [];
+    for (let step = 0; step < 8 && root.scrollTop > 0; step += 1) {
+      const anchor = visibleAnchor();
+      const topBefore = anchor.getBoundingClientRect().top;
+      const intended = Math.min(240, root.scrollTop);
+      const heightBefore = root.scrollHeight;
+      // `behavior: 'instant'` overrides the shell's smooth scrolling: the shell
+      // animates over many frames, and a step measured before the animation
+      // lands reads a still anchor as a 240px jump.
+      root.scrollTo({ top: root.scrollTop - intended, behavior: 'instant' });
+      root.dispatchEvent(new Event('scroll'));
+      await painted(4);
+      const moved = anchor.getBoundingClientRect().top - topBefore;
+      worstUnexpected = Math.max(worstUnexpected, Math.abs(moved - intended));
+      steps.push({
+        step,
+        intended,
+        moved: Math.round(moved),
+        scrollTop: Math.round(root.scrollTop),
+        grewBy: root.scrollHeight - heightBefore,
+      });
+    }
+    // On main this story reads 0 by construction — no sub-turn boundary exists
+    // to materialize. On this branch the error tracks materialization exactly:
+    // a zero-growth step read 0px, and with the folded-disclosure estimate at
+    // 320px against a 24–32px collapsed row, steps measured up to 244px — a
+    // reader-visible stall of a 240px scroll step. With the collapsed estimate
+    // corrected, the residual is the answer blocks' estimate error, which stays
+    // well under half a step. The bound is half a step: loose enough for
+    // per-run variance, tight enough that a stalled or reversed step can never
+    // pass again.
+    expect(
+      worstUnexpected,
+      `worst unexpected reading-anchor move: ${Math.round(worstUnexpected)}px; steps: ${JSON.stringify(steps)}`,
+    ).toBeLessThanOrEqual(120);
+  },
+};
+
+export const AWheelTheScrollerCannotActOnAsksForHistory: Story = {
+  render: () => <HistoryHarness turns={1} />,
+  play: async () => {
+    const before = firstResidentTurnId();
+    await painted(6);
+    const settled = tailMetrics();
+    // Too short to move: no scroll can follow the wheel, so the authority
+    // never learns the reader asked. The wheel itself has to carry it.
+    expect(settled.scrollHeight, JSON.stringify(settled)).toBeLessThanOrEqual(
+      settled.clientHeight,
+    );
+
+    wheelUp(tailScroller());
+    await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
+  },
+};
+
+export const EarlierHistoryLandsAboveTheReader: Story = {
+  render: () => <HistoryHarness turns={30} />,
+  play: async () => {
+    const root = tailScroller();
+    await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
+
+    // Just short of the band that asks for more, so the active range has
+    // painted turns around the reader before the load starts. Landing straight
+    // on zero leaves no visible turn above the load boundary to anchor on.
+    root.scrollTop = loadBand() + 400;
+    await painted(6);
+    const before = firstResidentTurnId();
+    const heightBefore = root.scrollHeight;
+    historyLoads.length = 0;
+
+    // The move that asks for earlier history and the reading of where the
+    // reader is, in one task.
+    root.scrollTop = Math.min(300, root.scrollHeight - root.clientHeight);
+    const rootTop = root.getBoundingClientRect().top;
+    const turn = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].find(
+      (candidate) => candidate.getBoundingClientRect().bottom > rootTop,
+    );
+    if (!turn?.dataset.turnId) throw new Error('no turn is on screen');
+    const anchor = { turnId: turn.dataset.turnId, top: Math.round(turn.getBoundingClientRect().top) };
+    wheelUp(root);
+
+    await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
+    await painted(6);
+
+    // The turns that arrived went above the reader, and the reader did not go
+    // with them. Asserting the element rather than a `scrollTop` delta is the
+    // point: a compensation computed from `scrollHeight` satisfies the delta
+    // while putting the reader somewhere else entirely.
+    //
+    // Budgeted against what arrived rather than in fixed pixels. A Turn carries
+    // `content-visibility: auto`, so one that lands off screen is anchored
+    // against its estimated height and settles a few pixels away from it; a
+    // reader who went with the history instead moves by the whole insert.
+    await waitFor(() =>
+      expect(
+        tailScroller().scrollHeight - heightBefore,
+        JSON.stringify({ anchor, loads: historyLoads }),
+      ).toBeGreaterThan(400),
+    );
+
+    // Fixed once, after the arrival has settled. Recomputed on every retry it
+    // would grow along with the drift it is supposed to bound, so a late
+    // `content-visibility` resolution could admit a reading that was failing.
+    await painted(8);
+    const inserted = tailScroller().scrollHeight - heightBefore;
+    const budget = Math.max(4, inserted * 0.02);
+    expect(
+      Math.abs(turnTop(anchor.turnId) - anchor.top),
+      JSON.stringify({ anchor, inserted, budget, now: turnTop(anchor.turnId), ...tailMetrics() }),
+    ).toBeLessThanOrEqual(budget);
+  },
+};
+
+/**
+ * The reader going *up* through Turns that have never rendered.
+ *
+ * A bound, not stillness. A Turn off screen is laid out at
+ * `contain-intrinsic-block-size: auto 280px` and swaps to its real height on
+ * the way past, so travelling through them moves things by construction —
+ * about 8% of the transcript here. What the bound says is that one Turn owes
+ * at most one estimate, keeping the correction proportional to Turns crossed
+ * rather than to what is inside them.
+ */
+const TRAVERSAL_STEP = 700;
+
+/** What one Turn is worth, measured after everything has rendered once. */
+function medianTurnHeight(): number {
+  const heights = [...tailScroller().querySelectorAll<HTMLElement>('[data-turn-id]')]
+    .map((turn) => turn.getBoundingClientRect().height)
+    .sort((a, b) => a - b);
+  if (heights.length === 0) throw new Error('the transcript has no mounted turn');
+  return heights[Math.floor(heights.length / 2)];
+}
+
+/** The first Turn whose box is still on screen, and where it starts. */
+function anchorInView(): { turnId: string; top: number } {
+  const root = tailScroller();
+  const rootTop = root.getBoundingClientRect().top;
+  const turn = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].find(
+    (candidate) => candidate.getBoundingClientRect().bottom > rootTop,
+  );
+  if (!turn?.dataset.turnId) throw new Error('no turn is on screen');
+  return { turnId: turn.dataset.turnId, top: Math.round(turn.getBoundingClientRect().top) };
+}
+
+export const UpwardTraversalHoldsTurnGeometry: Story = {
+  render: () => <SettledTranscriptHarness turns={40} />,
+  play: async () => {
+    const root = tailScroller();
+    await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
+    const heightBefore = root.scrollHeight;
+    expect(
+      heightBefore / root.clientHeight,
+      'the transcript has to be deep enough to hold unrendered Turns',
+    ).toBeGreaterThan(6);
+
+    const drifts: number[] = [];
+    let steps = 0;
+    while (root.scrollTop > 0 && steps < 40) {
+      const anchor = anchorInView();
+      const scrollBefore = root.scrollTop;
+      root.scrollTop = Math.max(0, scrollBefore - TRAVERSAL_STEP);
+      await painted(4);
+
+      // The reader moved by what the scroller actually moved, so the Turn under
+      // them comes down the viewport by that much plus whatever the estimates
+      // above them were off by.
+      const travelled = scrollBefore - root.scrollTop;
+      drifts.push(Math.round(turnTop(anchor.turnId) - (anchor.top + travelled)));
+      steps += 1;
+    }
+    expect(steps, 'the traversal has to have taken real steps').toBeGreaterThan(6);
+
+    const worstDrift = Math.max(...drifts.map(Math.abs));
+    const turnHeight = medianTurnHeight();
+    // No single step throws the reader past a whole exchange. One Turn's worth
+    // of correction is the most one Turn can owe.
+    expect(worstDrift, `per-step drift: ${drifts.join(' ')} against a Turn of ${turnHeight}`)
+      .toBeLessThanOrEqual(turnHeight);
+
+    // And over the whole traversal the corrections stay proportional to the
+    // Turns crossed. Measured at ~8% here; #4259's 63% is the failure this
+    // exists to catch.
+    const heightAfter = root.scrollHeight;
+    expect(
+      Math.abs(heightAfter - heightBefore) / heightBefore,
+      JSON.stringify({ heightBefore, heightAfter, steps, turnHeight }),
+    ).toBeLessThanOrEqual(0.15);
+
+    // And the reader can still get back.
+    dockButton().click();
+    await waitFor(
+      () => {
+        const settled = tailMetrics();
+        expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+      },
+      { timeout: 5_000 },
+    );
+  },
+};
+
+export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
+  render: () => <HistoryHarness turns={16} />,
+  play: async () => {
+    const root = tailScroller();
+    // Writing zero while the scroller is still at zero is a no-op, so require
+    // the initial pin to have provably moved before exercising the real one.
+    await waitFor(() => {
+      const settled = tailMetrics();
+      expect(settled.scrollTop, JSON.stringify(settled)).toBeGreaterThan(0);
+      expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+    });
+    const before = firstResidentTurnId();
+
+    // The one position where the browser declines to anchor, and the one the
+    // wheel-to-load path puts the reader in.
+    root.scrollTop = 0;
+    wheelUp(root);
+
+    await waitFor(() => expect(firstResidentTurnId()).not.toBe(before));
+    await painted(6);
+
+    // Anchoring resumes at an offset of one pixel, so the offset itself is the
+    // evidence: left at zero the browser holds the scroller at the top and
+    // every turn that arrives pushes the reader's content down the viewport.
+    expect(tailScroller().scrollTop).toBeGreaterThanOrEqual(1);
+  },
+};
+
+/**
+ * The prompt anchor rail (#563). All three of its shipped regressions had the
+ * same shape — the code kept working and the pixels stopped — so the
+ * assertions here are geometric.
+ *
+ * Tick count comes from `transcriptTurnIndex`, not from mounted Turns: the
+ * transcript holds only the Host's active range and the index carries the rest
+ * of the landmarks, so the rail gets all 64 ticks against 10 Turns. That is
+ * what the Host does in production.
+ */
+const PROMPT_RAIL_TURN_COUNT = 120;
+
+/** `DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS`, restated to keep stories off preload. */
+const PROMPT_RAIL_ACTIVE_RANGE = 10;
+
+/** `MAX_PROMPT_RAIL_TICKS` in prompt-anchor-rail.tsx, which does not export it. */
+const PROMPT_RAIL_MAX_TICKS = 64;
+
+const PROMPT_RAIL_TAIL_RANGE_START = PROMPT_RAIL_TURN_COUNT - PROMPT_RAIL_ACTIVE_RANGE + 1;
+
+const promptRailIndex = Array.from({ length: PROMPT_RAIL_TURN_COUNT }, (_, offset) => ({
+  turnId: `turn-scroll-${offset + 1}`,
+  sequence: offset + 1,
+  label: `第 ${offset + 1} 个问题`,
+}));
+
+const promptRailMessages = transcriptTurns(PROMPT_RAIL_TAIL_RANGE_START, PROMPT_RAIL_ACTIVE_RANGE);
+
+function PromptRailHarness() {
+  return (
+    <ComposedShell
+      chat={{ messages: promptRailMessages, transcriptTurnIndex: promptRailIndex }}
+    />
+  );
+}
+
+function railTicks(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>('.maka-prompt-rail-tick')];
+}
+
+function railBars(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>('.maka-prompt-rail-tick-bar')];
+}
+
+/** Positive on all four = the rail's box is inside the scrollport, clear of the dock. */
+function railInsets(): {
+  insetTop: number;
+  insetBottom: number;
+  insetRight: number;
+  dockClearance: number;
+} {
+  const scroller = tailScroller();
+  const rail = document.querySelector('.maka-prompt-rail');
+  if (!rail) throw new Error('the prompt rail is missing');
+  const scrollport = scroller.getBoundingClientRect();
+  const box = rail.getBoundingClientRect();
+  // Astryx renders the composer dock as the scroll container's last child; the
+  // rail measures it the same way, for want of a published hook.
+  const dock = scroller.lastElementChild?.getBoundingClientRect();
+  if (!dock) throw new Error('the composer dock is missing');
+  return {
+    insetTop: Math.round(box.top - scrollport.top),
+    insetBottom: Math.round(scrollport.bottom - box.bottom),
+    insetRight: Math.round(scrollport.right - box.right),
+    dockClearance: Math.round(dock.top - box.bottom),
+  };
+}
+
+export const PromptRailTicksPaintRealBoxes: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+
+    // Measured over ALL ticks, not a sample: a helper that skips what it
+    // cannot evaluate creates its blind spot exactly where a regression lives.
+    const bars = railBars().map((bar) => {
+      const box = bar.getBoundingClientRect();
+      return { width: Math.round(box.width), height: Math.round(box.height) };
+    });
+
+    expect(bars).toHaveLength(Math.min(PROMPT_RAIL_TURN_COUNT, PROMPT_RAIL_MAX_TICKS));
+    // #2580 shipped bars at 0x0 — present in the DOM, painting nothing.
+    expect(Math.min(...bars.map((bar) => bar.width))).toBeGreaterThan(0);
+    expect(Math.min(...bars.map((bar) => bar.height))).toBeGreaterThan(0);
+  },
+};
+
+export const PromptRailStaysInsideTheScrollport: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    const scroller = tailScroller();
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+    // Without an overflowing transcript the rail has nothing to be pinned
+    // against and the rest of this proves nothing.
+    expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight);
+
+    for (const position of ['top', 'bottom'] as const) {
+      scroller.scrollTop = position === 'top' ? 0 : scroller.scrollHeight;
+      scroller.dispatchEvent(new Event('scroll'));
+      await painted(4);
+
+      // The bottom is where it bites: a sticky offset is clamped by its
+      // containing block, and the chat shell ends a dock-height above the
+      // scrollport's bottom edge (#2161 showed up as a negative insetTop).
+      await waitFor(() => {
+        const insets = railInsets();
+        expect(
+          Object.entries(insets).filter(([, inset]) => inset < 0),
+          `rail geometry at the ${position}: ${JSON.stringify(insets)}`,
+        ).toEqual([]);
+      });
+    }
+  },
+};
+
+export const PromptRailHasNoGapsBetweenTicks: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(1));
+
+    // Two things at once, both by walking the rail a pixel at a time: no gap
+    // between hit boxes, where the hover falloff would drop out and pick up
+    // again every few pixels; and nothing occluding the ticks, which is #2338
+    // — macOS's overlay scrollbar takes no layout space but still swallows the
+    // pointer. `elementFromPoint`, not a dispatched pointer event, because a
+    // dispatched event cannot see occlusion at all.
+    //
+    // The occlusion half only bites in a headed browser on macOS: headless
+    // Chromium paints no platform scrollbar at all, and Linux's in-flow one
+    // moves the content column left instead of overlaying it. So #2338 is
+    // inert on CI, exactly as it was in E2E. Before touching the rail's right
+    // edge, run this on a Mac with `SMOKE_HEADED=1` — a plain local smoke run
+    // is headless and proves nothing about occlusion.
+    //
+    // Where the walk goes matters for the same reason. The bar sits at the
+    // tick's right edge, ~11px from the scrollport, inside the 14px the macOS
+    // overlay scrollbar claims; a column further left is outside it and sees
+    // no occlusion at all.
+    const bars = railBars();
+    const first = bars[0].getBoundingClientRect();
+    const last = bars[bars.length - 1].getBoundingClientRect();
+    const x = Math.round(first.left + first.width / 2);
+    const misses: number[] = [];
+    for (
+      let y = Math.round(first.top + first.height / 2);
+      y <= Math.round(last.top + last.height / 2);
+      y += 1
+    ) {
+      if (!document.elementFromPoint(x, y)?.closest('.maka-prompt-rail-tick')) misses.push(y);
+    }
+
+    // The walk has to have covered the rail, not two adjacent bars: a rail
+    // that laid out almost nothing would otherwise pass with no misses.
+    const walked = Math.round(last.bottom - first.top);
+    const railHeight = Math.round(
+      document.querySelector('.maka-prompt-rail')?.getBoundingClientRect().height ?? 0,
+    );
+    expect(walked, `walked ${walked} of a rail ${railHeight} tall`).toBeGreaterThan(
+      railHeight * 0.8,
+    );
+    expect(misses, `misses at y=${misses.slice(0, 12).join(',')}`).toHaveLength(0);
+  },
+};
+
+/** Away from the tail, but still inside the band that would ask for history. */
+async function scrollAwayFromTail(): Promise<void> {
+  const root = tailScroller();
+  root.scrollTop = Math.min(root.scrollHeight - root.clientHeight - 100, loadBand() + 200);
+  root.dispatchEvent(new Event('scroll'));
+  await painted(4);
+}
+
+async function scrollTranscriptTo(position: 'top' | 'bottom'): Promise<void> {
+  const root = tailScroller();
+  root.scrollTop = position === 'top' ? 0 : root.scrollHeight;
+  root.dispatchEvent(new Event('scroll'));
+  await painted(4);
+}
+
+export const ActiveTurnsKeepStableDomIdentities: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+    const sourceCount = Number(
+      messageList().getAttribute('data-turn-source-count'),
+    );
+    expect(sourceCount).toBe(PROMPT_RAIL_ACTIVE_RANGE);
+    expect(document.querySelectorAll('[data-turn-id]')).toHaveLength(sourceCount);
+
+    // Marked on the elements themselves: a remount drops the attribute, which
+    // a count alone cannot tell apart from a remount that produced the same
+    // number of Turns.
+    for (const turn of document.querySelectorAll<HTMLElement>('[data-turn-id]')) {
+      turn.dataset.stableMountProbe = turn.dataset.turnId;
+    }
+
+    await scrollTranscriptTo('bottom');
+    await scrollAwayFromTail();
+
+    expect(document.querySelectorAll('[data-turn-id]')).toHaveLength(sourceCount);
+    expect(document.querySelectorAll('[data-turn-id][data-stable-mount-probe]')).toHaveLength(
+      sourceCount,
+    );
+  },
+};
+
+export const ScrollingAwayPreservesTurnOwnedFocus: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+    await scrollTranscriptTo('bottom');
+
+    const tailTurnId = `turn-scroll-${PROMPT_RAIL_TURN_COUNT}`;
+    const turn = document.querySelector<HTMLElement>(`[data-turn-id="${tailTurnId}"]`);
+    if (!turn) throw new Error('the tail Turn is missing');
+
+    const action = document.createElement('button');
+    action.dataset.turnOwnedAction = 'true';
+    action.textContent = 'Turn-owned action';
+    turn.append(action);
+    action.focus();
+    const range = document.createRange();
+    range.selectNodeContents(action);
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    await scrollAwayFromTail();
+
+    await waitFor(() => {
+      const active = document.activeElement;
+      expect({
+        retained: document.querySelector(`[data-turn-id="${tailTurnId}"]`) !== null,
+        focusRetained: active instanceof HTMLElement && active.dataset.turnOwnedAction === 'true',
+        selectionRetained: document.getSelection()?.isCollapsed === false,
+      }).toEqual({ retained: true, focusRetained: true, selectionRetained: true });
+    });
+  },
+};
+
+export const OffscreenActiveTurnsStayFindable: Story = {
+  render: () => <PromptRailHarness />,
+  play: async () => {
+    await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
+    const firstTurnId = document
+      .querySelector('[data-turn-id]')
+      ?.getAttribute('data-turn-id');
+    const turnNumber = Number(firstTurnId?.split('-').at(-1));
+    expect(turnNumber).toBeGreaterThan(0);
+    const needle = `第 ${turnNumber} 个问题`;
+
+    await scrollTranscriptTo('bottom');
+
+    // `window.find` walks the rendered text, so a Turn skipped by
+    // `content-visibility` would not be there to find.
+    //
+    // The E2E original also asserted the Turn's text was in the accessibility
+    // tree, which needs CDP and so did not come across. The smoke's AX audit
+    // is not a substitute: it checks for unnamed actionable nodes and
+    // duplicate landmarks, never that a given string is exposed.
+    document.getSelection()?.removeAllRanges();
+    // `window.find` is non-standard, so it is not on the DOM lib's Window.
+    const found = (window as unknown as { find(text: string): boolean }).find(needle);
+
+    expect(found, `searching for ${needle}`).toBe(true);
+    expect(document.getSelection()?.toString() ?? '').toContain(needle);
+    document.getSelection()?.removeAllRanges();
+  },
+};
+
+/** Where a Turn sits relative to the top of the scrollport. */
+function turnOffsetFromScroller(turnId: string): number {
+  const root = tailScroller();
+  const turn = document.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
+  if (!turn) throw new Error(`turn ${turnId} is not mounted`);
+  return Math.round(turn.getBoundingClientRect().top - root.getBoundingClientRect().top);
+}
+
+/**
+ * The Host's half of a rail jump: a tick for a Turn outside the active range
+ * comes back out as `onLoadTranscriptTurn`, and the range moves to it. ChatView
+ * holds the claim until the Turn mounts, then aligns to it.
+ */
+function PromptRailNavigationHarness() {
+  const [firstIndex, setFirstIndex] = useState(PROMPT_RAIL_TAIL_RANGE_START);
+  return (
+    <ComposedShell
+      chat={{
+        messages: transcriptTurns(firstIndex, PROMPT_RAIL_ACTIVE_RANGE),
+        transcriptTurnIndex: promptRailIndex,
+        onLoadTranscriptTurn: (target) => setFirstIndex(target.sequence),
+      }}
+    />
+  );
+}
+
+export const FirstRailClickLandsOnItsPromptAndHolds: Story = {
+  render: () => <PromptRailNavigationHarness />,
+  play: async () => {
+    await waitFor(() => expect(railTicks().length).toBeGreaterThan(0));
+
+    // The bug only exists while a scroll is in flight: a jump that finishes in
+    // one frame has nothing for the tail-follow lock to collide with, which is
+    // why the E2E original ran under a fixture that asked for motion back.
+    // Here the fixture passes `scrollBehavior: 'smooth'` outright, so the one
+    // thing that can still collapse the scroll under it is the browser's own
+    // reduced-motion state.
+    expect(
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+      'a reduced-motion browser finishes the jump in one frame and this story stops testing anything',
+    ).toBe(false);
+
+    // The case that used to fail: the head of the conversation is not mounted,
+    // so the jump has to bring it in, and the fill that follows changes
+    // scrollHeight underneath the tail-follow lock. A lock that ignores
+    // scroll-ups arriving with a changed height stays on and pulls the
+    // transcript back to the bottom — the click looks dead until the reader
+    // scrolls by hand.
+    const targetTurnId = 'turn-scroll-1';
+    expect(document.querySelector(`[data-turn-id="${targetTurnId}"]`)).toBe(null);
+
+    railTicks()[0].click();
+
+    // Bounded on both sides: below is the Turn never arriving, above is it
+    // arriving and then being pulled off the top of the scrollport.
+    await waitFor(
+      () => expect(Math.abs(turnOffsetFromScroller(targetTurnId))).toBeLessThan(24),
+      { timeout: 10_000 },
+    );
+    expect(railTicks()[0].getAttribute('aria-current')).toBe('true');
+
+    // And stays: Turns keep resolving their content and remeasuring after the
+    // jump, so one that only wins the first frame reads as landing and then
+    // sliding away.
+    await painted(72);
+    const settled = turnOffsetFromScroller(targetTurnId);
+    expect(settled, `the prompt slid to ${settled} after landing`).toBeGreaterThan(-24);
+    expect(settled).toBeLessThan(24);
+    expect(railTicks()[0].getAttribute('aria-current')).toBe('true');
+  },
+};
+
+/**
+ * Which tick the reading position maps to, derived the way the rail derives
+ * it: the newest Turn when parked at the end, otherwise the first Turn in the
+ * top third of the scrollport, projected onto the tick count.
+ */
+function promptRailSnapshot(): {
+  currentIds: string[];
+  expectedId: string | null;
+  sourceTurnId: string | null;
+} {
+  const root = tailScroller();
+  const ticks = railTicks();
+  const currentIds = ticks
+    .filter((tick) => tick.getAttribute('aria-current') === 'true')
+    .map((tick) => tick.dataset.promptTurnId ?? '');
+  const rootBounds = root.getBoundingClientRect();
+  const atEnd = root.scrollHeight - root.scrollTop - root.clientHeight <= 2;
+  const turns = [...root.querySelectorAll<HTMLElement>('[data-transcript-turn-id]')]
+    .map((turn) => ({
+      element: turn,
+      id: turn.dataset.transcriptTurnId ?? '',
+      index: Number(turn.dataset.transcriptTurnId?.split('-').at(-1)) - 1,
+    }))
+    .filter((turn) => turn.id.length > 0 && Number.isFinite(turn.index));
+  const inScrollport = (element: HTMLElement, bottomEdge: number): boolean => {
+    const bounds = element.getBoundingClientRect();
+    return bounds.bottom > rootBounds.top && bounds.top < bottomEdge;
+  };
+  const readingBandTurns = turns
+    .filter(({ element }) => inScrollport(element, rootBounds.top + rootBounds.height * 0.34))
+    .sort((left, right) => left.index - right.index);
+  const scrollportTurns = turns
+    .filter(({ element }) => inScrollport(element, rootBounds.bottom))
+    .sort((left, right) => left.index - right.index);
+  const sourceTurn = atEnd
+    ? turns.reduce<(typeof turns)[number] | null>(
+        (latest, turn) => (latest === null || turn.index > latest.index ? turn : latest),
+        null,
+      )
+    : (readingBandTurns[0] ?? scrollportTurns[0] ?? null);
+  const expectedRailIndex =
+    sourceTurn === null || ticks.length === 0
+      ? null
+      : Math.round((sourceTurn.index * (ticks.length - 1)) / (PROMPT_RAIL_TURN_COUNT - 1));
+  return {
+    currentIds,
+    expectedId:
+      expectedRailIndex === null ? null : (ticks[expectedRailIndex]?.dataset.promptTurnId ?? null),
+    sourceTurnId: sourceTurn?.id ?? null,
+  };
+}
+
+async function expectRailMatchesReadingPosition(where: string): Promise<void> {
+  await waitFor(() => {
+    const snapshot = promptRailSnapshot();
+    expect(snapshot.expectedId, `no visible Turn at the ${where}`).not.toBe(null);
+    expect(snapshot.currentIds, `rail at the ${where}: ${JSON.stringify(snapshot)}`).toEqual([
+      snapshot.expectedId,
+    ]);
+  });
+}
+
+export const RailStaysOnTheVisiblePrompt: Story = {
+  render: () => <PromptRailNavigationHarness />,
+  play: async () => {
+    const root = tailScroller();
+    await waitFor(() => expect(railTicks().length).toBeGreaterThan(0));
+
+    await scrollTranscriptTo('bottom');
+    await expectRailMatchesReadingPosition('tail');
+    expect(railTicks().at(-1)?.getAttribute('aria-current')).toBe('true');
+
+    // Counted across every change, not sampled at rest: two current ticks for
+    // one frame in the middle of a scroll is the failure, and it is invisible
+    // to a reading taken after the scroll settles.
+    const currentCounts: number[] = [];
+    const rail = document.querySelector('.maka-prompt-rail');
+    if (!rail) throw new Error('the prompt rail is missing');
+    const record = (): void => {
+      currentCounts.push(rail.querySelectorAll('.maka-prompt-rail-tick[aria-current="true"]').length);
+    };
+    const observer = new MutationObserver(record);
+    observer.observe(rail, { attributes: true, subtree: true, attributeFilter: ['aria-current'] });
+    record();
+
+    try {
+      // Reading positions across the active range, then a jump that replaces
+      // the range entirely — the two ways the rail's input changes.
+      for (const fraction of [0.75, 0.5, 0.25, 0]) {
+        root.scrollTop = Math.round((root.scrollHeight - root.clientHeight) * fraction);
+        root.dispatchEvent(new Event('scroll'));
+        await painted(4);
+        await expectRailMatchesReadingPosition(`${fraction * 100}% of the transcript`);
+      }
+
+      railTicks()[0].click();
+      await waitFor(
+        () => expect(document.querySelector('[data-turn-id="turn-scroll-1"]')).not.toBe(null),
+        { timeout: 10_000 },
+      );
+      await scrollTranscriptTo('top');
+      await expectRailMatchesReadingPosition('head');
+      expect(railTicks()[0].getAttribute('aria-current')).toBe('true');
+    } finally {
+      observer.disconnect();
+    }
+
+    expect(currentCounts.length).toBeGreaterThan(1);
+    expect(
+      currentCounts.every((count) => count === 1),
+      `current tick count over time: ${currentCounts.join(',')}`,
+    ).toBe(true);
+  },
+};
+
+// What the real `open` action leaves behind, rather than a hand-written topology.
+const workbarLayoutWithOneFace: WorkbarLayoutState = reduceWorkbarLayout(
+  {
+    panels: createSessionWorkbarPanelsState(),
+    activeSessionId: 'session-active',
+    collapsedBySession: {},
+    bottomOpen: false,
+    rightWidth: SESSION_WORKBAR_DEFAULT_WIDTH,
+    bottomHeight: SESSION_BOTTOM_PANEL_DEFAULT_HEIGHT,
+  },
+  { type: 'open', placement: 'right', tab: { id: 'workbar:files', kind: 'files' } },
+);
+
+function WorkbarInShell() {
+  const [layout, dispatch] = useReducer(reduceWorkbarLayout, workbarLayoutWithOneFace);
+  const rightCollapsed = isSessionWorkbarCollapsed(layout);
+  const collapseRight = (collapsed: boolean) =>
+    dispatch({ type: 'collapse', placement: 'right', collapsed });
+  return (
+    <ToastProvider>
+      <WorkbarServicesProvider services={createFakeWorkbarServices()}>
+        <ComposedShell
+          motionEnabled
+          workbarCollapsed={rightCollapsed}
+          onToggleWorkbar={() => collapseRight(!rightCollapsed)}
+          detailChildren={
+            <div
+              className="maka-detail-with-artifacts"
+              style={
+                { '--maka-session-workbar-width': `${layout.rightWidth}px` } as CSSProperties
+              }
+            >
+              <div className="mainColumn" />
+              <WorkbarSurface
+                sessionId="session-active"
+                hidden={false}
+                onDismissPanel={() => collapseRight(true)}
+                panelsState={layout.panels}
+                rightCollapsed={rightCollapsed}
+                bottomOpen={layout.bottomOpen}
+                onActivateTab={(placement, tabId) =>
+                  dispatch({ type: 'activate', placement, tabId })
+                }
+                onCloseTab={(placement, tab) =>
+                  dispatch({ type: 'close', placement, tabIds: [tab.id] })
+                }
+                onCloseTabs={(placement, tabs) =>
+                  dispatch({ type: 'close', placement, tabIds: tabs.map((tab) => tab.id) })
+                }
+                onOpenLauncher={(placement) => dispatch({ type: 'open-launcher', placement })}
+                onRequestOpenTab={(placement, kind) =>
+                  dispatch({
+                    type: 'open',
+                    placement,
+                    tab: { id: `workbar:${kind}`, kind },
+                  })
+                }
+                confirmBypass={async () => true}
+              />
+            </div>
+          }
+        />
+      </WorkbarServicesProvider>
+    </ToastProvider>
+  );
+}
+
+// Real path: 收起一个开着面的工作栏 → 从标题栏再展开. The face is opened by
+// dispatching the app's own `open` action rather than by clicking through the
+// launcher, so the story starts where the app does without re-testing the
+// launcher's own path.
+//
+// The collapse toggle is one control that moves between two bands — the
+// workbar's own bar and the titlebar's right cluster — and `workbar/shell.css`
+// pads the bar with the titlebar strip's gutter precisely so it lands on the
+// same x in both, one `--space-2` in from the plate's edge on a platform that
+// draws nothing there. Only a story that mounts both bands can hold it there,
+// which is why this lives beside the shell rather than with the workbar's own
+// stories. The column eases shut and open the way the sidebar does, and the
+// face and the toggle keep their x through every frame of it: the box's left
+// edge sweeps over content that is already where it will rest.
+export const WorkbarCollapseKeepsOneToggleInPlace: Story = {
+  render: () => <WorkbarInShell />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const frame = canvasElement.querySelector<HTMLElement>(
+      '[data-maka-contract="session-workbar-right"]',
+    );
+    if (!frame) throw new Error('the right workbar is missing');
+    // The face's content is a sibling overlay panel with its own `hidden`
+    // (workbar-surface.tsx), so a visible frame does not mean a visible face.
+    const facePanel = canvasElement.querySelector<HTMLElement>(
+      '.maka-session-workbar-panel[data-overlay][data-placement="right"]',
+    );
+    if (!facePanel) throw new Error('the open face has no panel');
+    const bar = within(frame.querySelector<HTMLElement>('.maka-session-workbar-toolbar')!);
+    const collapse = bar.getByRole('button', { name: '收起任务工作栏' });
+    // The launcher stays mounted behind the face, so "not the picker" is a
+    // claim about reachability: `queryByRole` skips the inactive panel.
+    const pickerIsShowing = () =>
+      canvas.queryByRole('list', { name: '打开工具' }) !== null;
+    const face = await bar.findByRole('tab', { selected: true });
+    expect(
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+      'a reduced-motion browser collapses in one frame and this story stops testing the ease',
+    ).toBe(false);
+    // Frames around a click. The runner may be too slow to land the 280ms ease
+    // inside the window, so the resting state is awaited separately.
+    const faceContent = facePanel.firstElementChild!;
+    const sample = () =>
+      new Promise<{
+        frame: number[];
+        panel: number[];
+        faceRight: number[];
+        toggleX: number[];
+        eased: boolean;
+      }>((resolve) => {
+        const out = {
+          frame: [] as number[],
+          panel: [] as number[],
+          faceRight: [] as number[],
+          toggleX: [] as number[],
+          eased: false,
+        };
+        const start = performance.now();
+        const tick = () => {
+          const frameBox = frame.getBoundingClientRect();
+          out.frame.push(Math.round(frameBox.width));
+          out.panel.push(Math.round(facePanel.getBoundingClientRect().width));
+          out.faceRight.push(Math.round(faceContent.getBoundingClientRect().right - frameBox.right));
+          out.toggleX.push(Math.round(collapse.getBoundingClientRect().x));
+          out.eased ||= frame
+            .getAnimations()
+            .some((animation) => (animation as CSSTransition).transitionProperty === 'width');
+          if (performance.now() - start < 500) requestAnimationFrame(tick);
+          else resolve(out);
+        };
+        requestAnimationFrame(tick);
+      });
+    const eased = (sampled: Awaited<ReturnType<typeof sample>>, toggleX: number) => {
+      expect(sampled.eased).toBe(true);
+      expect(sampled.panel).toEqual(sampled.frame);
+      expect(new Set(sampled.faceRight)).toEqual(new Set([0]));
+      expect(new Set(sampled.toggleX)).toEqual(new Set([Math.round(toggleX)]));
+    };
+
+    expect(canvas.queryByRole('toolbar', { name: '工作区辅助操作' })).toBeNull();
+    expect(pickerIsShowing()).toBe(false);
+
+    const faceBox = face.getBoundingClientRect();
+    const openToggleBox = collapse.getBoundingClientRect();
+    expect(
+      Math.abs(
+        faceBox.y + faceBox.height / 2 - (openToggleBox.y + openToggleBox.height / 2),
+      ),
+    ).toBeLessThanOrEqual(1);
+    expect(frame.getBoundingClientRect().right - openToggleBox.right).toBe(8);
+
+    // Windows draws its caption buttons over the right of the strip and reports
+    // their width here; macOS reports 0. The bar has to give that width back.
+    // The root is where `maka-tokens.css` reads it into the gutter, so the
+    // override goes there, the way `env()` would report it.
+    const captionWidth = 80;
+    document.documentElement.style.setProperty(
+      '--maka-titlebar-overlay-right-width',
+      `${captionWidth}px`,
+    );
+    try {
+      await waitFor(() => {
+        expect(collapse.getBoundingClientRect().x).toBeCloseTo(
+          openToggleBox.x - captionWidth,
+          0,
+        );
+      });
+      const parked = collapse.getBoundingClientRect();
+
+      // [+] is a menu over the panel, not a swap to the launcher: the face you
+      // are reading stays on screen while you pick another one.
+      await userEvent.click(bar.getByRole('button', { name: '打开或关闭工作栏的面' }));
+      const menu = await within(document.body).findByRole('menu');
+      await userEvent.keyboard('{Escape}');
+      await waitFor(() => expect(menu).not.toBeVisible());
+      expect(pickerIsShowing()).toBe(false);
+
+      let sampling = sample();
+      await userEvent.click(collapse);
+      const restore = await canvas.findByRole('button', { name: '展开任务工作栏' });
+      eased(await sampling, parked.x);
+      await waitFor(() => expect(frame).not.toBeVisible());
+      expect(facePanel).not.toBeVisible();
+      const restoreBox = restore.getBoundingClientRect();
+      expect(Math.abs(restoreBox.x - parked.x)).toBeLessThanOrEqual(1);
+      expect(Math.abs(restoreBox.y - parked.y)).toBeLessThanOrEqual(1);
+
+      sampling = sample();
+      await userEvent.click(restore);
+      eased(await sampling, parked.x);
+      await waitFor(() => expect(frame).toBeVisible());
+      expect(facePanel).toBeVisible();
+      expect(pickerIsShowing()).toBe(false);
+      const restoredToggleBox = bar
+        .getByRole('button', { name: '收起任务工作栏' })
+        .getBoundingClientRect();
+      expect(Math.abs(restoredToggleBox.x - parked.x)).toBeLessThanOrEqual(1);
+      expect(Math.abs(restoredToggleBox.y - parked.y)).toBeLessThanOrEqual(1);
+    } finally {
+      document.documentElement.style.removeProperty('--maka-titlebar-overlay-right-width');
+    }
+  },
 };

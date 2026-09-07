@@ -887,7 +887,6 @@ async function seedAuthority(
     });
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const todos = await openInteractiveSessionTodoStoreForWrite(owner.lease);
-    await artifacts.recover();
     await Promise.all([
       artifacts.create({
         id: 'retirement-artifact',
@@ -897,7 +896,7 @@ async function seedAuthority(
         kind: 'file',
         content: 'remove me',
         mimeType: 'text/plain',
-        source: 'fixture',
+        source: 'tool_result',
         now: 1,
       }),
       artifacts.create({
@@ -908,7 +907,7 @@ async function seedAuthority(
         kind: 'file',
         content: 'recover cleanup',
         mimeType: 'text/plain',
-        source: 'fixture',
+        source: 'tool_result',
         now: 2,
       }),
       todos.replaceAll(retirement.id, [{ content: 'Remove retirement task', status: 'pending' }]),
@@ -996,7 +995,6 @@ async function assertRetirementCleanup(
   try {
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await artifacts.recover();
     assert.deepEqual(await execution.sessionStore.listPendingSessionRetirementCleanupIds(), []);
     for (const sessionId of sessionIds) {
       assert.equal((await artifacts.listPage(sessionId, { offset: 0, limit: 1 })).total, 0);

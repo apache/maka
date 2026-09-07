@@ -19,25 +19,9 @@
 
 // apps/desktop/src/main/startup-step.ts
 //
-// Everything before the first window is created runs at boot's top level,
-// where a promise that never settles takes the launch with it: the process
-// stays alive, the main thread sits in the event loop, no window is created,
-// and nothing at all is printed. From outside, that is indistinguishable from
-// a crash — diagnosing one instance of it cost a long bisection over workspace
-// contents, because there was no line saying which step had not come back.
-//
-// Naming the step turns that silence into one line that says where to look.
-// A step that finishes normally prints nothing, so this costs no noise.
-//
-// Who gets to read that line: whoever can see the main process's stderr — a
-// developer running from a terminal, an e2e run capturing output, a crash
-// report gathered by hand. `report` defaults to `console.warn`, and a packaged
-// .app launched from the Finder has nowhere for stderr to land, so somebody
-// who hits this in a shipped build still sees no window and nothing printed,
-// exactly as described above. This is a diagnostic for whoever goes looking,
-// not a message to the person the launch failed on. Ending the silence for
-// them would take a visible surface, which does not exist before the first
-// window and is not what this file does.
+// Name slow boot steps in the diagnostic log. The independent startup window
+// provides visible progress; these lines retain evidence for copied reports
+// and automated runs where that window is intentionally suppressed.
 //
 // What it cannot report: a step that never settles and holds no ref'd handle
 // lets the process exit before the unref'd timer ever fires, so nothing is

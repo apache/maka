@@ -26,12 +26,14 @@ import { describeTurnErrorClass } from '../../renderer/session-status-presentati
 
 describe('provider capacity presentation', () => {
   it('uses capacity-specific copy instead of the unknown error fallback', () => {
-    assert.match(describeSessionErrorReason('provider_capacity') ?? '', /满载/);
-    assert.match(describeTurnErrorClass('provider_capacity'), /满载/);
+    assert.match(describeSessionErrorReason('provider_capacity', 'zh-CN') ?? '', /满载/);
+    assert.match(describeSessionErrorReason('provider_capacity', 'en') ?? '', /at capacity/);
+    assert.match(describeTurnErrorClass('provider_capacity', 'zh-CN'), /满载/);
+    assert.match(describeTurnErrorClass('provider_capacity', 'en'), /at capacity/);
   });
 
   it('does not recommend an immediate direct retry', () => {
-    const label = describeTurnErrorClass('provider_capacity');
+    const label = describeTurnErrorClass('provider_capacity', 'zh-CN');
     assert.match(label, /等几分钟|换一个模型/);
     assert.doesNotMatch(label, /直接重试/);
   });

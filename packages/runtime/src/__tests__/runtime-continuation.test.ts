@@ -26,8 +26,8 @@ import {
   runtimePrefixSegment,
   type ImmutableRuntimePrefixV1,
 } from '@maka/core/runtime-boundary';
-import type { RuntimeEvent } from '@maka/core/runtime-event';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 
 import { createLocalContinuationSafetyInspector } from '../continuation-safety.js';
 import { buildContinuationReplayPlan } from '../continuation-replay.js';
@@ -40,6 +40,7 @@ import {
   buildSafeBoundaryContinuationPlan,
   type RuntimeContinuation,
 } from '../runtime-resume.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 
 test('local continuation safety inspector returns current authoritative workspace facts', async () => {
   const inspect = createLocalContinuationSafetyInspector({
@@ -77,9 +78,10 @@ test('RuntimeContinuationPlanner reads the durable source boundary and allocates
     }),
   ];
   const sourcePrefix = immutablePrefix(sourceEvents);
-  const ids = ['invocation-2', 'run-2', 'turn-2', 'claim-2'];
+  // Run and invocation are one identity, so the planner mints three ids, not four.
+  const ids = ['invocation-2', 'turn-2', 'claim-2'];
   const planner = new RuntimeContinuationPlanner({
-    readSourceRun: async () => runHeader('run-1'),
+    readSourceInvocation: async () => runInvocation('run-1'),
     readImmutableRuntimePrefix: async () => sourcePrefix,
     newId: () => ids.shift() ?? 'unexpected-id',
   });
@@ -99,7 +101,7 @@ test('RuntimeContinuationPlanner reads the durable source boundary and allocates
   assert.deepEqual(plan.continuation, {
     sessionId: 'session-1',
     invocationId: 'invocation-2',
-    runId: 'run-2',
+    runId: 'invocation-2',
     turnId: 'turn-2',
     sourceInvocationId: 'invocation-1',
     sourceRunId: 'run-1',
@@ -131,7 +133,7 @@ test('RuntimeContinuationPlanner reads the durable source boundary and allocates
 
 test('RuntimeContinuationPlanner parks with a stable reason when the ledger cannot be read', async () => {
   const planner = new RuntimeContinuationPlanner({
-    readSourceRun: async () => runHeader('run-1'),
+    readSourceInvocation: async () => runInvocation('run-1'),
     readImmutableRuntimePrefix: async () => {
       throw new Error('corrupt ledger');
     },
@@ -155,7 +157,7 @@ test('RuntimeContinuationPlanner parks with a stable reason when the ledger cann
 
 test('RuntimeContinuationPlanner derives terminal repair from durable run and event facts', async () => {
   const planner = new RuntimeContinuationPlanner({
-    readSourceRun: async () => runHeader('run-1', { status: 'running' }),
+    readSourceInvocation: async () => runInvocation('run-1', { outcome: 'open' }),
     readImmutableRuntimePrefix: async () =>
       immutablePrefix([
         event({
@@ -183,23 +185,23 @@ test('RuntimeContinuationPlanner derives terminal repair from durable run and ev
   assert.deepEqual(plan.rejectionReasons, ['terminal_repair_failed']);
 });
 
-test('RuntimeContinuationPlanner parks when the terminal run header disagrees with the ledger fact', async () => {
+test('RuntimeContinuationPlanner parks when the source ledger does not end on its terminal fact', async () => {
   const planner = new RuntimeContinuationPlanner({
-    readSourceRun: async () => runHeader('run-1', { status: 'completed' }),
+    readSourceInvocation: async () => runInvocation('run-1', { outcome: 'completed' }),
     readImmutableRuntimePrefix: async () =>
       immutablePrefix([
-        event({
-          id: 'source-user',
-          role: 'user',
-          author: 'user',
-          content: { kind: 'text', text: 'continue' },
-        }),
         event({
           id: 'source-terminal',
           role: 'system',
           author: 'system',
           status: 'failed',
           actions: { endInvocation: true },
+        }),
+        event({
+          id: 'source-user',
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'continue' },
         }),
       ]),
     newId: () => 'fresh-id',
@@ -222,7 +224,7 @@ test('RuntimeContinuationPlanner parks when the terminal run header disagrees wi
 
 test('RuntimeContinuationPlanner rejects immutable output after the source terminal fact', async () => {
   const planner = new RuntimeContinuationPlanner({
-    readSourceRun: async () => runHeader('run-1'),
+    readSourceInvocation: async () => runInvocation('run-1'),
     readImmutableRuntimePrefix: async () =>
       immutablePrefix([
         event({
@@ -267,7 +269,7 @@ test('RuntimeContinuationPlanner rejects immutable output after the source termi
 test('RuntimeContinuationPlanner uses canonical provider items for composite head and tail gates', async () => {
   let nextId = 0;
   const planner = new RuntimeContinuationPlanner({
-    readSourceRun: async () => runHeader('run-1'),
+    readSourceInvocation: async () => runInvocation('run-1'),
     readImmutableRuntimePrefix: async () =>
       immutablePrefix([
         event({
@@ -313,7 +315,7 @@ test('RuntimeContinuationPlanner uses canonical provider items for composite hea
 
 test('RuntimeContinuationPlanner rejects a ledger returned for another source run', async () => {
   const planner = new RuntimeContinuationPlanner({
-    readSourceRun: async () => runHeader('run-1'),
+    readSourceInvocation: async () => runInvocation('run-1'),
     readImmutableRuntimePrefix: async () =>
       immutablePrefix([
         event({
@@ -352,16 +354,18 @@ test('RuntimeContinuationPlanner rejects a ledger returned for another source ru
 
 test('RuntimeContinuationPlanner fails a cyclic continuation lineage closed', async () => {
   const runs = {
-    'run-1': runHeader('run-1', {
-      continuationSource: {
+    'run-1': runInvocation('run-1', {
+      source: {
+        kind: 'continuation' as const,
         sourceInvocationId: 'invocation-2',
         sourceRunId: 'run-2',
         sourceTurnId: 'turn-2',
         sourceRuntimeEventHighWater: 1,
       },
     }),
-    'run-2': runHeader('run-2', {
-      continuationSource: {
+    'run-2': runInvocation('run-2', {
+      source: {
+        kind: 'continuation' as const,
         sourceInvocationId: 'invocation-1',
         sourceRunId: 'run-1',
         sourceTurnId: 'turn-1',
@@ -374,7 +378,7 @@ test('RuntimeContinuationPlanner fails a cyclic continuation lineage closed', as
     ['run-2', prefixForIdentity('invocation-2', 'run-2', 'turn-2')],
   ]);
   const planner = new RuntimeContinuationPlanner({
-    readSourceRun: async (_sessionId, runId) => runs[runId as keyof typeof runs],
+    readSourceInvocation: async (_sessionId, runId) => runs[runId as keyof typeof runs],
     readImmutableRuntimePrefix: async ({ runId }) => prefixes.get(runId)!,
     newId: () => 'unused',
   });
@@ -397,10 +401,11 @@ test('RuntimeContinuationPlanner fails a cyclic continuation lineage closed', as
 test('RuntimeContinuationPlanner parks when a continuation ancestor is unavailable', async () => {
   const source = prefixForIdentity('invocation-2', 'run-2', 'turn-2');
   const planner = new RuntimeContinuationPlanner({
-    readSourceRun: async (_sessionId, runId) => {
+    readSourceInvocation: async (_sessionId, runId) => {
       if (runId === 'run-2') {
-        return runHeader('run-2', {
-          continuationSource: {
+        return runInvocation('run-2', {
+          source: {
+            kind: 'continuation' as const,
             sourceInvocationId: 'invocation-1',
             sourceRunId: 'run-missing',
             sourceTurnId: 'turn-1',
@@ -433,14 +438,15 @@ test('RuntimeContinuationPlanner parks when a continuation ancestor is unavailab
 });
 
 test('RuntimeContinuationPlanner caps continuation lineage at 64 segments', async () => {
-  const runs = new Map<string, AgentRunHeader>();
+  const runs = new Map<string, RuntimeInvocationRecord>();
   const prefixes = new Map<string, ImmutableRuntimePrefixV1>();
   for (let index = 1; index <= 64; index += 1) {
     const runId = `run-${index}`;
     runs.set(
       runId,
-      runHeader(runId, {
-        continuationSource: {
+      runInvocation(runId, {
+        source: {
+          kind: 'continuation' as const,
           sourceInvocationId: `invocation-${index + 1}`,
           sourceRunId: `run-${index + 1}`,
           sourceTurnId: `turn-${index + 1}`,
@@ -451,7 +457,7 @@ test('RuntimeContinuationPlanner caps continuation lineage at 64 segments', asyn
     prefixes.set(runId, prefixForIdentity(`invocation-${index}`, runId, `turn-${index}`));
   }
   const planner = new RuntimeContinuationPlanner({
-    readSourceRun: async (_sessionId, runId) => {
+    readSourceInvocation: async (_sessionId, runId) => {
       const run = runs.get(runId);
       if (!run) throw new Error('unexpected lineage read');
       return run;
@@ -503,21 +509,21 @@ test('RuntimeContinuationPlanner verifies a v2 lineage edge prefix digest', asyn
             highWater: 1,
             prefixDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
           },
-          replayManifestDigest:
-            'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           providerProjectionVersion: 1,
           providerReplayDigest:
             'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+          replayManifestDigest:
+            'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         },
       },
     }),
   ]);
   const planner = new RuntimeContinuationPlanner({
-    readSourceRun: async (_sessionId, runId) =>
+    readSourceInvocation: async (_sessionId, runId) =>
       runId === 'run-2'
-        ? runHeader('run-2', {
-            continuationSource: {
-              protocol: 'continuation_source_v2',
+        ? runInvocation('run-2', {
+            source: {
+              kind: 'continuation' as const,
               claimId: 'claim-1',
               boundaryDigest:
                 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -525,13 +531,9 @@ test('RuntimeContinuationPlanner verifies a v2 lineage edge prefix digest', asyn
               sourceRunId: 'run-1',
               sourceTurnId: 'turn-1',
               sourceRuntimeEventHighWater: 1,
-              sourcePrefixDigest:
-                'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-              replayManifestDigest:
-                'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
             },
           })
-        : runHeader('run-1'),
+        : runInvocation('run-1'),
     readImmutableRuntimePrefix: async ({ runId }) => (runId === 'run-2' ? source : ancestor),
     newId: () => 'unused',
   });
@@ -594,22 +596,20 @@ test('RuntimeContinuationPlanner binds every v2 lineage edge to its continuation
     }),
   ]);
   const planner = new RuntimeContinuationPlanner({
-    readSourceRun: async (_sessionId, runId) =>
+    readSourceInvocation: async (_sessionId, runId) =>
       runId === 'run-2'
-        ? runHeader('run-2', {
-            continuationSource: {
-              protocol: 'continuation_source_v2',
+        ? runInvocation('run-2', {
+            source: {
+              kind: 'continuation' as const,
               claimId: 'claim-expected',
               boundaryDigest: ancestorBoundary.manifestDigest,
               sourceInvocationId: ancestor.identity.invocationId,
               sourceRunId: ancestor.identity.runId,
               sourceTurnId: ancestor.identity.turnId,
               sourceRuntimeEventHighWater: ancestor.position.lastEventSeq,
-              sourcePrefixDigest: ancestor.prefixDigest,
-              replayManifestDigest: ancestorBoundary.manifestDigest,
             },
           })
-        : runHeader('run-1'),
+        : runInvocation('run-1'),
     readImmutableRuntimePrefix: async ({ runId }) => (runId === 'run-2' ? source : ancestor),
     newId: () => 'unused',
   });
@@ -678,17 +678,18 @@ test('RuntimeContinuationPlanner rejects downgrading a canonical v2 start to leg
     }),
   ]);
   const planner = new RuntimeContinuationPlanner({
-    readSourceRun: async (_sessionId, runId) =>
+    readSourceInvocation: async (_sessionId, runId) =>
       runId === sourceIdentity.runId
-        ? runHeader(sourceIdentity.runId, {
-            continuationSource: {
+        ? runInvocation(sourceIdentity.runId, {
+            source: {
+              kind: 'continuation' as const,
               sourceInvocationId: ancestor.identity.invocationId,
               sourceRunId: ancestor.identity.runId,
               sourceTurnId: ancestor.identity.turnId,
               sourceRuntimeEventHighWater: ancestor.position.lastEventSeq,
             },
           })
-        : runHeader('run-1'),
+        : runInvocation('run-1'),
     readImmutableRuntimePrefix: async ({ runId }) =>
       runId === sourceIdentity.runId ? source : ancestor,
     newId: () => 'unused',
@@ -758,22 +759,20 @@ test('RuntimeContinuationPlanner requires a durable target before authenticating
     }),
   ]);
   const planner = new RuntimeContinuationPlanner({
-    readSourceRun: async (_sessionId, runId) =>
+    readSourceInvocation: async (_sessionId, runId) =>
       runId === sourceIdentity.runId
-        ? runHeader(sourceIdentity.runId, {
-            continuationSource: {
-              protocol: 'continuation_source_v2',
+        ? runInvocation(sourceIdentity.runId, {
+            source: {
+              kind: 'continuation' as const,
               claimId: 'claim-1',
               boundaryDigest: ancestorReplay.plan.boundary.manifestDigest,
               sourceInvocationId: ancestor.identity.invocationId,
               sourceRunId: ancestor.identity.runId,
               sourceTurnId: ancestor.identity.turnId,
               sourceRuntimeEventHighWater: ancestor.position.lastEventSeq,
-              sourcePrefixDigest: ancestor.prefixDigest,
-              replayManifestDigest: ancestorReplay.plan.boundary.manifestDigest,
             },
           })
-        : runHeader('run-1'),
+        : runInvocation('run-1'),
     readImmutableRuntimePrefix: async ({ runId }) =>
       runId === sourceIdentity.runId ? source : ancestor,
     newId: () => 'unused',
@@ -842,22 +841,20 @@ test('RuntimeContinuationPlanner rejects a v2 lineage edge whose durable claim i
       actions: { endInvocation: true, stateDelta: { failureClass: 'test_failure' } },
     }),
   ]);
-  const sourceRun = runHeader(sourceIdentity.runId, {
-    continuationSource: {
-      protocol: 'continuation_source_v2',
+  const sourceRun = runInvocation(sourceIdentity.runId, {
+    source: {
+      kind: 'continuation' as const,
       claimId: 'claim-1',
       boundaryDigest: ancestorReplay.plan.boundary.manifestDigest,
       sourceInvocationId: ancestor.identity.invocationId,
       sourceRunId: ancestor.identity.runId,
       sourceTurnId: ancestor.identity.turnId,
       sourceRuntimeEventHighWater: ancestor.position.lastEventSeq,
-      sourcePrefixDigest: ancestor.prefixDigest,
-      replayManifestDigest: ancestorReplay.plan.boundary.manifestDigest,
     },
   });
   const planner = new RuntimeContinuationPlanner({
-    readSourceRun: async (_sessionId, runId) =>
-      runId === sourceIdentity.runId ? sourceRun : runHeader('run-1'),
+    readSourceInvocation: async (_sessionId, runId) =>
+      runId === sourceIdentity.runId ? sourceRun : runInvocation('run-1'),
     readImmutableRuntimePrefix: async ({ runId }) =>
       runId === sourceIdentity.runId ? source : ancestor,
     readContinuationClaimStateByBoundary: async () => undefined,
@@ -881,33 +878,50 @@ test('RuntimeContinuationPlanner rejects a v2 lineage edge whose durable claim i
 
 function sameRouteAdmission() {
   return {
-    runHeaders: ['run-1', 'run-2', 'run-3'].map((runId) =>
-      runHeader(runId, { llmConnectionId: 'connection-1' }),
-    ),
+    invocations: ['run-1', 'run-2', 'run-3'].map((runId) => runInvocation(runId)),
     targetProviderStateIdentity: undefined,
     targetModelId: 'test-model',
   };
 }
 
-function runHeader(runId: string, overrides: Partial<AgentRunHeader> = {}): AgentRunHeader {
+interface RunFacts {
+  source?: RuntimeEventInvocationOpenedContent['source'];
+  outcome?: 'completed' | 'failed' | 'aborted' | 'open';
+  failureClass?: string;
+  providerStateIdentity?: `sha256:${string}`;
+  modelId?: string;
+  cwd?: string;
+}
+
+/** One source invocation as the planner reads it back off the spine. */
+function runInvocation(runId: string, facts: RunFacts = {}): RuntimeInvocationRecord {
   const ordinal = runId.match(/(\d+)$/)?.[1] ?? '1';
-  const status = overrides.status ?? 'failed';
-  return {
-    runId,
-    invocationId: `invocation-${ordinal}`,
+  const outcome = facts.outcome ?? 'failed';
+  const failureClass = outcome === 'failed' ? (facts.failureClass ?? 'test_failure') : undefined;
+  return testInvocationRecord({
     sessionId: 'session-1',
+    invocationId: `invocation-${ordinal}`,
+    runId,
     turnId: `turn-${ordinal}`,
-    status,
-    backendKind: 'fake',
-    llmConnectionSlug: 'test',
-    modelId: 'test-model',
-    cwd: '/workspace/repo',
-    permissionMode: 'ask',
-    ...(status === 'failed' ? { failureClass: 'test_failure' } : {}),
-    createdAt: 1,
-    updatedAt: 1,
-    ...overrides,
-  };
+    openedAt: 1,
+    closedAt: 1,
+    ...(outcome === 'open' ? {} : { outcome }),
+    ...(failureClass ? { failureClass } : {}),
+    opening: {
+      route: {
+        provenance: 'runtime',
+        backendKind: 'fake',
+        llmConnectionId: 'connection-1',
+        llmConnectionSlug: 'test',
+        modelId: facts.modelId ?? 'test-model',
+        ...(facts.providerStateIdentity
+          ? { providerStateIdentity: facts.providerStateIdentity }
+          : {}),
+      },
+      configuration: { cwd: facts.cwd ?? '/workspace/repo' },
+      ...(facts.source ? { source: facts.source } : {}),
+    },
+  });
 }
 
 function event(overrides: Partial<RuntimeEvent>): RuntimeEvent {

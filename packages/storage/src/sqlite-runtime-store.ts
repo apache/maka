@@ -23,6 +23,7 @@ import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import { isDeepStrictEqual } from 'node:util';
+import { assertHandoffClaimSource } from '@maka/core/runtime-handoff';
 import {
   buildWorkspaceBaselineAuthorityEvents,
   buildWorkspaceSuccessorAuthorityEvent,
@@ -43,8 +44,10 @@ import {
 } from '@maka/core/workspace-version-authority';
 import {
   decodeRuntimeEvent,
+  decodeRuntimeInvocationOpened,
   isPartialRuntimeEvent,
   isTerminalRuntimeEvent,
+  runtimeEventInvocationOpening,
   TOOL_BOUNDARY_PROTOCOL_V1,
   type RuntimeEvent,
   type RuntimeEventManagedWorkspaceMutationV2,
@@ -61,11 +64,16 @@ import {
   type RuntimeRecoveryBundleStore,
   type RuntimeWorkspaceVersionAuthorityStore,
 } from '@maka/core/runtime-event-store';
+import type {
+  RuntimeInvocationPageCursor,
+  RuntimeInvocationPageInput,
+  RuntimeInvocationPageResult,
+  RuntimeInvocationRecord,
+  RuntimeInvocationSearchResult,
+} from '@maka/core/runtime-invocation';
 import { type ToolRecoveryDecisionFact } from '@maka/core/tool-recovery-fact';
 import { canonicalToolArgsHash, stableJsonStringify } from '@maka/core/tool-args-identity';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
-import { decodePersistedAgentRunHeader, type AgentRunHeader } from '@maka/core/agent-run';
-import { markPersisted } from '@maka/core/persisted-value';
 import {
   scanToolLedger,
   ToolLedgerCorruptionError,
@@ -76,6 +84,7 @@ import {
 } from '@maka/core/tool-ledger-scanner';
 import {
   buildImmutableRuntimePrefix,
+  continuationStartEventMatchesClaim,
   decodeContinuationClaim,
   type ContinuationClaimV1,
   type ImmutableRuntimePrefixV1,
@@ -95,6 +104,7 @@ import {
   RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY_VERSION,
   RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY,
   RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY_VERSION,
+  runtimeEventKind,
   SQLITE_RUNTIME_SCHEMA_VERSION,
 } from './sqlite-runtime-schema.js';
 import {
@@ -124,6 +134,19 @@ import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-author
 export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
 
 export type { ToolRecoveryMode } from '@maka/core/runtime-event';
+
+/**
+ * `isTerminalRuntimeEvent` asked in SQL.
+ *
+ * The TypeScript predicate stays the authority; this only lets a query find the
+ * terminal event without decoding every row it passes over. Both have to say the
+ * same thing, so the SQL half is written once here instead of at each query.
+ */
+const TERMINAL_RUNTIME_EVENT_SQL = `(
+            json_extract(payload_json, '$.actions.endInvocation') = 1
+            OR json_extract(payload_json, '$.status')
+              IN ('completed', 'failed', 'aborted', 'cancelled')
+          )`;
 
 const RUNTIME_EVENT_SCAN_BATCH_SIZE = 128;
 const RUNTIME_PARTIAL_SEGMENT_TARGET_BYTES = 64 * 1024;
@@ -526,6 +549,255 @@ export class SqliteRuntimeStore
     return this.readRuntimeEventsSync(sessionId, runId);
   }
 
+  /**
+   * Enumerate a Session's invocations: the opening fact names each one, and its
+   * highest-sequence event says whether it ended.
+   *
+   * Invocations that predate the opening fact could not be given one without
+   * rewriting an immutable sequence, so the migration parked their openings in
+   * `runtime_legacy_invocation_openings`. Both shelves are merged here and the
+   * result says nothing about which one a record came from: an opening is an
+   * opening, and a consumer that branched on its storage would be encoding the
+   * migration window into its own logic.
+   */
+  async listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    return this.readTransaction(() =>
+      this.readInvocationOpeningsSync(sessionId, { direction: 'asc' }).map((row) =>
+        this.completeInvocationRecordSync(row),
+      ),
+    );
+  }
+
+  async readRunInvocation(
+    sessionId: string,
+    runId: string,
+  ): Promise<RuntimeInvocationRecord | undefined> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    assertRuntimeStorageSafeId(runId, 'Invalid run id');
+    return this.readTransaction(() => {
+      const row = this.readInvocationOpeningsSync(sessionId, { direction: 'asc', runId }).at(0);
+      return row ? this.completeInvocationRecordSync(row) : undefined;
+    });
+  }
+
+  /**
+   * The first page of a Session's invocations, plus whether more exist.
+   *
+   * The extra row this reads past the limit is the whole truncation signal, so a
+   * caller never has to count a Session it declined to load.
+   */
+  async listSessionInvocationsBounded(
+    sessionId: string,
+    limit: number,
+  ): Promise<RuntimeInvocationSearchResult> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    assertInvocationSearchLimit(limit);
+    return this.readTransaction(() => {
+      const rows = this.readInvocationOpeningsSync(sessionId, {
+        direction: 'asc',
+        limit: limit + 1,
+      });
+      return {
+        invocations: rows.slice(0, limit).map((row) => this.completeInvocationRecordSync(row)),
+        truncated: rows.length > limit,
+      };
+    });
+  }
+
+  /** One newest-first page of a Session's invocations. */
+  async listSessionInvocationsPage(
+    sessionId: string,
+    input: RuntimeInvocationPageInput,
+  ): Promise<RuntimeInvocationPageResult> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    assertInvocationSearchLimit(input.limit);
+    if (input.before) {
+      assertRuntimeStorageSafeId(input.before.invocationId, 'Invalid invocation page cursor');
+      if (!Number.isFinite(input.before.openedAt)) {
+        throw new Error('Invalid invocation page cursor');
+      }
+    }
+    return this.readTransaction(() => {
+      const rows = this.readInvocationOpeningsSync(sessionId, {
+        direction: 'desc',
+        limit: input.limit + 1,
+        ...(input.before ? { before: input.before } : {}),
+      });
+      const page = rows.slice(0, input.limit);
+      const last = page.at(-1);
+      return {
+        invocations: page.map((row) => this.completeInvocationRecordSync(row)),
+        nextCursor:
+          rows.length > input.limit && last
+            ? { openedAt: last.openedAt, invocationId: last.invocationId }
+            : null,
+      };
+    });
+  }
+
+  /**
+   * One invocation named by its own identity.
+   *
+   * Absence throws rather than returning `undefined`: every caller here holds an
+   * invocation id that some durable fact already handed it, so a missing opening
+   * is corruption and not a branch a reader should be asked to handle.
+   */
+  async readInvocation(sessionId: string, invocationId: string): Promise<RuntimeInvocationRecord> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    assertRuntimeStorageSafeId(invocationId, 'Invalid invocation id');
+    return this.readTransaction(() => {
+      const row = this.readInvocationOpeningsSync(sessionId, {
+        direction: 'asc',
+        invocationId,
+      }).at(0);
+      if (!row) throw new Error(`Runtime invocation not found: ${invocationId}`);
+      return this.completeInvocationRecordSync(row);
+    });
+  }
+
+  /**
+   * Read invocation openings off both shelves as one ordered sequence.
+   *
+   * Every writer of an opening event stamps `committed_at` with the event's own
+   * timestamp, so that column orders the event shelf by the same value the
+   * record reports as `openedAt` and the legacy shelf keeps under `opened_at`.
+   * Ordering and paging therefore happen in SQL, and a bounded caller decodes
+   * only the openings it asked for.
+   */
+  private readInvocationOpeningsSync(
+    sessionId: string,
+    options: {
+      direction: 'asc' | 'desc';
+      limit?: number;
+      before?: RuntimeInvocationPageCursor;
+      invocationId?: string;
+      runId?: string;
+    },
+  ): Omit<RuntimeInvocationRecord, 'terminalEvent'>[] {
+    const order = options.direction === 'desc' ? 'DESC' : 'ASC';
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM (
+          SELECT
+            event_id AS event_id,
+            invocation_id AS invocation_id,
+            run_id AS run_id,
+            turn_id AS turn_id,
+            committed_at AS opened_at,
+            payload_json AS opening_json,
+            1 AS from_events
+          FROM runtime_events
+          WHERE session_id = :sessionId AND event_kind = 'invocation_opened'
+          UNION ALL
+          SELECT
+            NULL,
+            legacy.invocation_id,
+            legacy.run_id,
+            legacy.turn_id,
+            legacy.opened_at,
+            legacy.opening_json,
+            0
+          FROM runtime_legacy_invocation_openings AS legacy
+          WHERE legacy.session_id = :sessionId
+            AND NOT EXISTS (
+              SELECT 1 FROM runtime_events
+              WHERE runtime_events.invocation_id = legacy.invocation_id
+                AND runtime_events.event_kind = 'invocation_opened'
+            )
+        )
+        WHERE (:invocationId IS NULL OR invocation_id = :invocationId)
+          AND (:runId IS NULL OR run_id = :runId)
+          AND (
+            :beforeOpenedAt IS NULL
+            OR opened_at < :beforeOpenedAt
+            OR (opened_at = :beforeOpenedAt AND invocation_id < :beforeInvocationId)
+          )
+        ORDER BY opened_at ${order}, invocation_id ${order}
+        LIMIT :limit
+      `)
+      .all({
+        sessionId,
+        invocationId: options.invocationId ?? null,
+        runId: options.runId ?? null,
+        beforeOpenedAt: options.before?.openedAt ?? null,
+        beforeInvocationId: options.before?.invocationId ?? null,
+        limit: options.limit ?? -1,
+      }) as unknown as Array<{
+      event_id: string | null;
+      invocation_id: string;
+      run_id: string;
+      turn_id: string;
+      opened_at: number;
+      opening_json: string;
+      from_events: number;
+    }>;
+    return rows.map((row) => {
+      if (row.from_events !== 1) {
+        return {
+          sessionId,
+          invocationId: row.invocation_id,
+          runId: row.run_id,
+          turnId: row.turn_id,
+          openedAt: row.opened_at,
+          opening: decodeRuntimeInvocationOpened(JSON.parse(row.opening_json)),
+        };
+      }
+      const event = decodeRuntimeEventStorageRow({
+        event_id: row.event_id ?? '',
+        session_id: sessionId,
+        invocation_id: row.invocation_id,
+        run_id: row.run_id,
+        turn_id: row.turn_id,
+        payload_json: row.opening_json,
+      });
+      const opening = runtimeEventInvocationOpening(event);
+      if (!opening) {
+        throw new Error(`RuntimeEvent ${event.id} is indexed as an opening fact but is not one`);
+      }
+      return {
+        sessionId: event.sessionId,
+        invocationId: event.invocationId,
+        runId: event.runId,
+        turnId: event.turnId,
+        openedAt: event.ts,
+        opening,
+      };
+    });
+  }
+
+  /**
+   * An invocation's ending is its first terminal event, wherever it sits.
+   *
+   * The store seals a run on that event, so for anything it wrote itself the
+   * first terminal is also the only one and the last event. Ledgers written
+   * before the seal existed can carry a straggler after the terminal, and
+   * reading those as unfinished would contradict every other reader of the same
+   * rule: recovery, the read model and continuation resume all take the first
+   * terminal. A ledger that somehow holds two is corrupt, and saying so is the
+   * job of those readers — this inventory feeds Session lists, so it reports the
+   * ending it can see rather than poisoning the whole Session over one run.
+   */
+  private completeInvocationRecordSync(
+    record: Omit<RuntimeInvocationRecord, 'terminalEvent'>,
+  ): RuntimeInvocationRecord {
+    const terminalRow = this.db
+      .prepare(`
+        SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
+        FROM runtime_events
+        WHERE invocation_id = ?
+          AND ${TERMINAL_RUNTIME_EVENT_SQL}
+        ORDER BY event_seq ASC
+        LIMIT 1
+      `)
+      .get(record.invocationId) as unknown as RuntimeEventStorageRow | undefined;
+    const terminal = terminalRow ? decodeRuntimeEventStorageRow(terminalRow) : undefined;
+    return {
+      ...record,
+      ...(terminal && isTerminalRuntimeEvent(terminal) ? { terminalEvent: terminal } : {}),
+    };
+  }
+
   async scanRuntimeEvents(
     sessionId: string,
     runId: string,
@@ -894,7 +1166,7 @@ export class SqliteRuntimeStore
         `claim_id = ?
           OR target_invocation_id = ?
           OR target_run_id = ?
-          OR (target_session_id = ? AND target_turn_id = ?)
+          OR (? = 0 AND target_session_id = ? AND target_turn_id = ?)
           OR (
             source_session_id = ?
             AND source_run_id = ?
@@ -903,6 +1175,7 @@ export class SqliteRuntimeStore
         claim.claimId,
         claim.target.invocationId,
         claim.target.runId,
+        claim.targetOpening.source.kind === 'handoff' ? 1 : 0,
         claim.target.sessionId,
         claim.target.turnId,
         source.identity.sessionId,
@@ -935,7 +1208,7 @@ export class SqliteRuntimeStore
               target_invocation_id,
               target_run_id,
               target_turn_id,
-              target_run_header_json,
+              target_opening_json,
               claimed_at,
               protocol_version
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
@@ -956,7 +1229,7 @@ export class SqliteRuntimeStore
             claim.target.invocationId,
             claim.target.runId,
             claim.target.turnId,
-            stableJsonStringify(claim.targetRunHeader),
+            stableJsonStringify(claim.targetOpening),
             claim.claimedAt,
           );
       } catch (error) {
@@ -966,7 +1239,7 @@ export class SqliteRuntimeStore
             `claim_id = ?
               OR target_invocation_id = ?
               OR target_run_id = ?
-              OR (target_session_id = ? AND target_turn_id = ?)
+              OR (? = 0 AND target_session_id = ? AND target_turn_id = ?)
               OR (
                 source_session_id = ?
                 AND source_run_id = ?
@@ -975,6 +1248,7 @@ export class SqliteRuntimeStore
             claim.claimId,
             claim.target.invocationId,
             claim.target.runId,
+            claim.targetOpening.source.kind === 'handoff' ? 1 : 0,
             claim.target.sessionId,
             claim.target.turnId,
             source.identity.sessionId,
@@ -1027,7 +1301,7 @@ export class SqliteRuntimeStore
           target_invocation_id,
           target_run_id,
           target_turn_id,
-          target_run_header_json,
+          target_opening_json,
           claimed_at,
           start_event_id,
           start_kind,
@@ -3017,7 +3291,7 @@ export class SqliteRuntimeStore
           target_invocation_id,
           target_run_id,
           target_turn_id,
-          target_run_header_json,
+          target_opening_json,
           claimed_at,
           start_event_id,
           start_kind,
@@ -3048,7 +3322,7 @@ export class SqliteRuntimeStore
           target_invocation_id,
           target_run_id,
           target_turn_id,
-          target_run_header_json,
+          target_opening_json,
           claimed_at,
           start_event_id,
           start_kind,
@@ -3071,6 +3345,7 @@ export class SqliteRuntimeStore
       target.invocationId,
       target.sessionId,
       target.runId,
+      claim.targetOpening.source.kind === 'handoff' ? 1 : 0,
       target.sessionId,
       target.turnId,
     ] as const;
@@ -3080,7 +3355,7 @@ export class SqliteRuntimeStore
         FROM runtime_events
         WHERE invocation_id = ?
           OR (session_id = ? AND run_id = ?)
-          OR (session_id = ? AND turn_id = ?)
+          OR (? = 0 AND session_id = ? AND turn_id = ?)
         LIMIT 1
       `)
       .get(...values) as { found: number } | undefined;
@@ -3092,7 +3367,7 @@ export class SqliteRuntimeStore
           FROM runtime_partial_snapshots
           WHERE invocation_id = ?
             OR (session_id = ? AND run_id = ?)
-            OR (session_id = ? AND turn_id = ?)
+            OR (? = 0 AND session_id = ? AND turn_id = ?)
           LIMIT 1
         `)
         .get(...values) as { found: number } | undefined) !== undefined
@@ -3122,6 +3397,7 @@ export class SqliteRuntimeStore
 
   private assertContinuationBoundaryMatchesLedger(claim: ContinuationClaimV1): void {
     const lastIndex = claim.boundary.segments.length - 1;
+    let previousPrefix: ImmutableRuntimePrefixV1 | undefined;
     for (const [index, segment] of claim.boundary.segments.entries()) {
       let prefix: ImmutableRuntimePrefixV1;
       try {
@@ -3156,7 +3432,36 @@ export class SqliteRuntimeStore
             : `Continuation ancestor boundary changed for ${segment.identity.runId}`,
         );
       }
+      const opening = prefix.events[0]?.content;
+      const repeatsTurn = previousPrefix?.identity.turnId === prefix.identity.turnId;
+      if (
+        repeatsTurn ||
+        (opening?.kind === 'invocation_opened' && opening.source.kind === 'handoff')
+      ) {
+        if (
+          !previousPrefix ||
+          opening?.kind !== 'invocation_opened' ||
+          opening.source.kind !== 'handoff'
+        ) {
+          throw new Error('Same-turn boundary requires an authenticated handoff edge');
+        }
+        const row = this.readContinuationClaimRow('claim_id = ?', opening.source.claimId);
+        const state = row && this.decodeContinuationClaimStateRow(row);
+        if (
+          !state ||
+          state.startEventId !== prefix.events[0]?.id ||
+          !isDeepStrictEqual(
+            state.claim.boundary.segments,
+            claim.boundary.segments.slice(0, index),
+          ) ||
+          !continuationStartEventMatchesClaim(prefix.events[0], state.claim, state.startKind)
+        ) {
+          throw new Error('Same-turn boundary handoff claim does not authenticate its lineage');
+        }
+        assertHandoffClaimSource(state.claim, previousPrefix);
+      }
       if (index === lastIndex) {
+        assertHandoffClaimSource(claim, prefix);
         const terminalEvents = prefix.events.filter(isTerminalRuntimeEvent);
         const terminal = terminalEvents[0];
         if (terminalEvents.length !== 1 || !terminal || prefix.events.at(-1)?.id !== terminal.id) {
@@ -3165,6 +3470,7 @@ export class SqliteRuntimeStore
           );
         }
       }
+      previousPrefix = prefix;
     }
   }
 
@@ -3330,7 +3636,16 @@ export class SqliteRuntimeStore
     authorizedPendingClaimId?: string,
     exactRetry = false,
   ): void {
-    for (const row of this.readContinuationClaimRows()) {
+    const rows = this.readContinuationClaimRows();
+    const ownClaim = rows.find(
+      (row) =>
+        row.target_session_id === event.sessionId &&
+        row.target_invocation_id === event.invocationId &&
+        row.target_run_id === event.runId &&
+        row.target_turn_id === event.turnId,
+    );
+    const ownHandoff = ownClaim && decodeContinuationClaimRow(ownClaim);
+    for (const row of rows) {
       const claim = decodeContinuationClaimRow(row);
       const source = claim.boundary.segments.find(
         (segment) =>
@@ -3341,12 +3656,18 @@ export class SqliteRuntimeStore
           `RuntimeEvent source boundary is sealed by continuation claim ${claim.claimId}`,
         );
       }
+      if (source && exactRetry) continue;
 
       const target = claim.target;
       const collidesWithTarget =
         event.invocationId === target.invocationId ||
         (event.sessionId === target.sessionId && event.runId === target.runId) ||
-        (event.sessionId === target.sessionId && event.turnId === target.turnId);
+        (event.sessionId === target.sessionId &&
+          event.turnId === target.turnId &&
+          !(
+            ownHandoff?.targetOpening.source.kind === 'handoff' &&
+            ownHandoff.boundary.segments.some((segment) => segment.identity.runId === target.runId)
+          ));
       if (!collidesWithTarget) continue;
       if (
         event.sessionId !== target.sessionId ||
@@ -3370,11 +3691,7 @@ export class SqliteRuntimeStore
         SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
         FROM runtime_events
         WHERE session_id = ? AND run_id = ?
-          AND (
-            json_extract(payload_json, '$.actions.endInvocation') = 1
-            OR json_extract(payload_json, '$.status')
-              IN ('completed', 'failed', 'aborted', 'cancelled')
-          )
+          AND ${TERMINAL_RUNTIME_EVENT_SQL}
         ORDER BY event_seq ASC
       `)
       .all(event.sessionId, event.runId) as unknown as RuntimeEventStorageRow[];
@@ -4001,49 +4318,7 @@ function assertContinuationStartEvent(
   event: RuntimeEvent,
   startKind: 'runtime_admission' | 'claim_repair',
 ): void {
-  const start = event.actions?.continuationStart;
-  const runtimeProtocol = event.actions?.runtimeProtocol;
-  const actionKeys = event.actions ? Object.keys(event.actions) : [];
-  const validActionShape =
-    actionKeys.includes('continuationStart') &&
-    actionKeys.every((key) => key === 'continuationStart' || key === 'runtimeProtocol') &&
-    actionKeys.length === (runtimeProtocol === undefined ? 1 : 2);
-  const validRuntimeProtocol =
-    runtimeProtocol === undefined ||
-    (startKind === 'runtime_admission' &&
-      runtimeProtocol.toolBoundary === TOOL_BOUNDARY_PROTOCOL_V1);
-  const source = claim.boundary.segments.at(-1)!;
-  if (
-    event.sessionId !== claim.target.sessionId ||
-    event.invocationId !== claim.target.invocationId ||
-    event.runId !== claim.target.runId ||
-    event.turnId !== claim.target.turnId ||
-    event.ts < claim.claimedAt ||
-    event.partial ||
-    event.role !== 'system' ||
-    event.author !== 'system' ||
-    event.status !== undefined ||
-    event.content !== undefined ||
-    !event.actions ||
-    !validActionShape ||
-    !validRuntimeProtocol ||
-    !start ||
-    start.protocol !== 'continuation_start_v2' ||
-    start.provenance !== startKind ||
-    start.claimId !== claim.claimId ||
-    start.boundaryDigest !== claim.boundaryDigest ||
-    start.replayManifestDigest !== claim.boundary.manifestDigest ||
-    start.providerProjectionVersion !== claim.providerProjectionVersion ||
-    start.providerReplayDigest !== claim.providerReplayDigest ||
-    !isDeepStrictEqual(start.immediateSource, {
-      sessionId: source.identity.sessionId,
-      invocationId: source.identity.invocationId,
-      runId: source.identity.runId,
-      turnId: source.identity.turnId,
-      highWater: source.position.lastEventSeq,
-      prefixDigest: source.prefixDigest,
-    })
-  ) {
+  if (!continuationStartEventMatchesClaim(event, claim, startKind)) {
     throw new Error('Invalid continuation-start authority event');
   }
 }
@@ -4061,6 +4336,12 @@ function assertContinuationAuthorityCapability(db: DatabaseSync): void {
 
 function assertRuntimeStorageSafeId(value: string, message: string): void {
   if (!isRuntimeStorageSafeId(value)) throw new Error(message);
+}
+
+function assertInvocationSearchLimit(limit: number): void {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 256) {
+    throw new RangeError('Runtime invocation search limit must be an integer between 1 and 256');
+  }
 }
 
 interface RuntimeEventStorageRow {
@@ -4399,7 +4680,7 @@ interface ContinuationClaimStorageRow {
   target_invocation_id: string;
   target_run_id: string;
   target_turn_id: string;
-  target_run_header_json: string;
+  target_opening_json: string;
   claimed_at: number;
   start_event_id: string | null;
   start_kind: 'runtime_admission' | 'claim_repair' | null;
@@ -4447,16 +4728,6 @@ function decodeRuntimePartialStorageRow(row: RuntimePartialStorageRow): RuntimeE
 
 function decodeStoredRuntimeEvent(storedJson: string): RuntimeEvent {
   return decodeRuntimeEvent(JSON.parse(storedJson));
-}
-
-function runtimeEventKind(event: RuntimeEvent): string {
-  return (
-    event.content?.kind ??
-    event.status ??
-    (event.actions?.workspaceFact ? 'workspace_fact' : undefined) ??
-    (event.actions?.toolDispatch ? 'tool_dispatch' : undefined) ??
-    (event.actions?.endInvocation ? 'invocation_end' : 'runtime_fact')
-  );
 }
 
 interface RuntimePartialSnapshot {
@@ -4586,9 +4857,7 @@ function decodeContinuationClaimRow(row: ContinuationClaimStorageRow): Continuat
     throw new Error(`Unsupported continuation claim protocol ${row.protocol_version}`);
   }
   const boundary = JSON.parse(row.boundary_json) as unknown;
-  const targetRunHeader = decodePersistedAgentRunHeader(
-    markPersisted<AgentRunHeader>(JSON.parse(row.target_run_header_json)),
-  );
+  const targetOpening = JSON.parse(row.target_opening_json) as unknown;
   const claim = decodeContinuationClaim({
     protocol: 'continuation_claim_v1',
     claimId: row.claim_id,
@@ -4602,7 +4871,7 @@ function decodeContinuationClaimRow(row: ContinuationClaimStorageRow): Continuat
       runId: row.target_run_id,
       turnId: row.target_turn_id,
     },
-    targetRunHeader,
+    targetOpening,
     claimedAt: row.claimed_at,
   });
   const source = claim.boundary.segments.at(-1)!;

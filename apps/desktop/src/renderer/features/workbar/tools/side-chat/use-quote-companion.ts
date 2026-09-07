@@ -27,6 +27,7 @@ import {
   useSessionSettingIntent,
   type InteractionQueues,
   type LiveTurnProjection,
+  type TransientUserMessageProjection,
 } from '@maka/ui';
 import type {
   SandboxBoundaryRequestEvent,
@@ -160,6 +161,10 @@ export interface UseQuoteCompanionResult {
    *  the model but stays hidden from this side transcript (separate transcript,
    *  like Codex /side), so the panel isn't a duplicate of the main conversation. */
   messages: StoredMessage[];
+  /** Optimistic, renderer-only user bubbles shown the instant a send dispatches,
+   *  before the durable transcript echoes them back. Reconciled away once the
+   *  durable message with the same id lands. Pass straight to `ChatView`. */
+  transientMessages: readonly TransientUserMessageProjection[];
   liveTurn: LiveTurnProjection | undefined;
   streaming: boolean;
   processing: boolean;
@@ -269,6 +274,15 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const compactionTurnIdRef = useRef<string | null>(null);
   const pendingCompactionTerminalRef = useRef<PendingCompactionTerminal | null>(null);
   const [allMessages, setAllMessages] = useState<StoredMessage[]>([]);
+  // Renderer-only user bubble shown the instant a send dispatches. The durable
+  // transcript only echoes the just-sent question back mid-turn on a single
+  // best-effort refresh (and otherwise not until the turn settles), so without
+  // this the user's message stays invisible until the whole answer completes.
+  // Mirrors the main chat's optimistic `transientMessages`; reconciled away once
+  // the durable message with the same id lands in `allMessages`.
+  const [pendingUserMessages, setPendingUserMessages] = useState<
+    TransientUserMessageProjection[]
+  >([]);
   const [liveTurn, setLiveTurn] = useState<LiveTurnProjection | undefined>(undefined);
   const liveTurnRef = useRef(liveTurn);
   liveTurnRef.current = liveTurn;
@@ -346,6 +360,16 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   // there is no state to keep in sync.
   const setSubmitLocked = useCallback((locked: boolean) => {
     submitLockRef.current = locked;
+  }, []);
+
+  // Retire the optimistic bubble for a message id. Called when a send is
+  // retracted/abandoned; the success path retires it implicitly by reconciling
+  // against the durable transcript (see the `transientMessages` derivation).
+  const dropOptimisticUserMessage = useCallback((messageId: string) => {
+    setPendingUserMessages((current) => {
+      const next = current.filter((message) => message.id !== messageId);
+      return next.length === current.length ? current : next;
+    });
   }, []);
 
   const applyOwnedEvent = useCallback(
@@ -478,11 +502,14 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     (admission: PendingAdmission, message?: string) => {
       if (pendingAdmissionRef.current !== admission) return;
       setPendingAdmission(null);
+      // The send is being abandoned (retracted / failed): the optimistic bubble
+      // would otherwise linger with no turn to reconcile it away.
+      dropOptimisticUserMessage(admission.messageId);
       if (stopRequestRef.current === admission.stopPromise) stopRequestRef.current = null;
       if (!activeTurnIdRef.current) setLiveTurn(undefined);
       if (message) setError(message);
     },
-    [setPendingAdmission],
+    [dropOptimisticUserMessage, setPendingAdmission],
   );
 
   const resolveAdmission = useCallback(
@@ -843,9 +870,46 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       const turnId = crypto.randomUUID();
       const quoteSnapshot = snapshotCompanionQuotes(panelId, pendingQuotes);
       const label = (quoteSnapshot.quotes[0]?.text ?? trimmed).slice(0, 24);
+      // Show the user's question IMMEDIATELY as an optimistic bubble, before the
+      // fork exists. On a first send `ensureFork` makes a Host round trip, and the
+      // main chat renders the question the instant Send is pressed; the side panel
+      // must match rather than stay blank until the fork materializes. The bubble
+      // ALSO lights the running-status line — the panel derives it from
+      // `streaming || transientMessages.length > 0` — so the "working" cue rises
+      // in this same window WITHOUT arming the admission early. Arming it here
+      // would flip `streaming` on and render the Composer's Stop button while
+      // `stop()` is still a no-op (`companionIdRef` is only set at commitFork): a
+      // visible-but-dead control for the whole fork round trip. So the admission
+      // and live turn are armed in `onBeforeSend`, once the fork can actually be
+      // stopped; the double-submit window stays closed by `submitLockRef`.
+      // `abandonOptimisticSend` retires the bubble if setup fails before the send.
+      const admission: PendingAdmission = {
+        messageId: turnId,
+        events: [],
+        consumeOnAdmission: () => onQuotesConsumed(quoteSnapshot),
+      };
+      setPendingUserMessages((current) => [
+        ...current.filter((message) => message.id !== turnId),
+        {
+          id: turnId,
+          text: trimmed,
+          ts: Date.now(),
+          transientPlacement: 'current_turn',
+          ...(quoteSnapshot.quotes.length > 0 ? { quotes: quoteSnapshot.quotes } : {}),
+        },
+      ]);
+      // Setup can still fail before the send is in flight (fork unavailable,
+      // fail-closed permission write, or a lost subscription). Retire the
+      // optimistic bubble and release the lock so a failed first send never
+      // strands a question with no turn to reconcile it away. The admission and
+      // live turn are not armed until `onBeforeSend`, so nothing else to unwind.
+      const abandonOptimisticSend = () => {
+        dropOptimisticUserMessage(turnId);
+        setSubmitLocked(false);
+      };
       const fork = await ensureFork(`${copyRef.current.namePrefix}${label}`);
       if (fork.status !== 'ready') {
-        setSubmitLocked(false);
+        abandonOptimisticSend();
         return false;
       }
       // A permission mode picked before the fork existed is applied now, before
@@ -866,12 +930,12 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           applied = false;
         }
         if (!mountedRef.current) {
-          setSubmitLocked(false);
+          abandonOptimisticSend();
           return false;
         }
         if (!applied) {
           setError(copyRef.current.errors.respondFailed);
-          setSubmitLocked(false);
+          abandonOptimisticSend();
           return false;
         }
       }
@@ -885,14 +949,13 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           subscriptionReadyRef.current = subscribeToFork(fork.session.id);
           setError(copyRef.current.errors.sendFailed);
         }
-        setSubmitLocked(false);
+        abandonOptimisticSend();
         return false;
       }
       if (!mountedRef.current) {
-        setSubmitLocked(false);
+        abandonOptimisticSend();
         return false;
       }
-      let sendAdmission: PendingAdmission | undefined;
       const result = await performCompanionTurn({
         api: sideChat,
         sourceSession,
@@ -911,23 +974,18 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
             sessionId,
           }),
         onForkCommitted: () => {},
-        // Arm the optimistic live turn right before the send.
+        // The send is now in flight against a committed fork, so the Stop button
+        // can finally stop something: arm the admission (flips `streaming` on)
+        // and the live turn, and release the submit lock. The optimistic bubble
+        // is already on screen from before `ensureFork`.
         onBeforeSend: () => {
           stopRequestRef.current = null;
-          const admission: PendingAdmission = {
-            messageId: turnId,
-            events: [],
-            consumeOnAdmission: () => onQuotesConsumed(quoteSnapshot),
-          };
-          sendAdmission = admission;
           setPendingAdmission(admission);
           setSubmitLocked(false);
           setLiveTurn(armLiveTurn(turnId));
         },
       });
       if (result.status === 'sent' || result.status === 'pending') {
-        const admission = sendAdmission;
-        if (!admission) return false;
         if (result.status === 'pending') {
           const outcome = resolveAdmission(result.forkId, admission, result.messageId);
           if (outcome?.kind === 'retracted') {
@@ -943,9 +1001,21 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         }
         if ((await admission.stopPromise) === 'confirmed') return false;
         setHasContent(true);
-        // Surface the just-sent user message immediately, and reflect any
-        // automatic connection/model rebound in the read-only model label.
-        void sideChat.readSettledMessages(result.forkId)
+        // Surface the just-sent user message, and reflect any automatic
+        // connection/model rebound in the read-only model label. Wait for THIS
+        // message to be durable (requiredAssistantMessageId gates on any message
+        // id) rather than returning the first ready snapshot: on a follow-up the
+        // transcript store is already "ready" from the prior turn, so an
+        // unqualified read returns stale and the new turn never lands in
+        // `messages`. Without the turn, the running-status line ("正在推敲…") has
+        // nothing to attach to and only appears once the answer starts settling.
+        // The Host mints the user message id from the reserved turn id (`const
+        // messageId = turnId`), so a pending/steered `result.messageId` equals
+        // `turnId` — one identity across every path.
+        void sideChat
+          .readSettledMessages(result.forkId, {
+            requiredAssistantMessageId: turnId,
+          })
           .then(({ messages: next }) => {
             if (mountedRef.current) {
               setAllMessages((current) => mergeSettledMessages(current, next));
@@ -975,7 +1045,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         };
         setError(byCode[result.code]);
         activeTurnIdRef.current = null;
-        if (sendAdmission) releaseAdmission(sendAdmission);
+        releaseAdmission(admission);
         setLiveTurn(undefined);
       }
       // 'disposed' → the panel unmounted mid-create; nothing to update.
@@ -992,6 +1062,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       sideChat,
       bindAdmittedTurn,
       compact,
+      dropOptimisticUserMessage,
       releaseAdmission,
       resolveAdmission,
       setPendingAdmission,
@@ -1219,6 +1290,15 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const messages = allMessages.filter(
     (message) => message.turnId !== undefined && ownTurnIdsRef.current.has(message.turnId),
   );
+  // Drop the optimistic bubble only once its durable twin will actually RENDER,
+  // i.e. it is in `messages` (own-turn filtered) — not merely settled into
+  // `allMessages`. Building this from `allMessages` could retire the transient on
+  // an `outcome_unknown` settle while the durable message is still filtered out of
+  // the render, blinking the question away until `reconcileUnknownAdmission` binds.
+  const durableMessageIds = new Set(messages.map((message) => message.id));
+  const transientMessages = pendingUserMessages.filter(
+    (message) => !durableMessageIds.has(message.id),
+  );
   // Inherited model (read-only): the fork's once created, else the source's.
   const activeModel = companion
     ? { llmConnectionSlug: companion.llmConnectionSlug, model: companion.model }
@@ -1249,6 +1329,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     companionSession: companion,
     hasContent,
     messages,
+    transientMessages,
     liveTurn,
     streaming,
     processing,

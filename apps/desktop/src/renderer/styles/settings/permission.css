@@ -91,3 +91,11 @@
 .settingsCapabilityDetail {
   padding-inline-start: var(--space-4);
 }
+
+/* Astryx's single-column MetadataList aligns label/value pairs on their text
+   baseline, but its multi-column style omits that rule. A taller value then
+   stretches the grid row while the flex-based label centers vertically, so
+   pairs such as “配置 / 已填写” no longer read on one horizontal line. */
+.settingsCapabilityMetadata > dl {
+  align-items: baseline;
+}

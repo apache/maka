@@ -26,9 +26,12 @@ import type { LlmConnection } from '@maka/core/llm-connections';
 import type { SessionHeader } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeContinuationMetadata } from '@maka/core/backend-types';
 import { z } from 'zod';
-import type { AgentRunHeader, ModelCallCommit } from '@maka/core/agent-run';
+import type { ModelCallCommit } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
+import { sectionedSummary } from './history-compact-test-fixtures.js';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import {
   LATEST_CONTEXT_PROJECTION_TYPE,
@@ -49,6 +52,7 @@ import {
   createTestAiSdkBackend,
   testToolResultArchive,
 } from './execution-boundary-test-helpers.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 // The checkpoint write gate validates summary structure and floors the size
 // for large folds (#3029), so the stub summary is shaped like a real
@@ -136,6 +140,9 @@ interface ReactiveFixtureOptions {
   withoutContextWindow?: boolean;
   midTurnEnabled?: boolean;
   withoutPriorTurns?: boolean;
+  /** Two settled physical predecessors of the same logical Turn. */
+  handoff?: boolean;
+  anchorAuthor?: 'user' | 'host';
   bigPriors?: boolean;
   /** Leave same-route and cross-route signed thinking in a reduced pre-turn tail. */
   reasoningReplayTail?: boolean;
@@ -204,7 +211,8 @@ interface ReactiveFixture {
   summarizerCalls: () => number;
   anchor: RuntimeEvent;
   priorEvents: RuntimeEvent[];
-  priorRunHeaders: AgentRunHeader[];
+  priorInvocations: RuntimeInvocationRecord[];
+  continuation?: RuntimeContinuationMetadata;
   events: SessionEvent[];
   messages: unknown[];
   llmCalls: ReactiveLlmCall[];
@@ -495,14 +503,16 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
               ]
             : []),
         ];
-  const priorRunHeaders: AgentRunHeader[] = options.reasoningReplayTail
+  const priorInvocations: RuntimeInvocationRecord[] = options.reasoningReplayTail
     ? [
-        priorRunHeader('same-route-prior-run', 'test-connection-id', 'mock-model-id'),
-        priorRunHeader('prior-run', 'source-connection-id', 'source-model-id'),
+        priorRunInvocation('same-route-prior-run', 'test-connection-id', 'mock-model-id'),
+        priorRunInvocation('prior-run', 'source-connection-id', 'source-model-id'),
       ]
     : [];
   const anchor: RuntimeEvent = {
     ...runtimeTextEvent('anchor-1', 'turn-1', 'user', ANCHOR_TEXT),
+    ...(options.anchorAuthor ? { author: options.anchorAuthor } : {}),
+    ...(options.handoff ? { runId: 'run-original', invocationId: 'run-original' } : {}),
     ...(options.currentImage
       ? {
           content: {
@@ -526,7 +536,49 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       : {}),
   };
 
-  const ledger: RuntimeEvent[] = [anchor];
+  if (options.handoff) {
+    priorEvents.push(anchor);
+    for (const runId of ['run-original', 'run-intermediate']) {
+      const base = {
+        ...runtimeTextEvent(`${runId}-call`, 'turn-1', 'model', ''),
+        runId,
+        invocationId: runId,
+      };
+      priorEvents.push(
+        {
+          ...base,
+          content: {
+            kind: 'function_call',
+            id: `${runId}-tool`,
+            name: 'Read',
+            args: { path: `${runId}.md` },
+          },
+        },
+        {
+          ...base,
+          id: `${runId}-result`,
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: `${runId}-tool`,
+            name: 'Read',
+            isError: false,
+            result: { body: `${runId}:${RAW_SPAN_ONE.repeat(3)}` },
+          },
+        },
+      );
+    }
+    priorEvents.push({
+      ...runtimeTextEvent('handoff-tail', 'turn-1', 'user', 'HANDOFF_TAIL_SENTINEL'),
+      runId: 'run-intermediate',
+      invocationId: 'run-intermediate',
+      content: { kind: 'text', text: 'HANDOFF_TAIL_SENTINEL', steering: true },
+    });
+  }
+  // The successor's reader must never return predecessor events or the old
+  // user anchor: those already belong to its authenticated replay prefix.
+  const ledger: RuntimeEvent[] = options.handoff ? [] : [anchor];
   const ledgerCtx: RuntimeEventMapContext = {
     sessionId: 'session-1',
     invocationId: 'run-1',
@@ -713,7 +765,17 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     summarizerCalls: () => counters.summarizerCalls,
     anchor,
     priorEvents,
-    priorRunHeaders,
+    priorInvocations,
+    ...(options.handoff
+      ? {
+          continuation: {
+            sourceInvocationId: 'run-intermediate',
+            sourceRunId: 'run-intermediate',
+            sourceTurnId: 'turn-1',
+            sourceRuntimeEventHighWater: 3,
+          },
+        }
+      : {}),
     events,
     messages,
     llmCalls,
@@ -736,7 +798,8 @@ async function runTurn(
     text: ANCHOR_TEXT,
     context: [],
     runtimeContext: [...fixture.priorEvents],
-    runtimeContextRunHeaders: fixture.priorRunHeaders,
+    runtimeContextInvocations: [...fixture.priorInvocations],
+    ...(fixture.continuation ? { continuation: fixture.continuation } : {}),
     ...(pullSteering ? { pullSteering } : {}),
   })) {
     if (consumer === 'slow') {
@@ -775,6 +838,43 @@ function complete(
 }
 
 describe('reactive overflow recovery in the streaming backend', () => {
+  for (const anchorAuthor of ['user', 'host'] as const) {
+    test(`a handoff successor compacts its same-turn predecessors with a ${anchorAuthor} anchor without replaying effects or duplicating history`, async () => {
+      const fixture = buildReactiveFixture({
+        script: ['overflow', 'tool', 'done'],
+        withoutPriorTurns: true,
+        handoff: true,
+        anchorAuthor,
+      });
+      await runTurn(fixture);
+
+      assert.equal(complete(fixture)?.stopReason, 'end_turn');
+      assert.equal(fixture.model.doStreamCalls.length, 3);
+      assert.deepEqual(fixture.toolExecutions, ['one.md']);
+      assert.equal(fixture.recorded.length, 1);
+      assert.equal(fixture.recorded[0]?.phase, 'mid_turn');
+      const covered = JSON.parse(fixture.summarizedSources[0]!) as RuntimeEvent[];
+      assert.deepEqual(
+        covered.map((event) => event.id),
+        [
+          'anchor-1',
+          'run-original-call',
+          'run-original-result',
+          'run-intermediate-call',
+          'run-intermediate-result',
+        ],
+      );
+      for (const call of fixture.model.doStreamCalls.slice(1)) {
+        const prompt = JSON.stringify(call.prompt);
+        assert.match(prompt, /REACTIVE_SUMMARY_SENTINEL/);
+        assert.equal(prompt.split(ANCHOR_TEXT).length - 1, 1);
+        assert.equal(prompt.split('HANDOFF_TAIL_SENTINEL').length - 1, 1);
+        assert.equal(prompt.includes('run-original.md'), false);
+        assert.equal(prompt.includes('run-intermediate.md'), false);
+      }
+    });
+  }
+
   test('a request-level context-length 400 ends as a real error, never a fake end_turn', async () => {
     // The latent bug: a provider that rejects the request (doStream throws) is
     // surfaced as a stream error chunk while finishReason rejects. The old
@@ -1263,8 +1363,7 @@ describe('reactive overflow recovery in the streaming backend', () => {
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: fixture.priorEvents,
-      summary: 'EARLIER_TURN_SUMMARY',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('EARLIER_TURN_SUMMARY'),
     });
     carried = checkpoint;
     await runTurn(fixture);
@@ -1293,8 +1392,7 @@ describe('reactive overflow recovery in the streaming backend', () => {
       coveredRuntimeEvents: [
         runtimeTextEvent('never-happened', 'turn-x', 'user', 'AN EVENT THIS LEDGER NEVER HELD'),
       ],
-      summary: 'SUMMARY_OF_ANOTHER_HISTORY',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('SUMMARY_OF_ANOTHER_HISTORY'),
     });
     const fixture = buildReactiveFixture({
       script: ['done'],
@@ -1672,7 +1770,7 @@ describe('reactive overflow recovery in the streaming backend', () => {
       true,
     );
     assert.equal(fixture.recorded.length, 1);
-    assert.equal(fixture.llmCalls.at(-1)?.errorClass, 'ContextLength');
+    assert.equal(fixture.llmCalls.at(-1)?.errorClass, 'context_overflow');
   });
 
   test('no recovery seam means a context-length overflow ends as a real error', async () => {
@@ -1988,23 +2086,43 @@ function header(): SessionHeader {
   };
 }
 
-function priorRunHeader(runId: string, llmConnectionId: string, modelId: string): AgentRunHeader {
-  return {
-    runId,
+/** One prior invocation, as its own opening fact and terminal event describe it. */
+function priorRunInvocation(
+  runId: string,
+  llmConnectionId: string,
+  modelId: string,
+): RuntimeInvocationRecord {
+  const identity = {
     sessionId: 'session-1',
+    invocationId: `invocation-${runId}`,
+    runId,
     turnId: 'turn-0',
-    status: 'completed',
-    backendKind: 'ai-sdk',
-    llmConnectionId,
-    llmConnectionSlug: 'anthropic-source',
-    modelId,
-    providerStateIdentity:
-      runId === 'same-route-prior-run' ? PROVIDER_STATE_IDENTITY : `sha256:${'2'.repeat(64)}`,
-    cwd: '/tmp/maka',
-    permissionMode: 'ask',
-    createdAt: 1,
-    updatedAt: 2,
-    completedAt: 2,
+  };
+  return {
+    ...identity,
+    openedAt: 1,
+    opening: testInvocationOpening({
+      route: {
+        provenance: 'runtime',
+        backendKind: 'ai-sdk',
+        llmConnectionId: llmConnectionId,
+        llmConnectionSlug: 'anthropic-source',
+        modelId: modelId,
+        providerStateIdentity:
+          runId === 'same-route-prior-run' ? PROVIDER_STATE_IDENTITY : `sha256:${'2'.repeat(64)}`,
+      },
+      configuration: { cwd: '/tmp/maka' },
+    }),
+    terminalEvent: {
+      ...identity,
+      id: `${identity.runId}-terminal`,
+      ts: 2,
+      partial: false,
+      role: 'system',
+      author: 'system',
+      status: 'completed',
+      actions: { endInvocation: true },
+    },
   };
 }
 

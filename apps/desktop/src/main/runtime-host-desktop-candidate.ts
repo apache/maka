@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import type { IpcMain } from "electron";
 import type { ActiveInteractionRequestEvent } from '@maka/core/events';
 import { redactSecrets } from '@maka/core/redaction';
@@ -75,9 +76,7 @@ import {
   type DesktopNativeCapabilityProviderInput,
 } from "./runtime-host-native-capabilities.js";
 import {
-  registerRuntimeHostSharedSessionCatalogIpc,
   registerRuntimeHostSessionCatalogIpc,
-  toDesktopHostSharedSessionSummary,
 } from "./runtime-host-session-catalog-ipc-main.js";
 import { registerRuntimeHostWorkHubIpc } from "./runtime-host-workhub-ipc-main.js";
 import { registerRuntimeHostExternalSessionsIpc } from "./runtime-host-external-sessions-ipc-main.js";
@@ -100,6 +99,8 @@ import {
 } from "./runtime-host-session-execution-ipc-main.js";
 import { RuntimeHostSessionObservationRegistry } from "./runtime-host-session-observation-registry.js";
 import { RuntimeHostSessionObserver } from "./runtime-host-session-observer.js";
+import type { TurnMessageSubmitInput, TurnMessageSubmitResult } from '@maka/runtime-host/protocol';
+import type { DesktopTranscriptReplicaSnapshot } from './desktop-transcript-replica.js';
 import type {
   IpcHandler,
   ReconciledControlHandlers,
@@ -116,6 +117,7 @@ import {
 type CandidateIpcMain = ReconnectableReadIpcMain & Pick<IpcMain, "removeHandler">;
 
 export interface DesktopRuntimeHostCandidateDeps {
+  readonly cacheTranscript?: (scope: DesktopTargetScope, snapshot: DesktopTranscriptReplicaSnapshot) => void;
   readonly ipcMain: RuntimeHostTargetIpcMain;
   readonly workspaceRoot: string;
   readonly attachmentApprovals: AttachmentApprovalRegistry;
@@ -139,7 +141,6 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly completeComputerUseTurn: (
     sessionId: string,
   ) => void | Promise<void>;
-  readonly enableE2eControls?: boolean;
   readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
   readonly renderer?: {
     send(channel: string, scope: DesktopTargetScope, payload: unknown): void;
@@ -147,6 +148,7 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly onError?: RuntimeHostSessionDomainsIpcDeps["onError"];
   readonly isTargetActive?: () => boolean;
   readonly isTargetValid?: () => boolean;
+  readonly onGuestSessionCatalogChanged?: () => void;
   readonly newId?: () => string;
   readonly now?: () => number;
   readonly openSshTunnel?: (
@@ -226,6 +228,7 @@ export type DesktopRuntimeHostCandidateStartResult =
   | Exclude<ConnectOrSpawnRuntimeHostResult, { kind: "connected" }>;
 
 export interface DesktopRuntimeHostCandidate {
+  submitLocalMessage(input: TurnMessageSubmitInput): Promise<TurnMessageSubmitResult>;
   readonly botIncoming: BotIncomingMainService;
   readonly client: DesktopRuntimeHostClient;
   readonly closed: Promise<void>;
@@ -301,6 +304,22 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
     return this.#stopSession(sessionId);
   }
 
+  async submitLocalMessage(input: TurnMessageSubmitInput): Promise<TurnMessageSubmitResult> {
+    const observerId = `local-outbox:${input.messageId}`;
+    await this.#observer.observe(input.sessionId, observerId, {
+      id: -1, send() {}, once() {}, off() {},
+    }, true);
+    try {
+      const result = await this.#client.request('turn.message.submit', input);
+      const turns = result.disposition === 'turn_started'
+        ? [result.turnId] : this.#observer.observedRunningTurnIds(input.sessionId);
+      for (const turnId of turns) await this.#observer.watchTurn(input.sessionId, turnId);
+      return result;
+    } finally {
+      await this.#observer.unobserve(observerId).catch(() => undefined);
+    }
+  }
+
   async #close(): Promise<void> {
     this.#ipc.close();
     this.#detachSessionObservations();
@@ -346,6 +365,10 @@ export async function startDesktopRuntimeHostCandidate(
   if (connection.kind !== "connected") return connection;
   observeLocalRuntimeHostProcess(connection.spawnedProcess);
   try {
+    // A resident managed Host can speak this protocol while still using an
+    // older storage schema. Validate the shared local database before exposing
+    // any candidate services, so startup recovery can update its owning Host.
+    acquireOperationalStateDatabase(input.rootPath, { schemaMigration: 'require_current' }).close();
     return {
       kind: "ready",
       candidate: await createDesktopRuntimeHostCandidate(
@@ -593,6 +616,12 @@ export async function createDesktopRuntimeHostCandidate(
   let observationsAttached = false;
   let capabilitiesRegistered = false;
   try {
+    const onGuestSessionCatalogChanged = target.access === 'session_guest'
+      ? deps.onGuestSessionCatalogChanged
+      : undefined;
+    if (target.access === 'session_guest' && !onGuestSessionCatalogChanged) {
+      throw new Error('A Session Guest candidate requires a catalog-change authority');
+    }
     let domains: RuntimeHostSessionDomainsIpcHandle | undefined;
     const emitActiveInteractionsChanged = (
       sessionId: string,
@@ -605,6 +634,9 @@ export async function createDesktopRuntimeHostCandidate(
     };
     const sessionObserver = new RuntimeHostSessionObserver({
       client,
+      cacheTranscript: (snapshot) => {
+        if (target.access === 'owner') deps.cacheTranscript?.(scope, snapshot);
+      },
       emitSessionsChanged: (reason, sessionId, extra) =>
         emitSessionsChanged(reason, sessionId, extra),
       emitSessionDomainChanged: (change) =>
@@ -612,6 +644,7 @@ export async function createDesktopRuntimeHostCandidate(
           ? sharedShellRuns?.sessionDomainChanged(change)
           : domains?.sessionDomainChanged(change),
       emitRuntimeResourcePtyData: (event) => domains?.runtimeResourcePtyData(event),
+      emitRuntimeResourcePtyReset: (sessionId) => sendToRenderer?.('shell-runs:resync', { sessionId }),
       emitAgentGraphChanged: (event) => domains?.agentGraphChanged(event),
       emitActiveInteractionsChanged,
       emitSubscriptionRecovered: (sessionId) =>
@@ -667,7 +700,6 @@ export async function createDesktopRuntimeHostCandidate(
         },
       },
       ipc,
-      deps.enableE2eControls === true,
     );
     if (target.access === 'session_guest') {
       const trackedSessionIds = sessionObservations.trackedSessionIds();
@@ -698,11 +730,14 @@ export async function createDesktopRuntimeHostCandidate(
         once: target.once.bind(target),
         off: target.off.bind(target),
       }),
+      (missingSessionId) => emitSessionsChanged("deleted", missingSessionId),
     );
     const restoredSessionIdSet = new Set(restoredSessionIds);
-    const failedSessionIds = observedSessionIds.filter(
-      (sessionId) => !restoredSessionIdSet.has(sessionId),
-    );
+    // Attach forgets Sessions the Host no longer serves, so only Sessions
+    // that are still registered but failed to restore count as failures.
+    const failedSessionIds = sessionObservations
+      .observedSessionIds()
+      .filter((sessionId) => !restoredSessionIdSet.has(sessionId));
     if (failedSessionIds.length > 0) {
       throw new Error(
         `Failed to restore Session observations: ${failedSessionIds.join(', ')}`,
@@ -801,23 +836,12 @@ export async function createDesktopRuntimeHostCandidate(
         )
       : undefined;
     disposeClientIpc = target.access === 'session_guest'
-      ? client.subscribeSessionCatalogChanges(({ sessionId }) =>
-          emitSessionsChanged('updated', sessionId),
-        )
+      ? client.subscribeSessionCatalogChanges(() => onGuestSessionCatalogChanged!())
       : typeof registeredClientIpc === 'function'
         ? registeredClientIpc
         : undefined;
     if (target.access === 'session_guest') {
       registerRuntimeHostAttachmentPreviewIpc({ ipcMain: ipc, client });
-      registerRuntimeHostSharedSessionCatalogIpc(
-        {
-          getSession: async () => {
-            const session = await client.getSharedSession();
-            return session ? toDesktopHostSharedSessionSummary(session) : null;
-          },
-        },
-        ipc,
-      );
     } else {
       if (!sessionCopyCleanup) throw new Error('Owner Session copy authority is unavailable');
       registerRuntimeHostSessionCatalogIpc(

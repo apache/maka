@@ -56,13 +56,16 @@ const generatedFiles = ['maka.css', 'maka.js', 'maka.d.ts'];
 const canonicalCommand =
   ' * Command: astryx theme build src/renderer/astryx-theme/makaTheme.ts --out ' +
   'src/renderer/astryx-theme/maka.css';
+const canonicalBuilderComment = ' * maka theme — built by `astryx theme build`';
 const postProcessNote =
   '/* Post-processed by scripts/build-astryx-theme.mjs: the @layer reset\n' +
   ' * element-typography block is stripped — see that script for why. */\n\n';
 
 export function normalizeGeneratedHeader(source) {
   const withoutTimestamp = source.replace(/^ \* Generated: .*\n/m, '');
-  return withoutTimestamp.replace(/^ \* Command: .*$/m, canonicalCommand);
+  return withoutTimestamp
+    .replace(/^ \* Command: .*$/m, canonicalCommand)
+    .replace(/^ \* maka theme — built by `.*astryx theme build`$/m, canonicalBuilderComment);
 }
 
 export function stripResetLayer(css, file = cssOut) {

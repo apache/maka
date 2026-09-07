@@ -17,15 +17,18 @@
  * under the License.
  */
 
-import { COMPOSER_INPUT, ensureSidebarExpanded, expect, test } from './fixtures';
+import { COMPOSER_INPUT, awaitSendReady, ensureSidebarExpanded, expect, test } from './fixtures';
 
 test('an explicit new task survives a renderer reload without reopening history', async ({
   window: page,
 }) => {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('create history');
+  await awaitSendReady(page);
   await composer.press('Enter');
-  await expect(page.getByText(/Fake backend received: create history/)).toBeVisible();
+  await expect(page.getByText(/Fake backend received: create history/)).toBeVisible({
+    timeout: 20_000,
+  });
 
   await ensureSidebarExpanded(page);
   await page.getByRole('button', { name: '新任务', exact: true }).click();

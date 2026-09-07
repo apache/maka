@@ -385,6 +385,8 @@ const RAW_BUTTON_RE = /<\s*button\b/;
 const RAW_INPUT_RE = /<\s*input\b/;
 const RAW_SELECT_RE = /<\s*select\b/;
 const RAW_TEXTAREA_RE = /<\s*textarea\b/;
+const RAW_ACTION_ELEMENT_RE =
+  /<\s*(span|div)\b(?=[^>]*(?:onClick\s*=|role\s*=\s*['"]button['"]))[^>]*>/g;
 const HEX_RE = /#[0-9a-fA-F]{3,8}\b/;
 const OFF_HEIGHT_RE = /(?:min-)?height:\s*(\d+)px/g;
 const ALLOWED_H = new Set([28, 32, 36]);
@@ -528,11 +530,22 @@ export function analyzeTsx(rel, text, ctx) {
   const rawInput = RAW_INPUT_RE.test(code);
   const rawSelect = RAW_SELECT_RE.test(code);
   const rawTextarea = RAW_TEXTAREA_RE.test(code);
+  const rawActionElements = [...code.matchAll(RAW_ACTION_ELEMENT_RE)].map((match) => match[1]);
+  const rawActionElementCounts = new Map();
+  for (const element of rawActionElements) {
+    rawActionElementCounts.set(element, (rawActionElementCounts.get(element) || 0) + 1);
+  }
   const gaps = [];
+  const admissionGaps = [];
   if (rawButton) gaps.push('raw `<button` (API Use-the-System)');
   if (rawInput) gaps.push('raw `<input` (API Use-the-System)');
   if (rawSelect) gaps.push('raw `<select` (API Use-the-System)');
   if (rawTextarea) gaps.push('raw `<textarea` (API Use-the-System)');
+  for (const [element, count] of rawActionElementCounts) {
+    admissionGaps.push(
+      `hand-written interactive \`<${element}>\` (${count} ${count === 1 ? 'occurrence' : 'occurrences'}); use Astryx \`Button\`; do not hand-write controls from raw elements or custom control CSS (API Use-the-System)`,
+    );
+  }
   for (const name of shadows) {
     gaps.push(`public export \`${name}\` shadows Astryx component (not a re-export)`);
   }
@@ -552,6 +565,7 @@ export function analyzeTsx(rel, text, ctx) {
         : 'aligned — no raw controls; no Astryx JSX usage';
   return {
     astryx: named.size > 0 ? [...named].sort().join(', ') : 'none',
+    admissionGaps,
     gaps: note,
     severity,
   };
@@ -696,8 +710,23 @@ export function renderAstryxSurfaceInventory(repoRoot = root) {
     files,
     excluded,
     totals: bySev,
+    blockers: rows.flatMap((row) => [
+      ...(row.severity === 'blocker' ? [{ path: row.path, gaps: row.gaps }] : []),
+      ...(row.admissionGaps || []).map((gaps) => ({ path: row.path, gaps })),
+    ]),
     version,
   };
+}
+
+export function assertNoAstryxBlockers(rendered, legacyBaseline = new Map()) {
+  const blockers = rendered.blockers.filter(
+    (blocker) => legacyBaseline.get(blocker.path) !== blocker.gaps,
+  );
+  if (blockers.length === 0) return;
+  const details = blockers.map((blocker) => `- ${blocker.path}: ${blocker.gaps}`).join('\n');
+  throw new Error(
+    `Astryx surface blocker: hand-written controls are not allowed when Astryx owns the component. Use Astryx \`Button\` or the matching Astryx primitive; do not hand-write controls from raw elements or custom control CSS.\n${details}`,
+  );
 }
 
 function main() {

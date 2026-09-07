@@ -34,7 +34,6 @@ import {
   type SessionRailChrome,
   type SessionRailData,
   type SessionRowActions,
-  type SidebarUpdateReminder,
 } from '@maka/ui';
 import { useSessionNavigationController } from '../controller/use-session-navigation-controller.js';
 import type { SessionNavigationRowActions } from '../controller/session-row-actions.js';
@@ -48,16 +47,15 @@ import type { SessionNavigationPorts, SessionNavigationSession } from '../ports.
 
 /** The chrome the shell owns and the rail only displays. */
 export interface SessionNavigationChromeInput {
+  NavigationExtras?: ComponentType<{ readonly onOpenSession: (sessionId: string) => void }>;
   selection: NavSelection;
   scheduledTasks?: readonly ScheduledTask[];
   moduleMemory?: NavModuleMemory;
-  updateReminder?: SidebarUpdateReminder;
   workHubActive: boolean;
   workHubEntry?: { active: boolean; label: string; onSelect(): void };
   projectActions?: ProjectRowActions;
   onSelect(selection: NavSelection): void;
   onOpenSettings(): void;
-  onOpenUpdate?(): void;
   onNew(): void;
   onExitWorkHub(): void;
   onSelectSession(sessionId: string): void;
@@ -167,6 +165,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       worktreeSessionIds: controller.selectors.worktreeSessionIds,
       groups: controller.layout.viewMode === 'project' ? controller.selectors.groups : undefined,
       groupVariant: controller.layout.viewMode,
+      sessionProjectName: controller.selectors.sessionProjectName,
       sessionMeta: controller.selectors.sessionMeta,
       sessionBadge,
       onSelectSession: props.onSelectSession,
@@ -177,6 +176,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       controller.layout.viewMode,
       controller.selectors.groups,
       controller.selectors.sessionMeta,
+      controller.selectors.sessionProjectName,
       controller.selectors.worktreeSessionIds,
       props.onSelectSession,
       projectActions,
@@ -193,6 +193,8 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
   // a few dozen fibers — and every field on it follows the shell, so a
   // comparator here would run more often than it would save.
   const chrome: SessionRailChrome = {
+    auxiliaryNavigation: props.NavigationExtras
+      ? <props.NavigationExtras onOpenSession={props.onSelectSession} /> : undefined,
     collapsed: controller.layout.collapsed,
     onCollapsedChange: sessionRailLayoutStore.setCollapsed,
     collapseHandleRef: sessionRailLayoutStore.collapseHandleRef,
@@ -214,8 +216,6 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       props.onNew();
     },
     onOpenSettings: props.onOpenSettings,
-    updateReminder: props.updateReminder,
-    onOpenUpdate: props.onOpenUpdate,
     workHubEntry: props.workHubEntry,
   };
 

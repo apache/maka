@@ -265,7 +265,7 @@ test('retains the Model overlay while a partial Host catalog still has the prior
     {
       sessions: [{ ...otherHostSession, revision: 2, activityAt: 20 }],
       completeHostIds: ['host-b'],
-      knownProfileIds: ['profile-a', 'profile-b'],
+      knownOwnerProfileIds: ['profile-a', 'profile-b'],
     },
   );
   assert.equal(partialCatalog.find((session) => session.id === 'session-a')?.revision, 1);
@@ -279,7 +279,7 @@ test('retains the Model overlay while a partial Host catalog still has the prior
       { ...targetAfterWrite, activityAt: 21 },
     ],
     completeHostIds: ['host-a', 'host-b'],
-    knownProfileIds: ['profile-a', 'profile-b'],
+    knownOwnerProfileIds: ['profile-a', 'profile-b'],
   });
   assert.equal(caughtUpCatalog.find((session) => session.id === 'session-a')?.revision, 2);
   await render(2, caughtUpCatalog);
@@ -365,7 +365,7 @@ test('retires Permission and Orchestration overlays by their committed Session r
     {
       sessions: [{ ...otherHostSession, revision: 2, activityAt: 20 }],
       completeHostIds: ['host-b'],
-      knownProfileIds: ['profile-a', 'profile-b'],
+      knownOwnerProfileIds: ['profile-a', 'profile-b'],
     },
   );
   await render(1, partialCatalog);

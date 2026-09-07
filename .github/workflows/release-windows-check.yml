@@ -36,6 +36,8 @@ on:
       - 'packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv'
       - 'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'
       - 'scripts/package-windows-x64.mjs'
+      - 'scripts/windows-archive-repro.test.mjs'
+      - 'patches/app-builder-lib+*.patch'
       - 'scripts/generate-runtime-host-peer-dependencies.mjs'
       - 'scripts/generate-runtime-host-peer-notices.mjs'
       - 'scripts/verify-windows-x64.mjs'
@@ -166,8 +168,13 @@ jobs:
       - name: Package the Windows installer and ZIP
         run: npm run package:windows-x64
 
+      - name: Check archive reproducibility with different input timestamps
+        run: npm run test:windows-archives
+
       - name: Report Rust build cache
-        run: kache report --format github >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          set -o pipefail
+          kache report --format github | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Save Rust build cache
         if: github.ref_name == github.event.repository.default_branch

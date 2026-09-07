@@ -49,17 +49,25 @@ export interface AttachmentSnapshotInput {
  * only canonical Session Artifacts, so every path is read once under the byte
  * cap and handed to the Host-owned ingest boundary.
  */
-export async function resolveAttachmentRefs(input: {
+export async function resolveAttachmentRefs<T = AttachmentRef>(input: {
   files: AttachmentIngestFile[];
-  snapshot: (input: AttachmentSnapshotInput) => Promise<AttachmentRef>;
+  snapshot: (input: AttachmentSnapshotInput) => Promise<T>;
   resizeImage?: (bytes: Uint8Array) => Promise<Uint8Array>;
   maxBytes?: number;
-}): Promise<AttachmentRef[]> {
+  maxTotalBytes?: number;
+}): Promise<T[]> {
   const maxBytes = input.maxBytes ?? MAX_ATTACHMENT_BYTES;
-  const refs: AttachmentRef[] = [];
+  const maxTotalBytes = input.maxTotalBytes ?? Infinity;
+  let readBytes = 0;
+  let snapshotBytes = 0;
+  const refs: T[] = [];
   for (const file of input.files) {
     const name = attachmentFileName(file);
-    let bytes: Uint8Array = isPathAttachment(file) ? await readFileCapped(file.path, maxBytes) : file.content;
+    let bytes: Uint8Array = isPathAttachment(file)
+      ? await readFileCapped(file.path, Math.min(maxBytes, maxTotalBytes - readBytes))
+      : file.content;
+    readBytes += bytes.byteLength;
+    if (readBytes > maxTotalBytes) throw new Error('附件总量超出大小限制。');
     let mimeType = resolveAttachmentMimeType(bytes, file.mimeType, name);
     const kind = attachmentKindFromMimeType(mimeType, name);
 
@@ -67,6 +75,8 @@ export async function resolveAttachmentRefs(input: {
       bytes = await input.resizeImage(bytes);
       mimeType = sniffAttachmentMimeType(bytes) ?? mimeType;
     }
+    snapshotBytes += bytes.byteLength;
+    if (snapshotBytes > maxTotalBytes) throw new Error('附件总量超出大小限制。');
     const artifactKind: ArtifactKind =
       kind === 'image' ? 'image' : kind === 'pdf' ? 'pdf' : 'file';
     refs.push(
@@ -176,18 +186,25 @@ function attachmentFileName(file: AttachmentIngestFile): string {
  * BEFORE any file is read or artifact created. Count, per-file byte cap, and
  * approval-token checks all run here so a too-large / unapproved / forged
  * request is rejected with zero I/O. Path sizes come from main-side `stat`,
- * never from the renderer. Each approval token is consumed exactly once.
+ * never from the renderer. Approvals remain valid through asynchronous
+ * preparation; commit revalidates all tokens and consumes them only after
+ * its synchronous admission succeeds, with no intervening event-loop turn.
  */
-export async function resolveIngestItems(input: {
+export async function prepareIngestItems(input: {
   senderId: number;
   items: unknown;
   approvals: AttachmentApprovalRegistry;
   stat: (path: string) => Promise<{ size: number }>;
   maxAttachments?: number;
   maxBytes?: number;
-}): Promise<AttachmentIngestFile[]> {
+  maxTotalBytes?: number;
+}): Promise<{
+  files: AttachmentIngestFile[];
+  commit<T>(admit: () => T): T;
+}> {
   const maxAttachments = input.maxAttachments ?? MAX_ATTACHMENT_COUNT;
   const maxBytes = input.maxBytes ?? MAX_ATTACHMENT_BYTES;
+  let remainingBytes = input.maxTotalBytes ?? Infinity;
   if (!Array.isArray(input.items)) throw new Error('附件信息无效，请重新选择文件后再发送。');
   if (input.items.length > maxAttachments) throw new Error('一次最多添加 8 个附件。');
   // Phase 1: validate every item with no side effects. Approval tokens are
@@ -205,6 +222,8 @@ export async function resolveIngestItems(input: {
       if (!approved) throw new Error('附件来源已过期或无效，请重新选择文件后再发送。');
       const statResult = await input.stat(approved.path);
       if (statResult.size > maxBytes) throw new Error('单个附件超出大小限制。');
+      if (statResult.size > remainingBytes) throw new Error('附件总量超出大小限制。');
+      remainingBytes -= statResult.size;
       const mimeType = pickMimeType(record.mimeType, approved.mimeType);
       planned.push({ path: approved.path, ...(mimeType ? { mimeType } : {}), size: statResult.size });
       approvalIds.push(record.approvalId);
@@ -216,23 +235,39 @@ export async function resolveIngestItems(input: {
       // per 4 chars, so ceil(maxBytes*4/3)+padding is a safe upper bound.
       const maxBase64Len = Math.ceil((maxBytes * 4) / 3) + 4;
       if (record.base64.length > maxBase64Len) throw new Error('单个附件超出大小限制。');
+      if (Buffer.byteLength(record.base64, 'base64') > remainingBytes)
+        throw new Error('附件总量超出大小限制。');
       const content = Buffer.from(record.base64, 'base64');
       if (content.byteLength > maxBytes) throw new Error('单个附件超出大小限制。');
+      remainingBytes -= content.byteLength;
       const mimeType = typeof record.mimeType === 'string' && record.mimeType.length > 0 ? record.mimeType : undefined;
       planned.push({ name: record.name, ...(mimeType ? { mimeType } : {}), size: content.byteLength, content });
       continue;
     }
     throw new Error('附件信息无效，请重新选择文件后再发送。');
   }
-  // Phase 2: consume all approval tokens now that every item validated. Peek
-  // passed, so each consume succeeds unless a concurrent request raced on the
-  // same token; in that rare case we surface it as an expired-token error.
-  for (const id of approvalIds) {
-    if (!input.approvals.consumeApproval(input.senderId, id)) {
-      throw new Error('附件来源已过期或无效，请重新选择文件后再发送。');
-    }
-  }
-  return planned;
+  return {
+    files: planned,
+    commit(admit) {
+      // Validate the whole set before admission: a concurrent send, sender
+      // teardown or expiry during preparation must not burn another token.
+      for (const id of approvalIds) {
+        if (!input.approvals.peekApproval(input.senderId, id))
+          throw new Error('附件来源已过期或无效，请重新选择文件后再发送。');
+      }
+      const result = admit();
+      for (const id of approvalIds) input.approvals.consumeApproval(input.senderId, id);
+      return result;
+    },
+  };
+}
+
+/** Existing Host-direct callers redeem approvals before uploading. */
+export async function resolveIngestItems(
+  input: Parameters<typeof prepareIngestItems>[0],
+): Promise<AttachmentIngestFile[]> {
+  const prepared = await prepareIngestItems(input);
+  return prepared.commit(() => prepared.files);
 }
 
 function pickMimeType(renderer: unknown, approved: string | undefined): string | undefined {

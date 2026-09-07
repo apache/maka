@@ -49,6 +49,9 @@ import {
 } from "@maka/ui";
 import { Cpu, ICON_SIZE } from "@maka/ui/icons";
 import { getSettingsProjectsCopy } from "../locales/settings-projects-copy.js";
+import { getPeerMeshCopy } from "../locales/peer-mesh-copy.js";
+import type { UiLocale } from "@maka/core/ui-locale";
+
 import { PasswordInput } from "./password-input.js";
 import { settingsActionErrorMessage } from "./settings-error-copy.js";
 import { SettingsField, SettingsRow, SettingsSection } from "./settings-section.js";
@@ -92,6 +95,7 @@ export function RuntimeHostProfilesSection(props: {
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
+  const peerMeshCopy = getPeerMeshCopy(locale);
   const pairingActionCopy: RuntimeHostPairingActionCopy = {
     retry: copy.resolvePairingRecovery,
     retryFailed: copy.resolvePairingRecoveryFailed,
@@ -125,7 +129,10 @@ export function RuntimeHostProfilesSection(props: {
     readonly name: string;
   }>();
 
-  const [switching, setSwitching] = useState(false);
+  const [activeAction, setActiveAction] = useState<'other' | 'local-access-enable'>();
+  const switching = activeAction !== undefined;
+  const localAccessEnabling = activeAction === 'local-access-enable';
+  const setSwitching = (value: boolean) => setActiveAction(value ? 'other' : undefined);
   const [draft, setDraft] = useState(createRemoteHostDraft);
 
   const reload = useCallback(async () => {
@@ -192,7 +199,7 @@ export function RuntimeHostProfilesSection(props: {
       if (result.kind === "unavailable") {
         toast.error(
           copy.selectFailed,
-          result.message,
+          settingsActionErrorMessage(result.message, locale),
           undefined,
           { profileId },
         );
@@ -262,7 +269,7 @@ export function RuntimeHostProfilesSection(props: {
   }
 
   async function enableLocalRemoteAccess(allowInterruptActiveTasks = false): Promise<void> {
-    setSwitching(true);
+    setActiveAction('local-access-enable');
     try {
       const result = await window.maka.localRuntimeHostRemoteAccess.enable({
         allowInterruptActiveTasks,
@@ -298,7 +305,9 @@ export function RuntimeHostProfilesSection(props: {
         );
       }
     } finally {
-      if (mountedRef.current) setSwitching(false);
+      if (mountedRef.current) {
+        setActiveAction(undefined);
+      }
     }
   }
 
@@ -399,11 +408,13 @@ export function RuntimeHostProfilesSection(props: {
         <SettingsRow
           label={copy.thisComputerRemoteAccess}
           description={
-            localAccess?.state === 'unsupported'
-              ? localAccess.message
-              : localAccess?.state === 'unavailable'
+            localAccessEnabling
+              ? copy.remoteAccessEnabling
+              : localAccess?.state === 'unsupported'
                 ? localAccess.message
-                : copy.thisComputerRemoteAccessHelp
+                : localAccess?.state === 'unavailable'
+                  ? localAccess.message
+                  : copy.thisComputerRemoteAccessHelp
           }
           end={(
             <HStack gap={2} align="center">
@@ -450,6 +461,7 @@ export function RuntimeHostProfilesSection(props: {
                     variant="secondary"
                     size="sm"
                     label={copy.enableRemoteAccess}
+                    isLoading={localAccessEnabling}
                     isDisabled={
                       switching ||
                       !localAccess ||
@@ -660,11 +672,9 @@ export function RuntimeHostProfilesSection(props: {
                               <PeerMeshPeerIdButton
                                 peerId={profile.transport.reachability.lease.peerId}
                                 displayValue={abbreviatePeerId(profile.transport.reachability.lease.peerId)}
-                                copyLabel={locale.startsWith('zh')
-                                  ? `复制完整 Peer ID：${profile.transport.reachability.lease.peerId}`
-                                  : `Copy full Peer ID: ${profile.transport.reachability.lease.peerId}`}
-                                copiedTitle={locale.startsWith('zh') ? 'Peer ID 已复制' : 'Peer ID copied'}
-                                failedTitle={locale.startsWith('zh') ? '无法复制 Peer ID' : 'Could not copy Peer ID'}
+                                copyLabel={peerMeshCopy.copyPeerId(profile.transport.reachability.lease.peerId)}
+                                copiedTitle={peerMeshCopy.peerIdCopied}
+                                failedTitle={copy.peerIdCopyFailed}
                                 errorMessage={(error) => settingsActionErrorMessage(error, locale)}
                                 className="settingsRuntimeHostPeerId"
                               />
@@ -692,8 +702,8 @@ export function RuntimeHostProfilesSection(props: {
                             <Badge
                               variant="neutral"
                               label={entry.peerPath.kind === 'direct'
-                                ? (locale.startsWith('zh') ? '直连' : 'Direct')
-                                : (locale.startsWith('zh') ? '成员转发' : 'Member transit')}
+                                ? copy.peerPathDirect
+                                : copy.peerPathTransit}
                             />
                           </span>
                         </Tooltip>
@@ -836,12 +846,11 @@ export function RuntimeHostProfilesSection(props: {
 
 function peerPathDetail(
   path: RuntimeHostPeerConnectionPath,
-  locale: string,
+  locale: UiLocale,
 ): string {
+  const copy = getSettingsProjectsCopy(locale).runtimeHost;
   if (path.kind === 'transit') {
-    return locale.startsWith('zh')
-      ? `成员转发 · ${abbreviatePeerId(path.relayPeerId)}`
-      : `Member transit · ${abbreviatePeerId(path.relayPeerId)}`;
+    return `${copy.peerPathTransit} · ${abbreviatePeerId(path.relayPeerId)}`;
   }
   const transport = path.transport === 'webrtc'
     ? 'WebRTC'
@@ -849,10 +858,8 @@ function peerPathDetail(
       ? 'QUIC'
       : path.transport === 'tcp'
         ? 'TCP'
-        : locale.startsWith('zh')
-          ? '其他'
-          : 'Other';
-  return `${locale.startsWith('zh') ? '直连' : 'Direct'} · ${transport}`;
+        : copy.peerPathTransportOther;
+  return `${copy.peerPathDirect} · ${transport}`;
 }
 
 function abbreviatePeerId(peerId: string): string {

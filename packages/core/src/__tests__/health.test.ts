@@ -44,6 +44,20 @@ describe('HealthSignal contract', () => {
     assert.strictEqual(result.source, 'connection_test');
   });
 
+  test('separates connection test error classes from legacy diagnostics', () => {
+    const coded = healthSignalFromConnection(
+      connection({ lastTestStatus: 'needs_reauth', lastTestMessage: 'auth' }),
+      20,
+    );
+    assert.deepStrictEqual(coded.detail, { kind: 'last_test_error_class', errorClass: 'auth' });
+
+    const legacy = healthSignalFromConnection(
+      connection({ lastTestStatus: 'error', lastTestMessage: 'HTTP 502 upstream failure' }),
+      20,
+    );
+    assert.deepStrictEqual(legacy.detail, { kind: 'last_test_message' });
+  });
+
   test('a missing default model warns only when the workspace has no default target', () => {
     // The catalog projects `defaultModel` onto exactly one connection (the
     // default target). With a default configured elsewhere, an enabled
@@ -244,6 +258,10 @@ describe('HealthSignal contract', () => {
     assert.strictEqual(partial.status, 'warning');
     assert.strictEqual(partial.layer, 'feature');
     assert.strictEqual(partial.blocksCapability, false);
+    assert.deepStrictEqual(partial.detail, {
+      kind: 'capability_reason',
+      reason: '打开 Daily Review 可查看本地活动聚合结果',
+    });
   });
 });
 

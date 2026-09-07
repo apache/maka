@@ -23,8 +23,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
+import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import { RunSealedError } from '@maka/core/runtime-event-store';
+import { readLogicalRuntimeExecution } from '@maka/core/runtime-logical-execution';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   buildImmutableRuntimePrefix,
@@ -823,7 +826,7 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
-  it('decodes a persisted continuation target without widening new claims', async () => {
+  it('refuses a continuation target opening it cannot read, stored or submitted', async () => {
     await withStore(async (store, dbPath) => {
       const claim = continuationClaim();
       await persistImmutablePrefix(store, continuationSourcePrefix());
@@ -832,13 +835,16 @@ describe('SqliteRuntimeStore', () => {
           store.claimContinuation({
             claim: {
               ...claim,
-              targetRunHeader: {
-                ...claim.targetRunHeader,
-                permissionMode: 'execute',
-              } as unknown as ContinuationClaimV1['targetRunHeader'],
+              targetOpening: {
+                ...claim.targetOpening,
+                configuration: {
+                  ...claim.targetOpening.configuration,
+                  permissionMode: 'execute',
+                },
+              } as unknown as ContinuationClaimV1['targetOpening'],
             },
           }),
-        /Invalid AgentRun header schema/,
+        /Invalid RuntimeEvent invocation_opened schema/,
       );
       assert.equal((await store.claimContinuation({ claim })).kind, 'acquired');
 
@@ -846,9 +852,9 @@ describe('SqliteRuntimeStore', () => {
       try {
         database.exec(`
           UPDATE runtime_continuation_claims
-          SET target_run_header_json = json_set(
-            target_run_header_json,
-            '$.permissionMode',
+          SET target_opening_json = json_set(
+            target_opening_json,
+            '$.configuration.permissionMode',
             'execute'
           )
           WHERE claim_id = 'claim-1';
@@ -857,10 +863,188 @@ describe('SqliteRuntimeStore', () => {
         database.close();
       }
 
-      const persisted = await store.readContinuationClaimByBoundary(claim.boundaryDigest);
-      assert.equal(persisted?.targetRunHeader.permissionMode, 'ask');
+      // A persisted Run header used to be widened on read. The opening fact has
+      // no legacy layer and none is wanted: a claim whose frozen opening cannot
+      // be read cannot authenticate the start event it exists to authenticate,
+      // and admitting one against a guessed opening would be the failure this
+      // record is meant to prevent.
+      await assert.rejects(
+        store.readContinuationClaimByBoundary(claim.boundaryDigest),
+        /Invalid RuntimeEvent invocation_opened schema/,
+      );
     });
   });
+
+  for (const initialKind of ['fresh', 'continuation'] as const) {
+    it(`authenticates repeated handoff under one ${initialKind} logical admission across reopen`, async () => {
+      await withStore(async (store, dbPath) => {
+        const manual = continuationClaim();
+        let source: RuntimeEvent;
+        const segments: ReturnType<typeof runtimePrefixSegment>[] = [];
+        if (initialKind === 'continuation') {
+          const ancestor = continuationSourcePrefix();
+          await persistImmutablePrefix(store, ancestor);
+          segments.push(runtimePrefixSegment(ancestor));
+          await store.claimContinuation({ claim: manual });
+          source = continuationStartEvent(manual);
+          await store.commitContinuationStart({ claim: manual, event: source });
+        } else {
+          source = {
+            ...continuationStartEvent(manual),
+            id: 'root-opening',
+            actions: undefined,
+            content: {
+              ...manual.targetOpening,
+              source: { kind: 'fresh' },
+              root: { kind: 'goal', goalId: 'original-goal' },
+              lineage: { parentRunId: 'owning-agent', parentTurnId: 'owning-turn' },
+            },
+          };
+          await store.appendRuntimeEvent(source.sessionId, source.runId, source);
+        }
+        const rootRunId = source.runId;
+        const logicalIdentity = {
+          sessionId: source.sessionId,
+          turnId: source.turnId,
+          runId: rootRunId,
+        };
+        for (let index = 0; index < 2; index += 1) {
+          const target = {
+            sessionId: source.sessionId,
+            turnId: source.turnId,
+            runId: `handoff-run-${index}`,
+            invocationId: `handoff-invocation-${index}`,
+          };
+          const claimId = `handoff-claim-${index}`;
+          const seal: RuntimeEvent = {
+            ...source,
+            id: `pause-${index}`,
+            content: undefined,
+            ts: 15 + index,
+            actions: {
+              endInvocation: true,
+              handoffPause: {
+                protocol: 'runtime_handoff_pause_v1',
+                handoffId: `handoff-${index}`,
+                remainingSteps: null,
+                hostEpoch: 'old-host',
+                rootRunId,
+                successorRunId: target.runId,
+                successorInvocationId: target.invocationId,
+                claimId,
+              },
+            },
+          };
+          await store.appendRuntimeEvent(seal.sessionId, seal.runId, seal);
+          assert.equal(
+            (await readLogicalRuntimeExecution(store, logicalIdentity))?.pendingHandoff?.claimId,
+            claimId,
+          );
+          segments.push(
+            runtimePrefixSegment(
+              await store.readImmutableRuntimePrefix({
+                sessionId: source.sessionId,
+                runId: source.runId,
+              }),
+            ),
+          );
+          const boundary = createRuntimeBoundaryCursor(
+            segments as [(typeof segments)[number], ...typeof segments],
+          );
+          const proposed = continuationClaimForBoundary(boundary, { claimId, target });
+          assert.equal(source.content?.kind, 'invocation_opened');
+          const opening = source.content as ContinuationClaimV1['targetOpening'];
+          assert.equal(proposed.targetOpening.source.kind, 'continuation');
+          const claim: ContinuationClaimV1 = {
+            ...proposed,
+            targetOpening: {
+              ...opening,
+              source: {
+                ...(proposed.targetOpening.source as Extract<
+                  ContinuationClaimV1['targetOpening']['source'],
+                  { kind: 'continuation' }
+                >),
+                kind: 'handoff',
+                rootRunId,
+                claimId,
+                boundaryDigest: boundary.manifestDigest,
+              },
+            },
+          };
+          for (const targetOpening of [
+            { ...claim.targetOpening, root: { kind: 'user' as const } },
+            { ...claim.targetOpening, lineage: { parentRunId: 'stolen-owner' } },
+            { ...claim.targetOpening, configuration: { ...opening.configuration, cwd: '/other' } },
+          ]) {
+            if (JSON.stringify(targetOpening) === JSON.stringify(claim.targetOpening)) continue;
+            await assert.rejects(
+              store.claimContinuation({ claim: { ...claim, targetOpening } }),
+              /sealed source authority/,
+            );
+          }
+          await assert.rejects(
+            store.claimContinuation({
+              claim: {
+                ...claim,
+                target: { ...claim.target, invocationId: 'unauthorized-physical-target' },
+              },
+            }),
+            /sealed source authority/,
+          );
+          assert.equal((await store.claimContinuation({ claim })).kind, 'acquired');
+          assert.equal((await store.claimContinuation({ claim })).kind, 'existing');
+          assert.equal(
+            (await readLogicalRuntimeExecution(store, logicalIdentity))?.pendingHandoff?.claimId,
+            claimId,
+          );
+          source = continuationStartEvent(claim, { id: `handoff-start-${index}` });
+          await store.commitContinuationStart({ claim, event: source });
+          await store.commitContinuationStart({ claim, event: source });
+          const live = await readLogicalRuntimeExecution(store, logicalIdentity);
+          assert.equal(live?.root.runId, rootRunId);
+          assert.equal(live?.tip.runId, source.runId);
+          assert.equal(live?.pendingHandoff, undefined);
+          await assert.rejects(
+            store.appendRuntimeEvent(source.sessionId, 'rogue', {
+              ...source,
+              id: `rogue-${index}`,
+              runId: 'rogue',
+              invocationId: 'rogue',
+              content: { kind: 'text', text: 'unauthorized' },
+              actions: undefined,
+            }),
+            /target identity conflict/,
+          );
+        }
+        const terminal: RuntimeEvent = {
+          ...source,
+          id: 'logical-completion',
+          content: undefined,
+          status: 'completed',
+          actions: { endInvocation: true },
+        };
+        await store.appendRuntimeEvent(terminal.sessionId, terminal.runId, terminal);
+        store.close();
+        const reopened = createSqliteRuntimeStore(dbPath);
+        try {
+          const claims = await reopened.listContinuationClaimsForRecovery(source.sessionId);
+          assert.equal(claims.length, initialKind === 'fresh' ? 2 : 3);
+          assert.equal(claims.at(-1)?.claim.target.turnId, source.turnId);
+          assert.deepEqual(
+            (await reopened.readRuntimeEvents(source.sessionId, source.runId)).at(-1),
+            encodeCanonicalRuntimeEvent(terminal).event,
+          );
+          assert.equal(
+            (await readLogicalRuntimeExecution(reopened, logicalIdentity))?.tip.terminalEvent
+              ?.status,
+            'completed',
+          );
+        } finally {
+          reopened.close();
+        }
+      });
+    });
+  }
 
   it('rejects a continuation claim whose immediate source boundary is not durable', async () => {
     await withStore(async (store) => {
@@ -1073,6 +1257,47 @@ describe('SqliteRuntimeStore', () => {
 
       assert.equal(conflict.kind, 'conflict');
       assert.deepEqual(conflict.claim, claim);
+    });
+  });
+
+  it('lets a started continuation target be purged instead of refusing the delete', async () => {
+    await withStore(async (store, dbPath) => {
+      const claim = continuationClaim();
+      await persistImmutablePrefix(store, continuationSourcePrefix());
+      assert.equal((await store.claimContinuation({ claim })).kind, 'acquired');
+
+      const db = new DatabaseSync(dbPath);
+      try {
+        db.exec('PRAGMA foreign_keys = ON');
+        // Stand the claim up the way starting a continuation does: its start
+        // event is event one of the target Session's run.
+        const start = db
+          .prepare('SELECT event_id, session_id FROM runtime_events ORDER BY event_seq ASC LIMIT 1')
+          .get() as { event_id: string; session_id: string };
+        db.prepare(
+          "UPDATE runtime_continuation_claims SET start_event_id = ?, start_kind = 'runtime_admission' WHERE claim_id = ?",
+        ).run(start.event_id, claim.claimId);
+
+        // Purging a conversation deletes its events. The claim used to have no
+        // ON DELETE clause, so the constraint refused this and rolled the whole
+        // purge back — for the user's delete, a copy rollback, an import
+        // discard and Session retirement alike.
+        db.prepare('DELETE FROM runtime_events WHERE session_id = ?').run(start.session_id);
+
+        assert.equal(
+          (
+            db
+              .prepare(
+                'SELECT COUNT(*) AS count FROM runtime_continuation_claims WHERE claim_id = ?',
+              )
+              .get(claim.claimId) as { count: number }
+          ).count,
+          0,
+          'a continuation whose target was deleted no longer names anything, so it goes too',
+        );
+      } finally {
+        db.close();
+      }
     });
   });
 
@@ -1913,32 +2138,37 @@ function continuationClaimForBoundary(
     providerProjectionVersion: 1,
     providerReplayDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     target,
-    targetRunHeader: {
-      ...target,
-      status: 'created',
-      backendKind: 'fake',
-      llmConnectionSlug: 'connection-1',
-      modelId: 'model-1',
-      cwd: '/workspace/repo',
-      permissionMode: 'ask',
-      collaborationMode: 'agent',
-      orchestrationMode: 'default',
-      orchestrationSource: 'session',
-      agentSwarmAuthorization: 'none',
-      createdAt: claimedAt,
-      updatedAt: claimedAt,
-      parentRunId: source.identity.runId,
-      parentTurnId: source.identity.turnId,
-      continuationSource: {
-        protocol: 'continuation_source_v2',
-        claimId,
-        boundaryDigest: boundary.manifestDigest,
+    targetOpening: {
+      kind: 'invocation_opened',
+      protocol: 'invocation_opened_v1',
+      route: {
+        provenance: 'unknown',
+        backendKind: 'fake',
+        llmConnectionSlug: 'connection-1',
+        modelId: 'model-1',
+      },
+      configuration: {
+        cwd: '/workspace/repo',
+        permissionMode: 'ask',
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+        orchestrationSource: 'session',
+        toolMode: DEFAULT_TOOL_MODE,
+        agentSwarmAuthorization: 'none',
+      },
+      root: { kind: 'user' },
+      source: {
+        kind: 'continuation',
         sourceInvocationId: source.identity.invocationId,
         sourceRunId: source.identity.runId,
         sourceTurnId: source.identity.turnId,
         sourceRuntimeEventHighWater: source.position.lastEventSeq,
-        sourcePrefixDigest: source.prefixDigest,
-        replayManifestDigest: boundary.manifestDigest,
+        claimId,
+        boundaryDigest: boundary.manifestDigest,
+      },
+      lineage: {
+        parentRunId: source.identity.runId,
+        parentTurnId: source.identity.turnId,
       },
     },
     claimedAt,
@@ -2021,6 +2251,8 @@ function continuationStartEvent(
     partial: false,
     role: 'system',
     author: 'system',
+    modelVisibility: 'hidden',
+    content: claim.targetOpening,
     actions: {
       ...(overrides.toolBoundaryProtocol
         ? { runtimeProtocol: { toolBoundary: overrides.toolBoundaryProtocol } }

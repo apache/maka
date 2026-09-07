@@ -40,6 +40,17 @@ export function isAgentGraphPanelDismissible(
   return status !== undefined && DISMISSIBLE_STATUSES.has(status);
 }
 
+const LIVE_STATUSES = new Set<AgentGraphPanelStatus>([
+  'active',
+  'waiting',
+  'closing',
+]);
+
+/** A graph in one of these statuses can be stopped and must keep signaling liveness. */
+export function isAgentGraphLive(status: AgentGraphPanelStatus | undefined): boolean {
+  return status !== undefined && LIVE_STATUSES.has(status);
+}
+
 export function dismissAgentGraphPanel(
   dismissedBySession: AgentGraphPanelDismissals,
   sessionId: string,

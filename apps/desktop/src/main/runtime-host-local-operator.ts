@@ -17,10 +17,10 @@
  * under the License.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, rm, rmdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { redactSecrets } from '@maka/core/redaction';
 import {
   DEFAULT_PROCESS_TERMINATION_GRACE_MS,
@@ -28,6 +28,7 @@ import {
 } from '@maka/runtime/process-tree-terminator';
 import {
   decodeRuntimeHostAccessManagementFrame,
+  RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV,
   decodeRuntimeHostPeerManagementFrame,
   decodeRuntimeHostPeerMeshManagementFrame,
   decodeRuntimeHostServiceManagementFrame,
@@ -62,6 +63,43 @@ import {
 const SETUP_TIMEOUT_MS = 10 * 60_000;
 const SETUP_FRAME_PENDING_MAX = 20 * 1024;
 const STDERR_MAX_BYTES = 64 * 1024;
+const SETUP_CLEANUP_MAX_RETRIES = 10;
+const SETUP_CLEANUP_RETRY_DELAY_MS = 100;
+const WINDOWS_NPM_RESOLUTION_SCRIPT = String.raw`
+const { statSync } = require('node:fs');
+const path = require('node:path').win32;
+const candidates = [];
+const configuredNode = process.env.npm_node_execpath?.trim();
+const configuredCli = process.env.npm_execpath?.trim();
+if (configuredNode && configuredCli) candidates.push([configuredNode, configuredCli]);
+const searchPath = Object.entries(process.env).find(([key]) => key.toUpperCase() === 'PATH')?.[1];
+for (const entry of searchPath?.split(path.delimiter) ?? []) {
+  const directory = entry.replace(/^"|"$/g, '').trim();
+  if (!directory) continue;
+  candidates.push([
+    path.join(directory, 'node.exe'),
+    path.join(directory, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ]);
+}
+let resolved;
+for (const [nodePath, cliPath] of candidates) {
+  try {
+    if (
+      path.isAbsolute(nodePath) &&
+      path.isAbsolute(cliPath) &&
+      statSync(nodePath).isFile() &&
+      statSync(cliPath).isFile()
+    ) {
+      resolved = [nodePath, cliPath];
+      break;
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+}
+if (resolved) process.stdout.write(JSON.stringify(resolved));
+else process.exitCode = 1;
+`;
 
 type RuntimeHostSetupCompleteFrame = Extract<RuntimeHostSetupFrame, { kind: 'complete' }>;
 
@@ -89,6 +127,7 @@ export interface DesktopRuntimeHostLocalSetupCommand {
 }
 
 export interface DesktopRuntimeHostLocalServiceManagementInput {
+  readonly retirementSignal?: AbortSignal;
   readonly operator: RuntimeHostOperatorCommand;
   readonly action:
     | 'status'
@@ -102,6 +141,7 @@ export interface DesktopRuntimeHostLocalServiceManagementInput {
   readonly target: DesktopRuntimeHostLocalServiceTarget;
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly expectedConfigFingerprint?: string;
+  readonly expectedHost?: { readonly hostEpoch: string; readonly pid: number };
   readonly allowInterruptActiveTasks?: boolean;
   readonly retainManagedDeployment?: boolean;
   readonly signal?: AbortSignal;
@@ -164,6 +204,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
   readonly spawnProcess?: typeof spawn;
   readonly setupTimeoutMs?: number;
   readonly terminateProcess?: typeof terminateChildProcessTree;
+  readonly removeSetupWorkingDirectory?: (path: string) => Promise<void>;
 } = {}): {
   runSetup(
     setup: DesktopRuntimeHostLocalSetupInput,
@@ -197,6 +238,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
   ): Promise<RuntimeHostServiceManagementFrame>;
   runUpdate(
     input: {
+      readonly retirementSignal?: AbortSignal;
       readonly setupPackage: DesktopRuntimeHostSetupPackage;
       readonly target: DesktopRuntimeHostLocalServiceTarget;
       readonly expectedHost?: { readonly hostEpoch: string; readonly pid: number };
@@ -232,6 +274,15 @@ export function createDesktopRuntimeHostLocalOperator(input: {
   let closed = false;
   const closing = new AbortController();
   const terminate = input.terminateProcess ?? terminateChildProcessTree;
+  const removeSetupWorkingDirectory =
+    input.removeSetupWorkingDirectory ??
+    ((path: string) =>
+      rm(path, {
+        recursive: true,
+        force: true,
+        maxRetries: SETUP_CLEANUP_MAX_RETRIES,
+        retryDelay: SETUP_CLEANUP_RETRY_DELAY_MS,
+      }));
 
   return {
     async runSetup(setup, onProgress) {
@@ -267,7 +318,12 @@ export function createDesktopRuntimeHostLocalOperator(input: {
           active,
         });
       } finally {
-        await rm(workingDirectory, { recursive: true, force: true });
+        try {
+          await removeSetupWorkingDirectory(workingDirectory);
+        } catch {
+          // The private scratch directory is not part of the setup transaction.
+          // Its cleanup must not replace the operator's framed result or error.
+        }
       }
     },
     runPeer(command) {
@@ -369,6 +425,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
             ...(command.expectedConfigFingerprint
               ? ['--expected-config-fingerprint', command.expectedConfigFingerprint]
               : []),
+            ...(command.expectedHost ? ['--expected-host-json', JSON.stringify(command.expectedHost)] : []),
             ...(command.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
             ...(command.retainManagedDeployment ? ['--retain-managed-deployment'] : []),
             ...managedTargetArgs(command.target),
@@ -384,6 +441,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
         timeoutMs: input.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
         terminate,
         signal: combinedSignal(command.signal, closing.signal),
+        retirementSignal: command.retirementSignal,
         active,
       }).then((frame) => requireServiceFrame(frame, command.action));
     },
@@ -430,6 +488,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
         timeoutMs: input.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
         terminate,
         signal: combinedSignal(command.signal, closing.signal),
+        retirementSignal: command.retirementSignal,
         active,
         action: 'update',
         onProgress,
@@ -568,6 +627,7 @@ function requireServiceFrame(
 }
 
 function runServiceFrameProcess(input: {
+  readonly retirementSignal?: AbortSignal;
   readonly command: DesktopRuntimeHostLocalSetupCommand;
   readonly environment: NodeJS.ProcessEnv;
   readonly spawnProcess: typeof spawn;
@@ -662,6 +722,67 @@ function resolveLocalSetupPackage(
   return { specifier: setupPackage.path, integrity: setupPackage.integrity };
 }
 
+async function resolveLocalNpmCommand(
+  command: DesktopRuntimeHostLocalSetupCommand,
+  environment: NodeJS.ProcessEnv,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  label: string,
+): Promise<DesktopRuntimeHostLocalSetupCommand> {
+  if (process.platform !== 'win32' || command.executable !== 'npm') return command;
+
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const lookupSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  let npmCommand: readonly [string, string];
+  try {
+    npmCommand = await locateWindowsNpmCommand(environment, lookupSignal);
+  } catch (error) {
+    if (signal?.aborted) throw abortError(signal);
+    if (timeout.aborted) throw new Error(`${label} timed out`);
+    throw new Error(
+      'Local Runtime Host management requires a complete Node.js and npm installation',
+      { cause: error },
+    );
+  }
+  return { executable: npmCommand[0], args: [npmCommand[1], ...command.args] };
+}
+
+function locateWindowsNpmCommand(
+  environment: NodeJS.ProcessEnv,
+  signal: AbortSignal,
+): Promise<readonly [string, string]> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      process.execPath,
+      ['-e', WINDOWS_NPM_RESOLUTION_SCRIPT],
+      {
+        encoding: 'utf8',
+        env: { ...environment, ELECTRON_RUN_AS_NODE: '1' },
+        maxBuffer: 64 * 1024,
+        signal,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        if (error) return reject(error);
+        let command: unknown;
+        try {
+          command = JSON.parse(stdout);
+        } catch (parseError) {
+          return reject(parseError);
+        }
+        if (
+          !Array.isArray(command) ||
+          command.length !== 2 ||
+          !command.every((path) => typeof path === 'string' && isAbsolute(path))
+        ) {
+          return reject(new Error('The npm resolver returned an invalid command'));
+        }
+        resolve([command[0], command[1]]);
+      },
+    );
+  });
+}
+
 function managedTargetArgs(target: DesktopRuntimeHostLocalServiceTarget): string[] {
   return [
     '--expected-service-id',
@@ -677,6 +798,7 @@ function managedTargetArgs(target: DesktopRuntimeHostLocalServiceTarget): string
 }
 
 function runSingleFrameProcess<Frame>(input: {
+  readonly retirementSignal?: AbortSignal;
   readonly command: DesktopRuntimeHostLocalSetupCommand;
   readonly prefix: string;
   readonly decode: (line: string) => Frame | undefined;
@@ -752,7 +874,8 @@ function runSetupProcess(input: {
   });
 }
 
-function runFramedProcess<Frame, Result>(input: {
+async function runFramedProcess<Frame, Result>(input: {
+  readonly retirementSignal?: AbortSignal;
   readonly command: DesktopRuntimeHostLocalSetupCommand;
   readonly cwd?: string;
   readonly prefix: string;
@@ -771,17 +894,38 @@ function runFramedProcess<Frame, Result>(input: {
   readonly inputLine?: string;
   readonly pendingMaxBytes?: number;
 }): Promise<Result> {
+  const deadline = Date.now() + input.timeoutMs;
   input.signal?.throwIfAborted();
+  input.retirementSignal?.throwIfAborted();
+  const lookupTimeoutMs = deadline - Date.now();
+  if (lookupTimeoutMs <= 0) throw new Error(`${input.label} timed out`);
+  const command = await resolveLocalNpmCommand(
+    input.command,
+    input.environment,
+    input.signal,
+    lookupTimeoutMs,
+    input.label,
+  );
+  input.signal?.throwIfAborted();
+  const remainingTimeoutMs = deadline - Date.now();
+  if (remainingTimeoutMs <= 0) throw new Error(`${input.label} timed out`);
   return new Promise((resolve, reject) => {
-    const child = input.spawnProcess(input.command.executable, [...input.command.args], {
+    const child = input.spawnProcess(command.executable, [...command.args], {
       ...(input.cwd ? { cwd: input.cwd } : {}),
       detached: process.platform !== 'win32',
-      env: input.environment,
-      stdio: [input.inputLine === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      env: { ...input.environment, ...(input.retirementSignal
+        ? { [RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV]: '1' } : {}) },
+      stdio: [input.inputLine === undefined && !input.retirementSignal ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
     input.active.add(child);
     if (input.inputLine !== undefined) child.stdin?.end(`${input.inputLine}\n`);
+    const cancelRetirement = () => { child.stdin?.end(); };
+    // EOF is a cooperative request, not permission to kill the lifecycle owner.
+    // Old operators may ignore it; their final transaction result is still awaited.
+    child.stdin?.on('error', () => undefined);
+    input.retirementSignal?.addEventListener('abort', cancelRetirement, { once: true });
+    if (input.retirementSignal?.aborted) cancelRetirement();
     let filterFailure: Error | undefined;
     let stopFailure: Error | undefined;
     let stderr = '';
@@ -805,6 +949,7 @@ function runFramedProcess<Frame, Result>(input: {
     const cleanup = () => {
       clearTimeout(timeout);
       input.signal?.removeEventListener('abort', onAbort);
+      input.retirementSignal?.removeEventListener('abort', cancelRetirement);
       input.active.delete(child);
     };
     const finish = (result: Result | undefined, error?: Error) => {
@@ -823,7 +968,10 @@ function runFramedProcess<Frame, Result>(input: {
       );
     };
     const onAbort = () => stop(abortError(input.signal));
-    const timeout = setTimeout(() => stop(new Error(`${input.label} timed out`)), input.timeoutMs);
+    const timeout = setTimeout(
+      () => stop(new Error(`${input.label} timed out`)),
+      remainingTimeoutMs,
+    );
     input.signal?.addEventListener('abort', onAbort, { once: true });
     child.stdout?.on('data', (chunk: Buffer) => filter.push(chunk.toString('utf8')));
     child.stderr?.on('data', (chunk: Buffer) => {

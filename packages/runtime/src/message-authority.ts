@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import type { SteeringLease } from '@maka/core/backend-types';
-import type { RootExecutionDescriptor } from '@maka/core/agent-run';
+import type { BackendStopMode, SteeringLease } from '@maka/core/backend-types';
+import type { RootExecutionDescriptor } from '@maka/core/runtime-invocation';
 import type { MessageContent, SessionEvent } from '@maka/core/events';
 import type { StopSessionInput } from './session-manager.js';
 

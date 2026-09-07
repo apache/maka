@@ -27,6 +27,7 @@
  */
 
 import * as nodeCrypto from 'node:crypto';
+import type { ModelRetryDecision } from './model-failure.js';
 import { CONTEXT_OFFLOAD_ID_MAX_CODE_POINTS, type SessionContextRef } from './context-offload.js';
 import type {
   AdditionalPermissionRequest,
@@ -1203,6 +1204,7 @@ export interface QueueUpdateEvent extends BaseEvent {
 }
 
 export type ProviderRetryReason =
+  | 'stream_truncated'
   | 'network'
   | 'provider_capacity'
   | 'provider_unavailable'
@@ -1248,6 +1250,7 @@ export interface ProviderRetryStartedEvent extends BaseEvent {
 
 export interface ErrorEvent extends BaseEvent {
   type: 'error';
+  retry?: ModelRetryDecision;
   recoverable: boolean;
   code?: string;
   /** Stable machine-readable reason for UI / telemetry routing. */

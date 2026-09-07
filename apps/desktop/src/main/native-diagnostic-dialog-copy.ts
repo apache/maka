@@ -39,16 +39,6 @@ interface NativeDiagnosticDialogCopy {
     readonly recover: string;
     readonly exit: string;
   };
-  readonly runtimeHostRecovery: {
-    readonly title: string;
-    readonly message: string;
-    readonly detail: string;
-    readonly activeTasks: string;
-    readonly repairFailed: string;
-    readonly repair: string;
-    readonly repairAndRestart: string;
-    readonly exit: string;
-  };
   readonly defaultRuntimeHostRecovery: {
     readonly title: string;
     connectFailed(profileName: string): string;
@@ -88,18 +78,6 @@ const COPY = {
       recover: 'Recover Interface',
       exit: 'Exit',
     },
-    runtimeHostRecovery: {
-      title: 'Maka needs to repair Runtime Host',
-      message: 'The Runtime Host for this workspace could not start.',
-      detail:
-        'Maka can repair the managed Runtime Host selected by this Desktop. Your workspace, Host identity, credentials, and settings will be preserved. Repair may replace the installed Host with the version selected for this Desktop even when automatic update compatibility cannot be confirmed.',
-      activeTasks:
-        'The Host may still own active work. Continuing can interrupt that work before the Host restarts.',
-      repairFailed: 'The previous repair attempt did not finish. Copy diagnostics to inspect the details.',
-      repair: 'Repair Runtime Host',
-      repairAndRestart: 'Repair and Restart Host',
-      exit: 'Exit',
-    },
     defaultRuntimeHostRecovery: {
       title: 'Default Runtime Host is unavailable',
       connectFailed: (profileName) => `Could not connect to ${profileName}`,
@@ -118,7 +96,7 @@ const COPY = {
       exit: 'Exit',
     },
   },
-  zh: {
+  'zh-CN': {
     dialog: {
       copy: '复制诊断信息',
       copyAgain: '再次复制',
@@ -138,17 +116,6 @@ const COPY = {
       recover: '恢复界面',
       exit: '退出',
     },
-    runtimeHostRecovery: {
-      title: 'Maka 需要修复 Runtime Host',
-      message: '管理此工作区的 Runtime Host 无法启动。',
-      detail:
-        'Maka 可以修复此 Desktop 选择的托管 Runtime Host。工作区、Host 身份、凭证和设置都会保留。即使无法确认自动更新兼容性，修复也可能使用此 Desktop 选择的版本替换当前 Host。',
-      activeTasks: 'Host 可能仍有正在运行的任务。继续会先中断这些任务，再重启 Host。',
-      repairFailed: '上一次修复未能完成。复制诊断信息可查看详情。',
-      repair: '修复 Runtime Host',
-      repairAndRestart: '修复并重启 Host',
-      exit: '退出',
-    },
     defaultRuntimeHostRecovery: {
       title: '默认 Runtime Host 无法连接',
       connectFailed: (profileName) => `无法连接 ${profileName}`,
@@ -164,6 +131,44 @@ const COPY = {
       detail: (workspaceRoot) =>
         `系统中的磁盘标识可能发生了变化。仅当这是本机原来的 Maka 工作区、而不是复制出的工作区时，才选择修复。\n\n${workspaceRoot}`,
       repair: '修复工作区',
+      exit: '退出',
+    },
+  },
+  'zh-TW': {
+    dialog: {
+      copy: '複製診斷資訊',
+      copyAgain: '再次複製',
+      copied: '診斷資訊已複製，可直接貼上到問題報告中。',
+      copyFailed: '無法複製診斷資訊。',
+    },
+    fatalStartup: {
+      title: 'Maka 啟動失敗',
+      message: 'Maka 無法完成啟動。',
+      detail: '啟動時發生未預期的錯誤。複製診斷資訊可檢視詳細資料。',
+      exit: '退出',
+    },
+    rendererGone: {
+      title: 'Maka 需要復原',
+      message: 'Maka 介面意外停止執行。',
+      detail: '只復原介面，不重新啟動 Maka。Runtime Host、正在執行的工作和背景服務都會保留。',
+      recover: '復原介面',
+      exit: '退出',
+    },
+    defaultRuntimeHostRecovery: {
+      title: '預設 Runtime Host 無法連線',
+      connectFailed: (profileName) => `無法連線至 ${profileName}`,
+      detail:
+        '你可以重試、改用 Local 作為預設 Host，或保留目前選擇並稍後在設定中處理。複製診斷資訊可檢視連線失敗的詳細資料。',
+      retry: '重試',
+      useLocal: '改用 Local',
+      keepOffline: '保持離線',
+    },
+    storageRootRepair: {
+      title: 'Maka 工作區需要修復',
+      message: 'Maka 無法驗證這個工作區。',
+      detail: (workspaceRoot) =>
+        `系統中的磁碟識別資訊可能已變更。僅當這是本機原本的 Maka 工作區，而不是複製的工作區時，才選擇修復。\n\n${workspaceRoot}`,
+      repair: '修復工作區',
       exit: '退出',
     },
   },

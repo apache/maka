@@ -17,16 +17,17 @@
  * under the License.
  */
 
-import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { runtimeEventHasModelVisibleContent, type RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
+import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
 import { stableJsonLength } from './context-budget-helpers.js';
 import { groupEventsByTurn } from './model-history.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
 import { fitHistoryCompactMessages } from './history-compact-input-fit.js';
-import { replayPlanItemsToModelMessages } from './history-compact-summarizer.js';
-import { buildRuntimeEventModelReplayPlan } from './model-history.js';
 import type { ModelMessage } from './model-protocol.js';
+
+const SESSION_RECAP_TOOL_OUTCOME_MAX_CHARS = 600;
 
 export const SESSION_RECAP_INSTRUCTION =
   '<system-reminder>The user is returning to this session after being away. Write ONE sentence (roughly 25-40 words) recapping where things stand so they can resume instantly. Write the sentence in the language of the user\'s most recent substantive message; for mixed-language sessions use the dominant language of the user\'s messages. Lead with agency, phrased naturally in that language: if the session was mainly questions or review with no landed change, open by referencing what the user asked (the equivalent of "You asked ..."); if the agent landed changes, reference what was done (the equivalent of "We fixed/added/wired ..."); if almost nothing happened, say in that language that the session had just begun. Output only the sentence - no labels, no quotes, no preamble.</system-reminder>';
@@ -37,13 +38,14 @@ export function buildSessionRecapMessages(input: {
   readonly modelId: string;
 }): ModelMessage[] {
   const contextWindow = resolveSelectedModelContextWindow(input.connection, input.modelId);
-  let events = input.events;
   let maxEstimatedTokens: number | undefined;
+  let messages: ModelMessage[];
   if (contextWindow !== undefined) {
     maxEstimatedTokens = Math.max(0, Math.floor(contextWindow * 0.85) - 4_096);
-    events = recentTurnsWithinBudget(events, maxEstimatedTokens);
+    messages = recentRecapMessagesWithinBudget(input.events, maxEstimatedTokens);
+  } else {
+    messages = projectSessionRecapMessages(input.events);
   }
-  let messages = replayPlanItemsToModelMessages(buildRuntimeEventModelReplayPlan(events).items);
   if (
     messages.length === 0 &&
     input.events.length > 0 &&
@@ -58,21 +60,25 @@ export function buildSessionRecapMessages(input: {
 }
 
 /** Request-only recap projection; never mutates or replaces canonical history. */
-function recentTurnsWithinBudget(
+function recentRecapMessagesWithinBudget(
   events: readonly RuntimeEvent[],
   maxEstimatedTokens: number,
   charsPerToken = 4,
-): RuntimeEvent[] {
+): ModelMessage[] {
   const groups = groupEventsByTurn(events, charsPerToken);
-  const selected: RuntimeEvent[][] = [];
-  let selectedTokens = 0;
+  const selectedGroups: ModelMessage[][] = [];
+  let selectedChars = 2;
   for (let index = groups.length - 1; index >= 0; index -= 1) {
-    const group = groups[index]!;
-    if (selectedTokens + group.estimatedTokens > maxEstimatedTokens) break;
-    selected.unshift(group.events);
-    selectedTokens += group.estimatedTokens;
+    const projected = projectSessionRecapMessages(groups[index]!.events);
+    if (projected.length === 0) continue;
+    const projectedChars = stableJsonLength(projected);
+    const candidateChars =
+      selectedGroups.length === 0 ? projectedChars : projectedChars + selectedChars - 1;
+    if (candidateChars > maxEstimatedTokens * charsPerToken) break;
+    selectedGroups.push(projected);
+    selectedChars = candidateChars;
   }
-  return selected.flat();
+  return selectedGroups.reverse().flat();
 }
 
 function boundedOversizedTurnMessages(
@@ -80,7 +86,7 @@ function boundedOversizedTurnMessages(
   maxEstimatedTokens: number,
   charsPerToken = 4,
 ): ModelMessage[] {
-  const messages = replayPlanItemsToModelMessages(buildRuntimeEventModelReplayPlan(events).items);
+  const messages = projectSessionRecapMessages(events);
   try {
     return fitHistoryCompactMessages(messages, {
       maxInputEstimatedTokens: maxEstimatedTokens,
@@ -106,6 +112,73 @@ function boundedOversizedTurnMessages(
     return [boundedTextMessage(message.role, text, maxEstimatedTokens * charsPerToken)];
   }
   return [];
+}
+
+function projectSessionRecapMessages(events: readonly RuntimeEvent[]): ModelMessage[] {
+  const messages: ModelMessage[] = [];
+  for (const event of events) {
+    if (event.partial === true || !runtimeEventHasModelVisibleContent(event)) continue;
+    const content = event.content;
+    if (content?.kind === 'text' && (event.role === 'user' || event.role === 'model')) {
+      const text = content.text.trim();
+      if (text.length > 0) {
+        messages.push({ role: event.role === 'user' ? 'user' : 'assistant', content: text });
+      }
+      continue;
+    }
+    if (content?.kind !== 'function_response') continue;
+    const status = recapToolOutcomeStatus(content.isError === true, content.modelProjection);
+    const detail = recapToolOutcomeDetail(content.modelProjection);
+    messages.push({
+      role: 'assistant',
+      content: `Tool outcome (${content.name}, ${status})${detail ? `: ${detail}` : '.'}`,
+    });
+  }
+  return messages;
+}
+
+function recapToolOutcomeStatus(
+  isError: boolean,
+  projection: DurableToolResultProjection | undefined,
+): 'succeeded' | 'failed' | 'denied' {
+  if (projection?.kind === 'execution_denied') return 'denied';
+  if (
+    isError ||
+    projection?.kind === 'failure' ||
+    ((projection?.kind === 'text' || projection?.kind === 'json') && projection.isError === true)
+  ) {
+    return 'failed';
+  }
+  return 'succeeded';
+}
+
+function recapToolOutcomeDetail(projection: DurableToolResultProjection | undefined): string {
+  if (!projection) return '';
+  let detail: string;
+  switch (projection.kind) {
+    case 'text':
+      detail = projection.text;
+      break;
+    case 'json':
+      detail = JSON.stringify(projection.value);
+      break;
+    case 'content':
+      detail = projection.parts
+        .map((part) =>
+          part.kind === 'text'
+            ? part.text
+            : `[stored artifact: ${part.ref.kind === 'session_context' ? part.ref.refId : part.ref.relativePath}]`,
+        )
+        .join('\n');
+      break;
+    case 'execution_denied':
+      detail = projection.reason ?? '';
+      break;
+    case 'failure':
+      detail = projection.message;
+      break;
+  }
+  return boundedText(detail.trim(), SESSION_RECAP_TOOL_OUTCOME_MAX_CHARS);
 }
 
 function boundedTextMessage(

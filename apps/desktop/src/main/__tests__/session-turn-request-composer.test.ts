@@ -83,7 +83,11 @@ test('keeps a newer Guest draft across remount when an old request settles later
     cancelImport: async () => 'cancelled',
     readInvitationClipboard: async () => '',
     listMounts: async () => [],
+    subscribeMountChanges: () => () => undefined,
     removeMount: async () => undefined,
+    retryMount: async () => undefined,
+    renameMount: async () => undefined,
+    renamePrincipal: async () => ({ renamed: true }),
     requestTurn: async () => {
       throw new Error('connection lost after dispatch');
     },
@@ -174,7 +178,11 @@ test('resumes an in-flight Guest request across remount without submitting it tw
     cancelImport: async () => 'cancelled',
     readInvitationClipboard: async () => '',
     listMounts: async () => [],
+    subscribeMountChanges: () => () => undefined,
     removeMount: async () => undefined,
+    retryMount: async () => undefined,
+    renameMount: async () => undefined,
+    renamePrincipal: async () => ({ renamed: true }),
     requestTurn: async () => {
       requestCount += 1;
       return requestResult;

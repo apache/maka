@@ -178,6 +178,9 @@ const SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE = 256;
 const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_MESSAGES = 1_024;
 const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 const SQLITE_TURN_LANDMARK_LEGACY_NEIGHBOR_MESSAGES = 32;
+// Each target Session binds three parameters in the linkage query. Stay well
+// inside SQLite's bound-parameter limit.
+const WORKHUB_TARGET_LINKAGE_MAX_SESSIONS = 256;
 
 function decodeStoredMessage(value: unknown): StoredMessage {
   return decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
@@ -684,6 +687,40 @@ export class SqliteSessionMetadataStore {
     });
   }
 
+  async hasExplicitSandboxBoundaryDenial(
+    identities: readonly { sessionId: string; runId: string; turnId: string }[],
+  ): Promise<boolean> {
+    this.assertOpen();
+    const query = this.db.prepare(`
+      SELECT
+        MAX(CASE WHEN outcome_reason = 'client_denied' THEN 1 ELSE 0 END) AS explicit,
+        MAX(CASE WHEN outcome_reason IN ('client_denied', 'turn_stopped', 'turn_terminal', 'host_restarted')
+          THEN 0 ELSE 1 END) AS ambiguous
+      FROM sandbox_boundary_log
+      WHERE session_id = ? AND run_id = ? AND turn_id = ?
+        AND entry_kind = 'expansion_request' AND status = 'denied'
+    `);
+    let denied = false;
+    for (const identity of identities) {
+      assertSafeSessionId(identity.sessionId);
+      assertSandboxBoundaryProvenanceId(identity.runId, 'run id');
+      assertSandboxBoundaryProvenanceId(identity.turnId, 'turn id');
+      const evidence = query.get(identity.sessionId, identity.runId, identity.turnId) as {
+        explicit: number | null;
+        ambiguous: number | null;
+      };
+      // Legacy NULL also meant internal cleanup. Do not invent a user decision
+      // or erase a possible denial; ambiguous provenance blocks this continuation.
+      if (evidence.ambiguous === 1) {
+        throw new Error(
+          'Historical sandbox denial cannot be attributed safely; start a new user Turn.',
+        );
+      }
+      denied ||= evidence.explicit === 1;
+    }
+    return denied;
+  }
+
   async settleSandboxBoundaryRequest(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement> {
@@ -716,7 +753,7 @@ export class SqliteSessionMetadataStore {
           sessionId: input.sessionId,
           requestId: input.requestId,
           status: 'denied',
-          ...(input.closureReason ? { outcomeReason: input.closureReason } : {}),
+          outcomeReason: input.closureReason ?? 'client_denied',
           settledAt,
         });
         return {
@@ -2125,6 +2162,143 @@ export class SqliteSessionMetadataStore {
         .all(sessionId) as MessageAdmissionRow[];
       return rows.map((row) => decodeMessageAdmissionRow(sessionId, row));
     });
+  }
+
+  async readActiveWorkHubAssignmentsByTarget(
+    targetSessionIds: readonly string[],
+    maxAssignmentsPerTarget?: number,
+  ): Promise<readonly WorkHubDelegationAssignedMessage[]> {
+    this.assertOpen();
+    for (const sessionId of targetSessionIds) assertSafeSessionId(sessionId);
+    if (targetSessionIds.length > WORKHUB_TARGET_LINKAGE_MAX_SESSIONS) {
+      throw new Error('Invalid WorkHub target Session count');
+    }
+    if (
+      maxAssignmentsPerTarget !== undefined &&
+      (!Number.isSafeInteger(maxAssignmentsPerTarget) ||
+        maxAssignmentsPerTarget < 1 ||
+        maxAssignmentsPerTarget > 256)
+    ) {
+      throw new Error('Invalid WorkHub target Message limit');
+    }
+    const targets = [...new Set(targetSessionIds)];
+    if (targets.length === 0) return [];
+    return this.readTransaction(() => {
+      type Row = { session_id?: unknown; message_id?: unknown };
+      const list = targets.map(() => '?').join(', ');
+      // One Message moves between these lifecycle tables. Combine every target's
+      // identities once, then resolve activity from the canonical Coordination
+      // ledger in this same read transaction. That avoids rebuilding the target
+      // set once per page or once per candidate, without introducing another
+      // durable representation.
+      const rows = this.db
+        .prepare(
+          `
+          WITH target_messages(session_id, message_id) AS (
+            SELECT session_id, message_id
+            FROM message_admissions
+            WHERE session_id IN (${list})
+              AND message_id GLOB 'whm_*'
+              AND length(message_id) = 52
+            UNION
+            SELECT session_id, message_id
+            FROM session_messages
+            WHERE session_id IN (${list})
+              AND message_id GLOB 'whm_*'
+              AND length(message_id) = 52
+            UNION
+            SELECT session_id, message_id
+            FROM cancelled_message_admissions
+            WHERE session_id IN (${list})
+              AND message_id GLOB 'whm_*'
+              AND length(message_id) = 52
+          )
+          SELECT target.session_id, target.message_id
+          FROM target_messages AS target
+          CROSS JOIN session_messages AS assignment INDEXED BY session_messages_by_identity
+          WHERE assignment.session_id = ?
+            AND assignment.message_id = 'wha_' || substr(target.message_id, 5)
+          ORDER BY assignment.sequence DESC
+        `,
+        )
+        .iterate(
+          ...targets,
+          ...targets,
+          ...targets,
+          WORKHUB_COORDINATION_SESSION_ID,
+        ) as Iterable<Row>;
+      const assignments: WorkHubDelegationAssignedMessage[] = [];
+      const acceptedPerTarget = new Map<string, number>();
+      for (const row of rows) {
+        if (typeof row.message_id !== 'string' || typeof row.session_id !== 'string') {
+          throw new SessionMetadataConflictError('Invalid WorkHub target Message identity');
+        }
+        const targetSessionId = row.session_id;
+        if (
+          maxAssignmentsPerTarget !== undefined &&
+          (acceptedPerTarget.get(targetSessionId) ?? 0) >= maxAssignmentsPerTarget
+        ) {
+          continue;
+        }
+        const assignment = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `wha_${row.message_id.slice('whm_'.length)}`,
+        );
+        if (
+          assignment?.type !== 'workhub_coordination' ||
+          assignment.kind !== 'delegation_assigned' ||
+          assignment.targetSessionId !== targetSessionId ||
+          assignment.targetMessageId !== row.message_id
+        ) {
+          continue;
+        }
+        const terminalSuffix = createHash('sha256')
+          .update(assignment.delegationId, 'utf8')
+          .digest('hex')
+          .slice(0, 48);
+        const supersession = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `whx_${terminalSuffix}`,
+        );
+        if (
+          supersession?.type === 'workhub_coordination' &&
+          supersession.kind === 'delegation_superseded'
+        ) {
+          continue;
+        }
+        const replacementAbort = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `whb_${terminalSuffix}`,
+        );
+        if (
+          replacementAbort?.type === 'workhub_coordination' &&
+          replacementAbort.kind === 'delegation_replacement_aborted'
+        ) {
+          continue;
+        }
+        const stopResolution = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `whz_${terminalSuffix}`,
+        );
+        if (
+          stopResolution?.type === 'workhub_coordination' &&
+          stopResolution.kind === 'delegation_stop_resolved' &&
+          stopResolution.outcome !== 'not_owned'
+        ) {
+          continue;
+        }
+        assignments.push(assignment);
+        acceptedPerTarget.set(targetSessionId, (acceptedPerTarget.get(targetSessionId) ?? 0) + 1);
+      }
+      return assignments;
+    });
+  }
+
+  async readMessageById(sessionId: string, messageId: string): Promise<StoredMessage | undefined> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSafeSessionId(messageId);
+    return this.readTransaction(() => this.readMessageByIdSync(sessionId, messageId));
   }
 
   async markMessagesHandedOff(input: MarkMessagesHandedOffInput): Promise<void> {

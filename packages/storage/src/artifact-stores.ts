@@ -46,7 +46,6 @@ export {
   type ArtifactAttachmentResourceReader,
   type ReadImageSnapshotPlan,
 } from './artifact-attachments.js';
-export { persistProviderRequestCaptureArtifact } from './provider-request-capture-artifact.js';
 
 const writerBrand: unique symbol = Symbol('InteractiveArtifactStoreWriter');
 const writers = new WeakSet<object>();
@@ -57,27 +56,12 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
   readonly kind: 'interactive';
   readonly access: 'write';
   readonly [writerBrand]: true;
-  recover(): Promise<void>;
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
-  /**
-   * Create, reporting whether THIS call is the one that published the artifact.
-   *
-   * `create` is idempotent on a content-derived id: a second caller for the same
-   * bytes gets the existing record back. A caller that may later reclaim what it
-   * published cannot infer ownership from that success — it would reclaim an
-   * artifact an earlier, already-committed projection still references. The
-   * probe and the create share one write lease, so the receipt is exact.
-   */
-  createOwned(
-    input: CreateArtifactInput,
-  ): Promise<{ record: ArtifactRecord; publishedByThisCall: boolean }>;
   /**
    * Narrow system delete for one Session-owned artifact of a declared source.
    *
-   * Not a user delete: the sources this serves are `userDeletable: false`
-   * precisely because durable replay may depend on them. The caller must name
-   * the source it believes it owns, and a mismatch throws — so a caller that is
-   * wrong about what it is reclaiming reclaims nothing.
+   * The caller must name the source it believes it owns, and a mismatch throws,
+   * so a caller that is wrong about what it is reclaiming reclaims nothing.
    */
   deleteOwnedArtifactInSession(
     sessionId: string,
@@ -88,6 +72,7 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;
   purgeSessionArtifacts(sessionId: string): Promise<void>;
+  reclaimUpgradeResidue: ArtifactAuthorityStore['reclaimUpgradeResidue'];
   listPage: ArtifactAuthorityStore['listPage'];
   listTurnArtifacts: ArtifactAuthorityStore['listTurnArtifacts'];
   getInSession: ArtifactAuthorityStore['getInSession'];
@@ -161,30 +146,12 @@ function createWriterFacade(
     readChunkInSession: (sessionId, artifactId, options) =>
       run(() => store.readChunkInSession(sessionId, artifactId, options)),
     readDurableAttachmentBinary: (input) => run(() => store.readDurableAttachmentBinary(input)),
-    recover: () => run(() => authority.recover()),
     create: (input) => {
       const acceptedInput = snapshotCreateInput(input);
       return run(() => store.create(acceptedInput));
     },
-    createOwned: (input) => {
-      const acceptedInput = snapshotCreateInput(input);
-      return run(async () => {
-        const plannedId = acceptedInput.id;
-        const existing = plannedId
-          ? await store.getInSession(acceptedInput.sessionId, plannedId)
-          : undefined;
-        const record = await store.create(acceptedInput);
-        return { record, publishedByThisCall: !existing?.record };
-      });
-    },
     deleteOwnedArtifactInSession: (sessionId, artifactId, source) =>
-      run(async () => {
-        const entry = await store.getInSession(sessionId, artifactId);
-        if (!entry.record || entry.record.source !== source) {
-          throw new Error('Artifact does not belong to the expected Session authority');
-        }
-        await store.delete(artifactId);
-      }),
+      run(() => store.deleteOwnedArtifactInSession(sessionId, artifactId, source)),
     copyConversationArtifacts: (input) => {
       const acceptedInput: ConversationArtifactCopyInput = Object.freeze({
         ...input,
@@ -211,6 +178,7 @@ function createWriterFacade(
       return run(() => store.copyConversationArtifacts(acceptedInput));
     },
     purgeSessionArtifacts: (sessionId) => run(() => store.purgeSessionArtifacts(sessionId)),
+    reclaimUpgradeResidue: (input) => run(() => store.reclaimUpgradeResidue(input)),
     deleteUserArtifactInSession: (sessionId, artifactId) =>
       run(() => store.deleteUserArtifactInSession(sessionId, artifactId)),
     close: () => {

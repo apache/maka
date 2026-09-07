@@ -18,7 +18,11 @@
  */
 
 import { isDeepStrictEqual } from 'node:util';
-import type { RootExecutionDescriptor } from '@maka/core/agent-run';
+import { readLogicalRuntimeExecution } from '@maka/core/runtime-logical-execution';
+import {
+  runtimeInvocationOutcome,
+  type RootExecutionDescriptor,
+} from '@maka/core/runtime-invocation';
 import {
   messageContentsEqual,
   normalizeMessageContent,
@@ -60,7 +64,7 @@ export async function prepareHostedExecutionRecovery(
   for (const session of sessions) {
     const admissions = await input.rootAdmissions.recoverSession(session.id);
     const messages = await input.stores.sessionStore.readMessagesForRecovery(session.id);
-    const runs = await input.stores.agentRunStore.listSessionRunsForRecovery(session.id);
+    const runs = await input.stores.runtimeEventStore.listSessionInvocations(session.id);
     const runsById = new Map(runs.map((run) => [run.runId, run]));
     for (const run of runs) {
       await input.stores.agentRunStore.readEventsForRecovery(session.id, run.runId);
@@ -73,6 +77,12 @@ export async function prepareHostedExecutionRecovery(
     const pendingRecoveryClosures: RootTurnAdmission[] = [];
     for (const admission of admissions) {
       const run = runsById.get(admission.runId);
+      const logical =
+        run && (await readLogicalRuntimeExecution(input.stores.runtimeEventStore, admission, run));
+      if (logical?.pendingHandoff) {
+        replayAdmissions.push(admission);
+        rootReplayAdmissions.push(admission);
+      }
       const rootUserMessages = (
         messageIndex.userMessagesByTurnId.get(admission.turnId) ?? []
       ).filter((message) => message.id === admission.userMessageId);
@@ -80,7 +90,10 @@ export async function prepareHostedExecutionRecovery(
         ? (messageIndex.messagesById.get(admission.userMessageId) ?? [])
         : [];
       const executionContract = recoveryExecutionContract(admission.execution);
-      if (admission.execution.kind === 'scheduled_task' && (!run || !isTerminalRun(run.status))) {
+      if (
+        admission.execution.kind === 'scheduled_task' &&
+        (!logical || runtimeInvocationOutcome(logical.tip) === undefined)
+      ) {
         if (!input.assertScheduledTaskAdmission) {
           throw new RuntimeMessageAuthorityInvariantError(
             'ScheduledTask recovery admission has no canonical authority validator',
@@ -441,10 +454,6 @@ function usesHostRecoveryClosure(execution: RootExecutionDescriptor): execution 
     execution.kind === 'claimed_agent_graph_intent' ||
     execution.kind === 'linked_child_provider_retry'
   );
-}
-
-function isTerminalRun(status: string): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled';
 }
 
 function indexRecoveryMessages(messages: readonly StoredMessage[]): RecoveryMessageIndex {

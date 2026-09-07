@@ -856,6 +856,19 @@ describe('runtimeEventHasModelVisibleContent', () => {
   });
 });
 
+test('runtime errors reject malformed retry decisions at the durable boundary', () => {
+  for (const retry of [
+    { decision: 'exhausted', attempts: 0 },
+    { decision: 'exhausted', attempts: 1.5 },
+    { decision: 'declined', because: 'guess' },
+    { decision: 'declined', because: 'policy', rawError: 'secret' },
+  ]) {
+    assert.throws(() =>
+      decodeRuntimeEvent({ ...baseEvent(), content: { kind: 'error', message: 'failed', retry } }),
+    );
+  }
+});
+
 describe('RuntimeEvent reference validation', () => {
   test('accepts only canonical source message digests', () => {
     const digest = `sha256:${'a'.repeat(64)}` as `sha256:${string}`;

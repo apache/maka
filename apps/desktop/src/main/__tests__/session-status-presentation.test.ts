@@ -26,23 +26,26 @@ import {
 } from '../../renderer/session-status-presentation.js';
 
 const NOTHING_RAN = {
-  partialOutputRetained: false,
   toolActivityCount: 0,
   erroredToolCount: 0,
 };
 
 describe('failed turn presentation', () => {
   it('presents persisted provider server errors as provider failures', () => {
-    assert.match(describeTurnErrorClass('server_error', 'zh'), /模型服务返回错误/);
+    assert.match(describeTurnErrorClass('server_error', 'zh-CN'), /模型服务返回错误/);
+    assert.match(describeTurnErrorClass('server_error', 'zh-TW'), /模型服務回傳錯誤/);
     assert.match(describeTurnErrorClass('server_error', 'en'), /model service returned an error/i);
+    // Before #3758 the adapter persisted these codes with an unknown kind.
+    assert.equal(describeTurnErrorClass('ECONNRESET', 'en'), describeTurnErrorClass('network', 'en'));
   });
 
   it('states what to do without promising a resume the UI cannot offer', () => {
-    // The banner offers a button only for `app_restarted`; every other class
-    // has to point at the one action that always exists — send a message.
-    for (const errorClass of ['rate_limit', 'network', 'timeout', 'unknown_failure']) {
-      assert.match(describeTurnErrorClass(errorClass, 'zh'), /重新发消息|再发消息|发消息/);
+    for (const errorClass of ['rate_limit', 'network', 'timeout']) {
+      assert.match(describeTurnErrorClass(errorClass, 'zh-CN'), /重新发消息|再发消息|发消息/);
     }
+    assert.doesNotMatch(describeTurnErrorClass('unknown_failure', 'zh-CN'), /重试|重发/);
+    assert.match(describeTurnErrorClass('stream_truncated', 'zh-CN'), /中途断开/);
+    assert.match(describeFailedTurnExecutionState({ ...NOTHING_RAN, retry: { decision: 'declined', because: 'side_effects' } }, 'zh-CN')!, /未自动重试/);
   });
 
   it('grades continuable outcomes below outcomes the user must act on', () => {
@@ -59,7 +62,7 @@ describe('failed turn execution state', () => {
   it('warns that a completed tool may already have taken effect', () => {
     // A blind resend after a side-effecting tool can repeat that effect, so
     // this has to survive alongside a transport failure like `timeout`.
-    const zh = describeFailedTurnExecutionState({ ...NOTHING_RAN, toolActivityCount: 1 }, 'zh');
+    const zh = describeFailedTurnExecutionState({ ...NOTHING_RAN, toolActivityCount: 1 }, 'zh-CN');
     assert.match(zh ?? '', /执行过工具|实际改动/);
     const en = describeFailedTurnExecutionState({ ...NOTHING_RAN, toolActivityCount: 1 }, 'en');
     assert.match(en ?? '', /tools already ran/i);
@@ -70,28 +73,24 @@ describe('failed turn execution state', () => {
     // the tool branch win, so `auth` plus an errored tool advised "inspect the
     // tool result" and dropped the sign-in step. They are separate slots now.
     const state = { ...NOTHING_RAN, toolActivityCount: 1, erroredToolCount: 1 };
-    assert.match(describeTurnErrorClass('auth', 'zh'), /重新连接或登录/);
-    assert.match(describeFailedTurnExecutionState(state, 'zh') ?? '', /工具执行出错/);
-    assert.match(describeTurnErrorClass('context_overflow', 'zh'), /减少附件|开启新任务/);
+    assert.match(describeTurnErrorClass('auth', 'zh-CN'), /重新连接或登录/);
+    assert.match(describeFailedTurnExecutionState(state, 'zh-CN') ?? '', /工具执行出错/);
+    assert.match(describeTurnErrorClass('context_overflow', 'zh-CN'), /减少附件|开启新任务/);
+    assert.match(describeFailedTurnExecutionState(state, 'zh-TW') ?? '', /工具執行出錯/);
   });
 
-  it('reports nothing when the turn left nothing to re-read', () => {
-    assert.equal(describeFailedTurnExecutionState(NOTHING_RAN, 'zh'), undefined);
+  it('does not infer execution guidance from a legacy output hint', () => {
+    assert.equal(describeFailedTurnExecutionState(NOTHING_RAN, 'zh-CN'), undefined);
+    const legacyState = { ...NOTHING_RAN, partialOutputRetained: true };
+    assert.equal(describeFailedTurnExecutionState(legacyState, 'zh-CN'), undefined);
   });
 
   it('prefers the most specific state the turn reached', () => {
-    const all = { partialOutputRetained: true, toolActivityCount: 2, erroredToolCount: 1 };
-    assert.match(describeFailedTurnExecutionState(all, 'zh') ?? '', /工具执行出错/);
+    const all = { toolActivityCount: 2, erroredToolCount: 1 };
+    assert.match(describeFailedTurnExecutionState(all, 'zh-CN') ?? '', /工具执行出错/);
     assert.match(
-      describeFailedTurnExecutionState({ ...all, erroredToolCount: 0 }, 'zh') ?? '',
+      describeFailedTurnExecutionState({ ...all, erroredToolCount: 0 }, 'zh-CN') ?? '',
       /执行过工具/,
-    );
-    assert.match(
-      describeFailedTurnExecutionState(
-        { ...NOTHING_RAN, partialOutputRetained: true },
-        'zh',
-      ) ?? '',
-      /部分回答/,
     );
   });
 

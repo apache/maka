@@ -65,7 +65,7 @@ export const THINKING_MAX_TOTAL_CHARS = 32 * 1024;
 
 export interface ApplyThinkingOptions extends ApplyStreamOptions {
   /** Resolved UI locale for user-visible truncation markers. */
-  locale?: UiLocale;
+  locale: UiLocale;
 }
 
 export type ApplyThinkingResult = ApplyStreamResult;
@@ -74,9 +74,9 @@ export type ApplyThinkingResult = ApplyStreamResult;
 export function applyThinkingDelta(
   prev: string,
   rawDelta: string,
-  options: ApplyThinkingOptions = {},
+  options: ApplyThinkingOptions,
 ): ApplyThinkingResult {
-  const copy = getSharedUiCopy(options.locale ?? 'zh').stream;
+  const copy = getSharedUiCopy(options.locale).stream;
   return applyStreamDelta(prev, rawDelta, {
     maxDeltaChars: options.maxDeltaChars ?? THINKING_MAX_DELTA_CHARS,
     maxTotalChars: options.maxTotalChars ?? THINKING_MAX_TOTAL_CHARS,
@@ -96,11 +96,11 @@ export function applyThinkingDelta(
  */
 export function applyThinkingComplete(
   rawText: string,
-  options: ApplyThinkingOptions = {},
+  options: ApplyThinkingOptions,
 ): ApplyThinkingResult {
   return applyStreamComplete(rawText, {
     maxTotalChars: options.maxTotalChars ?? THINKING_MAX_TOTAL_CHARS,
     recovery: 'tail',
-    totalMarker: getSharedUiCopy(options.locale ?? 'zh').stream.thinkingHeadTruncated,
+    totalMarker: getSharedUiCopy(options.locale).stream.thinkingHeadTruncated,
   });
 }

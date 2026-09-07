@@ -19,7 +19,12 @@
 
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import type { IpcMain } from 'electron';
 import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
@@ -30,6 +35,7 @@ import type {
   ConnectOrSpawnRuntimeHostInput,
   RuntimeHostConnection,
 } from '@maka/runtime-host/client';
+import { RuntimeHostOperationError, runHostHandoff } from '@maka/runtime-host/client';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type ClientCapabilityCallFrame,
@@ -51,8 +57,10 @@ import {
   type DesktopRuntimeHostCandidateStartInput,
 } from '../runtime-host-desktop-candidate.js';
 import { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-observation-registry.js';
+import { RuntimeHostReconnectingIpcMain } from '../runtime-host-reconnecting-ipc-main.js';
 import { desktopSessionResourceKey } from '../../shared/runtime-host-identity.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { canRepairManagedRuntimeHostStartup } from '../runtime-host-startup-recovery.js';
 
 const TEST_HOST_ID = 'a'.repeat(64);
 const TEST_TARGET_EPOCH = 'test-target-epoch';
@@ -80,6 +88,143 @@ test('uses the manager-owned launch barrier for local candidate startup', async 
 
   assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
   assert.equal(connectedRoot, 'C:\\workspace');
+});
+
+test('updates a protocol-compatible managed Host before exposing a candidate over its old storage', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-desktop-managed-schema-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  acquireOperationalStateDatabase(root).close();
+  const databasePath = join(root, 'runtime.sqlite');
+  const legacy = new DatabaseSync(databasePath);
+  legacy.exec(`
+    DROP TABLE usage_model_call_attempts;
+    CREATE TABLE usage_model_call_attempts (
+      attempt_id TEXT PRIMARY KEY,
+      completed_at INTEGER NOT NULL,
+      record_json TEXT NOT NULL,
+      session_id TEXT
+    );
+    INSERT INTO usage_model_call_attempts VALUES ('retained', 1, '{}', 'deleted-session');
+    UPDATE operational_schema_migrations SET version = 6 WHERE scope = 'usage';
+  `);
+  legacy.close();
+  const ipc = ipcHarness();
+  const old = connectionHarness('old');
+  const updated = connectionHarness('updated');
+  let starts = 0;
+  let repairs = 0;
+  const candidate = await runHostHandoff({
+    observe: async () => {
+      try {
+        const host = starts++ === 0 ? old : updated;
+        const result = await startDesktopRuntimeHostCandidate({
+          ...deps(ipc),
+          workspaceRoot: root,
+          rootPath: root,
+          candidateEntrypoint: 'unused.js',
+          candidateLaunchBarrier: {
+            connect: async () => ({
+              kind: 'connected',
+              connection: host.connection,
+              registration: { lifecycleMode: 'supervised', pid: 123 },
+            }),
+          },
+        } as unknown as DesktopRuntimeHostCandidateStartInput);
+        assert.equal(result.kind, 'ready');
+        if (result.kind !== 'ready')
+          throw new Error('Expected a ready candidate');
+        return { kind: 'ready', value: result.candidate };
+      } catch (error) {
+        assert.ok(
+          error instanceof Error && canRepairManagedRuntimeHostStartup(error),
+        );
+        return {
+          kind: 'blocked',
+          blocker: {
+            identity: 'managed-schema-before',
+            target: { name: 'Local', location: 'local' },
+            reason: 'repair',
+            mayExitNaturally: false,
+            activity: {
+              connections: 0,
+              activeOperations: 0,
+              processUptimeSeconds: 1,
+              residencies: [],
+            },
+            replacement: {
+              kind: 'repair',
+              canReplaceIdle: true,
+              canInterrupt: true,
+              execute: async (authority) => {
+                repairs += 1;
+                assert.equal(authority, 'refuse_active_work');
+                assert.equal(
+                  old.closeCalls,
+                  1,
+                  'release the old connection before managed update',
+                );
+                assert.equal(
+                  old.capabilityRegistrations,
+                  0,
+                  'do not expose capabilities before storage admission',
+                );
+                assert.equal(ipc.size, 0);
+                const preserved = new DatabaseSync(databasePath, {
+                  readOnly: true,
+                });
+                try {
+                  assert.equal(
+                    preserved
+                      .prepare(
+                        "SELECT version FROM operational_schema_migrations WHERE scope = 'usage'",
+                      )
+                      .get()?.version,
+                    6,
+                  );
+                  assert.equal(
+                    preserved
+                      .prepare(
+                        "SELECT record_json FROM usage_model_call_attempts WHERE attempt_id = 'retained'",
+                      )
+                      .get()?.record_json,
+                    '{}',
+                  );
+                } finally {
+                  preserved.close();
+                }
+                // Simulate the updated owning Host, not Desktop, performing migration.
+                acquireOperationalStateDatabase(root).close();
+                return { kind: 'completed' };
+              },
+            },
+          },
+        };
+      }
+    },
+    openSurface: () => ({
+      update: (view) => assert.equal(view.state, 'progress', 'idle repair needs no consent'),
+      close: () => {},
+    }),
+  });
+  t.after(() => candidate.close());
+  assert.equal(starts, 2);
+  assert.equal(repairs, 1);
+  assert.equal(updated.capabilityRegistrations, 1);
+  const current = acquireOperationalStateDatabase(root, {
+    schemaMigration: 'require_current',
+  });
+  try {
+    assert.equal(
+      current.database
+        .prepare(
+          "SELECT session_id FROM usage_model_call_attempts WHERE attempt_id = 'retained'",
+        )
+        .get()?.session_id,
+      'deleted-session',
+    );
+  } finally {
+    current.close();
+  }
 });
 
 test('formats bounded local Host exit evidence without leaking stderr secrets', () => {
@@ -185,11 +330,12 @@ test('owns one complete Desktop candidate generation and can restart cleanly', a
   assert.equal(ipc.size, 0);
 });
 
-test('registers only shared observation IPC and consumes scoped catalog changes for a Guest', async () => {
+test('routes Guest catalog changes through the mount projection authority', async () => {
   const ipc = ipcHarness();
   const sharedResource = sharedShellRunUpdate('session-guest');
   const host = connectionHarness('guest', { runtimeResourceUpdate: sharedResource });
   const changes: Array<{ reason: string; sessionId?: string }> = [];
+  let catalogChanges = 0;
   const rendererEvents: Array<{ channel: string; payload: unknown }> = [];
   const candidate = await createCandidate(
     host.connection,
@@ -197,6 +343,9 @@ test('registers only shared observation IPC and consumes scoped catalog changes 
       ...deps(ipc),
       emitSessionsChanged: (_scope, reason, sessionId) => {
         changes.push({ reason, ...(sessionId === undefined ? {} : { sessionId }) });
+      },
+      onGuestSessionCatalogChanged: () => {
+        catalogChanges += 1;
       },
       renderer: {
         send(channel, _scope, payload) {
@@ -210,10 +359,7 @@ test('registers only shared observation IPC and consumes scoped catalog changes 
     'session_guest',
   );
 
-  assert.deepEqual(
-    ((await ipc.invoke('sessions:list')) as SessionCatalogProjection[]).map(({ id }) => id),
-    ['session-guest'],
-  );
+  assert.equal(ipc.channels.includes('sessions:list'), false);
   assert.equal(ipc.channels.includes('sessions:observe'), true);
   assert.equal(ipc.channels.includes('sessions:transcript:open'), true);
   assert.equal(ipc.channels.includes('sessions:send'), false);
@@ -242,7 +388,8 @@ test('registers only shared observation IPC and consumes scoped catalog changes 
     ),
   );
   host.publishSessionCatalogChange('session-guest');
-  assert.deepEqual(changes, [{ reason: 'updated', sessionId: 'session-guest' }]);
+  assert.equal(catalogChanges, 1);
+  assert.deepEqual(changes, []);
 
   await candidate.close();
 });
@@ -350,6 +497,42 @@ test('tears down the whole candidate when the Host connection closes', async () 
   await candidate.closed;
 
   assert.equal(host.closeCalls, 1);
+});
+
+test('preserves supported IPC when the connection closes before candidate startup returns', { timeout: 5_000 }, async (t) => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  t.after(() => router.close());
+  const firstHost = connectionHarness('closed-during-start');
+  const replaceCapabilities = firstHost.connection.replaceClientCapabilities;
+  firstHost.connection.replaceClientCapabilities = async (...args) => {
+    const result = await replaceCapabilities(...args);
+    // The final initialization response succeeds, immediately followed by EOF.
+    firstHost.disconnect();
+    return result;
+  };
+  const firstTarget = router.createTarget(TEST_TARGET_EPOCH);
+  const first = await createDesktopRuntimeHostCandidate(firstHost.connection, {
+    ...deps(ipc), ipcMain: firstTarget,
+  });
+  t.after(() => first.close());
+  firstTarget.completeRegistration();
+  router.activate(TEST_TARGET_EPOCH);
+  const pending = ipc.invoke('sessions:list').then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error }),
+  );
+
+  const secondHost = connectionHarness('replacement');
+  const secondTarget = router.createTarget(TEST_TARGET_EPOCH);
+  const second = await createDesktopRuntimeHostCandidate(secondHost.connection, {
+    ...deps(ipc), ipcMain: secondTarget,
+  });
+  t.after(() => second.close());
+  secondTarget.completeRegistration();
+  const result = await pending;
+  assert.ok('value' in result, `supported read was rejected: ${'error' in result ? result.error : ''}`);
+  assert.deepEqual((result.value as SessionCatalogProjection[]).map(({ id }) => id), ['session-replacement']);
 });
 
 test('disposes candidate-scoped product IPC state on reconnect teardown', async () => {
@@ -564,12 +747,60 @@ test('closes the claimed Host connection when native capability construction fai
           releaseComputerUseSession() {},
         }),
       ),
-    // The desktop-local schema check moved into the shared protocol decoder,
-    // which rejects a non-object tool schema root with its own wording.
     /tool schema root must be an object/,
   );
 
   assert.equal(ipc.size, 0);
+  assert.equal(host.closeCalls, 1);
+});
+
+test('isolates an invalid dynamic MCP tool without dropping the Host connection', async () => {
+  // Per-tool isolation: one bad tool is skipped and the provider still
+  // constructs, so the Host connection stays alive.
+  const ipc = ipcHarness();
+  const host = connectionHarness('invalid-capability');
+  const invalidTool = {
+    ...nativeTool(),
+    parameters: z.string(),
+  } as unknown as MakaTool;
+  const healthyTool = {
+    ...nativeTool(),
+    name: 'healthy_mcp',
+    impl: async () => 'healthy',
+  };
+
+  const candidate = await createDesktopRuntimeHostCandidate(
+    host.connection,
+    deps(ipc, {
+      browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
+      releaseBrowserSession() {},
+      computerUseTools: emptyComputerUseTools(),
+      releaseComputerUseSession() {},
+      additionalGroups: () => [
+        {
+          offerId: 'desktop_mcp',
+          label: 'MCP',
+          description: 'MCP tools',
+          tools: [invalidTool, healthyTool],
+        },
+      ],
+    }),
+  );
+
+  assert.equal(host.capabilityRegistrations, 1);
+  assert.equal(host.closeCalls, 0);
+  assert.deepEqual(
+    await host.invokeCapability({
+      ...capabilityFrame('session-invalid-capability'),
+      offerId: 'desktop_mcp',
+      serverId: 'desktop_mcp',
+      toolName: 'healthy_mcp',
+    }),
+    { content: [{ type: 'text', text: 'healthy' }] },
+  );
+
+  await candidate.close();
   assert.equal(host.closeCalls, 1);
 });
 
@@ -742,7 +973,6 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
     kind: 'subscription.runtime_resource_pty_data',
     hostEpoch: 'host-second-observer',
     subscriptionId: 'subscription-second-observer',
-    sequence: 1,
     sessionId: 'session-1',
     ref,
     ptySequence: 5,
@@ -859,7 +1089,7 @@ test('drops a stale shared Session observation when Guest access is gone', async
   });
   const firstCandidate = await createCandidate(
     firstHost.connection,
-    deps(firstIpc),
+    { ...deps(firstIpc), onGuestSessionCatalogChanged: () => undefined },
     observations,
     'external',
     'remote',
@@ -879,6 +1109,7 @@ test('drops a stale shared Session observation when Guest access is gone', async
       emitSessionsChanged: (_scope, reason, sessionId) => {
         changes.push({ reason, ...(sessionId === undefined ? {} : { sessionId }) });
       },
+      onGuestSessionCatalogChanged: () => undefined,
     },
     observations,
     'external',
@@ -889,6 +1120,69 @@ test('drops a stale shared Session observation when Guest access is gone', async
   assert.deepEqual(observations.trackedSessionIds(), []);
   assert.deepEqual(changes, [{ reason: 'deleted', sessionId: 'session-1' }]);
   await candidate.close();
+  await observations.close();
+});
+
+test('forgets an observed Session the Host no longer serves instead of blocking every reconnect', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const firstIpc = ipcHarness();
+  const firstHost = connectionHarness('missing-session-source', {
+    sessionId: 'session-1',
+    subscriptionSnapshot: continuitySnapshot(),
+  });
+  const firstCandidate = await createDesktopRuntimeHostCandidate(
+    firstHost.connection,
+    deps(firstIpc),
+    observations,
+  );
+  await firstIpc.invoke('sessions:observe', 'session-1', 'observer-1');
+  await firstCandidate.close();
+
+  // The replacement Host no longer serves session-1: subscription.open
+  // deterministically answers not_found.
+  const changes: Array<{ reason: string; sessionId?: string }> = [];
+  const missingHost = connectionHarness('missing-session-host', {
+    sessionId: 'session-1',
+    subscriptionError: new RuntimeHostOperationError(
+      'subscription.open',
+      'not_found',
+      'Runtime Host Session was not found',
+    ),
+  });
+  const secondCandidate = await createDesktopRuntimeHostCandidate(
+    missingHost.connection,
+    {
+      ...deps(ipcHarness()),
+      emitSessionsChanged: (_scope, reason, sessionId) => {
+        changes.push({ reason, ...(sessionId === undefined ? {} : { sessionId }) });
+      },
+    },
+    observations,
+  );
+
+  // The stale active registration is forgotten instead of failing the
+  // candidate start, and the renderer is told to drop the Session view.
+  assert.deepEqual(observations.observedSessionIds(), []);
+  assert.ok(
+    changes.some(
+      ({ reason, sessionId }) => reason === 'deleted' && sessionId === 'session-1',
+    ),
+  );
+  await secondCandidate.close();
+
+  // A later reconnect observes new Sessions on the same registry.
+  const thirdIpc = ipcHarness();
+  const thirdHost = connectionHarness('missing-session-recovered', {
+    sessionId: 'session-2',
+  });
+  const thirdCandidate = await createDesktopRuntimeHostCandidate(
+    thirdHost.connection,
+    deps(thirdIpc),
+    observations,
+  );
+  await thirdIpc.invoke('sessions:observe', 'session-2', 'observer-2');
+  assert.deepEqual(observations.observedSessionIds(), ['session-2']);
+  await thirdCandidate.close();
   await observations.close();
 });
 
@@ -1034,6 +1328,7 @@ function connectionHarness(
   let startTurnCalls = 0;
   let runtimeResourceControllerAcquires = 0;
   let activeSubscriptionFrames: AsyncFrameQueue | undefined;
+  const ptyListeners = new Set<(frame: Extract<SubscriptionFrame, { kind: 'subscription.runtime_resource_pty_data' }>) => void>();
   const connection = {
     hostEpoch: `host-${label}`,
     connectionId: `connection-${label}`,
@@ -1041,6 +1336,7 @@ function connectionHarness(
     selectedProtocol: 0,
     closed,
     request: async <K extends OperationKey>(operation: K, input: OperationInput<K>) => {
+      if (operation === 'subscription.pty_interest.set') return { subscriptionId: (input as { subscriptionId: string }).subscriptionId };
       if (
         operation === 'session.catalog.query' &&
         (input as { kind?: unknown }).kind === 'list_start'
@@ -1154,7 +1450,7 @@ function connectionHarness(
       if (options.subscriptionError) throw options.subscriptionError;
       const subscriptionFrames = new AsyncFrameQueue();
       activeSubscriptionFrames = subscriptionFrames;
-      const closeSubscription = () => subscriptionFrames.end();
+      const closeSubscription = () => { subscriptionFrames.end(); ptyListeners.clear(); };
       closeSubscriptions.add(closeSubscription);
       const emptyPage = {
         kind: 'page' as const,
@@ -1169,6 +1465,10 @@ function connectionHarness(
       return {
         hostEpoch: `host-${label}`,
         subscriptionId: `subscription-${label}`,
+        subscribePtyData(listener: (frame: Extract<SubscriptionFrame, { kind: 'subscription.runtime_resource_pty_data' }>) => void) {
+          ptyListeners.add(listener);
+          return () => ptyListeners.delete(listener);
+        },
         snapshot: options.subscriptionSnapshot ?? {
           projectionRevision: 1,
           session: { sessionId },
@@ -1222,6 +1522,10 @@ function connectionHarness(
     disconnect: () => resolveClosed?.(),
     pushSubscriptionFrame: (frame: SubscriptionFrame) => {
       assert.ok(activeSubscriptionFrames);
+      if (frame.kind === 'subscription.runtime_resource_pty_data') {
+        for (const listener of ptyListeners) listener(frame);
+        return;
+      }
       activeSubscriptionFrames.push(frame);
     },
     publishSessionCatalogChange: (sessionId: string) => {

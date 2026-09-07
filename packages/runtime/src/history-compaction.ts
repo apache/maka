@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { finitePositive } from './context-budget-helpers.js';
@@ -31,6 +31,7 @@ import { findCheckpointSummaryDefect } from './history-compact-summary-validatio
 import {
   buildHistoryCompactCheckpoint,
   historyCompactCheckpointToRuntimeEvent,
+  historyCompactSourceDigest,
   matchHistoryCompactCheckpointPrefix,
   midTurnHeadAnchorEvent,
   projectHistoryCompactCheckpointReplay,
@@ -185,15 +186,24 @@ export interface PlanHistoryCompactionInput {
   highWaterSeq?: number;
   previousCheckpoint?: HistoryCompactCheckpoint;
   /**
-   * Run headers for the ordered events, and the route this fold is dispatched
-   * on. Together they name the newest reply this route produced, which is the
-   * only span a retreat may target: a rejection of a larger one says nothing
-   * about a span another model accepted.
+   * The invocations behind the ordered events, and the route this fold is
+   * dispatched on. Together they name the newest reply this route produced,
+   * which is the only span a retreat may target: a rejection of a larger one
+   * says nothing about a span another model accepted.
    */
-  runHeaders?: readonly AgentRunHeader[];
+  invocations?: readonly RuntimeInvocationRecord[];
   acceptedRoute?: { modelId: string; connectionId?: string };
   /** Present only when this automatic Compaction should create a Memory task. */
   memoryExtractionBoundary?: HistoryCompactMemoryExtractionBoundary;
+  /**
+   * Projects the covered span to its effective (transition-folded) view. When
+   * present, the summary is written from that view and its digest is pinned as
+   * `coverage.effectiveSourceDigest`, so a later projection transition
+   * invalidates the checkpoint instead of being restored by it (#4845 review).
+   */
+  projectEffectiveCoverage?: (
+    coveredRuntimeEvents: readonly RuntimeEvent[],
+  ) => Promise<readonly RuntimeEvent[]>;
   summarize: HistoryCompactionSummarizer;
 }
 
@@ -229,22 +239,24 @@ export type HistoryCompactionFailReason = 'no_safe_completed_span' | 'summarizer
  * A span is only proven for the model and connection that accepted it: a token
  * count is a number in one tokenizer, and a session's history can span runs on
  * several routes. So the newest reply produced on the summarizer's own route
- * ends the span, found through the run headers rather than by role alone —
+ * ends the span, found through each run's opening rather than by role alone —
  * everything before its first event was in a request that route accepted.
  * A ledger with no reply from this route has nothing proven, and the caller
- * must not invent a boundary.
+ * must not invent a boundary. Nor does a run whose opening could not prove its
+ * route — a migrated header with no Connection — even when the current run has
+ * no Connection of its own: two unknowns are not a match.
  */
 function acceptedInputBoundary(
   events: readonly RuntimeEvent[],
-  runHeaders: readonly AgentRunHeader[],
+  invocations: readonly RuntimeInvocationRecord[],
   route: { modelId: string; connectionId?: string } | undefined,
 ): number | undefined {
   if (!route) return undefined;
   const onRoute = (event: RuntimeEvent | undefined): boolean => {
     if (event?.role !== 'model') return false;
-    const header = runHeaders.find((candidate) => candidate.runId === event.runId);
-    if (!header || header.modelId !== route.modelId) return false;
-    return header.llmConnectionId === route.connectionId;
+    const opened = invocations.find((candidate) => candidate.runId === event.runId)?.opening.route;
+    if (opened?.provenance !== 'runtime' || opened.modelId !== route.modelId) return false;
+    return opened.llmConnectionId === route.connectionId;
   };
   let index = -1;
   for (let cursor = events.length - 1; cursor >= 0; cursor -= 1) {
@@ -306,18 +318,47 @@ export async function planHistoryCompaction(
     const checkpointMatch = input.previousCheckpoint
       ? matchHistoryCompactCheckpointPrefix(input.previousCheckpoint, coveredRuntimeEvents)
       : undefined;
-    const previousCheckpoint =
+    let previousCheckpoint =
       checkpointMatch && !checkpointMatch.reason ? input.previousCheckpoint : undefined;
+    // Content-currency gate for roll-forward: the inherited summary or
+    // provider state describes the EFFECTIVE view of the previous coverage at
+    // its own creation. A projection transition committed since rewrites that
+    // view without touching the raw prefix, and reusing the stale content here
+    // would launder it into the new checkpoint under the current effective
+    // digest — later replay guards would then pass it (#4845 review). On
+    // drift, discard the checkpoint and re-summarize the whole effective span.
+    if (previousCheckpoint && checkpointMatch && input.projectEffectiveCoverage) {
+      const pinned = previousCheckpoint.coverage.effectiveSourceDigest;
+      const previousEffectiveCovered = await input.projectEffectiveCoverage(
+        checkpointMatch.coveredRuntimeEvents,
+      );
+      if (pinned === undefined || historyCompactSourceDigest(previousEffectiveCovered) !== pinned) {
+        previousCheckpoint = undefined;
+      }
+    }
     const newlyFoldedRuntimeEvents = previousCheckpoint
       ? checkpointMatch!.successorRuntimeEvents
       : coveredRuntimeEvents;
+
+    // The model-visible summary reads the effective (transition-folded) view
+    // of the covered span; the raw events keep the coverage identity.
+    const effectiveCoveredRuntimeEvents = input.projectEffectiveCoverage
+      ? [...(await input.projectEffectiveCoverage(coveredRuntimeEvents))]
+      : undefined;
+    const effectiveNewlyFoldedRuntimeEvents = effectiveCoveredRuntimeEvents
+      ? newlyFoldedRuntimeEvents.length === coveredRuntimeEvents.length
+        ? effectiveCoveredRuntimeEvents
+        : effectiveCoveredRuntimeEvents.slice(
+            effectiveCoveredRuntimeEvents.length - newlyFoldedRuntimeEvents.length,
+          )
+      : undefined;
 
     let compacted: string | HistoryCompactProviderState | undefined;
     try {
       compacted = await Promise.resolve(
         input.summarize({
-          coveredRuntimeEvents,
-          newlyFoldedRuntimeEvents,
+          coveredRuntimeEvents: effectiveCoveredRuntimeEvents ?? coveredRuntimeEvents,
+          newlyFoldedRuntimeEvents: effectiveNewlyFoldedRuntimeEvents ?? newlyFoldedRuntimeEvents,
           ...(previousCheckpoint ? { previousCheckpoint } : {}),
         }),
       );
@@ -337,7 +378,7 @@ export async function planHistoryCompaction(
           // (#4559).
           const proven = acceptedInputBoundary(
             input.orderedEvents,
-            input.runHeaders ?? [],
+            input.invocations ?? [],
             input.acceptedRoute,
           );
           if (proven === undefined || proven >= boundary.coveredCount) {
@@ -376,6 +417,7 @@ export async function planHistoryCompaction(
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: input.sessionId,
       coveredRuntimeEvents,
+      ...(effectiveCoveredRuntimeEvents ? { effectiveCoveredRuntimeEvents } : {}),
       ...(typeof compacted === 'string' ? { summary: compacted } : { providerState: compacted }),
       ...(phase === 'mid_turn'
         ? { phase: 'mid_turn' as const, headAnchor: input.headAnchor! }

@@ -17,6 +17,8 @@
  * under the License.
  */
 
+export * from './host-handoff.js';
+export { formatHostHandoff } from './host-handoff-copy.js';
 export {
   RuntimeHostManagedActivationError,
   activateRuntimeHostManagedDeployment,
@@ -44,6 +46,12 @@ export {
   type RuntimeHostRetirementMode,
   type RuntimeHostRetirementPreparation,
 } from './host-retirement.js';
+export {
+  forceTerminateObservedRegisteredRuntimeHost,
+  type ObservedRegisteredRuntimeHost,
+  type ObservedRegisteredRuntimeHostTerminationAuthority,
+} from './registered-host-termination.js';
+export type { RuntimeHostProcessIdentity } from './process-identity.js';
 export {
   LOCAL_RUNTIME_HOST_PROFILE,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
@@ -179,7 +187,7 @@ export {
   type IssueRuntimeHostOwnerConnectionCodeInput,
   type RuntimeHostOwnerConnectionCode,
 } from './owner-connection-code.js';
-export { ensureRuntimeHostPeerIdentity } from '../transport/peer-native.js';
+export { ensureRuntimeHostPeerIdentity, RuntimeHostPeerError } from '../transport/peer-native.js';
 export {
   createRuntimeHostPeerClient,
   createRuntimeHostPeerClientFromEnvironment,

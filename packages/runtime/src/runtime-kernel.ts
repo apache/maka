@@ -17,7 +17,9 @@
  * under the License.
  */
 
-import type { AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
+import type { AgentRunStore } from '@maka/core/agent-run';
+import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import {
   decodeRuntimeBoundaryCursor,
   type ContinuationClaimV1,
@@ -26,6 +28,7 @@ import {
 import {
   isTerminalRuntimeEvent,
   type RuntimeEvent,
+  type RuntimeEventInvocationOpenedContent,
   type ToolBoundaryProtocol,
 } from '@maka/core/runtime-event';
 import type {
@@ -78,7 +81,6 @@ import type {
   BackendSendInput,
   HostedInteractionBridge,
   RuntimeContinuationMetadata,
-  SteeringLease,
 } from '@maka/core/backend-types';
 import type { MakaTool } from './tool-runtime.js';
 import type {
@@ -96,7 +98,6 @@ import {
   buildStatusPatch,
   buildTurnStateMessage,
   normalizeStopSessionSource,
-  turnHasRetainedOutput as messagesHaveRetainedOutput,
 } from './session-projection-helpers.js';
 import { buildToolsForAgentDefinition } from './agent-catalog.js';
 import { loadLatestHistoryCompactCheckpointFromRunLedger } from './history-compact-ledger.js';
@@ -148,11 +149,15 @@ import {
   bindRuntimeInteractionRun,
   isHostedInteractionRequestEvent,
   isHostedInteractionSettlementAckEvent,
+  isShutdownCancelledInteractionAdmission,
   type RuntimeInteractionAuthority,
   type RuntimeInteractionRunBinding,
   type RuntimeInteractionRunClosureReason,
 } from './interaction-authority.js';
 import { DeliveryAckQueue, isDeliveryAckQueueClosed } from './delivery-ack-queue.js';
+import { runtimeHandoffPause, type RuntimeHandoffIntent } from '@maka/core/runtime-handoff';
+import { preserveHandoffOpening } from './runtime-resume.js';
+import type { AgentRunHandoffRequest } from './agent-run.js';
 
 export interface RuntimeKernelLike {
   claimExecution(sessionId: string): RuntimeExecutionClaim;
@@ -192,6 +197,12 @@ export interface RuntimeKernelLike {
    */
   runningTurnIds?(sessionId: string): string[];
   hasActiveRun?(sessionId: string, runId: string, turnId?: string): boolean;
+  requestRunHandoff?(
+    sessionId: string,
+    runId: string,
+    pause: RuntimeHandoffIntent,
+    signal: AbortSignal,
+  ): AgentRunHandoffRequest | undefined;
   updateCachedHeader(sessionId: string, header: SessionHeader): void;
   invalidateBackend(sessionId: string): Promise<void>;
   invalidateCachedBackends(): Promise<void>;
@@ -232,6 +243,8 @@ export interface TurnStartOptions {
 
 export interface ResumeContinuationOptions {
   onRunStarted?: () => void | Promise<void>;
+  /** Original logical owner may have accepted Stop while its sealed attempt retired. */
+  stopBeforeDispatch?: () => StopSessionInput | undefined;
 }
 
 export interface RuntimeExecutionClaim {
@@ -267,7 +280,6 @@ export interface RuntimeKernelDeps {
   now: () => number;
   childTools?: readonly MakaTool[];
   resolveChildTools?: (sessionId: string) => Promise<ResolvedChildToolActivation>;
-  repairRunRuntimeLedger?: (sessionId: string, runId: string) => Promise<boolean>;
   shellRuns?: ShellRunProcessManager;
   cleanupHistoryCompactArtifacts?: (input: HistoryCompactCleanupRequest) => Promise<void>;
   inspectContinuationSafety?: (sessionId: string) => Promise<RuntimeContinuationSafetyObservation>;
@@ -642,7 +654,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       await this.enterExecutionClaim(execution);
       const header = await this.deps.store.readHeader(sessionId);
       let workspaceIdentity: string | undefined;
-      if (this.deps.safeBoundaryResumeEnabled === true && this.deps.inspectContinuationSafety) {
+      if (this.deps.inspectContinuationSafety) {
         try {
           workspaceIdentity = (await this.deps.inspectContinuationSafety(sessionId))
             .workspaceIdentity;
@@ -664,7 +676,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
         ...(this.deps.toolBoundaryProtocol
           ? { toolBoundaryProtocol: this.deps.toolBoundaryProtocol }
           : {}),
-        repairRunRuntimeLedger: this.deps.repairRunRuntimeLedger,
         newId: this.deps.newId,
         now: this.deps.now,
         ...(workspaceIdentity ? { workspaceIdentity } : {}),
@@ -747,10 +758,16 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
 
     const header = await this.deps.store.readHeader(continuation.sessionId);
-    const [sourceRun, sessionRuns] = await Promise.all([
-      this.deps.runStore.readRun(continuation.sessionId, continuation.sourceRunId),
-      this.deps.runStore.listSessionRuns(continuation.sessionId),
-    ]);
+    const sessionRuns = await this.deps.runtimeEventStore.listSessionInvocations(
+      continuation.sessionId,
+    );
+    const sourceRun = sessionRuns.find((run) => run.runId === continuation.sourceRunId);
+    if (!sourceRun) {
+      throw new RuntimeContinuationRevalidationError(
+        'source_identity_changed',
+        'Runtime continuation source run no longer exists',
+      );
+    }
     const targetProviderStateIdentity = (
       await this.deps.backends.prepare(header.backend, {
         sessionId: continuation.sessionId,
@@ -760,7 +777,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       })
     ).providerStateIdentity;
     const admissionRoute: ContinuationReplayAdmissionRoute = {
-      runHeaders: sessionRuns,
+      invocations: sessionRuns,
       targetProviderStateIdentity,
       targetModelId: header.model,
     };
@@ -771,16 +788,38 @@ export class RuntimeKernel implements RuntimeKernelLike {
     );
     assertContinuationSourceUnchanged(continuation, sourceRun, sourceEvents);
     await this.revalidateContinuationSafety(continuation);
+    if (!this.deps.store.hasExplicitSandboxBoundaryDenial) {
+      throw new Error('Continuation requires authoritative sandbox boundary decision lookup');
+    }
+    const inheritedSandboxBoundaryDenied = await this.deps.store.hasExplicitSandboxBoundaryDenial(
+      continuation.boundary!.segments.map((segment) => segment.identity),
+    );
+
+    const handoffSourceComposition =
+      continuation.handoffRootRunId !== undefined
+        ? agentRunCompositionFromEvents(
+            await this.deps.runStore.readEvents(continuation.sessionId, sourceRun.runId),
+          )
+        : undefined;
+    if (continuation.handoffRootRunId !== undefined && !handoffSourceComposition) {
+      throw new RuntimeContinuationRevalidationError(
+        'source_identity_changed',
+        'Cooperative handoff source has no durable Run Composition',
+      );
+    }
 
     const userInput: UserMessageInput = {
       turnId: continuation.turnId,
       text: '',
-      parentTurnId: continuation.sourceTurnId,
+      ...(continuation.handoffRootRunId === undefined
+        ? { parentTurnId: continuation.sourceTurnId }
+        : {}),
     };
     const effectiveOrchestration = effectiveOrchestrationForRun(sourceRun, header);
     const effectiveToolMode = effectiveToolModeForRun(sourceRun);
     const claimedAt = this.deps.now();
-    const targetRunHeader = continuationTargetRunHeaderForExecution({
+    const targetOpening = continuationTargetOpeningForExecution({
+      sourceOpening: sourceRun.opening,
       continuation,
       sessionHeader: header,
       userInput,
@@ -788,9 +827,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
       effectiveOrchestration,
       effectiveToolMode,
       targetProviderStateIdentity,
-      claimedAt,
     });
-    const claim = continuationClaimForExecution(continuation, claimedAt, targetRunHeader);
+    const claim = continuationClaimForExecution(continuation, claimedAt, targetOpening);
     const claimResult = await continuationAuthority.claimContinuation({ claim });
     if (claimResult.kind !== 'acquired') {
       throw new RuntimeContinuationRevalidationError(
@@ -800,19 +838,21 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
     await this.deps.continuationFailpoint?.('after_continuation_claim_committed');
 
-    const existingClaim = sessionRuns.find(
-      (runHeader) =>
-        runHeader.continuationSource?.sourceRunId === continuation.sourceRunId &&
-        runHeader.continuationSource.sourceRuntimeEventHighWater ===
-          continuation.sourceRuntimeEventHighWater,
-    );
+    const existingClaim = sessionRuns.find((candidate) => {
+      const source = candidate.opening.source;
+      return (
+        source.kind !== 'fresh' &&
+        source.sourceRunId === continuation.sourceRunId &&
+        source.sourceRuntimeEventHighWater === continuation.sourceRuntimeEventHighWater
+      );
+    });
     if (existingClaim) {
       throw new RuntimeContinuationRevalidationError(
         'continuation_claim_conflict',
         `Runtime continuation source already has a continuation child: ${existingClaim.runId}`,
       );
     }
-    const existingTarget = sessionRuns.find((runHeader) => runHeader.runId === continuation.runId);
+    const existingTarget = sessionRuns.find((candidate) => candidate.runId === continuation.runId);
     if (existingTarget) {
       throw new RuntimeContinuationRevalidationError(
         'target_run_conflict',
@@ -825,7 +865,10 @@ export class RuntimeKernel implements RuntimeKernelLike {
       sessionId: continuation.sessionId,
       header,
       userInput,
-      runLineage: { parentRunId: continuation.sourceRunId },
+      runLineage:
+        continuation.handoffRootRunId !== undefined
+          ? sourceRun.opening.lineage
+          : { parentRunId: continuation.sourceRunId },
       runId: continuation.runId,
       invocationId: continuation.invocationId,
       store: this.deps.store,
@@ -834,12 +877,18 @@ export class RuntimeKernel implements RuntimeKernelLike {
       ...(continuationToolBoundaryProtocol
         ? { toolBoundaryProtocol: continuationToolBoundaryProtocol }
         : {}),
-      repairRunRuntimeLedger: this.deps.repairRunRuntimeLedger,
       newId: this.deps.newId,
       now: this.deps.now,
       workspaceIdentity: continuation.safetySnapshot.workspaceIdentity,
       effectiveOrchestration,
-      claimedRunHeader: claim.targetRunHeader,
+      // Round-tripped through the claim on purpose: openInvocation compares it
+      // against the opening it computes, so every continuation proves the claim
+      // still authorises the run about to execute.
+      claimedOpening: claim.targetOpening,
+      ...(continuation.handoffRootRunId !== undefined
+        ? { handoffSourceOpening: sourceRun.opening, handoffSourceComposition }
+        : {}),
+      claimedOpenedAt: claimedAt,
       effectiveToolMode,
       continuationFailpoint: this.deps.continuationFailpoint,
       commitContinuationStart: async (startedAt) => {
@@ -854,6 +903,10 @@ export class RuntimeKernel implements RuntimeKernelLike {
             partial: false,
             role: 'system',
             author: 'system',
+            modelVisibility: 'hidden',
+            // The start event is event 1 of the target invocation, so it is
+            // also where that invocation's opening fact lives.
+            content: claim.targetOpening,
             actions: {
               ...(continuationToolBoundaryProtocol
                 ? {
@@ -920,8 +973,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
         turnId: continuation.turnId,
         runId: continuation.runId,
       },
-      options.onRunStarted,
+      options,
       () => this.revalidateContinuationSafety(continuation),
+      inheritedSandboxBoundaryDenied,
     );
   }
 
@@ -987,7 +1041,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
       ...(this.deps.toolBoundaryProtocol
         ? { toolBoundaryProtocol: this.deps.toolBoundaryProtocol }
         : {}),
-      repairRunRuntimeLedger: this.deps.repairRunRuntimeLedger,
       newId: this.deps.newId,
       now: this.deps.now,
       effectiveOrchestration: resolveEffectiveOrchestration('default', undefined),
@@ -1045,7 +1098,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         turnId: run.turnId,
         runId: run.runId,
         runtimeContext: begin.runtimeContext,
-        runtimeContextRunHeaders: begin.runtimeContextRunHeaders,
+        runtimeContextInvocations: begin.runtimeContextInvocations,
       });
       if (run.isStopped()) return;
       const tokenUsageEvent: TokenUsageEvent = {
@@ -1175,15 +1228,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const interactionRun = owners.interactionRun;
     const messageOwner = owners.messageOwner;
 
-    let pullSteering: (() => readonly SteeringLease[]) | undefined;
-    let ackSteering: ((leaseIds: readonly string[]) => void) | undefined;
-    let nackSteering: ((leaseIds: readonly string[]) => void) | undefined;
-    if (messageOwner) {
-      pullSteering = () => messageOwner?.pull() ?? [];
-      ackSteering = (leaseIds) => messageOwner?.ack(leaseIds);
-      nackSteering = (leaseIds) => messageOwner?.nack(leaseIds);
-    }
-
     const stopBackend = this.stopBackendFor(begin.backend);
     const eventContext = this.runtimeEventMapContext({
       sessionId,
@@ -1196,6 +1240,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       backend: begin.backend,
       stopBackend,
       beforeDispatch: () => this.assertRunCanDispatch(run, begin.backend),
+      hasCommittedHandoff: () => run.hasCommittedHandoff(),
       ...(interactionRun ? { hostedInteraction: interactionRun } : {}),
       abortSignal: abortController.signal,
       eventContext,
@@ -1204,9 +1249,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
         runId: run.runId,
         ...begin.backendInput,
         headAnchorRuntimeEvent: begin.initialRuntimeEvent,
-        ...(pullSteering ? { pullSteering } : {}),
-        ...(ackSteering ? { ackSteering } : {}),
-        ...(nackSteering ? { nackSteering } : {}),
+        handoffBoundary: (signal, remainingSteps) =>
+          run.reachHandoffBoundary(signal, remainingSteps),
+        ...runtimeSteeringInput(owners.messageOwner),
       },
       onSessionEvent: async (sessionEvent, runtimeEvent) => {
         this.assertInteractionPublication(interactionRun, sessionEvent);
@@ -1293,8 +1338,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
     run: AgentRun,
     execution: PendingExecutionClaim,
     messageOwner?: RuntimeMessageRunIdentity,
-    onRunStarted?: () => void | Promise<void>,
+    options: ResumeContinuationOptions = {},
     revalidateSafety?: () => Promise<void>,
+    inheritedSandboxBoundaryDenied = false,
   ): AsyncIterable<SessionEvent> {
     const sessionEvents = new DeliveryAckQueue<SessionEvent>();
     const { abortController, release: releaseExecutionAbort } =
@@ -1324,7 +1370,15 @@ export class RuntimeKernel implements RuntimeKernelLike {
         });
         return started;
       });
-      await onRunStarted?.();
+      await options.onRunStarted?.();
+      const stop = options.stopBeforeDispatch?.();
+      if (stop) {
+        run.stop(stop.source, stop.workHubActionId);
+        releaseExecutionAbort();
+        await owners.finalize();
+        owners.releaseMessage();
+        return;
+      }
     } catch (error) {
       releaseExecutionAbort();
       if (error instanceof ContinuationStartCommitError) {
@@ -1350,6 +1404,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
               })(),
         ...(run.toolBoundaryProtocol ? { toolBoundaryProtocol: run.toolBoundaryProtocol } : {}),
       });
+      continuationMetadata.sandboxBoundaryDenied = inheritedSandboxBoundaryDenied;
     } catch (error) {
       releaseExecutionAbort();
       await this.finalizeFailedRunStart(owners, run, execution, error);
@@ -1368,6 +1423,21 @@ export class RuntimeKernel implements RuntimeKernelLike {
       backend: begin.backend,
       stopBackend,
       beforeDispatch: () => this.assertRunCanDispatch(run, begin.backend),
+      ...(continuation.handoffRootRunId !== undefined
+        ? {
+            prepareBeforeDispatch: async () => {
+              this.assertRunCanDispatch(run, begin.backend);
+              if (!begin.backend.prepareRunComposition) {
+                throw new Error(
+                  'Backend does not support cooperative handoff composition preparation',
+                );
+              }
+              await begin.backend.prepareRunComposition({ runId: run.runId, turnId: run.turnId });
+              run.assertRunCompositionCommitted();
+            },
+          }
+        : {}),
+      hasCommittedHandoff: () => run.hasCommittedHandoff(),
       ...(interactionRun ? { hostedInteraction: interactionRun } : {}),
       abortSignal: abortController.signal,
       eventContext,
@@ -1378,10 +1448,28 @@ export class RuntimeKernel implements RuntimeKernelLike {
         orchestration: run.effectiveOrchestration,
         toolMode: run.toolMode,
         text: '',
-        context: [],
         runtimeContext: continuation.runtimeContext,
-        runtimeContextRunHeaders: admissionRoute.runHeaders,
+        runtimeContextInvocations: admissionRoute.invocations,
         continuation: continuationMetadata,
+        ...runtimeSteeringInput(owners.messageOwner),
+        ...(continuation.handoffRootRunId !== undefined
+          ? {
+              maxSteps: continuation.handoffRemainingSteps,
+              // The original user anchor remains in the authenticated replay;
+              // a physical successor must not invent another user message.
+              headAnchorRuntimeEvent: continuation.runtimeContext.find(
+                (event) =>
+                  event.runId === continuation.handoffRootRunId &&
+                  event.turnId === continuation.turnId &&
+                  event.role === 'user' &&
+                  (event.author === 'user' || event.author === 'host') &&
+                  event.content?.kind === 'text' &&
+                  event.content.steering !== true,
+              ),
+            }
+          : {}),
+        handoffBoundary: (signal, remainingSteps) =>
+          run.reachHandoffBoundary(signal, remainingSteps),
       },
       onSessionEvent: async (sessionEvent, runtimeEvent) => {
         this.assertInteractionPublication(interactionRun, sessionEvent);
@@ -1492,6 +1580,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
     execution: PendingExecutionClaim,
     error: unknown,
   ): Promise<void> {
+    // A draining authority refused the start because everything is stopping, not
+    // because this run went wrong, so the run ends cancelled rather than failed.
+    if (isShutdownCancelledInteractionAdmission(error)) run.stop(undefined);
     try {
       await owners.failStart(error);
     } catch (failure) {
@@ -1619,7 +1710,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
     hostedInteraction?: HostedInteractionBridge;
     abortSignal: AbortSignal;
     eventContext: RuntimeEventMapContext;
+    prepareBeforeDispatch?: () => Promise<void>;
     beforeDispatch: () => void;
+    hasCommittedHandoff?: () => boolean;
     onSessionEvent: (sessionEvent: SessionEvent, runtimeEvent: RuntimeEvent) => Promise<void>;
     onError: (error: unknown) => Promise<void>;
     onFinally: () => Promise<void>;
@@ -1645,6 +1738,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
     let terminalAccepted = false;
     let errorSeen = false;
     try {
+      if (input.prepareBeforeDispatch) await input.prepareBeforeDispatch();
+      // Keep the final stop/admission check synchronous with backend.send.
       input.beforeDispatch();
       for await (const sessionEvent of input.backend.send({
         ...backendInput,
@@ -1661,7 +1756,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         await input.onSessionEvent(sessionEvent, runtimeEvent);
         if (terminalSeen) terminalAccepted = true;
       }
-      if (!terminalSeen) {
+      if (!terminalSeen && !input.hasCommittedHandoff?.()) {
         for (const sessionEvent of this.missingTerminalSessionEvents(
           input.eventContext.turnId,
           !errorSeen,
@@ -1927,7 +2022,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
         status: 'aborted',
         lineage: projection.lineage,
         ...(operation.abortSource ? { abortSource: operation.abortSource } : {}),
-        partialOutputRetained: await this.turnHasRetainedOutput(sessionId, projection.turnId),
       });
       await this.appendStopProjection(sessionId, projection.message);
       projection.projected = true;
@@ -2055,6 +2149,20 @@ export class RuntimeKernel implements RuntimeKernelLike {
       const run = active.activeRuns.get(runId);
       return run !== undefined && (turnId === undefined || run.turnId === turnId);
     });
+  }
+
+  requestRunHandoff(
+    sessionId: string,
+    runId: string,
+    pause: RuntimeHandoffIntent,
+    signal: AbortSignal,
+  ): AgentRunHandoffRequest | undefined {
+    if (!this.deps.inspectContinuationSafety) return undefined;
+    for (const active of this.backendGenerationsFor(sessionId)) {
+      const run = active.activeRuns.get(runId);
+      if (run) return run.requestHandoff(pause, signal);
+    }
+    return undefined;
   }
 
   updateCachedHeader(sessionId: string, header: SessionHeader): void {
@@ -2270,6 +2378,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
     );
   }
 
+  /** Every run this Session has opened, enumerated from the event spine. */
+  private async sessionRunIds(sessionId: string): Promise<string[]> {
+    const store = this.deps.runtimeEventStore;
+    if (!store) return [];
+    return (await store.listSessionInvocations(sessionId)).map((invocation) => invocation.runId);
+  }
+
   private buildBackendRecorderHooks(input: {
     sessionId: string;
   }): Pick<
@@ -2313,8 +2428,12 @@ export class RuntimeKernel implements RuntimeKernelLike {
               checkpoint: HistoryCompactCheckpoint,
               turnId: string,
             ) => this.historyCompactCoordinator.record(sessionId, checkpoint, runFor(turnId)),
-            loadModelProjectionTransitions: () =>
-              loadModelProjectionTransitionsFromRunLedger(this.deps.runStore!, sessionId),
+            loadModelProjectionTransitions: async () =>
+              loadModelProjectionTransitionsFromRunLedger(
+                this.deps.runStore!,
+                sessionId,
+                await this.sessionRunIds(sessionId),
+              ),
             recordModelProjectionTransition: (
               transition: ModelProjectionTransition,
               turnId: string,
@@ -2735,7 +2854,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
     turnId: string,
     status: TurnRecord['status'],
     lineage: AgentRunLineage = {},
-    options: { id?: string; ts?: number; errorClass?: string; abortSource?: string } = {},
+    options: {
+      id?: string;
+      ts?: number;
+      errorClass?: string;
+      abortSource?: string;
+      retry?: TurnRecord['retry'];
+    } = {},
   ): Promise<void> {
     const ts = options.ts ?? this.deps.now();
     await this.deps.store.appendMessage(
@@ -2748,14 +2873,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
         lineage,
         ...(options.abortSource ? { abortSource: options.abortSource } : {}),
         ...(options.errorClass !== undefined ? { errorClass: options.errorClass } : {}),
-        partialOutputRetained: await this.turnHasRetainedOutput(sessionId, turnId),
+        ...(options.retry ? { retry: options.retry } : {}),
       }),
     );
-  }
-
-  private async turnHasRetainedOutput(sessionId: string, turnId: string): Promise<boolean> {
-    const messages = await this.deps.store.readMessages(sessionId).catch(() => []);
-    return messagesHaveRetainedOutput(messages, turnId);
   }
 }
 
@@ -2838,7 +2958,7 @@ async function revalidateContinuationBoundary(
 function continuationClaimForExecution(
   continuation: RuntimeContinuation,
   claimedAt: number,
-  targetRunHeader: AgentRunHeader,
+  targetOpening: RuntimeEventInvocationOpenedContent,
 ): ContinuationClaimV1 {
   if (
     !continuation.claimId ||
@@ -2864,12 +2984,19 @@ function continuationClaimForExecution(
       runId: continuation.runId,
       turnId: continuation.turnId,
     },
-    targetRunHeader,
+    targetOpening,
     claimedAt,
   };
 }
 
-function continuationTargetRunHeaderForExecution(input: {
+/**
+ * The opening fact the claim freezes for its target invocation.
+ *
+ * It has to be byte-identical to the one the target's own AgentRun computes:
+ * the run compares them before it starts, so a claim can only admit the
+ * execution it actually authorised.
+ */
+function continuationTargetOpeningForExecution(input: {
   continuation: RuntimeContinuation;
   sessionHeader: SessionHeader;
   userInput: UserMessageInput;
@@ -2877,48 +3004,17 @@ function continuationTargetRunHeaderForExecution(input: {
   effectiveOrchestration: EffectiveOrchestration;
   effectiveToolMode: ToolMode;
   targetProviderStateIdentity: `sha256:${string}` | undefined;
-  claimedAt: number;
-}): AgentRunHeader {
-  const {
-    continuation,
-    sessionHeader,
-    userInput,
-    effectiveOrchestration,
-    effectiveToolMode,
-    claimedAt,
-  } = input;
+  sourceOpening: RuntimeEventInvocationOpenedContent;
+}): RuntimeEventInvocationOpenedContent {
+  const { continuation, sessionHeader, userInput, effectiveOrchestration, effectiveToolMode } =
+    input;
   if (!continuation.claimId || !continuation.boundary) {
     throw new RuntimeContinuationRevalidationError(
       'source_identity_changed',
       'Runtime continuation is missing its durable target-header identity',
     );
   }
-  const source = continuation.boundary.segments.at(-1)!;
-  return {
-    runId: continuation.runId,
-    invocationId: continuation.invocationId,
-    sessionId: continuation.sessionId,
-    turnId: continuation.turnId,
-    status: 'created',
-    backendKind: sessionHeader.backend,
-    ...(sessionHeader.llmConnectionId === undefined
-      ? {}
-      : { llmConnectionId: sessionHeader.llmConnectionId }),
-    ...(input.targetProviderStateIdentity
-      ? { providerStateIdentity: input.targetProviderStateIdentity }
-      : {}),
-    llmConnectionSlug: sessionHeader.llmConnectionSlug,
-    modelId: sessionHeader.model,
-    cwd: sessionHeader.cwd,
-    workspaceIdentity: input.workspaceIdentity,
-    permissionMode: sessionHeader.permissionMode,
-    collaborationMode: sessionHeader.collaborationMode ?? 'agent',
-    orchestrationMode: effectiveOrchestration.mode,
-    orchestrationSource: effectiveOrchestration.source,
-    agentSwarmAuthorization: effectiveOrchestration.agentSwarmAuthorization,
-    toolMode: effectiveToolMode,
-    createdAt: claimedAt,
-    updatedAt: claimedAt,
+  const lineage = {
     parentRunId: continuation.sourceRunId,
     ...(userInput.parentTurnId ? { parentTurnId: userInput.parentTurnId } : {}),
     ...(userInput.retriedFromTurnId ? { retriedFromTurnId: userInput.retriedFromTurnId } : {}),
@@ -2929,18 +3025,53 @@ function continuationTargetRunHeaderForExecution(input: {
     ...(userInput.parentSessionId ? { parentSessionId: userInput.parentSessionId } : {}),
     ...(userInput.agentId ? { agentId: userInput.agentId } : {}),
     ...(userInput.agentName ? { agentName: userInput.agentName } : {}),
-    continuationSource: {
-      protocol: 'continuation_source_v2',
+  };
+  const opening: RuntimeEventInvocationOpenedContent = {
+    kind: 'invocation_opened',
+    protocol: 'invocation_opened_v1',
+    route:
+      sessionHeader.llmConnectionId === undefined
+        ? {
+            provenance: 'unknown',
+            backendKind: sessionHeader.backend,
+            llmConnectionSlug: sessionHeader.llmConnectionSlug,
+            modelId: sessionHeader.model,
+          }
+        : {
+            provenance: 'runtime',
+            backendKind: sessionHeader.backend,
+            llmConnectionId: sessionHeader.llmConnectionId,
+            llmConnectionSlug: sessionHeader.llmConnectionSlug,
+            modelId: sessionHeader.model,
+            ...(input.targetProviderStateIdentity
+              ? { providerStateIdentity: input.targetProviderStateIdentity }
+              : {}),
+          },
+    configuration: {
+      cwd: sessionHeader.cwd,
+      permissionMode: sessionHeader.permissionMode,
+      collaborationMode: sessionHeader.collaborationMode ?? 'agent',
+      orchestrationMode: effectiveOrchestration.mode,
+      orchestrationSource: effectiveOrchestration.source,
+      toolMode: effectiveToolMode,
+      ...(effectiveOrchestration.agentSwarmAuthorization !== undefined
+        ? { agentSwarmAuthorization: effectiveOrchestration.agentSwarmAuthorization }
+        : {}),
+      workspaceIdentity: input.workspaceIdentity,
+    },
+    root: { kind: 'user' },
+    source: {
+      kind: 'continuation',
+      sourceInvocationId: continuation.sourceInvocationId,
+      sourceRunId: continuation.sourceRunId,
+      sourceTurnId: continuation.sourceTurnId,
+      sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
       claimId: continuation.claimId,
       boundaryDigest: continuation.boundary.manifestDigest,
-      sourceInvocationId: source.identity.invocationId,
-      sourceRunId: source.identity.runId,
-      sourceTurnId: source.identity.turnId,
-      sourceRuntimeEventHighWater: source.position.lastEventSeq,
-      sourcePrefixDigest: source.prefixDigest,
-      replayManifestDigest: continuation.boundary.manifestDigest,
     },
+    lineage,
   };
+  return preserveHandoffOpening(continuation, opening, input.sourceOpening);
 }
 
 function consumeAdmittedRuntimeContinuation(input: {
@@ -2994,7 +3125,7 @@ function consumeAdmittedRuntimeContinuation(input: {
   const replay = buildRuntimeEventModelReplayPlan(continuation.runtimeContext);
   const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
     continuation.runtimeContext,
-    input.admissionRoute.runHeaders,
+    input.admissionRoute.invocations,
     input.admissionRoute.targetProviderStateIdentity,
     input.admissionRoute.targetModelId,
   );
@@ -3049,7 +3180,9 @@ function assertRuntimeContinuationEnvelope(continuation: RuntimeContinuation): v
   if (
     continuation.invocationId === continuation.sourceInvocationId ||
     continuation.runId === continuation.sourceRunId ||
-    continuation.turnId === continuation.sourceTurnId
+    (continuation.handoffRootRunId === undefined
+      ? continuation.turnId === continuation.sourceTurnId
+      : continuation.turnId !== continuation.sourceTurnId)
   ) {
     throw new Error('Runtime continuation must use fresh invocation, run, and turn identities');
   }
@@ -3057,7 +3190,7 @@ function assertRuntimeContinuationEnvelope(continuation: RuntimeContinuation): v
 
 function assertContinuationSourceUnchanged(
   continuation: RuntimeContinuation,
-  sourceRun: AgentRunHeader,
+  sourceRun: RuntimeInvocationRecord,
   sourceEvents: readonly RuntimeEvent[],
 ): void {
   if (
@@ -3071,9 +3204,18 @@ function assertContinuationSourceUnchanged(
     );
   }
   const terminalEvents = matchingTerminalRuntimeEvents(sourceRun, sourceEvents);
-  const terminalStatus =
-    terminalEvents.length === 1 ? terminalRunStatusFromRuntimeEvent(terminalEvents[0]!) : undefined;
-  if (terminalStatus === undefined || terminalStatus !== sourceRun.status) {
+  const pause = terminalEvents.length === 1 ? runtimeHandoffPause(terminalEvents[0]!) : undefined;
+  if (
+    terminalEvents.length !== 1 ||
+    (continuation.handoffRootRunId === undefined
+      ? Boolean(pause) || terminalRunStatusFromRuntimeEvent(terminalEvents[0]!) === undefined
+      : !pause ||
+        pause.rootRunId !== continuation.handoffRootRunId ||
+        pause.successorRunId !== continuation.runId ||
+        pause.successorInvocationId !== continuation.invocationId ||
+        pause.claimId !== continuation.claimId ||
+        pause.remainingSteps !== continuation.handoffRemainingSteps)
+  ) {
     throw new RuntimeContinuationRevalidationError(
       'source_terminal_changed',
       'Runtime continuation source is no longer terminal',
@@ -3177,6 +3319,18 @@ interface RuntimeRunOwnerScopeCallbacks {
   releaseInteraction(binding: RuntimeInteractionRunBinding): void;
   settleReservedExecution(outcome: ExecutionClaimOutcome): void;
   finalizeExecution(operation: () => Promise<void>): Promise<void>;
+}
+
+function runtimeSteeringInput(
+  owner: RuntimeMessageRunOwner | undefined,
+): Pick<BackendSendInput, 'pullSteering' | 'ackSteering' | 'nackSteering'> {
+  return owner
+    ? {
+        pullSteering: () => owner.pull(),
+        ackSteering: (ids) => owner.ack(ids),
+        nackSteering: (ids) => owner.nack(ids),
+      }
+    : {};
 }
 
 class RuntimeRunOwnerScope {
@@ -3296,25 +3450,22 @@ class RuntimeRunOwnerScope {
 }
 
 function effectiveOrchestrationForRun(
-  run: AgentRunHeader,
+  run: RuntimeInvocationRecord,
   session: SessionHeader,
 ): EffectiveOrchestration {
-  if (
-    run.orchestrationMode !== undefined &&
-    run.orchestrationSource !== undefined &&
-    run.agentSwarmAuthorization !== undefined
-  ) {
+  const configuration = run.opening.configuration;
+  if (configuration.agentSwarmAuthorization !== undefined) {
     return {
-      mode: run.orchestrationMode,
-      source: run.orchestrationSource,
-      agentSwarmAuthorization: run.agentSwarmAuthorization,
+      mode: configuration.orchestrationMode,
+      source: configuration.orchestrationSource,
+      agentSwarmAuthorization: configuration.agentSwarmAuthorization,
     };
   }
   return resolveEffectiveOrchestration(session.orchestrationMode, undefined);
 }
 
-function effectiveToolModeForRun(run: AgentRunHeader): ToolMode {
-  return run.toolMode ?? DEFAULT_TOOL_MODE;
+function effectiveToolModeForRun(run: RuntimeInvocationRecord): ToolMode {
+  return run.opening.configuration.toolMode;
 }
 
 function assertNoRemovedChildAgentRunLineage(input: UserMessageInput): void {

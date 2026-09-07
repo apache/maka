@@ -23,7 +23,6 @@ import type { IpcMain } from 'electron';
 import type { SessionCatalogProjection, SessionCreateInput } from '@maka/runtime-host/protocol';
 import {
   registerRuntimeHostSessionCatalogIpc,
-  toDesktopHostSharedSessionSummary,
   toDesktopHostSessionSummary,
   type RuntimeHostSessionCatalogIpcDeps,
 } from '../runtime-host-session-catalog-ipc-main.js';
@@ -42,9 +41,8 @@ test('maps Runtime Host live run state without collapsing unknown and known-empt
   assert.deepEqual(running.runningTurnIds, ['turn-live']);
 });
 
-test('preserves the Session revision in Owner and Shared Desktop Host summaries', () => {
+test('preserves the Session revision in Owner Desktop Host summaries', () => {
   assert.equal(toDesktopHostSessionSummary(projection({ revision: 7 })).revision, 7);
-  assert.equal(toDesktopHostSharedSessionSummary(sharedProjection()).revision, 7);
 });
 
 test('session creation forwards the caller name for a mode that carries none', async () => {
@@ -125,17 +123,5 @@ function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionC
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     ...overrides,
-  };
-}
-
-function sharedProjection() {
-  return {
-    kind: 'shared_session' as const,
-    id: 'session-1',
-    revision: 7,
-    createdAt: 1,
-    activityAt: 2,
-    name: 'Session',
-    status: 'active' as const,
   };
 }

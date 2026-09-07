@@ -280,6 +280,13 @@ async function fetchProviderModelsStrict(
         .filter((model) => discovery.filter !== 'language-models' || model.type === 'language')
         .map(toModelInfo)
         .filter((model): model is ModelInfo => model !== null);
+      if (discovery.modelProtocols === 'commandcode') {
+        for (const model of models) {
+          if (/^(?:anthropic\/)?claude-/i.test(model.id)) {
+            model.apiProtocol = 'anthropic-messages';
+          }
+        }
+      }
       return filterDiscoveredModels(models, discovery.filter);
     }
     case 'google': {

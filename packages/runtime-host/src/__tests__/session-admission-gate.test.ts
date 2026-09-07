@@ -90,15 +90,16 @@ test('serializes overlapping multi-Session admissions without lock-order deadloc
   assert.deepEqual(order, ['first:start', 'third', 'first:end', 'second']);
 });
 
-test('keeps the admission open until admitted child work settles', async () => {
+test('keeps the admission open until joined leaf work settles', async () => {
   const gate = new SessionAdmissionGate();
   const childEntered = deferred();
   const releaseChild = deferred();
   let outerSettled = false;
 
   const outer = gate
-    .run('session', (lease) => {
-      void gate.runAdmitted('session', lease, async () => {
+    .run('session', () => {
+      assert.throws(() => gate.runOrJoin('other', () => undefined), /does not match/);
+      void gate.runOrJoin('session', async () => {
         childEntered.resolve();
         await releaseChild.promise;
       });
@@ -146,4 +147,29 @@ test('rejects accidental admission re-entry instead of deadlocking', async () =>
       /reuse its lease/,
     );
   });
+});
+
+test('work detached from an admission takes admissions of its own', async () => {
+  const gate = new SessionAdmissionGate();
+  const release = deferred();
+  const order: string[] = [];
+  let detached!: Promise<void>;
+
+  // The detached work starts inside the admission and admits before the
+  // admission ends, which is the order a drained Turn reaches its first
+  // admission in. Inherited context would reject it as re-entry.
+  await gate.run('session', async () => {
+    order.push('active:start');
+    detached = gate.detach(async () => {
+      await gate.run('session', () => {
+        order.push('detached:admitted');
+      });
+    });
+    await Promise.resolve();
+    order.push('active:end');
+    release.resolve();
+  });
+  await release.promise;
+  await detached;
+  assert.deepEqual(order, ['active:start', 'active:end', 'detached:admitted']);
 });

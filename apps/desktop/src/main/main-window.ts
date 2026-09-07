@@ -29,6 +29,7 @@ import { BrowserViewManager } from './browser/view-manager.js';
 import type { E2eFixture } from './e2e-fixture.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
 import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
+import { clearDevRendererHttpCache } from './main-renderer-dev-cache.js';
 import {
   type MainRendererFrameIdentity,
   observeMainRendererProcessGone,
@@ -99,6 +100,7 @@ interface MainWindowControllerDeps {
   // and the fake backend, so main-window.ts owns no env policy of its own.
   revealMode: WindowRevealMode;
   onClose?: () => void;
+  onShow?: () => void;
   onRendererProcessGone: (details: Electron.RenderProcessGoneDetails) => void | Promise<void>;
 }
 
@@ -435,6 +437,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     //
     // Both are gated on the URL using `http(s):` or `mailto:` — everything else
     // (file://, electron internal, etc.) is allowed/denied per Electron defaults.
+    mainWindow.once('show', () => deps.onShow?.());
     mainWindow.webContents.setWindowOpenHandler(({ url }) => {
       if (isExternalUrl(url)) {
         void shell.openExternal(url);
@@ -521,6 +524,11 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         : { ...mainWindow.getBounds(), isMaximized: false };
       void writeSavedBounds(workspaceRoot, final);
     });
+
+    // Dev-server cache hygiene (issue #4775) — see main-renderer-dev-cache.ts
+    // for why a stale immutable dep-chunk graph must never survive into a new
+    // dev session (duplicate React instances → null hook dispatcher crash).
+    await clearDevRendererHttpCache(mainWindow.webContents.session, rendererEntry);
 
     await loadMainRenderer(mainWindow, rendererEntry);
 

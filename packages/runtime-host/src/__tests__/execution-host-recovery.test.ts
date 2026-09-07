@@ -29,7 +29,6 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
-import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import type { StoredMessage } from '@maka/core/session';
@@ -205,8 +204,8 @@ test('startup recovery replays an admitted regenerate with its source lineage', 
     const ledger = await fixture.readTurn(regeneratedTurnId);
     assert.equal(ledger.runs.length, 1);
     assert.equal(ledger.userMessages.length, 1);
-    assert.equal(ledger.runs[0]?.parentTurnId, sourceTurnId);
-    assert.equal(ledger.runs[0]?.regeneratedFromTurnId, sourceTurnId);
+    assert.equal(ledger.runs[0]?.opening.lineage?.parentTurnId, sourceTurnId);
+    assert.equal(ledger.runs[0]?.opening.lineage?.regeneratedFromTurnId, sourceTurnId);
   });
 });
 
@@ -328,7 +327,7 @@ test('startup recovery rejects an unproven legacy non-terminal Run before closin
     await fixture.assertOwnerAvailable();
     const ledger = await fixture.readTurn(legacy.turnId);
     assert.equal(ledger.runs.length, 1);
-    assert.equal(ledger.runs[0]?.status, 'created');
+    assert.equal(ledger.runs[0]?.terminalEvent, undefined);
     assert.equal(ledger.terminalEvents.length, 0);
     assert.deepEqual(
       (await fixture.readSessionUserMessages()).filter((message) =>

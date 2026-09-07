@@ -246,7 +246,7 @@ describe('Maka Pi TUI runner', () => {
     const driver = new SlashCommandDriver();
     const run = runMakaPiTui({
       title: 'Maka',
-      locale: 'zh',
+      locale: 'zh-CN',
       driver,
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
@@ -325,7 +325,7 @@ describe('Maka Pi TUI runner', () => {
     const driver = new UserCommandDriver();
     const run = runMakaPiTui({
       title: 'Maka',
-      locale: 'zh',
+      locale: 'zh-CN',
       driver,
       cwd: '/repo',
       model: 'claude-sonnet-4-5',
@@ -712,7 +712,7 @@ describe('Maka Pi TUI runner', () => {
     assert.match(stderr, /fatal probe/);
   });
 
-  test('restores the terminal when driver stop rejects during close', async () => {
+  test('closing the TUI restores the terminal without issuing a Runtime stop', async () => {
     const terminal = new FakeTerminal();
     const driver = new RejectingStopDriver();
     const run = runMakaPiTui({
@@ -734,34 +734,65 @@ describe('Maka Pi TUI runner', () => {
       }),
     ]);
 
-    assert.equal(driver.stopCalls, 1);
+    assert.equal(driver.stopCalls, 0);
     assert.equal(terminal.stopCalls, 1);
     assert.equal(terminal.progressStates.at(-1), false);
   });
 
-  test('restores the terminal before a slow driver stop settles', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new HangingCloseDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'bypass',
-      terminal,
-    });
-
-    terminal.input('/exit');
-    terminal.input('\r');
-    await waitFor(() => driver.stopCalls === 1);
-    try {
-      assert.equal(terminal.stopCalls, 1);
-    } finally {
-      driver.releaseStop();
+  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+    test(`Host controls show localized confirmation and require an affirmative choice (${locale})`, async () => {
+      const terminal = new FakeTerminal();
+      const driver = new RejectingStopDriver();
+      const actions: string[] = [];
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'ask',
+        locale,
+        terminal,
+        hostControl: {
+          status: async () => 'Root: exact-root; epoch: exact-epoch; ready',
+          prepare: async (input, confirm) => {
+            actions.push(input.action);
+            return (await confirm('Owner: exact-installation; epoch: exact-epoch')) !== 'cancel';
+          },
+        },
+      });
+      terminal.input('/host status');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('exact-root'));
+      terminal.input('/host restart');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.screenOutput()).includes('exact-installation'),
+      );
+      const confirmation = plainTerminalOutput(terminal.screenOutput());
+      assert.match(confirmation, locale === 'en' ? /Cancel/ : /取消/);
+      assert.match(confirmation, locale === 'en' ? /Safe handoff/ : /安全交接/);
+      assert.match(
+        confirmation,
+        locale === 'en'
+          ? /Interrupt active work/
+          : locale === 'zh-CN'
+            ? /中断活动任务/
+            : /中斷進行中的工作/,
+      );
+      terminal.input('\r'); // Cancel is the default, never interruption.
+      await waitForTuiPaint(terminal);
+      assert.equal(terminal.stopCalls, 0);
+      terminal.input('/host restart');
+      terminal.input('\r');
+      await waitFor(() => actions.length === 2);
+      terminal.input('\x1b[B');
+      terminal.input('\r');
       await run;
-    }
-  });
+      assert.equal(driver.stopCalls, 0);
+      assert.deepEqual(actions, ['restart', 'restart']);
+    });
+  }
 
   test('restores the terminal when focus reporting fails after TUI start', async () => {
     const terminal = new ThrowingFocusReportTerminal();
@@ -799,7 +830,7 @@ describe('Maka Pi TUI runner', () => {
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
       permissionMode: 'bypass',
-      locale: 'zh',
+      locale: 'zh-CN',
       terminal,
       onboarding: fakeOnboardingSurface({
         verify: async (input) => {
@@ -868,7 +899,7 @@ describe('Maka Pi TUI runner', () => {
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
       permissionMode: 'bypass',
-      locale: 'zh',
+      locale: 'zh-CN',
       terminal,
       onboarding: fakeOnboardingSurface({
         save: async () => {
@@ -3420,7 +3451,7 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
-  test('quit during a running turn closes the TUI instead of steering it', async () => {
+  test('quit during a running turn detaches without steering or stopping Host-owned work', async () => {
     const terminal = new FakeTerminal();
     const driver = new SteeringTurnDriver();
     const run = runMakaPiTui({
@@ -3442,7 +3473,7 @@ describe('Maka Pi TUI runner', () => {
 
     await run;
     assert.deepEqual(driver.steered, []);
-    assert.equal(driver.stopCalls, 1);
+    assert.equal(driver.stopCalls, 0);
   });
 
   test('Alt+Enter during a turn queues a followup and shows a pending Queued line', async () => {
@@ -4119,7 +4150,7 @@ describe('Maka Pi TUI runner', () => {
       models: ['gpt-5', 'gpt-5-mini'],
       connectionSlug: 'openai',
       permissionMode: 'ask',
-      locale: 'zh',
+      locale: 'zh-CN',
       terminal,
     });
 
@@ -4141,7 +4172,7 @@ describe('Maka Pi TUI runner', () => {
       model: 'gpt-5',
       connectionSlug: 'openai',
       permissionMode: 'ask',
-      locale: 'zh',
+      locale: 'zh-CN',
       modelChoices: [
         {
           connectionId: 'connection-openai',
@@ -6746,7 +6777,7 @@ describe('Maka Pi TUI runner', () => {
       connectionSlug: 'claude-subscription',
       permissionMode: 'ask',
       terminal,
-      locale: 'zh',
+      locale: 'zh-CN',
       listSkills: async () => [],
     });
 
@@ -8235,7 +8266,7 @@ describe('Maka Pi TUI runner', () => {
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
       permissionMode: 'ask',
-      locale: 'zh',
+      locale: 'zh-CN',
       terminal,
     });
 
@@ -10596,23 +10627,6 @@ class FirstSessionPreparedDriver extends SlashCommandDriver {
       ts: 1,
       stopReason: 'end_turn',
     };
-  }
-}
-
-class HangingCloseDriver extends SlashCommandDriver {
-  stopCalls = 0;
-  private resolveStop: (() => void) | null = null;
-
-  override async stop(): Promise<void> {
-    this.stopCalls += 1;
-    await new Promise<void>((resolve) => {
-      this.resolveStop = resolve;
-    });
-  }
-
-  releaseStop(): void {
-    this.resolveStop?.();
-    this.resolveStop = null;
   }
 }
 

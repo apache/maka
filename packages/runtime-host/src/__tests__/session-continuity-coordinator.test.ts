@@ -89,7 +89,7 @@ test('open is an inactive publication barrier and live sequence starts at nextSe
   connection.activate(outcome.result.subscriptionId);
   await delayImmediate();
   assert.deepEqual(
-    sink.frames.map((frame) => frame.sequence),
+    sink.frames.map((frame) => ('sequence' in frame ? frame.sequence : undefined)),
     [1],
   );
   assert.equal(sink.frames[0]?.kind, 'subscription.session_delta');
@@ -818,7 +818,7 @@ test('fans one bounded Runtime Resource burst out to an inherited Session view',
   coordinator.close();
 });
 
-test('publishes live PTY bytes on the source Session continuity sequence', async () => {
+test('publishes live PTY bytes independently of the Session continuity sequence', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async () => canonical(),
@@ -832,6 +832,36 @@ test('publishes live PTY bytes on the source Session continuity sequence', async
   await coordinator.enqueueRuntimeResourcePtyData({
     sessionId: SESSION_ID,
     ref: 'maka://runtime/background-tasks/shell-1',
+    sequence: 4,
+    data: 'hidden',
+  });
+  assert.equal(sink.frames.length, 0, 'hidden terminal must not consume network output');
+  const interest = {
+    subscriptionId: opened.subscriptionId,
+    refs: ['maka://runtime/background-tasks/shell-1'],
+  };
+  assert.equal(
+    (
+      await coordinator.handlers['subscription.pty_interest.set'](
+        interest,
+        connectionContext('other-connection'),
+      )
+    ).ok,
+    false,
+  );
+  assert.equal(
+    (
+      await coordinator.handlers['subscription.pty_interest.set'](
+        interest,
+        connectionContext('connection-1'),
+      )
+    ).ok,
+    true,
+  );
+
+  await coordinator.enqueueRuntimeResourcePtyData({
+    sessionId: SESSION_ID,
+    ref: 'maka://runtime/background-tasks/shell-1',
     sequence: 5,
     data: 'ready',
   });
@@ -839,12 +869,65 @@ test('publishes live PTY bytes on the source Session continuity sequence', async
     kind: 'subscription.runtime_resource_pty_data',
     hostEpoch: HOST_EPOCH,
     subscriptionId: opened.subscriptionId,
-    sequence: 1,
     sessionId: SESSION_ID,
     ref: 'maka://runtime/background-tasks/shell-1',
     ptySequence: 5,
     data: 'ready',
   });
+  await coordinator.handlers['subscription.pty_interest.set'](
+    { ...interest, refs: [] },
+    connectionContext('connection-1'),
+  );
+  await coordinator.enqueueRuntimeResourcePtyData({
+    sessionId: SESSION_ID,
+    ref: interest.refs[0]!,
+    sequence: 6,
+    data: 'hidden again',
+  });
+  assert.equal(sink.frames.length, 1);
+  coordinator.close();
+});
+
+test('PTY overflow is bounded and requests terminal-only recovery while Session state progresses', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const blocked = deferred<void>();
+  const frames: SubscriptionFrame[] = [];
+  const connection = coordinator.attachConnection('connection-1', {
+    async send(frame) {
+      frames.push(frame);
+      if (frame.kind === 'subscription.runtime_resource_pty_data' && frames.length === 1)
+        await blocked.promise;
+    },
+  });
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+  await coordinator.handlers['subscription.pty_interest.set'](
+    { subscriptionId: opened.subscriptionId, refs: ['maka://runtime/background-tasks/shell-1'] },
+    connectionContext('connection-1'),
+  );
+  for (let sequence = 1; sequence <= 1000; sequence += 1) {
+    await coordinator.enqueueRuntimeResourcePtyData({
+      sessionId: SESSION_ID,
+      ref: 'maka://runtime/background-tasks/shell-1',
+      sequence,
+      data: 'x'.repeat(4096),
+    });
+  }
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
+  assert.equal(frames.length, 2);
+  assert.equal(frames[1]?.kind, 'subscription.session_delta');
+  if (frames[1]?.kind === 'subscription.session_delta') assert.equal(frames[1].sequence, 1);
+  blocked.resolve();
+  await delayImmediate();
+  assert.ok(
+    frames.some((frame) => frame.kind === 'subscription.runtime_resource_pty_data' && frame.reset),
+  );
+  assert.ok(frames.length <= 10, 'retained PTY backlog exceeded its frame budget');
+  assert.ok(frames.every((frame) => frame.kind !== 'subscription.closed'));
   coordinator.close();
 });
 
@@ -882,7 +965,7 @@ test('slow subscriber receives a terminal eviction without delaying another subs
     reason: 'slow_consumer',
   });
   assert.deepEqual(
-    fastSink.frames.map((frame) => frame.sequence),
+    fastSink.frames.map((frame) => ('sequence' in frame ? frame.sequence : undefined)),
     Array.from({ length: 32 }, (_, index) => index + 1),
   );
   coordinator.close();
@@ -2072,9 +2155,9 @@ test('rejoin seeds tool_result_preview at the open nextSequence without sequence
   connection.activate(opened.subscriptionId);
   await delayImmediate();
   assert.equal(sink.frames.length, 1);
-  assert.equal(sink.frames[0]?.sequence, 1);
   assert.equal(sink.frames[0]?.kind, 'subscription.session_event');
   if (sink.frames[0]?.kind !== 'subscription.session_event') return;
+  assert.equal(sink.frames[0].sequence, 1);
   assert.equal(sink.frames[0].event.type, 'tool_result_preview');
 
   const client = new ClientSessionSubscription(

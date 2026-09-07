@@ -1,3 +1,15 @@
+---
+doc_id: web-search-provider-capability
+title: "Provider-hosted web search capability"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-04
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -71,13 +83,19 @@ All production `AiSdkBackend` composition roots use the same
 | Desktop | persisted `webSearch.enabled/defaultProvider` settings | May add provider-native `WebSearch` |
 | CLI / TUI / `maka run` | the same persisted settings | May add provider-native `WebSearch` |
 | Runtime Host | runtime-policy web-search settings | May add provider-native `WebSearch` |
-| Headless Harbor | explicit `MAKA_WEB_SEARCH_ENABLED=true` | May add provider-native `WebSearch` |
 
-Headless remains opt-in because silently enabling network search would change
-benchmark semantics and historical baselines. Merely speaking Anthropic
-Messages is not enough to infer hosted-search support; Maka uses explicit model
-metadata or narrow model-id rules, including DeepSeek V4 Flash on an
-`anthropic-compatible` connection.
+The former Headless Harbor surface was retired by #2605 (2026-08-11, replaced
+by the minimal Eval kernel); its `MAKA_WEB_SEARCH_ENABLED=true` opt-in no
+longer exists. Its opt-in rationale — silently enabling network search would
+change benchmark semantics and historical baselines — now applies to eval
+subjects inverted: current benchmark subjects have no enablement path at all.
+Every subject removes `WebSearch`, `WebFetch`, and `FetchURL` from the
+provider-visible tool list, and the Eval metering proxy structurally strips
+named and provider-native web tools from external-harness requests, so
+results stay comparable across providers and baselines. Merely speaking
+Anthropic Messages is not enough to infer hosted-search support; Maka uses
+explicit model metadata or narrow model-id rules, including DeepSeek V4 Flash
+on an `anthropic-compatible` connection.
 
 An explicit `BackendFactoryContext.tools` list is a hard ceiling. Root surfaces
 may add native search, but scoped child agents do not gain it unless their

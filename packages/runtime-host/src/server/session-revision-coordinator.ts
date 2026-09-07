@@ -111,7 +111,7 @@ export interface HostSessionRevisionCoordinatorOptions {
   readonly sessionTodo: InteractiveSessionTodoWriter;
   readonly contextOffload?: Pick<
     InteractiveContextOffloadWriter,
-    'copyReferences' | 'retireSession' | 'collectGarbage'
+    'copyReferences' | 'retireSession'
   >;
   readonly manager: SessionManager;
   readonly admission: SessionAdmissionGate;
@@ -445,7 +445,7 @@ export class HostSessionRevisionCoordinator {
         requests: linkedChildRequests,
       },
       {
-        agentRunStore: this.#stores.agentRunStore,
+        runtimeEventStore: this.#stores.runtimeEventStore,
         artifacts: this.#artifacts,
         graph: this.options.graph,
         isSessionActive: this.options.isSessionActive,

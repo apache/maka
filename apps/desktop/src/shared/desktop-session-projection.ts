@@ -25,16 +25,15 @@ import type {
   StorageRef,
   ToolResultContent,
 } from '@maka/core/events';
-import type {
-  SessionSummary,
-  StoredMessage,
-  TurnRecord,
-} from '@maka/core/session';
+import type { SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { UsageStats } from '@maka/core/settings';
 import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
 import { desktopSessionKey, type DesktopHostRef } from './runtime-host-identity.js';
 
 export interface DesktopSessionSummary extends SessionSummary {
+  /** Client cache is readable history, not evidence of current Host execution. */
+  readonly localState?: 'pending' | 'cached';
+  readonly localCreatedAt?: number;
   /** Monotonic revision of the authoritative Runtime Host Session. */
   readonly revision: number;
   /** Present on authoritative Session Catalog snapshots, absent from command responses. */
@@ -47,7 +46,7 @@ export interface DesktopSessionSummary extends SessionSummary {
   readonly shared?: true;
 }
 
-export type DesktopSessionSummaryInput = SessionSummary & { readonly revision: number };
+export type DesktopSessionSummaryInput = SessionSummary & { readonly revision: number; readonly localState?: 'pending' | 'cached'; readonly localCreatedAt?: number };
 
 export interface DesktopSessionHost extends DesktopHostRef {
   readonly profileId: string;

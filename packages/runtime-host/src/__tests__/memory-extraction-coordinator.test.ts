@@ -45,6 +45,10 @@ import { type MemoryExtractionSourceSnapshot } from '@maka/runtime/memory-extrac
 import { HostMemoryExtractionCoordinator } from '../server/memory-extraction-coordinator.js';
 import { MemoryExtractionSessionLane } from '../server/memory-extraction-session-lane.js';
 
+function sectionedSummary(goal: string): string {
+  return `## Goal\n${goal}\n\n## Progress\n- done\n\n## Next Steps\n1. continue\n\n## Critical Context\n- (none)`;
+}
+
 describe('HostMemoryExtractionCoordinator', () => {
   test('extracts incidental memory through the post-terminal memory_extract path', async () => {
     await withMemoryWriter(async (writer) => {
@@ -685,8 +689,7 @@ describe('HostMemoryExtractionCoordinator', () => {
         checkpoint: buildHistoryCompactCheckpoint({
           sessionId: 'session-1',
           coveredRuntimeEvents: [old],
-          summary: 'The older context was compacted.',
-          summaryFormat: 'legacy_freeform',
+          summary: sectionedSummary('The older context was compacted.'),
           now: 1_500,
         }),
       });
@@ -731,15 +734,13 @@ describe('HostMemoryExtractionCoordinator', () => {
       const firstCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [first, firstBoundary],
-        summary: 'FIRST SUMMARY MUST BE REPLACED',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('FIRST SUMMARY MUST BE REPLACED'),
       });
       const secondCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [first, firstBoundary, second, secondBoundary],
         previousCheckpointId: firstCheckpoint.checkpointId,
-        summary: 'LATEST SECOND SUMMARY',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('LATEST SECOND SUMMARY'),
       });
       await writer.initializeExtractionCursor('session-1', 4);
       const observed: Array<{ snapshot: MemoryExtractionSourceSnapshot; prompt: string }> = [];
@@ -811,8 +812,7 @@ describe('HostMemoryExtractionCoordinator', () => {
         checkpoint: buildHistoryCompactCheckpoint({
           sessionId: 'session-1',
           coveredRuntimeEvents: [old, anchor],
-          summary: 'The older context and current-turn prefix were compacted.',
-          summaryFormat: 'legacy_freeform',
+          summary: sectionedSummary('The older context and current-turn prefix were compacted.'),
           phase: 'mid_turn',
           headAnchor: { runtimeEventId: anchor.id, turnId: anchor.turnId },
           now: 1_500,
@@ -849,8 +849,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const checkpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [old],
-        summary: 'Purported compacted context.',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('Purported compacted context.'),
         now: 1_500,
       });
       const observed: Array<{ snapshot: MemoryExtractionSourceSnapshot; prompt: string }> = [];
@@ -1239,8 +1238,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const checkpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [firstUser, secondUser],
-        summary: 'The conversation contains two durable preferences.',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('The conversation contains two durable preferences.'),
         memoryExtractionBoundary: {
           runId: compactionBoundary.runId,
           turnId: compactionBoundary.turnId,
@@ -1551,8 +1549,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const firstCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [oldUser],
-        summary: 'Old context.',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('Old context.'),
         memoryExtractionBoundary: {
           runId: oldBoundary.runId,
           turnId: oldBoundary.turnId,
@@ -1616,8 +1613,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const secondCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [oldUser, oldBoundary, newUser],
-        summary: 'Old and new context.',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('Old and new context.'),
         previousCheckpointId: firstCheckpoint.checkpointId,
         memoryExtractionBoundary: {
           runId: newBoundary.runId,
@@ -1671,8 +1667,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const firstCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [oldUser],
-        summary: 'Old context.',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('Old context.'),
         memoryExtractionBoundary: {
           runId: oldBoundary.runId,
           turnId: oldBoundary.turnId,
@@ -1682,8 +1677,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const secondCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [oldUser, oldBoundary, newUser],
-        summary: 'Old and new context.',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('Old and new context.'),
         previousCheckpointId: firstCheckpoint.checkpointId,
         memoryExtractionBoundary: {
           runId: newBoundary.runId,
@@ -1771,8 +1765,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const deniedCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [pendingUser, pendingBoundary, deniedUser],
-        summary: 'Denied period.',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('Denied period.'),
         memoryExtractionBoundary: {
           runId: deniedBoundary.runId,
           turnId: deniedBoundary.turnId,
@@ -1789,8 +1782,7 @@ describe('HostMemoryExtractionCoordinator', () => {
           deniedBoundary,
           eligibleUser,
         ],
-        summary: 'Eligible tail.',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('Eligible tail.'),
         previousCheckpointId: deniedCheckpoint.checkpointId,
         memoryExtractionBoundary: {
           runId: eligibleBoundary.runId,
@@ -1904,8 +1896,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const deniedCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [requestedUser, requestedCall, deniedUser],
-        summary: 'DENIED_SUMMARY_SECRET',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('DENIED_SUMMARY_SECRET'),
         memoryExtractionBoundary: {
           runId: deniedBoundary.runId,
           turnId: deniedBoundary.turnId,
@@ -1916,8 +1907,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const laterCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [requestedUser, requestedCall, deniedUser, deniedBoundary, laterUser],
-        summary: 'Cumulative summary after denial.',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('Cumulative summary after denial.'),
         previousCheckpointId: deniedCheckpoint.checkpointId,
         memoryExtractionBoundary: {
           runId: laterBoundary.runId,
@@ -2046,8 +2036,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const deniedCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [deniedUser],
-        summary: 'Denied period.',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('Denied period.'),
         memoryExtractionBoundary: {
           runId: deniedBoundary.runId,
           turnId: deniedBoundary.turnId,
@@ -2058,8 +2047,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const eligibleCheckpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [deniedUser, deniedBoundary, eligibleUser],
-        summary: 'Eligible tail.',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('Eligible tail.'),
         previousCheckpointId: deniedCheckpoint.checkpointId,
         memoryExtractionBoundary: {
           runId: eligibleBoundary.runId,
@@ -2117,8 +2105,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const checkpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [user],
-        summary: 'Context.',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('Context.'),
         memoryExtractionBoundary: {
           runId: 'wrong-run',
           turnId: boundary.turnId,
@@ -2161,8 +2148,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const checkpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [user],
-        summary: 'Context.',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('Context.'),
         memoryExtractionBoundary: {
           runId: boundary.runId,
           turnId: boundary.turnId,
@@ -2217,8 +2203,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const checkpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [user],
-        summary: 'Context.',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('Context.'),
         memoryExtractionBoundary: {
           runId: boundary.runId,
           turnId: boundary.turnId,
@@ -2259,8 +2244,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const checkpoint = buildHistoryCompactCheckpoint({
         sessionId: 'session-1',
         coveredRuntimeEvents: [user],
-        summary: 'Context.',
-        summaryFormat: 'legacy_freeform',
+        summary: sectionedSummary('Context.'),
         memoryExtractionBoundary: {
           runId: boundary.runId,
           turnId: boundary.turnId,

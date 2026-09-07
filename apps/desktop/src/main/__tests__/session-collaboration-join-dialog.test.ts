@@ -25,6 +25,7 @@ import { parseHTML } from 'linkedom';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import {
   SessionCollaborationJoinDialog,
+  SessionCollaborationNavigation,
   SessionCollaborationServicesProvider,
   type SessionCollaborationServices,
 } from '../../renderer/features/session-collaboration/testing.js';
@@ -67,7 +68,11 @@ test('keeps loading progress visible while an irreversible import settles', asyn
     cancelImport: async () => 'settling',
     readInvitationClipboard: async () => '',
     listMounts: async () => [],
+    subscribeMountChanges: () => () => undefined,
     removeMount: async () => undefined,
+    retryMount: async () => undefined,
+    renameMount: async () => undefined,
+    renamePrincipal: async () => ({ renamed: true }),
     requestTurn: async () => {
       throw new Error('unused');
     },
@@ -124,7 +129,11 @@ test('closes as a retained background recovery instead of reporting a failed joi
     cancelImport: async () => 'settling',
     readInvitationClipboard: async () => '',
     listMounts: async () => [],
+    subscribeMountChanges: () => () => undefined,
     removeMount: async () => undefined,
+    retryMount: async () => undefined,
+    renameMount: async () => undefined,
+    renamePrincipal: async () => ({ renamed: true }),
     requestTurn: async () => {
       throw new Error('unused');
     },
@@ -171,6 +180,130 @@ test('closes as a retained background recovery instead of reporting a failed joi
   assert.equal(imported, 1);
   assert.equal(closed, 1);
   assert.doesNotMatch(document.body.textContent, /connectionFailed/u);
+});
+
+test('identifies a retained shared task and its selected peer transport', async () => {
+  let retried: string | undefined;
+  let opened: string | undefined;
+  const services: SessionCollaborationServices = {
+    importInvitation: async () => ({ kind: 'error', reason: 'incompatible_host', message: 'raw compatibility details' }),
+    cancelImport: async () => 'settling',
+    readInvitationClipboard: async () => '',
+    listMounts: async () => [{
+      mountId: 'shared-1',
+      name: 'Shared Host',
+      hostId: 'a'.repeat(64),
+      readiness: 'ready',
+      peerPath: { kind: 'direct', transport: 'webrtc' },
+      session: {
+        kind: 'shared_session',
+        id: 'session-1',
+        revision: 1,
+        createdAt: 1,
+        activityAt: 2,
+        name: 'Shared task',
+        status: 'active',
+      },
+    }, {
+      mountId: 'offline', name: 'Waiting for Mac', hostId: 'a'.repeat(64),
+      readiness: 'reconnecting', failure: 'peer_path_unavailable',
+    }, {
+      mountId: 'revoked', name: 'Old access', hostId: 'a'.repeat(64),
+      readiness: 'unavailable', failure: 'credential_rejected',
+    }, {
+      mountId: 'incompatible', name: 'Old version', hostId: 'a'.repeat(64),
+      readiness: 'unavailable', failure: 'incompatible_host',
+    }],
+    subscribeMountChanges: () => () => undefined,
+    removeMount: async () => undefined,
+    retryMount: async (mountId) => { retried = mountId; },
+    renameMount: async () => undefined,
+    renamePrincipal: async () => ({ renamed: true }),
+    requestTurn: async () => {
+      throw new Error('unused');
+    },
+    getTurnRequests: async () => ({ canRequestTurns: false, requests: [] }),
+    acknowledgeTurnRequest: async () => ({ acknowledged: false }),
+    withdrawTurnRequest: async () => ({ withdrawn: false }),
+    getPendingTurnRequests: async () => [],
+    decideTurnRequest: async () => {
+      throw new Error('unused');
+    },
+    createOperationId: () => 'operation-1',
+  };
+  const { document } = installDom();
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  mountedRoot = createRoot(container);
+  await act(async () => {
+    mountedRoot?.render(
+      createElement(LocaleProvider, {
+        locale: 'en',
+        children: createElement(AstryxLocaleProvider, {
+          children: createElement(ToastProvider, {
+            children: createElement(SessionCollaborationServicesProvider, {
+              services,
+              children: createElement(SessionCollaborationJoinDialog, {
+                copy: testCopy(),
+                onImported: assert.fail,
+                onClose: () => undefined,
+                onOpenTask: (mount) => { opened = mount.session?.id; },
+              }),
+            }),
+          }),
+        }),
+      }),
+    );
+    await Promise.resolve();
+  });
+
+  assert.match(document.body.textContent, /Shared task/u);
+  assert.match(document.body.textContent, /Shared Host/u);
+  assert.match(document.body.textContent, /WebRTC/u);
+  assert.match(document.body.textContent, /Waiting for Mac/u);
+  assert.match(document.body.textContent, /directPathUnavailable/u);
+  assert.match(document.body.textContent, /accessRejected/u);
+  assert.match(document.body.textContent, /incompatibleHost/u);
+  assert.equal([...document.querySelectorAll('button')].filter((button) => button.textContent === 'retryConnection').length, 2);
+  await clickButton(document, 'retryConnection');
+  assert.equal(retried, 'offline');
+
+  await setTextArea(document, 'invitation');
+  await clickButton(document, 'join');
+  assert.ok(document.body.textContent.split('incompatibleHost').length - 1 > 1);
+  assert.doesNotMatch(document.body.textContent, /raw compatibility details/u);
+  await clickButton(document, 'openTask');
+  assert.equal(opened, 'session-1');
+
+  const retained = await services.listMounts();
+  let mounts: typeof retained = [];
+  let notify: (() => void) | undefined;
+  const navigationServices: SessionCollaborationServices = {
+    ...services,
+    listMounts: async () => mounts,
+    subscribeMountChanges: (listener) => {
+      notify = listener;
+      return () => { notify = undefined; };
+    },
+  };
+  await act(async () => {
+    mountedRoot?.render(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(AstryxLocaleProvider, {
+        children: createElement(SessionCollaborationServicesProvider, {
+          services: navigationServices,
+          children: createElement(SessionCollaborationNavigation, { onOpenSession: assert.fail }),
+        }),
+      }),
+    }));
+  });
+  assert.equal(document.querySelectorAll('button').length, 0, 'no entry before joining');
+  await act(async () => { mounts = retained; notify?.(); });
+  assert.equal(document.querySelectorAll('button').length, 1, 'joined tasks have an entry');
+  await act(async () => { mounts = retained.filter((mount) => mount.failure === 'credential_rejected'); notify?.(); });
+  assert.equal(document.querySelectorAll('button').length, 1, 'revoked access remains manageable');
+  await act(async () => { mounts = []; notify?.(); });
+  assert.equal(document.querySelectorAll('button').length, 0, 'removing the last access hides the entry');
 });
 
 function installDom(): { document: Document } {

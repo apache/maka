@@ -31,6 +31,8 @@ import {
   DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES,
 } from '../../preload/transcript-contract.js';
 import {
+  createDesktopTranscriptReconnectRecovery,
+  createRecoveringDesktopTranscriptRangeController,
   createDesktopTranscriptRangeController,
   DesktopTranscriptRangeStore,
 } from '../../renderer/desktop-transcript-range-store.js';
@@ -574,6 +576,98 @@ test('retains the reading anchor while an older page replaces the far edges', as
   assert.equal(snapshot.hasNewer, true);
 });
 
+for (const { coverage, textBytes } of (['complete', 'projected'] as const).flatMap((coverage) =>
+  [0, 300 * 1024, 600 * 1024].map((textBytes) => ({ coverage, textBytes })),
+)) {
+  test(`scrolls both ways through bounded ${coverage} history with ${textBytes}-byte Turns`, async () => {
+    const stride = coverage === 'projected' ? 3 : 1;
+    const messages = Array.from({ length: 40 }, (_, index) => ({
+      identity: index * stride,
+      message: { ...assistantMessage('x'.repeat(textBytes), `assistant-${index}`), turnId: `turn-${index}` },
+    }));
+    const largestTurnBytes = Math.max(...messages.map(({ message }) =>
+      Buffer.byteLength(JSON.stringify(message), 'utf8'),
+    ));
+    const maxNavigationBytes = Math.max(DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES, 2 * largestTurnBytes);
+    const pageTurns = textBytes === 0 ? 10 : 1;
+    const through = 39 * stride;
+    const pages = new Map<object, { messages: typeof messages; nextCursor: string | null }>();
+    const makePage = (direction: 'older' | 'newer', anchor: number | null) => {
+      const candidates = messages.filter(({ identity }) => anchor === null
+        || (direction === 'older' ? identity < anchor : identity > anchor));
+      const nextCursor = candidates.length > pageTurns ? 'more' : null;
+      const page = transcriptPage(direction, nextCursor, through);
+      pages.set(page, {
+        messages: direction === 'older' ? candidates.slice(-pageTurns) : candidates.slice(0, pageTurns),
+        nextCursor,
+      });
+      return page;
+    };
+    const handle = runtimeHostSessionFixture({
+      snapshot: continuitySnapshot(),
+      transcript: Promise.resolve([]),
+      events: { async *[Symbol.asyncIterator]() {} },
+      async close() {},
+      transcriptBootstrap: {
+        throughSequence: through,
+        durableCoverage: coverage,
+        overlayMessageCount: 0,
+        durable: makePage('older', null),
+        overlay: { ...transcriptPage('older', null, through), source: 'overlay' },
+      },
+      loadTranscriptOverlay: async () => [],
+      decodeTranscriptPage: async (page) => pages.get(page)!,
+      loadTranscriptPage: async (input) => makePage(input.direction, input.anchorSequence),
+    });
+    const store = transcriptStore();
+    const replica = await DesktopTranscriptReplica.prepare(handle, {
+      generation: 'generation-1',
+      onChange: (current, change) => {
+        for (const batch of encodeDesktopTranscriptChange(current.snapshot(), change)) store.accept(batch);
+      },
+    });
+    for (const batch of encodeDesktopTranscriptSnapshot(replica.snapshot())) store.accept(batch);
+    const controller = createDesktopTranscriptRangeController(store, async () => ({
+      sessionId: replica.sessionId, generation: replica.generation, hostEpoch: replica.hostEpoch,
+      readThroughMessageId: null,
+      loadBefore: (anchor, maxBytes) => replica.loadBefore(anchor, maxBytes!),
+      loadAfter: (anchor, maxBytes) => replica.loadAfter(anchor, maxBytes!),
+      loadAround: async () => { throw new Error('ordinary scrolling must not replace the range'); },
+      close: async () => replica.close(),
+    }));
+    for (const direction of ['older', 'newer', 'older', 'newer'] as const) {
+      let steps = 0;
+      while (direction === 'older' ? store.range().hasOlder : store.range().hasNewer) {
+        assert.ok(++steps <= 40, 'paging must make progress');
+        const before = replica.snapshot();
+        const anchor = (direction === 'older' ? before.durable[0] : before.durable.at(-1))!;
+        await (direction === 'older'
+          ? controller.loadBefore(DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES, anchor.message.turnId)
+          : controller.loadAfter(DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES, anchor.message.turnId));
+        const after = replica.snapshot();
+        assert.ok(after.durable.some(({ sequence }) => sequence === anchor.sequence));
+        assert.ok(after.durable.length <= DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS);
+        assert.ok(replica.residentBytes <= maxNavigationBytes,
+          'only the reading Turn and one adjacent Turn may exceed the soft range budget');
+        assert.ok(direction === 'older'
+          ? after.durable[0]!.sequence < before.durable[0]!.sequence
+          : after.durable.at(-1)!.sequence > before.durable.at(-1)!.sequence,
+          'every adjacent edge load must make progress');
+        for (let i = 1; i < after.durable.length; i++) {
+          assert.equal(after.durable[i]!.sequence - after.durable[i - 1]!.sequence, stride);
+        }
+      }
+      assert.equal(direction === 'older' ? store.range().oldestSequence : store.range().newestSequence,
+        direction === 'older' ? 0 : through);
+    }
+    // Global pressure may reclaim the range even after navigation used the
+    // atomic-Turn exception; the protection is local to that operation.
+    replica.trimDurable(128 * 1024);
+    assert.ok(replica.residentBytes <= 128 * 1024);
+    await controller.close();
+  });
+}
+
 test('delivers a mid-session tail append even while a history window is resident', async () => {
   // Reproduces the "active session does not show the newest message until you
   // switch away and back" bug. Once the resident window has been trimmed off
@@ -891,76 +985,78 @@ test('does not resurrect a discarded replica when a tail re-anchor is in flight'
   assert.equal(replica.residentBytes, 0);
 });
 
-test('does not resurrect a discarded replica when a history load is in flight', async () => {
-  // Same post-await `#resident` invariant, exercised through `loadBefore`: a
-  // history page is in flight when `discard()` reclaims the replica. The
-  // resolved older page must not repopulate durable state or publish.
-  const messages = [0, 1, 2, 3, 4].map((sequence) => ({
-    identity: sequence,
-    message: assistantMessage(String(sequence), `assistant-${sequence}`),
-  }));
-  const page = (nextCursor: string | null) => ({
-    kind: 'page' as const,
-    sessionId: 'session-1',
-    source: 'durable' as const,
-    direction: 'older' as const,
-    throughSequence: 4,
-    rawBytes: 1,
-    fragments: [],
-    rangeBoundarySequence: null,
-    protectedTurnSequence: null,
-    nextCursor,
-  });
-  const bootstrapPage = page('older');
-  const olderPage = page(null);
-  let releaseOlder: () => void = () => {};
-  const olderGate = new Promise<void>((resolve) => {
-    releaseOlder = resolve;
-  });
-  let signalEntered: () => void = () => {};
-  const olderEntered = new Promise<void>((resolve) => {
-    signalEntered = resolve;
-  });
-  const changes: { durableUpserts: readonly { sequence: number }[] }[] = [];
-  const handle = runtimeHostSessionFixture({
-    snapshot: continuitySnapshot(),
-    transcript: Promise.resolve([]),
-    events: { async *[Symbol.asyncIterator]() {} },
-    transcriptBootstrap: {
+for (const direction of ['older', 'newer'] as const) {
+  test(`does not resurrect a discarded replica when ${direction} history load is in flight`, async () => {
+    // A pending page must not repopulate or publish a reclaimed replica.
+    const messages = [0, 1, 2, 3, 4].map((sequence) => ({
+      identity: sequence,
+      message: assistantMessage(String(sequence), `assistant-${sequence}`),
+    }));
+    const page = (nextCursor: string | null) => ({
+      kind: 'page' as const,
+      sessionId: 'session-1',
+      source: 'durable' as const,
+      direction: 'older' as const,
       throughSequence: 4,
-      durableCoverage: 'complete',
-      overlayMessageCount: 0,
-      durable: bootstrapPage,
-      overlay: { ...page(null), source: 'overlay' },
-    },
-    loadTranscriptOverlay: async () => [],
-    decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
-      ? { messages: messages.slice(4), nextCursor: 'older' }
-      : { messages: messages.slice(2, 4), nextCursor: null },
-    loadTranscriptPage: async () => {
-      signalEntered();
-      await olderGate;
-      return olderPage;
-    },
-    async close() {},
-  });
-  const replica = await DesktopTranscriptReplica.prepare(handle, {
-    maxResidentBytes: 1024 * 1024,
-    onChange: (_replica, change) => changes.push(change),
-  });
+      rawBytes: 1,
+      fragments: [],
+      rangeBoundarySequence: null,
+      protectedTurnSequence: null,
+      nextCursor,
+    });
+    const bootstrapPage = page('older');
+    const adjacentPage = { ...page(null), direction };
+    let releasePage: () => void = () => {};
+    const pageGate = new Promise<void>((resolve) => {
+      releasePage = resolve;
+    });
+    let signalEntered: () => void = () => {};
+    const pageEntered = new Promise<void>((resolve) => {
+      signalEntered = resolve;
+    });
+    const changes: { durableUpserts: readonly { sequence: number }[] }[] = [];
+    const handle = runtimeHostSessionFixture({
+      snapshot: continuitySnapshot(),
+      transcript: Promise.resolve([]),
+      events: { async *[Symbol.asyncIterator]() {} },
+      transcriptBootstrap: {
+        throughSequence: 4,
+        durableCoverage: 'complete',
+        overlayMessageCount: 0,
+        durable: bootstrapPage,
+        overlay: { ...page(null), source: 'overlay' },
+      },
+      loadTranscriptOverlay: async () => [],
+      decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
+        ? { messages: direction === 'older' ? messages.slice(4) : messages.slice(0, 1), nextCursor: 'older' }
+        : { messages: messages.slice(2, 4), nextCursor: null },
+      loadTranscriptPage: async () => {
+        signalEntered();
+        await pageGate;
+        return adjacentPage;
+      },
+      async close() {},
+    });
+    const replica = await DesktopTranscriptReplica.prepare(handle, {
+      maxResidentBytes: 1024 * 1024,
+      onChange: (_replica, change) => changes.push(change),
+    });
 
-  // Load older history; reclaim memory while its page is pending.
-  const loading = replica.loadBefore(4, 128 * 1024);
-  await olderEntered;
-  replica.discard();
-  assert.equal(replica.resident, false);
-  releaseOlder();
-  await loading;
+    // Reclaim memory while an adjacent history page is pending.
+    const loading = direction === 'older'
+      ? replica.loadBefore(4, 128 * 1024)
+      : replica.loadAfter(1, 128 * 1024);
+    await pageEntered;
+    replica.discard();
+    assert.equal(replica.resident, false);
+    releasePage();
+    await loading;
 
-  assert.equal(changes.length, 0, 'a discarded replica must not publish an in-flight history page');
-  assert.equal(replica.resident, false);
-  assert.equal(replica.residentBytes, 0);
-});
+    assert.equal(changes.length, 0, 'a discarded replica must not publish an in-flight history page');
+    assert.equal(replica.resident, false);
+    assert.equal(replica.residentBytes, 0);
+  });
+}
 
 test('does not drive a discarded replica terminal when a contiguous catch-up is in flight', async () => {
   // Same post-await `#resident` invariant on the ordinary contiguous catch-up
@@ -1313,6 +1409,7 @@ test('reopens a failed transcript range with a fresh generation', async () => {
       hostEpoch: 'host-2',
       readThroughMessageId: null,
       async loadBefore() {},
+      async loadAfter() {},
       async loadAround() {},
       async close() {},
     };
@@ -1324,23 +1421,65 @@ test('reopens a failed transcript range with a fresh generation', async () => {
   await controller.close();
 });
 
+test('retries a failed transcript recovery after a newer observation becomes ready', async () => {
+  let rejectFirstReload!: (error: Error) => void;
+  const firstReload = new Promise<void>((_resolve, reject) => {
+    rejectFirstReload = reject;
+  });
+  let resolveSecondReload!: () => void;
+  const secondReload = new Promise<void>((resolve) => {
+    resolveSecondReload = resolve;
+  });
+  const reloads: Promise<void>[] = [firstReload, secondReload];
+  const errors: string[] = [];
+  const recovery = createDesktopTranscriptReconnectRecovery({
+    reload: () => {
+      const reload = reloads.shift();
+      if (!reload) throw new Error('unexpected transcript reload');
+      return reload;
+    },
+    onError(error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    },
+  });
+
+  recovery.transcriptFailed(new Error('initial open failed'));
+  recovery.observationChanged('ready');
+  await Promise.resolve();
+  recovery.observationChanged('pending');
+  recovery.observationChanged('ready');
+  rejectFirstReload(new Error('replaced transcript failed'));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(reloads.length, 0, 'the newer ready signal starts one trailing reload');
+  resolveSecondReload();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(errors, ['initial open failed', 'replaced transcript failed']);
+  recovery.close();
+});
+
 test('forwards a larger logical history range without changing batch size', async () => {
   const store = transcriptStore();
   for (const batch of encodeDesktopTranscriptSnapshot({
     sessionId: 'session-1',
     generation: 'generation-1',
     hostEpoch: 'host-1',
-    durableThrough: 2,
+    durableThrough: 4,
     durable: [
       { sequence: 1, message: assistantMessage('earlier') },
       {
         sequence: 2,
         message: { ...assistantMessage('latest', 'assistant-2'), turnId: 'turn-2' },
       },
+      {
+        sequence: 3,
+        message: { ...assistantMessage('more', 'assistant-3'), turnId: 'turn-2' },
+      },
     ],
     overlay: [],
     hasOlder: true,
-    hasNewer: false,
+    hasNewer: true,
   })) store.accept(batch);
   let request: { anchorSequence: number | null; maxBytes?: number } | undefined;
   const controller = createDesktopTranscriptRangeController(store, async () => ({
@@ -1351,6 +1490,9 @@ test('forwards a larger logical history range without changing batch size', asyn
     async loadBefore(anchorSequence, maxBytes) {
       request = { anchorSequence, maxBytes };
     },
+    async loadAfter(anchorSequence, maxBytes) {
+      request = { anchorSequence, maxBytes };
+    },
     async loadAround() {},
     async close() {},
   }));
@@ -1358,6 +1500,11 @@ test('forwards a larger logical history range without changing batch size', asyn
   await controller.loadBefore(512 * 1024, 'turn-2');
 
   assert.deepEqual(request, { anchorSequence: 2, maxBytes: 512 * 1024 });
+  await controller.loadAfter(512 * 1024, 'turn-2');
+  assert.deepEqual(request, { anchorSequence: 3, maxBytes: 512 * 1024 },
+    'forward reads start after the last resident record of the visible turn');
+  await controller.loadAfter(512 * 1024, 'evicted-turn');
+  assert.deepEqual(request, { anchorSequence: 3, maxBytes: 512 * 1024 });
   await controller.close();
 });
 
@@ -1514,3 +1661,60 @@ function continuitySnapshot() {
     interactions: { pending: [] },
   };
 }
+
+test('cached fallback remains readable and retries once per observation generation until live', async () => {
+  const store = transcriptStore();
+  const errors: unknown[] = [];
+  let opens = 0;
+  let online = false;
+  const controller = createRecoveringDesktopTranscriptRangeController(store, async () => {
+    opens += 1;
+    const identity = {
+      sessionId: 'session-1',
+      generation: online ? 'live-generation' : 'cached:generation',
+      hostEpoch: 'host-1',
+    };
+    for (const batch of encodeDesktopTranscriptSnapshot({
+      ...identity, durableThrough: 1,
+      durable: [{ sequence: 1, message: assistantMessage(online ? 'live' : 'cached') }],
+      overlay: [], hasOlder: false, hasNewer: false,
+    })) store.accept(batch);
+    return {
+      ...identity, readThroughMessageId: null,
+      loadBefore: async () => {}, loadAfter: async () => {}, loadAround: async () => {},
+      close: async () => {},
+    };
+  }, { onError: (error) => errors.push(error) });
+  const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+  await controller.ready();
+  await settle();
+  assert.equal(opens, 1);
+  assert.equal(store.range().generation, 'cached:generation');
+  controller.observationChanged('ready');
+  await settle();
+  assert.equal(opens, 2);
+  controller.observationChanged('ready');
+  await settle();
+  assert.equal(opens, 2);
+  online = true;
+  controller.observationChanged('pending');
+  controller.observationChanged('ready');
+  await settle();
+  assert.equal(opens, 3);
+  assert.equal(store.range().generation, 'live-generation');
+  assert.deepEqual(errors, []);
+  await controller.close();
+});
+
+test('live transcript open failures without cache still report the original error', async () => {
+  const failure = new Error('no Host and no cache');
+  const errors: unknown[] = [];
+  const controller = createRecoveringDesktopTranscriptRangeController(
+    transcriptStore(), async () => { throw failure; },
+    { onError: (error) => errors.push(error) },
+  );
+  await assert.rejects(controller.ready(), /no Host and no cache/);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(errors, [failure]);
+  await controller.close();
+});

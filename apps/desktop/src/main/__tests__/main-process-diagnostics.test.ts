@@ -61,6 +61,7 @@ const runtimeHostDiagnostics = {
   connections: 1,
   activeOperations: 1,
   activeResidencies: 0,
+  upgradeBlockingActivity: true,
   residencies: [],
   protocolVersion: 0,
   compatibilityEpoch: 16,

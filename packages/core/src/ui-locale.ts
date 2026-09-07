@@ -20,7 +20,7 @@
 import { IntlMessageFormat } from 'intl-messageformat';
 
 /** Resolved locales supported by human-facing Maka clients. */
-export const UI_LOCALES = ['zh', 'en'] as const;
+export const UI_LOCALES = ['zh-CN', 'zh-TW', 'en'] as const;
 
 export type UiLocale = (typeof UI_LOCALES)[number];
 
@@ -78,9 +78,7 @@ export function resolveUiMessageCatalog<T>(catalog: UiMessageCatalog<T>): UiCata
   return Object.fromEntries(
     UI_LOCALES.map((locale) => [
       locale,
-      locale === 'en'
-        ? catalog.en
-        : mergeUiMessages(catalog.en, catalog[locale] as DeepPartial<T> | undefined),
+      mergeUiMessages(catalog.en, catalog[locale] as DeepPartial<T> | undefined),
     ]),
   ) as UiCatalog<T>;
 }
@@ -122,19 +120,29 @@ function isMessageRecord(value: unknown): value is Readonly<Record<string, unkno
 }
 
 export function isUiLocale(value: unknown): value is UiLocale {
-  return value === 'zh' || value === 'en';
+  return value === 'zh-CN' || value === 'zh-TW' || value === 'en';
 }
 
 export function isUiLocalePreference(value: unknown): value is UiLocalePreference {
   return value === 'auto' || isUiLocale(value);
 }
 
+/** Decode persisted or externally supplied preferences into the closed locale vocabulary. */
+export function normalizeUiLocalePreference(value: unknown): UiLocalePreference {
+  if (value === 'zh') return 'zh-CN';
+  return isUiLocalePreference(value) ? value : 'auto';
+}
+
 /** Resolve the first supported language in the operating system preference list. */
 export function resolveSystemUiLocale(languages: readonly string[] | null | undefined): UiLocale {
   for (const language of languages ?? []) {
-    const normalized = language.trim();
-    if (/^zh(?:[-_]|$)/iu.test(normalized)) return 'zh';
-    if (/^en(?:[-_]|$)/iu.test(normalized)) return 'en';
+    const normalized = language.trim().replaceAll('_', '-');
+    if (/^zh(?:[-.]|$)/iu.test(normalized)) {
+      if (/^zh-(?:tw|hk|mo)(?:[-.]|$)/iu.test(normalized)) return 'zh-TW';
+      if (/^zh-hant(?:[-.]|$)/iu.test(normalized)) return 'zh-TW';
+      return 'zh-CN';
+    }
+    if (/^en(?:[-.]|$)/iu.test(normalized)) return 'en';
   }
   return 'en';
 }
@@ -156,6 +164,14 @@ export function resolveUiLocale(
 }
 
 /** Locale identifier used by every locale-sensitive Intl formatter. */
-export function uiLocaleToIntlLocale(locale: UiLocale): 'zh-CN' | 'en' {
-  return locale === 'zh' ? 'zh-CN' : 'en';
+export function uiLocaleToIntlLocale(locale: UiLocale): UiLocale {
+  return locale;
+}
+
+/** Copy for a wire code, or undefined when a newer producer sent one this catalog does not know. */
+export function lookupCopy(
+  map: Readonly<Record<string, string>>,
+  code: string | undefined,
+): string | undefined {
+  return code !== undefined && Object.hasOwn(map, code) ? map[code] : undefined;
 }

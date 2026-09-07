@@ -32,13 +32,16 @@ export type {
   RuntimeHostSettingsConnectionsBridge,
 } from './ports.js';
 export {
-  categoryLabel,
   connectionLastTestMessageDisplay,
   connectionTestFailureMessage,
   providerPanelActionErrorMessage,
 } from './provider-panel-shared.js';
+export { OnboardingStepForm } from './onboarding-step-form.js';
 export { getProviderSettingsCopy } from './settings-provider-copy.js';
+export { subscriptionResultMessage } from './subscription-result-message.js';
 export type { ProviderSettingsCopy } from './settings-provider-copy.js';
 export type {
   CredentialPresenceStatus,
 } from './provider-panel-shared.js';
+
+export { GenericProviderMark } from './generic-provider-mark.js';

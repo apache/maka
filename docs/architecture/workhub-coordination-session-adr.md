@@ -95,6 +95,24 @@ trusted user text, claims the source delegation in Coordination transcript order
 and rejects any later competing replacement intent. Neither a model nor a routing
 policy can directly authorize a write, Stop, or expansion of execution authority.
 
+Routing experiments replace Action Intent classification and/or Session Resolver
+recall behind the fixed Action Policy and unchanged Action Gate. A strategy names
+one Intent component and one Resolver component; it has no proposal-producing
+`resolve()` method and owns no visit focus. R2.4 pairs deterministic components;
+R3-A pairs model-assisted intent with model-ranked recall; R3-B pairs model-assisted
+intent with deterministic recall. These are experiment configurations, not separate
+policy implementations or a production model rollout.
+
+Intent output contains no target. Resolver output contains only ranked or ambiguous
+opaque candidate references, or no match; it cannot return creation or a disposition.
+The controller shares one bounded candidate context across arms; deterministic
+components retain full request text, while model adapters bound text at the model
+call boundary. The controller passes validated evidence through the same Policy with the same trusted Session snapshot.
+A model recall budget does not hide known Sessions from exact-name or correction
+rules in that fixed Policy. Policy retains trusted-text creation,
+ambiguity, correction and focus constraints. Model ranking alone cannot authorize
+work, and every resulting proposal still goes through the Host-owned Gate.
+
 ## Delegation links rather than copies transcripts
 
 A delegation persists only a bounded link between the coordination and execution

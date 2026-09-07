@@ -20,7 +20,7 @@
 import type { AgentRunStore } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
-import { isSessionInlineRun } from '@maka/core/agent-run';
+import { isSessionInlineInvocation } from '@maka/core/runtime-invocation';
 import { loadLatestHistoryCompactCheckpointFromRunLedger } from './history-compact-ledger.js';
 import {
   canReplaceHistoryCompactCheckpoint,
@@ -54,10 +54,14 @@ export class HistoryCompactCheckpointCoordinator {
     }
     const existing = this.loads.get(sessionId);
     if (existing) return existing;
-    if (!this.deps.runStore) return Promise.resolve(undefined);
+    const runStore = this.deps.runStore;
+    if (!runStore) return Promise.resolve(undefined);
 
     let guardedLoad: Promise<HistoryCompactCheckpoint | undefined>;
-    guardedLoad = loadLatestHistoryCompactCheckpointFromRunLedger(this.deps.runStore, sessionId)
+    guardedLoad = this.inlineRunIds(sessionId)
+      .then((runIds) =>
+        loadLatestHistoryCompactCheckpointFromRunLedger(runStore, sessionId, runIds),
+      )
       .then((checkpoint) => {
         if (checkpoint) this.scheduleCleanup(sessionId, checkpoint);
         if (this.loads.get(sessionId) === guardedLoad && !this.checkpoints.has(sessionId)) {
@@ -107,6 +111,15 @@ export class HistoryCompactCheckpointCoordinator {
     this.loads.delete(sessionId);
   }
 
+  /** The session's own runs, enumerated from the event spine that defines them. */
+  private async inlineRunIds(sessionId: string): Promise<string[]> {
+    const store = this.deps.runtimeEventStore;
+    if (!store) return [];
+    return (await store.listSessionInvocations(sessionId))
+      .filter((invocation) => isSessionInlineInvocation(invocation.opening))
+      .map((invocation) => invocation.runId);
+  }
+
   private scheduleCleanup(sessionId: string, checkpoint: HistoryCompactCheckpoint): void {
     if (
       !this.deps.cleanupHistoryCompactArtifacts ||
@@ -119,13 +132,10 @@ export class HistoryCompactCheckpointCoordinator {
     tracked = previous
       .catch(() => {})
       .then(async () => {
-        const runs = (await this.deps.runStore!.listSessionRuns(sessionId)).filter(
-          isSessionInlineRun,
-        );
         const runtimeEvents: RuntimeEvent[] = [];
-        for (const run of runs) {
+        for (const runId of await this.inlineRunIds(sessionId)) {
           runtimeEvents.push(
-            ...(await this.deps.runtimeEventStore!.readRuntimeEvents(sessionId, run.runId)),
+            ...(await this.deps.runtimeEventStore!.readRuntimeEvents(sessionId, runId)),
           );
         }
         await this.deps.cleanupHistoryCompactArtifacts!({

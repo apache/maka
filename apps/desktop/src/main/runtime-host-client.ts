@@ -114,6 +114,7 @@ import {
   type CollaborationGrantRevokeResult,
   type CollaborationInvitationPrepareResult,
   type CollaborationPrincipalRevokeResult,
+  type CollaborationPrincipalRenameResult,
   type CollaborationTurnRequestAcknowledgeResult,
   type CollaborationTurnRequestDecideResult,
   type CollaborationTurnRequestQueryResult,
@@ -159,6 +160,7 @@ const decodeStoredMessage = (value: unknown): StoredMessage =>
 const MAX_OPTIMISTIC_ATTEMPTS = 3;
 const MAX_SESSION_REVISION_ATTEMPTS = 8;
 const MAX_PRICING_SNAPSHOT_ATTEMPTS = 3;
+const RUNTIME_HOST_RETIREMENT_TIMEOUT_MS = 15_000;
 
 export type DesktopSessionConfigurationPatch = SessionConfigurationPatch;
 
@@ -201,6 +203,8 @@ export class DesktopRuntimeHostClientError extends Error {
 }
 
 export interface DesktopRuntimeHostSession {
+  setPtyInterests?(refs: readonly string[]): Promise<void>;
+  subscribePtyData?(listener: (frame: Extract<SubscriptionFrame, { kind: 'subscription.runtime_resource_pty_data' }>) => void): () => void;
   readonly hostEpoch: string;
   readonly subscriptionId: string;
   readonly snapshot: SessionContinuitySnapshot;
@@ -333,6 +337,10 @@ export class DesktopRuntimeHostClient {
     principalId: string,
   ): Promise<CollaborationPrincipalRevokeResult> {
     return this.request('collaboration.principal.revoke', { principalId });
+  }
+
+  renameCollaborationPrincipal(principalId: string, displayName: string): Promise<CollaborationPrincipalRenameResult> {
+    return this.request('collaboration.principal.rename', { principalId, displayName });
   }
 
   createCollaborationTurnRequest(
@@ -1322,7 +1330,11 @@ export class DesktopRuntimeHostClient {
   prepareHostRetirement(
     mode: RuntimeHostRetirementMode,
   ): Promise<RuntimeHostRetirementPreparation> {
-    return prepareConnectedRuntimeHostRetirement(this.connection, mode);
+    return prepareConnectedRuntimeHostRetirement(
+      this.connection,
+      mode,
+      RUNTIME_HOST_RETIREMENT_TIMEOUT_MS,
+    );
   }
 
   stopTurn(
@@ -1595,6 +1607,7 @@ export class DesktopRuntimeHostClient {
     }
     const session = new DesktopSessionHandle(subscription, () =>
       this.#sessions.delete(session),
+      async (refs) => { await this.request('subscription.pty_interest.set', { subscriptionId: subscription.subscriptionId, refs: [...refs] }); },
     );
     this.#sessions.add(session);
     return session;
@@ -1781,6 +1794,7 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
   constructor(
     private readonly subscription: RuntimeHostSessionSubscription,
     private readonly onClose: () => void,
+    readonly setPtyInterests: (refs: readonly string[]) => Promise<void>,
   ) {
     if (!subscription.transcriptBootstrap) {
       throw new Error("Desktop Session subscription omitted its transcript bootstrap");
@@ -1796,6 +1810,10 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
   loadTranscript(): Promise<StoredMessage[]> {
     this.#transcriptTask ??= this.subscription.loadTranscript(decodeStoredMessage);
     return this.#transcriptTask;
+  }
+
+  subscribePtyData(listener: Parameters<RuntimeHostSessionSubscription['subscribePtyData']>[0]): () => void {
+    return this.subscription.subscribePtyData(listener);
   }
 
   loadTranscriptOverlay(

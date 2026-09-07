@@ -39,35 +39,35 @@ export function createSessionListRefresher<T extends SessionSummary, TRequestCon
   let activeRefresh: Promise<T[]> | undefined;
 
   const drainRefreshes = async (): Promise<T[]> => {
-    let result = options.currentSessions();
-    while (completedGeneration < requestedGeneration) {
-      const generation = requestedGeneration;
-      const requestContext = options.captureRequestContext();
-      try {
-        const listed = await options.listSessions();
-        if (generation === requestedGeneration) {
-          result = listed;
-          options.commitSessions(result, requestContext);
-        } else {
+    try {
+      let result = options.currentSessions();
+      while (completedGeneration < requestedGeneration) {
+        const generation = requestedGeneration;
+        const requestContext = options.captureRequestContext();
+        try {
+          const listed = await options.listSessions();
+          if (generation === requestedGeneration) {
+            result = listed;
+            options.commitSessions(result, requestContext);
+          } else {
+            result = options.currentSessions();
+          }
+        } catch (error) {
+          if (generation === requestedGeneration) options.onError(error);
           result = options.currentSessions();
         }
-      } catch (error) {
-        if (generation === requestedGeneration) options.onError(error);
-        result = options.currentSessions();
+        completedGeneration = generation;
       }
-      completedGeneration = generation;
+      return result;
+    } finally {
+      activeRefresh = undefined;
     }
-    return result;
   };
 
   return {
     refresh(): Promise<T[]> {
       requestedGeneration += 1;
-      if (!activeRefresh) {
-        activeRefresh = drainRefreshes().finally(() => {
-          activeRefresh = undefined;
-        });
-      }
+      if (!activeRefresh) activeRefresh = drainRefreshes();
       return activeRefresh;
     },
   };

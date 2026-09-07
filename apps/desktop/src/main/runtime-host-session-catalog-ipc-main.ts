@@ -27,7 +27,6 @@ import { type SessionChangedEvent, type SessionChangedReason, type SessionCatalo
 import { projectSessionCatalogSummary } from '@maka/runtime-host/client';
 import type {
   SessionCatalogProjection,
-  SharedSessionCatalogProjection,
   SessionCreateInput,
   WorkspaceTarget,
   SessionModelTarget,
@@ -82,10 +81,6 @@ export interface RuntimeHostSessionCatalogIpcDeps {
   newId?: () => string;
 }
 
-export interface RuntimeHostSharedSessionCatalogIpcDeps {
-  getSession(): Promise<DesktopHostSessionSummary | null>;
-}
-
 export function registerRuntimeHostSessionCatalogIpc(
   deps: RuntimeHostSessionCatalogIpcDeps,
   ipcMain: ReconnectableReadIpcMain,
@@ -124,26 +119,11 @@ export function registerRuntimeHostSessionCatalogIpc(
     pendingCleanup.add(sessionId);
   });
   ipcMain.handle('sessions:create', async (_event, input?: CreateSessionRequestInput) => {
-    const request = resolveCreateSessionRequest(input);
     const workspace = await deps.resolveCreateProject({
       ...(input?.cwd === undefined ? {} : { cwd: input.cwd }),
       ...(input?.projectId === undefined ? {} : { projectId: input.projectId }),
     });
-    const session = await deps.client.createSession({
-      sessionId: newId(),
-      workspace,
-      ...(request.mode === undefined ? {} : { mode: request.mode }),
-      // A nameless mode (`bot`) keeps the caller's name, so always forward it.
-      name: request.name,
-      ...(request.labels === undefined ? {} : { labels: request.labels }),
-      modelTarget: normalizeModelTarget(input),
-      ...normalizeCreateThinkingLevel(input?.thinkingLevel),
-      ...(request.mode !== undefined || request.permissionMode === undefined
-        ? {}
-        : { permissionMode: request.permissionMode }),
-      collaborationMode: request.collaborationMode,
-      orchestrationMode: request.orchestrationMode,
-    });
+    const session = await deps.client.createSession(resolveDesktopSessionCreateInput(input, newId(), workspace));
     deps.emitSessionsChanged('created', session.id);
     return toDesktopHostSessionSummary(session);
   });
@@ -238,51 +218,6 @@ export function registerRuntimeHostSessionCatalogIpc(
   });
 }
 
-export function registerRuntimeHostSharedSessionCatalogIpc(
-  deps: RuntimeHostSharedSessionCatalogIpcDeps,
-  ipcMain: ReconnectableReadIpcMain,
-): void {
-  handleReconnectableRead(ipcMain, 'sessions:list', async (_event, filter?: unknown) => {
-    if (normalizeSessionListFilter(filter)?.subagentParentSessionId) return [];
-    const session = await deps.getSession();
-    return session ? [session] : [];
-  });
-}
-
-export function toDesktopHostSharedSessionSummary(
-  session: SharedSessionCatalogProjection,
-): DesktopHostSessionSummary {
-  return {
-    id: session.id,
-    revision: session.revision,
-    name: session.name,
-    activityAt: session.activityAt,
-    isFlagged: false,
-    isArchived: false,
-    labels: [],
-    labelsTruncated: false,
-    hasUnread: false,
-    ...(session.lastMessageAt === undefined ? {} : { lastMessageAt: session.lastMessageAt }),
-    ...(session.lastMessagePreview === undefined
-      ? {}
-      : { lastMessagePreview: session.lastMessagePreview }),
-    status: session.status,
-    ...(session.liveRunState === undefined
-      ? {}
-      : { runningTurnIds: [...session.liveRunState.runningTurnIds] }),
-    ...(session.blockedReason === undefined ? {} : { blockedReason: session.blockedReason }),
-    ...(session.statusUpdatedAt === undefined
-      ? {}
-      : { statusUpdatedAt: session.statusUpdatedAt }),
-    backend: 'ai-sdk',
-    llmConnectionSlug: '',
-    connectionLocked: true,
-    model: '',
-    permissionMode: 'ask',
-    shared: true,
-  };
-}
-
 /**
  * Reads the archived premise off the remove options.
  *
@@ -352,6 +287,21 @@ function normalizeSessionListFilter(value: unknown): SessionListFilter | undefin
             record.subagentParentSessionId,
           ),
         }),
+  };
+}
+
+export function resolveDesktopSessionCreateInput(input: CreateSessionRequestInput | undefined, sessionId: string, workspace: WorkspaceTarget): SessionCreateInput {
+  const request = resolveCreateSessionRequest(input);
+  return {
+    sessionId, workspace,
+    ...(request.mode === undefined ? {} : { mode: request.mode }),
+    name: request.name,
+    ...(request.labels === undefined ? {} : { labels: request.labels }),
+    modelTarget: normalizeModelTarget(input),
+    ...normalizeCreateThinkingLevel(input?.thinkingLevel),
+    ...(request.mode !== undefined || request.permissionMode === undefined ? {} : { permissionMode: request.permissionMode }),
+    collaborationMode: request.collaborationMode,
+    orchestrationMode: request.orchestrationMode,
   };
 }
 

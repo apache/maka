@@ -86,14 +86,15 @@ export interface EffectiveModelProjectionReduction {
  * here: the whole set is the state.
  */
 export async function loadModelProjectionTransitionsFromRunLedger(
-  runStore: Pick<AgentRunStore, 'listSessionRuns' | 'readEvents'>,
+  runStore: Pick<AgentRunStore, 'readEvents'>,
   sessionId: string,
+  runIds: readonly string[],
 ): Promise<LoadedModelProjectionTransitions> {
   const byId = new Map<string, ModelProjectionTransition>();
   const unreadableTargets = new Set<string>();
   let unscopedUnreadable = 0;
-  for (const run of await runStore.listSessionRuns(sessionId)) {
-    for (const event of await runStore.readEvents(sessionId, run.runId)) {
+  for (const runId of runIds) {
+    for (const event of await runStore.readEvents(sessionId, runId)) {
       if (event.type !== MODEL_PROJECTION_TRANSITION_EVENT_TYPE) continue;
       const transition = decodeLedgerTransition(event, sessionId);
       if (!transition) {

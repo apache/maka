@@ -133,7 +133,7 @@ flowchart TD
 
 | 词 | 处理对象 | 结果 |
 |---|---|---|
-| Repair | 旧 Run 的持久化状态 | 补齐或对齐 terminal RuntimeEvent、Run header 和 Turn 状态 |
+| Repair | 旧 Run 的持久化状态 | 给被中断的 Run 补上 terminal RuntimeEvent，并对齐 Turn 状态 |
 | Resume / Continuation | 一段已经证明安全的历史边界 | 创建新身份，继续 provider loop |
 | Reconcile | T1 已派发但没有 T2 outcome 的工具操作 | 观察外部世界，提交 completed 或 parked recovery decision |
 
@@ -206,7 +206,8 @@ Resume 安全性的核心不是“数据都写进 SQLite”，而是每类数据
 | 数据 | 性质 | 用途 |
 |---|---|---|
 | Immutable `RuntimeEvent` | canonical semantic fact | 模型历史、工具 call/dispatch/outcome、recovery observation/decision、terminal fact |
-| `AgentRunHeader` 与 AgentRun events | durable operational envelope | 一次执行尝试的身份、状态、lineage、诊断 |
+| invocation 开场事实 | 一次执行尝试的不可变声明 | 身份、route、配置、root authority、lineage |
+| AgentRun events | durable operational record | Runtime 逐阶段做了什么，以及诊断 |
 | `tool_operations` | SQLite projection | 快速读取某个 operation 当前状态 |
 | `tool_journal_events` | SQLite projection | 快速查看 prepared/outcome/recovery 状态变化 |
 | Session messages / Turn state | 产品与 UI 投影 | 展示对话和 Turn 状态，不参与工具恢复裁决 |
@@ -407,14 +408,11 @@ sequenceDiagram
   participant UI as Renderer
 
   App->>SM: recoverInterruptedSessions()
-  SM->>RS: 列出非终态 / 可疑 AgentRun
+  SM->>ES: 列出没有 terminal event 的 invocation
   SM->>ES: 读取 immutable RuntimeEvents
-  SM->>SM: 检查 terminal ledger 与 run header
-  alt 已有 terminal RuntimeEvent，header 落后
-    SM->>RS: 修复 matching run header
-  else 没有 terminal RuntimeEvent
-    SM->>ES: 先提交 recovered terminal RuntimeEvent
-    SM->>RS: 再提交 matching failed/cancelled header
+  SM->>RS: 读取这次 Run 的 operational events
+  alt 没有 terminal RuntimeEvent
+    SM->>ES: 提交 recovered terminal RuntimeEvent
   else ledger ambiguous / unreadable
     SM-->>UI: 保留可检查状态，fail closed
   end
@@ -424,9 +422,9 @@ sequenceDiagram
 
 这里保护一个贯穿 Runtime 的不变量：
 
-> terminal RuntimeEvent 必须先于 terminal Run header 提交；header 不能凭自己宣布一次执行已经结束。
+> 一次执行结束，当且仅当它的 terminal RuntimeEvent 已经落盘；没有别的东西记录它结束了。
 
-如果在两次提交之间再次崩溃，下次启动仍能从 terminal RuntimeEvent 修好 header。反过来先写 header，就会出现一个没有语义事实支持的“完成”状态。
+因为不存在第二次提交，崩溃也就没有可以落进去的缝隙。
 
 Desktop 还会恢复 Graph coordinator 和 supervisor wake。只有这些 startup repair 完成，并且 safe-boundary flag 开启后，才会尝试自动 continuation。
 
@@ -437,7 +435,7 @@ Phase 1 不处理未知副作用。它只允许“所有工具都已经有 commi
 Planner 需要同时通过这些 gate：
 
 - source Run 与 RuntimeEvent ledger 可读；
-- Run header 与唯一 terminal RuntimeEvent 一致；
+- source invocation 有且只有一个 terminal event；
 - 所有事件属于同一个 source execution identity；
 - Phase 0 得到 `safe_replay`；
 - 没有 pending permission；
@@ -525,7 +523,7 @@ Host 投影和 CLI 展示，不改变 planner、durable continuation claim 或 f
 
 1. 不创建第二条相同的 user event；
 2. 先提交一个 system-owned、model-invisible 的 continuation-start RuntimeEvent；
-3. 在新 Run header 中记录 source identity 和 high-water；
+3. 在新 invocation 的开场事实里记录 source identity 和 high-water；
 4. 直接把验证过的 history 交给 provider。
 
 这样既避免模型看到重复请求，也避免 completed tool call 因为“新建了一轮”而再次执行。
@@ -819,7 +817,7 @@ Eval 不恢复或重建 Runtime execution，只请求 Runtime Host 执行 Maka s
 4. T1 原子提交 call、dispatch 和 projection。
 5. 执行外部副作用，不持有数据库长事务。
 6. T2 原子提交 outcome，再把结果交给模型。
-7. terminal RuntimeEvent 先提交，Run header 后提交。
+7. 一次执行只以提交唯一一个 terminal RuntimeEvent 来结束。
 8. 崩溃重启后先 repair 旧 Run。
 9. Resolver 只读 immutable facts，判定 completed / not-dispatched / indeterminate / parked / corruption。
 10. 有 production reconciler 时，对 indeterminate 提交一个原子 recovery bundle；没有时 park。

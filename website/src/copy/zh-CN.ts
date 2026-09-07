@@ -26,6 +26,8 @@ export const zhCN: Copy = {
   siteName: 'Apache Maka (Incubating)',
   positioning: 'Apache Maka（孵化中）是一个高性能的 Agent 工作台，并完整记录它做过的每一件事。',
   theme: { toDark: '切换到深色模式', toLight: '切换到浅色模式' },
+  sceneAlt:
+    '一轮交互的运行时事件：模型说、执行命令、请求权限、你批准了、拿到结果、编辑文件、本轮结束。',
   nav: {
     docs: '文档',
     downloads: '下载',
@@ -98,7 +100,7 @@ export const zhCN: Copy = {
     p: '三条路径，边界分明。',
     nightly: {
       title: '体验 Desktop Nightly',
-      body: '每天基于 main 构建，面向开发者和测试者，发布在 GitHub Releases。目前支持 Apple Silicon Mac；Windows 是未签名预览。',
+      body: '每天基于 main 构建，面向开发者和测试者，发布在 GitHub Releases。macOS 覆盖 Apple Silicon 与 Intel；Windows 和 Linux 是未签名预览。',
       note: '不是 ASF RELEASE · 可能不稳定',
     },
     source: {
@@ -168,7 +170,8 @@ export const zhCN: Copy = {
       },
       nightly: {
         label: 'Desktop Nightly',
-        value: '每天基于 main 构建，支持 Apple Silicon Mac，Windows 为未签名预览。',
+        value:
+          '每天基于 main 构建。macOS arm64 与 x64；Windows x64、Linux x64 与 arm64 为未签名预览。',
         note: '不是 ASF RELEASE',
       },
       source: {
@@ -193,8 +196,8 @@ export const zhCN: Copy = {
     nightly: {
       h2: 'Desktop Nightly',
       note: '不是 ASF RELEASE',
-      p: 'Desktop Nightly 每天基于 main 构建，面向开发者和测试者，以 GitHub prerelease 形式发布。选择最新的 Maka Desktop Nightly；安装后应用会在 Nightly 渠道自动更新。它不是 ASF release，不适合生产环境。目前仅支持 Apple Silicon Mac。',
-      windows: 'Windows 是未签名预览，不属于受支持的发布层级。',
+      p: 'Desktop Nightly 每天基于 main 构建，面向开发者和测试者，以 GitHub prerelease 形式发布。选择最新的 Maka Desktop Nightly；安装后应用会在 Nightly 渠道自动更新。它不是 ASF release，不适合生产环境。提供 macOS 的 Apple Silicon 与 Intel、Windows x64、Linux x64 与 arm64 构建。',
+      windows: 'Windows 和 Linux 构建是未签名预览，不属于受支持的发布层级。',
     },
     source: {
       h2: '从源码构建',

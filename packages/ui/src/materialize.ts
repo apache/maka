@@ -189,7 +189,7 @@ function systemNoteLabel(kind: string, data: unknown, locale: UiLocale): string 
 
 export function materializeChat(
   messages: readonly StoredMessage[],
-  locale: UiLocale = "en",
+  locale: UiLocale,
 ): ChatItem[] {
   const items: ChatItem[] = [];
   for (const message of messages) {
@@ -415,7 +415,7 @@ export interface TurnViewModel {
   abortedAt?: number;
   abortSource?: string;
   errorClass?: string;
-  partialOutputRetained: boolean;
+  retry?: import('@maka/core/model-failure').ModelRetryDecision;
   user?: ChatItem;
   tools: ToolActivityItem[];
   assistant?: ChatItem;
@@ -484,7 +484,6 @@ export function overlayLiveTurn(
       : ({
           turnId: liveTurn.turnId,
           status: "completed" as const,
-          partialOutputRetained: false,
           tools: [],
           notes: [],
           timeline: [],
@@ -703,7 +702,7 @@ const SHELL_RUN_PRESENTATION_STATUS = {
  */
 export function materializeTurns(
   messages: readonly StoredMessage[],
-  locale: UiLocale = "en",
+  locale: UiLocale,
 ): TurnViewModel[] {
   const turnRecords = deriveTurnRecords(messages);
   const turnRecordById = new Map(
@@ -742,7 +741,7 @@ export function materializeTurns(
           : {}),
         ...(record?.abortSource ? { abortSource: record.abortSource } : {}),
         ...(record?.errorClass ? { errorClass: record.errorClass } : {}),
-        partialOutputRetained: record?.partialOutputRetained ?? false,
+        ...(record?.retry ? { retry: record.retry } : {}),
         tools: [],
         notes: [],
         timeline: [],
