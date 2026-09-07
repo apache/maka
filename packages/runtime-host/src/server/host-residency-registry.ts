@@ -50,7 +50,7 @@ export class HostResidencyRegistry {
     readonly resolve: () => void;
   }>();
   #activeCount = 0;
-  #drainCount = 0;
+  readonly #drainHandles = new Set<OperationResidency>();
 
   /** Residencies of either kind keep the process alive against idle exit. */
   get activeCount(): number {
@@ -59,25 +59,37 @@ export class HostResidencyRegistry {
 
   /** Only drain-kind residencies block maintenance probes and graceful close. */
   get drainCount(): number {
-    return this.#drainCount;
+    return this.#drainHandles.size;
   }
 
-  acquire(label: string, kind: HostResidencyKind = 'drain'): OperationResidency {
+  hasDrainResidenciesExcept(allowed: readonly OperationResidency[]): boolean {
+    const proven = new Set(allowed);
+    return [...this.#drainHandles].some((handle) => !proven.has(handle));
+  }
+
+  acquire(
+    label: string,
+    kind: HostResidencyKind = 'drain',
+    onRelease?: () => void,
+  ): OperationResidency {
     requireResidencyLabel(label);
     this.#activeCount += 1;
-    if (kind === 'drain') this.#drainCount += 1;
     const counts = this.#counts.get(label) ?? { total: 0, drain: 0 };
     counts.total += 1;
     if (kind === 'drain') counts.drain += 1;
     this.#counts.set(label, counts);
     let active = true;
-    return {
+    const handle: OperationResidency = {
       release: () => {
         if (!active) return;
         active = false;
+        this.#drainHandles.delete(handle);
         this.#release(label, kind);
+        onRelease?.();
       },
     };
+    if (kind === 'drain') this.#drainHandles.add(handle);
+    return handle;
   }
 
   snapshot(): readonly HostResidencySnapshot[] {
@@ -103,7 +115,6 @@ export class HostResidencyRegistry {
     counts.total -= 1;
     if (kind === 'drain') {
       counts.drain -= 1;
-      this.#drainCount -= 1;
     }
     this.#activeCount -= 1;
     if (counts.total === 0) this.#counts.delete(label);

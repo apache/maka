@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
 import type { BrowserWindow, BrowserWindowConstructorOptions } from 'electron';
+import type { HostHandoffView } from '@maka/runtime-host/client';
 import { createStartupProgressWindow, renderStartupProgressHtml } from '../startup-progress-window.js';
 
 function harness() {
@@ -30,18 +31,23 @@ function harness() {
   let minimized = false;
   let visible = false;
   let copied = 0;
+  let copiedHandoff: HostHandoffView | undefined;
   let documentUrl = '';
   let options: BrowserWindowConstructorOptions | undefined;
   let openWindow!: () => { action: string };
+  let contentSize = [520, 350];
+  let measuredHeight = 350;
   const scripts: string[] = [];
   const errors: unknown[] = [];
   const contents = Object.assign(new EventEmitter(), {
     setWindowOpenHandler(handler: typeof openWindow) { openWindow = handler; },
-    async executeJavaScript(source: string) { scripts.push(source); },
+    async executeJavaScript(source: string) { scripts.push(source); return measuredHeight; },
   });
   const window = Object.assign(new EventEmitter(), {
     webContents: contents,
     setMenuBarVisibility() {},
+    getContentSize() { return contentSize; },
+    setContentSize(width: number, height: number) { contentSize = [width, height]; },
     isDestroyed: () => destroyed,
     isMinimized: () => minimized,
     destroy() { destroyed = true; },
@@ -61,21 +67,46 @@ function harness() {
   const progress = createStartupProgressWindow({
     locale: 'en', dark: false, icon: '/test/icon.png',
     createWindow(input) { options = input; return window as unknown as BrowserWindow; },
-    copyDiagnostics() { copied += 1; },
+    copyDiagnostics(_phase, handoff) { copied += 1; copiedHandoff = handoff; },
     onError(error) { errors.push(error); },
   });
   return {
     progress, window, contents, scripts, errors, resolveLoad, rejectLoad,
     get options() { return options; },
     get copied() { return copied; },
+    get copiedHandoff() { return copiedHandoff; },
     get documentUrl() { return documentUrl; },
     get destroyed() { return destroyed; },
     get minimized() { return minimized; },
     get visible() { return visible; },
     get openWindow() { return openWindow; },
+    get contentSize() { return contentSize; },
+    setMeasuredHeight(height: number) { measuredHeight = height; },
   };
 }
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test('fits content instead of reserving an empty handoff panel and bounds long diagnoses', async () => {
+  const h = harness();
+  h.resolveLoad();
+  await flush();
+  const view: HostHandoffView = { revision: 'sized', state: 'attention',
+    reason: 'busy', mayExitNaturally: false, defaultAction: 'cancel',
+    actions: ['cancel'], target: { name: 'Local', location: 'local' } };
+  h.setMeasuredHeight(368);
+  h.progress.handoff(view, () => {}, 'en');
+  await flush();
+  assert.deepEqual(h.contentSize, [560, 368]);
+  h.setMeasuredHeight(900);
+  h.progress.handoff({ ...view, revision: 'long' }, () => {}, 'en');
+  await flush();
+  assert.deepEqual(h.contentSize, [560, 640]);
+  h.setMeasuredHeight(350);
+  h.progress.clearHandoff();
+  await flush();
+  assert.deepEqual(h.contentSize, [520, 350]);
+  h.progress.close();
+});
 
 test('shows the latest real phase after loading and minimizes without terminating startup', async () => {
   const h = harness();
@@ -151,4 +182,25 @@ test('localized progress stays self-contained, accessible and has no fabricated 
       assert.match(html, /maka-startup:\/\/copy/);
     }
   }
+});
+
+test('live handoff accepts only current allowed actions and copies the current diagnosis', async () => {
+  const h = harness();
+  const actions: string[] = [];
+  const view: HostHandoffView = { revision: 'first', target: { name: 'local', location: 'local' },
+    state: 'attention', reason: 'busy', mayExitNaturally: false,
+    actions: ['cancel', 'retry', 'interrupt'], defaultAction: 'cancel', diagnostic: 'current host is busy' };
+  const submit = (revision: string, action: string) => { actions.push(`${revision}:${action}`); };
+  h.progress.handoff(view, submit, 'en');
+  h.resolveLoad(); await flush();
+  h.progress.handoff({ ...view, revision: 'second', state: 'progress', phase: 'pausing', actions: ['cancel'] }, submit, 'en');
+  for (const url of ['maka-startup://handoff/first/interrupt', 'maka-startup://handoff/second/interrupt',
+    'maka-startup://handoff/second/cancel', 'maka-startup://copy']) {
+    h.contents.emit('will-navigate', { preventDefault() {} }, url);
+  }
+  await flush();
+  assert.deepEqual(actions, ['second:cancel']);
+  assert.equal(h.copiedHandoff?.revision, 'second');
+  assert.equal(h.copiedHandoff?.diagnostic, view.diagnostic);
+  h.progress.close();
 });

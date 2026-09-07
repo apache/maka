@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { createWorkHubController, port, session } from './workhub-controller-fixture.js';
 import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 import type { WorkHubCoordinationActInput } from '@maka/runtime-host/protocol';
@@ -32,7 +33,14 @@ import {
 import {
   createWorkHubRoutePolicy,
   workHubNewSessionName,
-} from '../../renderer/workhub-route-policy.js';
+} from '../../renderer/features/workhub/index.js';
+import {
+  createWorkHubR24RoutingStrategy,
+  createWorkHubR3BRoutingStrategy,
+  createWorkHubR3ARoutingStrategy,
+  WORKHUB_R3A_ROUTING_STRATEGY_ID,
+  type WorkHubRoutingStrategy,
+} from '../../renderer/features/workhub/index.js';
 
 const appShellUrl = [
   new URL('../../renderer/app-shell.tsx', import.meta.url),
@@ -59,161 +67,6 @@ test('binds the WorkHub controller to one Coordination identity rather than proj
     /useMemo\(\(\)\s*=>\s*createWorkHubController\([\s\S]*?\),\s*\[projects\]\)/u,
   );
 });
-
-function session(
-  sessionId: string,
-  overrides: Partial<WorkHubSessionFacts> = {},
-): WorkHubSessionFacts {
-  return {
-    target: { sessionId },
-    projectName: 'maka',
-    sessionName: sessionId,
-    kind: 'ordinary',
-    archived: false,
-    state: 'active',
-    updatedAt: 1,
-    ...overrides,
-  };
-}
-
-interface TestSessionPort extends WorkHubSessionPort {
-  create(input: { name: string }): Promise<WorkHubSessionFacts>;
-  submit(
-    target: { sessionId: string },
-    text: string,
-    turnId: string,
-  ): Promise<{ turnId: string; steered?: true }>;
-}
-
-function port(sessions: WorkHubSessionFacts[]): TestSessionPort {
-  let nextTurnId = 0;
-  return {
-    list: async () => sessions,
-    recentTurns: async () => [],
-    delegationFeedback: async (references) =>
-      references.map(({ delegationId }) => ({ delegationId, state: 'accepted' })),
-    routingEvidence: async () => [],
-    create: async () => {
-      throw new Error('create is not used by this read test');
-    },
-    submit: async (_target, _text, turnId) => ({
-      turnId: turnId || `reserved-turn-${++nextTurnId}`,
-    }),
-    subscribe: () => () => {},
-  };
-}
-
-function createWorkHubController({ sessions }: { sessions: TestSessionPort }) {
-  let candidateByRef = new Map<string, WorkHubSessionFacts>();
-  return createGatedWorkHubController({
-    sessions,
-    coordination: {
-      open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
-      candidates: async () => {
-        const candidates = (await sessions.list())
-          .filter((entry) => entry.kind === 'ordinary' && !entry.archived)
-          .map((entry) => ({
-            candidateRef: `candidate-${entry.target.sessionId}`,
-            sessionId: entry.target.sessionId,
-            sessionName: entry.sessionName,
-            workspace: {
-              target: { kind: 'host_path' as const, path: `/workspace/${entry.target.sessionId}` },
-              hostCwd: `/workspace/${entry.target.sessionId}`,
-            },
-            state: entry.state,
-            updatedAt: entry.updatedAt,
-          }));
-        const byId = new Map(
-          (await sessions.list()).map((entry) => [entry.target.sessionId, entry]),
-        );
-        candidateByRef = new Map(candidates.flatMap((candidate) => {
-          const entry = byId.get(candidate.sessionId);
-          return entry ? [[candidate.candidateRef, entry] as const] : [];
-        }));
-        return {
-          candidateSetId: `sha256:${'a'.repeat(64)}`,
-          candidates,
-        };
-      },
-      act: async (input) => {
-        if (input.proposal.disposition === 'answer_here') {
-          return {
-            disposition: 'answer_here',
-            coordinationTurnId: input.actionId,
-          };
-        }
-        if (input.proposal.disposition === 'clarify') {
-          return {
-            disposition: 'clarify',
-            coordinationTurnId: input.actionId,
-          };
-        }
-        if (input.proposal.disposition === 'create_new') {
-          const created = await sessions.create({ name: input.proposal.title });
-          const admitted = await sessions.submit(created.target, input.userText, input.actionId);
-          return {
-            disposition: 'create_new',
-            targetSessionId: created.target.sessionId,
-            targetTurnId: admitted.turnId,
-            ...(admitted.steered ? { steered: true as const } : {}),
-          };
-        }
-        if (input.proposal.disposition === 'replace') {
-          if (input.proposal.target.disposition === 'create_new') {
-            const created = await sessions.create({ name: input.proposal.target.title });
-            const admitted = await sessions.submit(created.target, input.userText, input.actionId);
-            return {
-              disposition: 'replace',
-              replacementDisposition: 'create_new',
-              targetSessionId: created.target.sessionId,
-              targetTurnId: admitted.turnId,
-              ...(admitted.steered ? { steered: true as const } : {}),
-            };
-          }
-          const replacementTarget = candidateByRef.get(input.proposal.target.candidateRef);
-          if (!replacementTarget) throw new Error('unknown test replacement candidate');
-          const admitted = await sessions.submit(
-            replacementTarget.target,
-            input.userText,
-            input.actionId,
-          );
-          return {
-            disposition: 'replace',
-            replacementDisposition: 'delegate_existing',
-            targetSessionId: replacementTarget.target.sessionId,
-            targetTurnId: admitted.turnId,
-            ...(admitted.steered ? { steered: true as const } : {}),
-          };
-        }
-        if (input.proposal.disposition === 'stop_work') {
-          return {
-            disposition: 'stop_work',
-            outcome: 'cancelled_pending',
-            targetSessionId: input.proposal.expects.targetSessionId,
-          };
-        }
-        if (input.proposal.disposition === 'resume_work') {
-          return {
-            disposition: 'resume_work',
-            outcome: 'resume_started',
-            targetSessionId: input.proposal.expects.targetSessionId,
-            targetTurnId: 'resumed-turn',
-          };
-        }
-        const target = candidateByRef.get(input.proposal.candidateRef);
-        if (!target) throw new Error('unknown test candidate');
-        const admitted = await sessions.submit(target.target, input.userText, input.actionId);
-        return {
-          disposition: 'delegate_existing',
-          targetSessionId: target.target.sessionId,
-          targetTurnId: admitted.turnId,
-          ...(admitted.steered ? { steered: true as const } : {}),
-        };
-      },
-    },
-  });
-}
 
 function coordinationAssignmentTurn(): WorkHubCoordinationTurn {
   return {
@@ -249,6 +102,7 @@ test('conversation acknowledges a durable assignment before projecting target ex
     references.map(({ delegationId }) => ({ delegationId, state: feedbackState }));
   const assignment = coordinationAssignmentTurn();
   const snapshots: string[] = [];
+  const activeSnapshots: string[][] = [];
   const controller = createGatedWorkHubController({
     sessions,
     coordination: {
@@ -264,10 +118,12 @@ test('conversation acknowledges a durable assignment before projecting target ex
 
   const handle = await controller.openConversation((turns) => {
     snapshots.push(turns[0]?.assignment?.feedbackState ?? 'missing');
+    activeSnapshots.push(turns.flatMap((turn) => turn.assignment?.linkState === 'active' ? [turn.assignment.targetSessionId] : []));
   }, () => undefined);
   await Promise.resolve();
 
   assert.deepEqual(snapshots.slice(0, 2), ['accepted', 'completed']);
+  assert.deepEqual(activeSnapshots, [['payment'], ['payment']]);
 
   feedbackState = 'waiting_for_user';
   onSessionChanged?.();
@@ -889,6 +745,42 @@ test('submit routes a unique complete Session name without asking', async () => 
     target: { sessionId: 'payment' },
     turnId: 'turn-exact',
     evidence: 'exact_session_name',
+  });
+  assert.deepEqual(submitted, ['payment']);
+  assert.equal((await controller.read()).focusSessionId, 'payment');
+});
+
+test('an injected R3 strategy still delegates through the shared controller and coordination.act port', async () => {
+  const submitted: string[] = [];
+  const sessions = port([
+    session('login', { sessionName: '登录刷新令牌' }),
+    session('payment', { sessionName: '支付回调幂等性' }),
+  ]);
+  sessions.submit = async (target) => {
+    submitted.push(target.sessionId);
+    return { turnId: 'turn-model-payment' };
+  };
+  const routingStrategy = createWorkHubR3ARoutingStrategy({
+    model: {
+      decide: async (input) => input.stage === 'intent'
+        ? { intent: 'work' }
+        : { kind: 'ranked', candidateRefs: ['candidate-payment'] },
+    },
+  });
+  const controller = createWorkHubController({ sessions, routingStrategy });
+
+  const result = await controller.submit({
+    requestId: 'request-r3-a',
+    text: '请实现账本边界检查器',
+  });
+
+  assert.deepEqual(result, {
+    kind: 'submitted',
+    strategyId: WORKHUB_R3A_ROUTING_STRATEGY_ID,
+    requestId: 'request-r3-a',
+    target: { sessionId: 'payment' },
+    turnId: 'turn-model-payment',
+    evidence: 'model_candidate',
   });
   assert.deepEqual(submitted, ['payment']);
 });
@@ -3310,4 +3202,74 @@ test('subscribe exposes Session invalidations without inventing WorkHub state', 
 
   assert.equal(invalidations, 1);
   assert.equal(unsubscribed, true);
+});
+
+for (const createStrategy of [createWorkHubR24RoutingStrategy, () => createWorkHubR3ARoutingStrategy({ model: { decide: async () => assert.fail('named resume must not invoke a model') } }), () => createWorkHubR3BRoutingStrategy({ model: { decide: async () => assert.fail('named resume must not invoke a model') } })]) {
+  const routingStrategy = createStrategy();
+  test(`named resume retains ${routingStrategy.strategyId} through the shared coordination.act port`, async () => {
+    const controller = createGatedWorkHubController({
+      sessions: port([session('payments', { sessionName: 'Payments' })]),
+      routingStrategy,
+      coordination: {
+        open: async () => ({ close: async () => undefined }),
+        record: async (input) => ({ turnId: input.turnId }),
+        candidates: async () => ({ candidateSetId: `sha256:${'e'.repeat(64)}`, candidates: [{ candidateRef: 'payments-ref', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }] }),
+        act: async (input) => {
+          assert.equal(input.proposal.disposition, 'resume_work');
+          assert.equal(input.proposal.resumesActionId, 'source-action');
+          return { disposition: 'resume_work', outcome: 'resume_started', targetSessionId: 'payments', targetTurnId: 'resumed-turn' };
+        },
+      },
+    });
+    const result = await controller.submit({ requestId: 'resume-strategy', text: 'Resume Payments' });
+    assert.equal(result.kind, 'resume');
+    assert.equal(result.strategyId, routingStrategy.strategyId);
+    if (result.kind === 'resume') assert.equal(result.outcome, 'resume_started');
+  });
+}
+
+for (const makeStrategy of [createWorkHubR24RoutingStrategy, () => createWorkHubR3ARoutingStrategy({ model: { decide: async (input) => input.stage === 'intent' ? { intent: 'work' } : { kind: 'none' } } }), () => createWorkHubR3BRoutingStrategy({ model: { decide: async () => ({ intent: 'work' }) } })]) {
+  test(`all combinations preserve Policy exact naming outside model recall budget: ${makeStrategy().strategyId}`, async () => {
+    const entries = Array.from({ length: 14 }, (_, i) => session(`work-${i}`, { sessionName: `任务编号${i}边界`, updatedAt: 14 - i }));
+    const controller = createWorkHubController({ sessions: port(entries), routingStrategy: makeStrategy() });
+    const result = await controller.submit({ requestId: 'outside-recall-budget', text: '任务编号13边界：补充测试' });
+    assert.equal(result.kind, 'submitted');
+    if (result.kind === 'submitted') assert.equal(result.target.sessionId, 'work-13');
+  });
+}
+
+test('Policy freezes visit focus before awaiting replaceable Intent', async () => {
+  let release!: () => void;
+  let started!: () => void;
+  const entered = new Promise<void>((resolve) => { started = resolve; });
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const strategy = createWorkHubR24RoutingStrategy();
+  const controller = createWorkHubController({
+    sessions: port([session('login'), session('payment')]),
+    routingStrategy: { ...strategy, intent: { async classify(input) {
+      started();
+      await pending;
+      return strategy.intent.classify(input);
+    } } },
+  });
+  await controller.read({ focus: { sessionId: 'login' } });
+  const result = controller.submit({ requestId: 'frozen-focus', text: '继续它' });
+  await entered;
+  await controller.read({ focus: { sessionId: 'payment' } });
+  release();
+  const submitted = await result;
+  assert.equal(submitted.kind, 'submitted');
+  if (submitted.kind === 'submitted') assert.equal(submitted.target.sessionId, 'login');
+});
+
+test('deterministic routing preserves executable instructions after the model text cutoff', async () => {
+  const sessions = port([]);
+  sessions.create = async () => session('ledger');
+  const controller = createWorkHubController({ sessions });
+  const result = await controller.submit({
+    requestId: 'long-executable-input',
+    text: '背景资料：' + '日志内容。'.repeat(450) + '\n请实现账本边界检查器',
+  });
+  assert.equal(result.kind, 'submitted');
+  if (result.kind === 'submitted') assert.equal(result.target.sessionId, 'ledger');
 });

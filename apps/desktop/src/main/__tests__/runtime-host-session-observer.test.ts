@@ -2794,7 +2794,6 @@ test("publishes Host sidecar and graph invalidations without inventing Session s
     kind: "subscription.runtime_resource_pty_data",
     hostEpoch: "host-1",
     subscriptionId: "subscription-1",
-    sequence: 3,
     sessionId: "session-1",
     ref: "maka://runtime/background-tasks/shell-1",
     ptySequence: 7,
@@ -2986,3 +2985,33 @@ class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
 async function waitFor(predicate: () => boolean): Promise<void> {
   await pollFor(predicate, { attempts: 100, message: 'Timed out waiting for observer state' });
 }
+
+test('a later observer in the same renderer receives the accumulated active stream', async () => {
+  const events = new AsyncFrameQueue();
+  let opens = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    activeAssistantStreams: [activeText('message-1')],
+    transcript: Promise.resolve([{ type: 'assistant', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'Hello', modelId: 'test-model' }]),
+    events,
+    async close() { events.end(); },
+  });
+  const observer = new RuntimeHostSessionObserver({
+    client: { openSession: async () => { opens += 1; return handle; } },
+    emitSessionsChanged() {},
+  });
+  const target = eventTarget(1);
+  await observer.observe('session-1', 'feature-first', target);
+  events.push(deltaFrame(1, 5, ' world'));
+  await waitFor(() => target.events.some((event) => 'text' in event && event.text === ' world'));
+  const before = target.events.length;
+  const seed = await observer.observe('session-1', 'conversation-later', target);
+  assert.equal(opens, 1);
+  assert.equal(target.events.length, before, 'private seeding does not replay to other listeners');
+  assert.ok(seed.some((event) =>
+    event.type === 'text_delta' && event.startOffset === 0 && event.text === 'Hello world'));
+  const after = target.events.length;
+  await observer.observe('session-1', 'conversation-later', target);
+  assert.equal(target.events.length, after, 'the same registration is still idempotent');
+  await observer.close();
+});

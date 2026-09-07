@@ -32,6 +32,7 @@ import {
 } from '../../preload/transcript-contract.js';
 import {
   createDesktopTranscriptReconnectRecovery,
+  createRecoveringDesktopTranscriptRangeController,
   createDesktopTranscriptRangeController,
   DesktopTranscriptRangeStore,
 } from '../../renderer/desktop-transcript-range-store.js';
@@ -1660,3 +1661,60 @@ function continuitySnapshot() {
     interactions: { pending: [] },
   };
 }
+
+test('cached fallback remains readable and retries once per observation generation until live', async () => {
+  const store = transcriptStore();
+  const errors: unknown[] = [];
+  let opens = 0;
+  let online = false;
+  const controller = createRecoveringDesktopTranscriptRangeController(store, async () => {
+    opens += 1;
+    const identity = {
+      sessionId: 'session-1',
+      generation: online ? 'live-generation' : 'cached:generation',
+      hostEpoch: 'host-1',
+    };
+    for (const batch of encodeDesktopTranscriptSnapshot({
+      ...identity, durableThrough: 1,
+      durable: [{ sequence: 1, message: assistantMessage(online ? 'live' : 'cached') }],
+      overlay: [], hasOlder: false, hasNewer: false,
+    })) store.accept(batch);
+    return {
+      ...identity, readThroughMessageId: null,
+      loadBefore: async () => {}, loadAfter: async () => {}, loadAround: async () => {},
+      close: async () => {},
+    };
+  }, { onError: (error) => errors.push(error) });
+  const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+  await controller.ready();
+  await settle();
+  assert.equal(opens, 1);
+  assert.equal(store.range().generation, 'cached:generation');
+  controller.observationChanged('ready');
+  await settle();
+  assert.equal(opens, 2);
+  controller.observationChanged('ready');
+  await settle();
+  assert.equal(opens, 2);
+  online = true;
+  controller.observationChanged('pending');
+  controller.observationChanged('ready');
+  await settle();
+  assert.equal(opens, 3);
+  assert.equal(store.range().generation, 'live-generation');
+  assert.deepEqual(errors, []);
+  await controller.close();
+});
+
+test('live transcript open failures without cache still report the original error', async () => {
+  const failure = new Error('no Host and no cache');
+  const errors: unknown[] = [];
+  const controller = createRecoveringDesktopTranscriptRangeController(
+    transcriptStore(), async () => { throw failure; },
+    { onError: (error) => errors.push(error) },
+  );
+  await assert.rejects(controller.ready(), /no Host and no cache/);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(errors, [failure]);
+  await controller.close();
+});

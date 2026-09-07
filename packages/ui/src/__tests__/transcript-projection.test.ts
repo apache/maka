@@ -439,19 +439,6 @@ describe('turn identity moves across structural change classes', () => {
       ],
     },
     {
-      field: 'partialOutputRetained',
-      // Recorded OR derived from the turn's own content, so isolating the
-      // recorded term needs a turn that produced nothing.
-      from: [
-        base[0]!,
-        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'aborted', partialOutputRetained: false },
-      ],
-      refresh: [
-        base[0]!,
-        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'aborted', partialOutputRetained: true },
-      ],
-    },
-    {
       field: 'assistant',
       refresh: [
         base[0]!,

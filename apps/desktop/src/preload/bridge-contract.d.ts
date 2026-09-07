@@ -710,6 +710,7 @@ export interface DesktopSessionUsageSummary extends UsageSummaryV2 {
 }
 
 export interface MakaBridge {
+  sessionLocal: import('../shared/session-local-contract.js').DesktopSessionLocalBridge;
   sessionCollaboration: {
     prepareInvitation(
       sessionId: string,
@@ -1118,10 +1119,12 @@ export interface MakaBridge {
           Pick<import('@maka/core/events').InlineReference, 'value' | 'start'>
         >;
       },
+      /** Revision transactions require Host admission before committing/clearing their draft. */
+      options?: { waitForHostAdmission?: boolean },
     ): Promise<
       | {
           ok: true;
-          disposition: 'turn_started' | 'steering' | 'followup';
+          disposition: 'turn_started' | 'steering' | 'followup' | 'locally_saved';
           turnId?: string;
           attachments: import('@maka/core/events').AttachmentRef[];
           inlineReferences: import('@maka/core/events').InlineReference[];

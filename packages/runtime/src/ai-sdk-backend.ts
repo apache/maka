@@ -72,7 +72,7 @@ import {
   type MemoryExtractionSourceSnapshot,
   type MemoryExtractionTrigger,
 } from './memory-extraction.js';
-import { modelUsesNativeOpenAiResponses, resolveModelRuntime } from './model-runtime.js';
+import { resolveModelRuntime } from './model-runtime.js';
 import { routeApplyPatchTools } from './apply-patch-profile.js';
 import { bindToolResultArchiveDecoder } from './tool-result-archive-capability.js';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
@@ -307,15 +307,17 @@ export class AiSdkBackend implements AgentBackend {
     // One resolved options value for every reader: the main call, the
     // auxiliary memory-extraction call, and the provider request all use the
     // same options value, so they cannot disagree on what was sent.
+    const runtime = resolveModelRuntime(input.connection, input.modelId);
     this.resolvedProviderOptions =
       input.providerOptions ??
-      buildProviderOptions(input.connection, input.modelId, input.header.thinkingLevel);
+      buildProviderOptions(input.connection, input.modelId, input.header.thinkingLevel, runtime);
     this.modelAdapter = new ModelAdapter({
       sessionId: input.sessionId,
       connection: input.connection,
       apiKey: input.apiKey,
       modelId: input.modelId,
       modelFactory: input.modelFactory,
+      resolvedRuntime: runtime,
       // `input.providerOptions` is an override escape hatch: when set it owns
       // the whole provider-options namespace (including reasoning effort), and
       // the computed defaults are dropped entirely. Keep providerOptions the
@@ -344,7 +346,6 @@ export class AiSdkBackend implements AgentBackend {
       assertModelCallAccountingReady: input.assertModelCallAccountingReady,
       beforeRunProviderDispatch: input.beforeRunProviderDispatch,
     });
-    const runtime = resolveModelRuntime(input.connection, input.modelId);
     const applyPatchProfile = runtime.applyPatchProfile;
     this.messageProjection = new AiSdkMessageProjection({
       modelAdapter: this.modelAdapter,
@@ -394,7 +395,7 @@ export class AiSdkBackend implements AgentBackend {
             );
             if (turn) turn.memoryExtractRequested = true;
           },
-          ...(modelUsesNativeOpenAiResponses(input.connection, input.modelId)
+          ...(input.connection.providerType === 'openai' && runtime.wire === 'openai-responses'
             ? { unsupportedReason: 'provider_unsupported' as const }
             : {}),
         })
@@ -431,6 +432,7 @@ export class AiSdkBackend implements AgentBackend {
    * long after its step still resolves this turn's watchdog, trace, and run.
    */
   private createToolRuntime(identity: {
+    inheritedSandboxBoundaryDenied: boolean;
     turnId: string;
     runId: string | undefined;
     invocationId: string | undefined;
@@ -440,6 +442,7 @@ export class AiSdkBackend implements AgentBackend {
   }): ToolRuntime {
     const input = this.input;
     return new ToolRuntime({
+      inheritedSandboxBoundaryDenied: identity.inheritedSandboxBoundaryDenied,
       sessionId: input.sessionId,
       header: input.header,
       connection: input.connection,
@@ -479,6 +482,13 @@ export class AiSdkBackend implements AgentBackend {
   // send()
   // --------------------------------------------------------------------------
 
+  async prepareRunComposition(input: { runId: string; turnId: string }): Promise<void> {
+    if (!this.input.beforeRunProviderDispatch) {
+      throw new Error('Backend has no durable Run Composition preparation authority');
+    }
+    await this.input.beforeRunProviderDispatch({ sessionId: this.sessionId, ...input });
+  }
+
   private openTurnScope(input: BackendSendInput): AiSdkTurn {
     const turn = new AiSdkTurn(
       {
@@ -497,6 +507,7 @@ export class AiSdkBackend implements AgentBackend {
         providerRetrySleep: this.providerRetrySleep,
         createToolRuntime: (owner) =>
           this.createToolRuntime({
+            inheritedSandboxBoundaryDenied: input.continuation?.sandboxBoundaryDenied === true,
             turnId: owner.turnId,
             runId: owner.runId,
             invocationId: input.invocationId ?? input.runId,

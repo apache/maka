@@ -192,10 +192,30 @@ it is not the final architecture or authority boundary of WorkHub.
 | --- | --- |
 | Action Intent | [`workhub-creation-intent.ts`](../packages/core/src/workhub-creation-intent.ts) |
 | Session Resolver | [`workhub-session-resolver.ts`](../packages/core/src/workhub-session-resolver.ts) |
-| Action Policy | [`workhub-route-policy.ts`](../apps/desktop/src/renderer/workhub-route-policy.ts) |
+| Action Policy | [`route-policy.ts`](../apps/desktop/src/renderer/features/workhub/model/route-policy.ts) |
 | Action Proposal | [`workhub-coordination.ts`](../packages/runtime-host/src/protocol/workhub-coordination.ts) |
 | Action Gate | [`workhub-coordination-action-gate.ts`](../packages/runtime-host/src/server/workhub-coordination-action-gate.ts) |
 | Projection | Coordination: [`workhub-coordination-port.ts`](../apps/desktop/src/renderer/workhub-coordination-port.ts); ordinary Sessions: [`workhub-session-port.ts`](../apps/desktop/src/renderer/workhub-session-port.ts) |
+
+**Routing strategy**: A named combination of one independently replaceable
+Action Intent classifier and one independently replaceable Session Resolver.
+It owns neither Action Policy nor Action Gate. Ordinary routing experiments use:
+
+| Configuration | Intent | Resolver | Policy / Gate |
+| --- | --- | --- | --- |
+| R2.4 | Deterministic | Deterministic | Shared and unchanged |
+| R3-A | Model-assisted | Model-ranked candidates | Shared and unchanged |
+| R3-B | Model-assisted | Deterministic | Shared and unchanged |
+
+Model Intent carries no target, and model recall carries no disposition or creation
+request. The fixed Policy combines these advisory results with trusted input,
+exact-name/related/focus rules, and action-specific constraints. Named stop/resume
+retain their deterministic reference requirements and Host admission. Component
+failures become uncertain evidence; no component can write or directly submit a
+proposal. Each arm receives the same bounded candidate context and the same trusted Policy
+snapshot. Deterministic components read the full request; model adapters bound text
+only at the model call boundary. The model recall limit does not remove known Sessions from the fixed
+Policy's exact-name and correction rules. Production still uses R2.4.
 
 _Avoid_: copied execution transcripts, self-routing, a second Session/WorkHub
 storage substrate, or treating model/routing output as execution authority.

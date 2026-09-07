@@ -170,6 +170,9 @@ export function TranscriptHistoryGapRow({
  * plus `hostTurnId` for the grouping once the Host names one.
  */
 export interface TransientUserMessageProjection {
+  deliveryStatus?: string;
+  deliveryDetail?: string;
+  deliveryActions?: readonly { label: string; onClick(): void }[];
   id: string;
   text: string;
   ts: number;

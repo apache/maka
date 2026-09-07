@@ -26,6 +26,7 @@ import {
   type AttachmentSnapshotInput,
   resolveAttachmentRefs,
   resolveIngestItems,
+  prepareIngestItems,
   resolvePickedAttachments,
   sniffPickedAttachmentMimeType,
 } from '../attachment-ingest.js';
@@ -150,6 +151,25 @@ describe('resolveIngestItems (pre-read validation)', () => {
         }),
       /过期|无效/,
     );
+  });
+
+  test('prepared approvals commit as one set and survive failed admission', async () => {
+    const approvals = createAttachmentApprovalRegistry();
+    const items = approvals.issueApprovals(1, [
+      { path: '/tmp/a.txt', name: 'a.txt', size: 1 },
+      { path: '/tmp/b.txt', name: 'b.txt', size: 1 },
+    ]);
+    const input = { senderId: 1, items, approvals, stat: async () => ({ size: 1 }) };
+    const plan = await prepareIngestItems(input);
+    assert.throws(() => plan.commit(() => { throw new Error('storage full'); }), /storage full/);
+    for (const item of items) assert.ok(approvals.peekApproval(1, item.approvalId));
+    const competing = await prepareIngestItems({ ...input, items: [items[1]] });
+    assert.equal(competing.commit(() => 'admitted'), 'admitted');
+    assert.throws(() => plan.commit(() => assert.fail('must not admit an invalid plan')), /过期|无效/);
+    assert.ok(approvals.peekApproval(1, items[0]!.approvalId), 'a lost race must not burn the other approval');
+    const remaining = await prepareIngestItems({ ...input, items: [items[0]] });
+    approvals.clearSender(1);
+    assert.throws(() => remaining.commit(() => assert.fail('must not admit after sender teardown')), /过期|无效/);
   });
 
   test('resolves a mix of approved paths and blobs into ingest files', async () => {

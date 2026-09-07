@@ -99,6 +99,8 @@ import {
 } from "./runtime-host-session-execution-ipc-main.js";
 import { RuntimeHostSessionObservationRegistry } from "./runtime-host-session-observation-registry.js";
 import { RuntimeHostSessionObserver } from "./runtime-host-session-observer.js";
+import type { TurnMessageSubmitInput, TurnMessageSubmitResult } from '@maka/runtime-host/protocol';
+import type { DesktopTranscriptReplicaSnapshot } from './desktop-transcript-replica.js';
 import type {
   IpcHandler,
   ReconciledControlHandlers,
@@ -115,6 +117,7 @@ import {
 type CandidateIpcMain = ReconnectableReadIpcMain & Pick<IpcMain, "removeHandler">;
 
 export interface DesktopRuntimeHostCandidateDeps {
+  readonly cacheTranscript?: (scope: DesktopTargetScope, snapshot: DesktopTranscriptReplicaSnapshot) => void;
   readonly ipcMain: RuntimeHostTargetIpcMain;
   readonly workspaceRoot: string;
   readonly attachmentApprovals: AttachmentApprovalRegistry;
@@ -225,6 +228,7 @@ export type DesktopRuntimeHostCandidateStartResult =
   | Exclude<ConnectOrSpawnRuntimeHostResult, { kind: "connected" }>;
 
 export interface DesktopRuntimeHostCandidate {
+  submitLocalMessage(input: TurnMessageSubmitInput): Promise<TurnMessageSubmitResult>;
   readonly botIncoming: BotIncomingMainService;
   readonly client: DesktopRuntimeHostClient;
   readonly closed: Promise<void>;
@@ -298,6 +302,22 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
 
   stopSession(sessionId: string): Promise<void> {
     return this.#stopSession(sessionId);
+  }
+
+  async submitLocalMessage(input: TurnMessageSubmitInput): Promise<TurnMessageSubmitResult> {
+    const observerId = `local-outbox:${input.messageId}`;
+    await this.#observer.observe(input.sessionId, observerId, {
+      id: -1, send() {}, once() {}, off() {},
+    }, true);
+    try {
+      const result = await this.#client.request('turn.message.submit', input);
+      const turns = result.disposition === 'turn_started'
+        ? [result.turnId] : this.#observer.observedRunningTurnIds(input.sessionId);
+      for (const turnId of turns) await this.#observer.watchTurn(input.sessionId, turnId);
+      return result;
+    } finally {
+      await this.#observer.unobserve(observerId).catch(() => undefined);
+    }
   }
 
   async #close(): Promise<void> {
@@ -614,6 +634,9 @@ export async function createDesktopRuntimeHostCandidate(
     };
     const sessionObserver = new RuntimeHostSessionObserver({
       client,
+      cacheTranscript: (snapshot) => {
+        if (target.access === 'owner') deps.cacheTranscript?.(scope, snapshot);
+      },
       emitSessionsChanged: (reason, sessionId, extra) =>
         emitSessionsChanged(reason, sessionId, extra),
       emitSessionDomainChanged: (change) =>
@@ -621,6 +644,7 @@ export async function createDesktopRuntimeHostCandidate(
           ? sharedShellRuns?.sessionDomainChanged(change)
           : domains?.sessionDomainChanged(change),
       emitRuntimeResourcePtyData: (event) => domains?.runtimeResourcePtyData(event),
+      emitRuntimeResourcePtyReset: (sessionId) => sendToRenderer?.('shell-runs:resync', { sessionId }),
       emitAgentGraphChanged: (event) => domains?.agentGraphChanged(event),
       emitActiveInteractionsChanged,
       emitSubscriptionRecovered: (sessionId) =>

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { ModelFailureKind } from '@maka/core/model-failure';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 
@@ -27,26 +28,21 @@ import { getDesktopConversationCopy } from './locales/conversation-copy.js';
  */
 export function describeSessionErrorReason(reason: string | undefined, locale: UiLocale): string | undefined {
   const copy = getDesktopConversationCopy(locale).turnError;
-  switch (reason?.toLowerCase()) {
-    case 'context_overflow':
-      return copy.contextOverflow;
-    case 'timeout':
-      return copy.timeout;
-    case 'model_after_tool_timeout':
-      return copy.timeout;
-    case 'auth':
-      return copy.auth;
-    case 'provider_billing':
-      return copy.providerBilling;
-    case 'provider_capacity':
-      return copy.providerCapacity;
-    case 'provider_unavailable':
-      return copy.provider;
-    case 'rate_limit':
-      return copy.rateLimit;
-    case 'network':
-      return copy.network;
-    default:
-      return undefined;
-  }
+  const kind = reason?.toLowerCase();
+  if (kind === 'model_after_tool_timeout') return copy.timeout;
+  const descriptions = {
+    context_overflow: copy.contextOverflow,
+    timeout: copy.timeout,
+    auth: copy.auth,
+    provider_billing: copy.providerBilling,
+    provider_capacity: copy.providerCapacity,
+    provider_unavailable: copy.provider,
+    rate_limit: copy.rateLimit,
+    network: copy.network,
+    stream_truncated: copy.streamTruncated,
+    request_rejected: copy.requestRejected,
+    abort: copy.unknown,
+    unknown: copy.unknown,
+  } satisfies Record<ModelFailureKind, string>;
+  return kind && Object.hasOwn(descriptions, kind) ? descriptions[kind as ModelFailureKind] : undefined;
 }

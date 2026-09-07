@@ -605,6 +605,7 @@ function providerRetryDelayMs(failedAttempt: number, retryAfterMs?: number): num
 
 function providerRetryReason(kind: ModelFailureKind): ProviderRetryReason {
   switch (kind) {
+    case 'stream_truncated':
     case 'network':
     case 'provider_unavailable':
     case 'rate_limit':
@@ -641,6 +642,7 @@ export class AiSdkTurn {
   aborted = false;
   loopStopRequested = false;
   loopStopReason: CompleteEvent['stopReason'] | undefined;
+  private handoffPaused = false;
   watchdog: StreamWatchdog | null = null;
   runTrace: RunTrace | null = null;
   readonly imageBudget: ProviderImageBudget = { used: 0, decisions: new Map() };
@@ -859,7 +861,7 @@ export class AiSdkTurn {
 
   private async *runWithinScope(input: BackendSendInput): AsyncIterable<SessionEvent> {
     const turnId = input.turnId;
-    const maxSteps = input.maxSteps ?? this.deps.maxSteps;
+    const maxSteps = input.maxSteps === null ? undefined : (input.maxSteps ?? this.deps.maxSteps);
     const toolRuntime = this.toolRuntime;
     const turnAbortController = this.abortController;
 
@@ -1301,6 +1303,9 @@ export class AiSdkTurn {
       };
       let lastCompletedStepHadToolResult = false;
       let terminalProviderErrorReason: string | undefined;
+      let terminalRetry:
+        | { error: unknown; retry: import('@maka/core/model-failure').ModelRetryDecision }
+        | undefined;
       try {
         const startWatchdog = (): void => {
           watchdogState.current?.stop();
@@ -2208,16 +2213,35 @@ export class AiSdkTurn {
                 sealedThinkingRetryCount < MAX_SEALED_THINKING_RETRIES_PER_STEP &&
                 attemptCanRecoverWithSealedThinking() &&
                 !attemptHasNoObservableOutput();
+              // The stopping gate also supplies the durable reason. An absent
+              // decision means this attempt is allowed to retry.
+              let retry: import('@maka/core/model-failure').ModelRetryDecision | undefined;
               if (
-                (failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery) &&
-                failure.kind !== 'context_overflow' &&
-                providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
-                stepBudgetRemains &&
-                (attemptHasNoObservableOutput() ||
+                !(
+                  attemptHasNoObservableOutput() ||
                   idleWatchdogRecovery ||
                   incompleteStreamRecovery ||
-                  sealedThinkingRecovery)
+                  sealedThinkingRecovery
+                )
               ) {
+                retry = {
+                  decision: 'declined',
+                  because: attemptSawToolActivity ? 'side_effects' : 'observable_output',
+                };
+              } else if (!stepBudgetRemains) {
+                retry = { decision: 'declined', because: 'budget' };
+              } else if (providerAttempt >= MAX_PROVIDER_ATTEMPTS_PER_STEP) {
+                retry = { decision: 'exhausted', attempts: providerAttempt };
+              } else if (failure.kind === 'context_overflow') {
+                retry = { decision: 'declined', because: 'policy' };
+              } else if (!(failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery)) {
+                retry =
+                  incompleteStreamTerminal &&
+                  incompleteStreamRetryCount >= MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP
+                    ? { decision: 'exhausted', attempts: providerAttempt }
+                    : { decision: 'declined', because: 'policy' };
+              }
+              if (!retry) {
                 if (idleWatchdogRecovery) idleWatchdogRetryCount += 1;
                 if (sealedThinkingRecovery) sealedThinkingRetryCount += 1;
                 if (incompleteStreamRecovery) incompleteStreamRetryCount += 1;
@@ -2269,6 +2293,7 @@ export class AiSdkTurn {
               // handler after settling any authoritative usage — never a
               // fabricated success.
               terminalProviderError = settledWatchdogTimeout?.error ?? failure;
+              terminalRetry = { error: terminalProviderError, retry };
               terminalProviderErrorReason =
                 lastCompletedStepHadToolResult && failure.kind === 'timeout'
                   ? 'model_after_tool_timeout'
@@ -2423,6 +2448,16 @@ export class AiSdkTurn {
           }
           const mayTakeAnotherStep = !stepLimitReached && !this.loopStopRequested && !this.aborted;
           if (returnedToolCalls.length > 0 && mayTakeAnotherStep) {
+            if (
+              (await input.handoffBoundary?.(
+                turnAbortController.signal,
+                maxSteps === undefined ? null : maxSteps - runtimeSteps,
+              )) === 'pause'
+            ) {
+              this.handoffPaused = true;
+              break agentLoop;
+            }
+            if (this.aborted || this.loopStopRequested) break agentLoop;
             currentStepMessageId = this.deps.newId();
             continue agentLoop;
           }
@@ -2453,6 +2488,17 @@ export class AiSdkTurn {
               !this.loopStopRequested &&
               !this.aborted
             ) {
+              await queue.waitUntilConsumedThroughCurrent();
+              if (
+                (await input.handoffBoundary?.(
+                  turnAbortController.signal,
+                  maxSteps === undefined ? null : maxSteps - runtimeSteps,
+                )) === 'pause'
+              ) {
+                this.handoffPaused = true;
+                break agentLoop;
+              }
+              if (this.aborted || this.loopStopRequested) break agentLoop;
               currentStepMessageId = this.deps.newId();
               continue agentLoop;
             }
@@ -2581,6 +2627,9 @@ export class AiSdkTurn {
         // win even when it arrives during post-stream usage persistence.
         if (this.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
         if (terminalProviderError) throw terminalProviderError;
+        // Usage above still belongs to this physical attempt. Its Runtime owner
+        // seals the drained stream; no complete/abort event ends the logical Turn.
+        if (this.handoffPaused) return;
         const stopReason =
           this.loopStopReason ??
           (maxSteps !== undefined && finishReason === 'tool-calls'
@@ -2635,7 +2684,12 @@ export class AiSdkTurn {
           } satisfies CompleteEvent);
         } else {
           const terminalError = currentWatchdogTimeout()?.error ?? err;
-          queue.push(this.makeErrorEvent(turnId, terminalError, terminalProviderErrorReason));
+          queue.push({
+            ...this.makeErrorEvent(turnId, terminalError, terminalProviderErrorReason),
+            ...(terminalRetry && terminalRetry.error === terminalError
+              ? { retry: terminalRetry.retry }
+              : {}),
+          });
           trace.modelStreamFailed(
             streamErrorClass,
             terminalError,
@@ -2865,9 +2919,11 @@ export class AiSdkTurn {
         diagnostics: [],
       };
     }
-    const rawPriorRuntimeContext = input.runtimeContext.filter(
-      (event) => event.turnId !== input.turnId,
-    );
+    // A handoff changes the physical Run, not the logical Turn. Its admitted
+    // replay is all predecessor history, including events with this turnId.
+    const rawPriorRuntimeContext = input.continuation
+      ? input.runtimeContext
+      : input.runtimeContext.filter((event) => event.turnId !== input.turnId);
     // Everything below reads EFFECTIVE model history: raw events folded through
     // the durable projection-transition reducer (#4283). Replay, budgeting and
     // compaction share one input, so no RuntimeEvent replay path can resurrect

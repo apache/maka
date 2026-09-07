@@ -34,6 +34,10 @@ test('retirement binds both interruption policy choices to the authenticated Hos
 
   await prepareConnectedRuntimeHostRetirement(connection, 'refuse_active_work');
   await prepareConnectedRuntimeHostRetirement(connection, 'interrupt_active_work');
+  await prepareConnectedRuntimeHostRetirement(
+    { ...connection, cooperativeHandoff: true },
+    'refuse_active_work',
+  );
 
   assert.deepEqual(requests, [
     {
@@ -50,5 +54,46 @@ test('retirement binds both interruption policy choices to the authenticated Hos
         allowInterruptActiveTasks: true,
       },
     },
+    {
+      operation: 'host.upgrade.prepare',
+      input: {
+        expectedHostEpoch: 'authenticated-host',
+        allowInterruptActiveTasks: false,
+        allowCooperativeHandoff: true,
+      },
+    },
   ]);
+});
+
+test('cancelling preparation closes its connection and waits for the request to settle', async () => {
+  const cancellation = new AbortController();
+  let rejectRequest!: (error: Error) => void;
+  let closed = false;
+  let settled = false;
+  const connection = {
+    hostEpoch: 'source',
+    cooperativeHandoff: true,
+    request: () =>
+      new Promise((_resolve, reject) => {
+        rejectRequest = reject;
+      }),
+    close: async () => {
+      closed = true;
+    },
+  } as unknown as RuntimeHostConnection;
+  const result = prepareConnectedRuntimeHostRetirement(
+    connection,
+    'refuse_active_work',
+    undefined,
+    cancellation.signal,
+  );
+  const rejected = assert.rejects(result, /user cancelled/u).then(() => {
+    settled = true;
+  });
+  cancellation.abort(new Error('user cancelled'));
+  await Promise.resolve();
+  assert.equal(closed, true);
+  assert.equal(settled, false);
+  rejectRequest(new Error('connection closed'));
+  await rejected;
 });

@@ -133,7 +133,8 @@ export function createSessionWorkspaceActions(deps: {
       pending = new Map();
       transientMessagesBySessionRef.current.set(sessionId, pending);
     }
-    pending.set(message.id, message);
+    const current = pending.get(message.id);
+    pending.set(message.id, current ? mergeTransientMessageProjection(current, message) : message);
     reprojectActiveTransients(sessionId);
   }
 

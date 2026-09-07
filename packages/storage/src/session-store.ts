@@ -401,6 +401,9 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]>;
   /** Requests already closed against the user because the host restarted. */
   listSandboxBoundaryRestartClosures(sessionId: string): Promise<SandboxBoundaryRequest[]>;
+  hasExplicitSandboxBoundaryDenial(
+    identities: readonly { sessionId: string; runId: string; turnId: string }[],
+  ): Promise<boolean>;
   settleSandboxBoundaryRequest(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement>;
@@ -875,6 +878,13 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async listSandboxBoundaryRestartClosures(sessionId: string): Promise<SandboxBoundaryRequest[]> {
     await this.ensureReady();
     return this.metadata.listSandboxBoundaryRestartClosures(sessionId);
+  }
+
+  async hasExplicitSandboxBoundaryDenial(
+    identities: readonly { sessionId: string; runId: string; turnId: string }[],
+  ): Promise<boolean> {
+    await this.ensureReady();
+    return this.metadata.hasExplicitSandboxBoundaryDenial(identities);
   }
 
   async settleSandboxBoundaryRequest(

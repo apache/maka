@@ -78,6 +78,59 @@ test('reads newly durable messages forward from an announced watermark', async (
   assert.equal(page.nextCursor, null);
 });
 
+test('preserves the canonical retry decision in shared bootstrap and later pages', async () => {
+  const durable: StoredMessage[] = [
+    {
+      type: 'turn_state',
+      id: 'state-1',
+      turnId: 'turn-1',
+      ts: 1,
+      status: 'failed',
+      errorClass: 'stream_truncated',
+      retry: { decision: 'declined', because: 'side_effects' },
+    },
+  ];
+  const reader = transcriptReader(durable);
+  const { state, bootstrap } = await createSessionTranscriptBootstrap({
+    reader,
+    sessionId: 'session-1',
+    subscriptionId: 'shared',
+    throughSequence: 0,
+    rootTurn: null,
+    activeAssistantStreams: [],
+    maxBytes: 1024,
+    projection: 'shared',
+  });
+  assert.deepEqual(decodeBootstrap(bootstrap.durable)[0]?.retry, {
+    decision: 'declined',
+    because: 'side_effects',
+  });
+  durable.push({
+    type: 'turn_state',
+    id: 'state-2',
+    turnId: 'turn-2',
+    ts: 2,
+    status: 'failed',
+    errorClass: 'stream_truncated',
+    retry: { decision: 'exhausted', attempts: 2 },
+  });
+  updateSubscriberTranscriptHighWater(state, 1);
+  const page = await readSessionTranscriptPage({
+    reader,
+    state,
+    request: {
+      subscriptionId: 'shared',
+      source: 'durable',
+      direction: 'newer',
+      throughSequence: 1,
+      cursor: null,
+      anchorSequence: 0,
+      maxBytes: 1024,
+    },
+  });
+  assert.deepEqual(decodeBootstrap(page)[0]?.retry, { decision: 'exhausted', attempts: 2 });
+});
+
 test('projects durable and active transcript records before sharing them', async () => {
   const durable: StoredMessage[] = [
     {

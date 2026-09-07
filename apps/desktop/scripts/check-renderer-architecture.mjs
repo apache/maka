@@ -635,7 +635,23 @@ function statementBindingIdentifier(statement, name, includeVar = true) {
   return undefined;
 }
 
+// WeakMap so entries go with the tree; a Map would retain every parsed file.
+const hoistedVarBindings = new WeakMap();
+
 function hoistedVarBindingIdentifier(root, name) {
+  if (!root) return undefined;
+  let byName = hoistedVarBindings.get(root);
+  if (!byName) {
+    byName = new Map();
+    hoistedVarBindings.set(root, byName);
+  }
+  if (byName.has(name)) return byName.get(name);
+  const binding = findHoistedVarBinding(root, name);
+  byName.set(name, binding);
+  return binding;
+}
+
+function findHoistedVarBinding(root, name) {
   let found;
   function visit(node, isRoot = false) {
     if (!node || found) return;

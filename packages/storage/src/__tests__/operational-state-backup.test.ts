@@ -184,3 +184,26 @@ test('rejects a backup whose native Runtime version contradicts its registry', a
     await rm(base, { recursive: true, force: true });
   }
 });
+
+test('continues to validate and restore version 3 backups without context refs', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-backup-v3-'));
+  try {
+    const stateRoot = join(base, 'state');
+    const sessions = createSessionStore(stateRoot);
+    await sessions.close?.();
+    const backupRoot = join(base, 'backup');
+    await createOperationalStateBackup({ stateRoot, destinationRoot: backupRoot });
+    const path = join(backupRoot, 'operational-backup.json');
+    const manifest = JSON.parse(await readFile(path, 'utf8'));
+    manifest.schemaVersion = 3;
+    await writeFile(path, JSON.stringify(manifest));
+    assert.equal((await validateOperationalStateBackup(backupRoot)).schemaVersion, 3);
+    assert.equal(
+      (await restoreOperationalStateBackup({ backupRoot, destinationRoot: join(base, 'restored') }))
+        .schemaVersion,
+      3,
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});

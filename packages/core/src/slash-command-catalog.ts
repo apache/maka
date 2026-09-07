@@ -35,6 +35,7 @@ export const SLASH_COMMAND_CATALOG = [
   { id: 'goal', session: 'required', surfaces: ['tui'] },
   { id: 'graph', session: 'none', surfaces: ['desktop', 'tui'] },
   { id: 'help', session: 'none', surfaces: ['tui'] },
+  { id: 'host', session: 'none', surfaces: ['tui'] },
   { id: 'mcp', session: 'none', surfaces: ['tui'] },
   { id: 'model', session: 'required', surfaces: ['tui'] },
   { id: 'move', session: 'required', surfaces: ['tui'] },
@@ -51,6 +52,7 @@ export const SLASH_COMMAND_CATALOG = [
   { id: 'swarm', session: 'none', surfaces: ['desktop', 'tui'] },
   { id: 'thinking', session: 'required', surfaces: ['tui'] },
   { id: 'transcript', session: 'required', surfaces: ['tui'] },
+  { id: 'update', session: 'none', surfaces: ['tui'] },
 ] as const satisfies readonly SlashCommandSpec[];
 
 export type SlashCommandId = (typeof SLASH_COMMAND_CATALOG)[number]['id'];

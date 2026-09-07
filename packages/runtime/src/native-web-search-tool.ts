@@ -19,6 +19,7 @@
 
 import { z } from 'zod';
 import { resolveHostedWebSearchCapability } from '@maka/core/model-web-search';
+import { resolveModelRuntime } from './model-runtime.js';
 import type { HostedWebSearchAdapter } from '@maka/core/model-web-search';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { WebSearchSettings } from '@maka/core/web-search';
@@ -88,6 +89,7 @@ export function routeWebSearchTools(input: {
       input.connection.providerType,
       input.connection.models,
       input.model,
+      resolveModelRuntime(input.connection, input.model).wire,
     );
     if (
       (firstSearchIndex >= 0 || input.allowAddNative === true) &&

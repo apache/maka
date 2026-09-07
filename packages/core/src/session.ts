@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { isModelRetryDecision, type ModelRetryDecision } from './model-failure.js';
+
 import {
   decodeMessageContent,
   TOOL_ACTIVITY_KINDS,
@@ -935,7 +937,9 @@ export interface TurnStateMessage {
   /** Diagnostic source for user/renderer-triggered aborts, e.g. renderer.stop_button. */
   abortSource?: string;
   errorClass?: string;
-  partialOutputRetained: boolean;
+  retry?: ModelRetryDecision;
+  /** Legacy retained-output hint; current projections derive this from output contributions. */
+  partialOutputRetained?: boolean;
 }
 
 export const WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION = 1 as const;
@@ -1144,6 +1148,7 @@ export interface TurnRecord {
   abortedAt?: number;
   abortSource?: string;
   errorClass?: string;
+  retry?: ModelRetryDecision;
   partialOutputRetained: boolean;
 }
 
@@ -1252,8 +1257,9 @@ const TOKEN_USAGE_MESSAGE_SHAPE = defineObjectShape<TokenUsageMessage>()(
   ],
 );
 const TURN_STATE_MESSAGE_SHAPE = defineObjectShape<TurnStateMessage>()(
-  ['type', 'id', 'turnId', 'ts', 'status', 'partialOutputRetained'],
+  ['type', 'id', 'turnId', 'ts', 'status'],
   [
+    'partialOutputRetained',
     'parentTurnId',
     'retriedFromTurnId',
     'regeneratedFromTurnId',
@@ -1262,6 +1268,7 @@ const TURN_STATE_MESSAGE_SHAPE = defineObjectShape<TurnStateMessage>()(
     'abortedAt',
     'abortSource',
     'errorClass',
+    'retry',
   ],
 );
 const WORKHUB_DELEGATION_ASSIGNED_MESSAGE_SHAPE =
@@ -1545,7 +1552,8 @@ function decodeMessage(
         hasExactShape(message, TURN_STATE_MESSAGE_SHAPE) &&
         hasMessageEnvelope(message, true) &&
         isTurnStatus(message.status) &&
-        typeof message.partialOutputRetained === 'boolean' &&
+        (message.partialOutputRetained === undefined ||
+          typeof message.partialOutputRetained === 'boolean') &&
         isOptionalString(message.parentTurnId) &&
         isOptionalString(message.retriedFromTurnId) &&
         isOptionalString(message.regeneratedFromTurnId) &&
@@ -1553,7 +1561,8 @@ function decodeMessage(
         isOptionalString(message.parentSessionId) &&
         (message.abortedAt === undefined || isFiniteNumber(message.abortedAt)) &&
         isOptionalString(message.abortSource) &&
-        isOptionalString(message.errorClass)
+        isOptionalString(message.errorClass) &&
+        (message.retry === undefined || isModelRetryDecision(message.retry))
       )
         return message as unknown as TurnStateMessage;
       break;
@@ -1847,6 +1856,7 @@ export function deriveTurnRecords(messages: readonly StoredMessage[]): TurnRecor
         ...(latestState.abortedAt !== undefined ? { abortedAt: latestState.abortedAt } : {}),
         ...(latestState.abortSource ? { abortSource: latestState.abortSource } : {}),
         ...(latestState.errorClass ? { errorClass: latestState.errorClass } : {}),
+        ...(latestState.retry ? { retry: latestState.retry } : {}),
         partialOutputRetained: latestState.partialOutputRetained || partialOutputRetained,
       };
     }

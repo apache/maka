@@ -25,6 +25,7 @@ import { NO_REAL_CONNECTION_CODE } from '@maka/core/connection-error-copy';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { emptyPlanSessionState } from '@maka/core/plan';
+import { readLogicalRuntimeExecutionForRun } from '@maka/core/runtime-logical-execution';
 import type { PermissionMode } from '@maka/core/permission';
 import {
   runtimeInvocationOutcome,
@@ -127,7 +128,10 @@ import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
 import { HostHostedExecutionCoordinator } from './hosted-execution-coordinator.js';
 import { HostHostedExecutionRunner } from './hosted-execution-runner.js';
-import { executeHostedExecutionToSettlement } from './hosted-execution-wait.js';
+import {
+  executeHostedExecutionToSettlement,
+  waitForHostedExecutionIdleOrAbort,
+} from './hosted-execution-wait.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import {
   beginRuntimeHostDomainModuleDrain,
@@ -169,6 +173,7 @@ import { SessionAdmissionGate } from './session-admission-gate.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
 import { HostWorkspaceResolver } from './workspace-resolver.js';
 import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
+import { HostStorageMaintenance } from './storage-maintenance.js';
 import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
 import { HostSessionEffectCoordinator } from './session-effect-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
@@ -309,12 +314,6 @@ export async function createExecutionRuntimeHostComposition(
               throw new Error('Context-offload Store is unavailable during Session retirement', {
                 cause: storage.contextOffloadUnavailable?.cause,
               });
-            },
-            collectGarbage: async (): Promise<never> => {
-              throw new Error(
-                'Context-offload Store is unavailable during context garbage collection',
-                { cause: storage.contextOffloadUnavailable?.cause },
-              );
             },
           }
         : undefined;
@@ -588,6 +587,8 @@ export async function createExecutionRuntimeHostComposition(
       hostEpoch: context.hostEpoch,
       root: rootPort,
       durableProof: {
+        readLogicalExecution: (identity) =>
+          readLogicalRuntimeExecutionForRun(stores.runtimeEventStore, identity),
         readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
           stores.agentRunStore.readRootTurnSourceMessageReceipt(sessionId, messageId),
         readImmutableSteeringMessageProof: (sessionId, messageId) =>
@@ -1448,10 +1449,9 @@ export async function createExecutionRuntimeHostComposition(
                 : 'WorkHub delegated execution is not resumable',
             );
           }
-          if (
-            plan.result.sourceRunId !== source.runId ||
-            plan.result.sourceTurnId !== source.turnId
-          ) {
+          // Root planning authenticates handoff membership. Its source may be
+          // a physical successor of this same logical Turn, never another Turn.
+          if (plan.result.sourceTurnId !== source.turnId) {
             throw new WorkHubActionEffectFailure(
               'operation_conflict',
               'WorkHub resume source lineage changed during planning',
@@ -1784,7 +1784,18 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
     );
     let recoverySessions: Awaited<ReturnType<typeof stores.sessionStore.listForRecovery>> = [];
+    const storageMaintenance = new HostStorageMaintenance({
+      artifacts: openedArtifactStore,
+      contextOffload: openedContextOffloadStore,
+      onError: (name, error) =>
+        console.error(`[runtime-host] ${name} will retry: ${generalizedErrorMessage(error)}`),
+    });
     domainModules = [
+      createRuntimeHostDomainModule({
+        id: 'storage-maintenance',
+        drain: [() => storageMaintenance.beginDrain()],
+        close: [() => storageMaintenance.close()],
+      }),
       createRuntimeHostDomainModule({
         id: 'plugin-platform',
         handlers: [pluginPlatformCoordinator.handlers],
@@ -1852,18 +1863,7 @@ export async function createExecutionRuntimeHostComposition(
           configuration.handlers,
         ],
         recovery: {
-          state: async () => {
-            await skills.recover();
-            try {
-              await openedArtifactStore.reclaimUpgradeResidue();
-            } catch (error) {
-              // Leftover bytes are not worth refusing to start over; the next
-              // start tries again.
-              console.error(
-                `[runtime-host] upgrade residue could not be reclaimed: ${generalizedErrorMessage(error)}`,
-              );
-            }
-          },
+          state: () => skills.recover(),
         },
         drain: [
           () => connectionEffects.beginDrain(),
@@ -2062,11 +2062,64 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       clientCapabilities,
       hostChanges,
+      prepareHandoff: async (hostEpoch, signal) => {
+        if (draining || signal.aborted) return undefined;
+        const goalHold = goal?.holdForHandoff();
+        const scheduleHold = scheduledTasks?.holdForHandoff();
+        let root: Awaited<ReturnType<RootTurnCoordinator['prepareHandoff']>>;
+        let detached = false;
+        const cancel = () => {
+          if (detached) return;
+          root?.cancel();
+          goalHold?.release();
+          scheduleHold?.release();
+          signal.removeEventListener('abort', cancel);
+        };
+        signal.addEventListener('abort', cancel, { once: true });
+        try {
+          if (!goalHold || !scheduleHold) {
+            cancel();
+            return undefined;
+          }
+          await waitForHostedExecutionIdleOrAbort(
+            Promise.all([goalHold.settled(), scheduleHold.settled()]).then(() => undefined),
+            signal,
+          );
+          root = await requireRootCoordinator(coordinator).prepareHandoff(hostEpoch, signal);
+          if (!root) {
+            cancel();
+            return undefined;
+          }
+          const prepared = root;
+          return {
+            seal: () => prepared.seal(),
+            residencies: async () => {
+              await waitForHostedExecutionIdleOrAbort(scheduleHold.settled(), signal);
+              const goals = await goalHold.residencies(prepared.executions);
+              const roots = await prepared.residencies();
+              if (!goals || !roots || signal.aborted || draining) return undefined;
+              return [...roots, ...goals, ...scheduleHold.residencies()];
+            },
+            detach: async () => {
+              detached = true;
+              signal.removeEventListener('abort', cancel);
+              await prepared.detach();
+              // Domain holds stay closed until the lifecycle owner drains us.
+            },
+            cancel,
+          };
+        } catch (error) {
+          cancel();
+          if (signal.aborted) return undefined;
+          throw error;
+        }
+      },
       releaseConnection: (connectionId: string) => {
         for (const module of domainModules) module.releaseConnection?.(connectionId);
       },
       beginDrain,
       recover,
+      startMaintenance: () => storageMaintenance.start(),
       close,
     };
   } catch (error) {

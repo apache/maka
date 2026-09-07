@@ -17,8 +17,9 @@
  * under the License.
  */
 
-import { app, BrowserWindow, nativeTheme } from 'electron';
-import { resolveSystemUiLocale } from '@maka/core/ui-locale';
+import { app, BrowserWindow, clipboard, nativeTheme } from 'electron';
+import { resolveSystemUiLocale, type UiLocale } from '@maka/core/ui-locale';
+import type { HostHandoffView, OpenHostHandoffSurface } from '@maka/runtime-host/client';
 import { readableAppIconPath } from './app-icon-surface.js';
 import { installApplicationMenu } from './application-menu.js';
 import { installDesktopStartupBranding } from './desktop-shell-presentation.js';
@@ -31,6 +32,7 @@ import {
 } from './startup-progress-window.js';
 
 let progress: StartupProgressWindow | undefined;
+let handoffUsesStartup = false;
 
 const focus = () => progress?.focus();
 
@@ -55,7 +57,8 @@ export function showDesktopStartupProgress(
       dark: nativeTheme.shouldUseDarkColors,
       icon: readableAppIconPath('default'),
       createWindow: (options) => new BrowserWindow(options),
-      copyDiagnostics,
+      copyDiagnostics: (phase, handoff) => handoff
+        ? clipboard.writeText(JSON.stringify(handoff, null, 2)) : copyDiagnostics(phase),
       onError: (error) => console.error('[startup] progress presentation failed:', error),
     });
     app.on('activate', focus);
@@ -69,6 +72,52 @@ export function showDesktopStartupProgress(
 
 export function updateDesktopStartupProgress(phase: StartupPhase): void {
   progress?.update(phase);
+}
+
+/** One presentation lifetime per attempt; startup reuses its already visible window. */
+export function createDesktopHostHandoffSurface(resolveLocale: () => Promise<UiLocale>): OpenHostHandoffSurface {
+  return (submit) => {
+    let latest: HostHandoffView | undefined;
+    let window: StartupProgressWindow | undefined;
+    let locale: UiLocale | undefined;
+    let ownWindow = false;
+    let closed = false;
+    void resolveLocale().then((resolved) => {
+      if (closed) return;
+      locale = resolved;
+      if (progress?.window() && !handoffUsesStartup) {
+        window = progress;
+        handoffUsesStartup = true;
+      } else {
+        ownWindow = true;
+        window = createStartupProgressWindow({
+          locale, dark: nativeTheme.shouldUseDarkColors, icon: readableAppIconPath('default'),
+          createWindow: (options) => new BrowserWindow(options),
+          copyDiagnostics: () => clipboard.writeText(JSON.stringify(latest, null, 2)),
+          onError: (error) => console.error('[runtime-host] handoff presentation failed:', error),
+        });
+      }
+      if (latest) window.handoff(latest, submit, locale);
+      window.focus();
+    }).catch((error) => {
+      console.error('[runtime-host] handoff presentation failed:', error);
+      if (latest) submit(latest.revision, 'cancel');
+    });
+    return {
+      update(view) {
+        latest = view;
+        if (window && locale) window.handoff(view, submit, locale);
+      },
+      close() {
+        closed = true;
+        if (ownWindow) window?.close();
+        else if (window) {
+          window.clearHandoff();
+          handoffUsesStartup = false;
+        }
+      },
+    };
+  };
 }
 
 export function desktopStartupProgressWindow(): BrowserWindow | undefined {
