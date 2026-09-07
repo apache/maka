@@ -21,10 +21,21 @@ import type { DatabaseSync } from 'node:sqlite';
 import { decodeRuntimeEvent, type RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 
-/** SQL counterpart of isTerminalRuntimeEvent; shared with the ledger store. */
+/**
+ * SQL counterpart of isTerminalRuntimeEvent; shared with the ledger store.
+ *
+ * The `json_valid` guard is what keeps this usable as a partial index: SQLite
+ * evaluates the index predicate over every row while building it, and
+ * `json_extract` on a malformed payload fails the whole statement. That would
+ * abort the migration that creates the index, roll back its version bump, and
+ * leave the next open to try — and fail — again.
+ */
 export const TERMINAL_RUNTIME_EVENT_SQL = `(
-  json_extract(payload_json, '$.actions.endInvocation') = 1
-  OR json_extract(payload_json, '$.status') IN ('completed', 'failed', 'aborted', 'cancelled')
+  json_valid(payload_json)
+  AND (
+    json_extract(payload_json, '$.actions.endInvocation') = 1
+    OR json_extract(payload_json, '$.status') IN ('completed', 'failed', 'aborted', 'cancelled')
+  )
 )`;
 
 /**

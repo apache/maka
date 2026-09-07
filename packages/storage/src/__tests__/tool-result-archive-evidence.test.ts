@@ -260,13 +260,7 @@ test('invalid event JSON and transition envelopes remain corrupt', async (t) => 
   const saved = f.db
     .prepare("SELECT payload_json FROM runtime_events WHERE event_id = 'response'")
     .get()!;
-  // Syntactically malformed JSON cannot be stored at all: the terminal-event
-  // index reads the payload, so SQLite refuses the write. An undecodable
-  // payload reaches the same reader branch.
-  assert.throws(() =>
-    f.db.exec("UPDATE runtime_events SET payload_json = '{' WHERE event_id = 'response'"),
-  );
-  f.db.exec(`UPDATE runtime_events SET payload_json = '{"nope":1}' WHERE event_id = 'response'`);
+  f.db.exec("UPDATE runtime_events SET payload_json = '{' WHERE event_id = 'response'");
   assert.deepEqual(await f.reader.read({ sessionId: 'session', runtimeEventId: 'response' }), {
     ok: false,
     reason: 'corrupt',
