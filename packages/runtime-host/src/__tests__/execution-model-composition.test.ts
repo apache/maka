@@ -1201,7 +1201,7 @@ test('Codex OAuth history compaction falls back to a text checkpoint after nativ
     assert.equal(attempts[0]?.providerId, 'openai-codex');
     assert.equal(attempts[0]?.historyCompactRoute, 'provider_native');
     assert.equal(attempts[0]?.status, 'failed');
-    assert.equal(attempts[0]?.errorClass, 'RequestRejected');
+    assert.equal(attempts[0]?.errorClass, 'request_rejected');
     assert.equal(attempts[0]?.httpStatus, 400);
     assert.equal(attempts[0]?.providerCode, 'missing_required_parameter');
     assert.equal(attempts[0]?.providerRequestId, 'req-codex-compact');

@@ -397,6 +397,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       parentTurnId: 'parent-turn',
       partialOutputRetained: true,
     });
+    assert.equal(deriveTurnRecords(out.messages)[0]?.partialOutputRetained, true);
     assert.deepStrictEqual(out.diagnostics, []);
   });
 

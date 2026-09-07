@@ -1309,7 +1309,7 @@ export class AiSdkCompaction {
   }): Promise<{ messages: ModelMessage[] } | undefined> {
     const state = input.midTurnState;
     if (input.retryAlreadyUsed || !state) return undefined;
-    if (this.modelAdapter.classifyError(input.error) !== 'ContextLength') return undefined;
+    if (this.modelAdapter.classifyError(input.error) !== 'context_overflow') return undefined;
 
     const eligibleImages = collectHistoricalImageToolResults(state.priorContentEvents);
     const imageOmission = omitHistoricalImageToolResults(input.currentMessages, eligibleImages);

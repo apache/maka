@@ -7758,7 +7758,7 @@ describe('AiSdkBackend error surfaces', () => {
     const error = events.find(
       (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
     );
-    assert.equal(error?.message, 'Authentication failed');
+    assert.equal(error?.message, '401 Authorization: Bearer [redacted]');
     assert.equal(JSON.stringify(events).includes('sk-live-secret-token-value'), false);
   });
 
@@ -7866,7 +7866,10 @@ describe('AiSdkBackend error surfaces', () => {
     assert.equal(messages.filter((message) => message.type === 'tool_result').length, 1);
     assert.equal(events.filter((event) => event.type === 'tool_result').length, 1);
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
-    assert.equal(events.find((event) => event.type === 'error')?.message, 'Operation failed');
+    assert.equal(
+      events.find((event) => event.type === 'error')?.message,
+      'T1 runtime commit failed: T1 unavailable',
+    );
   });
 
   test('redacts and caps synthetic tool error text before storage and model return', () => {
@@ -8214,8 +8217,8 @@ describe('AiSdkBackend usage telemetry', () => {
           reason,
         })),
       [
-        { phase: 'scheduled', attempt: 2, maxAttempts: 2, reason: 'provider_unavailable' },
-        { phase: 'started', attempt: 2, maxAttempts: 2, reason: 'provider_unavailable' },
+        { phase: 'scheduled', attempt: 2, maxAttempts: 2, reason: 'stream_truncated' },
+        { phase: 'started', attempt: 2, maxAttempts: 2, reason: 'stream_truncated' },
       ],
     );
     assert.equal(
@@ -8225,7 +8228,7 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
   });
 
-  test('classifies an exhausted output-free truncated stream as provider unavailable', async () => {
+  test('records exhaustion of output-free truncated stream recovery', async () => {
     const durable = durableTurnHarness('turn-truncated-exhausted', 'analyse the image');
     let calls = 0;
     const model = new MockLanguageModelV4({
@@ -8267,12 +8270,13 @@ describe('AiSdkBackend usage telemetry', () => {
     );
 
     assert.equal(calls, 2);
-    assert.equal(error?.reason, 'provider_unavailable');
+    assert.equal(error?.reason, 'stream_truncated');
+    assert.deepEqual(error?.retry, { decision: 'exhausted', attempts: 2 });
     assert.equal(error?.message, 'Provider stream ended without finishing (other)');
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
   });
 
-  test('does not retry a truncated provider stream after partial output', async () => {
+  for (const output of ['text', 'tool'] as const) {
     // The upstream cut the SSE connection mid-answer: chunks arrived, no
     // `finish` frame did. The stream then ends without yielding an error and
     // without throwing, so every guard that watches for a thrown failure sees
@@ -8280,67 +8284,84 @@ describe('AiSdkBackend usage telemetry', () => {
     // piece when the connection simply died — a benchmark cell recorded
     // `status: completed` on exactly this shape while the agent was still
     // mid-task.
-    const durable = durableTurnHarness('turn-truncated', 'analyse the image');
-    let calls = 0;
-    const model = new MockLanguageModelV4({
-      doStream: async () => {
-        calls += 1;
-        return {
-          stream: simulateReadableStream({
-            chunks: [
-              { type: 'stream-start', warnings: [] },
-              { type: 'text-start', id: 'text-1' },
-              { type: 'text-delta', id: 'text-1', delta: 'Let me look at the top region' },
-            ],
-            initialDelayInMs: null,
-            chunkDelayInMs: null,
-          }),
-        };
-      },
-    });
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
-      newId: idGenerator(),
-      now: monotonicClock(),
-      providerRetrySleep: async () => {},
-    });
+    test(`does not retry a truncated provider stream after ${output} activity`, async () => {
+      const durable = durableTurnHarness('turn-truncated', 'analyse the image');
+      let calls = 0;
+      const model = new MockLanguageModelV4({
+        doStream: async () => {
+          calls += 1;
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                { type: 'stream-start', warnings: [] },
+                ...(output === 'text'
+                  ? [
+                      { type: 'text-start', id: 'text-1' },
+                      { type: 'text-delta', id: 'text-1', delta: 'Let me look at the top region' },
+                    ]
+                  : [
+                      {
+                        type: 'tool-input-start',
+                        id: 'search-1',
+                        toolName: 'web_search',
+                        providerExecuted: true,
+                      },
+                    ]),
+              ] as LanguageModelV4StreamPart[],
+              initialDelayInMs: null,
+              chunkDelayInMs: null,
+            }),
+          };
+        },
+      });
+      const backend = createTestAiSdkBackend({
+        sessionId: 'session-1',
+        header: header(),
+        connection: connection(),
+        apiKey: 'sk-test',
+        modelId: 'mock-model-id',
+        modelFactory: () => model,
+        tools: [],
+        loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+        newId: idGenerator(),
+        now: monotonicClock(),
+        providerRetrySleep: async () => {},
+      });
 
-    const events = await drainDurably(backend.send(durable.input()), durable);
-    const complete = events.find(
-      (event): event is Extract<SessionEvent, { type: 'complete' }> => event.type === 'complete',
-    );
+      const events = await drainDurably(backend.send(durable.input()), durable);
+      const complete = events.find(
+        (event): event is Extract<SessionEvent, { type: 'complete' }> => event.type === 'complete',
+      );
 
-    // Not merely "some other stop reason": `max_tokens` would also satisfy that
-    // and still record the turn as completed downstream, which is the bug.
-    assert.equal(
-      complete?.stopReason,
-      'error',
-      'a stream that never delivered a finish frame did not end the turn',
-    );
-    assert.equal(calls, 1);
-    assert.equal(
-      events.some((event) => event.type === 'provider_retry'),
-      false,
-    );
-    // And it must say so. A failed terminal whose only trace is the stop reason
-    // leaves the session's lastError empty and the request ledger reading
-    // `success` — the same silence that let the benchmark cell pass unnoticed.
-    assert.ok(
-      events.some((event) => event.type === 'error'),
-      'a failed terminal must be accompanied by an error event',
-    );
-    const error = events.find(
-      (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
-    );
-    assert.equal(error?.reason, 'provider_unavailable');
-  });
+      // Not merely "some other stop reason": `max_tokens` would also satisfy that
+      // and still record the turn as completed downstream, which is the bug.
+      assert.equal(
+        complete?.stopReason,
+        'error',
+        'a stream that never delivered a finish frame did not end the turn',
+      );
+      assert.equal(calls, 1);
+      assert.equal(
+        events.some((event) => event.type === 'provider_retry'),
+        false,
+      );
+      // And it must say so. A failed terminal whose only trace is the stop reason
+      // leaves the session's lastError empty and the request ledger reading
+      // `success` — the same silence that let the benchmark cell pass unnoticed.
+      assert.ok(
+        events.some((event) => event.type === 'error'),
+        'a failed terminal must be accompanied by an error event',
+      );
+      const error = events.find(
+        (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
+      );
+      assert.equal(error?.reason, 'stream_truncated', error?.message ?? 'error event missing');
+      assert.deepEqual(error?.retry, {
+        decision: 'declined',
+        because: output === 'tool' ? 'side_effects' : 'observable_output',
+      });
+    });
+  }
 
   test('rejects continuation-capable tools before side effects without a durable reader', async () => {
     const loop = countingToolLoopModel(1);
@@ -11909,7 +11930,7 @@ describe('AiSdkBackend tool execution', () => {
       ),
       true,
     );
-    assert.deepEqual(telemetry, [{ status: 'error', errorClass: 'Auth', bytesOut: 0 }]);
+    assert.deepEqual(telemetry, [{ status: 'error', errorClass: 'auth', bytesOut: 0 }]);
   });
 
   test('flushes output deltas before successful and failed tool results', async () => {

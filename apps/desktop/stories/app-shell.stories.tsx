@@ -787,9 +787,26 @@ export const FailedTurnWithToolError: Story = {
   },
 };
 
-// Real path: the provider rate-limits the request and the turn settles failed.
-// The failed Banner carries the rate-limit guidance — the settled provider
-// error a bare transcript never shows.
+export const ProviderStreamTruncated: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ lastMessageAt: NOW - 3 * 60_000 }}
+      chat={{ messages: [
+        user('msg-st-1', 'turn-st', 4, '检查项目的构建结果。'),
+        { type: 'assistant', id: 'msg-st-answer', turnId: 'turn-st', ts: NOW - 199_000, text: '构建已完成，我继续检查输出。', modelId: 'claude-sonnet-4-5' },
+        { type: 'turn_state', id: 'state-st-failed', turnId: 'turn-st', ts: NOW - 198_000, status: 'failed', errorClass: 'stream_truncated', retry: { decision: 'declined', because: 'side_effects' }, partialOutputRetained: true },
+      ] }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      const banner = canvasElement.querySelector('.maka-turn-failed-banner');
+      expect(banner?.textContent).toContain('响应中途断开');
+      expect(banner?.textContent).toContain('为避免重复操作，未自动重试');
+    });
+  },
+};
+
 export const ProviderRateLimited: Story = {
   render: () => (
     <ComposedShell

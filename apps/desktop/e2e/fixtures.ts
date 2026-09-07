@@ -520,6 +520,7 @@ type E2eTestFixtures = {
   gitReviewWindow: { page: Page; projectRoot: string };
   invocableSkillsWindow: Page;
   projectSidebarWindow: Page;
+  renameFocusWindow: { page: Page; app: ElectronApplication };
   parentRemovalWindow: Page;
   railRenderWindow: Page;
   promptRailWindow: Page;
@@ -599,6 +600,17 @@ export const test = base.extend<E2eTestFixtures>({
       e2eFixtureScenario: 'sidebar-search-modal-open',
       locale: 'zh-CN',
     }, use);
+  },
+  // Visible because the contract under test is native keyboard delivery into
+  // the focused renderer element, not Playwright's synthetic page keyboard.
+  renameFocusWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '[data-maka-contract="search-modal"][open]',
+      e2eFixtureScenario: 'sidebar-search-modal-open',
+      locale: 'zh-CN',
+      showWindow: true,
+    }, async (page, { app }) => use({ page, app }));
   },
   parentRemovalWindow: async ({}, use) => {
     await withE2eWindow(

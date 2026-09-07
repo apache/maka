@@ -603,6 +603,7 @@ function providerRetryDelayMs(failedAttempt: number, retryAfterMs?: number): num
 
 function providerRetryReason(kind: ModelFailureKind): ProviderRetryReason {
   switch (kind) {
+    case 'stream_truncated':
     case 'network':
     case 'provider_unavailable':
     case 'rate_limit':
@@ -1271,6 +1272,9 @@ export class AiSdkTurn {
       };
       let lastCompletedStepHadToolResult = false;
       let terminalProviderErrorReason: string | undefined;
+      let terminalRetry:
+        | { error: unknown; retry: import('@maka/core/model-failure').ModelRetryDecision }
+        | undefined;
       try {
         const startWatchdog = (): void => {
           watchdogState.current?.stop();
@@ -2145,16 +2149,35 @@ export class AiSdkTurn {
                 sealedThinkingRetryCount < MAX_SEALED_THINKING_RETRIES_PER_STEP &&
                 attemptCanRecoverWithSealedThinking() &&
                 !attemptHasNoObservableOutput();
+              // The stopping gate also supplies the durable reason. An absent
+              // decision means this attempt is allowed to retry.
+              let retry: import('@maka/core/model-failure').ModelRetryDecision | undefined;
               if (
-                (failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery) &&
-                failure.kind !== 'context_overflow' &&
-                providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
-                stepBudgetRemains &&
-                (attemptHasNoObservableOutput() ||
+                !(
+                  attemptHasNoObservableOutput() ||
                   idleWatchdogRecovery ||
                   incompleteStreamRecovery ||
-                  sealedThinkingRecovery)
+                  sealedThinkingRecovery
+                )
               ) {
+                retry = {
+                  decision: 'declined',
+                  because: attemptSawToolActivity ? 'side_effects' : 'observable_output',
+                };
+              } else if (!stepBudgetRemains) {
+                retry = { decision: 'declined', because: 'budget' };
+              } else if (providerAttempt >= MAX_PROVIDER_ATTEMPTS_PER_STEP) {
+                retry = { decision: 'exhausted', attempts: providerAttempt };
+              } else if (failure.kind === 'context_overflow') {
+                retry = { decision: 'declined', because: 'policy' };
+              } else if (!(failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery)) {
+                retry =
+                  incompleteStreamTerminal &&
+                  incompleteStreamRetryCount >= MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP
+                    ? { decision: 'exhausted', attempts: providerAttempt }
+                    : { decision: 'declined', because: 'policy' };
+              }
+              if (!retry) {
                 if (idleWatchdogRecovery) idleWatchdogRetryCount += 1;
                 if (sealedThinkingRecovery) sealedThinkingRetryCount += 1;
                 if (incompleteStreamRecovery) incompleteStreamRetryCount += 1;
@@ -2206,6 +2229,7 @@ export class AiSdkTurn {
               // handler after settling any authoritative usage — never a
               // fabricated success.
               terminalProviderError = settledWatchdogTimeout?.error ?? failure;
+              terminalRetry = { error: terminalProviderError, retry };
               terminalProviderErrorReason =
                 lastCompletedStepHadToolResult && failure.kind === 'timeout'
                   ? 'model_after_tool_timeout'
@@ -2588,7 +2612,12 @@ export class AiSdkTurn {
           } satisfies CompleteEvent);
         } else {
           const terminalError = currentWatchdogTimeout()?.error ?? err;
-          queue.push(this.makeErrorEvent(turnId, terminalError, terminalProviderErrorReason));
+          queue.push({
+            ...this.makeErrorEvent(turnId, terminalError, terminalProviderErrorReason),
+            ...(terminalRetry && terminalRetry.error === terminalError
+              ? { retry: terminalRetry.retry }
+              : {}),
+          });
           trace.modelStreamFailed(
             streamErrorClass,
             terminalError,

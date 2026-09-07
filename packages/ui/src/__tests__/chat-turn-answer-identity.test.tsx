@@ -75,7 +75,6 @@ function turnWith(timeline: TurnTimelineItem[]): TurnViewModel {
   return {
     turnId: 'turn-1',
     status: 'running',
-    partialOutputRetained: false,
     user: { id: 'ask', role: 'user', text: 'ask', ts: 1 },
     tools: [],
     notes: [],

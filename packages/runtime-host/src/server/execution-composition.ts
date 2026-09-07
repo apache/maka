@@ -173,6 +173,7 @@ import { SessionAdmissionGate } from './session-admission-gate.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
 import { HostWorkspaceResolver } from './workspace-resolver.js';
 import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
+import { HostStorageMaintenance } from './storage-maintenance.js';
 import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
 import { HostSessionEffectCoordinator } from './session-effect-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
@@ -317,12 +318,6 @@ export async function createExecutionRuntimeHostComposition(
               throw new Error('Context-offload Store is unavailable during Session retirement', {
                 cause: storage.contextOffloadUnavailable?.cause,
               });
-            },
-            collectGarbage: async (): Promise<never> => {
-              throw new Error(
-                'Context-offload Store is unavailable during context garbage collection',
-                { cause: storage.contextOffloadUnavailable?.cause },
-              );
             },
           }
         : undefined;
@@ -1808,7 +1803,18 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
     );
     let recoverySessions: Awaited<ReturnType<typeof stores.sessionStore.listForRecovery>> = [];
+    const storageMaintenance = new HostStorageMaintenance({
+      artifacts: openedArtifactStore,
+      contextOffload: openedContextOffloadStore,
+      onError: (name, error) =>
+        console.error(`[runtime-host] ${name} will retry: ${generalizedErrorMessage(error)}`),
+    });
     domainModules = [
+      createRuntimeHostDomainModule({
+        id: 'storage-maintenance',
+        drain: [() => storageMaintenance.beginDrain()],
+        close: [() => storageMaintenance.close()],
+      }),
       createRuntimeHostDomainModule({
         id: 'plugin-platform',
         handlers: [pluginPlatformCoordinator.handlers],
@@ -1876,18 +1882,7 @@ export async function createExecutionRuntimeHostComposition(
           configuration.handlers,
         ],
         recovery: {
-          state: async () => {
-            await skills.recover();
-            try {
-              await openedArtifactStore.reclaimUpgradeResidue();
-            } catch (error) {
-              // Leftover bytes are not worth refusing to start over; the next
-              // start tries again.
-              console.error(
-                `[runtime-host] upgrade residue could not be reclaimed: ${generalizedErrorMessage(error)}`,
-              );
-            }
-          },
+          state: () => skills.recover(),
         },
         drain: [
           () => connectionEffects.beginDrain(),
@@ -2143,6 +2138,7 @@ export async function createExecutionRuntimeHostComposition(
       },
       beginDrain,
       recover,
+      startMaintenance: () => storageMaintenance.start(),
       close,
     };
   } catch (error) {

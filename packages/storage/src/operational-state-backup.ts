@@ -35,6 +35,11 @@ import { dirname, relative, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
 import { withArtifactWriterLock } from './artifact-writer-lock.js';
+import {
+  withOfflineContextSnapshot,
+  copyContextSnapshot,
+  validateContextSnapshot,
+} from './context-offload-snapshot.js';
 import { decodeStoredMessage } from './execution-record-codec.js';
 import {
   acquireOperationalStateDatabase,
@@ -49,7 +54,7 @@ import {
 import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
 
 export const OPERATIONAL_BACKUP_FORMAT = 'maka-operational-backup';
-export const OPERATIONAL_BACKUP_SCHEMA_VERSION = 3 as const;
+export const OPERATIONAL_BACKUP_SCHEMA_VERSION = 4 as const;
 export const OPERATIONAL_BACKUP_MANIFEST_FILE = 'operational-backup.json';
 
 export type OperationalBackupErrorCode =
@@ -78,7 +83,7 @@ export interface OperationalBackupFile {
 
 export interface OperationalBackupManifest {
   readonly format: typeof OPERATIONAL_BACKUP_FORMAT;
-  readonly schemaVersion: typeof OPERATIONAL_BACKUP_SCHEMA_VERSION;
+  readonly schemaVersion: 3 | typeof OPERATIONAL_BACKUP_SCHEMA_VERSION;
   readonly createdAt: number;
   readonly files: readonly OperationalBackupFile[];
 }
@@ -101,58 +106,61 @@ export async function createOperationalStateBackup(
   const destinationRoot = resolve(input.destinationRoot);
   assertSeparateRoots(stateRoot, destinationRoot);
   await assertMissing(destinationRoot, 'backup destination');
-  return withArtifactWriterLock(stateRoot, async (canonicalStateRoot) => {
-    assertSeparateRoots(canonicalStateRoot, destinationRoot);
-    const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
-    try {
-      await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
-      const database = acquireOperationalStateDatabase(canonicalStateRoot);
-      const databasePath = resolve(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME);
+  return withOfflineContextSnapshot(stateRoot, (contextLocked) =>
+    withArtifactWriterLock(stateRoot, async (canonicalStateRoot) => {
+      assertSeparateRoots(canonicalStateRoot, destinationRoot);
+      const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
       try {
-        await database.backup(databasePath);
-      } finally {
-        database.close();
+        await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
+        const database = acquireOperationalStateDatabase(canonicalStateRoot);
+        const databasePath = resolve(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME);
+        try {
+          await database.backup(databasePath);
+        } finally {
+          database.close();
+        }
+        normalizeStandaloneSqliteSnapshot(databasePath);
+        await chmod(databasePath, 0o600);
+        await syncFile(databasePath);
+        const artifactRoot = resolve(canonicalStateRoot, 'artifacts');
+        if (await pathExists(artifactRoot)) {
+          await copyRegularTree(
+            artifactRoot,
+            resolve(stagingRoot, 'artifacts'),
+            artifactRoot,
+            stagingRoot,
+          );
+        }
+        await copyContextSnapshot(canonicalStateRoot, stagingRoot, contextLocked);
+        const createdAt = (input.now ?? Date.now)();
+        if (!Number.isSafeInteger(createdAt) || createdAt < 0) {
+          throw new OperationalBackupError('corrupt_backup', 'Backup creation time is invalid');
+        }
+        const manifest: OperationalBackupManifest = {
+          format: OPERATIONAL_BACKUP_FORMAT,
+          schemaVersion: OPERATIONAL_BACKUP_SCHEMA_VERSION,
+          createdAt,
+          files: await inventory(stagingRoot),
+        };
+        const manifestPath = resolve(stagingRoot, OPERATIONAL_BACKUP_MANIFEST_FILE);
+        await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
+          encoding: 'utf8',
+          flag: 'wx',
+          mode: 0o600,
+        });
+        await syncFile(manifestPath);
+        await validateOperationalStateBackup(stagingRoot);
+        await syncDirectoryChain(stagingRoot, stagingRoot);
+        await mkdir(dirname(destinationRoot), { recursive: true });
+        await rename(stagingRoot, destinationRoot);
+        await syncDirectory(dirname(destinationRoot));
+        return manifest;
+      } catch (error) {
+        await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
+        throw error;
       }
-      normalizeStandaloneSqliteSnapshot(databasePath);
-      await chmod(databasePath, 0o600);
-      await syncFile(databasePath);
-      const artifactRoot = resolve(canonicalStateRoot, 'artifacts');
-      if (await pathExists(artifactRoot)) {
-        await copyRegularTree(
-          artifactRoot,
-          resolve(stagingRoot, 'artifacts'),
-          artifactRoot,
-          stagingRoot,
-        );
-      }
-      const createdAt = (input.now ?? Date.now)();
-      if (!Number.isSafeInteger(createdAt) || createdAt < 0) {
-        throw new OperationalBackupError('corrupt_backup', 'Backup creation time is invalid');
-      }
-      const manifest: OperationalBackupManifest = {
-        format: OPERATIONAL_BACKUP_FORMAT,
-        schemaVersion: OPERATIONAL_BACKUP_SCHEMA_VERSION,
-        createdAt,
-        files: await inventory(stagingRoot),
-      };
-      const manifestPath = resolve(stagingRoot, OPERATIONAL_BACKUP_MANIFEST_FILE);
-      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
-        encoding: 'utf8',
-        flag: 'wx',
-        mode: 0o600,
-      });
-      await syncFile(manifestPath);
-      await validateOperationalStateBackup(stagingRoot);
-      await syncDirectoryChain(stagingRoot, stagingRoot);
-      await mkdir(dirname(destinationRoot), { recursive: true });
-      await rename(stagingRoot, destinationRoot);
-      await syncDirectory(dirname(destinationRoot));
-      return manifest;
-    } catch (error) {
-      await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
-      throw error;
-    }
-  });
+    }),
+  );
 }
 
 export async function validateOperationalStateBackup(
@@ -173,6 +181,7 @@ export async function validateOperationalStateBackup(
     throw new OperationalBackupError('corrupt_backup', 'Backup file inventory does not match');
   }
   validateSqlite(resolve(root, OPERATIONAL_STATE_DATABASE_NAME), manifest.files);
+  await validateContextSnapshot(root);
   return manifest;
 }
 
@@ -201,6 +210,7 @@ export async function restoreOperationalStateBackup(
       throw new OperationalBackupError('corrupt_backup', 'Restored file inventory does not match');
     }
     validateSqlite(resolve(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME), manifest.files);
+    await validateContextSnapshot(stagingRoot);
     await syncDirectoryChain(stagingRoot, stagingRoot);
     await mkdir(dirname(destinationRoot), { recursive: true });
     await rename(stagingRoot, destinationRoot);
@@ -220,7 +230,7 @@ function decodeManifest(value: unknown): OperationalBackupManifest {
   if (record.format !== OPERATIONAL_BACKUP_FORMAT) {
     throw new OperationalBackupError('corrupt_backup', 'Backup format is invalid');
   }
-  if (record.schemaVersion !== OPERATIONAL_BACKUP_SCHEMA_VERSION) {
+  if (record.schemaVersion !== 3 && record.schemaVersion !== OPERATIONAL_BACKUP_SCHEMA_VERSION) {
     throw new OperationalBackupError('unsupported_schema', 'Backup schema is unsupported');
   }
   if (
@@ -253,7 +263,7 @@ function decodeManifest(value: unknown): OperationalBackupManifest {
   }
   return {
     format: OPERATIONAL_BACKUP_FORMAT,
-    schemaVersion: OPERATIONAL_BACKUP_SCHEMA_VERSION,
+    schemaVersion: record.schemaVersion,
     createdAt: record.createdAt as number,
     files,
   };

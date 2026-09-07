@@ -37,6 +37,7 @@
     "./plan": "./dist/plan.js",
     "./agent-run": "./dist/agent-run.js",
     "./subagent-workspace": "./dist/subagent-workspace.js",
+    "./model-failure": "./dist/model-failure.js",
     "./model-call-attempt": "./dist/model-call-attempt.js",
     "./model-call-usage-projection": "./dist/model-call-usage-projection.js",
     "./usage-ledger-merge": "./dist/usage-ledger-merge.js",

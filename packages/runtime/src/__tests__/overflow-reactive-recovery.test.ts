@@ -1781,7 +1781,7 @@ describe('reactive overflow recovery in the streaming backend', () => {
       true,
     );
     assert.equal(fixture.recorded.length, 1);
-    assert.equal(fixture.llmCalls.at(-1)?.errorClass, 'ContextLength');
+    assert.equal(fixture.llmCalls.at(-1)?.errorClass, 'context_overflow');
   });
 
   test('no recovery seam means a context-length overflow ends as a real error', async () => {

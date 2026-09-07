@@ -1080,9 +1080,9 @@ export class AgentRun {
         );
       }
     }
-    if (transition && !this.stopped) {
+    if (transition && !this.stopped && ev.type !== 'error') {
       const updateSessionStatus = async (): Promise<void> => {
-        if (terminalSessionEvent || ev.type === 'error') {
+        if (terminalSessionEvent) {
           await this.input.hooks
             .updateStatus(this.sessionId, transition.status, transition.blockedReason, ev.ts)
             .catch((error) => this.enqueueTraceWriteFailure(error, 'terminal session projection'));

@@ -29,6 +29,10 @@
       "tests": 1,
       "electron": "a pointer capture released outside the window -- there is no window edge to leave in a browser tab"
     },
+    "rename-focus.spec.ts": {
+      "tests": 1,
+      "electron": "native Electron keyboard events must reach the rename field immediately after menu dismissal or a row double-click"
+    },
     "session-draft-focus.spec.ts": {
       "tests": 1,
       "electron": "needs a second real Session (Host round trip) to switch to; the focus and draft-restore halves alone would not earn a window"

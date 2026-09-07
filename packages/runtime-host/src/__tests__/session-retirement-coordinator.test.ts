@@ -167,7 +167,7 @@ describe('Host Session retirement coordinator', () => {
     });
   });
 
-  test('retires context refs before draining every physical garbage batch', async () => {
+  test('retires only its own context refs without draining global garbage', async () => {
     const contextActions: string[] = [];
     let garbageBatches = 0;
     await purgeSessionSidecars(
@@ -179,10 +179,12 @@ describe('Host Session retirement coordinator', () => {
             contextActions.push(`retire:${sessionId}`);
             return { releasedReferences: 1, releasedLogicalBytes: 10 };
           },
-          collectGarbage: async (input) => {
-            contextActions.push(`collect:${input.maxBlobs}`);
-            garbageBatches += 1;
-            return { deletedBlobs: 1, deletedBytes: 10, hasMore: garbageBatches < 3 };
+          ...{
+            collectGarbage: async (input: { maxBlobs: number }) => {
+              contextActions.push(`collect:${input.maxBlobs}`);
+              garbageBatches += 1;
+              return { deletedBlobs: 1, deletedBytes: 10, hasMore: garbageBatches < 3 };
+            },
           },
         },
         purgeOperationalState: async () => {},
@@ -190,12 +192,8 @@ describe('Host Session retirement coordinator', () => {
       'session-context',
     );
 
-    assert.deepEqual(contextActions, [
-      'retire:session-context',
-      'collect:64',
-      'collect:64',
-      'collect:64',
-    ]);
+    assert.deepEqual(contextActions, ['retire:session-context']);
+    assert.equal(garbageBatches, 0);
   });
 
   test('rejects ordinary archive and remove operations for the Coordination Session', async () => {
@@ -1384,7 +1382,6 @@ async function withHarness(
           actions.retiredContext.push(sessionId);
           return { releasedReferences: 0, releasedLogicalBytes: 0 };
         },
-        collectGarbage: async () => ({ deletedBlobs: 0, deletedBytes: 0, hasMore: false }),
       },
       purgeOperationalState: async (sessionId) => {
         actions.purgedOperationalState.push(sessionId);

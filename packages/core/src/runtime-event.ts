@@ -33,6 +33,8 @@
  * projection, or ledger logic lives here. Those arrive in later nodes.
  */
 
+import { isModelRetryDecision, type ModelRetryDecision } from './model-failure.js';
+
 import {
   isRuntimeHandoffPause,
   runtimeHandoffPause,
@@ -244,6 +246,7 @@ export interface RuntimeEventSystemNoteContent {
 
 export interface RuntimeEventErrorContent {
   kind: 'error';
+  retry?: ModelRetryDecision;
   code?: string;
   /** Stable machine-readable reason for routing; mirrors ErrorEvent.reason. */
   reason?: string;
@@ -740,7 +743,7 @@ const FUNCTION_RESPONSE_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionRe
 );
 const ERROR_CONTENT_SHAPE = defineObjectShape<RuntimeEventErrorContent>()(
   ['kind', 'message'],
-  ['code', 'reason', 'details'],
+  ['code', 'reason', 'details', 'retry'],
 );
 const SYSTEM_NOTE_CONTENT_SHAPE = defineObjectShape<RuntimeEventSystemNoteContent>()(
   ['kind', 'note'],
@@ -1086,6 +1089,7 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         hasExactShape(value, ERROR_CONTENT_SHAPE) &&
         isOptionalString(value.code) &&
         isOptionalString(value.reason) &&
+        (value.retry === undefined || isModelRetryDecision(value.retry)) &&
         typeof value.message === 'string' &&
         (value.details === undefined || isStringArray(value.details) || isRecord(value.details))
       );

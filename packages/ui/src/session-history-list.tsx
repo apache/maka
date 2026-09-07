@@ -360,13 +360,9 @@ function SessionListGroups(props: {
    * The control the rename was started from, so focus can go back to it.
    *
    * Astryx's Dialog restores focus on its own — to whatever was focused when it
-   * opened — and that is exactly what fails here. A menu-launched dialog opens
-   * one frame AFTER the menu closed, and the two race: measured frame by frame,
-   * the dialog's capture lands on the menu item (frames 1-3) while the menu
-   * hands focus back to the trigger on frame 4. Restoring to a node that has
-   * since been unmounted is a no-op, so the edit ended on <body> and the next
-   * Tab started at the top of the window — while the delete confirm one item
-   * below in the same menu returns the trigger.
+   * opened. For a menu-launched dialog that is the menu item, which is removed
+   * as the menu closes. Restoring to that node is a no-op, so remember the
+   * stable trigger explicitly instead.
    *
    * The opener is passed in rather than captured here, because the component
    * that renders the menu is the only one that can name it without racing.
@@ -1106,7 +1102,6 @@ function ProjectItemActions(props: {
   const [pendingAction, setPendingAction] = useState<ProjectRowActionId | null>(null);
   const mountedRef = useMountedRef();
   const pendingActionRef = useRef<ProjectRowActionId | null>(null);
-  const pendingMenuIntentRef = useRef<(() => void) | null>(null);
   const project = props.project;
   const actions = props.actions;
 
@@ -1166,11 +1161,8 @@ function ProjectItemActions(props: {
           label: copy.projectRename,
           icon: Pencil,
           onClick: () => {
-            // Read now, while the trigger is still the thing the user is on:
-            // by the time the intent runs the menu has closed and focus is
-            // mid-handover.
             const opener = trailingRef.current?.querySelector<HTMLElement>('button') ?? null;
-            pendingMenuIntentRef.current = () => props.onStartRename(opener);
+            props.onStartRename(opener);
           },
         },
         {
@@ -1187,13 +1179,7 @@ function ProjectItemActions(props: {
         label={copy.projectActionsAriaLabel(project.name)}
         isDisabled={pendingAction !== null}
         isMenuOpen={menuOpen}
-        onOpenChange={(open) => {
-          setMenuOpen(open);
-          if (open) return;
-          const intent = pendingMenuIntentRef.current;
-          pendingMenuIntentRef.current = null;
-          if (intent) window.requestAnimationFrame(intent);
-        }}
+        onOpenChange={setMenuOpen}
         items={menuItems}
       />
     </span>
@@ -1233,7 +1219,6 @@ function SessionItemActions(props: {
   const [pendingAction, setPendingAction] = useState<SessionRowActionId | null>(null);
   const mountedRef = useMountedRef();
   const pendingActionRef = useRef<SessionRowActionId | null>(null);
-  const pendingMenuIntentRef = useRef<(() => void) | null>(null);
   const actions = props.actions;
 
   useEffect(
@@ -1271,13 +1256,7 @@ function SessionItemActions(props: {
         label={copy.actionsAriaLabel(actionContext)}
         isDisabled={pendingAction !== null}
         isMenuOpen={menuOpen}
-        onOpenChange={(open) => {
-          setMenuOpen(open);
-          if (open) return;
-          const intent = pendingMenuIntentRef.current;
-          pendingMenuIntentRef.current = null;
-          if (intent) window.requestAnimationFrame(intent);
-        }}
+        onOpenChange={setMenuOpen}
         items={
           props.bulkCount > 1 && props.selectionCommands
             ? [
@@ -1310,20 +1289,16 @@ function SessionItemActions(props: {
                   label: copy.rename,
                   icon: Pencil,
                   onClick: () => {
-                    // Read now, while the trigger is still the thing the user
-                    // is on: by the time the intent runs the menu has closed
-                    // and focus is mid-handover.
                     const opener =
                       trailingRef.current?.querySelector<HTMLElement>('button') ?? null;
-                    pendingMenuIntentRef.current = () =>
-                      props.onStartRename(
-                        {
-                          kind: 'session',
-                          id: props.session.id,
-                          name: props.session.name,
-                        },
-                        opener,
-                      );
+                    props.onStartRename(
+                      {
+                        kind: 'session',
+                        id: props.session.id,
+                        name: props.session.name,
+                      },
+                      opener,
+                    );
                   },
                 },
                 // Archive is where the rail stops. Deleting is the one row
