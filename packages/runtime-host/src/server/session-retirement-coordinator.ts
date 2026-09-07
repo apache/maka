@@ -121,7 +121,7 @@ export interface HostSessionRetirementCoordinatorOptions {
   readonly manager: RetirementManager;
   readonly capabilities: RetirementCapabilities;
   readonly continuity: RetirementContinuity;
-  readonly artifacts: Pick<InteractiveArtifactStoreWriter, 'purgeSessionArtifacts'>;
+  readonly artifacts: Pick<InteractiveArtifactStoreWriter, 'purgeSessionArtifactsBatch'>;
   readonly sessionTodo: Pick<InteractiveSessionTodoWriter, 'purgeSessionState'>;
   readonly contextOffload?: Pick<InteractiveContextOffloadWriter, 'retireSession'>;
   readonly purgeOperationalState: (sessionId: string) => Promise<void>;
@@ -714,16 +714,30 @@ export class HostSessionRetirementCoordinator {
     while (this.#cleanupQueue.size > 0) {
       const batch = [...this.#cleanupQueue];
       this.#cleanupQueue.clear();
-      await Promise.allSettled(batch.map((sessionId) => this.#cleanupRetiredSession(sessionId)));
+      const artifactCleanup = this.#artifacts.purgeSessionArtifactsBatch(batch);
+      await Promise.allSettled(
+        batch.map((sessionId) => this.#cleanupRetiredSession(sessionId, artifactCleanup)),
+      );
     }
   }
 
-  async #cleanupRetiredSession(sessionId: string): Promise<void> {
+  async #cleanupRetiredSession(
+    sessionId: string,
+    artifactCleanup: Promise<ReadonlyMap<string, PromiseSettledResult<void>>>,
+  ): Promise<void> {
     const worktree = this.#retiredWorktrees.get(sessionId);
     const outcomes = await Promise.allSettled([
       purgeSessionSidecars(
         {
-          artifacts: this.#artifacts,
+          artifacts: {
+            purgeSessionArtifacts: async () => {
+              const outcome = (await artifactCleanup).get(sessionId);
+              if (!outcome) {
+                throw new Error(`Artifact cleanup returned no result for Session ${sessionId}`);
+              }
+              if (outcome.status === 'rejected') throw outcome.reason;
+            },
+          },
           sessionTodo: this.#sessionTodo,
           ...(this.#contextOffload ? { contextOffload: this.#contextOffload } : {}),
           purgeOperationalState: this.#purgeOperationalState,

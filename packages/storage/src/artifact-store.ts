@@ -193,6 +193,15 @@ export interface ArtifactAuthorityStore extends DurableArtifactAttachmentReader 
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;
   purgeSessionArtifacts(sessionId: string): Promise<void>;
+  /**
+   * Resolves the workspace's path-alias guards once for a retiring Session batch.
+   * Per-Session unlink/sync failures leave that Session's metadata retryable;
+   * a guard-resolution or metadata-commit failure rejects the whole batch.
+   * Callers may discharge cleanup intents only for fulfilled Session results.
+   */
+  purgeSessionArtifactsBatch(
+    sessionIds: readonly string[],
+  ): Promise<ReadonlyMap<string, PromiseSettledResult<void>>>;
   reclaimUpgradeResidue(input: ArtifactUpgradeCleanupInput): Promise<ArtifactUpgradeCleanupResult>;
   deleteOwnedArtifactInSession(
     sessionId: string,
@@ -476,12 +485,81 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   }
 
   async purgeSessionArtifacts(sessionId: string): Promise<void> {
-    assertCanonicalArtifactEntityId(sessionId, 'sessionId');
-    await this.enqueueMutation(async () => {
+    const results = await this.purgeSessionArtifactsBatch([sessionId]);
+    const result = results.get(sessionId)!;
+    if (result.status === 'rejected') throw result.reason;
+  }
+
+  async purgeSessionArtifactsBatch(
+    sessionIds: readonly string[],
+  ): Promise<ReadonlyMap<string, PromiseSettledResult<void>>> {
+    const acceptedIds = new Set(sessionIds);
+    for (const sessionId of acceptedIds) assertCanonicalArtifactEntityId(sessionId, 'sessionId');
+    if (acceptedIds.size === 0) return new Map();
+    return this.enqueueMutation(async () => {
       await this.prepareMutationUnlocked();
-      await this.purgeRecordsUnlocked(
-        this.records.filter((record) => record.sessionId === sessionId),
+      const sessions = new Map<string, ArtifactRecord[]>(
+        [...acceptedIds].map((sessionId) => [sessionId, []]),
       );
+      for (const record of this.records) sessions.get(record.sessionId)?.push(record);
+      const results = new Map<string, PromiseSettledResult<void>>();
+      if ([...sessions.values()].every((records) => records.length === 0)) {
+        for (const sessionId of acceptedIds)
+          results.set(sessionId, { status: 'fulfilled', value: undefined });
+        return results;
+      }
+
+      // Resolve one stable snapshot while holding the writer lock. Two owners
+      // per identity suffice to preserve each Session's cross-Session alias
+      // guard, including aliases between two targets in this same batch.
+      const root = await ensureRealDirectory(this.artifactRoot);
+      const resolved = await this.resolveRemovalEntriesUnlocked(this.records);
+      const entries = new Map<string, ArtifactRemovalEntry | undefined>();
+      const owners = new Map<string, { first: ArtifactRecord; other?: ArtifactRecord }>();
+      for (const [index, record] of this.records.entries()) {
+        const entry = resolved[index];
+        entries.set(record.id, entry);
+        if (!entry) continue;
+        const owner = owners.get(entry.comparisonIdentity);
+        if (!owner) owners.set(entry.comparisonIdentity, { first: record });
+        else if (owner.first.sessionId !== record.sessionId) owner.other = record;
+      }
+
+      const deletedIds = new Set<string>();
+      for (const [sessionId, records] of sessions) {
+        try {
+          const paths = new Set<string>();
+          for (const record of records) {
+            validateRelativeArtifactPath(record.relativePath);
+            const entry = entries.get(record.id);
+            if (!entry) continue;
+            if (!isInsideOrSamePath(root, dirname(entry.unlinkPath))) {
+              throw new Error(`Artifact ${record.id} resolves outside the artifact root`);
+            }
+            const owner = owners.get(entry.comparisonIdentity)!;
+            const reference = owner.first.sessionId !== sessionId ? owner.first : owner.other;
+            if (reference) {
+              throw new Error(
+                `Artifact ${record.id} path is still referenced by artifact ${reference.id}`,
+              );
+            }
+            paths.add(entry.unlinkPath);
+          }
+          await this.removePurgePathsUnlocked([...paths]);
+          for (const record of records) deletedIds.add(record.id);
+          results.set(sessionId, { status: 'fulfilled', value: undefined });
+        } catch (reason) {
+          results.set(sessionId, { status: 'rejected', reason });
+        }
+      }
+      // Only Sessions whose unlink and directory-sync obligations succeeded
+      // participate in this commit. A failed commit rejects the whole batch;
+      // no caller may clear its retirement intent before metadata is durable.
+      if (deletedIds.size > 0) {
+        await this.writeMetadataUnlocked({ deleteIds: [...deletedIds] });
+        this.records = this.records.filter((record) => !deletedIds.has(record.id));
+      }
+      return results;
     });
   }
 
@@ -843,6 +921,14 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     paths: readonly string[],
   ): Promise<void> {
     const nextRecords = this.records.filter((record) => !ids.has(record.id));
+    await this.removePurgePathsUnlocked(paths);
+    // Keep the paths discoverable until physical cleanup is durable. Session
+    // retirement already owns the pending cleanup intent and retries on reopen.
+    await this.writeMetadataUnlocked({ deleteIds: [...ids] });
+    this.records = nextRecords;
+  }
+
+  private async removePurgePathsUnlocked(paths: readonly string[]): Promise<void> {
     const changedDirectories = new Set<string>();
     try {
       for (const path of paths) {
@@ -852,10 +938,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     } finally {
       for (const directory of changedDirectories) await syncDirectory(directory);
     }
-    // Keep the paths discoverable until physical cleanup is durable. Session
-    // retirement already owns the pending cleanup intent and retries on reopen.
-    await this.writeMetadataUnlocked({ deleteIds: [...ids] });
-    this.records = nextRecords;
   }
 
   private async prepareReadInSessionUnlocked(

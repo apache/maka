@@ -72,6 +72,7 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;
   purgeSessionArtifacts(sessionId: string): Promise<void>;
+  purgeSessionArtifactsBatch: ArtifactAuthorityStore['purgeSessionArtifactsBatch'];
   reclaimUpgradeResidue: ArtifactAuthorityStore['reclaimUpgradeResidue'];
   listPage: ArtifactAuthorityStore['listPage'];
   listTurnArtifacts: ArtifactAuthorityStore['listTurnArtifacts'];
@@ -178,6 +179,10 @@ function createWriterFacade(
       return run(() => store.copyConversationArtifacts(acceptedInput));
     },
     purgeSessionArtifacts: (sessionId) => run(() => store.purgeSessionArtifacts(sessionId)),
+    purgeSessionArtifactsBatch: (sessionIds) => {
+      const acceptedIds = Object.freeze([...sessionIds]);
+      return run(() => store.purgeSessionArtifactsBatch(acceptedIds));
+    },
     reclaimUpgradeResidue: (input) => run(() => store.reclaimUpgradeResidue(input)),
     deleteUserArtifactInSession: (sessionId, artifactId) =>
       run(() => store.deleteUserArtifactInSession(sessionId, artifactId)),

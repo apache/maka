@@ -47,7 +47,7 @@ import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { MemoryExtractionSessionLane } from '../server/memory-extraction-session-lane.js';
 import { HostSessionRetirementCoordinator } from '../server/session-retirement-coordinator.js';
 import { purgeSessionSidecars } from '../server/session-sidecar-purge.js';
-import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { deferred, waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const CONNECTION_CONTEXT: ConnectionContext = {
   hostEpoch: 'retirement-test',
@@ -170,9 +170,14 @@ describe('Host Session retirement coordinator', () => {
   test('retires only its own context refs without draining global garbage', async () => {
     const contextActions: string[] = [];
     let garbageBatches = 0;
+    const artifactSessions: string[] = [];
     await purgeSessionSidecars(
       {
-        artifacts: { purgeSessionArtifacts: async () => {} },
+        artifacts: {
+          purgeSessionArtifacts: async (sessionId) => {
+            artifactSessions.push(sessionId);
+          },
+        },
         sessionTodo: { purgeSessionState: async () => {} },
         contextOffload: {
           retireSession: async (sessionId) => {
@@ -192,6 +197,7 @@ describe('Host Session retirement coordinator', () => {
       'session-context',
     );
 
+    assert.deepEqual(artifactSessions, ['session-context']);
     assert.deepEqual(contextActions, ['retire:session-context']);
     assert.equal(garbageBatches, 0);
   });
@@ -937,6 +943,148 @@ describe('Host Session retirement coordinator', () => {
     });
   });
 
+  test('batches real artifact cleanup and preserves independent pending work and archived child files', async (t) => {
+    await withHarness(async (harness) => {
+      const retainedChild = await createClosedSubagent(harness, harness.rootId, 0);
+      const successfulSession = await createClosedGraphOperator(harness, harness.rootId, 'a');
+      const owner = await tryAcquireInteractiveRootOwner(
+        await resolveStorageRoot({ path: harness.workspaceRoot, kind: 'interactive' }),
+      );
+      assert.ok(owner);
+      const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+      let statPatch: ReturnType<typeof t.mock.method> | undefined;
+      let removePatch: ReturnType<typeof t.mock.method> | undefined;
+      try {
+        const records = await Promise.all(
+          [...harness.familyIds, successfulSession, retainedChild].map((sessionId) =>
+            artifacts.create({
+              sessionId,
+              turnId: 'turn-1',
+              name: 'retirement.txt',
+              kind: 'file',
+              content: `artifact for ${sessionId}`,
+              source: 'tool_result',
+            }),
+          ),
+        );
+        const retained = records.find((record) => record.sessionId === retainedChild)!;
+        const failed = records.find((record) => record.sessionId === harness.rootId)!;
+        const artifactPath = (relativePath: string) =>
+          join(owner.lease.canonicalPath, 'artifacts', relativePath);
+        const originalLstat = fsPromises.lstat;
+        let retainedStats = 0;
+        statPatch = t.mock.method(
+          fsPromises,
+          'lstat',
+          async (...args: Parameters<typeof originalLstat>) => {
+            if (args[0] === artifactPath(retained.relativePath)) retainedStats += 1;
+            return originalLstat(...args);
+          },
+        );
+        const originalRm = fsPromises.rm;
+        let failArtifact = true;
+        removePatch = t.mock.method(
+          fsPromises,
+          'rm',
+          async (...args: Parameters<typeof originalRm>) => {
+            if (failArtifact && args[0] === artifactPath(failed.relativePath)) {
+              throw new Error('injected artifact unlink failure');
+            }
+            return originalRm(...args);
+          },
+        );
+        syncBuiltinESMExports();
+        harness.purgeArtifactBatch = (sessionIds) =>
+          artifacts.purgeSessionArtifactsBatch(sessionIds);
+        harness.purgeTodo = async (sessionId) => {
+          if (sessionId === harness.revisionId) throw new Error('injected todo failure');
+        };
+        const target = await harness.store.readHeaderRecordSnapshot(harness.rootId);
+        const removed = await harness.coordinator.handlers['session.remove'](
+          { sessionId: harness.rootId, expectedRevision: target.revision },
+          CONNECTION_CONTEXT,
+        );
+        assert.equal(removed.ok, true);
+        await waitFor(
+          async () =>
+            !(await harness.store.listPendingSessionRetirementCleanupIds()).includes(
+              successfulSession,
+            ),
+          'successful session should complete despite other artifact and todo failures',
+        );
+        assert.equal(harness.actions.artifactBatches.length, 1);
+        assert.deepEqual(
+          new Set(harness.actions.artifactBatches[0]),
+          new Set([...harness.familyIds, successfulSession]),
+        );
+        assert.equal(retainedStats, 1, 'one guard-file resolution for the entire Host batch');
+        assert.deepEqual(
+          new Set(await harness.store.listPendingSessionRetirementCleanupIds()),
+          new Set(harness.familyIds),
+        );
+        assert.equal((await artifacts.listPage(harness.rootId, { offset: 0, limit: 10 })).total, 1);
+        assert.equal(
+          (await artifacts.listPage(harness.revisionId, { offset: 0, limit: 10 })).total,
+          0,
+        );
+        assert.equal(
+          (await artifacts.listPage(successfulSession, { offset: 0, limit: 10 })).total,
+          0,
+        );
+        assert.equal((await harness.store.readHeaderSnapshot(retainedChild)).isArchived, true);
+        assert.deepEqual(await artifacts.readTextInSession(retainedChild, retained.id), {
+          ok: true,
+          text: `artifact for ${retainedChild}`,
+        });
+
+        failArtifact = false;
+        harness.purgeTodo = undefined;
+        await harness.coordinator.recover();
+        await harness.coordinator.close();
+        assert.equal(harness.actions.artifactBatches.length, 2);
+        assert.deepEqual(new Set(harness.actions.artifactBatches[1]), new Set(harness.familyIds));
+        assert.deepEqual(await harness.store.listPendingSessionRetirementCleanupIds(), []);
+        assert.equal((await artifacts.listPage(harness.rootId, { offset: 0, limit: 10 })).total, 0);
+        assert.deepEqual(await artifacts.readTextInSession(retainedChild, retained.id), {
+          ok: true,
+          text: `artifact for ${retainedChild}`,
+        });
+      } finally {
+        await harness.coordinator.close();
+        statPatch?.mock.restore();
+        removePatch?.mock.restore();
+        syncBuiltinESMExports();
+        artifacts.close();
+        await owner.close();
+      }
+    });
+  });
+
+  for (const failure of ['missing result', 'batch rejection'] as const) {
+    test(`keeps cleanup pending on artifact ${failure} while still purging other sidecars`, async () => {
+      await withHarness(async (harness) => {
+        harness.purgeArtifactBatch = async () => {
+          if (failure === 'batch rejection') throw new Error('injected metadata failure');
+          return new Map([[harness.rootId, { status: 'fulfilled', value: undefined }]]);
+        };
+        const target = await harness.store.readHeaderRecordSnapshot(harness.rootId);
+        const removed = await harness.coordinator.handlers['session.remove'](
+          { sessionId: harness.rootId, expectedRevision: target.revision },
+          CONNECTION_CONTEXT,
+        );
+        assert.equal(removed.ok, true);
+        await harness.coordinator.close();
+        assert.equal(harness.actions.artifactBatches.length, 1);
+        assert.deepEqual(new Set(harness.actions.purgedTasks), new Set(harness.familyIds));
+        assert.deepEqual(new Set(harness.actions.purgedAgentGraphs), new Set(harness.familyIds));
+        assert.deepEqual(
+          new Set(await harness.store.listPendingSessionRetirementCleanupIds()),
+          new Set(failure === 'missing result' ? [harness.revisionId] : harness.familyIds),
+        );
+      });
+    });
+  }
+
   test('keeps aggregate cleanup retryable without changing a committed remove result', async () => {
     await withHarness(async (harness) => {
       harness.failArtifactCleanup = true;
@@ -1050,6 +1198,69 @@ describe('Host Session retirement coordinator', () => {
 
       assert.deepEqual(await harness.store.listPendingSessionRetirementCleanupIds(), []);
       assert.deepEqual(new Set(harness.actions.purgedArtifacts), new Set(harness.familyIds));
+    });
+  });
+
+  test('coalesces duplicate recovery and new removals into the next batch before close', async () => {
+    await withHarness(async (harness) => {
+      const entered = deferred();
+      const release = deferred();
+      const next = await harness.store.create(sessionInput('Next batch'));
+      let first = true;
+      harness.purgeArtifactBatch = async (sessionIds) => {
+        if (first) {
+          first = false;
+          entered.resolve();
+          await release.promise;
+        }
+        return new Map(
+          sessionIds.map((sessionId) => [sessionId, { status: 'fulfilled', value: undefined }]),
+        );
+      };
+      try {
+        const target = await harness.store.readHeaderRecordSnapshot(harness.rootId);
+        assert.equal(
+          (
+            await harness.coordinator.handlers['session.remove'](
+              { sessionId: harness.rootId, expectedRevision: target.revision },
+              CONNECTION_CONTEXT,
+            )
+          ).ok,
+          true,
+        );
+        await entered.promise;
+        await harness.coordinator.recover();
+        await harness.coordinator.recover();
+        const nextTarget = await harness.store.readHeaderRecordSnapshot(next.id);
+        assert.equal(
+          (
+            await harness.coordinator.handlers['session.remove'](
+              { sessionId: next.id, expectedRevision: nextTarget.revision },
+              CONNECTION_CONTEXT,
+            )
+          ).ok,
+          true,
+        );
+        assert.equal(harness.actions.artifactBatches.length, 1);
+        let closed = false;
+        const closing = harness.coordinator.close().then(() => {
+          closed = true;
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(closed, false);
+        release.resolve();
+        await closing;
+        assert.equal(harness.actions.artifactBatches.length, 2);
+        assert.deepEqual(new Set(harness.actions.artifactBatches[0]), new Set(harness.familyIds));
+        assert.deepEqual(
+          new Set(harness.actions.artifactBatches[1]),
+          new Set([...harness.familyIds, next.id]),
+        );
+        assert.equal(harness.actions.artifactBatches[1]!.length, harness.familyIds.length + 1);
+        assert.deepEqual(await harness.store.listPendingSessionRetirementCleanupIds(), []);
+      } finally {
+        release.resolve();
+      }
     });
   });
 
@@ -1172,6 +1383,7 @@ interface RetirementActions {
   readonly retiredCapabilities: string[];
   readonly retiredMessages: string[];
   readonly purgedArtifacts: string[];
+  readonly artifactBatches: string[][];
   readonly retiredContext: string[];
   readonly purgedTasks: string[];
   readonly purgedOperationalState: string[];
@@ -1211,6 +1423,7 @@ async function withHarness(
       retiredCapabilities: [],
       retiredMessages: [],
       purgedArtifacts: [],
+      artifactBatches: [],
       retiredContext: [],
       purgedTasks: [],
       purgedOperationalState: [],
@@ -1252,6 +1465,8 @@ async function withHarness(
       failRemovalPublication: false,
       failArtifactCleanup: false,
       purgeArtifact: undefined,
+      purgeArtifactBatch: undefined,
+      purgeTodo: undefined,
       hideRevisionFromNextFamilyRead: false,
       updateMetadataDuringNextDispose: false,
       updateSiblingBeforeRemoveCommit: false,
@@ -1366,14 +1581,22 @@ async function withHarness(
         },
       },
       artifacts: {
-        purgeSessionArtifacts: async (sessionId) => {
-          if (harness.purgeArtifact) return harness.purgeArtifact(sessionId);
-          if (harness.failArtifactCleanup) throw new Error('injected Artifact cleanup failure');
-          actions.purgedArtifacts.push(sessionId);
+        purgeSessionArtifactsBatch: async (sessionIds) => {
+          actions.artifactBatches.push([...sessionIds]);
+          if (harness.purgeArtifactBatch) return harness.purgeArtifactBatch(sessionIds);
+          const outcomes = await Promise.allSettled(
+            sessionIds.map(async (sessionId) => {
+              if (harness.purgeArtifact) return harness.purgeArtifact(sessionId);
+              if (harness.failArtifactCleanup) throw new Error('injected Artifact cleanup failure');
+              actions.purgedArtifacts.push(sessionId);
+            }),
+          );
+          return new Map(sessionIds.map((sessionId, index) => [sessionId, outcomes[index]!]));
         },
       },
       sessionTodo: {
         purgeSessionState: async (sessionId) => {
+          if (harness.purgeTodo) await harness.purgeTodo(sessionId);
           actions.purgedTasks.push(sessionId);
         },
       },
@@ -1436,6 +1659,10 @@ interface RetirementHarness {
   failRemovalPublication: boolean;
   failArtifactCleanup: boolean;
   purgeArtifact: ((sessionId: string) => Promise<void>) | undefined;
+  purgeArtifactBatch:
+    | ((sessionIds: readonly string[]) => Promise<ReadonlyMap<string, PromiseSettledResult<void>>>)
+    | undefined;
+  purgeTodo: ((sessionId: string) => Promise<void>) | undefined;
   hideRevisionFromNextFamilyRead: boolean;
   updateMetadataDuringNextDispose: boolean;
   updateSiblingBeforeRemoveCommit: boolean;
