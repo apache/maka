@@ -22,7 +22,7 @@ import { Button } from '@astryxdesign/core/Button';
 import type { DropdownMenuItemData } from '@astryxdesign/core/DropdownMenu';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
-import { ArrowLeft, FolderOpen } from './icons.js';
+import { ArrowLeft, Folder } from './icons.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { InlineRenameInput } from './inline-rename-input.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
@@ -107,7 +107,7 @@ export function TitlebarSessionIdentity(props: {
           <MoreMenu
             className="maka-titlebar-menu"
             label={copy.chat.projectInfo}
-            icon={<FolderOpen size={14} />}
+            icon={<Folder size={14} />}
             size="sm"
             alignment="start"
             items={projectSection}
