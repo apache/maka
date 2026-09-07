@@ -193,7 +193,7 @@ export function registerRuntimeHostSessionObservationIpc(
     'sessions:observe',
     async (event, sessionId: unknown, observerId: unknown) => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
-      await deps.observations.observe(
+      return deps.observations.observe(
         normalizedSessionId,
         requiredId(observerId, 'Session observer'),
         event.sender as RuntimeHostSessionObserverTarget,

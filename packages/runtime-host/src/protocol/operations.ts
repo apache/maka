@@ -339,6 +339,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'skill.catalog.query',
   'subscription.close',
   'subscription.open',
+  'subscription.pty_interest.set',
   'session.todo.query',
   'turn.interrupt',
   'turn.message.execution.query',

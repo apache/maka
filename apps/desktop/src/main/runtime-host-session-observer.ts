@@ -54,6 +54,7 @@ import {
   type DesktopSequencedTranscriptMessage,
   type DesktopTranscriptReplica,
   type DesktopTranscriptReplicaChange,
+  type DesktopTranscriptReplicaSnapshot,
 } from './desktop-transcript-replica.js';
 import {
   encodeDesktopTranscriptChange,
@@ -77,6 +78,7 @@ export type RuntimeHostSessionObserverTarget = RuntimeHostRendererTarget<Session
 export type RuntimeHostTranscriptTarget = RuntimeHostRendererTarget<DesktopTranscriptBatch>;
 
 export interface RuntimeHostSessionObserverDeps {
+  cacheTranscript?: (snapshot: DesktopTranscriptReplicaSnapshot) => void;
   client: SessionObserverClient;
   emitSessionsChanged: (
     reason: SessionChangedReason,
@@ -85,6 +87,7 @@ export interface RuntimeHostSessionObserverDeps {
   ) => void;
   emitSessionDomainChanged?: (change: SessionDomainChange) => void;
   emitRuntimeResourcePtyData?: (event: ShellRunPtyDataEvent) => void;
+  emitRuntimeResourcePtyReset?: (sessionId: string) => void;
   emitAgentGraphChanged?: (event: AgentGraphClientChangedEvent) => void;
   onWatchedTurnFinished?: (
     sessionId: string,
@@ -163,6 +166,7 @@ interface PendingTranscriptConsumer {
 interface ObserverRegistration {
   readonly state: ObservedSessionState;
   readonly group: ObserverTargetGroup;
+  readonly ptyRef?: string;
 }
 
 interface SubscriptionFailureIdentity {
@@ -188,6 +192,8 @@ export class RuntimeHostSessionObserver {
   readonly #emitSessionsChanged: RuntimeHostSessionObserverDeps["emitSessionsChanged"];
   readonly #emitSessionDomainChanged: (change: SessionDomainChange) => void;
   readonly #emitRuntimeResourcePtyData: (event: ShellRunPtyDataEvent) => void;
+  readonly #emitRuntimeResourcePtyReset: (sessionId: string) => void;
+  readonly #cacheTranscript: (snapshot: DesktopTranscriptReplicaSnapshot) => void;
   readonly #emitAgentGraphChanged: (
     event: AgentGraphClientChangedEvent,
   ) => void;
@@ -217,6 +223,8 @@ export class RuntimeHostSessionObserver {
       deps.emitSessionDomainChanged ?? (() => undefined);
     this.#emitRuntimeResourcePtyData =
       deps.emitRuntimeResourcePtyData ?? (() => undefined);
+    this.#emitRuntimeResourcePtyReset = deps.emitRuntimeResourcePtyReset ?? (() => undefined);
+    this.#cacheTranscript = deps.cacheTranscript ?? (() => undefined);
     this.#emitAgentGraphChanged =
       deps.emitAgentGraphChanged ?? (() => undefined);
     this.#onWatchedTurnFinished =
@@ -438,7 +446,8 @@ export class RuntimeHostSessionObserver {
     observerId: string,
     target: RuntimeHostSessionObserverTarget,
     messageAdmissions = false,
-  ): Promise<void> {
+    ptyRef?: string,
+  ): Promise<readonly SessionEvent[]> {
     this.#assertOpen();
     const previous = this.#observers.get(observerId);
     if (previous) {
@@ -448,7 +457,7 @@ export class RuntimeHostSessionObserver {
       ) {
         throw new Error("Runtime Host Session observer identity was reused");
       }
-      return;
+      return previous.state.projector?.seedActive(true) ?? [];
     }
     const state = this.#state(sessionId);
     if (messageAdmissions && !state.messageAdmissions) {
@@ -470,10 +479,12 @@ export class RuntimeHostSessionObserver {
       target.once("destroyed", destroyedListener);
     }
     group.observerIds.add(observerId);
-    this.#observers.set(observerId, { state, group });
+    this.#observers.set(observerId, { state, group, ptyRef });
     try {
       await state.subscriptionOwner.waitUntilReady();
+      if (ptyRef) await this.#syncPtyInterests(state);
       this.#seedTarget(state, group);
+      return state.projector?.seedActive(true) ?? [];
     } catch (error) {
       this.#detachObserver(observerId);
       throw error;
@@ -482,7 +493,10 @@ export class RuntimeHostSessionObserver {
 
   async unobserve(observerId: string): Promise<void> {
     const state = this.#detachObserver(observerId);
-    if (state) await this.#closeIfIdle(state);
+    if (state) {
+      await this.#syncPtyInterests(state);
+      await this.#closeIfIdle(state);
+    }
   }
 
   async watchTurn(sessionId: string, turnId: string): Promise<void> {
@@ -611,8 +625,10 @@ export class RuntimeHostSessionObserver {
       transcriptReplicaOptions: {
         accountPreparationBytes: (deltaBytes) =>
           this.#accountTranscriptPreparation(state, deltaBytes),
-        onChange: (replica, change) =>
-          this.#broadcastTranscriptChange(state, replica, change),
+        onChange: (replica, change) => {
+          this.#broadcastTranscriptChange(state, replica, change);
+          this.#cacheTranscript(replica.snapshot());
+        },
       },
       prepareActivation: (subscription, recovered) =>
         this.#prepareSubscriptionActivation(state, subscription, recovered),
@@ -672,6 +688,10 @@ export class RuntimeHostSessionObserver {
       return;
     }
     if (frame.kind === "subscription.runtime_resource_pty_data") {
+      if (frame.reset) {
+        this.#emitRuntimeResourcePtyReset(frame.sessionId);
+        return;
+      }
       this.#emitRuntimeResourcePtyData({
         sessionId: frame.sessionId,
         ref: frame.ref,
@@ -874,6 +894,7 @@ export class RuntimeHostSessionObserver {
       }
       state.snapshot = structuredClone(subscription.snapshot);
       state.replica = subscription.replica;
+      this.#cacheTranscript(subscription.replica.snapshot());
       subscription.replica.adoptResidentAccounting();
       state.projector = projector;
       previousReplica?.close();
@@ -1051,7 +1072,16 @@ export class RuntimeHostSessionObserver {
     const group = state.targets.get(targetId);
     if (!group) return;
     this.#detachTarget(state, group);
+    await this.#syncPtyInterests(state).catch(() => undefined);
     await this.#closeIfIdle(state);
+  }
+
+  #syncPtyInterests(state: ObservedSessionState): Promise<void> {
+    const refs = new Set<string>();
+    for (const observer of this.#observers.values()) {
+      if (observer.state === state && observer.ptyRef) refs.add(observer.ptyRef);
+    }
+    return state.subscriptionOwner.setPtyInterests([...refs]);
   }
 
   #detachTarget(state: ObservedSessionState, group: ObserverTargetGroup): void {

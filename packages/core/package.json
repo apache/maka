@@ -55,6 +55,7 @@
     "./user-question": "./dist/user-question.js",
     "./connections": "./dist/connections.js",
     "./context-offload": "./dist/context-offload.js",
+    "./tool-result-archive-evidence": "./dist/tool-result-archive-evidence.js",
     "./attachments": "./dist/attachments.js",
     "./artifacts": "./dist/artifacts.js",
     "./pet": "./dist/pet.js",

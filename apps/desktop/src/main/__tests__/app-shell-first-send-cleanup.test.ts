@@ -498,7 +498,7 @@ describe('composer first-send cleanup', () => {
     assert.equal(resolved, 0);
   });
 
-  it('returns a sparse existing session to latest before sending', async () => {
+  it('accepts a message while a sparse existing Session catches up in the background', async () => {
     const latest = deferred<void>();
     const order: string[] = [];
     const activeIdRef = { current: 'existing-session' as string | undefined };
@@ -529,9 +529,9 @@ describe('composer first-send cleanup', () => {
         transcriptRangeRef,
       }).send('hello');
       await new Promise((resolve) => setImmediate(resolve));
-      assert.deepEqual(order, ['latest']);
-      latest.resolve();
+      assert.deepEqual(order, ['latest', 'send']);
       assert.equal(await sending, true);
+      latest.resolve();
       assert.deepEqual(order, ['latest', 'send']);
     } finally {
       restoreWindow();

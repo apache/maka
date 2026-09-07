@@ -54,6 +54,7 @@ const selectShellRunRecord = (state: AppShellSessionUiState, sessionId: string |
  * is conditionally mounted - the always-mounted Composer lives in a separate
  * region and is not affected by this surface mounting or unmounting.
  */
+
 interface ChatMessageSurfaceProps extends Omit<
   ComponentProps<typeof ChatView>,
   | 'deepResearchRun'

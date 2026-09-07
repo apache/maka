@@ -71,6 +71,7 @@
     "src/renderer/locales/permission-center-copy.ts",
     "src/renderer/locales/plan-mode-copy.ts",
     "src/renderer/locales/session-collaboration-copy.ts",
+    "src/renderer/locales/session-local-copy.ts",
     "src/renderer/locales/settings-bot-copy.ts",
     "src/renderer/locales/settings-daily-review-copy.ts",
     "src/renderer/locales/settings-data-copy.ts",
@@ -88,6 +89,7 @@
     "src/renderer/locales/shell-copy.ts",
     "src/renderer/locales/shell-remaining-copy.ts",
     "src/renderer/locales/task-readiness-copy.ts",
+    "src/renderer/locales/workhub-copy.ts",
     "src/renderer/main.tsx",
     "src/renderer/mcp-brand-contrast.ts",
     "src/renderer/mcp-brand-marks.tsx",
@@ -246,7 +248,6 @@
     "src/renderer/workhub-coordination-host-scope.ts",
     "src/renderer/workhub-coordination-lifecycle.ts",
     "src/renderer/workhub-coordination-port.ts",
-    "src/renderer/workhub-route-policy.ts",
     "src/renderer/workhub-send-lease.ts",
     "src/renderer/workhub-session-port.ts",
     "src/renderer/workhub-surface.tsx",
@@ -333,6 +334,7 @@
           "./app-shell-copy.js": 1,
           "./attachment-preflight.js": 1,
           "./composer-attachments.js": 1,
+          "./features/conversation/index.js": 1,
           "./locales/shell-copy.js": 1,
           "./model-connection-errors.js": 1,
           "./session-workspace-errors.js": 1,
@@ -340,8 +342,8 @@
           "@maka/core/session-name": 1,
           "@maka/ui": 1
         },
-        "importSpecifiers": 14,
-        "nonTriviaTokens": 4086
+        "importSpecifiers": 13,
+        "nonTriviaTokens": 4076
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 4,
@@ -750,9 +752,9 @@
         "environmentCapabilities": {
           "document.querySelector": 1,
           "requestAnimationFrame": 1,
-          "window.clearTimeout": 4,
+          "window.clearTimeout": 1,
           "window.requestAnimationFrame": 4,
-          "window.setTimeout": 2
+          "window.setTimeout": 1
         },
         "hookCalls": {
           "useActiveExecutionBoundary": 1,
@@ -768,13 +770,13 @@
           "useAppShellTurnPresentation": 1,
           "useCommandPalette": 1,
           "useComposerAttachments": 1,
-          "useEffect": 12,
+          "useEffect": 10,
           "useKeyboardHelp": 1,
           "useLayoutEffect": 2,
           "useNewTaskChoice": 1,
           "useOnboardingSnapshot": 1,
           "usePlanModeState": 1,
-          "useRef": 21,
+          "useRef": 20,
           "useSessionCollaborationDialog": 1,
           "useSessionEventHealthPolling": 1,
           "useSessionNavigationReads": 1,
@@ -893,7 +895,7 @@
           "react": 1
         },
         "importSpecifiers": 121,
-        "nonTriviaTokens": 14996
+        "nonTriviaTokens": 14631
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -1619,6 +1621,15 @@
         "actionFactories": [],
         "dependencyPaths": {}
       },
+      "src/renderer/locales/session-local-copy.ts": {
+        "bridgePaths": {},
+        "environmentCapabilities": {},
+        "hookCalls": {},
+        "lifecycleMethods": {},
+        "unresolvedDependencies": 0,
+        "actionFactories": [],
+        "dependencyPaths": {}
+      },
       "src/renderer/locales/settings-bot-copy.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -1772,6 +1783,15 @@
         "dependencyPaths": {}
       },
       "src/renderer/locales/task-readiness-copy.ts": {
+        "bridgePaths": {},
+        "environmentCapabilities": {},
+        "hookCalls": {},
+        "lifecycleMethods": {},
+        "unresolvedDependencies": 0,
+        "actionFactories": [],
+        "dependencyPaths": {}
+      },
+      "src/renderer/locales/workhub-copy.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {},
@@ -3070,6 +3090,7 @@
           "../assets/provider-brands/xiaomimimo.svg": 1,
           "../assets/provider-brands/zai.svg": 1,
           "../assets/provider-brands/zenmux.svg": 1,
+          "../features/connection-settings": 1,
           "simple-icons": 1
         }
       },
@@ -4553,7 +4574,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./workhub-route-policy.js": 1
+          "./features/workhub/index.js": 1
         }
       },
       "src/renderer/workhub-coordination-host-scope.ts": {
@@ -4589,17 +4610,6 @@
           "./desktop-transcript-range-store.js": 1,
           "./workhub-controller.js": 1,
           "@maka/core/session": 1
-        }
-      },
-      "src/renderer/workhub-route-policy.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./application/contracts/workhub-request-intent.js": 1
         }
       },
       "src/renderer/workhub-send-lease.ts": {
@@ -4644,6 +4654,8 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "./features/workhub/index.js": 1,
+          "./locales/workhub-copy.js": 1,
           "./workhub-coordination-port.js": 1,
           "./workhub-send-lease.js": 1,
           "@astryxdesign/core": 1,

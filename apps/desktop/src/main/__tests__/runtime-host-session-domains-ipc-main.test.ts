@@ -636,6 +636,7 @@ test('adapts interactive terminal ownership to one Host controller lease', async
       sessionObserver: {
         observe: async (sessionId, observerId) => {
           calls.push({ operation: 'observe', input: { sessionId, observerId } });
+          return [];
         },
         unobserve: async (observerId) => {
           calls.push({ operation: 'unobserve', input: { observerId } });
@@ -764,6 +765,7 @@ test('restores terminal observation after the observer drops its registration', 
         observe: async () => {
           observeCalls += 1;
           observationActive = true;
+          return [];
         },
         unobserve: async () => {
           observationActive = false;
@@ -1398,7 +1400,7 @@ function registerDomainsIpc(
     {
       ...deps,
       sessionObserver: deps.sessionObserver ?? {
-        async observe() {},
+        async observe() { return []; },
         async unobserve() {},
       },
     },

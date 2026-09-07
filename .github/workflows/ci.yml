@@ -94,6 +94,7 @@ jobs:
         run: >-
           node --test --test-concurrency=1 scripts/ci-test-plan.test.mjs
           scripts/ci-workflow-policy.test.mjs scripts/verify-windows-harness.test.mjs
+          scripts/run-workspace-tests-parallel.test.mjs
 
       # Pure Node like the planner test, and the labelling workflow imports this
       # module directly, so a tier or exclusion change is caught here rather
@@ -237,6 +238,14 @@ jobs:
         if: steps.plan.outputs.asf_source == 'true'
         run: npm run check:asf-source
 
+      - name: Lint
+        if: steps.plan.outputs.code == 'true'
+        run: npm run lint
+
+      - name: Check formatting
+        if: steps.plan.outputs.code == 'true'
+        run: npm run format:check
+
       # Parsed dependency rules and an exact legacy-debt ledger keep the
       # renderer root from absorbing new feature or Desktop ownership while
       # the existing AppShell is migrated behind stable boundaries.
@@ -250,14 +259,6 @@ jobs:
           else
             npm run check:renderer-architecture
           fi
-
-      - name: Lint
-        if: steps.plan.outputs.code == 'true'
-        run: npm run lint
-
-      - name: Check formatting
-        if: steps.plan.outputs.code == 'true'
-        run: npm run format:check
 
       # This generated artifact describes the whole renderer/UI tree, so every
       # code-validation run checks it even when the triggering diff is outside
@@ -468,7 +469,9 @@ jobs:
       - name: Report CLI Rust build cache
         if: steps.plan.outputs.cli_package == 'true'
         shell: bash
-        run: kache report --format github >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          set -o pipefail
+          kache report --format github | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Save CLI Rust build cache
         if: steps.plan.outputs.cli_package == 'true' && github.ref_name == github.event.repository.default_branch

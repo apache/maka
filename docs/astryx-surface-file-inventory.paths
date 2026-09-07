@@ -16,8 +16,10 @@ apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
 apps/desktop/src/renderer/features/app-update/services-context.tsx
 apps/desktop/src/renderer/features/app-update/ui/app-update-provider.tsx
+apps/desktop/src/renderer/features/connection-settings/generic-provider-mark.tsx
 apps/desktop/src/renderer/features/connection-settings/onboarding-step-form.tsx
 apps/desktop/src/renderer/features/connection-settings/services-context.tsx
+apps/desktop/src/renderer/features/conversation/controller/session-local-messages.tsx
 apps/desktop/src/renderer/features/goals/services-context.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-dialog.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-host.tsx
@@ -66,6 +68,8 @@ apps/desktop/src/renderer/features/workbar/ui/side-chat-close-confirmation.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-surface.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-toggle.tsx
+apps/desktop/src/renderer/features/workhub/ui/workhub-navigation-rail.tsx
+apps/desktop/src/renderer/features/workhub/ui/workhub-prompt-rail.tsx
 apps/desktop/src/renderer/keyboard-help.tsx
 apps/desktop/src/renderer/live-turn-reconciler.tsx
 apps/desktop/src/renderer/maka-tokens.css
