@@ -210,28 +210,32 @@ export class RuntimeTranscriptQuery {
     invocationId: string,
     limits: { maxEvents: number; maxBytes: number },
   ): RuntimeTranscriptInvocation['events'] {
-    const rows = this.db
+    // Walked row by row: the limits cap what one Turn may pull into memory, so
+    // a check after `.all()` has already paid the cost it was meant to refuse.
+    const cursor = this.db
       .prepare(`
       SELECT o.ordinal, e.event_id, e.session_id, e.invocation_id, e.run_id, e.turn_id, e.payload_json
       FROM runtime_events e JOIN runtime_session_event_ordinals o ON o.event_id = e.event_id
       WHERE e.invocation_id = ? ORDER BY e.event_seq
     `)
-      .all(invocationId) as Array<StoredEventRow & { ordinal: number }>;
-    if (rows.length > limits.maxEvents) {
-      throw new RuntimeTranscriptOversizedTurnError(
-        `Turn ${invocationId} holds more RuntimeEvents than a transcript page may read`,
-      );
-    }
+      .iterate(invocationId) as Iterable<StoredEventRow & { ordinal: number }>;
+    const events: Array<RuntimeTranscriptInvocation['events'][number]> = [];
     let bytes = 0;
-    return rows.map((row) => {
-      bytes += row.payload_json.length;
+    for (const row of cursor) {
+      if (events.length === limits.maxEvents) {
+        throw new RuntimeTranscriptOversizedTurnError(
+          `Turn ${invocationId} holds more RuntimeEvents than a transcript page may read`,
+        );
+      }
+      bytes += Buffer.byteLength(row.payload_json);
       if (bytes > limits.maxBytes) {
         throw new RuntimeTranscriptOversizedTurnError(
           `Turn ${invocationId} holds more RuntimeEvent bytes than a transcript page may read`,
         );
       }
-      return { ordinal: row.ordinal, event: decodeStoredEvent(row) };
-    });
+      events.push({ ordinal: row.ordinal, event: decodeStoredEvent(row) });
+    }
+    return events;
   }
 
   private event(id: string): RuntimeEvent {

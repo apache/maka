@@ -26,6 +26,8 @@ import { describe, it } from 'node:test';
 import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { RunSealedError } from '@maka/core/runtime-event-store';
+import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
+import { RuntimeTranscriptOversizedTurnError } from '../runtime-transcript-query.js';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   buildImmutableRuntimePrefix,
@@ -108,6 +110,86 @@ describe('SqliteRuntimeStore', () => {
       );
       // Exact-id retry of an already-stored event keeps its dedup answer.
       await store.appendRuntimeEvent(terminal.sessionId, terminal.runId, terminal);
+    });
+  });
+
+  it('bounds a transcript Turn by the bytes it stores, not by its JSON string length', async () => {
+    await withStore(async (store) => {
+      const run = {
+        sessionId: 'session-1',
+        invocationId: 'invocation-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+      };
+      await store.appendRuntimeEvent(
+        run.sessionId,
+        run.runId,
+        buildInvocationOpenedEvent({
+          id: 'oversized-opening',
+          run,
+          openedAt: 1,
+          opening: {
+            kind: 'invocation_opened',
+            protocol: 'invocation_opened_v1',
+            route: {
+              provenance: 'runtime',
+              backendKind: 'fake',
+              llmConnectionId: 'fake-connection',
+              llmConnectionSlug: 'fake',
+              modelId: 'fake-model',
+            },
+            configuration: {
+              cwd: '/tmp',
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+              orchestrationSource: 'session',
+              toolMode: DEFAULT_TOOL_MODE,
+            },
+            root: { kind: 'user' },
+            source: { kind: 'fresh' },
+          },
+        }),
+      );
+      // Every character here is three stored bytes, so a budget read as UTF-16
+      // code units admits a Turn three times the size it was asked to bound.
+      const text = '本'.repeat(4_000);
+      await store.appendRuntimeEvent(run.sessionId, run.runId, {
+        id: 'oversized-prompt',
+        ...run,
+        ts: 2,
+        partial: false,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text },
+      });
+      await store.appendRuntimeEvent(run.sessionId, run.runId, {
+        id: 'oversized-terminal',
+        ...run,
+        ts: 3,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+        actions: { endInvocation: true },
+      });
+
+      const request = {
+        direction: 'newer' as const,
+        throughOrdinal: Number.MAX_SAFE_INTEGER,
+        position: 1,
+        limit: 8,
+        maxEvents: 64,
+      };
+      await assert.rejects(
+        store.readTranscriptInvocations(run.sessionId, { ...request, maxBytes: 6_000 }),
+        (error: unknown) => error instanceof RuntimeTranscriptOversizedTurnError,
+      );
+      const served = await store.readTranscriptInvocations(run.sessionId, {
+        ...request,
+        maxBytes: 64_000,
+      });
+      assert.equal(served.length, 1);
     });
   });
 

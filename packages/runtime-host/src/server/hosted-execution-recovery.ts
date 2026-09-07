@@ -148,11 +148,9 @@ export async function prepareHostedExecutionRecovery(
             admission.execution,
           );
         }
-        if (
-          executionContract.requiresUserMessage &&
-          !verifyUserMessage(admission, rootUserMessages, messageIdOwner)
-        ) {
-          await recordAdmittedUserMessage(input.stores, admission, run);
+        if (executionContract.requiresUserMessage) {
+          const recorded = verifyUserMessage(admission, rootUserMessages, messageIdOwner);
+          await recordAdmittedUserMessage(input.stores, admission, run, recorded);
         }
         continue;
       }
@@ -182,9 +180,12 @@ export async function prepareHostedExecutionRecovery(
         admission.turnId,
         admission.execution,
       );
-      if (!verifyUserMessage(admission, rootUserMessages, messageIdOwner)) {
-        await recordAdmittedUserMessage(input.stores, admission, run);
-      }
+      await recordAdmittedUserMessage(
+        input.stores,
+        admission,
+        run,
+        verifyUserMessage(admission, rootUserMessages, messageIdOwner),
+      );
     }
     if (replayAdmissions.length > 1) {
       throw new Error(`Session ${session.id} has multiple admitted Turns without Runs`);
@@ -248,6 +249,7 @@ async function recordAdmittedUserMessage(
   stores: ExecutionStoresWriter<'interactive'>,
   admission: RootTurnAdmission,
   run: RuntimeInvocationRecord,
+  ledgerHasMessage: boolean,
 ): Promise<void> {
   if (run.terminalEvent) return;
   const content = requireHostedExecutionMessageContent(admission);
@@ -264,9 +266,13 @@ async function recordAdmittedUserMessage(
     author: origin ? 'host' : 'user',
     content: { kind: 'text', ...content, ...(origin ? { origin } : {}) },
   };
-  await stores.runtimeEventStore.appendRuntimeEvent(admission.sessionId, run.runId, event);
+  if (!ledgerHasMessage) {
+    await stores.runtimeEventStore.appendRuntimeEvent(admission.sessionId, run.runId, event);
+  }
   // The Turn never reached the commit that carries these, and no later path
   // recomputes them: the connection lock is one-way and the preview is a write.
+  // Committed even when the ledger already holds the message, because the two
+  // are separate writes and a crash between them leaves exactly that state.
   const message = projectRuntimeEventUserMessage(event, event.id);
   if (message) {
     await stores.sessionStore.commitMessageCatalogProjection(admission.sessionId, message);

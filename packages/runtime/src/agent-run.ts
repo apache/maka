@@ -745,8 +745,11 @@ export class AgentRun {
     await this.recordRuntimeEvents([event], {
       requireDurableWrite: this.requiresDurablePersistence(),
     });
-    this.initialRuntimeEventPending = false;
+    // Owed until the catalog carries it too, not just until the ledger does:
+    // the projection is where the connection lock latches, and re-recording the
+    // event is free because its id is derived and the store dedupes it.
     await this.commitMessageProjection(projectRuntimeEventUserMessage(event, event.id));
+    this.initialRuntimeEventPending = false;
     return event;
   }
 

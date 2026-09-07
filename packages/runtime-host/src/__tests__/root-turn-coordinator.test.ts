@@ -575,6 +575,92 @@ test('startup recovery closes a ScheduledTask Run after its pending fire was set
   }
 });
 
+test('startup recovery commits the catalog facts a crashed Turn wrote no projection for', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+  });
+  const turnId = 'turn-catalog-projection-lost';
+  const runId = 'run-catalog-projection-lost';
+  const userMessageId = 'message-catalog-projection-lost';
+  let recovery: RootTurnCoordinator | undefined;
+  try {
+    await fixture.coordinator.close();
+    const session = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+    assert.equal(session.connectionLocked, false);
+    const admittedAt = Date.now();
+    const admission = await fixture.stores.agentRunStore.admitRootTurn({
+      sessionId: fixture.sessionId,
+      turnId,
+      proposedRunId: runId,
+      proposedUserMessageId: userMessageId,
+      execution: { kind: 'external_message' },
+      previousRootTurnId: null,
+      normalizedInput: { text: 'Say what the catalog never heard.' },
+      sourceMessages: [],
+      admittedAt,
+    });
+    assert.equal(admission.kind, 'admitted');
+    await seedInvocation(fixture.stores.runtimeEventStore, {
+      sessionId: fixture.sessionId,
+      invocationId: runId,
+      runId,
+      turnId,
+      openedAt: admittedAt,
+      opening: {
+        route: {
+          provenance: 'runtime',
+          backendKind: 'fake',
+          llmConnectionId: session.llmConnectionId!,
+          llmConnectionSlug: session.llmConnectionSlug,
+          modelId: session.model,
+        },
+        configuration: {
+          cwd: session.cwd,
+          permissionMode: session.permissionMode,
+          collaborationMode: session.collaborationMode ?? 'agent',
+          orchestrationMode: 'default',
+          orchestrationSource: 'session',
+          toolMode: 'direct',
+        },
+        root: { kind: 'user' },
+      },
+    });
+    // The ledger append and the catalog commit are two writes; this is the state
+    // a crash between them leaves, and the one the message-missing check misses.
+    await fixture.stores.runtimeEventStore.appendRuntimeEvent(fixture.sessionId, runId, {
+      id: userMessageId,
+      sessionId: fixture.sessionId,
+      invocationId: runId,
+      runId,
+      turnId,
+      ts: admittedAt,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'Say what the catalog never heard.' },
+    });
+
+    recovery = fixture.createRecoveryCoordinator();
+    await recovery.prepareRecovery();
+    await fixture.manager.recoverInterruptedSessionsStrict(fixture.stores);
+    await recovery.recover();
+
+    const recovered = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+    assert.equal(recovered.connectionLocked, true);
+    assert.equal(
+      (await fixture.stores.runtimeEventStore.readRuntimeEvents(fixture.sessionId, runId)).filter(
+        (event) => event.id === userMessageId,
+      ).length,
+      1,
+    );
+  } finally {
+    await recovery?.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('a failed exact Capability retry does not poison the parked continuation binding', async () => {
   const capabilities = new HostClientCapabilityCoordinator({
     ...clientCapabilityCoordinatorTestAdmission(),
