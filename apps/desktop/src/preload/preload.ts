@@ -122,7 +122,6 @@ import type { BotProvider } from '@maka/core/bot-chat-settings';
 import type { BotOnboardingSnapshot, BotOnboardingStartInput } from '@maka/core/bot-onboarding';
 import type { HealthSnapshot } from '@maka/core/health';
 import {
-  collectRuntimeHostSessionCatalogsWithCoverage,
   createRuntimeHostSessionCatalogRefresher,
   recordObservedRuntimeHostSessionAuthority,
   reconcileRuntimeHostSessionCatalog,
@@ -162,7 +161,6 @@ import type {
 } from '@maka/core/git-review';
 import type {
   ArtifactBinaryReadResult,
-  ArtifactChangedEvent,
   ArtifactDescriptor,
   ArtifactSaveResult,
   ArtifactTextReadResult,
@@ -409,6 +407,12 @@ async function runtimeHostScopeList(): Promise<readonly DesktopTargetScope[]> {
     }
     return readyScopes;
   }
+}
+
+async function readyOwnerRuntimeHostScopes(): Promise<readonly DesktopTargetScope[]> {
+  return (await runtimeHostScopeList()).filter(
+    (scope) => runtimeHostMetadataFor(scope)?.profileAccess === 'owner',
+  );
 }
 
 async function runtimeHostSessionRef(sessionId: string): Promise<{
@@ -811,7 +815,7 @@ function projectOnboardingSendOutcomes(
 async function loadDesktopOnboardingSnapshot(): Promise<OnboardingSnapshot> {
   const catalogSeed = desktopSessionCatalogRefresher.beginSeed();
   const defaultScope = await activeRuntimeHostRef();
-  const readyScopes = await runtimeHostScopeList();
+  const readyScopes = await readyOwnerRuntimeHostScopes();
   const scopes = [
     defaultScope,
     ...readyScopes.filter(
@@ -999,20 +1003,12 @@ async function listDesktopOwnerSessionsWithCoverage(): Promise<{
   sessions: DesktopSessionSummary[];
   completeHostIds: string[];
 }> {
-  const scopes = await runtimeHostScopeList();
-  return collectRuntimeHostSessionCatalogsWithCoverage(
-    scopes.flatMap((scope) => {
-      const metadata = runtimeHostMetadataFor(scope);
-      if (!metadata) throw new Error('Desktop Runtime Host metadata is unavailable');
-      if (metadata.profileAccess !== 'owner') return [];
-      return [{
-        hostId: scope.hostId,
-        sessions: ipcRenderer.invoke('sessions:list', scope)
-          .then((sessions: DesktopSessionSummaryInput[]) =>
-            sessions.map((session) => projectSessionCatalogSummary(scope, session))),
-      }];
-    }),
-  );
+  await runtimeHostScopeList();
+  const catalog = await ipcRenderer.invoke('session-local:catalog') as { scope: DesktopTargetScope; sessions: DesktopSessionSummaryInput[]; authoritative: boolean }[];
+  return {
+    sessions: catalog.flatMap(({ scope, sessions }) => sessions.map((session) => projectSessionSummary(scope, session))),
+    completeHostIds: catalog.filter((entry) => entry.authoritative).map((entry) => entry.scope.hostId),
+  };
 }
 
 async function listGuestSessionMountCatalog(): Promise<DesktopSessionSummary[]> {
@@ -1394,6 +1390,10 @@ const makaBridge = {
         principalId,
       );
     },
+    async renamePrincipal(sessionId, principalId, displayName) {
+      const session = await runtimeHostSessionRef(sessionId);
+      return ipcRenderer.invoke('session-collaboration:renamePrincipal', session.scope, principalId, displayName);
+    },
     async revokeGrant(sessionId, grantId) {
       const session = await runtimeHostSessionRef(sessionId);
       return ipcRenderer.invoke(
@@ -1437,6 +1437,12 @@ const makaBridge = {
     removeMount(mountId) {
       return ipcRenderer.invoke('session-collaboration:mount:remove', mountId);
     },
+    retryMount(mountId) {
+      return ipcRenderer.invoke('session-collaboration:mount:retry', mountId);
+    },
+    renameMount(mountId, name) {
+      return ipcRenderer.invoke('session-collaboration:mount:rename', mountId, name);
+    },
     async requestTurn(sessionId, input) {
       const session = await runtimeHostSessionRef(sessionId);
       return ipcRenderer.invoke(
@@ -1464,9 +1470,7 @@ const makaBridge = {
       );
     },
     async getPendingTurnRequests() {
-      const scopes = (await runtimeHostScopeList()).filter(
-        (scope) => runtimeHostMetadataFor(scope)?.profileAccess === 'owner',
-      );
+      const scopes = await readyOwnerRuntimeHostScopes();
       return collectAvailablePendingTurnRequests(
         scopes.map(async (scope) => {
           const result = await ipcRenderer.invoke(
@@ -1845,10 +1849,11 @@ const makaBridge = {
       input?: CreateSessionRequestInput,
     ): Promise<DesktopSessionSummary> {
       const scope = await runtimeHostScope(target);
-      return createDesktopSessionOnScope(scope, {
+      const session = await ipcRenderer.invoke('session-local:create', scope, {
         ...input,
         projectId: target.projectId,
-      });
+      }) as DesktopSessionSummaryInput;
+      return projectCreatedSessionSummary(scope, session);
     },
   },
   pets: {
@@ -2057,6 +2062,30 @@ const makaBridge = {
       };
     },
   },
+  sessionLocal: {
+    async listMessages(sessionId) {
+      const session = await runtimeHostSessionRef(sessionId);
+      const records = await ipcRenderer.invoke('session-local:messages', session.scope, session.sessionId) as import('../shared/session-local-contract.js').DesktopLocalMessage[];
+      return records.map((record) => ({ ...record, sessionId, attachments: projectDesktopAttachmentRefs(session.scope, record.attachments) }));
+    },
+    async cancelMessage(sessionId, messageId) {
+      const session = await runtimeHostSessionRef(sessionId);
+      await ipcRenderer.invoke('session-local:cancel', session.scope, session.sessionId, messageId);
+    },
+    async reconcileMessage(sessionId, messageId) {
+      const session = await runtimeHostSessionRef(sessionId);
+      await ipcRenderer.invoke('session-local:reconcile', session.scope, session.sessionId, messageId);
+    },
+    async readTranscript(sessionId) {
+      const session = await runtimeHostSessionRef(sessionId);
+      return ipcRenderer.invoke('session-local:transcript', session.scope, session.sessionId);
+    },
+    subscribeChanges(handler) {
+      return subscribeEveryRuntimeHostEvent('session-local:changed', (scope, event: { sessionId?: string }) => {
+        if (event.sessionId) handler(recordRuntimeHostSessionScope(scope, event.sessionId));
+      });
+    },
+  } satisfies import('../shared/session-local-contract.js').DesktopSessionLocalBridge,
   sessions: {
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]> {
       return listDesktopSessions(filter);
@@ -2112,7 +2141,7 @@ const makaBridge = {
     ): Promise<DesktopSessionStopResult> {
       return invokeSessionRuntimeHost('sessions:stop', sessionId, input);
     },
-    async submitMessage(sessionId, placement, command) {
+    async submitMessage(sessionId, placement, command, options) {
       const session = await runtimeHostSessionRef(sessionId);
       if (command.directoryReferences?.some((ref) => ref.hostId !== session.scope.hostId)) {
         throw new Error('Directory references belong to a different Runtime Host. Select the folder on the target Host.');
@@ -2121,12 +2150,18 @@ const makaBridge = {
         ? await encodeIngestItems(command.attachmentItems)
         : undefined;
       const result = (await ipcRenderer.invoke(
-        'sessions:submitMessage',
+        options?.waitForHostAdmission ? 'sessions:submitMessage' : 'session-local:submit',
         session.scope,
         session.sessionId,
         placement,
         {
           ...command,
+          ...(command.retainedAttachments ? { retainedAttachments: command.retainedAttachments.map((attachment) => {
+            if (attachment.ref.kind !== 'session_file') return attachment;
+            const owner = parseDesktopSessionKey(attachment.ref.sessionId);
+            if (!owner || owner.hostId !== session.scope.hostId || owner.sessionId !== session.sessionId) throw new Error('Retained attachment belongs to another Host or Session');
+            return { ...attachment, ref: { ...attachment.ref, sessionId: owner.sessionId } };
+          }) } : {}),
           ...(attachmentItems ? { attachmentItems } : {}),
         },
       )) as Awaited<ReturnType<MakaBridge['sessions']['submitMessage']>>;
@@ -2282,7 +2317,12 @@ const makaBridge = {
             session.scope,
             session.sessionId,
             observerId,
-          ),
+          ).then((seed: readonly SessionEvent[] | undefined) => {
+            if (disposed) return;
+            // Invoke replies can overtake event IPC. Apply the response's
+            // complete active snapshot before publishing renderer readiness.
+            for (const event of seed ?? []) handler(projectDesktopSessionEvent(session.scope, event));
+          }),
         };
       });
       const observing = observeDispatch.then(({ completion }) => completion);
@@ -2406,10 +2446,14 @@ const makaBridge = {
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionSummary> {
       return invokeSessionSummary('sessions:setThinkingLevel', sessionId, level ?? undefined);
     },
-    remove(
+    async remove(
       sessionId: string,
       options?: { revisionFamily?: boolean; requireArchived?: boolean },
     ): Promise<{ disposition: 'removed' | 'restored'; archivedSubtaskCount: number }> {
+      const session = await runtimeHostSessionRef(sessionId);
+      if (await ipcRenderer.invoke('session-local:discard', session.scope, session.sessionId)) {
+        return { disposition: 'removed', archivedSubtaskCount: 0 };
+      }
       return invokeSessionRuntimeHost('sessions:remove', sessionId, options);
     },
     previewRemoval(sessionId: string): Promise<number> {
@@ -2432,6 +2476,7 @@ const makaBridge = {
       const consumerId = crypto.randomUUID();
       const channel = `sessions:transcript:${consumerId}`;
       let identity: DesktopTranscriptIdentity | undefined;
+      let cachedIdentity: DesktopTranscriptIdentity | undefined;
       let closed = false;
       let requestClose = () => {};
       let consumerScope: DesktopTargetScope | undefined;
@@ -2471,8 +2516,17 @@ const makaBridge = {
         }
       };
       ipcRenderer.on(channel, listener);
-      const openDispatch = runtimeHostSessionRef(sessionId).then((session) => {
+      const openDispatch = runtimeHostSessionRef(sessionId).then(async (session) => {
         consumerScope = session.scope;
+        const cached = await ipcRenderer.invoke(
+          'session-local:transcript', session.scope, session.sessionId,
+        ).catch(() => null) as import('../shared/session-local-contract.js').DesktopCachedTranscript | null;
+        if (closed) throw new Error('Desktop transcript open was cancelled');
+        // Local frames do not participate in the live consumer identity or ACK window.
+        for (const [index, batch] of (cached?.batches ?? []).entries()) {
+          handler({ ...batch, deliverySequence: index + 1 });
+          if (batch.ready) cachedIdentity = { generation: batch.generation, hostEpoch: batch.hostEpoch };
+        }
         return {
           completion: ipcRenderer.invoke(
             'sessions:transcript:open',
@@ -2497,14 +2551,23 @@ const makaBridge = {
       try {
         opened = await openDispatch.then(({ completion }) => completion);
       } catch (error) {
+        const cancelled = closed;
         closed = true;
         ipcRenderer.off(channel, listener);
+        if (!cancelled && cachedIdentity && !identity) {
+          const unavailable = async () => { throw new Error('Reconnect the Host to load uncached history'); };
+          return {
+            ...cachedIdentity, sessionId, readThroughMessageId: null,
+            loadBefore: unavailable, loadAfter: unavailable, loadAround: unavailable,
+            close: async () => {},
+          };
+        }
         throw error;
       }
       if (closed) throw new Error('Desktop transcript open was cancelled');
       identity ??= { generation: opened.generation, hostEpoch: opened.hostEpoch };
       const range = (
-        operation: 'sessions:transcript:load-before' | 'sessions:transcript:load-around',
+        operation: 'sessions:transcript:load-before' | 'sessions:transcript:load-after' | 'sessions:transcript:load-around',
         anchorSequence: number | null,
         maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
       ): Promise<void> => {
@@ -2525,6 +2588,8 @@ const makaBridge = {
         sessionId,
         loadBefore: (anchorSequence, maxBytes) =>
           range('sessions:transcript:load-before', anchorSequence, maxBytes),
+        loadAfter: (anchorSequence, maxBytes) =>
+          range('sessions:transcript:load-after', anchorSequence, maxBytes),
         loadAround: (sequence, maxBytes) =>
           range('sessions:transcript:load-around', sequence, maxBytes),
         async close() {
@@ -2883,7 +2948,8 @@ const makaBridge = {
   // PR110b: onboarding snapshot + milestone IPCs. Renderer polls
   // `getSnapshot()` on app load and re-polls on existing invalidations.
   // Onboarding state and connection setup belong to the default Host; bounded
-  // Session summaries and send outcomes are merged from every ready Host.
+  // Owner send outcomes are merged from ready Owner Hosts; Guest summaries
+  // come from the separate, authorized mount catalog.
   onboarding: {
     getSnapshot(): Promise<OnboardingSnapshot> {
       return loadDesktopOnboardingSnapshot();
@@ -2994,10 +3060,10 @@ const makaBridge = {
     },
   },
   search: {
-    // Search each ready Host independently; a remote profile sends the query
-    // over that Host's authenticated connection, never through telemetry.
+    // Search each ready Owner Host independently; Guests cannot search a workspace.
+    // Remote queries use that Host's authenticated connection, never telemetry.
     async thread(request: SearchRequest): Promise<SearchResult[] | { ok: false; reason: SearchErrorReason; message: string }> {
-      const scopes = await runtimeHostScopeList();
+      const scopes = await readyOwnerRuntimeHostScopes();
       return collectThreadSearchResponses(
         scopes.map(async (scope) => {
           const result = await ipcRenderer.invoke('search:thread', scope, request) as
@@ -3598,8 +3664,8 @@ const makaBridge = {
     },
   },
   artifacts: {
-    list(sessionId: string, opts?: { includeDeleted?: boolean }): Promise<ArtifactDescriptor[]> {
-      return invokeProjectedSessionRuntimeHost('artifacts:list', sessionId, opts);
+    list(sessionId: string): Promise<ArtifactDescriptor[]> {
+      return invokeProjectedSessionRuntimeHost('artifacts:list', sessionId);
     },
     readText(sessionId: string, artifactId: string): Promise<ArtifactTextReadResult> {
       return invokeSessionRuntimeHost('artifacts:readText', sessionId, artifactId);
@@ -3609,14 +3675,6 @@ const makaBridge = {
     },
     delete(sessionId: string, artifactId: string): Promise<void> {
       return invokeSessionRuntimeHost('artifacts:delete', sessionId, artifactId);
-    },
-    subscribeChanges(handler: (event: ArtifactChangedEvent) => void): () => void {
-      return subscribeEveryRuntimeHostEvent('artifacts:changed', (scope, event: ArtifactChangedEvent) =>
-        handler({
-          ...event,
-          sessionId: recordRuntimeHostSessionScope(scope, event.sessionId),
-        }),
-      );
     },
   },
   skills: {
@@ -3868,9 +3926,6 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
         waiters.push(resolve);
         invocableSkillsWaiters.set(sessionId, waiters);
       });
-    },
-    releaseRendererObservations() {
-      return invokeActiveRuntimeHost<void>('sessions:e2e:release-renderer-observations');
     },
     rejectNextSessionObservation(message: string) {
       nextSessionObservationError = new Error(message);

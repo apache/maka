@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { SessionEvent } from "@maka/core/events";
 import { RuntimeHostOperationError } from "@maka/runtime-host/client";
 import type {
   RuntimeHostSessionObserver,
@@ -29,7 +30,9 @@ import type {
   DesktopTranscriptRangeRequest,
 } from '../preload/transcript-contract.js';
 
-type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'observe' | 'unobserve'> &
+type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'unobserve'> & {
+  observe(...args: Parameters<RuntimeHostSessionObserver['observe']>): Promise<readonly SessionEvent[] | void>;
+} &
   Partial<
     Pick<
       RuntimeHostSessionObserver,
@@ -37,6 +40,7 @@ type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'observe' | 'un
       | 'closeTranscript'
       | 'loadTranscriptAround'
       | 'loadTranscriptBefore'
+      | 'loadTranscriptAfter'
       | 'openTranscript'
     >
   >;
@@ -47,6 +51,7 @@ type TranscriptSource = Required<
     | 'closeTranscript'
     | 'loadTranscriptAround'
     | 'loadTranscriptBefore'
+    | 'loadTranscriptAfter'
     | 'openTranscript'
   >
 >;
@@ -55,9 +60,9 @@ type ObservationTargetBinding = <Payload>(
   target: RuntimeHostRendererTarget<Payload>,
 ) => RuntimeHostRendererTarget<Payload>;
 
-interface ObservationReadiness {
-  readonly promise: Promise<void>;
-  resolve(): void;
+interface ObservationReadiness<T = void> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
   reject(error: Error): void;
 }
 
@@ -67,6 +72,7 @@ function requireTranscriptSource(
   if (
     !source?.openTranscript ||
     !source.loadTranscriptBefore ||
+    !source.loadTranscriptAfter ||
     !source.loadTranscriptAround ||
     !source.closeTranscript
   ) {
@@ -94,7 +100,7 @@ interface SessionObservationRegistration {
   readonly messageAdmissions: boolean;
   readonly target: RuntimeHostSessionObserverTarget;
   readonly destroyedListener: () => void;
-  readonly ready: ObservationReadiness;
+  readonly ready: ObservationReadiness<readonly SessionEvent[]>;
   lifecycle: "pending" | "active";
 }
 
@@ -113,10 +119,10 @@ interface TranscriptReadiness {
   reject(error: Error): void;
 }
 
-function observationReadiness(): ObservationReadiness {
-  let resolve!: () => void;
+function observationReadiness<T = void>(): ObservationReadiness<T> {
+  let resolve!: (value: T) => void;
   let reject!: (error: Error) => void;
-  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
     reject = rejectPromise;
   });
@@ -172,7 +178,7 @@ export class RuntimeHostSessionObservationRegistry {
     const restored = await Promise.all(
       [...this.#registrations].map(async ([observerId, registration]) => {
         try {
-          await source.observe(
+          const seed = await source.observe(
             registration.sessionId,
             observerId,
             bindTarget(registration.target),
@@ -185,7 +191,7 @@ export class RuntimeHostSessionObservationRegistry {
             return undefined;
           }
           registration.lifecycle = "active";
-          registration.ready.resolve();
+          registration.ready.resolve(seed ?? []);
           return registration.sessionId;
         } catch (error) {
           if (
@@ -248,35 +254,6 @@ export class RuntimeHostSessionObservationRegistry {
     }
   }
 
-  async releaseTarget(targetId: number): Promise<void> {
-    const source = this.#source;
-    const observations = [...this.#registrations].filter(
-      ([, registration]) => registration.target.id === targetId,
-    );
-    const transcripts = [...this.#transcripts].filter(
-      ([, registration]) => registration.target.id === targetId,
-    );
-    for (const [observerId, registration] of observations) {
-      this.#deleteRegistration(observerId, registration);
-    }
-    for (const [consumerId, registration] of transcripts) {
-      this.#deleteTranscript(consumerId, registration);
-    }
-    if (!source) return;
-
-    const cleanup = await Promise.allSettled([
-      ...observations.map(([observerId]) => source.unobserve(observerId)),
-      ...transcripts.map(([consumerId]) => source.closeTranscript?.(consumerId, targetId)),
-    ]);
-    const errors = cleanup
-      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-      .map((result) => result.reason);
-    if (errors.length === 1) throw errors[0];
-    if (errors.length > 1) {
-      throw new AggregateError(errors, 'Failed to release renderer Session observations');
-    }
-  }
-
   detach(source: SessionObservationSource): void {
     if (this.#source === source) {
       this.#source = undefined;
@@ -292,7 +269,7 @@ export class RuntimeHostSessionObservationRegistry {
     observerId: string,
     target: RuntimeHostSessionObserverTarget,
     messageAdmissions = false,
-  ): Promise<void> {
+  ): Promise<readonly SessionEvent[]> {
     this.#assertOpen();
     const previous = this.#registrations.get(observerId);
     if (previous) {
@@ -309,7 +286,7 @@ export class RuntimeHostSessionObservationRegistry {
     const destroyedListener = () => {
       void this.#remove(observerId).catch(this.#onError);
     };
-    const ready = observationReadiness();
+    const ready = observationReadiness<readonly SessionEvent[]>();
     void ready.promise.catch(() => undefined);
     const registration: SessionObservationRegistration = {
       sessionId,
@@ -325,7 +302,7 @@ export class RuntimeHostSessionObservationRegistry {
     const source = this.#source;
     if (!source) return registration.ready.promise;
     try {
-      await source.observe(
+      const seed = await source.observe(
         sessionId,
         observerId,
         this.#bindTarget(target),
@@ -336,7 +313,7 @@ export class RuntimeHostSessionObservationRegistry {
         this.#registrations.get(observerId) === registration
       ) {
         registration.lifecycle = "active";
-        registration.ready.resolve();
+        registration.ready.resolve(seed ?? []);
       }
     } catch (error) {
       if (
@@ -419,6 +396,15 @@ export class RuntimeHostSessionObservationRegistry {
   ): Promise<void> {
     await this.#runTranscriptOperation(request.consumerId, (source) =>
       source.loadTranscriptAround(request, targetId),
+    );
+  }
+
+  async loadTranscriptAfter(
+    request: DesktopTranscriptRangeRequest,
+    targetId?: number,
+  ): Promise<void> {
+    await this.#runTranscriptOperation(request.consumerId, (source) =>
+      source.loadTranscriptAfter(request, targetId),
     );
   }
 

@@ -136,7 +136,10 @@ export function projectSharedSessionTranscriptMessage(
         ...(message.abortedAt === undefined ? {} : { abortedAt: message.abortedAt }),
         ...(message.abortSource === undefined ? {} : { abortSource: message.abortSource }),
         ...(message.errorClass === undefined ? {} : { errorClass: message.errorClass }),
-        partialOutputRetained: message.partialOutputRetained,
+        ...(message.retry === undefined ? {} : { retry: message.retry }),
+        ...(message.partialOutputRetained === undefined
+          ? {}
+          : { partialOutputRetained: message.partialOutputRetained }),
       };
     case 'token_usage':
       return {

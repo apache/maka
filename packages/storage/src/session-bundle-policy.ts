@@ -25,11 +25,26 @@ import type { ArtifactRecord } from '@maka/core/artifacts';
 import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
 import { withArtifactWriterLock } from './artifact-writer-lock.js';
 import {
+  withOfflineContextSnapshot,
+  copyContextSnapshot,
+  validateContextSnapshot,
+  planContextSnapshotFiles,
+} from './context-offload-snapshot.js';
+import {
+  CONTEXT_OFFLOAD_DATABASE_NAME,
+  CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME,
+} from './sqlite-context-offload-store.js';
+import {
   acquireOperationalStateDatabase,
   OPERATIONAL_STATE_DATABASE_NAME,
 } from './operational-state-store.js';
 
-export const SESSION_BUNDLE_STATE_ENTRIES = ['artifacts', OPERATIONAL_STATE_DATABASE_NAME] as const;
+export const SESSION_BUNDLE_STATE_ENTRIES = [
+  'artifacts',
+  OPERATIONAL_STATE_DATABASE_NAME,
+  CONTEXT_OFFLOAD_DATABASE_NAME,
+  CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME,
+] as const;
 export const SESSION_BUNDLE_PROTECTED_ENTRIES = [] as const;
 
 export type SessionBundleExportErrorCode =
@@ -61,7 +76,7 @@ export interface SessionBundleRootLayoutInput {
 export interface SessionBundleExportPlanEntry {
   relativePath: string;
   kind: 'file' | 'directory';
-  source: 'copy' | 'filtered_runtime_sqlite';
+  source: 'copy' | 'filtered_runtime_sqlite' | 'context_snapshot';
 }
 
 export interface SessionBundleExportPlan {
@@ -114,7 +129,7 @@ export async function planSessionBundleExport(
     }
     const rows = database
       .prepare(
-        'SELECT record_json FROM artifact_records WHERE session_id = ? ORDER BY created_at, storage_key',
+        'SELECT record_json FROM artifact_records WHERE session_id = ? ORDER BY created_at, artifact_id',
       )
       .all(input.sessionId) as Array<{ record_json?: unknown }>;
     artifacts = decodeArtifactRecordJsons(rows.map((row) => row.record_json));
@@ -145,6 +160,12 @@ export async function planSessionBundleExport(
     }
     includedEntries.push('artifacts');
   }
+  const contextFiles = await planContextSnapshotFiles(stateRoot, input.sessionId);
+  for (const relativePath of contextFiles) {
+    entries.push({ relativePath, kind: 'file', source: 'context_snapshot' });
+  }
+  if (contextFiles.length > 0) includedEntries.push(CONTEXT_OFFLOAD_DATABASE_NAME);
+  if (contextFiles.length > 1) includedEntries.push(CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME);
   const allowed = new Set<string>([...SESSION_BUNDLE_STATE_ENTRIES]);
   const excludedEntries = (await readdir(stateRoot)).filter((entry) => !allowed.has(entry)).sort();
   return {
@@ -161,33 +182,38 @@ export async function planSessionBundleExport(
 export async function exportSessionBundleState(
   input: SessionBundleExportInput,
 ): Promise<SessionBundleExportPlan> {
-  return withArtifactWriterLock(input.stateRoot, async (stateRoot) => {
-    const plan = await planSessionBundleExport({ ...input, stateRoot });
-    await assertDestinationMissing(plan.destinationRoot);
-    const stagingRoot = `${plan.destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
-    try {
-      await mkdir(stagingRoot, { recursive: true });
-      for (const entry of plan.entries) {
-        const destination = resolveInside(stagingRoot, entry.relativePath);
-        if (entry.kind === 'directory') {
-          await mkdir(destination, { recursive: true });
-          continue;
+  return withOfflineContextSnapshot(input.stateRoot, (contextLocked) =>
+    withArtifactWriterLock(input.stateRoot, async (stateRoot) => {
+      const plan = await planSessionBundleExport({ ...input, stateRoot });
+      await assertDestinationMissing(plan.destinationRoot);
+      const stagingRoot = `${plan.destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
+      try {
+        await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
+        for (const entry of plan.entries) {
+          if (entry.source === 'context_snapshot') continue;
+          const destination = resolveInside(stagingRoot, entry.relativePath);
+          if (entry.kind === 'directory') {
+            await mkdir(destination, { recursive: true });
+            continue;
+          }
+          await mkdir(dirname(destination), { recursive: true });
+          if (entry.source === 'copy') {
+            await copyFile(resolveInside(plan.stateRoot, entry.relativePath), destination);
+          } else {
+            await exportFilteredDatabase(plan.stateRoot, destination, plan.sessionId);
+          }
         }
-        await mkdir(dirname(destination), { recursive: true });
-        if (entry.source === 'copy') {
-          await copyFile(resolveInside(plan.stateRoot, entry.relativePath), destination);
-        } else {
-          await exportFilteredDatabase(plan.stateRoot, destination, plan.sessionId);
-        }
+        await copyContextSnapshot(stateRoot, stagingRoot, contextLocked, plan.sessionId);
+        await validateContextSnapshot(stagingRoot);
+        await mkdir(dirname(plan.destinationRoot), { recursive: true });
+        await rename(stagingRoot, plan.destinationRoot);
+        return plan;
+      } catch (error) {
+        await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
+        throw error;
       }
-      await mkdir(dirname(plan.destinationRoot), { recursive: true });
-      await rename(stagingRoot, plan.destinationRoot);
-      return plan;
-    } catch (error) {
-      await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
-      throw error;
-    }
-  });
+    }),
+  );
 }
 
 async function exportFilteredDatabase(
@@ -274,6 +300,7 @@ async function exportFilteredDatabase(
       .prepare('SELECT 1 AS present FROM session_metadata WHERE session_id = ?')
       .get(sessionId);
     if (!session) throw new Error(`Filtered session is missing: ${sessionId}`);
+    database.exec('PRAGMA journal_mode = DELETE');
   } catch (error) {
     try {
       database.exec('ROLLBACK');

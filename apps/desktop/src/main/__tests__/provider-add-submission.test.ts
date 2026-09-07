@@ -221,6 +221,18 @@ test('a create failure propagates instead of being reported as a discovery probl
   );
 });
 
+test('the field gate preserves stable slug validation issues', () => {
+  for (const [slug, detail] of [
+    ['', 'required'],
+    ['Not A Slug', 'format'],
+    ['a'.repeat(65), 'too_long'],
+  ]) {
+    assert.deepEqual(validateAddProviderDraft(draft({ slug })), {
+      field: 'slug', reason: 'invalid', detail,
+    });
+  }
+});
+
 test('the field gate still reports the rules that survived', () => {
   assert.deepEqual(validateAddProviderDraft(draft({ slug: 'Not A Slug' }))?.field, 'slug');
   assert.deepEqual(validateAddProviderDraft(draft({ existingSlugs: ['house-relay'] })), {

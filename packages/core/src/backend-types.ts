@@ -53,6 +53,8 @@ export interface RuntimeContinuationMetadata {
   sourceRunId: string;
   sourceTurnId: string;
   sourceRuntimeEventHighWater: number;
+  /** Restored by Runtime from authoritative decisions on the authenticated continuation chain. */
+  sandboxBoundaryDenied?: boolean;
 }
 
 export interface BackendSendInput {
@@ -63,7 +65,7 @@ export interface BackendSendInput {
   /** Caller-generated turn id shared by the persisted UserMessage and every emitted event. */
   turnId: string;
   /** Trusted per-turn cap on provider tool-call steps. */
-  maxSteps?: number;
+  maxSteps?: number | null;
   /** Trusted effective orchestration snapshot for this run. */
   orchestration?: EffectiveOrchestration;
   /** Trusted per-run tool protocol override. Direct remains the default. */
@@ -98,6 +100,14 @@ export interface BackendSendInput {
   runtimeContextInvocations?: readonly RuntimeInvocationRecord[];
   /** Continue from an already committed RuntimeEvent boundary without adding another user turn. */
   continuation?: RuntimeContinuationMetadata;
+  /** Runtime-owned reversible gate, called only before another provider step,
+   * after the preceding provider/tool events have been durably consumed.
+   * `pause` ends this physical stream without emitting logical completion.
+   */
+  handoffBoundary?: (
+    signal: AbortSignal,
+    remainingSteps: number | null,
+  ) => Promise<'continue' | 'pause'>;
   /**
    * Steering pull — a LEASE, and the single atomic commit point of delivery.
    * Backends that support mid-turn steering call this at every step boundary;
@@ -227,6 +237,12 @@ export type BackendSessionEvent = Exclude<
 export interface AgentBackend {
   readonly kind: PersistedBackendKind;
   readonly sessionId: string;
+  /**
+   * Resolve the same composition used by send and commit it through the Run
+   * recorder, without dispatching provider or tool work. Required for handoff;
+   * backends without this capability must not resume a cooperative pause.
+   */
+  prepareRunComposition?(input: { runId: string; turnId: string }): Promise<void>;
   send(input: BackendSendInput): AsyncIterable<SessionEvent>;
   compactHistory?(input: BackendCompactHistoryInput): Promise<BackendCompactHistoryResult>;
   stop(reason: 'user_stop' | 'redirect', mode?: BackendStopMode): Promise<void>;

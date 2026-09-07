@@ -248,6 +248,7 @@ interface ConnectResolvedRuntimeHostInput
 }
 
 export interface RuntimeHostConnection {
+  readonly cooperativeHandoff?: true;
   readonly rootId: string;
   readonly hostEpoch: string;
   readonly connectionId: string;
@@ -348,6 +349,7 @@ interface QueuedDomainFrame {
 type RequestTimeoutScope = 'request' | 'connection';
 
 class RuntimeHostConnectionImpl implements RuntimeHostConnection {
+  readonly cooperativeHandoff?: true;
   readonly rootId: string;
   readonly hostEpoch: string;
   readonly connectionId: string;
@@ -389,6 +391,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       selectedProtocol: number;
       compositionId: string;
       compositionRevision: string;
+      cooperativeHandoff?: true;
     },
     // livenessIntervalMs is validated by connectResolvedRuntimeHost alongside
     // the other connect timeouts, before any transport work happens.
@@ -409,6 +412,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.hostEpoch = accepted.hostEpoch;
     this.connectionId = accepted.connectionId;
     this.selectedProtocol = accepted.selectedProtocol;
+    this.cooperativeHandoff = accepted.cooperativeHandoff;
     this.compositionId = accepted.compositionId;
     this.compositionRevision = accepted.compositionRevision;
     this.#getPeerPath = options?.getPeerPath ?? (() => options?.peerPath);
@@ -638,8 +642,18 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   }
 
   async close(): Promise<void> {
-    this.#clientCapabilities.close(new Error('Runtime Host connection closed by Client'));
-    this.#transport.abort();
+    if (!this.peerPath) {
+      this.#clientCapabilities.close(new Error('Runtime Host connection closed by Client'));
+      this.#transport.abort();
+      await this.closed;
+      return;
+    }
+    // An intentional peer close must send logical FIN. Aborting its raw path
+    // instead leaves the Host retaining a recoverable session and its quota.
+    this.#fail(
+      new RuntimeHostTransportError('closed', 'Runtime Host connection closed by Client'),
+      true,
+    );
     await this.closed;
   }
 
@@ -946,7 +960,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     ).catch((failure: unknown) => this.#fail(asError(failure)));
   }
 
-  #fail(error: Error): void {
+  #fail(error: Error, gracefulPeerClose = false): void {
     if (this.#terminalError) return;
     this.#terminalError = error;
     if (this.#livenessTimer) clearTimeout(this.#livenessTimer);
@@ -983,7 +997,8 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.#configurationChangeListeners.clear();
     this.#sessionCatalogChangeListeners.clear();
     this.#scheduledTaskChangeListeners.clear();
-    this.#transport.abort();
+    if (gracefulPeerClose) this.#transport.closeAfterFlush();
+    else this.#transport.abort();
   }
 }
 
@@ -1457,6 +1472,7 @@ async function exchangeRuntimeHostHandshake(
   const helloProtocol = input.helloProtocol ?? input.protocol;
   const hello: LegacySurfaceClientHello = {
     kind: 'hello',
+    activitySnapshotVersion: 2,
     clientInstanceId: input.clientInstanceId,
     surface: 'desktop',
     protocolMin: helloProtocol.min,

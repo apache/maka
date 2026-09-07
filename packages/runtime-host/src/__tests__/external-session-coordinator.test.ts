@@ -32,6 +32,10 @@ import {
 } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostExternalSessionCoordinator } from '../server/external-session-coordinator.js';
+import {
+  NoUsableImportModelError,
+  SessionOperationFailure,
+} from '../server/session-catalog-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
 const context: ConnectionContext = {
@@ -345,7 +349,10 @@ test('reports conversion errors before persistence and store uncertainty after e
     ),
     {
       ok: false,
-      error: { code: 'invalid_request', message: 'External Session could not be converted' },
+      error: {
+        code: 'source_unreadable',
+        message: 'External Session could not be read or converted',
+      },
     },
   );
   assert.equal(createAttempts, 0);
@@ -371,6 +378,55 @@ test('reports conversion errors before persistence and store uncertainty after e
     },
   );
   assert.equal(persistenceFailure.drainRequests(), 1);
+});
+
+test('reports a model-target failure before any commit is attempted', async () => {
+  let createAttempts = 0;
+  const fixture = coordinatorFixture([adapterFixture()], {
+    resolveTarget: async () => {
+      throw new NoUsableImportModelError(
+        'No usable Session model connection is available for import',
+      );
+    },
+    createImportedSession: async () => {
+      createAttempts += 1;
+      assert.fail('A model-target failure must not enter persistence');
+    },
+  });
+
+  assert.deepEqual(
+    await fixture.coordinator.handlers['external-session.import'](
+      { adapterId: 'codex', sourceSessionId: 'source-0' },
+      context,
+    ),
+    {
+      ok: false,
+      error: {
+        code: 'model_unavailable',
+        message: 'No usable Session model connection is available for import',
+      },
+    },
+  );
+  assert.equal(createAttempts, 0);
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('reports an unsupported adapter as invalid_request, not a source-unreadable failure', async () => {
+  // Guards the shell mapping: only the dedicated `source_unreadable` code becomes
+  // the "too large or malformed" banner. An unknown adapter is a bad request and
+  // must stay generic rather than blame the source conversation.
+  const fixture = coordinatorFixture([adapterFixture()]);
+
+  assert.deepEqual(
+    await fixture.coordinator.handlers['external-session.import'](
+      { adapterId: 'unknown-adapter', sourceSessionId: 'source-0' },
+      context,
+    ),
+    {
+      ok: false,
+      error: { code: 'invalid_request', message: 'External Session source is unsupported' },
+    },
+  );
 });
 
 test('removes an imported Session when its model history cannot be prepared', async () => {
@@ -468,6 +524,14 @@ function coordinatorFixture(
     Pick<HostStore, 'createImportedSession' | 'lookupExternalSessionImports'> & {
       prepareImportedSessionHistory(sessionId: string): Promise<void>;
       discardImportedSession(sessionId: string): Promise<void>;
+      resolveTarget(): Promise<{
+        readonly backend: 'ai-sdk';
+        readonly llmConnectionSlug: string;
+        readonly model: string;
+        readonly permissionMode: 'ask';
+        readonly collaborationMode: 'agent';
+        readonly orchestrationMode: 'default';
+      }>;
     }
   > = {},
 ) {
@@ -546,14 +610,16 @@ function coordinatorFixture(
                 },
               },
       },
-      resolveTarget: async () => ({
-        backend: 'ai-sdk',
-        llmConnectionSlug: 'default',
-        model: 'gpt-5',
-        permissionMode: 'ask',
-        collaborationMode: 'agent',
-        orchestrationMode: 'default',
-      }),
+      resolveTarget:
+        storeOverrides.resolveTarget ??
+        (async () => ({
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'default',
+          model: 'gpt-5',
+          permissionMode: 'ask',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+        })),
       prepareImportedSessionHistory:
         storeOverrides.prepareImportedSessionHistory ??
         (async (sessionId) => {

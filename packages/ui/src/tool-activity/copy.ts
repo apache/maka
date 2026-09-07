@@ -49,6 +49,7 @@ export interface ToolActivityCopy {
   requiresBypass: {
     title: string;
     description: string;
+    errorMessage: string;
     action: string;
     pending: string;
   };
@@ -196,6 +197,7 @@ const TOOL_ACTIVITY_COPY = {
     requiresBypass: {
       title: '需要“绕过”模式',
       description: '此操作会直接控制本机应用，无法在沙箱模式下执行。',
+      errorMessage: '需要“绕过”模式。此操作会直接控制本机应用，无法在沙箱模式下执行。',
       action: '切换并重试',
       pending: '正在切换…',
     },
@@ -303,6 +305,7 @@ const TOOL_ACTIVITY_COPY = {
     requiresBypass: {
       title: '需要“繞過”模式',
       description: '此操作會直接控制本機應用，無法在沙箱模式下執行。',
+      errorMessage: '需要“繞過”模式。此操作會直接控制本機應用，無法在沙箱模式下執行。',
       action: '切換並重試',
       pending: '正在切換…',
     },
@@ -410,6 +413,7 @@ const TOOL_ACTIVITY_COPY = {
     requiresBypass: {
       title: 'Bypass mode required',
       description: 'This action controls a local app directly and cannot run inside the sandbox.',
+      errorMessage: 'Bypass mode required. This action controls a local app directly and cannot run inside the sandbox.',
       action: 'Switch and retry',
       pending: 'Switching…',
     },

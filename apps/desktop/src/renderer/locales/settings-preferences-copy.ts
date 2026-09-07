@@ -225,19 +225,12 @@ export type SettingsPreferencesCopy = {
     pasteHint: string;
     copyFailed: string;
     clipboardUnavailable: string;
-    devBuild: string;
-    nightlyBuild: string;
-    buildLabel: string;
     /** One sentence saying what following this channel means for the user. */
     channelSummaries: Record<'dev' | 'nightly' | 'release', string>;
     supportTitle: string;
     reportIssueHelp: string;
     reportIssueOpen: string;
     copyAction: string;
-    privacyLabel: string;
-    privacyTitle: string;
-    privacyPoints: readonly string[];
-    copying: string;
     copyDiagnostics: string;
     copyHelp: string;
     keyboardShortcuts: string;
@@ -252,9 +245,14 @@ export type SettingsPreferencesCopy = {
     updateDownloading: (version: string, percent: number) => string;
     updateVerifying: (version: string) => string;
     updateDownloaded: (version: string) => string;
+    /** Where the restart lives: the sidebar footer owns that handshake. */
+    updateDownloadedHint: string;
     updateInstalling: (version: string) => string;
-    updateCheckFailed: string;
-    updateCheckFailedDetail: (message: string) => string;
+    updateFailed: Record<'check' | 'download' | 'install', string>;
+    /** Provenance in one line: project, foundation status, licence. */
+    openSourceSummary: string;
+    sourceCode: string;
+    releaseNotes: string;
   };
   password: {
     copyFailed: string;
@@ -342,28 +340,29 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       passwordSavedPlaceholder: '密码已保存；输入新密码以替换',
     },
     about: {
-      loadFailed: '载入关于信息失败', loading: '正在加载关于页', unavailable: '无法载入关于信息', copied: '已复制诊断信息', pasteHint: '检查内容后，可直接粘贴到问题报告', copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', devBuild: '本地开发版', nightlyBuild: 'Nightly', buildLabel: '构建',
+      loadFailed: '载入关于信息失败', loading: '正在加载关于页', unavailable: '无法载入关于信息', copied: '已复制诊断信息', pasteHint: '检查内容后，可直接粘贴到问题报告', copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。',
       channelSummaries: {
         dev: '本地开发构建，不检查更新。',
         nightly: '每日构建的预发布版，自动更新到最新 nightly，会覆盖正式版安装。',
         release: '正式发布版，自动接收稳定更新。',
       },
       supportTitle: '支持',
-      copying: '复制中…', copyDiagnostics: '复制诊断信息', copyAction: '复制', copyHelp: '复制版本、平台、隐藏主目录后的工作区路径与近期脱敏日志；仅写入剪贴板，不会自动上传。',
+      copyDiagnostics: '复制诊断信息', copyAction: '复制', copyHelp: '复制版本、平台、隐藏主目录后的工作区路径与近期脱敏日志；仅写入剪贴板，不会自动上传。',
       reportIssueLabel: '报告问题', reportIssueHelp: '带上诊断信息去 GitHub Issues，回复更快。', reportIssueOpen: '打开',
       keyboardShortcuts: '键盘快捷键', keyboardShortcutsHelp: 'Maka 支持的全部快捷键一览。', keyboardShortcutsOpen: '查看',
-      privacyLabel: '隐私承诺', privacyTitle: '本地优先 · 隐私默认', privacyPoints: ['任务、设置、凭据和 Skill 指令文件都留在本机；模型密钥保存在本机凭据文件内，订阅令牌使用系统安全存储。', 'Maka 不发送使用遥测；只在你显式启用时与所选模型供应商通信。', '高风险工具操作需要在任务内明示授权；每个任务都会在本机保留消息、工具调用、权限决策与模式变更记录。'],
       checkForUpdates: '检查更新',
-      checkingForUpdates: '检查中…',
-      updateIdle: '尚未检查更新。',
-      updateNotAvailable: '已是最新版本。',
-      updateAvailable: (version) => `发现新版本 v${version}，正在准备下载…`,
-      updateDownloading: (version, percent) => `正在下载 v${version}（${percent}%）…`,
-      updateVerifying: (version) => `正在验证 v${version} 的发布来源…`,
-      updateDownloaded: (version) => `v${version} 已下载，可在侧栏选择重启安装。`,
-      updateInstalling: (version) => `正在安装 v${version}…`,
-      updateCheckFailed: '检查更新失败',
-      updateCheckFailedDetail: (message) => message,
+      checkingForUpdates: '正在检查更新…',
+      updateIdle: '尚未检查更新',
+      updateNotAvailable: '已是最新版本',
+      updateAvailable: (version) => `发现新版本 v${version}`,
+      updateDownloading: (version, percent) => `正在下载 v${version}（${percent}%）`,
+      updateVerifying: (version) => `正在验证 v${version} 的发布来源`,
+      updateDownloaded: (version) => `v${version} 已下载`,
+      updateDownloadedHint: '在侧栏底部重启即可安装。',
+      updateInstalling: (version) => `正在安装 v${version}`,
+      updateFailed: { check: '检查更新失败', download: '下载更新失败', install: '安装更新失败' },
+      openSourceSummary: 'Apache Maka (incubating) · Apache License 2.0',
+      sourceCode: '源码', releaseNotes: '发行说明',
     },
     password: { copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', copying: '复制中', copied: '已复制', copy: '复制', hide: '隐藏', show: '显示', value: '凭据值' },
   },
@@ -440,21 +439,21 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       passwordSavedPlaceholder: '密碼已儲存；輸入新密碼以替換',
     },
     about: {
-      loadFailed: '載入關於資訊失敗', loading: '正在載入關於頁', unavailable: '無法載入關於資訊', copied: '已複製診斷資訊', pasteHint: '檢查內容後，可直接貼上到問題報告', copyFailed: '複製失敗', clipboardUnavailable: '剪貼簿不可用或被系統拒絕。', devBuild: '本地開發版', nightlyBuild: 'Nightly', buildLabel: '建構', supportTitle: '支援', copyAction: '複製', reportIssueHelp: '帶上診斷資訊去 GitHub Issues，回覆更快。', reportIssueOpen: '開啟', channelSummaries: { dev: '本地開發建構，不檢查更新。', nightly: '每日建構的預發佈版，自動更新到最新 nightly，會覆蓋正式版安裝。', release: '正式發佈版，自動接收穩定更新。' }, privacyLabel: '隱私與安全', privacyTitle: '本地優先 · 隱私預設', privacyPoints: ['所有任務、設定、憑據和 Skill 指令檔案都保留在本機工作區。', '模型金鑰儲存在本機憑據檔案內；訂閱帳號權杖使用系統安全儲存。', 'Maka 不傳送使用遙測；只在你顯式啟用時與所選模型供應商通訊。', '高風險工具操作需要在任務內明示授權。', '每個任務都會在本機保留訊息、工具呼叫、權限決策與模式變更記錄。'], copying: '複製中…', copyDiagnostics: '複製診斷資訊', copyHelp: '複製版本、平臺、隱藏主目錄後的工作區路徑，以及近期脫敏的 Desktop 與 Runtime Host 記錄；僅寫入剪貼簿，不會自動上傳。', keyboardShortcuts: '鍵盤快捷鍵', keyboardShortcutsHelp: 'Maka 支援的全部快捷鍵一覽。', keyboardShortcutsOpen: '檢視', reportIssueLabel: '報告問題',
+      loadFailed: '載入關於資訊失敗', loading: '正在載入關於頁', unavailable: '無法載入關於資訊', copied: '已複製診斷資訊', pasteHint: '檢查內容後，可直接貼上到問題報告', copyFailed: '複製失敗', clipboardUnavailable: '剪貼簿不可用或被系統拒絕。', supportTitle: '支援', copyAction: '複製', reportIssueHelp: '帶上診斷資訊去 GitHub Issues，回覆更快。', reportIssueOpen: '開啟', channelSummaries: { dev: '本地開發建構，不檢查更新。', nightly: '每日建構的預發佈版，自動更新到最新 nightly，會覆蓋正式版安裝。', release: '正式發佈版，自動接收穩定更新。' }, copyDiagnostics: '複製診斷資訊', copyHelp: '複製版本、平臺、隱藏主目錄後的工作區路徑，以及近期脫敏的 Desktop 與 Runtime Host 記錄；僅寫入剪貼簿，不會自動上傳。', keyboardShortcuts: '鍵盤快捷鍵', keyboardShortcutsHelp: 'Maka 支援的全部快捷鍵一覽。', keyboardShortcutsOpen: '檢視', reportIssueLabel: '報告問題',
 
       checkForUpdates: '檢查更新',
-      checkingForUpdates: '檢查中…',
-
-
-      updateIdle: '尚未檢查更新。',
-      updateNotAvailable: '已是最新版本。',
-      updateAvailable: (version) => `發現新版本 v${version}，正在準備下載…`,
-      updateDownloading: (version, percent) => `正在下載 v${version}（${percent}%）…`,
-      updateVerifying: (version) => `正在驗證 v${version} 的發佈來源…`,
-      updateDownloaded: (version) => `v${version} 已下載，可在側欄選擇重啟安裝。`,
-      updateInstalling: (version) => `正在安裝 v${version}…`,
-      updateCheckFailed: '檢查更新失敗',
-      updateCheckFailedDetail: (message) => message,
+      checkingForUpdates: '正在檢查更新…',
+      updateIdle: '尚未檢查更新',
+      updateNotAvailable: '已是最新版本',
+      updateAvailable: (version) => `發現新版本 v${version}`,
+      updateDownloading: (version, percent) => `正在下載 v${version}（${percent}%）`,
+      updateVerifying: (version) => `正在驗證 v${version} 的發佈來源`,
+      updateDownloaded: (version) => `v${version} 已下載`,
+      updateDownloadedHint: '在側欄底部重啟即可安裝。',
+      updateInstalling: (version) => `正在安裝 v${version}`,
+      updateFailed: { check: '檢查更新失敗', download: '下載更新失敗', install: '安裝更新失敗' },
+      openSourceSummary: 'Apache Maka (incubating) · Apache License 2.0',
+      sourceCode: '原始碼', releaseNotes: '發行說明',
     },
     password: { copyFailed: '複製失敗', clipboardUnavailable: '剪貼簿不可用或被系統拒絕。', copying: '複製中', copied: '已複製', copy: '複製', hide: '隱藏', show: '顯示', value: '憑據值' },
   },
@@ -494,28 +493,29 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       passwordSavedPlaceholder: 'Password saved; enter a new password to replace it',
     },
     about: {
-      loadFailed: 'Could not load About information', loading: 'Loading About', unavailable: 'About information is unavailable', copied: 'Diagnostics copied', pasteHint: 'Review the content, then paste it into an issue report', copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', devBuild: 'Local development build', nightlyBuild: 'Nightly', buildLabel: 'Build',
+      loadFailed: 'Could not load About information', loading: 'Loading About', unavailable: 'About information is unavailable', copied: 'Diagnostics copied', pasteHint: 'Review the content, then paste it into an issue report', copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.',
       channelSummaries: {
         dev: 'A local development build. It does not check for updates.',
         nightly: 'A daily prerelease build. It updates itself to the latest nightly and replaces a release install.',
         release: 'The official release build. It receives stable updates automatically.',
       },
       supportTitle: 'Support',
-      copying: 'Copying…', copyDiagnostics: 'Copy diagnostics', copyAction: 'Copy', copyHelp: 'Copy version, platform, a home-redacted workspace path, and recent redacted logs. The report is written only to the clipboard and is never uploaded automatically.',
+      copyDiagnostics: 'Copy diagnostics', copyAction: 'Copy', copyHelp: 'Copy version, platform, a home-redacted workspace path, and recent redacted logs. The report is written only to the clipboard and is never uploaded automatically.',
       reportIssueLabel: 'Report an issue', reportIssueHelp: 'Open a GitHub issue with your diagnostics attached — replies come faster.', reportIssueOpen: 'Open',
       keyboardShortcuts: 'Keyboard shortcuts', keyboardShortcutsHelp: 'Every shortcut Maka responds to.', keyboardShortcutsOpen: 'View',
-      privacyLabel: 'Privacy commitments', privacyTitle: 'Local first · Private by default', privacyPoints: ['Tasks, settings, credentials, and Skill instructions stay on this machine; model keys live in a local credential file and subscription tokens use secure system storage.', 'Maka sends no usage telemetry and contacts a model provider only when you enable it.', 'High-risk tool operations require explicit permission in the task; messages, tool calls, permission decisions, and mode changes are retained locally for each task.'],
       checkForUpdates: 'Check for updates',
-      checkingForUpdates: 'Checking…',
-      updateIdle: 'No update check has run yet.',
-      updateNotAvailable: 'You are on the latest version.',
-      updateAvailable: (version) => `Version v${version} is available and will download shortly…`,
-      updateDownloading: (version, percent) => `Downloading v${version} (${percent}%)…`,
-      updateVerifying: (version) => `Verifying the release provenance for v${version}…`,
-      updateDownloaded: (version) => `v${version} is ready. Restart from the sidebar to install.`,
-      updateInstalling: (version) => `Installing v${version}…`,
-      updateCheckFailed: 'Could not check for updates',
-      updateCheckFailedDetail: (message) => message,
+      checkingForUpdates: 'Checking for updates…',
+      updateIdle: 'No update check has run yet',
+      updateNotAvailable: 'You are on the latest version',
+      updateAvailable: (version) => `v${version} is available`,
+      updateDownloading: (version, percent) => `Downloading v${version} (${percent}%)`,
+      updateVerifying: (version) => `Verifying the release provenance for v${version}`,
+      updateDownloaded: (version) => `v${version} is ready to install`,
+      updateDownloadedHint: 'Restart from the bottom of the sidebar to install it.',
+      updateInstalling: (version) => `Installing v${version}`,
+      updateFailed: { check: 'Could not check for updates', download: 'Could not download the update', install: 'Could not install the update' },
+      openSourceSummary: 'Apache Maka (incubating) · Apache License 2.0',
+      sourceCode: 'Source code', releaseNotes: 'Release notes',
     },
     password: { copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', copying: 'Copying', copied: 'Copied', copy: 'Copy', hide: 'Hide', show: 'Show', value: 'credential value' },
   },

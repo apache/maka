@@ -48,7 +48,10 @@ import type {
   DesktopRuntimeHostUpdateReconciliationOutcome,
   DesktopRuntimeHostUpdateReconciliationResponse,
 } from '../../preload/bridge-contract.js';
-import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
+import {
+  getSettingsProjectsCopy,
+  runtimeHostManagementErrorMessage,
+} from '../locales/settings-projects-copy.js';
 import {
   canonicalProjectDirectoryRoots,
   projectDirectoryRootsValid,
@@ -139,7 +142,7 @@ export function RuntimeHostManagementDialog(props: {
   const [result, setResult] = useState<DesktopRuntimeHostManagementResult>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
-  const [reconnectWarning, setReconnectWarning] = useState<string>();
+  const [reconnectWarning, setReconnectWarning] = useState(false);
   const [uninstalledRoot, setUninstalledRoot] = useState<string>();
   const [access, setAccess] = useState<DesktopRuntimeHostAccessSnapshot>();
   const [confirmation, setConfirmation] = useState<RuntimeHostManagementConfirmation>();
@@ -158,8 +161,6 @@ export function RuntimeHostManagementDialog(props: {
     useState(createWebRtcStunPolicyDraft);
   const nextDirectoryRootId = useRef(1);
   const logsRef = useRef<HTMLPreElement>(null);
-  const localizedError = (message: string): string =>
-    settingsActionErrorMessage(new Error(message), locale);
 
   const target = props.target;
   useEffect(() => {
@@ -167,7 +168,7 @@ export function RuntimeHostManagementDialog(props: {
     let disposed = false;
     setResult(undefined);
     setError(undefined);
-    setReconnectWarning(undefined);
+    setReconnectWarning(false);
     setUninstalledRoot(undefined);
     setAccess(undefined);
     setConfirmation(undefined);
@@ -193,7 +194,10 @@ export function RuntimeHostManagementDialog(props: {
           reconcileDirectoryPolicy(response.service);
           shouldLoadUpdatePolicy = response.service.state !== 'not_installed';
         }
-        else if (response.kind === 'error') setError(localizedError(response.error.message));
+        else if (response.kind === 'error') {
+          console.error('[runtime-host] management status failed', response.error);
+          setError(runtimeHostManagementErrorMessage(response.error.code, locale));
+        }
         else setUninstalledRoot(response.retainedStateRoot);
       } catch (failure) {
         if (!disposed) setError(settingsActionErrorMessage(failure, locale));
@@ -234,6 +238,13 @@ export function RuntimeHostManagementDialog(props: {
     if (logs) logs.scrollTop = logs.scrollHeight;
   }, [result]);
 
+  function reportManagementError(error: { readonly code: string; readonly message: string }): string {
+    console.error('[runtime-host] management failed', error);
+    const message = runtimeHostManagementErrorMessage(error.code, locale);
+    toast.error(copy.managementActionFailed, message);
+    return message;
+  }
+
   async function run(
     action: DesktopRuntimeHostManagementAction,
     allowInterruptActiveTasks = false,
@@ -241,7 +252,7 @@ export function RuntimeHostManagementDialog(props: {
     if (!target) return;
     setLoading(true);
     setError(undefined);
-    setReconnectWarning(undefined);
+    setReconnectWarning(false);
     setLastUpdateOutcome(undefined);
     try {
       const response = await window.maka.runtimeHostManagement.run(
@@ -260,10 +271,8 @@ export function RuntimeHostManagementDialog(props: {
           setConfirmation({ kind: 'restart' });
           return;
         }
-        const message = settingsActionErrorMessage(new Error(response.error.message), locale);
         setUpdatePolicy(undefined);
-        setError(message);
-        toast.error(copy.managementActionFailed, message);
+        setError(reportManagementError(response.error));
         return;
       }
       if (response.kind === 'uninstalled') {
@@ -371,7 +380,7 @@ export function RuntimeHostManagementDialog(props: {
     if (!target) return;
     setLoading(true);
     setError(undefined);
-    setReconnectWarning(undefined);
+    setReconnectWarning(false);
     setUpdatePhase('checking');
     setLastUpdateOutcome(undefined);
     try {
@@ -380,10 +389,8 @@ export function RuntimeHostManagementDialog(props: {
         allowInterruptActiveTasks,
       );
       if (response.kind === 'error') {
-        const message = localizedError(response.error.message);
         setUpdatePolicy(undefined);
-        setError(message);
-        toast.error(copy.managementActionFailed, message);
+        setError(reportManagementError(response.error));
         return;
       }
       if (response.kind === 'uninstalled') {
@@ -459,7 +466,7 @@ export function RuntimeHostManagementDialog(props: {
     if (!target || !directoryPolicyEdit || directoryPolicyEdit.conflict) return;
     setLoading(true);
     setError(undefined);
-    setReconnectWarning(undefined);
+    setReconnectWarning(false);
     try {
       const response = await window.maka.runtimeHostManagement.configureProjectDirectories(
         target.id,
@@ -468,9 +475,7 @@ export function RuntimeHostManagementDialog(props: {
         allowInterruptActiveTasks,
       );
       if (response.kind === 'error') {
-        const message = localizedError(response.error.message);
-        setError(message);
-        toast.error(copy.managementActionFailed, message);
+        setError(reportManagementError(response.error));
         return;
       }
       if (response.kind === 'uninstalled' || response.action !== 'configure') {
@@ -545,17 +550,15 @@ export function RuntimeHostManagementDialog(props: {
     if (!target) return;
     setLoading(true);
     setError(undefined);
-    setReconnectWarning(undefined);
+    setReconnectWarning(false);
     setUpdatePolicyError(undefined);
     setUpdatePhase('checking');
     setLastUpdateOutcome(undefined);
     try {
       const response = await window.maka.runtimeHostManagement.reconcileUpdate(target.id);
       if (response.kind === 'error') {
-        const message = localizedError(response.error.message);
         setUpdatePolicy(undefined);
-        setUpdatePolicyError(message);
-        toast.error(copy.managementActionFailed, message);
+        setUpdatePolicyError(reportManagementError(response.error));
         return;
       }
       setLastUpdateOutcome(response.reconciliation);
@@ -593,12 +596,12 @@ export function RuntimeHostManagementDialog(props: {
   }
 
   function applyReconnectWarning(
-    reconnectError: { readonly message: string } | undefined,
+    reconnectError: DesktopRuntimeHostManagementResult['reconnectError'],
   ): void {
-    setReconnectWarning(reconnectError ? localizedError(reconnectError.message) : undefined);
-    if (reconnectError) {
-      toast.warning(copy.managementReconnectFailed, localizedError(reconnectError.message));
-    }
+    setReconnectWarning(Boolean(reconnectError));
+    if (!reconnectError) return;
+    console.error('[runtime-host] reconnect failed', reconnectError);
+    toast.warning(copy.managementReconnectFailed);
   }
 
   async function revokeCredential(): Promise<void> {
@@ -676,11 +679,7 @@ export function RuntimeHostManagementDialog(props: {
               ) : null}
               {error ? <Banner status="error" title={error} /> : null}
               {reconnectWarning ? (
-                <Banner
-                  status="warning"
-                  title={copy.managementReconnectFailed}
-                  description={reconnectWarning}
-                />
+                <Banner status="warning" title={copy.managementReconnectFailed} />
               ) : null}
               {confirmation?.kind === 'configureDirectories' ? (
                 <Banner

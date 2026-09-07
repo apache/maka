@@ -155,7 +155,10 @@ describe('SQLite runtime schema migration', () => {
 
       migrateSqliteRuntimeDatabase(db);
 
-      assert.equal(SQLITE_RUNTIME_SCHEMA_VERSION, 16);
+      assert.equal(
+        (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+        SQLITE_RUNTIME_SCHEMA_VERSION,
+      );
       assert.equal(
         (
           db

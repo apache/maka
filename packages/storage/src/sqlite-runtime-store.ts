@@ -23,6 +23,7 @@ import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import { isDeepStrictEqual } from 'node:util';
+import { assertHandoffClaimSource } from '@maka/core/runtime-handoff';
 import {
   buildWorkspaceBaselineAuthorityEvents,
   buildWorkspaceSuccessorAuthorityEvent,
@@ -1165,7 +1166,7 @@ export class SqliteRuntimeStore
         `claim_id = ?
           OR target_invocation_id = ?
           OR target_run_id = ?
-          OR (target_session_id = ? AND target_turn_id = ?)
+          OR (? = 0 AND target_session_id = ? AND target_turn_id = ?)
           OR (
             source_session_id = ?
             AND source_run_id = ?
@@ -1174,6 +1175,7 @@ export class SqliteRuntimeStore
         claim.claimId,
         claim.target.invocationId,
         claim.target.runId,
+        claim.targetOpening.source.kind === 'handoff' ? 1 : 0,
         claim.target.sessionId,
         claim.target.turnId,
         source.identity.sessionId,
@@ -1237,7 +1239,7 @@ export class SqliteRuntimeStore
             `claim_id = ?
               OR target_invocation_id = ?
               OR target_run_id = ?
-              OR (target_session_id = ? AND target_turn_id = ?)
+              OR (? = 0 AND target_session_id = ? AND target_turn_id = ?)
               OR (
                 source_session_id = ?
                 AND source_run_id = ?
@@ -1246,6 +1248,7 @@ export class SqliteRuntimeStore
             claim.claimId,
             claim.target.invocationId,
             claim.target.runId,
+            claim.targetOpening.source.kind === 'handoff' ? 1 : 0,
             claim.target.sessionId,
             claim.target.turnId,
             source.identity.sessionId,
@@ -3342,6 +3345,7 @@ export class SqliteRuntimeStore
       target.invocationId,
       target.sessionId,
       target.runId,
+      claim.targetOpening.source.kind === 'handoff' ? 1 : 0,
       target.sessionId,
       target.turnId,
     ] as const;
@@ -3351,7 +3355,7 @@ export class SqliteRuntimeStore
         FROM runtime_events
         WHERE invocation_id = ?
           OR (session_id = ? AND run_id = ?)
-          OR (session_id = ? AND turn_id = ?)
+          OR (? = 0 AND session_id = ? AND turn_id = ?)
         LIMIT 1
       `)
       .get(...values) as { found: number } | undefined;
@@ -3363,7 +3367,7 @@ export class SqliteRuntimeStore
           FROM runtime_partial_snapshots
           WHERE invocation_id = ?
             OR (session_id = ? AND run_id = ?)
-            OR (session_id = ? AND turn_id = ?)
+            OR (? = 0 AND session_id = ? AND turn_id = ?)
           LIMIT 1
         `)
         .get(...values) as { found: number } | undefined) !== undefined
@@ -3393,6 +3397,7 @@ export class SqliteRuntimeStore
 
   private assertContinuationBoundaryMatchesLedger(claim: ContinuationClaimV1): void {
     const lastIndex = claim.boundary.segments.length - 1;
+    let previousPrefix: ImmutableRuntimePrefixV1 | undefined;
     for (const [index, segment] of claim.boundary.segments.entries()) {
       let prefix: ImmutableRuntimePrefixV1;
       try {
@@ -3427,7 +3432,36 @@ export class SqliteRuntimeStore
             : `Continuation ancestor boundary changed for ${segment.identity.runId}`,
         );
       }
+      const opening = prefix.events[0]?.content;
+      const repeatsTurn = previousPrefix?.identity.turnId === prefix.identity.turnId;
+      if (
+        repeatsTurn ||
+        (opening?.kind === 'invocation_opened' && opening.source.kind === 'handoff')
+      ) {
+        if (
+          !previousPrefix ||
+          opening?.kind !== 'invocation_opened' ||
+          opening.source.kind !== 'handoff'
+        ) {
+          throw new Error('Same-turn boundary requires an authenticated handoff edge');
+        }
+        const row = this.readContinuationClaimRow('claim_id = ?', opening.source.claimId);
+        const state = row && this.decodeContinuationClaimStateRow(row);
+        if (
+          !state ||
+          state.startEventId !== prefix.events[0]?.id ||
+          !isDeepStrictEqual(
+            state.claim.boundary.segments,
+            claim.boundary.segments.slice(0, index),
+          ) ||
+          !continuationStartEventMatchesClaim(prefix.events[0], state.claim, state.startKind)
+        ) {
+          throw new Error('Same-turn boundary handoff claim does not authenticate its lineage');
+        }
+        assertHandoffClaimSource(state.claim, previousPrefix);
+      }
       if (index === lastIndex) {
+        assertHandoffClaimSource(claim, prefix);
         const terminalEvents = prefix.events.filter(isTerminalRuntimeEvent);
         const terminal = terminalEvents[0];
         if (terminalEvents.length !== 1 || !terminal || prefix.events.at(-1)?.id !== terminal.id) {
@@ -3436,6 +3470,7 @@ export class SqliteRuntimeStore
           );
         }
       }
+      previousPrefix = prefix;
     }
   }
 
@@ -3601,7 +3636,16 @@ export class SqliteRuntimeStore
     authorizedPendingClaimId?: string,
     exactRetry = false,
   ): void {
-    for (const row of this.readContinuationClaimRows()) {
+    const rows = this.readContinuationClaimRows();
+    const ownClaim = rows.find(
+      (row) =>
+        row.target_session_id === event.sessionId &&
+        row.target_invocation_id === event.invocationId &&
+        row.target_run_id === event.runId &&
+        row.target_turn_id === event.turnId,
+    );
+    const ownHandoff = ownClaim && decodeContinuationClaimRow(ownClaim);
+    for (const row of rows) {
       const claim = decodeContinuationClaimRow(row);
       const source = claim.boundary.segments.find(
         (segment) =>
@@ -3612,12 +3656,18 @@ export class SqliteRuntimeStore
           `RuntimeEvent source boundary is sealed by continuation claim ${claim.claimId}`,
         );
       }
+      if (source && exactRetry) continue;
 
       const target = claim.target;
       const collidesWithTarget =
         event.invocationId === target.invocationId ||
         (event.sessionId === target.sessionId && event.runId === target.runId) ||
-        (event.sessionId === target.sessionId && event.turnId === target.turnId);
+        (event.sessionId === target.sessionId &&
+          event.turnId === target.turnId &&
+          !(
+            ownHandoff?.targetOpening.source.kind === 'handoff' &&
+            ownHandoff.boundary.segments.some((segment) => segment.identity.runId === target.runId)
+          ));
       if (!collidesWithTarget) continue;
       if (
         event.sessionId !== target.sessionId ||

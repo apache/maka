@@ -781,7 +781,9 @@ function accumulatorKey(kind: 'text' | 'thinking', messageId: string): string {
   return `${kind}\0${messageId}`;
 }
 
-function frameIdentity(frame: SubscriptionFrame): string {
+function frameIdentity(
+  frame: Exclude<SubscriptionFrame, { kind: 'subscription.runtime_resource_pty_data' }>,
+): string {
   return `host-frame:${frame.hostEpoch}:${frame.subscriptionId}:${frame.sequence}`;
 }
 
