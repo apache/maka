@@ -55,15 +55,15 @@ release commit 中的 [DISCLAIMER-WIP](https://github.com/apache/maka/blob/main/
 
 ## 安装
 
-Beta 阶段请明确从 `next` dist-tag 安装：
+从 `latest` dist-tag 安装当前的 alpha 版本。npm 上发布的是一个早期 alpha（0.0.0-alpha.0），命令面有限（`doctor`、帮助与版本命令）；完整的 CLI/TUI 尚未发布到 npm，请从本仓库的源码 checkout 运行：
 
 ```sh
-npm install --global maka-agent@next
+npm install --global maka-agent
 maka --version
 maka --help
 ```
 
-公开命令只有 `maka`。一次性运行请使用 `npx --yes --package maka-agent@next maka`；npm 上与本项目
+公开命令只有 `maka`。一次性运行请使用 `npx --yes --package maka-agent maka`；npm 上与本项目
 无关的 `maka` 包不是本项目。`runtime-host service install` 使用上面的持久全局安装；
 `runtime-host setup` 会从 `npx` 调用的精确 package 创建自己的托管副本。
 
@@ -96,25 +96,23 @@ Maka 默认会在执行高权限工具操作前询问。`maka run --yolo` 会授
 
 ## 升级
 
-使用预发布版本时，请继续明确指定 `next`：
+通过 `latest` tag 更新：
 
 ```sh
-maka update --target next
+maka update --target latest
 maka --version
 ```
 
 更新流程会先 stage 并验证精确 release，再替换本地 Runtime Host 与 npm-global package；
 默认不会中断 active 或 durable work。只有在你确认可以安全中断后，才使用
-`--allow-interrupt-active-tasks`。`npm install --global maka-agent@next` 仍可用于修复安装；
-不要使用不带 tag 的 `npm update --global maka-agent`，因为它会跟随 `latest`，可能选中
-不同的发布线。稳定版发布后，使用 `maka update --target latest`。
+`--allow-interrupt-active-tasks`。`npm install --global maka-agent` 仍可用于修复安装。
 
 ## 设置远程 Runtime Host
 
 在 Linux 或 macOS 上从精确的发布 package 设置持久 remote Runtime Host：
 
 ```sh
-npx --yes --package maka-agent@next maka runtime-host setup \
+npx --yes --package maka-agent maka runtime-host setup \
   --principal my-client \
   --preset terminal-client
 ```
@@ -124,7 +122,7 @@ npx --yes --package maka-agent@next maka runtime-host setup \
 可以在不改变当前 Host 的情况下检查 managed service 对应的发布频道：
 
 ```sh
-maka runtime-host service check-update --target next --json
+maka runtime-host service check-update --target latest --json
 ```
 
 结果会把频道固定为精确版本和 package integrity，并说明 package 是否提供足够的兼容性证据，
@@ -149,7 +147,7 @@ maka runtime-host service reconcile-update --json
 
 ```sh
 # 仅限安装过 managed Runtime Host service 的 Linux 或 macOS
-npx --yes --package maka-agent@next maka runtime-host service uninstall
+npx --yes --package maka-agent maka runtime-host service uninstall
 
 # 如果曾全局安装 Maka
 npm uninstall --global maka-agent

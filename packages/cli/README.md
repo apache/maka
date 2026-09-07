@@ -58,16 +58,18 @@ release gate. Real Eval executor validation currently runs on Linux x64 with Nod
 
 ## Install
 
-Install the current beta explicitly from the `next` dist-tag:
+Install the current alpha from the `latest` dist-tag. The published package is an early alpha
+(0.0.0-alpha.0) with a limited command surface (`doctor`, help, and version); the complete CLI/TUI
+is not published to npm yet and runs from a source checkout of this repository:
 
 ```sh
-npm install --global maka-agent@next
+npm install --global maka-agent
 maka --version
 maka --help
 ```
 
 The public command is `maka`. For a one-off invocation, use
-`npx --yes --package maka-agent@next maka`; the unrelated `maka` package on npm is not this project.
+`npx --yes --package maka-agent maka`; the unrelated `maka` package on npm is not this project.
 `runtime-host service install` uses the persistent global installation above; `runtime-host setup`
 creates its own managed copy from the exact package invoked by `npx`.
 
@@ -103,26 +105,24 @@ modify.
 
 ## Upgrade
 
-While using prereleases, keep the `next` tag explicit:
+Update through the `latest` tag:
 
 ```sh
-maka update --target next
+maka update --target latest
 maka --version
 ```
 
 The update stages and verifies the exact release before replacing the local Runtime Host or the
 npm-global package. It refuses to interrupt active or durable work by default. Use
 `--allow-interrupt-active-tasks` only after deciding that interruption is safe. A direct
-`npm install --global maka-agent@next` remains available for installation repair; do not use a bare
-`npm update --global maka-agent`, because it follows `latest` and may select a different release
-line. After a stable release is available, select it with `maka update --target latest`.
+`npm install --global maka-agent` remains available for installation repair.
 
 ## Remote Runtime Host setup
 
 To set up a persistent remote Runtime Host from an exact released package on Linux or macOS:
 
 ```sh
-npx --yes --package maka-agent@next maka runtime-host setup \
+npx --yes --package maka-agent maka runtime-host setup \
   --principal my-client \
   --preset terminal-client
 ```
@@ -133,7 +133,7 @@ Rerunning setup replaces that Client credential. The service no longer depends o
 Check a managed service against a release channel without changing the running Host:
 
 ```sh
-maka runtime-host service check-update --target next --json
+maka runtime-host service check-update --target latest --json
 ```
 
 The result pins the selected channel to an exact version and package integrity. It also reports
@@ -161,7 +161,7 @@ bounded one-shot command: it never interrupts active work and does not install a
 
 ```sh
 # When a managed Runtime Host service was installed on Linux or macOS
-npx --yes --package maka-agent@next maka runtime-host service uninstall
+npx --yes --package maka-agent maka runtime-host service uninstall
 
 # If Maka was installed globally
 npm uninstall --global maka-agent
