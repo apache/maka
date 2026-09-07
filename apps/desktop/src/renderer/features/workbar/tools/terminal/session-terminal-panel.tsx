@@ -266,6 +266,7 @@ export function SessionTerminalPanel(props: {
   return (
     <div
       className="maka-session-terminal-panel"
+      data-maka-assistant-exclude="terminal"
       role="region"
       aria-label={copy.ariaLabel}
       data-terminal-ref={props.terminalRef}

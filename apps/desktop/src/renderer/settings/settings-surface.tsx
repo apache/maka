@@ -853,6 +853,7 @@ function SettingsSurfaceContent(
               topContent={(
                 isNarrowSettings
                   ? <IconButton
+                      data-maka-assistant-target="settings.close"
                       variant="ghost"
                       label={copy.backToApp}
                       tooltip={copy.backToApp}
@@ -860,6 +861,7 @@ function SettingsSurfaceContent(
                       onClick={props.onClose}
                     />
                   : <Button
+                      data-maka-assistant-target="settings.close"
                       className="settingsBackButton"
                       variant="ghost"
                       width="100%"

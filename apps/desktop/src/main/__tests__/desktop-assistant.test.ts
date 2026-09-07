@@ -27,6 +27,7 @@ import { createDefaultSettings } from '@maka/core/settings';
 import type { SessionCatalogProjection } from '@maka/runtime-host/protocol';
 import { createDesktopAssistant } from '../desktop-assistant.js';
 import { ASSISTANT_RETENTION_MS, DesktopAssistantState } from '../desktop-assistant-state.js';
+import { DesktopAssistantSurface } from '../desktop-assistant-surface.js';
 
 test('assistant retention removes only expired owned sessions on the connected Host', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-assistant-'));
@@ -95,4 +96,40 @@ test('assistant IPC rejects other renderers and its tool rejects unowned Session
     sessionId: 'ordinary-session', turnId: 'turn', toolCallId: 'call', cwd: directory,
     abortSignal: new AbortController().signal, emitOutput() {},
   }), /No active request owns/);
+});
+
+test('observations exclude browser, terminal and secret descendants and reject replaced or stale handles', async () => {
+  const surface = new DesktopAssistantSurface();
+  const metadata = { ref: 'fresh', name: 'Rename', role: '', tag: 'button', type: '', section: '', navigation: false, external: false, editable: false };
+  let preparing = true;
+  let backend = 2;
+  const ax = (id: number, name: string, role = 'button') => ({ nodeId: String(id), backendDOMNodeId: id, name: { value: name }, role: { value: role } });
+  const wc = {
+    executeJavaScript: async () => preparing ? [{ ...metadata }] : true,
+    debugger: { sendCommand: async (method: string) => {
+      if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+      if (method === 'DOM.querySelector') return { nodeId: 2 };
+      if (method === 'DOM.describeNode') return { node: { backendNodeId: backend } };
+      return { nodes: [ax(2, 'Rename')] };
+    } },
+  } as unknown as WebContents;
+  await surface.prepare(wc);
+  const result = surface.filter({ nodeName: 'HTML', backendNodeId: 1, children: [
+    { nodeName: 'BUTTON', backendNodeId: 2, attributes: ['data-maka-assistant-ref', 'fresh'] },
+    { nodeName: 'DIV', backendNodeId: 3, attributes: ['data-maka-assistant-exclude', ''], children: [{ nodeName: 'BUTTON', backendNodeId: 4 }] },
+    { nodeName: 'IFRAME', backendNodeId: 5, children: [{ nodeName: 'BUTTON', backendNodeId: 6 }] },
+    { nodeName: 'INPUT', backendNodeId: 7, attributes: ['type', 'password'] },
+    { nodeName: 'DIV', backendNodeId: 8, attributes: ['class', 'xterm'], children: [{ nodeName: 'BUTTON', backendNodeId: 9 }] },
+  ] }, { nodes: [ax(2, 'Rename'), ...[3, 4, 5, 6, 7, 8, 9].map((id) => ax(id, 'excluded content'))] });
+  assert.equal(JSON.stringify(result).includes('excluded content'), false);
+  assert.deepEqual(surface.list().map((entry) => entry.name), ['Rename']);
+  preparing = false;
+  assert.equal((await surface.resolve(wc, 'fresh', 'click')).name, 'Rename');
+  await assert.rejects(surface.resolve(wc, 'fresh', 'type'), /not an editable/);
+  await assert.rejects(surface.resolve(wc, 'fresh', 'key'), /requires an editor/);
+  backend = 20;
+  await assert.rejects(surface.resolve(wc, 'fresh', 'click'), /replaced/);
+  preparing = true;
+  await surface.prepare(wc);
+  await assert.rejects(surface.resolve(wc, 'fresh', 'click'), /Stale/);
 });

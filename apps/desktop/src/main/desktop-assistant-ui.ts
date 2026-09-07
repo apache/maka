@@ -21,6 +21,7 @@ import { Page } from '@jackwener/opencli/browser/page';
 import type { WebContents } from 'electron';
 import type { AppSettings } from '@maka/core/settings';
 import type { DesktopAssistantAction, DesktopAssistantSnapshot } from '../shared/desktop-assistant.js';
+import { DesktopAssistantSurface, ASSISTANT_EXCLUDED } from './desktop-assistant-surface.js';
 
 const attr = 'data-maka-assistant-target';
 const selector = (target: string) => `[${attr}=${JSON.stringify(target)}]`;
@@ -34,34 +35,21 @@ const delay = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, r
 
 /** OpenCLI's AX formatter, transported directly to this window; no daemon or navigation. */
 class WindowPage extends Page {
-  constructor(private readonly contents: WebContents) { super('maka-assistant'); }
+  constructor(private readonly contents: WebContents, private readonly appSurface: DesktopAssistantSurface) { super('maka-assistant'); }
   override async getCurrentUrl() { return this.contents.getURL(); }
   override async cdp(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
     if (method === 'Page.getFrameTree') return {};
     if (!this.contents.debugger.isAttached()) this.contents.debugger.attach('1.3');
     if (method !== 'Accessibility.getFullAXTree') return this.contents.debugger.sendCommand(method, params);
     const { root } = await this.contents.debugger.sendCommand('DOM.getDocument', { depth: -1 });
-    const allowed = new Set<number>();
-    const visit = (node: { backendNodeId: number; attributes?: string[]; children?: typeof node[] }, safe = false) => {
-      const attrs = node.attributes ?? [];
-      const at = attrs.indexOf(attr);
-      const target = at < 0 ? '' : attrs[at + 1] ?? '';
-      safe ||= target === 'language' || target.startsWith('displayName.') || target.startsWith('theme.') || target.startsWith('settings.');
-      if (safe) allowed.add(node.backendNodeId);
-      for (const child of node.children ?? []) visit(child, safe);
-    };
-    visit(root);
     const result = await this.contents.debugger.sendCommand(method, params);
-    // Only app-owned navigation and preference controls are sent to the model.
-    // Transcript, credentials, webviews, and the assistant itself are omitted.
-    const nodes = result.nodes.filter((node: { backendDOMNodeId?: number; ignored?: boolean }) => !node.ignored && allowed.has(node.backendDOMNodeId ?? -1));
-    const childIds = new Set(nodes.flatMap((node: { childIds?: string[] }) => node.childIds ?? []));
-    return { nodes: [{ nodeId: 'maka-safe-root', role: { value: 'RootWebArea' }, name: { value: 'Maka controls' }, childIds: nodes.filter((node: { nodeId: string }) => !childIds.has(node.nodeId)).map((node: { nodeId: string }) => node.nodeId) }, ...nodes] };
+    return this.appSurface.filter(root, result);
   }
 }
 
 export class DesktopAssistantUi {
   private cursor?: { x: number; y: number };
+  private readonly surface = new DesktopAssistantSurface();
   constructor(
     private readonly window: () => WebContents,
     private readonly readSettings: () => Promise<AppSettings>,
@@ -82,11 +70,12 @@ export class DesktopAssistantUi {
 
   async observe() {
     const wc = this.window();
-    const page = new WindowPage(wc);
+    await this.surface.prepare(wc);
+    const page = new WindowPage(wc, this.surface);
     const accessibility = await page.snapshot({ source: 'ax' });
     const settings = await this.readSettings();
     const section = await wc.executeJavaScript(`document.querySelector('[data-maka-assistant-section]')?.getAttribute('data-maka-assistant-section') ?? null`);
-    return { section, language: settings.personalization.uiLocale, theme: settings.appearance.theme, accessibility };
+    return { section, language: settings.personalization.uiLocale, theme: settings.appearance.theme, accessibility, controls: this.surface.list() };
   }
 
   async visual() {
@@ -105,7 +94,41 @@ export class DesktopAssistantUi {
     return (await wc.capturePage(rect)).toPNG().toString('base64');
   }
 
-  async execute(action: DesktopAssistantAction, signal: AbortSignal) {
+  async execute(action: DesktopAssistantAction, signal: AbortSignal): Promise<{ verified: boolean; previous?: string; target?: string; value?: string; section?: string; dispatched?: boolean }> {
+    if (action.kind === 'open') {
+      if (await this.point(selector('settings.close'))) await this.click(selector('settings.close'), signal);
+      if (action.area !== 'app') {
+        if (!await this.point(selector(`app.${action.area}`))) await this.click('[data-maka-contract="shell-topbar-rail"] button[aria-expanded="false"]', signal);
+        await this.click(selector(`app.${action.area}`), signal);
+      }
+      return { verified: false, dispatched: true };
+    }
+    if ('ref' in action) {
+      const wc = this.window();
+      const target = await this.surface.resolve(wc, action.ref, action.kind);
+      signal.throwIfAborted();
+      const validate = async () => { signal.throwIfAborted(); await this.surface.resolve(this.window(), action.ref, action.kind); };
+      if (action.kind === 'click') await this.click(target.css, signal, validate);
+      else if (action.kind === 'type') await this.type(target.css, action.text, signal, validate);
+      else if (action.kind === 'key') {
+        await this.click(target.css, signal, validate);
+        await validate();
+        await wc.executeJavaScript(`window.dispatchEvent(new CustomEvent('maka-assistant:input', { detail: { key: ${JSON.stringify(action.key === 'Space' ? ' ' : action.key)} } }))`);
+        signal.throwIfAborted();
+        const keyCode = action.key.replace('Arrow', '');
+        wc.sendInputEvent({ type: 'keyDown', keyCode });
+        wc.sendInputEvent({ type: 'keyUp', keyCode });
+        await delay(150, signal);
+      } else {
+        const point = await this.move(target.css, signal, validate, action.kind === 'hover');
+        await wc.executeJavaScript(`window.dispatchEvent(new CustomEvent('maka-assistant:input', { detail: ${JSON.stringify({ ...point, ...(action.kind === 'scroll' ? { wheel: true } : {}) })} }))`);
+        signal.throwIfAborted();
+        wc.sendInputEvent({ type: 'mouseMove', ...point });
+        if (action.kind === 'scroll') wc.sendInputEvent({ type: 'mouseWheel', ...point, deltaX: 0, deltaY: -action.deltaY, canScroll: true, hasPreciseScrollingDeltas: true });
+        await delay(200, signal);
+      }
+      return { verified: false, dispatched: true };
+    }
     const section = action.kind === 'navigate' ? action.section : action.target === 'theme' ? 'appearance' : 'general';
     const wc = this.window();
     const opened = await wc.executeJavaScript(`!!document.querySelector('[data-maka-assistant-section]')`);
@@ -145,10 +168,10 @@ export class DesktopAssistantUi {
     return { verified: true, target: action.target, value: action.value, previous: action.target === 'language' ? before.personalization.uiLocale : before.appearance.theme };
   }
 
-  private async type(css: string, text: string, signal: AbortSignal) {
-    await this.click(css, signal);
+  private async type(css: string, text: string, signal: AbortSignal, validate?: () => Promise<void>) {
+    await this.click(css, signal, validate);
     const wc = this.window();
-    const focused = () => wc.executeJavaScript(`document.activeElement === document.querySelector(${JSON.stringify(css)})`);
+    const focused = () => this.window().executeJavaScript(`document.activeElement === document.querySelector(${JSON.stringify(css)})`);
     if (!await focused()) throw new Error('Text input did not receive focus');
     signal.throwIfAborted();
     wc.selectAll();
@@ -157,11 +180,12 @@ export class DesktopAssistantUi {
     // React receives genuine input events instead of a bypassed value setter.
     for (const character of text) {
       signal.throwIfAborted();
+      await validate?.();
       if (!await focused()) throw new Error('Text input lost focus; typing stopped');
       await wc.insertText(character);
       await delay(45, signal);
     }
-    const value = await wc.executeJavaScript(`document.querySelector(${JSON.stringify(css)})?.value`);
+    const value = await wc.executeJavaScript(`(() => { const e = document.querySelector(${JSON.stringify(css)}); return e && ('value' in e ? e.value : e.innerText); })()`);
     if (value !== text) throw new Error('Text input did not accept the requested value');
   }
 
@@ -170,36 +194,50 @@ export class DesktopAssistantUi {
     throw new Error('The interface did not confirm the requested change');
   }
 
-  private async point(css: string) {
+  private async point(css: string, hover = false) {
     return this.window().executeJavaScript(`(() => {
       const e = document.querySelector(${JSON.stringify(css)});
-      if (!e || e.closest('[inert]') || e.matches(':disabled,[aria-disabled="true"]')) return null;
+      if (!e || e.closest(${JSON.stringify(ASSISTANT_EXCLUDED)}) || e.closest('[inert]') || e.matches(':disabled,[aria-disabled="true"]')) return null;
       const r = e.getBoundingClientRect();
       const x = Math.round(r.x + r.width / 2), y = Math.round(r.y + r.height / 2);
       const hit = document.elementFromPoint(x, y);
-      if (r.width < 1 || r.height < 1 || !hit || !e.contains(hit)) return null;
+      if (r.width < 1 || r.height < 1 || !hit || hit.closest(${JSON.stringify(ASSISTANT_EXCLUDED)}) || (!${hover} && !e.contains(hit))) return null;
       return { x, y };
     })()`);
   }
 
-  private async click(css: string, signal: AbortSignal) {
+  private async move(css: string, signal: AbortSignal, validate?: () => Promise<void>, hover = false) {
     let point: { x: number; y: number } | null = null;
-    await this.waitFor(async () => { point = await this.point(css); return point !== null; }, signal);
+    await this.waitFor(async () => { point = await this.point(css, hover); return point !== null; }, signal);
     const distance = this.cursor ? Math.hypot(point!.x - this.cursor.x, point!.y - this.cursor.y) : 0;
     const durationMs = distance < 1 ? 0 : Math.round(Math.min(780, 260 + distance * 0.45));
     this.cursor = point!;
     this.update({ cursor: { ...point!, clicking: false, durationMs } });
     await delay(durationMs + 50, signal);
-    const current = await this.point(css);
+    const current = await this.point(css, hover);
     if (!current || current.x !== point!.x || current.y !== point!.y) throw new Error('Control moved or is covered; action stopped');
     signal.throwIfAborted();
-    this.update({ cursor: { ...current, clicking: true, durationMs: 0 } });
+    await validate?.();
+    return current;
+  }
+
+  private async click(css: string, signal: AbortSignal, validate?: () => Promise<void>) {
+    const current = await this.move(css, signal, validate, true);
     const wc = this.window();
     // Await the renderer's synchronous ownership marker before Chromium
     // delivers native input; IPC send and input delivery have different queues.
     await wc.executeJavaScript(`window.dispatchEvent(new CustomEvent('maka-assistant:input', { detail: ${JSON.stringify(current)} }))`);
     signal.throwIfAborted();
     wc.sendInputEvent({ type: 'mouseMove', ...current });
+    // Task-row actions appear on hover. Move the native pointer first, then
+    // require the actual control to own the hit point before pressing it.
+    await delay(120, signal);
+    const hit = await this.point(css);
+    if (!hit || hit.x !== current.x || hit.y !== current.y) throw new Error('Control is covered or moved; action stopped');
+    await validate?.();
+    await wc.executeJavaScript(`window.dispatchEvent(new CustomEvent('maka-assistant:input', { detail: ${JSON.stringify(current)} }))`);
+    signal.throwIfAborted();
+    this.update({ cursor: { ...current, clicking: true, durationMs: 0 } });
     wc.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...current });
     wc.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...current });
     await delay(150, signal);

@@ -36,6 +36,8 @@ import type { DesktopAssistantAction, DesktopAssistantSnapshot } from '../shared
 
 /** Product paths are stable; coordinates are resolved afresh for every action. */
 const PRODUCT_MAP = {
+  app: { newTask: 'New task from the sidebar', extensions: 'Skills and MCP extensions from the sidebar', automations: 'Scheduled tasks from the sidebar', app: 'Return from Settings to the application. Tasks are in the sidebar; task actions are in each task menu. Project selection is in the top bar; task files, review and activity are in the workbar.' },
+  interaction: 'Use controls[].ref from the latest observation for click, hover, type, key or scroll. Numeric refs in accessibility text are informational only. Execute one referenced action at a time, then inspect the new observation. Generic dispatch is not proof that the user goal succeeded. Terminal, embedded browser, external browser links and secret fields are excluded. Execute the user-requested actions directly, including existing application confirmation dialogs. Do not add a confirmation question for work the user already requested.',
   settings: SETTINGS_SECTIONS.map((section) => ({
     section, operation: 'navigate', path: ['settings.open', `settings.${section}`],
   })),
@@ -51,6 +53,11 @@ const actionSchema = z.union([
   z.object({ kind: z.literal('set'), target: z.literal('language'), value: z.enum(['auto', 'zh-CN', 'zh-TW', 'en']) }).strict(),
   z.object({ kind: z.literal('set'), target: z.literal('theme'), value: z.enum(['auto', 'light', 'dark']) }).strict(),
   z.object({ kind: z.literal('set'), target: z.literal('displayName'), value: z.string().trim().min(1).max(60).refine((value) => !/[\u0000-\u001f\u007f]/.test(value)) }).strict(),
+  z.object({ kind: z.literal('open'), area: z.enum(['newTask', 'extensions', 'automations', 'app']) }).strict(),
+  z.object({ kind: z.enum(['click', 'hover']), ref: z.string().max(100) }).strict(),
+  z.object({ kind: z.literal('type'), ref: z.string().max(100), text: z.string().max(8000) }).strict(),
+  z.object({ kind: z.literal('key'), ref: z.string().max(100), key: z.enum(['Enter', 'Space', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) }).strict(),
+  z.object({ kind: z.literal('scroll'), ref: z.string().max(100), deltaY: z.number().int().min(-900).max(900) }).strict(),
 ]);
 interface AssistantHost {
   client: DesktopRuntimeHostClient;
@@ -86,7 +93,10 @@ export function createDesktopAssistant(deps: AssistantDeps) {
     try { wc = deps.window(); } catch { return; }
     if (!wc.isDestroyed()) wc.send('desktop-assistant:changed', snapshot);
   };
-  const ui = new DesktopAssistantUi(deps.window, deps.readSettings, update, async () => {
+  const ui = new DesktopAssistantUi(() => {
+    if (run && host && !deps.isCurrent(host.client)) throw new Error('Runtime Host changed');
+    return deps.window();
+  }, deps.readSettings, update, async () => {
     if (!host || !deps.isCurrent(host.client)) throw new Error('Runtime Host changed');
     return (await host.client.queryRuntimePolicy()).policy.personalization.displayName;
   });
@@ -186,7 +196,7 @@ export function createDesktopAssistant(deps: AssistantDeps) {
   };
   const tool: MakaTool = {
     name: 'control',
-    description: 'Observe the current Maka interface, request a cropped image of the visible language/theme control, or execute a batch of known UI actions, including typing a display name into its real editor. Actions move a visible cursor, click real controls, and verify persisted values. Supported settings paths are provided in the product map. Never use for unsupported changes.',
+    description: 'Observe and operate the Maka application through current control references or known navigation paths. Terminal, embedded browser, external links and secret fields are excluded. Use one referenced action per call and inspect the returned observation; dispatch alone does not verify success. Execute requested actions directly, including application confirmation dialogs. Input uses real controls with a visible cursor. Visual returns a cropped visible language/theme control.',
     parameters: z.object({ operation: z.enum(['observe', 'visual', 'act']), actions: z.array(actionSchema).max(8).optional() }).strict(),
     impl: async (input, ctx) => {
       if (controlBusy) throw new Error('Another Desktop control call is still running; wait for its result');
@@ -202,11 +212,12 @@ export function createDesktopAssistant(deps: AssistantDeps) {
         return { image: await ui.visual() };
       }
       if (!args.actions?.length) throw new Error('Provide at least one action');
+      if (args.actions.some((action) => 'ref' in action) && args.actions.length !== 1) throw new Error('Observe after each referenced action before choosing the next control');
       if (actionFailure) return { interrupted: true, error: actionFailure, requiresNewRequest: true };
       const completed = [];
       try {
         update({ phase: 'acting', expanded: false });
-        await ui.begin(signal);
+        if (!snapshot.cursor) await ui.begin(signal);
         for (const action of args.actions) {
           signal.throwIfAborted();
           if (!deps.isCurrent(host.client)) throw new Error('Runtime Host changed');
@@ -221,8 +232,9 @@ export function createDesktopAssistant(deps: AssistantDeps) {
         return { completed, observation: await ui.observe() };
       } catch (error) {
         actionFailure = error instanceof Error ? error.message : String(error);
+        update({ cursor: undefined });
         return { completed, interrupted: true, error: actionFailure };
-      } finally { if (!signal.aborted) update({ phase: 'thinking', cursor: undefined }); }
+      } finally { if (!signal.aborted) update({ phase: 'thinking' }); }
       } finally { controlBusy = false; }
     },
     toModelOutput: ({ output }) => {
@@ -236,7 +248,7 @@ export function createDesktopAssistant(deps: AssistantDeps) {
     switch (command) {
       case 'snapshot': return snapshot;
       case 'open': update({ open: true, expanded: true }); await refreshModels(); await cleanup(); return;
-      case 'close': if (run) await stop(); update({ open: false }); return;
+      case 'close': update({ open: false }); return;
       case 'expand': update({ expanded: true }); return;
       case 'stop': await stop(); return;
       case 'submit': await submit(z.string().trim().min(1).max(8000).parse(payload)); return;

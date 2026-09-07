@@ -25,7 +25,12 @@ export type DesktopAssistantAction =
   | { readonly kind: 'navigate'; readonly section: SettingsSection }
   | { readonly kind: 'set'; readonly target: 'language'; readonly value: UiLocalePreference }
   | { readonly kind: 'set'; readonly target: 'theme'; readonly value: ThemePreference }
-  | { readonly kind: 'set'; readonly target: 'displayName'; readonly value: string };
+  | { readonly kind: 'set'; readonly target: 'displayName'; readonly value: string }
+  | { readonly kind: 'open'; readonly area: 'newTask' | 'extensions' | 'automations' | 'app' }
+  | { readonly kind: 'click' | 'hover'; readonly ref: string }
+  | { readonly kind: 'type'; readonly ref: string; readonly text: string }
+  | { readonly kind: 'key'; readonly ref: string; readonly key: 'Enter' | 'Space' | 'Escape' | 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight' }
+  | { readonly kind: 'scroll'; readonly ref: string; readonly deltaY: number };
 
 export interface DesktopAssistantMessage {
   readonly id: string;

@@ -43,13 +43,15 @@
 .desktopAssistantError { color: var(--destructive-text); font-size: 12px; padding: 0 8px; }
 .desktopAssistantCompact { width: min(410px, calc(100vw - 48px)); bottom: 16px; border-radius: 40px; }
 .desktopAssistantCompact .desktopAssistantHeader { padding-bottom: 0; }
-.desktopAssistantLauncher { position: fixed; z-index: 1100; bottom: 18px; right: 20px; -webkit-app-region: no-drag; }
-.desktopAssistantCursor { position: fixed; z-index: 1300; top: 0; left: 0; pointer-events: none; color: var(--accent-solid); filter: drop-shadow(0 2px 3px #0005); will-change: transform; }
-.desktopAssistantCursor svg { stroke: white; stroke-width: 1.5; }
-.desktopAssistantCursor span { display: block; position: absolute; left: 20px; top: 23px; padding: 2px 6px; border-radius: 8px; background: var(--accent-solid); color: white; font-size: 10px; }
-.desktopAssistantCursor.isClicking::before { content: ''; position: absolute; width: 32px; height: 32px; left: -16px; top: -16px; border-radius: 50%; border: 2px solid var(--accent-solid); animation: assistantClick .4s ease-out both; }
+.desktopAssistantLauncher { position: fixed; z-index: 1100; bottom: 18px; right: 20px; display: flex; align-items: center; gap: 6px; padding: 4px; border-radius: 14px; color: var(--foreground); background: var(--surface-overlay); -webkit-app-region: no-drag; }
+.desktopAssistantCursor { position: fixed; z-index: 1300; top: 0; left: 0; pointer-events: none; color: var(--accent-solid); filter: drop-shadow(0 2px 4px #0005) drop-shadow(0 0 6px #0002); will-change: transform; }
+.desktopAssistantCursorHeading { position: absolute; transform-origin: 0 0; will-change: transform; }
+.desktopAssistantCursorArrow { position: absolute; left: -25.5px; top: -15px; width: 36px; height: 30px; overflow: visible; transform-origin: 25.5px 15px; }
+.desktopAssistantCursor.isClicking::before { content: ''; position: absolute; width: 24px; height: 24px; left: -12px; top: -12px; border-radius: 50%; border: 2px solid var(--accent-solid); animation: assistantClick .4s ease-out both; }
+.desktopAssistantCursor.isClicking .desktopAssistantCursorArrow { animation: assistantTap .28s ease-out both; }
 @keyframes assistantPulse { 50% { opacity: .4; } }
 @keyframes assistantClick { to { transform: scale(1.7); opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .desktopAssistantDot.isBusy, .desktopAssistantCursor.isClicking::before { animation: none; } }
+@keyframes assistantTap { 40% { transform: scale(.88, 1.08); } to { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .desktopAssistantDot.isBusy, .desktopAssistantCursor.isClicking::before, .desktopAssistantCursor.isClicking .desktopAssistantCursorArrow { animation: none; } }
 
 .desktopAssistantComposer textarea::placeholder { color: var(--muted-foreground); opacity: 1; }
