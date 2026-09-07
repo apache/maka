@@ -186,7 +186,7 @@ test('Git changes re-read the workspace after the app regains focus', async ({
   await expect(panel.getByText('新增 5 行')).toBeVisible();
 });
 
-test('Terminal ownership follows the active Session and stops the old resource', async ({
+test('Terminal fits its panel without growing and stops when its Session changes', async ({
   window: page,
 }) => {
   const { composer, sessionId, sidebar } = await createSession(
@@ -209,6 +209,23 @@ test('Terminal ownership follows the active Session and stops the old resource',
         ?.result.status,
     )
     .toBe('running');
+
+  // Exercise real layout across frames: a Section's implicit grid row used to
+  // grow with xterm, continuously triggering fit/resize even at an idle prompt.
+  const fitsPanel = () => terminal.evaluate(async (element) => {
+    const panel = element.closest('.maka-session-workbar-panel')!;
+    const host = element.querySelector('.maka-session-terminal-xterm')!;
+    for (let frame = 0; frame < 12; frame += 1) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const bounds = panel.getBoundingClientRect();
+      const terminalBounds = host.getBoundingClientRect();
+      if (terminalBounds.height <= 0 || terminalBounds.bottom > bounds.bottom + 1) {
+        return false;
+      }
+    }
+    return true;
+  });
+  await expect.poll(fitsPanel).toBe(true);
 
   await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
   await expect(terminal).toHaveCount(0);

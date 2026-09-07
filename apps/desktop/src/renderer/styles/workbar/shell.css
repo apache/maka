@@ -133,6 +133,11 @@
 }
 
 .maka-session-workbar-panel[data-overlay] {
+  display: grid;
+  /* Section adds an inner wrapper with height: 100%. An implicit auto row
+     can grow with xterm's content, feeding ResizeObserver -> fit -> resize
+     back into layout indefinitely. Bound the row to the available panel. */
+  grid-template-rows: minmax(0, 1fr);
   position: relative;
   z-index: 1;
   overflow: hidden;
@@ -147,6 +152,8 @@
      leaving its own overflow scroller with nothing to scroll. */
   display: grid;
   grid-template-rows: minmax(0, 1fr);
+  /* One stretched track, like the frame: the face fills the height and the
+     column can be aligned as a whole. */
   padding-top: var(--maka-plate-titlebar-clearance);
 }
 
