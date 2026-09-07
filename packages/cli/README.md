@@ -125,14 +125,14 @@ the early alpha stub, and may switch the installation to the other release line.
 The update stages and verifies the exact release before replacing the local Runtime Host or the
 npm-global package. It refuses to interrupt active or durable work by default. Use
 `--allow-interrupt-active-tasks` only after deciding that interruption is safe. A direct
-`npm install --global maka-agent` remains available for installation repair.
+`npm install --global maka-agent@nightly` remains available for installation repair.
 
 ## Remote Runtime Host setup
 
 To set up a persistent remote Runtime Host from an exact released package on Linux or macOS:
 
 ```sh
-npx --yes --package maka-agent maka runtime-host setup \
+npx --yes --package maka-agent@nightly maka runtime-host setup \
   --principal my-client \
   --preset terminal-client
 ```
@@ -171,7 +171,7 @@ bounded one-shot command: it never interrupts active work and does not install a
 
 ```sh
 # When a managed Runtime Host service was installed on Linux or macOS
-npx --yes --package maka-agent maka runtime-host service uninstall
+npx --yes --package maka-agent@nightly maka runtime-host service uninstall
 
 # If Maka was installed globally
 npm uninstall --global maka-agent

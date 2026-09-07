@@ -116,14 +116,14 @@ maka --version
 
 更新流程会先 stage 并验证精确 release，再替换本地 Runtime Host 与 npm-global package；
 默认不会中断 active 或 durable work。只有在你确认可以安全中断后，才使用
-`--allow-interrupt-active-tasks`。`npm install --global maka-agent` 仍可用于修复安装。
+`--allow-interrupt-active-tasks`。`npm install --global maka-agent@nightly` 仍可用于修复安装。
 
 ## 设置远程 Runtime Host
 
 在 Linux 或 macOS 上从精确的发布 package 设置持久 remote Runtime Host：
 
 ```sh
-npx --yes --package maka-agent maka runtime-host setup \
+npx --yes --package maka-agent@nightly maka runtime-host setup \
   --principal my-client \
   --preset terminal-client
 ```
@@ -158,7 +158,7 @@ maka runtime-host service reconcile-update --json
 
 ```sh
 # 仅限安装过 managed Runtime Host service 的 Linux 或 macOS
-npx --yes --package maka-agent maka runtime-host service uninstall
+npx --yes --package maka-agent@nightly maka runtime-host service uninstall
 
 # 如果曾全局安装 Maka
 npm uninstall --global maka-agent
