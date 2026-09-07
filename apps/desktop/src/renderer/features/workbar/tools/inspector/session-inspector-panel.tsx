@@ -134,8 +134,12 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
         )}
 
         {/* Usage and context answer to different owners, so a successful
-            snapshot beside an empty or failed trace remains visible (#2323). */}
-        {snapshot.summaryLoading && (
+            snapshot beside an empty or failed trace remains visible (#2323).
+
+            Render only while there is no summary yet, same as the trace line above:
+            a live session re-reads its summary on every usage update, so gating on
+            the loading flag alone would blink this line in and out. */}
+        {snapshot.summaryLoading && !snapshot.summary && (
           <Text type="supporting" color="secondary">
             {copy.loadingSummary}
           </Text>

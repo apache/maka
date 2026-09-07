@@ -111,7 +111,7 @@ export interface HostSessionRevisionCoordinatorOptions {
   readonly sessionTodo: InteractiveSessionTodoWriter;
   readonly contextOffload?: Pick<
     InteractiveContextOffloadWriter,
-    'copyReferences' | 'retireSession' | 'collectGarbage'
+    'copyReferences' | 'retireSession'
   >;
   readonly manager: SessionManager;
   readonly admission: SessionAdmissionGate;

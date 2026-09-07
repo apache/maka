@@ -159,7 +159,10 @@ async function testConnectionStrict(
   if (!defaults) {
     return { ok: false, errorMessage: `Unknown provider type "${connection.providerType}"` };
   }
-  const sessionId = connection.providerType === 'opencode-go' ? randomUUID() : undefined;
+  const sessionId =
+    connection.providerType === 'opencode-go' || connection.providerType === 'opencode-free'
+      ? randomUUID()
+      : undefined;
   const auth = defaults.authKind;
   const secret = auth === 'none' ? '' : apiKey;
   const testModel = resolveConnectionTestModel(

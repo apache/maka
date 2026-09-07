@@ -665,6 +665,33 @@ test('message execution query reports the Turn that durably owns each Message', 
   });
 });
 
+test('message execution disposition reuses a held Session admission', async () => {
+  const fixture = createFixture();
+  const content = { text: 'pending delegation' };
+  await fixture.admissions.commitMessageAdmission({
+    ...ROOT,
+    messageId: 'pending-delegation',
+    content,
+    submittedContentDigest: messageContentDigest(content),
+    submittedPlacement: 'current_turn',
+    placement: 'current_turn',
+    disposition: 'steering',
+    skillInvocation: { loaded: [], failed: [], receipts: [] },
+    admittedAt: 10,
+  });
+
+  assert.deepEqual(
+    await fixture.sessionAdmission.run(ROOT.sessionId, (lease) =>
+      fixture.coordinator.readMessageExecutionDispositionAdmitted(
+        ROOT.sessionId,
+        'pending-delegation',
+        lease,
+      ),
+    ),
+    { kind: 'pending' },
+  );
+});
+
 test('submit re-runs admission when the queue revision moves during preflight', async () => {
   let preflightCalls = 0;
   const fixture = createFixture(undefined, async () => {
@@ -3679,6 +3706,7 @@ function createFixture(
   const terminal = deferred<TurnSnapshot>();
   let coordinator: HostMessageCoordinator;
   const root: HostMessageRootPort = {
+    readLatestRootTurnLineage: async (identity) => identity,
     readSessionHeader: async () => {
       return { isArchived: false };
     },
@@ -3780,6 +3808,7 @@ function createFixture(
     hostEpoch: 'epoch-1',
     root,
     durableProof: {
+      readLogicalExecution: async () => undefined,
       readRootTurnSourceMessageReceipt: async (_sessionId, messageId) => receipts.get(messageId),
       readImmutableSteeringMessageProof: async (_sessionId, messageId) => {
         const event = events.find(

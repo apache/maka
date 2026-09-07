@@ -45,6 +45,7 @@ import type { ExternalSessionOperationHandlerMap } from './operation-dispatcher.
 import {
   projectSessionCatalogRecord,
   SessionOperationFailure,
+  NoUsableImportModelError,
 } from './session-catalog-coordinator.js';
 import type { SessionAdmissionGate } from './session-admission-gate.js';
 import { type HostWorkspaceResolver, WorkspaceResolutionError } from './workspace-resolver.js';
@@ -246,6 +247,9 @@ export class HostExternalSessionCoordinator {
     try {
       target = await this.#resolveTarget();
     } catch (error) {
+      if (error instanceof NoUsableImportModelError) {
+        return importFailure('model_unavailable', error.message);
+      }
       if (error instanceof SessionOperationFailure) {
         return importFailure(error.code, error.message);
       }
@@ -269,10 +273,10 @@ export class HostExternalSessionCoordinator {
     } catch (error) {
       if (!commitAttempted) {
         return importFailure(
-          isSourceSessionNotFound(error) ? 'not_found' : 'invalid_request',
+          isSourceSessionNotFound(error) ? 'not_found' : 'source_unreadable',
           isSourceSessionNotFound(error)
             ? 'External Session does not exist'
-            : 'External Session could not be converted',
+            : 'External Session could not be read or converted',
         );
       }
       this.#requestDrain();

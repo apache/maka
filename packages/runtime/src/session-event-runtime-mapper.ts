@@ -611,6 +611,7 @@ function mapBackendSessionEvent(
         ...(event.reason !== undefined ? { reason: event.reason } : {}),
         message: event.message,
         ...(event.details !== undefined ? { details: event.details } : {}),
+        ...(event.retry !== undefined ? { retry: event.retry } : {}),
       };
       memory.failureContent = content;
       return {

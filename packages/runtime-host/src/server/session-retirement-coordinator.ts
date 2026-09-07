@@ -123,10 +123,7 @@ export interface HostSessionRetirementCoordinatorOptions {
   readonly continuity: RetirementContinuity;
   readonly artifacts: Pick<InteractiveArtifactStoreWriter, 'purgeSessionArtifacts'>;
   readonly sessionTodo: Pick<InteractiveSessionTodoWriter, 'purgeSessionState'>;
-  readonly contextOffload?: Pick<
-    InteractiveContextOffloadWriter,
-    'retireSession' | 'collectGarbage'
-  >;
+  readonly contextOffload?: Pick<InteractiveContextOffloadWriter, 'retireSession'>;
   readonly purgeOperationalState: (sessionId: string) => Promise<void>;
   readonly purgeAgentGraphState: (sessionId: string) => Promise<void>;
   readonly worktrees?: Pick<SubagentWorktreeExecutor, 'retire'>;

@@ -35,9 +35,13 @@ import {
 } from '@maka/runtime/context-budget';
 import { type ToolResultArchiveResourceReadInput } from '@maka/runtime/tool-result-archive-resource';
 import type { InteractiveArtifactStoreWriter } from '@maka/storage/artifact-stores';
+import type { SessionManagerDeps } from '@maka/runtime/session-manager';
+import type { SessionAdmissionGate } from './session-admission-gate.js';
+import type { SessionPresenceReader } from './session-presence.js';
 
 export interface HostExecutionArtifactServices {
   recordToolArtifacts(event: ToolArtifactRecorderInput): Promise<void>;
+  publishChildWorkspacePatch: NonNullable<SessionManagerDeps['publishChildWorkspacePatch']>;
   /**
    * One archive authority over the session artifact store (#2026). All three
    * reads and the writer address the same store, so the host has no way to hand
@@ -49,6 +53,8 @@ export interface HostExecutionArtifactServices {
 export function createHostExecutionArtifactServices(input: {
   artifacts: InteractiveArtifactStoreWriter;
   requestDrain: () => void;
+  sessionAdmission: SessionAdmissionGate;
+  sessions: SessionPresenceReader;
 }): HostExecutionArtifactServices {
   const runWrite = async <T>(operation: () => Promise<T>): Promise<T> => {
     try {
@@ -59,6 +65,13 @@ export function createHostExecutionArtifactServices(input: {
     }
   };
 
+  const publish = (artifact: Parameters<InteractiveArtifactStoreWriter['create']>[0]) =>
+    input.sessionAdmission.runOrJoin(artifact.sessionId, async () => {
+      if ((await input.sessions.probeSessionRemoval(artifact.sessionId)).kind !== 'present')
+        return null;
+      return runWrite(() => input.artifacts.create(artifact));
+    });
+
   const recordToolArtifacts = async (event: ToolArtifactRecorderInput): Promise<void> => {
     for (const candidate of event.candidates) {
       let content = candidate.content;
@@ -66,29 +79,43 @@ export function createHostExecutionArtifactServices(input: {
         content = (await readBoundedSourceFile(event.cwd, candidate.sourcePath)) ?? undefined;
       }
       if (content === undefined || contentBytes(content) > MAX_ATTACHMENT_BYTES) continue;
-      await runWrite(() =>
-        input.artifacts.create({
-          sessionId: event.sessionId,
-          turnId: event.turnId,
-          name: candidate.name,
-          kind: candidate.kind,
-          content,
-          ...(candidate.mimeType ? { mimeType: candidate.mimeType } : {}),
-          source: candidate.source ?? 'tool_result',
-          ...(candidate.summary ? { summary: candidate.summary } : {}),
-        }),
-      );
+      await publish({
+        sessionId: event.sessionId,
+        turnId: event.turnId,
+        name: candidate.name,
+        kind: candidate.kind,
+        content,
+        ...(candidate.mimeType ? { mimeType: candidate.mimeType } : {}),
+        source: candidate.source ?? 'tool_result',
+        ...(candidate.summary ? { summary: candidate.summary } : {}),
+      });
     }
   };
 
   const services: HostExecutionArtifactServices = {
     recordToolArtifacts,
+    publishChildWorkspacePatch: async ({ sessionId, turnId, binding, patch }) => {
+      const artifact = await publish({
+        id: subagentWritebackArtifactId(sessionId, turnId),
+        sessionId,
+        turnId,
+        name: 'workspace.patch',
+        kind: 'diff',
+        content: patch,
+        mimeType: 'text/x-diff; charset=utf-8',
+        source: 'subagent_writeback',
+        summary: `Workspace changes relative to ${binding.baseCommit}.`,
+      });
+      if (!artifact)
+        throw new Error(`Child Session ${sessionId} was retired before patch publication`);
+      return artifact;
+    },
     toolResultArchive: createToolResultArchiveCapability({
       archiveToolResult: (event: ToolResultArchiveRecorderInput) =>
         runWrite(async () => {
           const artifactId = stableToolResultArchiveArtifactId(event);
           const existing = await input.artifacts.getInSession(event.sessionId, artifactId);
-          if (existing.record?.status === 'live') {
+          if (existing.record) {
             const read = await readArchive(input.artifacts, {
               artifactId,
               sessionId: event.sessionId,
@@ -121,6 +148,17 @@ export function createHostExecutionArtifactServices(input: {
     }),
   };
   return Object.freeze(services);
+}
+
+function subagentWritebackArtifactId(sessionId: string, turnId: string): string {
+  const digest = createHash('sha256')
+    .update('maka-subagent-writeback-v1\0')
+    .update(sessionId)
+    .update('\0')
+    .update(turnId)
+    .digest('hex')
+    .slice(0, 32);
+  return `subagent_writeback_${digest}`;
 }
 
 async function readBoundedSourceFile(cwd: string, sourcePath: string): Promise<Buffer | null> {
@@ -171,7 +209,6 @@ async function readArchive(
   const entry = await artifacts.getInSession(event.sessionId, event.artifactId);
   const record = entry.record;
   if (!record) return { ok: false, reason: 'not_found' };
-  if (record.status === 'deleted') return { ok: false, reason: 'deleted' };
   if (record.source !== 'tool_result_archive') return { ok: false, reason: 'source_mismatch' };
   if (record.sizeBytes !== event.originalBytes) return { ok: false, reason: 'size_mismatch' };
   const read = await artifacts.readTextInSession(event.sessionId, event.artifactId, {

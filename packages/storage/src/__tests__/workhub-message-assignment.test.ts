@@ -77,6 +77,9 @@ test('atomically commits one WorkHub assignment and target admission', async () 
       ),
       [request.assignment],
     );
+    assert.deepEqual(await store.readActiveWorkHubAssignmentsByTarget([target.id]), [
+      request.assignment,
+    ]);
     const coordination = await store.readHeaderSnapshot(WORKHUB_COORDINATION_SESSION_ID);
     assert.equal(coordination.lastMessageAt, request.assignment.ts);
     await store.markMessagesHandedOff({
@@ -87,6 +90,266 @@ test('atomically commits one WorkHub assignment and target admission', async () 
     const replayAfterConsumption = await store.assignWorkHubMessage(request);
     assert.equal(replayAfterConsumption.kind, 'existing');
     assert.deepEqual(replayAfterConsumption.assignment, request.assignment);
+    assert.deepEqual(await store.readActiveWorkHubAssignmentsByTarget([target.id]), [
+      request.assignment,
+    ]);
+  } finally {
+    await store.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('scans every target Message lifecycle once and preserves Coordination order', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-workhub-target-linkage-'));
+  const store = createSessionStore(root);
+  try {
+    await createCoordinationSession(store, root);
+    const target = await store.create({
+      cwd: root,
+      name: 'Payments',
+      llmConnectionSlug: 'test',
+      model: 'test',
+      permissionMode: 'ask',
+    });
+    const unrelated = await store.create({
+      cwd: root,
+      name: 'Login',
+      llmConnectionSlug: 'test',
+      model: 'test',
+      permissionMode: 'ask',
+    });
+    const oldest = assignmentRequest('target-oldest', target.id, 'Payments', 'oldest-turn');
+    const middle = assignmentRequest('target-middle', target.id, 'Payments', 'middle-turn');
+    const newest = assignmentRequest('target-newest', target.id, 'Payments', 'newest-turn');
+    await store.assignWorkHubMessage(oldest);
+    await store.assignWorkHubMessage(
+      assignmentRequest('unrelated-action', unrelated.id, 'Login', 'unrelated-turn'),
+    );
+    await store.assignWorkHubMessage(middle);
+    await store.markMessagesHandedOff({
+      sessionId: target.id,
+      messageIds: [middle.admission.messageId],
+      turnId: middle.admission.turnId,
+    });
+    await store.assignWorkHubMessage(newest);
+    assert.equal(
+      await store.claimMessageAdmissionCancellation(
+        target.id,
+        newest.admission.messageId,
+        'newest-cancellation-claim',
+      ),
+      'cancelled_by_claim',
+    );
+
+    assert.deepEqual(await store.readActiveWorkHubAssignmentsByTarget([target.id]), [
+      newest.assignment,
+      middle.assignment,
+      oldest.assignment,
+    ]);
+  } finally {
+    await store.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('keeps target assignments reachable when their Message lifecycle changes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-workhub-target-linkage-transition-'));
+  const store = createSessionStore(root);
+  try {
+    await createCoordinationSession(store, root);
+    const target = await store.create({
+      cwd: root,
+      name: 'Payments',
+      llmConnectionSlug: 'test',
+      model: 'test',
+      permissionMode: 'ask',
+    });
+    const requests = ['transition-first', 'transition-second', 'transition-third']
+      .map((actionId) => assignmentRequest(actionId, target.id, target.name, `${actionId}-turn`))
+      .sort((left, right) => left.admission.messageId.localeCompare(right.admission.messageId));
+    for (const request of requests) await store.assignWorkHubMessage(request);
+
+    await store.markMessagesHandedOff({
+      sessionId: target.id,
+      messageIds: [requests[1]!.admission.messageId],
+      turnId: requests[1]!.admission.turnId,
+    });
+    assert.equal(
+      await store.claimMessageAdmissionCancellation(
+        target.id,
+        requests[0]!.admission.messageId,
+        'transition-cancellation-claim',
+      ),
+      'cancelled_by_claim',
+    );
+
+    assert.deepEqual(
+      (await store.readActiveWorkHubAssignmentsByTarget([target.id])).map(
+        ({ actionId }) => actionId,
+      ),
+      [...requests].reverse().map(({ assignment }) => assignment.actionId),
+    );
+  } finally {
+    await store.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('ignores ordinary WorkHub-shaped Message ids without hiding a real linkage', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-workhub-target-linkage-namespace-'));
+  const store = createSessionStore(root);
+  try {
+    await createCoordinationSession(store, root);
+    const target = await store.create({
+      cwd: root,
+      name: 'Payments',
+      llmConnectionSlug: 'test',
+      model: 'test',
+      permissionMode: 'ask',
+    });
+    const unrelated = await store.create({
+      cwd: root,
+      name: 'Login',
+      llmConnectionSlug: 'test',
+      model: 'test',
+      permissionMode: 'ask',
+    });
+    const real = assignmentRequest('real-target-action', target.id, target.name, 'real-turn');
+    const other = assignmentRequest(
+      'other-target-action',
+      unrelated.id,
+      unrelated.name,
+      'other-turn',
+    );
+    await store.assignWorkHubMessage(real);
+    await store.assignWorkHubMessage(other);
+    const ordinaryContent = normalizeMessageContent({ text: 'An ordinary pending Message' });
+    const ordinaryIds = [
+      ...Array.from(
+        { length: 33 },
+        (_, index) => `whm_${(index + 1).toString(16).padStart(48, '0')}`,
+      ),
+      other.admission.messageId,
+    ];
+    assert.equal(
+      ordinaryIds.slice(0, -1).every((id) => id < real.admission.messageId),
+      true,
+    );
+    for (const [index, messageId] of ordinaryIds.entries()) {
+      await store.commitMessageAdmission({
+        sessionId: target.id,
+        turnId: `ordinary-turn-${index}`,
+        runId: `ordinary-run-${index}`,
+        messageId,
+        content: ordinaryContent,
+        submittedContentDigest: messageContentDigest(ordinaryContent),
+        submittedPlacement: 'current_turn',
+        placement: 'current_turn',
+        disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: index,
+      });
+    }
+
+    assert.deepEqual(
+      (await store.readActiveWorkHubAssignmentsByTarget([target.id])).map(
+        ({ actionId }) => actionId,
+      ),
+      [real.assignment.actionId],
+    );
+  } finally {
+    await store.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('retires a link on every terminal record and on no other outcome', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-workhub-terminal-matrix-'));
+  const store = createSessionStore(root);
+  try {
+    await createCoordinationSession(store, root);
+    const target = await store.create({
+      cwd: root,
+      name: 'Payments',
+      llmConnectionSlug: 'test',
+      model: 'test',
+      permissionMode: 'ask',
+    });
+    const requests = Object.fromEntries(
+      ['plain', 'superseded', 'aborted', 'stopped', 'not-owned'].map((actionId) => [
+        actionId,
+        assignmentRequest(actionId, target.id, 'Payments', `${actionId}-turn`),
+      ]),
+    ) as Record<'plain' | 'superseded' | 'aborted' | 'stopped' | 'not-owned', AssignmentRequest>;
+    for (const request of Object.values(requests)) await store.assignWorkHubMessage(request);
+
+    const superseded = requests.superseded.assignment;
+    const aborted = requests.aborted.assignment;
+    const stopped = requests.stopped.assignment;
+    const notOwned = requests['not-owned'].assignment;
+    const supersession: WorkHubDelegationSupersededMessage = {
+      type: 'workhub_coordination',
+      id: `whx_${terminalSuffix(superseded.delegationId)}`,
+      turnId: 'terminal-matrix',
+      ts: 20,
+      schemaVersion: 2,
+      kind: 'delegation_superseded',
+      actionId: 'terminal-matrix-supersede',
+      actionFingerprint: `sha256:${'d'.repeat(64)}`,
+      coordinationTurnId: 'terminal-matrix',
+      supersededActionId: superseded.actionId,
+      supersededDelegationId: superseded.delegationId,
+      replacementDelegationId: 'whd_terminal_matrix_replacement',
+    };
+    const replacementAbort: WorkHubDelegationReplacementAbortedMessage = {
+      type: 'workhub_coordination',
+      id: `whb_${terminalSuffix(aborted.delegationId)}`,
+      turnId: 'terminal-matrix',
+      ts: 21,
+      schemaVersion: 2,
+      kind: 'delegation_replacement_aborted',
+      actionId: 'terminal-matrix-abort',
+      actionFingerprint: `sha256:${'e'.repeat(64)}`,
+      coordinationTurnId: 'terminal-matrix',
+      abortedActionId: aborted.actionId,
+      abortedDelegationId: aborted.delegationId,
+      targetSessionId: target.id,
+      reason: 'target_unavailable',
+    };
+    const stopResolution = (
+      assignment: WorkHubDelegationAssignedMessage,
+      outcome: WorkHubDelegationStopResolvedMessage['outcome'],
+      ts: number,
+    ): WorkHubDelegationStopResolvedMessage => ({
+      type: 'workhub_coordination',
+      id: `whz_${terminalSuffix(assignment.delegationId)}`,
+      turnId: 'terminal-matrix',
+      ts,
+      schemaVersion: 3,
+      kind: 'delegation_stop_resolved',
+      actionId: `terminal-matrix-stop-${outcome}`,
+      actionFingerprint: `sha256:${'f'.repeat(64)}`,
+      coordinationTurnId: 'terminal-matrix',
+      stopsActionId: assignment.actionId,
+      stopsDelegationId: assignment.delegationId,
+      targetSessionId: target.id,
+      targetTurnId: assignment.targetTurnId,
+      outcome,
+    });
+    await store.appendMessages(WORKHUB_COORDINATION_SESSION_ID, [
+      supersession,
+      replacementAbort,
+      stopResolution(stopped, 'stop_delivered', 22),
+      // `not_owned` means WorkHub never held the work, so the link survives.
+      stopResolution(notOwned, 'not_owned', 23),
+    ]);
+
+    assert.deepEqual(
+      (await store.readActiveWorkHubAssignmentsByTarget([target.id])).map(
+        ({ actionId }) => actionId,
+      ),
+      ['not-owned', 'plain'],
+    );
   } finally {
     await store.close?.();
     await rm(root, { recursive: true, force: true });
@@ -454,6 +717,12 @@ async function createCoordinationSession(
     },
   });
 }
+
+function terminalSuffix(delegationId: string): string {
+  return createHash('sha256').update(delegationId, 'utf8').digest('hex').slice(0, 48);
+}
+
+type AssignmentRequest = ReturnType<typeof assignmentRequest>;
 
 function assignmentRequest(
   actionId: string,

@@ -22,6 +22,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import fsPromises from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
+import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
+import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
+import { createHostExecutionArtifactServices } from '../server/execution-artifacts.js';
 import { describe, test } from 'node:test';
 import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
@@ -52,7 +57,117 @@ const CONNECTION_CONTEXT: ConnectionContext = {
 };
 
 describe('Host Session retirement coordinator', () => {
-  test('retires context refs before draining every physical garbage batch', async () => {
+  test('retirement finalizes admitted patches and fences late artifact publication', async (t) => {
+    await withHarness(async (harness) => {
+      const capability = await resolveStorageRoot({
+        path: harness.workspaceRoot,
+        kind: 'interactive',
+      });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+      const source = join(harness.workspaceRoot, 'late.txt');
+      await fsPromises.writeFile(source, 'late payload');
+      let entered!: () => void;
+      let release!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const blocked = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const original = fsPromises.realpath;
+      const pause = t.mock.method(
+        fsPromises,
+        'realpath',
+        async (...args: Parameters<typeof original>) => {
+          if (args[0] === source) {
+            entered();
+            await blocked;
+          }
+          return original(...args);
+        },
+      );
+      syncBuiltinESMExports();
+      let recording: Promise<void> | undefined;
+      try {
+        harness.purgeArtifact = (sessionId) => artifacts.purgeSessionArtifacts(sessionId);
+        const recorder = createHostExecutionArtifactServices({
+          artifacts,
+          requestDrain: () => assert.fail('unexpected drain'),
+          sessionAdmission: harness.admission,
+          sessions: harness.store,
+        });
+        const patch = {
+          turnId: 'turn-1',
+          patch: Buffer.from('workspace patch'),
+          binding: {
+            schemaVersion: 1 as const,
+            kind: 'git_worktree' as const,
+            leaseId: `subagent_worktree_${'a'.repeat(32)}`,
+            gitCommonDir: join(harness.workspaceRoot, '.git'),
+            worktreePath: harness.workspaceRoot,
+            branch: `maka/subagent/${'a'.repeat(32)}`,
+            baseCommit: 'b'.repeat(40),
+          },
+        };
+        harness.finalizeWorkspacePatches = async (sessionId) => {
+          const published = await recorder.publishChildWorkspacePatch({ ...patch, sessionId });
+          assert.equal(published.source, 'subagent_writeback');
+          assert.deepEqual(await artifacts.readTextInSession(sessionId, published.id), {
+            ok: true,
+            text: 'workspace patch',
+          });
+        };
+        recording = recorder.recordToolArtifacts({
+          sessionId: harness.revisionId,
+          turnId: 'turn-1',
+          toolUseId: 'tool-1',
+          toolName: 'Write',
+          args: {},
+          result: {},
+          cwd: harness.workspaceRoot,
+          candidates: [{ kind: 'file', name: 'late.txt', sourcePath: source }],
+        });
+        await started;
+        const target = await harness.store.readHeaderRecordSnapshot(harness.revisionId);
+        const removed = await harness.coordinator.handlers['session.remove'](
+          {
+            sessionId: harness.revisionId,
+            expectedRevision: target.revision,
+          },
+          CONNECTION_CONTEXT,
+        );
+        assert.equal(removed.ok, true);
+        await waitFor(
+          async () => (await harness.store.listPendingSessionRetirementCleanupIds()).length === 0,
+          'retirement cleanup completes while source read is paused',
+        );
+        release();
+        await recording;
+        await assert.rejects(
+          recorder.publishChildWorkspacePatch({ ...patch, sessionId: harness.revisionId }),
+          /retired before patch publication/,
+        );
+        assert.deepEqual(
+          (await artifacts.listPage(harness.revisionId, { offset: 0, limit: 10 })).records,
+          [],
+        );
+      } finally {
+        release();
+        try {
+          await recording;
+        } finally {
+          pause.mock.restore();
+          syncBuiltinESMExports();
+          artifacts.close();
+          await owner.close();
+        }
+      }
+    });
+  });
+
+  test('retires only its own context refs without draining global garbage', async () => {
     const contextActions: string[] = [];
     let garbageBatches = 0;
     await purgeSessionSidecars(
@@ -64,10 +179,12 @@ describe('Host Session retirement coordinator', () => {
             contextActions.push(`retire:${sessionId}`);
             return { releasedReferences: 1, releasedLogicalBytes: 10 };
           },
-          collectGarbage: async (input) => {
-            contextActions.push(`collect:${input.maxBlobs}`);
-            garbageBatches += 1;
-            return { deletedBlobs: 1, deletedBytes: 10, hasMore: garbageBatches < 3 };
+          ...{
+            collectGarbage: async (input: { maxBlobs: number }) => {
+              contextActions.push(`collect:${input.maxBlobs}`);
+              garbageBatches += 1;
+              return { deletedBlobs: 1, deletedBytes: 10, hasMore: garbageBatches < 3 };
+            },
           },
         },
         purgeOperationalState: async () => {},
@@ -75,12 +192,8 @@ describe('Host Session retirement coordinator', () => {
       'session-context',
     );
 
-    assert.deepEqual(contextActions, [
-      'retire:session-context',
-      'collect:64',
-      'collect:64',
-      'collect:64',
-    ]);
+    assert.deepEqual(contextActions, ['retire:session-context']);
+    assert.equal(garbageBatches, 0);
   });
 
   test('rejects ordinary archive and remove operations for the Coordination Session', async () => {
@@ -1269,7 +1382,6 @@ async function withHarness(
           actions.retiredContext.push(sessionId);
           return { releasedReferences: 0, releasedLogicalBytes: 0 };
         },
-        collectGarbage: async () => ({ deletedBlobs: 0, deletedBytes: 0, hasMore: false }),
       },
       purgeOperationalState: async (sessionId) => {
         actions.purgedOperationalState.push(sessionId);

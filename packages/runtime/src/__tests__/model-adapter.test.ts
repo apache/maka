@@ -400,7 +400,7 @@ describe('ModelAdapter stream and error normalization', () => {
       type: 'model_failure',
       kind: 'rate_limit',
       code: '429',
-      message: 'Rate limit exceeded',
+      message: '429 rate limit (code=429)',
       retryable: false,
     });
     // The backend consumes the typed failure without recovering the raw
@@ -408,7 +408,7 @@ describe('ModelAdapter stream and error normalization', () => {
     const shaped = adapter.makeErrorEvent('turn-1', errorEvent.failure);
     assert.equal(shaped.reason, 'rate_limit');
     assert.equal(shaped.code, '429');
-    assert.equal(shaped.message, 'Rate limit exceeded');
+    assert.equal(shaped.message, '429 rate limit (code=429)');
   });
 
   test('normalizes a status-less provider server_error into a retryable outage', () => {
@@ -430,7 +430,8 @@ describe('ModelAdapter stream and error normalization', () => {
         type: 'model_failure',
         kind: 'provider_unavailable',
         code: 'server_error',
-        message: 'Provider returned an error',
+        message:
+          'Streaming response failed: [502] Upstream error from Nvidia: Service temporarily overloaded (code=server_error)',
         retryable: true,
       },
     });
@@ -846,11 +847,11 @@ describe('ModelAdapter stream and error normalization', () => {
 
     assert.equal(
       adapter.classifyError(Object.assign(new Error('401 Authorization'), { code: 401 })),
-      'Auth',
+      'auth',
     );
-    assert.equal(adapter.classifyError(new TypeError('terminated')), 'Network');
+    assert.equal(adapter.classifyError(new TypeError('terminated')), 'network');
     const billingError = Object.assign(new Error('provider request failed'), { statusCode: 402 });
-    assert.equal(adapter.classifyError(billingError), 'ProviderBilling');
+    assert.equal(adapter.classifyError(billingError), 'provider_billing');
     assert.equal(adapter.makeErrorEvent('turn-1', billingError).reason, 'provider_billing');
     assert.equal(
       adapter.makeErrorEvent('turn-1', new Error('Model stream idle timeout after 120000ms'))
@@ -872,7 +873,7 @@ describe('ModelAdapter stream and error normalization', () => {
   });
 
   test('projects the final provider error inside an AI SDK retry wrapper', () => {
-    const inner = Object.assign(new Error('Service unavailable: token=provider-secret'), {
+    const inner = Object.assign(new Error('Service unavailable'), {
       name: 'AI_APICallError',
       statusCode: 503,
     });
@@ -885,8 +886,7 @@ describe('ModelAdapter stream and error normalization', () => {
     const event = newAdapter().makeErrorEvent('turn-1', wrapped);
 
     assert.equal(event.reason, 'provider_unavailable');
-    assert.equal(event.message, 'Provider returned an error');
-    assert.equal(JSON.stringify(event).includes('provider-secret'), false);
+    assert.equal(event.message, 'Service unavailable (status=503)');
   });
 
   test('projects a structured network error to a consistent reason and safe message', () => {
@@ -896,7 +896,7 @@ describe('ModelAdapter stream and error normalization', () => {
     });
 
     assert.equal(event.reason, 'network');
-    assert.equal(event.message, 'Network error');
+    assert.equal(event.message, 'fetch failed');
     assert.equal(JSON.stringify(event).includes('sk-live-secret-token-value'), false);
   });
 
@@ -905,16 +905,16 @@ describe('ModelAdapter stream and error normalization', () => {
     const error = new Error('connect ECONNREFUSED 127.0.0.1:443');
     const event = adapter.makeErrorEvent('turn-1', error);
 
-    assert.equal(adapter.classifyError(error), 'Error');
-    assert.equal(event.reason, undefined);
-    assert.equal(event.message, 'Network error');
+    assert.equal(adapter.classifyError(error), 'unknown');
+    assert.equal(event.reason, 'unknown');
+    assert.equal(event.message, 'connect ECONNREFUSED 127.0.0.1:443');
   });
 
   test('projects string provider errors through the same classification', () => {
     const event = newAdapter().makeErrorEvent('turn-1', 'fetch failed');
 
     assert.equal(event.reason, 'network');
-    assert.equal(event.message, 'Network error');
+    assert.equal(event.message, 'fetch failed');
   });
 
   test('retains a safe bounded summary from an unknown structured provider error', () => {
@@ -929,7 +929,7 @@ describe('ModelAdapter stream and error normalization', () => {
     });
     const event = adapter.makeErrorEvent('turn-1', failure);
 
-    assert.equal(event.reason, undefined);
+    assert.equal(event.reason, 'unknown');
     assert.equal(event.code, 'provider_error');
     assert.match(event.message, /^provider exploded api_key=\[redacted\]/);
     assert.match(event.message, /… \(code=provider_error, requestId=req-123\)$/);

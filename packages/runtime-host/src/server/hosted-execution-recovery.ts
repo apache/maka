@@ -18,6 +18,7 @@
  */
 
 import { isDeepStrictEqual } from 'node:util';
+import { readLogicalRuntimeExecution } from '@maka/core/runtime-logical-execution';
 import {
   runtimeInvocationOutcome,
   type RootExecutionDescriptor,
@@ -76,6 +77,12 @@ export async function prepareHostedExecutionRecovery(
     const pendingRecoveryClosures: RootTurnAdmission[] = [];
     for (const admission of admissions) {
       const run = runsById.get(admission.runId);
+      const logical =
+        run && (await readLogicalRuntimeExecution(input.stores.runtimeEventStore, admission, run));
+      if (logical?.pendingHandoff) {
+        replayAdmissions.push(admission);
+        rootReplayAdmissions.push(admission);
+      }
       const rootUserMessages = (
         messageIndex.userMessagesByTurnId.get(admission.turnId) ?? []
       ).filter((message) => message.id === admission.userMessageId);
@@ -85,7 +92,7 @@ export async function prepareHostedExecutionRecovery(
       const executionContract = recoveryExecutionContract(admission.execution);
       if (
         admission.execution.kind === 'scheduled_task' &&
-        (!run || runtimeInvocationOutcome(run) === undefined)
+        (!logical || runtimeInvocationOutcome(logical.tip) === undefined)
       ) {
         if (!input.assertScheduledTaskAdmission) {
           throw new RuntimeMessageAuthorityInvariantError(

@@ -24,6 +24,17 @@ import { getTuiPickerCopy, onboardingFailureMessage } from '../pi-tui-pickers.js
 import { TUI_COPY_RESOURCES } from '../tui-copy-catalog.js';
 
 const MESSAGE_VALUES = {
+  action: 'stop',
+  name: 'Local',
+  owner: 'npm-global:test',
+  root: 'root-id',
+  epoch: 'epoch-id',
+  composition: 'interactive',
+  revision: 'revision-id',
+  connections: 2,
+  operations: 1,
+  residencies: 0,
+  state: 'ready',
   count: 2,
   detail: 'HTTP 401',
   hasDetail: true,

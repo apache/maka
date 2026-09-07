@@ -29,7 +29,10 @@ import {
   decodeExternalSessionCatalogQueryInput,
   decodeExternalSessionImportInput,
 } from '@maka/runtime-host/protocol';
-import type { ExternalSessionImportIpcResult } from '../preload/external-session-import-result.js';
+import type {
+  ExternalSessionImportFailureReason,
+  ExternalSessionImportIpcResult,
+} from '../preload/external-session-import-result.js';
 import type { DesktopHostExternalSessionCatalogItem } from '../preload/external-session-catalog.js';
 import {
   handleReconnectableRead,
@@ -85,22 +88,42 @@ export function registerRuntimeHostExternalSessionsIpc(
     } catch (error) {
       if (
         error instanceof RuntimeHostOperationError &&
-        error.operation === 'external-session.import' &&
-        error.code === 'commit_outcome_unknown'
+        error.operation === 'external-session.import'
       ) {
-        // "Unknown" means the task may well be in the catalog, so tell the
-        // shell to read it again. Without this, the only trace of a maybe-
-        // committed import is the banner on the page, and the page is gone the
-        // moment the user leaves Settings -- which is exactly when they come
-        // back and import the same conversation a second time. No id: the
-        // whole point is that we do not know which task, if any, landed.
-        deps.emitSessionsChanged('created');
-        return {
-          ok: false,
-          reason: 'commit_outcome_unknown',
-        } satisfies ExternalSessionImportIpcResult;
+        if (error.code === 'commit_outcome_unknown') {
+          // "Unknown" means the task may well be in the catalog, so tell the
+          // shell to read it again. Without this, the only trace of a maybe-
+          // committed import is the banner on the page, and the page is gone the
+          // moment the user leaves Settings -- which is exactly when they come
+          // back and import the same conversation a second time. No id: the
+          // whole point is that we do not know which task, if any, landed.
+          deps.emitSessionsChanged('created');
+          return {
+            ok: false,
+            reason: 'commit_outcome_unknown',
+          } satisfies ExternalSessionImportIpcResult;
+        }
+        const reason = classifyImportFailure(error);
+        if (reason !== undefined) {
+          return { ok: false, reason } satisfies ExternalSessionImportIpcResult;
+        }
       }
       throw error;
     }
   });
+}
+
+/**
+ * Turn the intact Host operation error into a typed reason the renderer can
+ * render distinctly. Done here, in Desktop Main, because Electron IPC drops the
+ * `code` before the renderer sees the error. The coordinator publishes dedicated
+ * stable codes for these cases, so this maps by code alone — no message text and
+ * no reuse of an overloaded code such as `invalid_request`.
+ */
+function classifyImportFailure(
+  error: RuntimeHostOperationError,
+): Exclude<ExternalSessionImportFailureReason, 'commit_outcome_unknown'> | undefined {
+  if (error.code === 'model_unavailable') return 'no_model';
+  if (error.code === 'source_unreadable') return 'source_unreadable';
+  return undefined;
 }

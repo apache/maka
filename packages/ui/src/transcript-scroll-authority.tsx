@@ -97,7 +97,7 @@ export interface TranscriptScrollAuthority {
    * whoever needs "the reader is near the start" asks the position, and this
    * says when asking means anything.
    */
-  subscribeToReaderScroll(listener: () => void): () => void;
+  subscribeToReaderScroll(listener: (direction: 'up' | 'down') => void): () => void;
   subscribe(listener: () => void): () => void;
   getSnapshot(): TranscriptScrollSnapshot;
 }
@@ -130,7 +130,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   let lastScrollTop = 0;
   let snapshot: TranscriptScrollSnapshot = { pinned, awayFromTail };
   const listeners = new Set<() => void>();
-  const readerListeners = new Set<() => void>();
+  const readerListeners = new Set<(direction: 'up' | 'down') => void>();
 
   const publish = (): void => {
     // Net height cannot explain anchoring when content shrinks above the
@@ -177,6 +177,9 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
           lastScrollTop = target.scrollTop;
           return;
         }
+        // Once the viewport leaves our write, returning to that same pixel is
+        // a new movement, not an echo (bounded windows often have equal heights).
+        lastWrittenTop = undefined;
         // Content moves the offset too, and only ever by how much the end of
         // the transcript moved. Native anchoring answers content landing above
         // the reader by pushing the offset down by exactly what was inserted,
@@ -215,7 +218,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         }
         pinned = distance <= PIN_THRESHOLD_PX;
         publish();
-        for (const listener of [...readerListeners]) listener();
+        for (const listener of [...readerListeners]) listener(unexplained < 0 ? 'up' : 'down');
       };
       lastScrollHeight = target.scrollHeight;
       lastClientHeight = target.clientHeight;
@@ -322,7 +325,11 @@ export function useTranscriptScrollAuthority(): TranscriptScrollAuthority {
  * The label stays unset on purpose: `ChatSurfaceLayout` overrides Astryx's
  * `scrollToBottom` string through the locale provider that wraps this.
  */
-export function TranscriptScrollButton() {
+export function TranscriptScrollButton({
+  onActivate,
+}: {
+  onActivate?: () => Promise<void> | void;
+}) {
   const authority = useTranscriptScrollAuthority();
   const snapshot = useSyncExternalStore(
     authority.subscribe,
@@ -331,8 +338,12 @@ export function TranscriptScrollButton() {
   );
   return (
     <ChatLayoutScrollButton
-      isVisible={snapshot.awayFromTail}
-      onClick={() => authority.pinToTail()}
+      isVisible={snapshot.awayFromTail || onActivate !== undefined}
+      onClick={() => {
+        authority.pinToTail();
+        const activation = onActivate?.();
+        if (activation) void activation.catch(() => undefined);
+      }}
     />
   );
 }
