@@ -31,6 +31,7 @@
 // legible in both light and dark themes; viewBox is the upstream 24×24.
 
 import type { ProviderType } from '@maka/core/llm-connections';
+import { Cpu, ICON_SIZE } from '@maka/ui/icons';
 import type { ReactElement } from 'react';
 import { siMinimax } from 'simple-icons';
 import alibabaBrandMark from '../assets/provider-brands/alibabacloud.svg';
@@ -342,15 +343,6 @@ function MiniMaxMark(): ReactElement {
   );
 }
 
-function GenericProviderMark(): ReactElement {
-  return (
-    <svg viewBox="0 0 24 24" role="img" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="12" cy="12" r="8" />
-      <path d="M8 9.5h6.5a2 2 0 010 4H9.5a2 2 0 000 4H16" />
-    </svg>
-  );
-}
-
 // Vendored unchanged from @lobehub/icons-static-svg@1.91.0:
 // https://github.com/lobehub/lobe-icons/blob/32f4083f7a20b67ecdc7b29c0af031ada5a29c52/packages/static-svg/icons/ollama.svg
 // Lobe Icons is MIT licensed; this path is consumed verbatim, not redrawn here.
@@ -414,7 +406,7 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
     case 'github-copilot':
       // Primer Octicons does not license GitHub logos under its MIT terms.
       // Keep the provider identifiable by name without redistributing the mark.
-      return <GenericProviderMark />;
+      return <Cpu size={ICON_SIZE.plate} aria-hidden="true" />;
     case 'google':
       return <Gemini />;
     case 'deepseek':
@@ -464,6 +456,6 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
     case 'volcengine-agent-plan':
       return <img src={volcengineBrandMark} alt="" />;
     default:
-      return <GenericProviderMark />;
+      return <Cpu size={ICON_SIZE.plate} aria-hidden="true" />;
   }
 }
