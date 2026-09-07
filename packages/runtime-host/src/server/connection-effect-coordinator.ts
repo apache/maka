@@ -152,7 +152,12 @@ export class HostConnectionEffectCoordinator {
       const effect = await this.#withTransport(prepared, (fetch, secret) =>
         this.#runModelDiscovery(prepared.connection, secret, { fetch }),
       );
-      if (!effect.ok || effect.models.length === 0) {
+      // Copilot's account catalog is authoritative: an empty successful
+      // response means the account currently has no selectable models.
+      if (
+        !effect.ok ||
+        (effect.models.length === 0 && prepared.connection.providerType !== 'github-copilot')
+      ) {
         return {
           kind: 'failed',
           errorClass: effect.ok ? 'invalid_response' : effect.error.kind,

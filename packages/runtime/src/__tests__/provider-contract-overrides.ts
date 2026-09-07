@@ -364,6 +364,14 @@ async function runGitHubCopilotDiscovery(): Promise<void> {
           policy: { state: 'unconfigured' },
         },
         {
+          ...copilotModel('null-policy', ['/chat/completions']),
+          policy: null,
+        },
+        {
+          ...copilotModel('malformed-policy', ['/chat/completions']),
+          policy: 'enabled',
+        },
+        {
           ...copilotModel('hidden-from-picker', ['/chat/completions']),
           model_picker_enabled: false,
         },

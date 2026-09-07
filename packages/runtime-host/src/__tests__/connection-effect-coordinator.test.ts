@@ -1499,6 +1499,68 @@ test('provider discovery failure preserves the existing catalog and returns no s
   });
 });
 
+test('commits an authoritative empty GitHub Copilot catalog', async () => {
+  await withFixture(async ({ stores }) => {
+    const connection = await createConnection(
+      stores,
+      0,
+      connectionDraft('copilot-empty', 'github-copilot'),
+    );
+    const storedCredential = serializeOAuthSubscriptionTokens({
+      access_token: 'gho_copilot_empty',
+      refresh_token: 'ghr_copilot_empty',
+      expires_at: Number.MAX_SAFE_INTEGER,
+      token_type: 'Bearer',
+      base_url: 'https://api.githubcopilot.com',
+    });
+    const enrollment = await stores.operations.beginInteractiveOAuthLogin({
+      attemptId: 'connection-effect-copilot-empty',
+      target: { kind: 'existing', connectionId: connection.connectionId },
+    });
+    assert.equal(enrollment.kind, 'ready');
+    if (enrollment.kind !== 'ready') throw new Error('OAuth enrollment did not start');
+    const credential = await stores.operations.completeInteractiveOAuthLogin(
+      enrollment.ticket,
+      storedCredential,
+    );
+    assert.equal(credential.kind, 'committed');
+
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      now: () => 123,
+      createTransport: () => recordingTransport(() => undefined),
+      runModelDiscovery: async () => ({ ok: true, models: [] }),
+    });
+
+    const result = await coordinator.handlers['connection.models.fetch'](
+      { connectionId: connection.connectionId },
+      context,
+    );
+    assert.deepEqual(result, {
+      ok: true,
+      result: {
+        kind: 'committed',
+        catalogRevision: 2,
+        connection: { connectionId: connection.connectionId, revision: 2 },
+        modelCount: 0,
+        source: 'fetched',
+        fetchedAt: 123,
+      },
+    });
+
+    const snapshot = await stores.connectionCatalog.getSnapshot();
+    const updated = snapshot.connections.find(
+      ({ connectionId }) => connectionId === connection.connectionId,
+    );
+    assert.ok(updated);
+    assert.deepEqual(updated.models, []);
+    assert.deepEqual(updated.enabledModelIds, []);
+    assert.equal(snapshot.defaultTarget, null);
+  });
+});
+
 test('OAuth connection effects resolve the canonical access token instead of sending the vault payload', async () => {
   await withFixture(async ({ stores }) => {
     const connection = await createConnection(
