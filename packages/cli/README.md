@@ -22,7 +22,8 @@
 [简体中文](https://github.com/apache/maka/blob/main/packages/cli/README.zh-CN.md)
 
 Maka is a local-first agent workspace. The `maka-agent` npm package installs the interactive
-terminal UI, the non-interactive CLI, Runtime Host tooling, and the Eval command.
+terminal UI, the non-interactive CLI, Runtime Host tooling, and the Eval command. That package is
+published under the `nightly` dist-tag; `latest` holds an early alpha stub (see [Install](#install)).
 
 ## Apache Incubation Disclaimer
 
@@ -58,18 +59,23 @@ release gate. Real Eval executor validation currently runs on Linux x64 with Nod
 
 ## Install
 
-Install the current alpha from the `latest` dist-tag. The published package is an early alpha
-(0.0.0-alpha.0) with a limited command surface (`doctor`, help, and version); the complete CLI/TUI
-is not published to npm yet and runs from a source checkout of this repository:
+Two dist-tags are live on npm, and they are not interchangeable:
 
-```sh
-npm install --global maka-agent
-maka --version
-maka --help
-```
+- `nightly` carries the complete CLI — currently `0.2.0-dev.23.20260906`:
+
+  ```sh
+  npm install --global maka-agent@nightly
+  maka --version
+  maka --help
+  ```
+
+- `latest` points at an early alpha (`0.0.0-alpha.0`) whose command surface is limited to
+  `doctor`, help, and version. Because of that split, do not use a bare
+  `npm update --global maka-agent`: it follows `latest` and may switch the installation to the
+  other release line.
 
 The public command is `maka`. For a one-off invocation, use
-`npx --yes --package maka-agent maka`; the unrelated `maka` package on npm is not this project.
+`npx --yes --package maka-agent@nightly maka`; the unrelated `maka` package on npm is not this project.
 `runtime-host service install` uses the persistent global installation above; `runtime-host setup`
 creates its own managed copy from the exact package invoked by `npx`.
 
@@ -105,12 +111,16 @@ modify.
 
 ## Upgrade
 
-Update through the `latest` tag:
+Update within the nightly line by pinning the exact release (`--target` accepts `latest`,
+`next`, or an exact Maka version — there is no `nightly` channel name):
 
 ```sh
-maka update --target latest
+maka update --target 0.2.0-dev.23.20260906
 maka --version
 ```
+
+Do not use a bare `npm update --global maka-agent` to upgrade: it follows `latest`, which holds
+the early alpha stub, and may switch the installation to the other release line.
 
 The update stages and verifies the exact release before replacing the local Runtime Host or the
 npm-global package. It refuses to interrupt active or durable work by default. Use

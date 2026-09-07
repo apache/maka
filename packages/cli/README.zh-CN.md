@@ -22,7 +22,8 @@
 [English](./README.md)
 
 Maka 是一个本地优先的 Agent 工作空间。`maka-agent` npm 包包含交互式终端界面、非交互
-CLI、Runtime Host 工具和 Eval 命令。
+CLI、Runtime Host 工具和 Eval 命令。该包发布在 `nightly` dist-tag 上；`latest` 指向一个
+早期 alpha stub（见[安装](#安装)）。
 
 ## Apache 孵化免责声明
 
@@ -55,15 +56,21 @@ release commit 中的 [DISCLAIMER-WIP](https://github.com/apache/maka/blob/main/
 
 ## 安装
 
-从 `latest` dist-tag 安装当前的 alpha 版本。npm 上发布的是一个早期 alpha（0.0.0-alpha.0），命令面有限（`doctor`、帮助与版本命令）；完整的 CLI/TUI 尚未发布到 npm，请从本仓库的源码 checkout 运行：
+npm 上有两条 dist-tag，且二者不可互换：
 
-```sh
-npm install --global maka-agent
-maka --version
-maka --help
-```
+- `nightly` 承载完整的 CLI——当前为 `0.2.0-dev.23.20260906`：
 
-公开命令只有 `maka`。一次性运行请使用 `npx --yes --package maka-agent maka`；npm 上与本项目
+  ```sh
+  npm install --global maka-agent@nightly
+  maka --version
+  maka --help
+  ```
+
+- `latest` 指向一个早期 alpha（`0.0.0-alpha.0`），命令面只有 `doctor`、帮助与版本命令。
+  因此不要使用裸的 `npm update --global maka-agent`：它跟随 `latest`，可能把安装切换到
+  另一条发布线。
+
+公开命令只有 `maka`。一次性运行请使用 `npx --yes --package maka-agent@nightly maka`；npm 上与本项目
 无关的 `maka` 包不是本项目。`runtime-host service install` 使用上面的持久全局安装；
 `runtime-host setup` 会从 `npx` 调用的精确 package 创建自己的托管副本。
 
@@ -96,12 +103,16 @@ Maka 默认会在执行高权限工具操作前询问。`maka run --yolo` 会授
 
 ## 升级
 
-通过 `latest` tag 更新：
+在 nightly 线内更新时固定精确版本（`--target` 只接受 `latest`、`next` 或精确的 Maka
+版本号——不存在 `nightly` 这个 channel 名）：
 
 ```sh
-maka update --target latest
+maka update --target 0.2.0-dev.23.20260906
 maka --version
 ```
+
+不要使用裸的 `npm update --global maka-agent` 来升级：它跟随 `latest`（早期 alpha stub），
+可能把安装切换到另一条发布线。
 
 更新流程会先 stage 并验证精确 release，再替换本地 Runtime Host 与 npm-global package；
 默认不会中断 active 或 durable work。只有在你确认可以安全中断后，才使用
