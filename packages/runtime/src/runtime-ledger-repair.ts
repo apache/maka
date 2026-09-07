@@ -79,17 +79,7 @@ export class RuntimeLedgerRepair {
       // the same turn would make the Session read as two. The one exception is
       // this converter's own run: an interrupted import re-derives it, and the
       // deterministic ids let the store dedupe what already landed.
-      const inlineInvocations = await this.listInlineInvocations(sessionId);
-      const ownedTurnIds = new Set(
-        inlineInvocations
-          .filter(
-            (invocation) =>
-              invocation.terminalEvent ||
-              invocation.runId !== transcriptRunId(sessionId, invocation.turnId),
-          )
-          .map((invocation) => invocation.turnId),
-      );
-      const startedRunIds = new Set(inlineInvocations.map((invocation) => invocation.runId));
+      const { ownedTurnIds, startedRunIds } = await this.readLedgerOwnership(sessionId);
 
       for await (const scanned of this.readTurnsInPages(sessionId)) {
         const turnMessages = scanned.messages;
@@ -111,31 +101,19 @@ export class RuntimeLedgerRepair {
         const run = { sessionId, runId, turnId: turn.turnId, invocationId: runId };
         // A build before the ids were derived converted under random ones, so
         // an interrupted run of its can hold events this build cannot rederive.
+        // What it can read is which legacy row each of them came from, and that
+        // is the identity the conversion resumes on.
         const started = startedRunIds.has(runId)
           ? await this.deps.runtimeEventStore.readRuntimeEvents(sessionId, runId)
           : [];
-        const undeducible = started.filter((event) => !isDerivedTranscriptEventId(runId, event.id));
-        // Its opening is the one such event that can be adopted: the run needs
-        // exactly one, `runtime_events_one_opening_per_invocation` refuses a
-        // second, and which id it landed under changes nothing a reader sees.
-        const adoptedOpening =
-          undeducible.length === 1 && undeducible[0]?.content?.kind === 'invocation_opened';
-        if (undeducible.length > 0 && !adoptedOpening) {
-          // Its converted messages cannot be adopted the same way: rederiving
-          // them would stand a second, deterministic copy of each beside the
-          // one already there, and a Session that disagrees with itself is the
-          // failure this ledger exists to remove. The conversion can neither be
-          // finished nor withdrawn, so it is sealed as the unfinished thing it
-          // is — the legacy rows stay, and no one reads this turn as converted.
-          await this.deps.runtimeEventStore.appendRuntimeEvent(
-            sessionId,
-            runId,
-            abandonedTranscriptTerminalEvent({ run, openedAt }),
-          );
-          continue;
+        const converted = new Map<string, number>();
+        for (const event of started) {
+          const rowId = event.refs?.storedMessageId;
+          if (rowId) converted.set(rowId, (converted.get(rowId) ?? 0) + 1);
         }
-        const events = [
-          ...(adoptedOpening ? [] : [transcriptOpeningEvent({ header, run, openedAt })]),
+        const hasOpening = started.some((event) => event.content?.kind === 'invocation_opened');
+        const derived = [
+          ...(hasOpening ? [] : [transcriptOpeningEvent({ header, run, openedAt })]),
           ...backfillRuntimeEventsFromStoredMessages({
             run,
             outcome: transcriptOutcome(turn, turnMessages, openedAt),
@@ -151,7 +129,18 @@ export class RuntimeLedgerRepair {
             now: () => openedAt,
           }).events,
         ];
-        for (const event of events) {
+        // The whole turn is derived either way, so the ids stay the ones a
+        // fresh conversion would mint; only the events whose row already has
+        // that many on the run are dropped. A row half-converted by a crash
+        // between two of its events keeps the rest.
+        const seen = new Map<string, number>();
+        for (const event of derived) {
+          const rowId = event.refs?.storedMessageId;
+          if (rowId !== undefined) {
+            const index = seen.get(rowId) ?? 0;
+            seen.set(rowId, index + 1);
+            if (index < (converted.get(rowId) ?? 0)) continue;
+          }
           await this.deps.runtimeEventStore.appendRuntimeEvent(sessionId, runId, event);
         }
       }
@@ -203,10 +192,27 @@ export class RuntimeLedgerRepair {
     }
   }
 
-  private async listInlineInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]> {
-    return (await this.deps.runtimeEventStore.listSessionInvocations(sessionId)).filter(
-      (invocation) => isSessionInlineInvocation(invocation.opening),
-    );
+  /**
+   * Which turns the ledger already owns and which runs it has started, as ids
+   * rather than records: the inventory is one row per invocation and the scan
+   * that follows outlives it, so nothing keeps the records themselves.
+   */
+  private async readLedgerOwnership(
+    sessionId: string,
+  ): Promise<{ ownedTurnIds: Set<string>; startedRunIds: Set<string> }> {
+    const ownedTurnIds = new Set<string>();
+    const startedRunIds = new Set<string>();
+    for (const invocation of await this.deps.runtimeEventStore.listSessionInvocations(sessionId)) {
+      if (!isSessionInlineInvocation(invocation.opening)) continue;
+      startedRunIds.add(invocation.runId);
+      if (
+        invocation.terminalEvent ||
+        invocation.runId !== transcriptRunId(sessionId, invocation.turnId)
+      ) {
+        ownedTurnIds.add(invocation.turnId);
+      }
+    }
+    return { ownedTurnIds, startedRunIds };
   }
 
   private async withRepairQueue<T>(key: string, operation: () => Promise<T>): Promise<T> {
@@ -244,34 +250,6 @@ function transcriptRunId(sessionId: string, turnId: string): string {
  * emits them. The run id is already derived from the Session and turn, so the
  * same transcript always produces the same ids and a re-run appends nothing.
  */
-/** Whether this build's converter is the one that could have written that id. */
-function isDerivedTranscriptEventId(runId: string, eventId: string): boolean {
-  return eventId === `${runId}-opened` || new RegExp(`^${runId}-e\\d+$`).test(eventId);
-}
-
-/**
- * The terminal fact of a conversion that a released build left part-written.
- * Its id sits outside the derived sequence so it cannot collide with an event
- * that prefix already holds.
- */
-function abandonedTranscriptTerminalEvent(input: {
-  run: { sessionId: string; runId: string; turnId: string; invocationId: string };
-  openedAt: number;
-}): RuntimeEvent {
-  return backfillRuntimeEventsFromStoredMessages({
-    run: input.run,
-    outcome: {
-      status: 'failed',
-      ts: input.openedAt,
-      failureClass: 'missing_terminal_event',
-    },
-    messages: [],
-    modelHistory: 'conversation_text',
-    newId: () => `${input.run.runId}-abandoned`,
-    now: () => input.openedAt,
-  }).events[0] as RuntimeEvent;
-}
-
 function transcriptEventIds(runId: string): () => string {
   let seq = 0;
   return () => {

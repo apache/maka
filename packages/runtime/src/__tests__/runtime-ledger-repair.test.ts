@@ -879,7 +879,7 @@ test('resumes a conversion a released build opened under a random event id', asy
   }
 });
 
-test('seals a released conversion that had already converted messages', async () => {
+test('finishes a released conversion that had already converted messages', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-released-partial-'));
   const sessions = createSessionStore(root);
   const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
@@ -915,11 +915,14 @@ test('seals a released conversion that had already converted messages', async ()
 
     const [run] = await runtimeEvents.listSessionInvocations(session.id);
     assert.ok(run);
-    // The prefix cannot be finished and must not be doubled: one user text, not two.
-    assert.equal(runtimeInvocationOutcome(run), 'failed');
-    assert.equal(runtimeInvocationFailureClass(run), 'missing_terminal_event');
+    // The prefix is resumed by the legacy row each event names, so the turn
+    // converts whole and no row it already carried is converted twice.
+    assert.equal(runtimeInvocationOutcome(run), 'completed');
     const events = await runtimeEvents.readRuntimeEvents(session.id, run.runId);
-    assert.equal(events.filter((event) => event.content?.kind === 'text').length, 1);
+    assert.deepEqual(
+      events.flatMap((event) => (event.content ? [event.content.kind] : [])),
+      ['invocation_opened', 'text', 'text'],
+    );
   } finally {
     runtimeEvents.close();
     await sessions.close?.();
