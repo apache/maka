@@ -479,9 +479,15 @@ export class ConnectionCatalogDocumentOwner {
     // across by alias. A default outside the selection the reconciler just
     // decided is its own bug — fail closed where it is still attributable.
     const defaultTarget = currentDefaultTarget
-      ? { connectionId: previous.connectionId, modelId: reconciled.defaultModel }
+      ? reconciled.defaultModel
+        ? { connectionId: previous.connectionId, modelId: reconciled.defaultModel }
+        : null
       : current.defaultTarget;
-    if (currentDefaultTarget && !reconciled.enabledModelIds.includes(reconciled.defaultModel)) {
+    if (
+      currentDefaultTarget &&
+      reconciled.defaultModel &&
+      !reconciled.enabledModelIds.includes(reconciled.defaultModel)
+    ) {
       throw codecError(
         'invalid_document',
         'Model discovery reconciled a default outside its own selection',
