@@ -33,6 +33,7 @@ import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
 import { buildPriorRuntimeContext } from '../prior-run-context.js';
 import {
   buildInvocationOpenedEvent,
+  buildSyntheticTerminalRuntimeEvent,
   runtimeInvocationOutcome,
 } from '@maka/core/runtime-invocation';
 import { runtimeInvocationFailureClass } from '../runtime-event-read-model.js';
@@ -493,6 +494,119 @@ test("converts Maka's own legacy transcript whole, and resumes an interrupted co
     assert.deepEqual(
       events.flatMap((event) => (event.content ? [event.content.kind] : [])),
       ['invocation_opened', 'text', 'function_call', 'function_response', 'system_note', 'text'],
+    );
+  } finally {
+    await runtimeEvents.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('converts an imported turn ahead of a run the Session already sent', async () => {
+  // The state a released build leaves behind: it imported a transcript and then
+  // sent on that Session without converting first, so the native run took the
+  // Session's ordinals before the older imported turn was ever on the ledger.
+  const root = await mkdtemp(join(tmpdir(), 'maka-transcript-mixed-'));
+  const sessions = createSessionStore(root);
+  const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+  try {
+    const ts = Date.now();
+    const session = await sessions.createImportedSession(
+      {
+        cwd: '/repo',
+        llmConnectionSlug: 'anthropic',
+        model: 'claude-opus-5',
+        permissionMode: 'ask',
+      },
+      [
+        { type: 'user', id: 'i-user', turnId: 'turn-old', ts, text: 'the older question' },
+        {
+          type: 'assistant',
+          id: 'i-assistant',
+          turnId: 'turn-old',
+          ts: ts + 1,
+          text: 'the older answer',
+          modelId: 'claude-opus-5',
+        },
+        {
+          type: 'turn_state',
+          id: 'i-state',
+          turnId: 'turn-old',
+          ts: ts + 2,
+          status: 'completed',
+          partialOutputRetained: true,
+        },
+      ],
+      { adapterId: 'claude-code', sourceSessionId: 'imported-source' },
+    );
+    const run = { sessionId: session.id, runId: 'native-run', turnId: 'turn-new' };
+    const sentAt = ts + 1_000;
+    await sessions.appendMessages(session.id, [
+      { type: 'user', id: 'n-user', turnId: 'turn-new', ts: sentAt, text: 'the newer question' },
+    ]);
+    for (const event of [
+      buildInvocationOpenedEvent({
+        id: 'native-opening',
+        run: { ...run, invocationId: run.runId },
+        openedAt: sentAt,
+        opening: {
+          kind: 'invocation_opened',
+          protocol: 'invocation_opened_v1',
+          route: {
+            provenance: 'unknown',
+            backendKind: 'ai-sdk',
+            llmConnectionSlug: 'anthropic',
+            modelId: 'claude-opus-5',
+          },
+          configuration: {
+            cwd: '/repo',
+            permissionMode: 'ask',
+            collaborationMode: 'agent',
+            orchestrationMode: 'default',
+            orchestrationSource: 'session',
+            toolMode: 'direct',
+          },
+          root: { kind: 'user' },
+          source: { kind: 'fresh' },
+        },
+      }),
+      {
+        id: 'native-user',
+        sessionId: session.id,
+        invocationId: run.runId,
+        runId: run.runId,
+        turnId: run.turnId,
+        ts: sentAt,
+        partial: false,
+        role: 'user',
+        author: 'user',
+        modelVisibility: 'visible',
+        content: { kind: 'text', text: 'the newer question' },
+      } as const,
+      buildSyntheticTerminalRuntimeEvent({
+        id: 'native-terminal',
+        invocationId: run.runId,
+        run,
+        status: 'completed',
+        ts: sentAt + 1,
+      }),
+    ]) {
+      await runtimeEvents.appendRuntimeEvent(session.id, run.runId, event);
+    }
+
+    const repair = new RuntimeLedgerRepair({
+      runtimeEventStore: runtimeEvents,
+      readMessagesAfter: (sessionId, request) => sessions.readMessagesAfter(sessionId, request),
+    });
+    await repair.materializeTranscriptLedger(await sessions.readHeader(session.id));
+
+    const entries = await runtimeEvents.readSessionRuntimeEventEntries(session.id);
+    assert.deepEqual(
+      entries.flatMap(({ event }) => (event.content?.kind === 'text' ? [event.content.text] : [])),
+      ['the older question', 'the older answer', 'the newer question'],
+    );
+    assert.deepEqual(
+      entries.map(({ ordinal }) => ordinal),
+      entries.map((_, index) => index + 1),
     );
   } finally {
     await runtimeEvents.close?.();

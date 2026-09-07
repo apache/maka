@@ -5086,6 +5086,8 @@ describe('SessionManager permission mode updates', () => {
       readRuntimeEvents: (sessionId, runId) => durableEvents.readRuntimeEvents(sessionId, runId),
       readSessionRuntimeEventEntries: (sessionId) =>
         durableEvents.readSessionRuntimeEventEntries(sessionId),
+      resequenceSessionEventOrdinals: (sessionId) =>
+        durableEvents.resequenceSessionEventOrdinals(sessionId),
       readSessionRuntimeEvents: (sessionId) => durableEvents.readSessionRuntimeEvents(sessionId),
       listSessionInvocations: (sessionId) => durableEvents.listSessionInvocations(sessionId),
     };
@@ -13420,6 +13422,10 @@ class MemoryAgentRunStore
       .map((event, index) => ({ ordinal: index + 1, event: copyRuntimeEvent(event) }));
   }
 
+  // Ordinals here are positions in the append log, read off it every time, so
+  // there is nothing stored for a resequence to move.
+  async resequenceSessionEventOrdinals(_sessionId: string): Promise<void> {}
+
   replaceRuntimeEvent(
     sessionId: string,
     runId: string,
@@ -13802,6 +13808,10 @@ class MemoryRuntimeEventStore implements RuntimeEventStore {
       .filter((event) => event.sessionId === sessionId)
       .map((event, index) => ({ ordinal: index + 1, event: copyRuntimeEvent(event) }));
   }
+
+  // Ordinals here are positions in the append log, read off it every time, so
+  // there is nothing stored for a resequence to move.
+  async resequenceSessionEventOrdinals(_sessionId: string): Promise<void> {}
 
   async readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]> {
     const ordered: Array<{ event: RuntimeEvent; runId: string; eventIndex: number }> = [];

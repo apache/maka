@@ -144,6 +144,13 @@ export class RuntimeLedgerRepair {
           await this.deps.runtimeEventStore.appendRuntimeEvent(sessionId, runId, event);
         }
       }
+      // Appending gave every converted event an ordinal above the Session's
+      // existing runs, which is the wrong order whenever the transcript holds a
+      // turn older than a run already on the ledger. A released build could
+      // leave exactly that: it sent on an imported Session without converting
+      // first. `openedAt` above already says where each imported turn belongs;
+      // this is what makes the reader agree.
+      await this.deps.runtimeEventStore.resequenceSessionEventOrdinals(sessionId);
     });
   }
 

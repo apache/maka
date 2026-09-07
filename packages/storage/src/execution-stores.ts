@@ -579,6 +579,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
       readSessionRuntimeEventEntries: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEventEntries(sessionId)),
+      resequenceSessionEventOrdinals: (sessionId) =>
+        run(() => runtimeEventStore.resequenceSessionEventOrdinals(sessionId)),
       readTranscriptHighWater: (sessionId) =>
         run(() => runtimeEventStore.readTranscriptHighWater(sessionId)),
       readTranscriptInvocations: (sessionId, request) =>

@@ -1487,6 +1487,58 @@ export class SqliteRuntimeStore
     });
   }
 
+  async resequenceSessionEventOrdinals(sessionId: string): Promise<void> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    this.transaction(() => {
+      // Lifted above the range first: the second statement renumbers into the
+      // space these rows occupy, and (session_id, ordinal) is a primary key.
+      // Shifting up rather than below zero keeps every intermediate value
+      // inside the table's own `ordinal > 0`, and lands them past the 1..N the
+      // renumber assigns, since the count cannot exceed the maximum.
+      const { shift } = this.db
+        .prepare(`
+        SELECT COALESCE(MAX(ordinal), 0) AS shift
+        FROM runtime_session_event_ordinals
+        WHERE session_id = ?
+      `)
+        .get(sessionId) as { shift: number };
+      this.db
+        .prepare(`
+        UPDATE runtime_session_event_ordinals
+        SET ordinal = ordinal + :shift
+        WHERE session_id = :sessionId
+      `)
+        .run({ sessionId, shift });
+      this.db
+        .prepare(`
+        WITH opening AS (
+          SELECT invocation_id, CAST(json_extract(payload_json, '$.ts') AS INTEGER) AS opened_at
+          FROM runtime_events
+          WHERE session_id = :sessionId AND event_kind = 'invocation_opened'
+        ),
+        ordered AS (
+          SELECT
+            o.event_id AS event_id,
+            ROW_NUMBER() OVER (
+              ORDER BY COALESCE(opening.opened_at, e.committed_at), e.invocation_id, o.ordinal
+            ) AS ordinal
+          FROM runtime_session_event_ordinals o
+          JOIN runtime_events e ON e.event_id = o.event_id
+          LEFT JOIN opening ON opening.invocation_id = e.invocation_id
+          WHERE o.session_id = :sessionId
+        )
+        UPDATE runtime_session_event_ordinals
+        SET ordinal = (
+          SELECT ordered.ordinal
+          FROM ordered
+          WHERE ordered.event_id = runtime_session_event_ordinals.event_id
+        )
+        WHERE session_id = :sessionId
+      `)
+        .run({ sessionId });
+    });
+  }
+
   async #commitWorkspaceBaseline(
     input: WorkspaceBaselineAuthorityInput,
     rootId: string,
