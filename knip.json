@@ -3,6 +3,61 @@
   "ignoreExportsUsedInFile": true,
   "tags": ["-knipignore"],
   "workspaces": {
+    ".": {
+      "entry": [
+        "scripts/audit-alignment.mjs",
+        "scripts/computer-use/direct-runtime-ledger.mjs",
+        "scripts/computer-use/e2e-fixture.mjs",
+        "scripts/computer-use/prepare.mjs",
+        "scripts/computer-use/process-restart-harness.mjs",
+        "scripts/computer-use/process-restart-launcher.mjs",
+        "scripts/computer-use/provider-matrix.mjs",
+        "scripts/computer-use/real-ax-harness.mjs",
+        "scripts/computer-use/real-ax-launcher.mjs",
+        "scripts/computer-use/real-model-fixture.mjs",
+        "scripts/computer-use/real-model.mjs",
+        "scripts/generate-cu-status-icons.mjs",
+        "scripts/issue-pr-lifecycle.mjs",
+        "scripts/perf/*.{js,mjs}",
+        "scripts/pip-interaction-smoke.mjs",
+        "scripts/pr-effort.mjs"
+      ],
+      "project": ["scripts/**/*.{mjs,js,cjs}"],
+      "ignoreBinaries": ["gpg", "swift"],
+      "ignoreDependencies": ["app-builder-lib", "builder-util", "patch-package"]
+    },
+    "packages/runtime": {
+      "entry": ["src/filesystem-worker/worker-entry.ts"],
+      "project": ["src/**/*.ts", "scripts/*.mjs"]
+    },
+    "packages/runtime-host": {
+      "ignoreBinaries": ["mkfifo", "taskkill.exe"],
+      "entry": [
+        "src/__tests__/fixtures/stderr-after-launcher-exit.ts",
+        "src/__tests__/fixtures/windows-local-ipc-trust-host.ts",
+        "src/test-only/owned-candidate-gated-recovery-main.ts"
+      ],
+      "project": ["src/**/*.ts", "scripts/*.mjs"],
+      "ignoreIssues": {
+        "src/protocol/artifact.ts": ["duplicates"],
+        "src/protocol/session-transcript.ts": ["duplicates"],
+        "src/protocol/usage-pricing.ts": ["duplicates"]
+      }
+    },
+    "packages/storage": {
+      "ignoreBinaries": ["mkfifo"],
+      "entry": [
+        "src/__tests__/fixtures/session-bundle-hydration-binding-crash.ts",
+        "src/__tests__/fixtures/session-bundle-hydration-owner-write-failure.ts",
+        "src/__tests__/fixtures/session-bundle-inspect-child.ts",
+        "src/__tests__/fixtures/session-bundle-inspect-source-mutator.ts",
+        "src/__tests__/fixtures/session-bundle-pack-destination-replacer.ts",
+        "src/__tests__/fixtures/session-bundle-pack-link-replacer.ts",
+        "src/__tests__/fixtures/session-bundle-pack-linked-temp-remover.ts",
+        "src/__tests__/fixtures/session-bundle-pack-temp-replacer.ts"
+      ],
+      "project": ["src/**/*.ts"]
+    },
     "apps/desktop": {
       "entry": [
         "src/main/main.ts",
@@ -27,8 +82,29 @@
     },
     "packages/ui": {
       "entry": ["src/**/*.test.ts", "src/**/*.test.tsx", "stories/**/*.@(ts|tsx)"],
-      "project": ["src/**/*.{ts,tsx}", "stories/**/*.{ts,tsx}"],
+      "project": ["src/**/*.{ts,tsx}", "stories/**/*.{ts,tsx}", "scripts/*.mjs"],
       "ignoreDependencies": ["@storybook/react-vite", "storybook"]
+    },
+    "packages/core": {
+      "project": ["src/**/*.ts"]
+    },
+    "packages/mcp": {
+      "project": ["src/**/*.ts"]
+    },
+    "packages/computer-use": {
+      "project": ["src/**/*.ts"]
+    },
+    "packages/cli": {
+      "project": ["src/**/*.ts", "scripts/*.mjs"]
+    },
+    "packages/eval": {
+      "entry": ["harbor/deepseek-harness-toolchain/patch-subprocess-local.mjs"],
+      "project": ["src/**/*.ts", "harbor/**/*.mjs"],
+      "ignoreBinaries": ["taskkill.exe"]
+    },
+    "website": {
+      "ignoreDependencies": ["cookie"],
+      "project": ["src/**/*.{ts,astro,mjs}", "scripts/*.mjs", "test/*.mjs"]
     }
   }
 }

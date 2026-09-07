@@ -310,13 +310,17 @@ jobs:
         if: steps.plan.outputs.code == 'true'
         run: npm run astryx:theme -- --check
 
-      - name: Knip (apps/desktop)
+      - name: Knip (root + all workspaces)
         if: steps.plan.outputs.code == 'true'
-        run: npx knip --workspace apps/desktop
-
-      - name: Knip (packages/ui)
-        if: steps.plan.outputs.code == 'true'
-        run: npx knip --workspace packages/ui
+        run: |
+          # knip.json is JSON, so its ignoreDependencies reasons live here:
+          # patch-package is resolved through createRequire by
+          # apply-dependency-patches.mjs; website's cookie pin decides which copy
+          # astro's prerenderer loads, since vite resolves the bare specifier
+          # through the website root.
+          node --test scripts/check-knip-workspace-coverage.test.mjs
+          node scripts/check-knip-workspace-coverage.mjs
+          npx knip
 
       - name: Linux sandbox smoke
         if: steps.plan.outputs.runtime_sandbox == 'true'
