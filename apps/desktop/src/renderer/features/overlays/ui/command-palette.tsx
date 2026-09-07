@@ -17,19 +17,13 @@
  * under the License.
  */
 
-// apps/desktop/src/renderer/command-palette.tsx
-//
-// ⌘K (Ctrl+K off macOS) command palette. Combines static actions (new chat, theme
-// switch, open settings, open keyboard help) with the live session list so
-// the user can fuzzy-search across both. Astryx owns the dialog, input,
-// listbox, keyboard navigation, focus, and dismissal.
+// ⌘K (Ctrl+K off macOS) command palette. Renders the rows the shell built
+// (static actions plus the live session list) so the user can fuzzy-search
+// across both. Astryx owns the dialog, input, listbox, keyboard navigation,
+// focus, and dismissal; the overlays controller owns whether it is open.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  ICON_SIZE,
-  ChevronRight,
-  CornerDownLeft,
-} from '@maka/ui/icons';
+import { useEffect, useMemo, useRef } from 'react';
+import { ICON_SIZE, ChevronRight, CornerDownLeft } from '@maka/ui/icons';
 import {
   CommandPalette as AstryxCommandPalette,
   CommandPaletteFooter,
@@ -41,42 +35,15 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { Kbd } from '@astryxdesign/core/Kbd';
-import { useHotkeys } from '@astryxdesign/core/hooks';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
-import type { Command, CommandKind } from './command-palette-types';
-import { getShellCopy } from './locales/shell-copy';
-export type { Command } from './command-palette-types';
-
-// `Command` / `CommandKind` types live in `./command-palette-types`
-// (extracted so non-JSX consumers can import them under the main
-// tsconfig). Re-exported via the explicit `export { ... }` above.
-
-export function useCommandPalette(): [boolean, () => void, () => void] {
-  const [open, setOpen] = useState(false);
-
-  // `allowInInputs` because the palette's whole point is being reachable
-  // mid-sentence in the composer — the hook skips typing surfaces by default,
-  // which would have made ⌘K dead exactly where it is used most.
-  useHotkeys([
-    {
-      keys: 'mod+k',
-      allowInInputs: true,
-      onPress: () => setOpen((prev) => !prev),
-    },
-  ]);
-
-  // Stable open/close identities: callers feed these into memoized callback
-  // chains (the palette's command pipeline), so fresh closures per render
-  // would churn every memo downstream for no state change.
-  const openPalette = useCallback(() => setOpen(true), []);
-  const closePalette = useCallback(() => setOpen(false), []);
-  return [open, openPalette, closePalette];
-}
+import { getShellCopy } from '../../../locales/shell-copy.js';
+import type { Command } from '../model/command.js';
+import { useOverlays } from './overlays-context.js';
 
 function fuzzy(query: string, text: string): boolean {
   // Cheap subsequence match: every char of query (lowercase) must appear in
   // order somewhere inside text (lowercase). Good enough for a palette with
-// <100 commands; we can swap in a real fuzzy matcher later.
+  // <100 commands; we can swap in a real fuzzy matcher later.
   if (!query) return true;
   let i = 0;
   const q = query.toLowerCase();
@@ -87,11 +54,9 @@ function fuzzy(query: string, text: string): boolean {
   return i === q.length;
 }
 
-export function CommandPalette(props: {
-  commands: Command[];
-  isOpen: boolean;
-  onOpenChange(isOpen: boolean): void;
-}) {
+export function CommandPalette(props: { readonly commands: Command[] }) {
+  const { commands: overlayCommands, selectors } = useOverlays();
+  const isOpen = selectors.paletteOpen;
   const locale = useUiLocale();
   const copy = getShellCopy(locale).commandPalette;
   const astryxOverrides = useMemo(
@@ -113,14 +78,11 @@ export function CommandPalette(props: {
       })),
     [props.commands],
   );
-  const itemById = useMemo(
-    () => new Map(items.map((item) => [item.id, item])),
-    [items],
-  );
+  const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
   const pendingCommandRef = useRef<Command | null>(null);
 
   useEffect(() => {
-    if (props.isOpen) return;
+    if (isOpen) return;
     const command = pendingCommandRef.current;
     pendingCommandRef.current = null;
     if (!command) return;
@@ -128,7 +90,7 @@ export function CommandPalette(props: {
       void Promise.resolve(command.run()).catch(() => undefined);
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [props.isOpen]);
+  }, [isOpen]);
   const searchSource = useMemo<SearchSource<PaletteItem>>(
     () => ({
       bootstrap: () => items,
@@ -147,9 +109,7 @@ export function CommandPalette(props: {
           ) {
             return true;
           }
-          return command.keywords?.some((keyword) =>
-            fuzzy(normalized, keyword),
-          ) ?? false;
+          return command.keywords?.some((keyword) => fuzzy(normalized, keyword)) ?? false;
         });
       },
     }),
@@ -160,25 +120,22 @@ export function CommandPalette(props: {
     const command = itemById.get(commandId)?.auxiliaryData?.command;
     if (!command || pendingCommandRef.current) return;
     pendingCommandRef.current = command;
-    props.onOpenChange(false);
+    overlayCommands.closePalette();
   }
 
   return (
     <AstryxLocaleProvider overrides={astryxOverrides}>
       <AstryxCommandPalette
-        isOpen={props.isOpen}
-        onOpenChange={props.onOpenChange}
+        isOpen={isOpen}
+        onOpenChange={(open) => {
+          if (!open) overlayCommands.closePalette();
+        }}
         searchSource={searchSource}
         label={copy.label}
         width={584}
         maxHeight="min(620px, 68vh)"
-        input={(
-          <CommandPaletteInput
-            placeholder={copy.placeholder}
-            label={copy.searchLabel}
-          />
-        )}
-        emptySearchText={(
+        input={<CommandPaletteInput placeholder={copy.placeholder} label={copy.searchLabel} />}
+        emptySearchText={
           /* Filter empty (DESIGN.md §10 tier 1): no clear action here — the
              palette input itself is the exit from a no-match search. */
           <EmptyState
@@ -187,7 +144,7 @@ export function CommandPalette(props: {
             title={copy.emptyTitle}
             isCompact
           />
-        )}
+        }
         emptyBootstrapText={copy.emptyDescription}
         onValueChange={commit}
         renderItem={(item) => {
@@ -217,7 +174,7 @@ export function CommandPalette(props: {
             </>
           );
         }}
-        footer={(
+        footer={
           <CommandPaletteFooter>
             <span className="maka-palette-footer-hint">
               <Kbd keys="up" />
@@ -233,7 +190,7 @@ export function CommandPalette(props: {
               <span>{copy.closeHint}</span>
             </span>
           </CommandPaletteFooter>
-        )}
+        }
       />
     </AstryxLocaleProvider>
   );

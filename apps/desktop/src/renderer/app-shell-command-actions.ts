@@ -34,7 +34,7 @@ import {
   buildCommandList,
   buildSessionCommands,
 } from "./command-palette-commands.js";
-import type { Command } from "./command-palette-types.js";
+import type { Command } from './features/overlays/index.js';
 import { renderConversationMarkdown } from "./conversation-markdown.js";
 import {
   commandPaletteActionErrorMessage,

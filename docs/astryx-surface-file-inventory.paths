@@ -9,7 +9,6 @@ apps/desktop/src/renderer/cascade-layers.css
 apps/desktop/src/renderer/chat-composer-region.tsx
 apps/desktop/src/renderer/chat-message-surface.tsx
 apps/desktop/src/renderer/chat-recovery-notice.tsx
-apps/desktop/src/renderer/command-palette.tsx
 apps/desktop/src/renderer/composer-mentions.tsx
 apps/desktop/src/renderer/composition/desktop-feature-services.tsx
 apps/desktop/src/renderer/composition/legacy-desktop-region.tsx
@@ -29,6 +28,12 @@ apps/desktop/src/renderer/features/goals/ui/goal-provider.tsx
 apps/desktop/src/renderer/features/module-hub/services-context.tsx
 apps/desktop/src/renderer/features/module-hub/ui/module-hub-host.tsx
 apps/desktop/src/renderer/features/module-hub/ui/module-hub-provider.tsx
+apps/desktop/src/renderer/features/overlays/services-context.tsx
+apps/desktop/src/renderer/features/overlays/ui/command-palette.tsx
+apps/desktop/src/renderer/features/overlays/ui/keyboard-help-modal.tsx
+apps/desktop/src/renderer/features/overlays/ui/overlays-context.tsx
+apps/desktop/src/renderer/features/overlays/ui/overlays-root.tsx
+apps/desktop/src/renderer/features/overlays/ui/search-modal-host.tsx
 apps/desktop/src/renderer/features/runtime-host-management/services-context.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/peer-mesh-peer-id-button.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-add-computer-menu.tsx
@@ -81,7 +86,6 @@ apps/desktop/src/renderer/features/workhub/ui/workhub-progress-card.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-root.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-surface-switch.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-work-identity.tsx
-apps/desktop/src/renderer/keyboard-help.tsx
 apps/desktop/src/renderer/live-turn-reconciler.tsx
 apps/desktop/src/renderer/maka-tokens.css
 apps/desktop/src/renderer/mcp-brand-marks.tsx
