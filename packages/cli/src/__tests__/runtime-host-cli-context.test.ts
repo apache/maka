@@ -714,3 +714,104 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
   assert.fail('condition was not reached');
 }
+
+test('local CLI delegates a managed cold start once and reconnects without a launch claim', async () => {
+  const calls: string[] = [];
+  const connection = {
+    rootId: 'root-id',
+    hostEpoch: 'host-epoch',
+    connectionId: 'connection-id',
+    closed: new Promise<void>(() => {}),
+    close: async () => {},
+    subscribeConfigurationChanges: () => () => {},
+    subscribeConnectionCatalogChanges: () => () => {},
+    subscribeProjectCatalogChanges: () => () => {},
+    subscribeSessionCatalogChanges: () => () => {},
+    subscribeScheduledTaskChanges: () => () => {},
+  } as unknown as RuntimeHostConnection;
+  const context = await connectRuntimeHostCliConnection(
+    { rootPath: '/managed-root' },
+    {
+      connectOrSpawn: async (input) => {
+        assert.equal(input.managedLaunchClaim, undefined);
+        calls.push('connect');
+        return calls.length === 1
+          ? { kind: 'failed', reason: 'managed_root_requires_operator' }
+          : connectedHostResult(connection);
+      },
+      connectActivatedHost: async () => {
+        calls.push('connect');
+        return connectedHostResult(connection);
+      },
+      activateLocalManagedHost: async (input) => {
+        assert.equal(input.rootPath, '/managed-root');
+        calls.push('operator');
+      },
+    },
+  );
+  assert.deepEqual(calls, ['connect', 'operator', 'connect']);
+  await context.close();
+});
+
+test('local CLI does not loop if operator activation fails to make the Host available', async () => {
+  let activations = 0;
+  await assert.rejects(
+    connectRuntimeHostCliConnection(
+      { rootPath: '/managed-root' },
+      {
+        connectOrSpawn: async () => ({ kind: 'failed', reason: 'managed_root_requires_operator' }),
+        connectActivatedHost: async () => ({ kind: 'unavailable', reason: 'not_registered' }),
+        activateLocalManagedHost: async () => {
+          activations += 1;
+        },
+      },
+    ),
+    /could not join it \(not_registered\)/,
+  );
+  assert.equal(activations, 1);
+});
+
+test('local CLI propagates operator failure without attempting unmanaged recovery', async () => {
+  let connections = 0;
+  const failure = new Error('operator failed');
+  await assert.rejects(
+    connectRuntimeHostCliConnection(
+      { rootPath: '/managed-root' },
+      {
+        connectOrSpawn: async () => {
+          connections += 1;
+          return { kind: 'failed', reason: 'managed_root_requires_operator' };
+        },
+        activateLocalManagedHost: async () => {
+          throw failure;
+        },
+      },
+    ),
+    (error) => error === failure,
+  );
+  assert.equal(connections, 1);
+});
+
+test('activated managed Host incompatibility stays operator-owned', async () => {
+  await assert.rejects(
+    connectRuntimeHostCliConnection(
+      { rootPath: '/managed-root' },
+      {
+        connectOrSpawn: async () => ({ kind: 'failed', reason: 'managed_root_requires_operator' }),
+        activateLocalManagedHost: async () => {},
+        connectActivatedHost: async () => ({
+          kind: 'incompatible',
+          registration: hostRegistration(),
+          handshake: incompatibleRemoteHandshake(),
+        }),
+      },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.ok(!(error instanceof RuntimeHostCliConflictError));
+      assert.match(error.message, /incompatible/);
+      assert.match(error.message, /configured operator/);
+      return true;
+    },
+  );
+});

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { activateLocalManagedRuntimeHost } from './runtime-host-local-managed-activation.js';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { NO_REAL_CONNECTION_CODE } from '@maka/core/connection-error-copy';
@@ -27,6 +28,7 @@ import type {
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import {
   connectOrSpawnRuntimeHost,
+  connectRuntimeHost,
   connectRuntimeHostProfile,
   createClientRuntimeHostProfileCatalog,
   createRuntimeHostPeerClientFromEnvironment,
@@ -121,6 +123,8 @@ export interface RuntimeHostCliTarget {
 
 interface RuntimeHostCliContextDeps {
   readonly connectOrSpawn: typeof connectOrSpawnRuntimeHost;
+  readonly connectActivatedHost: typeof connectRuntimeHost;
+  readonly activateLocalManagedHost: typeof activateLocalManagedRuntimeHost;
   readonly connectProfile: typeof connectRuntimeHostProfile;
   readonly readConnectionCatalog: typeof readRuntimeHostConnectionCatalog;
   readonly loadClientInstanceId: typeof loadOrCreateRuntimeHostClientInstanceId;
@@ -154,6 +158,8 @@ export async function connectRuntimeHostCliConnection(
 ): Promise<RuntimeHostCliConnectionOnlyContextWithIdentity> {
   const deps: RuntimeHostCliContextDeps = {
     connectOrSpawn: connectOrSpawnRuntimeHost,
+    activateLocalManagedHost: activateLocalManagedRuntimeHost,
+    connectActivatedHost: connectRuntimeHost,
     connectProfile: connectRuntimeHostProfile,
     readConnectionCatalog: readRuntimeHostConnectionCatalog,
     loadClientInstanceId: loadOrCreateRuntimeHostClientInstanceId,
@@ -197,10 +203,34 @@ export async function connectRuntimeHostCliConnection(
         ...(signal ? { signal } : {}),
       });
     }
-    const connected = await deps.connectOrSpawn({
+    let connected = await deps.connectOrSpawn({
       ...connectInput,
       ...(signal ? { signal } : {}),
     });
+    if (connected.kind === 'failed' && connected.reason === 'managed_root_requires_operator') {
+      await deps.activateLocalManagedHost({
+        rootPath: input.rootPath,
+        ...(signal ? { signal } : {}),
+      });
+      signal?.throwIfAborted();
+      // Rejoin over Local IPC. The operator retains launch and update authority.
+      const activated = await deps.connectActivatedHost(connectInput);
+      if (activated.kind === 'connected') {
+        if (signal?.aborted) {
+          await activated.connection.close();
+          signal.throwIfAborted();
+        }
+        connected = activated;
+      } else {
+        const ConnectionError =
+          activated.kind === 'incompatible' || activated.kind === 'upgrade_required'
+            ? RuntimeHostPermanentReconnectError
+            : Error;
+        throw new ConnectionError(
+          `The installed Runtime Host was activated but the local CLI could not join it (${activated.kind === 'unavailable' ? activated.reason : activated.kind}). Use a compatible CLI or update the managed Host through its configured operator.`,
+        );
+      }
+    }
     if (connected.kind === 'incompatible') {
       throw new RuntimeHostCliConflictError(connected.handshake, connected.registration);
     }
