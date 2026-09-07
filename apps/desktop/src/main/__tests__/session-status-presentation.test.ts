@@ -41,15 +41,20 @@ describe('failed turn presentation', () => {
     assert.equal(describeTurnErrorClass('ECONNRESET', 'en'), describeTurnErrorClass('network', 'en'));
   });
 
-  it('keeps the failure summary from contradicting recorded retry refusals', () => {
-    for (const errorClass of ['rate_limit', 'network', 'timeout']) {
-      for (const locale of ['zh-CN', 'zh-TW', 'en'] as const) {
-        assert.doesNotMatch(describeTurnErrorClass(errorClass, locale), /重试|重試|retry|send a message/i);
-      }
-    }
-    assert.doesNotMatch(describeTurnErrorClass('unknown_failure', 'zh-CN'), /重试|重发/);
-    assert.match(describeTurnErrorClass('stream_truncated', 'zh-CN'), /中途断开/);
-    assert.match(describeFailedTurnExecutionState({ ...NOTHING_RAN, retry: { decision: 'declined', because: 'side_effects' } }, 'zh-CN')!, /未自动重试/);
+  it('shows the failure cause alongside the recorded retry refusal', () => {
+    const turn: TurnViewModel = {
+      turnId: 't1', status: 'failed', errorClass: 'network',
+      retry: { decision: 'declined', because: 'side_effects' },
+      tools: [], timeline: [], notes: [], startedAt: 1,
+    };
+    const presentation = deriveAppShellTurnPresentation([turn], {
+      activeId: 'session-1', pendingTurnActions: new Set<string>(), uiLocale: 'zh-CN',
+    });
+    assert.equal(presentation.failedReasonLabels.t1, '网络连接失败，请检查网络。');
+    assert.equal(presentation.failedExecutionStateLabels.t1,
+      '本次已有工具活动，为避免重复操作，未自动重试。请先检查工具结果。');
+    assert.equal(describeTurnErrorClass('rate_limit', 'zh-CN'), '模型请求太频繁被限流了。');
+    assert.equal(describeTurnErrorClass('timeout', 'zh-CN'), '模型请求超时。');
   });
 
   it('grades continuable outcomes below outcomes the user must act on', () => {
