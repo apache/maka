@@ -6,7 +6,7 @@ source_language: en
 implementation_status: current
 document_status: current
 translation_status: synced
-last_verified: 2026-09-04
+last_verified: 2026-09-07
 owners:
   - maka-backend
 ---
@@ -36,8 +36,13 @@ owners:
 
 ## Problem
 
-> **Status (verified 2026-09-04):** this optimization is implemented — every one of the five startup
-> import paths listed below is cut in the current source. The Problem is kept as the 2026-08-04
+> **Status (verified 2026-09-07):** this optimization is implemented — the five startup import paths
+> listed below are cut in the current source. One additional static path remains and is recorded as
+> accepted debt: `AppShellOverlays` (`app-shell.tsx:170`) → `useAppShellCommands` →
+> `command-palette-commands.ts:50` imports `isRetiredProvider` from `@maka/core/provider-registry`,
+> whose `PROVIDER_REGISTRY` is built from `model-metadata.generated` — a runtime import, not a lazy
+> command-palette entry — so the acceptance criterion's blanket exclusion of every startup
+> transitive metadata dependency is not fully satisfied. The Problem is kept as the 2026-08-04
 > record of the pre-optimization state.
 
 Most users configure only a few providers, but Maka currently loads metadata for every provider and hundreds of models on startup. This data should remain behind the main-process authority boundary, with the renderer receiving only the lightweight projection needed for the current UI.
@@ -113,7 +118,7 @@ Acceptance criteria:
 
 ## 问题
 
-> **状态（2026-09-04 核验）：** 该优化已落地——下面列出的五条首屏依赖链在当前源码中均已切断。Problem 一节保留的是 2026-08-04 优化前状态的记录。
+> **状态（2026-09-07 核验）：** 该优化已落地——下面列出的五条首屏依赖链在当前源码中均已切断。另有一条静态路径仍存在，现记录为已接受的遗留：`AppShellOverlays`（`app-shell.tsx:170`）→ `useAppShellCommands` → `command-palette-commands.ts:50` 从 `@maka/core/provider-registry` 导入 `isRetiredProvider`，而 `PROVIDER_REGISTRY` 由 `model-metadata.generated` 构建——这是运行时导入而非懒加载的命令面板入口，因此验收标准中"首屏全部静态传递依赖排除 metadata"的绝对表述并未完全满足。Problem 一节保留的是 2026-08-04 优化前状态的记录。
 
 大多数用户只配置少数几个 provider，但 Maka 当前会在启动时加载全部 provider 和数百个模型的元数据。完整目录应留在 main process 的权威边界内，renderer 只接收当前界面所需的轻量投影。
 

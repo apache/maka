@@ -6,7 +6,7 @@ source_language: en
 implementation_status: current
 document_status: current
 translation_status: source-only
-last_verified: 2026-09-04
+last_verified: 2026-09-07
 owners:
   - maka-backend
 ---
@@ -33,11 +33,14 @@ owners:
 
 ## 1. Problem and invariant
 
-> **Status (verified 2026-09-04):** this optimization is implemented — the adapter plans a turn
+> **Status (verified 2026-09-07):** this optimization is implemented — the adapter plans a turn
 > continuation and sends the suffix delta over a matching Responses WebSocket
 > (`packages/runtime/src/model-adapter.ts`, `openai-responses-continuation.ts`,
-> `openai-responses-websocket.ts`). The Problem below is kept as the record of the
-> pre-optimization state.
+> `openai-responses-websocket.ts`). One eligibility exclusion is part of the shipped scope: a
+> connection with request customizations (`hasRequestCustomization` in `model-factory.ts` — custom
+> headers or a body overlay) bypasses the Responses transport wrapper, keeps the full-request path,
+> and never establishes the WebSocket/continuation baseline. The Problem below is kept as the
+> record of the pre-optimization state.
 
 Long tool loops currently rebuild and upload the complete provider history on every step. The
 durable Runtime event ledger remains the source of truth, but the OpenAI Responses transport may
