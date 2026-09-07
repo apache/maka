@@ -24,7 +24,7 @@ import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-i
 import type { RuntimeEvent, RuntimeEventActions } from '@maka/core/runtime-event';
 import { runtimeEventHasModelVisibleContent } from '@maka/core/runtime-event';
 import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
-import { deriveTurnRecords } from '@maka/core/session';
+import { deriveTurnRecords, decodeCanonicalMessage } from '@maka/core/session';
 import {
   isHardRuntimeEventReadModelDiagnostic,
   isUnclaimedRuntimeEventDiagnostic,
@@ -1577,6 +1577,37 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       },
     ]);
     assert.deepStrictEqual(out.diagnostics, []);
+  });
+
+  test('failure diagnostics survive terminal projection and cold decoding', () => {
+    const message =
+      'Quota exceeded for this account (code=insufficient_quota, status=429, requestId=req-4502)';
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'provider-failed',
+          status: 'failed',
+          content: {
+            kind: 'error',
+            message,
+            retry: { decision: 'declined', because: 'side_effects' },
+          },
+          actions: { endInvocation: true, stateDelta: { failureClass: 'rate_limit' } },
+        }),
+      ],
+      { invocations: [endedAs('failed', 'rate_limit')] },
+    );
+    const live = deriveTurnRecords(out.messages)[0];
+    const cold = deriveTurnRecords(
+      JSON.parse(JSON.stringify(out.messages)).map(decodeCanonicalMessage),
+    )[0];
+    assert.equal(live.failureMessage, message);
+    assert.deepEqual(cold, live);
+    assert.equal(live.errorClass, 'rate_limit');
+    assert.throws(() =>
+      decodeCanonicalMessage({ ...out.messages[0], failureMessage: '界'.repeat(2048) }),
+    );
+    assert.deepEqual(live.retry, { decision: 'declined', because: 'side_effects' });
   });
 
   test('a session written with the retired context_budget_exhausted reads back as context_overflow', () => {

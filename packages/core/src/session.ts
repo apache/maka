@@ -17,7 +17,11 @@
  * under the License.
  */
 
-import { isModelRetryDecision, type ModelRetryDecision } from './model-failure.js';
+import {
+  MODEL_FAILURE_MESSAGE_MAX_BYTES,
+  isModelRetryDecision,
+  type ModelRetryDecision,
+} from './model-failure.js';
 
 import {
   decodeMessageContent,
@@ -912,6 +916,7 @@ export interface TurnStateMessage {
   /** Diagnostic source for user/renderer-triggered aborts, e.g. renderer.stop_button. */
   abortSource?: string;
   errorClass?: string;
+  failureMessage?: string;
   retry?: ModelRetryDecision;
 }
 
@@ -1121,6 +1126,7 @@ export interface TurnRecord {
   abortedAt?: number;
   abortSource?: string;
   errorClass?: string;
+  failureMessage?: string;
   retry?: ModelRetryDecision;
 }
 
@@ -1261,6 +1267,7 @@ const TURN_STATE_MESSAGE_SHAPE = defineObjectShape<TurnStateMessage>()(
     'abortedAt',
     'abortSource',
     'errorClass',
+    'failureMessage',
     'retry',
   ],
   ['partialOutputRetained'],
@@ -1542,6 +1549,10 @@ function decodeMessage(
         (message.abortedAt === undefined || isFiniteNumber(message.abortedAt)) &&
         isOptionalString(message.abortSource) &&
         isOptionalString(message.errorClass) &&
+        (message.failureMessage === undefined ||
+          (typeof message.failureMessage === 'string' &&
+            new TextEncoder().encode(message.failureMessage).byteLength <=
+              MODEL_FAILURE_MESSAGE_MAX_BYTES)) &&
         (message.retry === undefined || isModelRetryDecision(message.retry))
       )
         return pickShape(message as unknown as TurnStateMessage, TURN_STATE_MESSAGE_SHAPE);
@@ -1831,6 +1842,7 @@ export function deriveTurnRecords(messages: readonly StoredMessage[]): TurnRecor
         ...(latestState.abortedAt !== undefined ? { abortedAt: latestState.abortedAt } : {}),
         ...(latestState.abortSource ? { abortSource: latestState.abortSource } : {}),
         ...(latestState.errorClass ? { errorClass: latestState.errorClass } : {}),
+        ...(latestState.failureMessage ? { failureMessage: latestState.failureMessage } : {}),
         ...(latestState.retry ? { retry: latestState.retry } : {}),
       };
     }

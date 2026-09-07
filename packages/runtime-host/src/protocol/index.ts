@@ -101,7 +101,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 129 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 130 as const;
+// 130: Turn contributions carry the optional bounded `failureMessage` diagnostic.
+// Epoch-129 peers reject this added field on the strict contribution shape.
 // 129: Turn states and Turn records drop `partialOutputRetained`. The fact was
 // derived twice — once from the Turn's output rows, once off the state message
 // — and read by nothing; older peers require the field on both.

@@ -88,6 +88,7 @@ test('preserves the canonical retry decision in shared bootstrap and later pages
       status: 'failed',
       errorClass: 'stream_truncated',
       retry: { decision: 'declined', because: 'side_effects' },
+      failureMessage: 'Private provider diagnostic',
     },
   ];
   const reader = transcriptReader(durable);
@@ -101,6 +102,7 @@ test('preserves the canonical retry decision in shared bootstrap and later pages
     maxBytes: 1024,
     projection: 'shared',
   });
+  assert.equal(decodeBootstrap(bootstrap.durable)[0]?.failureMessage, undefined);
   assert.deepEqual(decodeBootstrap(bootstrap.durable)[0]?.retry, {
     decision: 'declined',
     because: 'side_effects',
@@ -113,6 +115,7 @@ test('preserves the canonical retry decision in shared bootstrap and later pages
     status: 'failed',
     errorClass: 'stream_truncated',
     retry: { decision: 'exhausted', attempts: 2 },
+    failureMessage: 'Another private diagnostic',
   });
   updateSubscriberTranscriptHighWater(state, 1);
   const page = await readSessionTranscriptPage({
@@ -128,6 +131,7 @@ test('preserves the canonical retry decision in shared bootstrap and later pages
       maxBytes: 1024,
     },
   });
+  assert.equal(decodeBootstrap(page)[0]?.failureMessage, undefined);
   assert.deepEqual(decodeBootstrap(page)[0]?.retry, { decision: 'exhausted', attempts: 2 });
 });
 

@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
 import test from 'node:test';
 import {
   decodeSessionTurnsQueryResult,
@@ -100,6 +101,7 @@ test('bounds turn diagnostics before publishing a contribution', () => {
         ts: 1,
         status: 'failed',
         errorClass: '失败'.repeat(100_000),
+        failureMessage: '失败'.repeat(100_000),
         retry: { decision: 'declined', because: 'side_effects' },
       },
     },
@@ -119,7 +121,11 @@ test('bounds turn diagnostics before publishing a contribution', () => {
     }),
   );
   const turn = projectSessionTurnContribution(contribution);
-  assert.deepEqual(turn?.retry, { decision: 'declined', because: 'side_effects' });
+  assert.ok(turn);
+  assert.ok(turn.failureMessage);
+  assert.ok(Buffer.byteLength(turn.failureMessage) <= MODEL_FAILURE_MESSAGE_MAX_BYTES);
+  assert.equal(turn.failureMessage, contribution.latestState!.message.failureMessage);
+  assert.deepEqual(turn.retry, { decision: 'declined', because: 'side_effects' });
 });
 
 test('rejects invalid turn-state references before publishing a contribution', () => {
