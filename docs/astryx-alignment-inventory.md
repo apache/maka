@@ -6,7 +6,7 @@ source_language: en
 implementation_status: current
 document_status: current
 translation_status: source-only
-last_verified: 2026-09-04
+last_verified: 2026-09-07
 owners:
   - maka-backend
 ---
@@ -79,7 +79,7 @@ shadows a shipped Astryx component — a review signal, not proof) · **polish**
 |---------|------|--------|
 | App shell / session list | SideNav | intentional raw siblings where nested button forbidden |
 | Composer | Raw hint/cancel buttons | **fixed → Button** |
-| Workbar tabs | Raw `role=tab` + dnd-kit | intentional (dnd + tablist; close is IconButton) |
+| Workbar tabs | Raw `role=tab` + dnd-kit | **fixed → Astryx `TabList`** (2026-09-05 rebuild; no dnd-kit remains) |
 | Workbar tool picker | Product-authored menu semantics and row chrome | **fixed → List + ListItem** |
 | Inspector failed filter | Raw toggle | **fixed → ToggleButton** |
 | Plan execution panel | Raw expand toggle | **fixed → Collapsible** |
@@ -107,5 +107,4 @@ shadows a shipped Astryx component — a review signal, not proof) · **polish**
 
 ## Remaining polish (non-blocker)
 - Quote chips / prompt-rail ticks stay product-shaped hit targets.
-- Workbar tab strip stays custom for dnd-kit + `role=tab`.
 - Nested button prohibition on SideNavItem endContent (documented intentional).
