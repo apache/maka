@@ -553,8 +553,8 @@ const CONVERSATION_COPY = {
       thinkingTruncatedTitle: '部分 reasoning 已截断；显示的是最近的内容', outputTruncatedTitle: '助手输出已超过单次回合上限，超出部分未渲染。如需完整内容请重新生成或查看持久化的任务日志。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', quoteExpandAriaLabel: '展开引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '已中断', abortedByStop: '已中断 · 由停止按钮触发',
       systemNotes: {
         contextCompacting: '正在压缩上下文…',
-        contextCompacted: '已压缩较早的对话内容，以适应模型上下文窗口。',
-        contextCompactionFailedOpen: '上下文摘要失败；本轮已在未生成新摘要的情况下继续。',
+        contextCompacted: '已压缩较早的上下文。',
+        contextCompactionFailedOpen: '上下文压缩失败；会话已继续，未生成新摘要。',
         contextProviderDropping: (used, prior) =>
           `供应商在丢弃或改写上下文：追加了内容，它报告的输入却是 ${used.toLocaleString('zh-CN')} tokens，与之前的 ${prior.toLocaleString('zh-CN')} 相比没有增长。在连接设置里为该模型声明上下文窗口，让 Maka 先行压缩。`,
         contextWindowSuggestion: (tokens, declared) =>
@@ -712,8 +712,8 @@ const CONVERSATION_COPY = {
       thinkingTruncatedTitle: '部分 reasoning 已截斷；顯示的是最近的內容', outputTruncatedTitle: '助手輸出已超過單次回合上限，超出部分未渲染。如需完整內容請重新生成或檢視持久化的任務記錄。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', quoteExpandAriaLabel: '展開引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '(已中斷)', abortedByStop: '(已中斷 · 由停止按鈕觸發)',
       systemNotes: {
         contextCompacting: '正在壓縮上下文…',
-        contextCompacted: '已壓縮較早的對話內容，以適應模型上下文視窗。',
-        contextCompactionFailedOpen: '上下文摘要失敗；本輪已在未生成新摘要的情況下繼續。',
+        contextCompacted: '已壓縮較早的上下文。',
+        contextCompactionFailedOpen: '上下文壓縮失敗；會話已繼續，未產生新摘要。',
         contextProviderDropping: (used, prior) =>
           `供應商在丟棄或改寫上下文：追加了內容，它報告的輸入卻是 ${used.toLocaleString('zh-TW')} tokens，與之前的 ${prior.toLocaleString('zh-TW')} 相比沒有成長。在連線設定裡為該模型宣告上下文視窗，讓 Maka 先行壓縮。`,
         contextWindowSuggestion: (tokens, declared) =>
@@ -897,8 +897,8 @@ const CONVERSATION_COPY = {
       thinkingTruncatedTitle: 'Some reasoning was truncated; showing the most recent content', outputTruncatedTitle: 'The assistant output exceeded the per-turn limit. Regenerate it or inspect the persisted task log for the complete content.', removeAttachmentAriaLabel: (name) => `Remove ${name}`, quoteLabel: 'Quote', quoteExpandAriaLabel: 'Show the full quoted excerpt', quoteCollapseAriaLabel: 'Collapse the quoted excerpt', removeQuoteAriaLabel: 'Remove quote', aborted: 'Interrupted', abortedByStop: 'Interrupted · Stop button',
       systemNotes: {
         contextCompacting: 'Compacting context…',
-        contextCompacted: 'Context compacted to keep this session within the model window.',
-        contextCompactionFailedOpen: 'Context summary failed; the session continued without a new summary.',
+        contextCompacted: 'Earlier context compacted.',
+        contextCompactionFailedOpen: 'Context compaction failed; the session continued without a new summary.',
         contextProviderDropping: (used, prior) =>
           `The provider is dropping or rewriting context: content was appended, and it counted ${used.toLocaleString('en-US')} input tokens against ${prior.toLocaleString('en-US')} before, which is no growth. Declare a context window for this model in the connection settings so Maka compacts first.`,
         contextWindowSuggestion: (tokens, declared) =>

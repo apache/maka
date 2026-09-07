@@ -91,11 +91,11 @@ describe('incremental transcript projection', () => {
 
     assert.equal(
       english[0]?.notes[0]?.text,
-      'Context compacted to keep this session within the model window.',
+      'Earlier context compacted.',
     );
     assert.equal(
       chinese[0]?.notes[0]?.text,
-      '已压缩较早的对话内容，以适应模型上下文窗口。',
+      '已压缩较早的上下文。',
     );
     assert.notStrictEqual(chinese, english);
   });
