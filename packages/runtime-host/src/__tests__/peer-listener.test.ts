@@ -183,7 +183,7 @@ test('rechecks peer authority at admission after the authentication response is 
   await listener.cleanup();
 });
 
-test('bounds active application streams from one authenticated peer', async () => {
+test('bounds active application streams from one authenticated principal', async () => {
   const streams = Array.from({ length: 5 }, () => authenticatedPendingStream('remote-peer'));
   let accepted = 0;
   const listener = createRuntimeHostPeerListener(
@@ -203,6 +203,72 @@ test('bounds active application streams from one authenticated peer', async () =
   assert.equal(accepted, 4);
   assert.equal(streams[4]?.aborted, true);
   await listener.cleanup();
+});
+
+test('admits distinct Guest mounts on one Desktop while bounding principals, devices and the Host; resume spends no slot', async (t) => {
+  let admit!: (stream: RuntimeHostPeerNativeStream) => void;
+  const accepted: import('../server/listener-set.js').RuntimeHostListenerConnection[] = [];
+  const client = peerWith([]);
+  const listener = createRuntimeHostPeerListener(
+    {
+      ...client,
+      serveApplication: async (onStream, signal) => {
+        admit = onStream;
+        return client.serveApplication(onStream, signal);
+      },
+    },
+    UNUSED_REACHABILITY,
+    {
+      authenticate: (credential: string) => ({
+        principalKind: 'session_guest',
+        principalId: credential,
+        credentialId: credential,
+        operationGrants: [],
+      }),
+      subscribeRevocations: () => () => {},
+    } as never,
+    (connection) => {
+      accepted.push(connection);
+    },
+  );
+  t.after(() => listener.cleanup());
+  let sequence = 0;
+  const open = async (
+    principal: string,
+    peerId = 'desktop',
+    session = ++sequence,
+    generation = 1,
+  ) => {
+    const stream = authenticatedPendingStream(peerId, principal, {
+      sessionId: session.toString(16).padStart(64, '0'),
+      generation,
+      received: 0,
+    });
+    const writes: Buffer[] = [];
+    admit({
+      ...stream,
+      write: async (bytes) => {
+        writes.push(Buffer.from(bytes));
+      },
+    });
+    await waitForImmediate();
+    return JSON.parse(writes[0]!.toString()) as { accepted: boolean; reason?: string };
+  };
+  for (let i = 0; i < 128; i++) assert.equal((await open(`guest-${i}`)).accepted, true);
+  // Additional connections for one grant cannot bypass its quota by changing PeerId.
+  for (let i = 0; i < 3; i++) assert.equal((await open('guest-0', `device-${i}`)).accepted, true);
+  assert.equal((await open('guest-0', 'another-device')).reason, 'capacity_exceeded');
+  for (let i = 0; i < 32; i++) assert.equal((await open(`profile-${i}`)).accepted, true);
+  assert.equal((await open('over-device')).reason, 'capacity_exceeded');
+  // The 160 established Desktop connections remain authorized during reattach.
+  assert.equal((await open('guest-0', 'desktop', 1, 2)).accepted, true);
+  assert.equal(accepted.length, 163);
+  for (let i = 0; i < 93; i++)
+    assert.equal((await open(`other-${i}`, 'other-desktop')).accepted, true);
+  assert.equal((await open('over-host', 'third-desktop')).reason, 'capacity_exceeded');
+  accepted[0]!.transport.abort(new Error('mount removed'));
+  await waitForImmediate();
+  assert.equal((await open('replacement')).accepted, true);
 });
 
 test('projects newly accepted coordination relays from the running peer endpoint', async () => {
@@ -330,6 +396,8 @@ function pendingStream(
 
 function authenticatedPendingStream(
   peerId: string,
+  credential = 'accepted',
+  resume?: { sessionId: string; generation: number; received: number },
 ): RuntimeHostPeerNativeStream & { readonly aborted: boolean } {
   let finish!: (value: null) => void;
   const pending = new Promise<null>((resolve) => {
@@ -345,7 +413,9 @@ function authenticatedPendingStream(
     read: async () => {
       if (first) {
         first = false;
-        return Buffer.from('{"v":1,"credential":"accepted"}\n');
+        return Buffer.from(
+          `${JSON.stringify(resume ? { v: 2, credential, resume } : { v: 1, credential })}\n`,
+        );
       }
       return pending;
     },

@@ -45,6 +45,8 @@ export type ChatSurfaceLayoutProps = Omit<ComponentProps<typeof ChatLayout>, 'au
    */
   scrollOwner?: 'astryx' | 'host';
   scrollToBottomLabel?: string;
+  /** Loads the durable tail after the scroll authority pins to it. */
+  onReturnToTail?(): Promise<void> | void;
 };
 
 /**
@@ -70,6 +72,7 @@ export function ChatSurfaceLayout({
   density = 'balanced',
   scrollOwner = 'astryx',
   scrollToBottomLabel,
+  onReturnToTail,
   ...props
 }: ChatSurfaceLayoutProps) {
   const hostOwned = scrollOwner === 'host';
@@ -88,7 +91,9 @@ export function ChatSurfaceLayout({
       autoScroll={!hostOwned}
       // Astryx's default button reads `isScrolledUp`, which stops updating the
       // moment its scroll layer is off. Maka's reads Maka's pin instead.
-      scrollButton={hostOwned ? <TranscriptScrollButton /> : props.scrollButton}
+      scrollButton={hostOwned
+        ? <TranscriptScrollButton onActivate={onReturnToTail} />
+        : props.scrollButton}
       density={density}
       className={cn('maka-chat-layout', className)}
       data-chat-scroll-container="true"

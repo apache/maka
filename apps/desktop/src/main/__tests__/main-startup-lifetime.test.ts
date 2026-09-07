@@ -60,8 +60,17 @@ test('retains process lifetime before a standalone startup dialog can close', ()
   );
   assert.match(
     windowAllClosed,
-    /process\.platform !== "darwin" && !isBrowserMessageBoxPresentationActive\(\)/u,
+    /process\.platform !== "darwin" && !isBrowserMessageBoxPresentationActive\(\) &&\s*!isDesktopStartupInProgress\(\)/u,
   );
+});
+
+test('presents startup before Host boot and hands off only when the main window is shown', () => {
+  const ready = mainSource.indexOf("console.log('[startup] app ready')");
+  const presentation = mainSource.indexOf('showDesktopStartupProgress(', ready);
+  const hostBoot = mainSource.indexOf("import('./runtime-host-boot.js')", ready);
+  assert.ok(ready >= 0 && presentation > ready && hostBoot > presentation);
+  assert.match(bootSource, /onShow: closeDesktopStartupProgress/u);
+  assert.match(mainWindowSource, /mainWindow\.once\('show', \(\) => deps\.onShow\?\.\(\)\)/u);
 });
 
 test('resolves persisted locale before first post-settings recovery prompt', () => {

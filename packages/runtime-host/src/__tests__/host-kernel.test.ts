@@ -809,6 +809,7 @@ describe('non-serving Runtime Host kernel', () => {
       assert.equal(diagnostics.platform, process.platform);
       assert.equal(diagnostics.protocolVersion, RUNTIME_HOST_PROTOCOL_VERSION);
       assert.equal(diagnostics.compatibilityEpoch, RUNTIME_HOST_COMPATIBILITY_EPOCH);
+      assert.equal(diagnostics.upgradeBlockingActivity, false);
       assert.ok(Array.isArray(diagnostics.logs));
       await connected.connection.close();
       await winner.host.closed;
@@ -1089,6 +1090,11 @@ describe('non-serving Runtime Host kernel', () => {
         { kind: 'active_tasks' },
       );
       assert.equal(host.state, 'ready');
+      assert.equal(
+        (await replacement.connection.request('host.diagnostics.query', {}))
+          .upgradeBlockingActivity,
+        true,
+      );
 
       await lateClient.connection.close();
       assert.deepEqual(
@@ -1099,6 +1105,23 @@ describe('non-serving Runtime Host kernel', () => {
         { kind: 'prepared', pid: process.pid },
       );
       await host.closed;
+      assert.equal(host.shutdownReason, 'retirement');
+    });
+  });
+
+  test('closing with a retirement reason reports a retirement shutdown', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const host = await RuntimeHostKernel.start({
+        owner,
+        lifecycleMode: 'service',
+        composition: KERNEL_COMPOSITION,
+      });
+
+      assert.equal(host.shutdownReason, undefined);
+      await host.close({ reason: 'retirement' });
       assert.equal(host.shutdownReason, 'retirement');
     });
   });

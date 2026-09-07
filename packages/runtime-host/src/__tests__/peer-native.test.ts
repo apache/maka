@@ -324,6 +324,37 @@ module.exports = {
     assert.equal(connectivityWakeups, 1);
     unsubscribeConnectivity();
 
+    const connectedPeers: string[] = [];
+    const detachRecovery = client.attachRouteResolver({
+      prepareRoutes: async () => {},
+      resolveRoutes: () => ({
+        state: 'exhausted',
+        routeHints: [],
+        coordinationRelays: [],
+        transitRelayPeerIds: [],
+      }),
+      subscribeRoutes: () => () => {},
+      peerConnected: (peerId) => {
+        connectedPeers.push(peerId);
+        if (peerId === 'restored') throw new Error('recovery observer failed');
+      },
+    });
+    assert.deepEqual(connectedPeers, ['restored'], 'attachment observes an already connected peer');
+    native.default.establishPeer('ready');
+    await waitForImmediate();
+    assert.deepEqual(connectedPeers, ['restored', 'ready']);
+    native.default.establishPeer('ready');
+    await waitForImmediate();
+    assert.deepEqual(
+      connectedPeers,
+      ['restored', 'ready'],
+      'snapshot refreshes are not new connections',
+    );
+    detachRecovery();
+    native.default.establishPeer('detached');
+    await waitForImmediate();
+    assert.deepEqual(connectedPeers, ['restored', 'ready']);
+
     native.default.failEndpoint();
     await waitForImmediate();
     await assert.rejects(
@@ -445,6 +476,25 @@ test('bounds and separates the peer credential preface from Runtime Host frames'
     streamWith(Buffer.from('{"v":2,"accepted":true,"resume":{"received":65536}}\n')),
   );
   assert.equal(resumedResult.resume?.received, 65_536);
+  await assert.rejects(
+    readRuntimeHostPeerAuthenticationResult(
+      streamWith(Buffer.from('{"v":2,"accepted":false,"reason":"capacity_exceeded"}\n')),
+    ),
+    (error: unknown) =>
+      error instanceof RuntimeHostPeerError && error.code === 'peer_capacity_exceeded',
+  );
+  for (const invalid of [
+    { v: 2, accepted: true, reason: 'capacity_exceeded' },
+    { v: 2, accepted: false, reason: 'unknown' },
+    { v: 2, accepted: false, reason: 'capacity_exceeded', resume: { received: 0 } },
+  ]) {
+    await assert.rejects(
+      readRuntimeHostPeerAuthenticationResult(
+        streamWith(Buffer.from(`${JSON.stringify(invalid)}\n`)),
+      ),
+      /result is invalid/u,
+    );
+  }
   for (const invalid of [
     { ...resume, generation: 0 },
     { ...resume, received: -1 },

@@ -101,7 +101,28 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 112 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 121 as const;
+// 121: Host diagnostics report `upgradeBlockingActivity`, the Host's
+// authoritative activity answer for maintenance probes, computed by the same
+// authority that gates `host.upgrade.prepare`. Older Clients reject the
+// unknown key when decoding diagnostics, so the pair must refuse each other
+// at the handshake.
+// 120: WorkHub admits named resume proposals with an explicit resumesActionId
+// and returns a transient resume outcome. Older peers cannot decode this action.
+// 119: Session Guest principals expose optional display names and an owner-only
+// rename command. Older peers reject named principal projections.
+// 118: External-session import publishes distinct `model_unavailable` and
+// `source_unreadable` error codes so the shell classifies failures by code
+// instead of the redacted message. Older peers cannot decode the new codes.
+// 117: WorkHub exposes only one correction linkage per bounded candidate and
+// no longer returns the Host's complete active-link set.
+// 116: User deletion rejects workflow-owned Artifacts with operation_conflict.
+// 115: Artifact creation requires explicit source ownership.
+// 114: Artifacts are physically deleted and no longer expose tombstone status.
+// 113: Client Capability tool schemas add `patternProperties` and draft-07 tuple
+// `additionalItems`; validation and projection share one per-keyword shape table.
+// Older peers reject these keywords and fail the handshake.
+
 // 112: Owners can query the Host execution environment through an extensible,
 // bounded resource-envelope contract. Older Hosts do not implement the query.
 // 111: Client Capability tool schemas may use draft-07 tuple additionalItems.

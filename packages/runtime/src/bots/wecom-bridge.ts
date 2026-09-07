@@ -19,7 +19,6 @@
 
 import { WSClient, type TextMessage, type WsFrame } from '@wecom/aibot-node-sdk';
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
-import { generalizedErrorMessage } from '@maka/core/redaction';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
 import type { BotSendOptions, BotStatus, SendCapable } from './types.js';
 
@@ -84,7 +83,7 @@ export class WeComBotBridge extends BaseBotAdapter implements SendCapable {
     const botId = this.settings.appId?.trim() ?? '';
     const secret = this.settings.appSecret?.trim() ?? '';
     if (!botId || !secret) {
-      this.reason = 'no-credentials';
+      this.reason = 'wecom_credentials_missing';
       this.readiness = 'scaffolded';
       this.emitStatusChange();
       return;
@@ -135,7 +134,7 @@ export class WeComBotBridge extends BaseBotAdapter implements SendCapable {
       .catch((error) => {
         if (this.explicitlyStopped || this.client !== client) return;
         this.running = false;
-        this.reason = generalizedErrorMessage(error);
+        this.recordFailure(error);
         this.readiness = 'configured';
         this.emitStatusChange();
         this.client = null;
@@ -173,7 +172,7 @@ export class WeComBotBridge extends BaseBotAdapter implements SendCapable {
       return response.headers?.req_id ?? null;
     } catch (error) {
       this.readiness = this.readiness === 'operational' ? 'degraded' : 'credentials_valid';
-      this.reason = generalizedErrorMessage(error);
+      this.recordFailure(error, 'send-failed');
       this.emitStatusChange();
       return null;
     }
@@ -214,7 +213,7 @@ export class WeComBotBridge extends BaseBotAdapter implements SendCapable {
     client.on('disconnected', (reason) => {
       if (this.client !== client || this.explicitlyStopped) return;
       this.running = false;
-      this.reason = reason || 'disconnected';
+      this.recordFailure(reason || 'disconnected', 'disconnected');
       this.readiness = this.readiness === 'operational' ? 'degraded' : 'configured';
       this.emitStatusChange();
     });
@@ -225,7 +224,7 @@ export class WeComBotBridge extends BaseBotAdapter implements SendCapable {
     });
     client.on('error', (error) => {
       if (this.client !== client || this.explicitlyStopped) return;
-      this.reason = generalizedErrorMessage(error);
+      this.recordFailure(error);
       this.readiness = this.readiness === 'operational' ? 'degraded' : 'configured';
       this.emitStatusChange();
     });

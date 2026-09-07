@@ -68,6 +68,7 @@ export type RuntimeHostPeerRouteResolution =
   | (RuntimeHostPeerRouteCandidateSnapshot & { readonly state: 'exhausted' });
 
 export interface RuntimeHostPeerRouteResolver {
+  peerConnected?(peerId: string): void;
   resolveRoutes(peerId: string): RuntimeHostPeerRouteResolution;
   prepareRoutes(peerId: string, signal: AbortSignal): Promise<void>;
   subscribeRoutes(peerId: string, listener: () => void): () => void;
@@ -268,6 +269,9 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     }
     if (this.#routeResolver === resolver) return () => undefined;
     this.#routeResolver = resolver;
+    for (const peerId of this.#endpoint?.connectivitySnapshot.connectedPeerIds ?? []) {
+      this.#notifyPeerConnected(peerId);
+    }
     for (const peerId of this.#routeListeners.keys()) {
       this.#subscribeResolver(peerId);
       this.#notifyRouteChange(peerId);
@@ -707,6 +711,8 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
         current = next;
         for (const peerId of new Set([...previousPeers, ...nextPeers])) {
           if (previousPeers.has(peerId) !== nextPeers.has(peerId)) this.#notifyRouteChange(peerId);
+          if (!previousPeers.has(peerId) && nextPeers.has(peerId))
+            this.#notifyPeerConnected(peerId);
         }
       }
     } catch (error) {
@@ -714,6 +720,14 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       this.#terminalError = error instanceof Error ? error : new Error(String(error));
       this.#finishConsumer('application', this.#terminalError);
       this.#finishConsumer('mesh', this.#terminalError);
+    }
+  }
+
+  #notifyPeerConnected(peerId: string): void {
+    try {
+      this.#routeResolver?.peerConnected?.(peerId);
+    } catch {
+      // Mesh recovery must not interrupt the transport's connectivity watcher.
     }
   }
 

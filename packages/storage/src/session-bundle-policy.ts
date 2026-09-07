@@ -114,7 +114,7 @@ export async function planSessionBundleExport(
     }
     const rows = database
       .prepare(
-        'SELECT record_json FROM artifact_records WHERE session_id = ? ORDER BY created_at, storage_key',
+        'SELECT record_json FROM artifact_records WHERE session_id = ? ORDER BY created_at, artifact_id',
       )
       .all(input.sessionId) as Array<{ record_json?: unknown }>;
     artifacts = decodeArtifactRecordJsons(rows.map((row) => row.record_json));

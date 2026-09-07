@@ -50,6 +50,7 @@ import {
   resolveRuntimeHostManagedServiceId,
   RUNTIME_HOST_SERVICE_LOG_MAX_BYTES,
   type RuntimeHostReconciliationProvider,
+  type RuntimeHostServiceErrorCode,
   type RuntimeHostSupervisorProvider,
 } from '@maka/runtime-host/operator';
 import {
@@ -287,7 +288,8 @@ export type RuntimeHostServiceManagerOverrides = Partial<RuntimeHostServiceManag
 
 export class RuntimeHostServiceManagerError extends Error {
   constructor(
-    readonly code:
+    readonly code: Extract<
+      RuntimeHostServiceErrorCode,
       | 'unsupported_platform'
       | 'service_manager_unavailable'
       | 'linger_disabled'
@@ -302,7 +304,8 @@ export class RuntimeHostServiceManagerError extends Error {
       | 'update_requires_retirement'
       | 'update_incomplete'
       | 'service_manager_operation_failed'
-      | 'uninstall_incomplete',
+      | 'uninstall_incomplete'
+    >,
     message: string,
     options?: ErrorOptions,
   ) {

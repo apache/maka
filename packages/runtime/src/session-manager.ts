@@ -119,7 +119,7 @@ import type {
 } from '@maka/core/agent-graph-topology';
 import type { AgentGraphScheduleUpdateSource } from '@maka/core/agent-graph-schedule';
 import type { AgentRunEvent, AgentRunStore } from '@maka/core/agent-run';
-import type { ArtifactRecord } from '@maka/core/artifacts';
+import { isArtifactChildResultOutput, type ArtifactRecord } from '@maka/core/artifacts';
 import { invocationMatchesClaimTarget } from '@maka/core/runtime-boundary';
 import type { ContinuationClaimV1 } from '@maka/core/runtime-boundary';
 import {
@@ -1027,21 +1027,23 @@ export class SessionManager {
   ): Promise<ArtifactRecord[]> {
     const list = this.deps.listArtifactsForTurn;
     if (!list) return [];
-    const artifacts = await list(sessionId, turnId);
-    if (!isTerminalRunStatus(status) || !this.hasWorktreePatchWriteBack()) return artifacts;
-    const header = await this.deps.store.readHeader(sessionId);
-    if (!header.subagentWorkspace) return artifacts;
-    const existing = artifacts.find((artifact) => artifact.source === 'subagent_writeback');
-    if (existing) return artifacts;
-
-    await this.finalizeChildWorkspacePatches(sessionId);
-    const finalized = await list(sessionId, turnId);
-    if (!finalized.some((artifact) => artifact.source === 'subagent_writeback')) {
-      throw new Error(
-        `Child Session ${sessionId} cannot reconstruct the historical workspace patch for Turn ${turnId}`,
-      );
+    let artifacts = await list(sessionId, turnId);
+    if (isTerminalRunStatus(status) && this.hasWorktreePatchWriteBack()) {
+      const header = await this.deps.store.readHeader(sessionId);
+      if (
+        header.subagentWorkspace &&
+        !artifacts.some((artifact) => artifact.source === 'subagent_writeback')
+      ) {
+        await this.finalizeChildWorkspacePatches(sessionId);
+        artifacts = await list(sessionId, turnId);
+        if (!artifacts.some((artifact) => artifact.source === 'subagent_writeback')) {
+          throw new Error(
+            `Child Session ${sessionId} cannot reconstruct the historical workspace patch for Turn ${turnId}`,
+          );
+        }
+      }
     }
-    return finalized;
+    return artifacts.filter(isArtifactChildResultOutput);
   }
 
   /**

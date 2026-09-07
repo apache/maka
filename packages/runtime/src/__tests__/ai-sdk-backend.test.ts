@@ -5518,6 +5518,240 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
+  test('persists the compaction fail-open note at decision time, before any settlement (#4850)', async () => {
+    // The replay fail-open decision is known at turn start; a stop before
+    // settlement skips usage persistence entirely, so a settlement-time note
+    // would never reach the transcript.
+    const gate = makeGate();
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: new ReadableStream<LanguageModelV4StreamPart>({
+          async start(controller) {
+            controller.enqueue({ type: 'stream-start', warnings: [] });
+            controller.enqueue({ type: 'text-start', id: 'text-1' });
+            controller.enqueue({ type: 'text-delta', id: 'text-1', delta: 'PARTIAL' });
+            // Hold the finish back so the send never reaches settlement until
+            // the test releases the gate.
+            await gate.promise;
+            controller.enqueue({ type: 'text-end', id: 'text-1' });
+            controller.enqueue({
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: {
+                inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                outputTokens: { total: 1, text: 1, reasoning: 0 },
+              },
+            });
+            controller.close();
+          },
+        }),
+      },
+    });
+    // A checkpoint whose covered prefix does not match the replayed events:
+    // the pre-turn replay fails open with a coverage miss.
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [
+        runtimeTextEvent({
+          id: 'unrelated-covered',
+          turnId: 'turn-unrelated',
+          role: 'user',
+          author: 'user',
+          text: 'UNRELATED_COVERED '.repeat(50),
+        }),
+      ],
+      summary: structuredSummary('STALE_CHECKPOINT_SENTINEL'),
+    });
+    const appended: Array<{ type: string; kind?: string; data?: unknown }> = [];
+    const isFailOpenNote = (message: { type: string; kind?: string }): boolean =>
+      message.type === 'system_note' && message.kind === 'context_compaction_failed_open';
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message: StoredMessage) => {
+        appended.push(message as unknown as { type: string; kind?: string; data?: unknown });
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: { historyCompact: { enabled: true } },
+      loadHistoryCompactCheckpoint: () => checkpoint,
+    });
+
+    const sendPromise = drain(
+      backend.send({
+        turnId: 'turn-1',
+        text: 'hi',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-real-history',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            text: 'REAL_HISTORY '.repeat(60),
+          }),
+        ],
+      }),
+    );
+    // The decision-time write precedes the provider stream's finish: wait for
+    // the note itself, not for any stream signal. On a settlement-only
+    // implementation this wait can only time out, which is the regression.
+    try {
+      await pollFor(() => appended.some(isFailOpenNote), {
+        timeoutMs: 10_000,
+        message: 'fail-open note was not written before settlement',
+      });
+    } finally {
+      await backend.stop('user_stop');
+      gate.release();
+    }
+    await sendPromise;
+
+    const note = appended.find(isFailOpenNote);
+    assert.ok(note, 'the fail-open note must be persisted even though the turn never settled');
+    assert.equal(
+      (note?.data as { failOpenReason?: string } | undefined)?.failOpenReason,
+      'coverage_miss',
+    );
+    // Settlement never ran: no usage was persisted, and the note did not wait
+    // for it.
+    assert.equal(
+      appended.some((message) => message.type === 'token_usage'),
+      false,
+    );
+  });
+
+  test('writes the compaction fail-open note exactly once when the send settles (#4850)', async () => {
+    const model = completionModel();
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [
+        runtimeTextEvent({
+          id: 'settle-unrelated-covered',
+          turnId: 'turn-unrelated',
+          role: 'user',
+          author: 'user',
+          text: 'SETTLE_UNRELATED_COVERED '.repeat(50),
+        }),
+      ],
+      summary: structuredSummary('SETTLE_STALE_CHECKPOINT_SENTINEL'),
+    });
+    const appended: Array<{ type: string; kind?: string }> = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message: StoredMessage) => {
+        appended.push(message as unknown as { type: string; kind?: string });
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: { historyCompact: { enabled: true } },
+      loadHistoryCompactCheckpoint: () => checkpoint,
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-1',
+        text: 'hi',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-settle-history',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            text: 'SETTLE_REAL_HISTORY '.repeat(60),
+          }),
+        ],
+      }),
+    );
+
+    const notes = appended.filter(
+      (message) =>
+        message.type === 'system_note' && message.kind === 'context_compaction_failed_open',
+    );
+    assert.equal(notes.length, 1, 'the settlement fallback must not duplicate the early note');
+  });
+
+  test('a failed decision-time note write still leaves the settlement fallback armed (#4850)', async () => {
+    // The per-send flag must rise only after the append lands: a failed
+    // decision-time write falls through to settlement instead of losing the
+    // note for the whole send.
+    const model = completionModel();
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [
+        runtimeTextEvent({
+          id: 'fallback-unrelated-covered',
+          turnId: 'turn-unrelated',
+          role: 'user',
+          author: 'user',
+          text: 'FALLBACK_UNRELATED_COVERED '.repeat(50),
+        }),
+      ],
+      summary: structuredSummary('FALLBACK_STALE_CHECKPOINT_SENTINEL'),
+    });
+    const isFailOpenNote = (message: { type: string; kind?: string }): boolean =>
+      message.type === 'system_note' && message.kind === 'context_compaction_failed_open';
+    const persisted: Array<{ type: string; kind?: string }> = [];
+    let noteWriteAttempts = 0;
+    let failNextNoteWrite = true;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message: StoredMessage) => {
+        const candidate = message as unknown as { type: string; kind?: string };
+        if (isFailOpenNote(candidate)) {
+          noteWriteAttempts += 1;
+          if (failNextNoteWrite) {
+            failNextNoteWrite = false;
+            throw new Error('storage hiccup');
+          }
+        }
+        persisted.push(candidate);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: { historyCompact: { enabled: true } },
+      loadHistoryCompactCheckpoint: () => checkpoint,
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-1',
+        text: 'hi',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-fallback-history',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            text: 'FALLBACK_REAL_HISTORY '.repeat(60),
+          }),
+        ],
+      }),
+    );
+
+    assert.equal(noteWriteAttempts, 2, 'the failed early write must be retried at settlement');
+    assert.equal(persisted.filter(isFailOpenNote).length, 1);
+  });
+
   test('after-step stop preserves the current provider step usage and prevents another step', async () => {
     const loop = countingToolLoopModel();
     const durable = durableTurnHarness('turn-1', 'hi');
@@ -6051,6 +6285,598 @@ describe('AiSdkBackend model history', () => {
     const prompt = JSON.stringify(compactPrompt(model));
     assert.match(prompt, /CODEX_MISMATCH_RAW_HISTORY/);
     assert.doesNotMatch(prompt, /CODEX_WRONG_MODEL_STATE|cmp_wrong_model/);
+  });
+
+  test('replays a checkpoint whose covered prefix carries a stale tool-result transition (#4842)', async () => {
+    // The standalone compaction path pins the checkpoint's coverage digest on
+    // RAW RuntimeEvents, while pre-turn replay used to match it against the
+    // transition-folded view: any durable stale-result archive inside the
+    // covered prefix then failed the digest and the turn silently fell back to
+    // full-history replay. Replay now matches the raw view and folds the
+    // projected [block, tail] afterwards.
+    const model = completionModel();
+    const transitions: ModelProjectionTransition[] = [];
+    const recorded: HistoryCompactCheckpoint[] = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'checkpoint-transition-replay-test',
+        charsPerToken: 1,
+        staleToolResultPrune: {
+          enabled: true,
+          maxResultEstimatedTokens: 1,
+          minRecentTurnsFull: 0,
+        },
+        historyCompact: { enabled: true },
+      },
+      summarizeHistoryCompact: async () => structuredSummary('FOLDED_PREFIX_COMPACT_SENTINEL'),
+      recordHistoryCompactCheckpoint: (checkpoint) => {
+        recorded.push(checkpoint);
+      },
+      loadHistoryCompactCheckpoint: () => recorded.at(-1),
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async (event) => ({ artifactId: `artifact-${event.runtimeEventId}` }),
+      }),
+      loadModelProjectionTransitions: async () => ({
+        transitions: [...transitions],
+        unreadableTargets: new Set<string>(),
+        unscopedUnreadable: 0,
+      }),
+      recordModelProjectionTransition: async (transition) => {
+        transitions.push(transition);
+      },
+    });
+    const priorEvents = [
+      runtimeTextEvent({
+        id: 'fold-old-user',
+        turnId: 'turn-old',
+        role: 'user',
+        author: 'user',
+        text: 'FOLD_OLD_USER_ALPHA '.repeat(60),
+      }),
+      runtimeEvent({
+        id: 'fold-call',
+        turnId: 'turn-old',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'tool-fold-1',
+          name: 'Read',
+          args: { path: 'a.ts' },
+        },
+      }),
+      runtimeEvent({
+        id: 'fold-result',
+        turnId: 'turn-old',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'tool-fold-1',
+          name: 'Read',
+          result: { body: 'y'.repeat(400) },
+          isError: false,
+        },
+      }),
+      runtimeTextEvent({
+        id: 'fold-recent-user',
+        turnId: 'turn-recent',
+        role: 'user',
+        author: 'user',
+        text: 'FOLD_RECENT_RETAINED_CONTEXT',
+      }),
+    ];
+
+    // Turn 1 commits the durable archive transition for the stale result. Each
+    // phase gets fresh clones: production readers deserialize their own event
+    // objects from the ledger, so no in-memory mutation can alias across them.
+    await drain(
+      backend.send({
+        turnId: 'turn-seed',
+        text: 'seed the archive transition',
+        context: [],
+        runtimeContext: structuredClone(priorEvents),
+      }),
+    );
+    assert.equal(transitions.length, 1);
+
+    // Standalone compaction creates the checkpoint over the raw prefix, exactly
+    // like the production path whose input is begin.runtimeContext.
+    const compact = await backend.compactHistory({
+      turnId: 'turn-compact',
+      runId: 'run-compact',
+      runtimeContext: structuredClone(priorEvents),
+    });
+    assert.equal(compact.outcome.kind, 'compacted');
+    assert.equal(recorded.length, 1);
+
+    // The next turn must replay through the checkpoint, not fail open. A fresh
+    // backend mirrors production: the compaction operation and the next send
+    // run as separate runs with separate backend instances.
+    const replayBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'checkpoint-transition-replay-test',
+        charsPerToken: 1,
+        staleToolResultPrune: {
+          enabled: true,
+          maxResultEstimatedTokens: 1,
+          minRecentTurnsFull: 0,
+        },
+        historyCompact: { enabled: true },
+      },
+      loadHistoryCompactCheckpoint: () => recorded.at(-1),
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async (event) => ({ artifactId: `artifact-${event.runtimeEventId}` }),
+      }),
+      loadModelProjectionTransitions: async () => ({
+        transitions: [...transitions],
+        unreadableTargets: new Set<string>(),
+        unscopedUnreadable: 0,
+      }),
+      recordModelProjectionTransition: async (transition) => {
+        transitions.push(transition);
+      },
+    });
+    await drain(
+      replayBackend.send({
+        turnId: 'turn-after-compact',
+        text: 'after compact',
+        context: [],
+        runtimeContext: structuredClone(priorEvents),
+      }),
+    );
+
+    const lastCall = model.doStreamCalls.at(-1);
+    const prompt = JSON.stringify(
+      lastCall?.prompt.map((message) => ({ role: message.role, content: message.content })),
+    );
+    assert.match(prompt, /FOLDED_PREFIX_COMPACT_SENTINEL/);
+    assert.doesNotMatch(prompt, /FOLD_OLD_USER_ALPHA/);
+  });
+
+  test('a checkpoint summary cannot echo a body a durable transition removed (#4845)', async () => {
+    // Coverage identity is pinned on raw events, but the summarizer must read
+    // the EFFECTIVE (transition-folded) prefix: an echoing summarizer fed raw
+    // events would quote the archived body into the checkpoint block and every
+    // later replay would restore what the transition removed.
+    const model = completionModel();
+    const transitions: ModelProjectionTransition[] = [];
+    const recorded: HistoryCompactCheckpoint[] = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'checkpoint-effective-summary-test',
+        charsPerToken: 1,
+        staleToolResultPrune: {
+          enabled: true,
+          maxResultEstimatedTokens: 1,
+          minRecentTurnsFull: 0,
+        },
+        historyCompact: { enabled: true },
+      },
+      summarizeHistoryCompact: async (input) =>
+        // Echo the covered span verbatim into a structurally valid summary.
+        structuredSummary(
+          `ECHO ${input.source.foldedRuntimeEvents
+            .map((event) => JSON.stringify(event.content))
+            .join(' ')}`,
+        ),
+      recordHistoryCompactCheckpoint: (checkpoint) => {
+        recorded.push(checkpoint);
+      },
+      loadHistoryCompactCheckpoint: () => recorded.at(-1),
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async (event) => ({ artifactId: `artifact-${event.runtimeEventId}` }),
+      }),
+      loadModelProjectionTransitions: async () => ({
+        transitions: [...transitions],
+        unreadableTargets: new Set<string>(),
+        unscopedUnreadable: 0,
+      }),
+      recordModelProjectionTransition: async (transition) => {
+        transitions.push(transition);
+      },
+    });
+    const priorEvents = [
+      runtimeTextEvent({
+        id: 'echo-old-user',
+        turnId: 'turn-old',
+        role: 'user',
+        author: 'user',
+        text: 'ECHO_OLD_USER '.repeat(60),
+      }),
+      runtimeEvent({
+        id: 'echo-call',
+        turnId: 'turn-old',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'tool-echo-1',
+          name: 'Read',
+          args: { path: 'secret.ts' },
+        },
+      }),
+      runtimeEvent({
+        id: 'echo-result',
+        turnId: 'turn-old',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'tool-echo-1',
+          name: 'Read',
+          result: { body: 'RAW_TRANSITIONED_TOOL_BODY '.repeat(40) },
+          isError: false,
+        },
+      }),
+    ];
+
+    await drain(
+      backend.send({
+        turnId: 'turn-seed',
+        text: 'seed the archive transition',
+        context: [],
+        runtimeContext: structuredClone(priorEvents),
+      }),
+    );
+    assert.equal(transitions.length, 1);
+
+    const compact = await backend.compactHistory({
+      turnId: 'turn-compact',
+      runId: 'run-compact',
+      runtimeContext: structuredClone(priorEvents),
+    });
+    assert.equal(compact.outcome.kind, 'compacted');
+    assert.equal(recorded.length, 1);
+
+    // The summary was written from the effective view: it carries the archive
+    // placeholder's identity, not the transitioned body.
+    const summary = recorded[0]?.version === 2 ? recorded[0].summary : '';
+    assert.match(summary, /artifact-echo-result/);
+    assert.doesNotMatch(summary, /RAW_TRANSITIONED_TOOL_BODY/);
+
+    const replayBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'checkpoint-effective-summary-test',
+        charsPerToken: 1,
+        staleToolResultPrune: {
+          enabled: true,
+          maxResultEstimatedTokens: 1,
+          minRecentTurnsFull: 0,
+        },
+        historyCompact: { enabled: true },
+      },
+      loadHistoryCompactCheckpoint: () => recorded.at(-1),
+      toolResultArchive: testToolResultArchive({}),
+      loadModelProjectionTransitions: async () => ({
+        transitions: [...transitions],
+        unreadableTargets: new Set<string>(),
+        unscopedUnreadable: 0,
+      }),
+    });
+    await drain(
+      replayBackend.send({
+        turnId: 'turn-after-compact',
+        text: 'after compact',
+        context: [],
+        runtimeContext: structuredClone(priorEvents),
+      }),
+    );
+
+    const lastCall = model.doStreamCalls.at(-1);
+    const prompt = JSON.stringify(
+      lastCall?.prompt.map((message) => ({ role: message.role, content: message.content })),
+    );
+    assert.match(prompt, /ECHO /);
+    assert.doesNotMatch(prompt, /RAW_TRANSITIONED_TOOL_BODY/);
+  });
+
+  test('a transition committed after creation invalidates the checkpoint at pre-turn replay (#4845 review)', async () => {
+    // The checkpoint pins the EFFECTIVE digest of its covered prefix. A
+    // projection transition committed AFTER the fold (here: a later turn's
+    // stale-result prune) leaves the raw ledger untouched, so the identity
+    // match still passes — but the summary describes a view that no longer
+    // exists. Replay must reject the checkpoint and fail open to the
+    // effective history rather than restore the transitioned body.
+    const model = completionModel();
+    const transitions: ModelProjectionTransition[] = [];
+    const recorded: HistoryCompactCheckpoint[] = [];
+    const echoSummarizer: Parameters<typeof createTestAiSdkBackend>[0]['summarizeHistoryCompact'] =
+      async (input) =>
+        structuredSummary(
+          `ECHO ${input.source.foldedRuntimeEvents
+            .map((event) => JSON.stringify(event.content))
+            .join(' ')}`,
+        );
+    const loadTransitions = async () => ({
+      transitions: [...transitions],
+      unreadableTargets: new Set<string>(),
+      unscopedUnreadable: 0,
+    });
+    const priorEvents = [
+      runtimeTextEvent({
+        id: 'echo-old-user',
+        turnId: 'turn-old',
+        role: 'user',
+        author: 'user',
+        text: 'ECHO_OLD_USER '.repeat(60),
+      }),
+      runtimeEvent({
+        id: 'echo-call',
+        turnId: 'turn-old',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'tool-echo-1',
+          name: 'Read',
+          args: { path: 'secret.ts' },
+        },
+      }),
+      runtimeEvent({
+        id: 'echo-result',
+        turnId: 'turn-old',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'tool-echo-1',
+          name: 'Read',
+          result: { body: 'RAW_TRANSITIONED_TOOL_BODY '.repeat(40) },
+          isError: false,
+        },
+      }),
+    ];
+
+    // 1. Creation: no transition exists yet, so the effective view IS the raw
+    //    view and the echo summary legitimately quotes the body into the block.
+    const creationBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: '[redacted]',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'checkpoint-effective-drift-test',
+        charsPerToken: 1,
+        staleToolResultPrune: { enabled: false },
+        historyCompact: { enabled: true },
+      },
+      summarizeHistoryCompact: echoSummarizer,
+      recordHistoryCompactCheckpoint: (checkpoint) => {
+        recorded.push(checkpoint);
+      },
+      loadModelProjectionTransitions: loadTransitions,
+    });
+    const compact = await creationBackend.compactHistory({
+      turnId: 'turn-compact',
+      runId: 'run-compact',
+      runtimeContext: structuredClone(priorEvents),
+    });
+    assert.equal(compact.outcome.kind, 'compacted');
+    assert.equal(recorded.length, 1);
+    assert.ok(recorded[0]!.coverage.effectiveSourceDigest);
+    const summary = recorded[0]!.version === 2 ? recorded[0]!.summary : '';
+    assert.match(summary, /RAW_TRANSITIONED_TOOL_BODY/);
+
+    // 2. A later turn commits a stale-result transition over the covered span.
+    const pruneModel = completionModel();
+    const pruneBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: '[redacted]',
+      modelId: 'mock-model-id',
+      modelFactory: () => pruneModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'checkpoint-effective-drift-test',
+        charsPerToken: 1,
+        staleToolResultPrune: {
+          enabled: true,
+          maxResultEstimatedTokens: 1,
+          minRecentTurnsFull: 0,
+        },
+        historyCompact: { enabled: true },
+      },
+      loadHistoryCompactCheckpoint: () => recorded.at(-1),
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async (event) => ({ artifactId: `artifact-${event.runtimeEventId}` }),
+      }),
+      loadModelProjectionTransitions: loadTransitions,
+      recordModelProjectionTransition: async (transition) => {
+        transitions.push(transition);
+      },
+    });
+    await drain(
+      pruneBackend.send({
+        turnId: 'turn-seed',
+        text: 'seed the archive transition',
+        context: [],
+        runtimeContext: structuredClone(priorEvents),
+      }),
+    );
+    assert.equal(transitions.length, 1);
+
+    // 3. Replay: the raw identity still matches, the effective digest does
+    //    not. The stale block must never reach the provider.
+    const replayModel = completionModel();
+    const replayBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: '[redacted]',
+      modelId: 'mock-model-id',
+      modelFactory: () => replayModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'checkpoint-effective-drift-test',
+        charsPerToken: 1,
+        staleToolResultPrune: { enabled: false },
+        historyCompact: { enabled: true },
+      },
+      loadHistoryCompactCheckpoint: () => recorded.at(-1),
+      toolResultArchive: testToolResultArchive({}),
+      loadModelProjectionTransitions: loadTransitions,
+    });
+    const events: unknown[] = [];
+    for await (const event of replayBackend.send({
+      turnId: 'turn-after-transition',
+      text: 'after transition',
+      context: [],
+      runtimeContext: structuredClone(priorEvents),
+    })) {
+      events.push(event);
+    }
+
+    const lastCall = replayModel.doStreamCalls.at(-1);
+    const prompt = JSON.stringify(
+      lastCall?.prompt.map((message) => ({ role: message.role, content: message.content })),
+    );
+    // Fail-open replayed the effective history: the archive placeholder is
+    // visible, the stale summary and the transitioned body are not.
+    assert.match(prompt, /artifact-echo-result/);
+    assert.doesNotMatch(prompt, /ECHO /);
+    assert.doesNotMatch(prompt, /RAW_TRANSITIONED_TOOL_BODY/);
+    // The rejection is diagnosed so the fail-open note can name it.
+    const usageEvent = events.find(
+      (event) => (event as { type?: string }).type === 'token_usage',
+    ) as
+      | {
+          contextBudget?: {
+            compactionDecisions?: Array<{ decision?: string; failOpenReason?: string }>;
+          };
+        }
+      | undefined;
+    const decisions = usageEvent?.contextBudget?.compactionDecisions ?? [];
+    assert.ok(
+      decisions.some(
+        (decision) =>
+          decision.decision === 'failedOpen' &&
+          decision.failOpenReason === 'effective_history_changed',
+      ),
+    );
+  });
+
+  test('pre-turn replay withholds a tool result whose transition record is unreadable (#4845)', async () => {
+    // prepareContextBudgetPolicy folds with the unreadable-target set so an
+    // undecodable record withholds the body behind the failure sentinel; the
+    // post-match fold of the projected [block, tail] must do the same or it
+    // becomes the one consumer that replays the removed body.
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'unreadable-target-replay-test',
+        charsPerToken: 1,
+        staleToolResultPrune: { enabled: false },
+        historyCompact: { enabled: true },
+      },
+      loadModelProjectionTransitions: async () => ({
+        transitions: [],
+        unreadableTargets: new Set<string>(['unreadable-result::tool_result']),
+        unscopedUnreadable: 0,
+      }),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'current user',
+        context: [],
+        runtimeContext: [
+          runtimeEvent({
+            id: 'unreadable-call',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'tool-unreadable-1',
+              name: 'Read',
+              args: { path: 'a.ts' },
+            },
+          }),
+          runtimeEvent({
+            id: 'unreadable-result',
+            turnId: 'turn-prev',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'tool-unreadable-1',
+              name: 'Read',
+              result: { body: 'RAW_UNREADABLE_TARGET_BODY' },
+              isError: false,
+            },
+          }),
+        ],
+      }),
+    );
+
+    const prompt = JSON.stringify(compactPrompt(model));
+    assert.match(prompt, /could not be projected safely/);
+    assert.doesNotMatch(prompt, /RAW_UNREADABLE_TARGET_BODY/);
   });
 
   test('keeps RuntimeEvent replay when a tool result is unmatched (orphan dropped, rest replayed)', async () => {

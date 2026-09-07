@@ -74,6 +74,7 @@ import {
   revokeAccessCredentialRotation,
   revokeCollaborationGrant,
   revokeCollaborationPrincipal,
+  renameCollaborationPrincipal,
   type RuntimeHostAccessAuthority,
 } from './access-authority.js';
 import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
@@ -333,7 +334,8 @@ export class RuntimeHostKernel {
     return this.#options.composition.descriptor;
   }
 
-  close(): Promise<void> {
+  close(input?: { readonly reason?: 'retirement' }): Promise<void> {
+    this.#shutdownReason ??= input?.reason;
     this.#requestDrain();
     return this.closed;
   }
@@ -692,6 +694,7 @@ export class RuntimeHostKernel {
           ok: true,
           result: {
             ...this.#statusSnapshot(),
+            upgradeBlockingActivity: this.#hasUpgradeBlockingActivity(0),
             compositionModules: this.#composition?.moduleIds ?? [],
             residencies: this.#residencies.snapshot(),
             protocolVersion: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -721,7 +724,7 @@ export class RuntimeHostKernel {
               },
             };
           }
-          if (!input.allowInterruptActiveTasks && this.#hasUpgradeBlockingActivity()) {
+          if (!input.allowInterruptActiveTasks && this.#hasUpgradeBlockingActivity(1)) {
             return { ok: true, result: { kind: 'active_tasks' } };
           }
           this.#shutdownReason = 'retirement';
@@ -786,6 +789,8 @@ export class RuntimeHostKernel {
           this.#settleAccessCredentialMutation(
             revokeCollaborationGrant(this.#options.accessAuthority, input),
           ),
+        'collaboration.principal.rename': async (input) =>
+          renameCollaborationPrincipal(this.#options.accessAuthority, input),
         'collaboration.principal.revoke': async (input) =>
           this.#settleAccessCredentialMutation(
             revokeCollaborationPrincipal(this.#options.accessAuthority, input.principalId),
@@ -871,12 +876,15 @@ export class RuntimeHostKernel {
     };
   }
 
-  #hasUpgradeBlockingActivity(): boolean {
+  #hasUpgradeBlockingActivity(selfCommands: 0 | 1): boolean {
     // The request's own accepted transport is expected. Any other live
     // connection arrived after discovery or remained attached and therefore
-    // requires explicit interruption authority before retirement.
+    // requires explicit interruption authority before retirement. Callers
+    // pass how many of the in-flight commands are their own: the
+    // `host.upgrade.prepare` command counts itself, while the diagnostics
+    // query path runs outside the command counter.
     if (this.#acceptedTransports.size > 1) return true;
-    if (this.#activeCommandOperations > 1) return true;
+    if (this.#activeCommandOperations > selfCommands) return true;
     return this.#residencies.drainCount > 0;
   }
 

@@ -347,6 +347,18 @@ export class RuntimeHostSessionObserver {
     });
   }
 
+  async loadTranscriptAfter(
+    request: DesktopTranscriptRangeRequest,
+    targetId?: number,
+  ): Promise<void> {
+    await this.#runTranscriptRangeOperation(request, targetId, (replica) =>
+      replica.loadAfter(
+        request.anchorSequence,
+        requireTranscriptRangeBytes(request.maxBytes),
+      ),
+    );
+  }
+
   async #runTranscriptRangeOperation(
     request: DesktopTranscriptRangeRequest,
     targetId: number | undefined,

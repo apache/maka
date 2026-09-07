@@ -166,6 +166,7 @@ import {
 import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
+  historyCompactSourceDigest,
   isProviderHistoryCompactCheckpoint,
   matchHistoryCompactCheckpointPrefix,
   projectHistoryCompactCheckpointReplay,
@@ -1004,6 +1005,56 @@ export class AiSdkTurn {
     let contextReportedWindowNoteWritten = false;
     let contextOverflowAfterCompactionNoteWritten = false;
     let contextWindowSuggestionNoteWritten = false;
+    // A compaction decision is known the moment its stage reports it — the
+    // pre-turn replay resolves its fold before the first request goes out —
+    // while the settlement path is skipped entirely by a stop or a stream
+    // error. Write both notes when the decision is known, once per send,
+    // whichever stage reports first (#4850).
+    const appendCompactionDecisionNotes = async (
+      contextBudget: ContextBudgetDiagnostic | undefined,
+    ): Promise<void> => {
+      if (
+        !contextCompactionFailedOpenNoteWritten &&
+        shouldAppendContextCompactionFailedOpenNote(contextBudget)
+      ) {
+        // The most recent stage that refused the fold: a send can carry both a
+        // priorReplay and an activeStep refusal after a diagnostic merge, and
+        // array order would pin the stale one.
+        const failOpenReason = contextBudget?.compactionDecisions
+          ?.filter(
+            (decision) =>
+              decision.boundaryKind === 'historyCompact' && decision.decision === 'failedOpen',
+          )
+          .at(-1)?.failOpenReason;
+        const note: SystemNoteMessage = {
+          type: 'system_note',
+          id: this.deps.newId(),
+          turnId,
+          ts: this.deps.now(),
+          kind: 'context_compaction_failed_open',
+          ...(failOpenReason !== undefined ? { data: { failOpenReason } } : {}),
+        };
+        // Mark written only after the append lands: a failed write must leave
+        // the flag down so the settlement fallback can still record the note.
+        contextCompactionFailedOpenNoteWritten = await this.deps.backend
+          .appendMessage(note)
+          .then(() => true)
+          .catch(() => false);
+      }
+      if (!contextCompactedNoteWritten && shouldAppendContextCompactedNote(contextBudget)) {
+        const note: SystemNoteMessage = {
+          type: 'system_note',
+          id: this.deps.newId(),
+          turnId,
+          ts: this.deps.now(),
+          kind: 'context_compacted',
+        };
+        contextCompactedNoteWritten = await this.deps.backend
+          .appendMessage(note)
+          .then(() => true)
+          .catch(() => false);
+      }
+    };
     // Request index (0-based) at which the active prune last rewrote the
     // request. A step Maka pruned is not append-only, so usage may legitimately
     // shrink.
@@ -1189,6 +1240,10 @@ export class AiSdkTurn {
       yield* this.drain(queue);
       return;
     }
+    // The pre-turn replay's fold decision is final here: surface it now so a
+    // stop or stream error later in the send cannot keep it from the
+    // transcript (#4850).
+    await appendCompactionDecisionNotes(priorReplay.contextBudget);
     if (midTurnState) {
       // Roll-forward seed: the latest durable checkpoint (loaded or written at
       // turn start) so a mid-turn summary only re-reads the newly folded span.
@@ -1303,6 +1358,7 @@ export class AiSdkTurn {
               ]
             : turnEvents;
           let replayEvents = rawProjectionEvents;
+          let effectiveProjectionCheckpoint = projectionCheckpoint;
           if (projectionCheckpoint) {
             const checkpointMatch = matchHistoryCompactCheckpointPrefix(
               projectionCheckpoint,
@@ -1311,11 +1367,27 @@ export class AiSdkTurn {
             if (checkpointMatch.reason) {
               throw new Error(`durable checkpoint projection mismatch: ${checkpointMatch.reason}`);
             }
-            replayEvents = projectHistoryCompactCheckpointReplay(
-              projectionCheckpoint,
+            // Content-currency guard: the raw identity still matches, but a
+            // transition committed after this fold (e.g. an active-turn prune
+            // in this very send) changed the effective view the block was
+            // built from. Replay without the stale block — the provider
+            // decides fit and overflow recovery re-folds (#4845 review).
+            const pinnedEffectiveDigest = projectionCheckpoint.coverage.effectiveSourceDigest;
+            const coveredEffective = await this.deps.compaction.foldEffectiveModelHistory(
               checkpointMatch.coveredRuntimeEvents,
-              checkpointMatch.successorRuntimeEvents,
             );
+            if (
+              pinnedEffectiveDigest === undefined ||
+              historyCompactSourceDigest(coveredEffective) !== pinnedEffectiveDigest
+            ) {
+              effectiveProjectionCheckpoint = undefined;
+            } else {
+              replayEvents = projectHistoryCompactCheckpointReplay(
+                projectionCheckpoint,
+                checkpointMatch.coveredRuntimeEvents,
+                checkpointMatch.successorRuntimeEvents,
+              );
+            }
             // The checkpoint was capacity-validated before it was persisted.
             // Do not re-run that gate against a later, larger successor tail:
             // the active-step shaper must see that growth so it can roll the
@@ -1344,7 +1416,7 @@ export class AiSdkTurn {
             await this.deps.messageProjection.materializeRuntimeReplayPlan(
               replayPlan,
               this.imageBudget,
-              projectionCheckpoint,
+              effectiveProjectionCheckpoint,
               compatibleProviderReasoningReplayEventIds(
                 replayEvents,
                 input.runtimeContextInvocations,
@@ -1353,7 +1425,7 @@ export class AiSdkTurn {
                 this.runId,
               ),
             );
-          return projectionCheckpoint
+          return effectiveProjectionCheckpoint
             ? currentTurnMessages
             : [...priorReplay.messages, ...currentTurnMessages];
         };
@@ -2489,34 +2561,10 @@ export class AiSdkTurn {
               ...usageFields,
             };
             await this.deps.backend.appendMessage(tu).catch(() => {});
-            if (
-              !contextCompactionFailedOpenNoteWritten &&
-              shouldAppendContextCompactionFailedOpenNote(contextBudgetForUsage)
-            ) {
-              contextCompactionFailedOpenNoteWritten = true;
-              const note: SystemNoteMessage = {
-                type: 'system_note',
-                id: this.deps.newId(),
-                turnId,
-                ts: this.deps.now(),
-                kind: 'context_compaction_failed_open',
-              };
-              await this.deps.backend.appendMessage(note).catch(() => {});
-            }
-            if (
-              !contextCompactedNoteWritten &&
-              shouldAppendContextCompactedNote(contextBudgetForUsage)
-            ) {
-              contextCompactedNoteWritten = true;
-              const note: SystemNoteMessage = {
-                type: 'system_note',
-                id: this.deps.newId(),
-                turnId,
-                ts: this.deps.now(),
-                kind: 'context_compacted',
-              };
-              await this.deps.backend.appendMessage(note).catch(() => {});
-            }
+            // Settlement fallback: a mid-turn or request-hook fold is only
+            // known here. Notes already written at decision time are skipped
+            // by the flags inside.
+            await appendCompactionDecisionNotes(contextBudgetForUsage);
             queue.push({
               type: 'token_usage',
               id: this.deps.newId(),
@@ -2836,8 +2884,18 @@ export class AiSdkTurn {
       this.deps.backend.modelId,
     );
     let contextBudget = preparedContextBudget.policy;
-    const budgeted = applyRuntimeEventContextBudget(priorRuntimeContext, contextBudget);
-    let runtimeContext = budgeted?.events ?? priorRuntimeContext;
+    // Match the durable checkpoint against the RAW ledger prefix: every
+    // creation path (standalone compactHistory and the mid-turn state) pins
+    // its coverage digest on raw events, so matching the folded view here
+    // lets any durable projection transition inside the covered prefix orphan
+    // the checkpoint and silently fail open into a full-history replay
+    // (#4842). The projected [block, tail] is then folded through the
+    // transition reducer before it becomes messages, so a committed
+    // transition still cannot resurrect content for the model (#4283).
+    const budgeted = applyRuntimeEventContextBudget(rawPriorRuntimeContext, contextBudget);
+    let runtimeContext = await this.deps.compaction.foldEffectiveModelHistory(
+      budgeted?.events ?? rawPriorRuntimeContext,
+    );
     let contextBudgetDiagnostic = budgeted?.diagnostic;
     let projectedHistoryCompactCheckpoint = budgeted?.historyCompactCheckpoint;
     if (preparedContextBudget.diagnosticPatch) {
