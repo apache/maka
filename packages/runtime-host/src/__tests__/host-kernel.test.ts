@@ -2255,10 +2255,7 @@ describe('non-serving Runtime Host kernel', () => {
       // the guard binds; Windows locally terminates such grandchildren
       // abruptly without a JS exit event, so only CI verdicts count as
       // cross-platform evidence for this assertion.
-      await waitForProcessExit(
-        launchedPid,
-        OWNED_CANDIDATE_RECOVERY_DELAY_MS + 15_000,
-      );
+      await waitForProcessExit(launchedPid, OWNED_CANDIDATE_RECOVERY_DELAY_MS + 15_000);
       await withTimeout(
         connected.connection.closed,
         5_000,
