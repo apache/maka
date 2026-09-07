@@ -195,8 +195,20 @@ export function estimateEffectiveToolResultChars(
 export function estimateRuntimeEventChars(event: RuntimeEvent): number {
   let total = 0;
   const content = event.content;
-  if (content?.kind === 'text' || content?.kind === 'thinking') total += content.text.length;
-  else if (content?.kind === 'function_call')
+  if (content?.kind === 'text' || content?.kind === 'thinking') {
+    total += content.text.length;
+    // Structured carriers are part of the event's weight: a quote- or
+    // attachment-only user message must not estimate to zero, or the
+    // history-compact gate drops a model-visible event (#4804).
+    if (content.kind === 'text') {
+      for (const quote of content.quotes ?? []) {
+        total += quote.text.length + (quote.label?.length ?? 0);
+      }
+      for (const attachment of content.attachments ?? []) {
+        total += attachment.name.length + attachment.mimeType.length;
+      }
+    }
+  } else if (content?.kind === 'function_call')
     total += content.name.length + stableJsonLength(content.args);
   else if (content?.kind === 'function_response')
     total += content.name.length + estimateEffectiveToolResultChars(content, event.sessionId);

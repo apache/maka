@@ -123,6 +123,21 @@ function projectSessionRecapMessages(events: readonly RuntimeEvent[]): ModelMess
       const text = content.text.trim();
       if (text.length > 0) {
         messages.push({ role: event.role === 'user' ? 'user' : 'assistant', content: text });
+      } else {
+        // Model-visible without inline text: a structured-only message must
+        // still leave evidence in the recap instead of vanishing (#4804).
+        const quoteCount = content.quotes?.length ?? 0;
+        const attachmentCount = content.attachments?.length ?? 0;
+        const carriers = [
+          quoteCount > 0 ? `${quoteCount} quote(s)` : undefined,
+          attachmentCount > 0 ? `${attachmentCount} attachment(s)` : undefined,
+        ].filter(Boolean);
+        if (carriers.length > 0) {
+          messages.push({
+            role: event.role === 'user' ? 'user' : 'assistant',
+            content: `[message carried ${carriers.join(' and ')}]`,
+          });
+        }
       }
       continue;
     }

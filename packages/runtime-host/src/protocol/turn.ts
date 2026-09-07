@@ -21,6 +21,7 @@ import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachmen
 import {
   decodeMessageContent as decodeCanonicalMessageContent,
   DIRECTORY_REFERENCE_MAX_COUNT,
+  hasMeaningfulMessageContent,
   isCanonicalAttachmentRef,
   type ContextCompactionOutcome,
   type MessageContent,
@@ -473,17 +474,12 @@ export function decodeMessageAdmissionContent(
   allowEmptyText = false,
 ): MessageContent {
   // Structure first with text emptiness unconstrained, then apply the
-  // admission rule: a quote or an attachment carries the turn by itself, so
-  // empty inline text is admissible when either is present (#4804). A truly
-  // contentless Message still throws, with the same frame error the
-  // text-length rule produced.
+  // shared meaningful-content predicate: a quote or an attachment carries
+  // the turn by itself, so empty inline text is admissible when either is
+  // present (#4804). A truly contentless Message still throws, with the
+  // same frame error the text-length rule produced.
   const content = decodeMessageContent(value, true);
-  if (
-    !allowEmptyText &&
-    content.text.length === 0 &&
-    (content.quotes?.length ?? 0) === 0 &&
-    (content.attachments?.length ?? 0) === 0
-  ) {
+  if (!allowEmptyText && !hasMeaningfulMessageContent(content)) {
     throw invalidProtocolFrame('Invalid Message text');
   }
   if (content.attachments?.some((attachment) => attachment.ref.kind === 'session_context')) {

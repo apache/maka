@@ -167,6 +167,21 @@ const MESSAGE_CONTENT_SHAPE = defineObjectShape<MessageContent>()(
   ['text'],
   ['displayText', 'attachments', 'directoryReferences', 'quotes', 'inlineReferences'],
 );
+
+/**
+ * A Turn message is meaningful when at least one of its three content carriers
+ * is present: inline text, an inline excerpt, or an attachment reference.
+ * Admission, compaction estimates, and recap projection must share this one
+ * predicate (#4804) — restating it per layer is how a quote-only message ends
+ * up admitted by one boundary and silently dropped by the next.
+ */
+export function hasMeaningfulMessageContent(content: MessageContent): boolean {
+  return (
+    content.text.length > 0 ||
+    (content.quotes?.length ?? 0) > 0 ||
+    (content.attachments?.length ?? 0) > 0
+  );
+}
 const ATTACHMENT_REF_SHAPE = defineObjectShape<AttachmentRef>()(
   ['kind', 'name', 'mimeType', 'bytes', 'ref'],
   [],
