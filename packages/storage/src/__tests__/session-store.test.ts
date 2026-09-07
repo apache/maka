@@ -731,6 +731,17 @@ describe('SQLite SessionStore', () => {
       sessionId = session.id;
       await store.appendMessages(session.id, [message, smallMessage]);
       assert.deepEqual(await store.readMessages(session.id), [message, smallMessage]);
+      // The paged scan the transcript conversion reads through must reassemble
+      // a chunked record too: inline it is only a marker, which decodes as
+      // nothing a transcript can carry.
+      const page = await store.readMessagesAfter(session.id, {
+        maxMessages: 8,
+        maxStoredBytes: 4 * 1024 * 1024,
+      });
+      assert.deepEqual(
+        page.records.map((record) => record.message),
+        [message, smallMessage],
+      );
     } finally {
       await store.close?.();
     }

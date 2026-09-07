@@ -2571,33 +2571,35 @@ export class SqliteSessionMetadataStore {
       if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
       const rows = this.db
         .prepare(`
-          SELECT sequence, record_json
-          FROM session_messages
-          WHERE session_id = ? AND sequence > ?
-          ORDER BY sequence
+          SELECT message.sequence, message.record_json, payload.record_bytes, payload.sha256
+          FROM session_messages AS message
+          LEFT JOIN session_message_payloads AS payload
+            ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+          WHERE message.session_id = ? AND message.sequence > ?
+          ORDER BY message.sequence
           LIMIT ?
         `)
-        .all(sessionId, request.afterSequence ?? -1, request.maxMessages) as Array<{
-        sequence?: unknown;
-        record_json?: unknown;
-      }>;
+        .all(
+          sessionId,
+          request.afterSequence ?? -1,
+          request.maxMessages,
+        ) as StoredSessionMessagePayloadRow[];
       const records: SessionMessageScanRecord[] = [];
       let storedBytes = 0;
       for (const row of rows) {
         const sequence = requireStoredMessageSequence(row.sequence, sessionId);
-        const recordJson = String(row.record_json);
+        // A record too large for one row is stored in chunks, with only a
+        // marker inline; its size is the chunk total, not the marker's.
+        const recordBytes =
+          typeof row.record_bytes === 'number' ? row.record_bytes : String(row.record_json).length;
         // The first record of a page is always taken, so a single row larger
         // than the budget still makes progress instead of stalling the scan.
-        if (records.length > 0 && storedBytes + recordJson.length > request.maxStoredBytes) break;
-        storedBytes += recordJson.length;
-        try {
-          records.push({
-            sequence,
-            message: decodeStoredMessage(JSON.parse(recordJson) as unknown),
-          });
-        } catch (error) {
-          throw new StoredSessionMessageIncompatibleError(sessionId, sequence, { cause: error });
-        }
+        if (records.length > 0 && storedBytes + recordBytes > request.maxStoredBytes) break;
+        storedBytes += recordBytes;
+        records.push({
+          sequence,
+          message: decodeStoredMessageRecordRow(this.db, sessionId, row),
+        });
       }
       const highWater = this.db
         .prepare('SELECT MAX(sequence) AS high_water FROM session_messages WHERE session_id = ?')
