@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { ModelInfo, ProviderType } from './llm-connections.js';
+import type { ModelInfo, ProviderType, ProviderRuntimeAdapter } from './llm-connections.js';
 import type { ThinkingOptions } from './model-thinking.js';
 import {
   GENERATED_MODELS_DEV_METADATA,
@@ -75,9 +75,6 @@ export function installRefreshedModelMetadata(metadata: ModelsDevMetadata | unde
 function activeMetadata(): ModelsDevMetadata {
   return refreshedMetadata ?? bundledModelMetadata;
 }
-const generatedModelProviderOverrides: Partial<
-  Record<ProviderType, Record<string, { npm: string; api?: string }>>
-> = GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES;
 
 /** Access paths that serve a canonical provider's model catalog. */
 const GENERATED_METADATA_PROVIDER_ALIASES: Partial<Record<ProviderType, ProviderType>> = {
@@ -140,11 +137,14 @@ export function modelMetadataIdsForProvider(providerType: ProviderType): string[
   );
 }
 
-export function lookupModelProviderOverride(
+export function lookupModelRuntimeOverride(
   providerType: ProviderType,
   modelId: string,
-): { npm: string; api?: string } | undefined {
-  return generatedModelProviderOverrides[providerType]?.[modelId.trim()];
+): { adapter: ProviderRuntimeAdapter; baseUrl?: string } | undefined {
+  const overrides: Partial<
+    Record<ProviderType, Record<string, { adapter: ProviderRuntimeAdapter; baseUrl?: string }>>
+  > = GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES;
+  return overrides[providerType]?.[modelId.trim()];
 }
 
 /**

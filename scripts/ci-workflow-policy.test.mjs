@@ -475,6 +475,13 @@ test('Rust build caches publish immutable source generations only from the defau
       name,
     );
     assert.doesNotMatch(workflow, /kache report [^\n]*--since/u, name);
+    const reports = [...workflow.matchAll(/^\s+(?:run: )?(kache report[^\n]*)$/gmu)].map(
+      ([, command]) => command,
+    );
+    assert.equal(reports.length, 1, name);
+    // The report must reach the raw log, not only the rendered summary panel.
+    assert.equal(reports[0], 'kache report --format github | tee -a "$GITHUB_STEP_SUMMARY"', name);
+    assert.match(workflow, /run: \|\n\s+set -o pipefail\n\s+kache report/u, name);
   }
 });
 

@@ -41,6 +41,8 @@ import {
   WorkHubSendLease,
   type WorkHubSendAttempt,
 } from './workhub-send-lease.js';
+import { WorkHubNavigationRail, WorkHubPromptRail } from './features/workhub/index.js';
+import { getWorkHubRailCopy } from './locales/workhub-copy.js';
 
 export interface WorkHubConversationTurn {
   requestId: string;
@@ -226,8 +228,12 @@ export function WorkHubSurface(props: {
   onOpenSession(sessionId: string): void;
 }) {
   const copy = workHubCopy(props.locale);
+  const railCopy = getWorkHubRailCopy(props.locale);
   const [projection, setProjection] = useState<WorkHubProjection>({ sessions: [], turns: [] });
-  const [coordinationTurns, setCoordinationTurns] = useState<readonly WorkHubCoordinationTurn[]>([]);
+  const [coordination, setCoordination] = useState<{
+    readonly turns: readonly WorkHubCoordinationTurn[];
+    readonly delegatedSessionIds: readonly string[];
+  }>({ turns: [], delegatedSessionIds: [] });
   const [turns, setTurns] = useState<WorkHubConversationTurn[]>([]);
   const [pending, setPending] = useState(false);
   const [initialLoadSettled, setInitialLoadSettled] = useState(false);
@@ -274,7 +280,12 @@ export function WorkHubSurface(props: {
     void props.controller.openConversation(
       (next) => {
         if (disposed) return;
-        setCoordinationTurns(next);
+        setCoordination({
+          turns: next,
+          delegatedSessionIds: [...next].sort((left, right) => right.updatedAt - left.updatedAt).flatMap(
+            (turn) => turn.assignment?.linkState === 'active' ? [turn.assignment.targetSessionId] : [],
+          ),
+        });
         setConversationReady(true);
         setConversationError(false);
       },
@@ -365,7 +376,7 @@ export function WorkHubSurface(props: {
       },
     });
   }, [conversationReady, initialLoadSettled, route, routeGate, sendLease]);
-  const visible = visibleWorkHubConversation(coordinationTurns, turns);
+  const visible = visibleWorkHubConversation(coordination.turns, turns);
   const visibleCoordinationTurns = visible.coordination;
   const visibleLocalTurns = visible.local;
   const conversationEmpty = visibleCoordinationTurns.length === 0 && visibleLocalTurns.length === 0;
@@ -396,12 +407,33 @@ export function WorkHubSurface(props: {
             : copy.loading}</span>
         </header>
 
-        <div className="maka-chat-shell">
-          <ChatMessageList
-            className="maka-chat-message-list maka-chatContent workhub-message-list"
-            gap={4}
-            isStreaming={pending}
-          >
+        <div className="workhub-body">
+          <WorkHubNavigationRail
+            locale={props.locale}
+            sessions={projection.sessions}
+            focusSessionId={projection.focusSessionId}
+            delegatedSessionIds={coordination.delegatedSessionIds}
+            copy={railCopy}
+            onOpenSession={props.onOpenSession}
+          />
+
+          <div className="maka-chat-shell workhub-conversation-shell">
+            <WorkHubPromptRail turns={[
+              ...visibleCoordinationTurns.map((turn) => ({
+                turnId: `workhub-message-${turn.messageId}`,
+                label: turn.text,
+                reply: turn.result,
+              })),
+              ...visibleLocalTurns.map((turn) => ({
+                turnId: `workhub-request-${turn.requestId}`,
+                label: turn.text,
+              })),
+            ]} />
+            <ChatMessageList
+              className="maka-chat-message-list maka-chatContent workhub-message-list"
+              gap={4}
+              isStreaming={pending}
+            >
             {!surfaceReady ? (
               <WorkHubLoadingState label={copy.loading} />
             ) : conversationEmpty && !loadError && !conversationError ? (
@@ -456,7 +488,8 @@ export function WorkHubSurface(props: {
                 ))}
               </div>
             )}
-          </ChatMessageList>
+            </ChatMessageList>
+          </div>
         </div>
       </section>
     </ChatSurfaceLayout>
@@ -574,6 +607,7 @@ export function WorkHubCoordinationTurnView(props: {
     : undefined;
   return (
     <WorkHubMessageFrame
+      anchorId={`workhub-message-${props.turn.messageId}`}
       text={props.turn.text}
       state={props.turn.stop?.outcome ?? (assignment?.linkState === 'active'
         ? assignment.feedbackState
@@ -694,7 +728,7 @@ function WorkHubTurnView(props: {
     : undefined;
 
   return (
-    <WorkHubMessageFrame text={turn.text} state={turn.state}>
+    <WorkHubMessageFrame anchorId={`workhub-request-${turn.requestId}`} text={turn.text} state={turn.state}>
           {turn.state === 'routing' ? (
             <p className="workhub-status" role="status">{copy.routing}</p>
           ) : turn.state === 'failed' ? (
@@ -775,6 +809,7 @@ function WorkHubTurnView(props: {
 }
 
 function WorkHubMessageFrame(props: {
+  anchorId: string;
   text: string;
   state: string;
   linkState?: WorkHubDelegationLinkState;
@@ -784,6 +819,8 @@ function WorkHubMessageFrame(props: {
   return (
     <section
       className={`workhub-turn${props.projected ? ' workhub-projected-turn' : ''}`}
+      data-turn-id={props.anchorId}
+      data-transcript-turn-id={props.anchorId}
       data-state={props.state}
       data-link-state={props.linkState}
     >

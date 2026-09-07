@@ -53,7 +53,7 @@ import {
   type ToolFreeModelCallContent,
   ProviderPrefixModelCallUnavailableError,
 } from '@maka/runtime/tool-free-model-call';
-import { modelUsesAnthropicMessages } from '@maka/runtime/model-runtime';
+import { resolveModelRuntime } from '@maka/runtime/model-runtime';
 import { type BackendFactoryContext } from '@maka/runtime/session-manager';
 import { type GoalEvaluatorResource } from '@maka/runtime/goal-evaluator';
 import { type ModelMessage } from '@maka/runtime/model-protocol';
@@ -508,10 +508,12 @@ async function runHostAuxiliaryModelCall(
       | Awaited<ReturnType<typeof generateProviderPrefixModelCall>>;
     try {
       result = await readDuringBackendCreation(() => {
+        const runtime = resolveModelRuntime(target.connection, target.model);
         const providerOptions = buildProviderOptions(
           target.connection,
           target.model,
           input.header.thinkingLevel,
+          runtime,
         );
         const model = getAIModel({
           sessionId: input.transportContextId,
@@ -520,14 +522,13 @@ async function runHostAuxiliaryModelCall(
           modelId: target.model,
           fetch: modelFetch,
           requestHeaders: target.requestHeaders,
+          resolvedRuntime: runtime,
         });
         return request.tools !== undefined
           ? generateProviderPrefixModelCall({
               model,
               ...request,
-              toolChoicePolicy: modelUsesAnthropicMessages(target.connection, target.model)
-                ? 'omit'
-                : 'none',
+              toolChoicePolicy: runtime.wire === 'anthropic-messages' ? 'omit' : 'none',
               abortSignal: input.abortSignal,
               providerOptions: request.providerOptions ?? providerOptions,
             })

@@ -54,6 +54,7 @@ import {
   loadOrCreateRuntimeHostClientInstanceId,
   listRuntimeHostWslDistributions,
   runtimeHostProfileAccess,
+  RuntimeHostProfileConnectionError,
   type ResolvedRuntimeHostProfile,
 } from "@maka/runtime-host/client";
 import {
@@ -87,6 +88,8 @@ import { createAttachmentApprovalRegistry } from "./attachment-approval.js";
 import { renderAttachmentPreview, resizeImageForAttachment } from "./attachment-resize-native.js";
 import { registerAttachmentPreviewIpc } from "./attachment-preview.js";
 import { readFileCapped, resolvePickedAttachments } from "./attachment-ingest.js";
+import { DesktopSessionLocalStore } from './session-local-store.js';
+import { DesktopSessionLocalService, desktopSessionLocalPartition, registerDesktopSessionLocalIpc, type DesktopSessionLocalTarget } from './session-local-service.js';
 import { registerBrowserIpc } from "./browser-ipc-main.js";
 import { browserViewHost } from "./browser/browser-host.js";
 import { releaseBrowserSession } from "./browser/session.js";
@@ -186,6 +189,7 @@ import {
   RuntimeHostUpgradeCancelledError,
   startRuntimeHostDesktopManager,
   type RuntimeHostDesktopManager,
+  type RuntimeHostDesktopTargetState,
 } from "./runtime-host-desktop-manager.js";
 import {
   buildRuntimeHostActiveQuitDialog,
@@ -572,6 +576,40 @@ onMainWindowClose = () => {
   native.computerUsePip.destroyAll();
 };
 const attachmentApprovals = createAttachmentApprovalRegistry();
+const sessionLocalStore = new DesktopSessionLocalStore(join(userDataDir, 'session-experience.sqlite'));
+const localSessionChanged = (scope: DesktopTargetScope, sessionId?: string): void => {
+  mainWindowController.send('session-local:changed', scope, { sessionId });
+  mainWindowController.send('sessions:changed', scope, { reason: 'updated', ts: Date.now(), ...(sessionId ? { sessionId } : {}) });
+};
+const sessionLocal = new DesktopSessionLocalService(sessionLocalStore, {
+  targets: () => (runtimeHostManager?.entries() ?? []).flatMap((state) => {
+    if (state.readiness === 'unavailable' && state.error instanceof RuntimeHostProfileConnectionError && state.error.reason === 'credential_rejected') return [];
+    const target = localSessionTarget(state);
+    return target ? [target] : [];
+  }),
+  changed: localSessionChanged,
+  onError: (error) => console.error('[session-local] background synchronization failed:', error),
+});
+registerDesktopSessionLocalIpc({
+  ipcMain, service: sessionLocal, approvals: attachmentApprovals, resizeImage: resizeImageForAttachment,
+  changed: localSessionChanged,
+  resolveWorkspace: async (target, input) => {
+    const context = runtimePolicyTargetsByEpoch.get(target.scope.targetEpoch);
+    if (!context?.isActive()) throw new Error('Select a cached project before creating an offline task');
+    return resolveDesktopSessionWorkspace(input, context.projectManagement, context.projectCatalog, {
+      allowHostPath: !runtimeHostProfileUsesHostWorkspace(context.policy.kind),
+    });
+  },
+});
+
+function localSessionTarget(state: RuntimeHostDesktopTargetState): DesktopSessionLocalTarget | undefined {
+  if (runtimeHostProfileAccess(state.target.profile) !== 'owner') return undefined;
+  const hostId = state.readiness === 'ready' ? state.candidate.client.hostId
+    : state.hostId ?? (state.target.profile.kind === 'local' ? startupLocalStorageRoot!.rootId : state.target.profile.rootId);
+  const partition = desktopSessionLocalPartition({ profileId: state.target.profile.id, hostId, incarnation: state.target.profileIncarnationId, credential: state.target.credential });
+  return { partition, scope: { hostId, targetEpoch: state.epoch }, profileId: state.target.profile.id,
+    ...(state.readiness === 'ready' ? { client: state.candidate.client, submit: (input) => state.candidate.submitLocalMessage(input) } : {}) };
+}
 const oauthPresentation = new RuntimeHostOAuthPresentation((url) => shell.openExternal(url));
 const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   clientDataRoot: userDataDir,
@@ -1110,6 +1148,7 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
       );
     },
     emitSessionsChanged,
+    cacheTranscript: (scope, snapshot) => sessionLocal.cacheTranscript(scope, snapshot),
     completeComputerUseTurn,
     createSessionCopyCleanup: ({ removeSession, resumeSessionCopy }) =>
       createSessionCopyCleanupAuthority({
@@ -1133,6 +1172,12 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
   {
     handoffSurface: createDesktopHostHandoffSurface(() => desktopLocale.resolve()),
     onTargetStateChanged: (state) => {
+      const localTarget = localSessionTarget(state);
+      if (localTarget) {
+        sessionLocalStore.bindAuthority(localTarget.profileId, localTarget.partition);
+        if (state.readiness === 'unavailable' && state.error instanceof RuntimeHostProfileConnectionError && state.error.reason === 'credential_rejected') sessionLocal.purge(localTarget);
+      }
+      sessionLocal.wake();
       const profileAccess = runtimeHostProfileAccess(state.target.profile);
       const hostId = state.readiness === "ready"
         ? state.candidate.client.hostId
@@ -1184,6 +1229,8 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
       }
     },
     onTargetRemoved: (state) => {
+      const localTarget = localSessionTarget(state);
+      if (localTarget) sessionLocal.purge(localTarget);
       const hostId = state.readiness === "ready"
         ? state.candidate.client.hostId
         : state.hostId;
@@ -1286,6 +1333,7 @@ workBoardIpc = registerWorkBoardIpc({
 updateDesktopStartupProgress('renderer');
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
+sessionLocal.wake();
 await guestSessionMountService.start().catch((error: unknown) => {
   console.error('[runtime-host] shared Sessions could not be restored:', error);
 });
@@ -1823,11 +1871,11 @@ function registerPersistentClientIpc(): void {
   });
   ipcMain.handle("runtime-host:identities", () =>
     (runtimeHostManager?.entries() ?? []).flatMap((state) => {
-      if (state.readiness !== "ready" && state.readiness !== "reconnecting") return [];
-      const hostId = state.readiness === "ready" ? state.candidate.client.hostId : state.hostId;
+      if (state.readiness === 'unavailable' && state.error instanceof RuntimeHostProfileConnectionError && state.error.reason === 'credential_rejected') return [];
+      const hostId = state.readiness === "ready" ? state.candidate.client.hostId : state.hostId ?? localSessionTarget(state)?.scope.hostId;
       if (!hostId) return [];
       return [
-        projectRuntimeHostIdentity(state.epoch, state.target, state.readiness, hostId),
+        projectRuntimeHostIdentity(state.epoch, state.target, state.readiness === 'ready' ? 'ready' : 'reconnecting', hostId),
       ];
     }),
   );
@@ -1918,6 +1966,10 @@ function emitSessionsChanged(
   sessionId?: string,
   extra?: Pick<SessionChangedEvent, "modelId" | "turnId">,
 ): void {
+  sessionLocal.changed(scope);
+  if (reason === 'deleted' && sessionId) {
+    try { sessionLocalStore.removeSession(sessionLocal.target(scope).partition, sessionId); } catch { /* A retired target cannot repopulate its cache. */ }
+  }
   const event: SessionChangedEvent = {
     reason,
     ts: Date.now(),
@@ -1966,6 +2018,7 @@ function closeRuntimeHostDesktop(): Promise<void> {
 }
 
 async function disposeRuntimeHostDesktop(): Promise<void> {
+  sessionLocal.close();
   powerMonitor.off("resume", wakePeerRecoveryAfterResume);
   clientSettingsWatcher.stop();
   updateService.dispose();
@@ -2010,6 +2063,7 @@ async function disposeRuntimeHostDesktop(): Promise<void> {
     if (result.status === "rejected")
       console.error("[runtime-host] shutdown failed:", result.reason);
   }
+  sessionLocalStore.close();
 }
 
 function wakePeerRecoveryAfterResume(): void {

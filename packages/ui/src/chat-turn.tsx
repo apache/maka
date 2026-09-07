@@ -287,6 +287,14 @@ export function TransientUserMessage(props: {
           directoryReferences={message.directoryReferences}
           inlineReferences={message.inlineReferences}
         />
+        {message.deliveryStatus && (
+          <div className="maka-message-delivery" role="status" title={message.deliveryDetail}>
+            <span>{message.deliveryStatus}</span>
+            {message.deliveryActions?.map((action) => (
+              <UiButton key={action.label} label={action.label} variant="ghost" size="sm" onClick={action.onClick} />
+            ))}
+          </div>
+        )}
       </LocalizedChatMessage>
     </div>
   );

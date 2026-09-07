@@ -306,6 +306,61 @@ test('serial outbound writer flushes accepted frames in FIFO order over a real s
   }
 });
 
+test('outbound scheduling prioritizes controls, makes fair data progress, and fences closure', async () => {
+  const blocked = deferred<void>();
+  const writes: HostFrame[] = [];
+  const transport: RuntimeHostMessageTransport = {
+    closed: Promise.resolve(),
+    read: async () => {
+      throw new Error('unexpected read');
+    },
+    async write(message) {
+      writes.push(decodeHostFrame(JSON.parse(message.toString('utf8'))));
+      if (writes.length === 1) await blocked.promise;
+    },
+    closeAfterFlush() {},
+    abort() {},
+  };
+  const writer = new BoundedSerialOutboundWriter(transport, () => assert.fail('writer failed'));
+  const pty = (ptySequence: number): HostFrame => ({
+    kind: 'subscription.runtime_resource_pty_data',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sessionId: 'session-1',
+    ref: 'maka://runtime/background-tasks/shell-1',
+    ptySequence,
+    data: 'bytes',
+  });
+  const receipts = [writer.enqueue(pty(1)), writer.enqueue(pty(2))];
+  for (let index = 0; index < 20; index += 1)
+    receipts.push(writer.enqueue(statusResponse(`control-${index}`)));
+  receipts.push(
+    writer.enqueue({
+      kind: 'subscription.closed',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      reason: 'session_removed',
+    }),
+  );
+  receipts.push(writer.enqueue(statusResponse('after-fence')));
+  blocked.resolve();
+  await Promise.all(receipts.map((receipt) => receipt.flushed));
+  assert.equal('operation' in writes[1]! && writes[1].requestId, 'control-0');
+  const ptyIndex = writes.findIndex(
+    (frame) =>
+      'kind' in frame &&
+      frame.kind === 'subscription.runtime_resource_pty_data' &&
+      frame.ptySequence === 2,
+  );
+  assert.ok(ptyIndex > 1 && ptyIndex <= 9, 'PTY must neither block controls nor starve');
+  const closed = writes.at(-2)!;
+  const last = writes.at(-1)!;
+  assert.equal('kind' in closed && closed.kind, 'subscription.closed');
+  assert.equal('operation' in last && last.requestId, 'after-fence');
+  writer.close();
+});
+
 test('serial outbound writer fails once when its real transport is closed', async () => {
   const pair = await openTransportPair();
   let failureCalls = 0;
@@ -430,6 +485,10 @@ test('flushes concurrent subscription opens before activating their live frame s
   };
   const continuity: SessionContinuityService = {
     handlers: {
+      'subscription.pty_interest.set': async (input) => ({
+        ok: true,
+        result: { subscriptionId: input.subscriptionId },
+      }),
       'subscription.open': async (input) => {
         openCalls += 1;
         if (openCalls === 16) requestsEntered.resolve();

@@ -187,3 +187,5 @@ export {
   type SearchSource,
   type SearchableItem,
 } from '@astryxdesign/core';
+
+export { PromptAnchorRail, type PromptAnchorRailTurn } from './prompt-anchor-rail.js';

@@ -37,6 +37,10 @@
       "tests": 1,
       "electron": "needs a second real Session (Host round trip) to switch to; the focus and draft-restore halves alone would not earn a window"
     },
+    "session-local-recovery.spec.ts": {
+      "tests": 3,
+      "electron": "SQLite admission crosses preload and main, survives both renderer reload and complete Electron restart, and cached history must render when the live IPC endpoint is unavailable"
+    },
     "session-workbar.spec.ts": {
       "tests": 6,
       "electron": "Git changes re-read on window focus, terminal PTY ownership across Sessions, Side Chat's fork lifecycle, a first send that has to reach the Host, and per-Session collapse persisted across a renderer reload; the composer-usage test is renderer-only and rides along on those windows until app-shell.tsx's composer-to-workbar wiring has a story host"

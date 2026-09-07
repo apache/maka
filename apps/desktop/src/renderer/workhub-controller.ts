@@ -24,11 +24,19 @@
  */
 
 import {
+  boundedWorkHubText,
+  createWorkHubR24RoutingStrategy,
   createWorkHubRoutePolicy,
+  boundedRoutingInput,
+  readWorkHubRoutingEvidence,
+  type WorkHubRoutePolicy,
   type WorkHubRouteEvidence,
+  type WorkHubRoutingStrategy,
+  type WorkHubRoutingStrategyId,
   type WorkHubStopClarificationReason,
   type WorkHubNamedActionRouteDecision,
-} from './workhub-route-policy.js';
+  WORKHUB_R24_ROUTING_STRATEGY_ID,
+} from './features/workhub/index.js';
 import type {
   OperationError,
   WorkHubCoordinationActInput,
@@ -141,16 +149,14 @@ export type WorkHubDelegationLinkState = 'active' | 'superseded' | 'aborted' | '
 const WORKHUB_TIMELINE_TEXT_LIMIT = 600;
 
 export function boundedWorkHubTimelineText(value: string): string {
-  const text = value.trim();
-  const chars = Array.from(text);
-  return chars.length <= WORKHUB_TIMELINE_TEXT_LIMIT
-    ? text
-    : `${chars.slice(0, WORKHUB_TIMELINE_TEXT_LIMIT - 1).join('')}…`;
+  return boundedWorkHubText(value, WORKHUB_TIMELINE_TEXT_LIMIT);
 }
 
 export interface WorkHubProjection {
   sessions: WorkHubSessionSummary[];
   turns: WorkHubProjectedTurn[];
+  /** Current deterministic coordination focus; projection only, never authority. */
+  focusSessionId?: string;
 }
 
 export interface WorkHubSubmitInput {
@@ -170,8 +176,9 @@ export interface WorkHubReadInput {
   focus?: WorkHubSessionTarget;
 }
 
-export const WORKHUB_ROUTING_STRATEGY_ID = 'wh-r2.4-session-context-continuity' as const;
-export type WorkHubRoutingStrategyId = typeof WORKHUB_ROUTING_STRATEGY_ID;
+/** @deprecated Prefer the versioned IDs exported by the WorkHub feature. */
+export const WORKHUB_ROUTING_STRATEGY_ID = WORKHUB_R24_ROUTING_STRATEGY_ID;
+export type { WorkHubRoutingStrategyId } from './features/workhub/index.js';
 
 export type WorkHubSubmission = (
   | {
@@ -264,7 +271,9 @@ export interface WorkHubController {
   read(input?: WorkHubReadInput): Promise<WorkHubProjection>;
   submit(input: WorkHubSubmitInput): Promise<WorkHubSubmission>;
   openConversation(
-    handler: (turns: readonly WorkHubCoordinationTurn[]) => void,
+    handler: (
+      turns: readonly WorkHubCoordinationTurn[],
+    ) => void,
     onError: (error: unknown) => void,
   ): Promise<{ close(): Promise<void> }>;
   recordConversationTurn(input: {
@@ -280,9 +289,12 @@ export interface WorkHubController {
 export function createWorkHubController(deps: {
   sessions: WorkHubSessionPort;
   coordination: WorkHubCoordinationPort;
+  routingStrategy?: WorkHubRoutingStrategy;
 }): WorkHubController {
   const { coordination } = deps;
+  const routingStrategy = deps.routingStrategy ?? createWorkHubR24RoutingStrategy();
   let routePolicy = createWorkHubRoutePolicy();
+  let routingTranscript: Array<{ userText: string; assistantText?: string }> = [];
   let focusReadVersion = 0;
   let pendingFocusReadVersion: number | undefined;
   const correctionFor = (
@@ -296,7 +308,7 @@ export function createWorkHubController(deps: {
     return { from, sourceActionId };
   };
   const reconcileFocus = (
-    policy: ReturnType<typeof createWorkHubRoutePolicy>,
+    policy: WorkHubRoutePolicy,
     sessions: readonly WorkHubSessionFacts[],
   ) => {
     policy.initializeFocus(sessions
@@ -306,7 +318,7 @@ export function createWorkHubController(deps: {
   };
   const completeSubmission = (
     input: WorkHubSubmitInput,
-    policy: ReturnType<typeof createWorkHubRoutePolicy>,
+    policy: WorkHubRoutePolicy,
     admitted: Extract<
       WorkHubCoordinationActResult,
       { disposition: 'delegate_existing' | 'create_new' | 'replace' }
@@ -318,7 +330,7 @@ export function createWorkHubController(deps: {
     policy.rememberTarget(target);
     return {
       kind: 'submitted',
-      strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+      strategyId: routingStrategy.strategyId,
       requestId: input.requestId,
       target,
       turnId: admitted.targetTurnId,
@@ -331,12 +343,13 @@ export function createWorkHubController(deps: {
     input: WorkHubSubmitInput,
     decision: WorkHubNamedActionRouteDecision,
     kind: 'resume' | 'stop',
+    strategyId: WorkHubRoutingStrategyId,
   ): Promise<Extract<WorkHubSubmission, { kind: 'clarification' | 'resume' | 'stop' }> | undefined> => {
     if (decision.kind === 'not_requested') return undefined;
     if (decision.kind === 'clarification') {
       return {
         kind: 'clarification',
-        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+        strategyId,
         requestId: input.requestId,
         text: input.text,
         options: [],
@@ -352,7 +365,7 @@ export function createWorkHubController(deps: {
       if (kind === 'resume' && !resumesActionId) {
         return {
           kind: 'clarification',
-          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+          strategyId,
           requestId: input.requestId,
           text: input.text,
           options: [],
@@ -372,7 +385,7 @@ export function createWorkHubController(deps: {
         ...(kind === 'stop' ? { confirmation: { kind: 'user_stop' as const } } : {}),
       });
       const result = {
-        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+        strategyId,
         requestId: input.requestId,
         target,
       };
@@ -400,7 +413,7 @@ export function createWorkHubController(deps: {
       ) {
         return {
           kind: 'clarification',
-          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+          strategyId,
           requestId: input.requestId,
           text: input.text,
           options: [],
@@ -417,7 +430,7 @@ export function createWorkHubController(deps: {
         }
         return {
           kind: 'clarification',
-          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+          strategyId,
           requestId: input.requestId,
           text: input.text,
           options: [],
@@ -477,6 +490,12 @@ export function createWorkHubController(deps: {
         handle = await coordination.open((turns) => {
           if (disposed) return;
           latestTurns = turns;
+          routingTranscript = turns.slice(-12).map((turn) => ({
+            userText: boundedWorkHubTimelineText(turn.text),
+            ...(turn.result
+              ? { assistantText: boundedWorkHubTimelineText(turn.result) }
+              : {}),
+          }));
           generation += 1;
           // The atomic assignment is already durable acknowledgement, so emit
           // it immediately before enriching it with target-owned lifecycle.
@@ -539,6 +558,7 @@ export function createWorkHubController(deps: {
         ) {
           reconcileFocus(readPolicy, facts);
         }
+        const focusSessionId = readPolicy.focusSnapshot().current?.sessionId;
         return {
           sessions: ordinary
             .map(({ kind: _kind, runningTurnIds: _runningTurnIds, ...session }) => session),
@@ -546,6 +566,7 @@ export function createWorkHubController(deps: {
           // Ordinary Session transcripts remain routing evidence, never a
           // second WorkHub conversation source.
           turns: [],
+          ...(focusSessionId ? { focusSessionId } : {}),
         };
       } finally {
         if (input?.focus && pendingFocusReadVersion === readFocusVersion) {
@@ -562,13 +583,13 @@ export function createWorkHubController(deps: {
         text: input.text,
         sessions: ordinary,
       });
-      const resume = await submitNamedDelegationAction(input, resumeDecision, 'resume');
+      const resume = await submitNamedDelegationAction(input, resumeDecision, 'resume', routingStrategy.strategyId);
       if (resume) return resume;
       const stopDecision = submissionPolicy.resolveStop({
         text: input.text,
         sessions: ordinary,
       });
-      const stop = await submitNamedDelegationAction(input, stopDecision, 'stop');
+      const stop = await submitNamedDelegationAction(input, stopDecision, 'stop', routingStrategy.strategyId);
       if (stop) return stop;
       const candidateSet = await coordination.candidates();
       const candidateBySessionId = new Map(
@@ -585,13 +606,34 @@ export function createWorkHubController(deps: {
       const routingEvidence = input.explicitTarget
         ? []
         : await deps.sessions.routingEvidence(routable.map((session) => session.target));
-      const decision = submissionPolicy.resolve({
+      const routingInput = boundedRoutingInput({
         text: input.text,
         sessions: routable,
         originPromptBySessionId: new Map(
           routingEvidence.map((entry) => [entry.target.sessionId, entry.originPrompt]),
         ),
+        candidateRefBySessionId: new Map(
+          candidateSet.candidates.map((candidate) => [candidate.sessionId, candidate.candidateRef]),
+        ),
+        coordinationTranscript: routingTranscript,
         ...(input.explicitTarget ? { explicitTarget: input.explicitTarget } : {}),
+      });
+      // Only Policy owns focus and produces proposals. Component output is evidence.
+      const decisionPolicy = submissionPolicy.snapshot();
+      const evidence = input.explicitTarget ? undefined : await readWorkHubRoutingEvidence(routingStrategy, routingInput);
+      const decision = decisionPolicy.resolve({
+        text: input.text,
+        // Every arm receives the same trusted Policy context. Model input
+        // limits must not hide a known Session from exact-name/correction rules.
+        sessions: routable,
+        originPromptBySessionId: new Map(routingEvidence.map((entry) => [entry.target.sessionId, entry.originPrompt])),
+        ...(input.explicitTarget ? { explicitTarget: input.explicitTarget } : {}),
+        ...(evidence ? { interpretation: {
+          classification: evidence.classification,
+          resolution: evidence.resolution.kind,
+          recalledSessionIds: evidence.resolution.kind === 'none' ? [] : evidence.resolution.candidateRefs.flatMap((ref) =>
+            [...routingInput.candidateRefBySessionId].filter(([, value]) => value === ref).map(([sessionId]) => sessionId)),
+        } } : {}),
       });
       if (decision.kind === 'clarification') {
         const correction = decision.correctedFrom
@@ -599,7 +641,7 @@ export function createWorkHubController(deps: {
           : undefined;
         return {
           kind: 'clarification',
-          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+          strategyId: routingStrategy.strategyId,
           requestId: input.requestId,
           text: input.text,
           options: decision.options.map((session) => ({
@@ -619,7 +661,7 @@ export function createWorkHubController(deps: {
         });
         return {
           kind: 'discussion',
-          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+          strategyId: routingStrategy.strategyId,
           requestId: input.requestId,
           text: input.text,
         };
@@ -675,7 +717,7 @@ export function createWorkHubController(deps: {
       if (targetSession?.state === 'waiting_for_user' && !input.retryAction) {
         return {
           kind: 'waiting',
-          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+          strategyId: routingStrategy.strategyId,
           requestId: input.requestId,
           text: input.text,
           target,

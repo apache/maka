@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { COMPOSER_INPUT, ensureSidebarExpanded, expect, test } from './fixtures';
+import { awaitSendReady, COMPOSER_INPUT, ensureSidebarExpanded, expect, test } from './fixtures';
 
 interface SettingsChunkLatchWindow extends Window {
   makaE2eLatch?: {
@@ -78,6 +78,7 @@ test('Settings loading surface owns unmodified Escape', async ({ window: page })
 test('opening settings commits an active titlebar rename', async ({ window: page }) => {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('create a session for settings rename');
+  await awaitSendReady(page);
   await composer.press('Enter');
 
   const identity = page.locator('[data-maka-contract="titlebar-identity"]');
@@ -100,6 +101,7 @@ test('settings hides expanded workbar chrome and restores it on close', async ({
 }) => {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('create a session with an expanded workbar');
+  await awaitSendReady(page);
   await composer.press('Enter');
 
   await page.getByRole('button', { name: '展开任务工作栏' }).click();

@@ -973,7 +973,6 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
     kind: 'subscription.runtime_resource_pty_data',
     hostEpoch: 'host-second-observer',
     subscriptionId: 'subscription-second-observer',
-    sequence: 1,
     sessionId: 'session-1',
     ref,
     ptySequence: 5,
@@ -1329,6 +1328,7 @@ function connectionHarness(
   let startTurnCalls = 0;
   let runtimeResourceControllerAcquires = 0;
   let activeSubscriptionFrames: AsyncFrameQueue | undefined;
+  const ptyListeners = new Set<(frame: Extract<SubscriptionFrame, { kind: 'subscription.runtime_resource_pty_data' }>) => void>();
   const connection = {
     hostEpoch: `host-${label}`,
     connectionId: `connection-${label}`,
@@ -1336,6 +1336,7 @@ function connectionHarness(
     selectedProtocol: 0,
     closed,
     request: async <K extends OperationKey>(operation: K, input: OperationInput<K>) => {
+      if (operation === 'subscription.pty_interest.set') return { subscriptionId: (input as { subscriptionId: string }).subscriptionId };
       if (
         operation === 'session.catalog.query' &&
         (input as { kind?: unknown }).kind === 'list_start'
@@ -1449,7 +1450,7 @@ function connectionHarness(
       if (options.subscriptionError) throw options.subscriptionError;
       const subscriptionFrames = new AsyncFrameQueue();
       activeSubscriptionFrames = subscriptionFrames;
-      const closeSubscription = () => subscriptionFrames.end();
+      const closeSubscription = () => { subscriptionFrames.end(); ptyListeners.clear(); };
       closeSubscriptions.add(closeSubscription);
       const emptyPage = {
         kind: 'page' as const,
@@ -1464,6 +1465,10 @@ function connectionHarness(
       return {
         hostEpoch: `host-${label}`,
         subscriptionId: `subscription-${label}`,
+        subscribePtyData(listener: (frame: Extract<SubscriptionFrame, { kind: 'subscription.runtime_resource_pty_data' }>) => void) {
+          ptyListeners.add(listener);
+          return () => ptyListeners.delete(listener);
+        },
         snapshot: options.subscriptionSnapshot ?? {
           projectionRevision: 1,
           session: { sessionId },
@@ -1517,6 +1522,10 @@ function connectionHarness(
     disconnect: () => resolveClosed?.(),
     pushSubscriptionFrame: (frame: SubscriptionFrame) => {
       assert.ok(activeSubscriptionFrames);
+      if (frame.kind === 'subscription.runtime_resource_pty_data') {
+        for (const listener of ptyListeners) listener(frame);
+        return;
+      }
       activeSubscriptionFrames.push(frame);
     },
     publishSessionCatalogChange: (sessionId: string) => {
