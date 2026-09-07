@@ -5507,6 +5507,9 @@ describe('AiSdkBackend model history', () => {
       appendMessage: async (message: StoredMessage) => {
         appended.push(message as unknown as { type: string; kind?: string; data?: unknown });
       },
+      recordSystemNote: async (kind, _turnId, data) => {
+        appended.push({ type: 'system_note', kind, data });
+      },
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
@@ -5584,6 +5587,9 @@ describe('AiSdkBackend model history', () => {
       appendMessage: async (message: StoredMessage) => {
         appended.push(message as unknown as { type: string; kind?: string });
       },
+      recordSystemNote: async (kind) => {
+        appended.push({ type: 'system_note', kind });
+      },
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
@@ -5646,7 +5652,10 @@ describe('AiSdkBackend model history', () => {
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message: StoredMessage) => {
-        const candidate = message as unknown as { type: string; kind?: string };
+        persisted.push(message as unknown as { type: string; kind?: string });
+      },
+      recordSystemNote: async (kind) => {
+        const candidate = { type: 'system_note', kind };
         if (isFailOpenNote(candidate)) {
           noteWriteAttempts += 1;
           if (failNextNoteWrite) {
