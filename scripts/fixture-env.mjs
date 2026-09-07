@@ -59,7 +59,6 @@ function isDeniedEnvKey(key) {
  *   locale?: 'zh-CN' | 'zh-TW' | 'en',
  *   platform?: 'darwin' | 'win32' | 'linux',
  *   theme?: 'light' | 'dark',
- *   scrollMotion?: 'auto' | 'smooth',
  *   timezone?: string,
  *   showWindow?: boolean,
  * }} [options]
@@ -104,12 +103,6 @@ export function buildFixtureEnv(userDataDir, homeDir, options = {}) {
   // explicitly. The decision stays with the caller: this builder is a pure
   // function of its arguments, so a test asserting "hidden run stays hidden"
   // means the same thing on a laptop and on a CI runner.
-  // Captures collapse scroll motion so their state never depends on when a
-  // scroll settles. A fixture whose subject IS the scrolling asks for the
-  // production behavior back — see `scroll-motion-policy`. Per launch rather
-  // than per scenario: it costs several seconds of settling per window, and
-  // only the case that needs it should pay.
-  if (options.scrollMotion) env.MAKA_E2E_FIXTURE_SCROLL_MOTION = options.scrollMotion;
   if (options.showWindow) env.MAKA_E2E_SHOW_WINDOW = '1';
   return env;
 }

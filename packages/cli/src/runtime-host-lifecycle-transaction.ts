@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { withOperatorRetirementCancellation } from './runtime-host-operator-retirement.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
   resolveExistingStorageRoot,
@@ -334,6 +335,16 @@ export async function retireRuntimeHostLifecycleOwner(input: {
   readonly timeoutMs?: number;
   readonly retireIdleSupervisor?: boolean;
 }): Promise<RuntimeHostLifecycleRetirement> {
+  return withOperatorRetirementCancellation((signal) =>
+    retireRuntimeHostLifecycleOwnerWithSignal(input, signal),
+  );
+}
+
+async function retireRuntimeHostLifecycleOwnerWithSignal(
+  input: Parameters<typeof retireRuntimeHostLifecycleOwner>[0],
+  signal?: AbortSignal,
+): Promise<RuntimeHostLifecycleRetirement> {
+  signal?.throwIfAborted();
   if (input.expectedOwner && !input.supervisor) {
     throw new RuntimeHostLifecycleTransactionError(
       'owner_changed',
@@ -352,6 +363,7 @@ export async function retireRuntimeHostLifecycleOwner(input: {
         const status = await input.supervisor.status();
         assertExpectedSupervisorOwner(input.expectedOwner, status);
       }
+      signal?.throwIfAborted();
       if (input.retireIdleSupervisor !== false) await input.supervisor?.retire();
       return { kind: 'retired', owner: idleOwner };
     } catch (error) {
@@ -376,6 +388,7 @@ export async function retireRuntimeHostLifecycleOwner(input: {
       assertExpectedSupervisorOwner(input.expectedOwner, status);
       if (status.active && status.pid !== null) {
         if (!input.allowInterruptActiveTasks) return { kind: 'active_tasks' };
+        signal?.throwIfAborted();
         await input.supervisor.retire();
         return waitForRuntimeHostLifecycleOwner(capability, input.timeoutMs ?? 45_000);
       }
@@ -411,6 +424,8 @@ export async function retireRuntimeHostLifecycleOwner(input: {
       const prepared = await prepareConnectedRuntimeHostRetirement(
         connected.connection,
         input.allowInterruptActiveTasks ? 'interrupt_active_work' : 'refuse_active_work',
+        undefined,
+        signal,
       );
       if (prepared.kind === 'active_tasks') return prepared;
       if (prepared.pid !== diagnostics.pid) {
@@ -420,6 +435,7 @@ export async function retireRuntimeHostLifecycleOwner(input: {
         );
       }
     } catch (error) {
+      signal?.throwIfAborted();
       if (!isRuntimeHostRetirementUnavailable(error) || !input.supervisor) throw error;
       if (!input.allowInterruptActiveTasks) return { kind: 'active_tasks' };
       await input.supervisor.retire();

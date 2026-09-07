@@ -17,36 +17,29 @@
  * under the License.
  */
 
-import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { ArtifactRecord } from '@maka/core/artifacts';
-import type {
-  ArtifactMetadataChanges,
-  ArtifactMetadataRepository,
-} from './artifact-metadata-repository.js';
 import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
 import {
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,
 } from './operational-state-store.js';
 
-export function createSqliteArtifactMetadataRepository(
-  workspaceRoot: string,
-): ArtifactMetadataRepository {
+export interface ArtifactMetadataChanges {
+  readonly upserts?: readonly ArtifactRecord[];
+  readonly deleteIds?: readonly string[];
+}
+
+export function createSqliteArtifactMetadataRepository(workspaceRoot: string) {
   return new SqliteArtifactMetadataRepository(workspaceRoot);
 }
 
-class SqliteArtifactMetadataRepository implements ArtifactMetadataRepository {
+class SqliteArtifactMetadataRepository {
   readonly #lease: OperationalStateDatabaseLease;
   #closed = false;
 
   constructor(workspaceRoot: string) {
     this.#lease = acquireOperationalStateDatabase(resolve(workspaceRoot));
-  }
-
-  ready(): Promise<void> {
-    this.assertOpen();
-    return Promise.resolve();
   }
 
   readAll(): ArtifactRecord[] {
@@ -55,7 +48,7 @@ class SqliteArtifactMetadataRepository implements ArtifactMetadataRepository {
       .prepare(`
         SELECT record_json
         FROM artifact_records
-        ORDER BY created_at, storage_key
+        ORDER BY created_at, artifact_id
       `)
       .all() as Array<{ record_json: string }>;
     return decodeRows(rows);
@@ -65,45 +58,65 @@ class SqliteArtifactMetadataRepository implements ArtifactMetadataRepository {
     this.assertOpen();
     this.#lease.transaction('write', () => {
       const remove = this.#lease.database.prepare(
-        'DELETE FROM artifact_records WHERE storage_key = ?',
+        'DELETE FROM artifact_records WHERE artifact_id = ?',
       );
-      for (const id of changes.deleteIds ?? []) remove.run(artifactIdentityKey(id));
+      for (const id of changes.deleteIds ?? []) remove.run(id);
 
       const upsert = this.#lease.database.prepare(`
         INSERT INTO artifact_records(
-          storage_key,
           artifact_id,
           session_id,
           created_at,
-          status,
           relative_path,
           record_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(storage_key) DO UPDATE SET
-          artifact_id = excluded.artifact_id,
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(artifact_id) DO UPDATE SET
           session_id = excluded.session_id,
           created_at = excluded.created_at,
-          status = excluded.status,
           relative_path = excluded.relative_path,
           record_json = excluded.record_json
-        WHERE artifact_id IS NOT excluded.artifact_id
-           OR session_id IS NOT excluded.session_id
+        WHERE session_id IS NOT excluded.session_id
            OR created_at IS NOT excluded.created_at
-           OR status IS NOT excluded.status
            OR relative_path IS NOT excluded.relative_path
            OR record_json IS NOT excluded.record_json
       `);
       for (const record of changes.upserts ?? []) {
         upsert.run(
-          artifactIdentityKey(record.id),
           record.id,
           record.sessionId,
           record.createdAt,
-          record.status,
           record.relativePath,
           JSON.stringify(record),
         );
       }
+    });
+  }
+
+  readUpgradeOrphanPaths(after: string, limit: number): string[] {
+    this.assertOpen();
+    const rows = this.#lease.database
+      .prepare(`SELECT relative_path FROM artifact_upgrade_orphan_paths
+        WHERE relative_path > ? ORDER BY relative_path LIMIT ?`)
+      .all(after, limit) as Array<{ relative_path: string }>;
+    return rows.map((row) => row.relative_path);
+  }
+
+  hasRelativePath(relativePath: string): boolean {
+    this.assertOpen();
+    return Boolean(
+      this.#lease.database
+        .prepare('SELECT 1 FROM artifact_records WHERE relative_path = ?')
+        .get(relativePath),
+    );
+  }
+
+  forgetUpgradeOrphanPaths(relativePaths: readonly string[]): void {
+    this.assertOpen();
+    this.#lease.transaction('write', () => {
+      const forget = this.#lease.database.prepare(
+        'DELETE FROM artifact_upgrade_orphan_paths WHERE relative_path = ?',
+      );
+      for (const relativePath of relativePaths) forget.run(relativePath);
     });
   }
 
@@ -120,8 +133,4 @@ class SqliteArtifactMetadataRepository implements ArtifactMetadataRepository {
 
 function decodeRows(rows: readonly { record_json: string }[]): ArtifactRecord[] {
   return decodeArtifactRecordJsons(rows.map((row) => row.record_json));
-}
-
-function artifactIdentityKey(id: string): string {
-  return createHash('sha256').update(JSON.stringify(id)).digest('hex');
 }

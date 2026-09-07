@@ -28,6 +28,7 @@ import {
 } from '@maka/runtime/process-tree-terminator';
 import {
   decodeRuntimeHostAccessManagementFrame,
+  RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV,
   decodeRuntimeHostPeerManagementFrame,
   decodeRuntimeHostPeerMeshManagementFrame,
   decodeRuntimeHostServiceManagementFrame,
@@ -126,6 +127,7 @@ export interface DesktopRuntimeHostLocalSetupCommand {
 }
 
 export interface DesktopRuntimeHostLocalServiceManagementInput {
+  readonly retirementSignal?: AbortSignal;
   readonly operator: RuntimeHostOperatorCommand;
   readonly action:
     | 'status'
@@ -139,6 +141,7 @@ export interface DesktopRuntimeHostLocalServiceManagementInput {
   readonly target: DesktopRuntimeHostLocalServiceTarget;
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly expectedConfigFingerprint?: string;
+  readonly expectedHost?: { readonly hostEpoch: string; readonly pid: number };
   readonly allowInterruptActiveTasks?: boolean;
   readonly retainManagedDeployment?: boolean;
   readonly signal?: AbortSignal;
@@ -235,6 +238,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
   ): Promise<RuntimeHostServiceManagementFrame>;
   runUpdate(
     input: {
+      readonly retirementSignal?: AbortSignal;
       readonly setupPackage: DesktopRuntimeHostSetupPackage;
       readonly target: DesktopRuntimeHostLocalServiceTarget;
       readonly expectedHost?: { readonly hostEpoch: string; readonly pid: number };
@@ -421,6 +425,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
             ...(command.expectedConfigFingerprint
               ? ['--expected-config-fingerprint', command.expectedConfigFingerprint]
               : []),
+            ...(command.expectedHost ? ['--expected-host-json', JSON.stringify(command.expectedHost)] : []),
             ...(command.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
             ...(command.retainManagedDeployment ? ['--retain-managed-deployment'] : []),
             ...managedTargetArgs(command.target),
@@ -436,6 +441,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
         timeoutMs: input.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
         terminate,
         signal: combinedSignal(command.signal, closing.signal),
+        retirementSignal: command.retirementSignal,
         active,
       }).then((frame) => requireServiceFrame(frame, command.action));
     },
@@ -482,6 +488,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
         timeoutMs: input.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
         terminate,
         signal: combinedSignal(command.signal, closing.signal),
+        retirementSignal: command.retirementSignal,
         active,
         action: 'update',
         onProgress,
@@ -620,6 +627,7 @@ function requireServiceFrame(
 }
 
 function runServiceFrameProcess(input: {
+  readonly retirementSignal?: AbortSignal;
   readonly command: DesktopRuntimeHostLocalSetupCommand;
   readonly environment: NodeJS.ProcessEnv;
   readonly spawnProcess: typeof spawn;
@@ -790,6 +798,7 @@ function managedTargetArgs(target: DesktopRuntimeHostLocalServiceTarget): string
 }
 
 function runSingleFrameProcess<Frame>(input: {
+  readonly retirementSignal?: AbortSignal;
   readonly command: DesktopRuntimeHostLocalSetupCommand;
   readonly prefix: string;
   readonly decode: (line: string) => Frame | undefined;
@@ -866,6 +875,7 @@ function runSetupProcess(input: {
 }
 
 async function runFramedProcess<Frame, Result>(input: {
+  readonly retirementSignal?: AbortSignal;
   readonly command: DesktopRuntimeHostLocalSetupCommand;
   readonly cwd?: string;
   readonly prefix: string;
@@ -886,6 +896,7 @@ async function runFramedProcess<Frame, Result>(input: {
 }): Promise<Result> {
   const deadline = Date.now() + input.timeoutMs;
   input.signal?.throwIfAborted();
+  input.retirementSignal?.throwIfAborted();
   const lookupTimeoutMs = deadline - Date.now();
   if (lookupTimeoutMs <= 0) throw new Error(`${input.label} timed out`);
   const command = await resolveLocalNpmCommand(
@@ -902,12 +913,19 @@ async function runFramedProcess<Frame, Result>(input: {
     const child = input.spawnProcess(command.executable, [...command.args], {
       ...(input.cwd ? { cwd: input.cwd } : {}),
       detached: process.platform !== 'win32',
-      env: input.environment,
-      stdio: [input.inputLine === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      env: { ...input.environment, ...(input.retirementSignal
+        ? { [RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV]: '1' } : {}) },
+      stdio: [input.inputLine === undefined && !input.retirementSignal ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
     input.active.add(child);
     if (input.inputLine !== undefined) child.stdin?.end(`${input.inputLine}\n`);
+    const cancelRetirement = () => { child.stdin?.end(); };
+    // EOF is a cooperative request, not permission to kill the lifecycle owner.
+    // Old operators may ignore it; their final transaction result is still awaited.
+    child.stdin?.on('error', () => undefined);
+    input.retirementSignal?.addEventListener('abort', cancelRetirement, { once: true });
+    if (input.retirementSignal?.aborted) cancelRetirement();
     let filterFailure: Error | undefined;
     let stopFailure: Error | undefined;
     let stderr = '';
@@ -931,6 +949,7 @@ async function runFramedProcess<Frame, Result>(input: {
     const cleanup = () => {
       clearTimeout(timeout);
       input.signal?.removeEventListener('abort', onAbort);
+      input.retirementSignal?.removeEventListener('abort', cancelRetirement);
       input.active.delete(child);
     };
     const finish = (result: Result | undefined, error?: Error) => {

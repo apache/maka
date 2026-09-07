@@ -23,7 +23,8 @@ import type {
   AgentGraphClientOperator,
   AgentGraphClientSnapshot,
 } from '@maka/runtime/stream-graph-read-model';
-import { AgentGraphPanel, getAgentGraphPanelCopy } from '../src/renderer/agent-graph-panel';
+import { AgentGraphPanel } from '../src/renderer/agent-graph-panel';
+import { getAgentGraphPanelCopy } from '../src/renderer/locales/agent-graph-copy';
 import { withScopedMakaBridge } from './maka-bridge';
 
 // Fidelity convention (#1433): every story names the real app path that
@@ -141,8 +142,8 @@ function graphBridge(snap: AgentGraphClientSnapshot, fail = false) {
 // `.maka-detail-with-artifacts`). Reuse those wrapper classes so the panel
 // inherits the composer column's seam rather than an arbitrary fixed box. The
 // full AppShell grid and Composer chrome around it are not rebuilt here — that
-// seam lives in Product/Shell Official AppShell, and its geometry is pinned by
-// e2e/session-workbar.spec.ts — so this isolates the panel itself at a
+// seam lives in Product/Shell Official AppShell, where its geometry is pinned
+// by that group's own play functions — so this isolates the panel itself at a
 // composer-column width.
 function panel() {
   return (
@@ -259,10 +260,40 @@ export const ManyOperators: Story = {
   ],
   render: panel,
   play: async ({ canvasElement }) => {
-    // The full list renders (its last operator is reachable). An exact row
-    // count and the omitted "+N" line are read-model contracts, covered by the
-    // read-model's own tests rather than asserted here (review feedback).
     await waitFor(() => expect(canvasElement.textContent).toContain('op-27'));
+    const panelElement = canvasElement.querySelector<HTMLElement>('.maka-agent-graph-panel');
+    const heading = panelElement?.querySelector<HTMLElement>('.maka-agent-graph-heading');
+    const content = panelElement?.querySelector<HTMLElement>('.maka-agent-graph-content');
+    const collapse = panelElement?.querySelector<HTMLButtonElement>(
+      '.maka-agent-graph-collapse-toggle',
+    );
+    if (!panelElement || !heading || !content || !collapse) {
+      throw new Error('Agent Graph production panel structure is incomplete');
+    }
+    expect(panelElement.querySelectorAll('.maka-agent-graph-operators > li')).toHaveLength(28);
+
+    const before = {
+      headingTop: heading.getBoundingClientRect().top,
+      contentTop: content.getBoundingClientRect().top,
+      contentScrollHeight: content.scrollHeight,
+      contentClientHeight: content.clientHeight,
+    };
+    expect(before.contentScrollHeight).toBeGreaterThan(before.contentClientHeight);
+    content.scrollTop = content.scrollHeight;
+    await waitFor(() => expect(content.scrollTop).toBeGreaterThan(0));
+
+    const headingRect = heading.getBoundingClientRect();
+    expect(Math.abs(headingRect.top - before.headingTop)).toBeLessThanOrEqual(1);
+    expect(Math.abs(content.getBoundingClientRect().top - before.contentTop)).toBeLessThanOrEqual(1);
+    expect(content.getBoundingClientRect().top).toBeGreaterThanOrEqual(headingRect.bottom);
+
+    collapse.click();
+    await waitFor(() => expect(panelElement.dataset.collapsed).toBe('true'));
+    await waitFor(() => {
+      const style = getComputedStyle(heading);
+      expect(style.paddingBottom).toBe('0px');
+      expect(style.borderBottomWidth).toBe('0px');
+    });
   },
 };
 

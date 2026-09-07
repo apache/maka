@@ -244,8 +244,7 @@ export async function prepareAgentGraphRevisionReferences(
     // A child result names every Artifact its turn held, and the ledger that
     // records it can never be rewritten -- so an id in it outlives whatever it
     // named. What this checks is therefore that a reference does not reach
-    // outside its own child and lineage, not that its target survived: the
-    // retired provider-request captures are reclaimed on their own, and a user
+    // outside its own child and lineage, not that its target survived: a user
     // may delete a child's Artifact. A reference whose target is gone stays
     // admissible and simply resolves to nothing, while one that crosses a
     // Session or a lineage was never admissible and still fails.
@@ -253,7 +252,7 @@ export async function prepareAgentGraphRevisionReferences(
       const artifact = await dependencies.artifacts
         .getInSession(childSessionId, artifactId)
         .catch(() => null);
-      if (!artifact?.record || artifact.record.status === 'deleted') continue;
+      if (!artifact?.record) continue;
       if (
         artifact.record.sessionId !== childSessionId ||
         !lineage.turnIds.has(artifact.record.turnId)

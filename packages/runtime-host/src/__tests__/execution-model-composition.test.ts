@@ -647,7 +647,6 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
   let runtime = createSqliteRuntimeStore(runtimePath);
   try {
     artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await artifacts.recover();
     await runtime.appendRuntimeEvent(sessionId, runId, head);
     backend = await createHostAiSdkBackend(
       backendCreationFixture({
@@ -737,7 +736,6 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
     assert.ok(owner);
     if (!owner) return;
     artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await artifacts.recover();
     runtime = createSqliteRuntimeStore(runtimePath);
     const recoveredEvents = await runtime.readRuntimeEvents(sessionId, runId);
     backend = await createHostAiSdkBackend(
@@ -769,6 +767,66 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
     await owner?.close();
     await provider.close();
     await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('handoff composition preparation commits the provider composition without dispatch', async () => {
+  const provider = await startProvider();
+  const snapshots: ReturnType<typeof decodeRunCompositionSnapshot>[] = [];
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        recordRunComposition: async (_runId, snapshot) => {
+          snapshots.push(decodeRunCompositionSnapshot(snapshot));
+        },
+      }),
+    );
+    await backend.prepareRunComposition({ runId: 'prepared-run', turnId: 'prepared-turn' });
+    assert.equal(snapshots.length, 1);
+    assert.equal(provider.requests.length, 0);
+    for await (const _event of backend.send({
+      invocationId: 'prepared-invocation',
+      runId: 'prepared-run',
+      turnId: 'prepared-turn',
+      text: 'Use the prepared composition.',
+      context: [],
+    })) {
+      // The provider gate must commit the same resolved composition.
+    }
+    assert.ok(provider.requests.length > 0);
+    assert.ok(snapshots.length > 1);
+    for (const snapshot of snapshots) assert.deepEqual(snapshot, snapshots[0]);
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
+test('handoff composition preparation fails closed without a durable recorder', async () => {
+  const provider = await startProvider();
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+      }),
+    );
+    await assert.rejects(
+      backend.prepareRunComposition({ runId: 'unrecorded-run', turnId: 'unrecorded-turn' }),
+      /no durable Run Composition preparation authority/,
+    );
+    assert.equal(provider.requests.length, 0);
+  } finally {
+    await backend?.dispose();
+    await provider.close();
   }
 });
 
@@ -1142,7 +1200,7 @@ test('Codex OAuth history compaction falls back to a text checkpoint after nativ
     assert.equal(attempts[0]?.providerId, 'openai-codex');
     assert.equal(attempts[0]?.historyCompactRoute, 'provider_native');
     assert.equal(attempts[0]?.status, 'failed');
-    assert.equal(attempts[0]?.errorClass, 'RequestRejected');
+    assert.equal(attempts[0]?.errorClass, 'request_rejected');
     assert.equal(attempts[0]?.httpStatus, 400);
     assert.equal(attempts[0]?.providerCode, 'missing_required_parameter');
     assert.equal(attempts[0]?.providerRequestId, 'req-codex-compact');
@@ -2027,9 +2085,10 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(compactUsage.inputTokens, 7);
     assert.equal(compactUsage.outputTokens, 3);
     const capturedRequestCount = mainRequests.length + compactRequests.length;
-    const attempts = await waitForCanonicalAttempts(usageStores, session.id, capturedRequestCount);
-    assert.equal(attempts.length, capturedRequestCount);
-    assert.ok(attempts.every((attempt) => attempt.promptComposition));
+    assert.equal(
+      await waitForCanonicalRequests(usageStores, session.id, capturedRequestCount),
+      capturedRequestCount,
+    );
     const contextDiagnostics = await composition.handlers['context.diagnostics.query'](
       { sessionId: session.id },
       connectionContext,
@@ -3858,28 +3917,23 @@ async function waitForUsage(
   throw new Error('Hosted real-model usage attribution was not persisted');
 }
 
-async function waitForCanonicalAttempts(
+async function waitForCanonicalRequests(
   usage: InteractiveUsageStoresWriter,
   sessionId: string,
   expectedRequests: number,
-): Promise<readonly ModelCallAttempt[]> {
+): Promise<number> {
+  const ask = () => usage.modelCalls.modelCallSummary({ range: 'all', sessionId }, Date.now());
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const page = await usage.modelCalls.modelCallAttempts(
-      { from: 0, to: Number.MAX_SAFE_INTEGER },
-      sessionId,
-    );
-    if (page.attempts.length >= expectedRequests) return page.attempts;
+    const { projection } = await ask();
+    if (projection.totalRequests >= expectedRequests) return projection.totalRequests;
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
-  const page = await usage.modelCalls.modelCallAttempts(
-    { from: 0, to: Number.MAX_SAFE_INTEGER },
-    sessionId,
-  );
+  const { projection, unreadableRecords } = await ask();
   throw new Error(
     `Hosted canonical model-call attempts were not persisted: ${JSON.stringify({
       expectedRequests,
-      attempts: page.attempts.length,
-      unreadableRecords: page.unreadableRecords,
+      totalRequests: projection.totalRequests,
+      unreadableRecords,
     })}`,
   );
 }

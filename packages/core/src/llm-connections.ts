@@ -567,12 +567,12 @@ export function effectiveBaseUrl(c: Pick<LlmConnection, 'providerType' | 'baseUr
   return providerDefaultsOf(c.providerType)?.baseUrl ?? '';
 }
 
-export function validateSlug(slug: string): string | null {
-  if (!slug.trim()) return 'Slug is required';
-  if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(slug)) {
-    return 'Slug must be lowercase letters, digits, and hyphens';
-  }
-  if (slug.length > 64) return 'Slug must be 64 characters or fewer';
+export type SlugValidationIssue = 'required' | 'format' | 'too_long';
+
+export function validateSlug(slug: string): SlugValidationIssue | null {
+  if (!slug.trim()) return 'required';
+  if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(slug)) return 'format';
+  if (slug.length > 64) return 'too_long';
   return null;
 }
 

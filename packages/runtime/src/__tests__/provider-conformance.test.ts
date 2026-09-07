@@ -962,6 +962,36 @@ describe('models.dev provider conformance', () => {
     assert.deepEqual(requests[2]?.body.contents, [{ role: 'user', parts: [{ text: 'Hi' }] }]);
   });
 
+  test('OpenCode Free probes reuse identity across candidates and renew it per operation', async () => {
+    const sessions: Array<string | undefined> = [];
+    const server = await startJsonServer(async (request, response) => {
+      sessions.push(request.headers['x-opencode-session'] as string | undefined);
+      respondJson(response, sessions.length % 2 === 1 ? 429 : 200, {
+        choices: [{ message: { role: 'assistant', content: 'ok' } }],
+      });
+    });
+    const connection: LlmConnection = {
+      slug: 'opencode-free',
+      name: 'OpenCode Free',
+      providerType: 'opencode-free',
+      baseUrl: `${server.url}/zen/v1`,
+      defaultModel: 'nemotron-3-ultra-free',
+      enabledModelIds: ['nemotron-3-ultra-free', 'mimo-v2.5-free'],
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    assert.equal((await testConnection(connection, '')).ok, true);
+    assert.equal((await testConnection(connection, '')).ok, true);
+    assert.equal(sessions.length, 4);
+    for (const session of sessions) {
+      assert.match(session ?? '', /^[0-9a-f-]{36}$/);
+    }
+    assert.equal(sessions[0], sessions[1]);
+    assert.equal(sessions[2], sessions[3]);
+    assert.notEqual(sessions[0], sessions[2]);
+  });
+
   test('OpenCode Go connection probes identify every supported wire request', async () => {
     const requests: Array<{
       url: string;

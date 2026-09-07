@@ -54,7 +54,8 @@ import type { HostDailyReviewModel } from './execution-model-authority.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import {
   CanonicalUsageProjectionIncompleteError,
-  readCompleteCanonicalUsage,
+  readCanonicalUsageBuckets,
+  readCompleteCanonicalUsageSummary,
 } from './canonical-usage-reader.js';
 
 const ARCHIVE_LIMIT = 180;
@@ -253,7 +254,16 @@ export class HostDailyReviewCoordinator {
 
   async #buildSummary(range: DayRangeMs, now: number): Promise<DailyReviewSummary> {
     const query = dailyUsageQuery(range);
-    const canonical = await readCompleteCanonicalUsage(this.#usage, query, now);
+    // The summary read repairs the projection and refuses an incomplete one; the
+    // bucket read that follows reuses that pass rather than repairing again.
+    const canonical = await readCompleteCanonicalUsageSummary(this.#usage, query, now);
+    const canonicalModels = await readCanonicalUsageBuckets(
+      this.#usage,
+      query,
+      'model',
+      now,
+      false,
+    );
     const [usageSummary, toolBuckets, modelBuckets, sessions] = await Promise.all([
       this.#usage.telemetry.summary(query),
       this.#usage.telemetry.buckets(query, 'tool'),
@@ -262,7 +272,7 @@ export class HostDailyReviewCoordinator {
     ]);
     return buildDailyReviewSummary({
       day: range,
-      usageSummary: mergeUsageSummary(usageSummary, canonical, query, now),
+      usageSummary: mergeUsageSummary(usageSummary, canonical),
       sessions: pickDailyReviewSessions(
         collapseSessionRevisions(sessions),
         range,
@@ -270,7 +280,7 @@ export class HostDailyReviewCoordinator {
       ),
       topTools: pickDailyReviewTopEntries(toolBuckets, DAILY_REVIEW_LIST_LIMIT),
       topModels: pickDailyReviewTopEntries(
-        mergeUsageBuckets(modelBuckets, canonical, query, 'model', now).buckets,
+        mergeUsageBuckets(modelBuckets, canonicalModels).buckets,
         DAILY_REVIEW_LIST_LIMIT,
       ),
     });

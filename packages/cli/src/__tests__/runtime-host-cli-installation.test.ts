@@ -121,11 +121,80 @@ test('recognizes configured and default npx cache roots without prefix collision
   const input = {
     environment: { npm_config_cache: join(base, 'cache') },
     homeDir: join(base, 'home'),
+    platform: 'linux' as const,
   };
 
   assert.equal(await isTemporaryNpxInstallation(configured, input), true);
   assert.equal(await isTemporaryNpxInstallation(defaultCache, input), true);
   assert.equal(await isTemporaryNpxInstallation(collision, input), false);
+});
+
+test('recognizes Windows npm cache provenance without classifying an unrelated installation', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-cli-npx-windows-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const localAppData = join(base, 'local-app-data');
+  const homeDir = join(base, 'home');
+  const defaultPackage = join(
+    localAppData,
+    'npm-cache',
+    '_npx',
+    'hash',
+    'node_modules',
+    'maka-agent',
+  );
+  const fallbackPackage = join(homeDir, 'npm-cache', '_npx', 'hash', 'node_modules', 'maka-agent');
+  const configuredPackage = join(
+    base,
+    'custom-cache',
+    '_npx',
+    'hash',
+    'node_modules',
+    'maka-agent',
+  );
+  const installedPackage = join(base, 'global', 'node_modules', 'maka-agent');
+  const input = { platform: 'win32' as const, homeDir };
+  await Promise.all(
+    [defaultPackage, fallbackPackage, configuredPackage, installedPackage].map((path) =>
+      mkdir(path, { recursive: true }),
+    ),
+  );
+
+  assert.equal(
+    await isTemporaryNpxInstallation(defaultPackage, {
+      ...input,
+      environment: { LOCALAPPDATA: localAppData },
+    }),
+    true,
+  );
+  assert.equal(
+    await isTemporaryNpxInstallation(fallbackPackage, {
+      ...input,
+      environment: {},
+    }),
+    true,
+  );
+  assert.equal(
+    await isTemporaryNpxInstallation(configuredPackage, {
+      ...input,
+      environment: { NPM_CONFIG_CACHE: join(base, 'custom-cache') },
+    }),
+    true,
+  );
+  assert.equal(
+    await isTemporaryNpxInstallation(installedPackage, {
+      ...input,
+      environment: { LOCALAPPDATA: localAppData },
+    }),
+    false,
+  );
+  // A missing package is not evidence of npx unless its path is in a known cache.
+  assert.equal(
+    await isTemporaryNpxInstallation(join(base, 'missing-installation'), {
+      ...input,
+      environment: {},
+    }),
+    false,
+  );
 });
 
 test('rejects non-UTF-8 package metadata instead of normalizing an owner observation', async (t) => {

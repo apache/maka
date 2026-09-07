@@ -222,7 +222,7 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
         // the fold past the summarizer provider's window, the rejection is the
         // planner's retreat signal, not a repair failure to file under the
         // initial defect (#4559).
-        if (classifyError(error) === 'ContextLength') {
+        if (classifyError(error) === 'context_overflow') {
           throw new HistoryCompactSummarizerError('input_too_large', { cause: error });
         }
         throw new HistoryCompactSummarizerError(initial.defect, {
@@ -249,7 +249,7 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
       // The summarizer's provider is the one judge of whether this fold fits
       // its own window: a context-length rejection is the signal the planner
       // retreats on, so it must keep its name here (#4559).
-      if (classifyError(error) === 'ContextLength') {
+      if (classifyError(error) === 'context_overflow') {
         throw new HistoryCompactSummarizerError('input_too_large', { cause: error });
       }
       throw new HistoryCompactSummarizerError('provider_error', { cause: error });

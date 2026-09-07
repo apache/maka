@@ -387,7 +387,7 @@ test('recovers deterministic managed-file staging after process exit', async (t)
   assert.equal((await recovered.usage()).physicalBytes, 0);
 });
 
-test('reports continuation while pending managed-file deletions remain', async (t) => {
+test('bounds pending managed-file deletion bytes and reports continuation', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-offload-pending-files-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const values = ['pending-one', 'pending-two', 'pending-three'];
@@ -413,11 +413,14 @@ test('reports continuation while pending managed-file deletions remain', async (
   t.after(() => recovered.close());
   const totalBytes = values.reduce((total, value) => total + Buffer.byteLength(value), 0);
   assert.equal((await recovered.usage()).physicalBytes, totalBytes);
+  const byteBudget = Math.max(...values.map((value) => Buffer.byteLength(value)));
   for (const hasMore of [true, true, false]) {
+    const before = (await recovered.usage()).physicalBytes;
     assert.deepEqual(
-      await recovered.collectGarbage({ olderThan: 1, maxBlobs: 1, maxBytes: totalBytes }),
+      await recovered.collectGarbage({ olderThan: 1, maxBlobs: 64, maxBytes: byteBudget }),
       { deletedBlobs: 0, deletedBytes: 0, hasMore },
     );
+    assert.ok(before - (await recovered.usage()).physicalBytes <= byteBudget);
   }
   assert.equal((await recovered.usage()).physicalBytes, 0);
 });
@@ -912,6 +915,126 @@ test('migrates v1 orphan blobs into the indexed garbage candidate set', async (t
     deletedBytes: 6,
     hasMore: false,
   });
+});
+
+test('bounds payload reads before collecting migrated v2 inline images', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-context-v2-gc-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, CONTEXT_OFFLOAD_DATABASE_NAME);
+  const legacy = new DatabaseSync(path);
+  // Schema from the released v2 authority (8b93dd52b), before managed values.
+  legacy.exec(`PRAGMA auto_vacuum = INCREMENTAL;
+  CREATE TABLE context_blobs (
+    blob_id BLOB PRIMARY KEY CHECK(length(blob_id) = 32),
+    payload BLOB NOT NULL,
+    size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0 AND length(payload) = size_bytes),
+    created_at INTEGER NOT NULL CHECK(created_at >= 0)
+  );
+
+  CREATE TABLE context_refs (
+    ref_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    owner_kind TEXT NOT NULL CHECK(
+      owner_kind IN ('read_image_snapshot', 'tool_result_archive')
+    ),
+    owner_id TEXT NOT NULL,
+    blob_id BLOB NOT NULL REFERENCES context_blobs(blob_id) ON DELETE RESTRICT,
+    media_type TEXT NOT NULL,
+    created_at INTEGER NOT NULL CHECK(created_at >= 0),
+    UNIQUE(session_id, owner_kind, owner_id)
+  );
+
+  CREATE INDEX context_refs_session
+    ON context_refs(session_id, created_at, ref_id);
+
+  CREATE INDEX context_refs_blob
+    ON context_refs(blob_id);
+
+  CREATE TABLE context_gc_candidates (
+    blob_id BLOB PRIMARY KEY
+      REFERENCES context_blobs(blob_id) ON DELETE CASCADE,
+    unreferenced_at INTEGER NOT NULL CHECK(unreferenced_at >= 0)
+  );
+
+  CREATE INDEX context_gc_candidates_eligible
+    ON context_gc_candidates(unreferenced_at, blob_id);
+
+  CREATE TABLE context_session_usage (
+    session_id TEXT PRIMARY KEY,
+    reference_count INTEGER NOT NULL CHECK(reference_count >= 0),
+    logical_bytes INTEGER NOT NULL CHECK(logical_bytes >= 0)
+  );
+
+  CREATE TABLE context_store_usage (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    blob_count INTEGER NOT NULL CHECK(blob_count >= 0),
+    physical_bytes INTEGER NOT NULL CHECK(physical_bytes >= 0)
+  );
+
+  INSERT INTO context_store_usage(singleton, blob_count, physical_bytes)
+    VALUES (1, 0, 0);
+
+    PRAGMA user_version = 2;
+  `);
+  const mib = 1024 * 1024;
+  try {
+    const insert = legacy.prepare('INSERT INTO context_blobs VALUES (?, ?, ?, ?)');
+    const orphan = legacy.prepare('INSERT INTO context_gc_candidates VALUES (?, ?)');
+    legacy.exec('BEGIN');
+    for (let i = 0; i < 65; i += 1) {
+      const bytes = Buffer.alloc(mib, i);
+      const hash = createHash('sha256').update(bytes).digest();
+      insert.run(hash, bytes, bytes.length, 1);
+      orphan.run(hash, 2);
+    }
+    legacy
+      .prepare('UPDATE context_store_usage SET blob_count = 65, physical_bytes = ?')
+      .run(65 * mib);
+    legacy.exec('COMMIT');
+  } finally {
+    legacy.close();
+  }
+  const store = new SqliteContextOffloadStore(path, { limits: defaultLimits() });
+  t.after(() => store.close());
+  const inspect = new DatabaseSync(path);
+  t.after(() => inspect.close());
+  assert.equal(pragmaNumber(inspect, 'user_version'), 3);
+  assert.equal(
+    inspect.prepare("SELECT count(*) AS n FROM context_blobs WHERE storage_kind = 'inline'").get()
+      ?.n,
+    65,
+  );
+
+  let payloadBytes = 0;
+  const countPayload = (row: Record<string, unknown> | undefined) => {
+    if (row?.payload instanceof Uint8Array) payloadBytes += row.payload.byteLength;
+  };
+  const prepare = DatabaseSync.prototype.prepare;
+  t.mock.method(DatabaseSync.prototype, 'prepare', function (this: DatabaseSync, sql: string) {
+    const statement = prepare.call(this, sql);
+    const all = statement.all.bind(statement);
+    const get = statement.get.bind(statement);
+    t.mock.method(statement, 'all', (...args: Parameters<typeof all>) => {
+      const rows = all(...args);
+      for (const row of rows) countPayload(row);
+      return rows;
+    });
+    t.mock.method(statement, 'get', (...args: Parameters<typeof get>) => {
+      const row = get(...args);
+      countPayload(row);
+      return row;
+    });
+    return statement;
+  });
+  await assert.rejects(
+    store.collectGarbage({ olderThan: 3, maxBlobs: 64, maxBytes: mib - 1 }),
+    /byte limit/,
+  );
+  assert.equal(payloadBytes, 0, 'a rejected batch must not materialize any payload');
+  const result = await store.collectGarbage({ olderThan: 3, maxBlobs: 64, maxBytes: 16 * mib });
+  assert.deepEqual(result, { deletedBlobs: 16, deletedBytes: 16 * mib, hasMore: true });
+  assert.equal(payloadBytes, 16 * mib, 'only admitted inline payloads are materialized');
+  assert.equal((await store.usage()).physicalBytes, 49 * mib);
 });
 
 test('lifecycle queries use Session and garbage eligibility indexes', async (t) => {

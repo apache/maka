@@ -114,6 +114,7 @@ import {
   type CollaborationGrantRevokeResult,
   type CollaborationInvitationPrepareResult,
   type CollaborationPrincipalRevokeResult,
+  type CollaborationPrincipalRenameResult,
   type CollaborationTurnRequestAcknowledgeResult,
   type CollaborationTurnRequestDecideResult,
   type CollaborationTurnRequestQueryResult,
@@ -159,7 +160,7 @@ const decodeStoredMessage = (value: unknown): StoredMessage =>
 const MAX_OPTIMISTIC_ATTEMPTS = 3;
 const MAX_SESSION_REVISION_ATTEMPTS = 8;
 const MAX_PRICING_SNAPSHOT_ATTEMPTS = 3;
-const RUNTIME_HOST_RETIREMENT_TIMEOUT_MS = 5_000;
+const RUNTIME_HOST_RETIREMENT_TIMEOUT_MS = 15_000;
 
 export type DesktopSessionConfigurationPatch = SessionConfigurationPatch;
 
@@ -334,6 +335,10 @@ export class DesktopRuntimeHostClient {
     principalId: string,
   ): Promise<CollaborationPrincipalRevokeResult> {
     return this.request('collaboration.principal.revoke', { principalId });
+  }
+
+  renameCollaborationPrincipal(principalId: string, displayName: string): Promise<CollaborationPrincipalRenameResult> {
+    return this.request('collaboration.principal.rename', { principalId, displayName });
   }
 
   createCollaborationTurnRequest(

@@ -222,12 +222,11 @@ function deriveTurnPresentationEntry(input: {
   if (turn.status === 'failed' && !isSandboxOnlyToolFailure(turn)) {
     entry.failedReasonLabel = describeTurnErrorClass(turn.errorClass, uiLocale);
     entry.failedSeverity = deriveFailedTurnSeverity(turn.errorClass);
-    const executionState = describeFailedTurnExecutionState({
-      partialOutputRetained: turn.partialOutputRetained,
+    entry.failedExecutionStateLabel = describeFailedTurnExecutionState({
+      retry: turn.retry,
       toolActivityCount: turn.tools.length,
       erroredToolCount: turn.tools.filter((tool) => tool.status === 'errored').length,
     }, uiLocale);
-    if (executionState) entry.failedExecutionStateLabel = executionState;
   }
 
   const lineageBadges = deriveTurnLineageBadges({
