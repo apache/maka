@@ -101,7 +101,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 123 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 124 as const;
+// 124: Session transcript bootstraps drop `durableCoverage`. A durable sequence
+// is an event ordinal times its stride, so no projection has contiguous
+// sequences any more and the claim the field made is unavailable to make.
 // 123: Session Turn contributions carry only the Turn's recorded state. Older
 // peers require the derived shape booleans this projection no longer sends.
 // 122: Durable transcript cursors seek Session event ordinals instead of run indexes.
