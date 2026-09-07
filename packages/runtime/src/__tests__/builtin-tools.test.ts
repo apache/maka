@@ -2246,8 +2246,13 @@ describe('builtin write tools path containment', () => {
     const writes: Array<{ cwd: string; path: string; content: string }> = [];
     const write = buildBuiltinTools({
       executor: fakeExecutor({
-        writeLockKey: async ({ cwd, path }) => ({ key: JSON.stringify([cwd, path]) }),
-        resolveWritablePath: async ({ cwd, path }) => ({ path: `${cwd}/${path}` }),
+        writeLockKey: async ({ cwd, path }) => ({
+          key: JSON.stringify([cwd, path]),
+          canonicalPath: `${cwd}/${path}`,
+        }),
+        resolveWritablePath: async ({ cwd, path }) => ({
+          path: path.startsWith('/') ? path : `${cwd}/${path}`,
+        }),
         writeFile: async ({ cwd, path, content }) => {
           writes.push({ cwd, path, content });
           return { ok: true, path, bytes: Buffer.byteLength(content, 'utf8') };
@@ -2787,7 +2792,7 @@ function fakeExecutor(overrides: Partial<WorkspaceExecutor>): WorkspaceExecutor 
     }),
     resolveExistingPath: async ({ path }) => ({ path }),
     resolveWritablePath: async ({ path }) => ({ path }),
-    writeLockKey: async ({ cwd, path }) => ({ key: `${cwd}:${path}` }),
+    writeLockKey: async ({ cwd, path }) => ({ key: `${cwd}:${path}`, canonicalPath: path }),
     globFiles: async () => ({ files: [] }),
     grepFiles: async () => ({ matches: [] }),
   };

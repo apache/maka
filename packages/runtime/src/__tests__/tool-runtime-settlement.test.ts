@@ -136,6 +136,47 @@ describe('ToolRuntime settlement', () => {
     assert.deepEqual(settlement.result, { ok: true });
   });
 
+  it('passes the durable operation identity to a prepared effect after T1', async () => {
+    let preparedOperationId: string | undefined;
+    let effectOperationId: string | undefined;
+    const runtime = makeRuntime({
+      runId: 'run-1',
+      invocationId: 'invocation-1',
+      runtimeCommitSink: {
+        commitToolPrepared: async (input) => {
+          preparedOperationId = input.operationId;
+          return { created: true, runtimeEventSeq: 1 };
+        },
+        commitToolOutcome: async () => ({ created: true, runtimeEventSeq: 2 }),
+      },
+    });
+
+    const settlement = await runtime.settleToolCall({
+      tool: {
+        ...tool(() => assert.fail('the prepared effect owns execution')),
+        name: 'PreparedRead',
+      },
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolCallId: 'provider-call-reused',
+      input: {},
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: () => undefined,
+        pushAndWaitUntilConsumed: async () => undefined,
+      },
+      effect: async (_signal, _fallbackEffect, executionContext) => {
+        effectOperationId = executionContext.operationId;
+        return { ok: true };
+      },
+    });
+
+    assert.ok(preparedOperationId);
+    assert.equal(effectOperationId, preparedOperationId);
+    assert.notEqual(effectOperationId, 'provider-call-reused');
+    assert.deepEqual(settlement.result, { ok: true });
+  });
+
   it('cancels prepared Client Capability work when T1 fails', async () => {
     const order: string[] = [];
     const clientTool: MakaTool = {
@@ -638,6 +679,38 @@ describe('ToolRuntime settlement', () => {
       (settlement.result as { childSessionId?: string }).childSessionId,
       'child-session',
     );
+  });
+
+  it('precomputes exclusive-step admission in provider order', () => {
+    const normal = tool(async () => ({ ok: true }));
+    const exclusive: MakaTool = {
+      ...tool(async () => ({ ok: true })),
+      name: 'AskUserQuestion',
+      executionSemantics: 'exclusive_step',
+    };
+
+    assert.deepEqual(makeRuntime().admitToolCallBatch([exclusive, normal, normal], 'step-a'), [
+      { kind: 'admitted' },
+      {
+        kind: 'rejected',
+        reason:
+          'Tool Read did not run: AskUserQuestion cannot share an assistant step with other tool calls. Send Read again in a later step.',
+      },
+      {
+        kind: 'rejected',
+        reason:
+          'Tool Read did not run: AskUserQuestion cannot share an assistant step with other tool calls. Send Read again in a later step.',
+      },
+    ]);
+    assert.deepEqual(makeRuntime().admitToolCallBatch([normal, exclusive, normal], 'step-b'), [
+      { kind: 'admitted' },
+      {
+        kind: 'rejected',
+        reason:
+          'Tool AskUserQuestion did not run: it cannot share an assistant step with other tool calls. Send AskUserQuestion again in a step where it is the only call.',
+      },
+      { kind: 'admitted' },
+    ]);
   });
 });
 

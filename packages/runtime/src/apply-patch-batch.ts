@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { ToolOutcomeUnknownError } from '@maka/core/events';
 import type { ApplyPatchOperation } from './filesystem-executor.js';
 import { formatSyntheticToolErrorText } from './tool-runtime.js';
 
@@ -48,6 +49,23 @@ function operationFact(operation: ApplyPatchOperation): AppliedPatchOperationFac
   return { type: operation.type, path: operation.path };
 }
 
+export class ApplyPatchBatchOutcomeUnknownError extends ToolOutcomeUnknownError {
+  readonly applied: readonly AppliedPatchOperationFact[];
+  readonly uncertain: AppliedPatchOperationFact;
+
+  constructor(input: {
+    applied: readonly AppliedPatchOperationFact[];
+    uncertain: AppliedPatchOperationFact;
+    cause: ToolOutcomeUnknownError;
+  }) {
+    super(`ApplyPatch outcome is unknown for ${input.uncertain.type} ${input.uncertain.path}.`, {
+      cause: input.cause,
+    });
+    this.applied = Object.freeze(input.applied.map((item) => Object.freeze({ ...item })));
+    this.uncertain = Object.freeze({ ...input.uncertain });
+  }
+}
+
 /** Execute one parsed patch in order while preserving the exact committed prefix. */
 export async function executeApplyPatchOperations(
   operations: readonly ApplyPatchOperation[],
@@ -75,6 +93,13 @@ export async function executeApplyPatchOperations(
       applied.push(operationFact(operation));
     } catch (error) {
       const failed = operationFact(operation);
+      if (error instanceof ToolOutcomeUnknownError) {
+        throw new ApplyPatchBatchOutcomeUnknownError({
+          applied,
+          uncertain: failed,
+          cause: error,
+        });
+      }
       const appliedText = applied.length
         ? ` Applied before failure: ${applied.map((item) => `${item.type} ${item.path}`).join(', ')}.`
         : ' No file operation was applied.';

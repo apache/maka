@@ -81,6 +81,7 @@ import { resolveModelRuntime } from './model-runtime.js';
 import { routeApplyPatchTools } from './apply-patch-profile.js';
 import { bindToolResultArchiveDecoder } from './tool-result-archive-capability.js';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
+import { ToolPreparationService } from './preparation/tool-preparation-service.js';
 export {
   DEFAULT_PERMISSION_TIMEOUT_MS,
   MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN,
@@ -126,6 +127,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   // ── Process-singleton deps ─────────────────────────────────────────────
   /** Canonical-named tools available this session. */
   tools: MakaTool[];
+  /** Process-owned authority synthesis root; every backend receives the same instance. */
+  preparationService: ToolPreparationService;
   /** Diagnostic-only Plan Mode/execution identity snapshot. */
   planTraceContext?: {
     mode: 'agent' | 'plan';
@@ -264,6 +267,7 @@ export class AiSdkBackend implements AgentBackend {
 
   // Pulled out of the input for ergonomic access on hot paths.
   private readonly input: AiSdkBackendInput;
+  private readonly preparationService: ToolPreparationService;
   private readonly newId: () => string;
   private readonly now: () => number;
   private readonly maxSteps: number | undefined;
@@ -305,7 +309,11 @@ export class AiSdkBackend implements AgentBackend {
     contextProviderDroppingReported: false,
   };
   constructor(input: AiSdkBackendInput) {
+    if (!input.preparationService) {
+      throw new Error('AiSdkBackend requires a process-owned ToolPreparationService');
+    }
     this.input = input;
+    this.preparationService = input.preparationService;
     this.sessionId = input.sessionId;
     this.newId = input.newId ?? (() => crypto.randomUUID());
     this.now = input.now ?? (() => Date.now());
@@ -505,6 +513,7 @@ export class AiSdkBackend implements AgentBackend {
         compaction: this.compaction,
         toolAvailabilityRuntime: this.toolAvailabilityRuntime,
         codeCellAdmission: this.codeCellAdmission,
+        preparationService: this.preparationService,
         resolvedProviderOptions: this.resolvedProviderOptions,
         session: this.turnSessionState,
         newId: this.newId,
