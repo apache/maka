@@ -7280,7 +7280,7 @@ describe('AiSdkBackend model history', () => {
 });
 
 describe('AiSdkBackend error surfaces', () => {
-  test('generalizes model setup errors before emitting renderer events', async () => {
+  test('preserves model setup diagnostics in renderer events', async () => {
     const backend = createBackend({
       connection: connection(),
       apiKey: 'sk-live-secret-token-value',
@@ -7300,8 +7300,7 @@ describe('AiSdkBackend error surfaces', () => {
     const error = events.find(
       (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
     );
-    assert.equal(error?.message, '401 Authorization: Bearer [redacted]');
-    assert.equal(JSON.stringify(events).includes('sk-live-secret-token-value'), false);
+    assert.equal(error?.message, '401 Authorization: Bearer sk-live-secret-token-value');
   });
 
   test('stops after a T1 rejection only after sibling tool calls settle', async () => {

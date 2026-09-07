@@ -210,7 +210,7 @@ describe('Provider error classification', () => {
   test('extracts allowlisted fields from JSON string failures without copying the payload', () => {
     const summary = providerModelFailure(
       JSON.stringify({
-        error: { message: 'provider rejected request', code: 'bad_request' },
+        error: { message: 'Invalid api_key=sk-test-diagnostic-value', code: 'bad_request' },
         request_id: 'req-123',
         prompt: 'private customer text',
         headers: { 'x-debug': 'internal' },
@@ -218,7 +218,7 @@ describe('Provider error classification', () => {
     );
 
     assert.partialDeepStrictEqual(summary, {
-      message: 'provider rejected request (code=bad_request, requestId=req-123)',
+      message: 'Invalid api_key=sk-test-diagnostic-value (code=bad_request, requestId=req-123)',
       code: 'bad_request',
     });
     assert.equal(JSON.stringify(summary).includes('private customer text'), false);

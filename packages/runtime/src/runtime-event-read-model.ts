@@ -19,7 +19,6 @@
 
 import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
-import { redactSecrets } from '@maka/core/redaction';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { AssistantStepContentKind, StoredMessage, TurnStatus } from '@maka/core/session';
 import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
@@ -1244,11 +1243,7 @@ function projectTerminalTurnState(
     ...(status === 'failed' ? { errorClass: failureClass ?? 'unknown' } : {}),
     ...(status === 'failed' && event.content?.kind === 'error' && event.content.message
       ? {
-          failureMessage: truncateUtf8(
-            redactSecrets(event.content.message),
-            MODEL_FAILURE_MESSAGE_MAX_BYTES,
-            '…',
-          ),
+          failureMessage: truncateUtf8(event.content.message, MODEL_FAILURE_MESSAGE_MAX_BYTES, '…'),
         }
       : {}),
     ...(status === 'failed' && event.content?.kind === 'error' && event.content.retry

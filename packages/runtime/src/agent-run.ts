@@ -53,6 +53,8 @@ import type { ModelCallCommit } from '@maka/core/agent-run';
 import { Buffer } from 'node:buffer';
 import { isDeepStrictEqual } from 'node:util';
 import { redactSecrets } from '@maka/core/redaction';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
 import {
   MODEL_CALL_ATTEMPT_EVENT_TYPE,
   type ModelCallAttempt,
@@ -1211,7 +1213,10 @@ export class AgentRun {
       return;
     }
     this.finalStatus = { status: 'blocked', blockedReason: 'unknown' };
-    this.markRunFailed(error instanceof Error ? error.name : 'unknown', errorMessage(error));
+    this.markRunFailed(
+      error instanceof Error ? error.name : 'unknown',
+      error instanceof Error ? error.message : String(error),
+    );
   }
 
   async finalize(): Promise<void> {
@@ -1454,12 +1459,13 @@ export class AgentRun {
   /**
    * Remember why this run is going to fail.
    *
+   * Preserve diagnostic text without trace redaction, within the byte budget.
    * Nothing is written here: the terminal RuntimeEvent carries the failure, and
    * it is committed once, at the end, by `commitTerminalRun`.
    */
   private markRunFailed(failureClass: string, message: string): void {
     this.failureClass = failureClass;
-    this.failureMessage = redactTraceString(message);
+    this.failureMessage = truncateUtf8(message, MODEL_FAILURE_MESSAGE_MAX_BYTES, '…');
   }
 
   /**

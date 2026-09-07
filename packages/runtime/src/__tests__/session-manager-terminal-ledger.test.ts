@@ -20,6 +20,7 @@
 import { deferred, nextId } from '@maka/core/test-only/async-primitives';
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
 import { setTimeout as timerDelay } from 'node:timers/promises';
 import { deriveTurnRecords } from '@maka/core/session';
 import { DurableStoreWriteError, RunSealedError } from '@maka/core/runtime-event-store';
@@ -221,6 +222,7 @@ describe('SessionManager terminal ledger invariants', () => {
   });
 
   test('error streams persist a failed terminal fact without non-terminal error ledger rows', async () => {
+    const diagnostic = 'Provider failed with api_key=sk-test-diagnostic-value';
     const store = new TinySessionStore();
     const { manager, runStore, session } = await makeHarness(
       [
@@ -228,7 +230,7 @@ describe('SessionManager terminal ledger invariants', () => {
           type: 'error',
           recoverable: false,
           reason: 'stream_truncated',
-          message: 'Response stream ended without a finish reason.',
+          message: diagnostic,
           retry: { decision: 'declined', because: 'side_effects' },
         },
         { type: 'complete', stopReason: 'end_turn' },
@@ -281,13 +283,14 @@ describe('SessionManager terminal ledger invariants', () => {
     const terminal = restored.find(isTerminalRuntimeEvent)!;
     assert.equal(
       terminal.content?.kind === 'error' ? terminal.content.message : undefined,
-      'Response stream ended without a finish reason.',
+      diagnostic,
     );
     assert.equal(runtimeEventHasModelVisibleContent(terminal), false);
     assert.ok(Buffer.byteLength(JSON.stringify(terminal)) < 4096);
     const cold = projectRuntimeEventsToStoredMessages(restored, { invocations: [run] });
     assert.deepEqual(cold.diagnostics, []);
     const coldTurn = deriveTurnRecords(cold.messages).find((turn) => turn.turnId === 'turn-1')!;
+    assert.equal(coldTurn.failureMessage, diagnostic);
     assert.equal(coldTurn.errorClass, turnState.errorClass);
     assert.deepEqual(coldTurn.retry, turnState.retry);
   });
@@ -1226,6 +1229,34 @@ describe('SessionManager terminal ledger invariants', () => {
       (await runStore.readRuntimeEvents(session.id, run.runId)).some(isTerminalRuntimeEvent),
       false,
     );
+  });
+
+  test('caught failures keep diagnostic text within the terminal byte budget', async () => {
+    const store = new TinySessionStore();
+    const runStore = new TinyAgentRunStore();
+    const session = await store.create(makeInput());
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId: 'turn-1', text: 'hello' },
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      newId: nextId(),
+      now: nextNow(40_000),
+      hooks: inertAgentRunHooks(store),
+    });
+    const prefix = 'api_key=sk-test-diagnostic-value ';
+    await run.recordFailure(new Error(prefix + '界'.repeat(2048)));
+    await run.finalize();
+    const terminal = (await runStore.readRuntimeEvents(session.id, run.runId)).find(
+      isTerminalRuntimeEvent,
+    );
+    const content = terminal?.content;
+    assert.equal(content?.kind, 'error');
+    if (content?.kind !== 'error') throw new Error('missing failure diagnostic');
+    assert.ok(content.message.startsWith(prefix));
+    assert.ok(Buffer.byteLength(content.message) <= MODEL_FAILURE_MESSAGE_MAX_BYTES);
   });
 
   test('direct AgentRun finalize synthesizes a failed terminal fact when no terminal event was recorded', async () => {

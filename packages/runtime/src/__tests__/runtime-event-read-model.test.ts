@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
 import { describe, test } from 'node:test';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
@@ -1579,9 +1580,8 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     assert.deepStrictEqual(out.diagnostics, []);
   });
 
-  test('failure diagnostics survive terminal projection and cold decoding', () => {
-    const message =
-      'Quota exceeded for this account (code=insufficient_quota, status=429, requestId=req-4502)';
+  test('failure diagnostics survive terminal projection and serialization round-trip', () => {
+    const message = 'Quota exceeded for api_key=sk-test-diagnostic-value (status=429)';
     const out = projectRuntimeEventsToStoredMessages(
       [
         ev({
@@ -1598,16 +1598,33 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       { invocations: [endedAs('failed', 'rate_limit')] },
     );
     const live = deriveTurnRecords(out.messages)[0];
-    const cold = deriveTurnRecords(
+    const roundTripped = deriveTurnRecords(
       JSON.parse(JSON.stringify(out.messages)).map(decodeCanonicalMessage),
     )[0];
     assert.equal(live.failureMessage, message);
-    assert.deepEqual(cold, live);
+    assert.deepEqual(roundTripped, live);
     assert.equal(live.errorClass, 'rate_limit');
     assert.throws(() =>
       decodeCanonicalMessage({ ...out.messages[0], failureMessage: '界'.repeat(2048) }),
     );
     assert.deepEqual(live.retry, { decision: 'declined', because: 'side_effects' });
+  });
+
+  test('bounds terminal diagnostics before publishing decodable turn states', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          status: 'failed',
+          content: { kind: 'error', message: '界'.repeat(2048) },
+          actions: { endInvocation: true, stateDelta: { failureClass: 'unknown' } },
+        }),
+      ],
+      { invocations: [endedAs('failed', 'unknown')] },
+    );
+    const turn = deriveTurnRecords(out.messages)[0];
+    assert.ok(turn.failureMessage?.startsWith('界'));
+    assert.ok(Buffer.byteLength(turn.failureMessage!) <= MODEL_FAILURE_MESSAGE_MAX_BYTES);
+    assert.doesNotThrow(() => out.messages.map(decodeCanonicalMessage));
   });
 
   test('a session written with the retired context_budget_exhausted reads back as context_overflow', () => {
