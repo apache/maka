@@ -37,7 +37,7 @@ owners:
 **Method:** file-level inventory regen + pattern scan + deep reads of shell/settings/modules/ui; prior art `docs/astryx-full-surface-audit.md`, `DESIGN.md`, `docs/astryx-surface-file-inventory.md`  
 **Evidence log:** goal scratch `frontend-review-scan.log` (inventory totals, greps, spot-checks, inventory unit tests)
 
-> **Status (verified 2026-09-04):** this is a review record pinned to the HEAD above; its
+> **Status (verified 2026-09-05):** this is a review record pinned to the HEAD above; its
 > citations describe that tree. Since then the workbar moved under
 > `apps/desktop/src/renderer/features/workbar/` (so `session-workbar.tsx` /
 > `session-workbar-tabs.ts` / `use-shell-layout.ts` no longer sit at their cited paths)
