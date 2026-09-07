@@ -78,11 +78,6 @@ test('derives turn records from bounded contribution pages', async () => {
             firstSequence: 0,
             latestState: null,
             userPromptPreview: 'hello',
-            hasAssistantMessage: true,
-            hasAssistantOutput: true,
-            hasToolResult: false,
-            hasFailedToolResult: false,
-            hasAbortNote: false,
           }],
           nextPosition: 2,
         };
@@ -105,11 +100,6 @@ test('derives turn records from bounded contribution pages', async () => {
             },
           },
           userPromptPreview: null,
-          hasAssistantMessage: false,
-          hasAssistantOutput: false,
-          hasToolResult: true,
-          hasFailedToolResult: false,
-          hasAbortNote: false,
         }],
         nextPosition: null,
       };
@@ -124,7 +114,7 @@ test('derives turn records from bounded contribution pages', async () => {
     userPromptPreview: 'hello',
     status: 'completed',
     statusSource: 'recorded',
-    partialOutputRetained: true,
+    partialOutputRetained: false,
   }]);
   assert.deepEqual(positions, [0, 2]);
   await client.close();
