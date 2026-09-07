@@ -102,6 +102,61 @@ test('buildMcpTools projects discovery, abort, and rich model output', async () 
   assert.match(model?.value[2]?.type === 'text' ? model.value[2].text : '', /structuredContent/u);
 });
 
+test('buildMcpTools leaves MCP JSON Schema validation to the server', async () => {
+  const inputSchema = {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    type: 'object',
+    properties: {
+      values: {
+        type: 'array',
+        prefixItems: [{ type: 'string' }],
+        items: { type: 'number' },
+      },
+    },
+    required: ['values'],
+  };
+  let invocationArgs: unknown;
+  const [tool] = buildMcpTools(
+    fakeProvider(
+      [
+        boundTool(
+          {
+            ...descriptor('server', 'validated'),
+            inputSchema,
+          },
+          binding('validated-binding'),
+        ),
+      ],
+      async (_binding, args) => {
+        invocationArgs = args;
+        return { content: [] };
+      },
+    ),
+  );
+  const parameters = tool?.parameters as {
+    jsonSchema?: unknown;
+    validate?: unknown;
+  };
+  assert.deepEqual(parameters.jsonSchema, inputSchema);
+  assert.equal(parameters.validate, undefined);
+  if (!tool) throw new Error('expected MCP tool');
+  assert.deepEqual(
+    await tool.impl(
+      { values: ['head', 42] },
+      {
+        sessionId: 'session',
+        turnId: 'turn',
+        cwd: '/workspace',
+        toolCallId: 'tool-call',
+        abortSignal: new AbortController().signal,
+        emitOutput() {},
+      },
+    ),
+    { content: [] },
+  );
+  assert.deepEqual(invocationArgs, { values: ['head', 42] });
+});
+
 test('buildMcpTools carries the Runtime-owned form callback to the provider', async () => {
   const cancellation = new AbortController();
   const provider = fakeProvider(

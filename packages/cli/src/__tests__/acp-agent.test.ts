@@ -70,6 +70,43 @@ describe('Maka ACP agent', () => {
     assert.deepEqual(lists, [{ cwd: '/workspace' }]);
   });
 
+  test('routes official SDK set-config requests through the Session registry', async () => {
+    const configurationRequests: unknown[] = [];
+    await client({ name: 'test-client' }).connectWith(
+      createMakaAcpAgent({
+        version: '0.2.0',
+        sessionRegistry: fakeSessionRegistry({ configurationRequests }),
+      }),
+      async (agent) => {
+        assert.deepEqual(
+          await agent.request(methods.agent.session.setConfigOption, {
+            sessionId: 'session-1',
+            configId: 'collaboration_mode',
+            value: 'plan',
+          }),
+          {
+            configOptions: [
+              {
+                type: 'select',
+                id: 'collaboration_mode',
+                name: 'Collaboration mode',
+                category: 'mode',
+                currentValue: 'plan',
+                options: [
+                  { value: 'agent', name: 'Agent' },
+                  { value: 'plan', name: 'Plan' },
+                ],
+              },
+            ],
+          },
+        );
+      },
+    );
+    assert.deepEqual(configurationRequests, [
+      { sessionId: 'session-1', configId: 'collaboration_mode', value: 'plan' },
+    ]);
+  });
+
   test('does not implement or advertise session/close', async () => {
     await client({ name: 'test-client' }).connectWith(
       createMakaAcpAgent({ version: '0.2.0', sessionRegistry: fakeSessionRegistry() }),
@@ -80,6 +117,26 @@ describe('Maka ACP agent', () => {
             assert.ok(error instanceof RequestError);
             assert.equal(error.code, -32601);
             assert.deepEqual(error.data, { method: 'session/close' });
+            return true;
+          },
+        );
+      },
+    );
+  });
+
+  test('does not implement session/set_mode', async () => {
+    await client({ name: 'test-client' }).connectWith(
+      createMakaAcpAgent({ version: '0.2.0', sessionRegistry: fakeSessionRegistry() }),
+      async (agent) => {
+        await assert.rejects(
+          agent.request(methods.agent.session.setMode, {
+            sessionId: 'session-1',
+            modeId: 'plan',
+          }),
+          (error: unknown) => {
+            assert.ok(error instanceof RequestError);
+            assert.equal(error.code, -32601);
+            assert.deepEqual(error.data, { method: 'session/set_mode' });
             return true;
           },
         );
@@ -100,7 +157,9 @@ describe('Maka ACP agent', () => {
   });
 });
 
-function fakeSessionRegistry(observations: { creates?: unknown[]; lists?: unknown[] } = {}) {
+function fakeSessionRegistry(
+  observations: { creates?: unknown[]; lists?: unknown[]; configurationRequests?: unknown[] } = {},
+) {
   return {
     create: async (params: unknown) => {
       observations.creates?.push(params);
@@ -115,6 +174,24 @@ function fakeSessionRegistry(observations: { creates?: unknown[]; lists?: unknow
             cwd: '/workspace',
             title: 'Session',
             updatedAt: '2026-08-24T00:00:00.000Z',
+          },
+        ],
+      };
+    },
+    setConfigOption: async (params: unknown) => {
+      observations.configurationRequests?.push(params);
+      return {
+        configOptions: [
+          {
+            type: 'select' as const,
+            id: 'collaboration_mode',
+            name: 'Collaboration mode',
+            category: 'mode',
+            currentValue: 'plan',
+            options: [
+              { value: 'agent', name: 'Agent' },
+              { value: 'plan', name: 'Plan' },
+            ],
           },
         ],
       };

@@ -18,16 +18,14 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { type BigIntStats, constants as fsConstants, createReadStream, type Dirent } from 'node:fs';
+import { type BigIntStats, constants as fsConstants } from 'node:fs';
 import {
   access,
   copyFile,
-  link,
   lstat,
   mkdir,
   open,
   readFile,
-  readdir,
   realpath,
   rm,
   stat,
@@ -53,15 +51,8 @@ import {
   type DeepResearchArtifactRole,
 } from '@maka/core/deep-research-run';
 import { sniffAttachmentMimeType } from '@maka/core/attachments';
-import { publishMarkerFile, readBoundedMarkerFile } from './marker-file.js';
-import {
-  ARTIFACT_PUBLICATION_STAGING_PATTERN,
-  ARTIFACT_PURGE_INTENT_FILE,
-  isArtifactPurgeRecoveryTempName,
-} from './artifact-storage-layout.js';
 import {
   isSafeRelativeArtifactPath,
-  validateCanonicalArtifactTargetName,
   validateRelativeArtifactPath,
 } from './artifact-metadata-codec.js';
 import {
@@ -70,40 +61,17 @@ import {
 } from './artifact-writer-lock.js';
 import type { ArtifactWriterLockAuthority } from './root-authority.js';
 import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
-import type {
-  ArtifactMetadataChanges,
-  ArtifactMetadataRepository,
-} from './artifact-metadata-repository.js';
-import { createSqliteArtifactMetadataRepository } from './sqlite-artifact-metadata.js';
+import {
+  createSqliteArtifactMetadataRepository,
+  type ArtifactMetadataChanges,
+} from './sqlite-artifact-metadata.js';
 
 export { isSafeRelativeArtifactPath } from './artifact-metadata-codec.js';
 
 export const ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES = 10 * 1024 * 1024;
 export const ARTIFACT_BINARY_PREVIEW_LIMIT_BYTES = 50 * 1024 * 1024;
 
-const PURGE_INTENT_SCHEMA_VERSION = 1 as const;
-
-const MAX_PURGE_INTENT_BYTES = 64 * 1024 * 1024;
 const ARTIFACT_PURGE_RESOLVE_CONCURRENCY = 8;
-/**
- * The source of the artifacts the retired capture sink wrote. The value stays
- * a valid source so the records still decode; nothing produces new ones.
- */
-const RETIRED_CAPTURE_ARTIFACT_SOURCE: ArtifactSource = 'provider_request_capture';
-
-/**
- * A record on its way off disk, which no copy may carry anywhere.
- *
- * Copying one would hand the target Session bytes already condemned, and would
- * put records back after the sweep finished and stopped looking. Leaving them
- * out also keeps the two from racing: the sweep can no longer delete a record a
- * copy is holding. That property belongs to the copy, not to one of its three
- * selection passes, so every pass asks the same question here.
- */
-function isRetiredCapture(record: ArtifactRecord): boolean {
-  return record.source === RETIRED_CAPTURE_ARTIFACT_SOURCE;
-}
-
 interface ArtifactSessionSnapshot {
   readonly records: readonly ArtifactRecord[];
   readonly revision: ArtifactListRevision;
@@ -111,7 +79,7 @@ interface ArtifactSessionSnapshot {
 
 type ArtifactReadFailure = {
   readonly ok: false;
-  readonly reason: 'not_found' | 'too_large' | 'read_failed' | 'not_allowed' | 'deleted';
+  readonly reason: 'not_found' | 'too_large' | 'read_failed' | 'not_allowed';
 };
 
 interface PreparedArtifactRead {
@@ -128,14 +96,6 @@ interface ArtifactRemovalEntry {
 
 type ArtifactRecordDraft = Omit<ArtifactRecord, 'sizeBytes'>;
 
-interface RecoverableOrphan {
-  readonly canonicalPath: string;
-  readonly dev: number;
-  readonly ino: number;
-  readonly size: number;
-  readonly digest: string;
-}
-
 export interface CreateArtifactInput {
   sessionId: string;
   turnId: string;
@@ -143,7 +103,7 @@ export interface CreateArtifactInput {
   kind: ArtifactKind;
   content: string | Uint8Array;
   mimeType?: string;
-  source?: ArtifactSource;
+  source: ArtifactSource;
   summary?: string;
   deepResearchRole?: DeepResearchArtifactRole;
   now?: number;
@@ -198,16 +158,6 @@ export interface ConversationArtifactCopyResult {
   readonly relativePaths: ReadonlyMap<string, string>;
 }
 
-export interface ArtifactStoreReader {
-  list(sessionId: string, opts?: { includeDeleted?: boolean }): Promise<ArtifactRecord[]>;
-  get(artifactId: string): Promise<ArtifactRecord | null>;
-  readText(
-    artifactId: string,
-    opts?: { maxBytes?: number; includeDeleted?: boolean },
-  ): Promise<ArtifactTextReadResult>;
-  readBinary(artifactId: string, opts?: { maxBytes?: number }): Promise<ArtifactBinaryReadResult>;
-}
-
 export type DurableArtifactBinaryReadResult =
   | ArtifactBinaryReadResult
   | { ok: false; reason: 'session_mismatch' };
@@ -220,25 +170,35 @@ export interface DurableArtifactAttachmentReader {
   }): Promise<DurableArtifactBinaryReadResult>;
 }
 
-export interface ArtifactStore extends ArtifactStoreReader, DurableArtifactAttachmentReader {
-  create(input: CreateArtifactInput): Promise<ArtifactRecord>;
-  delete(artifactId: string): Promise<void>;
-  purge(artifactIds: readonly string[]): Promise<void>;
-  close?(): void;
+export type ArtifactUserDeleteResult =
+  | { readonly kind: 'deleted' }
+  | { readonly kind: 'protected' }
+  | { readonly kind: 'not_found' };
+
+export interface ArtifactUpgradeCleanupInput {
+  readonly after?: string;
+  readonly maxPaths: number;
 }
 
-export type ArtifactUserDeleteResult =
-  | { readonly kind: 'deleted'; readonly record: ArtifactRecord }
-  | { readonly kind: 'not_found' }
-  | { readonly kind: 'protected' };
+export interface ArtifactUpgradeCleanupResult {
+  readonly nextAfter: string | null;
+  readonly processedPaths: number;
+  readonly failedPaths: number;
+}
 
-export interface ArtifactAuthorityStore extends ArtifactStore {
+export interface ArtifactAuthorityStore extends DurableArtifactAttachmentReader {
+  create(input: CreateArtifactInput): Promise<ArtifactRecord>;
+  close(): void;
   copyConversationArtifacts(
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;
   purgeSessionArtifacts(sessionId: string): Promise<void>;
-  /** Drops up to `limit` retired prepared-request captures; reports what remains. */
-  purgeRetiredCaptures(limit: number): Promise<{ purged: number; remaining: number }>;
+  reclaimUpgradeResidue(input: ArtifactUpgradeCleanupInput): Promise<ArtifactUpgradeCleanupResult>;
+  deleteOwnedArtifactInSession(
+    sessionId: string,
+    artifactId: string,
+    source: ArtifactSource,
+  ): Promise<void>;
   deleteUserArtifactInSession(
     sessionId: string,
     artifactId: string,
@@ -268,18 +228,7 @@ export interface ArtifactAuthorityStore extends ArtifactStore {
 
 export interface ArtifactStoreWriteAuthority {
   readonly store: ArtifactAuthorityStore;
-  recover(): Promise<void>;
   close(): void;
-}
-
-export function createSqliteArtifactStore(workspaceRoot: string): ArtifactStore {
-  return new SqliteArtifactStore(
-    workspaceRoot,
-    'self_managed',
-    createSqliteArtifactMetadataRepository(workspaceRoot),
-    undefined,
-    undefined,
-  );
 }
 
 export function createSqliteArtifactStoreWriteAuthority(
@@ -291,39 +240,28 @@ export function createSqliteArtifactStoreWriteAuthority(
 ): ArtifactStoreWriteAuthority {
   const store = new SqliteArtifactStore(
     workspaceRoot,
-    'authority',
     createSqliteArtifactMetadataRepository(workspaceRoot),
     options.assertAuthority,
     options.leaseBoundWriterLockAuthority,
   );
   return Object.freeze({
     store,
-    recover: () => store.recoverForWriteWithAuthority(),
     close: () => store.close(),
   });
 }
 
 class SqliteArtifactStore implements ArtifactAuthorityStore {
   private artifactRoot: string;
-  private purgeIntentPath: string;
   private records: ArtifactRecord[] = [];
-  private metadataReady = false;
-  private recoveryRequired: boolean;
-  private selfManagedRecoveryRequired: boolean;
-  private recoverableOrphans = new Map<string, RecoverableOrphan>();
   private queue: Promise<void> = Promise.resolve();
 
   constructor(
     private workspaceRoot: string,
-    private readonly recoveryMode: 'self_managed' | 'authority',
-    private readonly metadataRepository: ArtifactMetadataRepository,
+    private readonly metadataRepository: ReturnType<typeof createSqliteArtifactMetadataRepository>,
     private readonly assertAuthority?: () => Promise<void>,
     private readonly leaseBoundWriterLockAuthority?: ArtifactWriterLockAuthority,
   ) {
     this.artifactRoot = join(workspaceRoot, 'artifacts');
-    this.purgeIntentPath = join(this.artifactRoot, ARTIFACT_PURGE_INTENT_FILE);
-    this.recoveryRequired = recoveryMode === 'authority';
-    this.selfManagedRecoveryRequired = recoveryMode === 'self_managed';
   }
 
   close(): void {
@@ -337,7 +275,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     });
     const id = acceptedInput.id ?? randomUUID();
     if (!ARTIFACT_KIND_SET.has(acceptedInput.kind)) throw new Error('Invalid Artifact kind');
-    if (acceptedInput.source !== undefined && !ARTIFACT_SOURCE_SET.has(acceptedInput.source)) {
+    if (!ARTIFACT_SOURCE_SET.has(acceptedInput.source)) {
       throw new Error('Invalid Artifact source');
     }
     if (
@@ -358,13 +296,8 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     const name = sanitizeArtifactName(acceptedInput.name);
     const relativePath = `${acceptedInput.sessionId}/${id}-${name}`;
     validateRelativeArtifactPath(relativePath);
-    validateCanonicalArtifactTargetName(basename(relativePath));
     return this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked({
-        kind: 'create',
-        input: acceptedInput,
-        identity: { id, canonicalName: name },
-      });
+      await this.prepareMutationUnlocked();
       const existing = this.records.find((record) => record.id === id);
       if (existing) {
         return this.replayExistingArtifactUnlocked(existing, acceptedInput, {
@@ -373,19 +306,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           relativePath,
         });
       }
-      await this.assertNoCompatiblePublicationStagingUnlocked(acceptedInput, {
-        id,
-        canonicalName: name,
-      });
-      const adopted = await this.adoptRecoverableOrphanUnlocked(acceptedInput, {
-        id,
-        canonicalName: name,
-      });
-      if (adopted) return adopted;
-      await this.assertNoCompatiblePayloadExistsUnlocked(acceptedInput, {
-        id,
-        canonicalName: name,
-      });
       return this.publishNewArtifactUnlocked(
         {
           id,
@@ -396,14 +316,13 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           kind: acceptedInput.kind,
           relativePath,
           ...(acceptedInput.mimeType ? { mimeType: acceptedInput.mimeType } : {}),
-          ...(acceptedInput.source ? { source: acceptedInput.source } : {}),
+          source: acceptedInput.source,
           ...(acceptedInput.summary ? { summary: acceptedInput.summary } : {}),
           ...(acceptedInput.deepResearchRole
             ? { deepResearchRole: acceptedInput.deepResearchRole }
             : {}),
-          status: 'live',
         },
-        (tempPath) => writeFile(tempPath, acceptedInput.content, { flag: 'wx' }),
+        (targetPath) => writeFile(targetPath, acceptedInput.content, { flag: 'wx' }),
       );
     });
   }
@@ -441,18 +360,13 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           (record) =>
             record.sessionId === input.sourceSessionId &&
             turnIds.has(record.turnId) &&
-            !excludedArtifactIds.has(record.id) &&
-            !isRetiredCapture(record),
+            !excludedArtifactIds.has(record.id),
         )
         .map((record) => ({ ...record }));
       for (const [sessionId, artifactIds] of requestedLinkedArtifactIds) {
         for (const artifactId of artifactIds) {
           const record = this.records.find(
-            (candidate) =>
-              candidate.sessionId === sessionId &&
-              candidate.id === artifactId &&
-              candidate.status !== 'deleted' &&
-              !isRetiredCapture(candidate),
+            (candidate) => candidate.sessionId === sessionId && candidate.id === artifactId,
           );
           // A linked child result names every Artifact its turn held, and the
           // ledger naming them cannot be rewritten. One that is no longer
@@ -468,8 +382,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           record.sessionId === input.sourceSessionId &&
           includedArtifactIds.has(record.id) &&
           !excludedArtifactIds.has(record.id) &&
-          !selectedIds.has(record.id) &&
-          !isRetiredCapture(record)
+          !selectedIds.has(record.id)
         ) {
           selected.push({ ...record });
           selectedIds.add(record.id);
@@ -486,9 +399,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         input.targetSessionId,
         record.id,
       );
-      const prepared = await this.enqueue(() =>
-        this.prepareRecordRead(record, record.sizeBytes, true),
-      );
+      const prepared = await this.enqueue(() => this.prepareRecordRead(record, record.sizeBytes));
       if (!prepared.ok) {
         throw new Error(`Artifact ${record.id} could not be copied: ${prepared.reason}`);
       }
@@ -511,27 +422,13 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     const source = prepared.record;
     const name = sanitizeArtifactName(source.name);
     const relativePath = `${targetSessionId}/${targetId}-${name}`;
-    const publicationInput = { sessionId: targetSessionId, name };
     assertCanonicalArtifactEntityId(targetId, 'id');
     validateRelativeArtifactPath(relativePath);
-    validateCanonicalArtifactTargetName(basename(relativePath));
     return this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked({
-        kind: 'copy',
-        input: publicationInput,
-        identity: { id: targetId, canonicalName: name },
-      });
+      await this.prepareMutationUnlocked();
       if (this.records.some((record) => record.id === targetId)) {
         throw new Error(`Artifact target already exists: ${targetId}`);
       }
-      await this.assertNoCompatiblePublicationStagingUnlocked(publicationInput, {
-        id: targetId,
-        canonicalName: name,
-      });
-      await this.assertNoCompatiblePayloadExistsUnlocked(publicationInput, {
-        id: targetId,
-        canonicalName: name,
-      });
       return this.publishNewArtifactUnlocked(
         {
           ...source,
@@ -540,7 +437,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           name,
           relativePath,
         },
-        (tempPath) => copyFile(prepared.path, tempPath, fsConstants.COPYFILE_EXCL),
+        (targetPath) => copyFile(prepared.path, targetPath, fsConstants.COPYFILE_EXCL),
         source.sizeBytes,
       );
     });
@@ -548,7 +445,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
 
   private async publishNewArtifactUnlocked(
     draft: ArtifactRecordDraft,
-    writeStaging: (tempPath: string) => Promise<void>,
+    writeTarget: (targetPath: string) => Promise<void>,
     expectedSize?: number,
   ): Promise<ArtifactRecord> {
     const target = join(this.artifactRoot, draft.relativePath);
@@ -558,64 +455,88 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       await syncDirectoryChain(targetDirectory, this.workspaceRoot);
     }
     await assertArtifactDirectory(this.artifactRoot, targetDirectory);
-    const tempPath = join(targetDirectory, publicationStagingName(basename(target)));
-    let preserveStaging = false;
-    let targetLinked = false;
+    await rm(target, { force: true });
     try {
-      await writeStaging(tempPath);
-      await syncFile(tempPath);
+      await writeTarget(target);
+      await syncFile(target);
       await syncDirectory(targetDirectory);
-      const size = await stat(tempPath);
+      const size = await stat(target);
       if (expectedSize !== undefined && size.size !== expectedSize) {
         throw new Error(`Artifact source changed while copying: ${draft.id}`);
       }
       const record: ArtifactRecord = { ...draft, sizeBytes: size.size };
       const nextRecords = [...this.records, record];
-      try {
-        try {
-          await link(tempPath, target);
-          targetLinked = true;
-        } catch (error) {
-          if (isAlreadyExists(error)) {
-            throw new Error(`Artifact target already exists: ${draft.id}`);
-          }
-          throw error;
-        }
-        await syncDirectory(targetDirectory);
-        await this.writeMetadataUnlocked({ upserts: [record] });
-      } catch (error) {
-        if (targetLinked) {
-          try {
-            await removeFileDurably(target, targetDirectory);
-          } catch (cleanupError) {
-            preserveStaging = true;
-            this.invalidateWriterState();
-            throw new AggregateError(
-              [error, cleanupError],
-              `Artifact ${draft.id} metadata publication and payload cleanup both failed`,
-            );
-          }
-        }
-        throw error;
-      }
+      await this.writeMetadataUnlocked({ upserts: [record] });
       this.records = nextRecords;
       return { ...record };
-    } finally {
-      if (!preserveStaging) {
-        try {
-          await removeFileDurably(tempPath, targetDirectory);
-        } catch (error) {
-          this.invalidateWriterState();
-          throw error;
-        }
-      }
+    } catch (error) {
+      await removeFileDurably(target, targetDirectory).catch(() => undefined);
+      throw error;
     }
   }
 
   async purgeSessionArtifacts(sessionId: string): Promise<void> {
     assertCanonicalArtifactEntityId(sessionId, 'sessionId');
-    const records = await this.list(sessionId, { includeDeleted: true });
-    if (records.length > 0) await this.purge(records.map((record) => record.id));
+    await this.enqueueMutation(async () => {
+      await this.prepareMutationUnlocked();
+      await this.purgeRecordsUnlocked(
+        this.records.filter((record) => record.sessionId === sessionId),
+      );
+    });
+  }
+
+  /**
+   * Deletes the files the v1 upgrade recorded as no longer named by any record.
+   *
+   * A path some record has since claimed keeps its bytes. A note is discharged
+   * once its file is gone, and a file that will not go keeps only its own note
+   * rather than holding up the ones behind it.
+   */
+  async reclaimUpgradeResidue(
+    input: ArtifactUpgradeCleanupInput,
+  ): Promise<ArtifactUpgradeCleanupResult> {
+    if (!Number.isSafeInteger(input.maxPaths) || input.maxPaths < 1 || input.maxPaths > 1024) {
+      throw new TypeError('Artifact cleanup path limit must be between 1 and 1024');
+    }
+    const after = input.after ?? '';
+    const maxPaths = input.maxPaths;
+    return this.enqueueMutation(async () => {
+      const recorded = this.metadataRepository.readUpgradeOrphanPaths(after, maxPaths + 1);
+      const selected = recorded.slice(0, maxPaths);
+      const directories = new Set<string>();
+      const discharged: string[] = [];
+      let failedPaths = 0;
+      try {
+        for (const relativePath of selected) {
+          if (
+            this.metadataRepository.hasRelativePath(relativePath) ||
+            !isSafeRelativeArtifactPath(relativePath)
+          ) {
+            discharged.push(relativePath);
+            continue;
+          }
+          const target = join(this.artifactRoot, relativePath);
+          try {
+            await unlink(target);
+            directories.add(dirname(target));
+          } catch (error) {
+            if (!isNotFound(error)) {
+              failedPaths += 1;
+              continue;
+            }
+          }
+          discharged.push(relativePath);
+        }
+      } finally {
+        for (const directory of directories) await syncDirectory(directory);
+      }
+      if (discharged.length > 0) this.metadataRepository.forgetUpgradeOrphanPaths(discharged);
+      return {
+        nextAfter: recorded.length > selected.length ? selected.at(-1)! : null,
+        processedPaths: selected.length,
+        failedPaths,
+      };
+    });
   }
 
   private async replayExistingArtifactUnlocked(
@@ -659,51 +580,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       throw artifactReplayConflict(canonical.id);
     }
 
-    if (existing.status === 'live') return { ...existing };
-    const revived: ArtifactRecord = { ...existing, status: 'live' };
-    const nextRecords = this.records.map((record) =>
-      record.id === canonical.id ? revived : record,
-    );
-    await this.writeMetadataUnlocked({ upserts: [revived] });
-    this.records = nextRecords;
-    return { ...revived };
-  }
-
-  recoverForWriteWithAuthority(): Promise<void> {
-    return this.enqueueMutation(async () => {
-      this.recoveryRequired = true;
-      this.recoverableOrphans.clear();
-      await this.prepareRecoveryUnlocked();
-      this.recoverableOrphans = await this.findRecoverableOrphansUnlocked();
-      this.recoveryRequired = false;
-    });
-  }
-
-  async list(
-    sessionId: string,
-    opts: { includeDeleted?: boolean } = {},
-  ): Promise<ArtifactRecord[]> {
-    const includeDeleted = opts.includeDeleted ?? false;
-    return this.enqueue(async () => {
-      await this.load();
-      return (
-        this.records
-          .filter((record) => record.sessionId === sessionId)
-          .filter((record) => includeDeleted || record.status !== 'deleted')
-          // Secondary `id` sort for determinism when fixture artifacts share
-          // a frozen createdAt (PR108k-yj e2e-fixture determinism).
-          .sort(compareArtifactRecords)
-          .map((record) => ({ ...record }))
-      );
-    });
-  }
-
-  async get(artifactId: string): Promise<ArtifactRecord | null> {
-    return this.enqueue(async () => {
-      await this.load();
-      const record = this.records.find((item) => item.id === artifactId);
-      return record ? { ...record } : null;
-    });
+    return { ...existing };
   }
 
   async listPage(
@@ -731,7 +608,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       await this.load();
       const snapshot = this.sessionSnapshot(sessionId);
       return snapshot.records
-        .filter((record) => record.turnId === turnId && record.status !== 'deleted')
+        .filter((record) => record.turnId === turnId)
         .map((record) => ({ ...record }));
     });
   }
@@ -746,30 +623,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         record: record ? { ...record } : null,
       };
     });
-  }
-
-  async readText(
-    artifactId: string,
-    opts: { maxBytes?: number; includeDeleted?: boolean } = {},
-  ): Promise<ArtifactTextReadResult> {
-    const prepared = await this.prepareRead(
-      artifactId,
-      opts.maxBytes ?? ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES,
-      opts.includeDeleted ?? false,
-    );
-    return this.readPreparedText(prepared);
-  }
-
-  async readBinary(
-    artifactId: string,
-    opts: { maxBytes?: number } = {},
-  ): Promise<ArtifactBinaryReadResult> {
-    const prepared = await this.prepareRead(
-      artifactId,
-      opts.maxBytes ?? ARTIFACT_BINARY_PREVIEW_LIMIT_BYTES,
-      false,
-    );
-    return this.readPreparedBinary(prepared);
   }
 
   readTextInSession(
@@ -840,7 +693,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       const prepared = await this.prepareRecordRead(
         record,
         input.maxBytes ?? ARTIFACT_BINARY_PREVIEW_LIMIT_BYTES,
-        false,
       );
       return this.readPreparedBinary(prepared);
     });
@@ -865,19 +717,19 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     return { ok: true, base64: read.bytes.toString('base64'), mimeType };
   }
 
-  async delete(artifactId: string): Promise<void> {
-    await this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked({ kind: 'delete' });
-      const existing = this.records.find(
-        (record) => record.id === artifactId && record.status !== 'deleted',
-      );
-      if (!existing) return;
-      const tombstone: ArtifactRecord = { ...existing, status: 'deleted' };
-      const nextRecords: ArtifactRecord[] = this.records.map((record) =>
-        record.id === artifactId ? tombstone : record,
-      );
-      await this.writeMetadataUnlocked({ upserts: [tombstone] });
-      this.records = nextRecords;
+  deleteOwnedArtifactInSession(
+    sessionId: string,
+    artifactId: string,
+    source: ArtifactSource,
+  ): Promise<void> {
+    return this.enqueueMutation(async () => {
+      await this.prepareMutationUnlocked();
+      const snapshot = this.sessionSnapshot(sessionId);
+      const existing = snapshot.records.find((record) => record.id === artifactId);
+      if (!existing || existing.source !== source) {
+        throw new Error('Artifact does not belong to the expected Session authority');
+      }
+      await this.purgeRecordsUnlocked([existing]);
     });
   }
 
@@ -886,68 +738,21 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     artifactId: string,
   ): Promise<ArtifactUserDeleteResult> {
     return this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked({ kind: 'delete' });
+      await this.prepareMutationUnlocked();
       const snapshot = this.sessionSnapshot(sessionId);
       const existing = snapshot.records.find((record) => record.id === artifactId);
       if (!existing) return { kind: 'not_found' };
       if (!canUserDeleteArtifact(existing)) return { kind: 'protected' };
-      if (existing.status === 'deleted') {
-        return { kind: 'deleted', record: { ...existing } };
-      }
-      const tombstone: ArtifactRecord = { ...existing, status: 'deleted' };
-      const nextRecords = this.records.map((record) =>
-        record.id === existing.id ? tombstone : record,
-      );
-      await this.writeMetadataUnlocked({ upserts: [tombstone] });
-      this.records = nextRecords;
-      return { kind: 'deleted', record: { ...tombstone } };
+      await this.purgeRecordsUnlocked([existing]);
+      return { kind: 'deleted' };
     });
-  }
-
-  async purge(artifactIds: readonly string[]): Promise<void> {
-    const acceptedArtifactIds = Object.freeze([...artifactIds]);
-    await this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked({ kind: 'purge' });
-      const ids = new Set(acceptedArtifactIds);
-      await this.purgeRecordsUnlocked(this.records.filter((record) => ids.has(record.id)));
-    });
-  }
-
-  /**
-   * Drops a bounded batch of the prepared-request captures left behind by the
-   * retired capture sink, and reports what is still there.
-   *
-   * These are not the user's to clean up: they never appear in the UI, and the
-   * only thing that ever reclaimed one was purging its whole conversation. The
-   * store made them, so the store disposes of them.
-   *
-   * Bounded so a large residue cannot monopolise the mutation queue, and safe
-   * to stop at any point: purge publishes its intent before touching a file,
-   * and the next call reads whatever is left.
-   */
-  async purgeRetiredCaptures(limit: number): Promise<{ purged: number; remaining: number }> {
-    let outcome = { purged: 0, remaining: 0 };
-    await this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked({ kind: 'purge' });
-      const retired = this.records.filter(isRetiredCapture);
-      const batch = retired.slice(0, limit);
-      await this.purgeRecordsUnlocked(batch);
-      outcome = { purged: batch.length, remaining: retired.length - batch.length };
-    });
-    return outcome;
   }
 
   private async purgeRecordsUnlocked(records: readonly ArtifactRecord[]): Promise<void> {
     if (records.length === 0) return;
     const ids = new Set(records.map((record) => record.id));
     const paths = await this.preparePurgePathsUnlocked(records);
-    try {
-      await this.publishPurgeIntentUnlocked([...ids]);
-      await this.completePurgeUnlocked(ids, paths);
-    } catch (error) {
-      this.invalidateWriterState();
-      throw error;
-    }
+    await this.completePurgeUnlocked(ids, paths);
   }
 
   private async preparePurgePathsUnlocked(
@@ -1037,6 +842,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     ids: ReadonlySet<string>,
     paths: readonly string[],
   ): Promise<void> {
+    const nextRecords = this.records.filter((record) => !ids.has(record.id));
     const changedDirectories = new Set<string>();
     try {
       for (const path of paths) {
@@ -1046,20 +852,10 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     } finally {
       for (const directory of changedDirectories) await syncDirectory(directory);
     }
-    const nextRecords = this.records.filter((record) => !ids.has(record.id));
+    // Keep the paths discoverable until physical cleanup is durable. Session
+    // retirement already owns the pending cleanup intent and retries on reopen.
     await this.writeMetadataUnlocked({ deleteIds: [...ids] });
     this.records = nextRecords;
-    await this.removePurgeIntentUnlocked();
-  }
-
-  private async prepareRead(
-    artifactId: string,
-    maxBytes: number,
-    includeDeleted = false,
-  ): Promise<PreparedArtifactRead | ArtifactReadFailure> {
-    const record = await this.get(artifactId);
-    if (!record) return { ok: false, reason: 'not_found' };
-    return this.prepareRecordRead(record, maxBytes, includeDeleted);
   }
 
   private async prepareReadInSessionUnlocked(
@@ -1071,15 +867,13 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     const snapshot = this.sessionSnapshot(sessionId);
     const record = snapshot.records.find((candidate) => candidate.id === artifactId);
     if (!record) return { ok: false, reason: 'not_found' };
-    return this.prepareRecordRead(record, maxBytes, false);
+    return this.prepareRecordRead(record, maxBytes);
   }
 
   private async prepareRecordRead(
     record: ArtifactRecord,
     maxBytes: number,
-    includeDeleted: boolean,
   ): Promise<PreparedArtifactRead | ArtifactReadFailure> {
-    if (record.status === 'deleted' && !includeDeleted) return { ok: false, reason: 'deleted' };
     const resolved = await resolveArtifactPath({
       artifactRoot: this.artifactRoot,
       relativePath: record.relativePath,
@@ -1089,330 +883,26 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async load(): Promise<void> {
-    await this.metadataRepository.ready();
-    this.metadataReady = true;
     this.records = this.metadataRepository.readAll();
   }
 
   private async writeMetadataUnlocked(changes: ArtifactMetadataChanges): Promise<void> {
-    await this.metadataRepository.ready();
-    this.metadataReady = true;
     this.metadataRepository.applyChanges(changes);
   }
 
-  private async prepareMutationUnlocked(
-    purpose:
-      | {
-          readonly kind: 'create';
-          readonly input: CreateArtifactInput;
-          readonly identity: { readonly id: string; readonly canonicalName: string };
-        }
-      | {
-          readonly kind: 'copy';
-          readonly input: Pick<CreateArtifactInput, 'sessionId' | 'name'>;
-          readonly identity: { readonly id: string; readonly canonicalName: string };
-        }
-      | { readonly kind: 'delete' | 'purge' },
-  ): Promise<void> {
-    if (this.recoveryMode === 'self_managed') {
-      this.recoverableOrphans.clear();
-      if (this.selfManagedRecoveryRequired) {
-        await this.prepareRecoveryUnlocked();
-        this.selfManagedRecoveryRequired = false;
-      } else {
-        await this.reloadForMutationUnlocked();
-        await this.recoverPurgeIntentUnlocked();
-      }
-      if (purpose.kind === 'create' || purpose.kind === 'copy') {
-        await this.recoverCompatiblePublicationsUnlocked(purpose.input, purpose.identity);
-      }
-      if (purpose.kind === 'create') {
-        this.recoverableOrphans = await this.findCompatibleRecoverableOrphansUnlocked(
-          purpose.input,
-          purpose.identity,
-        );
-      }
-      return;
-    }
+  private async prepareMutationUnlocked(): Promise<void> {
     await this.reloadForMutationUnlocked();
-    if (this.recoveryRequired) throw artifactWriteRecoveryRequired();
-    if (!(await this.hasCanonicalRecoveryResidueUnlocked())) return;
-    this.recoveryRequired = true;
-    throw artifactWriteRecoveryRequired();
   }
 
   private async reloadForMutationUnlocked(): Promise<void> {
-    await this.metadataRepository.ready();
-    this.metadataReady = true;
     this.records = this.metadataRepository.readAll();
-  }
-
-  private async hasCanonicalRecoveryResidueUnlocked(): Promise<boolean> {
-    try {
-      await lstat(this.purgeIntentPath);
-      return true;
-    } catch (error) {
-      if (!isNotFound(error)) throw error;
-    }
-
-    let sessionEntries: Dirent[];
-    try {
-      sessionEntries = await readdir(this.artifactRoot, { withFileTypes: true });
-    } catch (error) {
-      if (isNotFound(error)) return false;
-      throw error;
-    }
-    if (sessionEntries.some((entry) => isArtifactPurgeRecoveryTempName(entry.name))) {
-      return true;
-    }
-    for (const sessionEntry of sessionEntries) {
-      if (!sessionEntry.isDirectory()) continue;
-      const entries = await readdir(join(this.artifactRoot, sessionEntry.name), {
-        withFileTypes: true,
-      });
-      if (entries.some((entry) => ARTIFACT_PUBLICATION_STAGING_PATTERN.test(entry.name))) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private async prepareRecoveryUnlocked(): Promise<void> {
-    await this.reloadForMutationUnlocked();
-    try {
-      await syncDirectory(this.artifactRoot);
-    } catch (error) {
-      if (!isNotFound(error)) throw error;
-    }
-    await this.recoverMetadataTempsUnlocked();
-    await this.recoverPublicationsUnlocked();
-    await this.recoverPurgeIntentUnlocked();
-  }
-
-  private async adoptRecoverableOrphanUnlocked(
-    input: CreateArtifactInput,
-    identity: { id: string; canonicalName: string },
-  ): Promise<ArtifactRecord | null> {
-    const names = [identity.canonicalName];
-    const candidates = names
-      .map((name) => ({
-        name,
-        relativePath: `${input.sessionId}/${identity.id}-${name}`,
-      }))
-      .map((candidate) => ({
-        ...candidate,
-        fingerprint: this.recoverableOrphans.get(filesystemPathKey(candidate.relativePath)),
-      }))
-      .filter(
-        (
-          candidate,
-        ): candidate is typeof candidate & {
-          readonly fingerprint: RecoverableOrphan;
-        } => candidate.fingerprint !== undefined,
-      );
-    if (candidates.length === 0) return null;
-    if (candidates.length !== 1) throw artifactReplayConflict(identity.id);
-
-    const candidate = candidates[0]!;
-    const resolved = await resolveArtifactPath({
-      artifactRoot: this.artifactRoot,
-      relativePath: candidate.relativePath,
-    });
-    if (!resolved.ok) throw artifactReplayConflict(identity.id);
-    const expectedBytes = Buffer.from(input.content);
-    const payloadStat = await lstat(resolved.path).catch(() => null);
-    const expectedDigest = sha256(expectedBytes);
-    if (
-      !payloadStat?.isFile() ||
-      payloadStat.isSymbolicLink() ||
-      payloadStat.size !== expectedBytes.byteLength ||
-      candidate.fingerprint.canonicalPath !== resolved.path ||
-      candidate.fingerprint.dev !== payloadStat.dev ||
-      candidate.fingerprint.ino !== payloadStat.ino ||
-      candidate.fingerprint.size !== payloadStat.size ||
-      candidate.fingerprint.digest !== expectedDigest ||
-      (await digestFile(resolved.path)) !== expectedDigest
-    ) {
-      throw artifactReplayConflict(identity.id);
-    }
-
-    const record: ArtifactRecord = {
-      id: identity.id,
-      sessionId: input.sessionId,
-      turnId: input.turnId,
-      createdAt: input.now ?? Date.now(),
-      name: candidate.name,
-      kind: input.kind,
-      relativePath: candidate.relativePath,
-      sizeBytes: payloadStat.size,
-      ...(input.mimeType ? { mimeType: input.mimeType } : {}),
-      ...(input.source ? { source: input.source } : {}),
-      ...(input.summary ? { summary: input.summary } : {}),
-      ...(input.deepResearchRole ? { deepResearchRole: input.deepResearchRole } : {}),
-      status: 'live',
-    };
-    const nextRecords = [...this.records, record];
-    await this.writeMetadataUnlocked({ upserts: [record] });
-    this.records = nextRecords;
-    this.recoverableOrphans.delete(filesystemPathKey(candidate.relativePath));
-    return { ...record };
-  }
-
-  private async findRecoverableOrphansUnlocked(): Promise<Map<string, RecoverableOrphan>> {
-    const orphans = new Map<string, RecoverableOrphan>();
-    const referencedPaths = new Set(
-      this.records.map((record) => filesystemPathKey(record.relativePath)),
-    );
-    let sessionEntries: Dirent[];
-    try {
-      sessionEntries = await readdir(this.artifactRoot, { withFileTypes: true });
-    } catch (error) {
-      if (isNotFound(error)) return orphans;
-      throw error;
-    }
-    for (const sessionEntry of sessionEntries) {
-      if (!sessionEntry.isDirectory() || !isCanonicalArtifactEntityId(sessionEntry.name)) continue;
-      const sessionDirectory = join(this.artifactRoot, sessionEntry.name);
-      await assertArtifactDirectory(this.artifactRoot, sessionDirectory);
-      for (const entry of await readdir(sessionDirectory, { withFileTypes: true })) {
-        if (!entry.isFile() || ARTIFACT_PUBLICATION_STAGING_PATTERN.test(entry.name)) continue;
-        const relativePath = `${sessionEntry.name}/${entry.name}`;
-        if (referencedPaths.has(filesystemPathKey(relativePath))) continue;
-        const path = join(sessionDirectory, entry.name);
-        const [canonicalPath, pathStat] = await Promise.all([realpath(path), lstat(path)]);
-        if (!pathStat.isFile() || pathStat.isSymbolicLink()) {
-          throw new Error(
-            `Artifact orphan changed while recovery was inspecting it: ${relativePath}`,
-          );
-        }
-        orphans.set(filesystemPathKey(relativePath), {
-          canonicalPath,
-          dev: pathStat.dev,
-          ino: pathStat.ino,
-          size: pathStat.size,
-          digest: await digestFile(path),
-        });
-      }
-    }
-    return orphans;
-  }
-
-  private async findCompatibleRecoverableOrphansUnlocked(
-    input: CreateArtifactInput,
-    identity: { id: string; canonicalName: string },
-  ): Promise<Map<string, RecoverableOrphan>> {
-    const orphans = new Map<string, RecoverableOrphan>();
-    const sessionDirectory = join(this.artifactRoot, input.sessionId);
-    try {
-      await assertArtifactDirectory(this.artifactRoot, sessionDirectory);
-    } catch (error) {
-      if (isNotFound(error)) return orphans;
-      throw error;
-    }
-    const referencedPaths = new Set(
-      this.records.map((record) => filesystemPathKey(record.relativePath)),
-    );
-    for (const name of [identity.canonicalName]) {
-      const relativePath = `${input.sessionId}/${identity.id}-${name}`;
-      if (referencedPaths.has(filesystemPathKey(relativePath))) continue;
-      const path = join(this.artifactRoot, relativePath);
-      let pathStat;
-      try {
-        pathStat = await lstat(path);
-      } catch (error) {
-        if (isNotFound(error)) continue;
-        throw error;
-      }
-      if (!pathStat.isFile() || pathStat.isSymbolicLink()) continue;
-      orphans.set(filesystemPathKey(relativePath), {
-        canonicalPath: await realpath(path),
-        dev: pathStat.dev,
-        ino: pathStat.ino,
-        size: pathStat.size,
-        digest: await digestFile(path),
-      });
-    }
-    return orphans;
-  }
-
-  private async recoverCompatiblePublicationsUnlocked(
-    input: Pick<CreateArtifactInput, 'sessionId' | 'name'>,
-    identity: { id: string; canonicalName: string },
-  ): Promise<void> {
-    const sessionDirectory = join(this.artifactRoot, input.sessionId);
-    const targetHashes = new Set(
-      [identity.canonicalName].map((name) => artifactTargetHash(`${identity.id}-${name}`)),
-    );
-    let entries: Dirent[];
-    try {
-      entries = await readdir(sessionDirectory, { withFileTypes: true });
-    } catch (error) {
-      if (isNotFound(error)) return;
-      throw error;
-    }
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-      const match = ARTIFACT_PUBLICATION_STAGING_PATTERN.exec(entry.name);
-      if (!match || !targetHashes.has(match[1]!)) continue;
-      await this.recoverPublicationUnlocked({
-        sessionId: input.sessionId,
-        sessionDirectory,
-        stagingName: entry.name,
-        targetHash: match[1]!,
-      });
-    }
-  }
-
-  private async assertNoCompatiblePayloadExistsUnlocked(
-    input: Pick<CreateArtifactInput, 'sessionId' | 'name'>,
-    identity: { id: string; canonicalName: string },
-  ): Promise<void> {
-    const names = new Set([identity.canonicalName]);
-    for (const name of names) {
-      const path = join(this.artifactRoot, input.sessionId, `${identity.id}-${name}`);
-      try {
-        await lstat(path);
-        throw new Error(`Artifact target already exists: ${identity.id}`);
-      } catch (error) {
-        if (!isNotFound(error)) throw error;
-      }
-    }
-  }
-
-  private async assertNoCompatiblePublicationStagingUnlocked(
-    input: Pick<CreateArtifactInput, 'sessionId' | 'name'>,
-    identity: { id: string; canonicalName: string },
-  ): Promise<void> {
-    const targetHashes = new Set(
-      [identity.canonicalName].map((name) => artifactTargetHash(`${identity.id}-${name}`)),
-    );
-    let entries: Dirent[];
-    try {
-      entries = await readdir(join(this.artifactRoot, input.sessionId), { withFileTypes: true });
-    } catch (error) {
-      if (isNotFound(error)) return;
-      throw error;
-    }
-    for (const entry of entries) {
-      const match = ARTIFACT_PUBLICATION_STAGING_PATTERN.exec(entry.name);
-      if (match && targetHashes.has(match[1]!)) {
-        throw new Error(`Artifact target already exists: ${identity.id}`);
-      }
-    }
-  }
-
-  private invalidateWriterState(): void {
-    if (this.recoveryMode === 'authority') this.recoveryRequired = true;
-    else this.selfManagedRecoveryRequired = true;
   }
 
   private bindMutationRoot(canonicalRoot: string): void {
     if (this.workspaceRoot === canonicalRoot) return;
     this.workspaceRoot = canonicalRoot;
     this.artifactRoot = join(canonicalRoot, 'artifacts');
-    this.purgeIntentPath = join(this.artifactRoot, ARTIFACT_PURGE_INTENT_FILE);
     this.records = [];
-    this.recoverableOrphans.clear();
-    if (this.recoveryMode === 'self_managed') this.selfManagedRecoveryRequired = true;
   }
 
   /**
@@ -1431,177 +921,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     return { records, revision: artifactListRevision(records) };
   }
 
-  private async publishPurgeIntentUnlocked(artifactIds: readonly string[]): Promise<void> {
-    const contents = JSON.stringify({
-      schemaVersion: PURGE_INTENT_SCHEMA_VERSION,
-      artifactIds,
-    });
-    const result = await publishMarkerFile({
-      root: this.artifactRoot,
-      markerFile: ARTIFACT_PURGE_INTENT_FILE,
-      contents,
-      maxBytes: MAX_PURGE_INTENT_BYTES,
-      publication: 'create',
-      invalidFile: invalidPurgeIntent,
-    });
-    if (result === 'already_exists') {
-      throw new Error('Artifact purge intent already exists');
-    }
-  }
-
-  private async recoverPurgeIntentUnlocked(): Promise<void> {
-    let contents: string;
-    try {
-      contents = await readBoundedMarkerFile({
-        path: this.purgeIntentPath,
-        maxBytes: MAX_PURGE_INTENT_BYTES,
-        invalidFile: invalidPurgeIntent,
-      });
-    } catch (error) {
-      if (isNotFound(error)) return;
-      throw error;
-    }
-    const intent = parsePurgeIntent(contents);
-    const ids = new Set(intent.artifactIds);
-    const records = this.records.filter((record) => ids.has(record.id));
-    if (records.length === 0) {
-      await this.removePurgeIntentUnlocked();
-      return;
-    }
-    if (records.length !== intent.artifactIds.length) {
-      throw invalidPurgeIntent();
-    }
-    const paths = await this.preparePurgePathsUnlocked(records);
-    await this.completePurgeUnlocked(ids, paths);
-  }
-
-  private async removePurgeIntentUnlocked(): Promise<void> {
-    try {
-      await unlink(this.purgeIntentPath);
-      await syncDirectory(this.artifactRoot);
-    } catch (error) {
-      if (!isNotFound(error)) throw error;
-    }
-  }
-
-  private async recoverMetadataTempsUnlocked(): Promise<void> {
-    let entries: Dirent[];
-    try {
-      entries = await readdir(this.artifactRoot, { withFileTypes: true });
-    } catch (error) {
-      if (isNotFound(error)) return;
-      throw error;
-    }
-    for (const entry of entries) {
-      if (!isArtifactPurgeRecoveryTempName(entry.name)) continue;
-      if (!entry.isFile()) {
-        throw new Error(`Artifact recovery temp is not a regular file: ${entry.name}`);
-      }
-      await removeFileDurably(join(this.artifactRoot, entry.name), this.artifactRoot);
-    }
-  }
-
-  private async recoverPublicationsUnlocked(): Promise<void> {
-    let sessionEntries: Dirent[];
-    try {
-      sessionEntries = await readdir(this.artifactRoot, { withFileTypes: true });
-    } catch (error) {
-      if (isNotFound(error)) return;
-      throw error;
-    }
-
-    for (const sessionEntry of sessionEntries) {
-      if (!sessionEntry.isDirectory()) continue;
-      const sessionDirectory = join(this.artifactRoot, sessionEntry.name);
-      const entries = await readdir(sessionDirectory, { withFileTypes: true });
-      for (const entry of entries) {
-        const match = ARTIFACT_PUBLICATION_STAGING_PATTERN.exec(entry.name);
-        if (!match) continue;
-        await this.recoverPublicationUnlocked({
-          sessionId: sessionEntry.name,
-          sessionDirectory,
-          stagingName: entry.name,
-          targetHash: match[1]!,
-        });
-      }
-    }
-  }
-
-  private async recoverPublicationUnlocked(input: {
-    sessionId: string;
-    sessionDirectory: string;
-    stagingName: string;
-    targetHash: string;
-  }): Promise<void> {
-    const stagingPath = join(input.sessionDirectory, input.stagingName);
-    const stagingStat = await lstat(stagingPath);
-    if (!stagingStat.isFile() || stagingStat.isSymbolicLink()) {
-      throw invalidPublicationResidue(input.stagingName);
-    }
-
-    const metadataMatches = this.records.filter(
-      (record) =>
-        record.sessionId === input.sessionId &&
-        artifactTargetHash(basename(record.relativePath)) === input.targetHash,
-    );
-    if (metadataMatches.length > 1) throw invalidPublicationResidue(input.stagingName);
-
-    const directoryEntries = await readdir(input.sessionDirectory, { withFileTypes: true });
-    const matchingTargets: Array<{ name: string; path: string; size: number }> = [];
-    for (const entry of directoryEntries) {
-      if (entry.name === input.stagingName || ARTIFACT_PUBLICATION_STAGING_PATTERN.test(entry.name))
-        continue;
-      if (artifactTargetHash(entry.name) !== input.targetHash) continue;
-      const candidatePath = join(input.sessionDirectory, entry.name);
-      const candidateStat = await lstat(candidatePath);
-      if (!candidateStat.isFile() || candidateStat.isSymbolicLink()) {
-        throw invalidPublicationResidue(input.stagingName);
-      }
-      matchingTargets.push({
-        name: entry.name,
-        path: candidatePath,
-        size: candidateStat.size,
-      });
-    }
-
-    const metadataRecord = metadataMatches[0];
-    if (matchingTargets.length === 0 && !metadataRecord) {
-      await removeFileDurably(stagingPath, input.sessionDirectory);
-      return;
-    }
-    if (matchingTargets.length !== 1) {
-      throw invalidPublicationResidue(input.stagingName);
-    }
-
-    const [linkedTarget] = matchingTargets;
-    if (
-      !linkedTarget ||
-      linkedTarget.size !== stagingStat.size ||
-      (await digestFile(linkedTarget.path)) !== (await digestFile(stagingPath))
-    ) {
-      throw invalidPublicationResidue(input.stagingName);
-    }
-    const relativePath = `${input.sessionId}/${linkedTarget.name}`;
-    validateRelativeArtifactPath(relativePath);
-
-    if (metadataRecord) {
-      if (
-        metadataRecord.relativePath !== relativePath ||
-        metadataRecord.sizeBytes !== linkedTarget.size
-      ) {
-        throw invalidPublicationResidue(input.stagingName);
-      }
-      await removeFileDurably(stagingPath, input.sessionDirectory);
-      return;
-    }
-
-    await removeFileDurably(
-      join(input.sessionDirectory, linkedTarget.name),
-      input.sessionDirectory,
-    );
-    await removeFileDurably(stagingPath, input.sessionDirectory);
-  }
-
   private enqueueSerialized<T>(operation: () => Promise<T>): Promise<T> {
     const next = this.queue.then(operation, operation);
     this.queue = next.then(
@@ -1613,14 +932,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
     return this.enqueueSerialized(async () => {
-      if (!this.metadataReady) {
-        return this.runWithWriterLock(async () => {
-          await this.assertAuthority?.();
-          await this.metadataRepository.ready();
-          this.metadataReady = true;
-          return operation();
-        });
-      }
       await this.assertAuthority?.();
       return operation();
     });
@@ -1645,10 +956,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       return operation();
     });
   }
-}
-
-function publicationStagingName(targetBasename: string): string {
-  return `.artifact-publish.${artifactTargetHash(targetBasename)}.${randomUUID()}.tmp`;
 }
 
 async function openRealTarget(path: string) {
@@ -1725,14 +1032,6 @@ async function readPreparedChunk(
   }
 }
 
-function artifactTargetHash(targetBasename: string): string {
-  return createHash('sha256').update(targetBasename).digest('hex');
-}
-
-function invalidPublicationResidue(stagingName: string): Error {
-  return new Error(`Artifact publication residue does not match canonical state: ${stagingName}`);
-}
-
 function artifactReplayConflict(artifactId: string): Error {
   return new Error(`Artifact ${artifactId} already exists with different metadata or content`);
 }
@@ -1745,10 +1044,6 @@ function conversationCopyArtifactId(
   return `copy_${createHash('sha256')
     .update(JSON.stringify([sourceSessionId, targetSessionId, sourceArtifactId]))
     .digest('hex')}`;
-}
-
-function artifactWriteRecoveryRequired(): Error {
-  return new Error('Artifact write recovery is required before another mutation');
 }
 
 function optionalCanonicalText(value: string | undefined): string | undefined {
@@ -1781,8 +1076,7 @@ function sameArtifactRecord(a: ArtifactRecord, b: ArtifactRecord): boolean {
     a.mimeType === b.mimeType &&
     a.source === b.source &&
     a.summary === b.summary &&
-    a.deepResearchRole === b.deepResearchRole &&
-    a.status === b.status
+    a.deepResearchRole === b.deepResearchRole
   );
 }
 
@@ -1790,12 +1084,6 @@ function assertPageBound(value: number, allowZero: boolean, label: string): void
   if (!Number.isSafeInteger(value) || value < (allowZero ? 0 : 1)) {
     throw new Error(`Artifact page ${label} is invalid`);
   }
-}
-
-async function digestFile(path: string): Promise<string> {
-  const hash = createHash('sha256');
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
-  return hash.digest('hex');
 }
 
 export async function resolveArtifactPath(input: {
@@ -1827,10 +1115,6 @@ export function sanitizeArtifactName(name: string): string {
     .replace(/[ .-]+$/, '');
   const truncated = truncateWithoutSplittingSurrogate(cleaned, 120).replace(/[ .-]+$/, '');
   return truncated || 'artifact';
-}
-
-function filesystemPathKey(path: string): string {
-  return Buffer.from(path, 'utf8').toString('utf8');
 }
 
 function truncateWithoutSplittingSurrogate(value: string, maxCodeUnits: number): string {
@@ -1867,45 +1151,8 @@ function assertArtifactTurnKey(value: unknown): asserts value is string {
   }
 }
 
-interface ArtifactPurgeIntent {
-  schemaVersion: typeof PURGE_INTENT_SCHEMA_VERSION;
-  artifactIds: string[];
-}
-
-function parsePurgeIntent(contents: string): ArtifactPurgeIntent {
-  let value: unknown;
-  try {
-    value = JSON.parse(contents);
-  } catch {
-    throw invalidPurgeIntent();
-  }
-  if (
-    !isRecord(value) ||
-    Object.keys(value).some((key) => key !== 'schemaVersion' && key !== 'artifactIds') ||
-    value.schemaVersion !== PURGE_INTENT_SCHEMA_VERSION ||
-    !Array.isArray(value.artifactIds) ||
-    value.artifactIds.length === 0 ||
-    !value.artifactIds.every(isCanonicalArtifactEntityId) ||
-    new Set(value.artifactIds).size !== value.artifactIds.length
-  ) {
-    throw invalidPurgeIntent();
-  }
-  return {
-    schemaVersion: PURGE_INTENT_SCHEMA_VERSION,
-    artifactIds: value.artifactIds,
-  };
-}
-
-function invalidPurgeIntent(): Error {
-  return new Error('Invalid artifact purge intent');
-}
-
 const ARTIFACT_KIND_SET = new Set<ArtifactKind>(ARTIFACT_KINDS);
 const ARTIFACT_SOURCE_SET = new Set<ArtifactSource>(ARTIFACT_SOURCES);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 async function assertArtifactDirectory(artifactRoot: string, directory: string): Promise<void> {
   const root = await ensureRealDirectory(artifactRoot);
@@ -1928,7 +1175,13 @@ async function resolveArtifactRemovalEntry(
   try {
     const parent = await realpath(dirname(target));
     const entry = join(parent, basename(target));
-    const entryStat = await lstat(entry, { bigint: true });
+    const entryStat = await lstat(entry, { bigint: true }).catch((error) => {
+      if (isNotFound(error)) return undefined;
+      throw error;
+    });
+    // A previous attempt may have unlinked the file but failed to sync its
+    // parent. Retain that parent in the next purge's durability barrier.
+    if (!entryStat) return { unlinkPath: entry, comparisonIdentity: `path:${entry}` };
     if (entryStat.isSymbolicLink()) {
       return {
         unlinkPath: entry,
@@ -1974,10 +1227,6 @@ function isInsideOrSamePath(root: string, target: string): boolean {
 
 function isNotFound(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
-}
-
-function isAlreadyExists(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST';
 }
 
 function sniffAllowedBinaryMime(bytes: Uint8Array): string | null {

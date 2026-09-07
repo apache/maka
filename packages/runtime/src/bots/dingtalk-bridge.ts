@@ -262,8 +262,10 @@ export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
 
   protected override readonly closeReasonPrefix = 'stream';
 
-  protected override checkCredentials(): string | null {
-    return this.settings.appId?.trim() && this.settings.appSecret?.trim() ? null : 'no-credentials';
+  protected override checkCredentials(): 'dingtalk_credentials_missing' | null {
+    return this.settings.appId?.trim() && this.settings.appSecret?.trim()
+      ? null
+      : 'dingtalk_credentials_missing';
   }
 
   protected override decideClose(code: number, explicitlyStopped: boolean): WsCloseDecision {
@@ -325,7 +327,7 @@ export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
       }
       this.connect(`${json.endpoint}?ticket=${encodeURIComponent(json.ticket)}`);
     } catch (error) {
-      this.reason = error instanceof Error ? error.message : String(error);
+      this.recordFailure(error);
       this.readiness = 'configured';
       this.emitStatusChange();
       this.scheduleReconnect();
@@ -400,7 +402,10 @@ export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
     }
     if (classification.kind !== 'ok') {
       this.readiness = this.readiness === 'operational' ? 'degraded' : 'credentials_valid';
-      this.reason = classification.kind === 'retry' ? 'rate-limited' : classification.description;
+      this.recordFailure(
+        classification.kind === 'retry' ? 'rate-limited' : classification.description,
+        classification.kind === 'retry' ? 'rate-limited' : 'send-failed',
+      );
       this.emitStatusChange();
       return null;
     }
@@ -455,7 +460,7 @@ export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
         errmsg?: string;
       } | null;
       if (!json || (json.errcode !== undefined && json.errcode !== 0)) {
-        this.reason = json?.errmsg ?? 'gettoken failed';
+        this.recordFailure(json?.errmsg ?? 'gettoken failed', 'dingtalk_no_access_token');
         return null;
       }
       if (typeof json.access_token !== 'string') return null;
@@ -466,7 +471,7 @@ export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
       };
       return this.token.value;
     } catch (error) {
-      this.reason = error instanceof Error ? error.message : String(error);
+      this.recordFailure(error);
       return null;
     }
   }

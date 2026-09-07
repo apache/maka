@@ -24,9 +24,10 @@ import {
   buildImmutableRuntimePrefix,
   createRuntimeBoundaryCursor,
   decodeContinuationClaim,
+  decodeRuntimeBoundaryCursor,
   invocationMatchesClaimTarget,
   runtimePrefixSegment,
-  type RuntimeBoundaryCursorV1,
+  type RuntimeBoundaryCursor,
   type RuntimePrefixIdentityV1,
 } from '../runtime-boundary.js';
 
@@ -216,7 +217,7 @@ describe('immutable RuntimeEvent boundary', () => {
     assert.throws(() => createRuntimeBoundaryCursor([first, second]), /duplicate invocationId/);
   });
 
-  it('rejects a boundary that reuses a source turn identity', () => {
+  it('versions consecutive same-turn physical attempts without weakening released cursors', () => {
     const firstIdentity = runtimeIdentity('run-first');
     const secondIdentity = {
       ...runtimeIdentity('run-second'),
@@ -233,7 +234,52 @@ describe('immutable RuntimeEvent boundary', () => {
       ]),
     );
 
-    assert.throws(() => createRuntimeBoundaryCursor([first, second]), /duplicate turnId/);
+    const cursor = createRuntimeBoundaryCursor([first, second]);
+    assert.equal(cursor.protocol, 'runtime_boundary_cursor_v2');
+    assert.deepEqual(decodeRuntimeBoundaryCursor(cursor), cursor);
+    assert.throws(
+      () => decodeRuntimeBoundaryCursor({ ...cursor, protocol: 'runtime_boundary_cursor_v1' }),
+      /version mismatch/,
+    );
+    const other = boundaryForRuns('other').segments[0];
+    assert.throws(() => createRuntimeBoundaryCursor([first, other, second]), /previous turnId/);
+  });
+
+  it('permits same-turn claims only for explicit handoff to the original logical root', () => {
+    const boundary = boundaryForRuns('run-source');
+    const manual = claimForBoundary(boundary);
+    const handoff = {
+      ...manual,
+      target: { ...manual.target, turnId: boundary.segments[0].identity.turnId },
+      targetOpening: {
+        ...manual.targetOpening,
+        source: {
+          ...manual.targetOpening.source,
+          kind: 'handoff',
+          rootRunId: 'run-source',
+        },
+      },
+    };
+    assert.equal(decodeContinuationClaim(handoff).targetOpening.source.kind, 'handoff');
+    assert.throws(
+      () => decodeContinuationClaim({ ...handoff, targetOpening: manual.targetOpening }),
+      /turnId reuses/,
+    );
+    assert.throws(
+      () => decodeContinuationClaim({ ...handoff, target: manual.target }),
+      /preserve the logical turnId/,
+    );
+    assert.throws(
+      () =>
+        decodeContinuationClaim({
+          ...handoff,
+          targetOpening: {
+            ...handoff.targetOpening,
+            source: { ...handoff.targetOpening.source, rootRunId: 'foreign' },
+          },
+        }),
+      /logical root mismatch/,
+    );
   });
 
   it('requires a continuation target to remain in the source session', () => {
@@ -375,7 +421,7 @@ function event(
   };
 }
 
-function boundaryForRuns(...runIds: string[]): RuntimeBoundaryCursorV1 {
+function boundaryForRuns(...runIds: string[]): RuntimeBoundaryCursor {
   const segments = runIds.map((runId) => {
     const identity = runtimeIdentity(runId);
     return runtimePrefixSegment(
@@ -387,7 +433,7 @@ function boundaryForRuns(...runIds: string[]): RuntimeBoundaryCursorV1 {
   return createRuntimeBoundaryCursor(segments);
 }
 
-function claimForBoundary(boundary: RuntimeBoundaryCursorV1) {
+function claimForBoundary(boundary: RuntimeBoundaryCursor) {
   const source = boundary.segments.at(-1)!;
   const target = {
     sessionId: boundary.segments[0].identity.sessionId,

@@ -197,6 +197,7 @@ export class GoalContinuationCoordinator {
   private readonly taskGatePolicy: GoalTaskGatePolicy;
   private readonly scheduler: GoalContinuationScheduler;
   private disposed = false;
+  private handoffHeld = false;
   private closeTask?: Promise<void>;
 
   constructor(private readonly deps: GoalContinuationDeps) {
@@ -483,6 +484,25 @@ export class GoalContinuationCoordinator {
     return resumed;
   }
 
+  /** Stop new continuation admission, but finish accounting for settled turns. */
+  holdForHandoff(): { settled(): Promise<void>; release(): void } | undefined {
+    if (this.disposed || this.handoffHeld) return undefined;
+    this.handoffHeld = true;
+    for (const lane of this.lanes.values()) this.clearWaitingTimer(lane);
+    let released = false;
+    return {
+      settled: async () => {
+        while (this.activeDrains.size > 0) await Promise.all([...this.activeDrains]);
+      },
+      release: () => {
+        if (released) return;
+        released = true;
+        this.handoffHeld = false;
+        for (const lane of this.lanes.values()) this.scheduleDrain(lane);
+      },
+    };
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -577,6 +597,7 @@ export class GoalContinuationCoordinator {
 
   private scheduleDrain(lane: SessionLane): void {
     if (!this.isCurrent(lane) || lane.draining) return;
+    if (this.handoffHeld && lane.queue.length === 0) return;
     const task = this.drainLane(lane).catch((error) => {
       if (!this.isCurrent(lane)) return;
       this.pauseCurrentGoal(lane, `Goal continuation coordinator failed: ${errorMessage(error)}`);
@@ -610,7 +631,7 @@ export class GoalContinuationCoordinator {
         item.resolve();
       }
 
-      if (!this.isCurrent(lane) || lane.queue.length > 0) return;
+      if (!this.isCurrent(lane) || lane.queue.length > 0 || this.handoffHeld) return;
       const goal = this.deps.goalManager.get(lane.sessionId);
       if (goal?.status === 'waiting' && lane.intent) {
         this.scheduleWaitingRetry(lane, goal);
@@ -768,7 +789,12 @@ export class GoalContinuationCoordinator {
   }
 
   private async tryAdmitIntent(lane: SessionLane, intent: ContinuationIntent): Promise<void> {
-    if (!this.isCurrent(lane) || lane.queue.length > 0 || lane.intent !== intent) {
+    if (
+      this.handoffHeld ||
+      !this.isCurrent(lane) ||
+      lane.queue.length > 0 ||
+      lane.intent !== intent
+    ) {
       return;
     }
     if (!this.ownedGoal(lane, intent)) {
@@ -780,7 +806,12 @@ export class GoalContinuationCoordinator {
       lane.sessionId,
       intent.checkpoint.goalId,
     );
-    if (!this.isCurrent(lane) || lane.queue.length > 0 || lane.intent !== intent) {
+    if (
+      this.handoffHeld ||
+      !this.isCurrent(lane) ||
+      lane.queue.length > 0 ||
+      lane.intent !== intent
+    ) {
       return;
     }
     const goal = this.ownedGoal(lane, intent);
@@ -881,7 +912,7 @@ export class GoalContinuationCoordinator {
   }
 
   private scheduleWaitingRetry(lane: SessionLane, goal: GoalState): void {
-    if (!this.isCurrent(lane) || lane.waitingTimer || !lane.intent) return;
+    if (this.handoffHeld || !this.isCurrent(lane) || lane.waitingTimer || !lane.intent) return;
     if (!this.deps.goalManager.matches(lane.sessionId, lane.intent.checkpoint)) {
       lane.intent = undefined;
       this.resetWaitingBackoff(lane);

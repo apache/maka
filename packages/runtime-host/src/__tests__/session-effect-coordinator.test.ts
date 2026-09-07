@@ -22,6 +22,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { restoreArtifactV1Shape } from './fixtures/artifact-v1.js';
 import type { SessionHeader } from '@maka/core/session';
 import type { RuntimeReadModelSessionView } from '@maka/runtime/runtime-read-model';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
@@ -38,8 +39,8 @@ const connectionContext: ConnectionContext = {
   acquireResidency: () => ({ release: () => undefined }),
 };
 
-test('Session recap publishes one protected result and exact retries never repeat provider work', async () => {
-  await withHarness(async ({ store, coordinator, modelCalls }) => {
+test('Session recap retries preserve the original result across a v1 upgrade', async () => {
+  await withHarness(async ({ coordinator, modelCalls, reopenFromV1 }) => {
     const input = { sessionId: 'session-1', effectId: 'effect-1', reason: 'manual' as const };
     const generated = {
       ok: true as const,
@@ -65,15 +66,18 @@ test('Session recap publishes one protected result and exact retries never repea
     );
     assert.equal(modelCalls.count, 1);
 
+    await coordinator.close();
+    const upgraded = await reopenFromV1();
+    let archived = false;
     const successor = createCoordinator(
-      store,
+      upgraded,
       {
         generateTitle: async () => undefined,
         generateRecap: async () => assert.fail('a durable exact retry must not call the model'),
       },
       {
         readSessionHeader: async () =>
-          ({ isArchived: true, status: 'active' }) as unknown as SessionHeader,
+          ({ isArchived: archived, status: 'active' }) as unknown as SessionHeader,
       },
     );
     assert.deepEqual(
@@ -81,6 +85,7 @@ test('Session recap publishes one protected result and exact retries never repea
       generated,
     );
     assert.equal(modelCalls.count, 1);
+    archived = true;
     assert.deepEqual(
       await successor.handlers['session.recap.generate'](
         { ...input, reason: 'idle' },
@@ -108,16 +113,21 @@ test('Session recap publishes one protected result and exact retries never repea
       },
     );
 
-    const records = await store.listPage('session-1', { offset: 0, limit: 10 });
+    const records = await upgraded.listPage('session-1', { offset: 0, limit: 10 });
     assert.equal(records.records.length, 2);
     for (const record of records.records) {
       assert.equal(record.source, 'session_effect');
       assert.equal(
-        (await store.deleteUserArtifactInSession('session-1', record.id)).kind,
+        (await upgraded.deleteUserArtifactInSession('session-1', record.id)).kind,
         'protected',
       );
     }
+    assert.deepEqual(
+      await successor.handlers['session.recap.generate'](input, connectionContext),
+      generated,
+    );
     await successor.close();
+    upgraded.close();
   });
 });
 
@@ -422,6 +432,7 @@ async function withHarness(
     coordinator: HostSessionEffectCoordinator;
     modelCalls: { count: number };
     admission: SessionAdmissionGate;
+    reopenFromV1(): Promise<Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>>>;
   }) => Promise<void>,
   overrideModel?: HostSessionEffectModel,
   options?: CoordinatorOptions,
@@ -432,7 +443,6 @@ async function withHarness(
   assert.ok(owner);
   try {
     const store = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await store.recover();
     const modelCalls = { count: 0 };
     const model: HostSessionEffectModel =
       overrideModel ??
@@ -450,7 +460,17 @@ async function withHarness(
       } satisfies HostSessionEffectModel);
     const admission = options?.admission ?? new SessionAdmissionGate();
     const coordinator = createCoordinator(store, model, { ...options, admission });
-    await run({ store, coordinator, modelCalls, admission });
+    await run({
+      store,
+      coordinator,
+      modelCalls,
+      admission,
+      reopenFromV1: async () => {
+        store.close();
+        restoreArtifactV1Shape(root);
+        return openInteractiveArtifactStoreForWrite(owner.lease);
+      },
+    });
     await coordinator.close();
   } finally {
     await owner.close();

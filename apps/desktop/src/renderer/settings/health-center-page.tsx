@@ -25,9 +25,11 @@ import type {
   HealthSnapshot,
 } from '@maka/core/health';
 import { HEALTH_SIGNAL_LAYERS } from '@maka/core/health';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { Text, VStack } from '@astryxdesign/core';
 import { Button, RelativeTime, StatusDot, useUiLocale, Banner } from '@maka/ui';
 import { getHealthCenterCopy, type HealthCenterCopy } from '../locales/settings-health-copy';
+import { botStatusReasonCopy } from '../locales/settings-bot-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import { SettingsSkeletonStack } from './settings-skeleton';
@@ -187,7 +189,7 @@ export function HealthCenterPage() {
               <Text type="supporting" size="sm" color="secondary">{layerCopy.description}</Text>
             </VStack>,
             ...signals.map((signal) => (
-              <HealthSignalRow key={signal.id} signal={signal} copy={copy} />
+              <HealthSignalRow key={signal.id} signal={signal} copy={copy} locale={locale} />
             )),
           ];
         })}
@@ -198,10 +200,13 @@ export function HealthCenterPage() {
   );
 }
 
-function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy }) {
+function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy; locale: UiLocale }) {
   const { signal, copy } = props;
   const statusCopy = copy.statuses[signal.status];
-  const detail = copy.signalDetail(signal);
+  // Copy catalogs may not runtime-import each other, so bot capability reasons
+  // (machine codes from the bridge) pre-resolve here; the catalog still owns
+  // the per-locale fallback sentences for every other producer.
+  const detail = localizedSignalDetail(signal, copy, props.locale);
   return (
     <SettingsRow
       align="start"
@@ -247,6 +252,17 @@ function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy }
       )}
     />
   );
+}
+
+/** Exported as a test seam: copy catalogs may not runtime-import each other,
+ * so bot capability reasons resolve here before the catalog's own fallback. */
+export function localizedSignalDetail(signal: HealthSignal, copy: HealthCenterCopy, locale: UiLocale): string | undefined {
+  const detail = signal.detail;
+  if (detail?.kind === 'capability_reason' && signal.relatedCapabilityId?.startsWith('bot:')) {
+    const botReason = botStatusReasonCopy(detail.reason, locale);
+    if (botReason) return botReason;
+  }
+  return copy.signalDetail(signal);
 }
 
 function groupSignalsByLayer(signals: HealthSignal[]): Record<HealthSignalLayer, HealthSignal[]> {

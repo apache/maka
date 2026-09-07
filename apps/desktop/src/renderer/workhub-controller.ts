@@ -27,6 +27,7 @@ import {
   createWorkHubRoutePolicy,
   type WorkHubRouteEvidence,
   type WorkHubStopClarificationReason,
+  type WorkHubNamedActionRouteDecision,
 } from './workhub-route-policy.js';
 import type {
   OperationError,
@@ -137,13 +138,6 @@ export interface WorkHubCoordinationTurn {
 
 export type WorkHubDelegationLinkState = 'active' | 'superseded' | 'aborted' | 'stopped';
 
-/** Unbounded, rebuildable linkage state kept separate from the bounded timeline. */
-export interface WorkHubActiveDelegation {
-  readonly actionId: string;
-  readonly targetSessionId: string;
-  readonly sequence: number;
-}
-
 const WORKHUB_TIMELINE_TEXT_LIMIT = 600;
 
 export function boundedWorkHubTimelineText(value: string): string {
@@ -215,6 +209,12 @@ export type WorkHubSubmission = (
       outcome: Extract<WorkHubCoordinationActResult, { disposition: 'stop_work' }>['outcome'];
       targetTurnId?: string;
     }
+  | {
+      kind: 'resume';
+      requestId: string;
+      target: WorkHubSessionTarget;
+      outcome: Extract<WorkHubCoordinationActResult, { disposition: 'resume_work' }>['outcome'];
+    }
 ) & { strategyId: WorkHubRoutingStrategyId };
 
 /**
@@ -248,10 +248,7 @@ export interface WorkHubSessionPort {
 
 export interface WorkHubCoordinationPort {
   open(
-    handler: (
-      turns: readonly WorkHubCoordinationTurn[],
-      activeDelegations: readonly WorkHubActiveDelegation[],
-    ) => void,
+    handler: (turns: readonly WorkHubCoordinationTurn[]) => void,
     onError: (error: unknown) => void,
   ): Promise<{ close(): Promise<void> }>;
   record(input: {
@@ -288,39 +285,15 @@ export function createWorkHubController(deps: {
   let routePolicy = createWorkHubRoutePolicy();
   let focusReadVersion = 0;
   let pendingFocusReadVersion: number | undefined;
-  const activeActionIdsBySessionId = new Map<string, string[]>();
-  const removeActiveAction = (sessionId: string, actionId: string) => {
-    const remaining = (activeActionIdsBySessionId.get(sessionId) ?? []).filter(
-      (candidate) => candidate !== actionId,
-    );
-    if (remaining.length === 0) {
-      activeActionIdsBySessionId.delete(sessionId);
-      return;
-    }
-    activeActionIdsBySessionId.set(sessionId, remaining);
-  };
-  const addActiveAction = (sessionId: string, actionId: string) => {
-    const active = activeActionIdsBySessionId.get(sessionId) ?? [];
-    if (!active.includes(actionId)) {
-      activeActionIdsBySessionId.set(sessionId, [...active, actionId]);
-    }
-  };
-  const correctionFor = (from: WorkHubSessionTarget): WorkHubCorrectionContext => {
-    const sourceActionId = activeActionIdsBySessionId.get(from.sessionId)?.at(-1);
+  const correctionFor = (
+    from: WorkHubSessionTarget,
+    candidateBySessionId: ReadonlyMap<string, WorkHubCoordinationCandidatesResult['candidates'][number]>,
+  ): WorkHubCorrectionContext => {
+    const sourceActionId = candidateBySessionId.get(from.sessionId)?.latestDelegationActionId;
     if (!sourceActionId) {
       throw new Error('WorkHub linked correction requires an active durable delegation');
     }
     return { from, sourceActionId };
-  };
-  const reconcileActiveDelegations = (
-    activeDelegations: readonly WorkHubActiveDelegation[],
-  ) => {
-    activeActionIdsBySessionId.clear();
-    for (const delegation of [...activeDelegations].sort(
-      (left, right) => left.sequence - right.sequence,
-    )) {
-      addActiveAction(delegation.targetSessionId, delegation.actionId);
-    }
   };
   const reconcileFocus = (
     policy: ReturnType<typeof createWorkHubRoutePolicy>,
@@ -342,10 +315,6 @@ export function createWorkHubController(deps: {
     correction: WorkHubCorrectionContext | undefined,
   ): Extract<WorkHubSubmission, { kind: 'submitted' }> => {
     const target = { sessionId: admitted.targetSessionId };
-    if (correction) {
-      removeActiveAction(correction.from.sessionId, correction.sourceActionId);
-    }
-    addActiveAction(target.sessionId, input.requestId);
     policy.rememberTarget(target);
     return {
       kind: 'submitted',
@@ -357,6 +326,106 @@ export function createWorkHubController(deps: {
       evidence,
       ...(correction ? { correctedFrom: correction.from } : {}),
     };
+  };
+  const submitNamedDelegationAction = async (
+    input: WorkHubSubmitInput,
+    decision: WorkHubNamedActionRouteDecision,
+    kind: 'resume' | 'stop',
+  ): Promise<Extract<WorkHubSubmission, { kind: 'clarification' | 'resume' | 'stop' }> | undefined> => {
+    if (decision.kind === 'not_requested') return undefined;
+    if (decision.kind === 'clarification') {
+      return {
+        kind: 'clarification',
+        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+        requestId: input.requestId,
+        text: input.text,
+        options: [],
+        reason: decision.reason,
+      };
+    }
+    const { target } = decision;
+    try {
+      const candidates = kind === 'resume' ? await coordination.candidates() : undefined;
+      const resumesActionId = candidates?.candidates.find(
+        (candidate) => candidate.sessionId === target.sessionId,
+      )?.latestDelegationActionId;
+      if (kind === 'resume' && !resumesActionId) {
+        return {
+          kind: 'clarification',
+          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+          requestId: input.requestId,
+          text: input.text,
+          options: [],
+          reason: 'resume_target_unavailable',
+        };
+      }
+      const admitted = await coordination.act({
+        actionId: input.requestId,
+        userText: input.text,
+        proposal: kind === 'resume'
+          ? {
+              disposition: 'resume_work',
+              expects: { targetSessionId: target.sessionId },
+              resumesActionId: resumesActionId!,
+            }
+          : { disposition: 'stop_work', expects: { targetSessionId: target.sessionId } },
+        ...(kind === 'stop' ? { confirmation: { kind: 'user_stop' as const } } : {}),
+      });
+      const result = {
+        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+        requestId: input.requestId,
+        target,
+      };
+      if (kind === 'resume' && admitted.disposition === 'resume_work') {
+        return {
+          ...result,
+          kind: 'resume',
+          outcome: admitted.outcome,
+        };
+      }
+      if (kind === 'stop' && admitted.disposition === 'stop_work') {
+        return {
+          ...result,
+          kind: 'stop',
+          outcome: admitted.outcome,
+          ...(admitted.targetTurnId ? { targetTurnId: admitted.targetTurnId } : {}),
+        };
+      }
+      throw new Error('WorkHub Action Gate returned an unexpected disposition');
+    } catch (error) {
+      if (
+        kind === 'resume' &&
+        error instanceof WorkHubCoordinationFailure &&
+        (error.code === 'operation_unavailable' || error.code === 'host_not_ready')
+      ) {
+        return {
+          kind: 'clarification',
+          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+          requestId: input.requestId,
+          text: input.text,
+          options: [],
+          reason: error.code === 'host_not_ready'
+            ? 'resume_host_recovering'
+            : 'resume_operation_unavailable',
+        };
+      }
+      if (error instanceof WorkHubCoordinationFailure && error.code === 'operation_conflict') {
+        if (!/no active durable delegation|does not identify one active durable delegation/iu.test(
+          error.message,
+        )) {
+          throw error;
+        }
+        return {
+          kind: 'clarification',
+          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+          requestId: input.requestId,
+          text: input.text,
+          options: [],
+          reason: kind === 'resume' ? 'resume_target_unavailable' : 'stop_target_unavailable',
+        };
+      }
+      throw error;
+    }
   };
   return {
     async openConversation(handler, onError) {
@@ -405,9 +474,8 @@ export function createWorkHubController(deps: {
       });
       let handle: { close(): Promise<void> } | undefined;
       try {
-        handle = await coordination.open((turns, activeDelegations) => {
+        handle = await coordination.open((turns) => {
           if (disposed) return;
-          reconcileActiveDelegations(activeDelegations);
           latestTurns = turns;
           generation += 1;
           // The atomic assignment is already durable acknowledgement, so emit
@@ -490,67 +558,18 @@ export function createWorkHubController(deps: {
       const sessions = await deps.sessions.list();
       reconcileFocus(submissionPolicy, sessions);
       const ordinary = sessions.filter((session) => session.kind === 'ordinary');
+      const resumeDecision = submissionPolicy.resolveResume({
+        text: input.text,
+        sessions: ordinary,
+      });
+      const resume = await submitNamedDelegationAction(input, resumeDecision, 'resume');
+      if (resume) return resume;
       const stopDecision = submissionPolicy.resolveStop({
         text: input.text,
         sessions: ordinary,
       });
-      if (stopDecision.kind !== 'not_requested') {
-        if (stopDecision.kind === 'clarification') {
-          return {
-            kind: 'clarification',
-            strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-            requestId: input.requestId,
-            text: input.text,
-            options: [],
-            reason: stopDecision.reason,
-          };
-        }
-        const { target } = stopDecision;
-        let admitted;
-        try {
-          admitted = await coordination.act({
-            actionId: input.requestId,
-            userText: input.text,
-            proposal: {
-              disposition: 'stop_work',
-              // Only the Session the reference resolved to. Which delegation
-              // that Session still owns is the Host's to decide, under the
-              // lease that ends it.
-              expects: { targetSessionId: target.sessionId },
-            },
-            confirmation: { kind: 'user_stop' },
-          });
-        } catch (error) {
-          // The Gate refusing the stop is an answer, not a fault: it is the
-          // only party that can say the Session owns no single stoppable
-          // delegation. Anything else is a real failure and still throws.
-          if (
-            error instanceof WorkHubCoordinationFailure &&
-            error.code === 'operation_conflict'
-          ) {
-            return {
-              kind: 'clarification',
-              strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-              requestId: input.requestId,
-              text: input.text,
-              options: [],
-              reason: 'stop_target_unavailable',
-            };
-          }
-          throw error;
-        }
-        if (admitted.disposition !== 'stop_work') {
-          throw new Error('WorkHub Action Gate returned an unexpected disposition');
-        }
-        return {
-          kind: 'stop',
-          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-          requestId: input.requestId,
-          target,
-          outcome: admitted.outcome,
-          ...(admitted.targetTurnId ? { targetTurnId: admitted.targetTurnId } : {}),
-        };
-      }
+      const stop = await submitNamedDelegationAction(input, stopDecision, 'stop');
+      if (stop) return stop;
       const candidateSet = await coordination.candidates();
       const candidateBySessionId = new Map(
         candidateSet.candidates.map((candidate) => [candidate.sessionId, candidate]),
@@ -576,7 +595,7 @@ export function createWorkHubController(deps: {
       });
       if (decision.kind === 'clarification') {
         const correction = decision.correctedFrom
-          ? correctionFor(decision.correctedFrom)
+          ? correctionFor(decision.correctedFrom, candidateBySessionId)
           : undefined;
         return {
           kind: 'clarification',
@@ -606,7 +625,9 @@ export function createWorkHubController(deps: {
         };
       }
       const correction = input.correction ??
-        (decision.correctedFrom ? correctionFor(decision.correctedFrom) : undefined);
+        (decision.correctedFrom
+          ? correctionFor(decision.correctedFrom, candidateBySessionId)
+          : undefined);
       if (decision.kind === 'new_session') {
         const { title } = decision;
         const admitted = await coordination.act(correction

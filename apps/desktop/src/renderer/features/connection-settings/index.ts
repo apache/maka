@@ -43,3 +43,5 @@ export type { ProviderSettingsCopy } from './settings-provider-copy.js';
 export type {
   CredentialPresenceStatus,
 } from './provider-panel-shared.js';
+
+export { GenericProviderMark } from './generic-provider-mark.js';

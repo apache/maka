@@ -32,6 +32,7 @@ export interface DesktopTranscriptRangeController {
   ready(): Promise<void>;
   waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean>;
   loadBefore(maxBytes?: number, anchorTurnId?: string): Promise<void>;
+  loadAfter(maxBytes?: number, anchorTurnId?: string): Promise<void>;
   loadAround(sequence: number): Promise<void>;
   loadLatest(): Promise<void>;
   reload(): Promise<void>;
@@ -70,6 +71,16 @@ export function createDesktopTranscriptRangeController(
     },
     async loadAround(sequence) {
       await (await current()).loadAround(sequence);
+    },
+    async loadAfter(maxBytes, anchorTurnId) {
+      const range = store.range();
+      if (!range.hasNewer) return;
+      await (await current()).loadAfter(
+        anchorTurnId === undefined
+          ? range.newestSequence
+          : store.sequenceForTurn(anchorTurnId, 'last') ?? range.newestSequence,
+        maxBytes,
+      );
     },
     async loadLatest() {
       const range = store.range();
@@ -111,12 +122,15 @@ export function createDesktopTranscriptReconnectRecovery(options: {
   let closed = false;
   let observationReady = false;
   let readinessGeneration = 0;
+  let attemptedReadinessGeneration = -1;
   let needsRecovery = false;
   let recoveryTask: Promise<void> | undefined;
 
   const recover = () => {
-    if (closed || !observationReady || !needsRecovery || recoveryTask) return;
+    if (closed || !observationReady || !needsRecovery || recoveryTask ||
+      attemptedReadinessGeneration === readinessGeneration) return;
     const admittedReadinessGeneration = readinessGeneration;
+    attemptedReadinessGeneration = admittedReadinessGeneration;
     needsRecovery = false;
     const task = Promise.resolve().then(async () => {
       try {
@@ -178,11 +192,27 @@ export function createRecoveringDesktopTranscriptRangeController(
   },
 ): RecoveringDesktopTranscriptRangeController {
   const controller = createDesktopTranscriptRangeController(store, open);
+  const cached = () => {
+    try {
+      const range = store.range();
+      return range.ready && range.generation.startsWith('cached:');
+    } catch {
+      return false;
+    }
+  };
+  const requireLive = () => {
+    if (cached()) throw new Error('The cached transcript is waiting for Host reconnection');
+  };
   const recovery = createDesktopTranscriptReconnectRecovery({
-    reload: controller.reload,
-    ...options,
+    async reload() {
+      await controller.reload();
+      requireLive();
+    },
+    onError(error) {
+      if (!cached()) options.onError(error);
+    },
   });
-  void controller.ready().catch(recovery.transcriptFailed);
+  void controller.ready().then(requireLive).catch(recovery.transcriptFailed);
   return {
     ...controller,
     observationChanged: recovery.observationChanged,
@@ -345,11 +375,9 @@ export class DesktopTranscriptRangeStore {
     return this.#newestUserSequence;
   }
 
-  sequenceForTurn(turnId: string): number | null {
-    for (const sequence of this.#durableOrder) {
-      if (this.#durable.get(sequence)?.message.turnId === turnId) return sequence;
-    }
-    return null;
+  sequenceForTurn(turnId: string, edge: 'first' | 'last' = 'first'): number | null {
+    const order = edge === 'first' ? this.#durableOrder : [...this.#durableOrder].reverse();
+    return order.find((sequence) => this.#durable.get(sequence)?.message.turnId === turnId) ?? null;
   }
 
   waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean> {

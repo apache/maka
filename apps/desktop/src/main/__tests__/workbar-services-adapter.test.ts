@@ -37,7 +37,6 @@ function createBridgeRecorder(): {
     'browser.setViewport',
     'browser.onState',
     'browser.onLive',
-    'artifacts.subscribeChanges',
     'inspector.subscribeUsageChanges',
   ]);
   // Adapters that reshape a bridge answer need one to reshape.
@@ -132,11 +131,10 @@ describe('createDesktopWorkbarServices', () => {
     services.browser.subscribeState(eventHandler)();
     services.browser.subscribeLive(eventHandler)();
 
-    await services.artifacts.list('s', { includeDeleted: true });
+    await services.artifacts.list('s');
     await services.artifacts.readText('s', 'a');
     await services.artifacts.readBinary('s', 'a');
     await services.artifacts.delete('s', 'a');
-    services.artifacts.subscribeChanges(eventHandler)();
     await services.artifacts.openPath('s', 'a');
     await services.artifacts.saveAs('s', 'a');
 
@@ -207,7 +205,6 @@ describe('createDesktopWorkbarServices', () => {
         'artifacts.readText',
         'artifacts.readBinary',
         'artifacts.delete',
-        'artifacts.subscribeChanges',
         'app.openArtifactPath',
         'app.saveArtifactAs',
         'inspector.trace',

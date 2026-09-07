@@ -24,7 +24,6 @@ import type {
   SessionBlockedReason,
   SessionHeader,
   SessionStatus,
-  StoredMessage,
   TurnRecord,
   TurnStateMessage,
 } from '@maka/core/session';
@@ -47,8 +46,8 @@ export interface BuildTurnStateMessageInput {
   status: TurnRecord['status'];
   lineage?: TurnStateLineage;
   errorClass?: string;
+  retry?: TurnRecord['retry'];
   abortSource?: string;
-  partialOutputRetained: boolean;
 }
 
 export function buildStatusPatch(
@@ -80,19 +79,13 @@ export function buildTurnStateMessage(input: BuildTurnStateMessageInput): TurnSt
     ...(lineage.parentSessionId ? { parentSessionId: lineage.parentSessionId } : {}),
     ...(input.status === 'aborted' ? { abortedAt: input.ts } : {}),
     ...(input.status === 'aborted' && input.abortSource ? { abortSource: input.abortSource } : {}),
-    ...(input.status === 'failed' ? { errorClass: input.errorClass ?? 'unknown' } : {}),
-    partialOutputRetained: input.partialOutputRetained,
+    ...(input.status === 'failed'
+      ? {
+          errorClass: input.errorClass ?? 'unknown',
+          ...(input.retry ? { retry: input.retry } : {}),
+        }
+      : {}),
   };
-}
-
-export function turnHasRetainedOutput(messages: readonly StoredMessage[], turnId: string): boolean {
-  return messages.some(
-    (message) =>
-      (message.type === 'assistant' &&
-        message.turnId === turnId &&
-        message.text.trim().length > 0) ||
-      (message.type === 'tool_result' && message.turnId === turnId),
-  );
 }
 
 export function normalizeStopSessionSource(

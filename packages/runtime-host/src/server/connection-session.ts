@@ -55,7 +55,10 @@ import {
   hasRuntimeHostOperationGrant,
 } from './connection-authority.js';
 
-type AcceptedConnectionContext = Omit<ConnectionContext, 'acquireResidency' | 'principal'> & {
+type AcceptedConnectionContext = Omit<
+  ConnectionContext,
+  'acquireResidency' | 'principal' | 'inputClosedSignal'
+> & {
   readonly clientInstanceId: string;
   readonly authority: RuntimeHostConnectionAuthority;
 };
@@ -90,7 +93,7 @@ export class RuntimeHostConnectionSession {
   #clientCapabilities: ClientCapabilityConnection | undefined;
   #clientCapabilityCloseTask: Promise<void> | undefined;
   #hostChanges: HostChangeSubscription | undefined;
-  #inputClosed = false;
+  readonly #inputClosedAbort = new AbortController();
   #closed = false;
 
   constructor(options: RuntimeHostConnectionSessionOptions) {
@@ -121,7 +124,7 @@ export class RuntimeHostConnectionSession {
   }
 
   async #closeAfterDispatchedReplies(): Promise<void> {
-    this.#inputClosed = true;
+    this.#inputClosedAbort.abort();
     this.#detachContinuity();
     this.#detachClientCapabilities();
     this.#detachHostChanges();
@@ -226,6 +229,7 @@ export class RuntimeHostConnectionSession {
           : undefined;
       const response = await dispatchOperation(frame, this.#options.resolveHandlers(), {
         ...this.#options.connection,
+        inputClosedSignal: this.#inputClosedAbort.signal,
         principal: this.#options.connection.authority.principalId,
         principalKind: this.#options.connection.authority.principalKind,
         ...(this.#options.connection.authority.credentialId
@@ -258,7 +262,7 @@ export class RuntimeHostConnectionSession {
   }
 
   #ensureContinuity(): SessionContinuityConnection | undefined {
-    if (this.#closed || this.#inputClosed) return;
+    if (this.#closed || this.#inputClosedAbort.signal.aborted) return;
     const service = this.#options.resolveContinuity();
     if (!service) return;
     if (this.#continuityService && this.#continuityService !== service) {
@@ -286,7 +290,12 @@ export class RuntimeHostConnectionSession {
   }
 
   #ensureClientCapabilities(): ClientCapabilityConnection | undefined {
-    if (this.#closed || this.#inputClosed) return;
+    if (this.#closed || this.#inputClosedAbort.signal.aborted) return;
+    // Guests observe and submit approval requests; they cannot provide Client
+    // Capabilities or directly admit a Turn. In particular, their pending and
+    // finalized connections may overlap while the credential becomes bound to
+    // the Client. Neither connection owns a capability-provider registration.
+    if (this.#options.connection.authority.principalKind === 'session_guest') return;
     const service = this.#options.resolveClientCapabilities?.();
     if (!service) return;
     if (this.#clientCapabilityService && this.#clientCapabilityService !== service) {
@@ -334,7 +343,7 @@ export class RuntimeHostConnectionSession {
   }
 
   attachGlobalChanges(): void {
-    if (this.#closed || this.#inputClosed) return;
+    if (this.#closed || this.#inputClosedAbort.signal.aborted) return;
     const service = this.#options.resolveHostChanges?.();
     if (!service || this.#hostChanges) return;
     const sharedSessionId =
@@ -392,7 +401,7 @@ export class RuntimeHostConnectionSession {
   #teardown(): void {
     if (this.#closed) return;
     this.#closed = true;
-    this.#inputClosed = true;
+    this.#inputClosedAbort.abort();
     this.#detachContinuity();
     this.#detachClientCapabilities();
     this.#detachHostChanges();

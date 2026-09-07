@@ -18,9 +18,8 @@
  */
 
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
-import { useMountedRef } from './use-mounted-ref.js';
 import { ICON_SIZE, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
-import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
+import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration, turnAbortStatusLabel } from './chat-display-helpers.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
@@ -288,6 +287,14 @@ export function TransientUserMessage(props: {
           directoryReferences={message.directoryReferences}
           inlineReferences={message.inlineReferences}
         />
+        {message.deliveryStatus && (
+          <div className="maka-message-delivery" role="status" title={message.deliveryDetail}>
+            <span>{message.deliveryStatus}</span>
+            {message.deliveryActions?.map((action) => (
+              <UiButton key={action.label} label={action.label} variant="ghost" size="sm" onClick={action.onClick} />
+            ))}
+          </div>
+        )}
       </LocalizedChatMessage>
     </div>
   );
@@ -889,52 +896,13 @@ function TurnFooterActions(props: {
   assistantText?: string;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  const [copyPhase, setCopyPhase] = useState<ClipboardCopyPhase | null>(null);
-  const copyPendingRef = useRef(false);
-  const copyResetTimerRef = useRef<number | null>(null);
-  const copyMountedRef = useMountedRef();
-
-  function clearCopyResetTimer() {
-    if (copyResetTimerRef.current === null) return;
-    window.clearTimeout(copyResetTimerRef.current);
-    copyResetTimerRef.current = null;
-  }
-
-  useEffect(() => {
-    return () => {
-      clearCopyResetTimer();
-    };
-  }, []);
-
-  function settleCopy(phase: Exclude<ClipboardCopyPhase, 'pending'>) {
-    if (!copyMountedRef.current) return;
-    setCopyPhase(phase);
-    copyResetTimerRef.current = window.setTimeout(() => {
-      if (!copyMountedRef.current) return;
-      setCopyPhase(null);
-      copyResetTimerRef.current = null;
-    }, 1400);
-  }
-
-  async function copyAssistantText() {
-    if (!props.assistantText || copyPendingRef.current) return;
-    copyPendingRef.current = true;
-    clearCopyResetTimer();
-    setCopyPhase('pending');
-    try {
-      await navigator.clipboard.writeText(props.assistantText);
-      settleCopy('copied');
-    } catch {
-      settleCopy('failed');
-    } finally {
-      copyPendingRef.current = false;
-    }
-  }
+  const copyFeedback = useClipboardCopyFeedback(1400, { redact: false });
+  const copyPhase = copyFeedback.phaseFor('answer');
 
   async function handleClick(action: TurnFooterActionMeta) {
     if (!action.enabled) return;
     if (action.id === 'copy') {
-      await copyAssistantText();
+      await copyFeedback.copy('answer', props.assistantText ?? '');
       return;
     }
     if (action.id === 'info') return; // tooltip-only meta display, no action
@@ -1189,6 +1157,7 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
   return (
     <ChatMessageBubble
       variant="ghost"
+      data-maka-transcript-boundary="default"
       // Astryx's own seam for a bubble that spans the message column: it sets
       // the width and drops the default max(80%, 280px) cap in one prop.
       width="100%"
@@ -1293,7 +1262,10 @@ function ProcessingBlock(props: {
 }) {
   const { entries } = props;
   return (
-    <div className="maka-processing-sequence">
+    <div
+      className="maka-processing-sequence"
+      data-maka-transcript-boundary="large"
+    >
       {entries.map((entry, index) => (
         <TurnTimelineEntry
           key={timelineEntryKey(entry, index)}
@@ -1313,6 +1285,7 @@ function DeepThinking(props: { text: string; live: boolean; settledText?: string
   return (
     <ChatReasoning
       className="maka-deep-thinking"
+      data-maka-transcript-boundary="large"
       label={label}
       previewText={reasoningPreviewText(props.text)}
       isStreaming={props.live}

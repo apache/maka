@@ -559,6 +559,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
   let requestedDrain = false;
   const goalChangeListeners = new Set<() => void>();
   const rootPort: HostMessageRootPort = {
+    readLatestRootTurnLineage: async (identity) => identity,
     readSessionHeader: (sessionId) => requireCoordinator(coordinator).readSessionHeader(sessionId),
     readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
     claimStopFence: (input, commitQueueFence, lease) =>
@@ -574,6 +575,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     hostEpoch,
     root: rootPort,
     durableProof: {
+      readLogicalExecution: async () => undefined,
       readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
         stores.agentRunStore.readRootTurnSourceMessageReceipt(sessionId, messageId),
       readImmutableSteeringMessageProof: (sessionId, messageId) =>

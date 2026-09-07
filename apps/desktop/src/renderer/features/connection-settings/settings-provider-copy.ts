@@ -183,6 +183,7 @@ const zhCopy = {
     modelKeyAria: (name: string) => `${name} 模型密钥`,
   },
   shared: {
+    connectionStale: '连接状态已更新，请刷新列表后再删除。',
     actionFallback: '模型连接服务暂时不可用，请稍后重试。', rateLimit: '当前账号或模型服务触发速率限制，请稍后重试。',
     timeout: '请求超时，请检查网络或代理后重试。', unavailable: '模型服务暂时不可用，请稍后重试。',
     network: '网络错误，请检查服务地址或代理设置后重试。', statusUnavailable: '连接测试状态暂时无法显示，请重新测试。',
@@ -214,7 +215,7 @@ const zhCopy = {
     cardAria: (name: string, description: string) => `添加模型供应商：${name}，${description}`,
   },
   add: {
-    invalidSlug: '连接标识格式不正确', duplicateSlug: '连接标识已存在', cloudflareAccount: '请填写 Cloudflare Account ID', endpointRequired: '这个供应商需要填写服务地址',
+    slugIssues: { required: '请填写连接标识', format: '连接标识只能包含小写字母、数字和连字符', too_long: '连接标识不能超过 64 个字符' }, duplicateSlug: '连接标识已存在', cloudflareAccount: '请填写 Cloudflare Account ID', endpointRequired: '这个供应商需要填写服务地址',
     accountLogin: '请到账号连接完成登录；登录成功后会自动创建模型连接。',
     apiKeyPlaceholder: '输入或粘贴 API Key', cancel: '取消', accountTitle: '使用账号连接登录',
     advancedRequest: '高级请求设置', expandAdvancedRequest: '展开高级请求设置', collapseAdvancedRequest: '收起高级请求设置',
@@ -349,6 +350,7 @@ const zhTwCopy = {
     modelKeyAria: (name: string) => `${name} 模型金鑰`,
   },
   shared: {
+    connectionStale: '連線狀態已更新，請重新整理清單後再刪除。',
     actionFallback: '模型連線服務暫時不可用，請稍後重試。', rateLimit: '目前帳號或模型服務觸發速率限制，請稍後重試。',
     timeout: '請求超時，請檢查網路或代理後重試。', unavailable: '模型服務暫時不可用，請稍後重試。',
     network: '網路錯誤，請檢查服務地址或代理設定後重試。', statusUnavailable: '連線測試狀態暫時無法顯示，請重新測試。',
@@ -378,7 +380,7 @@ const zhTwCopy = {
     cardAria: (name: string, description: string) => `新增模型供應商：${name}，${description}`,
   },
   add: {
-    invalidSlug: '連線標識格式不正確', duplicateSlug: '連線標識已存在', cloudflareAccount: '請填寫 Cloudflare Account ID', endpointRequired: '這個供應商需要填寫服務地址',
+    slugIssues: { required: '請填寫連線標識', format: '連線標識只能包含小寫字母、數字和連字號', too_long: '連線標識不能超過 64 個字元' }, duplicateSlug: '連線標識已存在', cloudflareAccount: '請填寫 Cloudflare Account ID', endpointRequired: '這個供應商需要填寫服務地址',
     accountLogin: '請到帳號連線完成登入；登入成功後會自動建立模型連線。',
     apiKeyPlaceholder: '輸入或貼上 API Key', cancel: '取消', accountTitle: '使用帳號連線登入',
     advancedRequest: '高階請求設定', expandAdvancedRequest: '展開高階請求設定', collapseAdvancedRequest: '收起高階請求設定',
@@ -514,6 +516,7 @@ const enCopy: ProviderSettingsCopy = {
     modelKeyAria: (name: string) => `${name} model key`,
   },
   shared: {
+    connectionStale: 'The connection changed while deleting. Refresh the list and try again.',
     actionFallback: 'The model connection service is temporarily unavailable. Try again later.', rateLimit: 'This account or model service is rate-limited. Try again later.',
     timeout: 'The request timed out. Check the network or proxy and try again.', unavailable: 'The model service is temporarily unavailable. Try again later.',
     network: 'Network error. Check the service URL or proxy settings and try again.', statusUnavailable: 'The connection test status is temporarily unavailable. Test again.',
@@ -543,7 +546,7 @@ const enCopy: ProviderSettingsCopy = {
     cardAria: (name: string, description: string) => `Add model provider: ${name}; ${description}`,
   },
   add: {
-    invalidSlug: 'The connection identifier format is invalid', duplicateSlug: 'Connection identifier already exists', cloudflareAccount: 'Enter the Cloudflare Account ID', endpointRequired: 'This provider requires a service URL',
+    slugIssues: { required: 'Enter a connection identifier', format: 'Connection identifiers use lowercase letters, digits, and hyphens', too_long: 'Connection identifiers are at most 64 characters' }, duplicateSlug: 'Connection identifier already exists', cloudflareAccount: 'Enter the Cloudflare Account ID', endpointRequired: 'This provider requires a service URL',
     accountLogin: 'Complete sign-in under account connections. A model connection is created automatically afterward.',
     apiKeyPlaceholder: 'Enter or paste API key', cancel: 'Cancel', accountTitle: 'Sign in with an account connection',
     advancedRequest: 'Advanced request settings', expandAdvancedRequest: 'Show advanced request settings', collapseAdvancedRequest: 'Hide advanced request settings',
