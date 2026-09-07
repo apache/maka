@@ -3068,8 +3068,9 @@ const workbarLayoutWithOneFace: WorkbarLayoutState = reduceWorkbarLayout(
   { type: 'open', placement: 'right', tab: { id: 'workbar:files', kind: 'files' } },
 );
 
-function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void } = {}) {
+function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; workbarWidth?: number } = {}) {
   const [layout, dispatch] = useReducer(reduceWorkbarLayout, workbarLayoutWithOneFace);
+  const workbarWidth = props.workbarWidth ?? layout.rightWidth;
   const rightCollapsed = isSessionWorkbarCollapsed(layout);
   const collapseRight = (collapsed: boolean) =>
     dispatch({ type: 'collapse', placement: 'right', collapsed });
@@ -3079,7 +3080,7 @@ function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void } = {
         <ComposedShell
           motionEnabled
           workbarCollapsed={rightCollapsed}
-          workbarWidth={layout.rightWidth}
+          workbarWidth={workbarWidth}
           session={props.longTitle ? { name: '主对话标题与右侧工作栏的宽度和信息层级验证 Long conversation title' } : undefined}
           onShare={props.onShare}
           onToggleWorkbar={() => collapseRight(!rightCollapsed)}
@@ -3320,6 +3321,68 @@ export const WorkbarCollapseKeepsOneToggleInPlace: Story = {
   },
 };
 
+
+const narrowWorkbarShare = fn();
+
+export const NarrowWorkbarClearsTitlebarReserve: Story = {
+  render: () => (
+    <WorkbarInShell
+      longTitle
+      onShare={narrowWorkbarShare}
+      workbarWidth={600}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    narrowWorkbarShare.mockClear();
+    const canvas = within(canvasElement);
+    const titlebar = canvasElement.querySelector<HTMLElement>('.maka-window-titlebar');
+    const identity = canvasElement.querySelector<HTMLElement>(
+      '[data-maka-contract="titlebar-identity"]',
+    );
+    const detail = canvasElement.querySelector<HTMLElement>('.maka-detail-with-artifacts');
+    const workbar = canvasElement.querySelector<HTMLElement>(
+      '.maka-session-workbar[data-placement="right"]:not([data-collapsed])',
+    );
+    if (!titlebar || !identity || !detail || !workbar) {
+      throw new Error('the titlebar, identity, detail area, or right workbar is missing');
+    }
+
+    // A bottom Workbar must not take width from the title. Share can remain
+    // clickable even when a stale right-side reserve squeezes the title away.
+    await userEvent.click(canvas.getByRole('button', { name: '收起任务工作栏' }));
+    const restore = await canvas.findByRole('button', { name: '展开任务工作栏' });
+    await waitFor(() => expect(workbar).not.toBeVisible());
+    const collapsedIdentityWidth = identity.getBoundingClientRect().width;
+    expect(collapsedIdentityWidth).toBeGreaterThan(0);
+
+    await userEvent.click(restore);
+    await waitFor(() => {
+      expect(workbar).toBeVisible();
+      // Collapsing adds a titlebar toggle, so expanding may give space back.
+      expect(identity.getBoundingClientRect().width).toBeGreaterThanOrEqual(
+        collapsedIdentityWidth - 1,
+      );
+    });
+
+    const share = identity.querySelector<HTMLButtonElement>('[aria-label$="任务操作"]')!;
+    await waitFor(() =>
+      expect(share.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+        titlebar.getBoundingClientRect().left,
+      ),
+    );
+    expect(workbar.getBoundingClientRect().width).toBeCloseTo(
+      detail.getBoundingClientRect().width,
+      0,
+    );
+    expect(share.getBoundingClientRect().right).toBeLessThanOrEqual(
+      titlebar.getBoundingClientRect().right,
+    );
+
+    await userEvent.click(share);
+    await userEvent.click(await within(canvasElement.ownerDocument.body).findByRole('menuitem', { name: '分享任务' }));
+    expect(narrowWorkbarShare).toHaveBeenCalledOnce();
+  },
+};
 
 // Real path (#3587): an explicit compaction runs as its own host Turn. The
 // transcript shows a live "正在压缩上下文…" row driven by the live Turn snapshot
