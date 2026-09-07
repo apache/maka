@@ -176,9 +176,9 @@ export interface RuntimeHostSessionObservationIpcDeps {
     RuntimeHostSessionObservationRegistry,
     | 'loadTranscriptAround'
     | 'loadTranscriptBefore'
+    | 'loadTranscriptAfter'
     | 'observe'
     | 'openTranscript'
-    | 'releaseTarget'
   >;
   resolveSideConversation(sessionId: string): Promise<boolean>;
 }
@@ -187,14 +187,13 @@ export interface RuntimeHostSessionObservationIpcDeps {
 export function registerRuntimeHostSessionObservationIpc(
   deps: RuntimeHostSessionObservationIpcDeps,
   ipcMain: ReconnectableReadIpcMain,
-  enableE2eControls = false,
 ): void {
   handleReconnectableRead(
     ipcMain,
     'sessions:observe',
     async (event, sessionId: unknown, observerId: unknown) => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
-      await deps.observations.observe(
+      return deps.observations.observe(
         normalizedSessionId,
         requiredId(observerId, 'Session observer'),
         event.sender as RuntimeHostSessionObserverTarget,
@@ -223,11 +222,12 @@ export function registerRuntimeHostSessionObservationIpc(
       event.sender.id,
     );
   });
-  if (enableE2eControls) {
-    ipcMain.handle('sessions:e2e:release-renderer-observations', (event) =>
-      deps.observations.releaseTarget(event.sender.id),
+  ipcMain.handle('sessions:transcript:load-after', async (event, input: unknown) => {
+    await deps.observations.loadTranscriptAfter(
+      normalizeTranscriptRangeRequest(input),
+      event.sender.id,
     );
-  }
+  });
 }
 
 /**

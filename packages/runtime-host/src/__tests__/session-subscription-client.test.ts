@@ -102,7 +102,7 @@ test('registers a subscription before receiving a coalesced first frame', async 
   );
 });
 
-test('delivers Runtime Resource PTY frames without closing the connection', async () => {
+test('unobserved PTY bytes do not consume the Session iterator or sequence', async () => {
   await withProtocolPeer(
     async (transport, hostEpoch, rootId) => {
       const request = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
@@ -111,7 +111,6 @@ test('delivers Runtime Resource PTY frames without closing the connection', asyn
         kind: 'subscription.runtime_resource_pty_data' as const,
         hostEpoch,
         subscriptionId: opened.subscriptionId,
-        sequence: 1,
         sessionId: 'session-1',
         ref: 'maka://runtime/background-tasks/shell-1',
         ptySequence: 7,
@@ -127,6 +126,7 @@ test('delivers Runtime Resource PTY frames without closing the connection', asyn
             result: opened,
           }),
           encodeLocalIpcTestFrame(frame),
+          encodeLocalIpcTestFrame(deltaFrame(hostEpoch, opened.subscriptionId, 1)),
         ]),
       );
       await answerClose(transport, opened.subscriptionId);
@@ -138,20 +138,47 @@ test('delivers Runtime Resource PTY frames without closing the connection', asyn
       });
       assert.deepEqual(await subscription[Symbol.asyncIterator]().next(), {
         done: false,
-        value: {
-          kind: 'subscription.runtime_resource_pty_data',
-          hostEpoch: connection.hostEpoch,
-          subscriptionId: subscription.subscriptionId,
-          sequence: 1,
-          sessionId: 'session-1',
-          ref: 'maka://runtime/background-tasks/shell-1',
-          ptySequence: 7,
-          data: 'ready',
-        },
+        value: deltaFrame(connection.hostEpoch, subscription.subscriptionId, 1),
       });
       await subscription.close();
     },
   );
+});
+
+test('PTY callbacks bypass a stalled Session iterator and isolate consumer failures', async () => {
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-1'),
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected read');
+    },
+  );
+  let delivered = 0;
+  subscription.subscribePtyData(() => {
+    throw new Error('broken display');
+  });
+  const unsubscribe = subscription.subscribePtyData(() => {
+    delivered += 1;
+  });
+  for (let ptySequence = 1; ptySequence <= 1000; ptySequence += 1) {
+    subscription.accept({
+      kind: 'subscription.runtime_resource_pty_data',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sessionId: 'session-1',
+      ref: 'maka://runtime/background-tasks/shell-1',
+      ptySequence,
+      data: 'bytes',
+    });
+  }
+  unsubscribe();
+  assert.equal(delivered, 1000);
+  subscription.accept(deltaFrame('host-1', 'subscription-1', 1));
+  assert.deepEqual(await subscription.next(), {
+    done: false,
+    value: deltaFrame('host-1', 'subscription-1', 1),
+  });
+  await subscription.close();
 });
 
 test('isolates a sequence gap and continues requests on the same connection', async () => {

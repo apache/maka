@@ -30,17 +30,37 @@ export type RuntimeHostRetirementPreparation = OperationOutput<'host.upgrade.pre
  * transport detail here so lifecycle owners can model the operation as
  * retirement instead of spreading update-specific authority.
  */
-export function prepareConnectedRuntimeHostRetirement(
+export async function prepareConnectedRuntimeHostRetirement(
   connection: RuntimeHostConnection,
   mode: RuntimeHostRetirementMode,
   timeoutMs?: number,
+  signal?: AbortSignal,
 ): Promise<RuntimeHostRetirementPreparation> {
-  return connection.request(
-    'host.upgrade.prepare',
-    {
-      expectedHostEpoch: connection.hostEpoch,
-      allowInterruptActiveTasks: mode === 'interrupt_active_work',
-    },
-    timeoutMs,
-  );
+  signal?.throwIfAborted();
+  // Retirement uses a dedicated lifecycle connection. Closing it cancels the
+  // Host's reversible preparation; a committed retirement remains committed.
+  const cancel = () => {
+    void connection.close().catch(() => undefined);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    return await connection.request(
+      'host.upgrade.prepare',
+      {
+        expectedHostEpoch: connection.hostEpoch,
+        allowInterruptActiveTasks: mode === 'interrupt_active_work',
+        ...(mode === 'refuse_active_work' && connection.cooperativeHandoff
+          ? { allowCooperativeHandoff: true }
+          : {}),
+      },
+      timeoutMs,
+    );
+  } catch (error) {
+    // Cancellation is not an unavailable protocol: lifecycle fallback must
+    // never turn this deliberate disconnect into supervisor interruption.
+    signal?.throwIfAborted();
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
 }

@@ -18,6 +18,7 @@
  */
 
 import type { SessionSummary } from '@maka/core/session';
+import type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
 import type { LiveTurnProjection } from '@maka/ui';
 
 /**
@@ -42,10 +43,12 @@ import type { LiveTurnProjection } from '@maka/ui';
  */
 export function settledSessionTransientIds(options: {
   activeId?: string;
-  sessions: readonly SessionSummary[];
+  sessions: readonly (SessionSummary & Pick<DesktopSessionSummary, 'localState'>)[];
   liveTurnBySession: Readonly<Record<string, LiveTurnProjection>>;
 }): string[] {
   return options.sessions.flatMap((session) => {
+    // Missing live fields in an offline/local catalog are not Host settlement evidence.
+    if (session.localState) return [];
     // The live runs first: a persisted status can disagree with them in both
     // directions — it is written after the run starts and can be left behind
     // entirely by a crash — so anything the runtime still reports as running
@@ -68,7 +71,7 @@ export function settledSessionTransientIds(options: {
  */
 export function reconcileSettledSessionTransients(options: {
   activeId?: string;
-  sessions: readonly SessionSummary[];
+  sessions: readonly (SessionSummary & Pick<DesktopSessionSummary, 'localState'>)[];
   observedLiveTurnBySession: Readonly<Record<string, LiveTurnProjection>>;
   clearTurnTransientStateIfCurrent: (
     sessionId: string,

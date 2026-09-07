@@ -23,6 +23,7 @@ import '../styles/site.css';
 import { Image } from 'astro:assets';
 import logo from '../../../apps/desktop/assets/app-icons/sky.png';
 import incubator from '../assets/incubator.png';
+import Preview from '../components/Preview.astro';
 import { links } from '../copy/links';
 import type { Copy, Locale } from '../copy/types';
 
@@ -70,6 +71,7 @@ const asf = [
     <title>{title}</title>
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
+    <Preview copy={copy} url={canonical} title={title} description={description} />
     {locales.map((locale) => <link rel="alternate" hreflang={locale} href={new URL(href(locale), Astro.site)} />)}
     <link rel="alternate" hreflang="x-default" href={new URL(href('en'), Astro.site)} />
     <link rel="icon" type="image/png" href={logo.src} />

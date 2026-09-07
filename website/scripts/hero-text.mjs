@@ -34,15 +34,24 @@ const entities = {
   '&nbsp;': ' ',
 };
 
-export function heroText(html) {
-  const start = html.indexOf('<header class="hero">');
-  if (start === -1) throw new Error('no hero header in the page');
-  const end = html.indexOf('</header>', start);
-  return html
-    .slice(start, end)
-    .replace(hidden, ' ')
+// The social preview image keeps the headline above the scene, so it has
+// this on top of what the README hero has.
+export function headlineText(html) {
+  const [, headline] = html.match(/<h1 class="display">(.*?)<\/h1>/su) ?? [];
+  if (!headline) throw new Error('no hero headline in the page');
+  return text(headline);
+}
+
+const text = (html) =>
+  html
     .replace(/<[^>]+>/gu, ' ')
     .replace(/&[a-z#0-9]+;/gu, (entity) => entities[entity] ?? entity)
     .replace(/\s+/gu, ' ')
     .trim();
+
+export function heroText(html) {
+  const start = html.indexOf('<header class="hero">');
+  if (start === -1) throw new Error('no hero header in the page');
+  const end = html.indexOf('</header>', start);
+  return text(html.slice(start, end).replace(hidden, ' '));
 }

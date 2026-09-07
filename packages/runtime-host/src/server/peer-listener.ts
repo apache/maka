@@ -39,8 +39,11 @@ import type {
 } from './listener-set.js';
 
 const MAX_PENDING_AUTHENTICATIONS = 16;
-const MAX_ACTIVE_STREAMS = 64;
-const MAX_ACTIVE_STREAMS_PER_PEER = 4;
+// A Desktop shares one PeerId across 128 Guest mounts and 32 Host profiles.
+// Authentication, not a transport identity, determines the small abuse quota.
+const MAX_ACTIVE_STREAMS = 256;
+const MAX_ACTIVE_STREAMS_PER_PEER = 160;
+const MAX_ACTIVE_STREAMS_PER_PRINCIPAL = 4;
 
 export interface RuntimeHostPeerListenerConfiguration {
   readonly nativePath: string;
@@ -89,7 +92,7 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
   readonly #accessAuthority: RuntimeHostAccessAuthority;
   readonly #accept: (connection: RuntimeHostListenerConnection) => void;
   readonly #transports = new Set<FramedByteStreamTransport>();
-  readonly #streams = new Set<RuntimeHostPeerNativeStream>();
+  readonly #streams = new Map<RuntimeHostPeerNativeStream, RuntimeHostConnectionAuthority>();
   readonly #sessions = new Map<
     string,
     { stream: ResumablePeerStream; authority: RuntimeHostConnectionAuthority }
@@ -217,11 +220,29 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
         stream.abort();
         return;
       }
-      const peerStreams = [...this.#streams].filter(
-        (admitted) => admitted.peerId === stream.peerId,
-      ).length;
-      if (this.#streams.size >= MAX_ACTIVE_STREAMS || peerStreams >= MAX_ACTIVE_STREAMS_PER_PEER) {
-        stream.abort();
+      let peerStreams = 0;
+      let principalStreams = 0;
+      for (const [admitted, owner] of this.#streams) {
+        if (admitted.peerId === stream.peerId) peerStreams++;
+        if (
+          owner.principalKind === authority.principalKind &&
+          owner.principalId === authority.principalId
+        )
+          principalStreams++;
+      }
+      if (
+        this.#streams.size >= MAX_ACTIVE_STREAMS ||
+        peerStreams >= MAX_ACTIVE_STREAMS_PER_PEER ||
+        principalStreams >= MAX_ACTIVE_STREAMS_PER_PRINCIPAL
+      ) {
+        // Legacy peers cannot distinguish capacity from credential rejection.
+        // Keep their previous EOF behavior, but give v2 clients a typed result.
+        if (resume) {
+          await writeRuntimeHostPeerAuthenticationResult(stream, false, {
+            reason: 'capacity_exceeded',
+          });
+          await stream.close();
+        } else stream.abort();
         return;
       }
       const logical = resume
@@ -236,7 +257,7 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
         });
       }
       const admittedStream = logical ?? stream;
-      this.#streams.add(admittedStream);
+      this.#streams.set(admittedStream, authority);
       let accepted = false;
       try {
         await writeRuntimeHostPeerAuthenticationResult(

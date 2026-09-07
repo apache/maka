@@ -22,7 +22,9 @@ import { describe, test } from 'node:test';
 import {
   ARTIFACT_ENTITY_ID_MAX_CHARS,
   ARTIFACT_TURN_KEY_MAX_CHARS,
+  ARTIFACT_SOURCES,
   canUserDeleteArtifact,
+  isArtifactChildResultOutput,
   isArtifactSharedSessionReadable,
   isArtifactUserVisible,
   isArtifactTurnKey,
@@ -56,28 +58,27 @@ describe('Artifact turn key', () => {
   });
 });
 
-describe('Artifact user-delete policy', () => {
-  test('protects durable evidence while allowing ordinary and unattributed artifacts', () => {
-    assert.equal(canUserDeleteArtifact({ source: 'deep_research' }), false);
-    assert.equal(canUserDeleteArtifact({ source: 'user_upload' }), true);
-    assert.equal(canUserDeleteArtifact({ source: undefined }), true);
-  });
-});
-
 describe('Artifact source policy', () => {
+  test('keeps workflow-owned evidence out of independent user deletion', () => {
+    for (const source of ARTIFACT_SOURCES) {
+      assert.equal(
+        canUserDeleteArtifact({ source }),
+        source === 'tool_result' || source === 'user_upload',
+        source,
+      );
+    }
+  });
+  test('includes produced outputs in child results without leaking internal artifacts', () => {
+    assert.equal(isArtifactChildResultOutput({ source: 'tool_result' }), true);
+    assert.equal(isArtifactChildResultOutput({ source: 'subagent_writeback' }), true);
+    assert.equal(isArtifactChildResultOutput({ source: 'tool_result_archive' }), false);
+    assert.equal(isArtifactChildResultOutput({ source: 'user_upload' }), false);
+  });
+
   test('keeps projection artifacts internal, durable, and readable in shared sessions', () => {
     const projection = { source: 'tool_result_projection' as const };
 
-    assert.equal(canUserDeleteArtifact(projection), false);
     assert.equal(isArtifactUserVisible(projection), false);
     assert.equal(isArtifactSharedSessionReadable(projection), true);
-  });
-
-  test('preserves unattributed artifact defaults', () => {
-    const unattributed = { source: undefined };
-
-    assert.equal(canUserDeleteArtifact(unattributed), true);
-    assert.equal(isArtifactUserVisible(unattributed), true);
-    assert.equal(isArtifactSharedSessionReadable(unattributed), false);
   });
 });

@@ -175,6 +175,15 @@
   margin: 0;
 }
 
+.maka-message-delivery {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--spacing-2);
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+
 /* The meta row holds two different kinds of thing, so it gets two different
    rules. The time is content — a fact about the message — and stays put; gating
    it on hover is what hid it from touch and from assistive tech. The actions are

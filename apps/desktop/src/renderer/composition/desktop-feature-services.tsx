@@ -18,6 +18,9 @@
  */
 
 import type { ReactNode } from 'react';
+import { ConversationServicesProvider } from '../features/conversation';
+import { createDesktopConversationServices } from '../platform/desktop/create-conversation-services';
+import { AppUpdateServicesProvider } from '../features/app-update/index.js';
 import { ConnectionSettingsServicesProvider } from '../features/connection-settings';
 import { GoalServicesProvider } from '../features/goals';
 import { ModuleHubServicesProvider } from '../features/module-hub';
@@ -27,6 +30,7 @@ import { SessionNavigationServicesProvider } from '../features/session-navigatio
 import { SessionSettingsServicesProvider } from '../features/session-settings';
 import { TaskEntryServicesProvider } from '../features/task-entry';
 import { WorkbarServicesProvider } from '../features/workbar';
+import { createDesktopAppUpdateServices } from '../platform/desktop/create-app-update-services';
 import { createDesktopGoalServices } from '../platform/desktop/create-goal-services';
 import { createDesktopConnectionSettingsServices } from '../platform/desktop/create-connection-settings-services';
 import { createDesktopModuleHubServices } from '../platform/desktop/create-module-hub-services';
@@ -39,6 +43,8 @@ import { createDesktopWorkbarServices } from '../platform/desktop/create-workbar
 
 export function createDesktopFeatureServices() {
   return {
+    appUpdate: createDesktopAppUpdateServices(),
+    conversation: createDesktopConversationServices(),
     connectionSettings: createDesktopConnectionSettingsServices(),
     goal: createDesktopGoalServices(),
     moduleHub: createDesktopModuleHubServices(),
@@ -56,24 +62,28 @@ export function DesktopFeatureServicesProvider(props: {
   readonly children?: ReactNode;
 }) {
   return (
-    <ConnectionSettingsServicesProvider services={props.services.connectionSettings}>
-      <RuntimeHostManagementServicesProvider services={props.services.runtimeHostManagement}>
-        <SessionCollaborationServicesProvider services={props.services.sessionCollaboration}>
-        <SessionNavigationServicesProvider services={props.services.sessionNavigation}>
-          <SessionSettingsServicesProvider services={props.services.sessionSettings}>
-            <TaskEntryServicesProvider services={props.services.taskEntry}>
-              <ModuleHubServicesProvider services={props.services.moduleHub}>
-                <GoalServicesProvider services={props.services.goal}>
-                  <WorkbarServicesProvider services={props.services.workbar}>
-                    {props.children}
-                  </WorkbarServicesProvider>
-                </GoalServicesProvider>
-              </ModuleHubServicesProvider>
-            </TaskEntryServicesProvider>
-          </SessionSettingsServicesProvider>
-        </SessionNavigationServicesProvider>
-        </SessionCollaborationServicesProvider>
-      </RuntimeHostManagementServicesProvider>
-    </ConnectionSettingsServicesProvider>
+    <AppUpdateServicesProvider services={props.services.appUpdate}>
+      <ConnectionSettingsServicesProvider services={props.services.connectionSettings}>
+        <RuntimeHostManagementServicesProvider services={props.services.runtimeHostManagement}>
+          <SessionCollaborationServicesProvider services={props.services.sessionCollaboration}>
+            <SessionNavigationServicesProvider services={props.services.sessionNavigation}>
+              <SessionSettingsServicesProvider services={props.services.sessionSettings}>
+                <TaskEntryServicesProvider services={props.services.taskEntry}>
+                  <ModuleHubServicesProvider services={props.services.moduleHub}>
+                    <GoalServicesProvider services={props.services.goal}>
+                      <WorkbarServicesProvider services={props.services.workbar}>
+                        <ConversationServicesProvider services={props.services.conversation}>
+                          {props.children}
+                        </ConversationServicesProvider>
+                      </WorkbarServicesProvider>
+                    </GoalServicesProvider>
+                  </ModuleHubServicesProvider>
+                </TaskEntryServicesProvider>
+              </SessionSettingsServicesProvider>
+            </SessionNavigationServicesProvider>
+          </SessionCollaborationServicesProvider>
+        </RuntimeHostManagementServicesProvider>
+      </ConnectionSettingsServicesProvider>
+    </AppUpdateServicesProvider>
   );
 }

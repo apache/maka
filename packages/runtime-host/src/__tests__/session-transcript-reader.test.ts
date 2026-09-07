@@ -245,7 +245,7 @@ test('stops scanning a control-only ledger at the cumulative immutable event lim
   const stores = {
     agentRunStore: {},
     runtimeEventStore: {
-      listSessionInvocations: async () => [testInvocation(sessionId)],
+      readRunInvocation: async () => testInvocation(sessionId),
       readRuntimeEventsBounded: async () => ({ status: 'limit_exceeded' as const }),
       scanRuntimeEvents: async (
         _sessionId: string,
@@ -298,7 +298,7 @@ test('stops an oversized active projection before retaining the full RuntimeEven
   const stores = {
     agentRunStore: {},
     runtimeEventStore: {
-      listSessionInvocations: async () => [testInvocation(sessionId)],
+      readRunInvocation: async () => testInvocation(sessionId),
       scanRuntimeEvents: async (
         _sessionId: string,
         _runId: string,

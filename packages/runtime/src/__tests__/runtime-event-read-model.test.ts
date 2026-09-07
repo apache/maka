@@ -406,8 +406,8 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       type: 'turn_state',
       status: 'completed',
       parentTurnId: 'parent-turn',
-      partialOutputRetained: true,
     });
+    assert.equal(deriveTurnRecords(out.messages)[0]?.partialOutputRetained, true);
     assert.deepStrictEqual(out.diagnostics, []);
   });
 
@@ -1588,7 +1588,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
         status: 'failed',
         parentTurnId: 'parent-turn',
         errorClass: 'tool_failed',
-        partialOutputRetained: false,
       },
     ]);
     assert.deepStrictEqual(out.diagnostics, []);
@@ -1630,7 +1629,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
         status: 'failed',
         parentTurnId: 'parent-turn',
         errorClass: 'context_overflow',
-        partialOutputRetained: false,
       },
     );
     assert.deepStrictEqual(out.diagnostics, []);
@@ -1691,7 +1689,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
         parentTurnId: 'parent-turn',
         abortedAt: ts + 9,
         abortSource: 'renderer.stop_button',
-        partialOutputRetained: false,
       },
     ]);
     assert.deepStrictEqual(out.diagnostics, []);
@@ -1852,6 +1849,18 @@ type ActionCoverageSamples = {
 };
 
 const ACTION_COVERAGE_SAMPLES: ActionCoverageSamples = {
+  handoffPause: {
+    action: {
+      protocol: 'runtime_handoff_pause_v1',
+      handoffId: 'handoff',
+      hostEpoch: 'host',
+      remainingSteps: null,
+      rootRunId: 'root',
+      successorRunId: 'next',
+      successorInvocationId: 'next',
+      claimId: 'claim',
+    },
+  },
   // `stateDelta` is an open record, so only named shapes are claimed and this
   // entry covers the field, not its contents. A new key inside a state delta is
   // out of reach of any contract keyed on the action surface.
