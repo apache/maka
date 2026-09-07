@@ -26,14 +26,15 @@ const CJK = /[\u3400-\u9fff]/u;
 
 test('resolves English park copy for every known reason with no Chinese (#4489)', () => {
   const reasons = [
-    'dangling_tool_state',
-    'pending_permission',
-    'workspace_identity_mismatch',
-    'tool_catalog_mismatch',
-    'provider_replay_unsupported',
-    'runtime_lineage_claim_mismatch',
+    'source_run_unreadable',
+    'safety_check_failed',
+    'continuation_already_exists',
+    'continuation_repair_required',
     'continuation_started_indeterminate',
     'resume_feature_disabled',
+    'continuation_authority_unavailable',
+    'safety_observation_unavailable',
+    'session_busy',
   ];
   const copy = resumeParkToastCopy(reasons, 'en');
   const fallback = resumeParkToastCopy([], 'en').description;
@@ -49,10 +50,10 @@ test('resolves English park copy for every known reason with no Chinese (#4489)'
 });
 
 test('keeps the Chinese copy for zh-CN', () => {
-  const copy = resumeParkToastCopy(['pending_permission'], 'zh-CN');
+  const copy = resumeParkToastCopy(['safety_check_failed'], 'zh-CN');
 
   assert.equal(copy.title, '暂时无法继续这一轮');
-  assert.equal(copy.description, '上次执行仍在等待权限确认。');
+  assert.equal(copy.description, '继续执行所需的安全检查未通过。');
 });
 
 test('resolves the missing-candidate special case per locale', () => {
@@ -71,6 +72,13 @@ test('falls back to the generic description for unknown reasons and dedupes repe
   assert.equal(unknown.title, 'This round cannot be resumed yet');
   assert.equal(unknown.description, 'This task does not currently meet the conditions to continue.');
 
-  const deduped = resumeParkToastCopy(['pending_permission', 'pending_permission'], 'zh-CN');
-  assert.equal(deduped.description, '上次执行仍在等待权限确认。');
+  const deduped = resumeParkToastCopy(['safety_check_failed', 'safety_check_failed'], 'zh-CN');
+  assert.equal(deduped.description, '继续执行所需的安全检查未通过。');
+});
+
+test('does not carry copy for Runtime-internal reasons that never reach a Client', () => {
+  const fallback = resumeParkToastCopy([], 'en').description;
+  for (const reason of ['dangling_tool_state', 'pending_permission', 'runtime_lineage_cycle']) {
+    assert.equal(resumeParkToastCopy([reason], 'en').description, fallback, reason);
+  }
 });

@@ -43,7 +43,10 @@ import {
   runtimeInvocationOutcome,
   type RuntimeInvocationRecord,
 } from '@maka/core/runtime-invocation';
-import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
+import {
+  seedInvocation,
+  testInvocationOpenedEvent,
+} from '@maka/runtime/test-only/invocation-fixture';
 import {
   aggregateMessageContents,
   messageContentDigest,
@@ -280,6 +283,114 @@ export class ExecutionFixture {
         // The opening fact is event 1 of the invocation, ahead of the user event,
         // any tool pair, and the terminal event.
         sourceRuntimeEventHighWater: requiredToolName ? 5 : 3,
+      };
+    } finally {
+      await stores?.sessionStore.close?.();
+      await owner.close();
+    }
+  }
+
+  async seedUndispatchedToolCallContinuationSource(requiredToolName: string): Promise<{
+    sourceRunId: string;
+    sourceTurnId: string;
+    sourceRuntimeEventHighWater: number;
+  }> {
+    const owner = await tryAcquireInteractiveRootOwner(this.capability);
+    assert.ok(owner);
+    if (!owner) throw new Error('Unable to acquire execution root for continuation setup');
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
+    try {
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const sourceInvocationId = randomUUID();
+      const sourceRunId = randomUUID();
+      const sourceTurnId = randomUUID();
+      const createdAt = Date.now();
+      const workspace = await resolveWorkspaceIdentity({ path: this.root });
+      const opened = testInvocationOpenedEvent({
+        sessionId: this.sessionId,
+        invocationId: sourceInvocationId,
+        runId: sourceRunId,
+        turnId: sourceTurnId,
+        openedAt: createdAt,
+        opening: {
+          route: {
+            provenance: 'runtime',
+            backendKind: 'fake',
+            llmConnectionId: FAKE_CONNECTION_ID,
+            llmConnectionSlug: 'fake',
+            modelId: 'fake-model',
+          },
+          configuration: {
+            cwd: this.root,
+            workspaceIdentity: workspace.workspaceIdentity,
+            permissionMode: 'ask',
+            collaborationMode: 'agent',
+            orchestrationMode: 'default',
+            orchestrationSource: 'session',
+            toolMode: 'direct',
+          },
+        },
+      });
+      const sourceRun = {
+        sessionId: this.sessionId,
+        invocationId: sourceInvocationId,
+        runId: sourceRunId,
+        turnId: sourceTurnId,
+      };
+      await stores.runtimeEventStore.appendRuntimeEvent(this.sessionId, sourceRunId, {
+        ...opened,
+        actions: { runtimeProtocol: { toolBoundary: TOOL_BOUNDARY_PROTOCOL_V1 } },
+      });
+      await stores.runtimeEventStore.appendRuntimeEvent(this.sessionId, sourceRunId, {
+        id: randomUUID(),
+        sessionId: this.sessionId,
+        invocationId: sourceInvocationId,
+        runId: sourceRunId,
+        turnId: sourceTurnId,
+        ts: createdAt + 1,
+        partial: false,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'Continue this interrupted request.' },
+      });
+      const toolCallId = randomUUID();
+      await stores.runtimeEventStore.appendRuntimeEvent(this.sessionId, sourceRunId, {
+        id: randomUUID(),
+        sessionId: this.sessionId,
+        invocationId: sourceInvocationId,
+        runId: sourceRunId,
+        turnId: sourceTurnId,
+        ts: createdAt + 2,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: toolCallId, name: requiredToolName, args: {} },
+        refs: { toolCallId },
+      });
+      const terminalAt = createdAt + 3;
+      const terminal = buildRecoveredTerminalRuntimeEvent({
+        id: randomUUID(),
+        run: sourceRun,
+        status: 'failed',
+        ts: terminalAt,
+        failureClass: 'app_restarted',
+        recoveryReason: 'test_undispatched_tool_call_source',
+      });
+      await commitTerminalRunWithRuntimeFact({
+        runtimeEventStore: stores.runtimeEventStore,
+        newId: randomUUID,
+        sessionId: this.sessionId,
+        runId: sourceRunId,
+        turnId: sourceTurnId,
+        status: 'failed',
+        ts: terminalAt,
+        terminalEvent: terminal,
+        failureClass: 'app_restarted',
+      });
+      return {
+        sourceRunId,
+        sourceTurnId,
+        sourceRuntimeEventHighWater: 4,
       };
     } finally {
       await stores?.sessionStore.close?.();

@@ -277,6 +277,35 @@ test('startup parks a provider-indeterminate continuation when resume is disable
   });
 });
 
+test('a source run whose tool call never dispatched resumes instead of parking', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const source = await fixture.seedUndispatchedToolCallContinuationSource(
+      mcpProxyToolName('resume_fixture', 'inspect'),
+    );
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    try {
+      assert.deepEqual(
+        await client.request('turn.resume.query', {
+          sessionId: fixture.sessionId,
+          sourceRunId: source.sourceRunId,
+          expectedRuntimeEventHighWater: source.sourceRuntimeEventHighWater,
+        }),
+        {
+          sessionId: fixture.sessionId,
+          disposition: 'ready',
+          sourceRunId: source.sourceRunId,
+          sourceTurnId: source.sourceTurnId,
+          sourceRuntimeEventHighWater: source.sourceRuntimeEventHighWater,
+        },
+      );
+    } finally {
+      await client.close();
+      await fixture.stopHost(host);
+    }
+  });
+});
+
 test('startup parks a pre-claim continuation whose Client Capability is absent', async () => {
   await withExecutionRoot(async (fixture) => {
     const requiredToolName = mcpProxyToolName('resume_fixture', 'inspect');
