@@ -283,7 +283,6 @@ function equivalentLegacyMessages(): StoredMessage[] {
       ts: ts + 8,
       status: 'completed',
       parentTurnId: 'parent-turn',
-      partialOutputRetained: true,
     },
   ];
 }
@@ -395,9 +394,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       type: 'turn_state',
       status: 'completed',
       parentTurnId: 'parent-turn',
-      partialOutputRetained: true,
     });
-    assert.equal(deriveTurnRecords(out.messages)[0]?.partialOutputRetained, true);
     assert.deepStrictEqual(out.diagnostics, []);
   });
 
@@ -1577,7 +1574,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
         status: 'failed',
         parentTurnId: 'parent-turn',
         errorClass: 'tool_failed',
-        partialOutputRetained: false,
       },
     ]);
     assert.deepStrictEqual(out.diagnostics, []);
@@ -1619,7 +1615,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
         status: 'failed',
         parentTurnId: 'parent-turn',
         errorClass: 'context_overflow',
-        partialOutputRetained: false,
       },
     );
     assert.deepStrictEqual(out.diagnostics, []);
@@ -1680,7 +1675,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
         parentTurnId: 'parent-turn',
         abortedAt: ts + 9,
         abortSource: 'renderer.stop_button',
-        partialOutputRetained: false,
       },
     ]);
     assert.deepStrictEqual(out.diagnostics, []);

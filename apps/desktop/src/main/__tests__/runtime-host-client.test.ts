@@ -96,7 +96,6 @@ test('derives turn records from bounded contribution pages', async () => {
               turnId: 'turn-1',
               ts: 3,
               status: 'completed',
-              partialOutputRetained: false,
             },
           },
           userPromptPreview: null,
@@ -114,7 +113,6 @@ test('derives turn records from bounded contribution pages', async () => {
     userPromptPreview: 'hello',
     status: 'completed',
     statusSource: 'recorded',
-    partialOutputRetained: false,
   }]);
   assert.deepEqual(positions, [0, 2]);
   await client.close();

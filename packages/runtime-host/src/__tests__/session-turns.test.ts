@@ -60,7 +60,7 @@ test('publishes no Turn until its recorded state is on the page', () => {
   );
 });
 
-test('takes retained output from the recorded turn state', () => {
+test('takes the published Turn from the recorded turn state', () => {
   assert.deepEqual(
     projectSessionTurnContribution({
       turnId: 'turn-1',
@@ -73,7 +73,6 @@ test('takes retained output from the recorded turn state', () => {
           turnId: 'turn-1',
           ts: 1,
           status: 'failed',
-          partialOutputRetained: true,
         },
       },
       userPromptPreview: 'hello',
@@ -84,7 +83,6 @@ test('takes retained output from the recorded turn state', () => {
       userPromptPreview: 'hello',
       status: 'failed',
       statusSource: 'recorded',
-      partialOutputRetained: true,
     },
   );
 });
@@ -101,7 +99,6 @@ test('bounds turn diagnostics before publishing a contribution', () => {
         turnId: 'turn-1',
         ts: 1,
         status: 'failed',
-        partialOutputRetained: false,
         errorClass: '失败'.repeat(100_000),
         retry: { decision: 'declined', because: 'side_effects' },
       },
@@ -139,41 +136,9 @@ test('rejects invalid turn-state references before publishing a contribution', (
           ts: 1,
           status: 'completed',
           parentTurnId: 'x'.repeat(129),
-          partialOutputRetained: false,
         },
       },
       userPromptPreview: null,
     }),
   );
 });
-
-for (const retained of [true, false]) {
-  test(`carries the recorded retained-output fact: ${retained}`, () => {
-    const contribution = projectSessionTurnContributionForWire({
-      turnId: 'turn-1',
-      firstSequence: 0,
-      latestState: {
-        sequence: 100,
-        message: {
-          type: 'turn_state',
-          id: 'state',
-          turnId: 'turn-1',
-          ts: 100,
-          status: 'failed',
-          partialOutputRetained: retained,
-        },
-      },
-      userPromptPreview: null,
-    });
-    const decoded = decodeSessionTurnsQueryResult({
-      sessionId: 'session-1',
-      throughSequence: 100,
-      contributions: [contribution],
-      nextPosition: null,
-    });
-    assert.equal(
-      projectSessionTurnContribution(decoded.contributions[0]!)?.partialOutputRetained,
-      retained,
-    );
-  });
-}

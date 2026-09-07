@@ -868,7 +868,6 @@ function bridge(options: {
         {
           turnId: 'source-turn',
           status: 'completed',
-          partialOutputRetained: false,
         },
       ],
       readSettledMessages: async () => ({ messages: [], settled: true }),

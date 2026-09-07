@@ -79,10 +79,8 @@ describe('failed turn execution state', () => {
     assert.match(describeFailedTurnExecutionState(state, 'zh-TW') ?? '', /工具執行出錯/);
   });
 
-  it('does not infer execution guidance from a legacy output hint', () => {
+  it('offers no execution guidance for a Turn that ran nothing', () => {
     assert.equal(describeFailedTurnExecutionState(NOTHING_RAN, 'zh-CN'), undefined);
-    const legacyState = { ...NOTHING_RAN, partialOutputRetained: true };
-    assert.equal(describeFailedTurnExecutionState(legacyState, 'zh-CN'), undefined);
   });
 
   it('prefers the most specific state the turn reached', () => {

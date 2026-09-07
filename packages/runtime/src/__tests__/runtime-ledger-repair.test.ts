@@ -91,7 +91,6 @@ test('repairs imported transcript turns into provider-neutral canonical history'
         turnId: 'turn-1',
         ts: externalTs,
         status: 'completed',
-        partialOutputRetained: true,
       },
     ];
     const session = await sessions.createImportedSession(
@@ -152,7 +151,6 @@ test('repairs imported transcript turns into provider-neutral canonical history'
         turnId: 'turn-2',
         ts: session.createdAt + 3,
         status: 'completed',
-        partialOutputRetained: true,
       },
     ];
     const continuedRun = {
@@ -271,7 +269,6 @@ test('an imported snapshot cutoff survives materialization as aborted', async ()
         status: 'aborted',
         abortedAt: ts,
         abortSource: 'external_session_snapshot',
-        partialOutputRetained: true,
       },
     ];
     const session = await sessions.createImportedSession(
@@ -333,7 +330,6 @@ test('does not import Host-handed-off transcript messages as synthetic runs', as
           turnId: 'host-turn',
           ts: 11,
           status: 'completed',
-          partialOutputRetained: false,
         },
       ],
       { adapterId: 'test', sourceSessionId: 'host-session' },
@@ -457,7 +453,6 @@ test("converts Maka's own legacy transcript whole, and resumes an interrupted co
         turnId: 'turn-1',
         ts: ts + 5,
         status: 'completed',
-        partialOutputRetained: true,
       },
     ]);
 
@@ -533,7 +528,6 @@ test('converts an imported turn ahead of a run the Session already sent', async 
           turnId: 'turn-old',
           ts: ts + 2,
           status: 'completed',
-          partialOutputRetained: true,
         },
       ],
       { adapterId: 'claude-code', sourceSessionId: 'imported-source' },
@@ -656,7 +650,6 @@ test('startup recovery leaves an interrupted legacy conversion for the importer 
         turnId: 'legacy-turn',
         ts: 30,
         status: 'completed',
-        partialOutputRetained: true,
       },
     ]);
     const append = runtimeEvents.appendRuntimeEvent.bind(runtimeEvents);
@@ -936,7 +929,6 @@ async function seedLegacyTurn(sessions: ReturnType<typeof createSessionStore>) {
       turnId: 'turn-1',
       ts: ts + 2,
       status: 'completed',
-      partialOutputRetained: true,
     },
   ]);
   return session;
@@ -1081,7 +1073,6 @@ test('converts a legacy transcript larger than one page without reading it whole
           turnId: `turn-${turn}`,
           ts: ts + turn * 3 + 2,
           status: 'completed',
-          partialOutputRetained: true,
         },
       ]);
     }

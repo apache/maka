@@ -930,8 +930,6 @@ export interface TurnStateMessage {
   abortSource?: string;
   errorClass?: string;
   retry?: ModelRetryDecision;
-  /** Legacy retained-output hint; current projections derive this from output contributions. */
-  partialOutputRetained?: boolean;
 }
 
 export const WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION = 1 as const;
@@ -1141,7 +1139,6 @@ export interface TurnRecord {
   abortSource?: string;
   errorClass?: string;
   retry?: ModelRetryDecision;
-  partialOutputRetained: boolean;
 }
 
 /**
@@ -1273,7 +1270,6 @@ const TOKEN_USAGE_MESSAGE_SHAPE = defineObjectShape<TokenUsageMessage>()(
 const TURN_STATE_MESSAGE_SHAPE = defineObjectShape<TurnStateMessage>()(
   ['type', 'id', 'turnId', 'ts', 'status'],
   [
-    'partialOutputRetained',
     'parentTurnId',
     'retriedFromTurnId',
     'regeneratedFromTurnId',
@@ -1554,8 +1550,6 @@ function decodeMessage(
         hasExactShape(message, TURN_STATE_MESSAGE_SHAPE) &&
         hasMessageEnvelope(message, true) &&
         isTurnStatus(message.status) &&
-        (message.partialOutputRetained === undefined ||
-          typeof message.partialOutputRetained === 'boolean') &&
         isOptionalString(message.parentTurnId) &&
         isOptionalString(message.retriedFromTurnId) &&
         isOptionalString(message.regeneratedFromTurnId) &&
@@ -1836,11 +1830,6 @@ export function deriveTurnRecords(messages: readonly StoredMessage[]): TurnRecor
     const latestState = bucket
       .filter((message): message is TurnStateMessage => message.type === 'turn_state')
       .at(-1);
-    const partialOutputRetained = bucket.some(
-      (message) =>
-        (message.type === 'assistant' && message.text.trim().length > 0) ||
-        message.type === 'tool_result',
-    );
     if (latestState) {
       return {
         turnId,
@@ -1859,14 +1848,12 @@ export function deriveTurnRecords(messages: readonly StoredMessage[]): TurnRecor
         ...(latestState.abortSource ? { abortSource: latestState.abortSource } : {}),
         ...(latestState.errorClass ? { errorClass: latestState.errorClass } : {}),
         ...(latestState.retry ? { retry: latestState.retry } : {}),
-        partialOutputRetained: latestState.partialOutputRetained || partialOutputRetained,
       };
     }
     return {
       turnId,
       status: inferLegacyTurnStatus(bucket),
       statusSource: 'inferred',
-      partialOutputRetained,
     };
   });
 }

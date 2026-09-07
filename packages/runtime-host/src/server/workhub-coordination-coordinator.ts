@@ -884,7 +884,6 @@ function coordinationSummaryMessages(input: WorkHubCoordinationRecordInput): Sto
       turnId: input.turnId,
       ts: ts + 2,
       status: 'completed',
-      partialOutputRetained: false,
     },
   ];
 }

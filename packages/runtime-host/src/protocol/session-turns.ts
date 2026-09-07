@@ -165,9 +165,6 @@ function projectTurnStateMessageForWire(message: TurnStateMessage): TurnStateMes
       ? { errorClass: truncateUtf8(message.errorClass, SESSION_TURN_DIAGNOSTIC_MAX_BYTES) }
       : {}),
     ...(message.retry ? { retry: message.retry } : {}),
-    ...(message.partialOutputRetained !== undefined
-      ? { partialOutputRetained: message.partialOutputRetained }
-      : {}),
   };
 }
 
@@ -201,9 +198,6 @@ export function projectSessionTurnContribution(
     ...(state.abortSource ? { abortSource: state.abortSource } : {}),
     ...(state.errorClass ? { errorClass: state.errorClass } : {}),
     ...(state.retry ? { retry: state.retry } : {}),
-    // Absent only on a `turn_state` written before the field existed, where
-    // nothing else on the contribution can say whether output survived.
-    partialOutputRetained: state.partialOutputRetained ?? false,
   };
 }
 

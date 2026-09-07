@@ -285,7 +285,6 @@ function runningTurnRecords(
       turnId,
       status: 'running',
       statusSource: 'recorded',
-      partialOutputRetained: false,
     });
   }
   return marked;

@@ -418,7 +418,7 @@ describe('turn identity moves across structural change classes', () => {
   const base: StoredMessage[] = [
     { type: 'user', id: 'u1', turnId: 'turn-1', ts: 1, text: 'ask' },
     { type: 'assistant', id: 'a1', turnId: 'turn-1', ts: 4, text: 'answer', modelId: 'model-1' },
-    { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'completed', partialOutputRetained: false },
+    { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'completed' },
   ];
 
   const cases: Array<{
@@ -435,7 +435,7 @@ describe('turn identity moves across structural change classes', () => {
       field: 'status',
       refresh: [
         ...base.slice(0, 2),
-        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed', partialOutputRetained: false },
+        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed' },
       ],
     },
     {

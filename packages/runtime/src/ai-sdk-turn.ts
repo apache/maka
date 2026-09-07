@@ -2592,8 +2592,8 @@ export class AiSdkTurn {
         // Flush the in-flight step's partial text/thinking before the terminal
         // abort/error events. Earlier steps already flushed at their
         // `finish-step`; this keeps their and this step's streamed-out output on
-        // BOTH exits — user stop and provider error / watchdog timeout — so
-        // partialOutputRetained reflects what the user actually saw.
+        // BOTH exits — user stop and provider error / watchdog timeout — so the
+        // transcript keeps what the user actually saw.
         await flushStep().catch(() => {});
         if (this.aborted) {
           queue.push({

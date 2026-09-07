@@ -7414,7 +7414,6 @@ describe('SessionManager permission mode updates', () => {
         turnId: 'turn-1',
         ts: 103,
         status: 'completed',
-        partialOutputRetained: true,
       },
       { type: 'user', id: 'imported-user-2', turnId: 'turn-2', ts: 104, text: 'Second question' },
       {
@@ -7431,7 +7430,6 @@ describe('SessionManager permission mode updates', () => {
         turnId: 'turn-2',
         ts: 106,
         status: 'completed',
-        partialOutputRetained: true,
       },
     ]);
 
@@ -7630,7 +7628,6 @@ describe('SessionManager permission mode updates', () => {
         turnId: 'turn-1',
         status: 'completed',
         statusSource: 'recorded',
-        partialOutputRetained: true,
       },
     ]);
     assert.deepStrictEqual(
@@ -7945,7 +7942,6 @@ describe('SessionManager permission mode updates', () => {
         turnId: 'turn-1',
         ts: 103,
         status: 'completed',
-        partialOutputRetained: true,
       },
     ];
     await store.appendMessages(session.id, legacyMessages);
@@ -7993,7 +7989,6 @@ describe('SessionManager permission mode updates', () => {
         turnId: 'turn-1',
         ts: 103,
         status: 'completed',
-        partialOutputRetained: false,
       },
     ]);
   });
@@ -8080,7 +8075,6 @@ describe('SessionManager permission mode updates', () => {
       ts: 103,
       status: 'failed',
       errorClass: 'tool_failed',
-      partialOutputRetained: true,
     });
     assert.strictEqual(runtimeEvents.filter((event) => event.status === 'failed').length, 1);
   });
@@ -8396,13 +8390,11 @@ describe('SessionManager permission mode updates', () => {
         turnId: 'turn-1',
         status: 'completed',
         statusSource: 'recorded',
-        partialOutputRetained: true,
       },
       {
         turnId: 'turn-2',
         status: 'running',
         statusSource: 'recorded',
-        partialOutputRetained: true,
       },
     ]);
   });
@@ -8434,7 +8426,6 @@ describe('SessionManager permission mode updates', () => {
         turnId: header.turnId,
         ts: 101,
         status: 'running',
-        partialOutputRetained: false,
       },
     ]);
     await runStore.appendRuntimeEvent(
@@ -8537,7 +8528,6 @@ describe('SessionManager permission mode updates', () => {
         turnId: header.turnId,
         ts: 101,
         status: 'running',
-        partialOutputRetained: false,
       },
     ]);
     await runStore.appendRuntimeEvent(
@@ -10790,7 +10780,6 @@ describe('SessionManager permission mode updates', () => {
         status: 'aborted',
         abortedAt: 2,
         abortSource: 'renderer.stop_button',
-        partialOutputRetained: false,
       },
     );
   });
@@ -11295,7 +11284,6 @@ describe('SessionManager permission mode updates', () => {
         turnId: 'running-turn',
         ts: 11,
         status: 'running',
-        partialOutputRetained: false,
       },
     ]);
     await store.appendMessages(waiting.id, [
@@ -11306,7 +11294,6 @@ describe('SessionManager permission mode updates', () => {
         turnId: 'waiting-turn',
         ts: 21,
         status: 'running',
-        partialOutputRetained: false,
       },
     ]);
     await store.appendMessages(activeStuck.id, [
@@ -11323,7 +11310,6 @@ describe('SessionManager permission mode updates', () => {
         turnId: 'active-stuck-turn',
         ts: 31,
         status: 'running',
-        partialOutputRetained: false,
       },
     ]);
     await store.appendMessages(failedThenCompleted.id, [
@@ -11340,7 +11326,6 @@ describe('SessionManager permission mode updates', () => {
         turnId: 'failed-completed-turn',
         ts: 33,
         status: 'running',
-        partialOutputRetained: false,
       },
       {
         type: 'turn_state',
@@ -11349,7 +11334,6 @@ describe('SessionManager permission mode updates', () => {
         ts: 34,
         status: 'failed',
         errorClass: 'tool_failed',
-        partialOutputRetained: false,
       },
       {
         type: 'turn_state',
@@ -11357,7 +11341,6 @@ describe('SessionManager permission mode updates', () => {
         turnId: 'failed-completed-turn',
         ts: 35,
         status: 'completed',
-        partialOutputRetained: false,
       },
     ]);
     await store.appendMessages(activeDone.id, [
@@ -11368,7 +11351,6 @@ describe('SessionManager permission mode updates', () => {
         turnId: 'active-turn',
         ts: 31,
         status: 'completed',
-        partialOutputRetained: false,
       },
     ]);
 
@@ -14467,7 +14449,6 @@ async function seedRuntimeReadTurn(input: {
       turnId: input.turnId,
       ts: 103,
       status: 'completed',
-      partialOutputRetained: true,
     },
   ];
   const projectedMessages: StoredMessage[] = [
@@ -14492,7 +14473,6 @@ async function seedRuntimeReadTurn(input: {
       turnId: input.turnId,
       ts: 103,
       status: 'completed',
-      partialOutputRetained: true,
     },
   ];
   await input.store.appendMessages(input.sessionId, legacyMessages);
@@ -14588,7 +14568,6 @@ async function seedRuntimeReadTurnWithHeader(input: {
         : {}),
       ...(input.header.branchOfTurnId ? { branchOfTurnId: input.header.branchOfTurnId } : {}),
       ...(input.header.parentSessionId ? { parentSessionId: input.header.parentSessionId } : {}),
-      partialOutputRetained: true,
     },
   ]);
   await seedRuntimeRun(input.runStore, header, events);
@@ -14849,7 +14828,6 @@ async function seedRunningTurn(
       turnId,
       ts: 10,
       status: 'running',
-      partialOutputRetained: false,
     },
   ]);
 }

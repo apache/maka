@@ -2164,7 +2164,6 @@ test("finishes a watched predecessor after initial catch-up recovery", async () 
               turnId: "turn-1",
               ts: 20,
               status: "completed" as const,
-              partialOutputRetained: true,
             },
           ]),
           events: secondEvents,
@@ -2320,7 +2319,6 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
         turnId: 'turn-1',
         status: 'completed' as const,
         statusSource: 'recorded' as const,
-        partialOutputRetained: true,
       }],
       openSession: async () => {
         openCount += 1;

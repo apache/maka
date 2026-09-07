@@ -272,7 +272,6 @@ describe('SessionManager terminal ledger invariants', () => {
       (message) => message.type === 'turn_state' && message.turnId === 'turn-1',
     );
     if (turnState?.type !== 'turn_state') throw new Error('failed turn_state was not projected');
-    assert.equal(turnState.partialOutputRetained, false);
     assert.strictEqual(turnState.status, 'failed');
     assert.strictEqual(turnState.errorClass, 'stream_truncated');
     assert.deepEqual(turnState.retry, { decision: 'declined', because: 'side_effects' });

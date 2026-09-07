@@ -251,7 +251,6 @@ test('projects durable and active transcript records before sharing them', async
       status: 'aborted',
       abortedAt: 5,
       abortSource: 'stop_button',
-      partialOutputRetained: true,
     },
     'session-1',
   );

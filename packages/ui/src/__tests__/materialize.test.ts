@@ -390,7 +390,6 @@ describe("live content over persisted partial rows", () => {
         turnId: "t1",
         ts: 2,
         status: "running",
-        partialOutputRetained: false,
       },
       {
         type: "assistant",
@@ -446,7 +445,6 @@ describe("unfinished tools take their status from the turn", () => {
         turnId: "t1",
         ts: 2,
         status: "running",
-        partialOutputRetained: false,
       },
       {
         type: "tool_call",
@@ -470,7 +468,6 @@ describe("unfinished tools take their status from the turn", () => {
         turnId: "t1",
         ts: 2,
         status: "failed",
-        partialOutputRetained: false,
       },
       {
         type: "tool_call",
@@ -497,7 +494,6 @@ describe("live tool status over persisted", () => {
         turnId: "t1",
         ts: 2,
         status: "running",
-        partialOutputRetained: false,
       },
       {
         type: "tool_call",
@@ -544,7 +540,6 @@ describe("live tool status over persisted", () => {
         turnId: "t1",
         ts: 2,
         status: "failed",
-        partialOutputRetained: false,
       },
       {
         type: "tool_call",
@@ -599,7 +594,6 @@ describe("live tool status over persisted", () => {
         turnId: "t1",
         ts: 2,
         status: "running",
-        partialOutputRetained: false,
       },
       {
         type: "tool_call",
@@ -659,7 +653,6 @@ describe("live tool status over persisted", () => {
         turnId: "t1",
         ts: 2,
         status: "running",
-        partialOutputRetained: false,
       },
       {
         type: "tool_call",

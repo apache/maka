@@ -578,7 +578,7 @@ export const StreamingTurn: Story = {
         runningStatus: true,
         messages: [
           user('msg-s-1', 'turn-s', 3, '顶层布局的 story 怎么做最稳？'),
-          { type: 'turn_state', id: 'state-s', turnId: 'turn-s', ts: NOW - 30_000, status: 'running', partialOutputRetained: false },
+          { type: 'turn_state', id: 'state-s', turnId: 'turn-s', ts: NOW - 30_000, status: 'running' },
         ],
         liveTurn: {
           turnId: 'turn-s', phase: 'streamed', steps: [{
@@ -611,7 +611,7 @@ export const RunningStatusDuringToolRun: Story = {
         runningStatus: true,
         messages: [
           user('msg-t-1', 'turn-t', 2, '把整个测试套件跑一遍，看看那三个失败用例是不是同一个原因。'),
-          { type: 'turn_state', id: 'state-t', turnId: 'turn-t', ts: NOW - 120_000, status: 'running', partialOutputRetained: false },
+          { type: 'turn_state', id: 'state-t', turnId: 'turn-t', ts: NOW - 120_000, status: 'running' },
         ],
         liveTurn: {
           turnId: 'turn-t', phase: 'streamed', steps: [{
@@ -641,8 +641,7 @@ const NPM_TEST_STDOUT_AT_CANCEL = "\n> maka@0.2.0 test\n> npm run build:test && 
 // Aborting settles the call as a cancelled `terminal` result (isError), and
 // `toolResultActivityStatus` maps a cancelled terminal to `interrupted`. There is
 // no `interrupted` turn status (only running/completed/aborted/failed) — the
-// tool-level state is derived from the settled result, not asserted. Because the
-// turn kept that partial result, `partialOutputRetained` is true.
+// tool-level state is derived from the settled result, not asserted.
 //
 // `npm test` runs for minutes (build:test then the runner), so a cancel at ~16s is
 // still inside a running process — it settles `cancelled`/130, not `timed_out`/124
@@ -668,7 +667,6 @@ export const InterruptedToolAfterTurnAbort: Story = {
             turnId: 'turn-i',
             ts: NOW - 118_000,
             status: 'running',
-            partialOutputRetained: false,
           },
           {
             type: 'assistant',
@@ -725,7 +723,6 @@ export const InterruptedToolAfterTurnAbort: Story = {
             status: 'aborted',
             abortedAt: NOW - 98_000,
             abortSource: 'renderer.stop_button',
-            partialOutputRetained: true,
           },
         ],
       }}
@@ -744,7 +741,7 @@ export const FailedTurnWithToolError: Story = {
       chat={{
         messages: [
           user('msg-f-1', 'turn-f', 5, '把 core 里的类型错误修掉，然后跑一遍类型检查确认。'),
-          { type: 'turn_state', id: 'state-f-running', turnId: 'turn-f', ts: NOW - 290_000, status: 'running', partialOutputRetained: false },
+          { type: 'turn_state', id: 'state-f-running', turnId: 'turn-f', ts: NOW - 290_000, status: 'running' },
           { type: 'assistant', id: 'msg-assistant-f', turnId: 'turn-f', ts: NOW - 285_000, text: '先运行类型检查定位问题。', modelId: 'claude-sonnet-4-5' },
           {
             type: 'tool_call',
@@ -773,7 +770,7 @@ export const FailedTurnWithToolError: Story = {
               text: "src/session.ts(88,7): error TS2322: Type 'string' is not assignable to type 'number'.\nnpm run typecheck exited with code 2.",
             },
           },
-          { type: 'turn_state', id: 'state-f-failed', turnId: 'turn-f', ts: NOW - 281_000, status: 'failed', errorClass: 'tool_failed', partialOutputRetained: false },
+          { type: 'turn_state', id: 'state-f-failed', turnId: 'turn-f', ts: NOW - 281_000, status: 'failed', errorClass: 'tool_failed' },
         ],
       }}
     />
@@ -794,7 +791,7 @@ export const ProviderStreamTruncated: Story = {
       chat={{ messages: [
         user('msg-st-1', 'turn-st', 4, '检查项目的构建结果。'),
         { type: 'assistant', id: 'msg-st-answer', turnId: 'turn-st', ts: NOW - 199_000, text: '构建已完成，我继续检查输出。', modelId: 'claude-sonnet-4-5' },
-        { type: 'turn_state', id: 'state-st-failed', turnId: 'turn-st', ts: NOW - 198_000, status: 'failed', errorClass: 'stream_truncated', retry: { decision: 'declined', because: 'side_effects' }, partialOutputRetained: true },
+        { type: 'turn_state', id: 'state-st-failed', turnId: 'turn-st', ts: NOW - 198_000, status: 'failed', errorClass: 'stream_truncated', retry: { decision: 'declined', because: 'side_effects' } },
       ] }}
     />
   ),
@@ -814,8 +811,8 @@ export const ProviderRateLimited: Story = {
       chat={{
         messages: [
           user('msg-r-1', 'turn-r', 4, '再生成三个对照方案，越详细越好。'),
-          { type: 'turn_state', id: 'state-r-running', turnId: 'turn-r', ts: NOW - 200_000, status: 'running', partialOutputRetained: false },
-          { type: 'turn_state', id: 'state-r-failed', turnId: 'turn-r', ts: NOW - 198_000, status: 'failed', errorClass: 'rate_limit', partialOutputRetained: false },
+          { type: 'turn_state', id: 'state-r-running', turnId: 'turn-r', ts: NOW - 200_000, status: 'running' },
+          { type: 'turn_state', id: 'state-r-failed', turnId: 'turn-r', ts: NOW - 198_000, status: 'failed', errorClass: 'rate_limit' },
         ],
       }}
     />
@@ -840,7 +837,7 @@ export const ProviderRetrying: Story = {
         runningStatus: true,
         messages: [
           user('msg-rr-1', 'turn-rr', 1, '把这份长文档翻译成英文。'),
-          { type: 'turn_state', id: 'state-rr', turnId: 'turn-rr', ts: NOW - 20_000, status: 'running', partialOutputRetained: false },
+          { type: 'turn_state', id: 'state-rr', turnId: 'turn-rr', ts: NOW - 20_000, status: 'running' },
         ],
         liveTurn: {
           turnId: 'turn-rr',
@@ -884,9 +881,9 @@ export const SafeResumeAfterRestart: Story = {
         safeResumeAction: { pending: false, onResume: noop },
         messages: [
           user('msg-sr-1', 'turn-sr', 3, '把这份报告整理成要点清单。'),
-          { type: 'turn_state', id: 'state-sr-running', turnId: 'turn-sr', ts: NOW - 150_000, status: 'running', partialOutputRetained: false },
+          { type: 'turn_state', id: 'state-sr-running', turnId: 'turn-sr', ts: NOW - 150_000, status: 'running' },
           { type: 'assistant', id: 'msg-assistant-sr', turnId: 'turn-sr', ts: NOW - 148_000, text: '好的，我先通读一遍，抓住主要结论——', modelId: 'claude-sonnet-4-5' },
-          { type: 'turn_state', id: 'state-sr-failed', turnId: 'turn-sr', ts: NOW - 146_000, status: 'failed', errorClass: 'app_restarted', partialOutputRetained: true },
+          { type: 'turn_state', id: 'state-sr-failed', turnId: 'turn-sr', ts: NOW - 146_000, status: 'failed', errorClass: 'app_restarted' },
         ],
       }}
     />
@@ -1040,7 +1037,6 @@ export const ComputerUseObservability: Story = {
             turnId: 'turn-cu',
             ts: NOW - 40_000,
             status: 'running',
-            partialOutputRetained: false,
           },
         ],
         liveTurn: {
@@ -2006,7 +2002,6 @@ function StreamingTailHarness() {
             turnId: 'turn-tail',
             ts: NOW - 30_000,
             status: 'running',
-            partialOutputRetained: false,
           },
         ],
         liveTurn: {
