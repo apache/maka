@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
@@ -30,6 +31,8 @@ export interface ArtifactMetadataChanges {
   readonly deleteIds?: readonly string[];
 }
 
+const EMPTY_SESSION_REVISION = `sha256:${createHash('sha256').update('[]').digest('hex')}` as const;
+
 export function createSqliteArtifactMetadataRepository(workspaceRoot: string) {
   return new SqliteArtifactMetadataRepository(workspaceRoot);
 }
@@ -42,7 +45,67 @@ class SqliteArtifactMetadataRepository {
     this.#lease = acquireOperationalStateDatabase(resolve(workspaceRoot));
   }
 
-  readAll(): ArtifactRecord[] {
+  getById(id: string): ArtifactRecord | null {
+    this.assertOpen();
+    const row = this.#lease.database
+      .prepare(`
+        SELECT artifact_id, session_id, created_at, relative_path, record_json
+        FROM artifact_records
+        WHERE artifact_id = ?
+      `)
+      .get(id) as ArtifactMetadataRow | undefined;
+    return row ? decodeIndexedRow(row) : null;
+  }
+
+  listBySession(sessionId: string): ArtifactRecord[] {
+    this.assertOpen();
+    const rows = this.#lease.database
+      .prepare(`
+        SELECT artifact_id, session_id, created_at, relative_path, record_json
+        FROM artifact_records
+        WHERE session_id = ?
+        ORDER BY created_at, artifact_id
+      `)
+      .all(sessionId) as ArtifactMetadataRow[];
+    return rows.flatMap((row) => {
+      const record = decodeIndexedRow(row);
+      return record ? [record] : [];
+    });
+  }
+
+  /** An opaque change token, not a digest of the Session's current record set. */
+  getSessionRevision(sessionId: string): `sha256:${string}` {
+    return this.withReadSnapshot(() => {
+      const row = this.#lease.database
+        .prepare('SELECT revision_token FROM artifact_session_revisions WHERE session_id = ?')
+        .get(sessionId) as { revision_token: string } | undefined;
+      if (!row) {
+        const present = this.#lease.database
+          .prepare('SELECT 1 FROM artifact_records WHERE session_id = ? LIMIT 1')
+          .get(sessionId);
+        if (present) throw new Error('Artifact Session revision is missing');
+        return EMPTY_SESSION_REVISION;
+      }
+      if (!/^[a-f0-9]{64}$/.test(row.revision_token)) {
+        throw new Error('Artifact Session revision is invalid');
+      }
+      // Preserve the wire shape while hashing only a fixed-size persisted token.
+      return `sha256:${createHash('sha256')
+        .update('artifact-session-revision-v1\0')
+        .update(row.revision_token)
+        .digest('hex')}` as const;
+    });
+  }
+
+  /** Compose synchronous queries against one committed database snapshot. */
+  withReadSnapshot<T>(read: () => T): T {
+    this.assertOpen();
+    return this.#lease.transaction('read', read);
+  }
+
+  // Purge must still check references through filesystem aliases across Sessions.
+  // Keep this scan explicit; ordinary reads and publication use the indexes above.
+  readAllForPurgeSafety(): ArtifactRecord[] {
     this.assertOpen();
     const rows = this.#lease.database
       .prepare(`
@@ -100,6 +163,15 @@ class SqliteArtifactMetadataRepository {
     return rows.map((row) => row.relative_path);
   }
 
+  isRelativePathClaimed(relativePath: string): boolean {
+    this.assertOpen();
+    return Boolean(
+      this.#lease.database
+        .prepare('SELECT 1 FROM artifact_records WHERE relative_path = ? LIMIT 1')
+        .get(relativePath),
+    );
+  }
+
   forgetUpgradeOrphanPaths(relativePaths: readonly string[]): void {
     this.assertOpen();
     this.#lease.transaction('write', () => {
@@ -119,6 +191,30 @@ class SqliteArtifactMetadataRepository {
   private assertOpen(): void {
     if (this.#closed) throw new Error('Artifact metadata repository is closed');
   }
+}
+
+type ArtifactMetadataRow = {
+  readonly artifact_id: string;
+  readonly session_id: string;
+  readonly created_at: number;
+  readonly relative_path: string;
+  readonly record_json: string;
+};
+
+function decodeIndexedRow(row: ArtifactMetadataRow): ArtifactRecord | null {
+  const record = decodeArtifactRecordJsons([row.record_json])[0];
+  // An indexed projection must not admit JSON belonging to a different identity
+  // or Session. Invalid rows remain unavailable, like other malformed metadata.
+  if (
+    !record ||
+    record.id !== row.artifact_id ||
+    record.sessionId !== row.session_id ||
+    record.createdAt !== row.created_at ||
+    record.relativePath !== row.relative_path
+  ) {
+    return null;
+  }
+  return record;
 }
 
 function decodeRows(rows: readonly { record_json: string }[]): ArtifactRecord[] {
