@@ -26,6 +26,21 @@ import type {
 const BATCH_SIZE = 32;
 const FLUSH_DELAY_MS = 1_000;
 const DEFAULT_SERVICE_NAME = 'maka';
+const MAX_HEADER_COUNT = 32;
+const MAX_HEADER_NAME_LENGTH = 128;
+const MAX_HEADER_VALUE_LENGTH = 8_192;
+const MAX_HEADER_BYTES = 64 * 1_024;
+const MAX_ERROR_CLASS_LENGTH = 128;
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u;
+const PROTECTED_HEADERS = new Set([
+  'connection',
+  'content-length',
+  'content-type',
+  'host',
+  'proxy-connection',
+  'transfer-encoding',
+]);
+const insecureAuthorizationWarnings = new Set<string>();
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 type Environment = Record<string, string | undefined>;
@@ -60,9 +75,11 @@ export function createOtlpTelemetryExporter(
   const env = options.env ?? process.env;
   const endpoint = resolveEndpoint(env);
   if (!endpoint) return undefined;
+  const headers = parseHeaders(env.OTEL_EXPORTER_OTLP_HEADERS);
+  warnForInsecureAuthorization(endpoint, headers);
   return new OtlpTelemetryExporterImpl(
     endpoint,
-    parseHeaders(env.OTEL_EXPORTER_OTLP_HEADERS),
+    headers,
     resourceAttributes(env),
     options.fetch ?? fetch,
   );
@@ -91,6 +108,7 @@ class OtlpTelemetryExporterImpl implements OtlpTelemetryExporter {
   }
 
   async exportLlmCall(record: PersistedLlmCallRecord): Promise<void> {
+    const errorClass = boundedErrorClass(record.errorClass);
     await this.enqueue({
       name: 'maka.llm.call',
       startedAt: record.startedAt,
@@ -105,12 +123,13 @@ class OtlpTelemetryExporterImpl implements OtlpTelemetryExporter {
         numberAttribute('maka.usage.output_tokens', record.outputTokens),
         numberAttribute('maka.usage.total_tokens', record.totalTokens),
         numberAttribute('maka.usage.cost_usd', record.costUsd),
-        ...(record.errorClass ? [stringAttribute('maka.error.class', record.errorClass)] : []),
+        ...(errorClass ? [stringAttribute('maka.error.class', errorClass)] : []),
       ],
     });
   }
 
   async exportToolInvocation(record: PersistedToolInvocationRecord): Promise<void> {
+    const errorClass = boundedErrorClass(record.errorClass);
     await this.enqueue({
       name: 'maka.tool.invocation',
       startedAt: record.startedAt,
@@ -123,7 +142,7 @@ class OtlpTelemetryExporterImpl implements OtlpTelemetryExporter {
         ...(record.modelId ? [stringAttribute('maka.model.id', record.modelId)] : []),
         numberAttribute('maka.tool.bytes_in', record.bytesIn),
         numberAttribute('maka.tool.bytes_out', record.bytesOut),
-        ...(record.errorClass ? [stringAttribute('maka.error.class', record.errorClass)] : []),
+        ...(errorClass ? [stringAttribute('maka.error.class', errorClass)] : []),
       ],
     });
   }
@@ -202,15 +221,15 @@ function toSpan(input: {
   attributes: OtlpAttribute[];
 }): OtlpSpan {
   const traceId = randomUUID().replaceAll('-', '');
+  const startedAt = normalizeTimestamp(input.startedAt);
+  const endedAt = normalizeTimestamp(input.startedAt + Math.max(0, input.durationMs));
   return {
     traceId,
     spanId: traceId.slice(0, 16),
     name: input.name,
     kind: 1,
-    startTimeUnixNano: String(Math.max(0, input.startedAt) * 1_000_000),
-    endTimeUnixNano: String(
-      Math.max(0, input.startedAt + Math.max(0, input.durationMs)) * 1_000_000,
-    ),
+    startTimeUnixNano: unixNanoseconds(startedAt),
+    endTimeUnixNano: unixNanoseconds(endedAt),
     attributes: input.attributes,
     status: { code: input.status === 'success' ? 1 : input.status === 'error' ? 2 : 0 },
   };
@@ -239,16 +258,73 @@ function resolveEndpoint(env: Environment): string | undefined {
 
 function parseHeaders(value: string | undefined): Record<string, string> {
   if (!value) return {};
-  const headers: Record<string, string> = {};
+  const headers = Object.create(null) as Record<string, string>;
+  const names = new Set<string>();
+  let encodedBytes = 0;
   for (const item of value.split(',')) {
     const separator = item.indexOf('=');
     if (separator <= 0) continue;
     const key = item.slice(0, separator).trim();
     const raw = item.slice(separator + 1).trim();
-    if (!key || !raw) continue;
-    headers[key] = decodeValue(raw);
+    if (
+      !key ||
+      key.length > MAX_HEADER_NAME_LENGTH ||
+      !HEADER_NAME.test(key) ||
+      PROTECTED_HEADERS.has(key.toLowerCase())
+    ) {
+      continue;
+    }
+    const lowerKey = key.toLowerCase();
+    if (names.has(lowerKey) || names.size >= MAX_HEADER_COUNT) continue;
+    const decoded = decodeValue(raw);
+    if (
+      !raw ||
+      decoded.length > MAX_HEADER_VALUE_LENGTH ||
+      /[^\t\u0020-\u007e\u0080-\u00ff]/u.test(decoded)
+    ) {
+      continue;
+    }
+    const entryBytes = new TextEncoder().encode(`${key}:${decoded}`).byteLength;
+    if (encodedBytes + entryBytes > MAX_HEADER_BYTES) break;
+    encodedBytes += entryBytes;
+    names.add(lowerKey);
+    headers[key] = decoded;
   }
   return headers;
+}
+
+function warnForInsecureAuthorization(endpoint: string, headers: Record<string, string>): void {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return;
+  }
+  if (url.protocol === 'https:') return;
+  const hasAuthorization = Object.keys(headers).some(
+    (name) => name.toLowerCase() === 'authorization',
+  );
+  if (hasAuthorization && !insecureAuthorizationWarnings.has(endpoint)) {
+    insecureAuthorizationWarnings.add(endpoint);
+    console.warn(
+      '[telemetry] OTLP endpoint is not using HTTPS while an authorization header is configured; credentials and telemetry will be sent without transport encryption',
+    );
+  }
+}
+
+function boundedErrorClass(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const sanitized = value.trim().replace(/[\u0000-\u001f\u007f-\u009f]/gu, '');
+  if (!sanitized) return undefined;
+  return Array.from(sanitized).slice(0, MAX_ERROR_CLASS_LENGTH).join('');
+}
+
+function normalizeTimestamp(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+}
+
+function unixNanoseconds(milliseconds: number): string {
+  return (BigInt(milliseconds) * 1_000_000n).toString();
 }
 
 function resourceAttributes(env: Environment): OtlpAttribute[] {

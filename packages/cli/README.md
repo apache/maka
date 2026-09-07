@@ -72,9 +72,12 @@ maka
 separate traces URL. `OTEL_RESOURCE_ATTRIBUTES` adds URL-encoded `key=value` resource attributes.
 
 Exported spans contain provider/model identifiers, model-call kind, tool name, duration, status,
-token counts, cost, byte counts, and bounded error classes. Prompts, message contents, tool
-arguments/results, credentials, and session paths are never exported. Export failures are
-best-effort and do not fail a turn or change the local Usage ledger.
+token counts, cost, byte counts, and error classes truncated to 128 Unicode characters with
+control characters removed. Prompts, message contents, tool arguments/results, credentials, and
+session paths are never exported. An authorization header on a non-HTTPS endpoint emits one
+warning per configured endpoint when the exporter is created. Each exported span is an independent
+usage event rather than a parent/child trace. Export failures are best-effort and do not fail a
+turn or change the local Usage ledger.
 
 ## Install
 

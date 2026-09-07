@@ -476,12 +476,12 @@ function createWriterFacade(
         read(() => telemetry.latestLlmRuntimeProbe(connectionSlug, modelId)),
       recordLlmCall: (record) =>
         admitSessionUsageMutation(record.sessionId, async () => {
-          await run(() => telemetry.insertLlmCall(record));
+          await telemetry.insertLlmCall(record);
           void exporter?.exportLlmCall(record);
         }),
       recordToolInvocation: (record) =>
         admitSessionUsageMutation(record.sessionId, async () => {
-          await run(() => telemetry.insertToolInvocation(record));
+          await telemetry.insertToolInvocation(record);
           void exporter?.exportToolInvocation(record);
         }),
     },
