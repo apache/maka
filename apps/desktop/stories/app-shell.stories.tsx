@@ -799,7 +799,7 @@ export const ProviderStreamTruncated: Story = {
       chat={{ messages: [
         user('msg-st-1', 'turn-st', 4, '检查项目的构建结果。'),
         { type: 'assistant', id: 'msg-st-answer', turnId: 'turn-st', ts: NOW - 199_000, text: '构建已完成，我继续检查输出。', modelId: 'claude-sonnet-4-5' },
-        { type: 'turn_state', id: 'state-st-failed', turnId: 'turn-st', ts: NOW - 198_000, status: 'failed', errorClass: 'stream_truncated', retry: { decision: 'declined', because: 'side_effects' } },
+        { type: 'turn_state', id: 'state-st-failed', turnId: 'turn-st', ts: NOW - 198_000, status: 'failed', errorClass: 'stream_truncated', failureMessage: 'Response stream ended without a finish reason. (status=502, requestId=req-stream-4502)', retry: { decision: 'declined', because: 'side_effects' } },
       ] }}
     />
   ),
@@ -820,7 +820,7 @@ export const ProviderRateLimited: Story = {
         messages: [
           user('msg-r-1', 'turn-r', 4, '再生成三个对照方案，越详细越好。'),
           { type: 'turn_state', id: 'state-r-running', turnId: 'turn-r', ts: NOW - 200_000, status: 'running' },
-          { type: 'turn_state', id: 'state-r-failed', turnId: 'turn-r', ts: NOW - 198_000, status: 'failed', errorClass: 'rate_limit' },
+          { type: 'turn_state', id: 'state-r-failed', turnId: 'turn-r', ts: NOW - 198_000, status: 'failed', errorClass: 'rate_limit', failureMessage: 'Quota exceeded for this account. Check the provider quota before submitting another request. (code=insufficient_quota, status=429, requestId=req-4502)' },
         ],
       }}
     />
@@ -832,6 +832,43 @@ export const ProviderRateLimited: Story = {
       ),
     );
   },
+};
+
+// The same turn moves from running to its durable terminal contribution.
+function FailureArrival() {
+  const [failed, fail] = useReducer(() => true, false);
+  useEffect(() => {
+    window.addEventListener('storybook:turn-failed', fail);
+    return () => window.removeEventListener('storybook:turn-failed', fail);
+  }, []);
+  return <ComposedShell chat={{ messages: [
+    user('msg-arrival', 'turn-arrival', 4, '检查结果。'),
+    { type: 'assistant', id: 'answer-arrival', turnId: 'turn-arrival', ts: NOW - 200_000, text: '已经得到部分结果。', modelId: 'claude-sonnet-4-5' },
+    { type: 'turn_state', id: 'state-arrival', turnId: 'turn-arrival', ts: NOW - 198_000, status: failed ? 'failed' : 'running', ...(failed ? { errorClass: 'stream_truncated', failureMessage: 'Response stream ended without a finish reason.', retry: { decision: 'declined' as const, because: 'observable_output' as const } } : {}) },
+  ] }} />;
+}
+
+export const FailureArrivesLive: Story = {
+  render: () => <FailureArrival />,
+  play: async ({ canvasElement }) => {
+    expect(canvasElement.querySelector('.maka-turn-failed-banner')).toBeNull();
+    window.dispatchEvent(new Event('storybook:turn-failed'));
+    await waitFor(() => expect(canvasElement.querySelector('.maka-turn-failed-banner')?.textContent).toContain('本次已有部分输出'));
+    const toggle = canvasElement.querySelector<HTMLButtonElement>('.maka-turn-failed-banner button[aria-expanded]')!;
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    toggle.focus();
+    toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('true'));
+    expect(document.activeElement).toBe(toggle);
+    expect(canvasElement.querySelector('.maka-turn-failure-detail')?.textContent).toBe('Response stream ended without a finish reason.');
+  },
+};
+
+export const LongFailureDiagnostic: Story = {
+  render: () => <ComposedShell chat={{ messages: [
+    user('msg-long-error', 'turn-long-error', 4, '检查模型配置。'),
+    { type: 'turn_state', id: 'state-long-error', turnId: 'turn-long-error', ts: NOW - 198_000, status: 'failed', errorClass: 'request_rejected', failureMessage: 'The provider rejected this request.\n' + 'configuration-'.repeat(145) + '\n(status=400, requestId=req-long-4502)' },
+  ] }} />,
 };
 
 // Real path: the provider throttles a live request and Runtime schedules a

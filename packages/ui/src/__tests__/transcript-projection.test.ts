@@ -457,6 +457,11 @@ describe('turn identity moves across structural change classes', () => {
       ],
     },
     {
+      field: 'failureMessage',
+      from: [...base.slice(0, 2), { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed', errorClass: 'rate_limit' }],
+      refresh: [...base.slice(0, 2), { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed', errorClass: 'rate_limit', failureMessage: 'Quota exceeded (status=429, requestId=req-4502)' }],
+    },
+    {
       field: 'assistant',
       refresh: [
         base[0]!,

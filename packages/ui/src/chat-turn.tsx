@@ -695,12 +695,12 @@ export const TurnView = memo(function TurnView(props: {
                   container="section"
                   className="maka-turn-failed-banner"
                   title={props.failedReasonLabel}
-                  {...(props.safeResumeAction?.detail ?? props.failedExecutionStateLabel
-                    ? {
-                        description:
-                          props.safeResumeAction?.detail ?? props.failedExecutionStateLabel,
-                      }
-                    : {})}
+                  description={
+                    <>
+                      {props.safeResumeAction?.detail ?? props.failedExecutionStateLabel}
+                      {!turn.failureMessage && <span className="maka-turn-failure-unavailable">{copy.failureDetailsUnavailable}</span>}
+                    </>
+                  }
                   {...(props.safeResumeAction
                     ? {
                         endContent: (
@@ -718,7 +718,11 @@ export const TurnView = memo(function TurnView(props: {
                         ),
                       }
                     : {})}
-                />
+                >
+                  {turn.failureMessage && (
+                    <pre className="maka-turn-failure-detail">{turn.failureMessage}</pre>
+                  )}
+                </Banner>
               )}
               {ownsTurnChrome && props.liveStreaming && (
                 <>

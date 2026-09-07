@@ -19,6 +19,8 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { TurnViewModel } from '@maka/ui';
+import { deriveAppShellTurnPresentation } from '../../renderer/app-shell-turn-view-model.js';
 import {
   describeFailedTurnExecutionState,
   describeTurnErrorClass,
@@ -39,9 +41,11 @@ describe('failed turn presentation', () => {
     assert.equal(describeTurnErrorClass('ECONNRESET', 'en'), describeTurnErrorClass('network', 'en'));
   });
 
-  it('states what to do without promising a resume the UI cannot offer', () => {
+  it('keeps the failure summary from contradicting recorded retry refusals', () => {
     for (const errorClass of ['rate_limit', 'network', 'timeout']) {
-      assert.match(describeTurnErrorClass(errorClass, 'zh-CN'), /重新发消息|再发消息|发消息/);
+      for (const locale of ['zh-CN', 'zh-TW', 'en'] as const) {
+        assert.doesNotMatch(describeTurnErrorClass(errorClass, locale), /重试|重試|retry|send a message/i);
+      }
     }
     assert.doesNotMatch(describeTurnErrorClass('unknown_failure', 'zh-CN'), /重试|重发/);
     assert.match(describeTurnErrorClass('stream_truncated', 'zh-CN'), /中途断开/);
@@ -92,4 +96,11 @@ describe('failed turn execution state', () => {
     );
   });
 
+});
+
+it('does not hide a terminal diagnostic behind a sandbox tool failure or promote a tool failure to a failed turn', () => {
+  const turn: TurnViewModel = { turnId: 't1', status: 'failed', errorClass: 'unknown', failureMessage: 'Provider request failed after the tool result', tools: [{ toolUseId: 'tool-1', toolName: 'Bash', status: 'errored', args: {}, result: { kind: 'text', text: 'Operation not permitted', sandboxDenial: { likely: true } } }], timeline: [], notes: [], startedAt: 1 };
+  const context = { activeId: 'session-1', pendingTurnActions: new Set<string>(), uiLocale: 'en' as const };
+  assert.ok(deriveAppShellTurnPresentation([turn], context).failedReasonLabels.t1);
+  assert.equal(deriveAppShellTurnPresentation([{ ...turn, status: 'completed' }], context).failedReasonLabels.t1, undefined);
 });

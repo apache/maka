@@ -66,14 +66,7 @@ function isSandboxOnlyToolFailure(turn: TurnViewModel): boolean {
   const erroredTools = turn.tools.filter((tool) => tool.status === 'errored');
   if (erroredTools.length === 0 || !erroredTools.every(isSandboxDeniedTool)) return false;
 
-  const errorClass = turn.errorClass?.toLowerCase();
-  return (
-    errorClass === undefined
-    || errorClass === 'unknown'
-    || errorClass === 'tool_failed'
-    || errorClass === 'sandbox_denial'
-    || errorClass === 'sandbox_denied'
-  );
+  return [undefined, 'unknown', 'tool_failed', 'sandbox_denial', 'sandbox_denied'].includes(turn.errorClass?.toLowerCase());
 }
 
 /**
@@ -219,7 +212,7 @@ function deriveTurnPresentationEntry(input: {
 
   const entry: TurnPresentationEntry = { footerActions };
 
-  if (turn.status === 'failed' && !isSandboxOnlyToolFailure(turn)) {
+  if (turn.status === 'failed' && (turn.failureMessage || !isSandboxOnlyToolFailure(turn))) {
     entry.failedReasonLabel = describeTurnErrorClass(turn.errorClass, uiLocale);
     entry.failedSeverity = deriveFailedTurnSeverity(turn.errorClass);
     entry.failedExecutionStateLabel = describeFailedTurnExecutionState({
