@@ -88,6 +88,7 @@ import type { RuntimeHostCompositionSource } from '../server/host-composition.js
 import { createUnavailableDomainOperationHandlers } from '../server/operation-dispatcher.js';
 import { HostChangeFeed } from '../server/host-change-feed.js';
 import { FramedTransport, RuntimeHostTransportError } from '../transport/framed-transport.js';
+import { OWNED_CANDIDATE_RECOVERY_DELAY_MS } from '../test-only/owned-candidate-recovery-delay.js';
 import {
   prepareStorageRootControlDirectory,
   resolveRootControlNamespace,
@@ -2204,6 +2205,11 @@ describe('non-serving Runtime Host kernel', () => {
             capability.rootId,
             join(paths.base, 'authority-lease-probe'),
             launchOwnerClientInstanceId,
+            // The owner-loss exit bound below covers the recovery window, so
+            // this run pins startup behind the delayed-recovery entry instead
+            // of leaving the bound at the mercy of however long an unassisted
+            // recovery takes under load.
+            '../../test-only/owned-candidate-delayed-recovery-main.js',
           ],
           { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
         ),
@@ -2233,14 +2239,26 @@ describe('non-serving Runtime Host kernel', () => {
       // running, and gating the exit assertion on it starts the exit budget at
       // a moment that has nothing to do with the Host's shutdown.
       //
-      // The bound comes from the kernel's contract rather than from an
-      // interval this test could predict. Owner loss cannot close a
-      // composition before its startup settles, and the shutdown that follows
-      // is bounded by `shutdownGraceMs` (10 s), after which the kernel
-      // force-terminates. Twenty seconds therefore sits above every
-      // legitimate exit and below the launcher's 60 s idle grace, so it cannot
-      // be satisfied by a Candidate that merely went idle.
-      await waitForProcessExit(launchedPid, 20_000);
+      // The bound is a sum of contracts the test controls rather than an
+      // interval this test could predict. A launch-owner Client is admitted
+      // while the Host is still recovering, and the guard that closes the
+      // Host on owner loss binds only after startup returns, so the
+      // remaining recovery time is part of the bound and has no kernel
+      // deadline. The delayed-recovery entry pins that window to
+      // OWNED_CANDIDATE_RECOVERY_DELAY_MS (5 s), and the shutdown that
+      // follows is bounded by `shutdownGraceMs` (10 s), after which the
+      // kernel force-terminates. The deadline is that delay plus the
+      // shutdown grace and margin — twenty seconds — which sits above every
+      // legitimate exit and below the launcher's 60 s idle grace, so it
+      // cannot be satisfied by a Candidate that merely went idle. The kill
+      // lands inside the pinned window, so this exercises owner loss before
+      // the guard binds; Windows locally terminates such grandchildren
+      // abruptly without a JS exit event, so only CI verdicts count as
+      // cross-platform evidence for this assertion.
+      await waitForProcessExit(
+        launchedPid,
+        OWNED_CANDIDATE_RECOVERY_DELAY_MS + 15_000,
+      );
       await withTimeout(
         connected.connection.closed,
         5_000,

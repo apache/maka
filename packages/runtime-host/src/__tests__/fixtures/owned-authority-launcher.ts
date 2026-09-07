@@ -20,10 +20,11 @@
 import { openSync } from 'node:fs';
 import { launchOwnedRuntimeHostCandidate } from '../../client/launcher.js';
 
-const [rootPath, expectedRootId, leasePath, clientInstanceId] = process.argv.slice(2);
+const [rootPath, expectedRootId, leasePath, clientInstanceId, entrypointOverride] =
+  process.argv.slice(2);
 if (!rootPath || !expectedRootId || !leasePath || !clientInstanceId) {
   throw new Error(
-    'usage: owned-authority-launcher <root> <expected-root-id> <lease-path> <client-id>',
+    'usage: owned-authority-launcher <root> <expected-root-id> <lease-path> <client-id> [entrypoint]',
   );
 }
 
@@ -31,7 +32,9 @@ const leaseFd = openSync(leasePath, 'a+');
 const attempt = await launchOwnedRuntimeHostCandidate({
   rootPath,
   expectedRootId,
-  entrypoint: new URL('../../execution-candidate-main.js', import.meta.url),
+  // Tests that bound an owner-loss exit pass a test-only entry whose
+  // startup window they control; the production entry stays the default.
+  entrypoint: new URL(entrypointOverride ?? '../../execution-candidate-main.js', import.meta.url),
   // The idle grace only has to outlast the test, and it has to stay clear of
   // any bound a test puts on an owner-loss exit: a Candidate that exits
   // because it went idle must never be mistaken for one that exited because

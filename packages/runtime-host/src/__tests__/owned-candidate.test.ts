@@ -471,7 +471,10 @@ async function waitForHostShutdownStart(
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const registration = await readHostRegistration(controlDirectory).catch(() => undefined);
+    // readHostRegistration already maps a missing file to `undefined`; the
+    // unguarded await lets real I/O or decode errors fail this wait loudly
+    // instead of masquerading as "shutdown started".
+    const registration = await readHostRegistration(controlDirectory);
     if (!registration || registration.state === 'draining') return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
