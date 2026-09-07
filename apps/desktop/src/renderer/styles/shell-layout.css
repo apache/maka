@@ -396,8 +396,15 @@ dialog:modal {
 }
 
 .maka-titlebar-menu .astryx-dropdown-menu-section-heading {
+  font-size: var(--text-label-size);
+  line-height: var(--text-label-leading);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.maka-titlebar-menu .astryx-dropdown-menu-section-heading::first-line {
+  font-weight: var(--font-weight-medium);
+  color: var(--foreground);
 }
 
 .maka-titlebar-identity__rename-input {
