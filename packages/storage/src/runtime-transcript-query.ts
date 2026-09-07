@@ -77,12 +77,41 @@ export class RuntimeTranscriptOversizedTurnError extends Error {
   readonly name = 'RuntimeTranscriptOversizedTurnError';
 }
 
-const joins = `
-  FROM runtime_session_event_ordinals o
-  JOIN runtime_events e ON e.event_id = o.event_id
-  LEFT JOIN runtime_events opened ON opened.invocation_id = e.invocation_id AND opened.event_kind = 'invocation_opened'
-  LEFT JOIN runtime_legacy_invocation_openings legacy ON legacy.invocation_id = e.invocation_id`;
-const opening = `COALESCE(json_extract(opened.payload_json, '$.content'), legacy.opening_json)`;
+/**
+ * Every invocation of a Session, one row each, with the ordinal it starts at.
+ *
+ * An invocation's first event is its opening, so the opening's ordinal is the
+ * invocation's — no scan of the events between is needed to learn where a Turn
+ * begins. A database migrated from run headers keeps its opening beside the
+ * ledger instead of in it, and records which of its own events came first;
+ * that anchor is the same fact, read from where that Session put it.
+ */
+const spine = `
+  spine AS (
+    SELECT e.invocation_id AS invocation_id, o.ordinal AS first,
+      json_extract(e.payload_json, '$.content') AS opening
+    FROM runtime_events e
+    JOIN runtime_session_event_ordinals o ON o.event_id = e.event_id
+    WHERE e.session_id = :sessionId AND e.event_kind = 'invocation_opened'
+    UNION ALL
+    SELECT legacy.invocation_id, o.ordinal, legacy.opening_json
+    FROM runtime_legacy_invocation_openings legacy
+    JOIN runtime_session_event_ordinals o ON o.event_id = legacy.anchor_event_id
+    WHERE legacy.session_id = :sessionId
+      AND NOT EXISTS (
+        SELECT 1 FROM runtime_events opened
+        WHERE opened.invocation_id = legacy.invocation_id
+          AND opened.event_kind = 'invocation_opened'
+      )
+  ),
+  ended AS (
+    SELECT t.invocation_id AS invocation_id, MIN(o.ordinal) AS last
+    FROM runtime_events t
+    JOIN runtime_session_event_ordinals o ON o.event_id = t.event_id
+    WHERE t.session_id = :sessionId
+      AND ${TERMINAL_RUNTIME_EVENT_SQL.replaceAll('payload_json', 't.payload_json')}
+    GROUP BY t.invocation_id
+  )`;
 /**
  * A Turn the Session transcript shows: one this Session ran itself rather than
  * on behalf of a subagent, and one that has already ended.
@@ -91,32 +120,42 @@ const opening = `COALESCE(json_extract(opened.payload_json, '$.content'), legacy
  * rows it produces is the read model's question, and is not asked here.
  */
 const settledInline = `
-  ${opening} IS NOT NULL
-  AND (json_extract(${opening}, '$.lineage.parentRunId') IS NULL
-    OR (json_extract(${opening}, '$.source.kind') = 'continuation'
-      AND json_extract(${opening}, '$.lineage.agentId') IS NULL))
-  AND EXISTS (
-    SELECT 1 FROM runtime_events ended
-    JOIN runtime_session_event_ordinals ending ON ending.event_id = ended.event_id
-    WHERE ended.invocation_id = e.invocation_id
-      AND ${TERMINAL_RUNTIME_EVENT_SQL.replaceAll('payload_json', 'ended.payload_json')}
-      AND ending.ordinal <= :throughOrdinal
-  )`;
+  spine.opening IS NOT NULL
+  AND (json_extract(spine.opening, '$.lineage.parentRunId') IS NULL
+    OR (json_extract(spine.opening, '$.source.kind') = 'continuation'
+      AND json_extract(spine.opening, '$.lineage.agentId') IS NULL))
+  AND ended.last <= :throughOrdinal`;
+const settledSpine = `
+  FROM spine JOIN ended ON ended.invocation_id = spine.invocation_id
+  WHERE ${settledInline}`;
+/** The same two facts, read off the ordinal index instead of a materialized spine. */
+const inlineOpening = (payload: string) => `
+  (json_extract(${payload}, '$.lineage.parentRunId') IS NULL
+    OR (json_extract(${payload}, '$.source.kind') = 'continuation'
+      AND json_extract(${payload}, '$.lineage.agentId') IS NULL))`;
+const endingOrdinal = (invocation: string) => `
+  (SELECT MIN(o2.ordinal) FROM runtime_events t
+   JOIN runtime_session_event_ordinals o2 ON o2.event_id = t.event_id
+   WHERE t.invocation_id = ${invocation}
+     AND ${TERMINAL_RUNTIME_EVENT_SQL.replaceAll('payload_json', 't.payload_json')})`;
 
-type InvocationRow = { invocation_id: string; run_id: string; first: number; last: number };
+type InvocationRow = { invocation_id: string; first: number; last: number };
 
 /** Selects invocations by Session ordinal. Payloads are decoded, never classified. */
 export class RuntimeTranscriptQuery {
   constructor(
     private readonly db: DatabaseSync,
-    private readonly invocation: (sessionId: string, runId: string) => RuntimeInvocationRecord,
+    private readonly invocation: (
+      sessionId: string,
+      invocationId: string,
+    ) => RuntimeInvocationRecord,
   ) {}
 
   highWater(sessionId: string): number | null {
     const row = this.db
       .prepare(`
-      SELECT MAX(o.ordinal) AS ordinal ${joins}
-      WHERE o.session_id = :sessionId AND o.ordinal <= :throughOrdinal AND ${settledInline}
+      WITH ${spine}
+      SELECT MAX(ended.last) AS ordinal ${settledSpine}
     `)
       .get({ sessionId, throughOrdinal: Number.MAX_SAFE_INTEGER }) as { ordinal?: unknown };
     return typeof row.ordinal === 'number' ? row.ordinal : null;
@@ -132,24 +171,37 @@ export class RuntimeTranscriptQuery {
       throw new Error('Invalid transcript direction');
     }
     // An invocation is selected by where its own events sit, so a walk that
-    // starts inside a Turn still finds that Turn and can serve its rows.
-    const rows = this.db
-      .prepare(`
-      SELECT e.invocation_id, e.run_id, MIN(o.ordinal) AS first, MAX(o.ordinal) AS last ${joins}
-      WHERE o.session_id = :sessionId AND o.ordinal <= :throughOrdinal AND ${settledInline}
-      GROUP BY e.invocation_id
-      HAVING ${request.direction === 'older' ? 'first <= :position' : 'last >= :position'}
-      ORDER BY first ${request.direction === 'older' ? 'DESC' : 'ASC'}
+    // starts inside a Turn still finds that Turn and can serve its rows. Both
+    // ends are the invocation's own two events — its opening and its ending —
+    // rather than the extremes of everything between them.
+    //
+    // Walking back is the direction a Session's history is read in, and it
+    // takes the ordinal index directly: openings descending from `position`,
+    // stopping at the page. What it costs is the page, not the Session.
+    //
+    // Walking forward cannot: "has an event at or after `position`" is a claim
+    // about an invocation's ending, and no ordinal index answers it without
+    // assuming Turns never interleave. It reads the spine instead, which costs
+    // the Session in Turns rather than in events.
+    const rows =
+      request.direction === 'older'
+        ? this.olderInvocations(sessionId, request)
+        : (this.db
+            .prepare(`
+      WITH ${spine}
+      SELECT spine.invocation_id, spine.first AS first, ended.last AS last
+      ${settledSpine} AND ended.last >= :position
+      ORDER BY spine.first ASC
       LIMIT :limit
     `)
-      .all({
-        sessionId,
-        throughOrdinal: request.throughOrdinal,
-        position: request.position,
-        limit: request.limit,
-      }) as InvocationRow[];
+            .all({
+              sessionId,
+              throughOrdinal: request.throughOrdinal,
+              position: request.position,
+              limit: request.limit,
+            }) as InvocationRow[]);
     return rows.map((row) => ({
-      invocation: this.invocation(sessionId, row.run_id),
+      invocation: this.invocation(sessionId, row.invocation_id),
       firstOrdinal: row.first,
       lastOrdinal: row.last,
       events: this.events(row.invocation_id, request),
@@ -162,22 +214,20 @@ export class RuntimeTranscriptQuery {
     // Evenly spaced Turn starts, chosen before any payload is read.
     const rows = this.db
       .prepare(`
-      WITH candidates AS (
-        SELECT e.invocation_id, e.run_id, o.ordinal,
-          ROW_NUMBER() OVER (ORDER BY o.ordinal) - 1 AS rank, COUNT(*) OVER () AS total
-        ${joins} WHERE o.session_id = :sessionId AND o.ordinal <= :throughOrdinal
-          AND e.event_seq = 1 AND ${settledInline}
+      WITH ${spine}, candidates AS (
+        SELECT spine.invocation_id AS invocation_id, spine.first AS ordinal,
+          ROW_NUMBER() OVER (ORDER BY spine.first) - 1 AS rank, COUNT(*) OVER () AS total
+        ${settledSpine}
       ), samples(n) AS (
         SELECT 0 UNION ALL SELECT n + 1 FROM samples WHERE n + 1 < :limit
       )
-      SELECT DISTINCT invocation_id, run_id, ordinal FROM candidates
+      SELECT DISTINCT invocation_id, ordinal FROM candidates
       JOIN samples ON rank = CASE WHEN :limit = 1 THEN total - 1
         ELSE CAST(n * (total - 1) / (:limit - 1) AS INTEGER) END
       ORDER BY ordinal
     `)
       .all({ sessionId, throughOrdinal, limit }) as Array<{
       invocation_id: string;
-      run_id: string;
       ordinal: number;
     }>;
     return rows.map((row) => {
@@ -197,13 +247,68 @@ export class RuntimeTranscriptQuery {
         | { ordinal: number; event_id: string }
         | undefined;
       return {
-        invocation: this.invocation(sessionId, row.run_id),
+        invocation: this.invocation(sessionId, row.invocation_id),
         firstOrdinal: row.ordinal,
         ...(prompt
           ? { prompt: { ordinal: prompt.ordinal, event: this.event(prompt.event_id) } }
           : {}),
       };
     });
+  }
+
+  /**
+   * The page walking back from `position`, taken off the ordinal index.
+   *
+   * Openings that live in the ledger are read in ordinal order and the walk
+   * stops at the page. A Session migrated from run headers keeps some openings
+   * beside the ledger, ordered by the anchor event each one names rather than
+   * by an ordinal of its own; that side is read separately and merged, so the
+   * common Session pays nothing for a table its history never wrote to.
+   */
+  private olderInvocations(
+    sessionId: string,
+    request: RuntimeTranscriptInvocationRequest,
+  ): InvocationRow[] {
+    const bind = {
+      sessionId,
+      throughOrdinal: request.throughOrdinal,
+      position: request.position,
+      limit: request.limit,
+    };
+    const ledger = this.db
+      .prepare(`
+      SELECT e.invocation_id AS invocation_id, o.ordinal AS first,
+        ${endingOrdinal('e.invocation_id')} AS last
+      FROM runtime_session_event_ordinals o
+      JOIN runtime_events e ON e.event_id = o.event_id
+      WHERE o.session_id = :sessionId AND o.ordinal <= :position
+        AND e.event_kind = 'invocation_opened'
+        AND ${inlineOpening("json_extract(e.payload_json, '$.content')")}
+        AND ${endingOrdinal('e.invocation_id')} <= :throughOrdinal
+      ORDER BY o.ordinal DESC
+      LIMIT :limit
+    `)
+      .all(bind) as InvocationRow[];
+    const migrated = this.db
+      .prepare(`
+      SELECT legacy.invocation_id AS invocation_id, o.ordinal AS first,
+        ${endingOrdinal('legacy.invocation_id')} AS last
+      FROM runtime_legacy_invocation_openings legacy
+      JOIN runtime_session_event_ordinals o ON o.event_id = legacy.anchor_event_id
+      WHERE legacy.session_id = :sessionId AND o.ordinal <= :position
+        AND ${inlineOpening('legacy.opening_json')}
+        AND ${endingOrdinal('legacy.invocation_id')} <= :throughOrdinal
+        AND NOT EXISTS (
+          SELECT 1 FROM runtime_events opened
+          WHERE opened.invocation_id = legacy.invocation_id
+            AND opened.event_kind = 'invocation_opened'
+        )
+      ORDER BY o.ordinal DESC
+      LIMIT :limit
+    `)
+      .all(bind) as InvocationRow[];
+    if (migrated.length === 0) return ledger;
+    return [...ledger, ...migrated].sort((a, b) => b.first - a.first).slice(0, request.limit);
   }
 
   private events(

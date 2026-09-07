@@ -544,9 +544,14 @@ export class SqliteRuntimeStore
   }
 
   private transcriptQuery(): RuntimeTranscriptQuery {
-    return new RuntimeTranscriptQuery(this.db, (sessionId, runId) => {
-      const opening = this.readInvocationOpeningsSync(sessionId, { direction: 'asc', runId }).at(0);
-      if (!opening) throw new Error(`Transcript invocation ${runId} is missing`);
+    return new RuntimeTranscriptQuery(this.db, (sessionId, invocationId) => {
+      // By invocation rather than by run: both shelves key their opening on it,
+      // so a page's records cost the page instead of the Session's Turns.
+      const opening = this.readInvocationOpeningsSync(sessionId, {
+        direction: 'asc',
+        invocationId,
+      }).at(0);
+      if (!opening) throw new Error(`Transcript invocation ${invocationId} is missing`);
       return this.completeInvocationRecordSync(opening);
     });
   }
