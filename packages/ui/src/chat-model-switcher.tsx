@@ -92,6 +92,7 @@ export function ThinkingLevelSelector(props: {
   presentation?: 'popover' | 'bottom-sheet';
   /** Force any open surface closed while an interaction prompt occludes the composer. */
   isReadOnly?: boolean;
+  onOpenChange?(open: boolean): void;
   onChange?(level: ThinkingLevel | undefined): void | Promise<void>;
   disabled?: boolean;
   /** Why the control is locked (mid-turn etc.); Selector exposes it as the disabled tooltip. */
@@ -131,6 +132,7 @@ export function ThinkingLevelSelector(props: {
       disabledMessage={props.disabledReason}
       placeholder={currentLabel}
       className="maka-thinking-level-selector"
+      onOpenChange={props.onOpenChange}
       onChange={selection.onChange}
     />
   );
