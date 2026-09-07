@@ -913,4 +913,54 @@ describe('single live-turn handoff', () => {
     ]);
     assert.equal(liveTurns.get()['session-1'], undefined);
   });
+
+  it('retires a re-seeded compaction row when the refreshed transcript is terminal', () => {
+    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({});
+    const ref = { current: liveTurns.get() };
+    const interactions = createStateSetter<InteractionQueues>({});
+    const handlers = createAppShellSessionEventHandlers({
+      uiLocale: 'en',
+      activeIdRef: { current: 'session-1' },
+      liveTurnBySessionRef: ref,
+      refreshMessages: async () => true,
+      refreshSessions: async () => [],
+      setLiveTurnBySession: (updater) => {
+        liveTurns.set(updater);
+        ref.current = liveTurns.get();
+      },
+      setInteractionBySession: interactions.set,
+      showModelSetupToast: () => {},
+      toastApi: { error: () => {} },
+    });
+
+    // A newly attached observer can only seed the still-running identity; it
+    // has no prior snapshot from which to synthesize the missed terminal event.
+    handlers.handleEvent('session-1', {
+      type: 'context_compaction_started',
+      id: 'compaction-started-1',
+      turnId: 'turn-compact',
+      ts: 1,
+    });
+    assert.equal(liveTurns.get()['session-1']?.rootExecutionKind, 'context_compact');
+
+    handlers.reconcilePersistedMessages('session-1', [
+      {
+        type: 'system_note',
+        id: 'compaction-settled-1',
+        turnId: 'turn-compact',
+        ts: 2,
+        kind: 'context_compacted',
+      },
+      {
+        type: 'turn_state',
+        id: 'turn-terminal-1',
+        turnId: 'turn-compact',
+        ts: 3,
+        status: 'completed',
+        partialOutputRetained: false,
+      },
+    ]);
+
+    assert.equal(liveTurns.get()['session-1'], undefined);
+  });
 });

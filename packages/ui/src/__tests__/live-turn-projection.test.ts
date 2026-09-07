@@ -20,6 +20,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { encodeToolStepProgress } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
 import { applyLiveTurnEvent } from './live-turn-zh.js';
 import {
   armLiveTurn,
@@ -1176,5 +1177,42 @@ describe('context-compaction live row', () => {
     });
     assert.equal(projection, undefined);
     assert.deepEqual(overlayLiveTurn([], projection, 'en'), []);
+  });
+
+  it('drops the running row when transcript reconciliation finds the compaction terminal', () => {
+    const projection = applyLiveTurnEvent(undefined, {
+      type: 'context_compaction_started',
+      id: 'compaction-started-1',
+      turnId: 'turn-compact',
+      ts: 1,
+    });
+    assert.ok(projection);
+    assert.equal(overlayLiveTurn([], projection, 'en')[0]?.status, 'running');
+
+    const messages: StoredMessage[] = [
+      {
+        type: 'system_note',
+        id: 'compaction-settled-1',
+        turnId: 'turn-compact',
+        ts: 2,
+        kind: 'context_compacted',
+      },
+      {
+        type: 'turn_state',
+        id: 'turn-terminal-1',
+        turnId: 'turn-compact',
+        ts: 3,
+        status: 'completed',
+        partialOutputRetained: false,
+      },
+    ];
+    const reconciled = reconcileTerminalLiveTurn(projection, messages);
+    const turns = overlayLiveTurn(materializeTurns(messages, 'en'), reconciled, 'en');
+
+    assert.equal(reconciled, undefined);
+    assert.deepEqual(
+      turns[0]?.notes.map((note) => note.text),
+      [getConversationCopy('en').messages.systemNotes.contextCompacted],
+    );
   });
 });

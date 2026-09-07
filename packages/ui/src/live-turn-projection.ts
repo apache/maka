@@ -684,8 +684,16 @@ export function reconcileTerminalLiveTurn(
       return withoutSteering;
     });
   }
+  if (
+    steps.length === 0
+    && projection.terminal
+    && (
+      projection.rootExecutionKind === 'context_compact'
+      || transcriptReachedTerminal
+      || steps.length !== projection.steps.length
+    )
+  ) return undefined;
   if (steps.length === projection.steps.length && !steeringSettled) return projection;
-  if (steps.length === 0 && projection.terminal) return undefined;
   if (!steeringSettled) return { ...projection, steps };
   const { pendingSteering: _pendingSteering, ...withoutSteering } = projection;
   return { ...withoutSteering, steps };

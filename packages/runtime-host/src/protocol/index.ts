@@ -101,9 +101,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 124 as const;
-// 124: Live Turn snapshots carry an optional `rootExecutionKind:'context_compact'`
-// so a running context-compaction Turn can render a transcript row. Epoch-123
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 125 as const;
+// 125: Live Turn snapshots carry an optional `rootExecutionKind:'context_compact'`
+// so a running context-compaction Turn can render a transcript row. Epoch-124
 // peers reject the added optional field on the strict live snapshot shape.
 // 124: PTY delivery is independent of the ordered Session state stream. A
 // bounded PTY overflow requests terminal-only snapshot recovery.

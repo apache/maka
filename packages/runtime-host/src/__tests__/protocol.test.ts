@@ -444,7 +444,7 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('publishes a new compatibility epoch for context-compaction transcript state', () => {
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 123);
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 124);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {
