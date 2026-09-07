@@ -72,8 +72,7 @@ npm run lint
 npm run format:check
 npm run build
 npm run typecheck
-npx knip --workspace apps/desktop
-npx knip --workspace packages/ui
+npx knip
 ```
 
 Architecture is documented in [ARCHITECTURE.md](./ARCHITECTURE.md); evaluation commands and contracts live in [`packages/eval`](./packages/eval).

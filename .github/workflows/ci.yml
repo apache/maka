@@ -310,13 +310,12 @@ jobs:
         if: steps.plan.outputs.code == 'true'
         run: npm run astryx:theme -- --check
 
-      - name: Knip (apps/desktop)
+      - name: Knip (root + all workspaces)
         if: steps.plan.outputs.code == 'true'
-        run: npx knip --workspace apps/desktop
-
-      - name: Knip (packages/ui)
-        if: steps.plan.outputs.code == 'true'
-        run: npx knip --workspace packages/ui
+        run: |
+          node --test scripts/check-knip-workspace-coverage.test.mjs
+          node scripts/check-knip-workspace-coverage.mjs
+          npx knip
 
       - name: Linux sandbox smoke
         if: steps.plan.outputs.runtime_sandbox == 'true'
