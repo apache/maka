@@ -91,24 +91,35 @@ export async function openToolResultArchiveEvidenceReader(
                 'SELECT payload_json FROM runtime_events WHERE event_id = ? AND session_id = ?',
               )
               .get(runtimeEventId, sessionId);
-            const event = decodeRuntimeEvent(JSON.parse(String(raw?.payload_json)));
+            let event: ReturnType<typeof decodeRuntimeEvent>;
+            try {
+              event = decodeRuntimeEvent(JSON.parse(String(raw?.payload_json)));
+            } catch {
+              return { ok: false, reason: 'corrupt' };
+            }
             if (event.sessionId !== sessionId || event.id !== runtimeEventId)
               return { ok: false, reason: 'corrupt' };
             const read = db.prepare(
               'SELECT record_json FROM core_agent_run_events WHERE session_id = ? AND run_id = ? AND sequence = ?',
             );
-            const transitions = sizes.map((row) => {
+            const transitions: ReturnType<typeof decodeAgentRunEvent>[] = [];
+            for (const row of sizes) {
               const stored = read.get(sessionId, row.run_id!, row.sequence!);
-              const transition = decodeAgentRunEvent(JSON.parse(String(stored?.record_json)));
-              if (transition.sessionId !== sessionId)
-                throw new Error('Transition Session mismatch');
-              return transition;
-            });
+              let transition: ReturnType<typeof decodeAgentRunEvent>;
+              try {
+                transition = decodeAgentRunEvent(JSON.parse(String(stored?.record_json)));
+              } catch {
+                return { ok: false, reason: 'corrupt' };
+              }
+              if (transition.sessionId !== sessionId) return { ok: false, reason: 'corrupt' };
+              transitions.push(transition);
+            }
             return { ok: true, event, transitions };
           });
         });
       } catch {
-        return { ok: false, reason: 'corrupt' };
+        // Failure to acquire/read the store is not evidence that its records are invalid.
+        return { ok: false, reason: 'unavailable' };
       }
     },
   };

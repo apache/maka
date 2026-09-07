@@ -220,13 +220,59 @@ test('upgrades the target index without rewriting immutable transition records',
 test('reader close and root revocation never return evidence', async (t) => {
   const f = await fixture(t);
   await f.owner.close();
-  assert.equal(
-    (await f.reader.read({ sessionId: 'session', runtimeEventId: 'response' })).ok,
-    false,
-  );
+  assert.deepEqual(await f.reader.read({ sessionId: 'session', runtimeEventId: 'response' }), {
+    ok: false,
+    reason: 'unavailable',
+  });
   f.reader.close();
   assert.deepEqual(await f.reader.read({ sessionId: 'session', runtimeEventId: 'response' }), {
     ok: false,
     reason: 'unavailable',
+  });
+});
+
+test('database read failures are unavailable, not corrupt evidence', async (t) => {
+  const f = await fixture(t);
+  const prepare = DatabaseSync.prototype.prepare;
+  const failure = t.mock.method(
+    DatabaseSync.prototype,
+    'prepare',
+    function (this: DatabaseSync, sql: string) {
+      if (sql.includes('length(CAST(payload_json AS BLOB))'))
+        throw new Error('injected database unavailable');
+      return prepare.call(this, sql);
+    },
+  );
+  assert.deepEqual(await f.reader.read({ sessionId: 'session', runtimeEventId: 'response' }), {
+    ok: false,
+    reason: 'unavailable',
+  });
+  failure.mock.restore();
+  assert.equal(
+    (await f.reader.read({ sessionId: 'session', runtimeEventId: 'response' })).ok,
+    true,
+  );
+});
+
+test('invalid event JSON and transition envelopes remain corrupt', async (t) => {
+  const f = await fixture(t);
+  f.insert(1, 'response');
+  const saved = f.db
+    .prepare("SELECT payload_json FROM runtime_events WHERE event_id = 'response'")
+    .get()!;
+  f.db.exec("UPDATE runtime_events SET payload_json = '{' WHERE event_id = 'response'");
+  assert.deepEqual(await f.reader.read({ sessionId: 'session', runtimeEventId: 'response' }), {
+    ok: false,
+    reason: 'corrupt',
+  });
+  f.db
+    .prepare("UPDATE runtime_events SET payload_json = ? WHERE event_id = 'response'")
+    .run(saved.payload_json!);
+  f.db.exec(
+    "UPDATE core_agent_run_events SET record_json = json_set(record_json, '$.ts', 'invalid-timestamp')",
+  );
+  assert.deepEqual(await f.reader.read({ sessionId: 'session', runtimeEventId: 'response' }), {
+    ok: false,
+    reason: 'corrupt',
   });
 });

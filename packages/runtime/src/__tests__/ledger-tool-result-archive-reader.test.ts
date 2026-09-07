@@ -293,3 +293,16 @@ test('unknown transition versions and incomplete evidence do not expose a source
     reason: 'too_large',
   });
 });
+
+test('availability maps to read_failed while corrupt evidence remains corrupt', async () => {
+  const f = fixture();
+  for (const reason of ['unavailable', 'corrupt'] as const) {
+    const reader = createLedgerToolResultArchiveReader({
+      read: async () => ({ ok: false, reason }),
+    });
+    assert.deepEqual(await reader({ ...f.placeholder, sessionId: 'session' }), {
+      ok: false,
+      reason: reason === 'unavailable' ? 'read_failed' : 'corrupt',
+    });
+  }
+});
