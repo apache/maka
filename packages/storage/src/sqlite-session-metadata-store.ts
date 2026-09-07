@@ -2567,6 +2567,10 @@ export class SqliteSessionMetadataStore {
     if (!Number.isSafeInteger(request.maxStoredBytes) || request.maxStoredBytes < 1) {
       throw new Error('Invalid Session message byte limit');
     }
+    if (request.afterSequence !== undefined && request.beforeSequence !== undefined) {
+      throw new Error('Invalid Session message scan bounds');
+    }
+    const backward = request.beforeSequence !== undefined;
     return this.readTransaction(() => {
       if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
       const rows = this.db
@@ -2575,13 +2579,13 @@ export class SqliteSessionMetadataStore {
           FROM session_messages AS message
           LEFT JOIN session_message_payloads AS payload
             ON payload.session_id = message.session_id AND payload.sequence = message.sequence
-          WHERE message.session_id = ? AND message.sequence > ?
-          ORDER BY message.sequence
+          WHERE message.session_id = ? AND message.sequence ${backward ? '<' : '>'} ?
+          ORDER BY message.sequence ${backward ? 'DESC' : 'ASC'}
           LIMIT ?
         `)
         .all(
           sessionId,
-          request.afterSequence ?? -1,
+          backward ? request.beforeSequence : (request.afterSequence ?? -1),
           request.maxMessages,
         ) as StoredSessionMessagePayloadRow[];
       const records: SessionMessageScanRecord[] = [];

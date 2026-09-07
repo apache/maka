@@ -25,7 +25,7 @@ import test from 'node:test';
 import { seedInvocation, testInvocationOpening } from '@maka/runtime/test-only/invocation-fixture';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import type { StoredMessage } from '@maka/core/session';
+import { WORKHUB_COORDINATION_SESSION_ID, type StoredMessage } from '@maka/core/session';
 import { projectRuntimeEventsToStoredMessages } from '@maka/runtime/runtime-event-read-model';
 import { foldTurnContribution } from '@maka/storage/session-message-projection';
 import type { SessionTurnContribution } from '@maka/storage/execution-stores';
@@ -660,6 +660,93 @@ test('stops an oversized active projection before retaining the full RuntimeEven
     /exceeds its event limit/,
   );
   assert.equal(visited, 8_193);
+});
+
+test('reads the WorkHub Coordination transcript from its own rows', async () => {
+  const rows: Array<{ sequence: number; message: StoredMessage }> = [
+    {
+      sequence: 0,
+      message: {
+        type: 'user',
+        id: 'wha_1-user',
+        turnId: 'wha_1',
+        ts: 1,
+        text: 'continue this work',
+      },
+    },
+    {
+      sequence: 1,
+      message: {
+        type: 'workhub_coordination',
+        id: 'wha_1',
+        turnId: 'wha_1',
+        ts: 2,
+        schemaVersion: 1,
+        kind: 'delegation_assigned',
+        actionId: 'wha_1',
+        actionFingerprint: `sha256:${'0'.repeat(64)}`,
+        coordinationTurnId: 'wha_1',
+        targetSessionId: 'session-target',
+        targetTurnId: 'turn-target',
+        targetMessageId: 'whm_1',
+        targetSessionName: 'Target',
+        delegationId: 'whd_1',
+        disposition: 'delegate_existing',
+        userText: 'continue this work',
+      },
+    },
+  ];
+  let ledgerReads = 0;
+  const stores = {
+    agentRunStore: {},
+    // Any ledger read is the defect: this Session's Turns are never admitted,
+    // so nothing ever converts these rows and a ledger read returns nothing.
+    runtimeEventStore: new Proxy(
+      {},
+      {
+        get: () => () => {
+          ledgerReads += 1;
+          return Promise.resolve([]);
+        },
+      },
+    ),
+    sessionStore: {
+      readTranscriptHighWaterSnapshot: async () => rows.at(-1)!.sequence,
+      readMessagesAfter: async (
+        _sessionId: string,
+        request: { afterSequence?: number; beforeSequence?: number; maxMessages: number },
+      ) => ({
+        records:
+          request.beforeSequence === undefined
+            ? rows.filter(({ sequence }) => sequence > (request.afterSequence ?? -1))
+            : rows.filter(({ sequence }) => sequence < request.beforeSequence!).reverse(),
+        highWaterSequence: rows.at(-1)!.sequence,
+      }),
+    },
+  } as unknown as ExecutionStoresWriter<'interactive'>;
+  const read = createSessionTranscriptReader({
+    stores,
+    canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+    ensureTranscriptLedger: async () => assert.fail('the Coordination Session has no conversion'),
+  });
+
+  const page = await read.readDurableRecords(WORKHUB_COORDINATION_SESSION_ID, {
+    direction: 'newer',
+    maxMessages: 8,
+    maxStoredBytes: 64 * 1024,
+  });
+
+  assert.deepEqual(
+    page.records.map(({ message }) => message.id),
+    ['wha_1-user', 'wha_1'],
+  );
+  assert.equal(ledgerReads, 0);
+  assert.deepEqual(
+    (await read.readDurableTurnLandmarks(WORKHUB_COORDINATION_SESSION_ID, 4)).landmarks.map(
+      ({ turnId }) => turnId,
+    ),
+    ['wha_1'],
+  );
 });
 
 function runtimeEvent(sessionId: string, overrides: Partial<RuntimeEvent>): RuntimeEvent {

@@ -226,13 +226,19 @@ export interface SessionTranscriptMessageLookupRequest {
 }
 
 /**
- * One forward page of a Session's legacy rows, for the converter that lifts
- * them onto the ledger. Nothing else reads `session_messages` any more, so this
- * is a migration scan rather than a transcript read.
+ * One page of a Session's legacy rows, for the converter that lifts them onto
+ * the ledger and for the WorkHub Coordination Session, whose transcript no run
+ * produces and so has no ledger to read.
  */
 export interface SessionMessageScanRequest {
   /** Exclusive lower bound; omit to start at the first row. */
   readonly afterSequence?: number;
+  /**
+   * Walk towards older rows instead, from this exclusive upper bound. Records
+   * then come back newest first, so the byte budget truncates at the older end,
+   * which is the end the walk is heading for. Pass at most one bound.
+   */
+  readonly beforeSequence?: number;
   readonly maxStoredBytes: number;
   readonly maxMessages: number;
 }

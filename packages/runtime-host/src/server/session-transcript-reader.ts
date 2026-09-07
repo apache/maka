@@ -19,7 +19,7 @@
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { readRunInvocation } from '@maka/core/runtime-event-store';
-import type { StoredMessage } from '@maka/core/session';
+import { WORKHUB_COORDINATION_SESSION_ID, type StoredMessage } from '@maka/core/session';
 import {
   activePresentationRuntimeEvents,
   affectsRuntimeEventStoredMessageProjection,
@@ -71,6 +71,9 @@ const TRANSCRIPT_TURN_SCAN_LIMIT = 1;
  * as absent rather than searched for down the Session.
  */
 const TRANSCRIPT_LOOKUP_MAX_TURNS = 2;
+/** One storage round trip of Coordination rows, sized like one ledger Turn. */
+const COORDINATION_TRANSCRIPT_SCAN_LIMIT = 64;
+const COORDINATION_TRANSCRIPT_SCAN_MAX_BYTES = DURABLE_TRANSCRIPT_TURN_MAX_BYTES;
 
 export function createSessionTranscriptReader(input: {
   stores: ExecutionStoresWriter<'interactive'>;
@@ -82,40 +85,34 @@ export function createSessionTranscriptReader(input: {
    */
   ensureTranscriptLedger?: (sessionId: string) => Promise<void>;
 }): SessionTranscriptReader {
-  const durable = createDurableLedgerTranscriptReader(input);
-  const prepared = async (sessionId: string): Promise<void> => {
+  const ledger = createDurableLedgerTranscriptReader(input);
+  const coordination = createCoordinationTranscriptReader(input.stores);
+  const isCoordination = (sessionId: string): boolean =>
+    sessionId === WORKHUB_COORDINATION_SESSION_ID;
+  // Only a ledger-backed Session has a conversion; the Coordination Session's
+  // rows are the transcript, not something a run left behind.
+  const prepared = async (sessionId: string): Promise<typeof ledger> => {
+    if (isCoordination(sessionId)) return coordination;
     await input.ensureTranscriptLedger?.(sessionId);
+    return ledger;
   };
   return {
-    readDurableHighWater: async (sessionId) => {
-      await prepared(sessionId);
-      return durable.readHighWater(sessionId);
-    },
-    readDurablePage: async (sessionId, request) => {
-      await prepared(sessionId);
-      return durable.readPage(sessionId, request);
-    },
-    readDurableRecords: async (sessionId, request) => {
-      await prepared(sessionId);
-      return durable.readRecords(sessionId, request);
-    },
-    readDurableMessagesById: async (sessionId, request) => {
-      await prepared(sessionId);
-      return durable.readMessagesById(sessionId, request);
-    },
-    readDurableTurnContributions: async (
-      sessionId,
-      throughSequence,
-      position,
-      maxContributions,
-    ) => {
-      await prepared(sessionId);
-      return durable.readTurnContributions(sessionId, throughSequence, position, maxContributions);
-    },
-    readDurableTurnLandmarks: async (sessionId, maxLandmarks) => {
-      await prepared(sessionId);
-      return durable.readTurnLandmarks(sessionId, maxLandmarks);
-    },
+    readDurableHighWater: async (sessionId) => (await prepared(sessionId)).readHighWater(sessionId),
+    readDurablePage: async (sessionId, request) =>
+      (await prepared(sessionId)).readPage(sessionId, request),
+    readDurableRecords: async (sessionId, request) =>
+      (await prepared(sessionId)).readRecords(sessionId, request),
+    readDurableMessagesById: async (sessionId, request) =>
+      (await prepared(sessionId)).readMessagesById(sessionId, request),
+    readDurableTurnContributions: async (sessionId, throughSequence, position, maxContributions) =>
+      (await prepared(sessionId)).readTurnContributions(
+        sessionId,
+        throughSequence,
+        position,
+        maxContributions,
+      ),
+    readDurableTurnLandmarks: async (sessionId, maxLandmarks) =>
+      (await prepared(sessionId)).readTurnLandmarks(sessionId, maxLandmarks),
     readActiveOverlay: async (sessionId, rootTurn) => {
       if (!rootTurn || isTerminalTurn(rootTurn)) return [];
 
@@ -278,87 +275,7 @@ function createDurableLedgerTranscriptReader(input: {
   return {
     readHighWater: highWater,
 
-    async readPage(
-      sessionId: string,
-      request: SessionTranscriptPageRequest,
-    ): Promise<SessionTranscriptStoragePage> {
-      const throughSequence =
-        request.throughSequence === undefined
-          ? await this.readHighWater(sessionId)
-          : request.throughSequence;
-      if (throughSequence === null) {
-        return { throughSequence: null, fragments: [], rawBytes: 0, next: null };
-      }
-      const fragments: SessionTranscriptStorageFragment[] = [];
-      let rawBytes = 0;
-      let next: SessionTranscriptStoragePage['next'] = null;
-      let truncated = false;
-      for await (const record of scan(sessionId, { ...request, throughSequence })) {
-        if (fragments.length >= request.maxMessages || rawBytes >= request.maxBytes) {
-          truncated = true;
-          next = { position: record.sequence, byteOffset: null };
-          break;
-        }
-        const data = Buffer.from(JSON.stringify(record.message), 'utf8');
-        // A message larger than the remaining budget is served in byte slices,
-        // from the edge the traversal is moving away from, so the next page
-        // resumes inside the same record instead of skipping it.
-        const continued = record.sequence === request.position && request.byteOffset !== undefined;
-        const edge = continued
-          ? request.byteOffset!
-          : request.direction === 'older'
-            ? data.byteLength
-            : 0;
-        const available = request.maxBytes - rawBytes;
-        const byteOffset = request.direction === 'older' ? Math.max(0, edge - available) : edge;
-        const end =
-          request.direction === 'older' ? edge : Math.min(data.byteLength, edge + available);
-        fragments.push({
-          sequence: record.sequence,
-          byteOffset,
-          totalBytes: data.byteLength,
-          payloadDigest: null,
-          data: data.subarray(byteOffset, end),
-        });
-        rawBytes += end - byteOffset;
-        const complete = request.direction === 'older' ? byteOffset === 0 : end === data.byteLength;
-        if (!complete) {
-          truncated = true;
-          next = {
-            position: record.sequence,
-            byteOffset: request.direction === 'older' ? byteOffset : end,
-          };
-          break;
-        }
-      }
-      if (!truncated) next = null;
-      return { throughSequence, fragments, rawBytes, next };
-    },
-
-    async readRecords(
-      sessionId: string,
-      request: SessionTranscriptRecordScanRequest,
-    ): Promise<SessionTranscriptRecordScanPage> {
-      const throughSequence =
-        request.throughSequence === undefined
-          ? await this.readHighWater(sessionId)
-          : request.throughSequence;
-      if (throughSequence === null) {
-        return { throughSequence: null, records: [], nextPosition: null };
-      }
-      const records: Array<{ sequence: number; message: StoredMessage }> = [];
-      let storedBytes = 0;
-      let nextPosition: number | null = null;
-      for await (const record of scan(sessionId, { ...request, throughSequence })) {
-        if (records.length >= request.maxMessages || storedBytes >= request.maxStoredBytes) {
-          nextPosition = record.sequence;
-          break;
-        }
-        records.push(record);
-        storedBytes += Buffer.byteLength(JSON.stringify(record.message), 'utf8');
-      }
-      return { throughSequence, records, nextPosition };
-    },
+    ...pagedTranscriptReads({ readHighWater: highWater, scan }),
 
     /** One row per Turn, folded from the Turn's own projected messages. */
     async readTurnContributions(
@@ -429,6 +346,112 @@ function createDurableLedgerTranscriptReader(input: {
       }
       return { throughSequence, landmarks };
     },
+  };
+}
+
+/** An ordered, bounded walk over one Session's transcript records. */
+interface TranscriptRecordSource {
+  readHighWater(sessionId: string): Promise<number | null>;
+  scan(
+    sessionId: string,
+    request: {
+      direction: 'older' | 'newer';
+      throughSequence?: number | null;
+      position?: number;
+      /** Stops the walk after this many Turns, for a read that may find nothing. */
+      maxTurns?: number;
+    },
+  ): AsyncGenerator<{ sequence: number; message: StoredMessage }>;
+}
+
+/**
+ * The reads that are the same whatever produces the records: a byte-bounded
+ * page, a record scan, and a lookup by message id. Each walks one source's
+ * ordered records and never asks where they came from.
+ */
+function pagedTranscriptReads(source: TranscriptRecordSource) {
+  return {
+    async readPage(
+      sessionId: string,
+      request: SessionTranscriptPageRequest,
+    ): Promise<SessionTranscriptStoragePage> {
+      const throughSequence =
+        request.throughSequence === undefined
+          ? await source.readHighWater(sessionId)
+          : request.throughSequence;
+      if (throughSequence === null) {
+        return { throughSequence: null, fragments: [], rawBytes: 0, next: null };
+      }
+      const fragments: SessionTranscriptStorageFragment[] = [];
+      let rawBytes = 0;
+      let next: SessionTranscriptStoragePage['next'] = null;
+      let truncated = false;
+      for await (const record of source.scan(sessionId, { ...request, throughSequence })) {
+        if (fragments.length >= request.maxMessages || rawBytes >= request.maxBytes) {
+          truncated = true;
+          next = { position: record.sequence, byteOffset: null };
+          break;
+        }
+        const data = Buffer.from(JSON.stringify(record.message), 'utf8');
+        // A message larger than the remaining budget is served in byte slices,
+        // from the edge the traversal is moving away from, so the next page
+        // resumes inside the same record instead of skipping it.
+        const continued = record.sequence === request.position && request.byteOffset !== undefined;
+        const edge = continued
+          ? request.byteOffset!
+          : request.direction === 'older'
+            ? data.byteLength
+            : 0;
+        const available = request.maxBytes - rawBytes;
+        const byteOffset = request.direction === 'older' ? Math.max(0, edge - available) : edge;
+        const end =
+          request.direction === 'older' ? edge : Math.min(data.byteLength, edge + available);
+        fragments.push({
+          sequence: record.sequence,
+          byteOffset,
+          totalBytes: data.byteLength,
+          payloadDigest: null,
+          data: data.subarray(byteOffset, end),
+        });
+        rawBytes += end - byteOffset;
+        const complete = request.direction === 'older' ? byteOffset === 0 : end === data.byteLength;
+        if (!complete) {
+          truncated = true;
+          next = {
+            position: record.sequence,
+            byteOffset: request.direction === 'older' ? byteOffset : end,
+          };
+          break;
+        }
+      }
+      if (!truncated) next = null;
+      return { throughSequence, fragments, rawBytes, next };
+    },
+
+    async readRecords(
+      sessionId: string,
+      request: SessionTranscriptRecordScanRequest,
+    ): Promise<SessionTranscriptRecordScanPage> {
+      const throughSequence =
+        request.throughSequence === undefined
+          ? await source.readHighWater(sessionId)
+          : request.throughSequence;
+      if (throughSequence === null) {
+        return { throughSequence: null, records: [], nextPosition: null };
+      }
+      const records: Array<{ sequence: number; message: StoredMessage }> = [];
+      let storedBytes = 0;
+      let nextPosition: number | null = null;
+      for await (const record of source.scan(sessionId, { ...request, throughSequence })) {
+        if (records.length >= request.maxMessages || storedBytes >= request.maxStoredBytes) {
+          nextPosition = record.sequence;
+          break;
+        }
+        records.push(record);
+        storedBytes += Buffer.byteLength(JSON.stringify(record.message), 'utf8');
+      }
+      return { throughSequence, records, nextPosition };
+    },
 
     /**
      * The durable rows behind a set of message ids.
@@ -448,7 +471,7 @@ function createDurableLedgerTranscriptReader(input: {
       const wanted = new Set(request.messageIds);
       const found: Array<{ sequence: number; message: StoredMessage }> = [];
       let bytes = 0;
-      for await (const record of scan(sessionId, {
+      for await (const record of source.scan(sessionId, {
         direction: 'older',
         throughSequence: request.throughSequence,
         maxTurns: TRANSCRIPT_LOOKUP_MAX_TURNS,
@@ -460,6 +483,114 @@ function createDurableLedgerTranscriptReader(input: {
         if (wanted.size === 0) break;
       }
       return found.sort((a, b) => a.sequence - b.sequence).map((record) => record.message);
+    },
+  };
+}
+
+/**
+ * The WorkHub Coordination Session's transcript, read from the rows the WorkHub
+ * writes.
+ *
+ * Every other Session's transcript is what its runs did, so the ledger holds
+ * all of it. The Coordination Session's is not: a delegation, a stop and a
+ * routing summary are appended under a Turn id that no root Turn admission ever
+ * minted, so there is no invocation for the ledger to hang them on and no
+ * conversion that could lift them. `workhub.coordination.answer` is the one
+ * path that would admit a real Turn and nothing in the renderer calls it.
+ *
+ * Delete this source once the WorkHub admits a Coordination Turn for every
+ * action, which its own ADR already requires (#3492,
+ * `docs/architecture/workhub-coordination-session-adr.md`): the Session then
+ * reads like any other and this reader has nothing left to do.
+ */
+function createCoordinationTranscriptReader(stores: ExecutionStoresWriter<'interactive'>) {
+  const store = stores.sessionStore;
+  const highWater = (sessionId: string): Promise<number | null> =>
+    store.readTranscriptHighWaterSnapshot(sessionId);
+
+  const scan = async function* (
+    sessionId: string,
+    request: {
+      direction: 'older' | 'newer';
+      throughSequence?: number | null;
+      position?: number;
+    },
+  ): AsyncGenerator<{ sequence: number; message: StoredMessage }> {
+    const throughSequence =
+      request.throughSequence === undefined ? await highWater(sessionId) : request.throughSequence;
+    if (throughSequence === null) return;
+    const older = request.direction === 'older';
+    const position = request.position ?? (older ? throughSequence : 0);
+    let cursor = older ? Math.min(position, throughSequence) + 1 : position - 1;
+    for (;;) {
+      const page = await store.readMessagesAfter(sessionId, {
+        ...(older ? { beforeSequence: cursor } : { afterSequence: cursor }),
+        maxMessages: COORDINATION_TRANSCRIPT_SCAN_LIMIT,
+        maxStoredBytes: COORDINATION_TRANSCRIPT_SCAN_MAX_BYTES,
+      });
+      if (page.records.length === 0) return;
+      for (const record of page.records) {
+        if (!older && record.sequence > throughSequence) return;
+        yield record;
+      }
+      cursor = page.records.at(-1)!.sequence;
+    }
+  };
+
+  const source: TranscriptRecordSource = { readHighWater: highWater, scan };
+  return {
+    readHighWater: highWater,
+
+    ...pagedTranscriptReads(source),
+
+    /** Folded from the rows themselves; these Turns have nothing else. */
+    async readTurnContributions(
+      sessionId: string,
+      throughSequence: number | null,
+      position: number,
+      maxContributions: number,
+    ): Promise<SessionTurnContributionPage> {
+      const watermark = throughSequence ?? (await highWater(sessionId));
+      if (watermark === null) {
+        return { throughSequence: null, contributions: [], nextPosition: null };
+      }
+      const byTurn = new Map<string, SessionTurnContribution>();
+      let nextPosition: number | null = null;
+      for await (const { sequence, message } of scan(sessionId, {
+        direction: 'newer',
+        throughSequence: watermark,
+        position,
+      })) {
+        const turnId = message.turnId;
+        if (turnId === undefined) continue;
+        if (!byTurn.has(turnId) && byTurn.size === maxContributions) {
+          nextPosition = sequence;
+          break;
+        }
+        byTurn.set(turnId, foldTurnContribution(byTurn.get(turnId), turnId, sequence, message));
+      }
+      return { throughSequence: watermark, contributions: [...byTurn.values()], nextPosition };
+    },
+
+    /** Every prompt, in order: this transcript has no index to sample from. */
+    async readTurnLandmarks(
+      sessionId: string,
+      maxLandmarks: number,
+    ): Promise<SessionTurnLandmarkSnapshot> {
+      const throughSequence = await highWater(sessionId);
+      if (throughSequence === null) return { throughSequence: null, landmarks: [] };
+      const landmarks: SessionTurnLandmark[] = [];
+      for await (const { sequence, message } of scan(sessionId, {
+        direction: 'newer',
+        throughSequence,
+      })) {
+        if (message.type !== 'user' || message.turnId === undefined) continue;
+        const label = (message.displayText ?? message.text ?? '').trim();
+        if (!label) continue;
+        landmarks.push({ turnId: message.turnId, sequence, label });
+        if (landmarks.length === maxLandmarks) break;
+      }
+      return { throughSequence, landmarks };
     },
   };
 }
