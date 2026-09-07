@@ -20,6 +20,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepResearchSession } from '@maka/core/deep-research';
 import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
+import { SESSION_NAME_MAX_CODE_POINTS } from '@maka/core/session-name';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import {
@@ -135,6 +136,7 @@ export class HostSessionRevisionCoordinator {
   readonly #stores: ExecutionStoresWriter<'interactive'>;
   readonly #artifacts: InteractiveArtifactStoreWriter;
   readonly #sessionTodo: InteractiveSessionTodoWriter;
+  #branchCreation: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly options: HostSessionRevisionCoordinatorOptions) {
     this.#stores = authenticateExecutionStoresWriter(options.stores, 'interactive');
@@ -483,16 +485,27 @@ export class HostSessionRevisionCoordinator {
       return copyFailure('persistence_failed', 'Source execution boundary is unavailable');
     }
 
-    const created = await this.#stores.sessionStore
-      .createStableSession(
+    const create = async () => {
+      if (kind === 'branch') {
+        const headers = await this.#stores.sessionStore.listHeaders();
+        createInput.name = nextBranchName(sourceHeader, headers);
+      }
+      return this.#stores.sessionStore.createStableSession(
         {
           sessionId: input.targetSessionId,
           requestFingerprint,
           input: createInput,
         },
         boundary,
-      )
-      .catch(() => null);
+      );
+    };
+    // Different source lanes can choose the same title. Serialize only the
+    // name lookup and durable reservation, not the transcript/artifact copy.
+    const creation = (kind === 'branch' ? this.#branchCreation.then(create) : create()).catch(
+      () => null,
+    );
+    if (kind === 'branch') this.#branchCreation = creation;
+    const created = await creation;
     if (!created) {
       return this.#unknownAfterCommitAttempt(
         kind,
@@ -621,7 +634,7 @@ export class HostSessionRevisionCoordinator {
           state: 'committed',
         },
         isFlagged: sourceHeader.isFlagged,
-        titleIsManual: sourceHeader.titleIsManual,
+        titleIsManual: kind === 'branch' ? false : sourceHeader.titleIsManual,
         connectionLocked:
           sourceHeader.connectionLocked ||
           copiedMessages.some((message) => message.type === 'user'),
@@ -917,6 +930,23 @@ export class HostSessionRevisionCoordinator {
         header.conversationCopy?.state === 'committed' &&
         header.conversationCopy.sourceSessionId === sessionId,
     );
+  }
+}
+
+function nextBranchName(source: SessionHeader, headers: readonly SessionHeader[]): string {
+  // Revisions retain their branch lineage; manual names and side conversations
+  // are literal titles, even when they happen to end in a number.
+  const base =
+    source.parentSessionId && !source.titleIsManual && !source.conversationCopy?.intent
+      ? source.name.replace(/ \([1-9]\d*\)$/u, '')
+      : source.name;
+  const codePoints = Array.from(base);
+  const names = new Set(headers.map((header) => header.name));
+  for (let index = 1; ; index += 1) {
+    const suffix = ` (${index})`;
+    const limit = SESSION_NAME_MAX_CODE_POINTS - suffix.length;
+    const name = codePoints.slice(0, limit).join('').trimEnd() + suffix;
+    if (!names.has(name)) return name;
   }
 }
 
