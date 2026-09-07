@@ -1503,6 +1503,48 @@ export const TitlebarIdentityWithoutProject: Story = {
   render: () => <ComposedShell session={{ projectId: null, cwd: undefined }} />,
 };
 
+export const TitlebarProjectFeedbackNarrow: Story = {
+  render: () => (
+    <ShellFrame sidebarCollapsed>
+      <header className="maka-window-titlebar">
+        <TitlebarSessionIdentity
+          sessionName="检查项目菜单"
+          onRenameSession={noop}
+          project={{ name: 'Apache Maka 项目协作与任务管理平台 '.repeat(8), path: '/workspace/maka-agent', onOpenFolder: noop }}
+        />
+      </header>
+    </ShellFrame>
+  ),
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const writeText = fn().mockRejectedValueOnce(new Error('Clipboard unavailable')).mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    try {
+      await userEvent.click(page.getByRole('button', { name: '项目信息' }));
+      const menu = await page.findByRole('menu', { name: '项目信息' });
+      const name = menu.querySelector<HTMLElement>('.maka-titlebar-menu__project-name')!;
+      const path = name.nextElementSibling!;
+      expect(name.getBoundingClientRect().height).toBeGreaterThan(Number.parseFloat(getComputedStyle(name).lineHeight));
+      expect(getComputedStyle(name).fontSize).toBe('14px');
+      expect(getComputedStyle(path).fontSize).toBe('14px');
+      expect(getComputedStyle(name).fontWeight).toBe('500');
+      expect(getComputedStyle(name).color).not.toBe(getComputedStyle(path).color);
+      await userEvent.click(within(menu).getByRole('menuitem', { name: '复制路径' }));
+      await waitFor(() => expect(within(menu).getByRole('menuitem', { name: '复制失败' })).toBeVisible());
+      await userEvent.click(within(menu).getByRole('menuitem', { name: '复制失败' }));
+      await waitFor(() => expect(within(menu).getByRole('menuitem', { name: '已复制' })).toBeVisible());
+      expect(writeText).toHaveBeenCalledTimes(2);
+      expect(writeText).toHaveBeenLastCalledWith('/workspace/maka-agent');
+      await userEvent.keyboard('{Escape}');
+      expect(document.activeElement).toBe(page.getByRole('button', { name: '项目信息' }));
+    } finally {
+      if (original) Object.defineProperty(navigator, 'clipboard', original);
+      else Reflect.deleteProperty(navigator, 'clipboard');
+    }
+  },
+};
+
 export const TitlebarParentReturn: Story = {
   render: function ParentReturn() {
     const names = ['发布新版网站', '检查登录功能', '复现登录失败'];

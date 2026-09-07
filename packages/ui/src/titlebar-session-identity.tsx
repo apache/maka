@@ -19,10 +19,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
-import type { DropdownMenuItemData } from '@astryxdesign/core/DropdownMenu';
+import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { IconButton } from '@astryxdesign/core/IconButton';
-import { MoreMenu } from '@astryxdesign/core/MoreMenu';
-import { ArrowLeft, Folder } from './icons.js';
+import { ArrowLeft, Folder, MoreHorizontal } from './icons.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { InlineRenameInput } from './inline-rename-input.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
@@ -64,31 +63,30 @@ export function TitlebarSessionIdentity(props: {
     nameRef.current?.focus();
   }, [renaming]);
 
-  const items: DropdownMenuItemData[] = [];
-  if (!props.readOnly) {
-    items.push({ label: copy.sessions.rename, onClick: () => setRenaming(true) });
-  }
-  if (props.action) {
-    items.push({ label: props.action.label, onClick: props.action.onClick });
-  }
-  const projectItems: DropdownMenuItemData[] = [];
-  if (props.project?.onOpenFolder) {
-    projectItems.push({ label: copy.chat.openProjectFolderAction, onClick: props.project.onOpenFolder });
-  }
   const path = props.project?.path;
   const copyPhase = path ? clipboard.phaseFor(path) : null;
-  const copyLabel = copyPhase === 'failed' ? copy.messages.copyFailed
+  const copyLabel = copyPhase === 'pending' ? copy.messages.copying
+    : copyPhase === 'failed' ? copy.messages.copyFailed
     : copyPhase === 'copied' ? copy.messages.copied : copy.chat.copyProjectPath;
-  if (path) {
-    projectItems.push({ label: copyLabel, onClick: () => { void clipboard.copy(path, path); } });
-  }
-  const projectContext = props.project
-    ? [props.project.name, props.project.path !== props.project.name ? props.project.path : undefined]
-        .filter(Boolean).join('\n')
-    : undefined;
-
-  const projectSection = projectContext ? [{ type: 'section' as const, title: projectContext, items: projectItems }] : [];
-  const taskItems = props.parentSession ? [...items, ...projectSection] : items;
+  const projectContent = props.project ? (
+    <div role="group" aria-label={copy.chat.projectInfo}>
+      <div className="maka-titlebar-menu__project">
+        <div className="maka-titlebar-menu__project-name">{props.project.name}</div>
+        {path && path !== props.project.name ? <div>{path}</div> : null}
+      </div>
+      {props.project.onOpenFolder ? (
+        <DropdownMenuItem label={copy.chat.openProjectFolderAction} onClick={props.project.onOpenFolder} />
+      ) : null}
+      {path ? (
+        <DropdownMenuItem
+          label={copyLabel}
+          hasCloseOnSelect={false}
+          isDisabled={clipboard.isPending}
+          onClick={() => { void clipboard.copy(path, path); }}
+        />
+      ) : null}
+    </div>
+  ) : null;
 
   return (
     <div className="maka-titlebar-identity" data-maka-contract="titlebar-identity" role="group" aria-label={copy.chat.titlebarIdentityAriaLabel}>
@@ -104,14 +102,14 @@ export function TitlebarSessionIdentity(props: {
         />
       ) : props.project ? (
         <span className="maka-titlebar-identity__action">
-          <MoreMenu
+          <DropdownMenu
             className="maka-titlebar-menu"
-            label={copy.chat.projectInfo}
-            icon={<Folder size={14} />}
-            size="sm"
+            button={{ label: copy.chat.projectInfo, tooltip: copy.chat.projectInfo, icon: <Folder size={14} />, isIconOnly: true, variant: 'ghost', size: 'sm' }}
+            hasChevron={false}
             alignment="start"
-            items={projectSection}
-          />
+          >
+            {projectContent}
+          </DropdownMenu>
         </span>
       ) : null}
       {renaming ? (
@@ -142,15 +140,18 @@ export function TitlebarSessionIdentity(props: {
           <span className="maka-titlebar-identity__segment--session">{props.sessionName}</span>
         </Button>
       )}
-      {taskItems.length > 0 ? (
+      {!props.readOnly || props.action || (props.parentSession && props.project) ? (
         <span className="maka-titlebar-identity__action">
-          <MoreMenu
+          <DropdownMenu
             className="maka-titlebar-menu"
-            label={copy.sessions.actionsAriaLabel(props.sessionName)}
-            size="sm"
+            button={{ label: copy.sessions.actionsAriaLabel(props.sessionName), tooltip: copy.sessions.actionsAriaLabel(props.sessionName), icon: <MoreHorizontal size={14} />, isIconOnly: true, variant: 'ghost', size: 'sm' }}
+            hasChevron={false}
             alignment="end"
-            items={taskItems}
-          />
+          >
+            {!props.readOnly ? <DropdownMenuItem label={copy.sessions.rename} onClick={() => setRenaming(true)} /> : null}
+            {props.action ? <DropdownMenuItem label={props.action.label} onClick={props.action.onClick} /> : null}
+            {props.parentSession ? projectContent : null}
+          </DropdownMenu>
         </span>
       ) : null}
       <span className="maka-visually-hidden" role="status">{copyPhase === 'failed' || copyPhase === 'copied' ? copyLabel : null}</span>
