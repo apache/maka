@@ -1521,7 +1521,7 @@ export class SqliteRuntimeStore
           FROM runtime_events
           WHERE session_id = :sessionId AND event_kind = 'invocation_opened'
         ),
-        ordered AS (
+        ordered AS MATERIALIZED (
           SELECT
             o.event_id AS event_id,
             ROW_NUMBER() OVER (
