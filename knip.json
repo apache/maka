@@ -23,6 +23,7 @@
       ],
       "project": ["src/**/*.{ts,tsx}", "e2e/**/*.ts", "stories/**/*.{ts,tsx}", "scripts/**/*.mjs"],
       "ignoreDependencies": ["@fontsource-variable/geist", "@fontsource-variable/geist-mono"],
+      "ignoreUnresolved": ["../native/notification-settings.node"],
       "ignoreBinaries": ["plutil", "pgrep"]
     },
     "packages/ui": {

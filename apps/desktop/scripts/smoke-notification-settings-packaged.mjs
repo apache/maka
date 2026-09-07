@@ -24,7 +24,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build, Platform } from 'electron-builder';
-import { _electron as electron } from 'playwright';
+import { _electron as electron } from '@playwright/test';
 import { closeElectronApplication } from '../../../scripts/electron-lifecycle.mjs';
 import config from '../electron-builder.config.mjs';
 

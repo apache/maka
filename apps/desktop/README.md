@@ -122,6 +122,8 @@ report its authorization as Maka's.
 using Xcode Command Line Tools and the pinned `node-api-headers` development
 dependency. Other platforms skip this build. The module uses Node-API 8 and is
 unpacked from ASAR so electron-builder can sign and load it with the app.
+Knip excludes only this generated `.node` import from source resolution;
+the packaged smoke test verifies its runtime loading.
 
 Queries run off the JS thread with a three-second native callback deadline,
 without requesting authorization, sending a notification, or replacing
@@ -133,7 +135,7 @@ Authorization does not guarantee a banner, sound, or delivery during Focus.
 After building Desktop, run this on macOS:
 
 ```sh
-node apps/desktop/scripts/smoke-notification-settings-packaged.mjs
+npm --workspace @maka/desktop run smoke:notification-settings
 ```
 
 This packages and ad-hoc signs a minimal app with the production native module

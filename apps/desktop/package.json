@@ -48,6 +48,7 @@
     "build:with-deps": "npm run build:workspace-deps && npm run build",
     "smoke:real-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs",
     "smoke:programmatic-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs --programmatic-only",
+    "smoke:notification-settings": "node scripts/smoke-notification-settings-packaged.mjs",
     "launch:fixture": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs --manual",
     "smoke:browser": "npm run build:workspace-deps && npm run build:main && npm run smoke:browser:run",
     "smoke:browser:run": "electron scripts/browser-observe-act-smoke.mjs"
