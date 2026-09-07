@@ -301,7 +301,7 @@ const fileLineCapGitReviewSnapshot: GitReviewSnapshot = {
 // Source-level truncation: a large changeset whose file list the source capped,
 // so `truncated` is set and the panel shows its 变化过多 banner. Each file is
 // ordinary — no single file trips the per-file cap here.
-const sourceTruncatedFiles: GitReviewSnapshot['files'] = Array.from({ length: 24 }, (_, index) => {
+const sourceTruncatedFiles: GitReviewSnapshot['files'] = Array.from({ length: 40 }, (_, index) => {
   const path = `src/feature-${String(index).padStart(2, '0')}.ts`;
   return {
     path,
@@ -1162,7 +1162,22 @@ export const ChangesTruncated: Story = {
   decorators: [bridge({ review: { ok: true, snapshot: sourceTruncatedGitReviewSnapshot } })],
   render: () => <Workbar tab="review" />,
   play: async ({ canvasElement }) => {
-    await within(canvasElement).findByText('变化过多，仅显示前一部分文件');
+    const canvas = within(canvasElement);
+    await canvas.findByText('变化过多，仅显示前一部分文件');
+    await userEvent.click(await canvas.findByRole('button', { name: '再显示 20 个文件' }));
+
+    const panel = canvasElement.querySelector<HTMLElement>('.maka-session-review-panel');
+    if (!panel) throw new Error('the changes panel is missing');
+    await waitFor(() => {
+      expect(
+        canvasElement.querySelectorAll('.maka-session-review-file').length,
+      ).toBe(40);
+      expect(panel.scrollHeight).toBeGreaterThan(panel.clientHeight);
+    });
+
+    panel.scrollTop = panel.scrollHeight;
+    await waitFor(() => expect(panel.scrollTop).toBeGreaterThan(0));
+    panel.scrollTop = 0;
   },
 };
 
