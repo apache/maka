@@ -61,6 +61,7 @@ class WindowPage extends Page {
 }
 
 export class DesktopAssistantUi {
+  private cursor?: { x: number; y: number };
   constructor(
     private readonly window: () => WebContents,
     private readonly readSettings: () => Promise<AppSettings>,
@@ -74,7 +75,8 @@ export class DesktopAssistantUi {
       const r = document.querySelector('.desktopAssistant')?.getBoundingClientRect();
       return { x: Math.round(r ? r.x + r.width / 2 : innerWidth / 2), y: Math.round(r ? r.y : innerHeight - 80) };
     })()`);
-    this.update({ cursor: { ...origin, clicking: false } });
+    this.cursor = origin;
+    this.update({ cursor: { ...origin, clicking: false, durationMs: 0 } });
     await delay(80, signal);
   }
 
@@ -183,12 +185,15 @@ export class DesktopAssistantUi {
   private async click(css: string, signal: AbortSignal) {
     let point: { x: number; y: number } | null = null;
     await this.waitFor(async () => { point = await this.point(css); return point !== null; }, signal);
-    this.update({ cursor: { ...point!, clicking: false } });
-    await delay(350, signal);
+    const distance = this.cursor ? Math.hypot(point!.x - this.cursor.x, point!.y - this.cursor.y) : 0;
+    const durationMs = distance < 1 ? 0 : Math.round(Math.min(780, 260 + distance * 0.45));
+    this.cursor = point!;
+    this.update({ cursor: { ...point!, clicking: false, durationMs } });
+    await delay(durationMs + 50, signal);
     const current = await this.point(css);
     if (!current || current.x !== point!.x || current.y !== point!.y) throw new Error('Control moved or is covered; action stopped');
     signal.throwIfAborted();
-    this.update({ cursor: { ...current, clicking: true } });
+    this.update({ cursor: { ...current, clicking: true, durationMs: 0 } });
     const wc = this.window();
     // Await the renderer's synchronous ownership marker before Chromium
     // delivers native input; IPC send and input delivery have different queues.

@@ -46,7 +46,7 @@ export interface DesktopAssistantSnapshot {
   readonly canUndo: boolean;
   readonly modelChoices?: readonly ChatModelChoice[];
   readonly model?: ChatModelChoice;
-  readonly cursor?: { readonly x: number; readonly y: number; readonly clicking: boolean };
+  readonly cursor?: { readonly x: number; readonly y: number; readonly clicking: boolean; readonly durationMs?: number };
 }
 
 export interface DesktopAssistantBridge {

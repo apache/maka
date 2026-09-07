@@ -19,10 +19,11 @@
 
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { MarkdownBody, ModelPicker, modelChoiceValue, modelMenuGroups, useUiLocale } from '@maka/ui';
-import { ArrowUp, MessageSquare as MessageCircle, MousePointer2, Square, X, Undo2 } from '@maka/ui/icons';
+import { ArrowUp, MessageSquare as MessageCircle, Square, X, Undo2 } from '@maka/ui/icons';
 import { Button, IconButton } from '@astryxdesign/core';
 import type { UiCatalog } from '@maka/core/ui-locale';
 import type { DesktopAssistantSnapshot, DesktopAssistantBridge } from '../../../shared/desktop-assistant.js';
+import { AssistantCursor } from './cursor';
 
 const Services = createContext<DesktopAssistantBridge | null>(null);
 export function DesktopAssistantServicesProvider(props: { services: DesktopAssistantBridge; children?: ReactNode }) {
@@ -135,6 +136,6 @@ export function DesktopAssistantRoot() {
         </div>
       </>}
     </section>}
-    {snapshot.cursor && <div className={`desktopAssistantCursor ${snapshot.cursor.clicking ? 'isClicking' : ''}`} style={{ transform: `translate(${snapshot.cursor.x}px, ${snapshot.cursor.y}px)` }} aria-hidden="true"><MousePointer2 size={25} fill="currentColor" /><span>Maka</span></div>}
+    {snapshot.cursor && <AssistantCursor cursor={snapshot.cursor} />}
   </>;
 }

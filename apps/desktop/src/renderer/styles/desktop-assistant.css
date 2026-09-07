@@ -44,12 +44,12 @@
 .desktopAssistantCompact { width: min(410px, calc(100vw - 48px)); bottom: 16px; border-radius: 40px; }
 .desktopAssistantCompact .desktopAssistantHeader { padding-bottom: 0; }
 .desktopAssistantLauncher { position: fixed; z-index: 1100; bottom: 18px; right: 20px; -webkit-app-region: no-drag; }
-.desktopAssistantCursor { position: fixed; z-index: 1300; top: 0; left: 0; pointer-events: none; color: var(--accent-solid); filter: drop-shadow(0 2px 3px #0005); transition: transform 320ms cubic-bezier(.22,.61,.36,1); }
+.desktopAssistantCursor { position: fixed; z-index: 1300; top: 0; left: 0; pointer-events: none; color: var(--accent-solid); filter: drop-shadow(0 2px 3px #0005); will-change: transform; }
 .desktopAssistantCursor svg { stroke: white; stroke-width: 1.5; }
 .desktopAssistantCursor span { display: block; position: absolute; left: 20px; top: 23px; padding: 2px 6px; border-radius: 8px; background: var(--accent-solid); color: white; font-size: 10px; }
 .desktopAssistantCursor.isClicking::before { content: ''; position: absolute; width: 32px; height: 32px; left: -16px; top: -16px; border-radius: 50%; border: 2px solid var(--accent-solid); animation: assistantClick .4s ease-out both; }
 @keyframes assistantPulse { 50% { opacity: .4; } }
 @keyframes assistantClick { to { transform: scale(1.7); opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .desktopAssistantCursor { transition: none; } .desktopAssistantDot.isBusy, .desktopAssistantCursor.isClicking::before { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .desktopAssistantDot.isBusy, .desktopAssistantCursor.isClicking::before { animation: none; } }
 
 .desktopAssistantComposer textarea::placeholder { color: var(--muted-foreground); opacity: 1; }
