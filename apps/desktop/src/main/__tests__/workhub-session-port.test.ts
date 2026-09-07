@@ -380,7 +380,7 @@ test('Coordination transcript adapter never replays history and completes only t
   const sessionId = desktopSessionKey({ hostId: 'local-host', sessionId: 'coordination' });
   const snapshots: unknown[] = [];
   let closes = 0;
-  const latestLoads: Array<{ sequence: number; maxBytes: number | undefined }> = [];
+  const latestLoads: Array<{ sequence: number | null; maxBytes: number | undefined }> = [];
   let deliver: ((batch: DesktopTranscriptBatch) => void) | undefined;
   const adapter = createDesktopWorkHubCoordinationPort({
     sessionId,

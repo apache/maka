@@ -21,14 +21,61 @@ import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
-import type { SessionHeader } from '@maka/core/session';
-import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '../test-only/fake-backend.js';
+import {
+  FAKE_ASK_USER_QUESTION_PROMPT,
+  FAKE_COMPLETE_HELD_TURN_STEERING,
+  FAKE_HOLD_OPEN_COMPLETE_PROMPT,
+  FakeBackend,
+} from '../test-only/fake-backend.js';
 import {
   RuntimeInteractionInvariantError,
   bindRuntimeInteractionRun,
   type RuntimeUserQuestionContinuation,
 } from '../interaction-authority.js';
-import type { SessionStore } from '../session-manager.js';
+
+test('a completable held answer emits its accumulated live text only after the completion steering latch', async () => {
+  const backend = new FakeBackend({ sessionId: 'session-1' });
+  const pending = [
+    { id: 'lease-1', messageId: 'message-1', content: { text: 'background marker' } },
+  ];
+  const iterator = backend
+    .send({
+      turnId: 'turn-1',
+      text: FAKE_HOLD_OPEN_COMPLETE_PROMPT,
+      context: [],
+      pullSteering: () => pending.splice(0),
+    })
+    [Symbol.asyncIterator]();
+  const events: SessionEvent[] = [];
+  while (
+    !events.some((event) => event.type === 'text_delta' && event.text.includes('background marker'))
+  ) {
+    const next = await iterator.next();
+    assert.equal(next.done, false);
+    events.push(next.value!);
+  }
+  assert.equal(
+    events.some((event) => event.type === 'text_complete' || event.type === 'complete'),
+    false,
+  );
+  pending.push({
+    id: 'lease-2',
+    messageId: 'message-2',
+    content: { text: FAKE_COMPLETE_HELD_TURN_STEERING },
+  });
+  for await (const event of { [Symbol.asyncIterator]: () => iterator }) events.push(event);
+  assert.equal(events.filter((event) => event.type === 'text_complete').length, 1);
+  const streamed = events
+    .flatMap((event) => (event.type === 'text_delta' ? [event.text] : []))
+    .join('');
+  assert.equal(events.find((event) => event.type === 'text_complete')?.text, streamed);
+  assert.equal(
+    events.some((event) => event.type === 'abort'),
+    false,
+  );
+  const terminal = events.at(-1);
+  assert.equal(terminal?.type === 'complete' ? terminal.stopReason : undefined, 'end_turn');
+});
 
 test('Fake question publication waits for exact hosted admission', async () => {
   const admissionStarted = deferred<void>();

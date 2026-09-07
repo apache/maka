@@ -400,9 +400,11 @@ describe('app shell session UI state controller', () => {
     assert.equal(index, undefined);
   });
 
-  it('enriches a Turn-only reading anchor when its range sequence arrives later', () => {
+  it('enriches a Turn-only reading anchor when its range sequence arrives later', async () => {
     let anchor: { turnId: string; sequence?: number } | undefined;
+    const admitted: Array<number | null> = [];
     transcriptReadingPosition.restoreRange({
+      lifecycle: transcriptReadingPosition.createRestoreLifecycle(),
       sessionId: 'session',
       readingAnchor: { turnId: 'turn' },
       controller: {
@@ -413,6 +415,7 @@ describe('app shell session UI state controller', () => {
           snapshot: () => ({ messages: [] }),
         },
         ready: async () => undefined,
+        setReadingAnchor: async (sequence) => { admitted.push(sequence); },
         loadAround: async () => assert.fail('the resident Turn must not load another range'),
       },
       isCurrent: () => true,
@@ -424,12 +427,15 @@ describe('app shell session UI state controller', () => {
     });
 
     assert.deepEqual(anchor, { turnId: 'turn', sequence: 17 });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(admitted, [17]);
   });
 
   it('does not enrich a reading anchor from another Session range', () => {
     let sequenceReads = 0;
     let anchor: { turnId: string; sequence?: number } | undefined;
     transcriptReadingPosition.restoreRange({
+      lifecycle: transcriptReadingPosition.createRestoreLifecycle(),
       sessionId: 'active',
       readingAnchor: { turnId: 'turn' },
       controller: {
@@ -461,6 +467,7 @@ describe('app shell session UI state controller', () => {
     const anchorWrites: Array<{ turnId: string; sequence?: number } | undefined> = [];
     let unavailable: { sessionId: string; turnId: string } | undefined;
     const options = {
+      lifecycle: transcriptReadingPosition.createRestoreLifecycle(),
       sessionId: 'session',
       readingAnchor: { turnId: 'missing' },
       controller: {
@@ -497,6 +504,7 @@ describe('app shell session UI state controller', () => {
     let messages: Array<{ id: string }> | undefined;
     const anchorWrites: Array<{ turnId: string; sequence?: number } | undefined> = [];
     const options = {
+      lifecycle: transcriptReadingPosition.createRestoreLifecycle(),
       sessionId: 'session',
       readingAnchor: { turnId: 'removed', sequence: 23 },
       controller: {
@@ -580,7 +588,7 @@ describe('app shell session UI state controller', () => {
     scenario.sides.a.failBefore(new Error('earlier read failed'));
     await stale;
     assert.deepEqual(scenario.errors.a, []);
-    assert.deepEqual(scenario.pending.a, [{ target: 'earlier' }, undefined]);
+    assert.deepEqual(scenario.pending.a, [{ target: 'earlier' }]);
     assert.deepEqual(scenario.pending.b, []);
   });
 
@@ -657,7 +665,7 @@ describe('app shell session UI state controller', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.deepEqual(scenario.sides.a.calls, ['before']);
     assert.deepEqual(scenario.sides.b.calls, []);
-    assert.deepEqual(scenario.pending.a, [{ target: 'earlier' }, undefined]);
+    assert.deepEqual(scenario.pending.a, [{ target: 'earlier' }]);
     scenario.sides.a.settleLatest();
     await queued;
   });

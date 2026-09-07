@@ -23,6 +23,7 @@ import type {
   DesktopTranscriptBatchPayload,
   DesktopTranscriptFragment,
   DesktopTranscriptHandle,
+  DesktopTranscriptNavigation,
 } from '../preload/transcript-contract.js';
 import { projectDesktopStoredMessage } from '../shared/desktop-session-projection.js';
 import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
@@ -34,6 +35,7 @@ export interface DesktopTranscriptRangeController {
   loadBefore(maxBytes?: number, anchorTurnId?: string): Promise<void>;
   loadAfter(maxBytes?: number, anchorTurnId?: string): Promise<void>;
   loadAround(sequence: number): Promise<void>;
+  setReadingAnchor(sequence: number | null, readingTurnId?: string): Promise<void>;
   loadLatest(): Promise<void>;
   reload(): Promise<void>;
   close(): Promise<void>;
@@ -46,51 +48,95 @@ export function createDesktopTranscriptRangeController(
   let closed = false;
   let openController = new AbortController();
   let handle = open(openController.signal);
+  type Navigation = DesktopTranscriptNavigation & {
+    readonly kind: 'before' | 'after' | 'around' | 'latest' | 'anchor';
+    readonly sequence: number | null;
+    readonly maxBytes?: number;
+  };
+  let navigation: Navigation = {
+    navigationVersion: 0, intent: 'followTail', kind: 'latest', sequence: null,
+  };
   const current = async () => {
     if (closed) throw new Error('Desktop transcript range is closed');
     return handle;
   };
+  const dispatch = async (command: Navigation) => {
+    const opening = handle;
+    const isCurrent = () => !closed && navigation === command && opening === handle;
+    try {
+      const value = await current();
+      if (!isCurrent()) return;
+      if (command.kind === 'before') {
+        await value.loadBefore(command.sequence, command.maxBytes, command);
+      } else if (command.kind === 'after') {
+        await value.loadAfter(command.sequence, command.maxBytes, command);
+      } else {
+        await value.loadAround(command.sequence, command.maxBytes, command);
+      }
+    } catch (error) {
+      if (isCurrent()) throw error;
+    }
+  };
+  const navigate = (command: Omit<Navigation, 'navigationVersion'>) => {
+    navigation = { ...command, navigationVersion: navigation.navigationVersion + 1 };
+    // Invalidate before awaiting an open handle or any previous page request.
+    store.expectNavigation(navigation.navigationVersion);
+    return dispatch(navigation);
+  };
   return {
     store,
-    async ready() {
-      await current();
-    },
+    async ready() { await current(); },
     async waitForDurableMessage(messageId, timeoutMs) {
       await current();
       return store.waitForDurableMessage(messageId, timeoutMs);
     },
     async loadBefore(maxBytes, anchorTurnId) {
       const range = store.range();
+      const anchor = anchorTurnId === undefined ? undefined : store.sequenceForTurn(anchorTurnId);
+      if (anchor === null) {
+        await navigate({ intent: 'history', kind: 'anchor', sequence: null,
+          readingTurnId: anchorTurnId, preserveRange: true });
+        return;
+      }
       if (!range.hasOlder) return;
-      await (await current()).loadBefore(
-        anchorTurnId === undefined
-          ? range.oldestSequence
-          : store.sequenceForTurn(anchorTurnId) ?? range.oldestSequence,
-        maxBytes,
-      );
+      await navigate({
+        intent: 'history', kind: 'before', maxBytes,
+        sequence: anchor ?? range.oldestSequence,
+        readingTurnId: anchorTurnId,
+      });
     },
-    async loadAround(sequence) {
-      await (await current()).loadAround(sequence);
+    loadAround(sequence) {
+      return navigate({ intent: 'history', kind: 'around', sequence });
     },
     async loadAfter(maxBytes, anchorTurnId) {
       const range = store.range();
+      const anchor = anchorTurnId === undefined ? undefined : store.sequenceForTurn(anchorTurnId, 'last');
+      if (anchor === null) {
+        await navigate({ intent: 'history', kind: 'anchor', sequence: null,
+          readingTurnId: anchorTurnId, preserveRange: true });
+        return;
+      }
       if (!range.hasNewer) return;
-      await (await current()).loadAfter(
-        anchorTurnId === undefined
-          ? range.newestSequence
-          : store.sequenceForTurn(anchorTurnId, 'last') ?? range.newestSequence,
-        maxBytes,
-      );
+      await navigate({
+        intent: 'history', kind: 'after', maxBytes,
+        sequence: anchor ?? range.newestSequence,
+        readingTurnId: anchorTurnId,
+      });
     },
-    async loadLatest() {
-      const range = store.range();
-      if (!range.hasNewer || range.durableThrough === null) return;
-      await (await current()).loadAround(range.durableThrough);
+    setReadingAnchor(sequence, readingTurnId) {
+      if (navigation.kind === 'anchor' && navigation.sequence === sequence &&
+        navigation.readingTurnId === readingTurnId) {
+        return Promise.resolve();
+      }
+      return navigate({ intent: 'history', kind: 'anchor', sequence, readingTurnId, preserveRange: true });
+    },
+    loadLatest() {
+      return navigate({ intent: 'followTail', kind: 'latest', sequence: null });
     },
     async reload() {
       const previous = handle;
       openController.abort();
-      handle = previous
+      const replacement = previous
         .then((value) => value.close())
         .catch(() => undefined)
         .then(() => {
@@ -98,7 +144,15 @@ export function createDesktopTranscriptRangeController(
           openController = new AbortController();
           return open(openController.signal);
         });
-      await handle;
+      handle = replacement;
+      await replacement;
+      if (closed || handle !== replacement) return;
+      const command = navigation;
+      // An anchor notification needs a real range read on a replacement handle.
+      if (command.kind === 'anchor' || command.kind === 'before' || command.kind === 'after') {
+        navigation = { ...command, kind: 'around', preserveRange: false };
+      }
+      await dispatch(navigation);
     },
     async close() {
       if (closed) return;
@@ -266,6 +320,8 @@ export class DesktopTranscriptRangeStore {
   readonly #durableOrder: number[] = [];
   readonly #overlayOrder: string[] = [];
   readonly #pending = new Map<string, PendingRecord>();
+  #navigationVersion = 0;
+  readonly #retiredGenerations = new Set<string>();
   #sourceSessionId: string | undefined;
   #generation: string | undefined;
   #hostEpoch: string | undefined;
@@ -287,7 +343,17 @@ export class DesktopTranscriptRangeStore {
     this.#expectedSessionId = sessionId;
   }
 
+  expectNavigation(navigationVersion: number): void {
+    if (navigationVersion <= this.#navigationVersion) return;
+    this.#navigationVersion = navigationVersion;
+    this.#pending.clear();
+    this.#batchChanged = false;
+  }
+
   accept(batch: DesktopTranscriptBatchPayload): boolean {
+    // A stale reset must be rejected before it can clear the current range.
+    if ((batch.navigationVersion ?? 0) !== this.#navigationVersion) return false;
+    if (this.#retiredGenerations.has(batch.generation)) return false;
     if (batch.reset) this.#reset(batch);
     if (
       batch.sessionId !== this.#sourceSessionId ||
@@ -400,6 +466,9 @@ export class DesktopTranscriptRangeStore {
   #reset(batch: DesktopTranscriptBatchPayload): void {
     if (batch.sessionId !== this.#expectedSessionId) {
       throw new Error('Desktop transcript belongs to a different Session');
+    }
+    if (this.#generation && this.#generation !== batch.generation) {
+      this.#retiredGenerations.add(this.#generation);
     }
     this.#durable.clear();
     this.#overlay.clear();

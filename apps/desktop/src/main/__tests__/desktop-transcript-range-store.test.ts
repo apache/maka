@@ -611,18 +611,25 @@ for (const { stride, textBytes } of [1, 3].flatMap((stride) =>
       loadTranscriptPage: async (input) => makePage(input.direction, input.anchorSequence),
     });
     const store = transcriptStore();
+    let navigationVersion = 0;
     const replica = await DesktopTranscriptReplica.prepare(handle, {
       generation: 'generation-1',
       onChange: (current, change) => {
-        for (const batch of encodeDesktopTranscriptChange(current.snapshot(), change)) store.accept(batch);
+        for (const batch of encodeDesktopTranscriptChange({ ...current.snapshot(), navigationVersion }, change)) store.accept(batch);
       },
     });
     for (const batch of encodeDesktopTranscriptSnapshot(replica.snapshot())) store.accept(batch);
     const controller = createDesktopTranscriptRangeController(store, async () => ({
       sessionId: replica.sessionId, generation: replica.generation, hostEpoch: replica.hostEpoch,
       readThroughMessageId: null,
-      loadBefore: (anchor, maxBytes) => replica.loadBefore(anchor, maxBytes!),
-      loadAfter: (anchor, maxBytes) => replica.loadAfter(anchor, maxBytes!),
+      loadBefore: (anchor, maxBytes, navigation) => {
+        navigationVersion = navigation?.navigationVersion ?? navigationVersion;
+        return replica.loadBefore(anchor, maxBytes!);
+      },
+      loadAfter: (anchor, maxBytes, navigation) => {
+        navigationVersion = navigation?.navigationVersion ?? navigationVersion;
+        return replica.loadAfter(anchor, maxBytes!);
+      },
       loadAround: async () => { throw new Error('ordinary scrolling must not replace the range'); },
       close: async () => replica.close(),
     }));
@@ -659,14 +666,9 @@ for (const { stride, textBytes } of [1, 3].flatMap((stride) =>
   });
 }
 
-test('delivers a mid-session tail append even while a history window is resident', async () => {
-  // Reproduces the "active session does not show the newest message until you
-  // switch away and back" bug. Once the resident window has been trimmed off
-  // the tail (hasNewer === true, e.g. after loading older history), a Host
-  // `transcript_advanced` for a freshly persisted message must still reach an
-  // already-open consumer. Before the fix, `advance()` short-circuited on
-  // hasNewer and published an empty change, so the append was silently dropped
-  // and only a fresh subscription (session switch) re-read it.
+test('delivers a mid-session tail append after following the tail from a history window', async () => {
+  // A follow-tail intent must recover the tail even if the resident cache
+  // still contains history when the Host advances.
   const messages = [0, 1, 2, 3, 4].map((sequence) => ({
     identity: sequence,
     message: {
@@ -724,6 +726,7 @@ test('delivers a mid-session tail append even while a history window is resident
 
   await replica.loadBefore(3, 128 * 1024);
   assert.equal(replica.snapshot().hasNewer, true);
+  replica.setNavigation('followTail');
   changes.splice(0);
 
   // The Host persists a new assistant message (sequence 5) and advances.
@@ -954,6 +957,7 @@ test('does not resurrect a discarded replica when a tail re-anchor is in flight'
 
   await replica.loadBefore(3, 128 * 1024);
   assert.equal(replica.snapshot().hasNewer, true);
+  replica.setNavigation('followTail');
   changes.splice(0);
 
   // Start the tail re-anchor; wait until catch-up is parked inside its page

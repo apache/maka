@@ -19,9 +19,11 @@
 
 import {
   captureTranscriptReadingAnchor,
+  createTranscriptRestoreLifecycle,
   currentTranscriptRange,
   loadTranscriptHistory,
   newestDurablePromptSequence,
+  prepareTranscriptForSend,
   refreshTranscriptTurnLandmarks,
   restoreSessionTranscriptRange,
   transcriptRestoreTarget,
@@ -29,9 +31,11 @@ import {
 
 export const transcriptReadingPosition = {
   captureAnchor: captureTranscriptReadingAnchor,
+  createRestoreLifecycle: createTranscriptRestoreLifecycle,
   currentRange: currentTranscriptRange,
   loadHistory: loadTranscriptHistory,
   newestDurablePromptSequence,
+  prepareForSend: prepareTranscriptForSend,
   refreshLandmarks: refreshTranscriptTurnLandmarks,
   restoreRange: restoreSessionTranscriptRange,
   restoreTarget: transcriptRestoreTarget,
@@ -42,6 +46,11 @@ export type {
   TranscriptHistoryPending,
 } from './controller/transcript-reading-position.js';
 export {
+  TranscriptReadingPositionController,
+  type TranscriptReadingPositionCommands,
+} from './controller/transcript-reading-position-controller.js';
+
+export {
   deriveTaskReadinessNotice,
   isTaskSubmissionHardBlocked,
   resolveTaskReadinessModelTarget,
@@ -51,4 +60,3 @@ export * from './model/session-ui-state.js';
 export type { ConversationServices } from './ports.js';
 export { ConversationServicesProvider } from './services.js';
 export { SessionLocalMessages } from './controller/session-local-messages.js';
-export { restoreTranscriptTailAfterSend } from './controller/transcript-reading-position.js';
