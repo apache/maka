@@ -24,8 +24,10 @@ import type { DesktopLocaleAuthority } from './desktop-locale-authority.js';
 import {
   isRunNotificationKind,
   resolveNotificationContent,
+  resolveNotificationIncognito,
   shouldRaiseRunNotification,
 } from './notifications-policy.js';
+import type { PrivacyAuthority } from './notifications-policy.js';
 
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 
@@ -35,6 +37,17 @@ interface NotificationsIpcDeps {
   locale: Pick<DesktopLocaleAuthority, 'observe'>;
   mainWindowController: MainWindowController;
   e2e: boolean;
+  /**
+   * Runtime Host privacy authority (#4981). The local settings copy never
+   * receives privacy updates (`clientOwnedSettingsPatch` excludes the
+   * section, and projection keeps the host's copy), so gating
+   * content-bearing notifications on `settings.privacy.incognitoActive`
+   * can read stale data and expose the session title + reply preview
+   * after incognito is enabled. When provided, its verdict wins; when it
+   * rejects, the notification is suppressed rather than risked
+   * (fail-closed); when absent, the existing local-copy gate applies.
+   */
+  privacyAuthority?: PrivacyAuthority | undefined;
 }
 
 /**
@@ -58,11 +71,17 @@ export function registerNotificationsIpc(deps: NotificationsIpcDeps): void {
     // Read the toggle lazily so a mid-session settings change takes
     // effect on the very next turn without any cache invalidation.
     const settings = await deps.settingsStore.get();
+    let incognito: boolean;
+    if (deps.privacyAuthority) {
+      incognito = await resolveNotificationIncognito(false, deps.privacyAuthority);
+    } else {
+      incognito = settings.privacy.incognitoActive;
+    }
     const gate = {
       enabled: settings.notifications.runComplete,
       supported,
       windowFocused: deps.mainWindowController.isFocused(),
-      incognito: settings.privacy.incognitoActive,
+      incognito,
       e2e: deps.e2e,
     };
     if (!shouldRaiseRunNotification(gate)) return;

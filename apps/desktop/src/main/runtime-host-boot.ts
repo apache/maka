@@ -1103,6 +1103,26 @@ registerNotificationsIpc({
   locale: desktopLocale,
   mainWindowController,
   e2e: isE2e,
+  // Privacy state is Host-owned: the local settings copy never receives
+  // privacy updates, so the notification gate asks the authority instead
+  // of trusting the stale local copy (#4981). Any ready host holding
+  // incognito suppresses the banner; an unreachable authority does too.
+  privacyAuthority: {
+    isIncognitoActive: async () => {
+      const entries = runtimeHostManager?.entries() ?? [];
+      const ready = entries.filter(
+        (entry): entry is Extract<typeof entry, { readiness: 'ready' }> =>
+          entry.readiness === 'ready',
+      );
+      const verdicts = await Promise.all(
+        ready.map(async (entry) =>
+          (await entry.candidate.client.queryRuntimePolicy()).policy.privacy
+            .incognitoActive,
+        ),
+      );
+      return verdicts.some((active) => active);
+    },
+  },
 });
 
 const sessionCopyOwnerProcessId = randomUUID();

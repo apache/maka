@@ -126,6 +126,29 @@ function sanitizeLine(value: unknown, max: number): string {
   return `${collapsed.slice(0, max - 1).trimEnd()}…`;
 }
 
+/** Resolves whether any connected host currently holds incognito. */
+export interface PrivacyAuthority {
+  isIncognitoActive(): Promise<boolean>;
+}
+
+/**
+ * Reads incognito from the authority (#4981). The local settings copy never
+ * receives privacy updates, so its value must not decide content-bearing
+ * notifications. A rejecting authority suppresses the notification rather
+ * than risking exposure (fail-closed).
+ */
+export async function resolveNotificationIncognito(
+  settingsIncognitoActive: boolean,
+  privacyAuthority: PrivacyAuthority | undefined,
+): Promise<boolean> {
+  if (!privacyAuthority) return settingsIncognitoActive;
+  try {
+    return await privacyAuthority.isIncognitoActive();
+  } catch {
+    return true;
+  }
+}
+
 /**
  * Final notification text: prefer the renderer's session name + reply
  * preview, falling back per-field to the generic copy when a field is

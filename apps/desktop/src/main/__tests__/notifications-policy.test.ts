@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import {
   isRunNotificationKind,
   resolveNotificationContent,
+  resolveNotificationIncognito,
   runNotificationCopy,
   shouldRaiseRunNotification,
 } from '../notifications-policy.js';
@@ -86,5 +87,33 @@ it('sanitizes renderer content, caps it, and falls back per field', () => {
   assert.deepEqual(
     resolveNotificationContent({ kind: 'errored', title: '出错的会话', body: '' }, 'zh-CN'),
     { title: '出错的会话', body: erroredFallback.body },
+  );
+});
+
+it('reads incognito from the Runtime Host authority, failing closed', async () => {
+  // Authority verdict wins over the local copy in both directions: the
+  // local copy never receives privacy updates, so a stale `true` must not
+  // suppress when the host says otherwise, and a stale `false` must not
+  // expose when incognito is actually on.
+  assert.equal(
+    await resolveNotificationIncognito(false, { isIncognitoActive: async () => true }),
+    true,
+  );
+  assert.equal(
+    await resolveNotificationIncognito(true, { isIncognitoActive: async () => false }),
+    false,
+  );
+  // No authority: the existing local-copy gate applies unchanged.
+  assert.equal(await resolveNotificationIncognito(true, undefined), true);
+  assert.equal(await resolveNotificationIncognito(false, undefined), false);
+  // An unreachable authority suppresses rather than risking exposure of
+  // the session title + reply preview outside the app.
+  assert.equal(
+    await resolveNotificationIncognito(false, {
+      isIncognitoActive: async () => {
+        throw new Error('host unreachable');
+      },
+    }),
+    true,
   );
 });
