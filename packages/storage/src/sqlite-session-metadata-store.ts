@@ -4994,6 +4994,14 @@ export class SqliteSessionMetadataStore {
     const current = this.readRecordSync(sessionId);
     if (!current) throw new SessionNotFoundError(sessionId);
     const lastMessageAt = maxTimestamp(current.header.lastMessageAt, projection.lastMessageAt);
+    // The preview refuses to move backwards for the same reason the timestamp
+    // does: a message older than the one on show is a repair of something the
+    // catalog already passed, and recovery replays exactly those.
+    const stale =
+      !replacePreview &&
+      projection.lastMessageAt !== undefined &&
+      current.header.lastMessageAt !== undefined &&
+      projection.lastMessageAt < current.header.lastMessageAt;
     this.updateHeaderSync(
       sessionId,
       {
@@ -5002,7 +5010,7 @@ export class SqliteSessionMetadataStore {
       },
       {
         skipNoop: true,
-        ...(replacePreview || projection.lastMessagePreview !== undefined
+        ...(!stale && (replacePreview || projection.lastMessagePreview !== undefined)
           ? {
               catalogPreview: {
                 kind: 'replace',

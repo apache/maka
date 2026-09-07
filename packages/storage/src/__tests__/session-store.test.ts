@@ -437,6 +437,42 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('a replayed older message latches the connection without moving the preview back', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-preview-replay-'));
+    const store = createSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      const prompt = {
+        type: 'user' as const,
+        id: 'message-prompt',
+        turnId: 'turn-1',
+        ts: 10,
+        text: 'the original prompt',
+      };
+      await store.commitMessageCatalogProjection(session.id, prompt);
+      await store.commitMessageCatalogProjection(session.id, {
+        ...prompt,
+        id: 'message-steering',
+        ts: 20,
+        text: 'the steering said later',
+      });
+
+      // Recovery replays the prompt when the ledger holds it but the catalog
+      // does not; on a Turn still running, a steering line is already on show.
+      await store.updateHeader(session.id, { connectionLocked: false });
+      await store.commitMessageCatalogProjection(session.id, prompt);
+
+      const page = await store.listCatalogPage(undefined, undefined, 10);
+      if (page.kind !== 'page') assert.fail('expected a catalog page');
+      assert.equal(page.records[0]?.summary.lastMessagePreview, 'the steering said later');
+      assert.equal(page.records[0]?.activityAt, 20);
+      assert.equal((await store.readHeader(session.id)).connectionLocked, true);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('keeps staging imports outside the catalog pagination domain', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-staging-catalog-'));
     const store = createSessionStore(root);
