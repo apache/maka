@@ -50,6 +50,7 @@ import {
   resolveRuntimeHostManagedServiceId,
   RUNTIME_HOST_SERVICE_LOG_MAX_BYTES,
   type RuntimeHostReconciliationProvider,
+  type RuntimeHostServiceErrorCode,
   type RuntimeHostSupervisorProvider,
 } from '@maka/runtime-host/operator';
 import {
@@ -239,6 +240,7 @@ export interface RuntimeHostManagedServiceInput {
   readonly cliPath: string;
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
   readonly expectedConfigFingerprint?: string;
+  readonly expectedHost?: { readonly hostEpoch: string; readonly pid: number };
   readonly allowInterruptActiveTasks?: boolean;
 }
 
@@ -287,7 +289,8 @@ export type RuntimeHostServiceManagerOverrides = Partial<RuntimeHostServiceManag
 
 export class RuntimeHostServiceManagerError extends Error {
   constructor(
-    readonly code:
+    readonly code: Extract<
+      RuntimeHostServiceErrorCode,
       | 'unsupported_platform'
       | 'service_manager_unavailable'
       | 'linger_disabled'
@@ -302,7 +305,8 @@ export class RuntimeHostServiceManagerError extends Error {
       | 'update_requires_retirement'
       | 'update_incomplete'
       | 'service_manager_operation_failed'
-      | 'uninstall_incomplete',
+      | 'uninstall_incomplete'
+    >,
     message: string,
     options?: ErrorOptions,
   ) {
@@ -330,6 +334,12 @@ export async function manageRuntimeHostService(
   backend: RuntimeHostServiceBackend,
   overrides: Partial<RuntimeHostServiceManagerDeps> = {},
 ): Promise<RuntimeHostManagedServiceResult> {
+  if (input.expectedHost) {
+    throw new RuntimeHostServiceManagerError(
+      'target_mismatch',
+      'An exact Host fence requires the canonical managed deployment operator',
+    );
+  }
   const deps = runtimeHostServiceManagerDeps(overrides);
   const configPath = resolveRuntimeHostManagedServiceConfigPath(input.clientDataRoot);
   const configDirectory = dirname(configPath);

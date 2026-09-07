@@ -281,6 +281,22 @@ test('a reader who scrolls up while the answer grows is still the reader', () =>
   });
 });
 
+test('reports both directions even when the reader returns to the last written offset', () => {
+  withObservers(() => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    const directions: string[] = [];
+    authority.subscribeToReaderScroll((direction) => directions.push(direction));
+    root.emitScroll();
+    root.scrollTop = 900;
+    root.emitScroll();
+    root.scrollTop = 2_400;
+    root.emitScroll();
+    assert.deepEqual(directions, ['up', 'down']);
+  });
+});
+
 test('a slow reader is a reader, however small each step is', () => {
   withObservers((resize) => {
     const root = fakeRoot();

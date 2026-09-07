@@ -401,6 +401,9 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]>;
   /** Requests already closed against the user because the host restarted. */
   listSandboxBoundaryRestartClosures(sessionId: string): Promise<SandboxBoundaryRequest[]>;
+  hasExplicitSandboxBoundaryDenial(
+    identities: readonly { sessionId: string; runId: string; turnId: string }[],
+  ): Promise<boolean>;
   settleSandboxBoundaryRequest(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement>;
@@ -425,6 +428,11 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     request: WorkHubMessageAssignmentRequest,
   ): Promise<WorkHubMessageAssignmentResult>;
   readWorkHubAssignment(actionId: string): Promise<WorkHubDelegationAssignedMessage | undefined>;
+  /** Newest active assignment first, across every requested target. */
+  readActiveWorkHubAssignmentsByTarget(
+    targetSessionIds: readonly string[],
+    maxAssignmentsPerTarget?: number,
+  ): Promise<readonly WorkHubDelegationAssignedMessage[]>;
   readWorkHubReplacement(
     delegationId: string,
   ): Promise<WorkHubDelegationReplacementRequestedMessage | undefined>;
@@ -699,6 +707,17 @@ class SqliteSessionStore implements SessionAuthorityStore {
       : undefined;
   }
 
+  async readActiveWorkHubAssignmentsByTarget(
+    targetSessionIds: readonly string[],
+    maxAssignmentsPerTarget?: number,
+  ): Promise<readonly WorkHubDelegationAssignedMessage[]> {
+    await this.ensureReady();
+    return this.metadata.readActiveWorkHubAssignmentsByTarget(
+      targetSessionIds,
+      maxAssignmentsPerTarget,
+    );
+  }
+
   async readWorkHubReplacement(
     delegationId: string,
   ): Promise<WorkHubDelegationReplacementRequestedMessage | undefined> {
@@ -770,17 +789,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     messageId: string,
   ): Promise<StoredMessage | undefined> {
     await this.ensureReady();
-    const throughSequence = await this.metadata.readTranscriptHighWater(
-      WORKHUB_COORDINATION_SESSION_ID,
-    );
-    if (throughSequence === null) return undefined;
-    const messages = await this.metadata.readTranscriptMessages(WORKHUB_COORDINATION_SESSION_ID, {
-      messageIds: [messageId],
-      throughSequence,
-      maxMessages: 1,
-      maxBytes: 768 * 1024,
-    });
-    return messages[0];
+    return this.metadata.readMessageById(WORKHUB_COORDINATION_SESSION_ID, messageId);
   }
 
   async discardStableConversationCopy(
@@ -869,6 +878,13 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async listSandboxBoundaryRestartClosures(sessionId: string): Promise<SandboxBoundaryRequest[]> {
     await this.ensureReady();
     return this.metadata.listSandboxBoundaryRestartClosures(sessionId);
+  }
+
+  async hasExplicitSandboxBoundaryDenial(
+    identities: readonly { sessionId: string; runId: string; turnId: string }[],
+  ): Promise<boolean> {
+    await this.ensureReady();
+    return this.metadata.hasExplicitSandboxBoundaryDenial(identities);
   }
 
   async settleSandboxBoundaryRequest(

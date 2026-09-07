@@ -49,6 +49,7 @@ import {
 } from './terminal-run-commit.js';
 import { buildToolOperationId } from './runtime-commit-sink.js';
 import { isContinuationStartRuntimeEvent } from './runtime-event-read-model.js';
+import { runtimeHandoffPause } from '@maka/core/runtime-handoff';
 import {
   buildToolResultArchiveResourceRef,
   parseToolResultArchiveResourceRef,
@@ -341,6 +342,7 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
   const runs = await Promise.all(
     selectedRunEvents.map(async ({ run, events }) => {
       const operationalEvents = await input.runStore.readEvents(run.sessionId, run.runId);
+      assertConversationRuntimeLedgerCopySupported(run, events);
       const terminal = classifyTerminalRuntimeLedger(run, events);
       if (run.terminalEvent && terminal.kind !== 'fact') {
         throw new Error(`Cannot copy terminal AgentRun ${run.runId} without one terminal fact`);
@@ -368,7 +370,6 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
     inlineRuntimeEvents,
     runs,
   };
-  assertConversationRuntimeLedgerCopySupported(plan);
   return plan;
 }
 
@@ -465,13 +466,14 @@ async function rebuildCopiedProjectionTransitions(
 }
 
 function assertConversationRuntimeLedgerCopySupported(
-  plan: ConversationRuntimeLedgerCopyPlan,
+  run: RuntimeInvocationRecord,
+  runtimeEvents: readonly RuntimeEvent[],
 ): void {
-  const unsupported = plan.runs.some(
-    ({ run, runtimeEvents }) =>
-      run.opening.source.kind === 'continuation' ||
-      runtimeEvents.some(isContinuationStartRuntimeEvent),
-  );
+  const unsupported =
+    run.opening.source.kind !== 'fresh' ||
+    runtimeEvents.some(
+      (event) => isContinuationStartRuntimeEvent(event) || runtimeHandoffPause(event),
+    );
   if (!unsupported) return;
 
   const error = new Error(

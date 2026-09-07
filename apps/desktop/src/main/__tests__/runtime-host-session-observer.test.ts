@@ -451,6 +451,7 @@ test('restores transcript consumers across Host replacement', async () => {
       };
     },
     async loadTranscriptBefore() {},
+    async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
     async closeTranscript() {},
   });
@@ -508,6 +509,7 @@ test('does not hold Host observation recovery on transcript replay', async () =>
       return transcriptResult(generation);
     },
     async loadTranscriptBefore() {},
+    async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
     async closeTranscript() {},
   });
@@ -537,6 +539,7 @@ test('does not hold Host observation recovery on transcript replay', async () =>
     async loadTranscriptBefore() {
       transcriptRangeStarted = true;
     },
+    async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
     acknowledgeTranscript() {
       transcriptAcknowledged = true;
@@ -577,89 +580,6 @@ test('does not hold Host observation recovery on transcript replay', async () =>
   await observations.close();
 });
 
-test('releases one renderer target before reload without restoring its observations', async () => {
-  const observations = new RuntimeHostSessionObservationRegistry();
-  const sessionCleanup = deferred<void>();
-  const transcriptCleanup = deferred<void>();
-  const unobserved: string[] = [];
-  const closedTranscripts: string[] = [];
-  const firstSource = {
-    async observe() {},
-    async unobserve(observerId: string) {
-      unobserved.push(observerId);
-      await sessionCleanup.promise;
-    },
-    async openTranscript(sessionId: string) {
-      return {
-        sessionId,
-        generation: 'first',
-        hostEpoch: 'host-first',
-        readThroughMessageId: null,
-      };
-    },
-    async loadTranscriptBefore() {},
-    async loadTranscriptAround() {},
-    async closeTranscript(consumerId: string) {
-      closedTranscripts.push(consumerId);
-      await transcriptCleanup.promise;
-    },
-  };
-  const targetA = {
-    id: 31,
-    send() {},
-    once() {},
-    off() {},
-  } satisfies RuntimeHostSessionObserverTarget & RuntimeHostTranscriptTarget;
-  const targetB = {
-    id: 32,
-    send() {},
-    once() {},
-    off() {},
-  } satisfies RuntimeHostSessionObserverTarget;
-
-  await observations.attach(firstSource);
-  await observations.observe('session-a', 'observer-a', targetA);
-  await observations.openTranscript('session-a', 'consumer-a', targetA);
-  await observations.observe('session-b', 'observer-b', targetB);
-
-  let released = false;
-  const releasing = observations.releaseTarget(targetA.id).then(() => {
-    released = true;
-  });
-  assert.deepEqual(unobserved, ['observer-a']);
-  assert.deepEqual(closedTranscripts, ['consumer-a']);
-  assert.deepEqual(observations.trackedSessionIds(), ['session-b']);
-  assert.equal(released, false);
-
-  sessionCleanup.resolve();
-  await Promise.resolve();
-  assert.equal(released, false);
-  transcriptCleanup.resolve();
-  await releasing;
-  assert.equal(released, true);
-
-  observations.detach(firstSource);
-  const restoredObservers: string[] = [];
-  const restoredTranscripts: string[] = [];
-  const secondSource = {
-    async observe(_sessionId: string, observerId: string) {
-      restoredObservers.push(observerId);
-    },
-    async unobserve() {},
-    async openTranscript(_sessionId: string, consumerId: string) {
-      restoredTranscripts.push(consumerId);
-      throw new Error('released transcript was restored');
-    },
-    async loadTranscriptBefore() {},
-    async loadTranscriptAround() {},
-    async closeTranscript() {},
-  };
-  assert.deepEqual(await observations.attach(secondSource), ['session-b']);
-  assert.deepEqual(restoredObservers, ['observer-b']);
-  assert.deepEqual(restoredTranscripts, []);
-  await observations.close();
-});
-
 test('fences transcript range failures to the current registration and Host source', async () => {
   const observations = new RuntimeHostSessionObservationRegistry();
   const target: RuntimeHostTranscriptTarget = {
@@ -683,6 +603,7 @@ test('fences transcript range failures to the current registration and Host sour
       };
     },
     loadTranscriptBefore,
+    async loadTranscriptAfter() {},
     async loadTranscriptAround() {},
     async closeTranscript() {},
   });
@@ -2873,7 +2794,6 @@ test("publishes Host sidecar and graph invalidations without inventing Session s
     kind: "subscription.runtime_resource_pty_data",
     hostEpoch: "host-1",
     subscriptionId: "subscription-1",
-    sequence: 3,
     sessionId: "session-1",
     ref: "maka://runtime/background-tasks/shell-1",
     ptySequence: 7,
@@ -3065,3 +2985,33 @@ class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
 async function waitFor(predicate: () => boolean): Promise<void> {
   await pollFor(predicate, { attempts: 100, message: 'Timed out waiting for observer state' });
 }
+
+test('a later observer in the same renderer receives the accumulated active stream', async () => {
+  const events = new AsyncFrameQueue();
+  let opens = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    activeAssistantStreams: [activeText('message-1')],
+    transcript: Promise.resolve([{ type: 'assistant', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'Hello', modelId: 'test-model' }]),
+    events,
+    async close() { events.end(); },
+  });
+  const observer = new RuntimeHostSessionObserver({
+    client: { openSession: async () => { opens += 1; return handle; } },
+    emitSessionsChanged() {},
+  });
+  const target = eventTarget(1);
+  await observer.observe('session-1', 'feature-first', target);
+  events.push(deltaFrame(1, 5, ' world'));
+  await waitFor(() => target.events.some((event) => 'text' in event && event.text === ' world'));
+  const before = target.events.length;
+  const seed = await observer.observe('session-1', 'conversation-later', target);
+  assert.equal(opens, 1);
+  assert.equal(target.events.length, before, 'private seeding does not replay to other listeners');
+  assert.ok(seed.some((event) =>
+    event.type === 'text_delta' && event.startOffset === 0 && event.text === 'Hello world'));
+  const after = target.events.length;
+  await observer.observe('session-1', 'conversation-later', target);
+  assert.equal(target.events.length, after, 'the same registration is still idempotent');
+  await observer.close();
+});

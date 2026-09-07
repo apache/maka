@@ -77,6 +77,7 @@ import type {
   MakaForeignSessionReader,
   MakaOnboardingSurface,
   MakaPiTuiTurnActivitySurface,
+  MakaPiTuiHostControl,
   ModelChoice,
   OnboardingIdentityChoice,
   OnboardingProviderEntry,
@@ -137,6 +138,7 @@ import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.
 import { TranscriptViewerOverlay } from './pi-tui-transcript-viewer.js';
 import { copyToClipboard } from './tui-clipboard.js';
 import { getTuiCopyCopy, lastAssistantText, serializeTranscriptText } from './tui-copy-command.js';
+import { getTuiHostOwnerCopy } from './tui-host-owner-copy.js';
 import { McpManagementOverlay } from './pi-tui-mcp-status.js';
 import type { TuiMcpManagement } from './tui-mcp-control.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
@@ -222,6 +224,8 @@ export interface MakaPiTuiInput {
   taskbarProgress?: boolean;
   /** Starts the CLI process-exit deadline after terminal restore, before outer cleanup. */
   onProcessExit?: (exitCode: number, error?: Error) => void;
+  /** Local owner preflight; accepted operations run only after the viewport disconnects. */
+  hostControl?: MakaPiTuiHostControl;
   /**
    * How long a prompt turn must run before its completion rings the terminal
    * BEL when unfocused. Injectable so tests exercise the long / short split
@@ -1021,9 +1025,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     restoreTerminal();
     if (error) rejectClosed(error);
     else resolveClosed();
-    // Runtime stop is best-effort after the shell has its terminal back. A
-    // double-Escape/Ctrl-C interrupt may already have one in flight; reuse it.
-    if (!interruptRequested) void input.driver.stop().catch(() => {});
+    // Closing a viewport is not a Turn or Host stop. Explicit interrupt keys
+    // retain their own stop path; an attached Host continues independently.
   };
 
   const handleProcessExit = (exitCode: number, error?: Error): void => {
@@ -3498,7 +3501,86 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
 
+  const runHostCommand = async (parts: string[]): Promise<void> => {
+    const copy = getTuiHostOwnerCopy(locale);
+    if (!input.hostControl) throw new Error(copy.unavailable);
+    const action = parts[1] ?? 'status';
+    if (action === 'status' && parts.length <= 2) {
+      const text = await input.hostControl.status();
+      if (!closed) {
+        state.entries.push({ kind: 'notice', level: 'info', text });
+        requestRender();
+      }
+      return;
+    }
+    if (action !== 'stop' && action !== 'restart' && action !== 'update') {
+      throw new Error(copy.usage);
+    }
+    const targets = parts.slice(2);
+    if (targets.length > (action === 'update' ? 1 : 0)) {
+      throw new Error(copy.usage);
+    }
+    const accepted = await input.hostControl.prepare(
+      {
+        action,
+        ...(targets[0] ? { target: targets[0] } : {}),
+      },
+      (detail) =>
+        new Promise((resolve) => {
+          if (closed) return resolve('cancel');
+          showSelectPicker(
+            copy.pickerTitle,
+            'cancel',
+            [
+              {
+                value: 'cancel',
+                label: copy.cancel,
+                description: copy.cancelDescription,
+              },
+              {
+                value: 'safe',
+                label: copy.safe,
+                description: copy.safeDescription,
+              },
+              ...(action === 'update'
+                ? []
+                : [
+                    {
+                      value: 'interrupt',
+                      label: copy.interrupt,
+                      description: copy.interruptDescription,
+                    },
+                  ]),
+            ],
+            (item) => resolve(item.value as 'cancel' | 'safe' | 'interrupt'),
+            {
+              minPrimaryColumnWidth: 16,
+              maxPrimaryColumnWidth: 26,
+              selectedIndex: 0,
+              notice: detail,
+              onCancel: () => resolve('cancel'),
+            },
+          );
+        }),
+    );
+    if (accepted) beginGracefulClose();
+  };
+
   const slashCommandHandlers = {
+    host: {
+      description: primaryGuidance.commands.host,
+      midTurn: 'local',
+      run: (parts: string[]) => {
+        void runHostCommand(parts).catch(reportError);
+      },
+    },
+    update: {
+      description: primaryGuidance.commands.update,
+      midTurn: 'local',
+      run: (parts: string[]) => {
+        void runHostCommand(['/host', 'update', ...parts.slice(1)]).catch(reportError);
+      },
+    },
     context: {
       description: primaryGuidance.commands.context,
       // Read-only diagnostics, but runControl-gated: mid-turn it would

@@ -200,6 +200,14 @@ async function validateInstalledProduct(root) {
     throw new AggregateError(smokeFailures, 'Installed CLI product flows both failed');
   }
 
+  logStep('checking npx invocation lifetime and durable schedule recovery after cache removal');
+  await smokeNpxScheduleRecovery({
+    packageRoot,
+    cliEntrypoint,
+    ptySpawn,
+    root: join(root, 'npx-schedule-recovery'),
+  });
+
   logStep('checking the managed Runtime Host lifecycle');
   await smokeRuntimeHostService({
     packageRoot,
@@ -818,6 +826,168 @@ async function smokeRuntimeHostService({ packageRoot, cliEntrypoint, ptySpawn, r
   );
 }
 
+async function smokeNpxScheduleRecovery({ packageRoot, cliEntrypoint, ptySpawn, root }) {
+  const home = join(root, 'home');
+  const workspace = join(root, 'workspace');
+  mkdirSync(workspace, { recursive: true });
+  const cache = join(root, 'npm-cache');
+  const cacheSlot = join(cache, '_npx', 'release-smoke');
+  const temporaryPackage = join(cacheSlot, 'node_modules', 'maka-agent');
+  // Use the already verified immutable candidate bytes, not a registry fetch
+  // or a symlink that resolves back to the persistent installation.
+  cpSync(packageRoot, temporaryPackage, { recursive: true, dereference: true });
+  const environment = { ...isolatedEnvironment(home), npm_config_cache: cache };
+  const dataRoots = await resolveInstalledDataRoots(packageRoot, environment, home);
+  const installation = await importInstalled(packageRoot, 'dist/runtime-host-cli-installation.js');
+  if (
+    !(await installation.isTemporaryNpxInstallation(temporaryPackage, {
+      environment,
+      homeDir: home,
+    }))
+  ) {
+    throw new Error('Release smoke cache layout is not recognized as a temporary npx package');
+  }
+  const client = await importInstalled(
+    packageRoot,
+    'node_modules/@maka/runtime-host/dist/client/index.js',
+  );
+  const protocol = await importInstalled(
+    packageRoot,
+    'node_modules/@maka/runtime-host/dist/protocol/index.js',
+  );
+  let observer;
+  let source;
+  let recovered;
+  let task;
+  const connect = async () => {
+    const result = await client.connectExistingRuntimeHost({
+      rootPath: dataRoots.workspaceRoot,
+      compositionId: protocol.INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      protocol: {
+        min: protocol.RUNTIME_HOST_PROTOCOL_VERSION,
+        max: protocol.RUNTIME_HOST_PROTOCOL_VERSION,
+      },
+      connectTimeoutMs: 10_000,
+      handshakeTimeoutMs: 10_000,
+    });
+    if (result.kind !== 'connected')
+      throw new Error(`Schedule smoke Host unavailable: ${result.kind}`);
+    observer = result.connection;
+    return result;
+  };
+  const assertSchedule = async () => {
+    const result = await observer.request('scheduled-task.query', { kind: 'get', taskId: task.id });
+    if (
+      result.kind !== 'task' ||
+      !result.task ||
+      JSON.stringify(scheduleFacts(result.task)) !== JSON.stringify(scheduleFacts(task))
+    ) {
+      throw new Error('The npx-created durable schedule changed or disappeared after recovery');
+    }
+    const diagnostics = await observer.request('host.diagnostics.query', {});
+    if (
+      !diagnostics.residencies.some((entry) => entry.label === 'scheduled-task' && entry.count > 0)
+    ) {
+      throw new Error('The release smoke schedule does not hold a Host residency');
+    }
+  };
+  const exitSurface = async (entrypoint, prepare) => {
+    const result = await runPtyScenario({
+      ptySpawn,
+      command: process.execPath,
+      args: [entrypoint],
+      cwd: workspace,
+      environment,
+      marker: '/setup',
+      onMarker: async (terminal) => {
+        await prepare();
+        await observer.close();
+        observer = undefined;
+        terminal.write('/exit\r');
+      },
+      timeoutMs: PROCESS_TIMEOUT_MS,
+    });
+    if (result.exitCode !== 0)
+      throw new Error(`Schedule smoke Surface exited with ${result.exitCode}`);
+  };
+  await withCleanup(
+    async () => {
+      await exitSurface(join(temporaryPackage, 'dist', 'cli.js'), async () => {
+        const connected = await connect();
+        source = {
+          rootId: observer.rootId,
+          hostEpoch: observer.hostEpoch,
+          pid: connected.registration.pid,
+        };
+        const created = await observer.request('scheduled-task.mutate', {
+          kind: 'create',
+          input: {
+            title: 'release-smoke npx durable schedule',
+            intentBody: '',
+            schedule: { kind: 'once', runAt: Date.now() + 24 * 60 * 60 * 1_000 },
+            effect: { kind: 'notify', channel: 'local' },
+          },
+        });
+        if (created.kind !== 'task') throw new Error('Unable to create the release smoke schedule');
+        task = created.task;
+        await assertSchedule();
+      });
+      // This must succeed before any forced cleanup or schedule deletion: the
+      // source still has durable work, but its temporary invocation has ended.
+      await waitForRuntimeHostShutdown(packageRoot, dataRoots.workspaceRoot);
+      const deadline = Date.now() + 5_000;
+      while (processExists(source.pid) && Date.now() < deadline) await delay(50);
+      if (processExists(source.pid))
+        throw new Error('The npx-owned Host outlived its CLI invocation');
+      renameSync(cacheSlot, join(root, 'removed-npx-cache-slot'));
+      if (existsSync(temporaryPackage)) throw new Error('The old npx package path still exists');
+
+      await exitSurface(cliEntrypoint, async () => {
+        const connected = await connect();
+        if (observer.rootId !== source.rootId || observer.hostEpoch === source.hostEpoch) {
+          throw new Error('Persistent CLI did not start a fresh Host for the same State Root');
+        }
+        recovered = { hostEpoch: observer.hostEpoch, pid: connected.registration.pid };
+        await assertSchedule();
+      });
+      // A persistent installation's Host survives Surface exit with this same
+      // schedule, beyond the ordinary idle grace and with no observer keeping
+      // it alive. Only remove our marked task after proving that distinction.
+      await delay(RUNTIME_HOST_SHUTDOWN_TIMEOUT_MS);
+      const connected = await connect();
+      if (
+        observer.hostEpoch !== recovered.hostEpoch ||
+        connected.registration.pid !== recovered.pid
+      ) {
+        throw new Error('The persistent Host was replaced after its Surface exited');
+      }
+      await assertSchedule();
+      const deleted = await observer.request('scheduled-task.mutate', {
+        kind: 'delete',
+        taskId: task.id,
+      });
+      if (deleted.kind !== 'deleted')
+        throw new Error('Unable to remove the release smoke schedule');
+    },
+    (completed) =>
+      runCleanupSteps([
+        () => observer?.close(),
+        () => settleRuntimeHost(packageRoot, dataRoots.workspaceRoot, completed),
+      ]),
+  );
+}
+
+function scheduleFacts(task) {
+  return {
+    id: task.id,
+    title: task.title,
+    status: task.status,
+    schedule: task.schedule,
+    effect: task.effect,
+    nextFireAt: task.nextFireAt,
+  };
+}
+
 async function allocateLoopbackPort() {
   const server = createServer();
   await new Promise((resolve, reject) => {
@@ -1268,6 +1438,7 @@ function runPtyScenario({
   return new Promise((resolvePromise, reject) => {
     let output = '';
     let markerSeen = false;
+    let markerAction = Promise.resolve();
     let outputActionApplied = false;
     let settled = false;
     const terminal = ptySpawn(command, args, {
@@ -1312,7 +1483,13 @@ function runPtyScenario({
       if (!markerSeen && output.includes(marker)) {
         markerSeen = true;
         try {
-          onMarker?.(terminal, output);
+          markerAction = Promise.resolve(onMarker?.(terminal, output)).catch((error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            terminal.kill();
+            reject(error);
+          });
         } catch (error) {
           settled = true;
           clearTimeout(timer);
@@ -1323,13 +1500,18 @@ function runPtyScenario({
     });
     terminal.onExit(({ exitCode, signal }) => {
       if (settled) return;
-      settled = true;
-      clearTimeout(timer);
       if (!markerSeen) {
+        settled = true;
+        clearTimeout(timer);
         reject(new Error(`PTY command exited before ${JSON.stringify(marker)}: ${output}`));
         return;
       }
-      resolvePromise({ exitCode, signal, output });
+      void markerAction.then(() => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolvePromise({ exitCode, signal, output });
+      });
     });
   });
 }

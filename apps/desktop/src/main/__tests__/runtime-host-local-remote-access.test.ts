@@ -335,6 +335,7 @@ test('repairs an existing managed Host with the current setup package and restar
   await mkdir(rootPath, { recursive: true });
   await writeManagedLifecycle(clientDataRoot, rootPath, rootId);
   const actions: string[] = [];
+  const phases: string[] = [];
   const service = createDesktopLocalRuntimeHostRemoteAccess({
     ipcMain: { handle() {}, removeHandler() {} },
     clientDataRoot,
@@ -343,14 +344,16 @@ test('repairs an existing managed Host with the current setup package and restar
     directPeerAvailable: true,
     manager: () => undefined,
     resolveSetupPackage: async () => setupPackage,
+    onUpdateProgress: (phase) => phases.push(phase),
     operator: {
       async runUpdate(input: {
         readonly setupPackage: unknown;
         readonly target: { readonly rootId: string; readonly deploymentId?: string };
         readonly allowManualUpdate?: boolean;
         readonly allowInterruptActiveTasks?: boolean;
-      }) {
+      }, onProgress: (phase: 'staging') => void) {
         actions.push('update');
+        onProgress('staging');
         assert.equal(input.setupPackage, setupPackage);
         assert.equal(input.target.rootId, rootId);
         assert.equal(input.target.deploymentId, RECOVERY_DEPLOYMENT_ID);
@@ -383,6 +386,7 @@ test('repairs an existing managed Host with the current setup package and restar
     kind: 'repaired',
   });
   assert.deepEqual(actions, ['update', 'restart']);
+  assert.deepEqual(phases, ['checking', 'staging', 'restart']);
 });
 
 test('replaces a conflicting supervised Host with the requested active-work policy', async (t) => {

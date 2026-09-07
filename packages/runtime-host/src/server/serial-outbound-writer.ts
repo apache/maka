@@ -29,8 +29,27 @@ const MAX_QUEUED_BYTES = 2 * 1024 * 1024;
 
 interface QueuedFrame {
   message: EncodedProtocolMessage;
+  lane: OutboundLane;
   resolve(): void;
   reject(error: Error): void;
+}
+
+type OutboundLane = 'control' | 'state' | 'bulk' | 'pty' | 'barrier';
+
+function frameLane(frame: HostFrame): OutboundLane {
+  if ('operation' in frame) {
+    if (frame.operation === 'subscription.close') return 'barrier';
+    if (
+      frame.operation === 'session.transcript.page' ||
+      frame.operation === 'artifact.query' ||
+      frame.operation === 'runtime.resource.query'
+    )
+      return 'bulk';
+    return 'control';
+  }
+  if (frame.kind === 'subscription.closed') return 'barrier';
+  if (frame.kind === 'subscription.runtime_resource_pty_data') return 'pty';
+  return frame.kind.startsWith('subscription.') ? 'state' : 'control';
 }
 
 export interface OutboundWriteReceipt {
@@ -56,6 +75,8 @@ export class BoundedSerialOutboundWriter {
   #writing = false;
   #drainTask: Promise<void> | undefined;
   #closed = false;
+  #controlBurst = 0;
+  #dataLane = 0;
 
   constructor(transport: RuntimeHostMessageTransport, onFailure: () => void) {
     this.#transport = transport;
@@ -87,7 +108,7 @@ export class BoundedSerialOutboundWriter {
     }
 
     const flushed = new Promise<void>((resolve, reject) => {
-      this.#queue.push({ message, resolve, reject });
+      this.#queue.push({ message, lane: frameLane(frame), resolve, reject });
       this.#queuedBytes += message.byteLength;
       if (!this.#writing) {
         this.#writing = true;
@@ -113,7 +134,7 @@ export class BoundedSerialOutboundWriter {
   async #drain(): Promise<void> {
     try {
       while (!this.#closed) {
-        const queued = this.#queue[0];
+        const queued = this.#nextFrame();
         if (!queued) return;
         try {
           await this.#transport.write(queued.message);
@@ -122,7 +143,7 @@ export class BoundedSerialOutboundWriter {
           return;
         }
         if (this.#closed) return;
-        this.#queue.shift();
+        this.#queue.splice(this.#queue.indexOf(queued), 1);
         this.#queuedBytes -= queued.message.byteLength;
         queued.resolve();
       }
@@ -137,6 +158,29 @@ export class BoundedSerialOutboundWriter {
     if (this.#closed) return;
     this.close(error);
     this.#onFailure();
+  }
+
+  #nextFrame(): QueuedFrame | undefined {
+    // Close acknowledgements are fences: no lower-priority subscription
+    // frames may arrive after a Client has retired their correlation ID.
+    const barrier = this.#queue.findIndex((frame) => frame.lane === 'barrier');
+    if (barrier === 0) return this.#queue[0];
+    const eligible = barrier < 0 ? this.#queue : this.#queue.slice(0, barrier);
+    const control = eligible.find((frame) => frame.lane === 'control');
+    if (control && this.#controlBurst < 8) {
+      this.#controlBurst += 1;
+      return control;
+    }
+    const lanes = ['state', 'bulk', 'pty'] as const;
+    for (let offset = 0; offset < lanes.length; offset += 1) {
+      const lane = (this.#dataLane + offset) % lanes.length;
+      const frame = eligible.find((candidate) => candidate.lane === lanes[lane]);
+      if (!frame) continue;
+      this.#dataLane = (lane + 1) % lanes.length;
+      this.#controlBurst = 0;
+      return frame;
+    }
+    return control;
   }
 }
 

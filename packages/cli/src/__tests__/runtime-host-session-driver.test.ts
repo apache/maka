@@ -2902,6 +2902,9 @@ class FakeConnection {
 }
 
 class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<SubscriptionFrame> {
+  subscribePtyData(): () => void {
+    return () => undefined;
+  }
   readonly hostEpoch = 'host-1';
   readonly activeAssistantStreams = [];
   readonly transcriptBootstrap = null;

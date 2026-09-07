@@ -19,22 +19,34 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { getRuntimeHostPeerMeshCopy } from '../../renderer/features/runtime-host-management/index.js';
+import { getPeerMeshCopy } from '../../renderer/locales/peer-mesh-copy.js';
+import { getSettingsProjectsCopy } from '../../renderer/locales/settings-projects-copy.js';
 import { getDesktopConversationCopy } from '../../renderer/locales/conversation-copy.js';
 import { getProviderSettingsCopy } from '../../renderer/features/connection-settings/index.js';
 import { settingsTestResultMessage } from '../../renderer/locales/settings-test-result-copy.js';
 
 test('Traditional Chinese Peer Mesh copy does not use the Simplified Chinese branch', () => {
-  const copy = getRuntimeHostPeerMeshCopy('zh-TW');
+  const copy = getPeerMeshCopy('zh-TW');
+  const runtimeHost = getSettingsProjectsCopy('zh-TW').runtimeHost;
 
   assert.equal(copy.experimental, '實驗性');
   assert.equal(copy.invalidResult, 'Peer Mesh 回傳了無效結果');
   assert.equal(copy.copyPeerId('peer-1'), '複製完整 Peer ID：peer-1');
-  assert.equal(copy.peerIdCopyFailed, '無法複製 Peer ID');
-  assert.equal(copy.peerPathDirect, '直接連線');
-  assert.equal(copy.peerPathTransit, '成員轉送');
-  assert.equal(copy.peerPathOther, '其他');
+  assert.equal(runtimeHost.peerIdCopyFailed, '無法複製 Peer ID');
+  assert.equal(runtimeHost.peerPathDirect, '直接連線');
+  assert.equal(runtimeHost.peerPathTransit, '成員轉送');
+  assert.equal(runtimeHost.peerPathTransportOther, '其他');
   assert.equal(copy.joinHint, '貼上另一個 Peer 產生的一次性邀請碼。');
+});
+
+test('Traditional Chinese Peer Mesh route states use exact localized labels', () => {
+  assert.deepEqual(getPeerMeshCopy('zh-TW').routeState, {
+    local: '本機',
+    connecting: '正在連線',
+    reachable: '可連線',
+    reconnecting: '正在恢復連線',
+    needs_repair: '需要新邀請碼修復',
+  });
 });
 
 test('Traditional Chinese connection copy uses 回傳, 回應, and 發送', () => {

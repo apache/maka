@@ -21,7 +21,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { List, ListItem } from '@astryxdesign/core/List';
-import { HStack } from '@astryxdesign/core/Stack';
+import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import {
   Badge,
@@ -31,9 +31,11 @@ import {
   TextArea,
   useToast,
 } from '@maka/ui';
+import { SessionCollaborationAliasAction } from './session-collaboration-alias-action.js';
 import { useSessionCollaborationServices } from '../services-context.js';
 import type {
   SessionCollaborationImportPhase,
+  SessionCollaborationImportResult,
   SessionCollaborationMountSummary,
 } from '../ports.js';
 
@@ -70,12 +72,18 @@ export interface SessionCollaborationJoinCopy {
   readonly memberTransitConnection: string;
   readonly disconnect: string;
   readonly disconnectFailed: string;
+  readonly openTask: string;
+  readonly retryConnection: string;
+  readonly accessRejected: string;
+  readonly sessionUnavailable: string;
+  readonly incompatibleHost: string;
 }
 
 export function SessionCollaborationJoinDialog(props: {
   readonly copy: SessionCollaborationJoinCopy;
   readonly onImported: () => void;
   readonly onClose: () => void;
+  readonly onOpenTask?: (mount: SessionCollaborationMountSummary) => void;
 }) {
   const services = useSessionCollaborationServices();
   const toast = useToast();
@@ -306,12 +314,23 @@ export function SessionCollaborationJoinDialog(props: {
                   {mounts.map((mount) => (
                     <ListItem
                       key={mount.mountId}
-                      label={mount.session?.name ?? mount.name}
-                      description={mount.session
-                        ? `${mount.name} · ${mountReadinessLabel(props.copy, mount.readiness)}`
-                        : mountReadinessLabel(props.copy, mount.readiness)}
-                      endContent={(
-                        <HStack gap={2} vAlign="center">
+                      label={mount.name}
+                      description={(
+                        <VStack gap={2}>
+                        <span>{mountFailureLabel(props.copy, mount) ?? mount.session?.name}</span>
+                        <HStack gap={2} vAlign="center" wrap="wrap">
+                          {mount.session && props.onOpenTask ? (
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              label={props.copy.openTask}
+                              isDisabled={working}
+                              onClick={() => {
+                                props.onOpenTask?.(mount);
+                                finishClose();
+                              }}
+                            />
+                          ) : null}
                           {mount.peerPath ? (
                             <Tooltip content={peerPathDetail(props.copy, mount.peerPath)}>
                               <span>
@@ -327,6 +346,15 @@ export function SessionCollaborationJoinDialog(props: {
                               label={mountReadinessLabel(props.copy, mount.readiness)}
                             />
                           ) : null}
+                          {mount.readiness !== 'ready' && !mountAccessLost(mount) ? (
+                            <Button variant="secondary" size="sm" label={props.copy.retryConnection}
+                              isDisabled={working || removingMountId !== undefined}
+                              onClick={() => void services.retryMount(mount.mountId).catch((error) =>
+                                toast.error(props.copy.connectionFailed, errorMessage(error)))} />
+                          ) : null}
+                          <SessionCollaborationAliasAction name={mount.name}
+                            disabled={working || removingMountId !== undefined}
+                            onSave={(name) => services.renameMount(mount.mountId, name)} />
                           <Button
                             variant="secondary"
                             size="sm"
@@ -336,6 +364,7 @@ export function SessionCollaborationJoinDialog(props: {
                             onClick={() => void disconnect(mount.mountId)}
                           />
                         </HStack>
+                        </VStack>
                       )}
                     />
                   ))}
@@ -364,6 +393,21 @@ export function SessionCollaborationJoinDialog(props: {
       />
     </Dialog>
   );
+}
+
+function mountAccessLost(mount: SessionCollaborationMountSummary): boolean {
+  return mount.failure === 'credential_rejected' || mount.failure === 'session_unavailable';
+}
+
+function mountFailureLabel(copy: SessionCollaborationJoinCopy, mount: SessionCollaborationMountSummary): string | undefined {
+  switch (mount.failure) {
+    case 'credential_rejected': return copy.accessRejected;
+    case 'session_unavailable': return copy.sessionUnavailable;
+    case 'incompatible_host': return copy.incompatibleHost;
+    case 'peer_path_unavailable': return copy.directPathUnavailable;
+    case 'connection_failed': return copy.connectionFailed;
+    default: return undefined;
+  }
 }
 
 function mountReadinessLabel(
@@ -406,16 +450,13 @@ function abbreviatePeerId(peerId: string): string {
 
 function importError(
   copy: SessionCollaborationJoinCopy,
-  reason:
-    | 'invalid_code'
-    | 'insecure_confirmation_required'
-    | 'peer_path_unavailable'
-    | 'connection_failed',
+  reason: Extract<SessionCollaborationImportResult, { kind: 'error' }>['reason'],
   message?: string,
 ): string {
   if (reason === 'invalid_code') return copy.invalidCode;
   if (reason === 'insecure_confirmation_required') return copy.insecureBody;
   if (reason === 'peer_path_unavailable') return copy.directPathUnavailable;
+  if (reason === 'incompatible_host') return copy.incompatibleHost;
   return message ?? copy.connectionFailed;
 }
 

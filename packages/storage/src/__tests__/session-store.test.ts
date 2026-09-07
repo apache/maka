@@ -1081,7 +1081,6 @@ describe('SQLite SessionStore', () => {
           turnId: 'turn-1',
           ts: 3,
           status: 'completed',
-          partialOutputRetained: true,
         },
         { type: 'user', id: 'user-2', turnId: 'turn-2', ts: 4, text: 'two' },
       ]);
@@ -1101,7 +1100,6 @@ describe('SQLite SessionStore', () => {
               turnId: 'turn-1',
               ts: 3,
               status: 'completed',
-              partialOutputRetained: true,
             },
           },
           userPromptPreview: 'one',
