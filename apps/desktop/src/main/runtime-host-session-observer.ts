@@ -1619,7 +1619,7 @@ function replacementProjection(
       }
       terminalEvents.push(...stored);
     } else if (isTerminalTurn(root)) {
-      terminalEvents.push(...projector.seedTerminal(root));
+      terminalEvents.push(...projector.seedActive(false), ...projector.seedTerminal(root));
     }
   }
   if (
@@ -1627,7 +1627,7 @@ function replacementProjection(
     isTerminalTurn(root) &&
     (!previousRoot || previousRoot.runId !== root.runId)
   ) {
-    terminalEvents.push(...projector.seedTerminal(root));
+    terminalEvents.push(...projector.seedActive(false), ...projector.seedTerminal(root));
   }
   return {
     terminalEvents,

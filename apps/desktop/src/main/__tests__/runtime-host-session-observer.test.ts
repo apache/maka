@@ -2443,6 +2443,112 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
   await observer.close();
 });
 
+test('replays durable admission before a terminal successor on subscription recovery', async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const secondEvents = new AsyncFrameQueue();
+  const recoveredSessions: string[] = [];
+  const terminalTranscript: StoredMessage[] = [
+    {
+      type: 'user',
+      id: 'follow-up-message',
+      turnId: 'turn-2',
+      ts: 20,
+      text: 'Continue',
+      steeringEventId: 'follow-up-steering',
+    },
+    {
+      type: 'assistant',
+      id: 'assistant-2',
+      turnId: 'turn-2',
+      ts: 30,
+      text: 'Done',
+      modelId: 'test-model',
+    },
+    {
+      type: 'turn_state',
+      id: 'terminal-2',
+      turnId: 'turn-2',
+      ts: 40,
+      status: 'completed',
+      partialOutputRetained: true,
+    },
+  ];
+  let openCount = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      listSessionTurns: async () => [{
+        turnId: 'turn-1',
+        status: 'completed' as const,
+        statusSource: 'recorded' as const,
+        partialOutputRetained: true,
+      }],
+      openSession: async () => {
+        openCount += 1;
+        if (openCount === 1) {
+          return runtimeHostSessionFixture({
+            snapshot: continuitySnapshot(),
+            transcript: Promise.resolve([]),
+            events: firstEvents,
+            async close() {
+              firstEvents.end();
+            },
+          });
+        }
+        return runtimeHostSessionFixture({
+          snapshot: continuitySnapshot({
+            projectionRevision: 2,
+            rootTurn: {
+              sessionId: 'session-1',
+              turnId: 'turn-2',
+              runId: 'run-2',
+              status: 'completed',
+              terminalEventId: 'terminal-2',
+            },
+          }),
+          transcript: Promise.resolve(terminalTranscript),
+          loadTranscriptOverlay: async () => terminalTranscript,
+          events: secondEvents,
+          async close() {
+            secondEvents.end();
+          },
+        });
+      },
+    },
+    emitSessionsChanged() {},
+    emitSubscriptionRecovered: (sessionId) => {
+      recoveredSessions.push(sessionId);
+    },
+    now: () => 50,
+  });
+  const target = eventTarget(23);
+  await observer.observe('session-1', 'observer-1', target, true);
+
+  firstEvents.push({
+    kind: 'subscription.closed',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    reason: 'slow_consumer',
+  });
+  await waitFor(() => recoveredSessions.length === 1);
+
+  assert.deepEqual(
+    target.events
+      .filter((event) => event.turnId === 'turn-2')
+      .map((event) => event.type),
+    ['message_admission', 'text_complete', 'complete'],
+  );
+  const admission = target.events.find(
+    (event): event is Extract<SessionEvent, { type: 'message_admission' }> =>
+      event.type === 'message_admission',
+  );
+  assert.deepEqual(
+    admission && { messageId: admission.messageId, turnId: admission.turnId },
+    { messageId: 'follow-up-message', turnId: 'turn-2' },
+  );
+  await observer.close();
+});
+
 test("shares one Host subscription and one delivery per renderer target", async () => {
   const events = new AsyncFrameQueue();
   let openCount = 0;

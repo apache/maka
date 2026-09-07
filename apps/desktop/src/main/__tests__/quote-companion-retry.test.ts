@@ -1982,6 +1982,125 @@ test('adopts a queued Side Conversation follow-up that starts after the active t
   assert.equal(container.firstElementChild?.getAttribute('data-live-text'), 'new answer');
 });
 
+test('reconciles a queued Side Conversation follow-up that settles before its started receipt', async () => {
+  let followUpMessageId: string | undefined;
+  let durableMessages: StoredMessage[] = [];
+  const pendingFollowUp = deferred<{ kind: 'started'; turnId: string }>();
+  const { container, emit, send, queue } = await renderOwnershipProbe({
+    send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+    submitFollowUp: async (_sessionId, placement, _text, messageId) => {
+      assert.equal(placement, 'next_turn');
+      followUpMessageId = messageId;
+      return pendingFollowUp.promise;
+    },
+    readSettledMessages: async () => ({ messages: durableMessages, settled: true }),
+  });
+
+  await act(async () => {
+    assert.equal(await send('initial prompt'), true);
+    await Promise.resolve();
+  });
+  let followUpResult!: Promise<boolean>;
+  await act(async () => {
+    followUpResult = queue('late follow-up');
+    await Promise.resolve();
+  });
+  await waitUntil(() => followUpMessageId !== undefined);
+  await act(async () => {
+    emit(completeEvent('old-complete', 'old-turn', 1));
+    await Promise.resolve();
+  });
+  await waitUntil(() => container.firstElementChild?.getAttribute('data-streaming') === 'false');
+
+  durableMessages = [
+    {
+      type: 'user',
+      id: followUpMessageId as string,
+      turnId: 'new-turn',
+      ts: 2,
+      text: 'late follow-up',
+    },
+    {
+      type: 'assistant',
+      id: 'new-assistant',
+      turnId: 'new-turn',
+      ts: 3,
+      text: 'new answer',
+      modelId: 'test-model',
+    },
+    {
+      type: 'turn_state',
+      id: 'new-complete-state',
+      turnId: 'new-turn',
+      ts: 4,
+      status: 'completed',
+      partialOutputRetained: true,
+    },
+  ];
+  await act(async () => {
+    emit(
+      messageAdmittedEvent(
+        'new-turn-admission',
+        'new-turn',
+        2,
+        followUpMessageId as string,
+      ),
+    );
+    emit(textDeltaEvent('new-turn-text', 'new-turn', 2, 'new answer'));
+    emit(completeEvent('new-complete', 'new-turn', 3));
+    await Promise.resolve();
+  });
+  assert.equal(container.firstElementChild?.getAttribute('data-streaming'), 'false');
+
+  await act(async () => {
+    pendingFollowUp.resolve({ kind: 'started', turnId: 'new-turn' });
+    assert.equal(await followUpResult, true);
+    await Promise.resolve();
+  });
+
+  assert.equal(
+    container.firstElementChild?.getAttribute('data-message-texts'),
+    'late follow-up|new answer',
+  );
+  assert.equal(container.firstElementChild?.getAttribute('data-live-turn-id'), '');
+  assert.equal(container.firstElementChild?.getAttribute('data-streaming'), 'false');
+});
+
+test('does not let a late Side Conversation started receipt replace a newer active turn', async () => {
+  const pendingFollowUp = deferred<{ kind: 'started'; turnId: string }>();
+  const { container, emit, send, queue } = await renderOwnershipProbe({
+    send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+    submitFollowUp: async () => pendingFollowUp.promise,
+    readSettledMessages: async () => ({ messages: [], settled: true }),
+  });
+
+  await act(async () => {
+    assert.equal(await send('initial prompt'), true);
+    await Promise.resolve();
+  });
+  let followUpResult!: Promise<boolean>;
+  await act(async () => {
+    followUpResult = queue('late follow-up');
+    await Promise.resolve();
+  });
+  await act(async () => {
+    emit(messageAdmittedEvent('newer-admission', 'newer-turn', 2, 'newer-message'));
+    emit(textDeltaEvent('newer-text', 'newer-turn', 3, 'newer answer'));
+    await Promise.resolve();
+  });
+  assert.equal(container.firstElementChild?.getAttribute('data-live-turn-id'), 'newer-turn');
+
+  await act(async () => {
+    pendingFollowUp.resolve({ kind: 'started', turnId: 'late-turn' });
+    assert.equal(await followUpResult, true);
+    await Promise.resolve();
+  });
+
+  assert.equal(container.firstElementChild?.getAttribute('data-live-turn-id'), 'newer-turn');
+  assert.equal(container.firstElementChild?.getAttribute('data-live-text'), 'newer answer');
+  assert.equal(container.firstElementChild?.getAttribute('data-streaming'), 'true');
+});
+
 test('keeps the settled prior turn visible while a queued successor is running', async () => {
   let firstMessageId: string | undefined;
   let followUpMessageId: string | undefined;

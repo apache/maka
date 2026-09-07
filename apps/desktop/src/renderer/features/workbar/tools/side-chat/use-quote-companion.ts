@@ -218,6 +218,19 @@ function requiredAssistantMessageId(projection: LiveTurnProjection | undefined):
   return [...(projection?.steps ?? [])].reverse().find((step) => step.text)?.stepId;
 }
 
+function transcriptRecordsTerminalTurn(
+  messages: readonly StoredMessage[],
+  turnId: string,
+): boolean {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.type === 'turn_state' && message.turnId === turnId) {
+      return message.status !== 'running';
+    }
+  }
+  return false;
+}
+
 /**
  * Companion for the quote side panel. On the first question it FORKS the main
  * session (`branchFromTurn` from the latest SETTLED turn) into a child that
@@ -402,16 +415,20 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     });
   }, []);
 
-  const adoptOwnedTurn = useCallback((turnId: string) => {
+  const recordOwnedTurn = useCallback((turnId: string) => {
     hasContentRef.current = true;
     setHasContent(true);
-    activeTurnIdRef.current = turnId;
     ownTurnIdsRef.current.add(turnId);
     setOwnTurnTick((tick) => tick + 1);
+  }, []);
+
+  const adoptOwnedTurn = useCallback((turnId: string) => {
+    recordOwnedTurn(turnId);
+    activeTurnIdRef.current = turnId;
     setLiveTurn((current) =>
       current?.turnId === turnId ? current : armLiveTurn(turnId),
     );
-  }, []);
+  }, [recordOwnedTurn]);
 
   const projectMessageQueue = useCallback(
     (event: Extract<SessionEvent, { type: 'queue_update' }>) => {
@@ -621,6 +638,69 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     },
     [bindAdmittedTurn, releaseAdmission],
   );
+
+  const reconcileStartedFollowUpTurn = useCallback(async (
+    forkId: string,
+    turnId: string,
+    predecessorTurnId: string | null,
+  ): Promise<boolean> => {
+    // Fence the subscription before the canonical read. This does not trigger
+    // a render by itself, but it lets a terminal event arriving during the read
+    // settle the returned Turn instead of being filtered as not-yet-owned.
+    // A still-later follow-up may already have activated another Turn, though;
+    // a delayed receipt for this Turn must not replace that newer authority.
+    if (
+      activeTurnIdRef.current === null
+      || activeTurnIdRef.current === predecessorTurnId
+      || activeTurnIdRef.current === turnId
+    ) {
+      activeTurnIdRef.current = turnId;
+    }
+    const retainOrArmTurn = () => {
+      if (
+        activeTurnIdRef.current === turnId
+        && !settlingTurnIdsRef.current.has(turnId)
+      ) {
+        adoptOwnedTurn(turnId);
+      } else {
+        recordOwnedTurn(turnId);
+      }
+      return true;
+    };
+    let messages: StoredMessage[];
+    try {
+      ({ messages } = await sideChat.readSettledMessages(forkId));
+      if (!mountedRef.current || companionIdRef.current !== forkId) {
+        if (activeTurnIdRef.current === turnId) activeTurnIdRef.current = null;
+        return false;
+      }
+    } catch {
+      if (!mountedRef.current || companionIdRef.current !== forkId) {
+        if (activeTurnIdRef.current === turnId) activeTurnIdRef.current = null;
+        return false;
+      }
+      // Without canonical terminal proof, the Host's started receipt remains
+      // the best available authority and preserves the existing live path.
+      return retainOrArmTurn();
+    }
+
+    if (!transcriptRecordsTerminalTurn(messages, turnId)) {
+      return retainOrArmTurn();
+    }
+
+    // A reconnect retry can replay the original `turn_started` receipt after
+    // the Turn's text and terminal event have already passed this renderer.
+    // The recorded Turn state is authoritative: retain its durable transcript
+    // without re-arming a Run that has no future terminal event to settle it.
+    if (activeTurnIdRef.current === turnId) {
+      activeTurnIdRef.current = null;
+      stopRequestRef.current = null;
+    }
+    recordOwnedTurn(turnId);
+    setAllMessages((current) => mergeSettledMessages(current, messages));
+    setLiveTurn((current) => current?.turnId === turnId ? undefined : current);
+    return true;
+  }, [adoptOwnedTurn, mountedRef, recordOwnedTurn, sideChat]);
 
   // Subscribe to the fork's event stream + load its transcript. Called
   // synchronously the moment the fork is committed, BEFORE the run starts, so
@@ -1280,6 +1360,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       messageId: admissionId,
       events: [],
     };
+    const predecessorTurnId = activeTurnIdRef.current;
     const optimisticMessage: TransientUserMessageProjection = {
       id: admissionId,
       text: trimmed,
@@ -1310,9 +1391,11 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         } else {
           // The active Turn can settle between the local streaming check and
           // Host admission. In that race a nominal next-turn follow-up starts
-          // immediately, so adopt the Host-named Turn even if its admission
-          // event arrived before this command reply (or was missed entirely).
-          adoptOwnedTurn(outcome.turnId);
+          // immediately. Reconcile first because a reconnect can replay this
+          // receipt after the Host-named Turn has already settled.
+          if (!(await reconcileStartedFollowUpTurn(id, outcome.turnId, predecessorTurnId))) {
+            return false;
+          }
         }
       } else if (resolveAdmission(id, admission, admissionId, true)?.kind === 'retracted') {
         return false;
@@ -1342,8 +1425,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       return false;
     }
   }, [
-    adoptOwnedTurn,
     bindAdmittedTurn,
+    reconcileStartedFollowUpTurn,
     dropOptimisticUserMessage,
     mountedRef,
     releaseAdmission,
