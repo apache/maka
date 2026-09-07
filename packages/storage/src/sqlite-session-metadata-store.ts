@@ -92,17 +92,34 @@ import {
   type SessionHeaderPatch,
   type StoredMessage,
   type SubagentSessionParent,
+  type WorkHubActionClaim,
+  type WorkHubActionClaimOutcome,
+  type WorkHubActionOperation,
+  type WorkHubDelegationAssignedMessage,
+  type WorkHubDelegationSupersededMessage,
+  WORKHUB_COORDINATION_SESSION_ID,
+  WORKHUB_COORDINATION_SESSION_ROLE,
   decodeCanonicalMessage,
   decodeStoredMessage as decodePersistedStoredMessage,
 } from '@maka/core/session';
 import { markPersisted } from '@maka/core/persisted-value';
 import {
   normalizePendingMessageAdmission,
+  normalizeProvenRootMessageHandoff,
+  normalizeProvenSteeringMessageHandoff,
   samePendingMessageAdmission,
+  type MarkMessagesHandedOffInput,
+  type MessageAdmissionCancellationClaimOutcome,
   type PendingMessageAdmission,
+  type ProvenRootMessageHandoff,
+  type ProvenSteeringMessageHandoff,
 } from './message-admission-store.js';
 import { normalizeSubmittedTurnIntent } from './submitted-turn-intent.js';
-import { messageContentsEqual, normalizeMessageContent } from '@maka/core/events';
+import {
+  messageContentDigest,
+  messageContentsEqual,
+  normalizeMessageContent,
+} from '@maka/core/events';
 import {
   type AgentGraphIntentAdmissionSnapshot,
   type AgentGraphTimelineMetadataSnapshot,
@@ -125,6 +142,8 @@ import {
   type ExternalSessionImportLookupResult,
   type SessionTranscriptMessageLookupRequest,
   type SessionTranscriptPageRequest,
+  type SessionTranscriptRecordScanPage,
+  type SessionTranscriptRecordScanRequest,
   type SessionTranscriptStoragePage,
   type SessionTurnContribution,
   type SessionTurnContributionPage,
@@ -159,6 +178,9 @@ const SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE = 256;
 const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_MESSAGES = 1_024;
 const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 const SQLITE_TURN_LANDMARK_LEGACY_NEIGHBOR_MESSAGES = 32;
+// Each target Session binds three parameters in the linkage query. Stay well
+// inside SQLite's bound-parameter limit.
+const WORKHUB_TARGET_LINKAGE_MAX_SESSIONS = 256;
 
 function decodeStoredMessage(value: unknown): StoredMessage {
   return decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
@@ -208,6 +230,23 @@ export interface SqliteSessionMetadataStoreOptions {
   databaseLease?: OperationalStateDatabaseLease;
 }
 
+export interface SqliteWorkHubMessageAssignmentRequest {
+  readonly assignment: WorkHubDelegationAssignedMessage;
+  readonly admission: PendingMessageAdmission;
+  readonly projection: SessionCatalogMessageProjection;
+  readonly supersession?: WorkHubDelegationSupersededMessage;
+  readonly create?: {
+    readonly header: SessionHeader;
+    readonly requestFingerprint: string;
+  };
+}
+
+export interface SqliteWorkHubMessageAssignmentResult {
+  readonly kind: 'assigned' | 'existing';
+  readonly targetCreated: boolean;
+  readonly assignment: WorkHubDelegationAssignedMessage;
+}
+
 export interface SessionMetadataRecord {
   header: SessionHeader;
   metadataVersion: number;
@@ -249,6 +288,7 @@ interface MessageAdmissionRow {
   readonly queue_order?: unknown;
   readonly admitted_at?: unknown;
   readonly submitted_intent_json?: unknown;
+  readonly skill_invocation_json?: unknown;
 }
 
 function decodeMessageAdmissionRow(
@@ -260,6 +300,7 @@ function decodeMessageAdmissionRow(
     typeof row.run_id !== 'string' ||
     typeof row.message_id !== 'string' ||
     typeof row.content_json !== 'string' ||
+    typeof row.skill_invocation_json !== 'string' ||
     typeof row.submitted_content_digest !== 'string' ||
     (row.submitted_placement !== 'current_turn' && row.submitted_placement !== 'next_turn') ||
     (row.placement !== 'current_turn' && row.placement !== 'next_turn') ||
@@ -285,6 +326,9 @@ function decodeMessageAdmissionRow(
     ...(typeof row.submitted_intent_json === 'string'
       ? { submittedIntent: normalizeSubmittedTurnIntent(JSON.parse(row.submitted_intent_json)) }
       : {}),
+    skillInvocation: JSON.parse(
+      row.skill_invocation_json,
+    ) as PendingMessageAdmission['skillInvocation'],
     admittedAt: row.admitted_at,
   });
 }
@@ -348,6 +392,7 @@ export interface SessionConfigurationMetadataUpdate {
   readonly expectedVersion: number;
   readonly configuration: {
     readonly backend: SessionHeader['backend'];
+    readonly llmConnectionId: string;
     readonly llmConnectionSlug: string;
     readonly connectionLocked: boolean;
     readonly model: string;
@@ -642,6 +687,40 @@ export class SqliteSessionMetadataStore {
     });
   }
 
+  async hasExplicitSandboxBoundaryDenial(
+    identities: readonly { sessionId: string; runId: string; turnId: string }[],
+  ): Promise<boolean> {
+    this.assertOpen();
+    const query = this.db.prepare(`
+      SELECT
+        MAX(CASE WHEN outcome_reason = 'client_denied' THEN 1 ELSE 0 END) AS explicit,
+        MAX(CASE WHEN outcome_reason IN ('client_denied', 'turn_stopped', 'turn_terminal', 'host_restarted')
+          THEN 0 ELSE 1 END) AS ambiguous
+      FROM sandbox_boundary_log
+      WHERE session_id = ? AND run_id = ? AND turn_id = ?
+        AND entry_kind = 'expansion_request' AND status = 'denied'
+    `);
+    let denied = false;
+    for (const identity of identities) {
+      assertSafeSessionId(identity.sessionId);
+      assertSandboxBoundaryProvenanceId(identity.runId, 'run id');
+      assertSandboxBoundaryProvenanceId(identity.turnId, 'turn id');
+      const evidence = query.get(identity.sessionId, identity.runId, identity.turnId) as {
+        explicit: number | null;
+        ambiguous: number | null;
+      };
+      // Legacy NULL also meant internal cleanup. Do not invent a user decision
+      // or erase a possible denial; ambiguous provenance blocks this continuation.
+      if (evidence.ambiguous === 1) {
+        throw new Error(
+          'Historical sandbox denial cannot be attributed safely; start a new user Turn.',
+        );
+      }
+      denied ||= evidence.explicit === 1;
+    }
+    return denied;
+  }
+
   async settleSandboxBoundaryRequest(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement> {
@@ -674,7 +753,7 @@ export class SqliteSessionMetadataStore {
           sessionId: input.sessionId,
           requestId: input.requestId,
           status: 'denied',
-          ...(input.closureReason ? { outcomeReason: input.closureReason } : {}),
+          outcomeReason: input.closureReason ?? 'client_denied',
           settledAt,
         });
         return {
@@ -1575,70 +1654,325 @@ export class SqliteSessionMetadataStore {
     const stored = normalizePendingMessageAdmission(admission);
     return this.transaction(() => {
       if (!this.readRecordSync(stored.sessionId)) throw new SessionNotFoundError(stored.sessionId);
-      const existingRow = this.db
-        .prepare(
-          `
-          SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
-            submitted_placement, placement, disposition, queue_order, admitted_at,
-            submitted_intent_json
-          FROM message_admissions
-          WHERE session_id = ? AND message_id = ?
-        `,
-        )
-        .get(stored.sessionId, stored.messageId) as MessageAdmissionRow | undefined;
-      if (existingRow) {
-        const existing = decodeMessageAdmissionRow(stored.sessionId, existingRow);
+      const existing = this.readMessageAdmissionSync(stored.sessionId, stored.messageId);
+      if (existing) {
         if (!samePendingMessageAdmission(existing, stored)) {
           throw new SessionMetadataConflictError('Message admission identity conflict');
         }
         return existing;
       }
-      const cancelled = this.db
-        .prepare(
-          'SELECT 1 AS present FROM cancelled_message_admissions WHERE session_id = ? AND message_id = ?',
-        )
-        .get(stored.sessionId, stored.messageId);
-      if (cancelled) {
-        throw new SessionMetadataConflictError('Message admission identity is already cancelled');
-      }
-      const orderRow = this.db
-        .prepare(
-          `
+      this.insertMessageAdmissionSync(stored);
+      return stored;
+    });
+  }
+
+  private readMessageAdmissionSync(
+    sessionId: string,
+    messageId: string,
+  ): PendingMessageAdmission | undefined {
+    const row = this.db
+      .prepare(
+        `
+        SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
+          submitted_placement, placement, disposition, queue_order, admitted_at,
+          submitted_intent_json, skill_invocation_json
+        FROM message_admissions
+        WHERE session_id = ? AND message_id = ?
+      `,
+      )
+      .get(sessionId, messageId) as MessageAdmissionRow | undefined;
+    return row ? decodeMessageAdmissionRow(sessionId, row) : undefined;
+  }
+
+  private insertMessageAdmissionSync(stored: PendingMessageAdmission): void {
+    const cancelled = this.db
+      .prepare(
+        'SELECT 1 AS present FROM cancelled_message_admissions WHERE session_id = ? AND message_id = ?',
+      )
+      .get(stored.sessionId, stored.messageId);
+    if (cancelled) {
+      throw new SessionMetadataConflictError('Message admission identity is already cancelled');
+    }
+    const orderRow = this.db
+      .prepare(
+        `
           SELECT COALESCE(MAX(queue_order), -1) + 1 AS next_order
           FROM message_admissions
           WHERE session_id = ?
         `,
-        )
-        .get(stored.sessionId) as { next_order?: unknown };
-      if (typeof orderRow.next_order !== 'number' || !Number.isSafeInteger(orderRow.next_order)) {
-        throw new SessionMetadataConflictError('Invalid message admission order');
-      }
-      this.db
-        .prepare(
-          `
+      )
+      .get(stored.sessionId) as { next_order?: unknown };
+    if (typeof orderRow.next_order !== 'number' || !Number.isSafeInteger(orderRow.next_order)) {
+      throw new SessionMetadataConflictError('Invalid message admission order');
+    }
+    this.db
+      .prepare(
+        `
           INSERT INTO message_admissions(
             session_id, turn_id, run_id, message_id, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
-            submitted_intent_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            submitted_intent_json, skill_invocation_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
-        )
-        .run(
-          stored.sessionId,
-          stored.turnId,
-          stored.runId,
-          stored.messageId,
-          JSON.stringify(stored.content),
-          stored.submittedContentDigest,
-          stored.submittedPlacement,
-          stored.placement,
-          stored.disposition,
-          orderRow.next_order,
-          stored.admittedAt,
-          stored.submittedIntent ? JSON.stringify(stored.submittedIntent) : null,
-        );
+      )
+      .run(
+        stored.sessionId,
+        stored.turnId,
+        stored.runId,
+        stored.messageId,
+        JSON.stringify(stored.content),
+        stored.submittedContentDigest,
+        stored.submittedPlacement,
+        stored.placement,
+        stored.disposition,
+        orderRow.next_order,
+        stored.admittedAt,
+        stored.submittedIntent ? JSON.stringify(stored.submittedIntent) : null,
+        JSON.stringify(stored.skillInvocation),
+      );
+  }
 
-      return stored;
+  async assignWorkHubMessage(
+    request: SqliteWorkHubMessageAssignmentRequest,
+  ): Promise<SqliteWorkHubMessageAssignmentResult> {
+    const assignmentJson = JSON.stringify(request.assignment);
+    const assignment = decodeCanonicalMessage(JSON.parse(assignmentJson) as unknown);
+    const supersessionJson = request.supersession
+      ? JSON.stringify(request.supersession)
+      : undefined;
+    const supersession = supersessionJson
+      ? decodeCanonicalMessage(JSON.parse(supersessionJson) as unknown)
+      : undefined;
+    const admission = normalizePendingMessageAdmission(request.admission);
+    const suffix = createHash('sha256')
+      .update(request.assignment.actionId)
+      .digest('hex')
+      .slice(0, 48);
+    if (
+      assignment.type !== 'workhub_coordination' ||
+      assignment.kind !== 'delegation_assigned' ||
+      assignment.targetSessionId !== admission.sessionId ||
+      assignment.targetTurnId !== admission.turnId ||
+      assignment.targetMessageId !== admission.messageId ||
+      assignment.id !== `wha_${suffix}` ||
+      assignment.targetMessageId !== `whm_${suffix}` ||
+      assignment.delegationId !== `whd_${suffix}` ||
+      !messageContentsEqual(
+        admission.content,
+        normalizeMessageContent({ text: assignment.userText }),
+      ) ||
+      admission.submittedContentDigest !== messageContentDigest(admission.content) ||
+      admission.submittedPlacement !== 'current_turn' ||
+      admission.placement !== 'current_turn' ||
+      admission.disposition !== 'steering'
+    ) {
+      throw new SessionMetadataConflictError('Invalid WorkHub assignment identity');
+    }
+    if (
+      (assignment.replacesActionId === undefined) !==
+        (assignment.replacesDelegationId === undefined) ||
+      (assignment.replacesDelegationId === undefined) !== (supersession === undefined) ||
+      (supersession !== undefined &&
+        (supersession.type !== 'workhub_coordination' ||
+          supersession.kind !== 'delegation_superseded' ||
+          supersession.actionId !== assignment.actionId ||
+          supersession.actionFingerprint !== assignment.actionFingerprint ||
+          supersession.coordinationTurnId !== assignment.coordinationTurnId ||
+          supersession.turnId !== assignment.coordinationTurnId ||
+          supersession.supersededActionId !== assignment.replacesActionId ||
+          supersession.supersededDelegationId !== assignment.replacesDelegationId ||
+          supersession.replacementDelegationId !== assignment.delegationId ||
+          supersession.id !==
+            `whx_${createHash('sha256')
+              .update(supersession.supersededDelegationId)
+              .digest('hex')
+              .slice(0, 48)}`))
+    ) {
+      throw new SessionMetadataConflictError('Invalid WorkHub supersession identity');
+    }
+    const create = request.create
+      ? {
+          header: normalizeSessionHeader(request.create.header),
+          requestFingerprint: request.create.requestFingerprint,
+        }
+      : undefined;
+    if (create) {
+      assertSessionCreateFingerprint(create.requestFingerprint);
+      if (create.header.id !== assignment.targetSessionId) {
+        throw new SessionMetadataConflictError('WorkHub create identity does not match target');
+      }
+    }
+    assertCatalogMessageProjection(request.projection);
+    if ((assignment.disposition === 'create_new') !== Boolean(create)) {
+      throw new SessionMetadataConflictError(
+        'WorkHub create request does not match assignment disposition',
+      );
+    }
+
+    return this.transaction(() => {
+      const coordination = this.readRecordSync(WORKHUB_COORDINATION_SESSION_ID);
+      if (
+        !coordination ||
+        coordination.header.role !== WORKHUB_COORDINATION_SESSION_ROLE ||
+        coordination.header.isArchived
+      ) {
+        throw new SessionMetadataConflictError('WorkHub Coordination Session is unavailable');
+      }
+
+      const existingAssignment = this.readMessageByIdSync(
+        WORKHUB_COORDINATION_SESSION_ID,
+        assignment.id,
+      );
+      if (existingAssignment) {
+        if (
+          existingAssignment.type !== 'workhub_coordination' ||
+          existingAssignment.kind !== 'delegation_assigned' ||
+          !sameWorkHubAssignmentRequest(existingAssignment, assignment)
+        ) {
+          throw new SessionMetadataConflictError(
+            'WorkHub action identity belongs to a different assignment',
+          );
+        }
+        return {
+          kind: 'existing' as const,
+          targetCreated: false,
+          assignment: existingAssignment,
+        };
+      }
+
+      if (supersession && assignment.replacesActionId && assignment.replacesDelegationId) {
+        const replacedSuffix = createHash('sha256')
+          .update(assignment.replacesActionId)
+          .digest('hex')
+          .slice(0, 48);
+        const replaced = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `wha_${replacedSuffix}`,
+        );
+        if (
+          replaced?.type !== 'workhub_coordination' ||
+          replaced.kind !== 'delegation_assigned' ||
+          replaced.delegationId !== assignment.replacesDelegationId
+        ) {
+          throw new SessionMetadataConflictError('WorkHub supersession source is unavailable');
+        }
+        const abortSuffix = createHash('sha256')
+          .update(assignment.replacesDelegationId)
+          .digest('hex')
+          .slice(0, 48);
+        const stopRequest = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `whq_${abortSuffix}`,
+        );
+        if (stopRequest) {
+          const stopResolution = this.readMessageByIdSync(
+            WORKHUB_COORDINATION_SESSION_ID,
+            `whz_${abortSuffix}`,
+          );
+          if (
+            stopResolution?.type !== 'workhub_coordination' ||
+            stopResolution.kind !== 'delegation_stop_resolved' ||
+            stopResolution.outcome !== 'not_owned'
+          ) {
+            throw new SessionMetadataConflictError('WorkHub delegation already has a stop claim');
+          }
+        }
+        const existingAbort = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `whb_${abortSuffix}`,
+        );
+        if (existingAbort) {
+          throw new SessionMetadataConflictError('WorkHub delegation replacement is aborted');
+        }
+        const existingSupersession = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          supersession.id,
+        );
+        if (existingSupersession) {
+          throw new SessionMetadataConflictError('WorkHub delegation is already superseded');
+        }
+      }
+
+      let targetCreated = false;
+      if (create) {
+        const probe = this.probeStableSessionCreateSync(
+          create.header.id,
+          create.requestFingerprint,
+        );
+        if (probe.kind === 'conflict') {
+          throw new SessionMetadataConflictError(
+            'WorkHub target Session identity belongs to a different create request',
+          );
+        }
+        if (probe.kind === 'absent') {
+          const committedAt = this.now();
+          this.db
+            .prepare(
+              `
+              INSERT INTO session_create_claims(session_id, request_fingerprint, claimed_at)
+              VALUES (?, ?, ?)
+            `,
+            )
+            .run(create.header.id, create.requestFingerprint, committedAt);
+          this.insertHeader(create.header, 1, committedAt);
+          targetCreated = true;
+        }
+      }
+
+      const target = this.readRecordSync(assignment.targetSessionId);
+      if (!target || target.header.isArchived) {
+        throw new SessionMetadataConflictError('WorkHub target Session is unavailable');
+      }
+      if (target.header.status === 'waiting_for_user') {
+        throw new SessionMetadataConflictError('WorkHub target Session is waiting for user input');
+      }
+      let committedAssignment = assignment;
+      let committedAssignmentJson = assignmentJson;
+      if (target.header.name !== assignment.targetSessionName) {
+        if (
+          assignment.disposition !== 'delegate_existing' ||
+          assignment.replacesDelegationId === undefined
+        ) {
+          throw new SessionMetadataConflictError('WorkHub target display identity changed');
+        }
+        // A durable replacement owns the target Session id before retiring the
+        // source. Canonicalize its display-only name at the same transaction
+        // boundary that validates the target so a concurrent rename cannot
+        // strand the already-retired delegation.
+        committedAssignment = { ...assignment, targetSessionName: target.header.name };
+        committedAssignmentJson = JSON.stringify(committedAssignment);
+      }
+      if (this.readMessageAdmissionSync(admission.sessionId, admission.messageId)) {
+        throw new SessionMetadataConflictError(
+          'WorkHub target Message identity belongs to another admission',
+        );
+      }
+
+      this.insertMessageAdmissionSync(admission);
+      const sequenceRow = this.db
+        .prepare(
+          'SELECT COALESCE(MAX(sequence), -1) AS last_sequence FROM session_messages WHERE session_id = ?',
+        )
+        .get(WORKHUB_COORDINATION_SESSION_ID) as { last_sequence?: unknown };
+      if (
+        typeof sequenceRow.last_sequence !== 'number' ||
+        !Number.isSafeInteger(sequenceRow.last_sequence) ||
+        sequenceRow.last_sequence < -1
+      ) {
+        throw new SessionMetadataConflictError('Invalid WorkHub transcript sequence');
+      }
+      this.insertSessionMessagesSync(
+        WORKHUB_COORDINATION_SESSION_ID,
+        sequenceRow.last_sequence + 1,
+        [
+          { message: committedAssignment, json: committedAssignmentJson },
+          ...(supersession && supersessionJson
+            ? [{ message: supersession, json: supersessionJson }]
+            : []),
+        ],
+      );
+      this.updateCatalogProjectionSync(WORKHUB_COORDINATION_SESSION_ID, request.projection, false);
+      return { kind: 'assigned' as const, targetCreated, assignment: committedAssignment };
     });
   }
 
@@ -1655,7 +1989,7 @@ export class SqliteSessionMetadataStore {
           `
           SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
-            submitted_intent_json
+            submitted_intent_json, skill_invocation_json
           FROM message_admissions
           WHERE session_id = ? AND message_id = ?
         `,
@@ -1679,6 +2013,137 @@ export class SqliteSessionMetadataStore {
     });
   }
 
+  /**
+   * Binds one WorkHub action identity to one exact operation, for good.
+   *
+   * Every other durable WorkHub record is keyed by what it is about, so none of
+   * them can see an action id that moved to a second delegation or a second
+   * disposition. This row is the global owner that rejects both, and it is
+   * written before the action's effect so a rejected or recovering attempt can
+   * never leak its identity into a different operation.
+   */
+  async claimWorkHubAction(claim: WorkHubActionClaim): Promise<WorkHubActionClaimOutcome> {
+    this.assertOpen();
+    assertSafeSessionId(claim.actionId);
+    assertSafeSessionId(claim.subject);
+    if (!/^sha256:[a-f0-9]{64}$/u.test(claim.actionFingerprint)) {
+      throw new SessionMetadataConflictError('Invalid WorkHub action fingerprint');
+    }
+    return this.transaction(() => {
+      const existing = this.readWorkHubActionClaimSync(claim.actionId);
+      if (existing) {
+        return existing.operation === claim.operation &&
+          existing.actionFingerprint === claim.actionFingerprint &&
+          existing.subject === claim.subject
+          ? 'same_claim'
+          : 'conflict';
+      }
+      this.db
+        .prepare(
+          `
+          INSERT INTO workhub_action_claims(
+            action_id, operation, action_fingerprint, subject, claimed_at
+          ) VALUES (?, ?, ?, ?, ?)
+        `,
+        )
+        .run(claim.actionId, claim.operation, claim.actionFingerprint, claim.subject, this.now());
+      return 'claimed';
+    });
+  }
+
+  async readWorkHubActionClaim(actionId: string): Promise<WorkHubActionClaim | undefined> {
+    this.assertOpen();
+    assertSafeSessionId(actionId);
+    return this.readTransaction(() => this.readWorkHubActionClaimSync(actionId));
+  }
+
+  private readWorkHubActionClaimSync(actionId: string): WorkHubActionClaim | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT operation, action_fingerprint, subject FROM workhub_action_claims WHERE action_id = ?',
+      )
+      .get(actionId) as
+      | { operation?: unknown; action_fingerprint?: unknown; subject?: unknown }
+      | undefined;
+    if (!row) return undefined;
+    if (
+      !isWorkHubActionOperation(row.operation) ||
+      typeof row.action_fingerprint !== 'string' ||
+      !/^sha256:[a-f0-9]{64}$/u.test(row.action_fingerprint) ||
+      typeof row.subject !== 'string'
+    ) {
+      throw new SessionMetadataConflictError('Invalid WorkHub action claim row');
+    }
+    return {
+      actionId,
+      operation: row.operation,
+      actionFingerprint: row.action_fingerprint as `sha256:${string}`,
+      subject: row.subject,
+    };
+  }
+
+  async claimMessageAdmissionCancellation(
+    sessionId: string,
+    messageId: string,
+    claimId: string,
+  ): Promise<MessageAdmissionCancellationClaimOutcome> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSafeSessionId(messageId);
+    assertSafeSessionId(claimId);
+    return this.transaction(() => {
+      const cancelled = this.db
+        .prepare(
+          'SELECT cancellation_claim_id FROM cancelled_message_admissions WHERE session_id = ? AND message_id = ?',
+        )
+        .get(sessionId, messageId) as { cancellation_claim_id?: unknown } | undefined;
+      if (cancelled) {
+        return cancelled.cancellation_claim_id === claimId ? 'same_claim' : 'already_cancelled';
+      }
+      const admission = this.db
+        .prepare(
+          `
+          SELECT submitted_content_digest, submitted_placement
+          FROM message_admissions
+          WHERE session_id = ? AND message_id = ?
+        `,
+        )
+        .get(sessionId, messageId) as
+        | { submitted_content_digest?: unknown; submitted_placement?: unknown }
+        | undefined;
+      if (
+        typeof admission?.submitted_content_digest !== 'string' ||
+        (admission.submitted_placement !== 'current_turn' &&
+          admission.submitted_placement !== 'next_turn')
+      ) {
+        throw new SessionMetadataConflictError('Message admission cancellation identity conflict');
+      }
+      this.db
+        .prepare(
+          `
+          INSERT INTO cancelled_message_admissions(
+            session_id, message_id, submitted_content_digest, submitted_placement,
+            cancellation_claim_id
+          ) VALUES (?, ?, ?, ?, ?)
+        `,
+        )
+        .run(
+          sessionId,
+          messageId,
+          admission.submitted_content_digest,
+          admission.submitted_placement,
+          claimId,
+        );
+      const deleted = this.db
+        .prepare('DELETE FROM message_admissions WHERE session_id = ? AND message_id = ?')
+        .run(sessionId, messageId);
+      if (deleted.changes !== 1) {
+        throw new SessionMetadataConflictError('Message admission cancellation identity conflict');
+      }
+      return 'cancelled_by_claim';
+    });
+  }
+
   async listMessageAdmissions(sessionId: string): Promise<readonly PendingMessageAdmission[]> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
@@ -1688,7 +2153,7 @@ export class SqliteSessionMetadataStore {
           `
           SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
-            submitted_intent_json
+            submitted_intent_json, skill_invocation_json
           FROM message_admissions
           WHERE session_id = ?
           ORDER BY queue_order, sequence
@@ -1699,16 +2164,181 @@ export class SqliteSessionMetadataStore {
     });
   }
 
-  async markMessagesHandedOff(input: {
-    sessionId: string;
-    messageIds: readonly string[];
-    turnId: string;
-  }): Promise<void> {
+  async readActiveWorkHubAssignmentsByTarget(
+    targetSessionIds: readonly string[],
+    maxAssignmentsPerTarget?: number,
+  ): Promise<readonly WorkHubDelegationAssignedMessage[]> {
+    this.assertOpen();
+    for (const sessionId of targetSessionIds) assertSafeSessionId(sessionId);
+    if (targetSessionIds.length > WORKHUB_TARGET_LINKAGE_MAX_SESSIONS) {
+      throw new Error('Invalid WorkHub target Session count');
+    }
+    if (
+      maxAssignmentsPerTarget !== undefined &&
+      (!Number.isSafeInteger(maxAssignmentsPerTarget) ||
+        maxAssignmentsPerTarget < 1 ||
+        maxAssignmentsPerTarget > 256)
+    ) {
+      throw new Error('Invalid WorkHub target Message limit');
+    }
+    const targets = [...new Set(targetSessionIds)];
+    if (targets.length === 0) return [];
+    return this.readTransaction(() => {
+      type Row = { session_id?: unknown; message_id?: unknown };
+      const list = targets.map(() => '?').join(', ');
+      // One Message moves between these lifecycle tables. Combine every target's
+      // identities once, then resolve activity from the canonical Coordination
+      // ledger in this same read transaction. That avoids rebuilding the target
+      // set once per page or once per candidate, without introducing another
+      // durable representation.
+      const rows = this.db
+        .prepare(
+          `
+          WITH target_messages(session_id, message_id) AS (
+            SELECT session_id, message_id
+            FROM message_admissions
+            WHERE session_id IN (${list})
+              AND message_id GLOB 'whm_*'
+              AND length(message_id) = 52
+            UNION
+            SELECT session_id, message_id
+            FROM session_messages
+            WHERE session_id IN (${list})
+              AND message_id GLOB 'whm_*'
+              AND length(message_id) = 52
+            UNION
+            SELECT session_id, message_id
+            FROM cancelled_message_admissions
+            WHERE session_id IN (${list})
+              AND message_id GLOB 'whm_*'
+              AND length(message_id) = 52
+          )
+          SELECT target.session_id, target.message_id
+          FROM target_messages AS target
+          CROSS JOIN session_messages AS assignment INDEXED BY session_messages_by_identity
+          WHERE assignment.session_id = ?
+            AND assignment.message_id = 'wha_' || substr(target.message_id, 5)
+          ORDER BY assignment.sequence DESC
+        `,
+        )
+        .iterate(
+          ...targets,
+          ...targets,
+          ...targets,
+          WORKHUB_COORDINATION_SESSION_ID,
+        ) as Iterable<Row>;
+      const assignments: WorkHubDelegationAssignedMessage[] = [];
+      const acceptedPerTarget = new Map<string, number>();
+      for (const row of rows) {
+        if (typeof row.message_id !== 'string' || typeof row.session_id !== 'string') {
+          throw new SessionMetadataConflictError('Invalid WorkHub target Message identity');
+        }
+        const targetSessionId = row.session_id;
+        if (
+          maxAssignmentsPerTarget !== undefined &&
+          (acceptedPerTarget.get(targetSessionId) ?? 0) >= maxAssignmentsPerTarget
+        ) {
+          continue;
+        }
+        const assignment = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `wha_${row.message_id.slice('whm_'.length)}`,
+        );
+        if (
+          assignment?.type !== 'workhub_coordination' ||
+          assignment.kind !== 'delegation_assigned' ||
+          assignment.targetSessionId !== targetSessionId ||
+          assignment.targetMessageId !== row.message_id
+        ) {
+          continue;
+        }
+        const terminalSuffix = createHash('sha256')
+          .update(assignment.delegationId, 'utf8')
+          .digest('hex')
+          .slice(0, 48);
+        const supersession = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `whx_${terminalSuffix}`,
+        );
+        if (
+          supersession?.type === 'workhub_coordination' &&
+          supersession.kind === 'delegation_superseded'
+        ) {
+          continue;
+        }
+        const replacementAbort = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `whb_${terminalSuffix}`,
+        );
+        if (
+          replacementAbort?.type === 'workhub_coordination' &&
+          replacementAbort.kind === 'delegation_replacement_aborted'
+        ) {
+          continue;
+        }
+        const stopResolution = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `whz_${terminalSuffix}`,
+        );
+        if (
+          stopResolution?.type === 'workhub_coordination' &&
+          stopResolution.kind === 'delegation_stop_resolved' &&
+          stopResolution.outcome !== 'not_owned'
+        ) {
+          continue;
+        }
+        assignments.push(assignment);
+        acceptedPerTarget.set(targetSessionId, (acceptedPerTarget.get(targetSessionId) ?? 0) + 1);
+      }
+      return assignments;
+    });
+  }
+
+  async readMessageById(sessionId: string, messageId: string): Promise<StoredMessage | undefined> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSafeSessionId(messageId);
+    return this.readTransaction(() => this.readMessageByIdSync(sessionId, messageId));
+  }
+
+  async markMessagesHandedOff(input: MarkMessagesHandedOffInput): Promise<void> {
     this.assertOpen();
     assertSafeSessionId(input.sessionId);
     assertSafeSessionId(input.turnId);
     const unique = [...new Set(input.messageIds)];
     for (const messageId of unique) assertSafeSessionId(messageId);
+    const requestedMessageIds = new Set(unique);
+    const provenRootMessages = new Map<string, ProvenRootMessageHandoff>();
+    for (const fallback of input.provenRootMessages ?? []) {
+      const normalized = normalizeProvenRootMessageHandoff(fallback);
+      if (!requestedMessageIds.has(normalized.messageId)) {
+        throw new SessionMetadataConflictError(
+          'Proven Root Message identity is not present in messageIds',
+        );
+      }
+      if (provenRootMessages.has(normalized.messageId)) {
+        throw new SessionMetadataConflictError('Proven Root Messages contain duplicate identities');
+      }
+      provenRootMessages.set(normalized.messageId, normalized);
+    }
+    const provenSteeringMessages = new Map<string, ProvenSteeringMessageHandoff>();
+    for (const proof of input.provenSteeringMessages ?? []) {
+      const normalized = normalizeProvenSteeringMessageHandoff(proof);
+      if (!requestedMessageIds.has(normalized.messageId)) {
+        throw new SessionMetadataConflictError(
+          'Proven steering Message identity is not present in messageIds',
+        );
+      }
+      if (provenSteeringMessages.has(normalized.messageId)) {
+        throw new SessionMetadataConflictError(
+          'Proven steering Messages contain duplicate identities',
+        );
+      }
+      if (normalized.executionTurnId !== input.turnId) {
+        throw new SessionMetadataConflictError('Proven steering execution Turn conflict');
+      }
+      provenSteeringMessages.set(normalized.messageId, normalized);
+    }
     this.transaction(() => {
       const lastSequenceRow = this.db
         .prepare(
@@ -1717,19 +2347,31 @@ export class SqliteSessionMetadataStore {
         .get(input.sessionId) as { last_sequence?: unknown };
       if (
         typeof lastSequenceRow.last_sequence !== 'number' ||
-        !Number.isSafeInteger(lastSequenceRow.last_sequence)
+        !Number.isSafeInteger(lastSequenceRow.last_sequence) ||
+        lastSequenceRow.last_sequence < -1
       ) {
         throw new SessionMetadataConflictError('Invalid Session message sequence');
       }
-      let nextSequence = lastSequenceRow.last_sequence + 1;
-      const materialized: StoredMessage[] = [];
+      const lastSequence = lastSequenceRow.last_sequence;
+      const historicalMissingMessages = new Map<
+        string,
+        { readonly message: StoredMessage; readonly json: string }
+      >();
+      const ordinaryMissingMessages = new Map<
+        string,
+        { readonly message: StoredMessage; readonly json: string }
+      >();
+      const historicalMessageIdSet = new Set<string>();
+      const existingSequences = new Map<string, number>();
       for (const messageId of unique) {
+        const fallback = provenRootMessages.get(messageId);
+        const steeringProof = provenSteeringMessages.get(messageId);
         const admissionRow = this.db
           .prepare(
             `
             SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
               submitted_placement, placement, disposition, queue_order, admitted_at,
-            submitted_intent_json
+            submitted_intent_json, skill_invocation_json
             FROM message_admissions
             WHERE session_id = ? AND message_id = ?
           `,
@@ -1738,6 +2380,35 @@ export class SqliteSessionMetadataStore {
         const admission = admissionRow
           ? decodeMessageAdmissionRow(input.sessionId, admissionRow)
           : undefined;
+        const provenCrossTurnSteering =
+          admission !== undefined &&
+          steeringProof !== undefined &&
+          admission.disposition === 'steering' &&
+          admission.turnId === steeringProof.admissionTurnId &&
+          admission.runId === steeringProof.admissionRunId &&
+          admission.admittedAt === steeringProof.admittedAt &&
+          messageContentsEqual(admission.content, steeringProof.content);
+        if (admission !== undefined && steeringProof !== undefined && !provenCrossTurnSteering) {
+          throw new SessionMetadataConflictError('Proven steering admission identity conflict');
+        }
+        if (
+          admission !== undefined &&
+          admission.turnId !== input.turnId &&
+          admission.disposition !== 'followup' &&
+          !provenCrossTurnSteering
+        ) {
+          throw new SessionMetadataConflictError('Message admission Turn conflict');
+        }
+        if (
+          admission !== undefined &&
+          fallback !== undefined &&
+          !messageContentsEqual(admission.content, fallback.content)
+        ) {
+          throw new SessionMetadataConflictError('Message admission fallback content conflict');
+        }
+        if (admission === undefined && fallback !== undefined) {
+          historicalMessageIdSet.add(messageId);
+        }
         if (
           !admission &&
           this.db
@@ -1770,20 +2441,21 @@ export class SqliteSessionMetadataStore {
           );
         }
         if (rows.length === 0) {
-          if (!admission)
-            throw new SessionMetadataConflictError('Message admission does not exist');
+          const source = admission ?? fallback;
+          if (!source) throw new SessionMetadataConflictError('Message admission does not exist');
           const message = decodeCanonicalMessage({
             type: 'user',
             id: messageId,
             turnId: input.turnId,
-            ts: admission.admittedAt,
-            ...admission.content,
-            steeringEventId: messageId,
+            ts: steeringProof?.eventTs ?? source.admittedAt,
+            ...source.content,
+            steeringEventId: steeringProof?.eventId ?? messageId,
           });
           const json = JSON.stringify(message);
-          this.insertSessionMessagesSync(input.sessionId, nextSequence, [{ message, json }]);
-          nextSequence += 1;
-          materialized.push(message);
+          (historicalMessageIdSet.has(messageId)
+            ? historicalMissingMessages
+            : ordinaryMissingMessages
+          ).set(messageId, { message, json });
         } else {
           const sequence = rows[0]?.sequence;
           if (typeof sequence !== 'number' || !Number.isSafeInteger(sequence)) {
@@ -1792,11 +2464,12 @@ export class SqliteSessionMetadataStore {
           const row = rows[0]!;
           const recordJson = readStoredMessageRecordJson(this.db, input.sessionId, sequence, row);
           const message = decodeStoredMessage(JSON.parse(recordJson) as unknown);
+          const expectedSource = admission ?? fallback ?? steeringProof;
           if (
             message.type !== 'user' ||
             message.id !== messageId ||
-            (admission !== undefined &&
-              !messageContentsEqual(normalizeMessageContent(message), admission.content))
+            (expectedSource !== undefined &&
+              !messageContentsEqual(normalizeMessageContent(message), expectedSource.content))
           ) {
             throw new SessionMetadataConflictError(
               'Message admission transcript identity conflict',
@@ -1805,6 +2478,15 @@ export class SqliteSessionMetadataStore {
           if (message.turnId !== input.turnId) {
             throw new SessionMetadataConflictError('Message admission transcript Turn conflict');
           }
+          if (
+            steeringProof !== undefined &&
+            (message.ts !== steeringProof.eventTs ||
+              message.turnId !== steeringProof.executionTurnId ||
+              message.steeringEventId !== steeringProof.eventId)
+          ) {
+            throw new SessionMetadataConflictError('Proven steering transcript identity conflict');
+          }
+          existingSequences.set(messageId, sequence);
         }
         if (admission) {
           const deleted = this.db
@@ -1815,17 +2497,119 @@ export class SqliteSessionMetadataStore {
           }
         }
       }
-      const latest = materialized.at(-1);
-      if (latest?.type === 'user') {
+      let tailLatest: StoredMessage | undefined;
+      if (historicalMessageIdSet.size > 0) {
+        const transcript = this.readSessionMessageOrderingSync(input.sessionId);
+        let previousExistingSequence = -1;
+        const historicalMessageIds = unique.filter((messageId) =>
+          historicalMessageIdSet.has(messageId),
+        );
+        for (const messageId of historicalMessageIds) {
+          const sequence = existingSequences.get(messageId);
+          if (sequence === undefined) continue;
+          const admittedAt = provenRootMessages.get(messageId)!.admittedAt;
+          const blockingRow = transcript.find(
+            ({ sequence: candidateSequence, message }) =>
+              candidateSequence > previousExistingSequence &&
+              candidateSequence < sequence &&
+              !historicalMessageIdSet.has(message.id) &&
+              (message.turnId === input.turnId || message.ts >= admittedAt),
+          );
+          if (sequence <= previousExistingSequence || blockingRow !== undefined) {
+            throw new SessionMetadataConflictError(
+              'Message admission transcript source order conflict',
+            );
+          }
+          previousExistingSequence = sequence;
+        }
+
+        const insertionGroups: Array<{
+          readonly boundary: number;
+          readonly entries: Array<{ readonly message: StoredMessage; readonly json: string }>;
+        }> = [];
+        let pending: Array<{ readonly message: StoredMessage; readonly json: string }> = [];
+        let previousAnchor = -1;
+        for (const messageId of historicalMessageIds) {
+          const missing = historicalMissingMessages.get(messageId);
+          if (missing) {
+            pending.push(missing);
+            continue;
+          }
+          const boundary = existingSequences.get(messageId);
+          if (pending.length > 0 && boundary !== undefined) {
+            const admittedAt = Math.min(...pending.map(({ message }) => message.ts));
+            const earlierBoundary = transcript.find(
+              ({ sequence, message }) =>
+                sequence > previousAnchor &&
+                sequence < boundary &&
+                !historicalMessageIdSet.has(message.id) &&
+                (message.turnId === input.turnId || message.ts >= admittedAt),
+            );
+            if (earlierBoundary) {
+              throw new SessionMetadataConflictError(
+                'Message admission transcript source order conflict',
+              );
+            }
+            insertionGroups.push({ boundary, entries: pending });
+            pending = [];
+          }
+          if (boundary !== undefined) previousAnchor = boundary;
+        }
+        if (pending.length > 0) {
+          const admittedAt = Math.min(...pending.map(({ message }) => message.ts));
+          const repairBoundary = transcript.find(
+            ({ sequence, message }) =>
+              sequence > previousAnchor &&
+              !historicalMessageIdSet.has(message.id) &&
+              (message.turnId === input.turnId || message.ts >= admittedAt),
+          )?.sequence;
+          insertionGroups.push({
+            boundary: repairBoundary ?? lastSequence + 1,
+            entries: pending,
+          });
+        }
+
+        for (const group of insertionGroups.reverse()) {
+          this.shiftSessionMessageSuffixSync(input.sessionId, group.boundary, group.entries.length);
+          this.insertSessionMessagesSync(input.sessionId, group.boundary, group.entries);
+          if (group.boundary === lastSequence + 1) {
+            tailLatest = group.entries.at(-1)?.message;
+          }
+        }
+      }
+      if (ordinaryMissingMessages.size > 0) {
+        const ordinaryEntries = unique.flatMap((messageId) => {
+          const entry = ordinaryMissingMessages.get(messageId);
+          return entry ? [entry] : [];
+        });
+        const currentLastSequenceRow = this.db
+          .prepare(
+            'SELECT COALESCE(MAX(sequence), -1) AS last_sequence FROM session_messages WHERE session_id = ?',
+          )
+          .get(input.sessionId) as { last_sequence?: unknown };
+        const currentLastSequence = currentLastSequenceRow.last_sequence;
+        if (
+          typeof currentLastSequence !== 'number' ||
+          !Number.isSafeInteger(currentLastSequence) ||
+          currentLastSequence < -1
+        ) {
+          throw new SessionMetadataConflictError('Invalid Session message sequence');
+        }
+        this.insertSessionMessagesSync(input.sessionId, currentLastSequence + 1, ordinaryEntries);
+        tailLatest = ordinaryEntries.at(-1)?.message;
+      }
+      if (tailLatest?.type === 'user') {
         this.updateCatalogProjectionSync(
           input.sessionId,
           {
-            lastMessageAt: latest.ts,
-            lastMessagePreview: catalogPreviewForUserMessage(latest),
+            lastMessageAt: tailLatest.ts,
+            lastMessagePreview: catalogPreviewForUserMessage(tailLatest),
           },
           false,
           true,
         );
+      } else if (historicalMissingMessages.size > 0 || ordinaryMissingMessages.size > 0) {
+        this.updateCatalogProjectionSync(input.sessionId, {}, false, true);
       }
     });
   }
@@ -1839,7 +2623,7 @@ export class SqliteSessionMetadataStore {
           `
           SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
-            submitted_intent_json
+            submitted_intent_json, skill_invocation_json
           FROM message_admissions
           WHERE session_id = ? AND message_id = ?
         `,
@@ -1859,7 +2643,8 @@ export class SqliteSessionMetadataStore {
         .prepare(
           `
           UPDATE message_admissions
-          SET content_json = ?, submitted_content_digest = ?, placement = ?, disposition = ?
+          SET content_json = ?, submitted_content_digest = ?, placement = ?, disposition = ?,
+            skill_invocation_json = ?
           WHERE session_id = ? AND message_id = ?
         `,
         )
@@ -1868,6 +2653,7 @@ export class SqliteSessionMetadataStore {
           stored.submittedContentDigest,
           stored.placement,
           stored.disposition,
+          JSON.stringify(stored.skillInvocation),
           stored.sessionId,
           stored.messageId,
         );
@@ -2210,6 +2996,86 @@ export class SqliteSessionMetadataStore {
         }
       }
       return messages;
+    });
+  }
+
+  async readTranscriptRecords(
+    sessionId: string,
+    request: SessionTranscriptRecordScanRequest,
+  ): Promise<SessionTranscriptRecordScanPage> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertTranscriptRecordScanRequest(request);
+    return this.readTransaction(() => {
+      if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+      const highWaterRow = this.db
+        .prepare('SELECT MAX(sequence) AS high_water FROM session_messages WHERE session_id = ?')
+        .get(sessionId) as { high_water?: unknown };
+      const actualHighWater = nullableStoredMessageSequence(highWaterRow.high_water, sessionId);
+      const throughSequence =
+        request.throughSequence === undefined ? actualHighWater : request.throughSequence;
+      if (throughSequence === null) {
+        return { throughSequence: null, records: [], nextPosition: null };
+      }
+      if (actualHighWater === null || throughSequence > actualHighWater) {
+        throw new Error(`Session transcript watermark is ahead of durable storage: ${sessionId}`);
+      }
+      const position = request.position ?? (request.direction === 'older' ? throughSequence : 0);
+      const comparison = request.direction === 'older' ? '<=' : '>=';
+      const order = request.direction === 'older' ? 'DESC' : 'ASC';
+      const rows = this.db
+        .prepare(
+          `
+          SELECT message.sequence,
+            coalesce(payload.record_bytes, length(CAST(message.record_json AS BLOB))) AS stored_bytes
+          FROM session_messages AS message
+          LEFT JOIN session_message_payloads AS payload
+            ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+          WHERE message.session_id = ?
+            AND message.sequence <= ?
+            AND message.sequence ${comparison} ?
+          ORDER BY message.sequence ${order}
+          LIMIT ?
+        `,
+        )
+        .all(sessionId, throughSequence, position, request.maxMessages + 1) as Array<{
+        sequence?: unknown;
+        stored_bytes?: unknown;
+      }>;
+      const selected: number[] = [];
+      let storedBytes = 0;
+      for (const row of rows) {
+        if (selected.length >= request.maxMessages) break;
+        const sequence = requireStoredMessageSequence(row.sequence, sessionId);
+        const bytes = requireTranscriptRecordByteLength(row.stored_bytes, sessionId, sequence);
+        if (selected.length > 0 && storedBytes + bytes > request.maxStoredBytes) break;
+        selected.push(sequence);
+        storedBytes += bytes;
+      }
+      const decoded = new Map<number, StoredMessage>();
+      for (const row of readStoredMessageRows(this.db, sessionId, selected)) {
+        try {
+          decoded.set(row.sequence, decodeStoredMessage(JSON.parse(row.recordJson) as unknown));
+        } catch (error) {
+          throw new StoredSessionMessageIncompatibleError(sessionId, row.sequence, {
+            cause: error,
+          });
+        }
+      }
+      const records = selected.map((sequence) => {
+        const message = decoded.get(sequence);
+        if (!message) throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+        return { sequence, message };
+      });
+      const last = selected.at(-1);
+      return {
+        throughSequence,
+        records,
+        nextPosition:
+          last !== undefined && rows.length > selected.length
+            ? last + (request.direction === 'older' ? -1 : 1)
+            : null,
+      };
     });
   }
 
@@ -4634,6 +5500,99 @@ export class SqliteSessionMetadataStore {
     return row ? decodeRecord(row) : undefined;
   }
 
+  private readMessageByIdSync(sessionId: string, messageId: string): StoredMessage | undefined {
+    const row = this.db
+      .prepare(
+        `
+        SELECT message.sequence, message.record_json, payload.record_bytes, payload.sha256
+        FROM session_messages AS message
+        LEFT JOIN session_message_payloads AS payload
+          ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+        WHERE message.session_id = ? AND message.message_id = ?
+      `,
+      )
+      .get(sessionId, messageId) as StoredSessionMessagePayloadRow | undefined;
+    return row ? decodeStoredMessageRecordRow(this.db, sessionId, row) : undefined;
+  }
+
+  private readSessionMessageOrderingSync(
+    sessionId: string,
+  ): Array<{ readonly sequence: number; readonly message: StoredMessage }> {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT message.sequence, message.record_json, payload.record_bytes, payload.sha256
+        FROM session_messages AS message
+        LEFT JOIN session_message_payloads AS payload
+          ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+        WHERE message.session_id = ?
+        ORDER BY message.sequence
+      `,
+      )
+      .all(sessionId) as StoredSessionMessagePayloadRow[];
+    return rows.map((row) => {
+      const sequence = requireStoredMessageSequence(row.sequence, sessionId);
+      const recordJson = readStoredMessageRecordJson(this.db, sessionId, sequence, row);
+      return {
+        sequence,
+        message: decodeStoredMessage(JSON.parse(recordJson) as unknown),
+      };
+    });
+  }
+
+  private shiftSessionMessageSuffixSync(
+    sessionId: string,
+    firstSequence: number,
+    amount: number,
+  ): void {
+    if (!Number.isSafeInteger(firstSequence) || firstSequence < 0) {
+      throw new SessionMetadataConflictError('Invalid transcript insertion sequence');
+    }
+    if (!Number.isSafeInteger(amount) || amount < 1) {
+      throw new SessionMetadataConflictError('Invalid transcript insertion size');
+    }
+    const sequences = (
+      this.db
+        .prepare(
+          `
+          SELECT sequence
+          FROM session_messages
+          WHERE session_id = ? AND sequence >= ?
+          ORDER BY sequence DESC
+        `,
+        )
+        .all(sessionId, firstSequence) as Array<{ sequence?: unknown }>
+    ).map((row) => requireStoredMessageSequence(row.sequence, sessionId));
+    const highest = sequences[0];
+    if (highest !== undefined && highest > Number.MAX_SAFE_INTEGER - amount) {
+      throw new SessionMetadataConflictError('Session message sequence overflow');
+    }
+    if (sequences.length === 0) return;
+
+    this.db.exec('PRAGMA defer_foreign_keys = ON');
+    const moveChunks = this.db.prepare(
+      'UPDATE session_message_chunks SET sequence = ? WHERE session_id = ? AND sequence = ?',
+    );
+    const movePayload = this.db.prepare(
+      'UPDATE session_message_payloads SET sequence = ? WHERE session_id = ? AND sequence = ?',
+    );
+    const moveMessage = this.db.prepare(
+      'UPDATE session_messages SET sequence = ? WHERE session_id = ? AND sequence = ?',
+    );
+    for (const sequence of sequences) {
+      const shifted = sequence + amount;
+      moveChunks.run(shifted, sessionId, sequence);
+      const payload = movePayload.run(shifted, sessionId, sequence);
+      if (payload.changes !== 0 && payload.changes !== 1) {
+        throw new SessionMetadataConflictError('Message payload sequence is ambiguous');
+      }
+      const message = moveMessage.run(shifted, sessionId, sequence);
+      if (message.changes !== 1) {
+        throw new SessionMetadataConflictError('Message transcript sequence changed during repair');
+      }
+    }
+  }
+
   private insertSessionMessagesSync(
     sessionId: string,
     firstSequence: number,
@@ -4642,6 +5601,13 @@ export class SqliteSessionMetadataStore {
       readonly json: string;
     }[],
   ): void {
+    if (
+      !Number.isSafeInteger(firstSequence) ||
+      firstSequence < 0 ||
+      entries.length > Number.MAX_SAFE_INTEGER - firstSequence + 1
+    ) {
+      throw new SessionMetadataConflictError('Session message sequence overflow');
+    }
     const insertMessage = this.db.prepare(`
       INSERT INTO session_messages(
         session_id, sequence, message_id, message_type, message_ts, record_json
@@ -6260,6 +7226,47 @@ function readStoredMessageRecordJson(
   return recordJson;
 }
 
+function isWorkHubActionOperation(value: unknown): value is WorkHubActionOperation {
+  return (
+    value === 'answer_here' ||
+    value === 'clarify' ||
+    value === 'delegate_existing' ||
+    value === 'create_new' ||
+    value === 'replace' ||
+    value === 'stop'
+  );
+}
+
+function sameWorkHubAssignmentRequest(
+  existing: WorkHubDelegationAssignedMessage,
+  requested: WorkHubDelegationAssignedMessage,
+): boolean {
+  return isDeepStrictEqual(
+    {
+      actionId: existing.actionId,
+      actionFingerprint: existing.actionFingerprint,
+      coordinationTurnId: existing.coordinationTurnId,
+      targetSessionId: existing.targetSessionId,
+      disposition: existing.disposition,
+      userText: existing.userText,
+      create: existing.create,
+      replacesActionId: existing.replacesActionId,
+      replacesDelegationId: existing.replacesDelegationId,
+    },
+    {
+      actionId: requested.actionId,
+      actionFingerprint: requested.actionFingerprint,
+      coordinationTurnId: requested.coordinationTurnId,
+      targetSessionId: requested.targetSessionId,
+      disposition: requested.disposition,
+      userText: requested.userText,
+      create: requested.create,
+      replacesActionId: requested.replacesActionId,
+      replacesDelegationId: requested.replacesDelegationId,
+    },
+  );
+}
+
 function foldTurnContribution(
   current: SessionTurnContribution | undefined,
   turnId: string,
@@ -6581,5 +7588,38 @@ function assertTranscriptPageRequest(request: SessionTranscriptPageRequest): voi
     request.maxMessages > 256
   ) {
     throw new Error('Session transcript page message limit must be between 1 and 256');
+  }
+}
+
+function assertTranscriptRecordScanRequest(request: SessionTranscriptRecordScanRequest): void {
+  if (request.direction !== 'older' && request.direction !== 'newer') {
+    throw new Error('Invalid Session transcript record direction');
+  }
+  if (
+    request.throughSequence !== undefined &&
+    request.throughSequence !== null &&
+    (!Number.isSafeInteger(request.throughSequence) || request.throughSequence < 0)
+  ) {
+    throw new Error('Invalid Session transcript watermark');
+  }
+  if (
+    request.position !== undefined &&
+    (!Number.isSafeInteger(request.position) || request.position < 0)
+  ) {
+    throw new Error('Invalid Session transcript position');
+  }
+  if (
+    !Number.isSafeInteger(request.maxStoredBytes) ||
+    request.maxStoredBytes < 1 ||
+    request.maxStoredBytes > 16 * 1024 * 1024
+  ) {
+    throw new Error('Invalid Session transcript record byte limit');
+  }
+  if (
+    !Number.isSafeInteger(request.maxMessages) ||
+    request.maxMessages < 1 ||
+    request.maxMessages > 256
+  ) {
+    throw new Error('Invalid Session transcript record count limit');
   }
 }

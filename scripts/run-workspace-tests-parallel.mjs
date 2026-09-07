@@ -21,10 +21,11 @@
 /**
  * Run each workspace's `test:dist` script.
  *
- * Default: parallel batch.
- * `--serial`: every workspace in package.json workspaces order (CI).
- * `--concurrency N`: cap the parallel batch to avoid overloading small runners.
+ * `--concurrency N`: cap the batch to avoid overloading small runners.
  * `--workspaces a,b`: run only the selected workspace paths.
+ *
+ * Workspaces are queued heaviest first so a long suite cannot be picked up once
+ * the other slots have drained.
  *
  * Each workspace owns how its dist tests run via package.json `test:dist`.
  * This script owns scheduling, bounded process residency, failure reporting, and
@@ -32,7 +33,7 @@
  */
 
 import { spawn as defaultSpawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -41,11 +42,6 @@ import { fileURLToPath } from 'node:url';
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRepoRoot = dirname(dirname(scriptPath));
 
-// Additions to this list need a measured, precisely stated reason. runtime
-// and runtime-host sat here temporarily while three tests relied on fixed
-// waits that missed their window under load; #2132 replaced those waits with
-// explicit barriers and the entries came out again.
-export const SERIAL_WORKSPACE_DIRS = [];
 export const DEFAULT_WORKSPACE_TIMEOUT_MS = 15 * 60_000;
 
 const PROCESS_TERMINATION_GRACE_MS = 1_000;
@@ -56,12 +52,52 @@ export function loadWorkspaceDirs(repoRoot, readFile = readFileSync) {
   return Array.isArray(rootPkg.workspaces) ? rootPkg.workspaces : [];
 }
 
-export function partitionWorkspaces(workspaceDirs, serialDirs = SERIAL_WORKSPACE_DIRS) {
-  const serialSet = new Set(serialDirs);
-  return {
-    parallel: workspaceDirs.filter((dir) => !serialSet.has(dir)),
-    serial: workspaceDirs.filter((dir) => serialSet.has(dir)),
-  };
+const TEST_SOURCE_PATTERN = /\.test\.[cm]?[jt]sx?$/u;
+// Build output would double-count the same suites and dependencies are not ours
+// to weigh, so neither tree is walked.
+const UNWEIGHED_DIRECTORIES = new Set(['node_modules', 'dist', '.git']);
+
+/**
+ * Bytes of test source under a workspace, the cheapest stand-in available here
+ * for how long its suite runs. A tree that cannot be read weighs nothing, which
+ * leaves the workspace in its declared position rather than failing the run.
+ */
+export function testSourceWeight(repoRoot, dir) {
+  let bytes = 0;
+  const pending = [join(repoRoot, dir)];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    let entries;
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (!UNWEIGHED_DIRECTORIES.has(entry.name)) pending.push(join(current, entry.name));
+      } else if (entry.isFile() && TEST_SOURCE_PATTERN.test(entry.name)) {
+        try {
+          bytes += statSync(join(current, entry.name)).size;
+        } catch {
+          // A file that vanished between the listing and the stat weighs nothing.
+        }
+      }
+    }
+  }
+  return bytes;
+}
+
+/**
+ * Heaviest workspace first, so no slot picks up a long suite once the others
+ * have drained. Ties keep their declared order.
+ */
+export function orderByDescendingWeight(dirs, weigh) {
+  // Nothing to reorder, and weighing would walk the tree for an answer no
+  // schedule can use.
+  if (dirs.length < 2) return [...dirs];
+  const weights = new Map(dirs.map((dir) => [dir, weigh(dir)]));
+  return [...dirs].sort((left, right) => weights.get(right) - weights.get(left));
 }
 
 export function nameForDir(dir) {
@@ -180,13 +216,6 @@ function tempRootSlug(name) {
   return name.replace(/[^a-zA-Z0-9._-]/g, '-');
 }
 
-async function runSerial(dirs, options) {
-  for (const dir of dirs) {
-    if (options.signal?.aborted) throw workspaceRunCancelledError();
-    await runWorkspace(dir, options);
-  }
-}
-
 async function runParallel(dirs, options, concurrency) {
   const failures = [];
   let nextIndex = 0;
@@ -212,7 +241,6 @@ async function runParallel(dirs, options, concurrency) {
 
 export async function runWorkspaceTests(options = {}) {
   const repoRoot = options.repoRoot ?? defaultRepoRoot;
-  const serialFlag = options.serial ?? false;
   const concurrency = options.concurrency ?? Number.POSITIVE_INFINITY;
   if (!(concurrency > 0)) throw new Error('concurrency must be greater than zero');
   const workspaceTimeoutMs = options.workspaceTimeoutMs ?? DEFAULT_WORKSPACE_TIMEOUT_MS;
@@ -220,8 +248,10 @@ export async function runWorkspaceTests(options = {}) {
     throw new Error('workspaceTimeoutMs must be greater than zero');
   }
   const spawn = options.spawn ?? defaultSpawn;
-  const workspaceDirs = options.workspaceDirs ?? loadWorkspaceDirs(repoRoot);
-  const serialDirs = options.serialWorkspaceDirs ?? SERIAL_WORKSPACE_DIRS;
+  const workspaceDirs = orderByDescendingWeight(
+    options.workspaceDirs ?? loadWorkspaceDirs(repoRoot),
+    (dir) => testSourceWeight(repoRoot, dir),
+  );
   const runOptions = {
     repoRoot,
     spawn,
@@ -230,49 +260,15 @@ export async function runWorkspaceTests(options = {}) {
     terminateWorkspace: options.terminateWorkspace,
   };
 
-  if (serialFlag) {
-    await runSerial(workspaceDirs, runOptions);
-  } else {
-    const { parallel, serial } = partitionWorkspaces(workspaceDirs, serialDirs);
-    // The serial batch runs even when the parallel batch failed, and both
-    // results are reported together.
-    //
-    // It used to be a plain `await` pair, so one failing parallel workspace
-    // threw before the serial batch started and those suites silently did not
-    // run — the summary looked shorter and finished sooner, which reads as
-    // "faster and greener" rather than "three packages were skipped". That is
-    // the wrong direction for a runner whose entire job is to say what passed.
-    //
-    // Cancellation still stops everything at once: an aborted signal skips the
-    // serial batch, because there the caller has asked for no further work.
-    let parallelError;
-    try {
-      await runParallel(parallel, runOptions, concurrency);
-    } catch (error) {
-      parallelError = error;
-    }
-    if (runOptions.signal?.aborted) throw parallelError ?? workspaceRunCancelledError();
-    let serialError;
-    try {
-      await runSerial(serial, runOptions);
-    } catch (error) {
-      serialError = error;
-    }
-    const errors = [parallelError, serialError].filter(Boolean);
-    if (errors.length > 0) {
-      throw new Error(errors.map((error) => error?.message ?? String(error)).join('\n'));
-    }
-  }
+  await runParallel(workspaceDirs, runOptions, concurrency);
 }
 
 export function parseCliArgs(args, availableDirs) {
   let concurrency = Number.POSITIVE_INFINITY;
-  let serial = false;
   const requestedDirs = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === '--serial') serial = true;
-    else if (arg === '--concurrency') concurrency = Number(args[++index]);
+    if (arg === '--concurrency') concurrency = Number(args[++index]);
     else if (arg.startsWith('--concurrency=')) concurrency = Number(arg.slice(14));
     else if (arg === '--workspaces') requestedDirs.push(...(args[++index] ?? '').split(','));
     else if (arg.startsWith('--workspaces=')) requestedDirs.push(...arg.slice(13).split(','));
@@ -291,7 +287,6 @@ export function parseCliArgs(args, availableDirs) {
   if (unknown.length > 0) throw new Error(`Unknown workspace: ${unknown.join(', ')}`);
   return {
     concurrency,
-    serial,
     workspaceDirs:
       selected.length > 0 ? availableDirs.filter((dir) => selected.includes(dir)) : availableDirs,
   };

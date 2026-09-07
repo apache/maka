@@ -18,7 +18,11 @@
  */
 
 import { isDeepStrictEqual } from 'node:util';
-import type { ActiveInteractionRequestEvent, SessionEvent } from '@maka/core/events';
+import type {
+  ActiveInteractionRequestEvent,
+  ContextCompactionStartedEvent,
+  SessionEvent,
+} from '@maka/core/events';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import type {
   InteractionPendingSnapshot,
@@ -172,6 +176,11 @@ export class RuntimeHostSessionProjector {
       );
     }
     if (isRuntimeHostTerminalTurn(root)) return events;
+    // Re-derive the running compaction row on reconnect / restart: the Host keeps
+    // the compaction Turn alive, so a reconnecting client learns of it here.
+    if (root.rootExecutionKind === 'context_compact') {
+      events.push(contextCompactionStartedEvent(root, this.#now()));
+    }
     let seededAssistantText = false;
     if (includeAssistantText) {
       for (const accumulator of this.#accumulators.values()) {
@@ -437,6 +446,20 @@ export class RuntimeHostSessionProjector {
       events.push(projectQueueUpdate(next.queue, root.turnId, this.#now()));
     }
     if (startedTurn) this.#accumulators.clear();
+    // Emit the presentation-only compaction-started event when the root Turn
+    // FIRST becomes a `context_compact` run, not only when the runId changes.
+    // The real lifecycle is `admitted (no rootExecutionKind) → running/
+    // context_compact` at the SAME runId, so gating on startedTurn would miss
+    // the live transition and only surface the row on reconnect via seedActive.
+    const rootIsCompaction =
+      !!root && !isRuntimeHostTerminalTurn(root) && root.rootExecutionKind === 'context_compact';
+    const previousWasCompaction =
+      !!previousRoot &&
+      !isRuntimeHostTerminalTurn(previousRoot) &&
+      previousRoot.rootExecutionKind === 'context_compact';
+    if (root && rootIsCompaction && !previousWasCompaction) {
+      events.push(contextCompactionStartedEvent(root, this.#now()));
+    }
     const retry = liveProviderRetryEvent(previousRoot, root, this.#now());
     if (retry) events.push(retry);
     const terminalTurn =
@@ -473,6 +496,13 @@ export class RuntimeHostSessionProjector {
         turnId: root.turnId,
         ts: this.#now(),
         stopReason: 'end_turn',
+        // Forward the typed compaction outcome already carried by the canonical
+        // Turn snapshot so the renderer can settle the running toast and show the
+        // terminal state. This projects an existing snapshot field (no turn-state
+        // persistence), so checkpointId stays a string.
+        ...(root.contextCompactionOutcome
+          ? { contextCompactionOutcome: root.contextCompactionOutcome }
+          : {}),
       });
     } else if (root.status === 'failed') {
       events.push({
@@ -538,6 +568,24 @@ function projectMessageRetractionEvents(
     }));
 }
 
+/**
+ * Presentation-only event that drives the renderer's live "compacting" row.
+ * Emitted on both the live transition (`accept`) and reconnect (`seedActive`)
+ * with a deterministic id keyed on the run, so a reconnect re-emits it
+ * idempotently.
+ */
+function contextCompactionStartedEvent(
+  turn: { runId: string; turnId: string },
+  now: number,
+): ContextCompactionStartedEvent {
+  return {
+    type: 'context_compaction_started',
+    id: `host-compaction-started:${turn.runId}`,
+    turnId: turn.turnId,
+    ts: now,
+  };
+}
+
 export function projectRuntimeHostInteractionRequest(
   interaction: InteractionPendingSnapshot,
   now: number,
@@ -564,6 +612,17 @@ export function projectRuntimeHostInteractionRequest(
       },
     ];
   }
+  if (interaction.request.kind === 'form') {
+    return [
+      {
+        type: 'form_request',
+        ...base,
+        message: interaction.request.message,
+        requester: structuredClone(interaction.request.requester),
+        fields: structuredClone(interaction.request.fields),
+      },
+    ];
+  }
   if (interaction.request.kind === 'sandbox_boundary') {
     return [
       {
@@ -571,6 +630,16 @@ export function projectRuntimeHostInteractionRequest(
         ...base,
         justification: interaction.request.justification,
         expansion: interaction.request.expansion,
+      },
+    ];
+  }
+  if (interaction.request.kind === 'client_capability') {
+    return [
+      {
+        type: 'client_capability_request',
+        ...base,
+        capability: interaction.request.target.capability,
+        scope: structuredClone(interaction.request.target.scope),
       },
     ];
   }
@@ -607,6 +676,10 @@ function projectSessionEvent(
       ...(event.operationId ? { operationId: event.operationId } : {}),
       ...(event.activityKind ? { activityKind: event.activityKind } : {}),
       ...(event.displayName ? { displayName: event.displayName } : {}),
+      ...(event.intent ? { intent: event.intent } : {}),
+      ...(event.argsPreview !== undefined
+        ? { argsPreview: structuredClone(event.argsPreview) }
+        : {}),
       ...(event.stepId ? { stepId: event.stepId } : {}),
       ...(event.shellRunRef ? { shellRunRef: event.shellRunRef } : {}),
     };
@@ -753,7 +826,9 @@ function accumulatorKey(kind: 'text' | 'thinking', messageId: string): string {
   return `${kind}\0${messageId}`;
 }
 
-function frameIdentity(frame: SubscriptionFrame): string {
+function frameIdentity(
+  frame: Exclude<SubscriptionFrame, { kind: 'subscription.runtime_resource_pty_data' }>,
+): string {
   return `host-frame:${frame.hostEpoch}:${frame.subscriptionId}:${frame.sequence}`;
 }
 
@@ -792,15 +867,40 @@ function providerRetryEvent(
   root: LiveTurnSnapshot,
   ts: number,
 ): Extract<SessionEvent, { type: 'provider_retry' }> {
-  if (!root.providerRetry) {
+  const retry = root.providerRetry;
+  if (!retry) {
     throw new Error('Non-terminal Turn snapshot has no provider retry');
   }
+  if (retry.phase !== 'scheduled') {
+    return {
+      type: 'provider_retry',
+      id: `host-seed:${root.runId}:provider_retry`,
+      turnId: root.turnId,
+      ts,
+      phase: 'started',
+      attempt: retry.attempt,
+      maxAttempts: retry.maxAttempts,
+      reason: retry.reason,
+    };
+  }
+  // remainingMs is the skew-free countdown authority for clients on another
+  // machine: a duration, recomputed from the host-clock schedule time stored
+  // in the snapshot, so a mid-wait re-projection (reconnect) does not restart
+  // the countdown. Snapshots from older runtimes lack `ts` and degrade to the
+  // full delay.
+  const remainingMs =
+    retry.ts === undefined ? retry.delayMs : Math.max(0, retry.delayMs - (ts - retry.ts));
   return {
     type: 'provider_retry',
     id: `host-seed:${root.runId}:provider_retry`,
     turnId: root.turnId,
     ts,
-    ...root.providerRetry,
+    phase: 'scheduled',
+    attempt: retry.attempt,
+    maxAttempts: retry.maxAttempts,
+    delayMs: retry.delayMs,
+    remainingMs,
+    reason: retry.reason,
   };
 }
 

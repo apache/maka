@@ -26,11 +26,14 @@ import {
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
+import type { SignedPeerReachabilityLeaseV1 } from '@maka/runtime-host/peer-reachability';
+import type { RuntimeHostManagedLaunchClaim } from '@maka/runtime-host/operator';
 import { readFile } from 'node:fs/promises';
 
 export interface RuntimeHostServiceCliOptions {
   readonly rootPath: string;
   readonly json?: boolean;
+  readonly managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly websocket?: {
     readonly host: string;
@@ -47,6 +50,9 @@ export interface RuntimeHostServiceCliOptions {
     readonly expectedPeerId?: string;
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
+    readonly automaticRelayDiscovery?: boolean;
+    readonly webRtcStunUrls?: readonly string[];
+    readonly meshDataRoot?: string;
   };
 }
 
@@ -75,6 +81,7 @@ export async function runRuntimeHostServiceCli(
     : undefined;
   const host = await startExecutionRuntimeHostService({
     rootPath: options.rootPath,
+    ...(options.managedLaunchClaim ? { managedLaunchClaim: options.managedLaunchClaim } : {}),
     ...(options.projectDirectoryRoots
       ? { projectDirectoryRoots: options.projectDirectoryRoots }
       : {}),
@@ -95,7 +102,7 @@ export async function runRuntimeHostServiceCli(
         }
         for (const peer of host.peerListeners) {
           process.stdout.write(
-            `Runtime Host direct peer is ready as ${peer.peerId} at ${peer.listenAddresses.join(', ')}\n`,
+            `Runtime Host direct peer is ready as ${peer.reachability.lease.peerId} at ${peer.reachability.lease.directRoutes.join(', ')}\n`,
           );
         }
       },
@@ -143,8 +150,7 @@ export function createRuntimeHostServiceReadyEvent(host: {
   readonly endpoint: string;
   readonly websocketEndpoints: readonly string[];
   readonly peerListeners: readonly {
-    readonly peerId: string;
-    readonly listenAddresses: readonly string[];
+    readonly reachability: SignedPeerReachabilityLeaseV1;
   }[];
   readonly compositionDescriptor: { readonly id: string; readonly revision: string };
 }): RuntimeHostServiceReadyEvent {
@@ -172,8 +178,8 @@ export function createRuntimeHostServiceReadyEvent(host: {
       }),
       ...host.peerListeners.map((peer) => ({
         kind: 'libp2p_direct' as const,
-        peerId: peer.peerId,
-        listenAddresses: peer.listenAddresses,
+        peerId: peer.reachability.lease.peerId,
+        listenAddresses: peer.reachability.lease.directRoutes,
       })),
     ],
   };

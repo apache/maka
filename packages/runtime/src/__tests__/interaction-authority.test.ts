@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -35,11 +36,13 @@ import {
   bindRuntimeInteractionRun,
   type RuntimeInteractionAuthority,
   type RuntimeInteractionRunOwner,
+  type RuntimeFormContinuation,
   type RuntimeSandboxBoundaryContinuation,
   type RuntimeUserQuestionContinuation,
 } from '../interaction-authority.js';
 import { SessionManager } from '../session-manager.js';
 import { ToolRuntime, type DurableSessionEventSink, type MakaTool } from '../tool-runtime.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 describe('Runtime Interaction authority seam', () => {
   test('binds the exact Run and rejects release before durable close', async () => {
@@ -87,6 +90,8 @@ describe('Runtime Interaction authority seam', () => {
             runId: 'wrong-run',
             acceptSandboxBoundaryRequest: async () => {},
             acceptUserQuestionRequest: async () => {},
+            acceptFormRequest: async () => {},
+            withdrawFormRequest: async () => {},
             close: async (reason) => {
               log.push(`close:${reason}`);
             },
@@ -197,6 +202,72 @@ describe('Runtime Interaction authority seam', () => {
     });
 
     runtime.endTurn();
+    await binding.close('turn_terminal');
+    await binding.settleLocalClosures();
+    binding.release();
+  });
+
+  test('publishes a hosted form and resumes only after its exact canonical continuation settles', async () => {
+    let form: RuntimeFormContinuation | undefined;
+    const events: SessionEvent[] = [];
+    const binding = await bindRuntimeInteractionRun(
+      authority({
+        acceptFormRequest: async ({ continuation }) => {
+          form = continuation;
+        },
+      }),
+      RUN,
+    );
+    const runtime = toolRuntime(events, binding);
+    const tool: MakaTool<Record<string, never>> = {
+      name: 'SyntheticForm',
+      description: 'Exercise the form Interaction seam.',
+      parameters: {},
+      nesting: 'direct_only',
+      impl: (_input, context) =>
+        context.requestUserForm!({
+          message: 'Choose settings',
+          requester: { name: 'deploy' },
+          fields: [
+            {
+              kind: 'integer',
+              name: 'replicas',
+              label: 'Replicas',
+              required: true,
+              minimum: 1,
+            },
+          ],
+        }),
+    };
+    const pending = settleTool(
+      runtime,
+      tool,
+      RUN.turnId,
+      durableEventSink(events),
+    )({}, { toolCallId: 'tool-form', abortSignal: new AbortController().signal });
+
+    await waitFor(() => events.some((event) => event.type === 'form_request'));
+    assert.ok(form);
+    assert.throws(
+      () =>
+        runtime.respondToUserForm({
+          requestId: form!.requestId,
+          action: 'accept',
+          values: { replicas: 2 },
+        }),
+      RuntimeInteractionInvariantError,
+    );
+    await form!.applyAnswer({ action: 'accept', values: { replicas: 2 } });
+    assert.deepEqual(await pending, { action: 'accept', values: { replicas: 2 } });
+    await waitFor(() => events.some((event) => event.type === 'form_answer_ack'));
+    assert.equal(
+      await binding.canResumeAfterSettlementAck(
+        events.find((event) => event.type === 'form_answer_ack')!,
+      ),
+      true,
+    );
+
+    await runtime.endTurn();
     await binding.close('turn_terminal');
     await binding.settleLocalClosures();
     binding.release();
@@ -532,6 +603,8 @@ function authority(
       close: async () => {},
       release: () => {},
       ...overrides,
+      acceptFormRequest: overrides.acceptFormRequest ?? (async () => {}),
+      withdrawFormRequest: overrides.withdrawFormRequest ?? (async () => {}),
     }),
   };
 }
@@ -612,26 +685,10 @@ function header(): SessionHeader {
     schemaVersion: 1,
   };
 }
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T): void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
-
 async function immediate(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (predicate()) return;
-    await immediate();
-  }
-  assert.fail('condition was not reached');
+  await pollFor(predicate, { attempts: 20, message: 'condition was not reached' });
 }

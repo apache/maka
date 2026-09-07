@@ -129,7 +129,13 @@ describe('Claude subscription runtime wiring', () => {
 
   test('Codex OAuth provider options use non-persistent ChatGPT backend defaults', () => {
     assert.deepEqual(buildProviderOptions(codexOAuthConnection(), 'gpt-5.5'), {
-      openai: { store: false, textVerbosity: 'medium', parallelToolCalls: true },
+      openai: {
+        store: false,
+        textVerbosity: 'medium',
+        reasoningSummary: 'auto',
+        reasoningEffort: 'medium',
+        parallelToolCalls: true,
+      },
     });
   });
 });

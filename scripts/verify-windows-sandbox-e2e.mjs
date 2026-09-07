@@ -627,13 +627,12 @@ async function verifyPackagedClientCancellation({
 async function listCancellationProcesses(sandboxExecutable, timeoutMs = 10_000) {
   const script = String.raw`
 $imageName = [IO.Path]::GetFileName($env:MAKA_CANCEL_SANDBOX)
+$escapedImageName = $imageName.Replace("'", "''")
 $matches = @(
-  Get-CimInstance Win32_Process | ForEach-Object {
-    if ($_.Name -eq $imageName) {
-      [PSCustomObject]@{
-        processId = $_.ProcessId
-        commandLine = [string]$_.CommandLine
-      }
+  Get-CimInstance Win32_Process -Filter "Name='$escapedImageName'" | ForEach-Object {
+    [PSCustomObject]@{
+      processId = $_.ProcessId
+      commandLine = [string]$_.CommandLine
     }
   }
 )

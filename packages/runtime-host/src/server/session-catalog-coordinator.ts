@@ -19,7 +19,7 @@
 
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { createHash } from 'node:crypto';
-import { authorizeConnectionModel } from '@maka/core/llm-connections';
+import { authorizeConnectionModel, connectionEnabledModelIds } from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import {
@@ -28,11 +28,12 @@ import {
   type ExecutionBoundarySummary,
 } from '@maka/core/sandbox-boundary';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
 import {
   isSessionStartModeLabel as isExecutionSemanticLabel,
   sessionStartModeSpec,
-} from '@maka/core/explore-agent';
+} from '@maka/core/session-start-mode';
 import {
   isWorkHubCoordinationSessionId,
   isWorkHubCoordinationSessionTarget,
@@ -49,6 +50,7 @@ import {
   type SessionHeaderSnapshot,
   type ExecutionStoresWriter,
 } from '@maka/storage/execution-stores';
+import type { CreateStableSessionRequest } from '@maka/storage/session-store';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import {
   SessionConfigurationRevisionConflictError,
@@ -57,6 +59,7 @@ import {
 } from '@maka/runtime/session-manager';
 import {
   decodeSessionCatalogProjection,
+  decodeSharedSessionCatalogProjection,
   SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
   SESSION_CATALOG_LABEL_MAX_BYTES,
   SESSION_CATALOG_LABEL_MAX_ITEMS,
@@ -69,6 +72,7 @@ import {
   type SessionCatalogItem,
   type SessionCatalogLiveRunState,
   type SessionCatalogProjection,
+  type SharedSessionCatalogProjection,
   type SessionCatalogQueryInput,
   type SessionCatalogQueryResult,
   type SessionCatalogRevision,
@@ -87,6 +91,7 @@ import {
   projectSessionTurnContributionForWire,
 } from '../protocol/index.js';
 import type { SessionCatalogOperationHandlerMap } from './operation-dispatcher.js';
+import type { RuntimeHostAccessAuthority } from './access-authority.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import { type HostWorkspaceResolver, WorkspaceResolutionError } from './workspace-resolver.js';
@@ -117,6 +122,18 @@ type SessionConfigurationAuthority = Pick<
 >;
 type SessionContinuity = Pick<SessionContinuityCoordinator, 'refreshCanonical'>;
 
+interface ResolvedSessionConfiguration {
+  readonly backend: 'ai-sdk';
+  readonly llmConnectionId?: string;
+  readonly llmConnectionSlug: string;
+  readonly model: string;
+  readonly thinkingLevel: SessionHeader['thinkingLevel'];
+  readonly connectionLocked: boolean;
+  readonly permissionMode: SessionHeader['permissionMode'];
+  readonly collaborationMode: NonNullable<SessionHeader['collaborationMode']>;
+  readonly orchestrationMode: NonNullable<SessionHeader['orchestrationMode']>;
+}
+
 export type SessionOperationFailureCode =
   | 'operation_unavailable'
   | 'invalid_request'
@@ -133,6 +150,20 @@ export class SessionOperationFailure extends Error {
   }
 }
 
+/**
+ * The import path found no ready connection+model to attach the task to. A
+ * distinct type (not just a message) so `#importSession` can map it to the
+ * stable `model_unavailable` wire code without inspecting the message — the
+ * generic `operation_unavailable` code it carries is also used for an
+ * unavailable source, which is a different failure.
+ */
+export class NoUsableImportModelError extends SessionOperationFailure {
+  constructor(message: string) {
+    super('operation_unavailable', message);
+    this.name = 'NoUsableImportModelError';
+  }
+}
+
 export interface HostSessionCatalogCoordinatorOptions {
   readonly stores: SessionCatalogStores;
   readonly runtimePolicy: SessionRuntimePolicyStores;
@@ -141,16 +172,98 @@ export interface HostSessionCatalogCoordinatorOptions {
   readonly continuity: SessionContinuity;
   readonly workspaceResolver: HostWorkspaceResolver;
   readonly requestDrain: () => void;
+  readonly sessionAccessAuthority?: Pick<
+    RuntimeHostAccessAuthority,
+    'activeSessionGrantForPrincipal'
+  >;
 }
 
 interface ResolvedSessionModel {
+  readonly connectionId: string;
   readonly connectionSlug: string;
   readonly model: string;
+}
+
+/** A connection+model the import path may attempt, in preference order. */
+interface ImportModelCandidate {
+  readonly connectionId: string;
+  readonly connectionSlug: string;
+  readonly modelId: string;
+  /**
+   * This candidate is the workspace's configured default. Its failure is never
+   * skipped — a set-but-unusable default fails the import exactly as an explicit
+   * default target does today, rather than silently substituting a connection
+   * the user never chose. Fallback only applies when no default is set.
+   */
+  readonly isDefault: boolean;
+}
+
+/**
+ * Connection+model candidates for an imported task, most-preferred first: the
+ * configured default (kept at its exact precedence), then one ready model per
+ * enabled connection in catalog order. Model-level readiness that is a pure
+ * catalog fact — enabled, not quarantined, chat-capable — is applied here so an
+ * unusable connection costs one `#resolveModel` attempt, not one per enabled
+ * model (a connection may enable hundreds). Connection-level readiness
+ * (credential, retired provider, identity) stays in `#resolveModel`, which
+ * remains the sole arbiter of those.
+ */
+function importModelCandidates(snapshot: ConnectionCatalogSnapshot): ImportModelCandidate[] {
+  const byId = new Map(
+    snapshot.connections.map((connection) => [connection.connectionId, connection]),
+  );
+  const candidates: ImportModelCandidate[] = [];
+  const seen = new Set<string>();
+  const push = (connection: ConnectionCatalogEntry, modelId: string, isDefault: boolean): void => {
+    const key = `${connection.connectionId} ${modelId}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({
+      connectionId: connection.connectionId,
+      connectionSlug: connection.slug,
+      modelId,
+      isDefault,
+    });
+  };
+  // The connection's first enabled model that is a valid chat target, by pure
+  // catalog facts alone (no credential or provider-liveness read). Emitting only
+  // this one — rather than every enabled model — bounds the enumeration to one
+  // candidate per connection, so a connection-level failure (missing credential,
+  // retired provider) costs a single `#resolveModel` round trip.
+  const firstReadyModel = (connection: ConnectionCatalogEntry): string | undefined => {
+    for (const modelId of connectionEnabledModelIds(connection)) {
+      // Mirror `#resolveModel`'s pure-catalog gates, the wire byte cap included:
+      // a model id can be within the catalog's code-unit limit yet exceed the
+      // byte cap (e.g. emoji), and taking it as the connection's sole candidate
+      // would let `#resolveModel` reject it and mask the connection's shorter,
+      // usable models. Skip it here so the next enabled model is considered.
+      if (Buffer.byteLength(modelId, 'utf8') > SESSION_CATALOG_MODEL_MAX_BYTES) continue;
+      const model = authorizeConnectionModel(connection, modelId);
+      if (model && !isModelExplicitlyUnsupportedForChat(model)) return modelId;
+    }
+    return undefined;
+  };
+  // Default first, so a configured-and-ready default keeps today's behavior.
+  // `retainedDefaultTarget` + `isValidTarget` guarantee a persisted default is
+  // enabled and present in `enabledModelIds`, so its exact model is taken at its
+  // precedence rather than re-picked from the connection.
+  const preferred = snapshot.defaultTarget;
+  if (preferred) {
+    const connection = byId.get(preferred.connectionId);
+    if (connection?.enabled) push(connection, preferred.modelId, true);
+  }
+  for (const connection of snapshot.connections) {
+    if (!connection.enabled) continue;
+    const modelId = firstReadyModel(connection);
+    if (modelId !== undefined) push(connection, modelId, false);
+  }
+  return candidates;
 }
 
 /** Host-owned Session catalog, creation, and configuration authority. */
 export class HostSessionCatalogCoordinator {
   readonly handlers: SessionCatalogOperationHandlerMap = {
+    'session.shared.query': (_input, context) => this.#querySharedSession(context.principal),
     'session.catalog.query': (input) => this.#query(input),
     'session.create': (input) => this.#create(input),
     'session.metadata.update': (input) => this.#updateMetadata(input),
@@ -169,6 +282,9 @@ export class HostSessionCatalogCoordinator {
   readonly #continuity: SessionContinuity;
   readonly #workspaceResolver: HostWorkspaceResolver;
   readonly #requestDrain: () => void;
+  readonly #sessionAccessAuthority:
+    | Pick<RuntimeHostAccessAuthority, 'activeSessionGrantForPrincipal'>
+    | undefined;
 
   constructor(options: HostSessionCatalogCoordinatorOptions) {
     this.#stores = options.stores;
@@ -178,14 +294,38 @@ export class HostSessionCatalogCoordinator {
     this.#continuity = options.continuity;
     this.#workspaceResolver = options.workspaceResolver;
     this.#requestDrain = options.requestDrain;
+    this.#sessionAccessAuthority = options.sessionAccessAuthority;
   }
 
+  /**
+   * Target for a task imported from another agent's conversation. Import is an
+   * explicit, one-off user action on a specific conversation, so it prefers the
+   * configured default but falls back to any ready connection+model — see
+   * `#resolveImportModel`.
+   */
   async resolveExternalSessionImportTarget(): Promise<Omit<CreateSessionInput, 'cwd' | 'name'>> {
-    const [model, policy] = await Promise.all([
-      this.#resolveModel({ kind: 'default' }, undefined),
-      this.#readRuntimePolicy(),
-    ]);
+    return this.#composeCreateTarget(this.#resolveImportModel());
+  }
+
+  /**
+   * Target for the autonomous WorkHub coordination create path (its
+   * `resolveCreateTarget`). Unlike import there is no user in the loop to pick a
+   * model, so this fails closed when no default is configured rather than binding
+   * a connection the user never chose. Import's fallback deliberately does not
+   * reach here; keeping the two resolvers apart is what confines the guess to an
+   * explicit user
+   * action.
+   */
+  async resolveDefaultCreateTarget(): Promise<Omit<CreateSessionInput, 'cwd' | 'name'>> {
+    return this.#composeCreateTarget(this.#resolveModel({ kind: 'default' }, undefined));
+  }
+
+  async #composeCreateTarget(
+    modelResolution: Promise<ResolvedSessionModel>,
+  ): Promise<Omit<CreateSessionInput, 'cwd' | 'name'>> {
+    const [model, policy] = await Promise.all([modelResolution, this.#readRuntimePolicy()]);
     return {
+      llmConnectionId: model.connectionId,
       llmConnectionSlug: model.connectionSlug,
       model: model.model,
       permissionMode: policy.policy.chatDefaults.permissionMode,
@@ -202,6 +342,35 @@ export class HostSessionCatalogCoordinator {
   /** WorkHub Action Gate path; callers cannot bypass the typed operation outcome. */
   createForWorkHub(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>> {
     return this.#create(input);
+  }
+
+  /** Prepare external facts before WorkHub commits create + assignment atomically. */
+  async prepareWorkHubCreate(input: SessionCreateInput): Promise<CreateStableSessionRequest> {
+    const prepared = await prepareCreate(input);
+    return this.#workspaceResolver.runWithUsageRecorded(input.workspace, async (workspace) => {
+      const [model, policy] = await Promise.all([
+        this.#resolveModel(input.modelTarget, input.thinkingLevel),
+        this.#readRuntimePolicy(),
+      ]);
+      return {
+        sessionId: input.sessionId,
+        requestFingerprint: createRequestFingerprint(input, prepared),
+        input: {
+          cwd: workspace.cwd,
+          ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
+          name: prepared.name,
+          labels: [...prepared.labels],
+          llmConnectionId: model.connectionId,
+          llmConnectionSlug: model.connectionSlug,
+          model: model.model,
+          ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
+          ...(input.toolProfile === undefined ? {} : { toolProfile: input.toolProfile }),
+          permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
+          collaborationMode: input.collaborationMode ?? 'agent',
+          orchestrationMode: input.orchestrationMode ?? 'default',
+        },
+      };
+    });
   }
 
   async #query(
@@ -240,6 +409,48 @@ export class HostSessionCatalogCoordinator {
       );
     } catch {
       return queryFailure('persistence_failed', 'Session catalog is unavailable');
+    }
+  }
+
+  async #querySharedSession(
+    principalId: string,
+  ): Promise<OperationOutcome<'session.shared.query'>> {
+    if (!this.#sessionAccessAuthority) {
+      return {
+        ok: false,
+        error: { code: 'operation_unavailable', message: 'Session sharing is unavailable' },
+      };
+    }
+    const grant = this.#sessionAccessAuthority.activeSessionGrantForPrincipal(
+      principalId,
+      'session_observation',
+    );
+    if (!grant) return { ok: true, result: { session: null } };
+    try {
+      const record = await this.#readCatalogRecordIfPresent(grant.sessionId);
+      const currentGrant = this.#sessionAccessAuthority.activeSessionGrantForPrincipal(
+        principalId,
+        'session_observation',
+      );
+      if (currentGrant?.grantId !== grant.grantId) {
+        return { ok: true, result: { session: null } };
+      }
+      return {
+        ok: true,
+        result: {
+          session: record
+            ? projectSharedSessionCatalogRecord(
+                record,
+                projectCatalogLiveRunState(this.#manager.runningTurnIds(record.header.id)),
+              )
+            : null,
+        },
+      };
+    } catch {
+      return {
+        ok: false,
+        error: { code: 'persistence_failed', message: 'Shared Session catalog is unavailable' },
+      };
     }
   }
 
@@ -381,6 +592,7 @@ export class HostSessionCatalogCoordinator {
               ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
               name: prepared.name,
               labels: [...prepared.labels],
+              llmConnectionId: model.connectionId,
               llmConnectionSlug: model.connectionSlug,
               model: model.model,
               ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
@@ -493,15 +705,11 @@ export class HostSessionCatalogCoordinator {
           );
         }
 
-        const model = await this.#resolveModel(
-          input.configuration.modelTarget,
-          input.configuration.thinkingLevel ?? undefined,
-        );
-        const clearsConnectionBlock = current.header.blockedReason === 'NO_REAL_CONNECTION';
-        if (
-          !clearsConnectionBlock &&
-          sessionConfigurationMatches(current.header, model, input.configuration)
-        ) {
+        const configuration = await this.#mergeConfigurationPatch(current.header, input.patch);
+        const clearsConnectionBlock =
+          input.patch.modelTarget !== undefined &&
+          current.header.blockedReason === 'NO_REAL_CONNECTION';
+        if (!clearsConnectionBlock && sessionConfigurationMatches(current.header, configuration)) {
           return configurationSuccess({
             kind: 'committed',
             session: projectSessionCatalogRecord(
@@ -512,16 +720,8 @@ export class HostSessionCatalogCoordinator {
         commitAttempted = true;
         await this.#manager.transitionSessionConfiguration(input.sessionId, {
           expectedRevision: input.expectedRevision,
-          configuration: {
-            backend: 'ai-sdk',
-            llmConnectionSlug: model.connectionSlug,
-            model: model.model,
-            thinkingLevel: input.configuration.thinkingLevel ?? undefined,
-            connectionLocked: true,
-            permissionMode: input.configuration.permissionMode,
-            collaborationMode: input.configuration.collaborationMode,
-            orchestrationMode: input.configuration.orchestrationMode,
-          },
+          clearConnectionBlock: input.patch.modelTarget !== undefined,
+          configuration,
         });
         return configurationSuccess(await this.#committedUpdate(input.sessionId, lease));
       } catch (error) {
@@ -717,15 +917,82 @@ export class HostSessionCatalogCoordinator {
     }
   }
 
+  /**
+   * Model for an imported task. Prefers the configured default but falls back to
+   * any ready connection+model, because a default is only auto-set during
+   * onboarding bootstrap (`setDefaultIfMissing`) and a self-configured profile
+   * legitimately has `defaultTarget: null` while holding perfectly usable
+   * connections. Without the fallback, every import fails before the source is
+   * even read. Unlike interactive session creation, import has no model picker,
+   * so this is the only place that can choose one.
+   */
+  async #resolveImportModel(): Promise<ResolvedSessionModel> {
+    let snapshot: ConnectionCatalogSnapshot;
+    try {
+      snapshot = await this.#runtimePolicy.connectionCatalog.getSnapshot();
+    } catch {
+      throw new SessionOperationFailure('persistence_failed', 'Connection catalog is unavailable');
+    }
+    for (const candidate of importModelCandidates(snapshot)) {
+      try {
+        return await this.#resolveModel(
+          {
+            kind: 'explicit',
+            connectionId: candidate.connectionId,
+            connectionSlug: candidate.connectionSlug,
+            model: candidate.modelId,
+          },
+          undefined,
+        );
+      } catch (error) {
+        if (!(error instanceof SessionOperationFailure)) throw error;
+        // The configured default is never substituted away from: if it is set
+        // but unusable (e.g. its credential was revoked), surface its failure
+        // exactly as an explicit default target does today, rather than silently
+        // attaching the task to a connection the user did not choose. The
+        // fallback below runs only when no default is set — the null-default
+        // state this fix is for, where there is nothing to substitute for.
+        if (candidate.isDefault) throw error;
+        // Otherwise, only a genuinely unusable candidate is skippable:
+        // `invalid_request` (disabled / retired / not-enabled / non-chat) and
+        // `operation_unavailable` (no credential). Any other code — notably
+        // `operation_conflict`, thrown when the connection was deleted or
+        // renamed after the snapshot — is a real fault the caller must see, not
+        // a reason to silently fall through to a lower-priority connection.
+        if (error.code !== 'invalid_request' && error.code !== 'operation_unavailable') {
+          throw error;
+        }
+      }
+    }
+    throw new NoUsableImportModelError(
+      'No usable Session model connection is available for import',
+    );
+  }
+
   async #resolveModel(
     target: SessionModelTarget,
     thinkingLevel: SessionCreateInput['thinkingLevel'],
   ): Promise<ResolvedSessionModel> {
     const selected = await this.#selectModelTarget(target);
-    const readiness = await this.#runtimePolicy.operations.resolveExecutionConnection(
-      selected.connectionSlug,
-    );
-    if (readiness.kind === 'not_found' || readiness.kind === 'disabled') {
+    const readiness = await this.#runtimePolicy.operations.resolveExecutionConnection({
+      kind: 'bound',
+      connectionId: selected.connectionId,
+      connectionSlug: selected.connectionSlug,
+    });
+    if (
+      selected.connectionId !== undefined &&
+      (readiness.kind === 'not_found' || readiness.kind === 'identity_mismatch')
+    ) {
+      throw new SessionOperationFailure(
+        'operation_conflict',
+        'Session model identity changed during selection',
+      );
+    }
+    if (
+      readiness.kind === 'not_found' ||
+      readiness.kind === 'identity_mismatch' ||
+      readiness.kind === 'disabled'
+    ) {
       throw new SessionOperationFailure(
         'invalid_request',
         'Session model connection is unavailable',
@@ -791,16 +1058,21 @@ export class HostSessionCatalogCoordinator {
         `Session model does not support thinking level ${thinkingLevel}`,
       );
     }
-    return { connectionSlug: connection.slug, model: selected.modelId };
+    return {
+      connectionId: connection.connectionId,
+      connectionSlug: connection.slug,
+      model: selected.modelId,
+    };
   }
 
   async #selectModelTarget(target: SessionModelTarget): Promise<{
     readonly connectionSlug: string;
-    readonly connectionId?: string;
+    readonly connectionId: string;
     readonly modelId: string;
   }> {
     if (target.kind === 'explicit') {
       return {
+        connectionId: target.connectionId,
         connectionSlug: target.connectionSlug,
         modelId: target.model,
       };
@@ -833,6 +1105,56 @@ export class HostSessionCatalogCoordinator {
     };
   }
 
+  async #mergeConfigurationPatch(
+    current: SessionHeader,
+    patch: SessionConfigurationUpdateInput['patch'],
+  ): Promise<ResolvedSessionConfiguration> {
+    if (current.llmConnectionId === undefined && patch.modelTarget === undefined) {
+      throw new SessionOperationFailure(
+        'operation_conflict',
+        'Legacy Session configuration requires an explicit account selection',
+      );
+    }
+    const thinkingLevel =
+      patch.thinkingLevel === undefined
+        ? current.thinkingLevel
+        : (patch.thinkingLevel ?? undefined);
+    let model: {
+      readonly connectionId?: string;
+      readonly connectionSlug: string;
+      readonly model: string;
+    } = {
+      ...(current.llmConnectionId === undefined ? {} : { connectionId: current.llmConnectionId }),
+      connectionSlug: current.llmConnectionSlug,
+      model: current.model,
+    };
+    if (patch.modelTarget !== undefined) {
+      model = await this.#resolveModel(patch.modelTarget, thinkingLevel);
+    } else if (patch.thinkingLevel !== undefined && current.llmConnectionId !== undefined) {
+      const connectionId = current.llmConnectionId;
+      model = await this.#resolveModel(
+        {
+          kind: 'explicit',
+          connectionId,
+          connectionSlug: current.llmConnectionSlug,
+          model: current.model,
+        },
+        thinkingLevel,
+      );
+    }
+    return {
+      backend: 'ai-sdk',
+      ...(model.connectionId === undefined ? {} : { llmConnectionId: model.connectionId }),
+      llmConnectionSlug: model.connectionSlug,
+      model: model.model,
+      thinkingLevel,
+      connectionLocked: patch.modelTarget === undefined ? current.connectionLocked : true,
+      permissionMode: patch.permissionMode ?? current.permissionMode,
+      collaborationMode: patch.collaborationMode ?? current.collaborationMode ?? 'agent',
+      orchestrationMode: patch.orchestrationMode ?? current.orchestrationMode ?? 'default',
+    };
+  }
+
   async #readRuntimePolicy(): Promise<
     Awaited<ReturnType<SessionRuntimePolicyStores['runtimePolicy']['getSnapshot']>>
   > {
@@ -846,15 +1168,15 @@ export class HostSessionCatalogCoordinator {
 
 function sessionConfigurationMatches(
   header: SessionHeader,
-  model: ResolvedSessionModel,
-  configuration: SessionConfigurationUpdateInput['configuration'],
+  configuration: ResolvedSessionConfiguration,
 ): boolean {
   return (
     header.backend === 'ai-sdk' &&
-    header.llmConnectionSlug === model.connectionSlug &&
-    header.model === model.model &&
-    header.thinkingLevel === (configuration.thinkingLevel ?? undefined) &&
-    header.connectionLocked &&
+    header.llmConnectionId === configuration.llmConnectionId &&
+    header.llmConnectionSlug === configuration.llmConnectionSlug &&
+    header.model === configuration.model &&
+    header.thinkingLevel === configuration.thinkingLevel &&
+    header.connectionLocked === configuration.connectionLocked &&
     header.permissionMode === configuration.permissionMode &&
     (header.collaborationMode ?? 'agent') === configuration.collaborationMode &&
     (header.orchestrationMode ?? 'default') === configuration.orchestrationMode
@@ -905,7 +1227,12 @@ function createRequestFingerprint(
     prepared.labels,
     input.modelTarget.kind === 'default'
       ? ['default']
-      : ['explicit', input.modelTarget.connectionSlug, input.modelTarget.model],
+      : [
+          'explicit',
+          input.modelTarget.connectionId,
+          input.modelTarget.connectionSlug,
+          input.modelTarget.model,
+        ],
     input.thinkingLevel ?? null,
     input.toolProfile ?? null,
     prepared.permissionMode ?? ['runtime_default'],
@@ -978,6 +1305,7 @@ export function projectSessionCatalogRecord(
     ...(header.revisionIndex === undefined ? {} : { revisionIndex: header.revisionIndex }),
     ...(header.revisionState === undefined ? {} : { revisionState: header.revisionState }),
     backend: header.backend,
+    llmConnectionId: header.llmConnectionId ?? null,
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,
     model: header.model,
@@ -997,6 +1325,30 @@ export function projectSessionCatalogRecord(
       reason: 'not_wire_representable',
     };
   }
+}
+
+function projectSharedSessionCatalogRecord(
+  record: SessionCatalogRecord,
+  liveRunState?: SessionCatalogLiveRunState,
+): SharedSessionCatalogProjection {
+  const { header, summary } = record;
+  const shared: SharedSessionCatalogProjection = {
+    kind: 'shared_session',
+    id: header.id,
+    revision: record.revision,
+    createdAt: header.createdAt,
+    activityAt: record.activityAt,
+    name: header.name,
+    ...(summary.lastMessageAt === undefined ? {} : { lastMessageAt: summary.lastMessageAt }),
+    ...(summary.lastMessagePreview === undefined
+      ? {}
+      : { lastMessagePreview: summary.lastMessagePreview }),
+    status: header.status,
+    ...(liveRunState === undefined ? {} : { liveRunState }),
+    ...(header.blockedReason === undefined ? {} : { blockedReason: header.blockedReason }),
+    ...(header.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: header.statusUpdatedAt }),
+  };
+  return decodeSharedSessionCatalogProjection(shared);
 }
 
 function projectCatalogLiveRunState(

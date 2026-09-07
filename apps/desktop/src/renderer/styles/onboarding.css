@@ -56,12 +56,17 @@
    an empty flex spacer before its empty state so ordinary chat heroes settle
    low in the message flow; here that spacer gives the full-height onboarding
    surface only half of the available block size. The surface then overflows
-   ChatLayout and its self-scroll root exposes a phantom page scrollbar. */
-.maka-chat-layout:has(.maka-onboarding-surface) {
+   ChatLayout and its self-scroll root exposes a phantom page scrollbar.
+
+   AppShell already owns `showOnboardingHero` and projects it onto ChatLayout.
+   Keep that direct composition state here: a descendant `:has()` made every
+   prompt-rail `aria-current` change invalidate the entire chat subtree during
+   scrolling. */
+.maka-chat-layout[data-maka-onboarding='true'] {
   overflow-y: hidden;
 }
 
-.maka-chat-layout:has(.maka-onboarding-surface) > :first-child {
+.maka-chat-layout[data-maka-onboarding='true'] > :first-child {
   flex: 1 1 auto;
   padding-block-end: 0;
   overflow: hidden;
@@ -73,9 +78,8 @@
 
 /* ChatLayout always paints its frosted composer dock, even when the Composer
    itself is hidden. Onboarding owns the whole empty surface, so that dock has
-   no content to support and would blur the card actions behind it. Derive the
-   opt-out from the mounted surface instead of duplicating onboarding state. */
-.maka-chat-layout:has(.maka-onboarding-surface) > :last-child {
+   no content to support and would blur the card actions behind it. */
+.maka-chat-layout[data-maka-onboarding='true'] > :last-child {
   display: none;
 }
 

@@ -18,7 +18,7 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Readable, Writable } from 'node:stream';
@@ -30,10 +30,14 @@ import {
   type ClientConnection,
   type ClientContext,
 } from '@agentclientprotocol/sdk';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
   startExecutionRuntimeHostService,
   type RuntimeHostKernel,
 } from '@maka/runtime-host/server';
+import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
+import { STORAGE_ROOT_MARKER_FILE } from '@maka/storage/root-authority';
 import { deriveMakaDataRoots, resolveMakaClientDataRoot } from '../workspace-root.js';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -41,6 +45,10 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 export interface AcpChildProcessHarnessOptions {
   readonly timeoutMs?: number;
   readonly startRuntimeHost?: boolean;
+  readonly model?: {
+    readonly id: string;
+    readonly thinkingLevels: readonly ThinkingLevel[];
+  };
 }
 
 export interface AcpChildProcessExit {
@@ -115,6 +123,16 @@ export class AcpChildProcessHarness {
 
   get stderr(): string {
     return Buffer.concat(this.#stderr).toString('utf8');
+  }
+
+  async hasRuntimeHostRootMarker(): Promise<boolean> {
+    try {
+      await lstat(join(this.#workspaceRoot, STORAGE_ROOT_MARKER_FILE));
+      return true;
+    } catch (error) {
+      if (isErrorWithCode(error, 'ENOENT')) return false;
+      throw error;
+    }
   }
 
   async withClient<T>(
@@ -278,6 +296,7 @@ export async function startAcpChildProcessHarness(
   let rootCleanupFollowsHostStartup = false;
   try {
     await mkdir(workspaceRoot, { recursive: true });
+    if (options.model) await seedModelConnection(workspaceRoot, options.model);
     if (options.startRuntimeHost) {
       hostStartup = startExecutionRuntimeHostService({ rootPath: workspaceRoot });
       try {
@@ -327,6 +346,56 @@ export async function startAcpChildProcessHarness(
     throw new Error(
       `ACP child-process harness startup failed; root=${workspaceRoot}: ${errorMessage(error)}`,
     );
+  }
+}
+
+async function seedModelConnection(
+  rootPath: string,
+  model: NonNullable<AcpChildProcessHarnessOptions['model']>,
+): Promise<void> {
+  const capability = await resolveStorageRoot({ path: rootPath, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  if (!owner) throw new Error('Unable to acquire ACP model fixture root');
+  try {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'acp-fixture-model',
+        name: 'ACP fixture model',
+        providerType: 'openai-compatible',
+        baseUrl: 'https://acp-model.invalid/v1',
+        enabled: true,
+        enabledModelIds: [model.id],
+        ...(model.thinkingLevels.length === 0
+          ? {}
+          : {
+              relayModelProfiles: {
+                [model.id]: { thinkingLevels: model.thinkingLevels },
+              },
+            }),
+      },
+    });
+    if (created.kind !== 'committed') throw new Error('ACP model fixture did not commit');
+    const connection = created.snapshot.connections[0];
+    if (!connection) throw new Error('ACP model fixture connection was not persisted');
+    const credential = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: 'acp-fixture-key',
+    });
+    if (credential.kind !== 'committed') throw new Error('ACP model fixture key did not commit');
+    const defaulted = await policy.connectionCatalog.setDefaultTarget({
+      expectedCatalogRevision: created.snapshot.revision,
+      target: { connectionId: connection.connectionId, modelId: model.id },
+    });
+    if (defaulted.kind !== 'committed') throw new Error('ACP model fixture was not selected');
+  } finally {
+    await owner.close();
   }
 }
 
@@ -514,4 +583,8 @@ class StartupTimeoutError extends Error {}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isErrorWithCode(error: unknown, code: string): boolean {
+  return error instanceof Error && 'code' in error && error.code === code;
 }

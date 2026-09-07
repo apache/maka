@@ -19,7 +19,11 @@
 
 import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { resolveRootControlNamespace, STORAGE_ROOT_MARKER_FILE } from '../../root-authority.js';
+import {
+  resolveRootControlNamespace,
+  resolveRootOwnershipNamespace,
+  STORAGE_ROOT_MARKER_FILE,
+} from '../../root-authority.js';
 
 // A storage root's control directory lives under the real OS account home, not
 // inside the temporary root a test creates, so removing the temporary directory
@@ -32,7 +36,10 @@ import { resolveRootControlNamespace, STORAGE_ROOT_MARKER_FILE } from '../../roo
 /** Removes the control directory for a rootId. Safe to call when none exists. */
 export async function removeControlDirectory(rootId: string): Promise<void> {
   if (rootId.length === 0) return;
-  await rm(join(resolveRootControlNamespace(), rootId), { recursive: true, force: true });
+  await Promise.all([
+    rm(join(resolveRootControlNamespace(), rootId), { recursive: true, force: true }),
+    rm(join(resolveRootOwnershipNamespace(), `${rootId}.lock`), { force: true }),
+  ]);
 }
 
 /**

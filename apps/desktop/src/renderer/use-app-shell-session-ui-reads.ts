@@ -17,28 +17,31 @@
  * under the License.
  */
 
-import type { InteractionQueues } from '@maka/ui';
 import type {
   AppShellSessionUiState,
   AppShellSessionUiStateController,
-  MessageQueueUiState,
 } from './app-shell-session-ui-state.js';
 import {
   deriveLiveTurnSnapshot,
   liveTurnSnapshotsEqual,
   selectStreamingSessionIds,
   sessionIdSetsEqual,
-  type LiveTurnSnapshot,
 } from './live-turn-snapshot.js';
-import { useAppShellSessionUiSelector } from './use-app-shell-session-ui-selector.js';
+import { useExternalStoreSelector } from './use-external-store-selector.js';
 
-const selectMessageLoadError = (state: AppShellSessionUiState) => state.messageLoadErrorBySession;
+const selectMessageLoadState = (state: AppShellSessionUiState) => ({
+  messageLoadErrorBySession: state.messageLoadErrorBySession,
+  transcriptRestoreUnavailableBySession: state.transcriptRestoreUnavailableBySession,
+});
+const messageLoadStateEqual = (
+  left: ReturnType<typeof selectMessageLoadState>,
+  right: ReturnType<typeof selectMessageLoadState>,
+) => left.messageLoadErrorBySession === right.messageLoadErrorBySession
+  && left.transcriptRestoreUnavailableBySession === right.transcriptRestoreUnavailableBySession;
 const selectMessageRetryPending = (state: AppShellSessionUiState) => state.messageRetryPendingBySession;
 const selectStopPending = (state: AppShellSessionUiState) => state.stopPendingBySession;
 const selectInteraction = (state: AppShellSessionUiState) => state.interactionBySession;
 const selectMessageQueue = (state: AppShellSessionUiState) => state.messageQueueBySession;
-const selectPendingPermissionMode = (state: AppShellSessionUiState) => state.pendingPermissionModeBySession;
-const selectPendingSessionModel = (state: AppShellSessionUiState) => state.pendingSessionModelBySession;
 const selectPulseSet = (state: AppShellSessionUiState) => selectStreamingSessionIds(state.liveTurnBySession);
 
 /**
@@ -71,27 +74,21 @@ const selectActiveSnapshot = (state: AppShellSessionUiState, sessionId: string |
 export function useAppShellSessionUiReads(
   controller: AppShellSessionUiStateController,
   activeId: string | undefined,
-): {
-  messageLoadErrorBySession: Record<string, string>;
-  messageRetryPendingBySession: Record<string, boolean>;
-  stopPendingBySession: Record<string, boolean>;
-  interactionBySession: InteractionQueues;
-  messageQueueBySession: Record<string, MessageQueueUiState>;
-  pendingPermissionModeBySession: Record<string, boolean>;
-  pendingSessionModelBySession: Record<string, boolean>;
-  streamingSessionIds: Set<string>;
-  activeLiveTurnSnapshot: LiveTurnSnapshot;
-} {
+) {
+  const messageLoadState = useExternalStoreSelector(
+    controller,
+    selectMessageLoadState,
+    undefined,
+    messageLoadStateEqual,
+  );
   return {
-    messageLoadErrorBySession: useAppShellSessionUiSelector(controller, selectMessageLoadError),
-    messageRetryPendingBySession: useAppShellSessionUiSelector(controller, selectMessageRetryPending),
-    stopPendingBySession: useAppShellSessionUiSelector(controller, selectStopPending),
-    interactionBySession: useAppShellSessionUiSelector(controller, selectInteraction),
-    messageQueueBySession: useAppShellSessionUiSelector(controller, selectMessageQueue),
-    pendingPermissionModeBySession: useAppShellSessionUiSelector(controller, selectPendingPermissionMode),
-    pendingSessionModelBySession: useAppShellSessionUiSelector(controller, selectPendingSessionModel),
-    streamingSessionIds: useAppShellSessionUiSelector(controller, selectPulseSet, undefined, sessionIdSetsEqual),
-    activeLiveTurnSnapshot: useAppShellSessionUiSelector(
+    ...messageLoadState,
+    messageRetryPendingBySession: useExternalStoreSelector(controller, selectMessageRetryPending),
+    stopPendingBySession: useExternalStoreSelector(controller, selectStopPending),
+    interactionBySession: useExternalStoreSelector(controller, selectInteraction),
+    messageQueueBySession: useExternalStoreSelector(controller, selectMessageQueue),
+    streamingSessionIds: useExternalStoreSelector(controller, selectPulseSet, undefined, sessionIdSetsEqual),
+    activeLiveTurnSnapshot: useExternalStoreSelector(
       controller,
       selectActiveSnapshot,
       activeId,

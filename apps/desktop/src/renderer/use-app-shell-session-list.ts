@@ -17,18 +17,26 @@
  * under the License.
  */
 
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useRef } from 'react';
 import { type LiveTurnProjection, useUiLocale } from '@maka/ui';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
   normalizeSessionSummaryForDisplay,
-} from './session-status-presentation';
+} from './session-status-presentation.js';
 import {
   createSessionListRefresher,
   type SessionListRefresher,
-} from './session-read-state';
+} from './session-read-state.js';
 import { reconcileSettledSessionTransients } from './settled-session-transients.js';
+import {
+  selectAuthoritativeSessionIds,
+  selectCatalogRevision,
+  selectSessions,
+  type SessionCatalogController,
+} from './session-catalog-state.js';
+import { sessionIdSetsEqual } from './live-turn-snapshot.js';
+import { useExternalStoreSelector } from './use-external-store-selector.js';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 
 type ToastApi = {
@@ -40,6 +48,7 @@ type RefBox<T> = { current: T };
 export function useAppShellSessionList(
   toastApi: ToastApi,
   options: {
+    catalog: SessionCatalogController;
     activeIdRef: RefBox<string | undefined>;
     liveTurnBySessionRef: RefBox<Record<string, LiveTurnProjection>>;
     clearTurnTransientStateIfCurrent: (
@@ -51,24 +60,23 @@ export function useAppShellSessionList(
   const uiLocale = useUiLocale();
   const uiLocaleRef = useRef(uiLocale);
   uiLocaleRef.current = uiLocale;
-  // The list and its observation revision are one committed snapshot. A
-  // failed refresh changes neither, so consumers can fence transient writes
-  // against successful catalog observations without a parallel error flag.
-  const [catalog, setCatalog] = useState<{
-    sessions: DesktopSessionSummary[];
-    revision: number;
-  }>({ sessions: [], revision: 0 });
-  const { sessions, revision: catalogRevision } = catalog;
-  const authoritativeSessionIds = useMemo(
-    () => new Set(sessions.map(({ id }) => id)),
-    [sessions],
+  const { catalog } = options;
+  // Selected from the catalog store rather than held here: the rail follows the
+  // same authority without the shell carrying it down a prop chain (#4109).
+  const sessions = useExternalStoreSelector(catalog, selectSessions);
+  const catalogRevision = useExternalStoreSelector(catalog, selectCatalogRevision);
+  const authoritativeSessionIds = useExternalStoreSelector(
+    catalog,
+    selectAuthoritativeSessionIds,
+    undefined,
+    sessionIdSetsEqual,
   );
   const sessionsRef = useRef<DesktopSessionSummary[]>([]);
   const refresherRef = useRef<SessionListRefresher<DesktopSessionSummary> | null>(null);
 
   function commitSessions(next: DesktopSessionSummary[]): void {
     sessionsRef.current = next;
-    setCatalog((current) => ({ sessions: next, revision: current.revision + 1 }));
+    catalog.commitSessions(next);
   }
 
   if (!refresherRef.current) {
@@ -97,19 +105,26 @@ export function useAppShellSessionList(
     });
   }
 
-  async function refreshSessions(): Promise<DesktopSessionSummary[]> {
-    return refresherRef.current!.refresh();
-  }
-
-  function seedSessions(
-    snapshotSessions: readonly DesktopSessionSummary[],
-  ): DesktopSessionSummary[] {
-    const next = snapshotSessions.map(normalizeSessionSummaryForDisplay);
-    commitSessions(next);
-    return next;
-  }
-
-
+  // Fixed identities for the renderer's lifetime: both close over ref boxes and
+  // a state setter only, and consumers list them in dep arrays and hand them
+  // down as props (see `session-workspace-actions.ts`).
+  const actionsRef = useRef<{
+    refreshSessions(): Promise<DesktopSessionSummary[]>;
+    seedSessions(
+      snapshotSessions: readonly DesktopSessionSummary[],
+    ): DesktopSessionSummary[];
+  } | null>(null);
+  actionsRef.current ??= {
+    async refreshSessions() {
+      return refresherRef.current!.refresh();
+    },
+    seedSessions(snapshotSessions) {
+      const next = snapshotSessions.map(normalizeSessionSummaryForDisplay);
+      commitSessions(next);
+      return next;
+    },
+  };
+  const { refreshSessions, seedSessions } = actionsRef.current;
 
   return {
     sessions,

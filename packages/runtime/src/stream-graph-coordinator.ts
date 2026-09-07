@@ -106,8 +106,10 @@ export interface AgentGraphCoordinatorRuntime {
 
 export interface AgentGraphCoordinatorInput {
   sessionStore: AgentGraphCoordinatorSessionStore;
-  runStore: Pick<AgentRunStore, 'listSessionRuns'>;
-  runtimeEventStore: Pick<RuntimeEventStore, 'readImmutableRuntimeEvents'>;
+  runtimeEventStore: Pick<
+    RuntimeEventStore,
+    'readImmutableRuntimeEvents' | 'listSessionInvocations'
+  >;
   controlStore: AgentGraphScheduleControlStore &
     AgentGraphClientProjectionStore &
     AgentGraphTimelineMetadataStore;
@@ -405,7 +407,6 @@ export class AgentGraphCoordinator {
       rootSessionId,
       graphId,
       controlStore: this.#input.controlStore,
-      runStore: this.#input.runStore,
       runtimeEventStore: this.#input.runtimeEventStore,
       options,
     });
@@ -547,7 +548,6 @@ export class AgentGraphCoordinator {
       readCommittedAgentGraphProjection({
         graphId,
         operators: topology.operators,
-        runStore: this.#input.runStore,
         runtimeEventStore: this.#input.runtimeEventStore,
       }),
       this.#input.controlStore.listAgentGraphIntentClaims(graphId),
@@ -1242,7 +1242,6 @@ export class AgentGraphCoordinator {
       const projection = await readCommittedAgentGraphProjection({
         graphId: sourceGraphId,
         operators: topology.operators,
-        runStore: this.#input.runStore,
         runtimeEventStore: this.#input.runtimeEventStore,
       });
       recordsBySource.set(

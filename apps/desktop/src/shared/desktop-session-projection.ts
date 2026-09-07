@@ -25,27 +25,33 @@ import type {
   StorageRef,
   ToolResultContent,
 } from '@maka/core/events';
-import type {
-  SessionSummary,
-  StoredMessage,
-  TurnRecord,
-} from '@maka/core/session';
+import type { SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { UsageStats } from '@maka/core/settings';
+import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
 import { desktopSessionKey, type DesktopHostRef } from './runtime-host-identity.js';
 
 export interface DesktopSessionSummary extends SessionSummary {
+  /** Client cache is readable history, not evidence of current Host execution. */
+  readonly localState?: 'pending' | 'cached';
+  readonly localCreatedAt?: number;
+  /** Monotonic revision of the authoritative Runtime Host Session. */
+  readonly revision: number;
   /** Present on authoritative Session Catalog snapshots, absent from command responses. */
   readonly activityAt?: number;
   readonly runtimeHostId: string;
   readonly profileId: string;
   readonly profileName: string;
-  readonly profileKind: 'local' | 'remote';
+  readonly profileKind: RuntimeHostProfileKind;
+  /** Present only for Session projections granted to a Guest principal. */
+  readonly shared?: true;
 }
+
+export type DesktopSessionSummaryInput = SessionSummary & { readonly revision: number; readonly localState?: 'pending' | 'cached'; readonly localCreatedAt?: number };
 
 export interface DesktopSessionHost extends DesktopHostRef {
   readonly profileId: string;
   readonly profileName: string;
-  readonly profileKind: 'local' | 'remote';
+  readonly profileKind: RuntimeHostProfileKind;
 }
 
 function projectSessionId(host: DesktopHostRef, sessionId: string): string {
@@ -124,6 +130,20 @@ export function projectDesktopStoredMessage(
       return message.parentSessionId
         ? { ...message, parentSessionId: projectSessionId(host, message.parentSessionId) }
         : message;
+    case 'workhub_coordination':
+      if (message.kind === 'delegation_superseded') return message;
+      return {
+        ...message,
+        targetSessionId: projectSessionId(host, message.targetSessionId),
+        ...(message.kind === 'delegation_replacement_requested'
+          ? {
+              replacedTargetSessionId: projectSessionId(
+                host,
+                message.replacedTargetSessionId,
+              ),
+            }
+          : {}),
+      };
     default:
       return message;
   }
@@ -182,7 +202,7 @@ export function projectDesktopTurnRecord(
 
 export function projectDesktopSessionSummary(
   host: DesktopSessionHost,
-  session: SessionSummary,
+  session: DesktopSessionSummaryInput,
 ): DesktopSessionSummary {
   return {
     ...session,

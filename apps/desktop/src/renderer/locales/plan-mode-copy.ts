@@ -50,7 +50,7 @@ export interface PlanModeCopy {
 }
 
 const COPY = {
-  zh: {
+  'zh-CN': {
     abandonConfirmation: {
       title: '放弃这个计划？',
       description: (title) => `“${title}”的执行记录会保留，但之后不能继续恢复。`,
@@ -67,6 +67,25 @@ const COPY = {
       approvedPlan: '已批准计划', stepCount: (completed, total) => `${completed}/${total} 步`,
       resume: '恢复执行', abandon: '放弃计划',
       stepStatuses: { pending: '未开始', in_progress: '正在执行', completed: '已完成', skipped: '已跳过' },
+    },
+  },
+  'zh-TW': {
+    abandonConfirmation: {
+      title: '放棄這個計劃？',
+      description: (title) => `“${title}”的執行記錄會保留，但之後不能繼續恢復。`,
+      confirm: '放棄計劃',
+      cancel: '取消',
+    },
+    proposal: {
+      aria: '計劃方案', kicker: '計劃方案', revision: '修訂版', steps: '執行步驟',
+      risks: '風險', revise: '繼續修改', execute: '執行計劃',
+      statuses: { pending_approval: '等待確認', approved: '已批准', stale: '已過期' },
+    },
+    execution: {
+      aria: '計劃執行狀態', interrupted: '計劃已中斷', running: '正在執行計劃',
+      approvedPlan: '已批准計劃', stepCount: (completed, total) => `${completed}/${total} 步`,
+      resume: '恢復執行', abandon: '放棄計劃',
+      stepStatuses: { pending: '未開始', in_progress: '正在執行', completed: '已完成', skipped: '已跳過' },
     },
   },
   en: {

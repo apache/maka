@@ -23,7 +23,7 @@ import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { MakaToolContext } from '@maka/runtime/tool-runtime';
 import type { ProxiedFetchProxy } from '@maka/runtime/network/scoped-fetch-transport';
 import type {
-  ResolveWebFetchExecutionResult,
+  ResolveHostOutboundExecutionResult,
   RuntimePolicyOperationCoordinator,
 } from '@maka/storage/runtime-policy-stores';
 import { createHostWebFetchTool } from '../server/web-fetch-tool.js';
@@ -160,9 +160,9 @@ test('Host WebFetch closes its transport when the owning turn is cancelled', asy
 });
 
 function resolver(
-  result: ResolveWebFetchExecutionResult,
-): Pick<RuntimePolicyOperationCoordinator, 'resolveWebFetchExecution'> {
-  return { resolveWebFetchExecution: async () => result };
+  result: ResolveHostOutboundExecutionResult,
+): Pick<RuntimePolicyOperationCoordinator, 'resolveHostOutboundExecution'> {
+  return { resolveHostOutboundExecution: async () => result };
 }
 
 function context(abortSignal = new AbortController().signal): MakaToolContext {

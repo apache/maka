@@ -26,6 +26,8 @@ import { auditAxTree } from './ax-tree-audit.mjs';
 
 const RENDER_VIEWPORT = Object.freeze({ width: 1280, height: 900 });
 const NARROW_RENDER_VIEWPORT = Object.freeze({ width: 720, height: 900 });
+const COLOR_SCHEMES = Object.freeze(['light', 'dark']);
+const FULL_PALETTE_STORY_IDS = new Set(['product-shell-official-appshell--native-conversation']);
 const REQUIRED_COMPUTER_USE_STORY_IDS = new Set([
   'product-accessibility-dialogs--create-scheduled-task',
   'product-accessibility-dialogs--mermaid-fullscreen',
@@ -56,6 +58,22 @@ const REQUIRED_COMPUTER_USE_STORY_IDS = new Set([
   'product-sidebar-session-list--long-titles-and-narrow',
   'product-shell-official-appshell--native-conversation',
   'product-shell-official-appshell--waiting-for-permission',
+]);
+// The smoke observes render completion, focus, and the accessibility tree; it
+// does not compare pixels. Every story supplies that structural evidence once,
+// while these canonical surfaces also prove the separate dark token block.
+// Dark mode currently changes only paint tokens, with no dark-only DOM, layout,
+// or renderer branches; expand this set if that invariant changes.
+const DARK_THEME_SENTINEL_STORY_IDS = new Set([
+  'design-system-palette-matrix--all-palettes',
+  'product-accessibility-dialogs--rename-conversation',
+  'product-markdown--rich-assistant-answer',
+  'product-settings-pages--appearance',
+  'product-settings-pages--bot-chat-needs-attention',
+  'product-shell-official-appshell--default-layout',
+]);
+const FORCED_COLORS_STORY_IDS = new Set([
+  'product-settings-pages--general-forced-colors-focus-ring',
 ]);
 
 // This is a catalog render and accessibility-tree health check.
@@ -119,23 +137,48 @@ function installStorybookRenderProbe({ storyId }) {
   connect();
 }
 
-export function catalogJobs(storyIndex) {
+export function catalogJobs(
+  storyIndex,
+  { themePalettes = ['default'], fullPaletteStoryIds = FULL_PALETTE_STORY_IDS } = {},
+) {
   const entries = storyIndex?.entries;
   if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
     throw new Error('Built Storybook index has no entries');
   }
+  if (!Array.isArray(themePalettes) || themePalettes.length === 0) {
+    throw new Error('Storybook smoke requires at least one theme palette');
+  }
+  const palettes = [...new Set(themePalettes)];
+  if (!palettes.includes('default')) {
+    throw new Error('Storybook smoke theme palettes must include default');
+  }
   const jobs = Object.values(entries)
     .filter((entry) => entry?.type === 'story' && typeof entry.id === 'string')
-    .map((entry) => ({ storyId: entry.id }));
+    .flatMap((entry) => {
+      const hasFullPaletteCoverage = fullPaletteStoryIds.has(entry.id);
+      const entryPalettes = hasFullPaletteCoverage ? palettes : ['default'];
+      const colorSchemes =
+        hasFullPaletteCoverage || DARK_THEME_SENTINEL_STORY_IDS.has(entry.id)
+          ? COLOR_SCHEMES
+          : ['light'];
+      return entryPalettes.flatMap((palette) =>
+        colorSchemes.map((colorScheme) => ({
+          storyId: entry.id,
+          colorScheme,
+          forcedColors: FORCED_COLORS_STORY_IDS.has(entry.id) ? 'active' : 'none',
+          palette,
+        })),
+      );
+    });
   if (jobs.length === 0) throw new Error('Built Storybook index has no stories');
   return jobs;
 }
 
-export function storyUrl(baseUrl, storyId) {
+export function storyUrl(baseUrl, job) {
   const url = new URL('/iframe.html', baseUrl);
-  url.searchParams.set('id', storyId);
+  url.searchParams.set('id', job.storyId);
   url.searchParams.set('viewMode', 'story');
-  url.searchParams.set('globals', 'colorScheme:light');
+  url.searchParams.set('globals', `colorScheme:${job.colorScheme};palette:${job.palette}`);
   return url.href;
 }
 
@@ -143,8 +186,13 @@ export function storyViewport(storyId) {
   return storyId.includes('narrow') ? NARROW_RENDER_VIEWPORT : RENDER_VIEWPORT;
 }
 
+export function jobLabel(job) {
+  const forcedColors = job.forcedColors === 'active' ? '/forced-colors' : '';
+  return `${job.storyId} (${job.colorScheme}/${job.palette}${forcedColors})`;
+}
+
 async function smokeStory(page, baseUrl, job, options = {}) {
-  const prefix = `[${job.storyId}]`;
+  const prefix = `[${jobLabel(job)}]`;
   const browserFailures = [];
   const onConsole = (message) => {
     if (message.type() === 'error') browserFailures.push(`console.error: ${message.text()}`);
@@ -158,7 +206,8 @@ async function smokeStory(page, baseUrl, job, options = {}) {
   try {
     await page.addInitScript(installStorybookRenderProbe, { storyId: job.storyId });
     await page.setViewportSize(storyViewport(job.storyId));
-    await page.goto(storyUrl(baseUrl, job.storyId), { waitUntil: 'load' });
+    await page.emulateMedia({ colorScheme: job.colorScheme, forcedColors: job.forcedColors });
+    await page.goto(storyUrl(baseUrl, job), { waitUntil: 'load' });
 
     try {
       await page.waitForFunction(
@@ -242,10 +291,10 @@ async function runJobs(browser, baseUrl, jobs, concurrency) {
       const page = await browser.newPage();
       try {
         await smokeStory(page, baseUrl, job);
-        process.stdout.write(`✓ ${job.storyId}\n`);
+        process.stdout.write(`✓ ${jobLabel(job)}\n`);
       } catch (error) {
         failures.push(error instanceof Error ? error.message : String(error));
-        process.stdout.write(`✗ ${job.storyId}\n`);
+        process.stdout.write(`✗ ${jobLabel(job)}\n`);
       } finally {
         await page.close();
       }
@@ -312,18 +361,25 @@ async function runCli() {
   const repoRoot = resolve(scriptDir, '..');
   const staticDir = resolve(process.argv[2] ?? join(repoRoot, 'apps/desktop/storybook-static'));
   const storyIndex = await readFile(join(staticDir, 'index.json'), 'utf8').then(JSON.parse);
-  const jobs = catalogJobs(storyIndex);
+  const { THEME_PALETTES } = await import('@maka/core/settings');
+  const jobs = catalogJobs(storyIndex, { themePalettes: THEME_PALETTES });
   const storyIds = new Set(jobs.map((job) => job.storyId));
-  const missingRequiredStories = [...REQUIRED_COMPUTER_USE_STORY_IDS].filter(
-    (storyId) => !storyIds.has(storyId),
-  );
+  const requiredStoryIds = new Set([
+    ...REQUIRED_COMPUTER_USE_STORY_IDS,
+    ...DARK_THEME_SENTINEL_STORY_IDS,
+    ...FORCED_COLORS_STORY_IDS,
+  ]);
+  const missingRequiredStories = [...requiredStoryIds].filter((storyId) => !storyIds.has(storyId));
   if (missingRequiredStories.length > 0) {
     throw new Error(
       `Computer Use story inventory is missing: ${missingRequiredStories.join(', ')}`,
     );
   }
   const { chromium } = await import('@playwright/test');
-  const browser = await chromium.launch({ headless: true });
+  // Headless Chromium paints no platform scrollbar, so anything a scrollbar
+  // can occlude is inert here and on CI. `SMOKE_HEADED=1` is how you check
+  // those by hand, on the platform whose scrollbar overlays the content.
+  const browser = await chromium.launch({ headless: process.env.SMOKE_HEADED !== '1' });
   const server = await startStaticServer(staticDir);
   let problems;
   try {
@@ -335,7 +391,9 @@ async function runCli() {
   if (problems.length > 0) {
     throw new Error(`${problems.length} story render(s) failed:\n${problems.join('\n')}`);
   }
-  process.stdout.write(`Storybook render smoke passed (${jobs.length} stories).\n`);
+  process.stdout.write(
+    `Storybook render smoke passed (${storyIds.size} stories, ${jobs.length} theme renders).\n`,
+  );
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

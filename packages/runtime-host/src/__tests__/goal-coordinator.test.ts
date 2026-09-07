@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { GoalAuthorityRecord } from '@maka/core/goal';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import type { GoalTurnOutcome } from '@maka/runtime/goal-continuation';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveGoalAuthorityForWrite } from '@maka/storage/goal-authority';
@@ -30,6 +31,7 @@ import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storag
 import { HostGoalCoordinator } from '../server/goal-coordinator.js';
 import { HostedExecutionProjectionReader } from '../server/hosted-execution-projection.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 test('one Host Goal is shared across clients with CAS control and crash-clear residency', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-'));
@@ -46,6 +48,7 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
     const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -83,7 +86,6 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
           start: () => goalTurn,
         };
       },
-      listActionableTaskKeys: async () => [],
       acquireResidency: () => {
         acquired++;
         return { release: () => released++ };
@@ -213,7 +215,6 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
         kind: 'unavailable',
         reason: 'Recovery assertion only',
       }),
-      listActionableTaskKeys: async () => [],
       acquireResidency: () => ({ release() {} }),
       onProjectionChanged: () => {},
       requestDrain: () => {},
@@ -243,6 +244,7 @@ test('session retirement forgets a terminal Goal without recreating deleted auth
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -283,7 +285,6 @@ test('session retirement forgets a terminal Goal without recreating deleted auth
         close: async () => {},
       },
       admitTurn: () => assert.fail('A terminal Goal must not admit a continuation'),
-      listActionableTaskKeys: async () => [],
       acquireResidency: () => assert.fail('A terminal Goal must not retain Host residency'),
       onProjectionChanged: (sessionId) => projectionChanges.push(sessionId),
       requestDrain: () => drainRequests++,
@@ -325,6 +326,7 @@ test('restart settles the durable current Goal execution through Hosted Executio
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -353,20 +355,30 @@ test('restart settles the durable current Goal execution through Hosted Executio
       admittedAt: 1,
     });
     assert.equal(admission.kind, 'admitted');
-    await stores.agentRunStore.createRun({
-      runId: execution.runId,
-      invocationId: execution.runId,
+    await seedInvocation(stores.runtimeEventStore, {
       sessionId: session.id,
+      invocationId: execution.runId,
+      runId: execution.runId,
       turnId: execution.turnId,
-      status: 'created',
-      backendKind: 'fake',
-      llmConnectionSlug: 'fake',
-      modelId: 'fake-model',
-      cwd: capability.canonicalPath,
-      permissionMode: 'ask',
-      goalId: record.goal.id,
-      createdAt: 2,
-      updatedAt: 2,
+      openedAt: 2,
+      opening: {
+        route: {
+          provenance: 'runtime',
+          backendKind: 'fake',
+          llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          llmConnectionSlug: 'fake',
+          modelId: 'fake-model',
+        },
+        configuration: {
+          cwd: capability.canonicalPath,
+          permissionMode: 'ask',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+          orchestrationSource: 'session',
+          toolMode: 'direct',
+        },
+        root: { kind: 'goal', goalId: record.goal.id },
+      },
     });
     await stores.runtimeEventStore.appendRuntimeEvent(session.id, execution.runId, {
       id: 'goal_recovery_terminal',
@@ -380,11 +392,6 @@ test('restart settles the durable current Goal execution through Hosted Executio
       role: 'model',
       author: 'agent',
       content: { kind: 'text', text: 'done' },
-    });
-    await stores.agentRunStore.updateRun(session.id, execution.runId, {
-      status: 'completed',
-      updatedAt: 3,
-      completedAt: 3,
     });
 
     let drainRequested = false;
@@ -403,7 +410,6 @@ test('restart settles the durable current Goal execution through Hosted Executio
         close: async () => {},
       },
       admitTurn: () => assert.fail('A terminal recovered execution must not be admitted again'),
-      listActionableTaskKeys: async () => [],
       acquireResidency: () => ({ release() {} }),
       onProjectionChanged: () => {},
       requestDrain: () => {
@@ -441,6 +447,7 @@ test('restart replaces a stale current execution with the current durable Goal i
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -492,7 +499,6 @@ test('restart replaces a stale current execution with the current durable Goal i
         recoveredIntent = true;
         return { kind: 'unavailable', reason: 'Recovery assertion only' };
       },
-      listActionableTaskKeys: async () => [],
       acquireResidency: () => ({ release() {} }),
       onProjectionChanged: () => {},
       requestDrain: () => {},
@@ -559,6 +565,7 @@ test('goal.arm creates one Goal per Session and refuses a second while it is unf
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -577,7 +584,6 @@ test('goal.arm creates one Goal per Session and refuses a second while it is unf
       },
       // Arming schedules nothing: the Goal takes hold on the next Turn.
       admitTurn: () => assert.fail('Arming must not admit a continuation Turn'),
-      listActionableTaskKeys: async () => [],
       acquireResidency: () => ({ release: () => {} }),
       onProjectionChanged: () => {},
       requestDrain: () => {},
@@ -673,6 +679,7 @@ test('a Goal armed but never carried by a Turn does not start itself after a res
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -690,7 +697,6 @@ test('a Goal armed but never carried by a Turn does not start itself after a res
         close: async () => {},
       },
       admitTurn: () => assert.fail('Arming must not admit a continuation Turn'),
-      listActionableTaskKeys: async () => [],
       acquireResidency: () => ({ release: () => {} }),
       onProjectionChanged: () => {},
       requestDrain: () => {},
@@ -736,7 +742,6 @@ test('a Goal armed but never carried by a Turn does not start itself after a res
         admitted = true;
         return { kind: 'unavailable', reason: 'Recovery assertion only' };
       },
-      listActionableTaskKeys: async () => [],
       acquireResidency: () => ({ release: () => {} }),
       onProjectionChanged: () => {},
       requestDrain: () => {},
@@ -774,6 +779,7 @@ test('resuming an armed Goal drives it, and a restart puts that drive back', asy
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -802,7 +808,6 @@ test('resuming an armed Goal drives it, and a restart puts that drive back', asy
         admitted += 1;
         return { kind: 'busy', whenIdle: new Promise<void>(() => {}) };
       },
-      listActionableTaskKeys: async () => [],
       acquireResidency: () => ({ release: () => {} }),
       onProjectionChanged: () => {},
       requestDrain: () => {},
@@ -886,7 +891,6 @@ test('resuming an armed Goal drives it, and a restart puts that drive back', asy
         admittedAfterRestart += 1;
         return { kind: 'busy', whenIdle: new Promise<void>(() => {}) };
       },
-      listActionableTaskKeys: async () => [],
       acquireResidency: () => ({ release: () => {} }),
       onProjectionChanged: () => {},
       requestDrain: () => {},
@@ -919,6 +923,7 @@ test('an arm admitted before the drain creates no Goal after it', async () => {
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -937,7 +942,6 @@ test('an arm admitted before the drain creates no Goal after it', async () => {
         close: async () => {},
       },
       admitTurn: () => assert.fail('A refused arm must not admit a Turn'),
-      listActionableTaskKeys: async () => [],
       acquireResidency: () => ({ release: () => {} }),
       onProjectionChanged: () => {},
       requestDrain: () => {},
@@ -994,17 +998,15 @@ function operationContext(connectionId: string) {
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 1_000;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for Goal continuation');
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await pollFor(predicate, {
+    timeoutMs: 1_000,
+    message: 'Timed out waiting for Goal continuation',
+  });
 }
 
 async function waitForAsync(predicate: () => Promise<boolean>): Promise<void> {
-  const deadline = Date.now() + 1_000;
-  while (!(await predicate())) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for durable Goal state');
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await pollFor(predicate, {
+    timeoutMs: 1_000,
+    message: 'Timed out waiting for durable Goal state',
+  });
 }

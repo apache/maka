@@ -18,9 +18,13 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import {
   buildInterruptedCodeModeOutcomeCommits,
   resolveRuntimeRecovery,
@@ -139,6 +143,80 @@ describe('RecoveryResolver', () => {
         },
       },
     );
+    assert.deepEqual(
+      commits[0]?.runtimeEvent.content?.kind === 'function_response'
+        ? commits[0].runtimeEvent.content.modelProjection
+        : undefined,
+      {
+        version: 1,
+        kind: 'json',
+        value: {
+          kind: 'json',
+          value: {
+            kind: 'code_mode',
+            status: 'interrupted',
+            message: 'Code Mode execution was interrupted by runtime recovery.',
+          },
+        },
+        isError: true,
+      },
+    );
+  });
+
+  it('commits a projected recovery outcome through the projection-aware SQLite T2 gate', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-recovery-projection-'));
+    const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+    try {
+      const call = event({
+        id: 'outer-call',
+        role: 'model',
+        author: 'agent',
+        origin: 'provider',
+        modelVisibility: 'visible',
+        content: { kind: 'function_call', id: 'exec-1', name: 'exec', args: { code: 'work()' } },
+        refs: { operationId: 'outer-op', toolCallId: 'exec-1' },
+      });
+      const dispatch = dispatchFor({
+        id: 'outer-dispatch',
+        operationId: 'outer-op',
+        toolCallId: 'exec-1',
+        toolName: 'exec',
+        args: { code: 'work()' },
+        resultProjectionVersion: 1,
+      });
+      await store.commitToolPrepared({
+        operationId: 'outer-op',
+        journalEventId: 'outer-op_prepared',
+        runtimeEvent: call,
+        dispatchRuntimeEvent: dispatch,
+        providerToolCallId: 'exec-1',
+        toolName: 'exec',
+        canonicalArgsHash: canonicalToolArgsHash('exec', { code: 'work()' }),
+        recoveryMode: 'never_auto_retry',
+        committedAt: 10,
+      });
+
+      const [commit] = buildInterruptedCodeModeOutcomeCommits(
+        await store.readImmutableRuntimeEvents('session-1', 'run-1'),
+        50,
+        'code_mode',
+      );
+      assert.ok(commit);
+      await store.commitToolOutcome(commit);
+
+      assert.equal((await store.readToolOperation('outer-op'))?.currentState, 'outcome_committed');
+      const response = (await store.readImmutableRuntimeEvents('session-1', 'run-1')).at(-1);
+      assert.equal(response?.content?.kind, 'function_response');
+      assert.equal(
+        response?.content?.kind === 'function_response'
+          ? response.content.modelProjection?.version
+          : undefined,
+        1,
+      );
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('does not infer Code Mode recovery from a custom direct exec name', () => {
@@ -399,6 +477,7 @@ function dispatchFor(input: {
   modelVisibility?: 'visible' | 'hidden';
   parentOperationId?: string;
   parentToolCallId?: string;
+  resultProjectionVersion?: 1;
 }): RuntimeEvent {
   return event({
     id: input.id,
@@ -412,6 +491,9 @@ function dispatchFor(input: {
         toolName: input.toolName,
         canonicalArgsHash: canonicalToolArgsHash(input.toolName, input.args),
         recoveryMode: 'never_auto_retry',
+        ...(input.resultProjectionVersion !== undefined
+          ? { resultProjectionVersion: input.resultProjectionVersion }
+          : {}),
       },
     },
     refs: {

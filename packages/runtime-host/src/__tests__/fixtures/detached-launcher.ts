@@ -17,24 +17,46 @@
  * under the License.
  */
 
-import { launchDetachedRuntimeHostCandidate } from '../../client/launcher.js';
+import {
+  launchDetachedRuntimeHostCandidate,
+  launchOwnedRuntimeHostCandidate,
+  type DetachedCandidateInput,
+} from '../../client/launcher.js';
 
-const [rootPath, expectedRootId, stderrMarkerPath] = process.argv.slice(2);
+const [rootPath, expectedRootId, mode] = process.argv.slice(2);
 if (!rootPath || !expectedRootId) {
   throw new Error('usage: detached-launcher <root> <expected-root-id>');
 }
-const candidateEntrypoint = new URL(
-  stderrMarkerPath ? './stderr-after-launcher-exit.js' : './kernel-candidate.js',
-  import.meta.url,
-);
+const invocationOwned = mode === 'invocation-owned';
+const closeOnLauncherExit = mode === 'close-on-launcher-exit' || invocationOwned;
+const stderrMarkerPath = closeOnLauncherExit ? undefined : mode;
+const candidateEntrypoint = closeOnLauncherExit
+  ? new URL('../../execution-candidate-main.js', import.meta.url)
+  : new URL(
+      stderrMarkerPath ? './stderr-after-launcher-exit.js' : './kernel-candidate.js',
+      import.meta.url,
+    );
 
-const attempt = await launchDetachedRuntimeHostCandidate({
+const launchInput = {
   rootPath,
   expectedRootId,
   entrypoint: candidateEntrypoint,
   idleGraceMs: 10_000,
+  ...(closeOnLauncherExit ? { closeOnLauncherExit: true } : {}),
   ...(stderrMarkerPath
     ? { env: { MAKA_TEST_STDERR_AFTER_PARENT_EXIT_MARKER: stderrMarkerPath } }
     : {}),
-}).spawned;
+} satisfies DetachedCandidateInput;
+const launch =
+  closeOnLauncherExit && !invocationOwned
+    ? launchOwnedRuntimeHostCandidate(launchInput)
+    : launchDetachedRuntimeHostCandidate(launchInput);
+if (invocationOwned) {
+  process.on('message', function finishInvocation(message) {
+    if (message !== 'exit-naturally') return;
+    process.off('message', finishInvocation);
+    process.disconnect?.();
+  });
+}
+const attempt = await launch.spawned;
 process.send?.({ type: 'launched', pid: attempt.pid });

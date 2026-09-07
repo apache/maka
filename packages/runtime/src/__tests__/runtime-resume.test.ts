@@ -26,7 +26,8 @@ import {
 } from '@maka/core/runtime-boundary';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 
 import { buildContinuationReplayPlan } from '../continuation-replay.js';
 import { PROVIDER_REPLAY_PROJECTION_VERSION } from '../model-history.js';
@@ -38,6 +39,7 @@ import {
   buildResumeReplayRuntimeEvents,
   projectToolOperationsFromRuntimeEvents,
 } from '../runtime-resume.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 
 describe('runtime resume phase 0 projection', () => {
   test('publishes the stable P0-P11 crash failpoint catalog', () => {
@@ -292,17 +294,18 @@ describe('runtime resume phase 1 safe-boundary continuation', () => {
       },
     ];
     const planner = new RuntimeContinuationPlanner({
-      readSourceRun: async (_sessionId, runId) =>
+      readSourceInvocation: async (_sessionId, runId) =>
         runId === 'run-2'
-          ? runHeader('run-2', {
-              continuationSource: {
+          ? runInvocation('run-2', {
+              source: {
+                kind: 'continuation',
                 sourceInvocationId: 'invocation-1',
                 sourceRunId: 'run-1',
                 sourceTurnId: 'turn-1',
                 sourceRuntimeEventHighWater: rootEvents.length,
               },
             })
-          : runHeader('run-1'),
+          : runInvocation('run-1'),
       readImmutableRuntimePrefix: async ({ runId, upToEventSeq }) => {
         const events = runId === 'run-2' ? childEvents : rootEvents;
         return immutablePrefix(upToEventSeq === undefined ? events : events.slice(0, upToEventSeq));
@@ -316,6 +319,7 @@ describe('runtime resume phase 1 safe-boundary continuation', () => {
     const plan = await planner.plan({
       sessionId: 'session-1',
       sourceRunId: 'run-2',
+      admissionRoute: sameRouteAdmission(),
       currentCwd: '/workspace/repo',
       sourceWorkspaceIdentity: 'workspace-1',
       currentWorkspaceIdentity: 'workspace-1',
@@ -380,6 +384,7 @@ describe('runtime resume phase 1 safe-boundary continuation', () => {
     const replay = buildContinuationReplayPlan({
       prefixes: [immutablePrefix(events)],
       providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+      admissionRoute: sameRouteAdmission(),
     });
     assert.equal(replay.kind, 'replayable');
     if (replay.kind !== 'replayable') return;
@@ -727,25 +732,41 @@ function safeBoundaryFacts() {
   };
 }
 
-function runHeader(runId: string, overrides: Partial<AgentRunHeader> = {}): AgentRunHeader {
-  const ordinal = runId.match(/(\d+)$/)?.[1] ?? '1';
-  const status = overrides.status ?? 'failed';
+function sameRouteAdmission() {
   return {
-    runId,
-    invocationId: `invocation-${ordinal}`,
-    sessionId: 'session-1',
-    turnId: `turn-${ordinal}`,
-    status,
-    backendKind: 'fake',
-    llmConnectionSlug: 'test',
-    modelId: 'test-model',
-    cwd: '/workspace/repo',
-    permissionMode: 'ask',
-    ...(status === 'failed' ? { failureClass: 'test_failure' } : {}),
-    createdAt: 1,
-    updatedAt: 1,
-    ...overrides,
+    invocations: ['run-1', 'run-2', 'run-3'].map((runId) => runInvocation(runId)),
+    targetProviderStateIdentity: undefined,
+    targetModelId: 'test-model',
   };
+}
+
+/** One failed invocation on the shared route, as its own events describe it. */
+function runInvocation(
+  runId: string,
+  facts: { source?: RuntimeEventInvocationOpenedContent['source'] } = {},
+): RuntimeInvocationRecord {
+  const ordinal = runId.match(/(\d+)$/)?.[1] ?? '1';
+  return testInvocationRecord({
+    sessionId: 'session-1',
+    invocationId: `invocation-${ordinal}`,
+    runId,
+    turnId: `turn-${ordinal}`,
+    openedAt: 1,
+    closedAt: 1,
+    outcome: 'failed',
+    failureClass: 'test_failure',
+    opening: {
+      route: {
+        provenance: 'runtime',
+        backendKind: 'fake',
+        llmConnectionId: 'connection-1',
+        llmConnectionSlug: 'test',
+        modelId: 'test-model',
+      },
+      configuration: { cwd: '/workspace/repo' },
+      ...(facts.source ? { source: facts.source } : {}),
+    },
+  });
 }
 
 function base(overrides: Partial<RuntimeEvent>): RuntimeEvent {

@@ -36,7 +36,7 @@ import {
   type MutateRuntimePolicyInput,
   type RuntimePolicy,
 } from '@maka/core/runtime-policy';
-import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import {
   resolveStorageRoot,
   StorageRootAuthorityError,
@@ -51,6 +51,13 @@ import {
   openInteractiveRuntimePolicyStoresForWrite,
   RuntimePolicyStoreError,
 } from '../runtime-policy-stores.js';
+import { ConnectionCatalogDocumentOwner } from '../runtime-policy/connection-catalog-document.js';
+import { CredentialVaultDocumentOwner } from '../runtime-policy/credential-vault-document.js';
+import {
+  prepareInteractiveOAuthEnrollmentIntent,
+  writeConnectionOnboardingIntent,
+} from '../runtime-policy/onboarding-transaction.js';
+import { upsertInteractiveOAuthLoginReceipt } from '../runtime-policy/oauth-login-receipt-document.js';
 import { removeControlDirectory } from './fixtures/control-directory-hygiene.js';
 
 const execFileAsync = promisify(execFile);
@@ -108,7 +115,9 @@ describe('runtime policy stores', () => {
         { names: ['x-tenant', 'X-Title'] },
       );
 
-      const resolved = await stores.operations.resolveExecutionConnection(connection.slug);
+      const resolved = await stores.operations.resolveExecutionConnection(
+        catalogSlug(connection.slug),
+      );
       assert.equal(resolved.kind, 'ready');
       if (resolved.kind !== 'ready') return;
       assert.deepEqual(resolved.connection.requestBodyOverlay, {
@@ -1308,20 +1317,34 @@ describe('runtime policy stores', () => {
         connectionDraft('execution-none', 'ollama', 'None'),
       );
 
-      assert.deepEqual(await stores.operations.resolveExecutionConnection('missing'), {
+      assert.deepEqual(await stores.operations.resolveExecutionConnection(catalogSlug('missing')), {
         kind: 'not_found',
       });
-      assert.deepEqual(await stores.operations.resolveExecutionConnection(disabled.slug), {
-        kind: 'disabled',
-      });
+      await assert.rejects(
+        stores.operations.resolveExecutionConnection({
+          kind: 'unexpected',
+          connectionSlug: 'missing',
+        } as never),
+        /Invalid execution Connection reference kind/,
+      );
+      assert.deepEqual(
+        await stores.operations.resolveExecutionConnection(catalogSlug(disabled.slug)),
+        {
+          kind: 'disabled',
+        },
+      );
 
-      const missingRequired = await stores.operations.resolveExecutionConnection(required.slug);
+      const missingRequired = await stores.operations.resolveExecutionConnection(
+        catalogSlug(required.slug),
+      );
       assert.equal(missingRequired.kind, 'credential_not_configured');
       if (missingRequired.kind === 'credential_not_configured') {
         assert.deepEqual(missingRequired.status.locator, connectionCredential(required, 'api_key'));
       }
       for (const connection of [optional, none]) {
-        const resolved = await stores.operations.resolveExecutionConnection(connection.slug);
+        const resolved = await stores.operations.resolveExecutionConnection(
+          catalogSlug(connection.slug),
+        );
         assert.equal(resolved.kind, 'ready');
         if (resolved.kind === 'ready') assert.deepEqual(resolved.secretMaterial, {});
       }
@@ -1336,11 +1359,17 @@ describe('runtime policy stores', () => {
         'execution-retired',
         '66666666-6666-4666-8666-666666666666',
       );
-      const retiredLogin = await stores.operations.beginInteractiveOAuthLogin(retired.connectionId);
-      assert.equal(retiredLogin.kind, 'provider_action_unavailable');
-      assert.deepEqual(await stores.operations.resolveExecutionConnection(retired.slug), {
-        kind: 'provider_retired',
+      const retiredLogin = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'retired-login',
+        target: { kind: 'existing', connectionId: retired.connectionId },
       });
+      assert.equal(retiredLogin.kind, 'provider_action_unavailable');
+      assert.deepEqual(
+        await stores.operations.resolveExecutionConnection(catalogSlug(retired.slug)),
+        {
+          kind: 'provider_retired',
+        },
+      );
 
       assert.equal(
         (
@@ -1360,7 +1389,9 @@ describe('runtime policy stores', () => {
         ).kind,
         'committed',
       );
-      const missingProxy = await stores.operations.resolveExecutionConnection(required.slug);
+      const missingProxy = await stores.operations.resolveExecutionConnection(
+        catalogSlug(required.slug),
+      );
       assert.equal(missingProxy.kind, 'credential_not_configured');
       if (missingProxy.kind === 'credential_not_configured') {
         assert.deepEqual(missingProxy.status.locator, proxyCredential());
@@ -1372,7 +1403,7 @@ describe('runtime policy stores', () => {
           expected: null,
           secret: 'execution-proxy-secret',
         }),
-        stores.operations.resolveExecutionConnection(required.slug),
+        stores.operations.resolveExecutionConnection(catalogSlug(required.slug)),
       ]);
       assert.equal(proxySet.kind, 'committed');
       assert.equal(resolved.kind, 'ready');
@@ -1381,6 +1412,62 @@ describe('runtime policy stores', () => {
       assert.equal(resolved.networkProxy.host, 'execution.proxy.internal');
       assert.equal(resolved.secretMaterial.connection?.secret, 'execution-connection-secret');
       assert.equal(resolved.secretMaterial.networkProxy?.secret, 'execution-proxy-secret');
+    });
+  });
+
+  test('bound execution never follows a reused connection slug', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const original = await createConnection(
+        stores,
+        0,
+        connectionDraft('reused-execution-slug', 'openai', 'Original'),
+      );
+      await stores.credentialVault.set({
+        locator: connectionCredential(original, 'api_key'),
+        expected: null,
+        secret: 'original-secret',
+      });
+
+      const bound = {
+        kind: 'bound' as const,
+        connectionId: original.connectionId,
+        connectionSlug: original.slug,
+      };
+      assert.equal((await stores.operations.resolveExecutionConnection(bound)).kind, 'ready');
+      assert.deepEqual(
+        await stores.operations.resolveExecutionConnection({
+          ...bound,
+          connectionSlug: 'different-slug',
+        }),
+        { kind: 'identity_mismatch' },
+      );
+
+      assert.equal(
+        (await stores.connectionCatalog.remove({ expected: connectionBasis(original) })).kind,
+        'committed',
+      );
+      const replacement = await createConnection(
+        stores,
+        2,
+        connectionDraft(original.slug, 'openai', 'Replacement'),
+      );
+      await stores.credentialVault.set({
+        locator: connectionCredential(replacement, 'api_key'),
+        expected: null,
+        secret: 'replacement-secret',
+      });
+
+      assert.deepEqual(await stores.operations.resolveExecutionConnection(bound), {
+        kind: 'not_found',
+      });
+      const current = await stores.operations.resolveExecutionConnection(
+        catalogSlug(original.slug),
+      );
+      assert.equal(current.kind, 'ready');
+      if (current.kind === 'ready') {
+        assert.equal(current.connection.connectionId, replacement.connectionId);
+        assert.equal(current.secretMaterial.connection?.secret, 'replacement-secret');
+      }
     });
   });
 
@@ -1429,7 +1516,9 @@ describe('runtime policy stores', () => {
         (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest?.status,
         'verified',
       );
-      const resolved = await stores.operations.resolveExecutionConnection(connection.slug);
+      const resolved = await stores.operations.resolveExecutionConnection(
+        catalogSlug(connection.slug),
+      );
       assert.equal(resolved.kind, 'ready');
       if (resolved.kind === 'ready') {
         assert.equal(resolved.secretMaterial.connection?.secret, replacementSecret);
@@ -1441,7 +1530,9 @@ describe('runtime policy stores', () => {
         secret: 'stale-refresh-must-not-commit',
       });
       assert.equal(stale.kind, 'superseded');
-      const stillResolved = await stores.operations.resolveExecutionConnection(connection.slug);
+      const stillResolved = await stores.operations.resolveExecutionConnection(
+        catalogSlug(connection.slug),
+      );
       assert.equal(stillResolved.kind, 'ready');
       if (stillResolved.kind === 'ready') {
         assert.equal(stillResolved.secretMaterial.connection?.secret, replacementSecret);
@@ -1462,7 +1553,7 @@ describe('runtime policy stores', () => {
   });
 
   test('conditionally commits discovery and test facts from the latest admitted state with one-shot tickets', async () => {
-    await withInteractiveOwner(async ({ stores }) => {
+    await withInteractiveOwner(async ({ root, stores }) => {
       const connection = await createConnection(
         stores,
         0,
@@ -1485,6 +1576,14 @@ describe('runtime policy stores', () => {
       );
 
       const fetch = await stores.operations.beginModelFetch(connection.connectionId);
+      await writeFile(
+        join(root, 'model-facts.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          overrides: { 'openai:gpt-5': { apiProtocol: 'openai-responses' } },
+        }),
+        'utf8',
+      );
       const testTicket = await stores.operations.beginConnectionTest(
         connection.connectionId,
         'gpt-5',
@@ -1493,6 +1592,7 @@ describe('runtime policy stores', () => {
       assert.equal(testTicket.kind, 'ready');
       if (fetch.kind !== 'ready' || testTicket.kind !== 'ready') return;
       assert.equal(testTicket.modelId, 'gpt-5');
+      assert.equal(testTicket.connection.models?.[0]?.apiProtocol, 'openai-responses');
       assert.equal(fetch.secretMaterial.connection?.secret, 'effect-secret');
 
       await assert.rejects(
@@ -1527,9 +1627,17 @@ describe('runtime policy stores', () => {
       if (discovered.kind !== 'committed') return;
       const afterDiscovery = discovered.snapshot.connections[0];
       assert.ok(afterDiscovery);
-      assert.deepEqual(afterDiscovery.models, [{ id: 'gpt-5.1' }, { id: 'gpt-5.2' }]);
-      // Discovery records what the provider reported; it does not re-decide what
-      // the user enabled. `gpt-5` was chosen and stays chosen (#1584).
+      assert.deepEqual(afterDiscovery.models, [
+        { id: 'gpt-5.1' },
+        { id: 'gpt-5.2' },
+        {
+          id: 'gpt-5',
+          apiProtocol: 'openai-responses',
+          factOverriddenFields: ['apiProtocol'],
+        },
+      ]);
+      // Discovery records what the provider reported while retaining the
+      // selected fact-backed model for selectors and execution.
       assert.deepEqual(afterDiscovery.enabledModelIds, ['gpt-5']);
       assert.equal(afterDiscovery.modelSource, 'fetched');
       assert.equal(afterDiscovery.modelsFetchedAt, 42);
@@ -2010,6 +2118,87 @@ describe('runtime policy stores', () => {
       assert.equal(
         (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest,
         undefined,
+      );
+    });
+  });
+
+  test('a bound connection credential write rejects revision, provider, and endpoint drift', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('bound-import', 'openai', 'Bound import'),
+      );
+      const locator = connectionCredential(connection, 'api_key');
+      const seeded = await stores.credentialVault.set({
+        locator,
+        expected: null,
+        secret: 'existing-target-secret',
+      });
+      assert.equal(seeded.kind, 'committed');
+      if (seeded.kind !== 'committed') return;
+      const status = await getCredentialStatus(stores.credentialVault, locator);
+      const sourceTarget = {
+        ...connectionBasis(connection),
+        slug: connection.slug,
+        providerType: connection.providerType,
+        effectiveBaseUrl: new URL(PROVIDER_REGISTRY.openai.baseUrl).toString(),
+      };
+
+      const moved = await stores.connectionCatalog.update({
+        expected: connectionBasis(connection),
+        changes: {
+          name: connection.name,
+          baseUrl: 'https://target-relay.example/v1',
+          enabled: connection.enabled,
+          enabledModelIds: connection.enabledModelIds,
+        },
+      });
+      assert.equal(moved.kind, 'committed');
+      if (moved.kind !== 'committed') return;
+      const current = moved.snapshot.connections.find(
+        (item) => item.connectionId === connection.connectionId,
+      );
+      assert.ok(current);
+      if (!current) return;
+
+      const staleRevision = await stores.credentialVault.set({
+        locator,
+        expected: credentialExpectation(status),
+        expectedConnection: sourceTarget,
+        secret: 'must-not-cross-targets',
+      } as never);
+      assert.deepEqual(staleRevision, {
+        kind: 'connection_stale',
+        expected: connectionBasis(connection),
+        actual: connectionBasis(current),
+      });
+      assert.deepEqual(await stores.operations.exportCredentialMaterial(locator, sourceTarget), {
+        kind: 'connection_stale',
+        expected: connectionBasis(connection),
+        actual: connectionBasis(current),
+      });
+
+      for (const expectedConnection of [
+        { ...sourceTarget, ...connectionBasis(current) },
+        { ...sourceTarget, ...connectionBasis(current), providerType: 'deepseek' },
+      ]) {
+        const mismatch = await stores.credentialVault.set({
+          locator,
+          expected: credentialExpectation(status),
+          expectedConnection,
+          secret: 'must-not-cross-targets',
+        } as never);
+        assert.deepEqual(mismatch, {
+          kind: 'connection_stale',
+          expected: connectionBasis(current),
+          actual: connectionBasis(current),
+        });
+      }
+
+      assert.equal(
+        (await stores.operations.exportCredentialMaterial(locator))?.secret,
+        'existing-target-secret',
       );
     });
   });
@@ -2942,6 +3131,383 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('a stale client cannot recreate a proxy credential after another client disables authentication', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const initialPolicy = await stores.runtimePolicy.getSnapshot();
+      const configured = await stores.operations.updateNetworkProxy({
+        expectedPolicyRevision: initialPolicy.revision,
+        expectedCredential: null,
+        networkProxy: {
+          ...initialPolicy.policy.networkProxy,
+          enabled: true,
+          authEnabled: true,
+          username: 'proxy-user',
+        },
+        credential: { kind: 'replace', secret: 'initial-secret' },
+      });
+      assert.equal(configured.kind, 'committed');
+      if (configured.kind !== 'committed') return;
+      assert.equal(configured.credentialStatus.configured, true);
+      if (!configured.credentialStatus.configured) return;
+
+      // Both clients observed the same Host-owned policy and credential basis.
+      const clientAPolicyRevision = configured.snapshot.revision;
+      const clientACredential = credentialBasis(configured.credentialStatus);
+      const clientBPolicyRevision = configured.snapshot.revision;
+      const clientBCredential = credentialBasis(configured.credentialStatus);
+
+      const disabled = await stores.operations.updateNetworkProxy({
+        expectedPolicyRevision: clientBPolicyRevision,
+        expectedCredential: clientBCredential,
+        networkProxy: {
+          ...configured.snapshot.policy.networkProxy,
+          authEnabled: false,
+          username: '',
+        },
+        credential: { kind: 'delete' },
+      });
+      assert.equal(disabled.kind, 'committed');
+      if (disabled.kind !== 'committed') return;
+
+      const staleReplacement = await stores.operations.updateNetworkProxy({
+        expectedPolicyRevision: clientAPolicyRevision,
+        expectedCredential: clientACredential,
+        networkProxy: configured.snapshot.policy.networkProxy,
+        credential: { kind: 'replace', secret: 'must-not-return' },
+      });
+      assert.ok(
+        staleReplacement.kind === 'revision_conflict' ||
+          staleReplacement.kind === 'credential_stale',
+      );
+
+      const finalPolicy = await stores.runtimePolicy.getSnapshot();
+      const finalCredential = await getCredentialStatus(stores.credentialVault, proxyCredential());
+      assert.equal(finalPolicy.policy.networkProxy.authEnabled, false);
+      assert.equal(finalCredential.configured, false);
+    });
+  });
+
+  test('a bound proxy credential import cannot replace the secret after the proxy target changes', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const initial = await stores.runtimePolicy.getSnapshot();
+      const source = await stores.operations.updateNetworkProxy({
+        expectedPolicyRevision: initial.revision,
+        expectedCredential: null,
+        networkProxy: {
+          ...initial.policy.networkProxy,
+          enabled: true,
+          host: 'proxy-a.example',
+          port: 8080,
+          authEnabled: true,
+          username: 'source-user',
+        },
+        credential: { kind: 'replace', secret: 'existing-secret' },
+      });
+      assert.equal(source.kind, 'committed');
+      if (source.kind !== 'committed' || !source.credentialStatus.configured) return;
+
+      const retargeted = await stores.operations.updateNetworkProxy({
+        expectedPolicyRevision: source.snapshot.revision,
+        expectedCredential: credentialBasis(source.credentialStatus),
+        networkProxy: {
+          ...source.snapshot.policy.networkProxy,
+          host: 'proxy-b.example',
+          username: 'target-user',
+        },
+        credential: { kind: 'keep' },
+      });
+      assert.equal(retargeted.kind, 'committed');
+      if (retargeted.kind !== 'committed') return;
+
+      const outcome = await stores.operations.updateNetworkProxy({
+        expectedPolicyRevision: retargeted.snapshot.revision,
+        expectedCredential: credentialBasis(source.credentialStatus),
+        networkProxy: retargeted.snapshot.policy.networkProxy,
+        credential: {
+          kind: 'replace',
+          secret: 'source-import-secret',
+          expectedTarget: {
+            protocol: 'http',
+            host: 'proxy-a.example',
+            port: 8080,
+            username: 'source-user',
+          },
+        },
+      } as never);
+
+      assert.deepEqual(outcome, {
+        kind: 'proxy_target_mismatch',
+        expected: {
+          protocol: 'http',
+          host: 'proxy-a.example',
+          port: 8080,
+          username: 'source-user',
+        },
+        actual: {
+          protocol: 'http',
+          host: 'proxy-b.example',
+          port: 8080,
+          username: 'target-user',
+        },
+      });
+      const exported = await stores.operations.exportCredentialMaterial(proxyCredential());
+      assert.equal(exported?.secret, 'existing-secret');
+      assert.deepEqual(exported?.proxyTarget, {
+        protocol: 'http',
+        host: 'proxy-b.example',
+        port: 8080,
+        username: 'target-user',
+      });
+    });
+  });
+
+  test('proxy replacement failure before vault publication leaves both stores unchanged', {
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX file handles are required to inject persistence failures'
+        : false,
+  }, async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const initial = await stores.runtimePolicy.getSnapshot();
+      const probe = await open(root, 'r');
+      const fileHandlePrototype = Object.getPrototypeOf(probe) as {
+        sync: typeof probe.sync;
+      };
+      const originalSync = fileHandlePrototype.sync;
+      await probe.close();
+      let syncCalls = 0;
+      const syncMock = mock.method(
+        fileHandlePrototype,
+        'sync',
+        async function (this: typeof probe) {
+          syncCalls += 1;
+          if (syncCalls === 1) throw new Error('injected proxy credential pre-publication failure');
+          return originalSync.call(this);
+        },
+      );
+
+      try {
+        await assert.rejects(
+          stores.operations.updateNetworkProxy({
+            expectedPolicyRevision: initial.revision,
+            expectedCredential: null,
+            networkProxy: {
+              ...initial.policy.networkProxy,
+              enabled: true,
+              host: 'unchanged.proxy.internal',
+              authEnabled: true,
+              username: 'unchanged-user',
+            },
+            credential: { kind: 'replace', secret: 'must-not-persist' },
+          }),
+          isStoreError('io_failed'),
+        );
+      } finally {
+        syncMock.mock.restore();
+      }
+
+      assert.deepEqual(await stores.runtimePolicy.getSnapshot(), initial);
+      assert.equal(
+        (await getCredentialStatus(stores.credentialVault, proxyCredential())).configured,
+        false,
+      );
+    });
+  });
+
+  test('proxy replacement never persists its secret outside the credential vault', {
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX file handles are required to inject persistence failures'
+        : false,
+  }, async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const initial = await stores.runtimePolicy.getSnapshot();
+      const secret = 'vault-only-proxy-secret';
+      const probe = await open(root, 'r');
+      const fileHandlePrototype = Object.getPrototypeOf(probe) as {
+        sync: typeof probe.sync;
+      };
+      const originalSync = fileHandlePrototype.sync;
+      await probe.close();
+      let syncCalls = 0;
+      const syncMock = mock.method(
+        fileHandlePrototype,
+        'sync',
+        async function (this: typeof probe) {
+          syncCalls += 1;
+          if (syncCalls === 3) throw new Error('injected proxy policy persistence failure');
+          return originalSync.call(this);
+        },
+      );
+
+      try {
+        await assert.rejects(
+          stores.operations.updateNetworkProxy({
+            expectedPolicyRevision: initial.revision,
+            expectedCredential: null,
+            networkProxy: {
+              ...initial.policy.networkProxy,
+              enabled: true,
+              host: 'vault-only.proxy.internal',
+              port: 7897,
+              authEnabled: true,
+              username: 'vault-only-user',
+            },
+            credential: { kind: 'replace', secret },
+          }),
+          isStoreError('commit_outcome_unknown'),
+        );
+      } finally {
+        syncMock.mock.restore();
+      }
+
+      const filesContainingSecret: string[] = [];
+      for (const entry of await readdir(root)) {
+        if (!entry.endsWith('.json')) continue;
+        if ((await readFile(join(root, entry), 'utf8')).includes(secret)) {
+          filesContainingSecret.push(entry);
+        }
+      }
+      assert.deepEqual(filesContainingSecret, ['credential-vault.json']);
+      assert.equal(existsSync(join(root, 'runtime-policy-network-proxy.json')), false);
+      assert.equal(existsSync(join(root, 'runtime-policy.json')), false);
+    });
+  });
+
+  test('authentication disable failure before policy publication leaves both stores unchanged', {
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX file handles are required to inject persistence failures'
+        : false,
+  }, async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const initial = await stores.runtimePolicy.getSnapshot();
+      const secret = 'unchanged-disabled-proxy-secret';
+      const configured = await stores.operations.updateNetworkProxy({
+        expectedPolicyRevision: initial.revision,
+        expectedCredential: null,
+        networkProxy: {
+          ...initial.policy.networkProxy,
+          enabled: true,
+          authEnabled: true,
+          username: 'unchanged-disable-user',
+        },
+        credential: { kind: 'replace', secret },
+      });
+      assert.equal(configured.kind, 'committed');
+      if (configured.kind !== 'committed') return;
+
+      const probe = await open(root, 'r');
+      const fileHandlePrototype = Object.getPrototypeOf(probe) as {
+        sync: typeof probe.sync;
+      };
+      const originalSync = fileHandlePrototype.sync;
+      await probe.close();
+      let syncCalls = 0;
+      const syncMock = mock.method(
+        fileHandlePrototype,
+        'sync',
+        async function (this: typeof probe) {
+          syncCalls += 1;
+          if (syncCalls === 1) throw new Error('injected proxy policy pre-publication failure');
+          return originalSync.call(this);
+        },
+      );
+
+      try {
+        await assert.rejects(
+          stores.operations.updateNetworkProxy({
+            expectedPolicyRevision: configured.snapshot.revision,
+            expectedCredential: credentialBasis(configured.credentialStatus),
+            networkProxy: {
+              ...configured.snapshot.policy.networkProxy,
+              authEnabled: false,
+              username: '',
+            },
+            credential: { kind: 'delete' },
+          }),
+          isStoreError('io_failed'),
+        );
+      } finally {
+        syncMock.mock.restore();
+      }
+
+      assert.deepEqual(await stores.runtimePolicy.getSnapshot(), configured.snapshot);
+      assert.equal(
+        (await getCredentialStatus(stores.credentialVault, proxyCredential())).configured,
+        true,
+      );
+    });
+  });
+
+  test('disabling proxy authentication commits policy before deleting its credential', {
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX file handles are required to inject persistence failures'
+        : false,
+  }, async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const initial = await stores.runtimePolicy.getSnapshot();
+      const secret = 'retained-disabled-proxy-secret';
+      const configured = await stores.operations.updateNetworkProxy({
+        expectedPolicyRevision: initial.revision,
+        expectedCredential: null,
+        networkProxy: {
+          ...initial.policy.networkProxy,
+          enabled: true,
+          host: 'disable-order.proxy.internal',
+          port: 7897,
+          authEnabled: true,
+          username: 'disable-order-user',
+        },
+        credential: { kind: 'replace', secret },
+      });
+      assert.equal(configured.kind, 'committed');
+      if (configured.kind !== 'committed') return;
+
+      const probe = await open(root, 'r');
+      const fileHandlePrototype = Object.getPrototypeOf(probe) as {
+        sync: typeof probe.sync;
+      };
+      const originalSync = fileHandlePrototype.sync;
+      await probe.close();
+      let syncCalls = 0;
+      const syncMock = mock.method(
+        fileHandlePrototype,
+        'sync',
+        async function (this: typeof probe) {
+          syncCalls += 1;
+          if (syncCalls === 3) throw new Error('injected proxy credential deletion failure');
+          return originalSync.call(this);
+        },
+      );
+
+      try {
+        await assert.rejects(
+          stores.operations.updateNetworkProxy({
+            expectedPolicyRevision: configured.snapshot.revision,
+            expectedCredential: credentialBasis(configured.credentialStatus),
+            networkProxy: {
+              ...configured.snapshot.policy.networkProxy,
+              authEnabled: false,
+              username: '',
+            },
+            credential: { kind: 'delete' },
+          }),
+          isStoreError('commit_outcome_unknown'),
+        );
+      } finally {
+        syncMock.mock.restore();
+      }
+
+      const persistedPolicy = JSON.parse(
+        await readFile(join(root, 'runtime-policy.json'), 'utf8'),
+      ) as { readonly policy: { readonly networkProxy: RuntimePolicy['networkProxy'] } };
+      assert.equal(persistedPolicy.policy.networkProxy.authEnabled, false);
+      assert.ok((await readFile(join(root, 'credential-vault.json'), 'utf8')).includes(secret));
+    });
+  });
+
   test('blocks WebFetch while privacy mode is active', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const policy = await stores.runtimePolicy.mutate({
@@ -2950,7 +3516,7 @@ describe('runtime policy stores', () => {
       });
       assert.equal(policy.kind, 'committed');
 
-      assert.deepEqual(await stores.operations.resolveWebFetchExecution(), {
+      assert.deepEqual(await stores.operations.resolveHostOutboundExecution(), {
         kind: 'privacy_mode',
       });
     });
@@ -3302,7 +3868,9 @@ describe('runtime policy stores', () => {
       if (!secondOwner) return;
       try {
         const second = await openInteractiveRuntimePolicyStoresForWrite(secondOwner.lease);
-        const resolved = await second.operations.resolveExecutionConnection(connection.slug);
+        const resolved = await second.operations.resolveExecutionConnection(
+          catalogSlug(connection.slug),
+        );
         assert.equal(resolved.kind, 'ready');
         if (resolved.kind !== 'ready') return;
         assert.equal(resolved.secretMaterial.connection?.secret, secret);
@@ -3386,6 +3954,479 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('recovers a v1 onboarding intent by identity before deriving a canonical slug', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      let connectionId = '';
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const connection = await createConnection(stores, 0, {
+          ...connectionDraft('my-relay', 'openai-compatible', 'Custom relay'),
+          baseUrl: 'https://relay.example.test/v1',
+        });
+        connectionId = connection.connectionId;
+        await writeFile(
+          join(root, 'runtime-policy-onboarding.json'),
+          `${JSON.stringify({
+            schemaVersion: 1,
+            connectionId,
+            providerType: connection.providerType,
+            suppliedSecret: null,
+            baseUrl: connection.baseUrl,
+            enabledModelIds: ['relay/new'],
+            discovery: {
+              models: [{ id: 'relay/new' }],
+              source: 'fetched',
+              fetchedAt: 1_800_000_000_001,
+            },
+            invalidateLastTest: false,
+          })}\n`,
+        );
+      } finally {
+        await owner.close();
+      }
+
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(successor);
+      if (!successor) return;
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(successor.lease);
+        const catalog = await stores.connectionCatalog.getSnapshot();
+        assert.deepEqual(
+          catalog.connections.map(({ connectionId: id, slug }) => ({ id, slug })),
+          [{ id: connectionId, slug: 'my-relay' }],
+        );
+        // Recovery follows the ordinary onboarding merge rule: the newly
+        // selected model is enabled while a declaration the wizard never
+        // offered remains intact.
+        assert.deepEqual(catalog.connections[0]?.enabledModelIds, ['relay/new', 'gpt-5']);
+        assert.equal(existsSync(join(root, 'runtime-policy-onboarding.json')), false);
+      } finally {
+        await successor.close();
+      }
+    });
+  });
+
+  test('recovers a v2 create intent with its preallocated dynamic identity', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      const connectionId = '22222222-2222-4222-8222-222222222222';
+      let firstConnectionId = '';
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        firstConnectionId = (
+          await createConnection(stores, 0, connectionDraft('openai', 'openai', 'OpenAI'))
+        ).connectionId;
+        await writeFile(
+          join(root, 'runtime-policy-onboarding.json'),
+          `${JSON.stringify({
+            schemaVersion: 2,
+            connectionId,
+            slug: 'openai-2',
+            providerType: 'openai',
+            suppliedSecret: 'second-account-secret',
+            baseUrl: null,
+            enabledModelIds: ['gpt-5'],
+            discovery: {
+              models: [{ id: 'gpt-5' }],
+              source: 'fetched',
+              fetchedAt: 1_800_000_000_002,
+            },
+            invalidateLastTest: false,
+          })}\n`,
+        );
+      } finally {
+        await owner.close();
+      }
+
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(successor);
+      if (!successor) return;
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(successor.lease);
+        const catalog = await stores.connectionCatalog.getSnapshot();
+        assert.deepEqual(
+          catalog.connections.map(({ connectionId: id, slug }) => ({ id, slug })),
+          [
+            { id: firstConnectionId, slug: 'openai' },
+            { id: connectionId, slug: 'openai-2' },
+          ],
+        );
+        assert.equal(
+          (
+            await stores.operations.exportCredentialMaterial({
+              scope: 'connection',
+              connectionId,
+              kind: 'api_key',
+            })
+          )?.secret,
+          'second-account-secret',
+        );
+        assert.equal(existsSync(join(root, 'runtime-policy-onboarding.json')), false);
+      } finally {
+        await successor.close();
+      }
+    });
+  });
+
+  test('fails closed when a v2 onboarding intent rebinds an existing id to another slug', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      let vaultBefore = '';
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const connection = await createConnection(
+          stores,
+          0,
+          connectionDraft('my-relay', 'openai-compatible', 'Custom relay'),
+        );
+        const credential = await stores.credentialVault.set({
+          locator: connectionCredential(connection, 'api_key'),
+          expected: null,
+          secret: 'original-secret',
+        });
+        assert.equal(credential.kind, 'committed');
+        vaultBefore = await readFile(join(root, 'credential-vault.json'), 'utf8');
+        await writeFile(
+          join(root, 'runtime-policy-onboarding.json'),
+          `${JSON.stringify({
+            schemaVersion: 2,
+            connectionId: connection.connectionId,
+            slug: 'openai-compatible',
+            providerType: connection.providerType,
+            suppliedSecret: 'must-not-replace-original',
+            baseUrl: connection.baseUrl,
+            enabledModelIds: ['gpt-5'],
+            discovery: {
+              models: [{ id: 'gpt-5' }],
+              source: 'fetched',
+              fetchedAt: 1_800_000_000_002,
+            },
+            invalidateLastTest: false,
+          })}\n`,
+        );
+      } finally {
+        await owner.close();
+      }
+
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(successor);
+      if (!successor) return;
+      try {
+        await assert.rejects(
+          openInteractiveRuntimePolicyStoresForWrite(successor.lease),
+          isStoreError('commit_outcome_unknown'),
+        );
+        assert.equal(existsSync(join(root, 'runtime-policy-onboarding.json')), true);
+        assert.equal(await readFile(join(root, 'credential-vault.json'), 'utf8'), vaultBefore);
+      } finally {
+        await successor.close();
+      }
+    });
+  });
+
+  test('interactive OAuth create allocates distinct entities and keeps attempt identity durable', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const target = { kind: 'create' as const, providerType: 'openai-codex' as const };
+      const first = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'oauth-create-first',
+        target,
+      });
+      assert.equal(first.kind, 'ready');
+      if (first.kind !== 'ready') return;
+      assert.match(first.identity.connectionId, UUID_PATTERN);
+      assert.equal(first.identity.slug, 'codex-subscription');
+      assert.deepEqual((await stores.connectionCatalog.getSnapshot()).connections, []);
+      assert.deepEqual(
+        await stores.credentialVault.getStatus({
+          scope: 'connection',
+          connectionId: first.identity.connectionId,
+          kind: 'oauth_token',
+        }),
+        { kind: 'connection_not_found' },
+      );
+
+      const firstCompletion = await stores.operations.completeInteractiveOAuthLogin(
+        first.ticket,
+        'oauth-create-secret-a',
+      );
+      assert.equal(firstCompletion.kind, 'committed');
+      if (firstCompletion.kind !== 'committed') return;
+      assert.deepEqual(firstCompletion.connection, first.identity);
+      assert.deepEqual(await stores.operations.queryInteractiveOAuthLogin('oauth-create-first'), {
+        kind: 'authenticated',
+        target,
+        connection: first.identity,
+      });
+      assert.deepEqual(
+        await stores.operations.beginInteractiveOAuthLogin({
+          attemptId: 'oauth-create-first',
+          target,
+        }),
+        {
+          kind: 'authenticated',
+          target,
+          connection: first.identity,
+        },
+      );
+      assert.deepEqual(
+        await stores.operations.beginInteractiveOAuthLogin({
+          attemptId: 'oauth-create-first',
+          target: { kind: 'create', providerType: 'xai-oauth' },
+        }),
+        { kind: 'attempt_conflict' },
+      );
+
+      const second = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'oauth-create-second',
+        target,
+      });
+      assert.equal(second.kind, 'ready');
+      if (second.kind !== 'ready') return;
+      assert.notEqual(second.identity.connectionId, first.identity.connectionId);
+      assert.equal(second.identity.slug, 'codex-subscription-2');
+      const secondCompletion = await stores.operations.completeInteractiveOAuthLogin(
+        second.ticket,
+        'oauth-create-secret-b',
+      );
+      assert.equal(secondCompletion.kind, 'committed');
+
+      const catalog = await stores.connectionCatalog.getSnapshot();
+      assert.deepEqual(
+        catalog.connections.map(({ connectionId, slug }) => ({ connectionId, slug })),
+        [first.identity, second.identity].map(({ connectionId, slug }) => ({
+          connectionId,
+          slug,
+        })),
+      );
+      assert.equal(catalog.defaultTarget, null);
+      for (const identity of [first.identity, second.identity]) {
+        assert.equal(
+          (
+            await getCredentialStatus(stores.credentialVault, {
+              scope: 'connection',
+              connectionId: identity.connectionId,
+              kind: 'oauth_token',
+            })
+          ).configured,
+          true,
+        );
+      }
+    });
+  });
+
+  test('interactive OAuth existing login re-enables only its frozen entity', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const original = await createConnection(stores, 0, {
+        ...connectionDraft('codex-disabled', 'openai-codex', 'Personal Codex'),
+        enabled: false,
+        enabledModelIds: ['gpt-5.1-codex-mini'],
+      });
+      const admitted = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'oauth-existing-disabled',
+        target: { kind: 'existing', connectionId: original.connectionId },
+      });
+      assert.equal(admitted.kind, 'ready');
+      if (admitted.kind !== 'ready') return;
+      assert.deepEqual(admitted.identity, {
+        connectionId: original.connectionId,
+        slug: original.slug,
+        providerType: original.providerType,
+      });
+      assert.equal((await stores.connectionCatalog.getSnapshot()).connections[0]?.enabled, false);
+      assert.equal(
+        (
+          await stores.operations.completeInteractiveOAuthLogin(
+            admitted.ticket,
+            'oauth-disabled-secret',
+          )
+        ).kind,
+        'committed',
+      );
+      const catalog = await stores.connectionCatalog.getSnapshot();
+      const reenabled = catalog.connections[0];
+      assert.ok(reenabled);
+      assert.equal(reenabled.connectionId, original.connectionId);
+      assert.equal(reenabled.slug, original.slug);
+      assert.equal(reenabled.name, original.name);
+      assert.deepEqual(reenabled.enabledModelIds, original.enabledModelIds);
+      assert.equal(reenabled.enabled, true);
+      assert.equal(catalog.defaultTarget, null);
+    });
+  });
+
+  test('OAuth enrollment fails closed when its exact entity or allocated slug drifts', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const createAdmission = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'oauth-create-slug-drift',
+        target: { kind: 'create', providerType: 'openai-codex' },
+      });
+      assert.equal(createAdmission.kind, 'ready');
+      if (createAdmission.kind !== 'ready') return;
+      await createConnection(stores, 0, {
+        ...connectionDraft(
+          createAdmission.identity.slug,
+          'openai-codex',
+          'Concurrent Codex entity',
+        ),
+        enabledModelIds: [...PROVIDER_REGISTRY['openai-codex'].fallbackModels],
+      });
+      assert.deepEqual(
+        await stores.operations.completeInteractiveOAuthLogin(
+          createAdmission.ticket,
+          'must-not-fallback',
+        ),
+        { kind: 'superseded', changed: ['connection'] },
+      );
+      assert.equal(
+        await stores.operations.exportCredentialMaterial({
+          scope: 'connection',
+          connectionId: createAdmission.identity.connectionId,
+          kind: 'oauth_token',
+        }),
+        null,
+      );
+
+      const existing = (await stores.connectionCatalog.getSnapshot()).connections[0];
+      assert.ok(existing);
+      const existingAdmission = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'oauth-existing-deleted',
+        target: { kind: 'existing', connectionId: existing.connectionId },
+      });
+      assert.equal(existingAdmission.kind, 'ready');
+      if (existingAdmission.kind !== 'ready') return;
+      assert.equal(
+        (await stores.connectionCatalog.remove({ expected: connectionBasis(existing) })).kind,
+        'committed',
+      );
+      assert.deepEqual(
+        await stores.operations.completeInteractiveOAuthLogin(
+          existingAdmission.ticket,
+          'must-not-rebind',
+        ),
+        { kind: 'superseded', changed: ['connection'] },
+      );
+    });
+  });
+
+  test('OAuth enrollment recovery converges after every durable commit boundary', async () => {
+    const stages = ['journal', 'vault', 'catalog', 'receipt'] as const;
+    for (const [index, stage] of stages.entries()) {
+      await withInteractiveRoot(async ({ root, capability }) => {
+        const firstOwner = await tryAcquireInteractiveRootOwner(capability);
+        assert.ok(firstOwner);
+        if (!firstOwner) return;
+        const attemptId = `oauth-recovery-${stage}`;
+        const secret = `oauth-recovery-secret-${stage}`;
+        let ready: Extract<
+          Awaited<ReturnType<Writer['operations']['beginInteractiveOAuthLogin']>>,
+          { kind: 'ready' }
+        >;
+        try {
+          const stores = await openInteractiveRuntimePolicyStoresForWrite(firstOwner.lease);
+          const admission = await stores.operations.beginInteractiveOAuthLogin({
+            attemptId,
+            target: { kind: 'create', providerType: 'openai-codex' },
+          });
+          assert.equal(admission.kind, 'ready');
+          if (admission.kind !== 'ready') return;
+          ready = admission;
+        } finally {
+          await firstOwner.close();
+        }
+
+        const target = { kind: 'create' as const, providerType: 'openai-codex' as const };
+        const intent = prepareInteractiveOAuthEnrollmentIntent({
+          attemptId,
+          target,
+          connectionBefore: null,
+          connectionAfter: ready.connection,
+          credentialBasis: null,
+          secret,
+        });
+        await writeConnectionOnboardingIntent(root, intent);
+        let precommittedCredentialId: string | undefined;
+
+        if (index >= 1) {
+          const vault = new CredentialVaultDocumentOwner();
+          const committed = await vault.set(root, {
+            locator: {
+              scope: 'connection',
+              connectionId: ready.identity.connectionId,
+              kind: 'oauth_token',
+            },
+            expected: null,
+            secret,
+          });
+          assert.equal(committed.kind, 'committed');
+          if (committed.kind !== 'committed') return;
+          const status = committed.snapshot.entries.find(
+            ({ locator }) =>
+              locator.scope === 'connection' &&
+              locator.connectionId === ready.identity.connectionId &&
+              locator.kind === 'oauth_token',
+          );
+          assert.equal(status?.configured, true);
+          precommittedCredentialId = status?.configured ? status.credentialId : undefined;
+        }
+        if (index >= 2) {
+          const catalog = new ConnectionCatalogDocumentOwner();
+          const prepared = catalog.prepareOAuthEnrollmentUpsert(
+            await catalog.read(root),
+            null,
+            ready.connection,
+          );
+          assert.equal(prepared.kind, 'ready');
+          if (prepared.kind !== 'ready') return;
+          await catalog.commitPreparedOnboarding(root, prepared);
+        }
+        if (index >= 3) {
+          await upsertInteractiveOAuthLoginReceipt(root, {
+            attemptId,
+            target,
+            connection: ready.identity,
+          });
+        }
+
+        const successor = await tryAcquireInteractiveRootOwner(capability);
+        assert.ok(successor);
+        if (!successor) return;
+        try {
+          const stores = await openInteractiveRuntimePolicyStoresForWrite(successor.lease);
+          assert.deepEqual(await stores.operations.queryInteractiveOAuthLogin(attemptId), {
+            kind: 'authenticated',
+            target,
+            connection: ready.identity,
+          });
+          const snapshot = await stores.connectionCatalog.getSnapshot();
+          assert.deepEqual(
+            snapshot.connections.map(({ connectionId, slug }) => ({ connectionId, slug })),
+            [{ connectionId: ready.identity.connectionId, slug: ready.identity.slug }],
+          );
+          assert.equal(snapshot.defaultTarget, null);
+          const credential = await stores.operations.exportCredentialMaterial({
+            scope: 'connection',
+            connectionId: ready.identity.connectionId,
+            kind: 'oauth_token',
+          });
+          assert.equal(credential?.secret, secret);
+          if (precommittedCredentialId) {
+            assert.equal(credential?.credentialId, precommittedCredentialId);
+          }
+          assert.equal(existsSync(join(root, 'runtime-policy-onboarding.json')), false);
+        } finally {
+          await successor.close();
+        }
+      });
+    }
+  });
+
   test('interactive OAuth login commits only against its frozen connection and credential basis', async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
       const claude = await createConnection(
@@ -3393,8 +4434,14 @@ describe('runtime policy stores', () => {
         0,
         connectionDraft('codex-login', 'openai-codex', 'Codex login'),
       );
-      const first = await stores.operations.beginInteractiveOAuthLogin(claude.connectionId);
-      const second = await stores.operations.beginInteractiveOAuthLogin(claude.connectionId);
+      const first = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'oauth-first',
+        target: { kind: 'existing', connectionId: claude.connectionId },
+      });
+      const second = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'oauth-second',
+        target: { kind: 'existing', connectionId: claude.connectionId },
+      });
       assert.equal(first.kind, 'ready');
       assert.equal(second.kind, 'ready');
       if (first.kind !== 'ready' || second.kind !== 'ready') return;
@@ -3418,7 +4465,10 @@ describe('runtime policy stores', () => {
         isStoreError('invalid_credential_input'),
       );
 
-      const beforeUpdate = await stores.operations.beginInteractiveOAuthLogin(claude.connectionId);
+      const beforeUpdate = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'oauth-before-update',
+        target: { kind: 'existing', connectionId: claude.connectionId },
+      });
       assert.equal(beforeUpdate.kind, 'ready');
       if (beforeUpdate.kind !== 'ready') return;
       const current = (await stores.connectionCatalog.getSnapshot()).connections.find(
@@ -3445,13 +4495,19 @@ describe('runtime policy stores', () => {
 
       const copilot = await createConnection(
         stores,
-        2,
+        (await stores.connectionCatalog.getSnapshot()).revision,
         connectionDraft('copilot-import', 'github-copilot', 'Copilot import'),
       );
-      assert.deepEqual(await stores.operations.beginInteractiveOAuthLogin(copilot.connectionId), {
-        kind: 'provider_action_unavailable',
-        availability: 'hidden',
+      // GitHub Copilot enrolls through the Host OAuth seam like every other
+      // account login, so its admission must be a real ticket, not hidden.
+      const copilotAdmission = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'copilot-login',
+        target: { kind: 'existing', connectionId: copilot.connectionId },
       });
+      assert.equal(copilotAdmission.kind, 'ready');
+      if (copilotAdmission.kind === 'ready') {
+        assert.equal(copilotAdmission.identity.providerType, 'github-copilot');
+      }
 
       // A retired provider keeps its stored connection, so the login entry
       // point is reachable and has to refuse on its own.
@@ -3461,10 +4517,13 @@ describe('runtime policy stores', () => {
         'claude-retired',
         '88888888-8888-4888-8888-888888888888',
       );
-      assert.deepEqual(await stores.operations.beginInteractiveOAuthLogin(retired.connectionId), {
-        kind: 'provider_action_unavailable',
-        availability: 'hidden',
-      });
+      assert.deepEqual(
+        await stores.operations.beginInteractiveOAuthLogin({
+          attemptId: 'retired-oauth-login',
+          target: { kind: 'existing', connectionId: retired.connectionId },
+        }),
+        { kind: 'provider_action_unavailable' },
+      );
     });
   });
 
@@ -3617,6 +4676,10 @@ function networkProxyMutation(
       },
     },
   };
+}
+
+function catalogSlug(connectionSlug: string) {
+  return { kind: 'catalog_slug' as const, connectionSlug };
 }
 
 function isStoreError(code: RuntimePolicyStoreError['code']) {

@@ -132,10 +132,15 @@ interface StatusItemCopy {
 }
 
 const COPY: UiCatalog<StatusItemCopy> = {
-  zh: {
+  'zh-CN': {
     stopUsing: (appName) => `停止操作 ${appName}`,
     stopUnnamed: '停止 Computer Use',
     empty: '没有正在进行的任务',
+  },
+  'zh-TW': {
+    stopUsing: (appName) => `停止操作 ${appName}`,
+    stopUnnamed: '停止 Computer Use',
+    empty: '沒有正在進行的任務',
   },
   en: {
     stopUsing: (appName) => `Stop Using ${appName}`,

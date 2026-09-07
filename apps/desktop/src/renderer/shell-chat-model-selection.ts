@@ -19,28 +19,81 @@
 
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 
-export type NewChatModel = { llmConnectionSlug: string; model: string };
+export type NewChatModel = {
+  llmConnectionId: string;
+  llmConnectionSlug: string;
+  model: string;
+};
+
+export type NewChatModelCandidate = Omit<NewChatModel, 'llmConnectionId'> & {
+  llmConnectionId?: string;
+};
+
+type ComposerModelTarget = {
+  llmConnectionId?: string;
+  llmConnectionSlug: string;
+  model?: string;
+};
+
+export function composerModelSupportsVision(input: {
+  active: ComposerModelTarget | undefined;
+  next: NewChatModel | undefined;
+  choices: readonly ChatModelChoice[];
+}): boolean | undefined {
+  const target = input.active ?? input.next;
+  if (!target?.llmConnectionId || !target.model) return undefined;
+  return input.choices.find(
+    (choice) =>
+      choice.connectionId === target.llmConnectionId &&
+      choice.connectionSlug === target.llmConnectionSlug &&
+      choice.model === target.model,
+  )?.supportsVision;
+}
 
 export function pickNewChatModel(input: {
-  pending: NewChatModel | null;
-  activationCandidate?: NewChatModel;
-  catalogDefault: NewChatModel | undefined;
+  pending: NewChatModelCandidate | null;
+  activationCandidate?: NewChatModelCandidate;
+  catalogDefault: NewChatModelCandidate | undefined;
   choices: readonly ChatModelChoice[];
 }): NewChatModel | undefined {
   for (const candidate of [input.pending, input.activationCandidate, input.catalogDefault]) {
-    if (candidate && input.choices.some(
-      (choice) => choice.connectionSlug === candidate.llmConnectionSlug && choice.model === candidate.model,
-    )) return candidate;
+    if (!candidate) continue;
+    const choice = input.choices.find(
+      (entry) =>
+        entry.connectionSlug === candidate.llmConnectionSlug && entry.model === candidate.model,
+    );
+    if (choice &&
+      (candidate.llmConnectionId === undefined || candidate.llmConnectionId === choice.connectionId)) {
+      return {
+        llmConnectionId: choice.connectionId,
+        llmConnectionSlug: choice.connectionSlug,
+        model: choice.model,
+      };
+    }
   }
   const first = input.choices[0];
-  return first ? { llmConnectionSlug: first.connectionSlug, model: first.model } : undefined;
+  return first
+    ? {
+        llmConnectionId: first.connectionId,
+        llmConnectionSlug: first.connectionSlug,
+        model: first.model,
+      }
+    : undefined;
 }
 
 export function chatModelChoiceLabel(
   choices: readonly ChatModelChoice[],
+  connectionId: string | undefined,
   connectionSlug: string | undefined,
   model: string | undefined,
 ): string | undefined {
   if (!connectionSlug || !model) return model;
-  return choices.find((choice) => choice.connectionSlug === connectionSlug && choice.model === model)?.label ?? model;
+  return (
+    choices.find(
+      (choice) =>
+        (connectionId === undefined || choice.connectionId === connectionId) &&
+        choice.connectionSlug === connectionSlug &&
+        choice.model === model,
+    )?.label ?? model
+  );
 }

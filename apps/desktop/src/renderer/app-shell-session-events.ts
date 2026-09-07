@@ -23,11 +23,11 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import {
   applyLiveTurnEvent,
   clearInteractions,
-  dequeueInteractionByRequestId,
-  dequeueInteractionByToolUseId,
-  enqueueInteraction,
+  reduceInteractionQueues,
   reconcileTerminalLiveTurn,
   settleLiveTurnStep,
+  TOOL_STREAM_MAX_CHUNKS,
+  TOOL_STREAM_MAX_TOTAL_CHARS,
   type LiveTurnProjection,
   type InteractionQueues,
   type TransientUserMessageProjection,
@@ -62,6 +62,7 @@ export interface AppShellSessionEventHandlers {
   reconcilePersistedMessages(sessionId: string, messages: readonly StoredMessage[]): void;
   settleAssistantStreaming(sessionId: string, messageId?: string): Promise<void>;
   flushDisplayEvents(sessionId: string): void;
+  dropDisplayEvents(sessionId: string): void;
   markDisplayPending(sessionId: string): void;
   markDisplayReady(sessionId: string): void;
 }
@@ -173,14 +174,33 @@ export function createAppShellSessionEventHandlers(options: {
   }
 
   function scheduleDisplayEvent(sessionId: string, event: SessionEvent): void {
-    const events = displayBatch.pendingEvents.get(sessionId);
-    if (events) events.push(event);
-    else displayBatch.pendingEvents.set(sessionId, [event]);
+    const events = displayBatch.pendingEvents.get(sessionId) ?? [];
+    events.push(event);
+    displayBatch.pendingEvents.set(sessionId, events);
+    if (event.type === 'tool_output_delta') {
+      let chunks = 0;
+      let chars = 0;
+      for (let index = events.length - 1; index >= 0; index -= 1) {
+        const candidate = events[index];
+        if (
+          candidate?.type === 'tool_output_delta'
+          && candidate.turnId === event.turnId
+          && candidate.toolUseId === event.toolUseId
+        ) {
+          chunks += 1;
+          chars += candidate.chunk.length;
+          if (
+            chunks > TOOL_STREAM_MAX_CHUNKS
+            || chars > TOOL_STREAM_MAX_TOTAL_CHARS
+          ) events.splice(index, 1);
+        }
+      }
+    }
     if (displayBatch.framePending || !scheduleFrame) return;
     displayBatch.framePending = true;
     scheduleFrame(() => {
       displayBatch.framePending = false;
-      if (displayBatch.pendingEvents.size === 0) return;
+      if (!displayBatch.pendingEvents.size) return;
       const batches = new Map(displayBatch.pendingEvents);
       displayBatch.pendingEvents.clear();
       setLiveTurnBySession((current) => replaceLiveTurns(current, batches));
@@ -189,8 +209,13 @@ export function createAppShellSessionEventHandlers(options: {
 
   function flushDisplayEvents(sessionId: string): void {
     const events = takePendingDisplayEvents(sessionId);
-    if (events.length === 0) return;
+    if (!events.length) return;
     updateLiveTurn(sessionId, events);
+  }
+
+  function dropDisplayEvents(sessionId: string): void {
+    displayBatch.pendingEvents.delete(sessionId);
+    displayBatch.displayPendingSessions.delete(sessionId);
   }
 
   function markDisplayPending(sessionId: string): void {
@@ -275,12 +300,18 @@ export function createAppShellSessionEventHandlers(options: {
     return messageId ? { requiredAssistantMessageId: messageId } : undefined;
   }
 
-  function handleEvent(sessionId: string, event: SessionEvent): void {
+  function handleEvent(sessionId: string, event: SessionEvent) {
+    // Only unbounded, append-only display streams may wait for paint. Every
+    // lifecycle/readiness event stays synchronous and flushes these first.
     if (
       scheduleFrame
       && activeIdRef.current === sessionId
       && canBatchDisplayEvents(sessionId)
-      && (event.type === 'text_delta' || event.type === 'thinking_delta')
+      && (
+        event.type === 'text_delta'
+        || event.type === 'thinking_delta'
+        || event.type === 'tool_output_delta'
+      )
     ) {
       scheduleDisplayEvent(sessionId, event);
       return;
@@ -288,29 +319,35 @@ export function createAppShellSessionEventHandlers(options: {
     const pending = takePendingDisplayEvents(sessionId);
     const before = applyProjectionEvents(liveTurnBySessionRef.current[sessionId], pending);
     updateLiveTurn(sessionId, [...pending, event]);
+    setInteractionBySession((current) =>
+      reduceInteractionQueues(current, sessionId, event),
+    );
 
     switch (event.type) {
       case 'queue_update':
         projectQueuedTransientMessages?.(
           sessionId,
-          [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]
+          (event.steeringEntries ?? []).concat(event.followupEntries ?? [])
             .filter((entry) => entry.state === 'queued')
             .map((entry) => ({
               id: entry.messageId,
               transientPlacement: entry.placement,
-              ...(entry.placement === 'current_turn' ? { hostTurnId: event.turnId } : {}),
+              ...(entry.placement === 'current_turn' && { hostTurnId: event.turnId }),
               ts: event.ts,
               text: entry.content.displayText ?? entry.content.text,
-              ...(entry.content.attachments ? { attachments: [...entry.content.attachments] } : {}),
-              ...(entry.content.quotes ? { quotes: [...entry.content.quotes] } : {}),
-              ...(entry.content.inlineReferences
-                ? { inlineReferences: [...entry.content.inlineReferences] }
-                : {}),
+              ...(entry.content.attachments && { attachments: [...entry.content.attachments] }),
+              ...(entry.content.directoryReferences && {
+                directoryReferences: entry.content.directoryReferences,
+              }),
+              ...(entry.content.quotes && { quotes: [...entry.content.quotes] }),
+              ...(entry.content.inlineReferences && {
+                inlineReferences: [...entry.content.inlineReferences],
+              }),
             })),
         );
         setMessageQueueBySession?.((current) => {
-          if (event.steering.length === 0 && event.followup.length === 0) {
-            if (!(sessionId in current)) return current;
+          if (!event.steering.length && !event.followup.length) {
+            if (!current[sessionId]) return current;
             const next = { ...current };
             delete next[sessionId];
             return next;
@@ -328,32 +365,40 @@ export function createAppShellSessionEventHandlers(options: {
         });
         break;
       case 'message_admission':
-        if (event.outcome === 'retracted') {
-          removeTransientMessage?.(sessionId, event.messageId);
-        }
+        if (event.outcome === 'retracted') removeTransientMessage?.(sessionId, event.messageId);
         break;
       case 'steering_message':
         // The live Turn projection now renders this same messageId in place.
-        // Retire only the renderer-owned tail row; a later nack queue_update
-        // will project it again if the Host returns the message to the queue.
+        // Retire the renderer-owned tail row and its pending-queue card; a
+        // later nack queue_update will project both again if the Host returns
+        // the message to the queue.
         removeTransientMessage?.(sessionId, event.messageId);
+        setMessageQueueBySession?.((current) => {
+          const queue = current[sessionId];
+          if (!queue?.entries.some((entry) => entry.messageId === event.messageId)) return current;
+          const entries = queue.entries.filter((entry) => entry.messageId !== event.messageId);
+          if (entries.length > 0) return { ...current, [sessionId]: { ...queue, entries } };
+          const next = { ...current };
+          delete next[sessionId];
+          return next;
+        });
         break;
       case 'text_complete':
         void refreshMessages(sessionId, { requiredAssistantMessageId: event.messageId }).catch(() => false);
         break;
       case 'sandbox_boundary_request':
+      case 'client_capability_request':
       case 'user_question_request':
+      case 'form_request':
         onInteractionChanged?.(sessionId);
-        setInteractionBySession((current) => enqueueInteraction(current, sessionId, event));
         break;
       // The runtime drops its owner on this ack, not on the tool result that
       // follows it, so this is where the request stops being answerable — the
       // same point its boundary sibling settles on, below.
       case 'user_question_answer_ack':
+      case 'client_capability_decision_ack':
+      case 'form_answer_ack':
         onInteractionChanged?.(sessionId);
-        setInteractionBySession((current) =>
-          dequeueInteractionByRequestId(current, sessionId, event.requestId),
-        );
         break;
       case 'sandbox_boundary_decision_ack':
         onInteractionChanged?.(sessionId);
@@ -362,17 +407,12 @@ export function createAppShellSessionEventHandlers(options: {
         // or the permission label keeps describing the permissions the session
         // had before the user granted more.
         onExecutionBoundaryChanged?.(sessionId);
-        setInteractionBySession((current) =>
-          dequeueInteractionByRequestId(current, sessionId, event.requestId),
-        );
         break;
       case 'tool_result':
-        setInteractionBySession((current) => dequeueInteractionByToolUseId(current, sessionId, event.toolUseId));
         void refreshMessages(sessionId);
         break;
       case 'error':
         onInteractionChanged?.(sessionId);
-        setInteractionBySession((current) => clearInteractions(current, sessionId));
         if (activeIdRef.current === sessionId) {
           if (isNoRealConnectionEvent(event)) {
             const reason = noRealConnectionReasonFromEvent(event);
@@ -404,9 +444,8 @@ export function createAppShellSessionEventHandlers(options: {
       case 'complete': {
         onInteractionChanged?.(sessionId);
         setInteractionBySession((current) => clearInteractions(current, sessionId));
-        if (event.contextCompactionOutcome) {
+        if (event.contextCompactionOutcome)
           onContextCompactionOutcome?.(sessionId, event.turnId, event.contextCompactionOutcome);
-        }
         if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens') {
           const body = [...(before?.steps ?? [])].reverse().find((step) => step.text?.text)?.text?.text;
           notifyRunEnded?.({ kind: 'completed', sessionId, body });
@@ -434,6 +473,7 @@ export function createAppShellSessionEventHandlers(options: {
     reconcilePersistedMessages,
     settleAssistantStreaming,
     flushDisplayEvents,
+    dropDisplayEvents,
     markDisplayPending,
     markDisplayReady,
   };

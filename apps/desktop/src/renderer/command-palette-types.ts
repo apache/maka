@@ -32,6 +32,10 @@ export interface Command {
   kind: CommandKind;
   label: string;
   hint?: string;
+  platformHint?: {
+    apple: string;
+    other: string;
+  };
   group: string;
   Icon: LucideIcon;
   keywords?: string[];

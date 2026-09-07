@@ -25,6 +25,8 @@ import {
 } from '@maka/core/session';
 import {
   runtimeHostExecutionUnavailableReason,
+  runtimeHostSafeBoundaryContinuationUnavailableReason,
+  LEGACY_CONNECTION_IDENTITY_EXECUTION_UNAVAILABLE_REASON,
   WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON,
   WORKHUB_COORDINATION_TARGET_UNAVAILABLE_REASON,
 } from '../server/host-session-availability.js';
@@ -40,6 +42,8 @@ const base = {
   subagentWorkspace: undefined,
   transcriptLedgerVersion: 1 as const,
   toolProfile: 'workhub-coordination-v1' as const,
+  llmConnectionId: 'connection-workhub',
+  backend: 'ai-sdk' as const,
 };
 
 test('WorkHub execution requires the exact reserved id, role, and zero-tool profile', () => {
@@ -99,5 +103,47 @@ test('WorkHub execution requires the exact reserved id, role, and zero-tool prof
       execution,
     ),
     WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON,
+  );
+});
+
+test('legacy Session identity cannot enter Host execution before explicit account recovery', () => {
+  assert.equal(
+    runtimeHostExecutionUnavailableReason(
+      {
+        ...base,
+        id: 'legacy-connection-session',
+        role: undefined,
+        llmConnectionId: undefined,
+      },
+      { kind: 'external_message' },
+    ),
+    LEGACY_CONNECTION_IDENTITY_EXECUTION_UNAVAILABLE_REASON,
+  );
+});
+
+test('legacy Session identity cannot resume a safe-boundary continuation', () => {
+  assert.equal(
+    runtimeHostSafeBoundaryContinuationUnavailableReason({
+      ...base,
+      id: 'legacy-safe-boundary-session',
+      role: undefined,
+      subagentParent: undefined,
+      llmConnectionId: undefined,
+    }),
+    LEGACY_CONNECTION_IDENTITY_EXECUTION_UNAVAILABLE_REASON,
+  );
+});
+
+test('legacy fake Session identity defers to the retired-backend product refusal', () => {
+  assert.equal(
+    runtimeHostSafeBoundaryContinuationUnavailableReason({
+      ...base,
+      id: 'legacy-fake-safe-boundary-session',
+      role: undefined,
+      subagentParent: undefined,
+      llmConnectionId: undefined,
+      backend: 'fake',
+    }),
+    undefined,
   );
 });

@@ -23,9 +23,16 @@ import { normalizeSubagentSettings } from '../subagent-settings.js';
 import type {
   AgentRuntimeSettingsPatch,
   MutateRuntimePolicyInput,
+  NetworkProxyCredentialUpdate,
+  NetworkProxyCredentialTarget,
   RuntimePolicy,
   RuntimePolicyMutation,
+  UpdateNetworkProxyInput,
 } from '../runtime-policy.js';
+import {
+  decodeCredentialVersionBasis,
+  normalizeCredentialSecret,
+} from './credential-vault-codec.js';
 import { WEB_SEARCH_PROVIDERS } from '../web-search.js';
 import {
   assertCanonicalValue,
@@ -71,6 +78,99 @@ export function normalizeRuntimePolicyMutation(value: unknown): MutateRuntimePol
   return {
     expectedRevision: revisionValue(input.expectedRevision, 'runtime policy expected revision'),
     operation: normalizeMutationOperation(operation),
+  };
+}
+
+export function normalizeNetworkProxyUpdate(value: unknown): UpdateNetworkProxyInput {
+  const input = exactRecord(value, 'network proxy update', [
+    'expectedPolicyRevision',
+    'expectedCredential',
+    'networkProxy',
+    'credential',
+  ]);
+  const expectedCredential =
+    input.expectedCredential === null
+      ? null
+      : decodeCredentialVersionBasis(input.expectedCredential);
+  if (expectedCredential !== null && expectedCredential.locator.scope !== 'network_proxy') {
+    throw domainError('network proxy update requires a network proxy credential basis');
+  }
+  const credential = normalizeNetworkProxyCredentialUpdate(input.credential);
+  const networkProxy = normalizeNetworkProxy(input.networkProxy);
+  if (!networkProxy.authEnabled && credential.kind !== 'delete') {
+    throw domainError('disabled proxy authentication requires credential deletion');
+  }
+  return {
+    expectedPolicyRevision: revisionValue(
+      input.expectedPolicyRevision,
+      'network proxy expected policy revision',
+    ),
+    expectedCredential,
+    networkProxy,
+    credential,
+  };
+}
+
+function normalizeNetworkProxyCredentialUpdate(value: unknown): NetworkProxyCredentialUpdate {
+  const base = exactRecord(
+    value,
+    'network proxy credential update',
+    ['kind', 'secret', 'expectedTarget'],
+    ['kind'],
+  );
+  switch (base.kind) {
+    case 'keep':
+    case 'delete': {
+      exactRecord(value, `network proxy credential ${base.kind}`, ['kind']);
+      return { kind: base.kind };
+    }
+    case 'replace': {
+      const replacement = exactRecord(
+        value,
+        'network proxy credential replacement',
+        ['kind', 'secret', 'expectedTarget'],
+        ['kind', 'secret'],
+      );
+      return {
+        kind: 'replace',
+        secret: normalizeCredentialSecret(replacement.secret),
+        ...(replacement.expectedTarget === undefined
+          ? {}
+          : {
+              expectedTarget: normalizeNetworkProxyCredentialTarget(replacement.expectedTarget),
+            }),
+      };
+    }
+    default:
+      throw domainError(`network proxy credential update '${String(base.kind)}' is unknown`);
+  }
+}
+
+export function normalizeNetworkProxyCredentialTarget(
+  value: unknown,
+): NetworkProxyCredentialTarget {
+  const item = exactRecord(value, 'network proxy credential target', [
+    'protocol',
+    'host',
+    'port',
+    'username',
+  ]);
+  if (item.protocol !== 'http' && item.protocol !== 'https' && item.protocol !== 'socks5') {
+    throw domainError('network proxy credential target protocol is invalid');
+  }
+  const rawHost = stringValue(item.host, 'network proxy credential target host', 255);
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(rawHost)) {
+    throw domainError('network proxy credential target host must not contain control characters');
+  }
+  const host = rawHost.trim().toLowerCase();
+  if (host.length === 0) {
+    throw domainError('network proxy credential target host must not be empty');
+  }
+  return {
+    protocol: item.protocol,
+    host,
+    port: integerValue(item.port, 'network proxy credential target port', 1, 65_535),
+    username: stringValue(item.username, 'network proxy credential target username', 256),
   };
 }
 

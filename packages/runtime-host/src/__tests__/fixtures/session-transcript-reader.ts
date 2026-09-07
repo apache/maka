@@ -101,6 +101,40 @@ export function transcriptReader(
       }
       return { throughSequence, fragments, rawBytes, next };
     },
+    readDurableRecords: async (_sessionId, request) => {
+      const throughSequence =
+        request.throughSequence === undefined
+          ? durable.length === 0
+            ? null
+            : durable.length - 1
+          : request.throughSequence;
+      if (throughSequence === null) {
+        return { throughSequence: null, records: [], nextPosition: null };
+      }
+      const position = request.position ?? (request.direction === 'older' ? throughSequence : 0);
+      const candidates = durable
+        .map((message, sequence) => ({ sequence, message }))
+        .filter(
+          ({ sequence }) =>
+            sequence <= throughSequence &&
+            (request.direction === 'older' ? sequence <= position : sequence >= position),
+        )
+        .sort((left, right) =>
+          request.direction === 'older'
+            ? right.sequence - left.sequence
+            : left.sequence - right.sequence,
+        );
+      const records = candidates.slice(0, request.maxMessages);
+      const last = records.at(-1);
+      return {
+        throughSequence,
+        records,
+        nextPosition:
+          last && records.length < candidates.length
+            ? last.sequence + (request.direction === 'older' ? -1 : 1)
+            : null,
+      };
+    },
     readDurableMessagesById: async (_sessionId, request) =>
       request.throughSequence === null
         ? []

@@ -104,7 +104,11 @@ function declaredLicenseFallback(pkg, source) {
       text: apache2LicenseText,
     };
   }
-  if (pkg.license === 'MIT') {
+  if (
+    pkg.license
+      .split(/\s+OR\s+/u)
+      .some((alternative) => alternative.replaceAll(/[()]/gu, '').trim() === 'MIT')
+  ) {
     const authors = pkg.authors.length > 0 ? pkg.authors.join(', ') : 'not included';
     return {
       name: 'MIT.txt',

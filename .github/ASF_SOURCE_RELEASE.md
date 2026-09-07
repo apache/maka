@@ -19,14 +19,9 @@
 
 # Apache Maka source release runbook
 
-This runbook prepares the official Apache Incubator source-release component.
-The first Maka release also requires npm and Desktop convenience artifacts, but
-those artifacts have separate build, licensing, signing, and acceptance gates.
-They must be built from the exact IPMC-approved source release produced here.
+This runbook prepares the official Apache Incubator source release. npm, Desktop, and other convenience artifacts use separate build, licensing, signing, and acceptance processes; they are not part of this source candidate or its release vote. Stable convenience artifacts, when provided, are built from the approved source release and tag.
 
-The workflow implements release mechanics; it does not establish that a commit
-is legally ready to release. Before starting a vote, the PPMC and mentors must
-confirm the candidate's provenance and release documents.
+The workflow implements release mechanics; it does not replace the human review of candidate provenance and release documents performed through the project's release vote.
 
 ## Candidate contract
 

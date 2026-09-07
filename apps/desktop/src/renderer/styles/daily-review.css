@@ -90,7 +90,7 @@
 }
 
 .maka-daily-review-report-prose {
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   overflow-wrap: anywhere;
 }
 

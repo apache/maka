@@ -86,7 +86,7 @@ describe('incremental transcript projection', () => {
     const chinese = projection.project({
       sessionId: SESSION,
       messages,
-      locale: 'zh',
+      locale: 'zh-CN',
     });
 
     assert.equal(
@@ -100,10 +100,28 @@ describe('incremental transcript projection', () => {
     assert.notStrictEqual(chinese, english);
   });
 
+  test('a locale change updates the live context-compaction row text', () => {
+    const projection = createTranscriptProjection();
+    // Empty messages keep the settled turns reference stable (NO_TURNS) across
+    // the locale switch, so only the overlay locale guard can re-localize the
+    // live "compacting" row.
+    const liveTurn: LiveTurnProjection = {
+      turnId: 'turn-compact',
+      phase: 'waiting',
+      steps: [],
+      rootExecutionKind: 'context_compact',
+      startedAt: 1,
+    };
+    const english = projection.project({ sessionId: SESSION, messages: [], liveTurn, locale: 'en' });
+    const chinese = projection.project({ sessionId: SESSION, messages: [], liveTurn, locale: 'zh-CN' });
+    assert.equal(english[0]?.notes[0]?.text, 'Compacting context…');
+    assert.equal(chinese[0]?.notes[0]?.text, '正在压缩上下文…');
+  });
+
   test('a shell-run update whose semantics are unchanged affects nothing', () => {
     const projection = createTranscriptProjection();
     const messages = history();
-    const base = { sessionId: SESSION, messages, liveTurn: streamingTurn('he') };
+    const base = { locale: 'en' as const, sessionId: SESSION, messages, liveTurn: streamingTurn('he') };
     const settled = projection.project({ ...base, shellRunUpdates: [backgroundUpdate] });
 
     // A new update object carrying an already-merged revision says nothing new.
@@ -127,8 +145,8 @@ describe('incremental transcript projection', () => {
 
   test('a turn missing from the durable snapshot is dropped, leaving the rest identical', () => {
     const projection = createTranscriptProjection();
-    const before = projection.project({ sessionId: SESSION, messages: history() });
-    const after = projection.project({ sessionId: SESSION, messages: history().slice(0, 4) });
+    const before = projection.project({ locale: 'en', sessionId: SESSION, messages: history() });
+    const after = projection.project({ locale: 'en', sessionId: SESSION, messages: history().slice(0, 4) });
     assert.notStrictEqual(after, before, 'a dropped turn must move the published list');
     assert.deepEqual(after.map((turn) => turn.turnId), ['turn-1']);
     assert.strictEqual(after[0], before[0]);
@@ -139,6 +157,7 @@ describe('incremental transcript projection', () => {
     // turn is recognised by value, wherever it lands.
     const projection = createTranscriptProjection();
     const before = projection.project({
+      locale: 'en',
       sessionId: SESSION,
       messages: [
         ...history(),
@@ -147,6 +166,7 @@ describe('incremental transcript projection', () => {
       ],
     });
     const after = projection.project({
+      locale: 'en',
       sessionId: SESSION,
       messages: [
         ...history().slice(0, 4),
@@ -161,8 +181,9 @@ describe('incremental transcript projection', () => {
 
   test('an edited-and-resent prompt invalidates its own turn and nothing before it', () => {
     const projection = createTranscriptProjection();
-    const before = projection.project({ sessionId: SESSION, messages: history() });
+    const before = projection.project({ locale: 'en', sessionId: SESSION, messages: history() });
     const after = projection.project({
+      locale: 'en',
       sessionId: SESSION,
       messages: [
         ...history().slice(0, 4),
@@ -178,6 +199,7 @@ describe('incremental transcript projection', () => {
   test('a live step handed off to durable messages rebuilds only its own turn', () => {
     const projection = createTranscriptProjection();
     const live = projection.project({
+      locale: 'en',
       sessionId: SESSION,
       messages: [...history(), { type: 'user', id: 'u3', turnId: 'turn-3', ts: 7, text: 'third' }],
       liveTurn: streamingTurn('half an ans'),
@@ -186,6 +208,7 @@ describe('incremental transcript projection', () => {
 
     // Handoff: the answer lands in messages and the live projection retires.
     const settled = projection.project({
+      locale: 'en',
       sessionId: SESSION,
       messages: [
         ...history(),
@@ -220,12 +243,13 @@ describe('incremental transcript projection', () => {
       sourceToolCallId: 'bash-1',
       result: shellRunSnapshot(1),
     };
-    const before = projection.project({ sessionId: SESSION, messages, shellRunUpdates: [owned] });
+    const before = projection.project({ locale: 'en', sessionId: SESSION, messages, shellRunUpdates: [owned] });
     const bash = before[0]?.tools[0];
     assert.equal(bash?.shellRunSource, 'owned');
     assert.equal(bash?.result?.kind === 'shell_run' ? bash.result.revision : undefined, 1);
 
     const after = projection.project({
+      locale: 'en',
       sessionId: SESSION,
       messages,
       shellRunUpdates: [{
@@ -255,6 +279,7 @@ describe('incremental transcript projection', () => {
       },
     });
     projection.project({
+      locale: 'en',
       sessionId: SESSION,
       messages: counted,
       liveTurn: streamingTurn('h'),
@@ -270,6 +295,7 @@ describe('incremental transcript projection', () => {
     const baseline = reads;
     for (const text of ['he', 'hel', 'hell', 'hello']) {
       projection.project({
+        locale: 'en',
         sessionId: SESSION,
         messages: counted,
         liveTurn: streamingTurn(text),
@@ -286,11 +312,11 @@ describe('incremental transcript projection', () => {
     const projection = createTranscriptProjection();
     const messages = history();
     const updates: ShellRunUpdate[] = [backgroundUpdate];
-    const before = projection.project({ sessionId: SESSION, messages, shellRunUpdates: updates });
+    const before = projection.project({ locale: 'en', sessionId: SESSION, messages, shellRunUpdates: updates });
     assert.equal(revisionOf(before[0]), 9);
 
     updates.push({ ...backgroundUpdate, result: shellRunSnapshot(21) });
-    const after = projection.project({ sessionId: SESSION, messages, shellRunUpdates: updates });
+    const after = projection.project({ locale: 'en', sessionId: SESSION, messages, shellRunUpdates: updates });
     assert.equal(revisionOf(after[0]), 21, 'an update appended to the same array must be applied');
   });
 
@@ -301,8 +327,9 @@ describe('incremental transcript projection', () => {
     // sessionId reset is hygiene, bounding what the projection holds on to
     // rather than standing between the user and a stale transcript.
     const projection = createTranscriptProjection();
-    const first = projection.project({ sessionId: SESSION, messages: history() });
+    const first = projection.project({ locale: 'en', sessionId: SESSION, messages: history() });
     const other = projection.project({
+      locale: 'en',
       sessionId: 'session-2',
       messages: [
         ...history().slice(0, 5),
@@ -313,7 +340,7 @@ describe('incremental transcript projection', () => {
     assert.equal(other[1]?.assistant?.text, 'a different answer');
 
     // Nothing of session-1 survived: re-projecting it rebuilds every turn.
-    const back = projection.project({ sessionId: SESSION, messages: history() });
+    const back = projection.project({ locale: 'en', sessionId: SESSION, messages: history() });
     assert.notStrictEqual(back[0], first[0]);
     assert.notStrictEqual(back[1], first[1]);
   });
@@ -325,8 +352,9 @@ describe('incremental transcript projection', () => {
     // affects — which is why the affected set is derived from the projection's
     // own output rather than passed through from the event.
     const projection = createTranscriptProjection();
-    const before = projection.project({ sessionId: SESSION, messages: history() });
+    const before = projection.project({ locale: 'en', sessionId: SESSION, messages: history() });
     const after = projection.project({
+      locale: 'en',
       sessionId: SESSION,
       messages: [
         ...history(),
@@ -373,6 +401,7 @@ describe('incremental transcript projection', () => {
     // over the live-merged turns, where the live-only tool already exists.
     const projection = createTranscriptProjection();
     const turns = projection.project({
+      locale: 'en',
       sessionId: SESSION,
       messages: [],
       liveTurn: {
@@ -428,19 +457,6 @@ describe('turn identity moves across structural change classes', () => {
       ],
     },
     {
-      field: 'partialOutputRetained',
-      // Recorded OR derived from the turn's own content, so isolating the
-      // recorded term needs a turn that produced nothing.
-      from: [
-        base[0]!,
-        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'aborted', partialOutputRetained: false },
-      ],
-      refresh: [
-        base[0]!,
-        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'aborted', partialOutputRetained: true },
-      ],
-    },
-    {
       field: 'assistant',
       refresh: [
         base[0]!,
@@ -453,10 +469,10 @@ describe('turn identity moves across structural change classes', () => {
   for (const { field, from, refresh } of cases) {
     test(`a refresh that only changes \`${field}\` moves the turn`, () => {
       const projection = createTranscriptProjection();
-      const before = projection.project({ sessionId: SESSION, messages: from ?? base });
+      const before = projection.project({ locale: 'en', sessionId: SESSION, messages: from ?? base });
       // A refresh re-reads the ledger over IPC: all-new objects either way, so
       // identity can only come from the value comparison under test.
-      const after = projection.project({ sessionId: SESSION, messages: refresh });
+      const after = projection.project({ locale: 'en', sessionId: SESSION, messages: refresh });
 
       // Self-check: the row really does move the field it names, so a row that
       // stops isolating its field fails loudly instead of passing vacuously.

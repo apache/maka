@@ -18,10 +18,9 @@
  */
 
 import { z } from 'zod';
-import { type CuAction, type CuPoint } from '@maka/core/computer-use';
+import type { CuAction } from '@maka/core/computer-use';
 import type { CuDispatchEvidence, CuRunResult, CuSemanticAction } from './computer-use-types.js';
 
-export const coordinate = z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()]);
 export const text = z.string().max(8000);
 
 /**
@@ -70,19 +69,6 @@ const redundantTargetHints = {
   app: z.string().min(1).max(512).optional(),
   window_id: z.number().int().positive().optional(),
 } as const;
-const pointerAction = <
-  T extends 'left_click' | 'right_click' | 'middle_click' | 'double_click' | 'triple_click',
->(
-  action: T,
-) =>
-  z
-    .object({
-      action: z.literal(action),
-      observation_id: z.string().min(1).max(256),
-      coordinate,
-      text: text.optional(),
-    })
-    .strict();
 export const computerParams = z.discriminatedUnion('action', [
   z
     .object({
@@ -273,42 +259,6 @@ export const computerParams = z.discriminatedUnion('action', [
     .refine((input) => input.app !== undefined || input.window_id !== undefined, {
       message: COMPUTER_USE_REFINEMENT_MESSAGES.screenshotTarget,
     }),
-  z.object({ action: z.literal('cursor_position') }).strict(),
-  z
-    .object({
-      action: z.literal('mouse_move'),
-      observation_id: z.string().min(1).max(256),
-      coordinate,
-    })
-    .strict(),
-  pointerAction('left_click'),
-  pointerAction('right_click'),
-  pointerAction('middle_click'),
-  pointerAction('double_click'),
-  pointerAction('triple_click'),
-  z
-    .object({
-      action: z.literal('left_mouse_down'),
-      observation_id: z.string().min(1).max(256),
-      coordinate,
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal('left_mouse_up'),
-      observation_id: z.string().min(1).max(256),
-      coordinate,
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal('left_click_drag'),
-      observation_id: z.string().min(1).max(256),
-      start_coordinate: coordinate,
-      coordinate,
-      text: text.optional(),
-    })
-    .strict(),
   z
     .object({
       action: z.literal('type'),
@@ -325,24 +275,6 @@ export const computerParams = z.discriminatedUnion('action', [
     .strict(),
   z
     .object({
-      action: z.literal('hold_key'),
-      observation_id: z.string().min(1).max(256),
-      text,
-      duration: z.number().min(0).max(60).optional(),
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal('scroll'),
-      observation_id: z.string().min(1).max(256),
-      coordinate,
-      scroll_direction: z.enum(['up', 'down', 'left', 'right']).optional(),
-      scroll_amount: z.number().int().min(0).max(100).optional(),
-      text: text.optional(),
-    })
-    .strict(),
-  z
-    .object({
       action: z.literal('wait'),
       duration: z.number().min(0).max(60).optional(),
       // A condition, so the wait can end when the thing happens rather than
@@ -354,18 +286,6 @@ export const computerParams = z.discriminatedUnion('action', [
     .refine((input) => !(input.wait_for_text && input.wait_for_text_gone), {
       message: COMPUTER_USE_REFINEMENT_MESSAGES.waitOneCondition,
     }),
-  z
-    .object({
-      action: z.literal('zoom'),
-      observation_id: z.string().min(1).max(256),
-      region: z.tuple([
-        z.number().int().nonnegative(),
-        z.number().int().nonnegative(),
-        z.number().int().nonnegative(),
-        z.number().int().nonnegative(),
-      ]),
-    })
-    .strict(),
 ]);
 export type ComputerParams = z.infer<typeof computerParams>;
 
@@ -490,27 +410,14 @@ export function describeComputerUseArgsViolation(
   return `${unique.join('; ')}${guidance}`;
 }
 
-const point = (c?: [number, number]): CuPoint | undefined => (c ? { x: c[0], y: c[1] } : undefined);
-
 export function snapshotComputerParams(args: ComputerParams): ComputerParams {
   for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(args))) {
     if (descriptor.get || descriptor.set) {
       throw new Error(`invalid_computer_params: '${key}' must be a plain data property`);
     }
   }
-  const cloneTuple = <T extends readonly number[] | undefined>(value: T): T =>
-    (value ? Object.freeze([...value]) : value) as T;
   const source = args as ComputerParams & Record<string, unknown>;
   const snapshot = { ...source } as Record<string, unknown>;
-  if (Object.hasOwn(source, 'coordinate')) {
-    snapshot.coordinate = cloneTuple(source.coordinate as [number, number] | undefined);
-  }
-  if (Object.hasOwn(args, 'start_coordinate')) {
-    snapshot.start_coordinate = cloneTuple(source.start_coordinate as [number, number] | undefined);
-  }
-  if (Object.hasOwn(source, 'region')) {
-    snapshot.region = cloneTuple(source.region as [number, number, number, number] | undefined);
-  }
   return Object.freeze(snapshot) as ComputerParams;
 }
 
@@ -520,11 +427,6 @@ export function snapshotComputerParams(args: ComputerParams): ComputerParams {
  * runtime converts the throw into an error tool-result.
  */
 export function adaptToCuAction(args: ComputerParams): CuAction {
-  const need = (c?: [number, number]): CuPoint => {
-    const p = point(c);
-    if (!p) throw new Error(`invalid_coordinate: action '${args.action}' requires coordinate`);
-    return p;
-  };
   const needText = (value: string | undefined, action: string): string => {
     if (typeof value !== 'string' || value.length === 0) {
       // Not `invalid_coordinate`: nothing here is about a point on the screen,
@@ -549,56 +451,12 @@ export function adaptToCuAction(args: ComputerParams): CuAction {
       throw new Error(`semantic action '${args.action}' requires the semantic backend`);
     case 'screenshot':
       return { type: 'screenshot' };
-    case 'cursor_position':
-      return { type: 'cursor_position' };
-    case 'mouse_move':
-      return { type: 'mouse_move', coordinate: need(args.coordinate) };
-    case 'left_click':
-      return { type: 'left_click', coordinate: need(args.coordinate), text: args.text };
-    case 'right_click':
-      return { type: 'right_click', coordinate: need(args.coordinate), text: args.text };
-    case 'middle_click':
-      return { type: 'middle_click', coordinate: need(args.coordinate), text: args.text };
-    case 'double_click':
-      return { type: 'double_click', coordinate: need(args.coordinate), text: args.text };
-    case 'triple_click':
-      return { type: 'triple_click', coordinate: need(args.coordinate), text: args.text };
-    case 'left_mouse_down':
-      return { type: 'left_mouse_down', coordinate: need(args.coordinate) };
-    case 'left_mouse_up':
-      return { type: 'left_mouse_up', coordinate: need(args.coordinate) };
-    case 'left_click_drag':
-      return {
-        type: 'left_click_drag',
-        startCoordinate: need(args.start_coordinate),
-        coordinate: need(args.coordinate),
-        text: args.text,
-      };
     case 'type':
       return { type: 'type', text: needText(args.text, args.action) };
     case 'key':
       return { type: 'key', text: needText(args.text, args.action) };
-    case 'hold_key':
-      return {
-        type: 'hold_key',
-        text: needText(args.text, args.action),
-        durationMs: Math.round((args.duration ?? 0) * 1000),
-      };
-    case 'scroll':
-      return {
-        type: 'scroll',
-        coordinate: need(args.coordinate),
-        scrollDirection: args.scroll_direction ?? 'down',
-        scrollAmount: args.scroll_amount ?? 3,
-        text: args.text,
-      };
     case 'wait':
       return { type: 'wait', durationMs: Math.round((args.duration ?? 0) * 1000) };
-    case 'zoom': {
-      if (!args.region) throw new Error("invalid_coordinate: action 'zoom' requires region");
-      const [x1, y1, x2, y2] = args.region;
-      return { type: 'zoom', region: { x1, y1, x2, y2 } };
-    }
     default:
       // The action name is the one field the model always chooses for itself,
       // and the schema already holds the closed set it may choose from. Naming
@@ -696,10 +554,6 @@ export function summarize(
   const shot = result.screenshot
     ? `; screenshot ${result.screenshot.widthPx}x${result.screenshot.heightPx}`
     : '';
-  const pointStr =
-    action.type === 'cursor_position' && result.resolvedScreenPoint
-      ? `; screen_point=${result.resolvedScreenPoint.x},${result.resolvedScreenPoint.y}`
-      : '';
   // `ok` is what the model reads first, and for a dispatch that provably
   // changed nothing it is the wrong first word. The executor already says so —
   // `effect: "suspected_noop"` means the action was delivered and the tree
@@ -719,7 +573,7 @@ export function summarize(
   // same clause it can act on, and that stays on both faces.
   const via = audience === 'host' ? ` via ${outcome.tier}` : '';
   return (
-    `maka_computer.${action.type} ${verdict}${via} (verified=${verified})${evidence}${pointStr}${shot}` +
+    `maka_computer.${action.type} ${verdict}${via} (verified=${verified})${evidence}${shot}` +
     (outcome.verified === false
       ? ' — dispatch could not be confirmed; re-screenshot before retrying'
       : outcome.verified === true && outcome.evidence?.effect === 'confirmed'

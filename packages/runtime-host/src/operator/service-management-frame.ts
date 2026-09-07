@@ -20,6 +20,10 @@
 import { z } from 'zod';
 import { PROJECT_DIRECTORY_MAX_ROOTS } from '../protocol/project-catalog.js';
 import {
+  runtimeHostReconciliationProviderSchema,
+  runtimeHostSupervisorProviderSchema,
+} from './managed-deployment.js';
+import {
   compareProductReleaseVersions,
   isProductReleaseVersion,
   isSha512PackageIntegrity,
@@ -30,11 +34,45 @@ export const RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX =
 export const RUNTIME_HOST_SERVICE_LOG_MAX_BYTES = 48 * 1024;
 export const RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES = 128;
 export const RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES = 2 * 1024;
+
+// Failure codes the operator CLI commits to; the wire keeps `code` an open string so older
+// Clients still decode frames from a newer operator, and presenters fold codes they do not know.
+export type RuntimeHostServiceErrorCode =
+  | 'unsupported_platform'
+  | 'service_manager_unavailable'
+  | 'linger_disabled'
+  | 'not_installed'
+  | 'invalid_config'
+  | 'invalid_launch'
+  | 'target_mismatch'
+  | 'configuration_changed'
+  | 'configuration_incomplete'
+  | 'active_tasks'
+  | 'retirement_failed'
+  | 'update_requires_retirement'
+  | 'update_incomplete'
+  | 'service_manager_operation_failed'
+  | 'uninstall_incomplete'
+  | 'deployment_io_failed'
+  | 'deployment_commit_unknown'
+  | 'target_unavailable'
+  | 'registry_unavailable'
+  | 'invalid_registry_metadata'
+  | 'package_download_failed'
+  | 'package_integrity_mismatch'
+  | 'invalid_package'
+  | 'invalid_update_policy'
+  | 'update_policy_write_failed'
+  | 'update_policy_commit_outcome_unknown'
+  | 'update_policy_changed'
+  | 'update_not_admitted';
 export const RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY = 'access-management-v1';
 export const RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV =
   'MAKA_RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST';
 export const RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY = 'process-lifetime-lock-v1';
 export const RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY = 'peer-management-v1';
+export const RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY = 'peer-relay-discovery-v1';
+export const RUNTIME_HOST_OPERATOR_PEER_WEBRTC_STUN_CAPABILITY = 'peer-webrtc-stun-v1';
 export const RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY = 'update-scheduler-v1';
 export const RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV =
   'MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST';
@@ -91,6 +129,8 @@ const SERVICE_STATES = ['not_installed', ...INSTALLED_SERVICE_STATES] as const;
 const OPERATOR_CAPABILITIES = [
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_PEER_WEBRTC_STUN_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
   RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
 ] as const;
@@ -119,6 +159,7 @@ const MANAGED_SERVICE_TARGET_SCHEMA = z
     serviceId: z.string().regex(/^[a-f0-9]{64}$/u),
     rootPath: boundedNonEmptyString(PATH_MAX_BYTES),
     rootId: z.string().regex(/^[a-f0-9]{64}$/u),
+    deploymentId: z.string().uuid().optional(),
   })
   .strict();
 
@@ -232,6 +273,21 @@ const SERVICE_SUMMARY_SCHEMA = z
     pid: z.number().int().positive().nullable(),
     lastExitCode: z.number().int().nonnegative().nullable(),
     installedVersion: boundedString(FIELD_MAX_BYTES).nullable(),
+    lifecycle: z
+      .object({
+        mode: z.enum(['on_demand', 'supervised']),
+        availability: z.enum(['activation', 'session', 'environment', 'machine']),
+        provider: runtimeHostSupervisorProviderSchema.optional(),
+      })
+      .strict()
+      .optional(),
+    reconciliation: z
+      .object({
+        trigger: z.enum(['manual', 'activation', 'scheduled']),
+        provider: runtimeHostReconciliationProviderSchema.optional(),
+      })
+      .strict()
+      .optional(),
     stateRoot: boundedString(PATH_MAX_BYTES).optional(),
     configurationFingerprint: z
       .string()

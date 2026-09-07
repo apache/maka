@@ -19,7 +19,7 @@
 
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { CollaborationMode } from '@maka/core/collaboration';
-import type { DesktopNewTaskTarget } from '../preload/bridge-contract.js';
+import type * as DesktopBridge from '../preload/bridge-contract.js';
 import type { InlineReference, QuoteRef } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -28,7 +28,6 @@ import type { StoredMessage } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import {
@@ -46,11 +45,10 @@ import {
   isSessionWorkspaceUnavailableError,
   showSessionWorkspaceUnavailableToast,
 } from './session-workspace-errors.js';
-import {
-  showSkillInvocationFeedback,
-  skillInvocationDisplayText,
-} from './skill-invocation-feedback.js';
+import * as skillFeedback from './skill-invocation-feedback.js';
+import { restoreTranscriptTailAfterSend } from './features/conversation/index.js';
 import type { DesktopTranscriptRangeController } from './desktop-transcript-range-store.js';
+import type { SessionPendingClaim } from './app-shell-session-ui-state.js';
 import {
   retainedAttachmentRefs,
   toComposerIngestItems,
@@ -67,6 +65,7 @@ import {
   noRealConnectionSetupDescription,
 } from './model-connection-errors.js';
 import type { RefreshMessagesOptions } from './session-message-settlement.js';
+import type { MessageListUpdater } from './session-workspace-actions.js';
 
 export type { RefreshMessagesOptions };
 
@@ -77,20 +76,24 @@ type ComposerImportOwner = {
 };
 
 type RefBox<T> = { current: T };
-type BooleanRecordUpdater = (updater: (current: Record<string, boolean>) => Record<string, boolean>) => void;
 type LiveTurnRecordUpdater = (
   updater: (current: Record<string, LiveTurnProjection>) => Record<string, LiveTurnProjection>,
 ) => void;
-type MessageListUpdater = (next: StoredMessage[] | ((current: StoredMessage[]) => StoredMessage[])) => void;
 type MessageLoadErrorUpdater = (updater: (current: Record<string, string>) => Record<string, string>) => void;
 type InteractionQueueUpdater = (updater: (current: InteractionQueues) => InteractionQueues) => void;
 
 type PendingNewChatModel = {
+  llmConnectionId: string;
   llmConnectionSlug: string;
   model: string;
 } | null;
 
 type PendingNewChatThinkingLevel = ThinkingLevel | null;
+type DesktopNewTaskTarget = DesktopBridge.DesktopNewTaskTarget;
+type DesktopSessionSummary = DesktopBridge.DesktopSessionSummary;
+type InteractionFormResponse = Parameters<
+  DesktopBridge.MakaBridge['sessions']['respondToUserForm']
+>[1];
 
 type ToastApi = {
   error(
@@ -102,17 +105,31 @@ type ToastApi = {
   info(title: string, description?: string): void;
 };
 
+type DirectoryReferences = NonNullable<TransientUserMessageProjection['directoryReferences']>;
+type MessageContextOptions = {
+  directoryReferences?: DirectoryReferences;
+  quotes?: readonly QuoteRef[];
+  workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
+};
+type SendOptions = MessageContextOptions & {
+  waitForHostAdmission?: boolean;
+  turnOrchestration?: TurnOrchestration;
+  displayText?: string;
+  onSessionResolved?: (sessionId: string) => void;
+};
+
+function copiedArray<K extends string, T>(
+  key: K,
+  values: readonly T[] | undefined,
+): Partial<Record<K, T[]>> {
+  return values?.length ? { [key]: [...values] } as Record<K, T[]> : {};
+}
+
 export interface AppShellChatActions {
   send(
     text: string,
     pending?: readonly PendingAttachment[],
-    options?: {
-      turnOrchestration?: TurnOrchestration;
-      quotes?: readonly QuoteRef[];
-      workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
-      displayText?: string;
-      onSessionResolved?: (sessionId: string) => void;
-    },
+    options?: SendOptions,
   ): Promise<boolean>;
   /**
    * Resolves with whether the Message was sent. An unproven outcome counts as
@@ -124,13 +141,11 @@ export interface AppShellChatActions {
     text: string,
     placement: 'current_turn' | 'next_turn',
     pending?: readonly PendingAttachment[],
-    options?: {
-      quotes?: readonly QuoteRef[];
-      workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
-    },
+    options?: MessageContextOptions,
   ): Promise<boolean>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion(response: UserQuestionResponse): Promise<void>;
+  respondToUserForm(response: InteractionFormResponse): Promise<void>;
   refreshMessages(sessionId: string, options?: RefreshMessagesOptions): Promise<boolean>;
   retryMessages(sessionId: string): Promise<void>;
 }
@@ -138,29 +153,18 @@ export interface AppShellChatActions {
 export function createAppShellChatActions(deps: {
   uiLocale: UiLocale;
   activeIdRef: RefBox<string | undefined>;
-  addPendingSessionAction: (
-    sessionId: string,
-    pendingRef: RefBox<Set<string>>,
-    setPendingBySession: BooleanRecordUpdater,
-  ) => boolean;
   captureComposerImportOwner: () => ComposerImportOwner;
   checkTaskSubmissionReadiness: () => Promise<boolean>;
-  clearPendingSessionAction: (
-    sessionId: string,
-    pendingRef: RefBox<Set<string>>,
-    setPendingBySession: BooleanRecordUpdater,
-  ) => void;
   isNewChatSendSurfaceActive: (owner: ComposerImportOwner) => boolean;
   /** The shell's one answer to "is this owner still the surface the user is
    *  looking at". Both halves matter — the section AND the session id — which
    *  is why the send path asks it instead of comparing the id itself. */
   isShellSurfaceOwnerActive: (owner: ComposerImportOwner) => boolean;
-  messageRetryPendingRef: RefBox<Set<string>>;
+  messageRetryPending: SessionPendingClaim;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
   activateSessionForFirstSend: (sessionId: string) => Promise<void>;
   setActiveId: (sessionId: string | undefined) => void;
   setMessageLoadErrorBySession: MessageLoadErrorUpdater;
-  setMessageRetryPendingBySession: BooleanRecordUpdater;
   setMessages: MessageListUpdater;
   addTransientMessage: (
     sessionId: string,
@@ -179,6 +183,7 @@ export function createAppShellChatActions(deps: {
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
   onExecutionBoundaryChanged?: (sessionId: string) => void;
+  respondToUserForm: DesktopBridge.MakaBridge['sessions']['respondToUserForm'];
   showModelSetupToast: (
     description: string,
     reason?: string,
@@ -206,18 +211,15 @@ export function createAppShellChatActions(deps: {
   const {
     uiLocale,
     activeIdRef,
-    addPendingSessionAction,
     captureComposerImportOwner,
     checkTaskSubmissionReadiness,
-    clearPendingSessionAction,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
-    messageRetryPendingRef,
+    messageRetryPending,
     refreshSessions,
     activateSessionForFirstSend,
     setActiveId,
     setMessageLoadErrorBySession,
-    setMessageRetryPendingBySession,
     setMessages,
     addTransientMessage,
     updateTransientMessage,
@@ -227,6 +229,7 @@ export function createAppShellChatActions(deps: {
     setInteractionBySession,
     onInteractionChanged,
     onExecutionBoundaryChanged,
+    respondToUserForm: submitUserForm,
     showModelSetupToast,
     toastApi,
     newChatModel,
@@ -248,17 +251,20 @@ export function createAppShellChatActions(deps: {
       placement?: TransientUserMessageProjection['transientPlacement'];
       hostTurnId?: string;
       updateOnly?: boolean;
+      directoryReferences?: DirectoryReferences;
       quotes?: readonly QuoteRef[];
       inlineReferences?: readonly InlineReference[];
     } = {},
   ): void {
+    const directoryReferences = options.directoryReferences;
     const quotes = options.quotes ?? [];
     const next: TransientUserMessageProjection = {
       id: messageId,
       ts: Date.now(),
       text,
-      ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
-      ...(quotes.length > 0 ? { quotes: [...quotes] } : {}),
+      ...copiedArray('attachments', attachments),
+      ...copiedArray('directoryReferences', directoryReferences),
+      ...copiedArray('quotes', quotes),
       inlineReferences: [...(options.inlineReferences ?? [])],
       transientPlacement: options.placement ?? 'current_turn',
       ...(options.hostTurnId ? { hostTurnId: options.hostTurnId } : {}),
@@ -345,15 +351,17 @@ export function createAppShellChatActions(deps: {
     displayText?: string;
     quotes?: readonly QuoteRef[];
     exactTurn?: boolean;
+    waitForHostAdmission?: boolean;
     /** Whether this Session's surface is on screen to receive Skill feedback. */
     isSurfaceVisible?: () => boolean;
   }): Promise<SubmittedMessage> {
     const { sessionId, messageId, placement } = input;
+    const directoryReferences = input.command.directoryReferences;
     const quotes = input.quotes ?? [];
     const result = await window.maka.sessions.submitMessage(sessionId, placement, {
       ...input.command,
       messageId,
-    });
+    }, { waitForHostAdmission: input.waitForHostAdmission });
     const surfaceVisible = input.isSurfaceVisible?.() ?? true;
     if (!result.ok) {
       if (result.reason === 'outcome_unknown') {
@@ -367,9 +375,13 @@ export function createAppShellChatActions(deps: {
       removeOptimisticUserMessage(sessionId, messageId);
       if (input.exactTurn) disarmTurnActive(sessionId, messageId);
       if (surfaceVisible) {
-        showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
+        skillFeedback.showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
       }
       return { kind: 'refused', skillInvocation: result.skillInvocation };
+    }
+    if (result.disposition === 'locally_saved') {
+      if (input.exactTurn) disarmTurnActive(sessionId, messageId);
+      return { kind: 'projected', skillInvocation: result.skillInvocation };
     }
     if (input.exactTurn) {
       if (result.disposition === 'turn_started' && result.turnId) {
@@ -381,7 +393,7 @@ export function createAppShellChatActions(deps: {
       }
     }
     if (surfaceVisible) {
-      showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
+      skillFeedback.showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
     }
     // The row is updated whether or not the surface is on screen: attachments,
     // inline references and the Host Turn grouping are what the user finds when
@@ -390,13 +402,14 @@ export function createAppShellChatActions(deps: {
       sessionId,
       messageId,
       input.displayText ??
-        skillInvocationDisplayText(input.command.text, result.skillInvocation),
+        skillFeedback.skillInvocationDisplayText(input.command.text, result.skillInvocation),
       result.attachments,
       {
         updateOnly: true,
         placement,
         ...(result.turnId ? { hostTurnId: result.turnId } : {}),
-        ...(quotes.length > 0 ? { quotes } : {}),
+        ...copiedArray('directoryReferences', directoryReferences),
+        ...copiedArray('quotes', quotes),
         inlineReferences: result.inlineReferences ?? [],
       },
     );
@@ -410,14 +423,9 @@ export function createAppShellChatActions(deps: {
   async function send(
     text: string,
     pending?: readonly PendingAttachment[],
-    options: {
-      turnOrchestration?: TurnOrchestration;
-      quotes?: readonly QuoteRef[];
-      workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
-      displayText?: string;
-      onSessionResolved?: (sessionId: string) => void;
-    } = {},
+    options: SendOptions = {},
   ): Promise<boolean> {
+    const directoryReferences = options.directoryReferences;
     const quotes = options.quotes;
     const exactTurn = options.turnOrchestration !== undefined;
     const initialSessionId = activeIdRef.current;
@@ -457,13 +465,48 @@ export function createAppShellChatActions(deps: {
     };
     try {
       const messageId = crypto.randomUUID();
+      async function submitIntoSession(sessionId: string, messageId: string) {
+        if (exactTurn) armTurnActive(sessionId, messageId);
+        const attachmentItems =
+          pending?.length
+            ? toComposerIngestItems(pending)
+            : undefined;
+        const retainedAttachments =
+          pending?.length
+            ? retainedAttachmentRefs(pending)
+            : undefined;
+        const sendCommand = {
+          text,
+          ...(options.displayText ? { displayText: options.displayText } : {}),
+          ...copiedArray('attachmentItems', attachmentItems),
+          ...copiedArray('retainedAttachments', retainedAttachments),
+          ...copiedArray('directoryReferences', directoryReferences),
+          ...copiedArray('quotes', quotes),
+          ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
+        };
+        return submitAndProject({
+          sessionId,
+          messageId,
+          placement: 'current_turn',
+          command: {
+            ...sendCommand,
+            ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
+          },
+          ...(options.displayText ? { displayText: options.displayText } : {}),
+          ...copiedArray('quotes', quotes),
+          exactTurn,
+          waitForHostAdmission: options.waitForHostAdmission,
+          isSurfaceVisible: () => activeIdRef.current === sessionId,
+        });
+      }
       if (!initialSessionId) {
         if (!initialNewTaskTarget) return false;
-        if (pending && pending.length > 0) preflightAttachmentItems(pending, uiLocale);
+        if (pending?.length) preflightAttachmentItems(pending, uiLocale);
         const session = await window.maka.newTasks.create(initialNewTaskTarget, {
           name: DEFAULT_SESSION_NAME,
           ...(newChatModel
             ? {
+                llmConnectionId: newChatModel.llmConnectionId,
                 llmConnectionSlug: newChatModel.llmConnectionSlug,
                 model: newChatModel.model,
               }
@@ -475,92 +518,51 @@ export function createAppShellChatActions(deps: {
         });
         unsentSessionId = session.id;
         optimisticSessionId = session.id;
-        // Consumed: the choice is now the created Session's, not the next
-        // draft's. A failed create leaves it in place so a retry keeps it.
-        if (newChatPermissionChoice) clearNewChatPermissionChoice();
-        // Active-stream snapshots can only restore assistant segments that
-        // are still streaming. Wait until the observer is ready before the
-        // first admission so a completed segment in a still-running Turn
-        // cannot become durable text without live identity.
-        await activateSessionForFirstSend(session.id);
-        if (activeIdRef.current !== session.id) {
-          await discardUnsentSession();
-          return false;
-        }
         optimisticMessageId = messageId;
+        // Stage the first row before activation. `setActiveId` projects this
+        // session-owned transient in the same state transition that replaces
+        // the new-chat surface, so the empty-session Maka hero cannot paint
+        // between observation settling and the submitted content appearing.
         showTransientUserMessage(
           session.id,
           messageId,
           options.displayText ?? text,
           [],
           {
-            ...(quotes && quotes.length > 0 ? { quotes } : {}),
+            ...copiedArray('directoryReferences', directoryReferences),
+            ...copiedArray('quotes', quotes),
             inlineReferences: [],
           },
         );
-        if (exactTurn) armTurnActive(session.id, messageId);
-        const attachmentItems =
-          pending && pending.length > 0
-            ? toComposerIngestItems(pending)
-            : undefined;
-        const retainedAttachments =
-          pending && pending.length > 0
-            ? retainedAttachmentRefs(pending)
-            : undefined;
-        const sendCommand = {
-          text,
-          ...(options.displayText ? { displayText: options.displayText } : {}),
-          ...(attachmentItems && attachmentItems.length > 0 ? { attachmentItems } : {}),
-          ...(retainedAttachments && retainedAttachments.length > 0
-            ? { retainedAttachments }
-            : {}),
-          ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
-          ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
-            ? { workspaceFileReferences: [...options.workspaceFileReferences] }
-            : {}),
-        };
-        const submitted = await submitAndProject({
-          sessionId: session.id,
-          messageId,
-          placement: 'current_turn',
-          command: {
-            ...sendCommand,
-            ...(options.turnOrchestration
-              ? { turnOrchestration: options.turnOrchestration }
-              : {}),
-          },
-          ...(options.displayText ? { displayText: options.displayText } : {}),
-          ...(quotes && quotes.length > 0 ? { quotes } : {}),
-          exactTurn,
-          isSurfaceVisible: () => activeIdRef.current === session.id,
-        });
+        // Consumed: the choice is now the created Session's, not the next
+        // draft's. A failed create leaves it in place so a retry keeps it.
+        if (newChatPermissionChoice) clearNewChatPermissionChoice();
+        // Main owns observation-before-dispatch. This only selects the local
+        // surface; saving a draft never waits for the Host's event stream.
+        await activateSessionForFirstSend(session.id);
+        if (activeIdRef.current !== session.id) {
+          removeOptimisticUserMessage(session.id, messageId);
+          await discardUnsentSession();
+          return false;
+        }
+        const submitted = await submitIntoSession(session.id, messageId);
         if (submitted.kind === 'refused') {
           await discardUnsentSession();
           return false;
         }
         unsentSessionId = undefined;
-        options.onSessionResolved?.(session.id);
-        await refreshSessions();
+        // The callback fires only when this send's first message projected;
+        // an unreconciled first message stays unreported.
+        if (submitted.kind === 'projected') options.onSessionResolved?.(session.id);
+        void refreshSessions().catch(() => undefined);
         return true;
       }
       const sessionId = initialSessionId;
       const transcript = transcriptRangeRef.current;
-      if (transcript) {
-        let hasNewer = false;
-        try {
-          const range = transcript.store.range();
-          hasNewer = range.sessionId === sessionId && range.hasNewer;
-        } catch {
-          // An unopened transcript is not a sparse historical view.
-        }
-        if (hasNewer) {
-          await transcript.loadLatest();
-          if (activeIdRef.current !== sessionId || transcriptRangeRef.current !== transcript) {
-            return false;
-          }
-          setMessages([...transcript.store.snapshot().messages]);
-        }
-      }
+      void restoreTranscriptTailAfterSend({
+        sessionId, controller: transcript, setMessages,
+        isCurrent: () => activeIdRef.current === sessionId && transcriptRangeRef.current === transcript,
+      });
       optimisticSessionId = sessionId;
       optimisticMessageId = messageId;
       showTransientUserMessage(
@@ -569,48 +571,14 @@ export function createAppShellChatActions(deps: {
         options.displayText ?? text,
         [],
         {
-          ...(quotes && quotes.length > 0 ? { quotes } : {}),
+          ...copiedArray('directoryReferences', directoryReferences),
+          ...copiedArray('quotes', quotes),
           inlineReferences: [],
         },
       );
-      if (exactTurn) armTurnActive(sessionId, messageId);
-      const attachmentItems =
-        pending && pending.length > 0
-          ? toComposerIngestItems(pending)
-          : undefined;
-      const retainedAttachments =
-        pending && pending.length > 0
-          ? retainedAttachmentRefs(pending)
-          : undefined;
-      const sendCommand = {
-        text,
-        ...(options.displayText ? { displayText: options.displayText } : {}),
-        ...(attachmentItems && attachmentItems.length > 0 ? { attachmentItems } : {}),
-        ...(retainedAttachments && retainedAttachments.length > 0
-          ? { retainedAttachments }
-          : {}),
-        ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
-        ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
-          ? { workspaceFileReferences: [...options.workspaceFileReferences] }
-          : {}),
-      };
-      const submitted = await submitAndProject({
-        sessionId,
-        messageId,
-        placement: 'current_turn',
-        command: {
-          ...sendCommand,
-          ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
-        },
-        ...(options.displayText ? { displayText: options.displayText } : {}),
-        ...(quotes && quotes.length > 0 ? { quotes } : {}),
-        exactTurn,
-        isSurfaceVisible: () => activeIdRef.current === sessionId,
-      });
-      if (submitted.kind === 'refused') return false;
-      if (submitted.kind === 'unreconciled') return true;
-      options.onSessionResolved?.(sessionId);
-      return true;
+      const submitted = await submitIntoSession(sessionId, messageId);
+      // An existing-Session send never reports a resolved Session.
+      return submitted.kind !== 'refused';
     } catch (error) {
       // Capture ownership before cleanup clears the optimistic Session. A
       // barrier timeout belongs to the surface that was waiting for it, while
@@ -678,16 +646,15 @@ export function createAppShellChatActions(deps: {
     text: string,
     placement: 'current_turn' | 'next_turn',
     pending?: readonly PendingAttachment[],
-    options: {
-      quotes?: readonly QuoteRef[];
-      workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
-    } = {},
+    options: MessageContextOptions = {},
   ): Promise<boolean> {
     const messageId = crypto.randomUUID();
+    const directoryReferences = options.directoryReferences;
     const quotes = options.quotes ?? [];
     showTransientUserMessage(sessionId, messageId, text, retainedAttachmentRefs(pending ?? []), {
       placement,
-      ...(quotes.length > 0 ? { quotes } : {}),
+      ...copiedArray('directoryReferences', directoryReferences),
+      ...copiedArray('quotes', quotes),
       inlineReferences: [],
     });
     try {
@@ -699,14 +666,13 @@ export function createAppShellChatActions(deps: {
         placement,
         command: {
           text,
-          ...(attachmentItems.length > 0 ? { attachmentItems } : {}),
-          ...(retainedAttachments.length > 0 ? { retainedAttachments } : {}),
-          ...(quotes.length > 0 ? { quotes: [...quotes] } : {}),
-          ...(options.workspaceFileReferences?.length
-            ? { workspaceFileReferences: [...options.workspaceFileReferences] }
-            : {}),
+          ...copiedArray('attachmentItems', attachmentItems),
+          ...copiedArray('retainedAttachments', retainedAttachments),
+          ...copiedArray('directoryReferences', directoryReferences),
+          ...copiedArray('quotes', quotes),
+          ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
         },
-        ...(quotes.length > 0 ? { quotes } : {}),
+        ...copiedArray('quotes', quotes),
         isSurfaceVisible: () => activeIdRef.current === sessionId,
       });
       // A refused Message opened nothing and left no row. Reporting it as sent
@@ -718,45 +684,20 @@ export function createAppShellChatActions(deps: {
     }
   }
 
-  async function respondToSandboxBoundary(response: SandboxBoundaryResponse) {
+  async function respondToInteraction<Response extends { requestId: string }>(
+    response: Response,
+    submit: (sessionId: string, response: Response) => Promise<void>,
+    onApplied?: (sessionId: string) => void,
+  ) {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
     try {
-      await window.maka.sessions.respondToSandboxBoundary(sessionId, response);
+      await submit(sessionId, response);
       onInteractionChanged?.(sessionId);
-      // #1611: the answer has been applied to the authoritative boundary, so
-      // the permission label must stop describing the pre-decision one. The
-      // ack event covers decisions settled on other surfaces; this covers the
-      // one the user just made here, without waiting for the round trip.
-      onExecutionBoundaryChanged?.(sessionId);
+      onApplied?.(sessionId);
       setInteractionBySession((current) =>
         dequeueInteractionByRequestId(current, sessionId, response.requestId),
       );
-    } catch (error) {
-      // Same fire-and-forget call site as stop(), wrap so a failed
-      // permission response (main process busy / session dropped)
-      // surfaces instead of dying as UnhandledPromiseRejection.
-      if (activeIdRef.current !== sessionId) return;
-      if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
-      } else {
-        toastApi.error(
-          copy.responseFailedTitle,
-          localizedShellErrorMessage(error, copy.responseFailedFallback, uiLocale),
-          undefined,
-          { sessionId },
-        );
-      }
-    }
-  }
-
-  async function respondToUserQuestion(response: UserQuestionResponse) {
-    const sessionId = activeIdRef.current;
-    if (!sessionId) return;
-    try {
-      await window.maka.sessions.respondToUserQuestion(sessionId, response);
-      onInteractionChanged?.(sessionId);
-      setInteractionBySession((current) => dequeueInteractionByRequestId(current, sessionId, response.requestId));
     } catch (error) {
       if (activeIdRef.current !== sessionId) return;
       if (isSessionWorkspaceUnavailableError(error)) {
@@ -815,7 +756,7 @@ export function createAppShellChatActions(deps: {
     }
   }
   async function retryMessages(sessionId: string) {
-    if (!addPendingSessionAction(sessionId, messageRetryPendingRef, setMessageRetryPendingBySession)) return;
+    if (!messageRetryPending.claim(sessionId)) return;
     try {
       if (activeIdRef.current !== sessionId) return;
       await transcriptRangeRef.current?.reload();
@@ -828,15 +769,22 @@ export function createAppShellChatActions(deps: {
       }));
       toastApi.error(copy.refreshFailedTitle, message, undefined, { sessionId });
     } finally {
-      clearPendingSessionAction(sessionId, messageRetryPendingRef, setMessageRetryPendingBySession);
+      messageRetryPending.release(sessionId);
     }
   }
 
   return {
     send,
     enqueueMessage,
-    respondToSandboxBoundary,
-    respondToUserQuestion,
+    respondToSandboxBoundary: (response) =>
+      respondToInteraction(
+        response,
+        window.maka.sessions.respondToSandboxBoundary,
+        onExecutionBoundaryChanged,
+      ),
+    respondToUserQuestion: (response) =>
+      respondToInteraction(response, window.maka.sessions.respondToUserQuestion),
+    respondToUserForm: (response) => respondToInteraction(response, submitUserForm),
     refreshMessages,
     retryMessages,
   };

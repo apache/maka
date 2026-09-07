@@ -22,6 +22,7 @@ import { describe, test } from 'node:test';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import { buildHistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
+import { sectionedSummary } from './history-compact-test-fixtures.js';
 import {
   bindProviderVisibleEvidence,
   projectMemoryExtractionEvidence,
@@ -204,8 +205,7 @@ describe('bounded Memory Extraction', () => {
     const previousCheckpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: [compacted],
-      summary: 'The old summary remains interpretation context.',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('The old summary remains interpretation context.'),
     });
     const source = buildMemoryCompactionSourceContext(
       [

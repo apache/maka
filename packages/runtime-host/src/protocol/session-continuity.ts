@@ -64,6 +64,14 @@ export const SESSION_LIVE_DELTA_MAX_BYTES = 16 * 1024;
 // needs at most three UTF-8 bytes (an astral pair needs four bytes total).
 export const SESSION_TOOL_OUTPUT_DELTA_MAX_BYTES = 3 * TOOL_OUTPUT_DELTA_MAX_CHARS;
 export const SESSION_TOOL_NAME_MAX_BYTES = 256;
+export const SESSION_TOOL_INTENT_MAX_BYTES = 512;
+/**
+ * Live `tool_start` frames carry a bounded, redacted args preview (never the
+ * full args — a Write can carry a whole file) so compact tool rows can name
+ * the call during the live window. Sized to fit `@maka/core`
+ * `projectToolArgsPreview`'s 2,048-char JSON cap with UTF-8 headroom.
+ */
+export const SESSION_TOOL_ARGS_PREVIEW_MAX_BYTES = 8 * 1024;
 export const SESSION_SUBSCRIPTION_FRAME_MAX_BYTES = 64 * 1024 - 1;
 export const SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES = 48 * 1024;
 
@@ -167,6 +175,18 @@ export type SessionToolEvent =
       // an event the rest of the system considered valid.
       activityKind?: ToolActivityKind;
       displayName?: string;
+      /**
+       * Model/runtime-authored call intent. Pass-through from the durable
+       * event; bounded on the wire.
+       */
+      intent?: string;
+      /**
+       * Bounded, redacted subset of the call args (see `@maka/core`
+       * `projectToolArgsPreview`) so live compact tool rows can name what the
+       * call does before the durable transcript delivers full args at turn
+       * end. Shaped like the args themselves; never carries file contents.
+       */
+      argsPreview?: unknown;
       stepId?: string;
       shellRunRef?: string;
     })
@@ -224,7 +244,7 @@ export interface SessionTranscriptAdvancedFrame extends SubscriptionEnvelope {
 }
 
 export const SESSION_DOMAINS = [
-  'task',
+  'todo',
   'plan',
   'deep_research',
   'usage',
@@ -254,12 +274,14 @@ export type SessionDomainChangedFrame = SubscriptionEnvelope &
     kind: 'subscription.session_domain_changed';
   };
 
-export interface SessionRuntimeResourcePtyDataFrame extends SubscriptionEnvelope {
+export interface SessionRuntimeResourcePtyDataFrame extends Omit<SubscriptionEnvelope, 'sequence'> {
   kind: 'subscription.runtime_resource_pty_data';
   sessionId: string;
   ref: string;
   ptySequence: number;
   data: string;
+  /** Bytes were omitted; reacquire the terminal snapshot before displaying more. */
+  reset?: true;
 }
 
 export type AgentGraphChangedReason = 'observation' | 'runtime_activity' | 'reconciled' | 'stopped';
@@ -273,7 +295,7 @@ export interface AgentGraphChangedFrame extends SubscriptionEnvelope {
 
 export interface SubscriptionClosedFrame extends SubscriptionEnvelope {
   kind: 'subscription.closed';
-  reason: 'slow_consumer' | 'session_removed';
+  reason: 'slow_consumer' | 'session_removed' | 'access_revoked';
 }
 
 export type SubscriptionFrame =
@@ -285,6 +307,11 @@ export type SubscriptionFrame =
   | SessionRuntimeResourcePtyDataFrame
   | AgentGraphChangedFrame
   | SubscriptionClosedFrame;
+
+export type OrderedSubscriptionFrame = Exclude<
+  SubscriptionFrame,
+  SessionRuntimeResourcePtyDataFrame
+>;
 
 const SUBSCRIPTION_OPEN_ERRORS = [
   'host_not_ready',
@@ -305,6 +332,20 @@ const SUBSCRIPTION_CLOSE_ERRORS = [
 ] as const;
 
 export const SESSION_CONTINUITY_OPERATION_SPECS = {
+  'subscription.pty_interest.set': defineOperation({
+    mode: 'control',
+    availability: 'ready',
+    errors: SUBSCRIPTION_CLOSE_ERRORS,
+    decodeInput: (value: unknown) => {
+      const record = requireExactRecord(value, 'PTY interest input', ['subscriptionId', 'refs']);
+      if (!Array.isArray(record.refs) || record.refs.length > 16)
+        throw invalidProtocolFrame('PTY interest must contain at most 16 refs');
+      const refs = record.refs.map(decodeRuntimeResourceRef);
+      if (new Set(refs).size !== refs.length) throw invalidProtocolFrame('Duplicate PTY interest');
+      return { subscriptionId: requireId(record.subscriptionId, 'subscriptionId'), refs };
+    },
+    decodeOutput: decodeSubscriptionCloseResult,
+  }),
   'subscription.open': defineOperation({
     mode: 'control',
     availability: 'ready',
@@ -342,6 +383,35 @@ export const SESSION_CONTINUITY_OPERATION_SPECS = {
 export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
   requireEncodedByteLimit(value, 'subscription frame', SESSION_SUBSCRIPTION_FRAME_MAX_BYTES);
   const record = requireRecord(value, 'subscription frame');
+  if (record.kind === 'subscription.runtime_resource_pty_data') {
+    assertExactKeys(record, 'Runtime Resource PTY data frame', [
+      'kind',
+      'hostEpoch',
+      'subscriptionId',
+      'sessionId',
+      'ref',
+      'ptySequence',
+      'data',
+      ...(Object.hasOwn(record, 'reset') ? ['reset'] : []),
+    ]);
+    if (record.reset !== undefined && record.reset !== true) {
+      throw invalidProtocolFrame('PTY reset must be true when present');
+    }
+    return {
+      kind: record.kind,
+      hostEpoch: requireId(record.hostEpoch, 'hostEpoch'),
+      subscriptionId: requireId(record.subscriptionId, 'subscriptionId'),
+      sessionId: requireEntityId(record.sessionId, 'sessionId'),
+      ref: decodeRuntimeResourceRef(record.ref),
+      ptySequence: requirePositiveCount(record.ptySequence, 'PTY sequence'),
+      data: requireUtf8BoundedString(
+        record.data,
+        'Runtime Resource PTY data',
+        SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES,
+      ),
+      ...(record.reset === true ? { reset: true } : {}),
+    };
+  }
   const envelope = decodeEnvelope(record);
   let frame: SubscriptionFrame;
   if (record.kind === 'subscription.session_projection') {
@@ -441,29 +511,6 @@ export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
             resources: decodeSessionRuntimeResourceChanges(record.resources),
           }
         : { kind: record.kind, ...envelope, sessionId, domain };
-  } else if (record.kind === 'subscription.runtime_resource_pty_data') {
-    assertExactKeys(record, 'Runtime Resource PTY data frame', [
-      'kind',
-      'hostEpoch',
-      'subscriptionId',
-      'sequence',
-      'sessionId',
-      'ref',
-      'ptySequence',
-      'data',
-    ]);
-    frame = {
-      kind: record.kind,
-      ...envelope,
-      sessionId: requireEntityId(record.sessionId, 'sessionId'),
-      ref: decodeRuntimeResourceRef(record.ref),
-      ptySequence: requirePositiveCount(record.ptySequence, 'PTY sequence'),
-      data: requireUtf8BoundedString(
-        record.data,
-        'Runtime Resource PTY data',
-        SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES,
-      ),
-    };
   } else if (record.kind === 'subscription.closed') {
     assertExactKeys(record, 'subscription closed frame', [
       'kind',
@@ -472,7 +519,11 @@ export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
       'sequence',
       'reason',
     ]);
-    if (record.reason !== 'slow_consumer' && record.reason !== 'session_removed') {
+    if (
+      record.reason !== 'slow_consumer' &&
+      record.reason !== 'session_removed' &&
+      record.reason !== 'access_revoked'
+    ) {
       throw invalidProtocolFrame('Invalid subscription close reason');
     }
     frame = { kind: record.kind, ...envelope, reason: record.reason };
@@ -774,6 +825,8 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       'operationId',
       'activityKind',
       'displayName',
+      'intent',
+      'argsPreview',
       'stepId',
       'shellRunRef',
     ];
@@ -786,6 +839,13 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       'toolUseId',
       'toolName',
     ]);
+    if (record.argsPreview !== undefined) {
+      requireEncodedByteLimit(
+        record.argsPreview,
+        'Session tool args preview',
+        SESSION_TOOL_ARGS_PREVIEW_MAX_BYTES,
+      );
+    }
     return {
       type: record.type,
       ...identity,
@@ -809,6 +869,18 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
               SESSION_TOOL_NAME_MAX_BYTES,
             ),
           }),
+      ...(record.intent === undefined
+        ? {}
+        : {
+            intent: requireUtf8BoundedString(
+              record.intent,
+              'Session tool intent',
+              SESSION_TOOL_INTENT_MAX_BYTES,
+            ),
+          }),
+      ...(record.argsPreview === undefined
+        ? {}
+        : { argsPreview: structuredClone(record.argsPreview) }),
       ...(record.stepId === undefined ? {} : { stepId: requireEntityId(record.stepId, 'stepId') }),
       ...(record.shellRunRef === undefined
         ? {}

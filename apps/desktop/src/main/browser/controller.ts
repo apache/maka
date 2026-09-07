@@ -19,8 +19,11 @@
 
 import { type BrowserWindow, type Session, shell, WebContentsView } from 'electron';
 import { CdpBridge, type AutomationEndpoint } from './cdp-bridge.js';
+import type { BrowserOriginLease } from './browser-host.js';
+import { BrowserOriginLeaseTracker } from './browser-origin-lease.js';
 import { browserViewWebPreferences } from './options.js';
 import {
+  type BrowserActionKind,
   type BrowserState,
   type BrowserViewRect,
   deriveBrowserState,
@@ -57,6 +60,9 @@ export class BrowserViewController {
   /** True while the view holds real on-screen bounds (last setViewport painted it). */
   private shownWithBounds = false;
   private automation: CdpBridge | null = null;
+  private readonly originLeases = new BrowserOriginLeaseTracker(() =>
+    this.destroyed || this.wc.isDestroyed() ? '' : this.wc.getURL(),
+  );
 
   constructor(
     private readonly window: BrowserWindow,
@@ -78,8 +84,8 @@ export class BrowserViewController {
     const wc = this.wc;
     wc.on('did-start-loading', () => this.emitState());
     wc.on('did-stop-loading', () => this.emitState());
-    wc.on('did-navigate', () => this.emitState());
-    wc.on('did-navigate-in-page', () => this.emitState());
+    wc.on('did-navigate', () => this.recordNavigation());
+    wc.on('did-navigate-in-page', () => this.recordNavigation());
     wc.on('page-title-updated', () => this.emitState());
     wc.on('did-fail-load', () => this.emitState());
 
@@ -149,6 +155,16 @@ export class BrowserViewController {
   private emitState(): void {
     if (this.destroyed) return;
     this.onState(this.sessionId, this.state());
+  }
+
+  private recordNavigation(): void {
+    if (this.destroyed) return;
+    this.originLeases.recordNavigation(this.wc.getURL());
+    this.emitState();
+  }
+
+  openOriginLease(approvedUrl: string, kind: BrowserActionKind): BrowserOriginLease {
+    return this.originLeases.open(approvedUrl, kind);
   }
 
   async navigate(input: string): Promise<void> {

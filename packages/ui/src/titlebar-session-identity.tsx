@@ -20,6 +20,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { BreadcrumbItem, Breadcrumbs } from '@astryxdesign/core/Breadcrumbs';
 import { Icon } from '@astryxdesign/core/Icon';
+import { IconButton } from '@astryxdesign/core/IconButton';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
+import { Share2 } from './icons.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { InlineRenameInput } from './inline-rename-input.js';
 import { useUiLocale } from './locale-context.js';
@@ -94,6 +97,8 @@ export function TitlebarSessionIdentity(props: {
   project?: TitlebarProject;
   /** Immediate linked parent when viewing a child subagent session. */
   parentSession?: TitlebarParentSession;
+  readOnly?: boolean;
+  action?: { readonly label: string; onClick(): void };
 }) {
   const copy = getConversationCopy(useUiLocale());
   const [renaming, setRenaming] = useState(false);
@@ -197,6 +202,12 @@ export function TitlebarSessionIdentity(props: {
               onCancel={() => endRename(true)}
             />
           </BreadcrumbItem>
+        ) : props.readOnly ? (
+          <BreadcrumbItem isCurrent>
+            <span className="maka-titlebar-identity__segment maka-titlebar-identity__segment--session">
+              {props.sessionName}
+            </span>
+          </BreadcrumbItem>
         ) : (
           /* `isCurrent={false}`, not the default: a current crumb renders as a
              plain <span aria-current="page"> and DROPS onClick, so the rename
@@ -216,6 +227,18 @@ export function TitlebarSessionIdentity(props: {
           </BreadcrumbItem>
         )}
       </Breadcrumbs>
+      {props.action ? (
+        <Tooltip content={props.action.label}>
+          <IconButton
+            className="maka-titlebar-identity__action"
+            label={props.action.label}
+            icon={<Share2 size={14} />}
+            variant="ghost"
+            size="sm"
+            onClick={props.action.onClick}
+          />
+        </Tooltip>
+      ) : null}
     </div>
   );
 }

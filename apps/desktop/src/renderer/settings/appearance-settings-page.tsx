@@ -18,21 +18,31 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { Button, Grid, HStack, SelectableCard, Text, VStack } from '@astryxdesign/core';
-import { SettingsPage, SettingsSection } from './settings-section';
+import { SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import {
   isAppIcon,
   type AppIcon,
   DEFAULT_APP_ICON_DARK,
   type AppIconChoice,
   type AppIconTarget,
+  TERMINAL_FONT_SIZE_MAX,
+  TERMINAL_FONT_SIZE_MIN,
   type ThemePalette,
   type ThemePreference,
+  UI_FONT_SIZE_MAX,
+  UI_FONT_SIZE_MIN,
   type UpdateAppSettingsResult,
 } from '@maka/core/settings';
-import { Switch, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { NumberInput, Switch, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 import { CustomPetSettingsSection } from './custom-pet-settings-section.js';
+import {
+  applyTerminalFontSize,
+  applyUiFontSize,
+  getTerminalFontSize,
+  getUiFontSize,
+} from '../theme';
 
 /**
  * Mini chat-surface mockup rendered inside each theme radio tile. Replaces
@@ -141,6 +151,7 @@ const APP_ICON_SECTION_HEADING_ID = 'settings-appearance-app-icon-heading';
 const PALETTE_SECTION_HEADING_ID = 'settings-appearance-palette-heading';
 const paletteGroupLabelId = (group: 'editor' | 'product') => `settings-appearance-palette-${group}-label`;
 const appIconGroupLabelId = (group: string) => `settings-appearance-app-icon-${group}-label`;
+const FONT_SIZE_SECTION_HEADING_ID = 'settings-appearance-font-size-heading';
 
 export function AppearanceSettingsPage(props: {
   themePref: ThemePreference;
@@ -342,6 +353,22 @@ export function AppearanceSettingsPage(props: {
     await persistAppearance({ palette: next });
   }
 
+  // Font sizing has no app-shell state to thread: theme.ts holds the live
+  // values, so the page seeds its inputs from there and applies directly.
+  // Same apply-then-persist shape as theme/palette above.
+  const [uiFontSize, setUiFontSizeState] = useState<number>(() => getUiFontSize());
+  const [terminalFontSize, setTerminalFontSizeState] = useState<number>(() => getTerminalFontSize());
+  async function setUiFontSize(next: number) {
+    setUiFontSizeState(next);
+    applyUiFontSize(next);
+    await persistAppearance({ uiFontSize: next });
+  }
+  async function setTerminalFontSize(next: number) {
+    setTerminalFontSizeState(next);
+    applyTerminalFontSize(next);
+    await persistAppearance({ terminalFontSize: next });
+  }
+
   return (
     /* Designer audit P2-13: 显示名称/界面语言/语气偏好 are identity, not
        appearance — they render on the 通用 page (see
@@ -439,6 +466,51 @@ export function AppearanceSettingsPage(props: {
             </Grid>
           </VStack>
         ))}
+      </SettingsSection>
+      <SettingsSection
+        variant="bare"
+        titleId={FONT_SIZE_SECTION_HEADING_ID}
+        title={sections.fontSize}
+        description={sections.fontSizeHelp}
+      >
+        <SettingsRow
+          label={copy.fontSize.uiLabel}
+          description={copy.fontSize.uiHelp}
+          end={
+            <NumberInput
+              label={copy.fontSize.uiLabel}
+              isLabelHidden
+              value={uiFontSize}
+              min={UI_FONT_SIZE_MIN}
+              max={UI_FONT_SIZE_MAX}
+              step={1}
+              isIntegerOnly
+              hasNumberSteppers
+              units="px"
+              width={132}
+              onChange={(value) => void setUiFontSize(value)}
+            />
+          }
+        />
+        <SettingsRow
+          label={copy.fontSize.terminalLabel}
+          description={copy.fontSize.terminalHelp}
+          end={
+            <NumberInput
+              label={copy.fontSize.terminalLabel}
+              isLabelHidden
+              value={terminalFontSize}
+              min={TERMINAL_FONT_SIZE_MIN}
+              max={TERMINAL_FONT_SIZE_MAX}
+              step={1}
+              isIntegerOnly
+              hasNumberSteppers
+              units="px"
+              width={132}
+              onChange={(value) => void setTerminalFontSize(value)}
+            />
+          }
+        />
       </SettingsSection>
       <SettingsSection
         variant="bare"

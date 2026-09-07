@@ -17,11 +17,8 @@
  * under the License.
  */
 
-import {
-  isConnectionReady,
-  normalizeOpenAiCodexConnection,
-  type ChatConfigurationReason,
-} from './connection-readiness.js';
+import { isConnectionReady, type ChatConfigurationReason } from './connection-readiness.js';
+import { normalizeOpenAiCodexConnection } from './model-catalog.js';
 import type { LlmConnection } from './llm-connections.js';
 
 export const TASK_SUBMISSION_READINESS_STATES = [

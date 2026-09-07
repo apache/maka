@@ -18,7 +18,6 @@
  */
 
 import { z } from 'zod';
-import { TASK_ID_MAX_CHARS, isSafeTaskId, type TaskLedgerStore } from '@maka/core/task-ledger';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
 import { isSafeSubagentPresetId } from '@maka/core/subagent-settings';
 import { type ToolResultContent } from '@maka/core/events';
@@ -89,7 +88,7 @@ export function buildChildAgentTools(tools: readonly MakaTool[]): MakaTool[] {
 }
 
 export function buildSubagentSpawnTool(
-  deps: { taskLedger?: TaskLedgerStore; definitions?: readonly AgentDefinition[] } = {},
+  deps: { definitions?: readonly AgentDefinition[] } = {},
 ): MakaTool<
   {
     profile?: string;
@@ -97,7 +96,6 @@ export function buildSubagentSpawnTool(
     task: string;
     write_back?: string;
     isolation?: string;
-    task_id?: string;
   },
   unknown
 > {
@@ -109,7 +107,7 @@ export function buildSubagentSpawnTool(
     description:
       'Run one bounded foreground child task. Prefer agent_list, then select the user-approved subagent_id whose description fits the task; profile is retained for legacy callers. If both selectors are present, subagent_id wins and profile is ignored.',
     parameters: z.preprocess(
-      (input) => cleanSubagentSpawnInput(input, deps.taskLedger !== undefined),
+      cleanSubagentSpawnInput,
       z
         .object({
           profile: z.enum(profiles).optional().describe('Legacy child capability profile.'),
@@ -137,17 +135,6 @@ export function buildSubagentSpawnTool(
             .describe(
               'Requested child workspace isolation. Worktree profiles fail closed until a worktree child executor is available.',
             ),
-          ...(deps.taskLedger
-            ? {
-                task_id: z
-                  .string()
-                  .min(1)
-                  .max(TASK_ID_MAX_CHARS)
-                  .refine(isSafeTaskId)
-                  .optional()
-                  .describe('Existing task UUID or short key to bind to this child run.'),
-              }
-            : {}),
         })
         .strip()
         .superRefine((input, ctx) => {
@@ -208,20 +195,6 @@ export function buildSubagentSpawnTool(
           },
         );
       }
-      // task_id is meaningful only in compositions that advertise task
-      // binding. Older or over-eager callers may still send it elsewhere;
-      // ignore it instead of turning an optional integration into a refusal.
-      const taskId = deps.taskLedger ? input.task_id : undefined;
-      const boundTask = taskId ? await deps.taskLedger!.get(ctx.sessionId, taskId) : undefined;
-      if (taskId && !boundTask) throw new Error(`No such task in this session: ${taskId}`);
-      let claimedOwner:
-        | {
-            actor: 'child_agent';
-            sessionId: string;
-            agentId: string;
-            turnId: string;
-          }
-        | undefined;
       let result: Omit<SubagentToolResult, 'kind'>;
       const progress = new ChildAgentProgressProjector(ctx);
       ctx.emitOutput('stdout', `Starting child agent: ${definition.name}\n`);
@@ -231,27 +204,6 @@ export function buildSubagentSpawnTool(
             agentProfile: definition.profile,
             ...(input.subagent_id ? { subagentId: input.subagent_id } : {}),
             prompt: input.task,
-            ...(boundTask
-              ? {
-                  onReady: async ({ childSessionId, turnId, agentId }) => {
-                    const owner = {
-                      actor: 'child_agent' as const,
-                      sessionId: childSessionId,
-                      agentId,
-                      turnId,
-                    };
-                    await deps.taskLedger!.claim(ctx.sessionId, boundTask.id, owner, {
-                      runId: ctx.runId,
-                      turnId: ctx.turnId,
-                      toolCallId: ctx.toolCallId,
-                      source: 'system',
-                      actor: 'main_agent',
-                      reason: `assigned to child agent ${agentId}`,
-                    });
-                    claimedOwner = owner;
-                  },
-                }
-              : {}),
             onEvent: (event) => progress.observe(event),
           }),
         );
@@ -260,52 +212,9 @@ export function buildSubagentSpawnTool(
           'stderr',
           `Child agent ${definition.name} failed: ${boundedChildError(error)}\n`,
         );
-        if (boundTask && claimedOwner) {
-          await deps.taskLedger!.settleAgentOutcome(
-            ctx.sessionId,
-            boundTask.id,
-            {
-              status: 'failed',
-              owner: claimedOwner,
-              reason:
-                error instanceof Error
-                  ? error.message
-                  : 'Child agent failed before returning a result',
-            },
-            {
-              turnId: claimedOwner.turnId,
-              toolCallId: ctx.toolCallId,
-              source: 'system',
-              actor: 'child_agent',
-            },
-          );
-        }
         throw error;
       }
       ctx.emitOutput('stdout', `Child agent ${definition.name}: ${result.status}\n`);
-      if (boundTask && claimedOwner) {
-        const owner = {
-          ...claimedOwner,
-          ...(result.runId ? { runId: result.runId } : {}),
-          turnId: result.turnId,
-        };
-        await deps.taskLedger!.settleAgentOutcome(
-          ctx.sessionId,
-          boundTask.id,
-          {
-            status: result.status,
-            owner,
-            reason: result.failureClass ?? result.summary,
-          },
-          {
-            runId: result.runId,
-            turnId: result.turnId,
-            toolCallId: ctx.toolCallId,
-            source: 'system',
-            actor: 'child_agent',
-          },
-        );
-      }
       return {
         kind: 'subagent',
         ...result,
@@ -314,11 +223,10 @@ export function buildSubagentSpawnTool(
   };
 }
 
-function cleanSubagentSpawnInput(input: unknown, taskBindingAvailable: boolean): unknown {
+function cleanSubagentSpawnInput(input: unknown): unknown {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
   const cleaned = { ...(input as Record<string, unknown>) };
   if (cleaned.subagent_id !== undefined) delete cleaned.profile;
-  if (!taskBindingAvailable) delete cleaned.task_id;
   return cleaned;
 }
 
@@ -753,7 +661,7 @@ export function buildSubagentProjectionTools(): MakaTool[] {
 }
 
 export function buildParentAgentTools(
-  deps: { taskLedger?: TaskLedgerStore; definitions?: readonly AgentDefinition[] } = {},
+  deps: { definitions?: readonly AgentDefinition[] } = {},
 ): MakaTool[] {
   const definitions = deps.definitions ?? BUILTIN_AGENT_DEFINITIONS;
   return [

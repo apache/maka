@@ -40,7 +40,7 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
       get: async () => config,
       transform: async (apply) => {
         calls.push('store');
-        config = apply(config);
+        config = await apply(config);
         return config;
       },
       upsert: async (serverId, server) => {
@@ -111,12 +111,12 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
   assert.equal(added.status, 'added');
   assert.deepEqual(added.config.mcpServers.brave, { command: 'npx' });
   assert.deepEqual(calls, ['store', 'sync', 'emit', 'publish']);
-  // A taken id comes back as data, not an IPC error, and commits nothing —
-  // the existence check now fails before the transaction ever reaches the
-  // credential-erase or write steps.
+  // A taken id comes back as data, not an IPC error. The check runs against
+  // the locked transaction snapshot, but reaches neither credential cleanup
+  // nor the file replacement.
   calls.length = 0;
   assert.deepEqual(await add({}, 'brave', { command: 'other' }), { status: 'exists' });
-  assert.deepEqual(calls, []);
+  assert.deepEqual(calls, ['store']);
 
   calls.length = 0;
   const testHandler = handlers.get('mcp:test');
@@ -130,7 +130,7 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
   assert.ok(cancelInstall);
   const cancelled = await cancelInstall({}, 'fixture');
   assert.equal(cancelled.mcpServers.fixture, undefined);
-  assert.deepEqual(calls, ['cancel', 'forget', 'store', 'sync', 'emit', 'publish']);
+  assert.deepEqual(calls, ['cancel', 'store', 'forget', 'sync', 'emit', 'publish']);
 });
 
 test('MCP remove aborts before touching the config when credential deletion fails', async () => {
@@ -142,7 +142,7 @@ test('MCP remove aborts before touching the config when credential deletion fail
     store: {
       get: async () => config,
       transform: async (apply) => {
-        config = apply(config);
+        config = await apply(config);
         return config;
       },
       upsert: async (serverId, server) => {
@@ -209,7 +209,7 @@ test('MCP IPC redacts clientSecret toward the renderer and restores the sentinel
     store: {
       get: async () => config,
       transform: async (apply) => {
-        config = apply(config);
+        config = await apply(config);
         return config;
       },
       upsert: async (serverId, server) => {
@@ -315,11 +315,13 @@ test('MCP market cancellation waits for an in-flight config write before rolling
     store: {
       get: async () => config,
       transform: async (apply) => {
-        calls.push('write:start');
+        calls.push('transaction:start');
         markWriteStarted();
         await writeGate;
-        config = apply(config);
-        calls.push('write:end');
+        const next = await apply(config);
+        calls.push('write');
+        config = next;
+        calls.push('transaction:end');
         return config;
       },
       upsert: async (serverId, server) => {
@@ -372,8 +374,8 @@ test('MCP market cancellation waits for an in-flight config write before rolling
   // The cancellation's own removal is a full transaction on the same lane:
   // credentials retire first, then the conditional write.
   assert.deepEqual(calls, [
-    'write:start', 'cancel', 'write:end',
-    'forget', 'write:start', 'write:end',
+    'transaction:start', 'cancel', 'write', 'transaction:end',
+    'transaction:start', 'forget', 'write', 'transaction:end',
     'sync', 'emit', 'publish',
   ]);
 });
@@ -394,7 +396,7 @@ test('an active login on a secret-bearing server does not veto edits to another 
     ipcMain: { handle(channel, handler) { handlers.set(channel, handler as (...args: any[]) => Promise<any>); } },
     store: {
       get: async () => config,
-      transform: async (apply) => { config = apply(config); return config; },
+      transform: async (apply) => { config = await apply(config); return config; },
       upsert: async (_serverId, _server) => config,
       remove: async () => config,
     },
@@ -452,7 +454,13 @@ test('a URL change retires the old endpoint credentials before the write, and an
     ipcMain: { handle(channel, handler) { handlers.set(channel, handler as (...args: any[]) => Promise<any>); } },
     store: {
       get: async () => config,
-      transform: async (apply) => { calls.push('write'); config = apply(config); return config; },
+      transform: async (apply) => {
+        calls.push('transaction:start');
+        const next = await apply(config);
+        calls.push('write');
+        config = next;
+        return config;
+      },
       upsert: async (_serverId, _server) => config,
       remove: async () => config,
     },
@@ -487,20 +495,29 @@ test('a URL change retires the old endpoint credentials before the write, and an
     upsert({}, 'remote', { url: 'https://new.example.com/mcp' }),
     /credential store unavailable/u,
   );
-  assert.deepEqual(calls, ['forget']);
+  assert.deepEqual(calls, ['transaction:start', 'forget']);
   const kept = config.mcpServers.remote;
   assert.ok(kept && 'url' in kept);
   assert.equal(kept.url, 'https://old.example.com/mcp');
+
+  // Policy failures are known before the credential-first transaction: an
+  // invalid replacement must not log the user out when it cannot be saved.
+  calls.length = 0;
+  await assert.rejects(
+    upsert({}, 'remote', { url: 'http://public.example.com/mcp' }),
+    /must use https/u,
+  );
+  assert.deepEqual(calls, ['transaction:start']);
 
   // Same repoint with a healthy credential store: erase strictly precedes
   // the write. An unchanged-URL upsert afterwards does not erase at all.
   eraseFails = false;
   calls.length = 0;
   await upsert({}, 'remote', { url: 'https://new.example.com/mcp' });
-  assert.deepEqual(calls, ['forget', 'write', 'sync']);
+  assert.deepEqual(calls, ['transaction:start', 'forget', 'write', 'sync']);
   calls.length = 0;
   await upsert({}, 'remote', { url: 'https://new.example.com/mcp', enabled: false });
-  assert.deepEqual(calls, ['write', 'sync']);
+  assert.deepEqual(calls, ['transaction:start', 'write', 'sync']);
 });
 
 test('cancelling an install rolls back only its own write, never a newer same-id config', async () => {
@@ -513,7 +530,7 @@ test('cancelling an install rolls back only its own write, never a newer same-id
     ipcMain: { handle(channel, handler) { handlers.set(channel, handler as (...args: any[]) => Promise<any>); } },
     store: {
       get: async () => config,
-      transform: async (apply) => { config = apply(config); return config; },
+      transform: async (apply) => { config = await apply(config); return config; },
       upsert: async (_serverId, _server) => config,
       remove: async () => config,
     },
@@ -586,7 +603,7 @@ test('a login claim travels the shared lane and cannot land inside an open trans
       transform: async (apply) => {
         markWriteStarted();
         await writeGate;
-        config = apply(config);
+        config = await apply(config);
         return config;
       },
       upsert: async (_serverId, _server) => config,
@@ -698,7 +715,7 @@ test('cancelling an install through the REAL store rolls the entry back despite 
   }
 });
 
-test('the config write fails closed when the snapshot drifts under the transaction', async () => {
+test('the config commit applies its mutation to the transaction snapshot', async () => {
   const handlers = new Map<string, (...args: any[]) => Promise<any>>();
   const config: McpConfigFile = { version: MCP_CONFIG_VERSION, mcpServers: {} };
   const drifted: McpConfigFile = {
@@ -710,10 +727,10 @@ test('the config write fails closed when the snapshot drifts under the transacti
     ipcMain: { handle(channel, handler) { handlers.set(channel, handler as (...args: any[]) => Promise<any>); } },
     store: {
       get: async () => config,
-      // Simulates an out-of-band writer landing between the snapshot read
-      // and the serialized write: apply() observes a different config.
+      // The store supplies the current snapshot after acquiring its shared
+      // lock. The mutation must preserve an unrelated edit already in it.
       transform: async (apply) => {
-        const next = apply(drifted);
+        const next = await apply(drifted);
         wrote = true;
         return next;
       },
@@ -742,8 +759,10 @@ test('the config write fails closed when the snapshot drifts under the transacti
 
   const upsert = handlers.get('mcp:upsert');
   assert.ok(upsert);
-  await assert.rejects(upsert({}, 'fixture', { command: 'node' }), /changed while/u);
-  assert.equal(wrote, false);
+  const next = await upsert({}, 'fixture', { command: 'node' });
+  assert.equal(wrote, true);
+  assert.ok(next.mcpServers.intruder);
+  assert.ok(next.mcpServers.fixture);
 });
 
 test('MCP config commit is not rolled back by a capability publication failure', async () => {
@@ -759,7 +778,7 @@ test('MCP config commit is not rolled back by a capability publication failure',
     store: {
       get: async () => config,
       transform: async (apply) => {
-        config = apply(config);
+        config = await apply(config);
         return config;
       },
       upsert: async (serverId, server) => {

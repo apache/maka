@@ -140,6 +140,55 @@ export interface InspectorOverviewModel {
    * the run ledger; three statements of the same tokens is two too many.
    */
   cacheHitRate?: number;
+  /**
+   * The session's metered tokens split the way a bill reads: served from the
+   * provider's cache, paid as uncached input, paid as output. Absent when
+   * nothing was metered — a breakdown of zero tokens is not zeros, it is
+   * nothing to break down.
+   */
+  tokenUsage?: InspectorTokenUsage;
+  /**
+   * Where the session's recorded time went, model calls against tool
+   * executions. Absent when the query could not answer either ledger — a
+   * connection-scoped query omits the tool side, and a session with no
+   * recorded time has no split to draw.
+   */
+  durationUsage?: InspectorDurationUsage;
+}
+
+export type InspectorTokenUsageKind = 'cacheRead' | 'cacheMiss' | 'output';
+
+export interface InspectorTokenUsageSegment {
+  kind: InspectorTokenUsageKind;
+  tokens: number;
+}
+
+export interface InspectorTokenUsage {
+  /** cacheRead + uncached input + output — the metered, billable tokens. */
+  total: number;
+  /**
+   * In reading order with empty rows dropped, so the bands and their legend
+   * cannot disagree about what is drawn.
+   */
+  segments: readonly InspectorTokenUsageSegment[];
+}
+
+export type InspectorDurationUsageKind = 'model' | 'tool';
+
+export interface InspectorDurationUsageSegment {
+  kind: InspectorDurationUsageKind;
+  count: number;
+  durationMs: number;
+}
+
+export interface InspectorDurationUsage {
+  /**
+   * model + tool recorded time. A sum of per-call durations, not wall-clock:
+   * parallel settlements and nested calls overlap, so this can exceed the
+   * session's elapsed time.
+   */
+  totalDurationMs: number;
+  segments: readonly InspectorDurationUsageSegment[];
 }
 
 export function estimatedSessionCost(
@@ -182,10 +231,14 @@ export function deriveInspectorOverviewModel(
   const composition = compositionState(diagnostics);
   const context = contextBudget(diagnostics);
   const cacheHitRate = usageCacheHitRate(usage);
+  const tokenUsage = usageTokenSplit(usage);
+  const durationUsage = usageDurationSplit(usage);
   return {
     ...(context ? { context } : {}),
     ...(composition ? { composition } : {}),
     ...(cacheHitRate !== undefined ? { cacheHitRate } : {}),
+    ...(tokenUsage ? { tokenUsage } : {}),
+    ...(durationUsage ? { durationUsage } : {}),
   };
 }
 
@@ -199,6 +252,75 @@ function usageCacheHitRate(usage: SessionUsageSummary | undefined): number | und
     return undefined;
   }
   return usage.totalTokens.cacheRead / usage.totalTokens.input;
+}
+
+/**
+ * The bill-shaped split of the session's metered tokens.
+ *
+ * `cacheMiss` is computed as the residual `input − cacheRead` rather than read
+ * from the ledger: several providers report the cached share only, and a
+ * ledger zero there would understate the uncached input the session paid for.
+ * The ledger's own `cacheMiss` is kept as a floor for records that reported
+ * the miss but no prompt total. `cacheRead` is taken as reported — providers
+ * that itemize the cached share without a prompt total leave it larger than
+ * `input`, and clamping it here would erase exactly the sessions the split
+ * exists to describe. Output is the metered figure as billed — providers that
+ * itemize reasoning include it in it, which is what the panel's row label says.
+ */
+function usageTokenSplit(usage: SessionUsageSummary | undefined): InspectorTokenUsage | undefined {
+  if (!usage) return undefined;
+  const { input, output, cacheRead, cacheMiss } = usage.totalTokens;
+  if (input + output <= 0) return undefined;
+  const uncachedInput = Math.max(input - cacheRead, cacheMiss, 0);
+  const segments = [
+    { kind: 'cacheRead' as const, tokens: cacheRead },
+    { kind: 'cacheMiss' as const, tokens: uncachedInput },
+    { kind: 'output' as const, tokens: output },
+  ].filter((segment) => segment.tokens > 0);
+  // The readout is the sum of what is drawn, so the rows and their total
+  // cannot disagree even when a provider's report made the ledger's own
+  // `total` drift from its parts.
+  return {
+    total: segments.reduce((carry, segment) => carry + segment.tokens, 0),
+    segments,
+  };
+}
+
+/**
+ * Model-call time against tool-execution time, both session-wide from their
+ * own ledgers. Presence follows the reported fields, not a zero default: a
+ * host that measured zero model time keeps its row — the call count is real —
+ * and `toolUsage` is simply absent when the query could not be scoped. A row
+ * with neither a clock nor a count is dropped; a split nobody measured is not
+ * a split worth drawing.
+ */
+function usageDurationSplit(
+  usage: SessionUsageSummary | undefined,
+): InspectorDurationUsage | undefined {
+  if (!usage) return undefined;
+  const segments = (
+    [
+      {
+        kind: 'model' as const,
+        count: usage.totalRequests,
+        durationMs: usage.totalDurationMs,
+      },
+      ...(usage.toolUsage
+        ? [
+            {
+              kind: 'tool' as const,
+              count: usage.toolUsage.requests,
+              durationMs: usage.toolUsage.durationMs,
+            },
+          ]
+        : []),
+    ] satisfies InspectorDurationUsageSegment[]
+  ).filter((segment) => segment.durationMs > 0 || segment.count > 0);
+  if (segments.length === 0) return undefined;
+  return {
+    totalDurationMs: segments.reduce((carry, segment) => carry + segment.durationMs, 0),
+    segments,
+  };
 }
 
 /**

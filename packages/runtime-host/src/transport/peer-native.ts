@@ -20,6 +20,7 @@
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import type { RuntimeHostByteStream } from './framed-byte-stream-transport.js';
+import type { PeerResumeState } from './resumable-peer-stream.js';
 
 const AUTHENTICATION_MAX_BYTES = 12 * 1024;
 const AUTHENTICATION_RESULT_MAX_BYTES = 256;
@@ -29,9 +30,12 @@ const require = createRequire(import.meta.url);
 export type RuntimeHostPeerErrorCode =
   | 'peer_identity_mismatch'
   | 'direct_path_unavailable'
+  | 'mesh_control_unavailable'
   | 'coordination_unavailable'
+  | 'transit_unavailable'
   | 'peer_native_unavailable'
   | 'peer_native_failed'
+  | 'peer_capacity_exceeded'
   | 'peer_connect_in_progress';
 
 export class RuntimeHostPeerError extends Error {
@@ -46,33 +50,179 @@ export class RuntimeHostPeerError extends Error {
 }
 
 export interface RuntimeHostPeerNativeStream {
+  readonly peerId: string;
+  readonly path?: RuntimeHostPeerConnectionPath;
   read(): Promise<Buffer | null>;
   write(bytes: Buffer): Promise<void>;
   close(): Promise<void>;
   abort(): void;
 }
 
+export type RuntimeHostPeerConnectionPath =
+  | {
+      readonly kind: 'direct';
+      readonly transport: 'quic' | 'tcp' | 'webrtc' | 'other';
+    }
+  | {
+      readonly kind: 'transit';
+      readonly relayPeerId: string;
+    };
+
+export interface RuntimeHostPeerIdentityProof {
+  readonly publicKey: Buffer;
+  readonly signature: Buffer;
+}
+
 export interface RuntimeHostPeerNativeEndpoint {
   readonly peerId: string;
-  readonly listenAddresses: readonly string[];
+  readonly reachabilitySnapshot: RuntimeHostPeerNativeReachabilitySnapshot;
+  readonly connectivitySnapshot: RuntimeHostPeerNativeConnectivitySnapshot;
+  readonly transitSnapshot: RuntimeHostPeerTransitSnapshot;
+  watchReachability(afterGeneration: number, timeoutMs: number): Promise<number>;
+  watchConnectivity(
+    afterGeneration: number,
+    timeoutMs: number,
+  ): Promise<RuntimeHostPeerNativeConnectivitySnapshot>;
   connect(options: {
+    readonly requestId: number;
     readonly peerId: string;
     readonly routeHints: readonly string[];
     readonly coordinationRelays?: readonly string[];
+    readonly transitRelayPeerIds?: readonly string[];
     readonly directDeadlineMs: number;
   }): Promise<RuntimeHostPeerNativeStream>;
+  connectMeshControl(options: {
+    readonly requestId: number;
+    readonly peerId: string;
+    readonly routeHints: readonly string[];
+    readonly coordinationRelays?: readonly string[];
+    readonly transitRelayPeerIds?: readonly string[];
+    readonly directDeadlineMs: number;
+  }): Promise<RuntimeHostPeerNativeStream>;
+  updateConnect(options: {
+    readonly requestId: number;
+    readonly routeHints: readonly string[];
+    readonly coordinationRelays?: readonly string[];
+    readonly transitRelayPeerIds?: readonly string[];
+  }): Promise<boolean>;
+  configureTransit(options: {
+    readonly allowedPeerIds: readonly string[];
+    readonly approvedRelayPeerIds: readonly string[];
+    readonly relayCandidates: readonly RuntimeHostPeerTransitRelayCandidate[];
+  }): Promise<void>;
+  cancelConnect(requestId: number): Promise<boolean>;
   accept(): Promise<RuntimeHostPeerNativeStream | null>;
+  acceptMeshControl(): Promise<RuntimeHostPeerNativeStream | null>;
   close(): Promise<void>;
 }
 
+export interface RuntimeHostPeerNativeReachabilitySnapshot {
+  readonly generation: number;
+  readonly listenAddresses: readonly string[];
+  readonly activeCoordinationRelays: readonly string[];
+}
+
+export interface RuntimeHostPeerNativeConnectivitySnapshot {
+  readonly generation: number;
+  readonly connectedPeerIds: readonly string[];
+}
+
+export interface RuntimeHostPeerTransitSnapshot {
+  readonly allowedPeerCount: number;
+  readonly activeReservationCount: number;
+  readonly activeCircuitCount: number;
+  readonly maxReservationCount: number;
+  readonly maxCircuitCount: number;
+  readonly maxCircuitsPerPeer: number;
+  readonly maxCircuitDurationSeconds: number;
+  readonly maxCircuitBytes: number;
+}
+
+export interface RuntimeHostPeerTransitRelayCandidate {
+  readonly peerId: string;
+  readonly addresses: readonly string[];
+  readonly coordinationRelays: readonly string[];
+}
+
 interface RuntimeHostPeerNativeModule {
+  readProcessStartIdentity?(pid: number): unknown;
   ensurePeerIdentity(keyPath: string): Promise<string>;
+  signPeerIdentity(
+    keyPath: string,
+    expectedPeerId: string,
+    payload: Buffer,
+  ): Promise<RuntimeHostPeerIdentityProof>;
+  verifyPeerIdentity(
+    peerId: string,
+    publicKey: Buffer,
+    payload: Buffer,
+    signature: Buffer,
+  ): boolean;
   startPeerEndpoint(options: {
     readonly keyPath: string;
+    readonly relayAnchorPath?: string;
     readonly expectedPeerId?: string;
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
-  }): RuntimeHostPeerNativeEndpoint;
+    readonly automaticRelayDiscovery?: boolean;
+    readonly webRtcStunUrls?: readonly string[];
+  }): unknown;
+}
+
+export function readRuntimeHostNativeProcessStartIdentity(
+  nativePath: string,
+  pid: number,
+): string | undefined {
+  const reader = loadNativeModule(nativePath).readProcessStartIdentity;
+  if (!reader) return undefined;
+  const identity = reader(pid);
+  return typeof identity === 'string' && isProcessStartIdentity(identity) ? identity : undefined;
+}
+
+export async function signRuntimeHostPeerIdentity(input: {
+  readonly nativePath: string;
+  readonly keyPath: string;
+  readonly expectedPeerId: string;
+  readonly payload: Buffer;
+}): Promise<RuntimeHostPeerIdentityProof> {
+  try {
+    const proof = await loadNativeModule(input.nativePath).signPeerIdentity(
+      input.keyPath,
+      input.expectedPeerId,
+      input.payload,
+    );
+    if (!isPeerIdentityProof(proof)) {
+      throw new RuntimeHostPeerError(
+        'peer_native_failed',
+        'Native peer identity signature is invalid',
+      );
+    }
+    return Object.freeze({
+      publicKey: Buffer.from(proof.publicKey),
+      signature: Buffer.from(proof.signature),
+    });
+  } catch (error) {
+    throw normalizePeerError(error);
+  }
+}
+
+export function verifyRuntimeHostPeerIdentity(input: {
+  readonly nativePath: string;
+  readonly peerId: string;
+  readonly publicKey: Buffer;
+  readonly payload: Buffer;
+  readonly signature: Buffer;
+}): boolean {
+  try {
+    return loadNativeModule(input.nativePath).verifyPeerIdentity(
+      input.peerId,
+      input.publicKey,
+      input.payload,
+      input.signature,
+    );
+  } catch (error) {
+    throw normalizePeerError(error);
+  }
 }
 
 export async function ensureRuntimeHostPeerIdentity(input: {
@@ -93,17 +243,32 @@ export async function ensureRuntimeHostPeerIdentity(input: {
 export function startRuntimeHostPeerEndpoint(input: {
   readonly nativePath: string;
   readonly keyPath: string;
+  readonly relayAnchorPath?: string;
   readonly expectedPeerId?: string;
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
+  readonly automaticRelayDiscovery?: boolean;
+  readonly webRtcStunUrls?: readonly string[];
 }): RuntimeHostPeerNativeEndpoint {
   try {
-    return loadNativeModule(input.nativePath).startPeerEndpoint({
+    const endpoint = loadNativeModule(input.nativePath).startPeerEndpoint({
       keyPath: input.keyPath,
+      ...(input.relayAnchorPath ? { relayAnchorPath: input.relayAnchorPath } : {}),
       ...(input.expectedPeerId ? { expectedPeerId: input.expectedPeerId } : {}),
       ...(input.listenAddresses ? { listenAddresses: input.listenAddresses } : {}),
       ...(input.coordinationRelays ? { coordinationRelays: input.coordinationRelays } : {}),
+      ...(input.automaticRelayDiscovery === undefined
+        ? {}
+        : { automaticRelayDiscovery: input.automaticRelayDiscovery }),
+      ...(input.webRtcStunUrls === undefined ? {} : { webRtcStunUrls: input.webRtcStunUrls }),
     });
+    if (!isPeerNativeEndpoint(endpoint)) {
+      throw new RuntimeHostPeerError(
+        'peer_native_unavailable',
+        'Runtime Host peer native endpoint has an incompatible API',
+      );
+    }
+    return endpoint;
   } catch (error) {
     throw normalizePeerError(error);
   }
@@ -133,6 +298,7 @@ function loadNativeModule(path: string): RuntimeHostPeerNativeModule {
 export async function writeRuntimeHostPeerAuthentication(
   stream: RuntimeHostPeerNativeStream,
   credential: string,
+  resume?: PeerResumeState,
 ): Promise<void> {
   if (!credential || /\s/u.test(credential)) {
     throw new RuntimeHostPeerError(
@@ -140,19 +306,50 @@ export async function writeRuntimeHostPeerAuthentication(
       'Runtime Host access credential is invalid',
     );
   }
-  await stream.write(Buffer.from(`${JSON.stringify({ v: 1, credential })}\n`, 'utf8'));
+  await withStreamDeadline(
+    stream.write(
+      Buffer.from(
+        `${JSON.stringify(resume ? { v: 2, credential, resume } : { v: 1, credential })}\n`,
+        'utf8',
+      ),
+    ),
+    stream,
+    RUNTIME_HOST_PEER_AUTHENTICATION_TIMEOUT_MS,
+    'Peer authentication write timed out',
+  );
 }
 
 export async function writeRuntimeHostPeerAuthenticationResult(
   stream: RuntimeHostPeerNativeStream,
   accepted: boolean,
+  detail?: { readonly received: number } | { readonly reason: 'capacity_exceeded' },
 ): Promise<void> {
-  await stream.write(Buffer.from(`${JSON.stringify({ v: 1, accepted })}\n`, 'utf8'));
+  await withStreamDeadline(
+    stream.write(
+      Buffer.from(
+        `${JSON.stringify(
+          detail && 'reason' in detail
+            ? { v: 2, accepted: false, reason: detail.reason }
+            : detail
+              ? { v: 2, accepted, resume: detail }
+              : { v: 1, accepted },
+        )}\n`,
+        'utf8',
+      ),
+    ),
+    stream,
+    RUNTIME_HOST_PEER_AUTHENTICATION_TIMEOUT_MS,
+    'Peer authentication response write timed out',
+  );
 }
 
 export async function readRuntimeHostPeerAuthentication(
   stream: RuntimeHostPeerNativeStream,
-): Promise<{ readonly credential: string; readonly remainder: Buffer }> {
+): Promise<{
+  readonly credential: string;
+  readonly remainder: Buffer;
+  readonly resume?: PeerResumeState;
+}> {
   const decoded = await readBoundedJsonLine(
     stream,
     AUTHENTICATION_MAX_BYTES,
@@ -161,13 +358,21 @@ export async function readRuntimeHostPeerAuthentication(
   if (!isAuthenticationPreface(decoded.value)) {
     throw new RuntimeHostPeerError('peer_native_failed', 'Peer authentication preface is invalid');
   }
-  return { credential: decoded.value.credential, remainder: decoded.remainder };
+  return {
+    credential: decoded.value.credential,
+    remainder: decoded.remainder,
+    ...('resume' in decoded.value ? { resume: decoded.value.resume } : {}),
+  };
 }
 
 export async function readRuntimeHostPeerAuthenticationResult(
   stream: RuntimeHostPeerNativeStream,
   timeoutMs = RUNTIME_HOST_PEER_AUTHENTICATION_TIMEOUT_MS,
-): Promise<{ readonly accepted: boolean; readonly remainder: Buffer }> {
+): Promise<{
+  readonly accepted: boolean;
+  readonly remainder: Buffer;
+  readonly resume?: { readonly received: number };
+}> {
   const decoded = await withStreamDeadline(
     readBoundedJsonLine(stream, AUTHENTICATION_RESULT_MAX_BYTES, 'Peer authentication result'),
     stream,
@@ -177,7 +382,17 @@ export async function readRuntimeHostPeerAuthenticationResult(
   if (!isAuthenticationResult(decoded.value)) {
     throw new RuntimeHostPeerError('peer_native_failed', 'Peer authentication result is invalid');
   }
-  return { accepted: decoded.value.accepted, remainder: decoded.remainder };
+  if ('reason' in decoded.value) {
+    throw new RuntimeHostPeerError(
+      'peer_capacity_exceeded',
+      'Runtime Host peer connection capacity is full; close unused Host or shared Session connections and retry',
+    );
+  }
+  return {
+    accepted: decoded.value.accepted,
+    remainder: decoded.remainder,
+    ...('resume' in decoded.value ? { resume: decoded.value.resume } : {}),
+  };
 }
 
 async function readBoundedJsonLine(
@@ -312,9 +527,10 @@ export class RuntimeHostPeerByteStream implements RuntimeHostByteStream {
 export function normalizePeerError(error: unknown): RuntimeHostPeerError {
   if (error instanceof RuntimeHostPeerError) return error;
   const cause = asError(error);
-  const match = /^(peer_[a-z_]+|direct_path_unavailable|coordination_unavailable):\s*(.*)$/su.exec(
-    cause.message,
-  );
+  const match =
+    /^(peer_[a-z_]+|direct_path_unavailable|mesh_control_unavailable|coordination_unavailable|transit_unavailable):\s*(.*)$/su.exec(
+      cause.message,
+    );
   if (match && isPeerErrorCode(match[1])) {
     return new RuntimeHostPeerError(match[1], match[2] || match[1], { cause });
   }
@@ -327,19 +543,136 @@ function isPeerNativeModule(value: unknown): value is RuntimeHostPeerNativeModul
     value !== null &&
     'ensurePeerIdentity' in value &&
     typeof value.ensurePeerIdentity === 'function' &&
+    'signPeerIdentity' in value &&
+    typeof value.signPeerIdentity === 'function' &&
+    'verifyPeerIdentity' in value &&
+    typeof value.verifyPeerIdentity === 'function' &&
     'startPeerEndpoint' in value &&
     typeof value.startPeerEndpoint === 'function'
   );
 }
 
-function isAuthenticationPreface(value: unknown): value is { v: 1; credential: string } {
+function isPeerIdentityProof(value: unknown): value is RuntimeHostPeerIdentityProof {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'publicKey' in value &&
+    Buffer.isBuffer(value.publicKey) &&
+    value.publicKey.byteLength > 0 &&
+    value.publicKey.byteLength <= 256 &&
+    'signature' in value &&
+    Buffer.isBuffer(value.signature) &&
+    value.signature.byteLength > 0 &&
+    value.signature.byteLength <= 256
+  );
+}
+
+function isPeerNativeEndpoint(value: unknown): value is RuntimeHostPeerNativeEndpoint {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'peerId' in value &&
+    isPeerId(value.peerId) &&
+    'reachabilitySnapshot' in value &&
+    isPeerReachabilitySnapshot(value.reachabilitySnapshot) &&
+    'connectivitySnapshot' in value &&
+    isPeerConnectivitySnapshot(value.connectivitySnapshot) &&
+    'transitSnapshot' in value &&
+    isPeerTransitSnapshot(value.transitSnapshot) &&
+    'connect' in value &&
+    typeof value.connect === 'function' &&
+    'connectMeshControl' in value &&
+    typeof value.connectMeshControl === 'function' &&
+    'updateConnect' in value &&
+    typeof value.updateConnect === 'function' &&
+    'configureTransit' in value &&
+    typeof value.configureTransit === 'function' &&
+    'watchReachability' in value &&
+    typeof value.watchReachability === 'function' &&
+    'watchConnectivity' in value &&
+    typeof value.watchConnectivity === 'function' &&
+    'cancelConnect' in value &&
+    typeof value.cancelConnect === 'function' &&
+    'accept' in value &&
+    typeof value.accept === 'function' &&
+    'acceptMeshControl' in value &&
+    typeof value.acceptMeshControl === 'function' &&
+    'close' in value &&
+    typeof value.close === 'function'
+  );
+}
+
+function isPeerConnectivitySnapshot(
+  value: unknown,
+): value is RuntimeHostPeerNativeConnectivitySnapshot {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'generation' in value &&
+    isCount(value.generation) &&
+    'connectedPeerIds' in value &&
+    Array.isArray(value.connectedPeerIds) &&
+    value.connectedPeerIds.every((peerId) => typeof peerId === 'string')
+  );
+}
+
+function isPeerReachabilitySnapshot(
+  value: unknown,
+): value is RuntimeHostPeerNativeReachabilitySnapshot {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'generation' in value &&
+    isCount(value.generation) &&
+    'listenAddresses' in value &&
+    Array.isArray(value.listenAddresses) &&
+    value.listenAddresses.every((address) => typeof address === 'string') &&
+    'activeCoordinationRelays' in value &&
+    Array.isArray(value.activeCoordinationRelays) &&
+    value.activeCoordinationRelays.every((address) => typeof address === 'string')
+  );
+}
+
+function isPeerTransitSnapshot(value: unknown): value is RuntimeHostPeerTransitSnapshot {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'allowedPeerCount' in value &&
+    isCount(value.allowedPeerCount) &&
+    'activeReservationCount' in value &&
+    isCount(value.activeReservationCount) &&
+    'activeCircuitCount' in value &&
+    isCount(value.activeCircuitCount) &&
+    'maxReservationCount' in value &&
+    isCount(value.maxReservationCount) &&
+    'maxCircuitCount' in value &&
+    isCount(value.maxCircuitCount) &&
+    'maxCircuitsPerPeer' in value &&
+    isCount(value.maxCircuitsPerPeer) &&
+    'maxCircuitDurationSeconds' in value &&
+    isCount(value.maxCircuitDurationSeconds) &&
+    'maxCircuitBytes' in value &&
+    isCount(value.maxCircuitBytes)
+  );
+}
+
+function isCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isAuthenticationPreface(
+  value: unknown,
+): value is { v: 1; credential: string } | { v: 2; credential: string; resume: PeerResumeState } {
   return (
     typeof value === 'object' &&
     value !== null &&
     !Array.isArray(value) &&
-    Object.keys(value).length === 2 &&
     'v' in value &&
-    value.v === 1 &&
+    ((value.v === 1 && Object.keys(value).length === 2) ||
+      (value.v === 2 &&
+        Object.keys(value).length === 3 &&
+        'resume' in value &&
+        isResumeState(value.resume))) &&
     'credential' in value &&
     typeof value.credential === 'string' &&
     value.credential.length > 0 &&
@@ -347,14 +680,55 @@ function isAuthenticationPreface(value: unknown): value is { v: 1; credential: s
   );
 }
 
-function isAuthenticationResult(value: unknown): value is { v: 1; accepted: boolean } {
+function isResumeState(value: unknown): value is PeerResumeState {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    Object.keys(value).length === 3 &&
+    'sessionId' in value &&
+    typeof value.sessionId === 'string' &&
+    /^[a-f0-9]{64}$/u.test(value.sessionId) &&
+    'generation' in value &&
+    isCount(value.generation) &&
+    (value.generation as number) > 0 &&
+    'received' in value &&
+    isCount(value.received)
+  );
+}
+
+function isAuthenticationResult(
+  value: unknown,
+): value is
+  | { v: 1; accepted: boolean }
+  | { v: 2; accepted: boolean; resume: { readonly received: number } }
+  | { v: 2; accepted: false; reason: 'capacity_exceeded' } {
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 3 &&
+    'v' in value &&
+    value.v === 2 &&
+    'accepted' in value &&
+    value.accepted === false &&
+    'reason' in value &&
+    value.reason === 'capacity_exceeded'
+  )
+    return true;
   return (
     typeof value === 'object' &&
     value !== null &&
     !Array.isArray(value) &&
-    Object.keys(value).length === 2 &&
     'v' in value &&
-    value.v === 1 &&
+    ((value.v === 1 && Object.keys(value).length === 2) ||
+      (value.v === 2 &&
+        Object.keys(value).length === 3 &&
+        'resume' in value &&
+        typeof value.resume === 'object' &&
+        value.resume !== null &&
+        Object.keys(value.resume).length === 1 &&
+        'received' in value.resume &&
+        isCount(value.resume.received))) &&
     'accepted' in value &&
     typeof value.accepted === 'boolean'
   );
@@ -386,9 +760,12 @@ function isPeerErrorCode(value: string | undefined): value is RuntimeHostPeerErr
   return (
     value === 'peer_identity_mismatch' ||
     value === 'direct_path_unavailable' ||
+    value === 'mesh_control_unavailable' ||
     value === 'coordination_unavailable' ||
+    value === 'transit_unavailable' ||
     value === 'peer_native_unavailable' ||
     value === 'peer_native_failed' ||
+    value === 'peer_capacity_exceeded' ||
     value === 'peer_connect_in_progress'
   );
 }
@@ -399,6 +776,12 @@ function isPeerId(value: unknown): value is string {
     value.length > 0 &&
     Buffer.byteLength(value, 'utf8') <= 256 &&
     !/[\u0000-\u001f\u007f]/u.test(value)
+  );
+}
+
+function isProcessStartIdentity(value: string): boolean {
+  return (
+    Buffer.byteLength(value, 'utf8') <= 256 && /^(?:darwin|linux|windows):[0-9a-f:-]+$/u.test(value)
   );
 }
 

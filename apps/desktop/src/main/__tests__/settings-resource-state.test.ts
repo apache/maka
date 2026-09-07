@@ -19,7 +19,10 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { createDefaultSettings } from '@maka/core/settings';
+import {
+  createDefaultSettings,
+  type RuntimeHostAppSettings,
+} from '@maka/core/settings';
 import {
   beginSettingsResourceLoad,
   completeSettingsResourceLoad,
@@ -39,6 +42,19 @@ import { createSettingsRequestAuthority } from '../../renderer/settings/settings
 
 const LOCAL_KEY = 'local:host-local-1';
 const REMOTE_KEY = 'remote:host-remote-1';
+
+function runtimeHostSettings(): RuntimeHostAppSettings {
+  const settings = createDefaultSettings();
+  return {
+    ...settings,
+    network: {
+      proxy: {
+        ...settings.network.proxy,
+        passwordConfigured: false,
+      },
+    },
+  };
+}
 
 function catalog(entries: DesktopRuntimeHostProfileSnapshot['entries']): DesktopRuntimeHostProfileSnapshot {
   return {
@@ -188,9 +204,9 @@ describe('Settings snapshot cache', () => {
 
   it('isolates settings and connections by selected Runtime Host key', () => {
     const cache = createSettingsSnapshotCache();
-    const localSettings = createDefaultSettings();
+    const localSettings = runtimeHostSettings();
     const remoteSettings = {
-      ...createDefaultSettings(),
+      ...runtimeHostSettings(),
       personalization: {
         ...createDefaultSettings().personalization,
         displayName: 'Remote Host',
@@ -210,7 +226,7 @@ describe('Settings snapshot cache', () => {
 
   it('prunes snapshots when a profile reconnects with a new host id', () => {
     const cache = createSettingsSnapshotCache();
-    cache.commitRuntimeHostSettingsRead(LOCAL_KEY, createDefaultSettings());
+    cache.commitRuntimeHostSettingsRead(LOCAL_KEY, runtimeHostSettings());
     cache.commitRuntimeHostConnectionsRead(LOCAL_KEY, {
       connections: [],
       defaultSlug: null,
@@ -232,7 +248,7 @@ describe('Settings snapshot cache', () => {
 
   it('stores settings and connection reads independently', () => {
     const cache = createSettingsSnapshotCache();
-    const settings = createDefaultSettings();
+    const settings = runtimeHostSettings();
     cache.commitRuntimeHostSettingsRead(LOCAL_KEY, settings);
 
     assert.equal(cache.readRuntimeHostSettings(LOCAL_KEY), settings);

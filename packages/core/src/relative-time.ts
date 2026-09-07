@@ -48,7 +48,8 @@ const SIDEBAR_TIME_BUCKETS = [
 ] as const;
 
 const JUST_NOW: UiCatalog<string> = {
-  zh: '刚刚',
+  'zh-CN': '刚刚',
+  'zh-TW': '剛剛',
   en: 'just now',
 };
 
@@ -57,31 +58,44 @@ function relativeAgeMs(ts: number, now: number): number {
   return Math.max(0, now - ts);
 }
 
-let cachedRelativeFormat: Intl.RelativeTimeFormat | null = null;
-let cachedAbsoluteFormat: Intl.DateTimeFormat | null = null;
-let cachedLocale: string | null = null;
+// One cache per formatter. They used to share `cachedLocale` and clear each
+// other on a miss, so alternating relative and absolute reads — which is what
+// the sidebar does, once per row — rebuilt an `Intl` formatter every call.
+let cachedRelativeFormat: { locale: string; format: Intl.RelativeTimeFormat } | null = null;
+let cachedAbsoluteFormat: { locale: string; format: Intl.DateTimeFormat } | null = null;
 
 function getRelativeFormat(uiLocale: UiLocale): Intl.RelativeTimeFormat {
   const locale = uiLocaleToIntlLocale(uiLocale);
-  if (!cachedRelativeFormat || cachedLocale !== locale) {
-    cachedRelativeFormat = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
-    cachedAbsoluteFormat = null;
-    cachedLocale = locale;
+  if (cachedRelativeFormat?.locale !== locale) {
+    cachedRelativeFormat = {
+      locale,
+      format: new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }),
+    };
   }
-  return cachedRelativeFormat;
+  return cachedRelativeFormat.format;
 }
 
 function getAbsoluteFormat(uiLocale: UiLocale): Intl.DateTimeFormat {
   const locale = uiLocaleToIntlLocale(uiLocale);
-  if (!cachedAbsoluteFormat || cachedLocale !== locale) {
-    cachedAbsoluteFormat = new Intl.DateTimeFormat(locale, {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-    });
-    cachedRelativeFormat = null;
-    cachedLocale = locale;
+  if (cachedAbsoluteFormat?.locale !== locale) {
+    cachedAbsoluteFormat = {
+      locale,
+      format: new Intl.DateTimeFormat(locale, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      }),
+    };
   }
-  return cachedAbsoluteFormat;
+  return cachedAbsoluteFormat.format;
+}
+
+/**
+ * Date and time for `ts`, spelled out. The single authority for the absolute
+ * reading a relative label falls back to and a tooltip shows; `@maka/ui` had
+ * its own uncached copy of the same `Intl` options until this became public.
+ */
+export function formatAbsoluteTimestamp(ts: number, locale: UiLocale): string {
+  return getAbsoluteFormat(locale).format(new Date(ts));
 }
 
 /**
@@ -89,11 +103,7 @@ function getAbsoluteFormat(uiLocale: UiLocale): Intl.DateTimeFormat {
  * absolute date string. `now` is injectable so tests pin a deterministic clock;
  * future timestamps (clock skew) snap to the just-now label.
  */
-export function formatRelativeTimestamp(
-  ts: number,
-  now: number = Date.now(),
-  locale: UiLocale = 'zh',
-): string {
+export function formatRelativeTimestamp(ts: number, now: number, locale: UiLocale): string {
   const diffMs = relativeAgeMs(ts, now);
   if (diffMs < JUST_NOW_MS) {
     return JUST_NOW[locale];
@@ -142,11 +152,7 @@ function getCompactFormats(uiLocale: UiLocale): {
  * Compact variant for wider list rows: relative inside the seven-day horizon,
  * then a localized date-only label.
  */
-export function formatCompactTimestamp(
-  ts: number,
-  now: number = Date.now(),
-  locale: UiLocale = 'zh',
-): string {
+export function formatCompactTimestamp(ts: number, now: number, locale: UiLocale): string {
   const diffMs = relativeAgeMs(ts, now);
   if (diffMs <= RELATIVE_HORIZON_MS) return formatRelativeTimestamp(ts, now, locale);
   const { sameYear, otherYear } = getCompactFormats(locale);
@@ -162,11 +168,7 @@ export function formatCompactTimestamp(
  * Unit tokens stay deliberately locale-neutral so the trailing column remains
  * stable across UI languages: "46min", "13h", "17d", "1mo", "1y".
  */
-export function formatSidebarTimestamp(
-  ts: number,
-  now: number = Date.now(),
-  locale: UiLocale = 'zh',
-): string {
+export function formatSidebarTimestamp(ts: number, now: number, locale: UiLocale): string {
   const diffMs = relativeAgeMs(ts, now);
   if (diffMs < JUST_NOW_MS) return JUST_NOW[locale];
   const bucket = sidebarTimeBucket(diffMs);
@@ -180,7 +182,6 @@ export function formatSidebarTimestamp(
 export function resetRelativeTimeFormatters(): void {
   cachedRelativeFormat = null;
   cachedAbsoluteFormat = null;
-  cachedLocale = null;
   cachedCompactSameYearFormat = null;
   cachedCompactOtherYearFormat = null;
   cachedCompactLocale = null;

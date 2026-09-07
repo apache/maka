@@ -33,14 +33,17 @@ import {
   type Terminal,
 } from '@earendil-works/pi-tui';
 import type { PermissionMode } from '@maka/core/permission';
+import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
 import {
-  isThinkingLevel,
-  thinkingVariantsForModel,
-  type ThinkingLevel,
-} from '@maka/core/model-thinking';
-import { type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
+  deriveConnectionSlug,
+  type ModelInfo,
+  type ProviderType,
+} from '@maka/core/llm-connections';
 import type { OrchestrationMode } from '@maka/core/orchestration';
-import type { SkillInvocationResult } from '@maka/core/skill-invocation';
+import type {
+  SkillInvocationFailureReason,
+  SkillInvocationResult,
+} from '@maka/core/skill-invocation';
 import { projectRevisionLinkedSessionTree } from '@maka/core/session-revisions';
 import {
   slashCommandsForSurface,
@@ -52,7 +55,12 @@ import {
   type SessionSummary,
   type StoredMessage,
 } from '@maka/core/session';
-import type { UiLocale } from '@maka/core/ui-locale';
+import {
+  defineUiMessageCatalog,
+  formatUiMessage,
+  resolveUiMessageCatalog,
+  type UiLocale,
+} from '@maka/core/ui-locale';
 import {
   buildForeignSessionHandoffMessage,
   foreignSessionHandoffDisplayText,
@@ -65,16 +73,23 @@ import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { SessionActivityLease } from '@maka/runtime/goal-turn-lifecycle';
 import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
 import type {
+  ConnectionIdentity,
   MakaForeignSessionReader,
   MakaOnboardingSurface,
   MakaPiTuiTurnActivitySurface,
+  MakaPiTuiHostControl,
   ModelChoice,
+  OnboardingIdentityChoice,
   OnboardingProviderEntry,
   SessionRecapGenerator,
 } from './pi-tui-contracts.js';
 import { AUTO_RECAP_DISPLAY_LIMIT_BYTES, shouldAutoRecap } from './session-recap.js';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
-import type { AgentGraphClientSnapshot, AgentGraphEpochSummary } from '@maka/runtime-host/protocol';
+import type {
+  AgentGraphClientSnapshot,
+  AgentGraphEpochSummary,
+  TurnResumeParkReason,
+} from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import { MakaSkillHighlightEditor } from './skill-highlight-editor.js';
 import { parseGraphCommand, type ParsedGraphCommand } from '@maka/core/graph-command';
@@ -87,15 +102,24 @@ import {
   type MakaSideConversationParentStatus,
   type MakaSessionSwitchResult,
 } from './session-driver.js';
+import { SafeBoundaryResumeParkedError } from './runtime-host-session-driver.js';
 import {
+  appendExpansionCollapseConfirmation,
   appendTurnFailureToTranscript,
+  appendUserCommandToTranscript,
   appendUserPrompt,
   applyMakaSessionEventToTranscript,
+  applyShellRunUpdateToTranscript,
   createMakaPiTranscriptState,
+  hasRunningUserCommand,
   activeSandboxBoundaryRequest,
+  activeFormRequest,
   activeUserQuestionRequest,
+  applyExpansionDefaultToAll,
   completePendingInteraction,
   applyShellRunViewUpdateToTranscript,
+  EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS,
+  hasExpandedEntriesAboveViewport,
   permissionModeLabel,
   retireCancelledTransientMessages,
   replaceTranscriptWithStoredMessages,
@@ -103,16 +127,27 @@ import {
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
+  type ExpansionEntryKind,
   type MakaPiTranscriptMetadata,
 } from './pi-transcript.js';
+import { FormInteractionOverlay, type TuiFormDraft } from './pi-tui-form-interaction.js';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import { runMakaPiTuiTurn, type MakaPiTuiTurnRequest } from './pi-tui-turn.js';
 import { editorTheme, selectListTheme } from './tui-ansi.js';
 import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.js';
 import { TranscriptViewerOverlay } from './pi-tui-transcript-viewer.js';
-import { McpStatusOverlay } from './pi-tui-mcp-status.js';
-import type { TuiMcpSurface } from './tui-mcp-control.js';
+import { copyToClipboard } from './tui-clipboard.js';
+import { getTuiCopyCopy, lastAssistantText, serializeTranscriptText } from './tui-copy-command.js';
+import { getTuiHostOwnerCopy } from './tui-host-owner-copy.js';
+import { McpManagementOverlay } from './pi-tui-mcp-status.js';
+import type { TuiMcpManagement } from './tui-mcp-control.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
 import { createShellRunHydrationController } from './shell-run-hydration.js';
+import {
+  CTX_REFRESH_DEBOUNCE_MS,
+  createCtxRefresher,
+  scheduleCtxRefreshTimeout,
+} from './tui-context-refresh.js';
 import { sessionStatusBadge } from './tui-session-status.js';
 import {
   AttentionController,
@@ -131,12 +166,14 @@ import {
 import {
   MakaAutocompleteProvider,
   DirectoryPickerOverlay,
-  MODEL_SWITCH_CACHE_WARNING,
   ModelSearchOverlay,
   OnboardingWizard,
   PickerOverlay,
   UserQuestionOverlay,
+  modelChoiceConnectionLabels,
+  getTuiPickerCopy,
   modelPickerItems,
+  onboardingFailureMessage,
   permissionModePickerItems,
   skillPickerItems,
   thinkingLevelPickerItems,
@@ -151,6 +188,7 @@ import {
   isLiveGoalStatus,
 } from './pi-goal.js';
 import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
+import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 import type { GoalControlAction, GoalProjection } from '@maka/runtime-host/protocol';
 
 export interface MakaPiTuiInput {
@@ -170,8 +208,9 @@ export interface MakaPiTuiInput {
    * when absent.
    */
   modelChoices?: readonly ModelChoice[];
+  connectionId?: string;
+  connectionIdentities?: readonly ConnectionIdentity[];
   connectionSlug: string;
-  providerType?: ProviderType;
   permissionMode: PermissionMode;
   /** Maximum context tokens for the active model, for the statusline ctx segment. */
   modelContextWindow?: number;
@@ -185,6 +224,8 @@ export interface MakaPiTuiInput {
   taskbarProgress?: boolean;
   /** Starts the CLI process-exit deadline after terminal restore, before outer cleanup. */
   onProcessExit?: (exitCode: number, error?: Error) => void;
+  /** Local owner preflight; accepted operations run only after the viewport disconnects. */
+  hostControl?: MakaPiTuiHostControl;
   /**
    * How long a prompt turn must run before its completion rings the terminal
    * BEL when unfocused. Injectable so tests exercise the long / short split
@@ -201,8 +242,28 @@ export interface MakaPiTuiInput {
     now?: () => number;
     schedule?: (callback: () => void, intervalMs: number) => () => void;
   };
+  /**
+   * Debounce scheduling for the live ctx refresh (#4545). Injectable so tests
+   * drive the timer deterministically; defaults to CTX_REFRESH_DEBOUNCE_MS +
+   * an unref'd setTimeout.
+   */
+  ctxRefreshTicker?: {
+    delayMs?: number;
+    schedule?: (callback: () => void, delayMs: number) => () => void;
+  };
   subscribeSessionTitleChanges?: (listener: (sessionId: string) => void) => () => void;
   subscribeShellRunUpdates?: (listener: (update: ShellRunUpdate) => void) => () => void;
+  /**
+   * The Host re-resolved its model catalog and handed back the new projection.
+   * Adopt it wholesale — the picker shows what the Host says, never a local
+   * merge of it.
+   */
+  subscribeModelCatalogChanges?: (
+    listener: (refresh: {
+      readonly modelChoices: readonly ModelChoice[];
+      readonly connectionIdentities: readonly ConnectionIdentity[];
+    }) => void,
+  ) => () => void;
   listShellRunUpdates?: (sessionId: string) => Promise<ShellRunUpdate[]>;
   /** Host-owned invocable Skill catalog used for picker, completion, and token highlighting. */
   listSkills?: (cwd: string) => Promise<readonly InvocableSkillEntry[]>;
@@ -217,8 +278,8 @@ export interface MakaPiTuiInput {
    *  whose listProviders/verify/save calls persist the connection + curated models
    *  via the host-owned stores. */
   onboarding?: MakaOnboardingSurface;
-  /** Client-owned MCP status and publication projection. Local TUI only in PR1. */
-  mcp?: TuiMcpSurface;
+  /** Client-owned MCP management and publication surface. Local TUI only. */
+  mcp?: TuiMcpManagement;
   /** First-run mode: auto-open the onboarding wizard on launch instead of
    *  waiting for /setup (used when the CLI starts with no configured connection). */
   firstRun?: boolean;
@@ -277,8 +338,117 @@ export function resolveTaskbarProgress(
   return environment.platform !== 'win32' && environment.windowsTerminalSession === undefined;
 }
 
+/**
+ * User-facing copy for a parked safe-boundary resume. Parked is the host's
+ * way of saying "no safe continuation exists right now"; the reasons below
+ * are informational, so they read as a plain sentence instead of a protocol
+ * identifier.
+ */
+export function safeBoundaryResumeParkedCopy(reason: TurnResumeParkReason): {
+  level: 'info' | 'error';
+  text: string;
+} {
+  switch (reason) {
+    case 'resume_feature_disabled':
+      return {
+        level: 'info',
+        text: 'Safe-boundary resume is not enabled on this runtime (set MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1 to enable).',
+      };
+    case 'resume_candidate_missing':
+      return {
+        level: 'info',
+        text: 'Nothing to resume: no interrupted run exists in this session.',
+      };
+    case 'session_busy':
+      return { level: 'info', text: 'Cannot resume: the session already has an active turn.' };
+    default:
+      return { level: 'error', text: `Safe-boundary resume parked: ${reason}` };
+  }
+}
+
+interface TuiRewindCopy {
+  readonly pickerTitle: string;
+  readonly pending: string;
+  readonly doneRefilled: string;
+  readonly doneKeptDraft: string;
+  readonly noTargets: string;
+  readonly busy: string;
+  readonly pickerHint: string;
+}
+
+interface TuiSkillsCopy {
+  readonly pickerTitle: string;
+  readonly usage: string;
+  readonly noneAvailable: string;
+  readonly loaded: string;
+  readonly loadFailed: string;
+  readonly outcomeNoRequest: string;
+  readonly outcomeMarkersNotSent: string;
+  readonly failedItem: string;
+  readonly tooManyRequestsItem: string;
+  readonly listSeparator: string;
+  readonly failureReasons: Readonly<Record<SkillInvocationFailureReason, string>>;
+}
+
+interface TuiConnectionIdentityCopy {
+  readonly withRecovery: string;
+  readonly emptyChoiceRecovery: string;
+  readonly confirmAccount: string;
+  readonly accountDeleted: string;
+  readonly identityMismatch: string;
+  readonly accountDisabled: string;
+}
+
+interface TuiSessionActionsCopy {
+  readonly foreignScanFailed: string;
+  readonly newSessionFailed: string;
+}
+
+const TUI_REWIND_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiRewindCopy>()(TUI_COPY_RESOURCES.rewind),
+);
+
+const TUI_SKILLS_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiSkillsCopy>()(TUI_COPY_RESOURCES.skills),
+);
+
+const TUI_CONNECTION_IDENTITY_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiConnectionIdentityCopy>()(TUI_COPY_RESOURCES['connection-identity']),
+);
+
+const TUI_SESSION_ACTIONS_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiSessionActionsCopy>()(TUI_COPY_RESOURCES['session-actions']),
+);
+
+function sessionConnectionIdentityNotice(
+  session: Pick<SessionSummary, 'llmConnectionId' | 'llmConnectionSlug'>,
+  identities: MakaPiTuiInput['connectionIdentities'],
+  locale: UiLocale,
+): string | undefined {
+  if (!identities) return undefined;
+  const copy = TUI_CONNECTION_IDENTITY_COPY[locale];
+  const withRecovery = (notice: string) =>
+    formatUiMessage(copy.withRecovery, { notice, recovery: copy.emptyChoiceRecovery }, locale);
+  if (!session.llmConnectionId) {
+    return withRecovery(copy.confirmAccount);
+  }
+  const identified = identities.find((entry) => entry.connectionId === session.llmConnectionId);
+  if (!identified) {
+    return withRecovery(copy.accountDeleted);
+  }
+  if (identified.connectionSlug !== session.llmConnectionSlug) {
+    return withRecovery(copy.identityMismatch);
+  }
+  if (!identified.enabled) {
+    return withRecovery(copy.accountDisabled);
+  }
+  return undefined;
+}
+
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const locale = input.locale ?? 'en';
+  const pickerCopy = getTuiPickerCopy(locale);
+  const copyCopy = getTuiCopyCopy(locale);
   const primaryGuidance = getTuiPrimaryGuidance(locale);
   const terminal = input.terminal ?? new ProcessTerminal();
   const taskbarProgress = resolveTaskbarProgress(input.taskbarProgress);
@@ -287,6 +457,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
   const tui = new TuiMainScreen(terminal);
   const state = createMakaPiTranscriptState();
+  // A pending confirmation is meaningful only for the exact transcript whose
+  // geometry produced it; reconnect/session replacement starts fresh.
+  let expansionCollapseConfirm: { kind: ExpansionEntryKind; at: number } | undefined;
   let transcriptLastUsedModel: string | undefined;
   const rememberTranscriptModel = (messages: readonly StoredMessage[]): void => {
     transcriptLastUsedModel = latestAssistantModelId(messages);
@@ -295,28 +468,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     messages: readonly StoredMessage[],
     options: { preserveClientLocalEntries?: boolean } = {},
   ): void => {
+    expansionCollapseConfirm = undefined;
     rememberTranscriptModel(messages);
     replaceTranscriptWithStoredMessages(state, messages, options);
   };
   let cwd = input.cwd;
   let model = input.model;
+  let connectionId = input.connectionId;
   let connectionSlug = input.connectionSlug;
-  // Mutable: a cross-connection /model switch rebinds the provider, which changes
-  // both the connection and the thinking variants the new model supports.
-  let providerType = input.providerType;
-  let modelContextWindow = input.modelContextWindow;
   let permissionMode = input.permissionMode;
   let orchestrationMode = input.driver.getOrchestrationMode?.() ?? 'default';
   let thinkingLevel: ThinkingLevel | undefined = undefined;
-  // The boot connection's declared capabilities win (an openai-compatible
-  // relay can declare relayModelProfiles[model].thinkingLevels). The
-  // providerType+model metadata variant is the fallback for modelChoices-free
-  // embeddings of the runner.
-  let thinkingLevels: readonly ThinkingLevel[] =
-    input.modelChoices?.find(
-      (choice) => choice.connectionSlug === connectionSlug && choice.model === model,
-    )?.thinkingLevels ?? (providerType ? thinkingVariantsForModel(providerType, model) : []);
   let sessionListScope: 'current' | 'all' = input.sessionListScope ?? 'current';
+  let connectionIdentityNotice: string | undefined;
   let busy = false;
   let closed = false;
   let currentActivityCompletion: Promise<void> | undefined;
@@ -359,6 +523,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         answers: Array<string | null>;
       }
     | undefined;
+  let formResponseInFlightRequestId: string | undefined;
+  let formOverlay: OverlayHandle | undefined;
+  let formOverlayComponent: FormInteractionOverlay | undefined;
+  let formOverlayRequestId: string | undefined;
+  let formOverlaySessionId: string | undefined;
+  let formOverlaySchema: string | undefined;
+  let retainedFormDraft:
+    | {
+        readonly sessionId: string;
+        readonly requestId: string;
+        readonly schema: string;
+        readonly drafts: readonly TuiFormDraft[];
+      }
+    | undefined;
   let turnRunning = false;
   // Monotonic generation for visible agent turns. A mid-turn `/session`
   // switch-away (#3380) bumps it to orphan the in-flight drain: every callback
@@ -395,6 +573,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // matching deliberately mirrors the editor's own per-chunk includes() checks,
   // so this flag agrees with what the editor will buffer.
   let editorPastePending = false;
+  // Set once a user-command stop rejects: a rejected stop publishes no
+  // terminal update, so the card would read running for the rest of the
+  // session and the branch below would capture every later Ctrl+C, hiding
+  // the exit chord. After a failure the capture disarms and Ctrl+C falls
+  // through to the normal idle handling (#3210).
+  let userCommandStopRejected = false;
   type AttachedTurnContext =
     | { readonly kind: 'adopted'; readonly turn: MakaPreparedSessionTurn }
     | { readonly kind: 'external'; readonly turn: MakaAttachedSessionTurn };
@@ -467,11 +651,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     permissionMode,
     orchestrationMode,
     thinkingLevel,
-    thinkingLevels,
+    thinkingLevels: currentThinkingLevels(),
     sessionId: input.driver.getSessionId(),
     busy,
     usage: state.usage,
-    modelContextWindow,
+    modelContextWindow: currentModelContextWindow(),
     turnElapsedMs: turnStartedAt !== undefined ? Date.now() - turnStartedAt : undefined,
     providerRetry: state.providerRetry,
     uiLocale: locale,
@@ -491,7 +675,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const transcript = new MakaTranscriptComponent(state, metadata);
   const activityStrip = new MakaActivityStripComponent(metadata);
-  const pendingQueue = new MakaPendingQueueComponent(state);
+  const pendingQueue = new MakaPendingQueueComponent(state, locale);
   const statusLine = new MakaStatusLineComponent(metadata);
   // Use the vendor editor's full 20-item autocomplete capacity. Larger command
   // catalogs remain scrollable and keep an exact position/total counter.
@@ -522,9 +706,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     attention.setBaseTitle(`${title} (${input.title})`);
   };
 
-  const requestRender = () => {
+  const requestRender = (force = false) => {
     transcript.invalidate();
-    tui.requestRender();
+    tui.requestRender(force);
   };
   const unsubscribeSessionTitleChanges =
     input.subscribeSessionTitleChanges?.((sessionId) => {
@@ -563,7 +747,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         return;
       }
       permissionResponseInFlightRequestId = null;
-      syncUserQuestionOverlay();
+      syncInteractionOverlays();
       requestRender();
     }) ?? (() => {});
   const unsubscribeTranscriptReplacements =
@@ -571,6 +755,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       if (closed || input.driver.getSessionId() !== sessionId) return;
       if (reason === 'reconnect') {
         replaceTranscript(messages, { preserveClientLocalEntries: true });
+        syncInteractionOverlays();
         shellRunElapsedTicker.sync();
         requestRender();
         const messageIds = state.entries.flatMap((entry) =>
@@ -600,6 +785,39 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     now: input.shellRunTicker?.now,
     schedule: input.shellRunTicker?.schedule,
   });
+
+  // Live ctx refresh (#4545): the end-of-turn token_usage event moves the
+  // statusline once per turn, but the Host's latest-context snapshot moves at
+  // every settled provider request. Pull it on the desktop inspector's signal
+  // (tui-context-refresh.ts) so a long turn shows the context filling as it
+  // fills. The query is a plain read on the driver — deliberately not routed
+  // through runControl, whose serial lock exists for mutations.
+  const getContextDiagnostics = input.driver.getContextDiagnostics?.bind(input.driver);
+  const ctxRefresher = getContextDiagnostics
+    ? createCtxRefresher({
+        query: async () => {
+          const sessionId = input.driver.getSessionId();
+          const diagnostics = await getContextDiagnostics();
+          return { sessionId, diagnostics };
+        },
+        apply: ({ sessionId, diagnostics }) => {
+          // The session moved under the query (switch, /new): its usage was
+          // rebuilt from stored messages, and a pre-switch snapshot must not
+          // overwrite it.
+          if (closed || input.driver.getSessionId() !== sessionId) return;
+          if (diagnostics.status !== 'available') return;
+          const { inputTokens, contextWindow } = diagnostics;
+          if (inputTokens === undefined || contextWindow === undefined || contextWindow <= 0)
+            return;
+          // Same formula the token_usage path uses (#1067), from the same
+          // settled request — the two cannot disagree.
+          state.usage.contextRemaining = Math.max(0, contextWindow - inputTokens);
+          requestRender();
+        },
+        delayMs: input.ctxRefreshTicker?.delayMs ?? CTX_REFRESH_DEBOUNCE_MS,
+        schedule: input.ctxRefreshTicker?.schedule ?? scheduleCtxRefreshTimeout,
+      })
+    : undefined;
 
   // ── Explicit skill invocation (#1148) ────────────────────────────────────
   // One cached list feeds autocomplete, the `/skill` picker, and the editor's
@@ -644,35 +862,51 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // autocomplete or picker open.
   void listSkillsCached(true);
 
-  const SKILL_INVOCATION_FAILURE_REASON_LABEL: Record<string, string> = {
-    not_found: '未找到',
-    disabled: '已禁用',
-    host_incompatible: '当前主机缺少其依赖的工具',
-    invalid_name: '名称无效',
-    too_many_requests: '调用请求过多',
-  };
+  const skillsCopy = TUI_SKILLS_COPY[locale];
 
   const showSkillInvocation = (skillInvocation: SkillInvocationResult): void => {
     const failed = skillInvocation.failed;
     const failedLabels = failed.map((entry) =>
       entry.reason === 'too_many_requests'
-        ? `请求超过 ${entry.requestLimit} 个上限（${SKILL_INVOCATION_FAILURE_REASON_LABEL[entry.reason]}）`
-        : `/skill:${entry.request}（${SKILL_INVOCATION_FAILURE_REASON_LABEL[entry.reason] ?? entry.reason}）`,
+        ? formatUiMessage(
+            skillsCopy.tooManyRequestsItem,
+            { limit: entry.requestLimit, reason: skillsCopy.failureReasons[entry.reason] },
+            locale,
+          )
+        : formatUiMessage(
+            skillsCopy.failedItem,
+            { request: entry.request, reason: skillsCopy.failureReasons[entry.reason] },
+            locale,
+          ),
     );
     if (failed.length > 0) {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: `未能加载技能 ${failedLabels.join('、')}；${
-          skillInvocation.loaded.length === 0 ? '未发起模型请求。' : '失败的调用标记未发送给模型。'
-        }`,
+        text: formatUiMessage(
+          skillsCopy.loadFailed,
+          {
+            failures: failedLabels.join(skillsCopy.listSeparator),
+            outcome:
+              skillInvocation.loaded.length === 0
+                ? skillsCopy.outcomeNoRequest
+                : skillsCopy.outcomeMarkersNotSent,
+          },
+          locale,
+        ),
       });
     }
     if (skillInvocation.loaded.length > 0) {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: `已加载技能：${skillInvocation.loaded.map((skill) => skill.name).join('、')}`,
+        text: formatUiMessage(
+          skillsCopy.loaded,
+          {
+            names: skillInvocation.loaded.map((skill) => skill.name).join(skillsCopy.listSeparator),
+          },
+          locale,
+        ),
       });
     }
     requestRender();
@@ -719,10 +953,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // Control commands (model/session/permission switches) mutate session state.
   // Run them through a single serial lock so a prompt submitted mid-switch can
   // not race the switch and land on the old session/model/permission mode.
-  const runControl = async (action: () => Promise<void>): Promise<void> => {
+  const runControl = async (
+    action: () => Promise<void>,
+    options: { readonly allowWhileBusy?: boolean } = {},
+  ): Promise<void> => {
     // Refuse nested control actions: an overlay onSelect bypasses editor.onSubmit,
     // so without this guard a switch could start while a prompt is still running.
-    if (busy) return;
+    // `/new` is the deliberate exception: stopping live user-owned commands IS
+    // its first step, so it must stay reachable while one runs (#3210 review).
+    if (busy && !options.allowWhileBusy) return;
     busy = true;
     const activity = beginActivity();
     editor.disableSubmit = true;
@@ -757,8 +996,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     process.off('unhandledRejection', handleUnhandledRejection);
   };
 
+  let unsubscribeModelCatalogChanges: (() => void) | undefined;
   const restoreTerminal = () => {
     removeProcessHandlers();
+    unsubscribeModelCatalogChanges?.();
     unsubscribeSessionTitleChanges();
     unsubscribeGoalChanges?.();
     void sideConversation?.stopParentObserver?.();
@@ -767,6 +1008,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     unsubscribeTranscriptReplacements();
     shellRunHydration.dispose();
     shellRunElapsedTicker.dispose();
+    ctxRefresher?.cancel();
     stopTurnElapsedTicker();
     setTaskbarProgress(false);
     // Drop the busy / attention title marker so the tab is not handed back to
@@ -783,9 +1025,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     restoreTerminal();
     if (error) rejectClosed(error);
     else resolveClosed();
-    // Runtime stop is best-effort after the shell has its terminal back. A
-    // double-Escape/Ctrl-C interrupt may already have one in flight; reuse it.
-    if (!interruptRequested) void input.driver.stop().catch(() => {});
+    // Closing a viewport is not a Turn or Host stop. Explicit interrupt keys
+    // retain their own stop path; an attached Host continues independently.
   };
 
   const handleProcessExit = (exitCode: number, error?: Error): void => {
@@ -922,6 +1163,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const idleMs = Date.now() - lastActivityAt;
     editor.addToHistory(prompt);
     if (handleSlashCommand(prompt, idleMs)) return;
+    const userCommand = parseUserCommand(prompt);
+    if (userCommand !== undefined) {
+      if (!userCommand) {
+        state.entries.push({ kind: 'notice', level: 'error', text: 'Usage: !<command>' });
+        requestRender();
+        return;
+      }
+      if (input.firstRun) {
+        void showSetupWizard();
+        return;
+      }
+      void runControl(() => runUserCommand(userCommand));
+      return;
+    }
     // First-run has no connection, so the wizard is the only surface. This is
     // the single choke point for idle submits (Enter, Alt+Enter, steer
     // fallback): reopen the wizard instead of opening a turn against a
@@ -983,7 +1238,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         // was dropped, and the submit answer is the only place it appears: the
         // Turn arrives through the started-Turn subscription, which carries
         // Session state rather than this Message's admission.
-        if (result?.disposition === 'turn_started' && result.skillInvocation) {
+        if (result) {
           const { loaded, failed } = result.skillInvocation;
           if (loaded.length > 0 || failed.length > 0) showSkillInvocation(result.skillInvocation);
         }
@@ -1047,7 +1302,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // success notice beside the input field instead of the transcript entry flow.
   let wizardOverlay: OverlayHandle | undefined;
   let wizard: OnboardingWizard | undefined;
-  let wizardProviderType: ProviderType | undefined;
   // The user's supplied key from the key step ('' reuses the stored secret for an
   // existing connection) and the models from the last verify (cached on save).
   // The runner holds them so the wizard stays UI-only; the secret never crosses
@@ -1057,12 +1311,50 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let wizardBaseUrl = '';
   // The existing connection the picked provider resolved to, so saving edits
   // it in place (a Desktop-created relay may live under a custom slug).
-  let wizardConnectionId: string | undefined;
+  let wizardTarget: OnboardingProviderEntry['target'] | undefined;
+  // The identity step's answer for a create target. Null halves keep the wire
+  // target bare so any Host vintage accepts it; an edited slug/name rides on
+  // the target and gets `slug_taken` back when it loses.
+  let wizardIdentity: OnboardingIdentityChoice = { slug: null, name: null };
   let wizardModels: readonly ModelInfo[] = [];
   // Authoritative ready model choices for `/model`. A startup snapshot refreshed
   // in place after `/setup` saves so newly configured models are immediately
   // available — the single source the picker and connection/model lookups read.
   let modelChoices = input.modelChoices;
+  let connectionIdentities = input.connectionIdentities;
+  // Derived, never mirrored: both the choices and the selected target move —
+  // the Host republishes its catalog, the user switches model — and a stored
+  // copy of what the two imply has to be resynchronized at every one of those
+  // points or go stale at the one that was missed.
+  // The slug and model identify the target; the id narrows it only once the
+  // caller or a session summary has supplied one, because two connections can
+  // share a slug across a rebind but a caller need not know either id.
+  const currentModelChoice = (): ModelChoice | undefined =>
+    modelChoices?.find(
+      (choice) =>
+        choice.connectionSlug === connectionSlug &&
+        choice.model === model &&
+        (connectionId === undefined || choice.connectionId === connectionId),
+    );
+  const onInitialTarget = (): boolean =>
+    connectionId === input.connectionId &&
+    connectionSlug === input.connectionSlug &&
+    model === input.model;
+  /** The caller's value stands only while no choice describes the target it came with. */
+  const currentModelContextWindow = (): number | undefined =>
+    currentModelChoice()?.contextWindow ??
+    (onInitialTarget() ? input.modelContextWindow : undefined);
+  // The Host resolved these when it projected the choice — including a relay's
+  // declared `relayModelProfiles[model].thinkingLevels`. A model no choice
+  // describes offers none rather than a locally guessed list.
+  const currentThinkingLevels = (): readonly ThinkingLevel[] =>
+    currentModelChoice()?.thinkingLevels ?? [];
+  unsubscribeModelCatalogChanges = input.subscribeModelCatalogChanges?.((refresh) => {
+    if (closed) return;
+    modelChoices = refresh.modelChoices;
+    connectionIdentities = refresh.connectionIdentities;
+    requestRender();
+  });
   // Monotonic attempt id: each setup submit captures one, and any transition
   // that abandons the in-flight attempt (back, re-pick, close) increments it so
   // a late verify/save settlement cannot clobber a newer attempt.
@@ -1080,6 +1372,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       if (prompt.trim().split(/\s+/, 1)[0] === '/transcript') {
         editor.addToHistory(prompt);
         handleSlashCommand(prompt, 0);
+        return;
+      }
+      if (parseUserCommand(prompt) !== undefined) {
+        editor.addToHistory(prompt);
+        state.entries.push({
+          kind: 'notice',
+          level: 'error',
+          text: 'Cannot run a user command while a turn is running.',
+        });
+        requestRender();
         return;
       }
       const swarmCommand = parseSwarmCommand(prompt);
@@ -1210,6 +1512,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           replaceTranscript(authoritativeAttachedTurn.messages, {
             preserveClientLocalEntries: true,
           });
+          syncInteractionOverlays();
           shellRunHydration.reset();
           if (input.listShellRunUpdates) {
             await shellRunHydration.hydrate(authoritativeAttachedTurn.sessionId);
@@ -1232,12 +1535,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         // not reach the adopted Session's transcript or overlays.
         if (superseded()) return;
         if (
-          (event.type === 'sandbox_boundary_request' || event.type === 'user_question_request') &&
+          (event.type === 'sandbox_boundary_request' ||
+            event.type === 'user_question_request' ||
+            event.type === 'form_request') &&
           resolvedInteractionIds.delete(event.requestId)
         ) {
           return;
         }
         applyMakaSessionEventToTranscript(state, event);
+        ctxRefresher?.observe(event);
         if (event.type === 'error') attention.attentionNeeded();
         if (
           permissionResponseInFlightRequestId !== null &&
@@ -1257,7 +1563,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           permissionAlerted = false;
         }
         shellRunElapsedTicker.sync();
-        syncUserQuestionOverlay();
+        syncInteractionOverlays();
         requestRender();
       },
       // A turn failing is worth pulling the user back, regardless of how long it
@@ -1271,7 +1577,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         appendTurnFailureToTranscript(state, error);
         attention.attentionNeeded();
         shellRunElapsedTicker.sync();
-        syncUserQuestionOverlay();
+        syncInteractionOverlays();
         requestRender();
       },
     }).then(
@@ -1326,40 +1632,24 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     );
   }
 
-  const adoptSessionMetadata = (summary: SessionSummary) => {
+  const adoptSessionMetadata = (summary: SessionSummary, announceIdentity = true) => {
     cwd = summary.cwd ?? cwd;
     setSessionTitle(summary.name);
-    const previousModel = model;
-    const previousConnectionSlug = connectionSlug;
     model = summary.model;
+    connectionId = summary.llmConnectionId;
     connectionSlug = summary.llmConnectionSlug;
-    const matchingChoice = modelChoices?.find(
-      (choice) => choice.connectionSlug === summary.llmConnectionSlug,
+    const identityNotice = sessionConnectionIdentityNotice(
+      summary,
+      connectionIdentities,
+      input.locale ?? 'en',
     );
-    providerType =
-      matchingChoice?.providerType ??
-      (previousConnectionSlug === summary.llmConnectionSlug ? providerType : undefined);
-    const contextWindowMatch = modelChoices?.find(
-      (choice) =>
-        choice.connectionSlug === summary.llmConnectionSlug && choice.model === summary.model,
-    );
-    if (contextWindowMatch) {
-      modelContextWindow = contextWindowMatch.contextWindow;
-    } else if (
-      previousConnectionSlug !== summary.llmConnectionSlug ||
-      previousModel !== summary.model
-    ) {
-      modelContextWindow = undefined;
+    if (announceIdentity && identityNotice && identityNotice !== connectionIdentityNotice) {
+      state.entries.push({ kind: 'notice', level: 'error', text: identityNotice });
     }
+    connectionIdentityNotice = identityNotice;
     permissionMode = input.driver.getPermissionMode?.() ?? summary.permissionMode;
     orchestrationMode = summary.orchestrationMode ?? 'default';
     thinkingLevel = summary.thinkingLevel;
-    // Choice-first: a relay model's user-declared levels live on the ModelChoice;
-    // the metadata fallback serves providers whose variants derive from the
-    // model id alone.
-    thinkingLevels =
-      contextWindowMatch?.thinkingLevels ??
-      (providerType ? thinkingVariantsForModel(providerType, summary.model) : []);
     refreshEditorCwd?.(cwd);
   };
 
@@ -1376,17 +1666,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const previousModel = transcriptLastUsedModel ?? model;
     await input.driver.setModel(nextModel);
     model = nextModel;
-    // Same-connection switch: scope the choice lookup to the live connection
-    // (another connection may expose the same model id with different
-    // declared thinking levels).
-    const match = modelChoices?.find(
-      (choice) => choice.connectionSlug === connectionSlug && choice.model === nextModel,
-    );
-    if (match) modelContextWindow = match.contextWindow;
     thinkingLevel = undefined;
-    thinkingLevels =
-      match?.thinkingLevels ??
-      (providerType ? thinkingVariantsForModel(providerType, nextModel) : []);
     state.entries.push({
       kind: 'notice',
       level: 'info',
@@ -1398,28 +1678,28 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // Cross-connection /model: rebind the session to the chosen connection + model.
   // Updates the provider (and thus the thinking variants) and the status line.
   const setModelChoice = async (choice: ModelChoice) => {
-    if (choice.model === model && choice.connectionSlug === connectionSlug) return;
+    if (
+      choice.model === model &&
+      choice.connectionSlug === connectionSlug &&
+      choice.connectionId === connectionId
+    ) {
+      return;
+    }
     const previousModel = transcriptLastUsedModel ?? model;
     const previousConnectionSlug = connectionSlug;
-    const previousChoice = modelChoices?.find(
-      (candidate) =>
-        candidate.model === previousModel && candidate.connectionSlug === previousConnectionSlug,
-    );
-    await input.driver.setModel(choice.model, choice.connectionSlug);
+    const connectionLabels = modelChoiceConnectionLabels(modelChoices ?? [choice]);
+    await input.driver.setModel(choice.model, choice.connectionSlug, choice.connectionId);
     model = choice.model;
+    connectionId = choice.connectionId;
     connectionSlug = choice.connectionSlug;
-    providerType = choice.providerType;
-    modelContextWindow = choice.contextWindow;
     thinkingLevel = undefined;
-    thinkingLevels =
-      choice.thinkingLevels ?? thinkingVariantsForModel(choice.providerType, choice.model);
     state.entries.push({
       kind: 'notice',
       level: 'info',
       text:
         previousConnectionSlug === choice.connectionSlug
           ? `Model changed: ${previousModel} → ${choice.model}`
-          : `Model changed: ${previousModel} (${previousChoice?.connectionName || previousConnectionSlug}) → ${choice.model} (${choice.connectionName || choice.connectionSlug})`,
+          : `Model changed: ${previousModel} (${connectionLabels.get(previousConnectionSlug) ?? previousConnectionSlug}) → ${choice.model} (${connectionLabels.get(choice.connectionSlug) ?? choice.connectionSlug})`,
     });
     requestRender();
   };
@@ -1435,6 +1715,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     requestRender();
   };
 
+  const runUserCommand = async (command: string): Promise<void> => {
+    if (!input.driver.runUserCommand) {
+      throw new Error('User commands are unavailable on this session driver.');
+    }
+    const started = await input.driver.runUserCommand(command);
+    appendUserCommandToTranscript(state, { command, ...started });
+    // A previous stop failure only disarms capture for the stranded command.
+    // A newly admitted command gets a fresh Ctrl+C stop attempt.
+    userCommandStopRejected = false;
+    const racedUpdate = started.takeRacedUpdate();
+    if (racedUpdate) {
+      applyShellRunUpdateToTranscript(state, started.commandId, racedUpdate);
+    }
+    requestRender();
+  };
+
   // Adopt a switch/rewind result: the active session is now `summary` with
   // `messages`. Shared by switchSession and rewindToTurn so both land the same
   // runner state (model/connection/thinking/transcript/scroll).
@@ -1443,8 +1739,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     messages,
     activeTurn,
   }: MakaSessionSwitchResult): Promise<void> => {
-    adoptSessionMetadata(summary);
+    adoptSessionMetadata(summary, false);
     replaceTranscript(messages);
+    syncInteractionOverlays();
+    if (connectionIdentityNotice) {
+      state.entries.push({ kind: 'notice', level: 'error', text: connectionIdentityNotice });
+    }
     shellRunHydration.reset();
     if (input.listShellRunUpdates) {
       await shellRunHydration.hydrate(summary.id);
@@ -1765,7 +2065,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const pendingNotice: (typeof state.entries)[number] = {
       kind: 'notice',
       level: 'info',
-      text: '正在回退到该轮之前…',
+      text: TUI_REWIND_COPY[locale].pending,
     };
     state.entries.push(pendingNotice);
     requestRender();
@@ -1790,9 +2090,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: refill
-          ? '已回退到该轮之前（分支为新任务，原任务保留），该轮 prompt 已回填输入框，可修改后重新发送。'
-          : '已回退到该轮之前（分支为新任务，原任务保留）。输入框已有未发送内容，未覆盖；该轮 prompt 已存入输入历史，可按 ↑ 找回。',
+        text: refill ? TUI_REWIND_COPY[locale].doneRefilled : TUI_REWIND_COPY[locale].doneKeptDraft,
       });
       requestRender();
     } catch (error) {
@@ -1806,7 +2104,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     tui.showOverlay(picker, {
       anchor: 'bottom-left',
       width: '100%',
-      maxHeight: Math.max(1, terminal.rows - BOTTOM_PICKER_MARGIN_ROWS),
+      // A numeric cap would freeze today's rows into the option; '100%' is
+      // re-resolved against the live terminal height on every composite, so
+      // after a resize the cap still lands at rows - margin (#4610 review).
+      maxHeight: '100%',
       margin: { bottom: BOTTOM_PICKER_MARGIN_ROWS },
     });
 
@@ -1832,13 +2133,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           completePendingInteraction(state, requestId);
         }
         userQuestionProgress = undefined;
-        syncUserQuestionOverlay();
+        syncInteractionOverlays();
         requestRender();
       })
       .catch((error) => {
         userQuestionInFlight = false;
         reportError(error);
-        syncUserQuestionOverlay();
+        syncInteractionOverlays();
       });
   };
 
@@ -1864,6 +2165,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         hint: '↑↓ move · type to answer · Enter select · Esc unanswered · Ctrl+C stop',
         placeholder: 'Other: type your answer…',
         options: question.options,
+        // Live budget: terminal.rows changes on resize, so read it per render
+        // rather than at overlay construction.
+        maxRows: () => Math.max(1, terminal.rows - BOTTOM_PICKER_MARGIN_ROWS),
         onSelectOption: (index) => advance(question.options[index]?.label ?? null),
         onSubmitText: (value) => advance(value),
         onSkip: () => advance(null),
@@ -1889,6 +2193,136 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
 
+  const closeFormOverlay = (retainDraft = true): void => {
+    if (
+      retainDraft &&
+      formOverlayComponent &&
+      formOverlaySessionId &&
+      formOverlayRequestId &&
+      formOverlaySchema
+    ) {
+      retainedFormDraft = {
+        sessionId: formOverlaySessionId,
+        requestId: formOverlayRequestId,
+        schema: formOverlaySchema,
+        drafts: formOverlayComponent.snapshotDrafts(),
+      };
+    }
+    formOverlay?.hide();
+    formOverlay = undefined;
+    formOverlayComponent = undefined;
+    formOverlayRequestId = undefined;
+    formOverlaySessionId = undefined;
+    formOverlaySchema = undefined;
+  };
+
+  const finishUserForm = (response: InteractionFormResponse): void => {
+    if (formResponseInFlightRequestId) return;
+    const respond = input.driver.respondToUserForm;
+    if (!respond) {
+      formOverlayComponent?.setSubmissionFailed();
+      reportError(new Error('User forms are unavailable on this driver.'));
+      return;
+    }
+    const responseSessionId = formOverlaySessionId ?? input.driver.getSessionId();
+    formResponseInFlightRequestId = response.requestId;
+    void respond
+      .call(input.driver, response)
+      .then(() => {
+        if (formResponseInFlightRequestId === response.requestId) {
+          formResponseInFlightRequestId = undefined;
+        }
+        if (
+          input.driver.getSessionId() === responseSessionId &&
+          activeFormRequest(state)?.requestId === response.requestId
+        ) {
+          completePendingInteraction(state, response.requestId);
+        }
+        if (
+          retainedFormDraft?.sessionId === responseSessionId &&
+          retainedFormDraft.requestId === response.requestId
+        ) {
+          retainedFormDraft = undefined;
+        }
+        if (
+          formOverlaySessionId === responseSessionId &&
+          formOverlayRequestId === response.requestId
+        ) {
+          closeFormOverlay(false);
+        }
+        syncInteractionOverlays();
+        requestRender();
+      })
+      .catch((error) => {
+        if (formResponseInFlightRequestId === response.requestId) {
+          formResponseInFlightRequestId = undefined;
+        }
+        if (
+          activeFormRequest(state)?.requestId === response.requestId &&
+          formOverlaySessionId === responseSessionId &&
+          formOverlayRequestId === response.requestId
+        ) {
+          formOverlayComponent?.setSubmissionFailed();
+        } else {
+          closeFormOverlay();
+          syncInteractionOverlays();
+        }
+        reportError(error);
+        requestRender();
+      });
+  };
+
+  const syncFormOverlay = (): void => {
+    const request = activeFormRequest(state);
+    if (!request) {
+      closeFormOverlay();
+      return;
+    }
+    const sessionId = input.driver.getSessionId();
+    if (!sessionId) {
+      closeFormOverlay();
+      return;
+    }
+    if (
+      retainedFormDraft?.sessionId === sessionId &&
+      retainedFormDraft.requestId !== request.requestId
+    ) {
+      retainedFormDraft = undefined;
+    }
+    if (formOverlaySessionId !== sessionId || formOverlayRequestId !== request.requestId)
+      closeFormOverlay();
+    if (formResponseInFlightRequestId || formOverlayComponent) return;
+    const schema = JSON.stringify(request.fields);
+    const restoredDrafts =
+      retainedFormDraft?.sessionId === sessionId &&
+      retainedFormDraft.requestId === request.requestId &&
+      retainedFormDraft.schema === schema
+        ? retainedFormDraft.drafts
+        : undefined;
+    if (
+      retainedFormDraft?.sessionId === sessionId &&
+      retainedFormDraft.requestId === request.requestId &&
+      retainedFormDraft.schema !== schema
+    ) {
+      retainedFormDraft = undefined;
+    }
+    formOverlayComponent = new FormInteractionOverlay(tui, {
+      locale,
+      request,
+      initialDrafts: restoredDrafts,
+      onRespond: finishUserForm,
+    });
+    formOverlaySessionId = sessionId;
+    formOverlaySchema = schema;
+    formOverlayRequestId = request.requestId;
+    formOverlay = showBottomPicker(formOverlayComponent);
+  };
+
+  const syncInteractionOverlays = (): void => {
+    syncUserQuestionOverlay();
+    syncFormOverlay();
+  };
+
   const showSelectPicker = (
     title: string,
     rightLabel: string,
@@ -1911,7 +2345,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const picker = new PickerOverlay(list, {
       title,
       rightLabel,
-      hint: options.hint,
+      hint: options.hint ?? pickerCopy.selectPickerHint,
       notice: options.notice,
     });
     let overlay: OverlayHandle | undefined;
@@ -1931,10 +2365,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     wizardOverlay?.hide();
     wizardOverlay = undefined;
     wizard = undefined;
-    wizardProviderType = undefined;
     wizardApiKey = '';
     wizardBaseUrl = '';
-    wizardConnectionId = undefined;
+    wizardTarget = undefined;
+    wizardIdentity = { slug: null, name: null };
     wizardModels = [];
   };
 
@@ -1942,15 +2376,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // still escapes the wizard) instead of being stored as an API key; every
   // in-flight state stays inside the wizard overlay, never the transcript.
   const submitWizardKey = (apiKey: string): void => {
-    const providerType = wizardProviderType;
-    if (!providerType || !wizard) return;
+    const target = wizardTarget;
+    if (!target || !wizard) return;
     if (apiKey.startsWith('/')) {
       closeWizard();
       handleSlashCommand(apiKey, 0);
       return;
     }
     if (!input.onboarding) {
-      wizard.setKeyError('Onboarding 不可用：当前运行环境未提供配置入口。');
+      wizard.setKeyError(pickerCopy.onboardingUnavailable);
       requestRender();
       return;
     }
@@ -1959,32 +2393,29 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const attempt = ++wizardAttempt;
     targetWizard.setVerifying();
     requestRender();
-    void input.onboarding
-      .verify({ providerType, connectionId: wizardConnectionId, apiKey, baseUrl: wizardBaseUrl })
-      .then(
-        (result) => {
-          if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
-          if (result.kind === 'error') {
-            // Probe failed: re-arm the key field in place. The host stores nothing
-            // during verify, so retrying with a corrected key is clean.
-            // A stale snapshot (the targeted connection is gone) is not a key
-            // problem — retyping cannot fix it, so skip that framing.
-            wizard.setKeyError(
-              result.stale ? result.text : `API key 验证失败：${result.text}。请检查后重新输入。`,
-            );
-            requestRender();
-            return;
+    void input.onboarding.verify({ target, apiKey, baseUrl: wizardBaseUrl }).then(
+      (result) => {
+        if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+        if (result.kind !== 'ok') {
+          // A rejected slug is the identity step's to fix, not the key's.
+          if (result.kind === 'rejected' && result.reason === 'slug_taken') {
+            wizard.setIdentityError(onboardingFailureMessage(result, locale));
+          } else {
+            wizard.setKeyError(onboardingFailureMessage(result, locale));
           }
-          wizardModels = result.models;
-          wizard.setModels(result.models); // advance to the models step
           requestRender();
-        },
-        (error) => {
-          if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
-          wizard.setKeyError(`配置失败：${error instanceof Error ? error.message : String(error)}`);
-          requestRender();
-        },
-      );
+          return;
+        }
+        wizardModels = result.models;
+        wizard.setModels(result.models); // advance to the models step
+        requestRender();
+      },
+      () => {
+        if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+        wizard.setKeyError(onboardingFailureMessage({ kind: 'unavailable' }, locale));
+        requestRender();
+      },
+    );
   };
 
   // Models submit from the wizard: persist the curated enabled set, refresh the
@@ -1992,10 +2423,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // success (first-run closes the TUI so the host re-resolves the new default).
   // Setup never appends a transcript Note and never switches the active session.
   const submitWizardModels = (enabledModelIds: readonly string[]): void => {
-    const providerType = wizardProviderType;
-    if (!providerType || !wizard) return;
+    const target = wizardTarget;
+    if (!target || !wizard) return;
     if (!input.onboarding) {
-      wizard.setModelError('Onboarding 不可用：当前运行环境未提供配置入口。');
+      wizard.setModelError(pickerCopy.onboardingUnavailable);
       requestRender();
       return;
     }
@@ -2005,40 +2436,53 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     requestRender();
     void input.onboarding
       .save({
-        providerType,
-        connectionId: wizardConnectionId,
+        target,
         apiKey: wizardApiKey,
         baseUrl: wizardBaseUrl,
         enabledModelIds,
-        models: wizardModels,
       })
       .then(
         (result) => {
-          if (result.kind === 'error') {
+          if (result.kind !== 'ok') {
             if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
-            wizard.setModelError(result.text);
+            if (result.kind === 'rejected' && result.reason === 'slug_taken') {
+              wizard.setIdentityError(onboardingFailureMessage(result, locale));
+            } else {
+              wizard.setModelError(onboardingFailureMessage(result, locale));
+            }
             requestRender();
             return;
           }
-          // Authoritatively refresh the running TUI's ready model choices so the
-          // newly configured models are immediately available from /model — even
-          // if the user abandoned the wizard mid-save. Abandonment only drops the
-          // in-frame success UI, not the background state sync. The active
-          // session is not switched.
-          modelChoices = result.modelChoices;
+          // The durable save may finish after the user backed out of the models
+          // step. Preserve the Host-assigned identity while this wizard still
+          // points at the same target, so submitting it again edits that exact
+          // Connection instead of allocating a duplicate account.
+          if (wizard === targetWizard && wizardTarget === target) {
+            wizardTarget = {
+              kind: 'existing',
+              connectionId: result.connection.connectionId,
+            };
+          }
           if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+          // Catalog projection is attempt-scoped: a late save from an abandoned
+          // attempt must not overwrite choices refreshed by a newer save.
+          if (result.refresh.kind === 'ok') {
+            modelChoices = result.refresh.modelChoices;
+            connectionIdentities = result.refresh.connectionIdentities;
+          }
           if (input.firstRun) {
             beginClose();
             return;
           }
-          wizard.setSuccess(enabledModelIds.length);
+          wizard.setSuccess(
+            enabledModelIds.length,
+            result.refresh.kind === 'failed' ? pickerCopy.accountSavedRefreshFailed : undefined,
+          );
           requestRender();
         },
-        (error) => {
+        () => {
           if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
-          wizard.setModelError(
-            `保存失败：${error instanceof Error ? error.message : String(error)}`,
-          );
+          wizard.setModelError(onboardingFailureMessage({ kind: 'unavailable' }, locale));
           requestRender();
         },
       );
@@ -2049,11 +2493,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (input.onboarding) {
       try {
         providers = await input.onboarding.listProviders();
-      } catch (error) {
+      } catch {
         state.entries.push({
           kind: 'notice',
           level: 'info',
-          text: `无法读取已配置的连接：${error instanceof Error ? error.message : String(error)}`,
+          text: pickerCopy.listProvidersFailed,
         });
         requestRender();
         return;
@@ -2063,7 +2507,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       // wizard can report unavailability in-frame at submit instead of throwing.
       providers = listApiKeyOnboardableProviders().map((provider) => ({
         ...provider,
-        hasConnection: false,
+        target: { kind: 'create' as const, providerType: provider.providerType },
+        label: provider.label,
+        suggestedSlug: deriveConnectionSlug(provider.providerType),
         enabledModelIds: [],
       }));
     }
@@ -2071,21 +2517,37 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: '没有可配置的 API key 类供应商。',
+        text: pickerCopy.noConfigurableProviders,
       });
       requestRender();
       return;
     }
     wizardOverlay?.hide();
     wizard = new OnboardingWizard(tui, {
+      locale,
       providers,
-      onPickProvider: (providerType, existingConnectionId) => {
-        wizardProviderType = providerType;
+      onPickProvider: (provider) => {
+        // Each picker selection is a new logical intent, even when the user
+        // reselects the same catalog row. A late save may converge only the
+        // exact target object captured by its own submit.
+        wizardTarget = { ...provider.target };
+        wizardIdentity = { slug: null, name: null };
         wizardApiKey = '';
         wizardBaseUrl = '';
-        wizardConnectionId = existingConnectionId;
         wizardModels = [];
         wizardAttempt += 1; // a new pick supersedes any in-flight attempt
+        requestRender();
+      },
+      onSubmitIdentity: (identity) => {
+        wizardIdentity = identity;
+        if (wizardTarget?.kind === 'create') {
+          wizardTarget = {
+            kind: 'create',
+            providerType: wizardTarget.providerType,
+            ...(identity.slug === null ? {} : { slug: identity.slug }),
+            ...(identity.name === null ? {} : { name: identity.name }),
+          };
+        }
         requestRender();
       },
       onSubmitBaseUrl: (baseUrl) => {
@@ -2251,11 +2713,28 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       text: 'Resuming from the latest safe boundary…',
     });
     requestRender();
-    for await (const event of input.driver.resumeLatest()) {
-      applyMakaSessionEventToTranscript(state, event);
-      shellRunElapsedTicker.sync();
-      syncUserQuestionOverlay();
-      requestRender();
+    try {
+      for await (const event of input.driver.resumeLatest()) {
+        applyMakaSessionEventToTranscript(state, event);
+        ctxRefresher?.observe(event);
+        shellRunElapsedTicker.sync();
+        syncInteractionOverlays();
+        requestRender();
+      }
+    } catch (error) {
+      // Preserve the Host's reason: expected user states are informational,
+      // while unavailable recovery authority and safety observations stay red.
+      if (error instanceof SafeBoundaryResumeParkedError) {
+        const presentation = safeBoundaryResumeParkedCopy(error.reason);
+        state.entries.push({
+          kind: 'notice',
+          level: presentation.level,
+          text: presentation.text,
+        });
+        requestRender();
+        return;
+      }
+      throw error;
     }
   };
 
@@ -2298,6 +2777,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // prefixed select value so they never collide with Maka session ids. A scan
     // error is surfaced (not silently swallowed): degrade to no rows but tell
     // the user why, so a real store bug isn't mistaken for "no sessions".
+    // Deliberate #2672 exception: the interpolated detail is a local
+    // file-scan diagnostic (not backend copy) and the TUI has no log channel
+    // to carry it, so dropping it would hide the only debugging signal.
     const foreignByValue = new Map<string, ForeignSessionSummary>();
     if ('error' in foreignScan) {
       const detail =
@@ -2305,7 +2787,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text: `读取外部对话失败：${detail}`,
+        text: formatUiMessage(
+          TUI_SESSION_ACTIONS_COPY[locale].foreignScanFailed,
+          { detail },
+          locale,
+        ),
       });
     } else {
       for (const summary of foreignScan.summaries) {
@@ -2390,7 +2876,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: '没有可回退的轮次。',
+        text: TUI_REWIND_COPY[locale].noTargets,
       });
       requestRender();
       return;
@@ -2399,9 +2885,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       value: target.turnId,
       label: target.label,
     }));
+    const rewindCopy = TUI_REWIND_COPY[locale];
     showSelectPicker(
-      'Rewind',
-      'Rewind',
+      rewindCopy.pickerTitle,
+      rewindCopy.pickerTitle,
       items,
       (item) => {
         // runControl drops the action silently when busy is already held (e.g.
@@ -2412,7 +2899,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           state.entries.push({
             kind: 'notice',
             level: 'error',
-            text: '无法回退：当前有正在进行的操作 — 请等待其完成，或中断（Esc）后重试。',
+            text: rewindCopy.busy,
           });
           requestRender();
           return;
@@ -2422,13 +2909,27 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       {
         minPrimaryColumnWidth: 24,
         maxPrimaryColumnWidth: 48,
-        hint: '回到选定轮次之前（丢弃该轮及之后，prompt 回填输入框） · enter 选择 / esc 取消',
+        hint: rewindCopy.pickerHint,
       },
     );
   };
 
-  const newSession = async (): Promise<void> => {
-    input.driver.startNewSession();
+  const newSession = async (): Promise<boolean> => {
+    try {
+      await input.driver.startNewSession();
+    } catch {
+      // The identity swap was aborted driver-side: the previous Session, its
+      // transcript, and every user-command card stay exactly as they were.
+      // Surface the failure instead of silently stranding the running
+      // commands; the driver's raw error text is not product copy (#2672).
+      state.entries.push({
+        kind: 'notice',
+        level: 'error',
+        text: TUI_SESSION_ACTIONS_COPY[locale].newSessionFailed,
+      });
+      requestRender();
+      return false;
+    }
     // A fresh session is not bound by the previous one's boundary. Falling back
     // to the *current* label would keep the previous Session's mode, including
     // Auto while a changed Host default creates with full access; the launch
@@ -2443,9 +2944,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // session, send a prompt to begin" cue. A notice here would make entries
     // non-empty and suppress it.
     replaceTranscript([]);
+    syncInteractionOverlays();
     shellRunElapsedTicker.sync();
     await discardCurrentSidePair();
     requestRender();
+    return true;
   };
 
   // Import a foreign (Claude Code / Codex) session: read its digest, open a
@@ -2465,7 +2968,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     try {
       const digest = await input.foreignSessions.readDigest(summary);
       if (closed) return;
-      await newSession();
+      if (!(await newSession())) return;
       submitMessage(foreignSessionHandoffDisplayText(digest), 'current_turn', {
         modelText: buildForeignSessionHandoffMessage(digest),
       });
@@ -2486,15 +2989,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const showHelp = () => {
     // Derive the command list from the registry so /help never drifts from the
     // real commands. Keybindings are not commands, so they are listed by hand.
-    const commands = slashCommands
-      .map((command) => {
+    const commands = [
+      ...slashCommands.map((command) => {
         const aliasSuffix =
           command.aliases && command.aliases.length > 0
             ? ` (${command.aliases.map((alias) => `/${alias}`).join(', ')})`
             : '';
         return `  /${command.name}${aliasSuffix} — ${command.description}`;
-      })
-      .join('\n');
+      }),
+      primaryGuidance.help.userCommand,
+    ].join('\n');
     const keybindings = primaryGuidance.help.keybindings.join('\n');
     state.entries.push({
       kind: 'notice',
@@ -2522,9 +3026,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const showMcpStatus = (): void => {
     let overlay: OverlayHandle | undefined;
-    const viewer = new McpStatusOverlay({
+    const viewer = new McpManagementOverlay({
       locale,
+      tui,
       ...(input.mcp ? { surface: input.mcp } : {}),
+      canManage: () => !busy,
       viewportRows: () => terminal.rows,
       onClose: () => overlay?.hide(),
       onChange: () => tui.requestRender(),
@@ -2546,8 +3052,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (choices && choices.length > 0) {
       let overlay: OverlayHandle | undefined;
       const picker = new ModelSearchOverlay(tui, {
+        locale,
         choices,
-        current: { model, connectionSlug },
+        current: { model, connectionId, connectionSlug },
         showCacheWarning: hasConversationHistory,
         onSelect: (choice) => {
           overlay?.hide();
@@ -2559,16 +3066,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return;
     }
     showSelectPicker(
-      'Select Model',
+      pickerCopy.modelPickerTitle,
       connectionSlug,
-      modelPickerItems(model, input.models),
+      modelPickerItems(model, input.models, locale),
       (item) => {
         void runControl(() => setModel(item.value));
       },
       {
         minPrimaryColumnWidth: 24,
         maxPrimaryColumnWidth: 48,
-        notice: hasConversationHistory ? MODEL_SWITCH_CACHE_WARNING : undefined,
+        notice: hasConversationHistory ? pickerCopy.modelSwitchCacheWarning : undefined,
       },
     );
   };
@@ -2583,13 +3090,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: '当前没有可调用的技能。',
+        text: skillsCopy.noneAvailable,
       });
       requestRender();
       return;
     }
     showSelectPicker(
-      'Invoke Skill',
+      skillsCopy.pickerTitle,
       String(entries.length),
       skillPickerItems(entries),
       (item) => {
@@ -2601,9 +3108,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const showThinkingLevelList = () => {
-    const items = thinkingLevelPickerItems(thinkingLevels, thinkingLevel);
+    const items = thinkingLevelPickerItems(currentThinkingLevels(), thinkingLevel, locale);
     showSelectPicker(
-      'Select Thinking Level',
+      pickerCopy.thinkingPickerTitle,
       thinkingLevel ?? 'default',
       items,
       (item) => {
@@ -2994,7 +3501,86 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
 
+  const runHostCommand = async (parts: string[]): Promise<void> => {
+    const copy = getTuiHostOwnerCopy(locale);
+    if (!input.hostControl) throw new Error(copy.unavailable);
+    const action = parts[1] ?? 'status';
+    if (action === 'status' && parts.length <= 2) {
+      const text = await input.hostControl.status();
+      if (!closed) {
+        state.entries.push({ kind: 'notice', level: 'info', text });
+        requestRender();
+      }
+      return;
+    }
+    if (action !== 'stop' && action !== 'restart' && action !== 'update') {
+      throw new Error(copy.usage);
+    }
+    const targets = parts.slice(2);
+    if (targets.length > (action === 'update' ? 1 : 0)) {
+      throw new Error(copy.usage);
+    }
+    const accepted = await input.hostControl.prepare(
+      {
+        action,
+        ...(targets[0] ? { target: targets[0] } : {}),
+      },
+      (detail) =>
+        new Promise((resolve) => {
+          if (closed) return resolve('cancel');
+          showSelectPicker(
+            copy.pickerTitle,
+            'cancel',
+            [
+              {
+                value: 'cancel',
+                label: copy.cancel,
+                description: copy.cancelDescription,
+              },
+              {
+                value: 'safe',
+                label: copy.safe,
+                description: copy.safeDescription,
+              },
+              ...(action === 'update'
+                ? []
+                : [
+                    {
+                      value: 'interrupt',
+                      label: copy.interrupt,
+                      description: copy.interruptDescription,
+                    },
+                  ]),
+            ],
+            (item) => resolve(item.value as 'cancel' | 'safe' | 'interrupt'),
+            {
+              minPrimaryColumnWidth: 16,
+              maxPrimaryColumnWidth: 26,
+              selectedIndex: 0,
+              notice: detail,
+              onCancel: () => resolve('cancel'),
+            },
+          );
+        }),
+    );
+    if (accepted) beginGracefulClose();
+  };
+
   const slashCommandHandlers = {
+    host: {
+      description: primaryGuidance.commands.host,
+      midTurn: 'local',
+      run: (parts: string[]) => {
+        void runHostCommand(parts).catch(reportError);
+      },
+    },
+    update: {
+      description: primaryGuidance.commands.update,
+      midTurn: 'local',
+      run: (parts: string[]) => {
+        void runHostCommand(['/host', 'update', ...parts.slice(1)]).catch(reportError);
+      },
+    },
     context: {
       description: primaryGuidance.commands.context,
       // Read-only diagnostics, but runControl-gated: mid-turn it would
@@ -3037,6 +3623,67 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           return;
         }
         void runControl(compactSession);
+      },
+    },
+    copy: {
+      description: primaryGuidance.commands.copy,
+      // Refused mid-turn: copy grabs the finished reply, and while a turn streams
+      // the last assistant entry is the half-written one — copying that would
+      // silently hand back a partial message. Wait for the turn (or Esc) first.
+      midTurn: 'refuse',
+      run: (parts: string[]) => {
+        const scope = parts.length >= 2 ? parts[1] : undefined;
+        if (parts.length > 2 || (scope !== undefined && scope !== 'all')) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: copyCopy.usage,
+          });
+          requestRender();
+          return;
+        }
+        const copyAll = scope === 'all';
+        const text = copyAll
+          ? serializeTranscriptText(state, {
+              user: copyCopy.roleUser,
+              assistant: copyCopy.roleAssistant,
+              goalContinuation: copyCopy.roleGoalContinuation,
+              legacyAutomation: copyCopy.roleLegacyAutomation,
+            })
+          : lastAssistantText(state);
+        if (!text) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'info',
+            text: copyCopy.nothingToCopy,
+          });
+          requestRender();
+          return;
+        }
+        const result = copyToClipboard(terminal, text);
+        if (!result.ok) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: formatUiMessage(
+              copyCopy.tooLarge,
+              { bytes: result.bytes, limit: result.limit },
+              locale,
+            ),
+          });
+          requestRender();
+          return;
+        }
+        state.entries.push({
+          kind: 'notice',
+          level: 'info',
+          text: formatUiMessage(
+            copyAll ? copyCopy.copiedAll : copyCopy.copiedLast,
+            { count: text.length },
+            locale,
+          ),
+        });
+        requestRender();
       },
     },
     exit: {
@@ -3116,7 +3763,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       description: primaryGuidance.commands.new,
       midTurn: 'refuse',
       run: () => {
-        void runControl(async () => newSession());
+        void runControl(
+          async () => {
+            await newSession();
+          },
+          { allowWhileBusy: true },
+        );
       },
     },
     skill: {
@@ -3127,7 +3779,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           state.entries.push({
             kind: 'notice',
             level: 'error',
-            text: 'Usage: /skill，或直接在消息中输入 /skill:<name>',
+            text: skillsCopy.usage,
           });
           requestRender();
           return;
@@ -3188,12 +3840,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       description: primaryGuidance.commands.thinking,
       midTurn: 'refuse',
       run: (parts: string[]) => {
+        const thinkingLevels = currentThinkingLevels();
         if (parts.length === 1) {
           if (thinkingLevels.length === 0) {
             state.entries.push({
               kind: 'notice',
               level: 'info',
-              text: '当前模型不支持思考级别切换。',
+              text: pickerCopy.thinkingUnsupported,
             });
             requestRender();
             return;
@@ -3214,7 +3867,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             level: 'error',
             text:
               thinkingLevels.length === 0
-                ? '当前模型不支持思考级别切换。'
+                ? pickerCopy.thinkingUnsupported
                 : `Usage: /thinking ${['default', ...thinkingLevels].join('|')}`,
           });
           requestRender();
@@ -3403,6 +4056,42 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
   refreshEditorCwd(cwd);
 
+  // #4011: a collapse toggle that strands expanded blocks above the viewport
+  // arms this window; pressing the same key again within it knowingly accepts
+  // one scrollback-clearing full redraw to collapse those blocks too. The
+  // window (not a latch on other keys) is the only expiry, matching the
+  // double-Escape interrupt pattern.
+  const handleExpansionToggleKey = (kind: ExpansionEntryKind): boolean => {
+    const armed = expansionCollapseConfirm;
+    expansionCollapseConfirm = undefined;
+    if (armed?.kind === kind) {
+      if (Date.now() - armed.at <= EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS) {
+        // The confirmed second press: apply the (collapsed) default to every
+        // entry, including the ones above the viewport, and pay the deliberate
+        // full redraw the notice announced.
+        if (applyExpansionDefaultToAll(state, kind)) requestRender(true);
+        return true;
+      }
+      // A reader can reasonably miss the short window. Keep the already
+      // collapsed default and make the explicit choice visible again instead
+      // of falling through to the opposite ordinary toggle.
+      if (appendExpansionCollapseConfirmation(state, kind)) {
+        expansionCollapseConfirm = { kind, at: Date.now() };
+        requestRender();
+        return true;
+      }
+    }
+    const toggled =
+      kind === 'tool' ? toggleAllToolExpansion(state) : toggleAllThinkingExpansion(state);
+    if (!toggled) return false;
+    const collapsed = kind === 'tool' ? !state.expandAllTools : !state.expandAllThinking;
+    if (collapsed && hasExpandedEntriesAboveViewport(state, kind)) {
+      expansionCollapseConfirm = { kind, at: Date.now() };
+    }
+    requestRender();
+    return true;
+  };
+
   tui.addInputListener((data) => {
     // Track bracketed pastes before any consuming branch: this must observe
     // every chunk the editor could buffer, regardless of what the rest of the
@@ -3450,7 +4139,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return { consume: true };
     }
     if (
-      activeUserQuestionRequest(state) &&
+      (activeUserQuestionRequest(state) || activeFormRequest(state)) &&
       turnRunning &&
       matchesKey(data, Key.ctrl('c')) &&
       !isKeyRepeat(data)
@@ -3500,20 +4189,36 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // one (e.g. `Esc`, type, `Esc`).
     if (!matchesKey(data, Key.escape)) lastIdleEscapeAt = 0;
     if (matchesKey(data, Key.ctrl('o')) && !isKeyRepeat(data)) {
-      if (toggleAllToolExpansion(state)) {
-        requestRender();
+      if (handleExpansionToggleKey('tool')) {
         return { consume: true };
       }
     }
     if (matchesKey(data, Key.ctrl('t')) && !isKeyRepeat(data)) {
-      if (toggleAllThinkingExpansion(state)) {
-        requestRender();
+      if (handleExpansionToggleKey('thinking')) {
         return { consume: true };
       }
     }
     if (turnRunning && matchesKey(data, Key.ctrl('c'))) {
       if (interruptRequested) handleProcessExit(0);
       else requestTurnInterrupt();
+      return { consume: true };
+    }
+    if (
+      !turnRunning &&
+      matchesKey(data, Key.ctrl('c')) &&
+      !userCommandStopRejected &&
+      hasRunningUserCommand(state) &&
+      input.driver.stopUserCommands
+    ) {
+      lastIdleCtrlCAt = 0;
+      void runControl(async () => {
+        try {
+          await input.driver.stopUserCommands!();
+        } catch (error) {
+          userCommandStopRejected = true;
+          reportError(error);
+        }
+      });
       return { consume: true };
     }
     // Double Escape interrupts the running turn. This must sit below the
@@ -3598,9 +4303,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // into a scrollback-clearing full redraw (its `firstChanged < viewportTop`
   // path). The toggles therefore retarget only entries inside the viewport;
   // see entryInLiveViewport in pi-transcript.ts (#1097). A block whose own
-  // expansion pushed its head above the viewport can consequently never be
-  // collapsed in place (#1134): the toggles still flip the default and append
-  // a notice, and the expanded content stays readable in scrollback.
+  // expansion pushed its head above the viewport can consequently not be
+  // collapsed by the next press (#1134): the toggle still flips the default
+  // and appends a notice, and the expanded content stays readable in
+  // scrollback. #4011 adds the deliberate exception: pressing the same key
+  // again within EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS applies the collapsed
+  // default to those blocks too and pays one scrollback-clearing full redraw
+  // (requestRender(true)), re-anchoring the viewport at the tail.
   tui.setClearOnShrink(false);
   tui.addChild(layout);
   tui.setFocus(editorSurface);
@@ -3845,3 +4554,9 @@ function matchesSideConversationToggle(data: string): boolean {
 // Two Escapes this close together read as one deliberate "stop the turn".
 const DOUBLE_ESCAPE_INTERRUPT_WINDOW_MS = 600;
 const DOUBLE_CTRL_C_EXIT_WINDOW_MS = 1_000;
+/** Only a leading bang opts into a local user command; ordinary prose remains a prompt. */
+function parseUserCommand(prompt: string): string | undefined {
+  const trimmed = prompt.trim();
+  if (!trimmed.startsWith('!')) return undefined;
+  return trimmed.slice(1).trim();
+}

@@ -20,8 +20,9 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { encodeToolStepProgress } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
+import { applyLiveTurnEvent } from './live-turn-zh.js';
 import {
-  applyLiveTurnEvent,
   armLiveTurn,
   confirmLiveTurn,
   reconcileTerminalLiveTurn,
@@ -70,7 +71,7 @@ describe('the unconfirmed claim an arm carries', () => {
 
 describe('provider retry copy', () => {
   it('describes capacity retries without collapsing them into generic unavailability', () => {
-    assert.match(getConversationCopy('zh').messages.providerRetryReason.provider_capacity, /满载/);
+    assert.match(getConversationCopy('zh-CN').messages.providerRetryReason.provider_capacity, /满载/);
     assert.match(
       getConversationCopy('en').messages.providerRetryReason.provider_capacity,
       /capacity/,
@@ -183,7 +184,7 @@ describe('applyLiveTurnEvent', () => {
       delayMs: 4_000,
       reason: 'rate_limit',
     });
-    assert.deepEqual(scheduled?.providerRetry, {
+    assert.deepEqual(scheduled?.providerRetry?.event, {
       type: 'provider_retry',
       id: 'retry-1',
       turnId: 'turn-1',
@@ -194,6 +195,9 @@ describe('applyLiveTurnEvent', () => {
       delayMs: 4_000,
       reason: 'rate_limit',
     });
+    // Receipt is stamped on the client clock so the countdown ticks in one
+    // clock domain, immune to skew against a remote Runtime Host.
+    assert.equal(typeof scheduled?.providerRetry?.receivedAtMs, 'number');
 
     const started = applyLiveTurnEvent(scheduled, {
       type: 'provider_retry',
@@ -205,16 +209,7 @@ describe('applyLiveTurnEvent', () => {
       maxAttempts: 10,
       reason: 'rate_limit',
     });
-    assert.deepEqual(started?.providerRetry, {
-      type: 'provider_retry',
-      id: 'retry-2',
-      turnId: 'turn-1',
-      ts: 101,
-      phase: 'started',
-      attempt: 2,
-      maxAttempts: 10,
-      reason: 'rate_limit',
-    });
+    assert.equal(started?.providerRetry?.event.phase, 'started');
 
     const streamed = applyLiveTurnEvent(started, {
       type: 'text_delta',
@@ -251,7 +246,7 @@ describe('applyLiveTurnEvent', () => {
       reason: 'provider_capacity',
     });
 
-    assert.equal(started?.providerRetry?.reason, 'provider_capacity');
+    assert.equal(started?.providerRetry?.event.reason, 'provider_capacity');
   });
 
 
@@ -500,7 +495,7 @@ describe('applyLiveTurnEvent', () => {
 
     assert.equal(projection.steps.flatMap((step) => step.tools).length, 1);
     assert.deepEqual(
-      overlayLiveTurn([], projection)[0]?.timeline.map((item) =>
+      overlayLiveTurn([], projection, 'en')[0]?.timeline.map((item) =>
         item.kind === 'user' ? `user:${item.message.text}` : item.kind),
       ['user:before tool', 'text', 'tools', 'user:after tool'],
     );
@@ -527,7 +522,7 @@ describe('applyLiveTurnEvent', () => {
       ts: 101,
     });
 
-    const timeline = overlayLiveTurn([], withLateThinking)[0]?.timeline;
+    const timeline = overlayLiveTurn([], withLateThinking, 'en')[0]?.timeline;
     assert.deepEqual(timeline?.map((item) => item.kind), ['tools', 'thinking']);
   });
 
@@ -844,14 +839,17 @@ describe('reconcileTerminalLiveTurn', () => {
       turnId: 'turn-1',
       phase: 'streamed',
       providerRetry: {
-        type: 'provider_retry',
-        id: 'retry-1',
-        turnId: 'turn-1',
-        ts: 2,
-        phase: 'started',
-        attempt: 2,
-        maxAttempts: 3,
-        reason: 'network',
+        event: {
+          type: 'provider_retry',
+          id: 'retry-1',
+          turnId: 'turn-1',
+          ts: 2,
+          phase: 'started',
+          attempt: 2,
+          maxAttempts: 3,
+          reason: 'network',
+        },
+        receivedAtMs: 2,
       },
       steps: [{
         stepId: 'assistant-1',
@@ -1029,7 +1027,7 @@ describe('tool_result_preview live projection', () => {
         type: 'turn_state', id: 'state-1', turnId: 'turn-1', ts: 3,
         status: 'running', partialOutputRetained: true,
       },
-    ]);
+    ], 'en');
     const started = applyLiveTurnEvent(undefined, {
       type: 'tool_start', id: 'start-1', turnId: 'turn-1', stepId: 'step-1',
       toolUseId: 'tool-1', toolName: 'Read', args: { path: 'README.md' }, ts: 4,
@@ -1039,7 +1037,7 @@ describe('tool_result_preview live projection', () => {
       isError: false, content: { kind: 'text', text: '' }, ts: 5,
     });
 
-    assert.deepEqual(overlayLiveTurn(turns, settled)[0]?.tools[0]?.result, {
+    assert.deepEqual(overlayLiveTurn(turns, settled, 'en')[0]?.tools[0]?.result, {
       kind: 'text',
       text: '',
     });
@@ -1076,3 +1074,145 @@ function previewedSubagentTurn(): LiveTurnProjection {
     ts: 101,
   });
 }
+
+describe('context-compaction live row', () => {
+  it('arms a rootExecutionKind projection from a context_compaction_started event', () => {
+    const projection = applyLiveTurnEvent(undefined, {
+      type: 'context_compaction_started',
+      id: 'compaction-started-1',
+      turnId: 'turn-compact',
+      ts: 1,
+    });
+    assert.ok(projection);
+    assert.equal(projection.turnId, 'turn-compact');
+    assert.equal(projection.rootExecutionKind, 'context_compact');
+    assert.equal(projection.steps.length, 0);
+  });
+
+  it('overlays exactly one localized "compacting" system row while running', () => {
+    const projection = applyLiveTurnEvent(undefined, {
+      type: 'context_compaction_started',
+      id: 'compaction-started-1',
+      turnId: 'turn-compact',
+      ts: 1,
+    });
+    const turns = overlayLiveTurn([], projection, 'en');
+    assert.equal(turns.length, 1);
+    assert.equal(turns[0]?.turnId, 'turn-compact');
+    assert.equal(turns[0]?.status, 'running');
+    assert.equal(turns[0]?.notes.length, 1);
+    assert.equal(
+      turns[0]?.notes[0]?.text,
+      getConversationCopy('en').messages.systemNotes.contextCompacting,
+    );
+  });
+
+  it('merges the compacting note into an already-persisted running turn', () => {
+    // Production persists a `turn_state:running` row for the compaction turn, so
+    // materializeTurns yields an empty running turn before the live row arrives.
+    const settled = [
+      {
+        turnId: 'turn-compact',
+        status: 'running' as const,
+        statusSource: 'recorded' as const,
+        partialOutputRetained: false,
+        tools: [],
+        notes: [],
+        timeline: [],
+        startedAt: 5,
+      },
+    ];
+    const projection = applyLiveTurnEvent(undefined, {
+      type: 'context_compaction_started',
+      id: 'compaction-started-1',
+      turnId: 'turn-compact',
+      ts: 7,
+    });
+    const turns = overlayLiveTurn(settled, projection, 'en');
+    assert.equal(turns.length, 1);
+    assert.equal(turns[0]?.turnId, 'turn-compact');
+    assert.equal(turns[0]?.notes.length, 1);
+    assert.equal(
+      turns[0]?.notes[0]?.text,
+      getConversationCopy('en').messages.systemNotes.contextCompacting,
+    );
+    assert.equal(turns[0]?.notes[0]?.id, 'context-compaction:turn-compact');
+    // Deterministic ts (no Date.now()): the note borrows the settled turn's start.
+    assert.equal(turns[0]?.notes[0]?.ts, 5);
+    // Idempotent across reprojection — no duplicate note.
+    const again = overlayLiveTurn(turns, projection, 'en');
+    assert.equal(again[0]?.notes.length, 1);
+  });
+
+  it('localizes the compacting row per locale', () => {
+    const projection = applyLiveTurnEvent(undefined, {
+      type: 'context_compaction_started',
+      id: 'compaction-started-1',
+      turnId: 'turn-compact',
+      ts: 1,
+    });
+    assert.equal(
+      overlayLiveTurn([], projection, 'zh-CN')[0]?.notes[0]?.text,
+      getConversationCopy('zh-CN').messages.systemNotes.contextCompacting,
+    );
+    assert.notEqual(
+      getConversationCopy('zh-CN').messages.systemNotes.contextCompacting,
+      getConversationCopy('en').messages.systemNotes.contextCompacting,
+    );
+  });
+
+  it('drops the row when the compaction turn completes with no content', () => {
+    let projection = applyLiveTurnEvent(undefined, {
+      type: 'context_compaction_started',
+      id: 'compaction-started-1',
+      turnId: 'turn-compact',
+      ts: 1,
+    });
+    projection = applyLiveTurnEvent(projection, {
+      type: 'complete',
+      id: 'complete-1',
+      turnId: 'turn-compact',
+      ts: 2,
+      stopReason: 'end_turn',
+    });
+    assert.equal(projection, undefined);
+    assert.deepEqual(overlayLiveTurn([], projection, 'en'), []);
+  });
+
+  it('drops the running row when transcript reconciliation finds the compaction terminal', () => {
+    const projection = applyLiveTurnEvent(undefined, {
+      type: 'context_compaction_started',
+      id: 'compaction-started-1',
+      turnId: 'turn-compact',
+      ts: 1,
+    });
+    assert.ok(projection);
+    assert.equal(overlayLiveTurn([], projection, 'en')[0]?.status, 'running');
+
+    const messages: StoredMessage[] = [
+      {
+        type: 'system_note',
+        id: 'compaction-settled-1',
+        turnId: 'turn-compact',
+        ts: 2,
+        kind: 'context_compacted',
+      },
+      {
+        type: 'turn_state',
+        id: 'turn-terminal-1',
+        turnId: 'turn-compact',
+        ts: 3,
+        status: 'completed',
+        partialOutputRetained: false,
+      },
+    ];
+    const reconciled = reconcileTerminalLiveTurn(projection, messages);
+    const turns = overlayLiveTurn(materializeTurns(messages, 'en'), reconciled, 'en');
+
+    assert.equal(reconciled, undefined);
+    assert.deepEqual(
+      turns[0]?.notes.map((note) => note.text),
+      [getConversationCopy('en').messages.systemNotes.contextCompacted],
+    );
+  });
+});

@@ -58,6 +58,8 @@ const page = {
       data: Buffer.from('test').toString('base64'),
     },
   ],
+  rangeBoundarySequence: 2,
+  protectedTurnSequence: 2,
   nextCursor: 'opaque-cursor',
 };
 
@@ -70,6 +72,7 @@ test('Session transcript protocol accepts bounded correlated pages and bootstrap
 
   const bootstrap = {
     throughSequence: 3,
+    durableCoverage: 'complete' as const,
     overlayMessageCount: 0,
     durable: { ...page, direction: 'older' as const },
     overlay: {
@@ -80,6 +83,8 @@ test('Session transcript protocol accepts bounded correlated pages and bootstrap
       throughSequence: 3,
       rawBytes: 0,
       fragments: [],
+      rangeBoundarySequence: null,
+      protectedTurnSequence: null,
       nextCursor: null,
     },
   };
@@ -162,6 +167,27 @@ test('Session transcript protocol rejects malformed and uncorrelated values', ()
     isProtocolError,
   );
   assert.throws(
+    () => decodeSessionTranscriptPage({ ...page, rangeBoundarySequence: 4 }),
+    isProtocolError,
+  );
+  assert.throws(
+    () => decodeSessionTranscriptPage({ ...page, protectedTurnSequence: 4 }),
+    isProtocolError,
+  );
+  assert.throws(
+    () =>
+      decodeSessionTranscriptPage({
+        ...page,
+        source: 'overlay',
+        rawBytes: 0,
+        fragments: [],
+        rangeBoundarySequence: null,
+        protectedTurnSequence: 2,
+        nextCursor: null,
+      }),
+    isProtocolError,
+  );
+  assert.throws(
     () =>
       decodeSessionTranscriptPage({
         ...page,
@@ -181,6 +207,7 @@ test('Session transcript protocol rejects malformed and uncorrelated values', ()
     () =>
       decodeSessionTranscriptBootstrap({
         throughSequence: 3,
+        durableCoverage: 'complete',
         overlayMessageCount: 0,
         durable: page,
         overlay: { ...page, source: 'overlay', throughSequence: 2 },

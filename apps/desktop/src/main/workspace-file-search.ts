@@ -70,14 +70,14 @@ function runGitLsFiles(
   return new Promise((resolve) => {
     execFileImpl(
       'git',
-      ['ls-files', '--cached', '--others', '--exclude-standard'],
+      ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
       { cwd, timeout: LS_TIMEOUT_MS, windowsHide: true, maxBuffer: 32 * 1024 * 1024 },
       (error, stdout) => {
         if (error) {
           resolve({ ok: false });
           return;
         }
-        const files = stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+        const files = stdout.split('\0').filter(Boolean);
         resolve({ ok: true, files });
       },
     );

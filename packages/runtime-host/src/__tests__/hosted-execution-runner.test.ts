@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { OperationHandlerMap } from '../server/operation-dispatcher.js';
@@ -227,7 +228,12 @@ function input() {
     executionId: ID,
     session: {
       workspace: { kind: 'host_path' as const, path: '/workspace' },
-      modelTarget: { kind: 'explicit' as const, connectionSlug: 'env-openai', model: 'model' },
+      modelTarget: {
+        kind: 'explicit' as const,
+        connectionId: 'connection-1',
+        connectionSlug: 'env-openai',
+        model: 'model',
+      },
     },
     content: { text: 'solve' },
   };
@@ -340,17 +346,6 @@ function context() {
     acquireResidency: () => ({ release() {} }),
   };
 }
-
-function deferred() {
-  let resolve!: () => void;
-  return {
-    promise: new Promise<void>((settle) => {
-      resolve = settle;
-    }),
-    resolve: () => resolve(),
-  };
-}
-
 function sequence(...values: number[]): () => number {
   let index = 0;
   return () => values[Math.min(index++, values.length - 1)]!;

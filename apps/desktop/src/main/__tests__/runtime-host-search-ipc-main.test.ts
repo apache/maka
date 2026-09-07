@@ -24,6 +24,16 @@ import type { SessionCatalogProjection } from '@maka/runtime-host/protocol';
 import type { IpcHandler } from '../ipc-reconnect-policy.js';
 import type { DesktopRuntimeHostClient } from '../runtime-host-client.js';
 import { registerRuntimeHostSearchIpc } from '../runtime-host-search-ipc-main.js';
+import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
+
+// The catalog hands search a composed Desktop key, not a bare Runtime Host id.
+// Naming it here is what makes the passthrough in runtime-host-search-ipc-main
+// observable: a hit whose target carried the bare id would open nothing on a
+// second Host.
+const SEARCHABLE_SESSION = desktopSessionKey({
+  hostId: 'host-b',
+  sessionId: 'searchable-session',
+});
 
 test('Runtime Host transcripts produce title and content hits with turn ids', async () => {
   const handlers = new Map<string, IpcHandler>();
@@ -38,15 +48,21 @@ test('Runtime Host transcripts produce title and content hits with turn ids', as
       },
     },
     client: searchClient({
-      listSessions: async () => [catalogSession('searchable-session', '长对话提示词导航示例')],
+      listSessions: async () => [catalogSession(SEARCHABLE_SESSION, '长对话提示词导航示例')],
       openSession: async () =>
         ({
+          // Three earlier messages so the hit's `sequence` is its real position
+          // in the transcript. With a single message every projection, correct
+          // or not, reports 0.
           loadTranscript: async () => [
+            { type: 'user', id: 'host-user-0', turnId: 'turn-host-0', ts: 1, text: '第 0 个问题' },
+            { type: 'assistant', id: 'host-reply-0', turnId: 'turn-host-0', ts: 2, text: '回答 0' },
+            { type: 'user', id: 'host-user-1', turnId: 'turn-host-1', ts: 3, text: '第 1 个问题' },
             {
               type: 'user',
               id: 'host-user',
               turnId: 'turn-host-3',
-              ts: 1,
+              ts: 4,
               text: '第 3 个问题：这一段的调用链路是怎样的？',
             },
           ],
@@ -69,7 +85,7 @@ test('Runtime Host transcripts produce title and content hits with turn ids', as
   assert.equal(titleHits[0]?.summary, '任务标题');
   assert.deepEqual(titleHits[0]?.target, {
     kind: 'thread',
-    sessionId: 'searchable-session',
+    sessionId: SEARCHABLE_SESSION,
   });
 
   const contentHits = expectResults(
@@ -83,9 +99,9 @@ test('Runtime Host transcripts produce title and content hits with turn ids', as
   assert.equal(contentHits[0]?.summary, '用户消息');
   assert.deepEqual(contentHits[0]?.target, {
     kind: 'thread',
-    sessionId: 'searchable-session',
+    sessionId: SEARCHABLE_SESSION,
     turnId: 'turn-host-3',
-    sequence: 0,
+    sequence: 3,
   });
   assert.equal(closed, 2);
 });
@@ -171,6 +187,7 @@ function catalogSession(id: string, name: string): SessionCatalogProjection {
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'zai-live',
     connectionLocked: true,
     model: 'glm-5.1',

@@ -42,9 +42,12 @@ Only use Windows assets attached to a Maka GitHub Release. The NSIS installer is
    `winget install BurntSushi.ripgrep.MSVC` if Runtime's `Grep` tool is needed. Restart Maka after
    changing `PATH`.
 
-The release gate installs a pinned v0.1.9 build, fully smokes it, upgrades the same installation to
-the candidate, fully smokes the candidate, waits for installed processes to exit, and runs the real
-uninstaller. A second gate proves the automatic, running-app upgrade path: the installed candidate,
+The release gate installs the previously published build pinned in
+`scripts/windows-upgrade-baseline.json` — by tag, asset name, and SHA-256 — fully smokes it, upgrades
+the same installation to the candidate, fully smokes the candidate, waits for installed processes to
+exit, and runs the real uninstaller. The baseline is verified against the contract that build shipped
+under, not the candidate's: it may predate resources the candidate must carry, and it carries its own
+update channel. A second gate proves the automatic, running-app upgrade path: the installed candidate,
 running, discovers a newer build through its packaged electron-updater against a loopback test feed,
 downloads it in the background, hands off to the NSIS installer, relaunches as the new version, and
 passes the full packaged smoke — with the feed requests (including the differential-download probe),
@@ -105,8 +108,9 @@ workspace data first; the preview does not yet claim business-data migration gua
 5. 启动 Maka，在 **设置 → 模型**中配置模型。需要 Runtime `Grep` 工具时，执行
    `winget install BurntSushi.ripgrep.MSVC`，并在 `PATH` 更新后重启 Maka。
 
-发布门禁会安装固定的 v0.1.9、执行完整 smoke、在同一目录升级候选版本、再次完整 smoke、等待安装目录内
-进程退出，并运行真实卸载器。另一个门禁证明**运行中的自动更新路径**：已安装且正在运行的候选版本通过打包的
+发布门禁会安装 `scripts/windows-upgrade-baseline.json` 中按 tag、资产名与 SHA-256 固定的既往已发布构建，
+执行完整 smoke、在同一目录升级候选版本、再次完整 smoke、等待安装目录内进程退出，并运行真实卸载器。基线按
+其发布时所处的契约校验，而非候选版本的契约：它可能不含候选版本必须携带的资源，也带着自己的更新通道。另一个门禁证明**运行中的自动更新路径**：已安装且正在运行的候选版本通过打包的
 electron-updater 从 loopback 测试 feed 发现新版本、后台下载、交接给 NSIS 安装器、以新版本自动重启并通过
 完整打包 smoke——feed 请求（含差量下载探测）、`downloaded` 状态及其精确版本对、最终安装版本均逐项断言；
 `checking`/`downloading` 等瞬态不逐项断言。
@@ -185,9 +189,8 @@ parent-directory update through volatile device caches.
 
 | Surface | Current Windows guarantee | Boundary |
 |---|---|---|
-| SQLite operational state | Databases use WAL journaling with `synchronous=FULL`. Real-process failpoint tests verify that committed runtime, continuation, memory, and managed-workspace facts survive owner death while incomplete transactions do not become authoritative. | The guarantee is the SQLite and Windows filesystem contract on supported local storage. Maka does not claim protection from storage hardware or drivers that acknowledge flushes before data is stable. |
+| SQLite operational state | Databases use WAL journaling with `synchronous=FULL`. Real-process failpoint tests verify that committed runtime, continuation, and memory facts survive owner death while incomplete transactions do not become authoritative. Workspace RuntimeEvents and projections retain their schema 9 reader/rebuild contract. | The guarantee is the SQLite and Windows filesystem contract on supported local storage. Maka does not claim protection from storage hardware or drivers that acknowledge flushes before data is stable. |
 | Artifact payload publication | Payload bytes are written to a same-directory staging file and the file is synchronized before publication. Recovery reconciles staged payloads, metadata, deletes, and owner death without accepting uncommitted residue. | Windows evidence covers forced process termination and restart. It does not establish a separately forced parent-directory entry after sudden system power loss. |
-| Marker and managed-workspace control files | Writers synchronize temporary file contents before same-directory `link` or `rename` publication. Readers validate file and root identity and fail closed on unsupported replacement. | Node can synchronize the file on Windows, but the repository's directory synchronization barrier is intentionally unavailable on Windows. |
 | Root and open-database replacement | Live owners retain exclusive authority and cleanup closes stores and leases before deleting their roots. | Windows does not permit the POSIX test technique of renaming or unlinking an open SQLite database or replacing a directory that contains open files. Those tests remain classified as platform contracts rather than portable recovery gates. |
 
 On POSIX, stable-storage paths synchronize changed parent directories after publishing or removing a
@@ -206,7 +209,6 @@ Environment: Windows 11 x64, Node.js 22.23.1, npm 11, Git for Windows.
 |---|---:|---|
 | Workspace build | PASS | All root `build:test` workspace builds completed. |
 | Repository script tests | 110 pass, 0 fail, 1 skip | The skip is a real macOS `pgrep` probe. |
-| Managed workspace baseline tests | 17 pass, 0 fail, 5 skip | Passed after enabling Git for Windows long paths. |
 | Storage suite | 514 pass, 100 fail, 40 skip | Failures are dominated by `EBUSY` cleanup while SQLite files remain open. |
 | Complete repository test plan | TIMEOUT | `npm test` did not exit within 10 minutes and left the workspace test runner alive. |
 

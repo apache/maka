@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { SessionEvent } from '@maka/core/events';
 import type { BackendSessionEvent } from '@maka/core/backend-types';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -34,6 +34,7 @@ import {
   mapCompleteStopReason,
   mapSessionEventToRuntimeEvent,
   createSessionEventMapMemory,
+  isLiveBackendSessionEvent,
 } from '../session-event-runtime-mapper.js';
 import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 import {
@@ -42,6 +43,7 @@ import {
 } from '../runtime-event-read-model.js';
 import { isNonTerminalErrorRuntimeEvent } from '../agent-run.js';
 import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 // ============================================================================
 // Event builders
@@ -162,25 +164,6 @@ describe('mapSessionEventToRuntimeEvent (pure)', () => {
     assert.deepEqual(mapped.actions?.stateDelta, {
       stopReason: 'step_limit',
       failureClass: 'tool_step_cap_reached',
-    });
-  });
-
-  test('context_budget_exhausted keeps its detail in the durable terminal state', () => {
-    const mapped = mapSessionEventToRuntimeEvent(
-      ev({
-        type: 'complete',
-        stopReason: 'context_budget_exhausted',
-        contextBudgetExhaustedDetail: 'head_anchor_exceeds_capacity',
-      }),
-      ctx,
-      createSessionEventMapMemory(),
-    );
-
-    assert.equal(mapped.status, 'failed');
-    assert.deepEqual(mapped.actions?.stateDelta, {
-      stopReason: 'context_budget_exhausted',
-      failureClass: 'context_budget_exhausted',
-      contextBudgetExhaustedDetail: 'head_anchor_exceeds_capacity',
     });
   });
 
@@ -338,6 +321,46 @@ describe('mapSessionEventToRuntimeEvent (pure)', () => {
     assert.deepEqual(mapped.actions?.userQuestionAnswerAccepted, {
       requestId: 'question-1',
     });
+    assert.equal(mapped.refs?.toolCallId, 'tool-1');
+  });
+
+  test('form_request maps to one system-authored runtime action', () => {
+    const mapped = mapSessionEventToRuntimeEvent(
+      ev({
+        type: 'form_request',
+        requestId: 'form-1',
+        toolUseId: 'tool-1',
+        message: 'Choose settings',
+        requester: { name: 'deploy' },
+        fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+      }),
+      ctx,
+    );
+
+    assert.equal(mapped.role, 'system');
+    assert.equal(mapped.author, 'system');
+    assert.deepEqual(mapped.actions?.formRequest, {
+      requestId: 'form-1',
+      toolUseId: 'tool-1',
+      message: 'Choose settings',
+      requester: { name: 'deploy' },
+      fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+    });
+  });
+
+  test('form_answer_ack maps without duplicating the canonical result', () => {
+    const mapped = mapSessionEventToRuntimeEvent(
+      ev({
+        type: 'form_answer_ack',
+        requestId: 'form-1',
+        toolUseId: 'tool-1',
+      }),
+      ctx,
+    );
+
+    assert.equal(mapped.role, 'system');
+    assert.equal(mapped.author, 'user');
+    assert.deepEqual(mapped.actions?.formAnswerAccepted, { requestId: 'form-1' });
     assert.equal(mapped.refs?.toolCallId, 'tool-1');
   });
 
@@ -547,6 +570,29 @@ const PROJECTION_SAMPLES: ProjectionSamples = {
       toolUseId: 'tool-1',
     },
   },
+  form_request: {
+    subject: {
+      type: 'form_request',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'form-1',
+      toolUseId: 'tool-1',
+      message: 'Choose settings',
+      requester: { name: 'deploy' },
+      fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+    },
+  },
+  form_answer_ack: {
+    subject: {
+      type: 'form_answer_ack',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'form-1',
+      toolUseId: 'tool-1',
+    },
+  },
   plan_submitted: {
     subject: {
       type: 'plan_submitted',
@@ -608,19 +654,22 @@ const PROJECTION_SAMPLES: ProjectionSamples = {
   abort: { subject: { type: 'abort', id: 'e', turnId: 'turn-1', ts: 1, reason: 'user_stop' } },
 };
 
-const projectionRunHeader: AgentRunHeader = {
-  runId: 'run-1',
+const projectionInvocation: RuntimeInvocationRecord = {
   sessionId: 'session-1',
+  invocationId: 'invocation-1',
+  runId: 'run-1',
   turnId: 'turn-1',
-  status: 'completed',
-  backendKind: 'ai-sdk',
-  llmConnectionSlug: 'anthropic',
-  modelId: 'model-1',
-  cwd: '/tmp',
-  permissionMode: 'ask',
-  createdAt: 1,
-  updatedAt: 2,
-  completedAt: 2,
+  openedAt: 1,
+  opening: testInvocationOpening({
+    route: {
+      provenance: 'runtime',
+      backendKind: 'ai-sdk',
+      llmConnectionId: 'anthropic-connection',
+      llmConnectionSlug: 'anthropic',
+      modelId: 'model-1',
+    },
+    configuration: { cwd: '/tmp' },
+  }),
 };
 
 describe('SessionEvent projection coverage', () => {
@@ -642,6 +691,36 @@ describe('SessionEvent projection coverage', () => {
     );
   });
 
+  test('keeps Host-owned Client Capability interactions out of backend projection', () => {
+    const request: SessionEvent = {
+      type: 'client_capability_request',
+      id: 'client-capability-request-1',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'request-1',
+      toolUseId: 'tool-1',
+      capability: 'browser',
+      scope: { kind: 'browser_origin', origin: 'https://example.com' },
+    };
+    const ack: SessionEvent = {
+      type: 'client_capability_decision_ack',
+      id: 'client-capability-ack-1',
+      turnId: 'turn-1',
+      ts: 2,
+      requestId: 'request-1',
+      toolUseId: 'tool-1',
+      decision: 'allow',
+    };
+
+    for (const event of [request, ack]) {
+      assert.equal(isLiveBackendSessionEvent(event), false);
+      assert.throws(
+        () => mapSessionEventToRuntimeEvent(event, ctx),
+        new RegExp(`${event.type} is not a backend event`, 'u'),
+      );
+    }
+  });
+
   // The contract is over what a reader can actually meet: every mapped event
   // AgentRun admits to the ledger has to project. It asserts on the unclaimed
   // codes at either severity, not on the hard one alone — a control fact whose
@@ -655,7 +734,7 @@ describe('SessionEvent projection coverage', () => {
         .filter((event) => !isNonTerminalErrorRuntimeEvent(event));
 
       const projected = projectRuntimeEventsToStoredMessages(runtimeEvents, {
-        runHeaders: [projectionRunHeader],
+        invocations: [projectionInvocation],
       });
 
       assert.deepEqual(projected.diagnostics.filter(isUnclaimedRuntimeEventDiagnostic), []);
@@ -679,7 +758,7 @@ describe('SessionEvent projection coverage', () => {
     assert.equal(runtimeEvent.actions?.stateDelta?.unmappedSessionEventType, 'not_yet_mapped');
 
     const projected = projectRuntimeEventsToStoredMessages([runtimeEvent], {
-      runHeaders: [projectionRunHeader],
+      invocations: [projectionInvocation],
     });
     assert.deepEqual(projected.messages, []);
     // Filtered through the predicate the contract above uses, not just compared

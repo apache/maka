@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import {
   withLegacyFileUpdateLockLease,
@@ -36,6 +37,18 @@ if (process.argv[3] === 'legacy') {
     if (inheritedFd <= 2) throw new Error('Legacy lock lease is not inheritable');
     await mkdir(`${targetPath}.lock`);
     await hold();
+  });
+} else if (process.argv[3] === 'inherit') {
+  await withProcessLifetimeFileUpdateLock(targetPath, async (inheritedFd) => {
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30_000)'], {
+      stdio: ['ignore', 'ignore', 'inherit', inheritedFd],
+    });
+    await new Promise<void>((resolve, reject) => {
+      child.once('spawn', resolve);
+      child.once('error', reject);
+    });
+    process.send?.({ kind: 'locked', inheritorPid: child.pid });
+    await new Promise<never>(() => setInterval(() => undefined, 1_000));
   });
 } else {
   await withProcessLifetimeFileUpdateLock(targetPath, hold);

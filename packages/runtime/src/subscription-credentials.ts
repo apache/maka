@@ -140,6 +140,7 @@ export type ResolveAndPersistOAuthSubscriptionTokensInput =
   RefreshAndPersistOAuthSubscriptionTokensInput & { refreshSkewMs?: number };
 
 const CODEX = OAUTH_PROVIDER_CONTRACTS['openai-codex'];
+const COPILOT = OAUTH_PROVIDER_CONTRACTS['github-copilot'];
 const XAI = OAUTH_PROVIDER_CONTRACTS['xai-oauth'];
 
 const OAUTH_REFRESH_LEASE_MS = 30_000;
@@ -464,7 +465,7 @@ export async function refreshOAuthSubscriptionTokens(input: {
     case 'openai-codex':
       return refreshOpenAiCodexTokens(input.tokens, now, fetchFn, input.signal);
     case 'github-copilot':
-      return input.tokens;
+      return refreshGitHubCopilotTokens(input.tokens, now, fetchFn, input.signal);
     case 'xai-oauth':
       return refreshXaiOAuthTokens(input.tokens, now, fetchFn, input.signal);
   }
@@ -479,11 +480,29 @@ export const GITHUB_COPILOT_COMPAT_HEADERS = {
   'Copilot-Integration-Id': 'vscode-chat',
 } as const;
 
-export function createGitHubCopilotAccountTokens(githubToken: string): OAuthSubscriptionTokens {
+/**
+ * A GitHub account token GitHub declared no lifetime for. Recorded as an
+ * explicit sentinel because it is the one thing that distinguishes a
+ * non-refreshable record from one carrying a real `expires_in`.
+ */
+export const GITHUB_COPILOT_NON_EXPIRING_AT = Number.MAX_SAFE_INTEGER;
+
+/** The lifetime GitHub returned, when the account token is an expiring one. */
+export interface GitHubCopilotAccountTokenLifetime {
+  readonly expiresAt: number;
+  readonly refreshToken: string;
+}
+
+export function createGitHubCopilotAccountTokens(
+  githubToken: string,
+  lifetime?: GitHubCopilotAccountTokenLifetime,
+): OAuthSubscriptionTokens {
   return {
     access_token: githubToken,
-    refresh_token: githubToken,
-    expires_at: Number.MAX_SAFE_INTEGER,
+    // A non-expiring token has no refresh grant behind it, so it stands in as
+    // its own refresh token; `expires_at` is what tells the two records apart.
+    refresh_token: lifetime?.refreshToken ?? githubToken,
+    expires_at: lifetime?.expiresAt ?? GITHUB_COPILOT_NON_EXPIRING_AT,
     token_type: 'Bearer',
     base_url: GITHUB_COPILOT_DEFAULT_API_ENDPOINT,
   };
@@ -551,6 +570,49 @@ async function refreshOpenAiCodexTokens(
       optionalOAuthBoundedString(payload.id_token, OAUTH_MAX_TOKEN_CHARS) ?? tokens.id_token,
     expires_at: oauthExpiresAt(now(), expiresInSeconds),
     account_id: tokens.account_id,
+  };
+}
+
+async function refreshGitHubCopilotTokens(
+  tokens: OAuthSubscriptionTokens,
+  now: () => number,
+  fetchFn: typeof fetch,
+  signal?: AbortSignal,
+): Promise<OAuthSubscriptionTokens> {
+  // A non-expiring account token is its own authority: GitHub issues no
+  // refresh grant for it, so returning it unchanged IS the refresh.
+  if (tokens.expires_at === GITHUB_COPILOT_NON_EXPIRING_AT) return tokens;
+  const response = await fetchFn(COPILOT.tokenEndpoint, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: COPILOT.clientId,
+      refresh_token: tokens.refresh_token,
+    }).toString(),
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub Copilot OAuth token refresh failed (${response.status}).`);
+  }
+  const payload = requireOAuthDataRecord(await response.json());
+  // GitHub reports a rejected refresh as HTTP 200 with an `error` body, so an
+  // ok status alone must not be allowed to replace the stored authority.
+  if (typeof payload.error === 'string') {
+    throw new Error('GitHub Copilot OAuth token refresh was rejected.');
+  }
+  const { record, accessToken, expiresInSeconds } = requireRefreshedTokenFields(payload);
+  if (!isSupportedGitHubCopilotAccountToken(accessToken)) {
+    throw new Error('GitHub Copilot OAuth token refresh returned an unsupported token.');
+  }
+  return {
+    ...tokens,
+    access_token: accessToken,
+    refresh_token: nextRefreshToken(record.refresh_token, tokens.refresh_token),
+    expires_at: oauthExpiresAt(now(), expiresInSeconds),
   };
 }
 

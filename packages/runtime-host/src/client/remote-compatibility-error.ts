@@ -48,6 +48,7 @@ export class RuntimeHostRemoteCompatibilityError extends RuntimeHostPermanentRec
   readonly name = 'RuntimeHostRemoteCompatibilityError';
   readonly code = RUNTIME_HOST_REMOTE_INCOMPATIBLE_CODE;
   readonly details: RuntimeHostRemoteCompatibilityDetails;
+  readonly hostEpoch: string;
 
   constructor(profileId: string, handshake: HostIncompatible) {
     const details = Object.freeze({
@@ -68,6 +69,7 @@ export class RuntimeHostRemoteCompatibilityError extends RuntimeHostPermanentRec
     });
     super(formatRuntimeHostRemoteCompatibilityMessage(details));
     this.details = details;
+    this.hostEpoch = handshake.hostEpoch;
   }
 }
 

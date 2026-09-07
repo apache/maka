@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
@@ -25,7 +26,10 @@ import {
   type AppSettings,
   type UpdateAppSettingsInput,
 } from '@maka/core/settings';
-import type { BotRegistry } from '@maka/runtime/bots';
+import { BotRegistry } from '@maka/runtime/bots';
+import { UI_LOCALES } from '@maka/core/ui-locale';
+import { botOnboardingErrorMessage, botStatusReasonMessage, getBotSettingsCopy } from '../../renderer/locales/settings-bot-copy.js';
+import { loadRuntimeUndici } from './runtime-undici.js';
 import type { SettingsStore } from '@maka/storage/settings-store';
 import {
   BotOnboardingService,
@@ -34,13 +38,6 @@ import {
 } from '../bot-onboarding-main.js';
 
 const QR_DATA = 'data:image/png;base64,ZmFrZQ==';
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => { resolve = next; });
-  return { promise, resolve };
-}
-
 function harness(
   adapter: BotOnboardingProviderAdapter,
   applyEffect?: (settings: AppSettings, patch: UpdateAppSettingsInput) => Promise<void>,
@@ -111,6 +108,46 @@ function startResult() {
 }
 
 describe('BotOnboardingService', () => {
+  it('preserves a failed live Stream probe through the onboarding warning and localized presenter', async () => {
+    const { MockAgent, getGlobalDispatcher, setGlobalDispatcher } = loadRuntimeUndici();
+    const previous = getGlobalDispatcher();
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    setGlobalDispatcher(agent);
+    const registry = new BotRegistry({ onIncomingMessage() {}, onStatusChange() {} });
+    agent.get('https://oapi.dingtalk.com').intercept({ path: '/gettoken?appkey=public-id&appsecret=private-secret', method: 'GET' }).reply(200, { access_token: 'test-access-token', expires_in: 7200 });
+    agent.get('https://api.dingtalk.com').intercept({ path: '/v1.0/gateway/connections/open', method: 'POST' }).reply(503, { message: 'unavailable' });
+    const flow = harness({
+      async start() { return startResult(); },
+      async poll() { return { status: 'confirmed', credential: { provider: 'dingtalk', clientId: 'public-id', clientSecret: 'private-secret' } }; },
+    }, async (settings) => registry.applySettings(settings.botChat), { getStatus: () => ({ ...registry.getStatus('dingtalk') }) });
+    try {
+      const started = await flow.service.start({ provider: 'dingtalk' });
+      flow.advance(5000);
+      const snapshot = await flow.service.poll(started.sessionId);
+      agent.assertNoPendingInterceptors();
+      assert.equal(snapshot.state, 'connected');
+      assert.equal(snapshot.warningCode, 'saved_not_connected');
+      assert.equal(snapshot.warningDetail, 'connections-open-503');
+      for (const locale of UI_LOCALES) assert.equal(botStatusReasonMessage(snapshot.warningDetail, locale), getBotSettingsCopy(locale).statusReasons.withCode.connectionsOpen('503'));
+    } finally {
+      await registry.stopAll();
+      setGlobalDispatcher(previous);
+      await agent.close();
+    }
+  });
+  it('returns a coded error snapshot when the provider start fails', async () => {
+    const flow = harness({
+      async start() { throw new Error('HTTP 503 from provider'); },
+      async poll() { throw new Error('unreachable'); },
+    }, async () => {}, { getStatus: () => ({ readiness: 'not_configured' }) as never });
+    const started = await flow.service.start({ provider: 'dingtalk' });
+    assert.equal(started.state, 'error');
+    assert.equal(started.errorCode, 'provider_error');
+    for (const locale of UI_LOCALES) {
+      assert.equal(botOnboardingErrorMessage(started.errorCode, locale), getBotSettingsCopy(locale).onboarding.errors.provider_error);
+    }
+  });
   it('persists confirmed credentials in main while returning a secret-free snapshot', async () => {
     const adapter: BotOnboardingProviderAdapter = {
       async start() { return startResult(); },
@@ -357,8 +394,8 @@ describe('BotOnboardingService', () => {
     test.advance(5_000);
     const connected = await test.service.poll(started.sessionId);
     assert.equal(connected.state, 'connected');
-    assert.match(connected.warning ?? '', /凭据已保存，但连接未建立/);
-    assert.match(connected.warning ?? '', /鉴权失败/);
+    assert.equal(connected.warningCode, 'saved_not_connected');
+    assert.match(connected.warningDetail ?? '', /鉴权失败/);
     assert.equal(JSON.stringify(connected).includes('private-client-secret'), false);
   });
 
@@ -382,7 +419,7 @@ describe('BotOnboardingService', () => {
     test.advance(5_000);
     const connected = await test.service.poll(started.sessionId);
     assert.equal(connected.state, 'connected');
-    assert.equal(connected.warning, undefined);
+    assert.equal(connected.warningCode, undefined);
   });
 
   it('invalidates an older session when the same provider starts again', async () => {

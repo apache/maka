@@ -33,7 +33,29 @@
 
 import type { BrowserActionKind } from './logic.js';
 
+export interface BrowserOriginLeaseSnapshot {
+  readonly epoch: number;
+  readonly url: string;
+  readonly violatedUrl?: string;
+}
+
+export interface BrowserOriginLease {
+  readonly approvedOrigin: string;
+  /** Arm a navigate lease immediately before its approved Page.goto call. */
+  startNavigation(targetUrl: string): void;
+  snapshot(): BrowserOriginLeaseSnapshot;
+  release(): void;
+}
+
 export interface BrowserViewHost {
+  /** Read the current real URL without creating or attaching an automation endpoint. */
+  currentUrl(sessionId: string): string;
+  /**
+   * Track every committed navigation while one admitted Browser call is live.
+   * The lease remembers the first cross-Origin URL, so A→B→A cannot regain the
+   * original approval by merely ending on A again.
+   */
+  openOriginLease(sessionId: string, approvedUrl: string, kind: BrowserActionKind): BrowserOriginLease;
   /**
    * The visible-lease gate (see browserActionAllowed): may `sessionId` run a
    * `kind` action right now? EVERY kind — read, navigate, mutate — requires the

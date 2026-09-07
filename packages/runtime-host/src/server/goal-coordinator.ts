@@ -30,7 +30,6 @@ import {
   GoalContinuationCoordinator,
   type GoalSessionCloseOperation,
   type GoalObservedTurnStart,
-  type GoalTaskGateTrace,
   type GoalTurnAdmission,
   type GoalTurnOutcome,
 } from '@maka/runtime/goal-continuation';
@@ -85,7 +84,6 @@ export interface HostGoalCoordinatorOptions {
     checkpoint: GoalCheckpoint,
     controlLease: GoalControlLease,
   ) => GoalTurnAdmission;
-  readonly listActionableTaskKeys: (sessionId: string) => Promise<string[]>;
   readonly acquireResidency: () => RuntimeHostResidency;
   readonly onProjectionChanged: (sessionId: string) => void;
   readonly requestDrain: () => void;
@@ -164,10 +162,6 @@ export class HostGoalCoordinator {
       },
       getTokenCount: (sessionId) => tokenCache.get(sessionId) ?? 0,
       admitTurn: options.admitTurn,
-      taskGate: {
-        listActionableTaskKeys: options.listActionableTaskKeys,
-        recordDecision: (trace) => this.#recordTaskGateDecision(trace, now),
-      },
       durability: {
         flush: (sessionId) => this.#flushGoalState(sessionId),
         recordCurrentExecution: (current) => this.#recordCurrentExecution(current),
@@ -315,6 +309,51 @@ export class HostGoalCoordinator {
     for (const sessionId of new Set(sessionIds)) {
       this.continuation.unarchiveSession(sessionId);
     }
+  }
+
+  holdForHandoff():
+    | {
+        settled(): Promise<void>;
+        residencies(
+          executions: readonly { sessionId: string; turnId: string; runId: string }[],
+        ): Promise<readonly RuntimeHostResidency[] | undefined>;
+        release(): void;
+      }
+    | undefined {
+    if (this.#draining) return undefined;
+    const hold = this.continuation.holdForHandoff();
+    if (!hold) return undefined;
+    const settled = async () => {
+      await hold.settled();
+      await this.#flushGoalState();
+    };
+    return {
+      settled,
+      release: hold.release,
+      residencies: async (executions) => {
+        await settled();
+        if (this.#draining) return undefined;
+        for (const [sessionId] of this.#residencies) {
+          const authority = this.#authorityBySession.get(sessionId);
+          if (!authority) return undefined;
+          const current = authority.record.currentExecution;
+          const paused = executions.find((execution) => execution.sessionId === sessionId);
+          // An observed external turn is not a durable Goal execution. Its
+          // in-memory completion registration cannot be silently discarded.
+          if (
+            paused &&
+            (!current ||
+              current.execution.turnId !== paused.turnId ||
+              current.execution.runId !== paused.runId)
+          )
+            return undefined;
+          if (current && !paused) return undefined;
+          if (current && !this.matchesActive(sessionId, current.checkpoint, current.controlLease))
+            return undefined;
+        }
+        return [...this.#residencies.values()];
+      },
+    };
   }
 
   beginDrain(): void {
@@ -598,28 +637,6 @@ export class HostGoalCoordinator {
     }
     retained?.release();
     this.#residencies.delete(goal.sessionId);
-  }
-
-  async #recordTaskGateDecision(trace: GoalTaskGateTrace, now: () => number): Promise<void> {
-    const admission = await this.#stores.agentRunStore.readRootTurnAdmission(
-      trace.sessionId,
-      trace.turnId,
-    );
-    if (!admission) return;
-    await this.#stores.agentRunStore.appendEvent(trace.sessionId, admission.runId, {
-      type: 'task_gate_decided',
-      id: this.#newId(),
-      runId: admission.runId,
-      sessionId: trace.sessionId,
-      turnId: trace.turnId,
-      ts: now(),
-      message: `Task gate: ${trace.decision}`,
-      data: {
-        goalId: trace.goalId,
-        decision: trace.decision,
-        taskKeys: trace.taskKeys,
-      },
-    });
   }
 }
 

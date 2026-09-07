@@ -22,7 +22,7 @@ import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { FormLayout } from '@astryxdesign/core/FormLayout';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Button, HStack, NumberInput, TextInput, useUiLocale } from '@maka/ui';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
+import { getProviderSettingsCopy } from '../features/connection-settings';
 
 /**
  * Introduce a model by exact id, for a provider whose catalog cannot grow on

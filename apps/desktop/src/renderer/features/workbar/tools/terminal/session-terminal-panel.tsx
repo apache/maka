@@ -20,19 +20,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
-import {
-  generalizedErrorMessage,
-  generalizedErrorMessageChinese,
-} from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { useUiLocale } from '@maka/ui';
 import { ICON_SIZE, Terminal as TerminalIcon } from '@maka/ui/icons';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy';
-import { SessionTerminalHydration } from './session-terminal-hydration';
+import { SessionTerminalHydration, SessionTerminalRenderQueue } from './session-terminal-hydration';
 import { suppressTerminalQueryReplies } from './session-terminal-query';
 import { scheduleTerminalFrame } from './session-terminal-frame';
 import { useWorkbarServices } from '../../services-context.js';
+import { getTerminalFontSize, subscribeTerminalFontSize } from '../../../../theme';
 
 function terminalTheme(element: HTMLElement) {
   const styles = getComputedStyle(element);
@@ -77,10 +75,12 @@ export function SessionTerminalPanel(props: {
 
   useEffect(() => {
     const host = hostRef.current;
-    if (!host || !props.terminalRef) return;
+    if (!host || !props.terminalRef || !props.active) return;
 
     lastSizeRef.current = '';
     let disposed = false;
+    let hydrationPending = false;
+    let resyncRequested = false;
     let cancelHydrationFrame: (() => void) | null = null;
     const hydration = new SessionTerminalHydration();
     const terminal = new Terminal({
@@ -88,7 +88,7 @@ export function SessionTerminalPanel(props: {
       cursorBlink: true,
       cursorStyle: 'bar',
       fontFamily: 'Geist Mono Variable, ui-monospace, SFMono-Regular, Menlo, monospace',
-      fontSize: 12,
+      fontSize: getTerminalFontSize(),
       letterSpacing: 0,
       lineHeight: 1.2,
       screenReaderMode: true,
@@ -106,10 +106,19 @@ export function SessionTerminalPanel(props: {
     // the next prompt. Do not route xterm-generated query replies through that
     // input path; terminal setters and ordinary user input remain unaffected.
     const terminalQueryReplies = suppressTerminalQueryReplies(terminal);
+    const renderQueue = new SessionTerminalRenderQueue({
+      write: (data, done) => terminal.write(data, done),
+      reset: () => terminal.reset(),
+      resync: () => {
+        if (hydrationPending) resyncRequested = true;
+        else hydrate(hydration.begin());
+      },
+    });
 
     const writeEvent = (event: { sequence: number; data: string }) => {
       const live = hydration.accept(event);
-      if (live) terminal.write(live.data);
+      if (live) renderQueue.append(live.data);
+      if (hydration.needsSnapshot && !hydrationPending) hydrate(hydration.begin());
     };
     const unsubscribe = terminalService.subscribePtyData((event) => {
       if (
@@ -122,6 +131,7 @@ export function SessionTerminalPanel(props: {
       writeEvent(event);
     });
     const hydrate = (epoch: number) => {
+      hydrationPending = true;
       void terminalService
         .attach({ sessionId: props.sessionId, ref: props.terminalRef! })
         .then((snapshot) => {
@@ -131,10 +141,12 @@ export function SessionTerminalPanel(props: {
             return;
           }
           const committed = hydration.commit(epoch, snapshot);
-          if (!committed) return;
-          terminal.reset();
-          if (committed.snapshot.buffer) terminal.write(committed.snapshot.buffer);
-          for (const event of committed.replay) terminal.write(event.data);
+          if (!committed) {
+            resyncRequested = hydration.needsSnapshot;
+            return;
+          }
+          renderQueue.replace(committed.snapshot.buffer);
+          for (const event of committed.replay) renderQueue.append(event.data);
           setError(null);
           cancelHydrationFrame?.();
           cancelHydrationFrame = scheduleTerminalFrame(() => {
@@ -147,14 +159,22 @@ export function SessionTerminalPanel(props: {
         .catch((nextError) => {
           if (disposed || !hydration.isCurrent(epoch)) return;
           setError(
-            locale === 'zh'
-              ? generalizedErrorMessageChinese(nextError, copy.loadFailed)
-              : generalizedErrorMessage(nextError, copy.loadFailed),
+            generalizedErrorMessageForLocale(nextError, copy.loadFailed, locale),
           );
+        })
+        .finally(() => {
+          hydrationPending = false;
+          if (disposed || !resyncRequested) return;
+          resyncRequested = false;
+          hydrate(hydration.begin());
         });
     };
     const unsubscribeResync = terminalService.subscribeResync((event) => {
       if (disposed || event.sessionId !== props.sessionId) return;
+      if (hydrationPending) {
+        resyncRequested = true;
+        return;
+      }
       hydrate(hydration.begin());
     });
     const inputSubscription = terminal.onData((input) => {
@@ -168,9 +188,7 @@ export function SessionTerminalPanel(props: {
         .catch((nextError) => {
           if (disposed) return;
           setError(
-            locale === 'zh'
-              ? generalizedErrorMessageChinese(nextError, copy.writeFailed)
-              : generalizedErrorMessage(nextError, copy.writeFailed),
+            generalizedErrorMessageForLocale(nextError, copy.writeFailed, locale),
           );
         });
     });
@@ -193,14 +211,25 @@ export function SessionTerminalPanel(props: {
     const observer = new ResizeObserver(resize);
     observer.observe(host);
 
+    // Live-apply font-size changes from Appearance settings. Changing the size
+    // reflows cols/rows, so clear the cached size and re-fit to re-emit the new
+    // geometry to the PTY.
+    const unsubscribeFontSize = subscribeTerminalFontSize((size) => {
+      terminal.options.fontSize = size;
+      lastSizeRef.current = '';
+      resize();
+    });
+
     setError(null);
     hydrate(hydration.begin());
 
     return () => {
       disposed = true;
+      renderQueue.close();
       cancelHydrationFrame?.();
       cancelHydrationFrame = null;
       observer.disconnect();
+      unsubscribeFontSize();
       unsubscribe();
       unsubscribeResync();
       inputSubscription.dispose();
@@ -218,6 +247,7 @@ export function SessionTerminalPanel(props: {
     locale,
     props.sessionId,
     props.terminalRef,
+    props.active,
     terminalService,
   ]);
 

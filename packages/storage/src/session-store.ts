@@ -47,6 +47,7 @@ import {
   isSessionStatus,
   isWorkHubCoordinationSessionId,
   subagentSessionRuntimeSummary,
+  WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
 } from '@maka/core/session';
 import { isCollaborationMode } from '@maka/core/collaboration';
@@ -82,8 +83,20 @@ import {
   type TurnRecord,
   type TurnStateMessage,
   type UserMessage,
+  type WorkHubDelegationAssignedMessage,
+  type WorkHubDelegationReplacementAbortedMessage,
+  type WorkHubDelegationReplacementRequestedMessage,
+  type WorkHubActionClaim,
+  type WorkHubActionClaimOutcome,
+  type WorkHubDelegationStopRequestedMessage,
+  type WorkHubDelegationStopResolvedMessage,
+  type WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
-import type { MessageAdmissionStore, PendingMessageAdmission } from './message-admission-store.js';
+import type {
+  MarkMessagesHandedOffInput,
+  MessageAdmissionStore,
+  PendingMessageAdmission,
+} from './message-admission-store.js';
 import {
   isVisibleSessionMessage,
   lastMessagePreviewForMessages,
@@ -175,6 +188,21 @@ export interface CreateStableSessionRequest {
   readonly input: StableSessionCreateInput;
 }
 
+export interface WorkHubMessageAssignmentRequest {
+  readonly assignment: WorkHubDelegationAssignedMessage;
+  readonly admission: PendingMessageAdmission;
+  /** Present exactly when this assignment atomically supersedes an earlier link. */
+  readonly supersession?: WorkHubDelegationSupersededMessage;
+  /** Present exactly when the assignment creates its target Session. */
+  readonly create?: CreateStableSessionRequest;
+}
+
+export interface WorkHubMessageAssignmentResult {
+  readonly kind: 'assigned' | 'existing';
+  readonly targetCreated: boolean;
+  readonly assignment: WorkHubDelegationAssignedMessage;
+}
+
 export type StableSessionCreateInput = CreateSessionInput & {
   readonly conversationCopy?: SessionConversationCopy;
   readonly role?: SessionRole;
@@ -234,6 +262,20 @@ export interface SessionTranscriptStoragePage {
     readonly position: number;
     readonly byteOffset: number | null;
   } | null;
+}
+
+export interface SessionTranscriptRecordScanRequest {
+  readonly direction: 'older' | 'newer';
+  readonly throughSequence?: number | null;
+  readonly position?: number;
+  readonly maxStoredBytes: number;
+  readonly maxMessages: number;
+}
+
+export interface SessionTranscriptRecordScanPage {
+  readonly throughSequence: number | null;
+  readonly records: readonly { readonly sequence: number; readonly message: StoredMessage }[];
+  readonly nextPosition: number | null;
 }
 
 export interface SessionTurnContribution {
@@ -312,6 +354,11 @@ export interface SessionStore {
 }
 
 export interface SessionAuthorityStore extends SessionStore, MessageAdmissionStore {
+  /** Decode a bounded ledger range for an authority-owned wire projection. */
+  readTranscriptRecordsSnapshot(
+    sessionId: string,
+    request: SessionTranscriptRecordScanRequest,
+  ): Promise<SessionTranscriptRecordScanPage>;
   /** Read a bounded set of durable messages at an inclusive transcript watermark. */
   readTranscriptMessagesSnapshot(
     sessionId: string,
@@ -354,6 +401,9 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]>;
   /** Requests already closed against the user because the host restarted. */
   listSandboxBoundaryRestartClosures(sessionId: string): Promise<SandboxBoundaryRequest[]>;
+  hasExplicitSandboxBoundaryDenial(
+    identities: readonly { sessionId: string; runId: string; turnId: string }[],
+  ): Promise<boolean>;
   settleSandboxBoundaryRequest(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement>;
@@ -373,6 +423,38 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     request: CreateStableSessionRequest,
     initialBoundary?: ExecutionBoundary,
   ): Promise<CreateStableSessionResult>;
+  /** Atomically persist a WorkHub linkage and the target Message admission. */
+  assignWorkHubMessage(
+    request: WorkHubMessageAssignmentRequest,
+  ): Promise<WorkHubMessageAssignmentResult>;
+  readWorkHubAssignment(actionId: string): Promise<WorkHubDelegationAssignedMessage | undefined>;
+  /** Newest active assignment first, across every requested target. */
+  readActiveWorkHubAssignmentsByTarget(
+    targetSessionIds: readonly string[],
+    maxAssignmentsPerTarget?: number,
+  ): Promise<readonly WorkHubDelegationAssignedMessage[]>;
+  readWorkHubReplacement(
+    delegationId: string,
+  ): Promise<WorkHubDelegationReplacementRequestedMessage | undefined>;
+  readWorkHubReplacementAbort(
+    delegationId: string,
+  ): Promise<WorkHubDelegationReplacementAbortedMessage | undefined>;
+  readWorkHubSupersession(
+    delegationId: string,
+  ): Promise<WorkHubDelegationSupersededMessage | undefined>;
+  readWorkHubStopRequest(
+    delegationId: string,
+  ): Promise<WorkHubDelegationStopRequestedMessage | undefined>;
+  readWorkHubStopResolution(
+    delegationId: string,
+  ): Promise<WorkHubDelegationStopResolvedMessage | undefined>;
+  /**
+   * Durably binds one action identity to one exact WorkHub operation before its
+   * effect. Survives removal of the target Session so a committed destructive
+   * claim can still converge afterwards.
+   */
+  claimWorkHubAction(claim: WorkHubActionClaim): Promise<WorkHubActionClaimOutcome>;
+  readWorkHubActionClaim(actionId: string): Promise<WorkHubActionClaim | undefined>;
   discardStableConversationCopy(sessionId: string, requestFingerprint: string): Promise<boolean>;
   listCatalogPage(
     filter: SessionListFilter | undefined,
@@ -576,6 +658,140 @@ class SqliteSessionStore implements SessionAuthorityStore {
       : result;
   }
 
+  async assignWorkHubMessage(
+    request: WorkHubMessageAssignmentRequest,
+  ): Promise<WorkHubMessageAssignmentResult> {
+    await this.ensureReady();
+    const create = request.create;
+    if (create) {
+      assertCoordinationIdentityPairing(create.sessionId, create.input.role);
+      if (create.sessionId !== request.assignment.targetSessionId) {
+        throw new Error('WorkHub assignment create identity does not match its target');
+      }
+    }
+    const result = await this.metadata.assignWorkHubMessage({
+      assignment: request.assignment,
+      admission: request.admission,
+      projection: projectSessionCatalogMessages([request.assignment]),
+      ...(request.supersession ? { supersession: request.supersession } : {}),
+      ...(create
+        ? {
+            create: {
+              header: buildSessionHeader(
+                this.workspaceRoot,
+                create.input,
+                create.sessionId,
+                create.input.conversationCopy,
+              ),
+              requestFingerprint: create.requestFingerprint,
+            },
+          }
+        : {}),
+    });
+    if (result.kind === 'assigned') {
+      for (const listener of this.transcriptChangeListeners) {
+        listener(WORKHUB_COORDINATION_SESSION_ID);
+      }
+    }
+    return result;
+  }
+
+  async readWorkHubAssignment(
+    actionId: string,
+  ): Promise<WorkHubDelegationAssignedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `wha_${workHubIdentitySuffix(actionId)}`,
+    );
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_assigned'
+      ? message
+      : undefined;
+  }
+
+  async readActiveWorkHubAssignmentsByTarget(
+    targetSessionIds: readonly string[],
+    maxAssignmentsPerTarget?: number,
+  ): Promise<readonly WorkHubDelegationAssignedMessage[]> {
+    await this.ensureReady();
+    return this.metadata.readActiveWorkHubAssignmentsByTarget(
+      targetSessionIds,
+      maxAssignmentsPerTarget,
+    );
+  }
+
+  async readWorkHubReplacement(
+    delegationId: string,
+  ): Promise<WorkHubDelegationReplacementRequestedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whp_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' &&
+      message.kind === 'delegation_replacement_requested'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubReplacementAbort(
+    delegationId: string,
+  ): Promise<WorkHubDelegationReplacementAbortedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whb_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' &&
+      message.kind === 'delegation_replacement_aborted'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubSupersession(
+    delegationId: string,
+  ): Promise<WorkHubDelegationSupersededMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whx_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_superseded'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubStopRequest(
+    delegationId: string,
+  ): Promise<WorkHubDelegationStopRequestedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whq_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_stop_requested'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubStopResolution(
+    delegationId: string,
+  ): Promise<WorkHubDelegationStopResolvedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whz_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_stop_resolved'
+      ? message
+      : undefined;
+  }
+
+  async claimWorkHubAction(claim: WorkHubActionClaim): Promise<WorkHubActionClaimOutcome> {
+    await this.ensureReady();
+    return this.metadata.claimWorkHubAction(claim);
+  }
+
+  async readWorkHubActionClaim(actionId: string): Promise<WorkHubActionClaim | undefined> {
+    await this.ensureReady();
+    return this.metadata.readWorkHubActionClaim(actionId);
+  }
+
+  private async readWorkHubCoordinationMessage(
+    messageId: string,
+  ): Promise<StoredMessage | undefined> {
+    await this.ensureReady();
+    return this.metadata.readMessageById(WORKHUB_COORDINATION_SESSION_ID, messageId);
+  }
+
   async discardStableConversationCopy(
     sessionId: string,
     requestFingerprint: string,
@@ -662,6 +878,13 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async listSandboxBoundaryRestartClosures(sessionId: string): Promise<SandboxBoundaryRequest[]> {
     await this.ensureReady();
     return this.metadata.listSandboxBoundaryRestartClosures(sessionId);
+  }
+
+  async hasExplicitSandboxBoundaryDenial(
+    identities: readonly { sessionId: string; runId: string; turnId: string }[],
+  ): Promise<boolean> {
+    await this.ensureReady();
+    return this.metadata.hasExplicitSandboxBoundaryDenial(identities);
   }
 
   async settleSandboxBoundaryRequest(
@@ -809,6 +1032,14 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.readTranscriptMessages(sessionId, request);
   }
 
+  async readTranscriptRecordsSnapshot(
+    sessionId: string,
+    request: SessionTranscriptRecordScanRequest,
+  ): Promise<SessionTranscriptRecordScanPage> {
+    await this.ensureReady();
+    return this.metadata.readTranscriptRecords(sessionId, request);
+  }
+
   async readTranscriptHighWaterSnapshot(sessionId: string): Promise<number | null> {
     await this.ensureReady();
     return this.metadata.readTranscriptHighWater(sessionId);
@@ -893,16 +1124,17 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.hasCancelledMessageAdmission(sessionId, messageId);
   }
 
+  async claimMessageAdmissionCancellation(sessionId: string, messageId: string, claimId: string) {
+    await this.ensureReady();
+    return this.metadata.claimMessageAdmissionCancellation(sessionId, messageId, claimId);
+  }
+
   async listMessageAdmissions(sessionId: string): Promise<readonly PendingMessageAdmission[]> {
     await this.ensureReady();
     return this.metadata.listMessageAdmissions(sessionId);
   }
 
-  async markMessagesHandedOff(input: {
-    sessionId: string;
-    messageIds: readonly string[];
-    turnId: string;
-  }): Promise<void> {
+  async markMessagesHandedOff(input: MarkMessagesHandedOffInput): Promise<void> {
     await this.ensureReady();
     await this.metadata.markMessagesHandedOff(input);
     for (const listener of this.transcriptChangeListeners) listener(input.sessionId);
@@ -1094,6 +1326,10 @@ class SqliteSessionStore implements SessionAuthorityStore {
   }
 }
 
+function workHubIdentitySuffix(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex').slice(0, 48);
+}
+
 /**
  * The reserved identity and the reserved role are one fact, and the invariant
  * belongs to every creator that builds a header — subagents and Agent Graph
@@ -1154,6 +1390,7 @@ function buildSessionHeader(
     ...(input.revisionState ? { revisionState: input.revisionState } : {}),
     hasUnread: false,
     backend: 'ai-sdk',
+    ...(input.llmConnectionId === undefined ? {} : { llmConnectionId: input.llmConnectionId }),
     llmConnectionSlug: input.llmConnectionSlug,
     // A subagent Session's route is chosen by the spawn that created it and is
     // never re-targeted, so it is born frozen. Every other Session freezes on
@@ -1211,6 +1448,8 @@ export function normalizeSessionHeader(
     (header.lastReadMessageId === undefined || typeof header.lastReadMessageId === 'string') &&
     typeof header.hasUnread === 'boolean' &&
     isPersistedBackendKind(header.backend) &&
+    (header.llmConnectionId === undefined ||
+      (typeof header.llmConnectionId === 'string' && header.llmConnectionId.length > 0)) &&
     typeof header.llmConnectionSlug === 'string' &&
     typeof header.connectionLocked === 'boolean' &&
     typeof header.model === 'string' &&
@@ -1307,17 +1546,25 @@ function isValidConversationCopyLineage(header: SessionHeader): boolean {
     return false;
   }
   if (copy.kind === 'branch') {
-    return (
-      header.parentSessionId === copy.sourceSessionId &&
-      header.branchOfTurnId === copy.sourceTurnId &&
+    const revisionClear =
       header.revisionRootSessionId === undefined &&
       header.revisionParentSessionId === undefined &&
       header.revisionOfTurnId === undefined &&
       header.revisionIndex === undefined &&
-      header.revisionState === undefined
-    );
+      header.revisionState === undefined;
+    if (!revisionClear || header.parentSessionId !== copy.sourceSessionId) {
+      return false;
+    }
+    // An empty copy (absent `sourceTurnId`) records provenance
+    // (`parentSessionId`) but must not fabricate a `branchOfTurnId`, and is only
+    // valid for a side conversation; a through-turn copy must anchor to it.
+    return copy.sourceTurnId === undefined
+      ? header.branchOfTurnId === undefined && copy.intent === 'side_conversation'
+      : header.branchOfTurnId === copy.sourceTurnId;
   }
+  // Revision copies always carry a turn boundary (enforced at decode).
   return (
+    copy.sourceTurnId !== undefined &&
     header.revisionParentSessionId === copy.sourceSessionId &&
     header.revisionOfTurnId === copy.sourceTurnId
   );
@@ -1439,6 +1686,7 @@ function toSummary(header: SessionHeader, messages: StoredMessage[] = []): Sessi
     ...(header.revisionIndex !== undefined ? { revisionIndex: header.revisionIndex } : {}),
     ...(header.revisionState ? { revisionState: header.revisionState } : {}),
     backend: header.backend,
+    ...(header.llmConnectionId === undefined ? {} : { llmConnectionId: header.llmConnectionId }),
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,
     model: header.model,

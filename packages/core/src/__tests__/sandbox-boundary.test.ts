@@ -19,7 +19,6 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { expect } from './test-helpers.js';
 import {
   applySandboxBoundaryExpansion,
   assessSandboxBoundaryExpansion,
@@ -40,25 +39,29 @@ import {
 
 describe('executionBoundaryDisplayMode', () => {
   test('keeps the read-only/writable distinction the boundary carries (#1611)', () => {
-    expect(
+    assert.strictEqual(
       executionBoundaryDisplayMode({
         kind: 'managed',
         profile: createReadOnlyPermissionProfile(),
         revision: 0,
       }),
-    ).toBe('explore');
-    expect(
+      'explore',
+    );
+    assert.strictEqual(
       executionBoundaryDisplayMode({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
         revision: 0,
       }),
-    ).toBe('ask');
-    expect(executionBoundaryDisplayMode({ kind: 'bypass', revision: 1 })).toBe('bypass');
-    expect(
+      'ask',
+    );
+    assert.strictEqual(executionBoundaryDisplayMode({ kind: 'bypass', revision: 1 }), 'bypass');
+    assert.strictEqual(
       executionBoundaryDisplayMode({ kind: 'managed', access: 'read_only', revision: 2 }),
-    ).toBe('explore');
-    expect(executionBoundaryDisplayMode({ kind: 'managed', access: 'writable', revision: 2 })).toBe(
+      'explore',
+    );
+    assert.strictEqual(
+      executionBoundaryDisplayMode({ kind: 'managed', access: 'writable', revision: 2 }),
       'ask',
     );
   });
@@ -68,7 +71,8 @@ describe('executionBoundaryDisplayMode', () => {
       filesystem: { entries: [{ path: '/outside/dist', access: 'write', scope: 'subtree' }] },
     });
 
-    expect(executionBoundaryDisplayMode({ kind: 'managed', profile: widened, revision: 1 })).toBe(
+    assert.strictEqual(
+      executionBoundaryDisplayMode({ kind: 'managed', profile: widened, revision: 1 }),
       'ask',
     );
   });
@@ -80,17 +84,18 @@ describe('executionBoundaryDisplayMode', () => {
     // it never claims a specific boundary — so this under-states rather than
     // misstates. If Auto's hint ever names a boundary again, this mapping
     // becomes a lie and has to change with it.
-    expect(
+    assert.strictEqual(
       executionBoundaryDisplayMode({
         kind: 'managed',
         profile: createDangerFullAccessPermissionProfile(),
         revision: 0,
       }),
-    ).toBe('ask');
+      'ask',
+    );
   });
 
   test('an externally isolated boundary has no locally controllable mode', () => {
-    expect(executionBoundaryDisplayMode({ kind: 'external', revision: 0 })).toBe(undefined);
+    assert.strictEqual(executionBoundaryDisplayMode({ kind: 'external', revision: 0 }), undefined);
   });
 });
 
@@ -106,7 +111,7 @@ describe('SandboxBoundaryExpansion', () => {
       network: { enabled: true },
     });
 
-    expect(result).toEqual({
+    assert.deepStrictEqual(result, {
       ok: true,
       expansion: {
         filesystem: {
@@ -127,7 +132,7 @@ describe('SandboxBoundaryExpansion', () => {
       },
     });
 
-    expect(result).toEqual({
+    assert.deepStrictEqual(result, {
       ok: true,
       expansion: {
         filesystem: {
@@ -141,14 +146,15 @@ describe('SandboxBoundaryExpansion', () => {
         entries: [{ path: 'D:\\Outside\\Tree', access: 'read', scope: 'subtree' }],
       },
     });
-    expect(canReadPath(widened, 'd:\\outside\\tree\\file.txt')).toBe(true);
-    expect(canReadPath(widened, 'D:\\Outside\\Sibling\\file.txt')).toBe(false);
+    assert.strictEqual(canReadPath(widened, 'd:\\outside\\tree\\file.txt'), true);
+    assert.strictEqual(canReadPath(widened, 'D:\\Outside\\Sibling\\file.txt'), false);
 
-    expect(
+    assert.strictEqual(
       validateSandboxBoundaryExpansion({
         filesystem: { entries: [{ path: 'C:\\', access: 'read', scope: 'subtree' }] },
       }).ok,
-    ).toBe(true);
+      true,
+    );
   });
 
   test('rejects non-normalized Windows boundary paths', () => {
@@ -158,11 +164,12 @@ describe('SandboxBoundaryExpansion', () => {
       '\\\\server\\share\\secret.txt',
       'D:\\outside\\',
     ]) {
-      expect(
+      assert.strictEqual(
         validateSandboxBoundaryExpansion({
           filesystem: { entries: [{ path, access: 'read', scope: 'exact' }] },
         }).ok,
-      ).toBe(false);
+        false,
+      );
     }
   });
 
@@ -182,7 +189,7 @@ describe('SandboxBoundaryExpansion', () => {
       { profile: { type: 'managed' } },
       { fileSystem: { entries: [{ path: '/legacy', access: 'read', scope: 'exact' }] } },
     ]) {
-      expect(validateSandboxBoundaryExpansion(expansion).ok).toBe(false);
+      assert.strictEqual(validateSandboxBoundaryExpansion(expansion).ok, false);
     }
   });
 
@@ -207,10 +214,10 @@ describe('SandboxBoundaryExpansion', () => {
       network: { enabled: true },
     });
 
-    expect(canWritePath(result, '/outside/open.txt')).toBe(true);
-    expect(canReadPath(result, '/outside/locked/file.txt')).toBe(false);
-    expect(canWritePath(result, '/outside/locked/file.txt')).toBe(false);
-    expect(result.network.kind).toBe('enabled');
+    assert.strictEqual(canWritePath(result, '/outside/open.txt'), true);
+    assert.strictEqual(canReadPath(result, '/outside/locked/file.txt'), false);
+    assert.strictEqual(canWritePath(result, '/outside/locked/file.txt'), false);
+    assert.strictEqual(result.network.kind, 'enabled');
   });
 
   test('enables network when filesystem access is already unrestricted', () => {
@@ -225,7 +232,7 @@ describe('SandboxBoundaryExpansion', () => {
       network: { enabled: true },
     });
 
-    expect(result.network.kind).toBe('enabled');
+    assert.strictEqual(result.network.kind, 'enabled');
   });
 
   test('compacts cumulative explicit grants without changing special paths or denies', () => {
@@ -248,7 +255,7 @@ describe('SandboxBoundaryExpansion', () => {
       },
     });
 
-    expect(result.fileSystem.entries).toEqual([
+    assert.deepStrictEqual(result.fileSystem.entries, [
       { kind: 'special', access: 'write', special: ':workspace_roots' },
       { kind: 'path', access: 'deny', path: '/outside/locked', match: 'subtree' },
       { kind: 'path', access: 'read', path: '/outside/tree', match: 'subtree' },
@@ -269,25 +276,28 @@ describe('SandboxBoundaryExpansion', () => {
       network: { kind: 'restricted' },
     };
 
-    expect(
+    assert.strictEqual(
       assessSandboxBoundaryExpansion(base, {
         filesystem: {
           entries: [{ path: '/outside/already.txt', access: 'read', scope: 'exact' }],
         },
       }).outcome,
-    ).toBe('noop');
-    expect(
+      'noop',
+    );
+    assert.strictEqual(
       assessSandboxBoundaryExpansion(base, {
         filesystem: { entries: [{ path: '/outside/new.txt', access: 'read', scope: 'exact' }] },
       }).outcome,
-    ).toBe('apply');
-    expect(
+      'apply',
+    );
+    assert.deepStrictEqual(
       assessSandboxBoundaryExpansion(base, {
         filesystem: {
           entries: [{ path: '/outside', access: 'write', scope: 'subtree' }],
         },
       }),
-    ).toEqual({ outcome: 'conflict', reason: 'explicit_deny' });
+      { outcome: 'conflict', reason: 'explicit_deny' },
+    );
   });
 
   test('does not treat a child of an exact path grant as already approved', () => {
@@ -307,7 +317,7 @@ describe('SandboxBoundaryExpansion', () => {
       },
     });
 
-    expect(assessment.outcome).toBe('apply');
+    assert.strictEqual(assessment.outcome, 'apply');
   });
 
   test('keeps explicit denies authoritative inside an otherwise unrestricted profile', () => {
@@ -321,13 +331,14 @@ describe('SandboxBoundaryExpansion', () => {
       network: { kind: 'enabled' },
     };
 
-    expect(
+    assert.deepStrictEqual(
       assessSandboxBoundaryExpansion(base, {
         filesystem: {
           entries: [{ path: '/locked/file.txt', access: 'read', scope: 'exact' }],
         },
       }),
-    ).toEqual({ outcome: 'conflict', reason: 'explicit_deny' });
+      { outcome: 'conflict', reason: 'explicit_deny' },
+    );
   });
 
   test('keeps protected metadata deny-write authoritative over exact write expansions', () => {
@@ -345,7 +356,7 @@ describe('SandboxBoundaryExpansion', () => {
       network: { kind: 'restricted' },
     };
 
-    expect(
+    assert.deepStrictEqual(
       assessSandboxBoundaryExpansion(
         base,
         {
@@ -361,7 +372,8 @@ describe('SandboxBoundaryExpansion', () => {
         },
         { workspaceRoots: ['/workspace'] },
       ),
-    ).toEqual({ outcome: 'conflict', reason: 'explicit_deny' });
+      { outcome: 'conflict', reason: 'explicit_deny' },
+    );
   });
 
   test('uses the same default slash-tmp root as permission enforcement', () => {
@@ -371,15 +383,15 @@ describe('SandboxBoundaryExpansion', () => {
       },
     });
 
-    expect(assessment.outcome).toBe('noop');
+    assert.strictEqual(assessment.outcome, 'noop');
   });
 });
 
 describe('ExecutionBoundary', () => {
   test('decodes only a complete full boundary snapshot', () => {
     const managed = createGenesisExecutionBoundary('ask');
-    expect(decodeExecutionBoundary(JSON.parse(JSON.stringify(managed)))).toEqual(managed);
-    expect(decodeExecutionBoundary({ kind: 'bypass', revision: 3 })).toEqual({
+    assert.deepStrictEqual(decodeExecutionBoundary(JSON.parse(JSON.stringify(managed))), managed);
+    assert.deepStrictEqual(decodeExecutionBoundary({ kind: 'bypass', revision: 3 }), {
       kind: 'bypass',
       revision: 3,
     });
@@ -411,7 +423,7 @@ describe('ExecutionBoundary', () => {
       },
     };
 
-    expect(decodeExecutionBoundary(JSON.parse(JSON.stringify(boundary)))).toEqual(boundary);
+    assert.deepStrictEqual(decodeExecutionBoundary(JSON.parse(JSON.stringify(boundary))), boundary);
   });
 
   test('rejects a complete boundary snapshot above the shared capacity', () => {
@@ -445,11 +457,11 @@ describe('ExecutionBoundary', () => {
     const bypass = createGenesisExecutionBoundary('bypass');
     const external = { kind: 'external', revision: 0 } as const;
 
-    expect(executionBoundaryContains(auto, readOnly)).toBe(true);
-    expect(executionBoundaryContains(readOnly, auto)).toBe(false);
-    expect(executionBoundaryContains(bypass, external)).toBe(true);
-    expect(executionBoundaryContains(external, external)).toBe(true);
-    expect(executionBoundaryContains(external, auto)).toBe(false);
-    expect(executionBoundaryContains(auto, external)).toBe(false);
+    assert.strictEqual(executionBoundaryContains(auto, readOnly), true);
+    assert.strictEqual(executionBoundaryContains(readOnly, auto), false);
+    assert.strictEqual(executionBoundaryContains(bypass, external), true);
+    assert.strictEqual(executionBoundaryContains(external, external), true);
+    assert.strictEqual(executionBoundaryContains(external, auto), false);
+    assert.strictEqual(executionBoundaryContains(auto, external), false);
   });
 });

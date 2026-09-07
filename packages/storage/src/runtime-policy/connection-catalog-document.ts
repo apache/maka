@@ -22,6 +22,7 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
   decodeCanonicalConnectionCatalogEntry,
+  decodeConnectionName,
   decodeConnectionSlug,
   decodeConnectionTarget,
   decodeConnectionTestSummary,
@@ -47,11 +48,7 @@ import {
   type MigrateSystemSeedInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
-import {
-  deriveConnectionSlug,
-  PROVIDER_DEFAULTS,
-  reconcileConnectionAfterModelFetch,
-} from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, reconcileConnectionAfterModelFetch } from '@maka/core/llm-connections';
 import { modelIdAliasesForProvider } from '@maka/core/model-metadata';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import { pruneRelayModelProfiles } from '@maka/core/model-thinking';
@@ -203,17 +200,19 @@ export class ConnectionCatalogDocumentOwner {
         `Connection catalog cannot exceed ${CONNECTION_CATALOG_MAX_CONNECTIONS} entries`,
       );
     }
-    const fallbackModels = fallbackInventory(input.connection.providerType);
     const next = this.nextDocument(current, [
       ...current.connections,
       {
         ...input.connection,
         connectionId: randomUUID(),
         revision: 1,
-        models: fallbackModels,
-        ...(fallbackModels.length > 0
-          ? { modelSource: 'fallback' as const, modelsFetchedAt: 0 }
-          : {}),
+        // A provider with no model-list endpoint ships its inventory in the
+        // registry, and the resolver prepends it to whatever the connection
+        // stores. Copying it in here as well persisted a build-time constant
+        // as if it were connection state: a second authority for the same
+        // fact, frozen at the moment the row was written, that a build
+        // shipping a new model could no longer correct.
+        models: [],
       },
     ]);
     await this.write(root, next);
@@ -365,9 +364,12 @@ export class ConnectionCatalogDocumentOwner {
     if (!previous || (!isLegacySeed && !hasRetiredModels)) {
       return committed(current);
     }
-    const fallbackModels = isLegacySeed
-      ? fallbackInventory(previous.providerType)
-      : previous.models.filter((model) => !retired.has(model.id));
+    // A legacy seed's stored inventory was the registry's shipped list copied
+    // in at write time. Clearing it is the migration: the resolver prepends
+    // that list from the current build, so the row stops carrying a stale
+    // second copy of it. Any other row keeps its own inventory, minus the
+    // retired ids.
+    const models = isLegacySeed ? [] : previous.models.filter((model) => !retired.has(model.id));
     const {
       lastTest: _lastTest,
       modelSource: _modelSource,
@@ -386,12 +388,10 @@ export class ConnectionCatalogDocumentOwner {
       ...retained,
       revision: nextRevision(previous.revision),
       enabledModelIds: migratedEnabledModelIds,
-      models: fallbackModels,
-      ...(isLegacySeed && fallbackModels.length > 0
-        ? { modelSource: 'fallback' as const, modelsFetchedAt: 0 }
-        : previous.modelSource === undefined
-          ? {}
-          : { modelSource: previous.modelSource, modelsFetchedAt: previous.modelsFetchedAt }),
+      models,
+      ...(isLegacySeed || previous.modelSource === undefined
+        ? {}
+        : { modelSource: previous.modelSource, modelsFetchedAt: previous.modelsFetchedAt }),
       ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
     };
     const target = current.defaultTarget;
@@ -467,7 +467,9 @@ export class ConnectionCatalogDocumentOwner {
         hasModelInventory: previous.models.length > 0,
       },
       result.models,
-      { aliases: modelIdAliasesForProvider(previous.providerType) },
+      {
+        aliases: modelIdAliasesForProvider(previous.providerType),
+      },
     );
     // Discovery MOVES a target: a provider's model rename carries the default
     // across by alias. A default outside the selection the reconciler just
@@ -516,40 +518,42 @@ export class ConnectionCatalogDocumentOwner {
   prepareOnboardingUpsert(
     current: ConnectionCatalogDocument,
     rawConnectionId: string,
+    rawSlug: string,
     rawProviderType: unknown,
+    rawName: string | null,
     rawBaseUrl: string | null,
     rawEnabledModelIds: readonly string[],
     rawResult: ConnectionModelDiscoveryResult,
     invalidateLastTest: boolean,
-  ): PreparedOnboardingResult | { readonly kind: 'slug_conflict' } {
+  ):
+    | PreparedOnboardingResult
+    | { readonly kind: 'slug_conflict' }
+    | { readonly kind: 'catalog_full' } {
     const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
+    const slug = decodeConnectionInput(() => decodeConnectionSlug(rawSlug));
     const providerType = decodeConnectionInput(() => decodeProviderType(rawProviderType));
-    const definition = PROVIDER_DEFAULTS[providerType];
+    const requestedName =
+      rawName === null ? null : decodeConnectionInput(() => decodeConnectionName(rawName));
+    const definition = PROVIDER_REGISTRY[providerType];
     // Identity first: the intent's connectionId names the connection being
     // edited, whatever slug it lives under — a relay created in Desktop under
     // a custom slug is updated in place, never duplicated at the canonical
     // slug. Only a genuinely new connection lands at the derived slug.
-    let index = current.connections.findIndex(
+    const index = current.connections.findIndex(
       (connection) => connection.connectionId === connectionId,
     );
-    if (index < 0) {
-      index = current.connections.findIndex(
-        (connection) => connection.slug === deriveConnectionSlug(providerType),
-      );
-    }
     const previous = current.connections[index];
     if (previous && previous.providerType !== providerType) {
       return { kind: 'slug_conflict' };
     }
-    if (previous && previous.connectionId !== connectionId) {
-      throw codecError('invalid_document', 'Onboarding intent conflicts with the connection id');
+    if (previous && previous.slug !== slug) {
+      throw codecError('invalid_document', 'Onboarding intent conflicts with the connection slug');
     }
-    const slug = previous?.slug ?? deriveConnectionSlug(providerType);
+    if (!previous && current.connections.some((connection) => connection.slug === slug)) {
+      return { kind: 'slug_conflict' };
+    }
     if (!previous && current.connections.length >= CONNECTION_CATALOG_MAX_CONNECTIONS) {
-      throw codecError(
-        'invalid_connection_input',
-        `Connection catalog cannot exceed ${CONNECTION_CATALOG_MAX_CONNECTIONS} entries`,
-      );
+      return { kind: 'catalog_full' };
     }
     const result = decodeConnectionInput(() => normalizeConnectionModelDiscoveryResult(rawResult));
     // Non-empty is the requirement; `source` is write provenance, not a
@@ -568,7 +572,9 @@ export class ConnectionCatalogDocumentOwner {
     const changes = decodeConnectionInput(() =>
       normalizeConnectionCatalogEntryUpdateForProvider(
         {
-          name: previous?.name ?? definition.label,
+          // An edit keeps the stored name; a create takes the caller's choice
+          // when the wizard collected one, else the provider label.
+          name: previous?.name ?? requestedName ?? definition.label,
           ...(effectiveBaseUrl ? { baseUrl: effectiveBaseUrl } : {}),
           enabled: true,
           enabledModelIds: rawEnabledModelIds,
@@ -612,6 +618,9 @@ export class ConnectionCatalogDocumentOwner {
     const { relayModelProfiles: _staleProfiles, ...baseWithoutProfiles } = base;
     const finalized: ConnectionCatalogEntry = {
       ...baseWithoutProfiles,
+      // `changes.name` carries the edit-preserving / create-requested / provider
+      // -label resolution — `base` alone would keep the provider label forever.
+      name: changes.name,
       ...(relayModelProfiles ? { relayModelProfiles } : {}),
       ...(changes.baseUrl !== undefined ? { baseUrl: changes.baseUrl } : {}),
       revision: previous ? nextRevision(previous.revision) : 1,
@@ -655,6 +664,57 @@ export class ConnectionCatalogDocumentOwner {
     return { kind: 'ready', document: next, changed: true };
   }
 
+  prepareOAuthEnrollmentUpsert(
+    current: ConnectionCatalogDocument,
+    connectionBefore: ConnectionCatalogEntry | null,
+    rawConnectionAfter: ConnectionCatalogEntry,
+  ):
+    | PreparedOnboardingResult
+    | { readonly kind: 'connection_conflict' }
+    | { readonly kind: 'catalog_full' } {
+    const connectionAfter = decodeConnectionInput(() =>
+      decodeCanonicalConnectionCatalogEntry(rawConnectionAfter),
+    );
+    const idIndex = current.connections.findIndex(
+      (connection) => connection.connectionId === connectionAfter.connectionId,
+    );
+    const slugIndex = current.connections.findIndex(
+      (connection) => connection.slug === connectionAfter.slug,
+    );
+    if (connectionBefore === null) {
+      if (idIndex >= 0 || slugIndex >= 0) {
+        const exact =
+          idIndex >= 0 &&
+          idIndex === slugIndex &&
+          isDeepStrictEqual(current.connections[idIndex], connectionAfter);
+        return exact
+          ? { kind: 'ready', document: current, changed: false }
+          : { kind: 'connection_conflict' };
+      }
+      if (current.connections.length >= CONNECTION_CATALOG_MAX_CONNECTIONS) {
+        return { kind: 'catalog_full' };
+      }
+      const next = this.nextDocument(current, [...current.connections, connectionAfter]);
+      this.assertDocumentSize(next);
+      return { kind: 'ready', document: next, changed: true };
+    }
+    if (idIndex < 0 || (slugIndex >= 0 && slugIndex !== idIndex)) {
+      return { kind: 'connection_conflict' };
+    }
+    const actual = current.connections[idIndex];
+    if (isDeepStrictEqual(actual, connectionAfter)) {
+      return { kind: 'ready', document: current, changed: false };
+    }
+    if (!isDeepStrictEqual(actual, connectionBefore)) {
+      return { kind: 'connection_conflict' };
+    }
+    const connections = [...current.connections];
+    connections[idIndex] = connectionAfter;
+    const next = this.nextDocument(current, connections);
+    this.assertDocumentSize(next);
+    return { kind: 'ready', document: next, changed: true };
+  }
+
   async commitPreparedOnboarding(
     root: string,
     prepared: PreparedOnboardingResult,
@@ -668,6 +728,7 @@ export class ConnectionCatalogDocumentOwner {
     current: ConnectionCatalogDocument,
     expected: ConnectionVersionBasis,
     rawResult: ConnectionTestSummary,
+    modelFactsFingerprint: string,
   ): Promise<ConnectionCatalogSnapshot> {
     const result = decodeConnectionInput(() => decodeConnectionTestSummary(rawResult));
     const index = findConnectionIndex(current, expected);
@@ -679,6 +740,7 @@ export class ConnectionCatalogDocumentOwner {
       ...previous,
       revision: nextRevision(previous.revision),
       lastTest: result,
+      lastTestModelFactsFingerprint: modelFactsFingerprint,
     });
   }
 
@@ -700,7 +762,11 @@ export class ConnectionCatalogDocumentOwner {
     // provider that can no longer be tested, so there is nothing to
     // invalidate.
     if (previous.lastTest === undefined || isRetiredProvider(previous.providerType)) return false;
-    const { lastTest: _lastTest, ...withoutLastTest } = previous;
+    const {
+      lastTest: _lastTest,
+      lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
+      ...withoutLastTest
+    } = previous;
     await this.writePatchedResult(root, current, index, {
       ...withoutLastTest,
       revision: nextRevision(previous.revision),
@@ -723,7 +789,11 @@ export class ConnectionCatalogDocumentOwner {
     if (!current.connections.some(invalidates)) return false;
     const connections = current.connections.map((connection) => {
       if (!invalidates(connection)) return connection;
-      const { lastTest: _lastTest, ...withoutLastTest } = connection;
+      const {
+        lastTest: _lastTest,
+        lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
+        ...withoutLastTest
+      } = connection;
       return {
         ...withoutLastTest,
         revision: nextRevision(connection.revision),
@@ -775,15 +845,6 @@ export class ConnectionCatalogDocumentOwner {
       );
     }
   }
-}
-
-function fallbackInventory(
-  providerType: ConnectionCatalogEntry['providerType'],
-): ConnectionCatalogEntry['models'] {
-  const provider = PROVIDER_DEFAULTS[providerType];
-  return provider.modelDiscovery.kind === 'fallback'
-    ? provider.fallbackModels.map((id) => ({ id }))
-    : [];
 }
 
 export function catalogSnapshot(document: ConnectionCatalogDocument): ConnectionCatalogSnapshot {

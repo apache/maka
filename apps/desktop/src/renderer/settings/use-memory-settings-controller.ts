@@ -689,5 +689,5 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
 }
 
 function memoryResultMessage(message: string, locale: UiLocale, fallback: string): string {
-  return locale === 'zh' || !/[\u3400-\u9fff]/u.test(message) ? message : fallback;
+  return locale === 'zh-CN' || !/[\u3400-\u9fff]/u.test(message) ? message : fallback;
 }

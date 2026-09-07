@@ -24,19 +24,26 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
 import {
   WorkHubCoordinationStatus,
+  WorkHubCoordinationTurnView,
   WorkHubProjectionRefreshGate,
   WorkHubSurfaceRouteGate,
+  submitAndRecordWorkHubSurfaceInput,
+  submitLeasedWorkHubSurfaceInput,
   submitWorkHubSurfaceInput,
   visibleWorkHubConversation,
+  workHubAmbiguousCommandPrompt,
   workHubSurfaceFailure,
   workHubSubmissionClearsDraft,
 } from '../../renderer/workhub-surface.js';
 import {
-  createLegacyWorkHubControllerForTests as createWorkHubController,
+  createWorkHubController,
   WORKHUB_ROUTING_STRATEGY_ID,
   type WorkHubController,
+  type WorkHubCoordinationTurn,
+  type WorkHubDelegationExecutionState,
   type WorkHubSubmitInput,
 } from '../../renderer/workhub-controller.js';
+import { WorkHubSendLease } from '../../renderer/workhub-send-lease.js';
 import {
   createDesktopWorkHubSessionPort,
   type WorkHubDesktopSession,
@@ -51,7 +58,7 @@ test('surface turns Action Gate rejections into safe actionable failures', () =>
   );
   assert.equal(
     workHubSurfaceFailure(
-      new Error('WorkHub linked correction requires persistent delegation support'),
+      new Error('WorkHub linked correction requires an active durable delegation'),
     ),
     'linked_correction_unavailable',
   );
@@ -81,18 +88,19 @@ test('surface route gate rejects same-frame duplicate operations and reopens aft
 });
 
 test('Coordination lifecycle keeps a visible loading state and exposes failure recovery', () => {
-  const renderStatus = (state: 'resolving' | 'failed') => renderToStaticMarkup(
-    createElement(LocaleProvider, {
-      locale: 'en',
-      children: createElement(AstryxLocaleProvider, {
-        children: createElement(WorkHubCoordinationStatus, {
-          locale: 'en',
-          state,
-          onRetry: () => undefined,
+  const renderStatus = (state: 'resolving' | 'failed') =>
+    renderToStaticMarkup(
+      createElement(LocaleProvider, {
+        locale: 'en',
+        children: createElement(AstryxLocaleProvider, {
+          children: createElement(WorkHubCoordinationStatus, {
+            locale: 'en',
+            state,
+            onRetry: () => undefined,
+          }),
         }),
       }),
-    }),
-  );
+    );
   const resolving = renderStatus('resolving');
   const failed = renderStatus('failed');
 
@@ -101,6 +109,142 @@ test('Coordination lifecycle keeps a visible loading state and exposes failure r
   assert.match(failed, /role="alert"/);
   assert.match(failed, /Check the default model/);
   assert.match(failed, />Retry</);
+});
+
+test('durable delegation renders every projected target state as a navigable result', () => {
+  const states: Array<[WorkHubDelegationExecutionState, string]> = [
+    ['accepted', 'Accepted'],
+    ['running', 'Running'],
+    ['waiting_for_user', 'Waiting for you'],
+    ['completed', 'Completed'],
+    ['failed', 'Failed'],
+    ['aborted', 'Aborted'],
+    ['recovering', 'Recovering'],
+  ];
+  for (const [state, label] of states) {
+    const turn: WorkHubCoordinationTurn = {
+      messageId: 'assignment-1',
+      turnId: 'action-1',
+      text: 'Continue payments',
+      state: 'completed',
+      assignment: {
+        actionId: 'action-1',
+        delegationId: 'delegation-1',
+        targetSessionId: 'payment',
+        targetSessionName: 'Payments',
+        targetMessageId: 'payment-message',
+        targetTurnId: 'payment-turn',
+        feedbackState: state,
+        linkState: 'active',
+      },
+      updatedAt: 10,
+    };
+    const markup = renderToStaticMarkup(
+      createElement(LocaleProvider, {
+        locale: 'en',
+        children: createElement(AstryxLocaleProvider, {
+          children: createElement(WorkHubCoordinationTurnView, {
+            turn,
+            projection: { sessions: [], turns: [] },
+            locale: 'en',
+            onOpenSession: () => undefined,
+          }),
+        }),
+      }),
+    );
+    assert.match(markup, /<button/u);
+    assert.match(markup, /Payments/u);
+    assert.match(markup, /Active link/u);
+    assert.match(markup, new RegExp(label, 'u'));
+    assert.match(markup, new RegExp(`data-state="${state}"`, 'u'));
+    assert.match(markup, /data-link-state="active"/u);
+  }
+});
+
+test('durable delegation renders terminal link state instead of stale execution feedback', () => {
+  const terminalLinks = [
+    ['superseded', 'Superseded link', '已被更正'],
+    ['aborted', 'Aborted replacement', '更正已中止'],
+    ['stopped', 'Stopped link', '已停止关联'],
+  ] as const;
+  for (const [linkState, english, chinese] of terminalLinks) {
+    const turn: WorkHubCoordinationTurn = {
+      messageId: `assignment-${linkState}`,
+      turnId: `action-${linkState}`,
+      text: 'Continue payments',
+      state: 'completed',
+      assignment: {
+        actionId: `action-${linkState}`,
+        delegationId: `delegation-${linkState}`,
+        targetSessionId: 'payment',
+        targetSessionName: 'Payments',
+        targetMessageId: 'payment-message',
+        targetTurnId: 'payment-turn',
+        // Link authority must win even if the target execution projection is stale.
+        feedbackState: 'running',
+        linkState,
+      },
+      updatedAt: 10,
+    };
+    const render = (locale: 'en' | 'zh-CN') => renderToStaticMarkup(
+      createElement(LocaleProvider, {
+        locale,
+        children: createElement(AstryxLocaleProvider, {
+          children: createElement(WorkHubCoordinationTurnView, {
+            turn,
+            projection: { sessions: [], turns: [] },
+            locale,
+            onOpenSession: () => undefined,
+          }),
+        }),
+      }),
+    );
+    const englishMarkup = render('en');
+    const chineseMarkup = render('zh-CN');
+
+    assert.match(englishMarkup, new RegExp(english, 'u'));
+    assert.doesNotMatch(englishMarkup, />Running</u);
+    assert.match(englishMarkup, new RegExp(`data-state="${linkState}"`, 'u'));
+    assert.match(englishMarkup, new RegExp(`data-link-state="${linkState}"`, 'u'));
+    assert.match(chineseMarkup, new RegExp(chinese, 'u'));
+  }
+});
+
+test('durable creation explicitly announces the new work', () => {
+  const turn: WorkHubCoordinationTurn = {
+    messageId: 'created-assignment',
+    turnId: 'created-action',
+    text: 'Fix login stability',
+    state: 'completed',
+    assignment: {
+      actionId: 'created-action',
+      delegationId: 'created-delegation',
+      targetSessionId: 'login',
+      targetSessionName: 'Login stability',
+      targetMessageId: 'login-message',
+      targetTurnId: 'login-turn',
+      feedbackState: 'accepted',
+      linkState: 'active',
+      createdNew: true,
+    },
+    updatedAt: 10,
+  };
+  const render = (locale: 'en' | 'zh-CN') => renderToStaticMarkup(
+    createElement(LocaleProvider, {
+      locale,
+      children: createElement(AstryxLocaleProvider, {
+        children: createElement(WorkHubCoordinationTurnView, {
+          turn,
+          projection: { sessions: [], turns: [] },
+          locale,
+          onOpenSession: () => undefined,
+        }),
+      }),
+    }),
+  );
+
+  assert.match(render('en'), /Created new work:/u);
+  assert.match(render('zh-CN'), /已创建新工作：/u);
 });
 
 test('surface projection refresh gate rejects older reads after a newer refresh starts', () => {
@@ -116,41 +260,144 @@ test('surface projection refresh gate rejects older reads after a newer refresh 
 
 test('surface keeps the Composer draft when routing fails or the target is waiting', () => {
   assert.equal(workHubSubmissionClearsDraft(undefined), false);
-  assert.equal(workHubSubmissionClearsDraft({
-    kind: 'waiting',
-    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-    requestId: 'waiting',
-    text: '继续处理',
-    target: { sessionId: 'payment' },
-  }), false);
-  assert.equal(workHubSubmissionClearsDraft({
-    kind: 'discussion',
-    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-    requestId: 'discussion',
-    text: '先讨论方向',
-  }), true);
+  assert.equal(
+    workHubSubmissionClearsDraft({
+      kind: 'waiting',
+      strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+      requestId: 'waiting',
+      text: '继续处理',
+      target: { sessionId: 'payment' },
+    }),
+    false,
+  );
+  assert.equal(
+    workHubSubmissionClearsDraft({
+      kind: 'discussion',
+      strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+      requestId: 'discussion',
+      text: '先讨论方向',
+    }),
+    true,
+  );
 });
 
 test('surface replaces a local discussion placeholder with its durable model answer', () => {
-  const local = [{
-    requestId: 'discussion-turn',
-    text: 'What is next?',
-    state: 'settled' as const,
-    outcome: {
-      kind: 'discussion' as const,
-      strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+  const local = [
+    {
       requestId: 'discussion-turn',
       text: 'What is next?',
+      state: 'settled' as const,
+      outcome: {
+        kind: 'discussion' as const,
+        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+        requestId: 'discussion-turn',
+        text: 'What is next?',
+      },
+    },
+  ];
+  const durable = [
+    {
+      messageId: 'user-message',
+      turnId: 'discussion-turn',
+      text: 'What is next?',
+      result: 'Slice 3 is next.',
+      state: 'completed' as const,
+      updatedAt: 10,
+    },
+  ];
+
+  assert.deepEqual(visibleWorkHubConversation(durable, local), {
+    coordination: durable,
+    local: [],
+  });
+});
+
+test('surface replaces a submitted placeholder with its durable assignment state', () => {
+  const local = [{
+    requestId: 'replacement-action',
+    text: 'Switch to Login',
+    state: 'settled' as const,
+    outcome: {
+      kind: 'submitted' as const,
+      strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+      requestId: 'replacement-action',
+      target: { sessionId: 'login' },
+      turnId: 'login-turn',
+      evidence: 'explicit_target' as const,
     },
   }];
-  const durable = [{
-    messageId: 'user-message',
-    turnId: 'discussion-turn',
-    text: 'What is next?',
-    result: 'Slice 3 is next.',
-    state: 'completed' as const,
+  const durable: WorkHubCoordinationTurn[] = [{
+    messageId: 'assignment',
+    turnId: 'replacement-action',
+    text: 'Switch to Login',
+    state: 'completed',
+    assignment: {
+      actionId: 'replacement-action',
+      delegationId: 'login-delegation',
+      targetSessionId: 'login',
+      targetSessionName: 'Login',
+      targetMessageId: 'login-message',
+      targetTurnId: 'login-turn',
+      feedbackState: 'accepted',
+      linkState: 'active',
+    },
     updatedAt: 10,
   }];
+
+  assert.deepEqual(visibleWorkHubConversation(durable, local), {
+    coordination: durable,
+    local: [],
+  });
+});
+
+test('surface replaces resume feedback with the ordinary coordination acknowledgement', () => {
+  const local = [
+    {
+      requestId: 'stop-action',
+      text: 'Stop Payments',
+      state: 'settled' as const,
+      outcome: {
+        kind: 'stop' as const,
+        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+        requestId: 'stop-action',
+        target: { sessionId: 'payments' },
+        outcome: 'stop_delivered' as const,
+      },
+    },
+    {
+      requestId: 'resume-action',
+      text: 'Resume Payments',
+      state: 'settled' as const,
+      outcome: {
+        kind: 'resume' as const,
+        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+        requestId: 'resume-action',
+        target: { sessionId: 'payments' },
+        outcome: 'resume_started' as const,
+      },
+    },
+  ];
+  const durable: WorkHubCoordinationTurn[] = [
+    {
+      messageId: 'stop-record',
+      turnId: 'stop-action',
+      text: 'Stop Payments',
+      state: 'completed',
+      stop: {
+        targetSessionId: 'payments',
+        targetSessionName: 'Payments',
+        outcome: 'stop_delivered',
+      },
+      updatedAt: 10,
+    },
+    {
+      messageId: 'resume-record',
+      turnId: 'resume-action',
+      text: 'Resume Payments',
+      state: 'completed',
+      updatedAt: 20,
+    },
+  ];
 
   assert.deepEqual(visibleWorkHubConversation(durable, local), {
     coordination: durable,
@@ -177,11 +424,13 @@ test('surface keeps clarification and successful routing in WorkHub', async () =
           strategyId: WORKHUB_ROUTING_STRATEGY_ID,
           requestId: input.requestId,
           text: input.text,
-          options: [{
-            target: { sessionId: 'payment' },
-            projectName: 'billing',
-            sessionName: '支付回调幂等性',
-          }],
+          options: [
+            {
+              target: { sessionId: 'payment' },
+              projectName: 'billing',
+              sessionName: '支付回调幂等性',
+            },
+          ],
         };
       }
       return {
@@ -213,6 +462,93 @@ test('surface keeps clarification and successful routing in WorkHub', async () =
   assert.deepEqual(submissions[1]?.explicitTarget, { sessionId: 'payment' });
 });
 
+test('ambiguous creation is durably clarified before a fresh imperative creates work', async () => {
+  const actions: Array<{ disposition: string; userText: string; assistantText?: string }> = [];
+  const controller = createWorkHubController({
+    sessions: {
+      list: async () => [],
+      recentTurns: async () => [],
+      delegationFeedback: async () => [],
+      routingEvidence: async () => [],
+      subscribe: () => () => {},
+    },
+    coordination: {
+      open: async () => ({ close: async () => undefined }),
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'a'.repeat(64)}`,
+        candidates: [],
+      }),
+      act: async (input) => {
+        actions.push({
+          disposition: input.proposal.disposition,
+          userText: input.userText,
+          ...(input.proposal.disposition === 'clarify'
+            ? { assistantText: input.proposal.assistantText }
+            : {}),
+        });
+        if (input.proposal.disposition === 'clarify') {
+          return { disposition: 'clarify', coordinationTurnId: input.actionId };
+        }
+        if (input.proposal.disposition === 'create_new') {
+          return {
+            disposition: 'create_new',
+            targetSessionId: 'created-login',
+            targetTurnId: input.actionId,
+          };
+        }
+        throw new Error(`Unexpected disposition: ${input.proposal.disposition}`);
+      },
+    },
+  });
+
+  const ambiguousTexts = [
+    'Explain how to diagnose login, then fix it.',
+    'Show me how to diagnose login, then fix it.',
+    'Walk me through how to diagnose login, then fix it.',
+    '教我如何诊断登录，然后修复它。',
+  ];
+  for (const [index, text] of ambiguousTexts.entries()) {
+    const ambiguous = await submitAndRecordWorkHubSurfaceInput({
+      controller,
+      request: { requestId: `ambiguous-request-${index}`, text },
+      recordedUserText: text,
+      summary: () => workHubAmbiguousCommandPrompt('en'),
+      onSummaryError: () => assert.fail('clarification should be durable'),
+    });
+    assert.equal(ambiguous.kind, 'clarification', text);
+    assert.equal(
+      ambiguous.kind === 'clarification' ? ambiguous.reason : undefined,
+      'ambiguous_command',
+      text,
+    );
+  }
+  assert.deepEqual(
+    actions,
+    ambiguousTexts.map((userText) => ({
+      disposition: 'clarify',
+      userText,
+      assistantText: workHubAmbiguousCommandPrompt('en'),
+    })),
+  );
+
+  const submitted = await submitAndRecordWorkHubSurfaceInput({
+    controller,
+    request: { requestId: 'direct-request', text: 'Fix login.' },
+    recordedUserText: 'Fix login.',
+    summary: () => 'unused',
+    onSummaryError: () => assert.fail('submitted work is projected from its assignment'),
+  });
+  assert.equal(submitted.kind, 'submitted');
+  assert.equal(
+    submitted.kind === 'submitted' ? submitted.evidence : undefined,
+    'new_session',
+  );
+  assert.equal(actions.at(-1)?.disposition, 'create_new');
+  assert.equal(actions.at(-1)?.userText, 'Fix login.');
+  assert.notEqual(actions[0]?.userText, actions[1]?.userText);
+});
+
 test('surface leaves discussion in WorkHub instead of creating a task view', async () => {
   const controller: WorkHubController = {
     read: async () => ({ sessions: [], turns: [] }),
@@ -241,21 +577,53 @@ test('surface leaves discussion in WorkHub instead of creating a task view', asy
 
 test('real Session projection creates new guide topics and preserves origin ambiguity', async () => {
   let clock = 10;
-  const sessions: WorkHubDesktopSession[] = [{
-    id: 'login',
-    name: '刷新令牌过期致重复登录的排查计划',
-    labels: [],
-    isArchived: false,
-    status: 'active',
-    projectId: 'project-router',
-    lastMessageAt: clock,
-    lastMessagePreview: '已经整理为检查清单',
-  }];
-  const prompts = new Map<string, string[]>([[
-    'login',
-    ['排查登录刷新令牌过期导致重复登录的问题，先只分析并列出计划，不修改文件。'],
-  ]]);
+  const sessions: WorkHubDesktopSession[] = [
+    {
+      id: 'login',
+      name: '刷新令牌过期致重复登录的排查计划',
+      labels: [],
+      isArchived: false,
+      status: 'active',
+      projectId: 'project-router',
+      lastMessageAt: clock,
+      lastMessagePreview: '已经整理为检查清单',
+    },
+  ];
+  const prompts = new Map<string, string[]>([
+    [
+      'login',
+      ['排查登录刷新令牌过期导致重复登录的问题，先只分析并列出计划，不修改文件。'],
+    ],
+  ]);
   const created: string[] = [];
+  const createSession = async ({ name }: { name: string }) => {
+    const id = name.includes('支付回调') ? 'payment' : 'layout';
+    const createdSession: WorkHubDesktopSession = {
+      id,
+      name: id === 'payment' ? '支付回调幂等性' : '移动端窄屏布局',
+      labels: [],
+      isArchived: false,
+      status: 'active',
+      projectId: 'project-maka',
+      lastMessageAt: ++clock,
+    };
+    created.push(id);
+    sessions.push(createdSession);
+    prompts.set(id, []);
+    return createdSession;
+  };
+  const send = async (
+    sessionId: string,
+    command: { type: 'send'; turnId: string; text: string },
+  ) => {
+    prompts.get(sessionId)?.push(command.text);
+    const target = sessions.find((candidate) => candidate.id === sessionId);
+    if (target) {
+      target.lastMessageAt = ++clock;
+      target.lastMessagePreview = command.text;
+    }
+    return { ok: true as const, turnId: command.turnId };
+  };
   const port = createDesktopWorkHubSessionPort({
     transcripts: {
       open: async () => {
@@ -264,42 +632,116 @@ test('real Session projection creates new guide topics and preserves origin ambi
     },
     sessions: {
       list: async () => sessions,
-      listTurns: async (sessionId) => (prompts.get(sessionId) ?? [])
-        .map((userPromptPreview) => ({ userPromptPreview })),
-      create: async ({ name }) => {
-        const id = name.includes('支付回调') ? 'payment' : 'layout';
-        const session: WorkHubDesktopSession = {
-          id,
-          name: id === 'payment' ? '支付回调幂等性' : '移动端窄屏布局',
-          labels: [],
-          isArchived: false,
-          status: 'active',
-          projectId: 'project-maka',
-          lastMessageAt: ++clock,
-        };
-        created.push(id);
-        sessions.push(session);
-        prompts.set(id, []);
-        return session;
-      },
-      send: async (sessionId, command) => {
-        prompts.get(sessionId)?.push(command.text);
-        const session = sessions.find((candidate) => candidate.id === sessionId);
-        if (session) {
-          session.lastMessageAt = ++clock;
-          session.lastMessagePreview = command.text;
-        }
-        return { ok: true, turnId: command.turnId };
-      },
+      listTurns: async (sessionId) =>
+        (prompts.get(sessionId) ?? []).map((userPromptPreview) => ({ userPromptPreview })),
+      queryMessageExecutions: async () => ({ resolutions: [] }),
+      create: createSession,
+      send,
       stop: async () => {},
       subscribeChanges: () => () => {},
     },
-    projectName: (projectId) => projectId === 'project-router'
-      ? 'maka-workhub-session-router'
-      : 'maka-agent',
-    newTurnId: () => `turn-${clock + 1}`,
+    projectName: (projectId) =>
+      projectId === 'project-router' ? 'maka-workhub-session-router' : 'maka-agent',
   });
-  const controller = createWorkHubController({ sessions: port });
+  const controller = createWorkHubController({
+    sessions: port,
+    coordination: {
+      open: async () => ({ close: async () => undefined }),
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'a'.repeat(64)}`,
+        candidates: sessions.map((entry) => ({
+          candidateRef: `candidate-${entry.id}`,
+          sessionId: entry.id,
+          sessionName: entry.name,
+          workspace: {
+            target: { kind: 'host_path' as const, path: `/workspace/${entry.id}` },
+            hostCwd: `/workspace/${entry.id}`,
+          },
+          state: entry.status,
+          updatedAt: entry.lastMessageAt ?? 0,
+        })),
+      }),
+      act: async (input) => {
+        if (input.proposal.disposition === 'answer_here') {
+          return { disposition: 'answer_here', coordinationTurnId: input.actionId };
+        }
+        if (input.proposal.disposition === 'clarify') {
+          return { disposition: 'clarify', coordinationTurnId: input.actionId };
+        }
+        if (input.proposal.disposition === 'create_new') {
+          const target = await createSession({ name: input.proposal.title });
+          const admitted = await send(target.id, {
+            type: 'send',
+            turnId: input.actionId,
+            text: input.userText,
+          });
+          return {
+            disposition: 'create_new',
+            targetSessionId: target.id,
+            targetTurnId: admitted.turnId,
+          };
+        }
+        if (input.proposal.disposition === 'replace') {
+          if (input.proposal.target.disposition === 'create_new') {
+            const target = await createSession({ name: input.proposal.target.title });
+            const admitted = await send(target.id, {
+              type: 'send',
+              turnId: input.actionId,
+              text: input.userText,
+            });
+            return {
+              disposition: 'replace',
+              replacementDisposition: 'create_new',
+              targetSessionId: target.id,
+              targetTurnId: admitted.turnId,
+            };
+          }
+          const targetSessionId = input.proposal.target.candidateRef.replace(
+            /^candidate-/u,
+            '',
+          );
+          const admitted = await send(targetSessionId, {
+            type: 'send',
+            turnId: input.actionId,
+            text: input.userText,
+          });
+          return {
+            disposition: 'replace',
+            replacementDisposition: 'delegate_existing',
+            targetSessionId,
+            targetTurnId: admitted.turnId,
+          };
+        }
+        if (input.proposal.disposition === 'stop_work') {
+          return {
+            disposition: 'stop_work',
+            outcome: 'cancelled_pending',
+            targetSessionId: input.proposal.expects.targetSessionId,
+          };
+        }
+        if (input.proposal.disposition === 'resume_work') {
+          return {
+            disposition: 'resume_work',
+            outcome: 'resume_started',
+            targetSessionId: input.proposal.expects.targetSessionId,
+            targetTurnId: 'resumed-turn',
+          };
+        }
+        const targetSessionId = input.proposal.candidateRef.replace(/^candidate-/u, '');
+        const admitted = await send(targetSessionId, {
+          type: 'send',
+          turnId: input.actionId,
+          text: input.userText,
+        });
+        return {
+          disposition: 'delegate_existing',
+          targetSessionId,
+          targetTurnId: admitted.turnId,
+        };
+      },
+    },
+  });
 
   const payment = await controller.submit({
     requestId: 'setup-payment',
@@ -322,7 +764,178 @@ test('real Session projection creates new guide topics and preserves origin ambi
   assert.equal(layout.kind === 'submitted' ? layout.evidence : undefined, 'new_session');
   assert.deepEqual(created, ['payment', 'layout']);
   assert.equal(ambiguous.kind, 'clarification');
-  assert.deepEqual(ambiguous.kind === 'clarification'
-    ? ambiguous.options.map((option) => option.target.sessionId)
-    : [], ['login', 'payment']);
+  assert.deepEqual(
+    ambiguous.kind === 'clarification'
+      ? ambiguous.options.map((option) => option.target.sessionId)
+      : [],
+    ['login', 'payment'],
+  );
 });
+
+test('action identity survives reload while edited text remains current', () => {
+  const { storage } = memoryStorage();
+  const first = new WorkHubSendLease({
+    scope: 'host-a',
+    storage,
+    createId: () => 'action-1',
+  });
+  assert.deepEqual(first.acquireAttempt('Continue payments'), {
+    requestId: 'action-1',
+    text: 'Continue payments',
+    retrying: false,
+  });
+
+  const restarted = new WorkHubSendLease({
+    scope: 'host-a',
+    storage,
+    createId: () => 'action-2',
+  });
+  assert.deepEqual(restarted.acquireAttempt('Investigate login instead'), {
+    requestId: 'action-1',
+    text: 'Investigate login instead',
+    retrying: true,
+  });
+});
+
+test('draft and action identity have independent Host-scoped lifecycles', () => {
+  const { storage } = memoryStorage();
+  const hostA = new WorkHubSendLease({ scope: 'host-a', storage, createId: () => 'action-a' });
+  const hostB = new WorkHubSendLease({ scope: 'host-b', storage, createId: () => 'action-b' });
+  hostA.write('workhub', 'A draft');
+  hostB.write('workhub', 'B draft');
+  assert.equal(hostA.acquire('A send'), 'action-a');
+  assert.equal(hostB.acquire('B send'), 'action-b');
+  hostA.complete('action-a');
+  assert.equal(hostA.read('workhub'), 'A draft');
+  assert.equal(hostB.read('workhub'), 'B draft');
+  assert.equal(hostB.acquire('B retry'), 'action-b');
+});
+
+test('successful delegated submission needs no renderer summary write', async () => {
+  let records = 0;
+  const controller = fakeController({
+    submit: async (input) => ({
+      kind: 'submitted',
+      strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+      requestId: input.requestId,
+      target: { sessionId: 'payments' },
+      turnId: 'payments-turn',
+      evidence: 'explicit_target',
+    }),
+    record: async ({ turnId }) => {
+      records += 1;
+      return { turnId };
+    },
+  });
+  const result = await submitAndRecordWorkHubSurfaceInput({
+    controller,
+    request: { requestId: 'action-1', text: 'Continue payments' },
+    recordedUserText: 'Continue payments',
+    summary: () => 'Sent to Payments',
+    onSummaryError: () => assert.fail('no summary write is expected'),
+  });
+  assert.equal(result.kind, 'submitted');
+  assert.equal(records, 0);
+});
+
+test('resume records ordinary conversation text without persisting execution fields', async () => {
+  const records: unknown[] = [];
+  const controller = fakeController({
+    submit: async (input) => ({
+      kind: 'resume', strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+      requestId: input.requestId, target: { sessionId: 'payments' }, outcome: 'resume_started',
+    }),
+    record: async (input) => { records.push(input); return { turnId: input.turnId }; },
+  });
+  await submitAndRecordWorkHubSurfaceInput({
+    controller,
+    request: { requestId: 'resume-1', text: 'Resume Payments' },
+    recordedUserText: 'Resume Payments',
+    summary: () => 'Resume requested. See the target Session for current progress.',
+    onSummaryError: () => assert.fail('conversation write must succeed'),
+  });
+  assert.deepEqual(records, [{
+    turnId: 'resume-1', userText: 'Resume Payments',
+    assistantText: 'Resume requested. See the target Session for current progress.', disposition: 'summary',
+  }]);
+});
+
+test('lease retires only after an acknowledged submission', async () => {
+  const { storage } = memoryStorage();
+  let sends = 0;
+  const lease = new WorkHubSendLease({
+    scope: 'host-a',
+    storage,
+    createId: () => `action-${sends + 1}`,
+  });
+  lease.write('workhub', 'Continue payments');
+  const cleared = await submitLeasedWorkHubSurfaceInput({
+    lease,
+    text: 'Continue payments',
+    submit: async (attempt) => {
+      sends += 1;
+      return {
+        kind: 'submitted',
+        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+        requestId: attempt.requestId,
+        target: { sessionId: 'payments' },
+        turnId: 'payments-turn',
+        evidence: 'explicit_target',
+      };
+    },
+  });
+  assert.equal(cleared, true);
+  assert.equal(lease.acquire('Next work'), 'action-2');
+});
+
+test('clarification choice retires its action without clearing the Composer draft', async () => {
+  const { storage } = memoryStorage();
+  const lease = new WorkHubSendLease({
+    scope: 'host-a',
+    storage,
+    createId: () => 'action-choice',
+  });
+  lease.write('workhub', 'Unrelated draft');
+
+  const clearsComposer = await submitLeasedWorkHubSurfaceInput({
+    lease,
+    text: 'Unrelated draft',
+    preserveDraft: true,
+    submit: async (attempt) => ({
+      kind: 'submitted',
+      strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+      requestId: attempt.requestId,
+      target: { sessionId: 'payments' },
+      turnId: 'payments-turn',
+      evidence: 'explicit_target',
+    }),
+  });
+
+  assert.equal(clearsComposer, false);
+  assert.equal(lease.read('workhub'), 'Unrelated draft');
+});
+
+function memoryStorage() {
+  const values = new Map<string, string>();
+  return {
+    storage: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    },
+  };
+}
+
+function fakeController(input: {
+  submit: WorkHubController['submit'];
+  record: WorkHubController['recordConversationTurn'];
+}): WorkHubController {
+  return {
+    read: async () => ({ sessions: [], turns: [] }),
+    submit: input.submit,
+    openConversation: async () => ({ close: async () => undefined }),
+    recordConversationTurn: input.record,
+    subscribe: () => () => undefined,
+    resetVisitContext: () => undefined,
+  };
+}

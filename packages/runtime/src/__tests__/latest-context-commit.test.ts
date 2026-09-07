@@ -36,8 +36,13 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
-import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
-import type { ModelCallCommit } from '@maka/core/agent-run';
+import { z } from 'zod';
+import {
+  decodeModelCallAttempt,
+  PROMPT_COMPOSITION_MAX_TOOLS,
+  type ModelCallAttempt,
+  type PromptComposition,
+} from '@maka/core/model-call-attempt';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { createSessionStore } from '@maka/storage/session-store';
@@ -45,7 +50,7 @@ import { BackendRegistry, SessionManager } from '../session-manager.js';
 import { readLatestContextDiagnostics } from '../context-diagnostics.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
-test('a real send seals its row all the way into SQLite, with nothing injected', async () => {
+test('a real send seals its observation into SQLite and reconstructs it after restart', async () => {
   // Tracker → backend → the kernel seam a backend is actually built with →
   // AgentRun → the storage transaction. Every layer in that list once had a
   // signature that compiled while dropping the row, and no test crossed all of
@@ -75,7 +80,11 @@ test('a real send seals its row all the way into SQLite, with nothing injected',
         apiKey: 'sk-test',
         modelId: 'mock-model-id',
         modelFactory: () => answeringModel(),
-        tools: [],
+        // More tools than the composition names, because the cap is only a
+        // real cap when something is actually over it: with an empty list the
+        // row that crosses the chain has no tool rows at all, and every
+        // assertion about them holds for free.
+        tools: overflowingToolset(),
         // The seams the kernel hands a real backend, forwarded exactly as the
         // production composition forwards them — this is the hop that broke.
         ...(ctx.recordModelCallAttempt
@@ -107,10 +116,12 @@ test('a real send seals its row all the way into SQLite, with nothing injected',
     }
 
     let scanned = 0;
+    const sessionRunIds = (await runtimeEventStore.listSessionInvocations(session.id)).map(
+      (invocation) => invocation.runId,
+    );
     const diagnostics = await readLatestContextDiagnostics(
       {
-        listSessionRuns: (sessionId) => runStore.listSessionRuns(sessionId),
-        readEvents: async (sessionId, runId) => {
+        readEvents: async (sessionId: string, runId: string) => {
           scanned += 1;
           return runStore.readEvents(sessionId, runId);
         },
@@ -119,6 +130,7 @@ test('a real send seals its row all the way into SQLite, with nothing injected',
           runStore.repairEventProjection(sessionId, type, event, options),
       },
       session.id,
+      sessionRunIds,
     );
 
     assert.equal(diagnostics.status, 'available');
@@ -131,28 +143,182 @@ test('a real send seals its row all the way into SQLite, with nothing injected',
       'and the request describes what it was made of',
     );
     assert.equal(scanned, 0, 'the row was committed by the send, not rebuilt by the read');
+    assertToolsAccountedFor(diagnostics.composition);
 
+    await manager.stopSession(session.id, { source: 'stop_button' });
+    runStore.close?.();
+
+    const reopened = createSqliteAgentRunStore(root);
+    try {
+      const canonicalAttempts = (
+        await Promise.all(
+          sessionRunIds.map(async (runId) => {
+            const events = await reopened.readEvents(session.id, runId);
+            return events
+              .filter((event) => event.type === 'model_call_attempt_recorded')
+              .map((event) => decodeModelCallAttempt(event.data));
+          }),
+        )
+      ).flat();
+      assert.equal(canonicalAttempts.length, 1);
+      const composition = canonicalAttempts[0]?.promptComposition;
+      assert.ok(composition);
+      assert.ok(composition.segments.length > 0);
+      assertToolsAccountedFor(composition);
+
+      let coldScans = 0;
+      const cold = await readLatestContextDiagnostics(
+        {
+          readEvents: async (sessionId: string, runId: string) => {
+            coldScans += 1;
+            return reopened.readEvents(sessionId, runId);
+          },
+          repairEventProjection: (sessionId, type, event, options) =>
+            reopened.repairEventProjection(sessionId, type, event, options),
+        },
+        session.id,
+        sessionRunIds,
+      );
+
+      assert.ok(coldScans > 0, 'omitting the projection reader forces a restart-safe ledger fold');
+      assert.equal(cold.status, 'available');
+      if (cold.status !== 'available') return;
+      assert.deepEqual(cold.composition, diagnostics.composition);
+    } finally {
+      reopened.close?.();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a turn aborted before dispatch does not create a canonical sent attempt', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-aborted-request-chain-'));
+  try {
+    const sessionStore = createSessionStore(root);
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    const backends = new BackendRegistry();
+    let ids = 0;
+    const newId = () => `abort-chain-${++ids}`;
+    let providerCalls = 0;
+
+    backends.register('ai-sdk', (ctx) => {
+      let backend!: ReturnType<typeof createTestAiSdkBackend>;
+      backend = createTestAiSdkBackend({
+        sessionId: ctx.sessionId,
+        header: ctx.header,
+        appendMessage: async () => {},
+        connection: {
+          slug: 'mock-main',
+          providerType: 'anthropic',
+          defaultModel: 'mock-model-id',
+          models: [{ id: 'mock-model-id', contextWindow: 200_000 }],
+        },
+        apiKey: 'sk-test',
+        modelId: 'mock-model-id',
+        modelFactory: () =>
+          new MockLanguageModelV4({
+            doStream: async () => {
+              providerCalls += 1;
+              return { stream: simulateReadableStream({ chunks: [] }) };
+            },
+          }),
+        tools: [],
+        beforeRunProviderDispatch: () => {
+          void backend.stop('user_stop');
+        },
+        ...(ctx.recordModelCallAttempt
+          ? { recordModelCallAttempt: ctx.recordModelCallAttempt }
+          : {}),
+        newId,
+        now: () => 1_000 + ids,
+      });
+      return backend;
+    });
+
+    const manager = new SessionManager({
+      store: sessionStore,
+      runStore,
+      runtimeEventStore,
+      backends,
+      newId,
+      now: () => 1_000 + ids,
+    });
+    const session = await manager.createSession({
+      cwd: root,
+      llmConnectionSlug: 'mock-main',
+      permissionMode: 'bypass',
+    });
+    for await (const _event of manager.sendMessage(session.id, {
+      turnId: 'turn-aborted-before-dispatch',
+      text: 'abort after preparing the request',
+    })) {
+      // Drain the aborted turn through the real AgentRun store.
+    }
+
+    const runIds = (await runtimeEventStore.listSessionInvocations(session.id)).map(
+      (invocation) => invocation.runId,
+    );
+    const events = (
+      await Promise.all(runIds.map((runId) => runStore.readEvents(session.id, runId)))
+    ).flat();
+    assert.equal(providerCalls, 0);
+    assert.equal(events.filter((event) => event.type === 'model_call_attempt_recorded').length, 0);
+    assert.deepEqual(await readLatestContextDiagnostics(runStore, session.id, runIds), {
+      status: 'unavailable',
+      reason: 'no_completed_request',
+    });
     await manager.stopSession(session.id, { source: 'stop_button' });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test('a layer that forwards only the attempt no longer type-checks', () => {
-  // The regression this replaces was invisible precisely because it compiled.
-  // Keeping the shape in a value here means a future narrowing is a build
-  // failure rather than a silently missing feature.
-  const forward = (commit: ModelCallCommit<ModelCallAttempt>) => commit;
-  const commit = {
-    attempt: { attemptId: 'a-1' } as ModelCallAttempt,
-    latestContext: { attemptId: 'a-1', orderedAt: 10, snapshot: { attemptId: 'a-1' } },
-  } satisfies ModelCallCommit<ModelCallAttempt>;
+const TOOLS_OVER_THE_CAP = 5;
 
-  const forwarded = forward(commit);
+/** More tools than the composition names, each a different size. */
+function overflowingToolset() {
+  return Array.from({ length: PROMPT_COMPOSITION_MAX_TOOLS + TOOLS_OVER_THE_CAP }, (_, index) => ({
+    name: `tool-${String(index).padStart(3, '0')}`,
+    description: `probe ${'d'.repeat(index * 8)}`,
+    parameters: z.object({ q: z.string() }),
+    impl: async () => ({ ok: true }),
+  }));
+}
 
-  assert.equal(forwarded.latestContext?.attemptId, 'a-1', 'the derived row survives the hop');
-  assert.equal(forwarded.attempt.attemptId, 'a-1');
-});
+/**
+ * The tool rows, checked the way the panel has to be able to trust them.
+ *
+ * The cap is what keeps one MCP server's 1000 tools out of every attempt, so
+ * the row a reader gets is by design not the whole toolset. What it must still
+ * be is honest about that: the named ones are the largest, the rest are
+ * counted, and the two together account for every tool byte the segment claims.
+ */
+function assertToolsAccountedFor(composition: PromptComposition | undefined): void {
+  assert.ok(composition);
+  const tools = composition.tools ?? [];
+  assert.equal(tools.length, PROMPT_COMPOSITION_MAX_TOOLS);
+  assert.equal(composition.remainingTools?.count, TOOLS_OVER_THE_CAP);
+
+  const namedBytes = tools.reduce((total, tool) => total + tool.bytes, 0);
+  assert.equal(
+    namedBytes + (composition.remainingTools?.bytes ?? 0),
+    composition.segments.find((segment) => segment.kind === 'tool_definitions')?.bytes,
+    'the named tools and the remainder add up to the tool bytes the segment reports',
+  );
+
+  // Largest first, so the top of the list is what a reader could remove.
+  const largest = Array.from(
+    { length: PROMPT_COMPOSITION_MAX_TOOLS },
+    (_, index) =>
+      `tool-${String(PROMPT_COMPOSITION_MAX_TOOLS + TOOLS_OVER_THE_CAP - 1 - index).padStart(3, '0')}`,
+  );
+  assert.deepEqual(
+    tools.map((tool) => tool.name),
+    largest,
+  );
+}
 
 function answeringModel(): MockLanguageModelV4 {
   return new MockLanguageModelV4({

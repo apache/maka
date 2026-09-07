@@ -68,8 +68,6 @@ export type CuDispatchOutcome =
 
 export interface CuRunResult {
   outcome: CuDispatchOutcome;
-  /** Final logical screen point resolved by the backend for pointer actions. */
-  resolvedScreenPoint?: CuPoint;
   /** Present for `screenshot`, and (by convention) after a mutating action so
    *  the model can SEE the result — the authoritative verification (S17). */
   screenshot?: CuScreenshot;
@@ -357,13 +355,18 @@ export interface CuOverlayHookContext {
 }
 
 export interface CuOverlayHook {
-  onActionBegin(action: CuAction, context: CuOverlayHookContext): CuPresentationFence | void;
+  onActionBegin(
+    action: CuPresentationAction,
+    context: CuOverlayHookContext,
+  ): CuPresentationFence | void;
   onActionEnd?(
-    action: CuAction,
+    action: CuPresentationAction,
     result: CuRunResult | undefined,
     context: CuOverlayHookContext,
   ): void | Promise<void>;
 }
+
+export type CuPresentationAction = { type: CuSemanticAction['type'] } | CuAction;
 
 /**
  * The host dispatch seam. Implemented in @maka/computer-use by the maka-cu

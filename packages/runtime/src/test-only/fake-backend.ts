@@ -40,6 +40,7 @@ import type { SessionStore } from '../session-manager.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export const FAKE_ASK_USER_QUESTION_PROMPT = '__e2e_ask_user_question__';
+export const FAKE_ASK_USER_QUESTION_DURING_DRAIN_PROMPT = '__e2e_ask_user_question_during_drain__';
 export const FAKE_ASK_SANDBOX_BOUNDARY_PROMPT = '__e2e_ask_sandbox_boundary__';
 export const FAKE_WAIT_FOR_STEERING_PROMPT = '__e2e_wait_for_steering__';
 export const FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT =
@@ -70,6 +71,10 @@ export class FakeBackend implements AgentBackend {
   private stopped = false;
   private pendingQuestion: PendingQuestion | undefined;
   private pendingSandboxBoundary: PendingSandboxBoundary | undefined;
+  private readonly questionAdmissionWaiters: Array<() => void> = [];
+  private readonly questionAdmissionCheckpointWaiters: Array<() => void> = [];
+  private readonly stopWaiters: Array<() => void> = [];
+  private questionAdmissionWaiting = false;
 
   constructor(
     private readonly ctx: {
@@ -84,7 +89,10 @@ export class FakeBackend implements AgentBackend {
 
   async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
     this.stopped = false;
-    if (input.text === FAKE_ASK_USER_QUESTION_PROMPT) {
+    if (
+      input.text === FAKE_ASK_USER_QUESTION_PROMPT ||
+      input.text === FAKE_ASK_USER_QUESTION_DURING_DRAIN_PROMPT
+    ) {
       yield* this.sendQuestionScenario(input);
       return;
     }
@@ -326,6 +334,8 @@ export class FakeBackend implements AgentBackend {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.releaseQuestionAdmission();
+    for (const resolve of this.stopWaiters.splice(0)) resolve();
     if (this.pendingQuestion && !this.pendingQuestion.hosted) {
       this.pendingQuestion.resolve(null);
       this.pendingQuestion = undefined;
@@ -349,6 +359,15 @@ export class FakeBackend implements AgentBackend {
   }
 
   async dispose(): Promise<void> {}
+
+  releaseQuestionAdmission(): void {
+    for (const resolve of this.questionAdmissionWaiters.splice(0)) resolve();
+  }
+
+  waitForQuestionAdmissionCheckpoint(): Promise<void> {
+    if (this.questionAdmissionWaiting) return Promise.resolve();
+    return new Promise((resolve) => this.questionAdmissionCheckpointWaiters.push(resolve));
+  }
 
   private async *sendErrorScenario(
     input: BackendSendInput,
@@ -440,6 +459,10 @@ export class FakeBackend implements AgentBackend {
       args: { questions },
     };
 
+    if (input.text === FAKE_ASK_USER_QUESTION_DURING_DRAIN_PROMPT) {
+      await this.waitForQuestionAdmissionRelease();
+    }
+
     let resolveResponse!: (response: UserQuestionResponse | null) => void;
     const responsePromise = new Promise<UserQuestionResponse | null>((resolve) => {
       resolveResponse = resolve;
@@ -465,6 +488,7 @@ export class FakeBackend implements AgentBackend {
         await input.hostedInteraction.admitUserQuestionRequest({ request, settlement });
       } catch (error) {
         this.takePendingQuestion(turnId, requestId).resolve(null);
+        if (input.text === FAKE_ASK_USER_QUESTION_DURING_DRAIN_PROMPT) await this.waitForStop();
         throw error;
       }
     }
@@ -537,6 +561,22 @@ export class FakeBackend implements AgentBackend {
     });
     yield { type: 'text_complete', id: randomUUID(), turnId, ts: completedAt, messageId, text };
     yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'end_turn' };
+  }
+
+  private async waitForQuestionAdmissionRelease(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    this.questionAdmissionWaiting = true;
+    for (const resolve of this.questionAdmissionCheckpointWaiters.splice(0)) resolve();
+    try {
+      await new Promise<void>((resolve) => this.questionAdmissionWaiters.push(resolve));
+    } finally {
+      this.questionAdmissionWaiting = false;
+    }
+  }
+
+  private waitForStop(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    return new Promise((resolve) => this.stopWaiters.push(resolve));
   }
 
   private async *sendSandboxBoundaryScenario(input: BackendSendInput): AsyncIterable<SessionEvent> {

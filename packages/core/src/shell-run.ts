@@ -70,6 +70,13 @@ export type ShellRunTerminalStatus = (typeof SHELL_RUN_TERMINAL_STATUSES)[number
 export type ShellRunActiveStatus = (typeof SHELL_RUN_ACTIVE_STATUSES)[number];
 export type ShellMode = 'pipes' | 'pty';
 
+/**
+ * Determines whether a runtime shell resource may be summarized to the model.
+ * User-owned interactive terminals remain observable to their attached Client,
+ * but their command stream and output are not part of an agent turn.
+ */
+export type ShellRunVisibility = 'model' | 'user';
+
 export interface PipeShellOutput {
   mode: 'pipes';
   stdout: string;
@@ -125,6 +132,8 @@ export interface ShellRunRecord {
   sourceRunId?: string;
   sourceTurnId: string;
   sourceToolCallId: string;
+  /** Defaults to `model` for model-initiated Bash runs. */
+  visibility?: ShellRunVisibility;
   cwd: string;
   command: string;
   status: ShellRunStatus;
@@ -312,6 +321,7 @@ const SHELL_RUN_RECORD_KEYS: ReadonlySet<string> = new Set([
   'sourceRunId',
   'sourceTurnId',
   'sourceToolCallId',
+  'visibility',
   'cwd',
   'command',
   'status',
@@ -364,6 +374,9 @@ export function normalizeShellRunRecord(
     hasOnlyKeys(record, SHELL_RUN_RECORD_KEYS) &&
     requiredStrings.every((item) => typeof item === 'string') &&
     isShellRunSourceToolCallId(record.sourceToolCallId) &&
+    (record.visibility === undefined ||
+      record.visibility === 'model' ||
+      record.visibility === 'user') &&
     record.sessionId === sessionId &&
     record.shellRunId === shellRunId &&
     isShellRunStatus(record.status) &&
@@ -507,6 +520,7 @@ function canonicalShellRunRecord(record: ShellRunRecord): ShellRunRecord {
     ...(record.sourceRunId !== undefined ? { sourceRunId: record.sourceRunId } : {}),
     sourceTurnId: record.sourceTurnId,
     sourceToolCallId: record.sourceToolCallId,
+    ...(record.visibility !== undefined ? { visibility: record.visibility } : {}),
     cwd: record.cwd,
     command: record.command,
     status: record.status,

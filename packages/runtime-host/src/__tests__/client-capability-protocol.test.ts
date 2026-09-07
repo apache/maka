@@ -118,10 +118,12 @@ describe('Client Capability protocol', () => {
       decodeClientFrame({
         kind: 'client.capability.accepted',
         invocationId: 'invocation',
+        admissionEvidence: { kind: 'browser_url', url: 'https://example.com/path' },
       }),
       {
         kind: 'client.capability.accepted',
         invocationId: 'invocation',
+        admissionEvidence: { kind: 'browser_url', url: 'https://example.com/path' },
       },
     );
     assert.deepEqual(
@@ -133,6 +135,94 @@ describe('Client Capability protocol', () => {
         kind: 'client.capability.admitted',
         invocationId: 'invocation',
       },
+    );
+    assert.deepEqual(
+      decodeClientFrame({
+        kind: 'client.capability.interaction_request',
+        invocationId: 'invocation',
+        interactionId: 'provider-form-1',
+        request: {
+          message: 'Choose a target',
+          requester: { name: 'deploy', source: 'Fixture' },
+          fields: [
+            {
+              kind: 'single_select',
+              name: 'target',
+              label: 'Target',
+              required: true,
+              options: [
+                { value: 'staging', label: 'Staging' },
+                { value: 'production', label: 'Production' },
+              ],
+            },
+          ],
+        },
+      }),
+      {
+        kind: 'client.capability.interaction_request',
+        invocationId: 'invocation',
+        interactionId: 'provider-form-1',
+        request: {
+          message: 'Choose a target',
+          requester: { name: 'deploy', source: 'Fixture' },
+          fields: [
+            {
+              kind: 'single_select',
+              name: 'target',
+              label: 'Target',
+              required: true,
+              options: [
+                { value: 'staging', label: 'Staging' },
+                { value: 'production', label: 'Production' },
+              ],
+            },
+          ],
+        },
+      },
+    );
+    assert.deepEqual(
+      decodeHostFrame({
+        kind: 'client.capability.interaction_result',
+        invocationId: 'invocation',
+        interactionId: 'provider-form-1',
+        result: { action: 'accept', values: { target: 'staging' } },
+      }),
+      {
+        kind: 'client.capability.interaction_result',
+        invocationId: 'invocation',
+        interactionId: 'provider-form-1',
+        result: { action: 'accept', values: { target: 'staging' } },
+      },
+    );
+  });
+
+  test('rejects malformed nested Client Capability interactions at the codec', () => {
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          kind: 'client.capability.interaction_request',
+          invocationId: 'invocation',
+          interactionId: 'provider-form-1',
+          request: {
+            message: 'Invalid duplicate fields',
+            requester: { name: 'fixture' },
+            fields: [
+              { kind: 'boolean', name: 'same', label: 'First', required: true },
+              { kind: 'boolean', name: 'same', label: 'Second', required: true },
+            ],
+          },
+        }),
+      (error: unknown) => error instanceof RuntimeHostProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          kind: 'client.capability.interaction_result',
+          invocationId: 'invocation',
+          interactionId: 'provider-form-1',
+          result: { action: 'cancel', values: {} },
+        }),
+      (error: unknown) => error instanceof RuntimeHostProtocolError,
     );
   });
 
@@ -254,6 +344,26 @@ describe('Client Capability protocol', () => {
         ),
       (error: unknown) => error instanceof RuntimeHostProtocolError,
     );
+    assert.doesNotThrow(() =>
+      decodeClientFrame(
+        replaceFrame([
+          {
+            ...offer('pattern_properties', 'tool'),
+            tools: [
+              {
+                ...offer('pattern_properties', 'tool').tools[0],
+                inputSchema: {
+                  type: 'object',
+                  patternProperties: {
+                    '^x-': { type: 'string' },
+                  },
+                },
+              },
+            ],
+          },
+        ]),
+      ),
+    );
     for (const inputSchema of [
       { type: 'string' },
       { type: 'object', unsupportedKeyword: true },
@@ -300,6 +410,52 @@ describe('Client Capability protocol', () => {
           },
         ]),
       ),
+    );
+    assert.doesNotThrow(() =>
+      decodeClientFrame(
+        replaceFrame([
+          {
+            ...offer('pattern_properties', 'tool'),
+            tools: [
+              {
+                ...offer('pattern_properties', 'tool').tools[0],
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    prefix: { type: 'string', pattern: '^[a-z]+$' },
+                  },
+                  patternProperties: {
+                    '^x-': { type: 'string' },
+                  },
+                },
+              },
+            ],
+          },
+        ]),
+      ),
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame(
+          replaceFrame([
+            {
+              ...offer('bad_pattern_property', 'tool'),
+              tools: [
+                {
+                  ...offer('bad_pattern_property', 'tool').tools[0],
+                  inputSchema: {
+                    type: 'object',
+                    properties: { value: { type: 'string' } },
+                    patternProperties: { '(': { type: 'string' } },
+                  },
+                },
+              ],
+            },
+          ]),
+        ),
+      (error: unknown) =>
+        error instanceof RuntimeHostProtocolError &&
+        /patternProperties key is not a valid pattern/u.test(error.message),
     );
     assert.doesNotThrow(() =>
       decodeClientFrame(

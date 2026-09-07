@@ -39,10 +39,7 @@ test('removes exactly the transient messages the Host retracts while stopping', 
     const stop = createAppShellStopAction({
       uiLocale: 'en',
       activeIdRef: { current: 'session-1' },
-      addPendingSessionAction: () => true,
-      clearPendingSessionAction: () => undefined,
-      setStopPendingBySession: () => undefined,
-      stopPendingRef: { current: new Set<string>() },
+      stopPending: { claim: () => true, release: () => undefined },
       removeTransientMessage: (sessionId, messageId) => removed.push({ sessionId, messageId }),
       toastApi: { error() {} },
     });

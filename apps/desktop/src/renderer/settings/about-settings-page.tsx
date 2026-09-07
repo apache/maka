@@ -17,27 +17,19 @@
  * under the License.
  */
 
-import { useEffect, useId, useState, type ReactNode } from 'react';
-import { Badge, Link, List, ListItem } from '@astryxdesign/core';
-import { Kbd } from '@astryxdesign/core/Kbd';
-import { Sparkles } from '@maka/ui/icons';
+import { useEffect, useState, type ReactNode, type RefObject } from 'react';
+import { Link, Text } from '@astryxdesign/core';
+import { Banner, Button, useMountedRef, useToast, useUiLocale, type ToastApi } from '@maka/ui';
 import {
-  Banner,
-  Button,
-  PageHeader,
-  useMountedRef,
-  useToast,
-  useUiLocale,
-} from '@maka/ui';
-import type { AppUpdateStatus } from '../../preload/bridge-contract.js';
-import { SettingsActions, SettingsPage, SettingsSection } from './settings-section.js';
-import { SettingRow } from './settings-rows.js';
+  AppUpdateAboutProjectionConsumer,
+  type AppUpdateAboutProjection,
+} from '../features/app-update/index.js';
+import { SettingsPage, SettingsRow, SettingsSection } from './settings-section.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
 import { SettingsSkeletonStack } from './settings-skeleton.js';
 import { useActionGuard } from './use-action-guard.js';
-import { aboutUpdateStatusDetail } from './about-update-status.js';
+import { aboutChannelSummary, aboutUpdateRow } from './about-update-status.js';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
-import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
@@ -45,23 +37,101 @@ import {
 
 type AppInfo = Awaited<ReturnType<typeof window.maka.app.info>>;
 
-const ISSUE_TRACKER_URL = 'https://github.com/apache/maka/issues';
+const REPOSITORY_URL = 'https://github.com/apache/maka';
+const ISSUE_TRACKER_URL = `${REPOSITORY_URL}/issues`;
+const RELEASES_URL = `${REPOSITORY_URL}/releases`;
+
+/**
+ * The page is rows of one shape — label, one quiet line, one control at the
+ * end — because that is the Astryx settings idiom (the CLI's settings-sidebar
+ * template), and because every second vocabulary on this page (a keycap, a
+ * token, secondary buttons, a bulleted list) was a second thing to read on a
+ * page whose content is four facts and three actions.
+ *
+ * Two control faces remain, and that split is Astryx's own rule, not ours:
+ * `Button` "is for actions like saving, deleting, or submitting"; `Link` is
+ * for "navigating between pages or to external URLs" and its docs say not to
+ * use it "for actions that do not navigate". So 检查更新, 复制 and 查看 are
+ * buttons (secondary or ghost "based on emphasis"), and the two places that
+ * leave the app are links. The link takes the button's inline inset so both
+ * faces end on one text edge.
+ */
+
+/* The ghost `sm` button pads its label by one spacing step; without the same
+   inset the link's text sits 12px further right than the buttons' text. */
+const linkInRowEnd = { paddingInline: 'var(--spacing-3)' } as const;
+type AboutCopy = ReturnType<typeof getSettingsPreferencesCopy>['about'];
+
+/**
+ * The updater's row, rendered only for a packaged install. Update state is not
+ * this page's to own: the App Update feature holds the renderer's sole updater
+ * subscription above AppShell and publishes About's projection, so the row
+ * reads status from the consumer and issues the feature's guarded check
+ * instead of touching the bridge. A component rather than the consumer's
+ * render callback because the action guard is a hook.
+ */
+function AboutUpdateStatusRow(props: {
+  readonly update: AppUpdateAboutProjection;
+  readonly copy: AboutCopy;
+  readonly locale: ReturnType<typeof useUiLocale>;
+  readonly toast: ToastApi;
+  readonly mountedRef: RefObject<boolean>;
+}) {
+  const { update, copy, locale, toast, mountedRef } = props;
+  const checkUpdateGuard = useActionGuard<'check'>();
+  const row = aboutUpdateRow(update.status, copy, {
+    errorDetail: (message) => settingsActionErrorMessage(message, locale),
+  });
+
+  async function checkForUpdates() {
+    if (!checkUpdateGuard.begin('check')) return;
+    try {
+      const status = await update.checkForUpdates();
+      if (status.state === 'error') {
+        toast.error(
+          copy.updateFailed[status.operation],
+          settingsActionErrorMessage(status.message, locale),
+        );
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(copy.updateFailed.check, settingsActionErrorMessage(error, locale));
+      }
+    } finally {
+      checkUpdateGuard.finish();
+    }
+  }
+
+  return (
+    <SettingsRow
+      label={row.label}
+      description={row.description ?? undefined}
+      end={row.action === 'none' ? undefined : (
+        /* Secondary, not primary: the page has no task to complete, and the
+           one action the update flow cannot do without (the restart) lives in
+           the sidebar reminder. Not ghost either: unlike 复制 and 查看 below,
+           this changes the updater's state. */
+        <Button
+          variant="secondary"
+          size="sm"
+          isLoading={update.checking || row.action === 'checking'}
+          onClick={() => void checkForUpdates()}
+          label={copy.checkForUpdates}
+        />
+      )}
+    />
+  );
+}
 
 export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).about;
-  const sharedCopy = getSettingsSharedCopy(locale);
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [infoError, setInfoError] = useState<string | null>(null);
   const [copyingDiagnostics, setCopyingDiagnostics] = useState(false);
-  const [updateStatus, setUpdateStatus] = useState<AppUpdateStatus | null>(null);
-  const [checkingUpdate, setCheckingUpdate] = useState(false);
   const diagnosticCopyGuard = useActionGuard<'copy'>();
-  const checkUpdateGuard = useActionGuard<'check'>();
   const aboutPageMountedRef = useMountedRef();
   const toast = useToast();
-  const diagnosticsHelpId = useId();
-  const updateHelpId = useId();
 
   useEffect(() => {
     let cancelled = false;
@@ -73,37 +143,21 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
         }
       })
       .catch((error) => {
-        if (cancelled) return;
-        const message = settingsActionErrorMessage(error, locale);
-        setInfoError(message);
-        toast.error(
-          copy.loadFailed,
-          message,
-          undefined,
-          defaultRuntimeHostDiagnosticTarget(error),
-        );
-    });
+        if (!cancelled) {
+          const message = settingsActionErrorMessage(error, locale);
+          setInfoError(message);
+          toast.error(
+            copy.loadFailed,
+            message,
+            undefined,
+            defaultRuntimeHostDiagnosticTarget(error),
+          );
+        }
+      });
     return () => {
       cancelled = true;
     };
   }, [copy.loadFailed, locale, toast]);
-
-  useEffect(() => {
-    let cancelled = false;
-    window.maka.app
-      .updateStatus()
-      .then((status) => {
-        if (!cancelled) setUpdateStatus(status);
-      })
-      .catch(() => undefined);
-    const unsubscribe = window.maka.app.subscribeUpdateStatus((status) => {
-      if (!cancelled) setUpdateStatus(status);
-    });
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, []);
 
   async function copyDiagnostics() {
     if (!diagnosticCopyGuard.begin('copy')) return;
@@ -121,144 +175,129 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
     }
   }
 
-  async function checkForUpdates() {
-    if (!checkUpdateGuard.begin('check')) return;
-    setCheckingUpdate(true);
-    try {
-      const status = await window.maka.app.checkForUpdates();
-      if (aboutPageMountedRef.current) setUpdateStatus(status);
-      if (status.state === 'error') {
-        toast.error(copy.updateCheckFailed, copy.updateCheckFailedDetail(status.message));
-      }
-    } catch (error) {
-      if (aboutPageMountedRef.current) {
-        toast.error(copy.updateCheckFailed, settingsActionErrorMessage(error, locale));
-      }
-    } finally {
-      checkUpdateGuard.finish();
-      if (aboutPageMountedRef.current) setCheckingUpdate(false);
-    }
-  }
-
-  let aboutContent: ReactNode;
+  let identity: ReactNode;
   if (!info && !infoError) {
-    aboutContent = (
-      <SettingsSkeletonStack
-        label={copy.loading}
-        lines={[
-          { width: '38%', size: 'lg' },
-          { width: '70%' },
-          { width: '52%' },
-        ]}
-      />
+    identity = (
+      <SettingsSection variant="bare">
+        <SettingsSkeletonStack
+          label={copy.loading}
+          lines={[
+            { width: '38%', size: 'lg' },
+            { width: '70%' },
+            { width: '52%' },
+          ]}
+        />
+      </SettingsSection>
     );
   } else if (!info) {
-    aboutContent = (
-      <Banner
-        status="info"
-        role="alert"
-        title={copy.unavailable}
-        description={infoError} />
+    identity = (
+      <SettingsSection variant="bare">
+        <Banner status="info" role="alert" title={copy.unavailable} description={infoError} />
+      </SettingsSection>
     );
   } else {
-    aboutContent = (
-      <>
-        <PageHeader
-          as_wrapper="div"
-          className="settingsAboutHero"
-          as="h2"
-          icon={<Sparkles size={30} /> /* 64% of the 48px plate, matching .providerLogo's fill */}
-          iconClassName="settingsAboutLogo"
-          headingRowClassName="settingsAboutHeading"
-          title="Maka"
-          badge={
-            <>
-              <Badge variant="neutral" label={`v${info.appVersion}`} />
-              <Badge
-                variant="blue"
-                label={info.buildMode === 'dev'
-                  ? info.buildCommit
-                    ? `${copy.devBuild} · ${info.buildCommit}`
-                    : copy.devBuild
-                  : copy.packagedBuild}
-              />
-            </>
-          }
-          subtitle={copy.subtitle}
-          subtitleClassName="settingsAboutTagline"
-        />
-        {/* Detail audit: the five privacy commitments rendered inside an info
-            Banner — five lines of bold status-blue body copy, the exact blue
-            flood DESIGN.md's Signal-Not-Texture rule forbids. They are ordinary
-            statements, so they read as a quiet marker list in a labeled group. */}
-        <SettingsSection variant="bare" title={copy.privacyTitle}>
-          <List aria-label={copy.privacyLabel} density="compact" listStyle="disc">
-            {/* Fragment-wrapped: ListItem single-line-truncates STRING labels,
-                and a privacy commitment must wrap, not ellipsize. */}
-            {copy.privacyPoints.map((point) => <ListItem key={point} label={<>{point}</>} />)}
-          </List>
-        </SettingsSection>
-        {/* The keyboard sheet's home. It used to be reachable only from the
-            titlebar's `…` drawer and from two shortcuts — which made the panel
-            that lists the shortcuts openable only by shortcut. It is reference
-            material about the app, so it belongs on 关于, and this is the entry
-            a mouse can find. */}
-        {props.onOpenKeyboardHelp && (
-          <SettingsSection title={sharedCopy.groups.reference}>
-            <SettingRow
-              title={copy.keyboardShortcuts}
-              detail={copy.keyboardShortcutsHelp}
-              action={(
-                <Button variant="ghost" size="sm" onClick={props.onOpenKeyboardHelp} label={copy.keyboardShortcutsOpen} />
-              )}
-            />
-          </SettingsSection>
-        )}
-        <SettingsSection title={copy.updatesTitle}>
-          <SettingRow
-            title={copy.checkForUpdates}
-            detail={aboutUpdateStatusDetail(updateStatus, copy, {
-              isDevBuild: info.buildMode === 'dev',
-            })}
-            action={(
-              <Button
-                variant="secondary"
-                size="sm"
-                isDisabled={checkingUpdate || info.buildMode === 'dev'}
-                aria-describedby={updateHelpId}
-                onClick={() => void checkForUpdates()}
-                label={checkingUpdate || updateStatus?.state === 'checking'
-                  ? copy.checkingForUpdates
-                  : copy.checkForUpdates}
+    identity = (
+      /* The two facts a user opens this page for, as the unlabeled lead group:
+         which build this is, and whether it is current. Unlabeled because the
+         page title already says 关于.
+
+         A dev checkout follows no feed, so it gets no update row at all: its
+         channel line already says it does not update. Everywhere else the row
+         offers 检查更新 only where the service would honour one; a downloaded
+         update says where the restart is (the sidebar footer owns that
+         handshake) rather than growing a second one here. */
+      <SettingsSection>
+        <SettingsRow label={`Maka v${info.appVersion}`} description={aboutChannelSummary(info, copy)} />
+        {info.buildMode === 'dev' ? null : (
+          <AppUpdateAboutProjectionConsumer>
+            {(update) => (
+              <AboutUpdateStatusRow
+                update={update}
+                copy={copy}
+                locale={locale}
+                toast={toast}
+                mountedRef={aboutPageMountedRef}
               />
             )}
-          />
-          <p id={updateHelpId}>
-            {info.buildMode === 'dev' ? copy.updateDevBuildHelp : copy.updateHelp}
-          </p>
-        </SettingsSection>
-      </>
+          </AppUpdateAboutProjectionConsumer>
+        )}
+      </SettingsSection>
     );
   }
 
   return (
     <SettingsPage>
-      {aboutContent}
-      <SettingsSection title={sharedCopy.groups.buildInfo}>
-        <SettingsActions>
-          <Button
-            variant="primary"
-            isDisabled={copyingDiagnostics}
-            aria-describedby={diagnosticsHelpId}
-            onClick={() => void copyDiagnostics()}
-            label={copyingDiagnostics ? copy.copying : copy.copyDiagnostics}
+      {identity}
+      {/* Support lives OUTSIDE the info conditional on purpose: copying
+          diagnostics must not depend on `app.info` succeeding — that is the
+          very moment a user needs it. The keyboard sheet used to be reachable
+          only from the titlebar's `…` drawer and two shortcuts, which made
+          the panel listing the shortcuts openable only by shortcut; this is
+          the entry a mouse can find.
+
+          The verb on the face ("复制") is not a name; the row's label is.
+          `Item` puts the row label in a sibling element, so each control
+          carries its own aria-label instead of borrowing one. */}
+      <SettingsSection title={copy.supportTitle}>
+        <SettingsRow
+          label={copy.copyDiagnostics}
+          description={copy.copyHelp}
+          end={(
+            <Button
+              variant="ghost"
+              size="sm"
+              isLoading={copyingDiagnostics}
+              onClick={() => void copyDiagnostics()}
+              aria-label={copy.copyDiagnostics}
+              label={copy.copyAction}
+            />
+          )}
+        />
+        <SettingsRow
+          label={copy.reportIssueLabel}
+          description={copy.reportIssueHelp}
+          end={(
+            <Link
+              href={ISSUE_TRACKER_URL}
+              target="_blank"
+              rel="noreferrer noopener"
+              label={copy.reportIssueLabel}
+              style={linkInRowEnd}
+            >
+              {copy.reportIssueOpen}
+            </Link>
+          )}
+        />
+        {props.onOpenKeyboardHelp ? (
+          <SettingsRow
+            label={copy.keyboardShortcuts}
+            description={copy.keyboardShortcutsHelp}
+            end={(
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={props.onOpenKeyboardHelp}
+                aria-label={copy.keyboardShortcuts}
+                label={copy.keyboardShortcutsOpen}
+              />
+            )}
           />
-          <Kbd keys="mod+shift+d" />
-          <Link href={ISSUE_TRACKER_URL} target="_blank" rel="noreferrer noopener">
-            {copy.reportIssueLabel}
+        ) : null}
+      </SettingsSection>
+      {/* Provenance is one quiet line, not a group: nothing here is a setting
+          or an action the user came for. */}
+      <SettingsSection variant="bare">
+        <Text type="supporting" color="secondary">
+          {copy.openSourceSummary}
+          {' · '}
+          <Link href={REPOSITORY_URL} target="_blank" rel="noreferrer noopener" type="inherit">
+            {copy.sourceCode}
           </Link>
-          <p id={diagnosticsHelpId}>{copy.copyHelp}</p>
-        </SettingsActions>
+          {' · '}
+          <Link href={RELEASES_URL} target="_blank" rel="noreferrer noopener" type="inherit">
+            {copy.releaseNotes}
+          </Link>
+        </Text>
       </SettingsSection>
     </SettingsPage>
   );

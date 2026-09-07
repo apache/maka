@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { IpcMain } from "electron";
@@ -31,9 +32,68 @@ import {
 import * as ipcReconnectPolicy from "../ipc-reconnect-policy.js";
 import {
   RuntimeHostHandlerUnavailableError,
+  RuntimeHostHandlerUnsupportedError,
   RuntimeHostReconnectingIpcMain,
   RuntimeHostTargetChangedError,
 } from "../runtime-host-reconnecting-ipc-main.js";
+
+test("unsupported Guest IPC fails immediately while an Owner channel still survives reconnect", { timeout: 1_000 }, async (t) => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  t.after(() => router.close());
+  const owner = router.createTarget("owner");
+  owner.handleReconnectableRead!("onboarding:getSnapshot", async () => "owner");
+  owner.completeRegistration();
+  assert.throws(
+    () => owner.handleReconnectableRead!("late-channel", async () => "late"),
+    /registration is complete/,
+  );
+  router.activate("owner");
+  router.activate("guest");
+  // A request during first connection can wait until its actual surface is known.
+  const early = assert.rejects(
+    ipc.invoke("onboarding:getSnapshot", scope("guest")),
+    RuntimeHostHandlerUnsupportedError,
+  );
+  router.createTarget("guest").completeRegistration();
+  await early;
+  await assert.rejects(
+    ipc.invoke("onboarding:getSnapshot", scope("guest")),
+    RuntimeHostHandlerUnsupportedError,
+  );
+  owner.removeHandler("onboarding:getSnapshot");
+  const recovering = ipc.invoke("onboarding:getSnapshot", scope("owner"));
+  const replacement = router.createTarget("owner");
+  replacement.handleReconnectableRead!("onboarding:getSnapshot", async () => "replacement");
+  replacement.completeRegistration();
+  assert.equal(await recovering, "replacement");
+});
+
+test("reconciliation becomes unavailable when the replacement no longer supports its channel", { timeout: 1_000 }, async (t) => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  t.after(() => router.close());
+  const target = router.createTarget("owner");
+  let dispatches = 0;
+  target.handleReconciledControl!("goal:arm", {
+    dispatch: async () => {
+      dispatches += 1;
+      return { kind: "reconcile", context: { sessionId: "session-1" } };
+    },
+    reconcile: async () => assert.fail("The closed candidate must not reconcile"),
+    reconciliationUnavailable: async (context) => ({ kind: "unavailable", context }),
+  });
+  target.completeRegistration();
+  router.activate("owner");
+  const result = ipc.invoke("goal:arm", scope("owner"));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  target.removeHandler("goal:arm");
+  router.createTarget("owner").completeRegistration();
+  assert.deepEqual(await result, {
+    kind: "unavailable", context: { sessionId: "session-1" },
+  });
+  assert.equal(dispatches, 1);
+});
 
 test("classifies only dispatched control connection loss for reconciliation", () => {
   const predicate = (
@@ -686,14 +746,4 @@ function ipcHarness() {
 
 function scope(targetEpoch: string) {
   return { hostId: `host-${targetEpoch}`, targetEpoch };
-}
-
-function deferred<T = void>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((settle, fail) => {
-    resolve = settle;
-    reject = fail;
-  });
-  return { promise, reject, resolve };
 }

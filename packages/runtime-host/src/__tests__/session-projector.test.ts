@@ -24,6 +24,7 @@ import type { StoredMessage } from '@maka/core/session';
 import type { SteeringMessageSnapshot } from '../protocol/message.js';
 import {
   createRuntimeHostSessionProjectionSeed,
+  projectRuntimeHostInteractionRequest,
   RuntimeHostSessionProjector,
 } from '../adapter/session-projector.js';
 import {
@@ -31,6 +32,48 @@ import {
   type SessionContinuitySnapshot,
   type SubscriptionFrame,
 } from '../protocol/index.js';
+
+test('projects Client Capability approvals without exposing provider identities', () => {
+  assert.deepEqual(
+    projectRuntimeHostInteractionRequest(
+      {
+        schemaVersion: 1,
+        interactionId: 'approval-1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        revision: 1,
+        request: {
+          kind: 'client_capability',
+          toolUseId: 'tool-1',
+          target: {
+            providerId: 'provider-secret',
+            contractId: 'contract-secret',
+            serverId: 'desktop_browser',
+            toolName: 'browser_snapshot',
+            capability: 'browser',
+            scope: { kind: 'browser_origin', origin: 'https://example.com' },
+          },
+        },
+        status: 'pending',
+        outcome: null,
+      },
+      10,
+    ),
+    [
+      {
+        type: 'client_capability_request',
+        id: 'host-interaction:approval-1:1',
+        turnId: 'turn-1',
+        ts: 10,
+        requestId: 'approval-1',
+        toolUseId: 'tool-1',
+        capability: 'browser',
+        scope: { kind: 'browser_origin', origin: 'https://example.com' },
+      },
+    ],
+  );
+});
 
 test('applies authoritative replacement once and does not complete it again at Turn terminal', () => {
   const projector = new RuntimeHostSessionProjector(
@@ -72,6 +115,43 @@ test('applies authoritative replacement once and does not complete it again at T
     terminal.map((event) => event.type),
     ['complete'],
   );
+});
+
+test('forwards a terminal context-compaction outcome with the synthesized complete event', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const events = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        status: 'completed',
+        terminalEventId: 'compact-terminal-1',
+        contextCompactionOutcome: { kind: 'unchanged', reason: 'already_current' },
+      },
+    }),
+  }).events;
+
+  assert.deepEqual(events, [
+    {
+      type: 'complete',
+      id: 'compact-terminal-1',
+      turnId: 'turn-1',
+      ts: 10,
+      stopReason: 'end_turn',
+      contextCompactionOutcome: { kind: 'unchanged', reason: 'already_current' },
+    },
+  ]);
 });
 
 test('keeps a revocable in-flight lease pending', () => {
@@ -268,6 +348,76 @@ test('reseeds the latest provider retry when the active Turn still carries one',
   assert.equal(seeded.length, 1);
   assert.equal(seeded[0]?.type, 'provider_retry');
   assert.equal(seeded[0] && 'phase' in seeded[0] ? seeded[0].phase : undefined, 'scheduled');
+});
+
+test('projects structured context-budget failure detail to the Desktop event', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const events = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        status: 'failed',
+        terminalEventId: 'terminal-1',
+        failureClass: 'context_overflow',
+      },
+    }),
+  }).events;
+
+  assert.deepEqual(events, [
+    {
+      type: 'error',
+      id: 'terminal-1',
+      turnId: 'turn-1',
+      ts: 10,
+      recoverable: false,
+      reason: 'context_overflow',
+      message: 'Turn failed: context_overflow',
+    },
+  ]);
+});
+
+test('reseeds a scheduled retry with remainingMs recomputed from the stored schedule time', () => {
+  // #3393: a reconnect mid-wait must not restart the countdown. The snapshot
+  // keeps the host-clock schedule time; the projector re-derives the skew-free
+  // remaining duration at projection time.
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        status: 'running',
+        providerRetry: {
+          phase: 'scheduled' as const,
+          attempt: 8,
+          maxAttempts: 10,
+          delayMs: 40_000,
+          ts: 5, // scheduled 5ms before the projector clock's `now`
+          reason: 'rate_limit' as const,
+        },
+      },
+    }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const seeded = projector.seedActive(true);
+  const retry = seeded[0];
+  assert.ok(retry && retry.type === 'provider_retry' && retry.phase === 'scheduled');
+  assert.equal(retry.delayMs, 40_000);
+  assert.equal(retry.remainingMs, 39_995);
 });
 
 test('emits a live provider retry when the snapshot overlay appears, then drops it after content', () => {
@@ -726,3 +876,164 @@ function assistant(id: string, text: string): Extract<StoredMessage, { type: 'as
     modelId: 'gpt-5',
   };
 }
+
+test('live tool_start keeps intent and argsPreview, and never fabricates args', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+    [],
+  );
+
+  const update = projector.accept({
+    kind: 'subscription.session_event',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    sessionId: 'session-1',
+    runId: 'run-1',
+    event: {
+      type: 'tool_start',
+      id: 'event-1',
+      turnId: 'turn-1',
+      ts: 1,
+      toolUseId: 'tool-1',
+      toolName: 'Bash',
+      intent: '只读探索:检查渲染入口',
+      argsPreview: { command: 'git status --porcelain' },
+    },
+  });
+
+  assert.equal(update.events.length, 1);
+  const event = update.events[0]!;
+  assert.equal(event.type, 'tool_start');
+  if (event.type !== 'tool_start') return;
+  assert.equal(event.intent, '只读探索:检查渲染入口');
+  assert.deepEqual(event.argsPreview, { command: 'git status --porcelain' });
+  assert.equal(event.args, undefined);
+});
+
+test('seeds a context-compaction-started event for a running compaction Turn', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'running',
+        rootExecutionKind: 'context_compact',
+      },
+    }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  const seeded = projector.seedActive(true);
+  assert.equal(seeded.length, 1);
+  assert.equal(seeded[0]?.type, 'context_compaction_started');
+  assert.equal(seeded[0]?.turnId, 'turn-compact');
+});
+
+test('emits a context-compaction-started event when a compaction Turn starts', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  const events = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'running',
+        rootExecutionKind: 'context_compact',
+      },
+    }),
+  }).events;
+  assert.ok(
+    events.some(
+      (event) => event.type === 'context_compaction_started' && event.turnId === 'turn-compact',
+    ),
+  );
+});
+
+test('emits context-compaction-started on the admitted → running transition at one runId', () => {
+  // The real lifecycle keeps the same runId: `admitted` (no rootExecutionKind)
+  // then `running` / context_compact. Gating on a runId change would miss this
+  // and only surface the row on reconnect.
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'admitted',
+      },
+    }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  const events = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'running',
+        rootExecutionKind: 'context_compact',
+      },
+    }),
+  }).events;
+  assert.equal(events.filter((event) => event.type === 'context_compaction_started').length, 1);
+});
+
+test('projects the typed context-compaction outcome onto the completed Turn event', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'running',
+        rootExecutionKind: 'context_compact',
+      },
+    }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  const events = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-compact',
+        runId: 'run-compact',
+        status: 'completed',
+        terminalEventId: 'terminal-1',
+        contextCompactionOutcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
+      },
+    }),
+  }).events;
+  const complete = events.find((event) => event.type === 'complete');
+  assert.ok(complete);
+  assert.deepEqual(
+    complete && 'contextCompactionOutcome' in complete
+      ? complete.contextCompactionOutcome
+      : undefined,
+    { kind: 'compacted', checkpointId: 'checkpoint-1' },
+  );
+});

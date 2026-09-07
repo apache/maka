@@ -18,7 +18,7 @@
  */
 
 import { Buffer } from 'node:buffer';
-import { attachmentKindFromMimeType, guessMimeFromName, MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
+import { MAX_ATTACHMENT_BYTES, sniffAttachmentMimeType } from '@maka/core/attachments';
 import type { AttachmentApprovalRegistry } from './attachment-approval.js';
 
 export type AttachmentPreviewResult =
@@ -65,17 +65,14 @@ export async function loadApprovalPreview(input: {
   }
   const approved = input.approvals.peekApproval(input.senderId, input.approvalId);
   if (!approved) return { ok: false, reason: 'not_found' };
-  const mimeType =
-    approved.mimeType && approved.mimeType.length > 0
-      ? approved.mimeType
-      : guessMimeFromName(approved.name);
-  if (attachmentKindFromMimeType(mimeType, approved.name) !== 'image') {
-    return { ok: false, reason: 'not_image' };
-  }
   const maxBytes = input.maxBytes ?? MAX_ATTACHMENT_BYTES;
   if (approved.size > maxBytes) return { ok: false, reason: 'unreadable' };
   try {
     const bytes = await input.readFile(approved.path, approved.size);
+    const contentMimeType = sniffAttachmentMimeType(bytes);
+    if (!contentMimeType?.startsWith('image/')) {
+      return { ok: false, reason: 'not_image' };
+    }
     const preview = await input.renderPreview(bytes);
     if (preview) {
       return {
@@ -86,7 +83,7 @@ export async function loadApprovalPreview(input: {
     }
     const fallbackCap = input.inlineFallbackMaxBytes ?? INLINE_PREVIEW_FALLBACK_MAX_BYTES;
     if (bytes.byteLength <= fallbackCap) {
-      return { ok: true, base64: Buffer.from(bytes).toString('base64'), mimeType };
+      return { ok: true, base64: Buffer.from(bytes).toString('base64'), mimeType: contentMimeType };
     }
     return { ok: false, reason: 'unreadable' };
   } catch {

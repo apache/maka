@@ -32,12 +32,7 @@ import { join } from 'node:path';
 
 import { isCanonicalWindowsPath } from '@maka/core/windows-path';
 
-import type {
-  SandboxBackend,
-  SandboxCapabilityProbeResult,
-  SandboxTransformRequest,
-  SandboxTransformResult,
-} from './types.js';
+import type { SandboxBackend, SandboxTransformRequest, SandboxTransformResult } from './types.js';
 import { compileWindowsSandboxPolicy, type WindowsSandboxPolicy } from './windows-profile.js';
 
 /**
@@ -133,18 +128,6 @@ export class WindowsBrokerSandboxBackend implements SandboxBackend {
       profile.fileSystem.kind === 'restricted' &&
       profile.network.kind === 'restricted'
     );
-  }
-
-  probe(request: SandboxTransformRequest): SandboxCapabilityProbeResult {
-    const plan = this.plan(request);
-    if (!plan.ok) return plan;
-    return {
-      ok: true,
-      executable: this.options.clientPath,
-      sandboxType: 'windows',
-      requiresSandbox: true,
-      preference: plan.preference,
-    };
   }
 
   transform(request: SandboxTransformRequest): SandboxTransformResult {

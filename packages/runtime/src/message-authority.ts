@@ -18,8 +18,9 @@
  */
 
 import type { BackendStopMode, SteeringLease } from '@maka/core/backend-types';
-import type { RootExecutionDescriptor } from '@maka/core/agent-run';
+import type { RootExecutionDescriptor } from '@maka/core/runtime-invocation';
 import type { MessageContent, SessionEvent } from '@maka/core/events';
+import type { StopSessionInput } from './session-manager.js';
 
 export interface RuntimeMessageRunIdentity {
   readonly sessionId: string;
@@ -62,20 +63,8 @@ export interface RuntimeHostedRootExecutionInput extends RuntimeMessageRunIdenti
 /** Host-only root lifecycle capability. Embedded compositions must omit it. */
 export interface RuntimeHostedRootAuthority extends RuntimeMessageAuthority {
   executeRoot(input: RuntimeHostedRootExecutionInput): Promise<void>;
-  stopRoot(
-    identity: RuntimeMessageRunIdentity,
-    input?: {
-      source?: 'stop_button' | 'graph_supervisor';
-      mode?: BackendStopMode;
-    },
-  ): Promise<void>;
-  stopSession(
-    sessionId: string,
-    input?: {
-      source?: 'stop_button' | 'graph_supervisor';
-      mode?: BackendStopMode;
-    },
-  ): Promise<void>;
+  stopRoot(identity: RuntimeMessageRunIdentity, input?: StopSessionInput): Promise<void>;
+  stopSession(sessionId: string, input?: StopSessionInput): Promise<void>;
 }
 
 export function isRuntimeHostedRootAuthority(

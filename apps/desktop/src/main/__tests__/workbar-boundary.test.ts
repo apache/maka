@@ -67,7 +67,10 @@ describe('Workbar feature boundary', () => {
   });
 
   it('is consumed outside the feature only through public entries', () => {
-    const allowed = /\/features\/workbar\/(?:index|testing)(?:\.js)?$/;
+    // `stories` joins `index` and `testing` as a public entry: the surface it
+    // exposes is only resolvable by a bundler, so Storybook can import it and
+    // the node suites behind `testing` cannot.
+    const allowed = /\/features\/workbar\/(?:index|testing|stories)(?:\.js)?$/;
     const violations: string[] = [];
     for (const root of [join(desktopRoot, 'src'), join(desktopRoot, 'stories')]) {
       for (const path of sourceFiles(root)) {
@@ -160,14 +163,20 @@ describe('Workbar feature boundary', () => {
       ),
       true,
     );
+    // The catalog reaches the panel through ComposerMentionsProvider rather
+    // than through props (#4109), so what this guards is the context read, not
+    // the prop names. Both facets still have to arrive together: a panel that
+    // showed the skills without their loading verdict would advertise a
+    // catalog it cannot honour.
+    assert.equal(quotePanel.includes('useComposerMentionsContext()'), true);
     assert.equal(
       quotePanel.includes(
-        'mentionSkillsUnavailable={props.mentionSkillsUnavailable}',
+        'mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}',
       ),
       true,
     );
     assert.equal(
-      quotePanel.includes('mentionSkillsLoading={props.mentionSkillsLoading}'),
+      quotePanel.includes('mentionSkillsLoading={mentions?.mentionSkillsLoading}'),
       true,
     );
   });

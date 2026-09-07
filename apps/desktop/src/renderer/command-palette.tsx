@@ -37,6 +37,7 @@ import {
   AstryxLocaleProvider,
   type SearchSource,
   type SearchableItem,
+  PlatformShortcutText,
   useUiLocale,
 } from '@maka/ui';
 import { Kbd } from '@astryxdesign/core/Kbd';
@@ -139,6 +140,13 @@ export function CommandPalette(props: {
           if (!command) return false;
           if (fuzzy(normalized, command.label)) return true;
           if (command.hint && fuzzy(normalized, command.hint)) return true;
+          if (
+            command.platformHint &&
+            (fuzzy(normalized, command.platformHint.apple) ||
+              fuzzy(normalized, command.platformHint.other))
+          ) {
+            return true;
+          }
           return command.keywords?.some((keyword) =>
             fuzzy(normalized, keyword),
           ) ?? false;
@@ -191,9 +199,14 @@ export function CommandPalette(props: {
                 <command.Icon size={ICON_SIZE.chrome} />
               </span>
               <span className="maka-palette-label">{command.label}</span>
-              {command.hint ? (
+              {command.hint || command.platformHint ? (
                 <span className="maka-palette-hint">
-                  {command.hint}
+                  {command.hint ?? (
+                    <PlatformShortcutText
+                      apple={command.platformHint!.apple}
+                      other={command.platformHint!.other}
+                    />
+                  )}
                   <ChevronRight size={ICON_SIZE.meta} aria-hidden="true" />
                 </span>
               ) : (

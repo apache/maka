@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { deriveTurnRecords } from '@maka/core/session';
+import { deriveTurnRecords, isUserVisibleSessionSystemNote } from '@maka/core/session';
 import {
   isInFlightToolStatus,
   toolResultActivityStatus,
@@ -56,6 +56,8 @@ export interface ChatItem {
   ts?: number;
   /** User-message attachments projected from StoredMessage; absent on assistant/system rows. */
   attachments?: AttachmentRef[];
+  /** Host-bound directory references projected from StoredMessage; user rows only. */
+  directoryReferences?: import('@maka/core/events').DirectoryReference[];
   /** Inline quoted excerpts projected from StoredMessage; user rows only. */
   quotes?: QuoteRef[];
   /** Frozen inline token metadata projected from StoredMessage; user rows only. */
@@ -85,6 +87,12 @@ export interface ToolActivityItem {
   activityKind?: ToolActivityKind;
   displayName?: string;
   intent?: string;
+  /**
+   * Live-only bounded/redacted args subset from the Runtime Host wire (full
+   * args arrive with the durable transcript at turn end). Display formatters
+   * read `args ?? argsPreview`; never rendered as raw JSON.
+   */
+  argsPreview?: unknown;
   origin?: 'provider' | 'code_mode';
   modelVisibility?: 'visible' | 'hidden';
   parentToolCallId?: string;
@@ -132,27 +140,56 @@ export interface ToolActivityItem {
   shellRunSource?: "owned" | "unavailable";
 }
 
-// system_note kinds that we surface inline to the user. Everything else
-// (session_resume, connection_locked, mode_change-as-internal-audit, …)
-// stays in the JSONL audit trail but is hidden from the chat surface so
-// the conversation reads like a conversation, not a debug log.
-const VISIBLE_SYSTEM_NOTES = new Set<string>([
-  "context_compacted",
-  "context_compaction_failed_open",
-  "step_limit",
-]);
-
-function systemNoteLabel(kind: string, locale: UiLocale): string {
+function systemNoteLabel(kind: string, data: unknown, locale: UiLocale): string {
   const copy = getConversationCopy(locale).messages.systemNotes;
   if (kind === "context_compacted") return copy.contextCompacted;
   if (kind === "context_compaction_failed_open") return copy.contextCompactionFailedOpen;
+  if (kind === "context_provider_dropping") {
+    const dropping = data as { inputTokens?: unknown; priorInputTokens?: unknown } | undefined;
+    const used = typeof dropping?.inputTokens === "number" ? dropping.inputTokens : 0;
+    const prior = typeof dropping?.priorInputTokens === "number" ? dropping.priorInputTokens : 0;
+    return copy.contextProviderDropping(used, prior);
+  }
+  if (kind === "context_overflow_after_compaction") return copy.contextOverflowAfterCompaction;
+  if (kind === "context_reported_window_exceeded") {
+    const exceeded = data as
+      | { usedTokens?: unknown; reportedContextWindow?: unknown }
+      | undefined;
+    const used = typeof exceeded?.usedTokens === "number" ? exceeded.usedTokens : 0;
+    const reported =
+      typeof exceeded?.reportedContextWindow === "number" ? exceeded.reportedContextWindow : 0;
+    return copy.contextReportedWindowExceeded(used, reported);
+  }
+  if (kind === "context_window_overrun") {
+    const overrun = data as
+      | { usedTokens?: unknown; declaredContextWindow?: unknown }
+      | undefined;
+    const used = typeof overrun?.usedTokens === "number" ? overrun.usedTokens : 0;
+    const declared =
+      typeof overrun?.declaredContextWindow === "number" ? overrun.declaredContextWindow : 0;
+    return copy.contextWindowOverrun(used, declared);
+  }
+  if (kind === "context_window_suggestion") {
+    const suggestion = data as
+      | { suggestedContextWindow?: unknown; declaredContextWindow?: unknown }
+      | undefined;
+    const tokens =
+      typeof suggestion?.suggestedContextWindow === "number"
+        ? suggestion.suggestedContextWindow
+        : 0;
+    const declared =
+      typeof suggestion?.declaredContextWindow === "number"
+        ? suggestion.declaredContextWindow
+        : undefined;
+    return copy.contextWindowSuggestion(tokens, declared);
+  }
   if (kind === "step_limit") return copy.stepLimit;
   return kind;
 }
 
 export function materializeChat(
   messages: readonly StoredMessage[],
-  locale: UiLocale = "en",
+  locale: UiLocale,
 ): ChatItem[] {
   const items: ChatItem[] = [];
   for (const message of messages) {
@@ -168,6 +205,7 @@ export function materializeChat(
         ...(message.quotes && message.quotes.length > 0
           ? { quotes: message.quotes }
           : {}),
+        ...(message.directoryReferences ? { directoryReferences: message.directoryReferences } : {}),
         ...(message.inlineReferences !== undefined
           ? { inlineReferences: message.inlineReferences }
           : {}),
@@ -183,12 +221,12 @@ export function materializeChat(
       });
     if (
       message.type === "system_note" &&
-      VISIBLE_SYSTEM_NOTES.has(message.kind)
+      isUserVisibleSessionSystemNote(message.kind)
     ) {
       items.push({
         id: message.id,
         role: "system",
-        text: systemNoteLabel(message.kind, locale),
+        text: systemNoteLabel(message.kind, message.data, locale),
         ts: message.ts,
       });
     }
@@ -377,7 +415,7 @@ export interface TurnViewModel {
   abortedAt?: number;
   abortSource?: string;
   errorClass?: string;
-  partialOutputRetained: boolean;
+  retry?: import('@maka/core/model-failure').ModelRetryDecision;
   user?: ChatItem;
   tools: ToolActivityItem[];
   assistant?: ChatItem;
@@ -417,11 +455,55 @@ export interface TurnViewModel {
 export function overlayLiveTurn(
   turns: readonly TurnViewModel[],
   liveTurn: LiveTurnProjection | undefined,
+  locale: UiLocale,
 ): readonly TurnViewModel[] {
   if (!liveTurn) return turns;
   const targetIndex = turns.findIndex(
     (turn) => turn.turnId === liveTurn.turnId,
   );
+  // A running host-owned context-compaction Turn emits no assistant content.
+  // The Runtime persists a `turn_state:running` row for it, so a settled turn
+  // with this turnId usually already exists (empty). Surface a single
+  // "compacting" system row: merge the note into that existing turn, or
+  // synthesize one if it has not settled yet. The note is deduped by id so
+  // reprojection stays idempotent, and it disappears when the Turn settles
+  // (the live projection drops to undefined and the durable `context_compacted`
+  // note takes over).
+  if (liveTurn.rootExecutionKind === "context_compact" && liveTurn.steps.length === 0) {
+    const noteId = `context-compaction:${liveTurn.turnId}`;
+    if (targetIndex >= 0) {
+      const existing = turns[targetIndex]!;
+      if (existing.notes.some((note) => note.id === noteId)) return turns;
+      const note: ChatItem = {
+        id: noteId,
+        role: "system",
+        text: getConversationCopy(locale).messages.systemNotes.contextCompacting,
+        ts: existing.startedAt,
+      };
+      return turns.map((turn, index) =>
+        index === targetIndex ? { ...turn, notes: [...turn.notes, note] } : turn,
+      );
+    }
+    const startedAt = liveTurn.startedAt ?? 0;
+    return [
+      ...turns,
+      {
+        turnId: liveTurn.turnId,
+        status: "running" as const,
+        tools: [],
+        notes: [
+          {
+            id: noteId,
+            role: "system",
+            text: getConversationCopy(locale).messages.systemNotes.contextCompacting,
+            ts: startedAt,
+          },
+        ],
+        timeline: [],
+        startedAt,
+      } satisfies TurnViewModel,
+    ];
+  }
   if (
     targetIndex >= 0
     && liveTurn.steps.length === 0
@@ -446,7 +528,6 @@ export function overlayLiveTurn(
       : ({
           turnId: liveTurn.turnId,
           status: "completed" as const,
-          partialOutputRetained: false,
           tools: [],
           notes: [],
           timeline: [],
@@ -665,7 +746,7 @@ const SHELL_RUN_PRESENTATION_STATUS = {
  */
 export function materializeTurns(
   messages: readonly StoredMessage[],
-  locale: UiLocale = "en",
+  locale: UiLocale,
 ): TurnViewModel[] {
   const turnRecords = deriveTurnRecords(messages);
   const turnRecordById = new Map(
@@ -704,7 +785,7 @@ export function materializeTurns(
           : {}),
         ...(record?.abortSource ? { abortSource: record.abortSource } : {}),
         ...(record?.errorClass ? { errorClass: record.errorClass } : {}),
-        partialOutputRetained: record?.partialOutputRetained ?? false,
+        ...(record?.retry ? { retry: record.retry } : {}),
         tools: [],
         notes: [],
         timeline: [],
@@ -768,12 +849,12 @@ export function materializeTurns(
       }
     } else if (
       message.type === "system_note" &&
-      VISIBLE_SYSTEM_NOTES.has(message.kind)
+      isUserVisibleSessionSystemNote(message.kind)
     ) {
       turn.notes.push({
         id: message.id,
         role: "system",
-        text: systemNoteLabel(message.kind, locale),
+        text: systemNoteLabel(message.kind, message.data, locale),
         ts: message.ts,
       });
     } else if (message.type === "token_usage") {
@@ -1095,6 +1176,7 @@ function chatItemFromContent(
     ...(content.quotes && content.quotes.length > 0
       ? { quotes: content.quotes }
       : {}),
+    ...(content.directoryReferences ? { directoryReferences: content.directoryReferences } : {}),
     ...(content.inlineReferences !== undefined
       ? { inlineReferences: content.inlineReferences }
       : {}),

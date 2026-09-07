@@ -25,10 +25,8 @@ import {
   createDesktopPhysicalInputGuard,
 } from './computer-use-host.js';
 import { createCursorOverlayController } from './computer-use/cursor-overlay-window.js';
-import {
-  createComputerUsePipController,
-  withComputerUsePip,
-} from './computer-use/pip-window.js';
+import { withComputerUsePip } from './computer-use/pip-feed.js';
+import { createComputerUsePipController } from './computer-use/pip-window.js';
 import {
   createComputerUseStatusItem,
   withComputerUseStatusItem,

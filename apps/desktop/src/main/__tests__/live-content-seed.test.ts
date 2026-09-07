@@ -21,10 +21,36 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   EMPTY_LIVE_CONTENT_SEED,
+  EMPTY_SESSION_OBSERVATION_AUTHORITY,
+  advanceSessionObservationAuthority,
   beginLiveContentSeed,
   completeLiveContentSeed,
   liveContentSeedRevision,
 } from '../../renderer/live-content-seed.js';
+
+test('catalog hydration does not replace an already-bound Session observation', () => {
+  const selected = advanceSessionObservationAuthority(
+    EMPTY_SESSION_OBSERVATION_AUTHORITY,
+    'session-a',
+    undefined,
+  );
+  const hydrated = advanceSessionObservationAuthority(selected, 'session-a', 'profile-a');
+
+  assert.equal(hydrated.profileId, 'profile-a');
+  assert.equal(hydrated.revision, selected.revision);
+});
+
+test('a real Session observation authority handoff advances the revision', () => {
+  const selected = advanceSessionObservationAuthority(
+    EMPTY_SESSION_OBSERVATION_AUTHORITY,
+    'session-a',
+    'profile-a',
+  );
+  const handedOff = advanceSessionObservationAuthority(selected, 'session-a', 'profile-b');
+
+  assert.equal(handedOff.profileId, 'profile-b');
+  assert.equal(handedOff.revision, selected.revision + 1);
+});
 
 test('withholds live content until the current observation generation is ready', () => {
   const first = beginLiveContentSeed(EMPTY_LIVE_CONTENT_SEED, 'session-a');

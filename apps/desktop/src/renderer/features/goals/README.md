@@ -28,11 +28,16 @@ the Goal indicator projection consumed by the chat surface.
 - Consumers import production APIs from `features/goals`.
 - Tests and stories may additionally import `features/goals/testing`.
 - Goals may use shared renderer copy, core types, and Maka UI.
+- Projection transport contexts live with the authoritative Maka UI prop
+  contracts. GoalProvider writes them; the two authorized Desktop leaves read
+  and hand them to the real UI prop sites without owning or accepting those
+  values from AppShell. The feature must not import the leaves back into the slice.
 - Goals must not import `AppShell`, the preload implementation, or the main process.
 - Desktop I/O enters through `GoalServices`; feature code never reads the
   Desktop global bridge directly.
-- `AppShell` supplies the active Session id and a session-scoped error reporter.
-  It consumes only `<GoalHost>`, commands, and selectors.
+- `AppShell` supplies the active Session id, whether the current interaction may
+  open the dialog, and a session-scoped error-reporting intent. It does not read
+  the controller, its model, or a Goal context.
 
 ## Lifecycle invariants
 
@@ -52,12 +57,29 @@ the Goal indicator projection consumed by the chat surface.
 - Form input and errors reset on each open. Budgets are validated against core
   bounds and are never silently clamped.
 
-## Public surface
+## Public surface and render ownership
 
-- `host` is passed intact to `<GoalHost model={goals.host} />`.
-- `commands.openDialog` is the shell entry for the composer action.
-- `selectors.active` disables duplicate Goal creation and
-  `selectors.indicator` feeds the active chat surface.
+- `<GoalProvider>` is the only production caller of `useGoalController`. The
+  controller hook is intentionally absent from the production barrel.
+- `ChatComposerRegion` consumes only `openDialog` and `active`, then binds them
+  at the authoritative `Composer` props.
+- `ChatMessageSurface` consumes only the Goal indicator, then binds it at the
+  authoritative `ChatView` prop.
+- `<GoalHost>` reads the dialog model directly from the provider.
+
+The three projections use separate contexts. Iteration/token updates therefore
+do not repaint the Composer, and dialog state does not repaint either chat
+surface. A non-reader child under `GoalProvider` retains the element built by
+its parent and does not re-render for Goal-only updates. The transport keeps
+AppShell out of the values and gives TypeScript a checked prop handoff at each
+actual UI reader instead of relying on a structurally loose cloned element.
+Other Composer and ChatView instances under AppShell do not consume these
+contexts, so WorkHub and Workbar cannot inherit the main Session's Goal.
+
+Production code must not export or invoke `useGoalController` outside
+`GoalProvider`, pass a controller model back through `AppShell`, or replace the
+narrow contexts with one catch-all controller context. The AppShell hook gate,
+renderer debt ledger, and Goals boundary tests lock those constraints.
 
 The Desktop adapter is created once in the renderer composition root. Tests
 use `createFakeGoalServices` from `testing.ts`; production code must not import

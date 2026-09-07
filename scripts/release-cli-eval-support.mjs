@@ -41,6 +41,10 @@ export function findEvalReleaseTarball(
   if (platform !== 'linux' || arch !== 'x64') {
     throw new Error('The real Eval release validation requires Linux x64');
   }
+  return findReleaseTarball(releaseDirectory);
+}
+
+export function findReleaseTarball(releaseDirectory) {
   const tarballs = readdirSync(releaseDirectory)
     .filter((name) => /^maka-agent-[^/]+\.tgz$/u.test(name))
     .map((name) => join(releaseDirectory, name));

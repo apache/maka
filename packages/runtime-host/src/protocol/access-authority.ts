@@ -30,7 +30,19 @@ import type { OperationKey } from './operations.js';
 
 export const ACCESS_CREDENTIAL_MAX_GRANTS = 256;
 
-export type AccessCredentialPrincipalKind = 'remote_owner' | 'capability_provider';
+export type AccessCredentialPrincipalKind =
+  | 'remote_owner'
+  | 'capability_provider'
+  | 'session_guest';
+export type ManagedAccessCredentialPrincipalKind = Exclude<
+  AccessCredentialPrincipalKind,
+  'session_guest'
+>;
+
+export interface ClientCapabilityOwnerIdentity {
+  readonly principalId: string;
+  readonly clientInstanceId: string;
+}
 
 const ACCESS_ERRORS = [
   'host_not_ready',
@@ -43,26 +55,29 @@ const ACCESS_ERRORS = [
 ] as const;
 
 export interface AccessCredentialIssueInput {
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
+  readonly capabilityOwnerCredentialId?: string;
 }
 
 export interface AccessCredentialIssueResult {
   readonly credentialId: string;
   readonly deliveryId: string;
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
+  readonly capabilityOwner?: ClientCapabilityOwnerIdentity;
 }
 
 export type AccessCredentialReplaceInput = AccessCredentialIssueInput;
 export type AccessCredentialReplaceResult = AccessCredentialIssueResult;
-export interface AccessCredentialPrepareInput extends AccessCredentialIssueInput {
+export interface AccessCredentialPrepareInput
+  extends Omit<AccessCredentialIssueInput, 'capabilityOwnerCredentialId'> {
   readonly bindClientInstance?: boolean;
 }
 export type AccessCredentialPrepareResult = AccessCredentialIssueResult;
@@ -195,15 +210,28 @@ export const ACCESS_AUTHORITY_OPERATION_SPECS = {
 } as const;
 
 export function decodeAccessCredentialIssueInput(value: unknown): AccessCredentialIssueInput {
-  const record = requireExactRecord(value, 'access credential issue input', [
-    'principalKind',
-    'principalId',
-    'operationGrants',
-    'canPublishClientCapabilities',
-    'canUseHostPaths',
-  ]);
+  const record = requireShapedRecord(
+    value,
+    'access credential issue input',
+    [
+      'principalKind',
+      'principalId',
+      'operationGrants',
+      'canPublishClientCapabilities',
+      'canUseHostPaths',
+    ],
+    ['capabilityOwnerCredentialId'],
+  );
+  const decodedPrincipalKind = principalKind(record.principalKind);
+  const capabilityOwnerCredentialId =
+    record.capabilityOwnerCredentialId === undefined
+      ? undefined
+      : requireId(record.capabilityOwnerCredentialId, 'capabilityOwnerCredentialId');
+  if (capabilityOwnerCredentialId && decodedPrincipalKind !== 'capability_provider') {
+    throw invalidProtocolFrame('Only a capability provider credential may declare a Client owner');
+  }
   return {
-    principalKind: principalKind(record.principalKind),
+    principalKind: decodedPrincipalKind,
     principalId: principalId(record.principalId),
     operationGrants: operationGrants(record.operationGrants),
     canPublishClientCapabilities: boolean(
@@ -211,6 +239,7 @@ export function decodeAccessCredentialIssueInput(value: unknown): AccessCredenti
       'canPublishClientCapabilities',
     ),
     canUseHostPaths: boolean(record.canUseHostPaths, 'canUseHostPaths'),
+    ...(capabilityOwnerCredentialId ? { capabilityOwnerCredentialId } : {}),
   };
 }
 
@@ -243,19 +272,32 @@ export function decodeAccessCredentialPrepareInput(value: unknown): AccessCreden
 }
 
 export function decodeAccessCredentialIssueResult(value: unknown): AccessCredentialIssueResult {
-  const record = requireExactRecord(value, 'access credential issue result', [
-    'credentialId',
-    'deliveryId',
-    'principalKind',
-    'principalId',
-    'operationGrants',
-    'canPublishClientCapabilities',
-    'canUseHostPaths',
-  ]);
+  const record = requireShapedRecord(
+    value,
+    'access credential issue result',
+    [
+      'credentialId',
+      'deliveryId',
+      'principalKind',
+      'principalId',
+      'operationGrants',
+      'canPublishClientCapabilities',
+      'canUseHostPaths',
+    ],
+    ['capabilityOwner'],
+  );
+  const decodedPrincipalKind = principalKind(record.principalKind);
+  const capabilityOwner =
+    record.capabilityOwner === undefined
+      ? undefined
+      : clientCapabilityOwnerIdentity(record.capabilityOwner);
+  if (capabilityOwner && decodedPrincipalKind !== 'capability_provider') {
+    throw invalidProtocolFrame('Only a capability provider credential may declare a Client owner');
+  }
   return {
     credentialId: requireId(record.credentialId, 'credentialId'),
     deliveryId: requireId(record.deliveryId, 'deliveryId'),
-    principalKind: principalKind(record.principalKind),
+    principalKind: decodedPrincipalKind,
     principalId: principalId(record.principalId),
     operationGrants: operationGrants(record.operationGrants),
     canPublishClientCapabilities: boolean(
@@ -263,11 +305,19 @@ export function decodeAccessCredentialIssueResult(value: unknown): AccessCredent
       'canPublishClientCapabilities',
     ),
     canUseHostPaths: boolean(record.canUseHostPaths, 'canUseHostPaths'),
+    ...(capabilityOwner ? { capabilityOwner } : {}),
   };
 }
 
-function principalKind(value: unknown): AccessCredentialPrincipalKind {
+function principalKind(value: unknown): ManagedAccessCredentialPrincipalKind {
   if (value !== 'remote_owner' && value !== 'capability_provider') {
+    throw invalidProtocolFrame('Invalid access credential principalKind');
+  }
+  return value;
+}
+
+function revocablePrincipalKind(value: unknown): AccessCredentialPrincipalKind {
+  if (value !== 'remote_owner' && value !== 'capability_provider' && value !== 'session_guest') {
     throw invalidProtocolFrame('Invalid access credential principalKind');
   }
   return value;
@@ -284,7 +334,7 @@ export function decodeAccessPrincipalRevokeInput(value: unknown): AccessPrincipa
     'principalId',
   ]);
   return {
-    principalKind: principalKind(record.principalKind),
+    principalKind: revocablePrincipalKind(record.principalKind),
     principalId: principalId(record.principalId),
   };
 }
@@ -368,6 +418,17 @@ function principalId(value: unknown): string {
     throw invalidProtocolFrame('Invalid access credential principalId');
   }
   return principal;
+}
+
+function clientCapabilityOwnerIdentity(value: unknown): ClientCapabilityOwnerIdentity {
+  const record = requireExactRecord(value, 'Client Capability owner identity', [
+    'principalId',
+    'clientInstanceId',
+  ]);
+  return {
+    principalId: principalId(record.principalId),
+    clientInstanceId: requireId(record.clientInstanceId, 'clientInstanceId'),
+  };
 }
 
 function boolean(value: unknown, label: string): boolean {

@@ -23,6 +23,41 @@ export interface LiveContentSeed {
   readonly readyGeneration: number;
 }
 
+export interface SessionObservationAuthority {
+  readonly sessionId: string | undefined;
+  readonly profileId: string | undefined;
+  readonly revision: number;
+}
+
+export const EMPTY_SESSION_OBSERVATION_AUTHORITY: SessionObservationAuthority = {
+  sessionId: undefined,
+  profileId: undefined,
+  revision: 0,
+};
+
+/**
+ * Changes the observation identity only when its actual authority changes.
+ *
+ * A newly created Session is selected before its catalog row arrives. The
+ * preload already resolved and pinned that Session's profile for the first
+ * observation, so the catalog's later undefined -> profile hydration is not a
+ * new authority and must not tear down the ready stream. A known profile
+ * changing to another known profile is a real authority handoff and does need
+ * a fresh observation.
+ */
+export function advanceSessionObservationAuthority(
+  current: SessionObservationAuthority,
+  sessionId: string | undefined,
+  profileId: string | undefined,
+): SessionObservationAuthority {
+  if (current.sessionId !== sessionId) {
+    return { sessionId, profileId, revision: current.revision + 1 };
+  }
+  if (profileId === undefined || profileId === current.profileId) return current;
+  if (current.profileId === undefined) return { ...current, profileId };
+  return { sessionId, profileId, revision: current.revision + 1 };
+}
+
 export const EMPTY_LIVE_CONTENT_SEED: LiveContentSeed = {
   sessionId: undefined,
   generation: 0,

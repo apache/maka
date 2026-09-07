@@ -22,12 +22,17 @@ import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { CLI_RELEASE_ARTIFACT_LIMITS } from './release-cli-artifact-policy.mjs';
-import { compareProductReleaseVersions, parseProductReleaseVersion } from './release-version.mjs';
+import {
+  assertProductNightlyVersion,
+  parseProductNightlyVersion,
+  parseProductReleaseVersion,
+} from './release-version.mjs';
 
 const PACKAGE_NAME = 'maka-agent';
 const REGISTRY_ORIGIN = 'https://registry.npmjs.org';
 const REPOSITORY = 'apache/maka';
-const STAGE_WORKFLOW_PATH = '.github/workflows/release-cli-stage.yml';
+const PUBLICATION_WORKFLOW_PATH = '.github/workflows/npm-publication.yml';
+const REGISTRY_REQUEST_TIMEOUT_MS = 30_000;
 const RELEASE_RECORD_KEYS = [
   'schemaVersion',
   'packageName',
@@ -39,13 +44,26 @@ const RELEASE_RECORD_KEYS = [
   'checksum',
   'inventory',
   'source',
+  'publisher',
 ];
 
 export function parseCliReleaseVersion(version) {
   const { prerelease } = parseProductReleaseVersion(version);
+  if (prerelease.length > 0) {
+    throw new Error('Formal CLI releases must use a stable product version');
+  }
   return {
     version,
-    distTag: prerelease.length > 0 ? 'next' : 'latest',
+    distTag: 'latest',
+    tarball: `${PACKAGE_NAME}-${version}.tgz`,
+  };
+}
+
+export function parseCliNightlyVersion(version, productVersion) {
+  assertProductNightlyVersion(version, productVersion);
+  return {
+    version,
+    distTag: 'nightly',
     tarball: `${PACKAGE_NAME}-${version}.tgz`,
   };
 }
@@ -57,17 +75,16 @@ export function validateRegistryChannels({ releaseVersion, releaseDistTag, distT
   if (distTags[releaseDistTag] !== releaseVersion) {
     throw new Error(`Registry dist-tag ${releaseDistTag} does not point to ${releaseVersion}`);
   }
+}
 
-  const latest = distTags.latest;
-  const next = distTags.next;
-  if (releaseDistTag === 'latest' && typeof next !== 'string') {
-    throw channelLagError({ releaseVersion, releaseDistTag, latest, next });
+export function prepareNightlyRelease({ repoRoot, releaseDirectory, expectedVersion }) {
+  const cliManifest = readJson(join(repoRoot, 'packages/cli/package.json'), 'CLI manifest');
+  if (cliManifest.name !== PACKAGE_NAME) {
+    throw new Error(`CLI package name must be ${PACKAGE_NAME}`);
   }
-  if (typeof latest === 'string' && typeof next === 'string') {
-    if (compareProductReleaseVersions(next, latest) < 0) {
-      throw channelLagError({ releaseVersion, releaseDistTag, latest, next });
-    }
-  }
+  const identity = parseCliNightlyVersion(expectedVersion, cliManifest.version);
+  const candidate = validateCandidateFiles(releaseDirectory, identity);
+  return { ...identity, tarballPath: candidate.tarballPath, sha256: candidate.sha256 };
 }
 
 export function prepareStageRelease({
@@ -76,6 +93,7 @@ export function prepareStageRelease({
   expectedVersion,
   productTag,
   sourceSha,
+  publisherSha,
   runId,
   runAttempt,
   repository,
@@ -85,25 +103,20 @@ export function prepareStageRelease({
   if (cliManifest.name !== PACKAGE_NAME) {
     throw new Error(`CLI package name must be ${PACKAGE_NAME}`);
   }
-  const identity = parseCliReleaseVersion(cliManifest.version);
-  if (expectedVersion !== identity.version) {
-    throw new Error(
-      `Release version confirmation ${expectedVersion} does not match ${identity.version}`,
-    );
-  }
+  const identity = parseCliReleaseVersion(expectedVersion);
   if (productTag !== `v${identity.version}`) {
     throw new Error(`Product tag ${productTag} does not match ${identity.version}`);
   }
-  validateSourceIdentity({
-    sourceSha,
+  validateProductSource({ sourceSha, repository });
+  validatePublisherIdentity({
+    publisherSha,
     runId,
     runAttempt,
-    repository,
     workflowPath,
   });
   const candidate = validateCandidateFiles(releaseDirectory, identity);
   const record = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     packageName: PACKAGE_NAME,
     ...identity,
     productTag,
@@ -112,8 +125,11 @@ export function prepareStageRelease({
     inventory: `${identity.tarball}.files.json`,
     source: {
       repository,
-      workflow: workflowPath,
       commit: sourceSha,
+    },
+    publisher: {
+      workflow: workflowPath,
+      commit: publisherSha,
       runId,
       runAttempt,
     },
@@ -134,17 +150,17 @@ export function validateStageRun({ releaseDirectory, expectedVersion, run }) {
   }
   if (
     !run ||
-    String(run.id) !== record.source.runId ||
-    String(run.run_attempt) !== record.source.runAttempt ||
-    run.path !== record.source.workflow ||
+    String(run.id) !== record.publisher.runId ||
+    String(run.run_attempt) !== record.publisher.runAttempt ||
+    run.path !== record.publisher.workflow ||
     run.event !== 'workflow_dispatch' ||
-    run.head_branch !== record.productTag ||
-    run.head_sha !== record.source.commit ||
+    run.head_branch !== 'main' ||
+    run.head_sha !== record.publisher.commit ||
     run.conclusion !== 'success' ||
     run.head_repository?.full_name !== record.source.repository
   ) {
     throw new Error(
-      'Release record does not belong to the exact successful product-tag stage workflow run',
+      'Release record does not belong to the exact successful main-branch stage workflow run',
     );
   }
   return record;
@@ -202,6 +218,54 @@ export async function fetchRegistryRelease({
   return { ...record, tarballPath, sha256 };
 }
 
+export async function resolveRegistryNightlyPredecessor({ fetchImpl = fetch } = {}) {
+  const packageMetadata = await fetchJson(
+    fetchImpl,
+    `${REGISTRY_ORIGIN}/${PACKAGE_NAME}`,
+    'package metadata',
+  );
+  const version = packageMetadata?.['dist-tags']?.nightly;
+  parseProductNightlyVersion(version);
+
+  const versionMetadata = await fetchJson(
+    fetchImpl,
+    `${REGISTRY_ORIGIN}/${PACKAGE_NAME}/${encodeURIComponent(version)}`,
+    'package version metadata',
+    'application/json',
+  );
+  if (versionMetadata.name !== PACKAGE_NAME || versionMetadata.version !== version) {
+    throw new Error('Registry Nightly identity does not match its dist-tag');
+  }
+
+  const tarball = `${PACKAGE_NAME}-${version}.tgz`;
+  const tarballUrl = parseRegistryTarballUrl(versionMetadata.dist?.tarball, tarball);
+  const integrity = parseSha512Integrity(versionMetadata.dist?.integrity);
+  return {
+    version,
+    tarballUrl,
+    integrity,
+  };
+}
+
+export async function assertRegistryNightlyPredecessor({
+  expectedVersion,
+  expectedTarballUrl,
+  expectedIntegrity,
+  fetchImpl = fetch,
+}) {
+  const current = await resolveRegistryNightlyPredecessor({ fetchImpl });
+  if (
+    current.version !== expectedVersion ||
+    current.tarballUrl !== expectedTarballUrl ||
+    current.integrity !== expectedIntegrity
+  ) {
+    throw new Error(
+      `Qualified npm Nightly predecessor ${expectedVersion} is no longer current; found ${current.version}`,
+    );
+  }
+  return current;
+}
+
 export function validateSignatureAudit({ releaseDirectory, audit }) {
   const record = loadReleaseRecord(releaseDirectory);
   if (!Array.isArray(audit?.invalid) || !Array.isArray(audit?.missing)) {
@@ -250,7 +314,7 @@ export function prepareSignatureAuditTree({ releaseDirectory, auditDirectory }) 
 function loadReleaseRecord(releaseDirectory) {
   const record = readJson(join(releaseDirectory, 'release.json'), 'release record');
   exactKeys(record, RELEASE_RECORD_KEYS, 'release record');
-  if (record.schemaVersion !== 3 || record.packageName !== PACKAGE_NAME) {
+  if (record.schemaVersion !== 4 || record.packageName !== PACKAGE_NAME) {
     throw new Error('Unsupported CLI release record');
   }
   const identity = parseCliReleaseVersion(record.version);
@@ -267,17 +331,17 @@ function loadReleaseRecord(releaseDirectory) {
   if (!/^[0-9a-f]{64}$/u.test(record.sha256)) {
     throw new Error('Release record sha256 is invalid');
   }
-  exactKeys(
-    record.source,
-    ['repository', 'workflow', 'commit', 'runId', 'runAttempt'],
-    'release source',
-  );
-  validateSourceIdentity({
+  exactKeys(record.source, ['repository', 'commit'], 'release source');
+  validateProductSource({
     sourceSha: record.source.commit,
-    runId: record.source.runId,
-    runAttempt: record.source.runAttempt,
     repository: record.source.repository,
-    workflowPath: record.source.workflow,
+  });
+  exactKeys(record.publisher, ['workflow', 'commit', 'runId', 'runAttempt'], 'release publisher');
+  validatePublisherIdentity({
+    publisherSha: record.publisher.commit,
+    runId: record.publisher.runId,
+    runAttempt: record.publisher.runAttempt,
+    workflowPath: record.publisher.workflow,
   });
   const candidate = validateCandidateFiles(releaseDirectory, identity);
   if (candidate.sha256 !== record.sha256) {
@@ -306,13 +370,17 @@ function validateCandidateFiles(releaseDirectory, identity) {
   return { tarballPath, sha256 };
 }
 
-function validateSourceIdentity({ sourceSha, runId, runAttempt, repository, workflowPath }) {
+function validateProductSource({ sourceSha, repository }) {
   if (!/^[0-9a-f]{40}$/u.test(sourceSha)) throw new Error('Release source SHA is invalid');
+  if (repository !== REPOSITORY) throw new Error(`Release repository must be ${REPOSITORY}`);
+}
+
+function validatePublisherIdentity({ publisherSha, runId, runAttempt, workflowPath }) {
+  if (!/^[0-9a-f]{40}$/u.test(publisherSha)) throw new Error('Release publisher SHA is invalid');
   if (!/^[1-9]\d*$/u.test(runId)) throw new Error('Release workflow run ID is invalid');
   if (!/^[1-9]\d*$/u.test(runAttempt)) throw new Error('Release workflow run attempt is invalid');
-  if (repository !== REPOSITORY) throw new Error(`Release repository must be ${REPOSITORY}`);
-  if (workflowPath !== STAGE_WORKFLOW_PATH) {
-    throw new Error(`Release workflow must be ${STAGE_WORKFLOW_PATH}`);
+  if (workflowPath !== PUBLICATION_WORKFLOW_PATH) {
+    throw new Error(`Release workflow must be ${PUBLICATION_WORKFLOW_PATH}`);
   }
 }
 
@@ -334,11 +402,11 @@ function parseProvenanceStatement(attestation) {
 
 function matchesReleaseProvenance(statement, record) {
   const repository = `https://github.com/${record.source.repository}`;
-  const ref = `refs/tags/${record.productTag}`;
+  const ref = 'refs/heads/main';
   const definition = statement?.predicate?.buildDefinition;
   const workflow = definition?.externalParameters?.workflow;
   const dependencies = definition?.resolvedDependencies;
-  const invocationId = `${repository}/actions/runs/${record.source.runId}/attempts/${record.source.runAttempt}`;
+  const invocationId = `${repository}/actions/runs/${record.publisher.runId}/attempts/${record.publisher.runAttempt}`;
   return (
     statement?._type === 'https://in-toto.io/Statement/v1' &&
     statement?.predicateType === 'https://slsa.dev/provenance/v1' &&
@@ -346,12 +414,12 @@ function matchesReleaseProvenance(statement, record) {
       'https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1' &&
     workflow?.repository === repository &&
     workflow?.ref === ref &&
-    workflow?.path === record.source.workflow &&
+    workflow?.path === record.publisher.workflow &&
     Array.isArray(dependencies) &&
     dependencies.some(
       (dependency) =>
         dependency?.uri === `git+${repository}@${ref}` &&
-        dependency?.digest?.gitCommit === record.source.commit,
+        dependency?.digest?.gitCommit === record.publisher.commit,
     ) &&
     definition?.internalParameters?.github?.event_name === 'workflow_dispatch' &&
     statement?.predicate?.runDetails?.builder?.id?.startsWith(
@@ -361,22 +429,11 @@ function matchesReleaseProvenance(statement, record) {
   );
 }
 
-function channelLagError({ releaseVersion, releaseDistTag, latest, next }) {
-  const current = typeof next === 'string' ? next : 'missing';
-  if (releaseDistTag === 'next') {
-    return new Error(
-      `Registry next dist-tag (${current}) is behind latest (${latest}); prerelease ${releaseVersion} cannot advance the next channel`,
-    );
-  }
-  return new Error(
-    `Registry next dist-tag (${current}) is behind the latest release. Before finalizing, authenticate interactively with npm and run: npm dist-tag add "${PACKAGE_NAME}@${releaseVersion}" next --registry ${REGISTRY_ORIGIN}/`,
-  );
-}
-
 async function fetchJson(fetchImpl, url, label, accept = 'application/vnd.npm.install-v1+json') {
   const response = await fetchImpl(url, {
     headers: { accept },
     redirect: 'error',
+    signal: AbortSignal.timeout(REGISTRY_REQUEST_TIMEOUT_MS),
   });
   if (!response.ok)
     throw new Error(`Registry ${label} request failed with status ${response.status}`);
@@ -435,6 +492,18 @@ function parseRegistryTarballUrl(value, expectedName) {
   return url.href;
 }
 
+function parseSha512Integrity(value) {
+  if (typeof value !== 'string' || !value.startsWith('sha512-')) {
+    throw new Error('Registry package metadata has no valid SHA-512 integrity');
+  }
+  const encoded = value.slice('sha512-'.length);
+  const bytes = Buffer.from(encoded, 'base64');
+  if (bytes.byteLength !== 64 || bytes.toString('base64') !== encoded) {
+    throw new Error('Registry package metadata has no valid SHA-512 integrity');
+  }
+  return value;
+}
+
 function exactKeys(value, keys, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
@@ -474,12 +543,13 @@ function appendOutputs(path, values) {
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
-  if (command === 'prepare-stage' && args.length === 9) {
+  if (command === 'prepare-stage' && args.length === 10) {
     const [
       releaseDirectory,
       expectedVersion,
       productTag,
       sourceSha,
+      publisherSha,
       runId,
       runAttempt,
       repository,
@@ -492,6 +562,7 @@ async function main() {
       expectedVersion,
       productTag,
       sourceSha,
+      publisherSha,
       runId,
       runAttempt,
       repository,
@@ -500,6 +571,20 @@ async function main() {
     appendOutputs(output, {
       version: result.record.version,
       dist_tag: result.record.distTag,
+      tarball: result.tarballPath,
+    });
+    return;
+  }
+  if (command === 'prepare-nightly' && args.length === 3) {
+    const [releaseDirectory, expectedVersion, output] = args;
+    const result = prepareNightlyRelease({
+      repoRoot: resolve(import.meta.dirname, '..'),
+      releaseDirectory: resolve(releaseDirectory),
+      expectedVersion,
+    });
+    appendOutputs(output, {
+      version: result.version,
+      dist_tag: result.distTag,
       tarball: result.tarballPath,
     });
     return;
@@ -515,6 +600,7 @@ async function main() {
       appendOutputs(output, {
         product_tag: record.productTag,
         source_commit: record.source.commit,
+        version: record.version,
       });
     }
     return;
@@ -535,6 +621,25 @@ async function main() {
     });
     return;
   }
+  if (command === 'resolve-nightly-predecessor' && args.length === 1) {
+    const [output] = args;
+    const predecessor = await resolveRegistryNightlyPredecessor();
+    appendOutputs(output, {
+      version: predecessor.version,
+      tarball_url: predecessor.tarballUrl,
+      integrity: predecessor.integrity,
+    });
+    return;
+  }
+  if (command === 'assert-nightly-predecessor' && args.length === 3) {
+    const [expectedVersion, expectedTarballUrl, expectedIntegrity] = args;
+    await assertRegistryNightlyPredecessor({
+      expectedVersion,
+      expectedTarballUrl,
+      expectedIntegrity,
+    });
+    return;
+  }
   if (command === 'validate-audit' && args.length === 2) {
     const [releaseDirectory, auditPath] = args;
     validateSignatureAudit({
@@ -544,7 +649,7 @@ async function main() {
     return;
   }
   throw new Error(
-    `Usage: release-cli-publication.mjs <prepare-stage|prepare-audit|validate-stage-run|fetch-registry|validate-audit> ...`,
+    `Usage: release-cli-publication.mjs <prepare-stage|prepare-nightly|prepare-audit|validate-stage-run|fetch-registry|resolve-nightly-predecessor|assert-nightly-predecessor|validate-audit> ...`,
   );
 }
 

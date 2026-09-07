@@ -82,8 +82,10 @@ Qualification also keeps three fail-closed invariants:
 
 The old direct real-machine qualification runner was removed. The five-round
 restart runner remains available as `npm run computer-use -- restart-soak`,
-but is regression-only and cannot satisfy a provider matrix cell. There is one
-qualification path rather than parallel evidence standards.
+using the `MAKA_CU_AX_MODEL_LAB_ROOT` fixture checkout described in
+[Lab fixture setup](./computer-use-evidence-classes.md#lab-fixture-setup). The
+runner is regression-only and cannot satisfy a provider matrix cell. There is
+one qualification path rather than parallel evidence standards.
 
 ## Next Layer
 

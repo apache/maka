@@ -23,17 +23,14 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { requireComputerUseLabRoot } from './lab-root.mjs';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '../..');
 const harnessPath = join(here, 'real-ax-harness.mjs');
 const monitorPath = join(here, 'real-e2e-monitor.swift');
 const inputAgeSource = join(here, 'physical-input-age.swift');
-const labRoot = process.env.MAKA_CU_AX_MODEL_LAB_ROOT;
-if (!labRoot) {
-  throw new Error(
-    'MAKA_CU_AX_MODEL_LAB_ROOT is required: point it at a local checkout of the Codex CUA Lab fixture',
-  );
-}
+const labRoot = requireComputerUseLabRoot();
 const statePath = join(labRoot, 'test-app/runtime/state.json');
 const fixtureBundleId = 'com.openai.codex.cualab';
 const expectedAppPath = join(labRoot, 'test-app/build/Codex CUA Lab.app');

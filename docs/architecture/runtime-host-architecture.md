@@ -47,7 +47,8 @@ If each Client owns its own Runtime and recovery path, the system gains multiple
 - one process owns writes for one State Root;
 - Local IPC and authenticated WebSocket use the same durable state;
 - business code decides what work means;
-- one execution authority admits and stops top-level Session work, tracks its final result, and waits for cleanup.
+- one execution authority admits and stops top-level Session work, tracks its final result, and waits for cleanup;
+- one model catalog describes what a Connection's models are and can do. The Host resolves each model from the stored row and its own model metadata and projects the result; Clients render that projection. A Client resolves a catalog itself only where the Host has no state to resolve against — a provider not yet added, or an editor draft not yet saved.
 
 ## Parts in plain language
 

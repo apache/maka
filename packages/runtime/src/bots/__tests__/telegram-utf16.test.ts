@@ -22,19 +22,9 @@ import { describe, it } from 'node:test';
 
 import { __TEST__ } from '../telegram-bridge.js';
 
-const { utf16Len, prefixWithinUtf16, splitForTelegram } = __TEST__;
+const { utf16Len, splitForTelegram } = __TEST__;
 
 describe('Telegram UTF-16 limits', () => {
-  it('truncates prefixes without splitting surrogate pairs', () => {
-    for (const [text, limit, expected] of [
-      ['hello', 100, 'hello'],
-      ['abcdef', 3, 'abc'],
-      ['a😀', 2, 'a'],
-    ] as const) {
-      assert.equal(prefixWithinUtf16(text, limit), expected, text);
-    }
-  });
-
   it('splits oversized text within limits, on code points, and preferably at newlines', () => {
     assert.deepEqual(splitForTelegram('hello world'), ['hello world']);
 

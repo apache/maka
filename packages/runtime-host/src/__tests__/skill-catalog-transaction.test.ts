@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { closeSync, fsyncSync, openSync, writeSync } from 'node:fs';
+import { closeSync, fsyncSync, openSync, readdirSync, writeFileSync, writeSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -213,7 +213,6 @@ test('intent body write failure cleans staging and does not poison recovery', as
 });
 
 test('a process killed before intent publication leaves only a GC-safe pre-intent transaction', async () => {
-  if (process.platform === 'win32') return;
   const root = await tempRoot();
   const moduleUrl = new URL('../server/skill-catalog-transaction.js', import.meta.url).href;
   const script = `
@@ -236,7 +235,8 @@ test('a process killed before intent publication leaves only a GC-safe pre-inten
       child.once('exit', (code, signal) => resolve({ code, signal }));
     },
   );
-  assert.equal(exit.signal, 'SIGKILL');
+  if (process.platform === 'win32') assert.notEqual(exit.code, 0);
+  else assert.equal(exit.signal, 'SIGKILL');
   const transaction = await onlyTransaction(root);
   assert.deepEqual((await readdir(transaction)).sort(), ['intent.json.tmp', 'next']);
   await writer(root).recover();
@@ -536,18 +536,25 @@ test('managed recovery fails closed without overwriting a third-party edit', asy
   assert.deepEqual(await transactionEntries(root), entries);
 });
 
-test('managed replacement preserves a pre-GC open-fd save and fails before transaction completion', async () => {
-  if (process.platform === 'win32') return;
+test('managed replacement preserves a pre-GC stale save and fails before transaction completion', async () => {
   const root = await tempRoot();
   const expected = managedArtifacts('old');
   const next = managedArtifacts('new');
   await createManaged(root, 'managed', expected);
-  const fd = openSync(join(root, 'skills', 'managed', 'SKILL.md'), 'r+');
+  const fd =
+    process.platform === 'win32'
+      ? undefined
+      : openSync(join(root, 'skills', 'managed', 'SKILL.md'), 'r+');
   const transactionWriter = new SkillCatalogTransactionWriter(
     async (operation) => operation(root),
     {
       failpoint(point) {
         if (point !== 'after_managed_publish') return;
+        if (fd === undefined) {
+          // Windows cannot freeze a directory with an open child, so inject the same stale save after the rename.
+          writeFileSync(frozenSkillPath(root), '# open fd edit\n', { flush: true });
+          return;
+        }
         writeSync(fd, Buffer.from('# open fd edit\n'), 0, 15, 0);
         fsyncSync(fd);
       },
@@ -559,7 +566,7 @@ test('managed replacement preserves a pre-GC open-fd save and fails before trans
       isTransactionError('commit_outcome_unknown'),
     );
   } finally {
-    closeSync(fd);
+    if (fd !== undefined) closeSync(fd);
   }
 
   assert.deepEqual(await readManaged(root, 'managed'), next);
@@ -569,6 +576,13 @@ test('managed replacement preserves a pre-GC open-fd save and fails before trans
   assert.deepEqual(await readManaged(root, 'managed'), next);
   assert.match(await readFile(join(frozen, 'SKILL.md'), 'utf8'), /^# open fd edit/);
 });
+
+function frozenSkillPath(root: string): string {
+  const skills = join(root, 'skills');
+  const frozen = readdirSync(skills).filter((entry) => entry.startsWith('.maka-frozen-'));
+  assert.equal(frozen.length, 1);
+  return join(skills, frozen[0], 'SKILL.md');
+}
 
 test('managed replacement rejects a stale expected set before creating an intent', async () => {
   const root = await tempRoot();
@@ -622,7 +636,6 @@ test('recovery rejects modified intents by the digest bound into the transaction
 });
 
 test('managed recovery rejects symlinks without following them', async () => {
-  if (process.platform === 'win32') return;
   const root = await tempRoot();
   const expected = managedArtifacts('old');
   const next = managedArtifacts('new');

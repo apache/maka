@@ -40,6 +40,7 @@ import {
   type InteractiveUsageStoresFailureClassification,
   type InteractiveUsageStoresWriter,
 } from '@maka/storage/usage-stores';
+import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import {
   encodePricingQueryResult,
   encodeUsageQueryResult,
@@ -61,7 +62,11 @@ import {
 } from '../protocol/index.js';
 import type { UsagePricingOperationHandlerMap } from './operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
-import { readCanonicalUsage } from './canonical-usage-reader.js';
+import {
+  readCanonicalUsageBuckets,
+  readCanonicalUsageLogs,
+  readCanonicalUsageSummary,
+} from './canonical-usage-reader.js';
 
 /** Root-scoped projection over the authentic lease-bound usage stores. */
 export class HostUsagePricingCoordinator {
@@ -75,6 +80,10 @@ export class HostUsagePricingCoordinator {
   readonly #requestDrain: () => void;
   readonly #activation: RuntimePolicyActivationGate;
   readonly #onCommittedPricingMutation: () => void;
+  // Resolves a session's human-readable title for the Task column. Reads the
+  // durable session header directly (unfiltered, in-process), so it covers
+  // reserved-role, coordination, and legacy sessions the catalog omits.
+  readonly #readSessionTitle?: (sessionId: string) => Promise<string | undefined>;
   #poisonDrainRequested = false;
 
   constructor(
@@ -82,23 +91,42 @@ export class HostUsagePricingCoordinator {
     requestDrain: () => void,
     activation: RuntimePolicyActivationGate,
     onCommittedPricingMutation: () => void = () => {},
+    readSessionTitle?: (sessionId: string) => Promise<string | undefined>,
   ) {
     this.#stores = authenticateInteractiveUsageStoresWriter(stores);
     this.#requestDrain = requestDrain;
     this.#activation = activation;
     this.#onCommittedPricingMutation = onCommittedPricingMutation;
+    this.#readSessionTitle = readSessionTitle;
   }
 
-  /**
-   * Reads the canonical ledger for the window a query addresses (#1679). The
-   * range is resolved once here so both sources answer the same window.
-   */
-  async #canonicalUsage(
-    query: UsageQuery,
-    now: number,
-    repair = true,
-  ): Promise<CanonicalUsageSource> {
-    return readCanonicalUsage(this.#stores, query, now, repair);
+  // Resolve titles for exactly the sessions on this page. A session that no
+  // longer exists is simply left untitled — one deleted session never blanks
+  // the rest. Store lifecycle, persistence, and malformed-header failures are
+  // *not* swallowed: they propagate so #queryUsage maps them to host_draining/
+  // persistence_failed and the Desktop keeps its normal reconnect path.
+  async #resolveSessionTitles(
+    rows: ReadonlyArray<{ readonly sessionId?: string }>,
+  ): Promise<ReadonlyMap<string, string>> {
+    const titles = new Map<string, string>();
+    const read = this.#readSessionTitle;
+    if (!read) return titles;
+    const ids = [
+      ...new Set(rows.map((row) => row.sessionId).filter((id): id is string => id !== undefined)),
+    ];
+    await Promise.all(
+      ids.map(async (id) => {
+        try {
+          const title = (await read(id))?.trim();
+          if (title) titles.set(id, title);
+        } catch (error) {
+          // A genuinely missing session is left untitled so the UI falls back;
+          // any other failure is a store problem and must reach #queryUsage.
+          if (!isSessionNotFoundError(error)) throw error;
+        }
+      }),
+    );
+    return titles;
   }
 
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {
@@ -107,14 +135,27 @@ export class HostUsagePricingCoordinator {
       if (input.kind === 'summary') {
         const merged = mergeUsageSummary(
           await this.#stores.telemetry.summary(input.query),
-          await this.#canonicalUsage(input.query, now),
-          input.query,
-          now,
+          await readCanonicalUsageSummary(this.#stores, input.query, now),
         );
+        // Tool executions are in their own ledger, not the model-call one, so
+        // their totals ride beside the merged summary rather than inside it —
+        // the same owner split the tool buckets path already follows. A
+        // connection-scoped query is refused instead of answered: tool rows
+        // that predate connection attribution cannot be scoped, and a ring
+        // built from an unscoped subset would quietly contradict the model
+        // totals beside it.
         const { provenance, ...summary } = merged;
+        const toolUsage =
+          input.query.connectionSlug === undefined
+            ? await this.#stores.telemetry.toolSummary(input.query)
+            : undefined;
         return {
           ok: true,
-          result: encodeUsageQueryResult({ kind: 'summary', summary, provenance }),
+          result: encodeUsageQueryResult({
+            kind: 'summary',
+            summary: { ...summary, toolUsage },
+            provenance,
+          }),
         };
       }
       if (input.kind === 'buckets') {
@@ -129,10 +170,13 @@ export class HostUsagePricingCoordinator {
             : mergeUsageBuckets(
                 legacy,
                 // Only the first page repairs; later pages reuse it.
-                await this.#canonicalUsage(input.query, now, offset === 0),
-                input.query,
-                input.groupBy,
-                now,
+                await readCanonicalUsageBuckets(
+                  this.#stores,
+                  input.query,
+                  input.groupBy,
+                  now,
+                  offset === 0,
+                ),
               );
         if (offset > merged.buckets.length) return invalidUsageOffset();
         return {
@@ -154,10 +198,17 @@ export class HostUsagePricingCoordinator {
       if (input.source === 'tool') {
         const page = await this.#stores.telemetry.toolLogs(input.query, offset, limit);
         if (offset > page.total) return invalidUsageOffset();
+        const titles = await this.#resolveSessionTitles(page.rows);
         return {
           ok: true,
           result: encodeUsageQueryResult(
-            usageLogPage('tool', page.rows.map(projectToolUsageLog), page.total, offset, limit),
+            usageLogPage(
+              'tool',
+              page.rows.map((row) => projectToolUsageLog(row, titles)),
+              page.total,
+              offset,
+              limit,
+            ),
           ),
         };
       }
@@ -167,19 +218,18 @@ export class HostUsagePricingCoordinator {
       const merged = mergeUsageLogs(
         legacy,
         // Only the first page repairs; later pages reuse it.
-        await this.#canonicalUsage(input.query, now, offset === 0),
-        input.query,
-        now,
+        await readCanonicalUsageLogs(this.#stores, input.query, now, offset + limit, offset === 0),
         offset,
         limit,
       );
       if (offset > merged.total) return invalidUsageOffset();
+      const titles = await this.#resolveSessionTitles(merged.rows);
       return {
         ok: true,
         result: encodeUsageQueryResult(
           usageLogPage(
             'llm',
-            merged.rows.map(projectUsageLog),
+            merged.rows.map((row) => projectUsageLog(row, titles)),
             merged.total,
             offset,
             limit,
@@ -547,9 +597,13 @@ function projectUsageBucket(bucket: UsageBucket): UsageBucket {
   };
 }
 
-function projectUsageLog(row: UsageLogRow): LlmUsageLogProjection {
+function projectUsageLog(
+  row: UsageLogRow,
+  titles: ReadonlyMap<string, string>,
+): LlmUsageLogProjection {
   const cacheMissInputSource = (row as UsageLogRow & { readonly cacheMissInputSource?: unknown })
     .cacheMissInputSource;
+  const title = row.sessionId === undefined ? undefined : titles.get(row.sessionId);
   return {
     source: 'llm',
     id: projectIdentity(row.id),
@@ -577,6 +631,7 @@ function projectUsageLog(row: UsageLogRow): LlmUsageLogProjection {
     status: row.status,
     ...(row.errorClass === undefined ? {} : { errorClass: projectText(row.errorClass) }),
     ...(row.sessionId === undefined ? {} : { sessionId: projectIdentity(row.sessionId) }),
+    ...(title === undefined ? {} : { sessionTitle: projectText(title) }),
     ...(row.turnId === undefined ? {} : { turnId: projectIdentity(row.turnId) }),
   };
 }
@@ -588,7 +643,9 @@ function projectToolUsageLog(
     readonly bytesOut: number;
     readonly ts: number;
   },
+  titles: ReadonlyMap<string, string>,
 ): ToolUsageLogProjection {
+  const title = row.sessionId === undefined ? undefined : titles.get(row.sessionId);
   return {
     source: 'tool',
     id: projectIdentity(row.id),
@@ -616,6 +673,7 @@ function projectToolUsageLog(
     bytesOut: row.bytesOut,
     startedAt: row.startedAt,
     ...(row.sessionId === undefined ? {} : { sessionId: projectIdentity(row.sessionId) }),
+    ...(title === undefined ? {} : { sessionTitle: projectText(title) }),
     ...(row.turnId === undefined ? {} : { turnId: projectIdentity(row.turnId) }),
   };
 }

@@ -35,6 +35,7 @@ import {
 } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { redactSecrets } from '@maka/core/redaction';
+import { serializedByteLength } from '@maka/core/serialized-byte-length';
 import {
   deepScrubMcpSecrets,
   EMPTY_MCP_SECRET_INVENTORY,
@@ -46,6 +47,7 @@ import {
 import {
   isMcpStdioConfig,
   isNonLoopbackCleartextHttp,
+  mcpConfigChangeRetiresCredentials,
   resolveMcpProtocolPreference,
   type McpBoundTool,
   type McpCallResult,
@@ -89,6 +91,7 @@ import {
   type McpOAuthStorage,
 } from './oauth.js';
 
+export { formatMcpDiagnosticText } from './diagnostic-text.js';
 export { McpToolCallError } from './tool-call-error.js';
 export {
   createCredentialMcpOAuthStorage,
@@ -131,6 +134,10 @@ const STDERR_OVERSIZED_LINE = '[stderr line omitted: exceeds diagnostic limit]';
 const STDERR_CONTINUATION = '[stderr continuation omitted]';
 const MAX_SUMMARIZED_ERROR_BLOCKS = 100;
 const OVERSIZED_TOOL_ERROR_CONTENT = 'server returned oversized error content';
+const MAX_SUCCESS_TOOL_RESULT_CONTENT_BLOCKS = 256;
+const MAX_SUCCESS_TOOL_RESULT_BYTES = 24 * 1024 * 1024;
+const MAX_SUCCESS_TOOL_RESULT_JSON_DEPTH = 32;
+const MAX_SUCCESS_TOOL_RESULT_JSON_NODES = 8_192;
 const MAX_TOOL_REFRESH_PASSES = 3;
 const TOOL_REFRESH_BURST_IDLE_MS = 1_000;
 // Recency-bounded per-server scrub material: enough to cover every value a
@@ -444,7 +451,7 @@ export class McpClientManager {
         // retries the erase against the still-owed old config.
         const owed = current.credentialCleanupOwed
           ? current.credentialCleanupOwed
-          : remoteUrlChanged(current.config, serverConfig)
+          : mcpConfigChangeRetiresCredentials(current.config, serverConfig)
             ? current.config
             : undefined;
         if (owed) {
@@ -853,6 +860,7 @@ export class McpClientManager {
         scrubKnownSecrets(redactSecrets(summarizeErrorContent(result.content)), inventory),
       );
     }
+    assertSuccessfulToolResultBudget(serverId, toolName, result, { raw: true });
     const validateOutput = preparation.value.validateOutput;
     if (validateOutput) {
       if (result.structuredContent === undefined) {
@@ -874,10 +882,12 @@ export class McpClientManager {
     }
     // Success payloads cross toward the renderer and the transcript too; a
     // server can embed the credential it was just sent into a result.
-    return {
+    const published = {
       content: deepScrub(result.content.map(normalizeContent), inventory),
       structuredContent: deepScrub(result.structuredContent, inventory),
     };
+    assertSuccessfulToolResultBudget(serverId, toolName, published);
+    return published;
   }
 
   async test(serverId: string): Promise<McpTestResult> {
@@ -1596,8 +1606,11 @@ export class McpClientManager {
    * its config is removed, so a delete failure aborts the removal while
    * everything is still recoverable — instead of leaving an orphaned token
    * a same-id re-add would inherit. */
-  async forgetServerCredentials(serverId: string): Promise<void> {
-    await this.forgetAuthorization(serverId, this.connections.get(serverId)?.config);
+  async forgetServerCredentials(
+    serverId: string,
+    previousConfig = this.connections.get(serverId)?.config,
+  ): Promise<void> {
+    await this.forgetAuthorization(serverId, previousConfig);
   }
 
   /** Drops any stored OAuth record for a server that is being removed or
@@ -2385,6 +2398,158 @@ function normalizeContent(value: unknown): McpContentBlock {
   return { type: 'unknown', value };
 }
 
+function assertSuccessfulToolResultBudget(
+  serverId: string,
+  toolName: string,
+  result: { content: unknown[]; structuredContent?: unknown },
+  options: { raw?: boolean } = {},
+): void {
+  if (result.content.length > MAX_SUCCESS_TOOL_RESULT_CONTENT_BLOCKS) {
+    throw successfulToolResultBudgetError(serverId, toolName, 'content block');
+  }
+  const budget: SuccessfulToolResultBudget = {
+    bytes: 0,
+    nodes: 0,
+    active: new WeakSet<object>(),
+  };
+  try {
+    // Bound the untrusted content before normalization and then the exact
+    // result that crosses the public boundary. Known-block metadata may be
+    // discarded later, but it must not provide a path around the first pass.
+    countSuccessfulToolResultValue(
+      result.structuredContent === undefined
+        ? { content: result.content }
+        : { content: result.content, structuredContent: result.structuredContent },
+      budget,
+      0,
+      options.raw === true,
+    );
+  } catch (error) {
+    if (error instanceof SuccessfulToolResultBudgetViolation) {
+      throw successfulToolResultBudgetError(serverId, toolName, error.limit);
+    }
+    throw new McpToolCallError(serverId, toolName, 'server returned an invalid tool result');
+  }
+}
+
+type SuccessfulToolResultBudgetLimit = 'byte' | 'content block' | 'JSON depth' | 'JSON node';
+
+class SuccessfulToolResultBudgetViolation extends Error {
+  constructor(readonly limit: Exclude<SuccessfulToolResultBudgetLimit, 'content block'>) {
+    super(limit);
+  }
+}
+
+interface SuccessfulToolResultBudget {
+  bytes: number;
+  nodes: number;
+  active: WeakSet<object>;
+}
+
+function countSuccessfulToolResultValue(
+  value: unknown,
+  budget: SuccessfulToolResultBudget,
+  depth: number,
+  rejectUndefined = false,
+): void {
+  budget.nodes += 1;
+  if (budget.nodes > MAX_SUCCESS_TOOL_RESULT_JSON_NODES) {
+    throw new SuccessfulToolResultBudgetViolation('JSON node');
+  }
+  if (depth > MAX_SUCCESS_TOOL_RESULT_JSON_DEPTH) {
+    throw new SuccessfulToolResultBudgetViolation('JSON depth');
+  }
+  if (value === null) {
+    countSuccessfulToolResultBytes(budget, 4);
+    return;
+  }
+  if (typeof value === 'string') {
+    countSuccessfulToolResultJsonStringBytes(budget, value);
+    return;
+  }
+  if (typeof value === 'boolean') {
+    countSuccessfulToolResultBytes(budget, value ? 4 : 5);
+    return;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error('non-finite number');
+    countSuccessfulToolResultBytes(budget, JSON.stringify(value).length);
+    return;
+  }
+  if (typeof value !== 'object') throw new Error('unsupported JSON value');
+  if (budget.active.has(value)) throw new Error('cyclic JSON value');
+  if (typeof (value as { toJSON?: unknown }).toJSON === 'function') {
+    throw new Error('custom JSON serializer');
+  }
+  if (!Array.isArray(value)) {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error('non-plain JSON object');
+    }
+  }
+
+  budget.active.add(value);
+  try {
+    if (Array.isArray(value)) {
+      countSuccessfulToolResultBytes(budget, 1);
+      for (let index = 0; index < value.length; index += 1) {
+        if (index > 0) countSuccessfulToolResultBytes(budget, 1);
+        countSuccessfulToolResultValue(value[index], budget, depth + 1, rejectUndefined);
+      }
+      countSuccessfulToolResultBytes(budget, 1);
+      return;
+    }
+
+    countSuccessfulToolResultBytes(budget, 1);
+    let emitted = 0;
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) continue;
+      const item = (value as Record<string, unknown>)[key];
+      if (item === undefined) {
+        if (rejectUndefined) throw new Error('unsupported JSON value');
+        continue;
+      }
+      if (emitted > 0) countSuccessfulToolResultBytes(budget, 1);
+      countSuccessfulToolResultJsonStringBytes(budget, key);
+      countSuccessfulToolResultBytes(budget, 1);
+      countSuccessfulToolResultValue(item, budget, depth + 1, rejectUndefined);
+      emitted += 1;
+    }
+    countSuccessfulToolResultBytes(budget, 1);
+  } finally {
+    budget.active.delete(value);
+  }
+}
+
+function countSuccessfulToolResultJsonStringBytes(
+  budget: SuccessfulToolResultBudget,
+  value: string,
+): void {
+  const remainingBytes = MAX_SUCCESS_TOOL_RESULT_BYTES - budget.bytes;
+  const bytes = serializedByteLength(value, remainingBytes);
+  if (bytes > remainingBytes) throw new SuccessfulToolResultBudgetViolation('byte');
+  budget.bytes += bytes;
+}
+
+function countSuccessfulToolResultBytes(budget: SuccessfulToolResultBudget, bytes: number): void {
+  if (budget.bytes > MAX_SUCCESS_TOOL_RESULT_BYTES - bytes) {
+    throw new SuccessfulToolResultBudgetViolation('byte');
+  }
+  budget.bytes += bytes;
+}
+
+function successfulToolResultBudgetError(
+  serverId: string,
+  toolName: string,
+  limit: SuccessfulToolResultBudgetLimit,
+): McpToolCallError {
+  return new McpToolCallError(
+    serverId,
+    toolName,
+    `server returned a tool result that exceeds the ${limit} limit`,
+  );
+}
+
 function summarizeErrorContent(content: unknown[]): string {
   if (content.length > MAX_SUMMARIZED_ERROR_BLOCKS) return OVERSIZED_TOOL_ERROR_CONTENT;
   const fragments: string[] = [];
@@ -2569,16 +2734,6 @@ async function connectCandidate(
   } finally {
     signal.removeEventListener('abort', closeOnAbort);
   }
-}
-
-/** True when a reconfigured server no longer talks to the endpoint its
- * stored credentials were issued for: the URL changed, or the entry
- * switched between stdio and remote. A headers-only edit returns false. */
-function remoteUrlChanged(previous: McpServerConfig, next: McpServerConfig): boolean {
-  const previousStdio = isMcpStdioConfig(previous);
-  const nextStdio = isMcpStdioConfig(next);
-  if (previousStdio || nextStdio) return previousStdio !== nextStdio;
-  return previous.url !== next.url;
 }
 
 function stableConfigFingerprint(config: McpServerConfig): string {

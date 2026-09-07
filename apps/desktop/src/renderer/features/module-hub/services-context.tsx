@@ -17,24 +17,13 @@
  * under the License.
  */
 
-import { createContext, useContext, type ReactNode } from 'react';
+import { createServicesContext } from '../../application/contracts/feature-services.js';
 import type { ModuleHubServices } from './ports.js';
 
-const ModuleHubServicesContext = createContext<ModuleHubServices | null>(null);
+const { Provider, useServices } = createServicesContext<ModuleHubServices>('ModuleHubServicesProvider');
 
-export function ModuleHubServicesProvider(props: {
-  services: ModuleHubServices;
-  children?: ReactNode;
-}) {
-  return (
-    <ModuleHubServicesContext.Provider value={props.services}>
-      {props.children}
-    </ModuleHubServicesContext.Provider>
-  );
-}
+export const ModuleHubServicesProvider = Provider;
 
 export function useModuleHubServices(): ModuleHubServices {
-  const services = useContext(ModuleHubServicesContext);
-  if (!services) throw new Error('ModuleHubServicesProvider is missing');
-  return services;
+  return useServices();
 }

@@ -22,74 +22,116 @@ import {
   readRuntimeHostPeerAuthentication,
   RUNTIME_HOST_PEER_AUTHENTICATION_TIMEOUT_MS,
   RuntimeHostPeerByteStream,
-  startRuntimeHostPeerEndpoint,
   writeRuntimeHostPeerAuthenticationResult,
-  type RuntimeHostPeerNativeEndpoint,
   type RuntimeHostPeerNativeStream,
 } from '../transport/peer-native.js';
+import type { RuntimeHostPeerClient } from '../client/peer-client.js';
+import type { PeerReachabilityPublisher } from '../peer-reachability/index.js';
 import type { RuntimeHostAccessAuthority } from './access-authority.js';
+import {
+  ResumablePeerStream,
+  PeerResumeRejectedError,
+} from '../transport/resumable-peer-stream.js';
+import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
 import type {
   RuntimeHostListenerConnection,
   RuntimeHostPeerListener as RuntimeHostPeerListenerContract,
 } from './listener-set.js';
 
 const MAX_PENDING_AUTHENTICATIONS = 16;
+// A Desktop shares one PeerId across 128 Guest mounts and 32 Host profiles.
+// Authentication, not a transport identity, determines the small abuse quota.
+const MAX_ACTIVE_STREAMS = 256;
+const MAX_ACTIVE_STREAMS_PER_PEER = 160;
+const MAX_ACTIVE_STREAMS_PER_PRINCIPAL = 4;
 
-export interface StartRuntimeHostPeerListenerOptions {
+export interface RuntimeHostPeerListenerConfiguration {
   readonly nativePath: string;
   readonly keyPath: string;
   readonly expectedPeerId?: string;
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
+  readonly automaticRelayDiscovery?: boolean;
+  readonly webRtcStunUrls?: readonly string[];
+}
+
+export interface RuntimeHostPeerListenerEndpointOptions {
+  readonly client: RuntimeHostPeerClient;
+  readonly reachability: PeerReachabilityPublisher;
+}
+
+export type StartRuntimeHostPeerListenerOptions = RuntimeHostPeerListenerEndpointOptions & {
   readonly accessAuthority: RuntimeHostAccessAuthority;
   readonly accept: (connection: RuntimeHostListenerConnection) => void;
-}
+};
 
 export function startRuntimeHostPeerListener(
   options: StartRuntimeHostPeerListenerOptions,
 ): RuntimeHostPeerListenerContract {
-  const endpoint = startRuntimeHostPeerEndpoint(options);
-  return createRuntimeHostPeerListener(endpoint, options.accessAuthority, options.accept);
+  return createRuntimeHostPeerListener(
+    options.client,
+    options.reachability,
+    options.accessAuthority,
+    options.accept,
+  );
 }
 
 export function createRuntimeHostPeerListener(
-  endpoint: RuntimeHostPeerNativeEndpoint,
+  client: RuntimeHostPeerClient,
+  reachability: PeerReachabilityPublisher,
   accessAuthority: RuntimeHostAccessAuthority,
   accept: (connection: RuntimeHostListenerConnection) => void,
 ): RuntimeHostPeerListenerContract {
-  return new RuntimeHostPeerListener(endpoint, accessAuthority, accept);
+  return new RuntimeHostPeerListener(client, reachability, accessAuthority, accept);
 }
 
 class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
   readonly kind = 'libp2p_direct' as const;
   readonly endpoint: string;
-  readonly peerId: string;
-  readonly listenAddresses: readonly string[];
-  readonly #endpoint: RuntimeHostPeerNativeEndpoint;
+  readonly #reachability: PeerReachabilityPublisher;
   readonly #accessAuthority: RuntimeHostAccessAuthority;
   readonly #accept: (connection: RuntimeHostListenerConnection) => void;
   readonly #transports = new Set<FramedByteStreamTransport>();
+  readonly #streams = new Map<RuntimeHostPeerNativeStream, RuntimeHostConnectionAuthority>();
+  readonly #sessions = new Map<
+    string,
+    { stream: ResumablePeerStream; authority: RuntimeHostConnectionAuthority }
+  >();
+  readonly #unsubscribeRevocations: () => void;
   readonly #authentications = new Map<RuntimeHostPeerNativeStream, Promise<void>>();
-  readonly #acceptTask: Promise<void>;
+  readonly #serving: Promise<void>;
+  readonly #serveLifetime = new AbortController();
   #acceptFailure: unknown;
   #admitting = true;
   #closeAdmissionTask: Promise<void> | undefined;
   #cleanupTask: Promise<void> | undefined;
 
   constructor(
-    endpoint: RuntimeHostPeerNativeEndpoint,
+    client: RuntimeHostPeerClient,
+    reachability: PeerReachabilityPublisher,
     accessAuthority: RuntimeHostAccessAuthority,
     accept: (connection: RuntimeHostListenerConnection) => void,
   ) {
-    this.endpoint = endpoint.peerId;
-    this.peerId = endpoint.peerId;
-    this.listenAddresses = Object.freeze([...endpoint.listenAddresses]);
-    this.#endpoint = endpoint;
+    const identity = client.identity();
+    this.endpoint = identity.peerId;
+    this.#reachability = reachability;
     this.#accessAuthority = accessAuthority;
     this.#accept = accept;
-    this.#acceptTask = this.#acceptStreams().catch((error: unknown) => {
-      this.#acceptFailure = error;
+    this.#unsubscribeRevocations = accessAuthority.subscribeRevocations((credentialId) => {
+      for (const session of this.#sessions.values()) {
+        if (session.authority.credentialId === credentialId) session.stream.abort();
+      }
     });
+    const captureFailure = (error: unknown) => {
+      this.#acceptFailure ??= error;
+    };
+    this.#serving = client
+      .serveApplication((stream) => this.#acceptStream(stream), this.#serveLifetime.signal)
+      .catch(captureFailure);
+  }
+
+  get reachability() {
+    return this.#reachability.current();
   }
 
   closeAdmission(): Promise<void> {
@@ -105,40 +147,29 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
     this.#cleanupTask ??= (async () => {
       await this.closeAdmission();
       for (const transport of this.#transports) transport.abort();
-      await this.#endpoint.close();
-      await this.#acceptTask;
+      for (const session of this.#sessions.values()) session.stream.abort();
+      this.#unsubscribeRevocations();
+      this.#serveLifetime.abort();
+      await this.#serving;
       if (this.#acceptFailure) throw this.#acceptFailure;
     })();
     return this.#cleanupTask;
   }
 
-  async #acceptStreams(): Promise<void> {
-    while (true) {
-      let stream: RuntimeHostPeerNativeStream | null;
-      try {
-        stream = await this.#endpoint.accept();
-      } catch (error) {
-        if (this.#cleanupTask) return;
-        throw error;
-      }
-      if (!stream) return;
-      if (!this.#admitting) {
-        stream.abort();
-        continue;
-      }
-      if (this.#authentications.size >= MAX_PENDING_AUTHENTICATIONS) {
-        stream.abort();
-        continue;
-      }
-      const task = this.#authenticateAndAccept(stream).finally(() => {
-        this.#authentications.delete(stream);
-      });
-      this.#authentications.set(stream, task);
-      void task;
+  #acceptStream(stream: RuntimeHostPeerNativeStream): void {
+    if (!this.#admitting || this.#authentications.size >= MAX_PENDING_AUTHENTICATIONS) {
+      stream.abort();
+      return;
     }
+    const task = this.#authenticateAndAccept(stream).finally(() => {
+      this.#authentications.delete(stream);
+    });
+    this.#authentications.set(stream, task);
+    void task;
   }
 
   async #authenticateAndAccept(stream: RuntimeHostPeerNativeStream): Promise<void> {
+    let transportOwnsStream = false;
     try {
       const authenticated = await withDeadline(
         readRuntimeHostPeerAuthentication(stream),
@@ -155,28 +186,131 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
         stream.abort();
         return;
       }
-      await writeRuntimeHostPeerAuthenticationResult(stream, true);
-      if (!this.#admitting) {
+      const resume = authenticated.resume;
+      const existing = resume ? this.#sessions.get(resume.sessionId) : undefined;
+      if (existing) {
+        if (
+          existing.stream.peerId !== stream.peerId ||
+          existing.authority.credentialId !== authority.credentialId ||
+          existing.authority.principalKind !== authority.principalKind ||
+          existing.authority.principalId !== authority.principalId
+        ) {
+          await writeRuntimeHostPeerAuthenticationResult(stream, false);
+          stream.abort();
+          return;
+        }
+        existing.stream.reserve(resume!);
+        await writeRuntimeHostPeerAuthenticationResult(stream, true, {
+          received: existing.stream.received,
+        });
+        if (!this.#admitting || !this.#accessAuthority.authenticate(authenticated.credential)) {
+          stream.abort();
+          return;
+        }
+        existing.stream.attach(resume!.generation, {
+          stream,
+          remainder: authenticated.remainder,
+          received: resume!.received,
+        });
+        return;
+      }
+      // Recovery must never create a second Host connection after state loss.
+      if (resume && (resume.generation !== 1 || resume.received !== 0)) {
+        await writeRuntimeHostPeerAuthenticationResult(stream, false);
         stream.abort();
         return;
       }
-      const admittedAuthority = this.#accessAuthority.authenticate(authenticated.credential);
-      if (!admittedAuthority) {
-        stream.abort();
+      let peerStreams = 0;
+      let principalStreams = 0;
+      for (const [admitted, owner] of this.#streams) {
+        if (admitted.peerId === stream.peerId) peerStreams++;
+        if (
+          owner.principalKind === authority.principalKind &&
+          owner.principalId === authority.principalId
+        )
+          principalStreams++;
+      }
+      if (
+        this.#streams.size >= MAX_ACTIVE_STREAMS ||
+        peerStreams >= MAX_ACTIVE_STREAMS_PER_PEER ||
+        principalStreams >= MAX_ACTIVE_STREAMS_PER_PRINCIPAL
+      ) {
+        // Legacy peers cannot distinguish capacity from credential rejection.
+        // Keep their previous EOF behavior, but give v2 clients a typed result.
+        if (resume) {
+          await writeRuntimeHostPeerAuthenticationResult(stream, false, {
+            reason: 'capacity_exceeded',
+          });
+          await stream.close();
+        } else stream.abort();
         return;
       }
-      const transport = new FramedByteStreamTransport(
-        new RuntimeHostPeerByteStream(stream, authenticated.remainder),
-      );
-      this.#transports.add(transport);
-      void transport.closed.then(() => this.#transports.delete(transport));
+      const logical = resume
+        ? new ResumablePeerStream({ peerId: stream.peerId, sessionId: resume.sessionId })
+        : undefined;
+      if (logical && resume) {
+        logical.reserve(resume);
+        this.#sessions.set(resume.sessionId, { stream: logical, authority });
+        void logical.closed.then(() => {
+          if (this.#sessions.get(resume.sessionId)?.stream === logical)
+            this.#sessions.delete(resume.sessionId);
+        });
+      }
+      const admittedStream = logical ?? stream;
+      this.#streams.set(admittedStream, authority);
+      let accepted = false;
       try {
-        this.#accept({ transport, authority: admittedAuthority });
-      } catch (error) {
-        transport.abort(asError(error));
+        await writeRuntimeHostPeerAuthenticationResult(
+          stream,
+          true,
+          logical ? { received: 0 } : undefined,
+        );
+        if (!this.#admitting) {
+          stream.abort();
+          return;
+        }
+        const admittedAuthority = this.#accessAuthority.authenticate(authenticated.credential);
+        if (!admittedAuthority) {
+          stream.abort();
+          return;
+        }
+        const transport = new FramedByteStreamTransport(
+          new RuntimeHostPeerByteStream(
+            admittedStream,
+            logical ? Buffer.alloc(0) : authenticated.remainder,
+          ),
+        );
+        if (logical && resume)
+          logical.attach(resume.generation, {
+            stream,
+            remainder: authenticated.remainder,
+            received: 0,
+          });
+        this.#transports.add(transport);
+        transportOwnsStream = true;
+        accepted = true;
+        void transport.closed.then(() => {
+          this.#transports.delete(transport);
+          this.#streams.delete(admittedStream);
+        });
+        try {
+          this.#accept({ transport, authority: admittedAuthority });
+        } catch (error) {
+          transport.abort(asError(error));
+        }
+      } finally {
+        if (!accepted) {
+          admittedStream.abort();
+          this.#streams.delete(admittedStream);
+        }
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof PeerResumeRejectedError) {
+        await writeRuntimeHostPeerAuthenticationResult(stream, false).catch(() => undefined);
+      }
       stream.abort();
+    } finally {
+      if (!transportOwnsStream) this.#streams.delete(stream);
     }
   }
 }

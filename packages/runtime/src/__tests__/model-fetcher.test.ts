@@ -384,6 +384,75 @@ describe('fetchProviderModels', () => {
       assert.equal(JSON.stringify(outcome).includes(secret), false);
     }
   });
+
+  test('a declared output modality without text is recorded as a capability', async () => {
+    // `output_modalities` was validated and then dropped, so a relay that
+    // advertised an image-only model handed back a row indistinguishable from
+    // a chat model's and nothing downstream could refuse it.
+    const server = await startJsonServer((_request, response) => {
+      respondJson(response, 200, {
+        data: [
+          { id: 'relay-image', input_modalities: ['text'], output_modalities: ['image'] },
+          { id: 'relay-speech', input_modalities: ['text'], output_modalities: ['audio'] },
+          { id: 'relay-chat', input_modalities: ['text'], output_modalities: ['text', 'image'] },
+          { id: 'relay-video', input_modalities: ['text'], output_modalities: [] },
+          { id: 'relay-silent', input_modalities: ['text'] },
+        ],
+      });
+    });
+
+    const models = await fetchProviderModels(
+      { ...zaiConnection(), baseUrl: server.url },
+      'zai-live-secret',
+    );
+    const capabilitiesOf = (id: string) => models.find((model) => model.id === id)?.capabilities;
+
+    assert.equal(capabilitiesOf('relay-image')?.chat, false);
+    assert.equal(capabilitiesOf('relay-image')?.imageGeneration, true);
+    // Audio-only is equally unable to answer in text, but it is not an image
+    // generator and must not be labelled one.
+    assert.equal(capabilitiesOf('relay-speech')?.chat, false);
+    assert.equal(capabilitiesOf('relay-speech')?.imageGeneration, undefined);
+    // Text among the outputs is a chat model whatever else it also emits.
+    assert.equal(capabilitiesOf('relay-chat')?.chat, undefined);
+    // An empty list and an absent one both say nothing, and nothing is not a
+    // refusal: a video model's output has no representation in this union.
+    assert.equal(capabilitiesOf('relay-video')?.chat, undefined);
+    assert.equal(capabilitiesOf('relay-silent')?.chat, undefined);
+  });
+
+  test('an unrecognized output modality never disables a model', async () => {
+    // The array is validated as an array and never item-by-item, so these
+    // reach the modality read intact. Every other modality read here ADDS a
+    // capability and an unrecognized value merely costs a fact; this one
+    // REMOVES chat, where the same miss would silently disable a model that
+    // works. Unrecognized has to mean "said nothing", not "said not text".
+    const server = await startJsonServer((_request, response) => {
+      respondJson(response, 200, {
+        data: [
+          { id: 'relay-cased', output_modalities: ['Text'] },
+          { id: 'relay-null', output_modalities: [null] },
+          { id: 'relay-numeric', output_modalities: [42] },
+          { id: 'relay-future', output_modalities: ['hologram'] },
+          // A recognized value alongside an unrecognized one still counts:
+          // the provider named a modality this build understands.
+          { id: 'relay-mixed', output_modalities: ['image', 'hologram'] },
+        ],
+      });
+    });
+
+    const models = await fetchProviderModels(
+      { ...zaiConnection(), baseUrl: server.url },
+      'zai-live-secret',
+    );
+    const capabilitiesOf = (id: string) => models.find((model) => model.id === id)?.capabilities;
+
+    for (const id of ['relay-cased', 'relay-null', 'relay-numeric', 'relay-future']) {
+      assert.equal(capabilitiesOf(id)?.chat, undefined, id);
+    }
+    assert.equal(capabilitiesOf('relay-mixed')?.chat, false);
+    assert.equal(capabilitiesOf('relay-mixed')?.imageGeneration, true);
+  });
 });
 
 async function startJsonServer(

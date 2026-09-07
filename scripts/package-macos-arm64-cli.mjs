@@ -46,6 +46,7 @@ import {
   releaseNpmEnvironment,
   resolveReleaseWorkspacePackages,
   resolveWorkspaceReleaseFiles,
+  workspaceReleaseManifest,
 } from './release-cli-file-policy.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -205,29 +206,23 @@ export async function stageWorkspacePackages(installRoot, workspacePackages) {
     ...workspacePackages.map(async ({ directory, manifest, workspacePath }) => {
       const targetDirectory = join(installRoot, workspacePath);
       await mkdir(targetDirectory, { recursive: true });
-      await copyFile(join(directory, 'package.json'), join(targetDirectory, 'package.json'));
+      await writeFile(
+        join(targetDirectory, 'package.json'),
+        `${JSON.stringify(workspaceReleaseManifest(manifest), null, 2)}\n`,
+      );
       await Promise.all(
         resolveWorkspaceReleaseFiles(directory, manifest).map(async (releaseFile) => {
           const source = join(directory, ...releaseFile.split('/'));
           const target = join(targetDirectory, ...releaseFile.split('/'));
           await mkdir(dirname(target), { recursive: true });
-          await cp(source, target, { recursive: true });
+          await cp(source, target, {
+            recursive: true,
+            filter: (path) => !isMakaDevelopmentArtifact(relative(directory, path)),
+          });
         }),
       );
-      await pruneMakaDevelopmentArtifacts(targetDirectory);
     }),
   ]);
-}
-
-async function pruneMakaDevelopmentArtifacts(directory, root = directory) {
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const path = join(directory, entry.name);
-    if (isMakaDevelopmentArtifact(relative(root, path))) {
-      await rm(path, { recursive: entry.isDirectory(), force: true });
-    } else if (entry.isDirectory()) {
-      await pruneMakaDevelopmentArtifacts(path, root);
-    }
-  }
 }
 
 export async function listDependencyPatchNames() {

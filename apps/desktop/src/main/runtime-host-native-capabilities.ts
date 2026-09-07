@@ -25,32 +25,69 @@ import {
   type ClientCapabilityProvider,
   type OAuthPresentationBackend,
 } from "@maka/runtime-host/client";
-import type {
-  ClientCapabilityCallFrame,
-  ClientCapabilityCallResult,
-  ClientCapabilityContentBlock,
-  ClientCapabilityHostPathAccess,
-  ClientCapabilityOffer,
-  ClientCapabilityServiceCallFrame,
-  ClientCapabilityServiceOffer,
+import {
+  CLIENT_CAPABILITY_MAX_MANIFEST_BYTES,
+  CLIENT_CAPABILITY_MAX_OFFERS,
+  CLIENT_CAPABILITY_MAX_TOOLS,
+  CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER,
+  decodeClientCapabilityReplaceInput,
+  decodeClientCapabilityToolDescriptor,
+  projectToolInputSchema,
+  type ClientCapabilityCallFrame,
+  type ClientCapabilityCallResult,
+  type ClientCapabilityContentBlock,
+  type ClientCapabilityHostPathAccess,
+  type ClientCapabilityOffer,
+  type ClientCapabilityServiceCallFrame,
+  type ClientCapabilityServiceOffer,
+  type ClientCapabilityToolDescriptor,
 } from "@maka/runtime-host/protocol";
+import { clientCapabilityEntityId } from "@maka/runtime-host/client-capability-entity-id";
 import { toJSONSchema, z } from "zod";
+import { withBrowserOriginAdmission } from './browser/browser-origin-admission.js';
 import type { DesktopTargetScope } from '../shared/runtime-host-identity.js';
 
 const CAPABILITY_VERSION = "0";
 const BROWSER_OFFER_ID = "desktop_browser";
 const COMPUTER_USE_OFFER_ID = "desktop_computer_use";
+// Same wire length as the registrationId the Client Capability channel assigns.
+const MANIFEST_REGISTRATION_ID_PLACEHOLDER = "00000000-0000-4000-8000-000000000000";
+
+/** A tool published under its own wire identity instead of the group default. */
+export interface DesktopIdentifiedCapabilityTool {
+  readonly tool: MakaTool;
+  readonly serverId: string;
+  readonly toolName: string;
+}
 
 export interface DesktopCapabilityGroup {
   readonly offerId: string;
   readonly label: string;
   readonly description: string;
-  readonly tools: readonly MakaTool[];
+  readonly tools: readonly (MakaTool | DesktopIdentifiedCapabilityTool)[];
+  /**
+   * Marks a dynamically sourced group: tools the decoder rejects are omitted
+   * with a diagnostic, the group may be chunked past the single-offer tool
+   * limit, and its trailing tools are shed first under the manifest budget.
+   * Fixed groups never set this — their failures stay loud.
+   */
+  readonly dynamic?: boolean;
 }
 
-interface NativeToolBinding {
+interface PreparedDesktopCapabilityTool {
   readonly tool: MakaTool;
+  readonly descriptor: ClientCapabilityToolDescriptor;
 }
+
+interface PreparedDesktopCapabilityGroup {
+  readonly offerId: string;
+  readonly label: string;
+  readonly description: string;
+  readonly tools: readonly PreparedDesktopCapabilityTool[];
+  readonly dynamic?: boolean;
+}
+
+type NativeToolBinding = Pick<PreparedDesktopCapabilityTool, "tool">;
 
 type DesktopToolModelOutput = Awaited<
   ReturnType<NonNullable<MakaTool["toModelOutput"]>>
@@ -62,6 +99,12 @@ type DesktopToolContentPart = Extract<
 
 export interface DesktopNativeCapabilityProviderInput {
   readonly browserTools: readonly MakaTool[];
+  readonly resolveBrowserUrl: (input: {
+    readonly sessionId: string;
+    readonly toolName: string;
+    readonly arguments: Record<string, unknown>;
+    readonly signal: AbortSignal;
+  }) => string | Promise<string>;
   readonly releaseBrowserSession: (sessionId: string) => void | Promise<void>;
   readonly computerUseTools: ComputerUseToolSet;
   readonly releaseComputerUseSession: (
@@ -96,6 +139,8 @@ interface DesktopNativeCapabilityProviderOptions {
   readonly onSessionUsed?: (sessionId: string) => void;
   readonly onComputerUseTurnUsed?: (sessionId: string, turnId: string) => void;
   readonly onClosed?: () => void;
+  /** Reports a visible degradation while assembling the published manifest. */
+  readonly onDiagnostic?: (diagnostic: string) => void;
   readonly nativeSessionId?: (sessionId: string) => string;
   readonly targetScope?: DesktopTargetScope;
 }
@@ -105,12 +150,7 @@ export function createDesktopNativeCapabilityProvider(
   input: DesktopNativeCapabilityProviderInput,
   providerOptions: DesktopNativeCapabilityProviderOptions = {},
 ): DesktopNativeCapabilityProvider {
-  const groups = capabilityGroups(input);
   const hostPathAccess = providerOptions.hostPathAccess ?? "cwd";
-  const offers = Object.freeze(
-    groups.map((group) => capabilityOffer(group, hostPathAccess)),
-  );
-  const bindings = indexBindings(groups);
   const oauthPresentation = input.oauthPresentation
     ? createOAuthPresentationClientProvider(input.oauthPresentation)
     : undefined;
@@ -118,6 +158,31 @@ export function createDesktopNativeCapabilityProvider(
     ? input.additionalServices(requireTargetScope(providerOptions.targetScope))
     : [];
   const services = indexServices(oauthPresentation?.services?.() ?? [], additionalServices);
+  const serviceOffers = Object.freeze(
+    [...services.values()].map(({ serviceId, version }) =>
+      Object.freeze({ serviceId, version }),
+    ),
+  );
+  const groups = fitDesktopCapabilityManifest(
+    prepareCapabilityGroups(capabilityGroups(input), providerOptions.onDiagnostic),
+    serviceOffers,
+    hostPathAccess,
+    providerOptions.onDiagnostic,
+  );
+  const offers = Object.freeze(
+    groups.map((group) => capabilityOffer(group, hostPathAccess)),
+  );
+  // Authoritative check: a manifest that will be sent must decode first, so a
+  // budget overrun can never fail the whole registration at the channel. An
+  // empty provider is legal and never registers.
+  if (offers.length > 0 || serviceOffers.length > 0) {
+    decodeClientCapabilityReplaceInput({
+      registrationId: MANIFEST_REGISTRATION_ID_PLACEHOLDER,
+      offers,
+      ...(serviceOffers.length === 0 ? {} : { services: serviceOffers }),
+    });
+  }
+  const bindings = indexBindings(groups);
   const releaseSessionResources = [
     input.releaseBrowserSession,
     input.releaseComputerUseSession,
@@ -144,7 +209,7 @@ export function createDesktopNativeCapabilityProvider(
 
   return {
     offers: () => offers,
-    services: () => [...services.values()].map(({ serviceId, version }) => ({ serviceId, version })),
+    services: () => [...serviceOffers],
     call: (frame, options) => {
       if (closed)
         throw new Error("Desktop native capability provider is closed");
@@ -156,6 +221,7 @@ export function createDesktopNativeCapabilityProvider(
 
       const invocation = new AbortController();
       const task = invokeNativeTool(
+        input,
         binding,
         frame,
         options,
@@ -238,7 +304,7 @@ async function invokeAdditionalService(
   options: Parameters<NonNullable<ClientCapabilityProvider["callService"]>>[1],
 ): Promise<Record<string, unknown>> {
   options.signal.throwIfAborted();
-  await options.accept();
+  await options.accept({ kind: "none" });
   options.signal.throwIfAborted();
   return service.call(frame.method, frame.input, { signal: options.signal });
 }
@@ -309,6 +375,7 @@ function capabilityGroups(
 }
 
 async function invokeNativeTool(
+  input: DesktopNativeCapabilityProviderInput,
   binding: NativeToolBinding,
   frame: ClientCapabilityCallFrame,
   options: Parameters<NonNullable<ClientCapabilityProvider["call"]>>[1],
@@ -328,30 +395,69 @@ async function invokeNativeTool(
   }
   const signal = AbortSignal.any([options.signal, invocation.signal]);
   signal.throwIfAborted();
-  const parameters = requireZodSchema(binding.tool);
-  const args = await parameters.parseAsync(frame.arguments);
+  const args = await parseNativeToolArguments(binding.tool.parameters, frame.arguments);
   signal.throwIfAborted();
-  await options.accept();
+  const sessionId =
+    frame.offerId === BROWSER_OFFER_ID || frame.offerId === COMPUTER_USE_OFFER_ID
+      ? providerOptions.nativeSessionId?.(frame.sessionId) ?? frame.sessionId
+      : frame.sessionId;
+  const admissionEvidence =
+    frame.offerId === BROWSER_OFFER_ID
+      ? {
+          kind: "browser_url" as const,
+          url: await input.resolveBrowserUrl({
+            sessionId,
+            toolName: frame.toolName,
+            arguments: frame.arguments,
+            signal,
+          }),
+        }
+      : { kind: "none" as const };
+  signal.throwIfAborted();
+  await options.accept(admissionEvidence);
+  signal.throwIfAborted();
+  if (admissionEvidence.kind === "browser_url") {
+    const currentUrl = await input.resolveBrowserUrl({
+      sessionId,
+      toolName: frame.toolName,
+      arguments: frame.arguments,
+      signal,
+    });
+    if (browserOrigin(currentUrl) !== browserOrigin(admissionEvidence.url)) {
+      throw new Error("Browser origin changed while admission was pending");
+    }
+  }
   signal.throwIfAborted();
   usedSessionIds.add(frame.sessionId);
   providerOptions.onSessionUsed?.(frame.sessionId);
   if (frame.offerId === COMPUTER_USE_OFFER_ID) {
     providerOptions.onComputerUseTurnUsed?.(frame.sessionId, frame.turnId);
   }
-  const sessionId =
-    frame.offerId === BROWSER_OFFER_ID || frame.offerId === COMPUTER_USE_OFFER_ID
-      ? providerOptions.nativeSessionId?.(frame.sessionId) ?? frame.sessionId
-      : frame.sessionId;
-  const output = await binding.tool.impl(args, {
-    sessionId,
-    turnId: frame.turnId,
-    cwd,
-    toolCallId: frame.toolCallId,
-    abortSignal: signal,
-    emitOutput() {},
-    ...(options.progress ? { emitProgress: options.progress } : {}),
-  });
+  const execute = () =>
+    binding.tool.impl(args, {
+      sessionId,
+      turnId: frame.turnId,
+      cwd,
+      toolCallId: frame.toolCallId,
+      abortSignal: signal,
+      emitOutput() {},
+      ...(options.progress ? { emitProgress: options.progress } : {}),
+    });
+  const output = await (admissionEvidence.kind === "browser_url"
+    ? withBrowserOriginAdmission(
+        { sessionId, url: admissionEvidence.url },
+        execute,
+      )
+    : execute());
   return projectToolResult(binding.tool, frame.toolCallId, args, output);
+}
+
+function browserOrigin(value: string): string {
+  const url = new URL(value);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("Browser admission requires an HTTP origin");
+  }
+  return url.origin;
 }
 
 function abortInvocations(
@@ -371,7 +477,7 @@ function abortInvocations(
 }
 
 function capabilityOffer(
-  group: DesktopCapabilityGroup,
+  group: PreparedDesktopCapabilityGroup,
   hostPathAccess: ClientCapabilityHostPathAccess,
 ): ClientCapabilityOffer {
   return Object.freeze({
@@ -382,58 +488,222 @@ function capabilityOffer(
     label: group.label,
     description: group.description,
     tools: Object.freeze(
-      group.tools.map((tool) =>
-        Object.freeze({
-          serverId: group.offerId,
-          name: tool.name,
-          description: tool.description,
-          inputSchema: toolInputSchema(tool),
-          ...(tool.activityKind ? { activityKind: tool.activityKind } : {}),
-          ...(tool.displayName
-            ? { annotations: Object.freeze({ title: tool.displayName }) }
-            : {}),
-        }),
-      ),
+      group.tools.map(({ descriptor }) => descriptor),
     ),
   });
 }
 
-function toolInputSchema(tool: MakaTool): Record<string, unknown> {
-  const schema = toJSONSchema(requireZodSchema(tool), {
-    io: "input",
-    target: "draft-07",
-    unrepresentable: "any",
-    cycles: "ref",
-    reused: "inline",
+function prepareCapabilityGroups(
+  groups: readonly DesktopCapabilityGroup[],
+  onDiagnostic?: (diagnostic: string) => void,
+): PreparedDesktopCapabilityGroup[] {
+  return groups.flatMap((group) => {
+    const tools = group.tools.flatMap((entry): PreparedDesktopCapabilityTool[] => {
+      const tool = isIdentifiedEntry(entry) ? entry.tool : entry;
+      const identity = isIdentifiedEntry(entry)
+        ? { serverId: entry.serverId, toolName: entry.toolName }
+        : undefined;
+      let descriptor: ClientCapabilityToolDescriptor;
+      try {
+        const declaredSchema = declaredToolInputSchema(tool);
+        descriptor = Object.freeze(
+          decodeClientCapabilityToolDescriptor(
+            capabilityToolDescriptor(group.offerId, tool, declaredSchema, identity),
+          ),
+        );
+      } catch (error) {
+        const dynamic = group.dynamic || group.offerId === 'desktop_mcp';
+        if (!dynamic) throw error;
+        onDiagnostic?.(
+          `Desktop omitted ${group.offerId} tool ${tool.name}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return [];
+      }
+      return [{ tool, descriptor }];
+    });
+    if (group.dynamic && tools.length === 0) return [];
+    return chunkPreparedGroup({ ...group, tools });
   });
-  delete schema.$schema;
-  if (schema.type !== "object") {
-    throw new Error(
-      `Desktop native capability tool schema must be an object: ${tool.name}`,
-    );
-  }
-  return Object.freeze(schema);
 }
 
-function requireZodSchema(tool: MakaTool): z.ZodType {
-  if (!(tool.parameters instanceof z.ZodType)) {
+/**
+ * Split a dynamic group beyond the single-offer tool limit into stable chunks.
+ * Chunked offers keep the group's server identity, so published tool names and
+ * Session Grant scopes do not depend on how the group was split. The grant key
+ * still carries the offer contract, so changing the published tool set
+ * re-prompts already-approved tools.
+ */
+function chunkPreparedGroup(
+  group: PreparedDesktopCapabilityGroup,
+): PreparedDesktopCapabilityGroup[] {
+  if (
+    !group.dynamic ||
+    group.tools.length <= CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER
+  ) {
+    return [group];
+  }
+  const chunks: PreparedDesktopCapabilityGroup[] = [];
+  for (
+    let offset = 0;
+    offset < group.tools.length;
+    offset += CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER
+  ) {
+    chunks.push({
+      ...group,
+      offerId:
+        offset === 0
+          ? group.offerId
+          : `${group.offerId}_${offset / CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER + 1}`,
+      tools: group.tools.slice(offset, offset + CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER),
+    });
+  }
+  return chunks;
+}
+
+/**
+ * Fit the assembled manifest to the Client Capability budgets before it is
+ * sent. Fixed capability groups are never degraded: if they alone exceed a
+ * budget the registration must fail loudly. Dynamic (omittable) groups shed
+ * their trailing tools instead, and the omission is reported.
+ */
+function fitDesktopCapabilityManifest(
+  groups: readonly PreparedDesktopCapabilityGroup[],
+  services: readonly ClientCapabilityServiceOffer[],
+  hostPathAccess: ClientCapabilityHostPathAccess,
+  onDiagnostic?: (diagnostic: string) => void,
+): PreparedDesktopCapabilityGroup[] {
+  const fitting = groups.map((group) => ({ group, tools: [...group.tools] }));
+  const omitted: string[] = [];
+  const assemble = (): PreparedDesktopCapabilityGroup[] =>
+    fitting
+      .filter((entry) => entry.tools.length > 0)
+      .map((entry) => ({ ...entry.group, tools: entry.tools }));
+  while (!manifestFitsBudget(assemble(), services, hostPathAccess)) {
+    let index = fitting.length - 1;
+    while (
+      index >= 0 &&
+      (!fitting[index]?.group.dynamic || fitting[index]?.tools.length === 0)
+    ) {
+      index -= 1;
+    }
+    const entry = fitting[index];
+    if (!entry) {
+      throw new Error(
+        "Desktop fixed capability groups exceed the Client Capability manifest budget",
+      );
+    }
+    const dropped = entry.tools.pop();
+    if (dropped) omitted.push(dropped.descriptor.name);
+  }
+  if (omitted.length > 0) {
+    const names = omitted.reverse();
+    const shown = names.slice(0, 8).join(", ");
+    onDiagnostic?.(
+      `Desktop omitted ${names.length} MCP tool(s) beyond the Client Capability manifest budget: ${shown}${names.length > 8 ? `, +${names.length - 8} more` : ""}`,
+    );
+  }
+  return assemble();
+}
+
+function manifestFitsBudget(
+  groups: readonly PreparedDesktopCapabilityGroup[],
+  services: readonly ClientCapabilityServiceOffer[],
+  hostPathAccess: ClientCapabilityHostPathAccess,
+): boolean {
+  if (groups.length > CLIENT_CAPABILITY_MAX_OFFERS) return false;
+  const offers = groups.map((group) => capabilityOffer(group, hostPathAccess));
+  let toolCount = 0;
+  for (const offer of offers) toolCount += offer.tools.length;
+  if (toolCount > CLIENT_CAPABILITY_MAX_TOOLS) return false;
+  const manifest = {
+    registrationId: MANIFEST_REGISTRATION_ID_PLACEHOLDER,
+    offers,
+    ...(services.length === 0 ? {} : { services }),
+  };
+  return (
+    Buffer.byteLength(JSON.stringify(manifest), "utf8") <= CLIENT_CAPABILITY_MAX_MANIFEST_BYTES
+  );
+}
+
+function isIdentifiedEntry(
+  entry: MakaTool | DesktopIdentifiedCapabilityTool,
+): entry is DesktopIdentifiedCapabilityTool {
+  return 'tool' in entry;
+}
+
+function capabilityToolDescriptor(
+  offerId: string,
+  tool: MakaTool,
+  inputSchema: Record<string, unknown>,
+  identity?: { readonly serverId: string; readonly toolName: string },
+): ClientCapabilityToolDescriptor {
+  return Object.freeze({
+    serverId: clientCapabilityEntityId(identity?.serverId ?? offerId),
+    name: clientCapabilityEntityId(identity?.toolName ?? tool.name),
+    description: tool.description,
+    inputSchema,
+    ...(tool.activityKind ? { activityKind: tool.activityKind } : {}),
+    ...(tool.displayName
+      ? { annotations: Object.freeze({ title: tool.displayName }) }
+      : {}),
+  });
+}
+
+function declaredToolInputSchema(tool: MakaTool): Record<string, unknown> {
+  const schema = tool.parameters instanceof z.ZodType
+    ? toJSONSchema(tool.parameters, {
+        io: "input",
+        target: "draft-07",
+        unrepresentable: "any",
+        cycles: "ref",
+        reused: "inline",
+      })
+    : cloneDeclaredJsonSchema(tool);
+  delete schema.$schema;
+  return Object.freeze(projectToolInputSchema(schema));
+}
+
+function cloneDeclaredJsonSchema(tool: MakaTool): Record<string, unknown> {
+  const parameters = tool.parameters as { readonly jsonSchema?: unknown } | undefined;
+  const schema = parameters?.jsonSchema;
+  if (!isPlainRecord(schema)) {
     throw new Error(
       `Desktop native capability tool has an invalid schema: ${tool.name}`,
     );
   }
-  return tool.parameters;
+  const projected = Object.hasOwn(schema, 'type')
+    ? schema
+    : { ...schema, type: 'object' };
+  return structuredClone(projected);
+}
+
+async function parseNativeToolArguments(parameters: unknown, args: unknown): Promise<unknown> {
+  if (parameters instanceof z.ZodType) {
+    return parameters.parseAsync(args);
+  }
+  // MCP servers remain the authority for their full JSON Schema. The Client
+  // Capability publication is a deliberately smaller protocol projection, so
+  // compiling the external schema again here would duplicate that authority
+  // and execute untrusted regular expressions on the main thread.
+  return args;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function indexBindings(
-  groups: readonly DesktopCapabilityGroup[],
+  groups: readonly PreparedDesktopCapabilityGroup[],
 ): Map<string, NativeToolBinding> {
   const bindings = new Map<string, NativeToolBinding>();
   for (const group of groups) {
-    for (const tool of group.tools) {
+    for (const { tool, descriptor } of group.tools) {
       const key = bindingKey({
         offerId: group.offerId,
-        serverId: group.offerId,
-        toolName: tool.name,
+        serverId: descriptor.serverId,
+        toolName: descriptor.name,
       });
       if (bindings.has(key)) {
         throw new Error(

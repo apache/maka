@@ -18,13 +18,15 @@
  */
 
 import assert from 'node:assert/strict';
-import { afterEach, describe, it } from 'node:test';
+import { afterEach, describe, it, mock } from 'node:test';
 import {
+  createSessionRailLayoutStore,
   readSessionListViewMode,
   writeSessionListViewMode,
 } from '../../renderer/features/session-navigation/testing.js';
 
 const VIEW_MODE_KEY = 'maka-chat-list-view-mode-v1';
+const WIDTH_KEY = 'maka-chat-list-width-v1';
 
 function installMemoryLocalStorage(initial: Record<string, string> = {}) {
   const store = new Map<string, string>(Object.entries(initial));
@@ -94,5 +96,45 @@ describe('session list view mode persistence', () => {
       assert.equal(readSessionListViewMode(), 'conversation', stored);
       memory.restore();
     }
+  });
+});
+
+describe('session rail width persistence', () => {
+  const cleanups: Array<() => void> = [];
+  afterEach(() => {
+    mock.timers.reset();
+    while (cleanups.length > 0) cleanups.pop()?.();
+  });
+
+  it('persists a width the user dragged to', () => {
+    const memory = installMemoryLocalStorage();
+    cleanups.push(memory.restore);
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const store = createSessionRailLayoutStore();
+
+    store.setWidth(400);
+    mock.timers.tick(200);
+
+    assert.equal(store.getState().width, 400);
+    assert.equal(memory.store.get(WIDTH_KEY), '400');
+  });
+
+  // Astryx reports a collapse as `onSizeChange(0)`. Clamping that to the minimum
+  // and storing it loses the width the user chose: collapse, reload, expand, and
+  // the rail comes back at 180 instead of 400.
+  it("ignores the collapse sentinel instead of storing it as the user's width", () => {
+    const memory = installMemoryLocalStorage();
+    cleanups.push(memory.restore);
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const store = createSessionRailLayoutStore();
+    store.setWidth(400);
+    mock.timers.tick(200);
+
+    store.setCollapsed(true);
+    store.setWidth(0);
+    mock.timers.tick(200);
+
+    assert.equal(store.getState().width, 400);
+    assert.equal(memory.store.get(WIDTH_KEY), '400');
   });
 });

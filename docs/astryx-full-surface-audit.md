@@ -84,7 +84,7 @@ Aligned: skills-panel, scheduled-task-*, daily-review-panel, module-pages, compo
 ### P1 — visual system
 
 - plan-mode / agent-graph plate: avoid fill + border + raw shadow stack; prefer raised ladder or single elevation token.
-- plan-mode status washes → semantic `--*-wash` tokens.
+- ~~plan-mode status washes → semantic `--*-wash` tokens.~~ Done: plan-mode reads the Astryx `-muted` rung, and the `--*-wash` family it named no longer exists.
 - quote companion composer elevation → token.
 
 ### P2 — primitives consistency

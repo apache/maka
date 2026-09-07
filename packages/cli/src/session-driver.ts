@@ -18,7 +18,7 @@
  */
 
 import { realpath } from 'node:fs/promises';
-import type { SessionEvent } from '@maka/core/events';
+import type { SessionEvent, ShellRunSnapshotResult, ShellRunUpdate } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -26,6 +26,7 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { CreateSessionInput, TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type {
@@ -133,6 +134,13 @@ export function skillInvocationBlockedMessage(skillInvocation: SkillInvocationRe
     : 'Explicit Skill invocation could not be resolved';
 }
 
+export interface MakaUserCommand {
+  readonly commandId: string;
+  readonly result: ShellRunSnapshotResult;
+  /** Returns the newest update that raced the initial card into the transcript. */
+  takeRacedUpdate(): ShellRunUpdate['result'] | undefined;
+}
+
 export interface MakaSessionDriver {
   listSessions(): Promise<SessionSummary[]>;
   getSessionResumeAvailability?(session: SessionSummary): Promise<SessionResumeAvailability>;
@@ -149,12 +157,17 @@ export interface MakaSessionDriver {
     options: MakaSubmitMessageOptions,
   ): Promise<TurnMessageSubmitResult | undefined>;
   queryCancelledMessages(messageIds: readonly string[]): Promise<TurnMessageQueryResult>;
+  /** Runs one user-owned command. Its input/output never becomes model prompt history. */
+  runUserCommand?(command: string): Promise<MakaUserCommand>;
+  /** Stops every live user-owned command started by this driver. */
+  stopUserCommands?(): Promise<void>;
   compactSession(): AsyncIterable<SessionEvent>;
   resumeLatest?(): AsyncIterable<SessionEvent>;
   retractQueued?(): Promise<MakaRetractedMessages>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;
-  setModel(model: string, connectionSlug?: string): Promise<void>;
+  respondToUserForm?(response: InteractionFormResponse): Promise<void>;
+  setModel(model: string, connectionSlug?: string, connectionId?: string): Promise<void>;
   setThinkingLevel(level: ThinkingLevel | undefined): Promise<void>;
   setPermissionMode(mode: PermissionMode): Promise<void>;
   setOrchestrationMode?(mode: OrchestrationMode): Promise<void>;
@@ -188,7 +201,12 @@ export interface MakaSessionDriver {
       reason: MakaTranscriptReplacementReason,
     ) => void,
   ): () => void;
-  startNewSession(): void;
+  /**
+   * Prepares a fresh Session: stops every live user-owned command first so
+   * their cards and Ctrl+C affordance never outlive the identity swap.
+   * Rejects without changing Session identity when a stop fails (#3210).
+   */
+  startNewSession(): Promise<void>;
   stop(): Promise<void>;
   getSessionId(): string | null;
   /**

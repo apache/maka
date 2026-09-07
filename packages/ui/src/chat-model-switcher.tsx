@@ -38,20 +38,25 @@
 
 import { type ReactNode, useMemo, useState } from 'react';
 import { Button as UiButton } from '@astryxdesign/core';
-import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
+import {
+  DropdownMenu,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+} from '@astryxdesign/core/DropdownMenu';
 import { ICON_SIZE, AlertTriangle, Check, Settings } from './icons.js';
 import {
   type ChatModelChoice,
   type ModelMenuGroup,
+  exactModelChoiceValue,
   modelChoiceDescription,
   modelMenuGroups,
-  modelChoiceValue,
 } from './chat-model-helpers.js';
 import { type ProviderType } from '@maka/core/llm-connections';
 import { type SessionSummary } from '@maka/core/session';
 import { type ThinkingLevel } from '@maka/core/model-thinking';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
+import type { ComposerModelSwitchAvailability } from './composer-helpers.js';
 
 const DEFAULT_THINKING_LEVEL = '__default__';
 
@@ -72,32 +77,54 @@ const currentCheck = <Check size={ICON_SIZE.control} aria-hidden="true" />;
 /**
  * The one shared body of both model menus: an optional leading row for a
  * current model the catalog no longer lists, then one `role="group"` section
- * per connection (heading + its models). The current value wears a check —
- * plain menu items, not radio rows, so the menu keeps the quiet footer's sm
- * density. `disabled` locks every row, not just the trigger: an aria-disabled
+ * per connection (heading + its models). Radio semantics expose the selected
+ * value to assistive technology while the aria-hidden check preserves the
+ * quiet footer's visual density. `disabled` locks every row, not just the trigger: an aria-disabled
  * trigger still opens its menu on ArrowDown (Astryx DropdownMenu's keydown
  * path does not consult `isDisabled`), so the lock must live on the items too.
  */
 function ModelMenuItems(props: {
   groups: readonly ModelMenuGroup[];
   currentValue?: string;
+  label: string;
   leadingOption?: { label: string; providerType?: ProviderType };
   renderProviderMark?(type: ProviderType): ReactNode;
   disabled?: boolean;
-  onPick(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
+  onPick(input: {
+    llmConnectionId: string;
+    llmConnectionSlug: string;
+    model: string;
+  }): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   return (
-    <>
+    <DropdownMenuRadioGroup
+      value={props.currentValue}
+      label={props.label}
+      onChange={(value) => {
+        const choice = props.groups
+          .flatMap((group) => group.choices)
+          .find((entry) => exactModelChoiceValue(
+            entry.connectionId,
+            entry.connectionSlug,
+            entry.model,
+          ) === value);
+        if (choice) {
+          void props.onPick({
+            llmConnectionId: choice.connectionId,
+            llmConnectionSlug: choice.connectionSlug,
+            model: choice.model,
+          });
+        }
+      }}
+    >
       {props.leadingOption ? (
-        <DropdownMenuItem
+        <DropdownMenuRadioItem
+          value={props.currentValue ?? ''}
           icon={providerMarkIcon(props.leadingOption.providerType, props.renderProviderMark)}
           label={props.leadingOption.label}
           endContent={currentCheck}
           isDisabled={props.disabled}
-          // Current value: picking it changes nothing, but the click still
-          // owes the user the menu close every other item gives.
-          onClick={() => {}}
         />
       ) : null}
       {props.groups.map((group) => (
@@ -106,24 +133,26 @@ function ModelMenuItems(props: {
             {group.heading}
           </div>
           {group.choices.map((choice) => {
-            const value = modelChoiceValue(choice.connectionSlug, choice.model);
+            const value = exactModelChoiceValue(
+              choice.connectionId,
+              choice.connectionSlug,
+              choice.model,
+            );
             return (
-              <DropdownMenuItem
+              <DropdownMenuRadioItem
                 key={value}
+                value={value}
                 icon={providerMarkIcon(choice.providerType, props.renderProviderMark)}
                 label={choice.label}
                 description={modelChoiceDescription(choice, locale)}
                 endContent={value === props.currentValue ? currentCheck : undefined}
                 isDisabled={props.disabled}
-                onClick={() => {
-                  void props.onPick({ llmConnectionSlug: choice.connectionSlug, model: choice.model });
-                }}
               />
             );
           })}
         </div>
       ))}
-    </>
+    </DropdownMenuRadioGroup>
   );
 }
 
@@ -139,7 +168,6 @@ export function ThinkingLevelSelector(props: {
   disabled?: boolean;
   /** Why the control is locked (mid-turn etc.); replaces the action tooltip so the reason is discoverable, matching the model switcher beside it. */
   disabledReason?: string;
-  loading?: boolean;
 }) {
   const copy = getConversationCopy(useUiLocale()).model;
   const hasVariants = props.levels.length > 0 && Boolean(props.onChange);
@@ -166,59 +194,95 @@ export function ThinkingLevelSelector(props: {
         variant: 'ghost',
         size: 'sm',
         isDisabled: props.disabled,
-        isLoading: props.loading,
         tooltip: props.disabledReason ?? copy.changeThinkingLevel,
         className: 'maka-thinking-level-selector',
         'aria-label': `${copy.thinkingLevel}: ${currentLabel}`,
       }}
     >
-      {options.map((option) => (
-        <DropdownMenuItem
-          key={option.value}
-          label={option.label}
-          endContent={option.value === currentValue ? currentCheck : undefined}
-          isDisabled={props.disabled}
-          onClick={() => {
-            void props.onChange?.(
-              option.value === DEFAULT_THINKING_LEVEL ? undefined : (option.value as ThinkingLevel),
-            );
-          }}
-        />
-      ))}
+      <DropdownMenuRadioGroup
+        value={currentValue}
+        label={`${copy.thinkingLevel}: ${currentLabel}`}
+        onChange={(value) => {
+          void props.onChange?.(
+            value === DEFAULT_THINKING_LEVEL ? undefined : (value as ThinkingLevel),
+          );
+        }}
+      >
+        {options.map((option) => (
+          <DropdownMenuRadioItem
+            key={option.value}
+            value={option.value}
+            label={option.label}
+            endContent={option.value === currentValue ? currentCheck : undefined}
+            isDisabled={props.disabled}
+          />
+        ))}
+      </DropdownMenuRadioGroup>
     </DropdownMenu>
   );
 }
 
 export function ChatModelSwitcher(props: {
   activeSession: SessionSummary;
+  activeModelConnectionId?: string;
+  activeModelConnectionSlug?: string;
   activeModel?: string;
   activeModelLabel?: string;
   currentProviderType?: ProviderType;
   choices: ChatModelChoice[];
   hasConversationHistory?: boolean;
-  pending?: boolean;
+  availability?: ComposerModelSwitchAvailability;
   disabledReason?: string;
+  /** Optional controlled open state used by an external recovery action. */
+  isMenuOpen?: boolean;
+  onMenuOpenChange?(open: boolean): void;
+  /** Hide a stale display-only row while the Session requires identity recovery. */
+  hideUnavailableCurrentOption?: boolean;
   renderProviderMark?(type: ProviderType): ReactNode;
-  onChange?(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
+  onChange?(input: {
+    llmConnectionId: string;
+    llmConnectionSlug: string;
+    model: string;
+  }): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).model;
+  const currentConnectionId =
+    props.activeModelConnectionId ?? props.activeSession.llmConnectionId;
+  const currentConnectionSlug =
+    props.activeModelConnectionSlug ?? props.activeSession.llmConnectionSlug;
   const currentModel = props.activeModel ?? props.activeSession.model;
-  const currentValue = modelChoiceValue(props.activeSession.llmConnectionSlug, currentModel);
-  const pending = Boolean(props.pending);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const disabled = pending || Boolean(props.disabledReason) || !props.onChange || props.choices.length === 0;
+  const currentValue = currentConnectionId
+    ? exactModelChoiceValue(
+        currentConnectionId,
+        currentConnectionSlug,
+        currentModel,
+      )
+    : undefined;
+  const availability = props.availability ?? { available: true, pending: false };
+  const [internalMenuOpen, setInternalMenuOpen] = useState(false);
+  const menuOpen = props.isMenuOpen ?? internalMenuOpen;
+  const setMenuOpen = (open: boolean) => {
+    if (props.isMenuOpen === undefined) setInternalMenuOpen(open);
+    props.onMenuOpenChange?.(open);
+  };
+  const disabled =
+    Boolean(props.disabledReason) ||
+    !availability.available || !props.onChange || props.choices.length === 0;
   const grouped = modelMenuGroups(props.choices, locale);
-  const currentKnownChoice = props.choices.some((choice) => modelChoiceValue(choice.connectionSlug, choice.model) === currentValue);
+  const currentKnownChoice = props.choices.some(
+    (choice) =>
+      exactModelChoiceValue(choice.connectionId, choice.connectionSlug, choice.model) ===
+      currentValue,
+  );
   const displayLabel = props.activeModelLabel ?? currentModel;
-  const title = pending
-    ? `${copy.switching}…`
-    : props.disabledReason ?? copy.switchAriaLabel;
+  const title = props.disabledReason ?? copy.switchAriaLabel;
   const announceWarning = menuOpen && props.hasConversationHistory === true;
 
   return (
     <>
       <DropdownMenu
+        {...(props.isMenuOpen === undefined ? {} : { isMenuOpen: props.isMenuOpen })}
         placement="above"
         hasChevron={false}
         className="maka-composer-quiet-menu"
@@ -229,10 +293,9 @@ export function ChatModelSwitcher(props: {
           variant: 'ghost',
           size: 'sm',
           isDisabled: disabled,
-          isLoading: pending,
           tooltip: title,
           className: 'maka-model-switcher-trigger',
-          'aria-label': copy.switchAriaLabel,
+          'aria-label': `${copy.switchAriaLabel}: ${displayLabel}`,
         }}
       >
         {announceWarning ? (
@@ -244,12 +307,18 @@ export function ChatModelSwitcher(props: {
         <ModelMenuItems
           groups={grouped}
           currentValue={currentValue}
-          leadingOption={!currentKnownChoice ? { label: displayLabel, providerType: props.currentProviderType } : undefined}
+          label={`${copy.switchAriaLabel}: ${displayLabel}`}
+          leadingOption={
+            !currentKnownChoice && !props.hideUnavailableCurrentOption
+              ? { label: displayLabel, providerType: props.currentProviderType }
+              : undefined
+          }
           renderProviderMark={props.renderProviderMark}
           disabled={disabled}
           onPick={async (next) => {
             if (
-              next.llmConnectionSlug === props.activeSession.llmConnectionSlug &&
+              next.llmConnectionSlug === currentConnectionSlug &&
+              next.llmConnectionId === currentConnectionId &&
               next.model === currentModel
             ) return;
             try {
@@ -287,14 +356,20 @@ export function NewChatModelPicker(props: {
   currentValue?: string;
   currentProviderType?: ProviderType;
   renderProviderMark?(type: ProviderType): ReactNode;
-  onPick(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
+  onPick(input: {
+    llmConnectionId: string;
+    llmConnectionSlug: string;
+    model: string;
+  }): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).model;
   const grouped = modelMenuGroups(props.choices, locale);
   const currentValue = props.currentValue ?? '';
   const currentKnownChoice = props.choices.some(
-    (choice) => modelChoiceValue(choice.connectionSlug, choice.model) === currentValue,
+    (choice) =>
+      exactModelChoiceValue(choice.connectionId, choice.connectionSlug, choice.model) ===
+      currentValue,
   );
   return (
     <DropdownMenu
@@ -314,6 +389,7 @@ export function NewChatModelPicker(props: {
       <ModelMenuItems
         groups={grouped}
         currentValue={currentValue}
+        label={copy.newChatAriaLabel(props.label)}
         leadingOption={!currentKnownChoice && currentValue ? { label: props.label, providerType: props.currentProviderType } : undefined}
         renderProviderMark={props.renderProviderMark}
         onPick={props.onPick}

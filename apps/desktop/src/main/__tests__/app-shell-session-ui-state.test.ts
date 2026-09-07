@@ -31,6 +31,11 @@ import {
   createInitialAppShellSessionUiState,
   type AppShellSessionUiState,
 } from '../../renderer/app-shell-session-ui-state.js';
+import {
+  transcriptReadingPosition,
+  type TranscriptHistoryGates,
+  type TranscriptHistoryPending,
+} from '../../renderer/features/conversation/index.js';
 
 function boundaryRequest(requestId: string): SandboxBoundaryRequestEvent {
   return {
@@ -59,6 +64,93 @@ function answeredArm(turnId: string) {
   return confirmLiveTurn(armLiveTurn(turnId), turnId)!;
 }
 
+function deferred() {
+  let resolve!: () => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function deferredHistoryController() {
+  const before = deferred();
+  const after = deferred();
+  const latest = deferred();
+  const calls: string[] = [];
+  return {
+    controller: {
+      loadBefore: () => {
+        calls.push('before');
+        return before.promise;
+      },
+      loadAfter: (maxBytes: number, anchorTurnId?: string) => {
+        calls.push(`after:${maxBytes}:${anchorTurnId}`);
+        return after.promise;
+      },
+      loadLatest: () => {
+        calls.push('latest');
+        return latest.promise;
+      },
+    },
+    calls,
+    settleBefore: before.resolve,
+    settleAfter: after.resolve,
+    settleLatest: latest.resolve,
+    failBefore: before.reject,
+  };
+}
+
+function crossSessionGateScenario() {
+  type HistoryRequest = Parameters<typeof transcriptReadingPosition.loadHistory>[0]['request'];
+  const gates: TranscriptHistoryGates = new WeakMap();
+  const sessionIds = { a: 'session', b: 'session:a' } as const;
+  const sides = {
+    a: deferredHistoryController(),
+    b: deferredHistoryController(),
+  };
+  let active: 'a' | 'b' = 'a';
+  let range: object = sides.a.controller;
+  let currentPending: TranscriptHistoryPending | undefined;
+  const pending = {
+    a: [] as Array<Pick<HistoryRequest, 'target'> | undefined>,
+    b: [] as Array<Pick<HistoryRequest, 'target'> | undefined>,
+  };
+  const errors = { a: [] as unknown[], b: [] as unknown[] };
+  return {
+    sides,
+    pending,
+    errors,
+    currentPending: () => currentPending,
+    switchTo(id: 'a' | 'b') {
+      active = id;
+      range = sides[id].controller;
+    },
+    load(
+      id: 'a' | 'b',
+      request: { target: 'earlier' | 'later' | 'latest'; anchorTurnId?: string },
+    ) {
+      const side = sides[id];
+      return transcriptReadingPosition.loadHistory({
+        gates,
+        sessionId: sessionIds[id],
+        request,
+        controller: side.controller,
+        maxBytes: 4096,
+        isCurrent: () => active === id && range === side.controller,
+        setPending: (update) => {
+          currentPending = update(currentPending);
+          pending[id].push(currentPending?.sessionId === sessionIds[id]
+            ? { target: currentPending.target }
+            : undefined);
+        },
+        onError: (error) => errors[id].push(error),
+      });
+    },
+  };
+}
+
 function seededState(): AppShellSessionUiState {
   return {
     ...createInitialAppShellSessionUiState(),
@@ -70,8 +162,7 @@ function seededState(): AppShellSessionUiState {
       drop: [boundaryRequest('drop')],
       keep: [boundaryRequest('keep')],
     },
-    pendingPermissionModeBySession: { drop: true, keep: true },
-    pendingSessionModelBySession: { drop: true, keep: true },
+    transcriptRestoreUnavailableBySession: { drop: 'turn-drop', keep: 'turn-keep' },
   };
 }
 
@@ -91,6 +182,12 @@ describe('session live run display state', () => {
 });
 
 describe('app shell session UI state controller', () => {
+  it('does not mirror session-setting writes into UI pending state', () => {
+    const state = createInitialAppShellSessionUiState();
+    assert.equal('pendingPermissionModeBySession' in state, false);
+    assert.equal('pendingSessionModelBySession' in state, false);
+  });
+
   it('selects background terminal sessions without cutting off the active handoff', () => {
     const sessions = [
       { id: 'running', status: 'running' },
@@ -183,8 +280,7 @@ describe('app shell session UI state controller', () => {
     assert.deepEqual(Object.keys(next.stopPendingBySession), ['keep']);
     assert.deepEqual(Object.keys(next.liveTurnBySession), ['keep']);
     assert.deepEqual(Object.keys(next.interactionBySession), ['keep']);
-    assert.deepEqual(Object.keys(next.pendingPermissionModeBySession), ['keep']);
-    assert.deepEqual(Object.keys(next.pendingSessionModelBySession), ['keep']);
+    assert.deepEqual(Object.keys(next.transcriptRestoreUnavailableBySession), ['keep']);
   });
 
   it('keeps state identity for no-op map updates and only replaces the selected map', () => {
@@ -230,6 +326,360 @@ describe('app shell session UI state controller', () => {
     controller.clearSessionUiState('drop');
 
     assert.deepEqual(Object.keys(controller.sessionEventHealthBySessionRef.current), ['keep']);
+  });
+
+  it('owns per-session transcript reading anchors without notifying render subscribers', () => {
+    let notifications = 0;
+    const controller = createAppShellSessionUiStateController();
+    controller.subscribe(() => {
+      notifications += 1;
+    });
+
+    controller.setTranscriptReadingAnchor('drop', { turnId: 'turn-drop', sequence: 7 });
+    controller.setTranscriptReadingAnchor('keep', { turnId: 'turn-keep', sequence: 11 });
+    controller.setTranscriptReadingAnchor('drop', { turnId: 'turn-drop' });
+
+    assert.deepEqual(controller.transcriptReadingAnchorBySessionRef.current, {
+      drop: { turnId: 'turn-drop', sequence: 7 },
+      keep: { turnId: 'turn-keep', sequence: 11 },
+    });
+    assert.equal(notifications, 0, 'reading anchors have no live render subscriber');
+
+    controller.setTranscriptReadingAnchor('keep', undefined);
+    controller.clearSessionUiState('drop');
+
+    assert.deepEqual(controller.transcriptReadingAnchorBySessionRef.current, {});
+    assert.equal(notifications, 0);
+  });
+
+  it('publishes unavailable transcript restores only until they are consumed', () => {
+    let notifications = 0;
+    const controller = createAppShellSessionUiStateController();
+    controller.subscribe(() => {
+      notifications += 1;
+    });
+
+    controller.setTranscriptRestoreUnavailable('session', 'turn-missing');
+
+    assert.deepEqual(controller.getState().transcriptRestoreUnavailableBySession, {
+      session: 'turn-missing',
+    });
+    assert.equal(notifications, 1);
+
+    controller.setTranscriptRestoreUnavailable('session', undefined);
+
+    assert.deepEqual(controller.getState().transcriptRestoreUnavailableBySession, {});
+    assert.equal(notifications, 2);
+  });
+
+  it('clears Owner landmarks and ignores their late response when the active Session becomes a Guest', async () => {
+    let resolveOwner!: (value: { throughSequence: number; landmarks: string[] }) => void;
+    let index: { sessionId: string; throughSequence: number | null; turns: readonly string[] } | undefined = {
+      sessionId: 'owner-session', throughSequence: 0, turns: ['previous-owner-turn'],
+    };
+    const dispose = transcriptReadingPosition.refreshLandmarks({
+      sessionId: 'owner-session',
+      newestDurablePromptSequence: 1,
+      list: () => new Promise<{ throughSequence: number; landmarks: string[] }>((resolve) => {
+        resolveOwner = resolve;
+      }),
+      isCurrent: () => true,
+      setIndex: (value) => { index = value; },
+    });
+    // The shell cleans up the Owner effect and passes no ownerActiveId for Guests.
+    dispose?.();
+    transcriptReadingPosition.refreshLandmarks<string>({
+      sessionId: undefined,
+      newestDurablePromptSequence: 1,
+      list: async () => assert.fail('Guests cannot query Owner turn landmarks'),
+      isCurrent: () => true,
+      setIndex: (value) => { index = value; },
+    });
+    resolveOwner({ throughSequence: 1, landmarks: ['owner-turn'] });
+    await Promise.resolve();
+    assert.equal(index, undefined);
+  });
+
+  it('enriches a Turn-only reading anchor when its range sequence arrives later', () => {
+    let anchor: { turnId: string; sequence?: number } | undefined;
+    transcriptReadingPosition.restoreRange({
+      sessionId: 'session',
+      readingAnchor: { turnId: 'turn' },
+      controller: {
+        store: {
+          range: () => ({ sessionId: 'session' }),
+          sequenceForTurn: () => 17,
+          newestDurableUserSequence: () => 17,
+          snapshot: () => ({ messages: [] }),
+        },
+        ready: async () => undefined,
+        loadAround: async () => assert.fail('the resident Turn must not load another range'),
+      },
+      isCurrent: () => true,
+      setMessages: () => assert.fail('the resident range must not replace messages'),
+      setReadingAnchor: (_sessionId, next) => {
+        anchor = next;
+      },
+      onError: (error) => assert.fail(String(error)),
+    });
+
+    assert.deepEqual(anchor, { turnId: 'turn', sequence: 17 });
+  });
+
+  it('does not enrich a reading anchor from another Session range', () => {
+    let sequenceReads = 0;
+    let anchor: { turnId: string; sequence?: number } | undefined;
+    transcriptReadingPosition.restoreRange({
+      sessionId: 'active',
+      readingAnchor: { turnId: 'turn' },
+      controller: {
+        store: {
+          range: () => ({ sessionId: 'stale' }),
+          sequenceForTurn: () => {
+            sequenceReads += 1;
+            return 17;
+          },
+          newestDurableUserSequence: () => 17,
+          snapshot: () => ({ messages: [] }),
+        },
+        ready: async () => undefined,
+        loadAround: async () => assert.fail('a stale range must not load'),
+      },
+      isCurrent: () => true,
+      setMessages: () => assert.fail('a stale range must not replace messages'),
+      setReadingAnchor: (_sessionId, next) => {
+        anchor = next;
+      },
+      onError: (error) => assert.fail(String(error)),
+    });
+
+    assert.equal(sequenceReads, 0);
+    assert.equal(anchor, undefined);
+  });
+
+  it('abandons a Turn-only restore that remains absent after the range is ready', async () => {
+    const anchorWrites: Array<{ turnId: string; sequence?: number } | undefined> = [];
+    let unavailable: { sessionId: string; turnId: string } | undefined;
+    const options = {
+      sessionId: 'session',
+      readingAnchor: { turnId: 'missing' },
+      controller: {
+        store: {
+          range: () => ({ sessionId: 'session' }),
+          sequenceForTurn: () => null,
+          newestDurableUserSequence: () => null,
+          snapshot: () => ({ messages: [] }),
+        },
+        ready: async () => undefined,
+        loadAround: async () => assert.fail('a Turn-only anchor has no load target'),
+      },
+      isCurrent: () => true,
+      setMessages: () => assert.fail('an unavailable target must not replace messages'),
+      setReadingAnchor: (_sessionId: string, next: { turnId: string; sequence?: number } | undefined) => {
+        anchorWrites.push(next);
+      },
+      onRestoreUnavailable: (sessionId: string, turnId: string) => {
+        unavailable = { sessionId, turnId };
+      },
+      onError: (error: unknown) => assert.fail(String(error)),
+    };
+
+    transcriptReadingPosition.restoreRange(options);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(anchorWrites, [undefined]);
+    assert.deepEqual(unavailable, { sessionId: 'session', turnId: 'missing' });
+  });
+
+  it('abandons a known-sequence restore when loadAround cannot make the Turn resident', async () => {
+    let loadedSequence: number | undefined;
+    let unavailable: { sessionId: string; turnId: string } | undefined;
+    let messages: Array<{ id: string }> | undefined;
+    const anchorWrites: Array<{ turnId: string; sequence?: number } | undefined> = [];
+    const options = {
+      sessionId: 'session',
+      readingAnchor: { turnId: 'removed', sequence: 23 },
+      controller: {
+        store: {
+          range: () => ({ sessionId: 'session' }),
+          sequenceForTurn: () => null,
+          newestDurableUserSequence: () => 29,
+          snapshot: () => ({ messages: [{ id: 'latest' }] }),
+        },
+        ready: async () => undefined,
+        loadAround: async (sequence: number) => {
+          loadedSequence = sequence;
+        },
+      },
+      isCurrent: () => true,
+      setMessages: (next: Array<{ id: string }>) => {
+        messages = next;
+      },
+      setReadingAnchor: (_sessionId: string, next: { turnId: string; sequence?: number } | undefined) => {
+        anchorWrites.push(next);
+      },
+      onRestoreUnavailable: (sessionId: string, turnId: string) => {
+        unavailable = { sessionId, turnId };
+      },
+      onError: (error: unknown) => assert.fail(String(error)),
+    };
+
+    transcriptReadingPosition.restoreRange(options);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.equal(loadedSequence, 23);
+    assert.deepEqual(messages, [{ id: 'latest' }]);
+    assert.deepEqual(anchorWrites, [undefined]);
+    assert.deepEqual(unavailable, { sessionId: 'session', turnId: 'removed' });
+  });
+
+  it('starts another Session history load without waiting behind an in-flight load elsewhere', async () => {
+    const scenario = crossSessionGateScenario();
+    const stale = scenario.load('a', { target: 'earlier' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(scenario.sides.a.calls, ['before']);
+    assert.deepEqual(scenario.pending.a, [{ target: 'earlier' }]);
+
+    scenario.switchTo('b');
+    const navigation = scenario.load('b', { target: 'latest' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(scenario.sides.b.calls, ['latest']);
+    assert.deepEqual(scenario.pending.b, [{ target: 'latest' }]);
+
+    scenario.sides.a.settleBefore();
+    await stale;
+    assert.deepEqual(scenario.currentPending(), { sessionId: 'session:a', target: 'latest' });
+    scenario.sides.b.settleLatest();
+    await navigation;
+  });
+
+  it('leaves the switched-to Session untouched when a stale Session load settles late', async () => {
+    const scenario = crossSessionGateScenario();
+    const stale = scenario.load('a', { target: 'earlier' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    scenario.switchTo('b');
+    const navigation = scenario.load('b', { target: 'latest' });
+    scenario.sides.b.settleLatest();
+    await navigation;
+    assert.deepEqual(scenario.pending.b, [{ target: 'latest' }, undefined]);
+    assert.deepEqual(scenario.sides.b.calls, ['latest']);
+
+    scenario.sides.a.settleBefore();
+    await stale;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(scenario.pending.b, [{ target: 'latest' }, undefined]);
+    assert.deepEqual(scenario.sides.b.calls, ['latest']);
+    assert.deepEqual(scenario.errors.b, []);
+  });
+
+  it('reports a late history load failure to its own Session alone', async () => {
+    const scenario = crossSessionGateScenario();
+    const stale = scenario.load('a', { target: 'earlier' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    scenario.switchTo('b');
+    scenario.sides.a.failBefore(new Error('earlier read failed'));
+    await stale;
+    assert.deepEqual(scenario.errors.a, []);
+    assert.deepEqual(scenario.pending.a, [{ target: 'earlier' }, undefined]);
+    assert.deepEqual(scenario.pending.b, []);
+  });
+
+  it('replays the queued latest load once after an in-flight load settles on the same Session', async () => {
+    const scenario = crossSessionGateScenario();
+    const inFlight = scenario.load('a', { target: 'earlier' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const queuedEarlier = scenario.load('a', { target: 'earlier', anchorTurnId: 'turn-anchor' });
+    const queuedLatest = scenario.load('a', { target: 'latest' });
+    assert.deepEqual(scenario.sides.a.calls, ['before']);
+
+    scenario.sides.a.settleBefore();
+    await inFlight;
+    assert.deepEqual(scenario.sides.a.calls, ['before', 'latest']);
+    scenario.sides.a.settleLatest();
+    await Promise.allSettled([queuedEarlier, queuedLatest]);
+    assert.deepEqual(scenario.pending.a, [
+      { target: 'earlier' },
+      undefined,
+      { target: 'latest' },
+      undefined,
+    ]);
+  });
+
+  it('replays a queued forward load with its reading anchor after a backward load settles', async () => {
+    const scenario = crossSessionGateScenario();
+    const inFlight = scenario.load('a', { target: 'earlier' });
+    const queued = scenario.load('a', { target: 'later', anchorTurnId: 'turn-anchor' });
+    assert.deepEqual(scenario.sides.a.calls, ['before']);
+
+    scenario.sides.a.settleBefore();
+    await inFlight;
+    assert.deepEqual(scenario.sides.a.calls, ['before', 'after:4096:turn-anchor']);
+    scenario.sides.a.settleAfter();
+    await queued;
+    assert.deepEqual(scenario.pending.a, [
+      { target: 'earlier' },
+      undefined,
+      { target: 'later' },
+      undefined,
+    ]);
+  });
+
+  it('keeps the queued latest load when adjacent requests arrive after it', async () => {
+    const scenario = crossSessionGateScenario();
+    const inFlight = scenario.load('a', { target: 'earlier' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const queuedLatest = scenario.load('a', { target: 'latest' });
+    const queuedEarlier = scenario.load('a', { target: 'earlier', anchorTurnId: 'turn-anchor' });
+    const queuedLater = scenario.load('a', { target: 'later', anchorTurnId: 'turn-anchor' });
+    assert.deepEqual(scenario.sides.a.calls, ['before']);
+
+    scenario.sides.a.settleBefore();
+    await inFlight;
+    assert.deepEqual(scenario.sides.a.calls, ['before', 'latest']);
+    scenario.sides.a.settleLatest();
+    await Promise.allSettled([queuedLatest, queuedEarlier, queuedLater]);
+    assert.deepEqual(scenario.pending.a, [
+      { target: 'earlier' },
+      undefined,
+      { target: 'latest' },
+      undefined,
+    ]);
+  });
+
+  it('does not replay a settled load after its Session range was replaced', async () => {
+    const scenario = crossSessionGateScenario();
+    const inFlight = scenario.load('a', { target: 'earlier' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const queued = scenario.load('a', { target: 'latest' });
+    scenario.switchTo('b');
+    scenario.sides.a.settleBefore();
+    await inFlight;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(scenario.sides.a.calls, ['before']);
+    assert.deepEqual(scenario.sides.b.calls, []);
+    assert.deepEqual(scenario.pending.a, [{ target: 'earlier' }, undefined]);
+    scenario.sides.a.settleLatest();
+    await queued;
+  });
+
+  it('replays a queued load through its own Session callbacks', async () => {
+    const scenario = crossSessionGateScenario();
+    const inFlight = scenario.load('a', { target: 'earlier' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const queued = scenario.load('a', { target: 'latest' });
+    scenario.sides.a.settleBefore();
+    await inFlight;
+    assert.deepEqual(scenario.sides.a.calls, ['before', 'latest']);
+    scenario.sides.a.settleLatest();
+    await queued;
+    assert.deepEqual(scenario.pending.a, [
+      { target: 'earlier' },
+      undefined,
+      { target: 'latest' },
+      undefined,
+    ]);
+    assert.deepEqual(scenario.pending.b, []);
+    assert.deepEqual(scenario.sides.b.calls, []);
   });
 
   it('keeps the synchronous live-turn ref aligned with reducer updates', () => {

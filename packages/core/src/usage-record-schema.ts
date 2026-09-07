@@ -82,7 +82,6 @@ const CURRENT_CONTEXT_BUDGET_SHAPE = defineObjectShape<ContextBudgetDiagnostic>(
   ],
   [
     'policyName',
-    'maxHistoryEstimatedTokens',
     'prunedToolResults',
     'prunedToolResultEstimatedTokensBefore',
     'prunedToolResultEstimatedTokensAfter',
@@ -105,6 +104,7 @@ const CURRENT_CONTEXT_BUDGET_SHAPE = defineObjectShape<ContextBudgetDiagnostic>(
  * produce them through ContextBudgetDiagnostic.
  */
 const RETIRED_CONTEXT_BUDGET_KEYS = [
+  'maxHistoryEstimatedTokens',
   'maxHistoryTurns',
   'semanticCompactEnabled',
   'semanticCompactMode',
@@ -186,6 +186,7 @@ const PROMPT_SEGMENT_KINDS = new Set([
   'tool_schema',
   'prior_history',
   'current_user',
+  // Read compatibility for historical usage rows; current writers do not emit it.
   'turn_tail',
 ]);
 
@@ -282,6 +283,63 @@ export interface TokenUsageFields {
   contextBudget?: ContextBudgetDiagnostic;
   /** Links this aggregate to per-physical-request AgentRun trace rows. */
   providerRequestTraceId?: string;
+  /**
+   * The send's LAST provider request, as a pair: the input tokens the provider
+   * reported for it, and its output tokens. `input` above is the send's sum
+   * across steps and cannot anchor anything; the last step's real input and
+   * output can, so the next turn judges its first request from real usage.
+   * Absent means no anchor, and the next turn has no proactive fold until its
+   * first accepted request.
+   */
+  lastRequestAnchor?: LastRequestAnchor;
+}
+
+/**
+ * The last provider request of a send, as the provider counted it: its real
+ * input tokens and its real output tokens. Together they are the baseline the
+ * next request is judged from — everything the model produced is re-sent as
+ * input — with no local measure involved (#4559).
+ *
+ * `payloadChars` is a retired key from the 0.2.0 anchor, which paired the input
+ * count with a locally measured payload size. It is still accepted on decode so
+ * sessions written by that build keep loading, and ignored.
+ */
+export interface LastRequestAnchor {
+  inputTokens: number;
+  outputTokens?: number;
+  /**
+   * The route that produced these counts.
+   *
+   * A token count is a number in one model's tokenizer against one connection.
+   * The runtime already refuses an anchor across a route change, validating it
+   * against the run header; carrying the route on the record lets every other
+   * reader apply the same rule without reconstructing run headers, and without
+   * pairing counts from one model with another model's window.
+   */
+  modelId?: string;
+  connectionId?: string;
+}
+
+const LAST_REQUEST_ANCHOR_SHAPE = defineObjectShape<LastRequestAnchor>()(
+  ['inputTokens'],
+  ['outputTokens', 'modelId', 'connectionId'],
+);
+const RETIRED_LAST_REQUEST_ANCHOR_KEYS = ['payloadChars'] as const;
+const LAST_REQUEST_ANCHOR_DECODE_SHAPE = {
+  required: LAST_REQUEST_ANCHOR_SHAPE.required,
+  allowed: new Set([...LAST_REQUEST_ANCHOR_SHAPE.allowed, ...RETIRED_LAST_REQUEST_ANCHOR_KEYS]),
+};
+
+export function isLastRequestAnchor(value: unknown): value is LastRequestAnchor {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, LAST_REQUEST_ANCHOR_DECODE_SHAPE) &&
+    isFiniteNumber(value.inputTokens) &&
+    value.inputTokens > 0 &&
+    (value.outputTokens === undefined ||
+      (isFiniteNumber(value.outputTokens) && value.outputTokens >= 0)) &&
+    (value.payloadChars === undefined || isFiniteNumber(value.payloadChars))
+  );
 }
 
 export function isTokenUsageFields(value: unknown): value is TokenUsageFields {
@@ -302,7 +360,8 @@ export function isTokenUsageFields(value: unknown): value is TokenUsageFields {
     (value.promptSegments === undefined ||
       (Array.isArray(value.promptSegments) &&
         value.promptSegments.every(isPromptSegmentEstimate))) &&
-    (value.contextBudget === undefined || isContextBudgetDiagnostic(value.contextBudget))
+    (value.contextBudget === undefined || isContextBudgetDiagnostic(value.contextBudget)) &&
+    (value.lastRequestAnchor === undefined || isLastRequestAnchor(value.lastRequestAnchor))
   );
 }
 

@@ -38,7 +38,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { _electron as electron } from '@playwright/test';
 import { closeElectronApplication } from './electron-lifecycle.mjs';
-import { buildFixtureEnv, isCiLinuxDisplay } from './fixture-env.mjs';
+import { buildFixtureEnv, inactiveWindowPlatformArgs, isCiLinuxDisplay } from './fixture-env.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DESKTOP_DIR = join(ROOT, 'apps', 'desktop');
@@ -56,20 +56,6 @@ const CLOSE_GRACE_MS = 5_000;
  * name works; UTC is the one nobody has to look up.
  */
 export const CAPTURE_TIMEZONE = process.env.FIXTURE_TIMEZONE ?? 'UTC';
-
-/**
- * Electron 43 defaults to native Wayland when XDG_SESSION_TYPE=wayland, where
- * BrowserWindow.showInactive() is unsupported. Keep inactive fixtures on
- * XWayland; other launches retain Electron's platform default.
- *
- * @param {NodeJS.ProcessEnv} [env]
- * @param {NodeJS.Platform} [platform]
- */
-export function inactiveWindowElectronArgs(env = process.env, platform = process.platform) {
-  return platform === 'linux' && env.XDG_SESSION_TYPE?.toLowerCase() === 'wayland'
-    ? ['.', '--ozone-platform=x11']
-    : ['.'];
-}
 
 /**
  * Map the BrowserWindow owned by this launch without focusing it.
@@ -160,7 +146,8 @@ export async function withFixtureWindow(scenario, options, fn) {
   // xvfb throttles a hidden window's compositor to ~1fps; only that isolated
   // display gets a visible window. Local hit tests stay accessory/Dock-hidden.
   const ciVisible = isCiLinuxDisplay();
-  const launchArgs = mapWindowInactive && !ciVisible ? inactiveWindowElectronArgs() : ['.'];
+  const launchArgs =
+    mapWindowInactive && !ciVisible ? ['.', ...inactiveWindowPlatformArgs()] : ['.'];
 
   const userDataDir = await mkdtemp(join(tmpdir(), 'maka-fixture-'));
   // Inside the throwaway userData dir so the same teardown removes it; there

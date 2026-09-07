@@ -43,7 +43,7 @@
  * Pure: no IO, no network, no clock. Given the registry it is a total function.
  */
 
-import { lookupModelProviderOverride, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
+import { lookupModelRuntimeOverride, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 import {
   PROVIDER_REGISTRY,
   type ProviderDefaults,
@@ -51,6 +51,7 @@ import {
   type ProviderRuntimeAdapter,
   type ProviderType,
 } from '@maka/core/provider-registry';
+import { resolveRuntimeProviderAdapter } from '../provider-runtime-policy.js';
 
 export const PROVIDER_CONTRACT_DIMENSIONS = [
   'discovery',
@@ -70,15 +71,38 @@ export type ProviderContractWire =
   | 'google-generate'
   | 'cohere-v2';
 
-/** Runtime-adapter kinds whose request wire is provider-specific (auth, headers,
+/** Providers whose request wire is provider-specific (auth, headers,
  * per-model protocol) and therefore cannot be generated from the declaration. */
-export const SUBSCRIPTION_WIRE_ADAPTER_KINDS: ReadonlySet<ProviderRuntimeAdapter['kind']> = new Set(
-  ['openai-codex', 'github-copilot'],
-);
+export const SUBSCRIPTION_WIRE_PROVIDER_TYPES: ReadonlySet<ProviderType> = new Set([
+  'openai-codex',
+  'github-copilot',
+]);
+
+/**
+ * The wire a provider's Runtime adapter speaks, which its `/models` endpoint
+ * follows. Derived from the adapter rather than declared beside it: the two
+ * cannot then disagree.
+ */
+export type ProviderWireProtocol = 'anthropic' | 'openai' | 'google' | 'cohere';
+
+function wireProtocolFor(def: ProviderDefaults): ProviderWireProtocol {
+  switch (def.runtimeAdapter.kind) {
+    case 'anthropic':
+      return 'anthropic';
+    case 'google':
+      return 'google';
+    case 'cohere':
+      return 'cohere';
+    case 'unavailable':
+      throw new Error('an unavailable adapter has no wire');
+    default:
+      return 'openai';
+  }
+}
 
 /** Derived expectation for a generated `discovery` cell. */
 export interface ProviderContractDiscoveryPlan {
-  protocol: ProviderDefaults['protocol'];
+  protocol: ProviderWireProtocol;
   /**
    * How the discovery request carries (or omits) a credential:
    *   - `none`     the request must carry no credential — a public model list, or
@@ -152,7 +176,6 @@ export interface ProviderContractEdgeWireSample {
 
 export interface ProviderContractRow {
   providerType: ProviderType;
-  protocol: ProviderDefaults['protocol'];
   adapterKind: ProviderRuntimeAdapter['kind'];
   discoveryKind: ProviderModelDiscovery['kind'];
   /** Deterministic model id generated cells drive through discovery and the wire. */
@@ -173,7 +196,7 @@ function overrideKeyFor(providerType: ProviderType, dimension: ProviderContractD
   return `${providerType}:${dimension}`;
 }
 
-function wireForProtocol(protocol: ProviderDefaults['protocol']): ProviderContractWire {
+function wireForProtocol(protocol: ProviderWireProtocol): ProviderContractWire {
   switch (protocol) {
     case 'openai':
       return 'openai-chat';
@@ -202,7 +225,7 @@ function wireForProtocol(protocol: ProviderDefaults['protocol']): ProviderContra
  */
 function sampleModelIdFor(providerType: ProviderType, def: ProviderDefaults): string {
   const usesDefaultWire = (id: string): boolean => {
-    if (lookupModelProviderOverride(providerType, id)) return false;
+    if (lookupModelRuntimeOverride(providerType, id)) return false;
     if (usesOpenAiResponsesWire(providerType, def, id)) return false;
     return true;
   };
@@ -214,7 +237,7 @@ function usesOpenAiResponsesWire(
   def: ProviderDefaults,
   modelId: string,
 ): boolean {
-  const adapter = def.runtimeAdapter;
+  const adapter = resolveRuntimeProviderAdapter(def.runtimeAdapter);
   const supportsResponses =
     adapter.kind === 'openai' ||
     (adapter.kind === 'openai-compatible' && adapter.responses !== undefined);
@@ -223,60 +246,16 @@ function usesOpenAiResponsesWire(
   );
 }
 
-/**
- * Edge-shaped model ids each provider's account surface can really serve —
- * slashes, dots, colon-suffixed quantization/cloud tags, vendor casing — that
- * the plain first-fallback sample does not exercise. The generated wire
- * executor drives every declared id end-to-end (exact-model-id + tool-loop) on
- * the wire resolved for that id, proving exact-id preservation is not an
- * artifact of simple ids. Future providers enter by declaration alone.
- */
-const EDGE_WIRE_SAMPLE_MODEL_IDS: Partial<Record<ProviderType, readonly string[]>> = {
-  'opencode-go': ['kimi-k2.7-code'],
-  localai: ['localai/Qwen3-8B-Instruct-GGUF:Q4_K_M'],
-  'lm-studio': ['lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-GGUF'],
-  'minimax-coding-plan': ['MiniMax-M2.7-highspeed'],
-  'tencent-tokenhub': ['hy3-preview'],
-};
-
-/**
- * Resolve the wire a declared edge id executes on, mirroring the runtime's
- * per-model resolution order: a models.dev per-model override wins, then the
- * native OpenAI adapter's declared per-id protocol, then the provider's
- * default protocol wire. Ids that resolve outside the four executable wires
- * (e.g. OpenAI Responses) must be owned by a named override instead of an edge
- * declaration; declaring one here is a plan-construction error.
- */
-function edgeWireSamplesFor(
-  providerType: ProviderType,
-  def: ProviderDefaults,
-): ProviderContractEdgeWireSample[] {
-  return (EDGE_WIRE_SAMPLE_MODEL_IDS[providerType] ?? []).map((modelId) => {
-    const override = lookupModelProviderOverride(providerType, modelId);
-    if (override) {
-      switch (override.npm) {
-        case '@ai-sdk/anthropic':
-          return { modelId, wire: 'anthropic-messages' as const };
-        case '@ai-sdk/google':
-          return { modelId, wire: 'google-generate' as const };
-        case '@ai-sdk/openai-compatible':
-          return { modelId, wire: 'openai-chat' as const };
-        default:
-          throw new Error(
-            `edge wire sample ${providerType}/${modelId} resolves to ${override.npm}, which has no ` +
-              'generated wire; own it with a named override binding instead of an edge declaration',
-          );
-      }
-    }
-    if (usesOpenAiResponsesWire(providerType, def, modelId)) {
-      throw new Error(
-        `edge wire sample ${providerType}/${modelId} routes to the OpenAI Responses wire, which has no ` +
-          'generated executor; own it with a named override binding instead of an edge declaration',
-      );
-    }
-    return { modelId, wire: wireForProtocol(def.protocol) };
-  });
-}
+const EDGE_WIRE_SAMPLES: Partial<Record<ProviderType, readonly ProviderContractEdgeWireSample[]>> =
+  {
+    'opencode-go': [{ modelId: 'kimi-k2.7-code', wire: 'openai-chat' }],
+    localai: [{ modelId: 'localai/Qwen3-8B-Instruct-GGUF:Q4_K_M', wire: 'openai-chat' }],
+    'lm-studio': [
+      { modelId: 'lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-GGUF', wire: 'openai-chat' },
+    ],
+    'minimax-coding-plan': [{ modelId: 'MiniMax-M2.7-highspeed', wire: 'anthropic-messages' }],
+    'tencent-tokenhub': [{ modelId: 'hy3-preview', wire: 'openai-chat' }],
+  };
 
 function discoveryCell(providerType: ProviderType, def: ProviderDefaults): ProviderContractCell {
   const discovery = def.modelDiscovery;
@@ -329,7 +308,7 @@ function discoveryCell(providerType: ProviderType, def: ProviderDefaults): Provi
         state: 'generated',
         dimension: 'discovery',
         discovery: {
-          protocol: def.protocol,
+          protocol: wireProtocolFor(def),
           auth:
             discovery.auth === 'none' || def.authKind === 'none'
               ? 'none'
@@ -362,7 +341,7 @@ function wireDimensionCell(
       reason: `${providerType} has no Runtime adapter and cannot send`,
     };
   }
-  if (SUBSCRIPTION_WIRE_ADAPTER_KINDS.has(def.runtimeAdapter.kind)) {
+  if (SUBSCRIPTION_WIRE_PROVIDER_TYPES.has(providerType)) {
     return {
       state: 'override',
       dimension,
@@ -382,14 +361,14 @@ function wireDimensionCell(
         'OpenAI Responses relay wire is provider-specific until the matrix has a generated Responses executor',
     };
   }
-  return { state: 'generated', dimension, wire: wireForProtocol(def.protocol) };
+  return { state: 'generated', dimension, wire: wireForProtocol(wireProtocolFor(def)) };
 }
 
 function reasoningReplayCell(
   providerType: ProviderType,
   def: ProviderDefaults,
 ): ProviderContractCell {
-  const adapter = def.runtimeAdapter;
+  const adapter = resolveRuntimeProviderAdapter(def.runtimeAdapter);
   if (adapter.kind === 'unavailable') {
     return {
       state: 'not-applicable',
@@ -397,7 +376,7 @@ function reasoningReplayCell(
       reason: `${providerType} has no Runtime adapter and cannot send`,
     };
   }
-  if (SUBSCRIPTION_WIRE_ADAPTER_KINDS.has(adapter.kind)) {
+  if (SUBSCRIPTION_WIRE_PROVIDER_TYPES.has(providerType)) {
     return {
       state: 'override',
       dimension: 'reasoning-replay',
@@ -434,17 +413,12 @@ function reasoningReplayCell(
       },
     };
   }
-  if (
-    providerType === 'volcengine-agent-plan' &&
-    adapter.kind === 'openai' &&
-    adapter.apiProtocol === 'openai-responses'
-  ) {
+  if (adapter.kind === 'openai' && adapter.apiProtocol === 'openai-responses') {
     return {
       state: 'override',
       dimension: 'reasoning-replay',
       overrideKey: overrideKeyFor(providerType, 'reasoning-replay'),
-      contract:
-        'Stateless OpenAI Responses reasoning items retain their encrypted content across Maka-owned durable replay',
+      contract: 'Native OpenAI Responses reasoning items retain their provider continuation state',
     };
   }
   // Native Anthropic / OpenAI / Google / Cohere SDKs own signed reasoning replay
@@ -467,11 +441,10 @@ export function buildProviderContractRow(
 ): ProviderContractRow {
   return {
     providerType,
-    protocol: def.protocol,
     adapterKind: def.runtimeAdapter.kind,
     discoveryKind: def.modelDiscovery.kind,
     sampleModelId: sampleModelIdFor(providerType, def),
-    edgeWireSamples: edgeWireSamplesFor(providerType, def),
+    edgeWireSamples: EDGE_WIRE_SAMPLES[providerType] ?? [],
     cells: {
       discovery: discoveryCell(providerType, def),
       'exact-model-id': wireDimensionCell('exact-model-id', providerType, def),

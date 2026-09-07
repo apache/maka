@@ -21,11 +21,10 @@ import { lazy, Suspense, type ComponentProps, type CSSProperties } from 'react';
 import { Card } from '@astryxdesign/core/Card';
 import { ResizeHandle, type ResizableProps } from '@astryxdesign/core/Resizable';
 import { Spinner } from '@astryxdesign/core/Spinner';
-import { Composer, useUiLocale } from '@maka/ui';
-import type { ComposerProps } from '../../../../../../../packages/ui/dist/composer.d.ts';
+import { Composer, useToast, useUiLocale } from '@maka/ui';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { SessionSummary } from '@maka/core/session';
-import { getShellCopy } from '../../../locales/shell-copy';
+import { confirmBypassPermission, getShellCopy } from '../../../locales/shell-copy';
 import type {
   SessionWorkbarPanelsState,
   SessionWorkbarPlacement,
@@ -95,18 +94,6 @@ export interface WorkbarHostModel {
     placement: SessionWorkbarPlacement,
     tabs: readonly SessionWorkbarTab[],
   ) => void;
-  onReorderTab: (
-    placement: SessionWorkbarPlacement,
-    tabId: string,
-    targetTabId: string,
-  ) => void;
-  onMoveTab: (
-    placement: SessionWorkbarPlacement,
-    tabId: string,
-    direction: 'left' | 'right',
-  ) => void;
-  onMoveTabToPanel: (tabId: string, target: SessionWorkbarPlacement) => void;
-  onPinTab: (tabId: string) => void;
   onOpenLauncher: (placement: SessionWorkbarPlacement) => void;
   onRequestOpenTab: (
     placement: SessionWorkbarPlacement,
@@ -120,18 +107,12 @@ export interface WorkbarHostModel {
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
   onContentStateChange?: (panelId: string, hasContent: boolean) => void;
-  onPreparingStateChange?: (panelId: string, preparing: boolean) => void;
   onInitialPromptStarted?: (panelId: string) => void;
   onPromptAccepted?: (panelId: string, prompt: string) => void;
   onActivityStateChange?: (panelId: string, active: boolean) => void;
-  preparingSideChatPanelIds?: ReadonlySet<string>;
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
-  mentionSkills?: ComposerProps['mentionSkills'];
-  mentionSkillsUnavailable?: ComposerProps['mentionSkillsUnavailable'];
-  mentionSkillsLoading?: ComposerProps['mentionSkillsLoading'];
-  onSearchMentionFiles?: ComposerProps['onSearchMentionFiles'];
   closeConfirmation: {
     key: string;
     open: boolean;
@@ -142,7 +123,9 @@ export interface WorkbarHostModel {
 }
 
 export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
-  const copy = getShellCopy(useUiLocale()).app;
+  const locale = useUiLocale();
+  const toast = useToast();
+  const copy = getShellCopy(locale).app;
   const style = {
     '--maka-session-workbar-width': `${props.rightWidth}px`,
     '--maka-session-bottom-panel-height': `${props.bottomHeight}px`,
@@ -196,10 +179,6 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               onActivateTab={props.onActivateTab}
               onCloseTab={props.onCloseTab}
               onCloseTabs={props.onCloseTabs}
-              onReorderTab={props.onReorderTab}
-              onMoveTab={props.onMoveTab}
-              onMoveTabToPanel={props.onMoveTabToPanel}
-              onPinTab={props.onPinTab}
               onOpenLauncher={props.onOpenLauncher}
               onRequestOpenTab={props.onRequestOpenTab}
               quotes={props.quotes}
@@ -207,18 +186,13 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               onRemoveQuote={props.onRemoveQuote}
               onForkVisibilityChange={props.onForkVisibilityChange}
               onContentStateChange={props.onContentStateChange}
-              onPreparingStateChange={props.onPreparingStateChange}
               onInitialPromptStarted={props.onInitialPromptStarted}
               onPromptAccepted={props.onPromptAccepted}
               onActivityStateChange={props.onActivityStateChange}
-              preparingSideChatPanelIds={props.preparingSideChatPanelIds}
               activeSideChatPanelIds={props.activeSideChatPanelIds}
               sourceSession={props.sourceSession}
               modelChoices={props.modelChoices}
-              mentionSkills={props.mentionSkills}
-              mentionSkillsUnavailable={props.mentionSkillsUnavailable}
-              mentionSkillsLoading={props.mentionSkillsLoading}
-              onSearchMentionFiles={props.onSearchMentionFiles}
+              confirmBypass={() => confirmBypassPermission(toast, locale)}
             />
           </Suspense>
         </div>

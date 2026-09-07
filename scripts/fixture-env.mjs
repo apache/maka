@@ -56,10 +56,9 @@ function isDeniedEnvKey(key) {
  * @param {string} homeDir
  * @param {{
  *   scenario?: string,
- *   locale?: 'zh' | 'en',
+ *   locale?: 'zh-CN' | 'zh-TW' | 'en',
  *   platform?: 'darwin' | 'win32' | 'linux',
  *   theme?: 'light' | 'dark',
- *   scrollMotion?: 'auto' | 'smooth',
  *   timezone?: string,
  *   showWindow?: boolean,
  * }} [options]
@@ -104,12 +103,6 @@ export function buildFixtureEnv(userDataDir, homeDir, options = {}) {
   // explicitly. The decision stays with the caller: this builder is a pure
   // function of its arguments, so a test asserting "hidden run stays hidden"
   // means the same thing on a laptop and on a CI runner.
-  // Captures collapse scroll motion so their state never depends on when a
-  // scroll settles. A fixture whose subject IS the scrolling asks for the
-  // production behavior back — see `scroll-motion-policy`. Per launch rather
-  // than per scenario: it costs several seconds of settling per window, and
-  // only the case that needs it should pay.
-  if (options.scrollMotion) env.MAKA_E2E_FIXTURE_SCROLL_MOTION = options.scrollMotion;
   if (options.showWindow) env.MAKA_E2E_SHOW_WINDOW = '1';
   return env;
 }
@@ -130,4 +123,27 @@ export function buildFixtureEnv(userDataDir, homeDir, options = {}) {
  */
 export function isCiLinuxDisplay(env = process.env, platform = process.platform) {
   return Boolean(env.CI) && platform === 'linux';
+}
+
+/**
+ * Extra Electron arguments a launch needs when its window will be revealed
+ * inactively.
+ *
+ * Electron 43 defaults to native Wayland when XDG_SESSION_TYPE=wayland, where
+ * BrowserWindow.showInactive() is unsupported — the window may simply not
+ * appear, which puts back the ~1fps compositor throttling and the geometry
+ * failures that asking for a visible window exists to avoid. Keep those
+ * launches on XWayland; every other launch retains Electron's platform
+ * default.
+ *
+ * Returns only the extra arguments, so each launcher composes it with its own:
+ * `['.', ...inactiveWindowPlatformArgs(), `--user-data-dir=${dir}`]`.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {NodeJS.Platform} [platform]
+ */
+export function inactiveWindowPlatformArgs(env = process.env, platform = process.platform) {
+  return platform === 'linux' && env.XDG_SESSION_TYPE?.toLowerCase() === 'wayland'
+    ? ['--ozone-platform=x11']
+    : [];
 }

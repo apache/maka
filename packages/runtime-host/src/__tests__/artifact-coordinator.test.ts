@@ -44,7 +44,6 @@ test('Artifact ingest is connection-bound, replay-safe, and commits one durable 
   assert.ok(owner);
   try {
     const store = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await store.recover();
     let now = 0;
     const coordinator = new HostArtifactCoordinator(
       store,
@@ -271,7 +270,6 @@ test('Artifact mutation failure requests Host drain and fails closed', async () 
   assert.ok(owner);
   try {
     const store = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await store.recover();
     await store.create({
       id: 'artifact-1',
       sessionId: 'session-1',
@@ -279,6 +277,7 @@ test('Artifact mutation failure requests Host drain and fails closed', async () 
       name: 'artifact.txt',
       kind: 'file',
       content: 'durable',
+      source: 'tool_result',
       now: 1,
     });
 
@@ -345,7 +344,6 @@ test('Artifact query streams complete content in bounded ordered chunks', async 
   assert.ok(owner);
   try {
     const store = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await store.recover();
     const content = Buffer.alloc(ARTIFACT_READ_CHUNK_MAX_BYTES + 17, 7);
     await store.create({
       id: 'artifact-large',
@@ -354,6 +352,7 @@ test('Artifact query streams complete content in bounded ordered chunks', async 
       name: 'large.bin',
       kind: 'file',
       content,
+      source: 'tool_result',
       now: 1,
     });
     const coordinator = new HostArtifactCoordinator(
@@ -394,6 +393,117 @@ test('Artifact query streams complete content in bounded ordered chunks', async 
     assert.equal(Buffer.from(second.result.chunkBase64, 'base64').byteLength, 17);
     assert.equal(second.result.nextOffset, null);
     assert.equal(second.result.totalBytes, content.byteLength);
+    store.close();
+  } finally {
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Session Guests can read only shared attachment Artifacts from their granted Session', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-artifact-shared-read-'));
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  try {
+    const store = await openInteractiveArtifactStoreForWrite(owner.lease);
+    await store.create({
+      id: 'shared-image',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      name: 'shared.png',
+      kind: 'image',
+      mimeType: 'image/png',
+      source: 'user_upload',
+      content: Buffer.from('image'),
+      now: 1,
+    });
+    await store.create({
+      id: 'private-artifact',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      name: 'private.txt',
+      kind: 'file',
+      source: 'session_effect',
+      content: Buffer.from('private'),
+      now: 2,
+    });
+    let active = true;
+    let revokeAfterAuthorization = false;
+    const coordinator = new HostArtifactCoordinator(
+      store,
+      () => assert.fail('successful read must not request Host drain'),
+      new SessionAdmissionGate(),
+      { probeSessionRemoval: async () => ({ kind: 'present' }) },
+      Date.now,
+      {
+        activeSessionGrant: () => {
+          if (!active) return;
+          if (revokeAfterAuthorization) {
+            revokeAfterAuthorization = false;
+            queueMicrotask(() => {
+              active = false;
+            });
+          }
+          return {
+            kind: 'session_observation',
+            grantId: 'grant-1',
+            principalId: 'guest-1',
+            sessionId: 'session-1',
+            createdAt: '2026-08-30T00:00:00.000Z',
+          };
+        },
+      },
+    );
+    const guest = {
+      ...connectionContext,
+      principal: 'guest-1',
+      principalKind: 'session_guest' as const,
+    };
+
+    const visible = await coordinator.handlers['artifact.query'](
+      { kind: 'get', sessionId: 'session-1', artifactId: 'shared-image' },
+      guest,
+    );
+    assert.equal(visible.ok && visible.result.kind === 'artifact', true);
+    assert.equal(
+      (
+        await coordinator.handlers['artifact.query'](
+          { kind: 'get', sessionId: 'session-1', artifactId: 'private-artifact' },
+          guest,
+        )
+      ).ok,
+      false,
+    );
+    assert.equal(
+      (
+        await coordinator.handlers['artifact.query'](
+          { kind: 'list_start', sessionId: 'session-1' },
+          guest,
+        )
+      ).ok,
+      false,
+    );
+
+    revokeAfterAuthorization = true;
+    assert.equal(
+      (
+        await coordinator.handlers['artifact.query'](
+          { kind: 'get', sessionId: 'session-1', artifactId: 'shared-image' },
+          guest,
+        )
+      ).ok,
+      false,
+    );
+    assert.equal(
+      (
+        await coordinator.handlers['artifact.query'](
+          { kind: 'get', sessionId: 'session-1', artifactId: 'shared-image' },
+          guest,
+        )
+      ).ok,
+      false,
+    );
     store.close();
   } finally {
     await owner.close();

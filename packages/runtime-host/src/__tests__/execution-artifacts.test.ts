@@ -19,14 +19,129 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, truncate, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
-import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
+import {
+  openInteractiveArtifactStoreForWrite,
+  createReadImageSnapshotPlanner,
+} from '@maka/storage/artifact-stores';
+import { encodeDurableToolResultOutputWithArtifacts } from '@maka/runtime/durable-tool-result-projection';
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { createHostExecutionArtifactServices } from '../server/execution-artifacts.js';
+import { restoreArtifactV1Shape } from './fixtures/artifact-v1.js';
+import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+
+test('a refused projection preserves a shared image until Session cleanup', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-shared-projection-'));
+  const owner = await tryAcquireInteractiveRootOwner(
+    await resolveStorageRoot({ path: root, kind: 'interactive' }),
+  );
+  assert.ok(owner);
+  const store = await openInteractiveArtifactStoreForWrite(owner.lease);
+  const entered = deferred();
+  const fail = deferred();
+  let rejected: PromiseLike<unknown> | undefined;
+  try {
+    const bytes = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=',
+      'base64',
+    );
+    const image = {
+      type: 'file' as const,
+      mediaType: 'image/png',
+      data: { type: 'data' as const, data: bytes.toString('base64') },
+    };
+    const plan = createReadImageSnapshotPlanner(store);
+    const shared = () =>
+      plan({
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        name: 'Tool Result image',
+        bytes,
+        mimeType: 'image/png',
+      });
+    let ordinal = 0;
+    rejected = Promise.resolve(
+      encodeDurableToolResultOutputWithArtifacts(
+        {
+          type: 'content',
+          value: [
+            image,
+            {
+              ...image,
+              data: {
+                type: 'data',
+                data: Buffer.concat([bytes, Buffer.from([0])]).toString('base64'),
+              },
+            },
+          ],
+        },
+        'session-1',
+        () => {
+          if (++ordinal === 1) return shared();
+          return {
+            ref: {
+              kind: 'session_file' as const,
+              sessionId: 'session-1',
+              relativePath: 'failed-image',
+            },
+            persist: async () => {
+              entered.resolve();
+              await fail.promise;
+              throw new Error('injected publication failure');
+            },
+          };
+        },
+      ),
+    );
+    await entered.promise;
+    const accepted = await encodeDurableToolResultOutputWithArtifacts(
+      { type: 'content', value: [image] },
+      'session-1',
+      shared,
+    );
+    assert.equal(accepted.kind, 'content');
+    fail.resolve();
+    assert.equal(((await rejected) as { kind: string }).kind, 'failure');
+    const ref = shared().ref;
+    assert.deepEqual(
+      await store.readDurableAttachmentBinary({
+        sessionId: ref.sessionId,
+        artifactId: ref.relativePath,
+      }),
+      {
+        ok: true,
+        base64: bytes.toString('base64'),
+        mimeType: 'image/png',
+      },
+    );
+    const record = (await store.getInSession(ref.sessionId, ref.relativePath)).record;
+    assert.ok(record);
+    await store.purgeSessionArtifacts('session-1');
+    await assert.rejects(stat(join(root, 'artifacts', record.relativePath)), { code: 'ENOENT' });
+    assert.equal((await store.listPage('session-1', { offset: 0, limit: 10 })).total, 0);
+    assert.deepEqual(
+      await store.readDurableAttachmentBinary({
+        sessionId: ref.sessionId,
+        artifactId: ref.relativePath,
+      }),
+      {
+        ok: false,
+        reason: 'not_found',
+      },
+    );
+  } finally {
+    fail.resolve();
+    await rejected;
+    store.close();
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('Hosted execution publishes contained Tool Artifacts and durable result archives', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-execution-artifacts-'));
@@ -42,9 +157,10 @@ test('Hosted execution publishes contained Tool Artifacts and durable result arc
   assert.ok(owner);
   try {
     const store = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await store.recover();
     const services = createHostExecutionArtifactServices({
       artifacts: store,
+      sessionAdmission: new SessionAdmissionGate(),
+      sessions: { probeSessionRemoval: async () => ({ kind: 'present' }) },
       requestDrain: () => assert.fail('successful Artifact writes must not request Host drain'),
     });
     await services.recordToolArtifacts({
@@ -98,6 +214,26 @@ test('Hosted execution publishes contained Tool Artifacts and durable result arc
       { ok: true, serializedResult },
     );
     await store.close();
+    restoreArtifactV1Shape(join(base, 'root'));
+    const upgraded = await openInteractiveArtifactStoreForWrite(owner.lease);
+    try {
+      const successor = createHostExecutionArtifactServices({
+        artifacts: upgraded,
+        sessionAdmission: new SessionAdmissionGate(),
+        sessions: { probeSessionRemoval: async () => ({ kind: 'present' }) },
+        requestDrain: () => assert.fail('reading an upgraded archive must not drain'),
+      });
+      assert.deepEqual(
+        await successor.toolResultArchive.services.readToolResultArchive({
+          ...archiveInput,
+          kind: 'maka.archived_tool_result',
+          artifactId: archived.artifactId,
+        }),
+        { ok: true, serializedResult },
+      );
+    } finally {
+      upgraded.close();
+    }
   } finally {
     await owner.close();
     await rm(base, { recursive: true, force: true });

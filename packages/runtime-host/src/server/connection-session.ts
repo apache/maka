@@ -43,7 +43,11 @@ import type {
   ClientCapabilityConnection,
   ClientCapabilityService,
 } from './client-capability-service.js';
-import type { HostChangeFeed, HostChangeSubscription } from './host-change-feed.js';
+import type {
+  HostChangeFeed,
+  HostChangeSubscription,
+  HostChangeSubscriptionMask,
+} from './host-change-feed.js';
 import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
 import {
   authorizeClientCapabilityFrame,
@@ -51,7 +55,10 @@ import {
   hasRuntimeHostOperationGrant,
 } from './connection-authority.js';
 
-type AcceptedConnectionContext = Omit<ConnectionContext, 'acquireResidency' | 'principal'> & {
+type AcceptedConnectionContext = Omit<
+  ConnectionContext,
+  'acquireResidency' | 'principal' | 'inputClosedSignal'
+> & {
   readonly clientInstanceId: string;
   readonly authority: RuntimeHostConnectionAuthority;
 };
@@ -69,6 +76,7 @@ export interface RuntimeHostConnectionSessionOptions {
   resolveContinuity(): SessionContinuityService | undefined;
   resolveClientCapabilities?(): ClientCapabilityService | undefined;
   resolveHostChanges?(): HostChangeFeed | undefined;
+  resolveSharedSessionId?(): string | undefined;
   beginOperation(frame: RequestFrame): Promise<ConnectionOperationLease | HostOperationErrorCode>;
   onTeardown(): void;
 }
@@ -85,7 +93,7 @@ export class RuntimeHostConnectionSession {
   #clientCapabilities: ClientCapabilityConnection | undefined;
   #clientCapabilityCloseTask: Promise<void> | undefined;
   #hostChanges: HostChangeSubscription | undefined;
-  #inputClosed = false;
+  readonly #inputClosedAbort = new AbortController();
   #closed = false;
 
   constructor(options: RuntimeHostConnectionSessionOptions) {
@@ -116,7 +124,7 @@ export class RuntimeHostConnectionSession {
   }
 
   async #closeAfterDispatchedReplies(): Promise<void> {
-    this.#inputClosed = true;
+    this.#inputClosedAbort.abort();
     this.#detachContinuity();
     this.#detachClientCapabilities();
     this.#detachHostChanges();
@@ -221,9 +229,14 @@ export class RuntimeHostConnectionSession {
           : undefined;
       const response = await dispatchOperation(frame, this.#options.resolveHandlers(), {
         ...this.#options.connection,
+        inputClosedSignal: this.#inputClosedAbort.signal,
         principal: this.#options.connection.authority.principalId,
+        principalKind: this.#options.connection.authority.principalKind,
         ...(this.#options.connection.authority.credentialId
           ? { credentialId: this.#options.connection.authority.credentialId }
+          : {}),
+        ...(this.#options.connection.authority.clientInstanceId
+          ? { credentialClientInstanceId: this.#options.connection.authority.clientInstanceId }
           : {}),
         acquireResidency: () => admission.acquireResidency(),
       });
@@ -249,7 +262,7 @@ export class RuntimeHostConnectionSession {
   }
 
   #ensureContinuity(): SessionContinuityConnection | undefined {
-    if (this.#closed || this.#inputClosed) return;
+    if (this.#closed || this.#inputClosedAbort.signal.aborted) return;
     const service = this.#options.resolveContinuity();
     if (!service) return;
     if (this.#continuityService && this.#continuityService !== service) {
@@ -277,7 +290,12 @@ export class RuntimeHostConnectionSession {
   }
 
   #ensureClientCapabilities(): ClientCapabilityConnection | undefined {
-    if (this.#closed || this.#inputClosed) return;
+    if (this.#closed || this.#inputClosedAbort.signal.aborted) return;
+    // Guests observe and submit approval requests; they cannot provide Client
+    // Capabilities or directly admit a Turn. In particular, their pending and
+    // finalized connections may overlap while the credential becomes bound to
+    // the Client. Neither connection owns a capability-provider registration.
+    if (this.#options.connection.authority.principalKind === 'session_guest') return;
     const service = this.#options.resolveClientCapabilities?.();
     if (!service) return;
     if (this.#clientCapabilityService && this.#clientCapabilityService !== service) {
@@ -290,7 +308,16 @@ export class RuntimeHostConnectionSession {
           connectionId: this.#options.connection.connectionId,
           principalId: this.#options.connection.authority.principalId,
           clientInstanceId: this.#options.connection.clientInstanceId,
+          ...(this.#options.connection.authority.clientInstanceId
+            ? {
+                credentialBoundClientInstanceId:
+                  this.#options.connection.authority.clientInstanceId,
+              }
+            : {}),
           principalKind: this.#options.connection.authority.principalKind,
+          ...(this.#options.connection.authority.capabilityOwner
+            ? { capabilityOwner: this.#options.connection.authority.capabilityOwner }
+            : {}),
         },
         {
           send: (frame) => {
@@ -316,9 +343,23 @@ export class RuntimeHostConnectionSession {
   }
 
   attachGlobalChanges(): void {
-    if (this.#closed || this.#inputClosed) return;
+    if (this.#closed || this.#inputClosedAbort.signal.aborted) return;
     const service = this.#options.resolveHostChanges?.();
     if (!service || this.#hostChanges) return;
+    const sharedSessionId =
+      this.#options.connection.authority.principalKind === 'session_guest' &&
+      hasRuntimeHostOperationGrant(this.#options.connection.authority, 'session.shared.query')
+        ? this.#options.resolveSharedSessionId?.()
+        : undefined;
+    const sessionCatalog: HostChangeSubscriptionMask['sessionCatalog'] =
+      sharedSessionId !== undefined
+        ? {
+            sessionId: sharedSessionId,
+            principalId: this.#options.connection.authority.principalId,
+          }
+        : hasRuntimeHostOperationGrant(this.#options.connection.authority, 'session.catalog.query')
+          ? true
+          : undefined;
     this.#hostChanges = service.attachConnection(
       this.#options.connection.connectionId,
       {
@@ -326,14 +367,15 @@ export class RuntimeHostConnectionSession {
           this.#options.connection.authority,
           'runtime.policy.query',
         ),
+        connectionCatalog: hasRuntimeHostOperationGrant(
+          this.#options.connection.authority,
+          'connection.catalog.query',
+        ),
         projectCatalog: hasRuntimeHostOperationGrant(
           this.#options.connection.authority,
           'project.catalog.query',
         ),
-        sessionCatalog: hasRuntimeHostOperationGrant(
-          this.#options.connection.authority,
-          'session.catalog.query',
-        ),
+        sessionCatalog,
         scheduledTask: hasRuntimeHostOperationGrant(
           this.#options.connection.authority,
           'scheduled-task.query',
@@ -359,7 +401,7 @@ export class RuntimeHostConnectionSession {
   #teardown(): void {
     if (this.#closed) return;
     this.#closed = true;
-    this.#inputClosed = true;
+    this.#inputClosedAbort.abort();
     this.#detachContinuity();
     this.#detachClientCapabilities();
     this.#detachHostChanges();

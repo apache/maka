@@ -18,8 +18,8 @@
  */
 
 import { useEffect, useState } from 'react';
-import { formatAbsoluteTimestamp } from './chat-display-helpers.js';
 import {
+  formatAbsoluteTimestamp,
   formatRelativeTimestamp,
   nextRelativeRefreshDelay,
   formatSidebarTimestamp,

@@ -25,6 +25,7 @@ import { describe, test } from 'node:test';
 import {
   createTaskFixture,
   findEvalReleaseTarball,
+  findReleaseTarball,
   isolatedEnvironment,
   readFrameworkOutputs,
 } from './release-cli-eval-support.mjs';
@@ -37,6 +38,19 @@ describe('installed Eval release validation support', () => {
         () => findEvalReleaseTarball(join(root, 'missing-release'), 'win32', 'x64'),
         /requires Linux x64/u,
       );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('resolves the one built tarball instead of assuming the checked-in version', () => {
+    const root = mkdtempSync(join(tmpdir(), 'maka-release-tarball-'));
+    try {
+      const tarball = join(root, 'maka-agent-0.2.0-dev.42.20260829.tgz');
+      writeFileSync(tarball, 'candidate');
+      assert.equal(findReleaseTarball(root), tarball);
+      writeFileSync(join(root, 'maka-agent-0.2.0.tgz'), 'other candidate');
+      assert.throws(() => findReleaseTarball(root), /Expected one release tarball/u);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

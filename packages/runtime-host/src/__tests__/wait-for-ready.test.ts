@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { waitForRuntimeHostReady } from '../client/wait-for-ready.js';
@@ -40,11 +41,3 @@ test('stops a pending ready probe when its reconnect attempt is cancelled', asyn
   controller.abort(reason);
   await assert.rejects(waiting, (error: unknown) => error === reason);
 });
-
-function deferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}

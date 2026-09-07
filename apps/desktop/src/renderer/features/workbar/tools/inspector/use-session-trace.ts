@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { type UiLocale } from '@maka/core/ui-locale';
 import {
   mergeSessionTraces,
@@ -33,7 +33,8 @@ import type {
 import {
   createRefreshCoalescer,
   createTraceRefreshCoalescer,
-} from '../../../../session-trace-refresh.js';
+  TRACE_REFRESH_DEBOUNCE_MS,
+} from './session-trace-refresh.js';
 import { useWorkbarServices } from '../../services-context.js';
 
 interface SessionTraceState {
@@ -62,9 +63,6 @@ interface SessionTraceSnapshot extends Omit<SessionTraceState, 'tracePages'> {
 const EMPTY_STATE: SessionTraceState = { loading: false };
 const EMPTY_SNAPSHOT: SessionTraceSnapshot = { loading: false };
 
-/** Long enough to absorb a turn's closing burst, short enough to feel live. */
-export const TRACE_REFRESH_DEBOUNCE_MS = 400;
-
 /**
  * Reads the per-session causal trace (#1625).
  *
@@ -84,7 +82,12 @@ export function useSessionTrace(
   // whose comment once outran its code — is renderable in a test without the
   // UI package behind it.
   copy: { loadFailed: string; locale: UiLocale },
-): SessionTraceSnapshot & { retry: () => void; loadEarlier: () => void } {
+): SessionTraceSnapshot & {
+  canHideEarlier: boolean;
+  retry: () => void;
+  loadEarlier: () => void;
+  hideEarlier: () => void;
+} {
   const { inspector } = useWorkbarServices();
   const traceRevisionRef = useRef(0);
   const summaryRevisionRef = useRef(0);
@@ -142,9 +145,7 @@ export function useSessionTrace(
                   loading: false,
                   loadingEarlier: false,
                   error:
-                    copy.locale === 'zh'
-                      ? generalizedErrorMessageChinese(error, copy.loadFailed)
-                      : generalizedErrorMessage(error, copy.loadFailed),
+                    generalizedErrorMessageForLocale(error, copy.loadFailed, copy.locale),
                 }
               : current,
           );
@@ -199,9 +200,7 @@ export function useSessionTrace(
                   loading: false,
                   loadingEarlier: false,
                   error:
-                    copy.locale === 'zh'
-                      ? generalizedErrorMessageChinese(error, copy.loadFailed)
-                      : generalizedErrorMessage(error, copy.loadFailed),
+                    generalizedErrorMessageForLocale(error, copy.loadFailed, copy.locale),
                 }
               : current,
           );
@@ -337,6 +336,7 @@ export function useSessionTrace(
     [state.tracePages],
   );
   const nextCursor = state.tracePages?.at(-1)?.nextCursor;
+  const canHideEarlier = Boolean(state.tracePages && state.tracePages.length > 1 && !nextCursor);
 
   const loadEarlier = useCallback(() => {
     if (!sessionId || !nextCursor || state.loading || state.loadingEarlier) return;
@@ -348,11 +348,30 @@ export function useSessionTrace(
     readEarlierPage(sessionId, nextCursor);
   }, [nextCursor, readEarlierPage, sessionId, state.loading, state.loadingEarlier]);
 
+  const hideEarlier = useCallback(() => {
+    if (!sessionId || !canHideEarlier) return;
+    const loaded = traceWindowRef.current;
+    if (loaded?.sessionId !== sessionId || loaded.pages.length < 2) return;
+    const pages = loaded.pages.slice(0, 1);
+    traceWindowRef.current = { sessionId, pages };
+    desiredPageCountRef.current = { sessionId, count: 1 };
+    setState((current) =>
+      current.sessionId === sessionId ? { ...current, tracePages: pages } : current,
+    );
+  }, [canHideEarlier, sessionId]);
+
   if (state.sessionId !== sessionId) {
-    return { ...EMPTY_SNAPSHOT, loading: Boolean(sessionId) && active, retry, loadEarlier };
+    return {
+      ...EMPTY_SNAPSHOT,
+      loading: Boolean(sessionId) && active,
+      canHideEarlier: false,
+      retry,
+      loadEarlier,
+      hideEarlier,
+    };
   }
   const { tracePages: _tracePages, ...snapshot } = state;
-  return { ...snapshot, trace, nextCursor, retry, loadEarlier };
+  return { ...snapshot, trace, nextCursor, canHideEarlier, retry, loadEarlier, hideEarlier };
 }
 
 async function readTracePageWindow(

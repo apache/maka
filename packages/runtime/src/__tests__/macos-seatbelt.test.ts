@@ -18,6 +18,9 @@
  */
 
 import assert from 'node:assert/strict';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import {
@@ -163,11 +166,109 @@ describe('buildSeatbeltPolicy', () => {
     assert.deepEqual(result.definitionArgs, [
       '-DREADABLE_ROOT_0=/repo',
       '-DREADABLE_ROOT_1=/private/tmp/maka-test',
-      '-DREADABLE_ROOT_2=/tmp',
+      `-DREADABLE_ROOT_2=${realpathSync('/tmp')}`,
       '-DWRITABLE_ROOT_0=/repo',
       '-DWRITABLE_ROOT_1=/private/tmp/maka-test',
-      '-DWRITABLE_ROOT_2=/tmp',
+      `-DWRITABLE_ROOT_2=${realpathSync('/tmp')}`,
     ]);
+  });
+
+  it('allows directory reads along every readable root ancestor chain', () => {
+    const policy = policyText(createReadOnlyPermissionProfile());
+
+    assert.match(
+      policy,
+      /\(allow file-read-data\n  \(require-all\n    \(path-ancestors \(param "READABLE_ROOT_0"\)\)\n    \(vnode-type DIRECTORY\)\n  \)\)/,
+    );
+  });
+
+  it('resolves symlinked temp roots before passing them to Seatbelt', () => {
+    const linkedTempRoot = mkdtempSync(join(tmpdir(), 'maka-seatbelt-root-'));
+
+    try {
+      const result = buildSeatbeltPolicy({
+        profile: createWorkspaceWritePermissionProfile(),
+        pathContext: {
+          workspaceRoots: ['/repo'],
+          tmpdir: linkedTempRoot,
+          slashTmp: '/tmp',
+        },
+      });
+      const canonicalTempRoot = realpathSync(linkedTempRoot);
+
+      assert.ok(result.definitionArgs.includes(`-DREADABLE_ROOT_1=${canonicalTempRoot}`));
+      assert.ok(result.definitionArgs.includes(`-DWRITABLE_ROOT_1=${canonicalTempRoot}`));
+    } finally {
+      rmSync(linkedTempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('canonicalizes a missing denied leaf through its existing symlinked ancestor', () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'maka-seatbelt-deny-'));
+    const realTarget = join(scratch, 'real');
+    const linkedTarget = join(scratch, 'link');
+    mkdirSync(realTarget);
+    symlinkSync(realTarget, linkedTarget);
+
+    try {
+      const profile: PermissionProfile = {
+        type: 'managed',
+        name: 'custom',
+        fileSystem: {
+          kind: 'restricted',
+          entries: [
+            { kind: 'path', access: 'write', path: linkedTarget, match: 'subtree' },
+            {
+              kind: 'path',
+              access: 'deny',
+              path: join(linkedTarget, 'blocked.txt'),
+              match: 'exact',
+            },
+          ],
+        },
+        network: { kind: 'restricted' },
+      };
+      const result = buildSeatbeltPolicy({ profile, pathContext: { workspaceRoots: ['/repo'] } });
+      const canonicalTarget = realpathSync(linkedTarget);
+
+      assert.ok(result.definitionArgs.includes(`-DWRITABLE_ROOT_0=${canonicalTarget}`));
+      assert.ok(
+        result.policy.includes(`(require-not (literal "${join(canonicalTarget, 'blocked.txt')}"))`),
+      );
+      assert.ok(!result.policy.includes(`(literal "${join(linkedTarget, 'blocked.txt')}")`));
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('fails policy construction when a root cannot be canonicalized', function (t) {
+    if (process.getuid?.() === 0) return t.skip('EACCES does not apply to root');
+    const scratch = mkdtempSync(join(tmpdir(), 'maka-seatbelt-eacces-'));
+    const sealed = join(scratch, 'sealed');
+    mkdirSync(sealed);
+    chmodSync(sealed, 0o000);
+
+    try {
+      const profile: PermissionProfile = {
+        type: 'managed',
+        name: 'custom',
+        fileSystem: {
+          kind: 'restricted',
+          entries: [
+            { kind: 'path', access: 'write', path: scratch, match: 'subtree' },
+            { kind: 'path', access: 'deny', path: join(sealed, 'blocked.txt'), match: 'exact' },
+          ],
+        },
+        network: { kind: 'restricted' },
+      };
+
+      assert.throws(() =>
+        buildSeatbeltPolicy({ profile, pathContext: { workspaceRoots: ['/repo'] } }),
+      );
+    } finally {
+      chmodSync(sealed, 0o700);
+      rmSync(scratch, { recursive: true, force: true });
+    }
   });
 
   it('keeps workspace metadata writable in the standard workspace profile', () => {
@@ -198,15 +299,21 @@ describe('buildSeatbeltPolicy', () => {
       policy,
       /\(allow file-write\*\n  \(require-all\n    \(subpath \(param "WRITABLE_ROOT_0"\)\)\n    \(require-not \(regex #"\^\/repo\/secret\(\/\.\*\)\?\$"\)\)\n  \)\)/,
     );
+    assert.match(
+      policy,
+      /\(allow file-read-data\n  \(require-all\n    \(path-ancestors \(param "READABLE_ROOT_0"\)\)\n    \(vnode-type DIRECTORY\)\n    \(require-not \(regex #"\^\/repo\/secret\(\/\.\*\)\?\$"\)\)\n  \)\)/,
+    );
   });
 
   it('escapes workspace root before building protected metadata regex requirements', () => {
+    // The workspace does not exist, so only its `/tmp` ancestor is canonicalized.
+    const workspaceRoot = join(realpathSync('/tmp'), 'repo.(test)+[x]');
     const result = buildSeatbeltPolicy({
       profile: workspaceWriteProfileWithCustomProtectedMetadata(),
       pathContext: { workspaceRoots: ['/tmp/repo.(test)+[x]'] },
     });
 
-    assert.match(result.policy, /\^\/tmp\/repo\\\.\\\(test\\\)\\\+\\\[x\\\]\/\(\.\*\/\)\?\\\.git/);
+    assert.ok(result.policy.includes(`#"^${escapeSeatbeltRegex(workspaceRoot)}/(.*/)?\\.git`));
   });
 
   it('emits network restricted and enabled policy sections', () => {
@@ -235,6 +342,7 @@ describe('buildSeatbeltPolicy', () => {
     assert.match(result.policy, /\(literal \(param "READABLE_ROOT_0"\)\)/);
     assert.match(result.policy, /\(subpath \(param "READABLE_ROOT_1"\)\)/);
     assert.match(result.policy, /\(literal \(param "WRITABLE_ROOT_0"\)\)/);
+    assert.match(result.policy, /\(path-ancestors \(param "READABLE_ROOT_0"\)\)/);
     assert.deepEqual(result.definitionArgs.slice(0, 3), [
       '-DREADABLE_ROOT_0=/outside/file.txt',
       '-DREADABLE_ROOT_1=/outside/tree',

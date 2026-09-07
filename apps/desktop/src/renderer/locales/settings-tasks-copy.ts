@@ -34,8 +34,12 @@ export type SettingsTasksCopy = {
   purgeAllConfirmTitle(count: number): string;
   purgeMatchesConfirmTitle(count: number): string;
   purgeConfirmBody: string;
+  /** Appended to the purge confirm: a bulk delete keeps linked subtasks. */
+  purgeSubtaskNote: string;
   purgeConfirmAction: string;
   purgedToast(count: number): string;
+  /** Toast suffix after a purge that moved linked subtasks to the archive. */
+  purgedSubtaskNote(count: number): string;
   /**
    * Tasks a sweep kept because they were restored while it ran. Reads after
    * either outcome, so a sweep never has to choose between reporting a failure
@@ -56,7 +60,7 @@ export type SettingsTasksCopy = {
 };
 
 const SETTINGS_TASKS_COPY_BY_LOCALE = {
-  zh: {
+  'zh-CN': {
     listAria: '已归档任务',
     noProject: '无项目',
     deletedParent: '原父任务已删除',
@@ -66,8 +70,10 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     purgeAllConfirmTitle: (count: number) => `清空全部 ${count} 条已归档任务？`,
     purgeMatchesConfirmTitle: (count: number) => `删除搜索到的 ${count} 条任务？`,
     purgeConfirmBody: '这些任务及其全部消息会被永久删除，无法撤销。',
+    purgeSubtaskNote: '其中的普通子任务不会被删除，将保留并移入归档。',
     purgeConfirmAction: '永久删除',
     purgedToast: (count: number) => `已删除 ${count} 条任务`,
+    purgedSubtaskNote: (count: number) => `${count} 个子任务已移入归档`,
     purgeKeptRestored: (count: number) => `另有 ${count} 条在此期间被恢复，已保留。`,
     purgeFailedTitle: '删除任务失败',
     purgeFailedBody: (count: number) => `${count} 条仍在，请重试。`,
@@ -80,6 +86,33 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     delete: '彻底删除',
     emptyTitle: '没有已归档的任务',
     emptyBody: '在侧栏里归档一个任务后，可以在这里恢复或彻底删除它。',
+  },
+  'zh-TW': {
+    listAria: '已歸檔任務',
+    noProject: '無專案',
+    deletedParent: '原父任務已刪除',
+    searchLabel: '搜尋已歸檔任務',
+    purgeAll: '清空全部',
+    purgeMatches: (count: number) => `刪除這 ${count} 條`,
+    purgeAllConfirmTitle: (count: number) => `清空全部 ${count} 條已歸檔任務？`,
+    purgeMatchesConfirmTitle: (count: number) => `刪除搜尋到的 ${count} 條任務？`,
+    purgeConfirmBody: '這些任務及其全部訊息會被永久刪除，無法撤銷。',
+    purgeSubtaskNote: '其中的普通子任務不會被刪除，將保留並移入歸檔。',
+    purgeConfirmAction: '永久刪除',
+    purgedToast: (count: number) => `已刪除 ${count} 條任務`,
+    purgedSubtaskNote: (count: number) => `${count} 個子任務已移入歸檔`,
+    purgeKeptRestored: (count: number) => `另有 ${count} 條在此期間被恢復，已保留。`,
+    purgeFailedTitle: '刪除任務失敗',
+    purgeFailedBody: (count: number) => `${count} 條仍在，請重試。`,
+    purgeUnverified: '任務已刪除，但無法讀取列表確認結果。請重新開啟本頁檢視。',
+    noMatchTitle: '沒有符合的任務',
+    noMatchBody: '換個關鍵詞試試。',
+    moreActions: (name: string) => `「${name}」的更多操作`,
+    restore: '恢復',
+    restoreTask: (name: string) => `恢復「${name}」`,
+    delete: '徹底刪除',
+    emptyTitle: '沒有已歸檔的任務',
+    emptyBody: '在側欄裡歸檔一個任務後，可以在這裡恢復或徹底刪除它。',
   },
   en: {
     listAria: 'Archived tasks',
@@ -94,8 +127,11 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
       count === 1 ? 'Delete the 1 task you searched for?' : `Delete the ${count} tasks you searched for?`,
     purgeConfirmBody:
       'The tasks and all of their messages are removed permanently. This cannot be undone.',
+    purgeSubtaskNote: 'Any ordinary subtasks are kept and moved to Archived.',
     purgeConfirmAction: 'Delete permanently',
     purgedToast: (count: number) => (count === 1 ? 'Deleted 1 task' : `Deleted ${count} tasks`),
+    purgedSubtaskNote: (count: number) =>
+      count === 1 ? '1 subtask moved to Archived' : `${count} subtasks moved to Archived`,
     purgeKeptRestored: (count: number) =>
       count === 1
         ? '1 more was restored meanwhile and kept.'

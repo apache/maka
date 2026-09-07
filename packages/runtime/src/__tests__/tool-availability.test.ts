@@ -34,6 +34,16 @@ function tool(name: string, description = name): MakaTool {
   return { name, description, parameters: z.object({}), impl: () => ({ ok: true }) };
 }
 
+function withCategory(name: string, categoryHint: MakaTool['categoryHint']): MakaTool {
+  return {
+    name,
+    description: name,
+    parameters: z.object({}),
+    impl: () => ({ ok: true }),
+    categoryHint,
+  };
+}
+
 const invalid: MakaTool = {
   name: 'invalid',
   description: 'invalid',
@@ -58,6 +68,10 @@ test('tool availability hash canonicalizes group members', () => {
     groups: [{ id: 'docs', toolNames: ['docs_edit', 'docs_read'] }],
   });
   assert.equal(grouped, reordered);
+});
+
+test('tool availability hash distinguishes full and search-enabled bindings', () => {
+  assert.notEqual(toolAvailabilityHash(undefined), toolAvailabilityHash({}));
 });
 
 function runtime() {
@@ -104,6 +118,24 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.ok(plan.activeTools.includes('Read'));
     assert.ok(!plan.activeTools.includes('browser_click'));
     assert.doesNotMatch(searchTool(plan).description, /- Read/);
+  });
+
+  test('skill discovery tools stay direct while search is enabled', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('Skill'), tool('SkillSearch'), tool('custom')],
+      {},
+      invalid,
+    ).prepare(new Map());
+    assert.deepEqual(plan.activeTools, ['Skill', 'SkillSearch', TOOL_SEARCH_NAME]);
+  });
+
+  test('provider-routed apply_patch inherits direct editing visibility', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('apply_patch'), tool('custom')],
+      {},
+      invalid,
+    ).prepare(new Map());
+    assert.deepEqual(plan.activeTools, ['apply_patch', TOOL_SEARCH_NAME]);
   });
 
   test('inventory contains group and canonical names without tool descriptions', () => {
@@ -303,12 +335,69 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.ok(!secondPlan.activeTools.includes('browser_click'));
   });
 
-  test('without searchable groups every bound tool stays directly visible', () => {
-    const plan = new ToolAvailabilityRuntime([tool('Read'), tool('custom')], {}, invalid).prepare(
-      new Map(),
-    );
+  test('an ungrouped bound tool is deferred by default', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('Read'), tool('future_tool')],
+      {},
+      invalid,
+    ).prepare(new Map());
+    assert.deepEqual(plan.activeTools, ['Read', TOOL_SEARCH_NAME]);
+    assert.match(searchTool(plan).description, /- future_tool/);
+    assert.ok(plan.gating?.gatedNames.has('future_tool'));
+  });
+
+  test('omitting availability keeps an explicit binding fully visible', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('Read'), tool('custom')],
+      undefined,
+      invalid,
+    ).prepare(new Map());
     assert.deepEqual(plan.activeTools, ['custom', 'Read']);
     assert.ok(!plan.providerTools.some((candidate) => candidate.name === TOOL_SEARCH_NAME));
     assert.equal(plan.gating, undefined);
+  });
+
+  test('buckets ungrouped native tools into capability families by categoryHint', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [
+        withCategory('agent_spawn', 'subagent'),
+        withCategory('web_search', 'web_read'),
+        withCategory('screen_click', 'computer_use'),
+        withCategory('session_tool', 'custom_tool'), // no family mapping -> other
+        tool('legacy_tool'), // no categoryHint -> other
+      ],
+      { groups: [] },
+      invalid,
+    ).prepare(new Map());
+
+    const bySource = plan.diagnostics([], 0)!.visibleToolNamesBySource!;
+    // Distinct permission hints land in distinct browsing families, not one `other`.
+    assert.deepEqual(bySource.agents, ['agent_spawn']);
+    assert.deepEqual(bySource.web, ['web_search']);
+    assert.deepEqual(bySource.computer_use, ['screen_click']);
+    // Only hint-less / custom_tool tools fall back to `other`.
+    assert.deepEqual(bySource.other, ['legacy_tool', 'session_tool']);
+    // A hint present in the exhaustive family map but mapped to `null`
+    // (custom_tool) still resolves to `other`, not a family of its own.
+    assert.equal(bySource.custom_tool, undefined);
+
+    // Family ids surface in the searchable inventory the model sees.
+    const description = searchTool(plan).description;
+    assert.match(description, /agents:\n- agent_spawn/);
+    assert.match(description, /web:\n- web_search/);
+    assert.match(description, /computer_use:\n- screen_click/);
+  });
+
+  test('a caller-supplied group keeps precedence over a categoryHint family', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [withCategory('agent_spawn', 'subagent'), withCategory('agent_list', 'subagent')],
+      { groups: [{ id: 'orchestration', label: 'Orchestration', toolNames: ['agent_spawn'] }] },
+      invalid,
+    ).prepare(new Map());
+
+    const bySource = plan.diagnostics([], 0)!.visibleToolNamesBySource!;
+    // The explicit group claims agent_spawn; only the remaining hinted tool is family-bucketed.
+    assert.deepEqual(bySource.orchestration, ['agent_spawn']);
+    assert.deepEqual(bySource.agents, ['agent_list']);
   });
 });

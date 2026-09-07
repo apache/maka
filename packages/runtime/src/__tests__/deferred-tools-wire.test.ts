@@ -39,6 +39,7 @@ import { ModelAdapter } from '../model-adapter.js';
 import type { ModelStreamEvent, ModelToolSet } from '../model-protocol.js';
 import { canonicalizeToolSet } from '../request-shape.js';
 import type { MakaTool } from '../tool-runtime.js';
+import { TOOL_SEARCH_PROVIDER_NAME, ToolAvailabilityRuntime } from '../tool-availability.js';
 
 // A tool with a real (non-trivial) zod schema so the AI SDK actually serializes it.
 function tool(name: string): MakaTool {
@@ -119,6 +120,113 @@ describe('hidden tools are trimmed from the provider request (wire-level)', () =
 });
 
 describe('ModelAdapter provider-step boundary', () => {
+  test('uses a provider-safe alias for Maka tool_search on OpenAI Responses', async () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'codex-subscription',
+        providerType: 'openai-codex',
+        defaultModel: 'gpt-5.6-sol',
+      } as never,
+      apiKey: 'test',
+      modelId: 'gpt-5.6-sol',
+      modelFactory: () => ({}),
+      providerOptions: {},
+      newId: () => 'id',
+      now: () => 0,
+    });
+    const modelTools: ModelToolSet = {
+      tool_search: {
+        description: 'Search Maka deferred tools',
+        inputSchema: z.object({ query: z.string() }),
+      },
+    };
+    let seenTools: string[] = [];
+    const model = new MockLanguageModelV4({
+      doStream: async ({ tools }) => {
+        seenTools = (tools ?? []).map((tool) => tool.name);
+        return {
+          stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'tool-call',
+              toolCallId: 'next-search-call',
+              toolName: TOOL_SEARCH_PROVIDER_NAME,
+              input: JSON.stringify({ query: 'settings' }),
+            },
+            {
+              type: 'tool-result',
+              providerExecuted: true,
+              toolCallId: 'provider-result',
+              toolName: TOOL_SEARCH_PROVIDER_NAME,
+              result: { activated: [] },
+            } as unknown as LanguageModelV4StreamPart,
+            {
+              type: 'finish',
+              finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+              usage: ZERO_USAGE,
+            },
+          ]),
+        };
+      },
+    });
+
+    const result = await adapter.startStream({
+      model,
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'search-call',
+              toolName: 'tool_search',
+              input: { query: 'browser' },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'search-call',
+              toolName: 'tool_search',
+              output: {
+                type: 'json',
+                value: { activated: ['browser_click'] },
+              },
+            },
+          ],
+        },
+      ],
+      tools: modelTools,
+      activeTools: ['tool_search'],
+      onStreamActivity: () => {},
+      abortSignal: new AbortController().signal,
+      repairToolCall: async () => null,
+    });
+
+    const events: ModelStreamEvent[] = [];
+    for await (const event of result.events) events.push(event);
+    assert.deepEqual(seenTools, [TOOL_SEARCH_PROVIDER_NAME]);
+    assert.equal(
+      events.find((event) => event.kind === 'tool-call')?.toolCall.toolName,
+      'tool_search',
+    );
+    assert.equal(
+      events.find((event) => event.kind === 'provider-tool-result')?.toolName,
+      'tool_search',
+    );
+  });
+
+  test('rejects a real tool that collides with the provider-safe alias', () => {
+    assert.throws(
+      () =>
+        new ToolAvailabilityRuntime([tool(TOOL_SEARCH_PROVIDER_NAME)], undefined, tool('invalid')),
+      /reserved by Runtime/,
+    );
+  });
+
   test('returns provider tool calls without executing tool behavior inside the SDK', async () => {
     let executeCalls = 0;
     const toolsWithExecutableBehavior = {

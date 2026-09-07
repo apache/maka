@@ -18,29 +18,42 @@
  */
 
 import { createReadOnlyPermissionProfile } from '@maka/core/permission-profile';
-import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
+import {
+  createManagedExecutionBoundary,
+  type ExecutionBoundary,
+} from '@maka/core/sandbox-boundary';
 import type {
-  ManagedWorkspaceExecutionHandle,
-  ManagedWorkspaceFilesystemWorker,
-  ManagedWorkspaceOwner,
-  ManagedWorkspaceReadOnlyOperation,
-  ManagedWorkspaceReadOnlyResult,
-} from '@maka/storage/managed-workspace-owner';
+  FilesystemWorkerClient,
+  FilesystemWorkerClientOperation,
+} from '@maka/runtime/filesystem-worker';
 
-export type RuntimeHostWorkspaceExecutionProfile =
-  | {
-      readonly kind: 'attached_checkout_v1';
-      readonly cwd: string;
-    }
-  | {
-      readonly kind: 'managed_worktree_v1';
-      readonly executionHandle: ManagedWorkspaceExecutionHandle;
-    };
+export interface RuntimeHostWorkspaceExecutionProfile {
+  readonly kind: 'attached_checkout_v1';
+  readonly cwd: string;
+}
+
+export type RuntimeHostWorkspaceReadOnlyOperation = Extract<
+  FilesystemWorkerClientOperation,
+  { kind: 'read' | 'glob' | 'grep' }
+>;
+
+export type RuntimeHostWorkspaceReadOnlyResult = Extract<
+  Awaited<ReturnType<FilesystemWorkerClient['execute']>>,
+  { kind: 'read' | 'read_image' | 'glob' | 'grep' }
+>;
+
+export interface RuntimeHostWorkspaceFilesystemWorker {
+  execute(input: {
+    readonly operation: RuntimeHostWorkspaceReadOnlyOperation;
+    readonly cwd: string;
+    readonly executionBoundary: ExecutionBoundary;
+    readonly abortSignal?: AbortSignal;
+  }): Promise<RuntimeHostWorkspaceReadOnlyResult>;
+}
 
 export type RuntimeHostWorkspaceExecutionErrorCode =
   | 'workspace_execution_draining'
   | 'filesystem_worker_unavailable'
-  | 'managed_workspace_profile_unavailable'
   | 'workspace_operation_denied';
 
 export class RuntimeHostWorkspaceExecutionError extends Error {
@@ -57,16 +70,15 @@ export interface RuntimeHostWorkspaceExecutionComposition {
   readonly state: 'ready' | 'draining' | 'closed';
   executeReadOnly(
     profile: RuntimeHostWorkspaceExecutionProfile,
-    operation: ManagedWorkspaceReadOnlyOperation,
+    operation: RuntimeHostWorkspaceReadOnlyOperation,
     abortSignal?: AbortSignal,
-  ): Promise<ManagedWorkspaceReadOnlyResult>;
+  ): Promise<RuntimeHostWorkspaceReadOnlyResult>;
   beginDrain(): void;
   close(): Promise<void>;
 }
 
 export interface CreateRuntimeHostWorkspaceExecutionCompositionInput {
-  readonly filesystemWorker?: ManagedWorkspaceFilesystemWorker;
-  readonly managedOwner?: ManagedWorkspaceOwner;
+  readonly filesystemWorker?: RuntimeHostWorkspaceFilesystemWorker;
 }
 
 export function createAttachedWorkspaceExecutionProfile(
@@ -79,12 +91,6 @@ export function createAttachedWorkspaceExecutionProfile(
     );
   }
   return Object.freeze({ kind: 'attached_checkout_v1', cwd });
-}
-
-export function createManagedWorkspaceExecutionProfile(
-  executionHandle: ManagedWorkspaceExecutionHandle,
-): RuntimeHostWorkspaceExecutionProfile {
-  return Object.freeze({ kind: 'managed_worktree_v1', executionHandle });
 }
 
 export function createRuntimeHostWorkspaceExecutionComposition(
@@ -134,19 +140,6 @@ export function createRuntimeHostWorkspaceExecutionComposition(
       }
       activeOperations += 1;
       try {
-        if (profile.kind === 'managed_worktree_v1') {
-          if (!input.managedOwner) {
-            throw new RuntimeHostWorkspaceExecutionError(
-              'managed_workspace_profile_unavailable',
-              'Managed workspace execution is not composed for this Runtime Host',
-            );
-          }
-          return await input.managedOwner.withManagedWorkspaceExecution(
-            profile.executionHandle,
-            (scope) =>
-              input.managedOwner!.executeReadOnlyFilesystemOperation(scope, operation, abortSignal),
-          );
-        }
         if (!input.filesystemWorker) {
           throw new RuntimeHostWorkspaceExecutionError(
             'filesystem_worker_unavailable',
@@ -168,7 +161,6 @@ export function createRuntimeHostWorkspaceExecutionComposition(
       closeTask ??= (async () => {
         beginDrain();
         await waitForDrain();
-        await input.managedOwner?.close();
         state = 'closed';
       })();
       return closeTask;
@@ -176,7 +168,7 @@ export function createRuntimeHostWorkspaceExecutionComposition(
   };
 }
 
-function isReadOnlyOperation(input: unknown): input is ManagedWorkspaceReadOnlyOperation {
+function isReadOnlyOperation(input: unknown): input is RuntimeHostWorkspaceReadOnlyOperation {
   if (!input || typeof input !== 'object') return false;
   const kind = (input as { kind?: unknown }).kind;
   return kind === 'read' || kind === 'glob' || kind === 'grep';
@@ -189,13 +181,10 @@ function isWorkspaceExecutionProfile(
   const candidate = input as {
     kind?: unknown;
     cwd?: unknown;
-    executionHandle?: { kind?: unknown };
   };
-  if (candidate.kind === 'attached_checkout_v1') {
-    return typeof candidate.cwd === 'string' && candidate.cwd.length > 0;
-  }
   return (
-    candidate.kind === 'managed_worktree_v1' &&
-    candidate.executionHandle?.kind === 'managed_workspace_execution_handle_v1'
+    candidate.kind === 'attached_checkout_v1' &&
+    typeof candidate.cwd === 'string' &&
+    candidate.cwd.length > 0
   );
 }

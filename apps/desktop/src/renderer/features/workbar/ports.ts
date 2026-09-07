@@ -24,7 +24,6 @@ import type {
 } from '@maka/core/events';
 import type {
   ArtifactBinaryReadResult,
-  ArtifactChangedEvent,
   ArtifactDescriptor,
   ArtifactSaveResult,
   ArtifactTextReadResult,
@@ -34,6 +33,7 @@ import type { GitReviewReadResult, GitReviewSource } from '@maka/core/git-review
 import type { PermissionMode } from '@maka/core/permission';
 import type { RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type {
   SessionChangedEvent,
   SessionSummary,
@@ -41,10 +41,13 @@ import type {
   TurnRecord,
 } from '@maka/core/session';
 import type { SessionTrace } from '@maka/core/session-trace';
-import type { Task, TaskLedgerChangedEvent } from '@maka/core/task-ledger';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { Result } from '@maka/core/result';
-import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
+import type {
+  ContextCompactResult,
+  ContextDiagnosticsResult,
+} from '@maka/runtime-host/protocol';
 import type { MergedUsageSummary } from '@maka/core/usage-ledger-merge';
 import type {
   ShellRunPtyDataEvent,
@@ -91,13 +94,6 @@ export interface WorkbarTerminalService {
   ): WorkbarUnsubscribe;
 }
 
-export interface WorkbarTasksService {
-  list(sessionId: string): Promise<Task[]>;
-  subscribeChanges(
-    handler: (event: TaskLedgerChangedEvent) => void,
-  ): WorkbarUnsubscribe;
-}
-
 export interface WorkbarBrowserService {
   setActiveSession(sessionId: string | null): void;
   setViewport(input: { sessionId: string; rect: BrowserViewRect | null }): void;
@@ -129,10 +125,7 @@ export type WorkbarOpenArtifactResult =
     };
 
 export interface WorkbarArtifactsService {
-  list(
-    sessionId: string,
-    options?: { includeDeleted?: boolean },
-  ): Promise<ArtifactDescriptor[]>;
+  list(sessionId: string): Promise<ArtifactDescriptor[]>;
   readText(
     sessionId: string,
     artifactId: string,
@@ -142,9 +135,6 @@ export interface WorkbarArtifactsService {
     artifactId: string,
   ): Promise<ArtifactBinaryReadResult>;
   delete(sessionId: string, artifactId: string): Promise<void>;
-  subscribeChanges(
-    handler: (event: ArtifactChangedEvent) => void,
-  ): WorkbarUnsubscribe;
   openPath(
     sessionId: string,
     artifactId: string,
@@ -177,6 +167,7 @@ export interface WorkbarInspectorService {
 }
 
 export interface WorkbarAttachmentsService {
+  readBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   pickFiles(): Promise<
     | {
         ok: true;
@@ -220,7 +211,7 @@ export interface SideChatSessionPort {
   branchFromTurn(
     sessionId: string,
     input: {
-      sourceTurnId: string;
+      sourceTurnId?: string;
       name?: string;
       copyId: string;
       sideConversation: true;
@@ -231,6 +222,7 @@ export interface SideChatSessionPort {
   >;
   cleanupSessionCopy(sessionId: string): Promise<void>;
   abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
+  compact(sessionId: string): Promise<ContextCompactResult>;
   send(
     sessionId: string,
     command: {
@@ -255,9 +247,17 @@ export interface SideChatSessionPort {
     sessionId: string,
     response: SandboxBoundaryResponse,
   ): Promise<void>;
+  respondToClientCapability(
+    sessionId: string,
+    response: ClientCapabilityResponse,
+  ): Promise<void>;
   respondToUserQuestion(
     sessionId: string,
     response: UserQuestionResponse,
+  ): Promise<void>;
+  respondToUserForm(
+    sessionId: string,
+    response: InteractionFormResponse,
   ): Promise<void>;
   subscribeEvents(
     sessionId: string,
@@ -271,7 +271,6 @@ export interface SideChatSessionPort {
 export interface WorkbarServices {
   readonly review: WorkbarReviewService;
   readonly terminal: WorkbarTerminalService;
-  readonly tasks: WorkbarTasksService;
   readonly browser: WorkbarBrowserService;
   readonly artifacts: WorkbarArtifactsService;
   readonly inspector: WorkbarInspectorService;

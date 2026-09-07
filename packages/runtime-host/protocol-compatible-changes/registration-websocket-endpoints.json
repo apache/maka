@@ -1,0 +1,5 @@
+{
+  "epoch": 56,
+  "files": ["packages/runtime-host/src/protocol/index.ts"],
+  "reason": "Adds an optional loopback WebSocket endpoint list to Host registration; older decoders ignore it and newer decoders accept its absence"
+}

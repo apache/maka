@@ -62,7 +62,7 @@ export const LucideIcons: Story = {
     <section style={{ display: 'grid', gap: 20, maxWidth: 920 }}>
       <div style={{ display: 'grid', gap: 4 }}>
         <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>Lucide Icons</h2>
-        <p style={{ color: 'var(--foreground-secondary)', fontSize: 12, margin: 0, lineHeight: 1.5 }}>
+        <p style={{ color: 'var(--muted-foreground)', fontSize: 12, margin: 0, lineHeight: 1.5 }}>
           {LUCIDE_ICONS.length} 个通用 UI 图标,通过 icons.tsx 的 lucide-react re-export 自动追踪。业务代码仍只从 @maka/ui/icons 取图标。
         </p>
       </div>
@@ -87,7 +87,7 @@ export const LucideIcons: Story = {
             }}
           >
             <Comp size={20} />
-            <code style={{ color: 'var(--foreground-secondary)', fontSize: 10, wordBreak: 'break-word' }}>{name}</code>
+            <code style={{ color: 'var(--muted-foreground)', fontSize: 10, wordBreak: 'break-word' }}>{name}</code>
           </div>
         ))}
       </div>
@@ -100,7 +100,7 @@ export const BotBrandIcons: Story = {
     <section style={{ display: 'grid', gap: 20, maxWidth: 760 }}>
       <div style={{ display: 'grid', gap: 4 }}>
         <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>Bot Brand Icons</h2>
-        <p style={{ color: 'var(--foreground-secondary)', fontSize: 12, margin: 0, lineHeight: 1.5 }}>
+        <p style={{ color: 'var(--muted-foreground)', fontSize: 12, margin: 0, lineHeight: 1.5 }}>
           {BOT_BRAND_PROVIDERS.length} 个 IM 渠道品牌图标,本地 React SVG,零运行时 CDN 依赖。
         </p>
       </div>
@@ -119,7 +119,7 @@ export const BotBrandIcons: Story = {
             }}
           >
             <BotBrandLogo provider={provider} width={32} height={32} />
-            <code style={{ color: 'var(--foreground-secondary)', fontSize: 10 }}>{provider}</code>
+            <code style={{ color: 'var(--muted-foreground)', fontSize: 10 }}>{provider}</code>
           </div>
         ))}
       </div>

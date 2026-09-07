@@ -34,11 +34,12 @@ import {
   createAppShellSessionDisplayBatch,
   createAppShellSessionEventHandlers,
 } from '../../renderer/app-shell-session-events.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 function renderWithLocale(child: ReactNode): string {
   return renderToStaticMarkup(
     createElement(LocaleProvider, {
-      locale: 'zh',
+      locale: 'zh-CN',
       children: createElement(ChatSurfaceLayout, { composer: null, children: child }),
     }),
   );
@@ -58,11 +59,7 @@ function createStateSetter<T>(initial: T): {
 }
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
-  const deadline = Date.now() + 3_000;
-  while (!predicate()) {
-    if (Date.now() >= deadline) assert.fail(message);
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
+  await pollFor(predicate, { timeoutMs: 3_000, pollMs: 10, message });
 }
 
 function renderLiveTurn(liveTurn: LiveTurnProjection): string {
@@ -110,9 +107,32 @@ describe('single live-turn handoff', () => {
       onNew() {},
     } satisfies Parameters<typeof ChatView>[0]));
 
-    assert.equal((markup.match(/data-virtual-turn-id=/g) ?? []).length, 1);
+    assert.equal((markup.match(/data-transcript-turn-id=/g) ?? []).length, 1);
     assert.match(markup, /data-transient-message-id="message-pending"/);
     assert.match(markup, />send now</);
+  });
+
+  it('does not flash the empty-chat Maka hero before a first transient message', () => {
+    const markup = renderWithLocale(createElement(ChatView, {
+      activeSession: {
+        id: 'session-1', name: 'pending', status: 'active', backend: 'ai-sdk',
+        labels: [], isFlagged: false, isArchived: false, hasUnread: false,
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+      },
+      messages: [],
+      transientMessages: [
+        {
+          id: 'message-pending', ts: 1,
+          text: 'inspect this image', transientPlacement: 'current_turn',
+        },
+      ],
+      scrollBehavior: 'smooth',
+      onNew() {},
+    } satisfies Parameters<typeof ChatView>[0]));
+
+    assert.match(markup, /data-transient-message-id="message-pending"/);
+    assert.match(markup, />inspect this image</);
+    assert.doesNotMatch(markup, /maka-hero-empty-chat/);
   });
 
   it('shows a loading transient before its real live Turn answer', () => {
@@ -146,7 +166,7 @@ describe('single live-turn handoff', () => {
     assert.doesNotMatch(markup, /maka-chat-message-loading/);
     assert.ok(markup.indexOf('send now') < markup.indexOf('data-turn-id="turn-1"'));
     assert.equal((markup.match(/data-transient-message-id="turn-1"/g) ?? []).length, 1);
-    assert.equal((markup.match(/data-virtual-turn-id="turn-1"/g) ?? []).length, 1);
+    assert.equal((markup.match(/data-transcript-turn-id="turn-1"/g) ?? []).length, 1);
   });
 
   it('keeps an unresolved root transient before a live Turn that arrived before IPC settled', () => {
@@ -283,7 +303,7 @@ describe('single live-turn handoff', () => {
       liveTurnBySessionRef.current = liveTurns.get();
     };
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef,
       refreshMessages: async (sessionId, options) => {
@@ -336,7 +356,7 @@ describe('single live-turn handoff', () => {
     const frames: Array<() => void> = [];
     let publications = 0;
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef,
       refreshMessages: async () => true,
@@ -380,6 +400,112 @@ describe('single live-turn handoff', () => {
     assert.equal(publications, 2);
   });
 
+  it('bounds tool output queued for one animation frame', () => {
+    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
+      'session-1': armLiveTurn('turn-1'),
+    });
+    const liveTurnBySessionRef = { current: liveTurns.get() };
+    const interactions = createStateSetter<InteractionQueues>({});
+    const frames: Array<() => void> = [];
+    const displayBatch = createAppShellSessionDisplayBatch();
+    let publications = 0;
+    const handlers = createAppShellSessionEventHandlers({
+      uiLocale: 'zh-CN',
+      activeIdRef: { current: 'session-1' },
+      liveTurnBySessionRef,
+      refreshMessages: async () => true,
+      refreshSessions: async () => [],
+      setLiveTurnBySession: (updater) => {
+        publications += 1;
+        liveTurns.set(updater);
+        liveTurnBySessionRef.current = liveTurns.get();
+      },
+      setInteractionBySession: interactions.set,
+      showModelSetupToast: () => {},
+      toastApi: { error: () => {} },
+      scheduleFrame: (callback) => { frames.push(callback); },
+      displayBatch,
+    });
+
+    handlers.handleEvent('session-1', {
+      type: 'tool_start', id: 'start', turnId: 'turn-1', toolUseId: 'tool-1',
+      toolName: 'Bash', args: {}, ts: 0,
+    });
+    publications = 0;
+    for (let index = 0; index <= 200; index += 1) {
+      handlers.handleEvent('session-1', {
+        type: 'tool_output_delta', id: `output-${index}`, turnId: 'turn-1',
+        sessionId: 'session-1', toolCallId: 'tool-1', toolUseId: 'tool-1',
+        seq: index, stream: 'stdout', chunk: 'x', redacted: false,
+        createdAt: index + 1, ts: index + 1,
+      });
+    }
+
+    assert.equal(publications, 0);
+    assert.equal(frames.length, 1);
+    assert.equal(displayBatch.pendingEvents.get('session-1')?.length, 200);
+    frames.shift()?.();
+    assert.equal(publications, 1);
+    const chunks = liveTurns.get()['session-1']?.steps[0]?.tools[0]?.outputChunks;
+    assert.equal(chunks?.length, 200);
+    assert.equal(chunks?.[0]?.seq, 1);
+    assert.equal(chunks?.at(-1)?.seq, 200);
+
+    for (let index = 201; index <= 203; index += 1) {
+      handlers.handleEvent('session-1', {
+        type: 'tool_output_delta', id: `output-${index}`, turnId: 'turn-1',
+        sessionId: 'session-1', toolCallId: 'tool-1', toolUseId: 'tool-1',
+        seq: index, stream: 'stdout', chunk: 'y'.repeat(8 * 1024), redacted: false,
+        createdAt: index + 1, ts: index + 1,
+      });
+    }
+    const pending = displayBatch.pendingEvents.get('session-1');
+    assert.equal(publications, 1);
+    assert.equal(pending?.length, 2);
+    assert.equal(pending?.[0]?.type === 'tool_output_delta' ? pending[0].seq : undefined, 202);
+    assert.equal(pending?.[1]?.type === 'tool_output_delta' ? pending[1].seq : undefined, 203);
+    assert.equal(frames.length, 1);
+    frames.shift()?.();
+    assert.equal(publications, 2);
+  });
+
+  it('does not publish queued output after its session is cleared', () => {
+    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
+      'session-1': armLiveTurn('turn-1'),
+    });
+    const liveTurnBySessionRef = { current: liveTurns.get() };
+    const interactions = createStateSetter<InteractionQueues>({});
+    const frames: Array<() => void> = [];
+    const handlers = createAppShellSessionEventHandlers({
+      uiLocale: 'zh-CN',
+      activeIdRef: { current: 'session-1' },
+      liveTurnBySessionRef,
+      refreshMessages: async () => true,
+      refreshSessions: async () => [],
+      setLiveTurnBySession: (updater) => {
+        liveTurns.set(updater);
+        liveTurnBySessionRef.current = liveTurns.get();
+      },
+      setInteractionBySession: interactions.set,
+      showModelSetupToast: () => {},
+      toastApi: { error: () => {} },
+      scheduleFrame: (callback) => { frames.push(callback); },
+    });
+
+    handlers.handleEvent('session-1', {
+      type: 'tool_output_delta', id: 'output', turnId: 'turn-1',
+      sessionId: 'session-1', toolCallId: 'tool-1', toolUseId: 'tool-1',
+      seq: 0, stream: 'stdout', chunk: 'late', redacted: false,
+      createdAt: 1, ts: 1,
+    });
+    handlers.dropDisplayEvents('session-1');
+    liveTurns.set(() => ({}));
+    liveTurnBySessionRef.current = liveTurns.get();
+
+    frames.shift()?.();
+    assert.equal(liveTurns.get()['session-1'], undefined);
+  });
+
   it('applies catch-up deltas immediately until the returning session is seeded', () => {
     const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
       'session-1': armLiveTurn('turn-1'),
@@ -389,7 +515,7 @@ describe('single live-turn handoff', () => {
     const frames: Array<() => void> = [];
     let publications = 0;
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef,
       refreshMessages: async () => true,
@@ -452,7 +578,7 @@ describe('single live-turn handoff', () => {
     const displayBatch = createAppShellSessionDisplayBatch();
     let publications = 0;
     const deps = {
-      uiLocale: 'zh' as const,
+      uiLocale: 'zh-CN' as const,
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef,
       refreshMessages: async () => true,
@@ -499,7 +625,7 @@ describe('single live-turn handoff', () => {
       ref.current = liveTurns.get();
     };
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef: ref,
       refreshMessages: async () => true,
@@ -529,6 +655,48 @@ describe('single live-turn handoff', () => {
     assert.equal(interactions.get()['session-1']?.[0]?.requestId, 'request-1');
   });
 
+  it('queues and retires a form at the Host answer acknowledgement', () => {
+    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
+      'session-1': armLiveTurn('turn-1'),
+    });
+    const ref = { current: liveTurns.get() };
+    const interactions = createStateSetter<InteractionQueues>({});
+    const handlers = createAppShellSessionEventHandlers({
+      uiLocale: 'en',
+      activeIdRef: { current: 'session-1' },
+      liveTurnBySessionRef: ref,
+      refreshMessages: async () => true,
+      refreshSessions: async () => [],
+      setLiveTurnBySession: liveTurns.set,
+      setInteractionBySession: interactions.set,
+      showModelSetupToast: () => {},
+      toastApi: { error: () => {} },
+    });
+    handlers.handleEvent('session-1', {
+      type: 'form_request',
+      id: 'form-event',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'form-1',
+      toolUseId: 'tool-1',
+      message: 'Configure deployment',
+      requester: { name: 'deploy' },
+      fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+    });
+    assert.equal(interactions.get()['session-1']?.[0]?.requestId, 'form-1');
+
+    handlers.handleEvent('session-1', {
+      type: 'form_answer_ack',
+      id: 'form-ack',
+      turnId: 'turn-1',
+      ts: 2,
+      requestId: 'form-1',
+      toolUseId: 'tool-1',
+    });
+    assert.deepEqual(interactions.get()['session-1'], []);
+    assert.equal(liveTurns.get()['session-1']?.terminal, undefined);
+  });
+
   it('hands an aborted projection over only after persisted messages cover it', async () => {
     const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
       'session-1': {
@@ -556,7 +724,7 @@ describe('single live-turn handoff', () => {
       resolveRefresh = resolve;
     });
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef: ref,
       refreshMessages: async () => refresh,
@@ -605,7 +773,7 @@ describe('single live-turn handoff', () => {
       | { sessionId: string; turnId: string; eventId: string }
       | undefined;
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef: ref,
       refreshMessages: async () => false,
@@ -678,7 +846,7 @@ describe('single live-turn handoff', () => {
     const ref = { current: liveTurns.get() };
     const interactions = createStateSetter<InteractionQueues>({});
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef: ref,
       refreshMessages: async () => true,
@@ -718,7 +886,7 @@ describe('single live-turn handoff', () => {
       resolveRefresh = resolve;
     });
     const handlers = createAppShellSessionEventHandlers({
-      uiLocale: 'zh',
+      uiLocale: 'zh-CN',
       activeIdRef: { current: 'session-1' },
       liveTurnBySessionRef: ref,
       refreshMessages: async () => refresh,
@@ -743,6 +911,56 @@ describe('single live-turn handoff', () => {
       { type: 'tool_call', id: 'tool-1', turnId: 'turn-1', stepId: 'tool:tool-1', ts: 2, toolName: 'Bash', args: {} },
       { type: 'tool_result', id: 'result-1', turnId: 'turn-1', ts: 3, toolUseId: 'tool-1', isError: false, content: { kind: 'text', text: 'ok' } },
     ]);
+    assert.equal(liveTurns.get()['session-1'], undefined);
+  });
+
+  it('retires a re-seeded compaction row when the refreshed transcript is terminal', () => {
+    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({});
+    const ref = { current: liveTurns.get() };
+    const interactions = createStateSetter<InteractionQueues>({});
+    const handlers = createAppShellSessionEventHandlers({
+      uiLocale: 'en',
+      activeIdRef: { current: 'session-1' },
+      liveTurnBySessionRef: ref,
+      refreshMessages: async () => true,
+      refreshSessions: async () => [],
+      setLiveTurnBySession: (updater) => {
+        liveTurns.set(updater);
+        ref.current = liveTurns.get();
+      },
+      setInteractionBySession: interactions.set,
+      showModelSetupToast: () => {},
+      toastApi: { error: () => {} },
+    });
+
+    // A newly attached observer can only seed the still-running identity; it
+    // has no prior snapshot from which to synthesize the missed terminal event.
+    handlers.handleEvent('session-1', {
+      type: 'context_compaction_started',
+      id: 'compaction-started-1',
+      turnId: 'turn-compact',
+      ts: 1,
+    });
+    assert.equal(liveTurns.get()['session-1']?.rootExecutionKind, 'context_compact');
+
+    handlers.reconcilePersistedMessages('session-1', [
+      {
+        type: 'system_note',
+        id: 'compaction-settled-1',
+        turnId: 'turn-compact',
+        ts: 2,
+        kind: 'context_compacted',
+      },
+      {
+        type: 'turn_state',
+        id: 'turn-terminal-1',
+        turnId: 'turn-compact',
+        ts: 3,
+        status: 'completed',
+        partialOutputRetained: false,
+      },
+    ]);
+
     assert.equal(liveTurns.get()['session-1'], undefined);
   });
 });

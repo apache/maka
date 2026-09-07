@@ -311,7 +311,7 @@
   border: var(--border-width-hairline) solid transparent;
   border-radius: var(--radius-pill);
   background: transparent;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   white-space: nowrap;
   max-width: min(180px, 28vw);
   transition:
@@ -392,7 +392,7 @@
   padding: var(--space-1) var(--space-2-5);
   border: var(--border-width-hairline) solid var(--warning);
   border-radius: var(--radius-control);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .maka-composer-no-model-hint-action {
@@ -435,7 +435,7 @@
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-pill);
   background: var(--background-elevated);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .maka-composer-revision-notice > svg {

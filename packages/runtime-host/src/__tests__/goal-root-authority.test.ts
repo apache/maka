@@ -17,13 +17,19 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import {
+  runtimeInvocationOutcome,
+  type RuntimeInvocationRecord,
+} from '@maka/core/runtime-invocation';
+import { runtimeInvocationFailureClass } from '@maka/runtime/runtime-event-read-model';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import { BackendRegistry, SessionManager } from '@maka/runtime/session-manager';
 import { FakeBackend } from '@maka/runtime/test-only/fake-backend';
 import { GOAL_SET_TOOL_NAME } from '@maka/runtime/goal-tools';
@@ -97,11 +103,8 @@ test('Goal continuation uses the canonical root admission and durable origin', {
     assert.deepEqual(durableAdmission?.execution, { kind: 'goal', goalId: created.id });
     assert.ok(durableAdmission);
     if (!durableAdmission) return;
-    const run = await fixture.stores.agentRunStore.readRun(
-      fixture.sessionId,
-      durableAdmission.runId,
-    );
-    assert.equal(run.goalId, created.id);
+    const run = await readInvocation(fixture, durableAdmission.runId);
+    assert.deepEqual(run?.opening.root, { kind: 'goal', goalId: created.id });
     const user = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
       (message) => message.type === 'user' && message.turnId === admission.turnId,
     );
@@ -163,8 +166,8 @@ test('queued Goal control revokes a prepared root before durable admission', asy
       undefined,
     );
     assert.equal(
-      (await fixture.stores.agentRunStore.listSessionRuns(fixture.sessionId)).some(
-        (run) => run.goalId === created.id,
+      (await fixture.stores.runtimeEventStore.listSessionInvocations(fixture.sessionId)).some(
+        (run) => run.opening.root.kind === 'goal' && run.opening.root.goalId === created.id,
       ),
       false,
     );
@@ -305,7 +308,7 @@ test('drain revokes pending ScheduledTask before durable root admission', async 
       undefined,
     );
     assert.equal(
-      (await fixture.stores.agentRunStore.listSessionRuns(fixture.sessionId)).some(
+      (await fixture.stores.runtimeEventStore.listSessionInvocations(fixture.sessionId)).some(
         (run) => run.runId === runId,
       ),
       false,
@@ -392,7 +395,7 @@ test('Host Goal continuation bridges its exact generation into root authority', 
     if (!resumed) return;
 
     const run = await waitForGoalRun(fixture, resumed.id);
-    assert.equal(run.goalId, resumed.id);
+    assert.deepEqual(run.opening.root, { kind: 'goal', goalId: resumed.id });
     const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
       fixture.sessionId,
       run.turnId,
@@ -423,10 +426,10 @@ test('restart closes an admitted Goal without a Run instead of replaying it', as
     });
 
     await fixture.coordinator.prepareRecovery();
-    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, runId);
-    assert.equal(run.goalId, 'goal-restart');
-    assert.equal(run.status, 'failed');
-    assert.equal(run.failureClass, 'app_restarted');
+    const run = await readInvocation(fixture, runId);
+    assert.deepEqual(run?.opening.root, { kind: 'goal', goalId: 'goal-restart' });
+    assert.equal(run && runtimeInvocationOutcome(run), 'failed');
+    assert.equal(run && runtimeInvocationFailureClass(run), 'app_restarted');
     const user = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
       (message) => message.type === 'user' && message.turnId === turnId,
     );
@@ -490,15 +493,15 @@ test('restart rejects a Goal Run carrying delegated execution lineage', async ()
       sourceMessages: [],
       admittedAt: 1,
     });
-    await fixture.stores.agentRunStore.createRun(
-      runHeader({
-        sessionId: fixture.sessionId,
-        turnId,
-        runId,
-        goalId,
-        parentRunId: 'foreign-parent-run',
-      }),
-    );
+    await seedInvocation(fixture.stores.runtimeEventStore, {
+      sessionId: fixture.sessionId,
+      turnId,
+      runId,
+      opening: {
+        root: { kind: 'goal', goalId },
+        lineage: { parentRunId: 'foreign-parent-run' },
+      },
+    });
 
     await assert.rejects(
       () => fixture.coordinator.prepareRecovery(),
@@ -540,6 +543,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
   const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
   const session = await stores.sessionStore.create({
     cwd: capability.canonicalPath,
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',
@@ -555,6 +559,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
   let requestedDrain = false;
   const goalChangeListeners = new Set<() => void>();
   const rootPort: HostMessageRootPort = {
+    readLatestRootTurnLineage: async (identity) => identity,
     readSessionHeader: (sessionId) => requireCoordinator(coordinator).readSessionHeader(sessionId),
     readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
     claimStopFence: (input, commitQueueFence, lease) =>
@@ -570,6 +575,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     hostEpoch,
     root: rootPort,
     durableProof: {
+      readLogicalExecution: async () => undefined,
       readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
         stores.agentRunStore.readRootTurnSourceMessageReceipt(sessionId, messageId),
       readImmutableSteeringMessageProof: (sessionId, messageId) =>
@@ -673,7 +679,6 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     },
     admitTurn: (sessionId, text, checkpoint, controlLease) =>
       goalExecutions.admitTurn(sessionId, text, checkpoint, controlLease),
-    listActionableTaskKeys: async () => [],
     acquireResidency,
     onProjectionChanged: (sessionId) => {
       requireContinuity(continuity).enqueueCanonicalRefresh(sessionId);
@@ -733,45 +738,27 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     },
   };
 }
-
-function deferred(): { promise: Promise<void>; resolve(): void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((next) => {
-    resolve = next;
-  });
-  return { promise, resolve };
+async function readInvocation(
+  fixture: Fixture,
+  runId: string,
+): Promise<RuntimeInvocationRecord | undefined> {
+  return (await fixture.stores.runtimeEventStore.listSessionInvocations(fixture.sessionId)).find(
+    (candidate) => candidate.runId === runId,
+  );
 }
 
-async function waitForGoalRun(
-  fixture: Fixture,
-  goalId: string,
-): Promise<Awaited<ReturnType<Fixture['stores']['agentRunStore']['readRun']>>> {
+async function waitForGoalRun(fixture: Fixture, goalId: string): Promise<RuntimeInvocationRecord> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const run = (await fixture.stores.agentRunStore.listSessionRuns(fixture.sessionId)).find(
-      (candidate) => candidate.goalId === goalId,
+    const run = (
+      await fixture.stores.runtimeEventStore.listSessionInvocations(fixture.sessionId)
+    ).find(
+      (candidate) =>
+        candidate.opening.root.kind === 'goal' && candidate.opening.root.goalId === goalId,
     );
     if (run) return run;
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   throw new Error('Goal continuation did not reach the root authority');
-}
-
-function runHeader(overrides: Partial<AgentRunHeader>): AgentRunHeader {
-  return {
-    runId: 'run-1',
-    invocationId: 'run-1',
-    sessionId: 'session-1',
-    turnId: 'turn-1',
-    status: 'created',
-    backendKind: 'fake',
-    llmConnectionSlug: 'fake',
-    modelId: 'fake-model',
-    cwd: '/workspace',
-    permissionMode: 'ask',
-    createdAt: 1,
-    updatedAt: 1,
-    ...overrides,
-  };
 }
 
 function operationContext() {

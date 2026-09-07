@@ -66,7 +66,10 @@ try {
 
   const maka = join(prefix, 'bin/maka');
   const packageRoot = join(prefix, 'lib/node_modules/maka-agent');
-  if (!existsSync(maka) || !existsSync(join(packageRoot, 'packages/eval/harbor/run_trial.py'))) {
+  if (
+    !existsSync(maka) ||
+    !existsSync(join(packageRoot, 'node_modules/@maka/eval/harbor/run_trial.py'))
+  ) {
     throw new Error('The installed candidate is missing its CLI or bundled Eval runtime');
   }
 

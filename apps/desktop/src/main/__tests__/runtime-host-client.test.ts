@@ -158,11 +158,13 @@ function subscription(
   lifecycle: string[],
 ): RuntimeHostSessionSubscription {
   return {
+    subscribePtyData: () => () => undefined,
     hostEpoch: 'host-1',
     subscriptionId: `subscription-${sessionId}`,
     activeAssistantStreams: [],
     transcriptBootstrap: {
       throughSequence: null,
+      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: emptyTranscriptPage(sessionId, 'durable'),
       overlay: emptyTranscriptPage(sessionId, 'overlay'),
@@ -209,6 +211,8 @@ function emptyTranscriptPage(sessionId: string, source: 'durable' | 'overlay') {
     throughSequence: null,
     rawBytes: 0,
     fragments: [],
+    rangeBoundarySequence: null,
+    protectedTurnSequence: null,
     nextCursor: null,
   };
 }

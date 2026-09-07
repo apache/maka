@@ -17,8 +17,8 @@
  * under the License.
  */
 
+import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { expect } from '../test-helpers.js';
 import { StreamWatchdog, type StreamWatchdogTimeout } from '../stream-watchdog.js';
 
 describe('StreamWatchdog', () => {
@@ -36,10 +36,10 @@ describe('StreamWatchdog', () => {
 
     watchdog.start();
     timers.advance(29_999);
-    expect(fired).toEqual([]);
+    assert.deepStrictEqual(fired, []);
     timers.advance(1);
 
-    expect(fired).toEqual([{ phase: 'connect', elapsedMs: 30_000 }]);
+    assert.deepStrictEqual(fired, [{ phase: 'connect', elapsedMs: 30_000 }]);
   });
 
   test('activity switches to idle timeout and resets the clock', () => {
@@ -58,10 +58,10 @@ describe('StreamWatchdog', () => {
     timers.advance(5_000);
     watchdog.markActivity();
     timers.advance(9_999);
-    expect(fired).toEqual([]);
+    assert.deepStrictEqual(fired, []);
     timers.advance(1);
 
-    expect(fired).toEqual([{ phase: 'idle', elapsedMs: 10_000 }]);
+    assert.deepStrictEqual(fired, [{ phase: 'idle', elapsedMs: 10_000 }]);
   });
 
   test('pause suppresses timeout while waiting for user permission', () => {
@@ -80,13 +80,13 @@ describe('StreamWatchdog', () => {
     watchdog.markActivity();
     watchdog.pause();
     timers.advance(600_000);
-    expect(fired).toEqual([]);
+    assert.deepStrictEqual(fired, []);
 
     watchdog.resume();
     timers.advance(9_999);
-    expect(fired).toEqual([]);
+    assert.deepStrictEqual(fired, []);
     timers.advance(1);
-    expect(fired).toEqual([{ phase: 'idle', elapsedMs: 10_000 }]);
+    assert.deepStrictEqual(fired, [{ phase: 'idle', elapsedMs: 10_000 }]);
   });
 
   test('nested pauses require matching resumes before idle timeout restarts', () => {
@@ -106,17 +106,17 @@ describe('StreamWatchdog', () => {
     watchdog.pause();
     watchdog.pause();
     timers.advance(600_000);
-    expect(fired).toEqual([]);
+    assert.deepStrictEqual(fired, []);
 
     watchdog.resume();
     timers.advance(60_000);
-    expect(fired).toEqual([]);
+    assert.deepStrictEqual(fired, []);
 
     watchdog.resume();
     timers.advance(9_999);
-    expect(fired).toEqual([]);
+    assert.deepStrictEqual(fired, []);
     timers.advance(1);
-    expect(fired).toEqual([{ phase: 'idle', elapsedMs: 10_000 }]);
+    assert.deepStrictEqual(fired, [{ phase: 'idle', elapsedMs: 10_000 }]);
   });
 
   test('stop cancels the active timer', () => {
@@ -135,7 +135,7 @@ describe('StreamWatchdog', () => {
     watchdog.stop();
     timers.advance(1_000);
 
-    expect(fired).toEqual([]);
+    assert.deepStrictEqual(fired, []);
   });
 });
 

@@ -22,13 +22,19 @@ import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import { LocaleProvider } from '@maka/ui';
 import { NEW_TASK_PENDING_KEY } from '../../renderer/pending-items.js';
+import { getDesktopConversationCopy } from '../../renderer/locales/conversation-copy.js';
 import {
   useComposerAttachments,
   type ComposerAttachmentService,
 } from '../../renderer/use-composer-attachments.js';
 import { useAppShellComposerQuotes } from '../../renderer/use-app-shell-composer-quotes.js';
+import {
+  composerModelSupportsVision,
+  type NewChatModel,
+} from '../../renderer/shell-chat-model-selection.js';
 
 /**
  * #3408 for what the composer STAGES. The draft text is covered by
@@ -60,7 +66,7 @@ afterEach(async () => {
 
 async function mountProbe<T>(useHook: (options: { draftKey: string }) => T): Promise<{
   latest(): T;
-  render(draftKey: string): Promise<void>;
+  render(draftKey: string, locale?: 'en' | 'zh-CN'): Promise<void>;
 }> {
   const { document, window } = parseHTML('<div id="root"></div>');
   Object.assign(globalThis, {
@@ -82,11 +88,11 @@ async function mountProbe<T>(useHook: (options: { draftKey: string }) => T): Pro
     return null;
   }
 
-  const render = async (draftKey: string) => {
+  const render = async (draftKey: string, locale: 'en' | 'zh-CN' = 'en') => {
     await act(async () => {
       root.render(
         createElement(LocaleProvider, {
-          locale: 'en',
+          locale,
           children: createElement(Probe, { draftKey }),
         }),
       );
@@ -131,8 +137,59 @@ function stubFilePicker(): {
   };
 }
 
+const PNG_MAGIC = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+function fileWithBytes(name: string, type: string, bytes: ArrayLike<number>): File {
+  return new File([Uint8Array.from(bytes)], name, { type });
+}
+
 function textFile(name: string): File {
-  return { name, type: 'text/plain', size: 12 } as unknown as File;
+  // Bytes that match no signature, so content sniffing leaves the declared
+  // text type in place rather than downgrading it.
+  return fileWithBytes(name, 'text/plain', new TextEncoder().encode('plain notes'));
+}
+
+/** A blob whose leading-byte read rejects, exercising the `sniffFileMimeType`
+ * catch: the declared image/PDF type must be downgraded, not reinstated. */
+function unreadableFile(name: string, type: string): File {
+  return {
+    name,
+    type,
+    size: 32,
+    slice: () => ({ arrayBuffer: () => Promise.reject(new Error('slice read failed')) }),
+  } as unknown as File;
+}
+
+/** A blob whose leading-byte read is held open, so a test can switch the active
+ * draft while `fileToPending` is mid-sniff — the window this PR's async made
+ * real. Bytes are PNG so it stages as an image once the read resolves. */
+function deferredImageFile(name: string): { file: File; resolveRead(): void } {
+  let release: () => void = () => {};
+  const arrayBuffer = () =>
+    new Promise<ArrayBuffer>((resolve) => {
+      release = () => resolve(new Uint8Array(PNG_MAGIC).buffer);
+    });
+  const file = {
+    name,
+    type: 'image/png',
+    size: PNG_MAGIC.length,
+    slice: () => ({ arrayBuffer }),
+  } as unknown as File;
+  return { file, resolveRead: () => release() };
+}
+
+function modelChoice(model: string, supportsVision: boolean): ChatModelChoice {
+  return {
+    connectionId: 'connection-test',
+    connectionSlug: 'test',
+    providerType: 'openai-compatible',
+    providerLabel: 'Test',
+    model,
+    label: model,
+    isDefault: model === 'text-model',
+    thinkingLevels: [],
+    supportsVision,
+  };
 }
 
 test('a Session keeps its own staged quotes, and the new-task bucket keeps its own', async () => {
@@ -179,6 +236,80 @@ test('a completing send clears the attachments it submitted', async () => {
   await act(() => clearAfterSend(submitted));
 
   assert.equal(probe.latest().pendingAttachments.length, 0);
+});
+
+test('AppShell composition shows the localized non-vision image notice once per task', async () => {
+  const calls: Array<{ title: string; description?: string }> = [];
+  let nextModel: NewChatModel | undefined = {
+    llmConnectionId: 'connection-test',
+    llmConnectionSlug: 'test',
+    model: 'text-model',
+  };
+  const choices = [modelChoice('text-model', false), modelChoice('vision-model', true)];
+  const probe = await mountProbe((options) =>
+    useComposerAttachments({
+      ...options,
+      toastApi: { error() {} },
+      imageNotice: {
+        notify(title, description) {
+          calls.push({ title, ...(description === undefined ? {} : { description }) });
+        },
+        supportsVision: () => composerModelSupportsVision({
+          active: undefined,
+          next: nextModel,
+          choices,
+        }),
+      },
+      service: idleAttachmentService,
+    }),
+  );
+  const image = fileWithBytes('chart.png', 'image/png', PNG_MAGIC);
+
+  await probe.render('session-en', 'en');
+  await act(() => probe.latest().attachFilePaths([image]));
+  await act(() => probe.latest().attachFilePaths([image]));
+  assert.equal(probe.latest().pendingAttachments.length, 2);
+  const en = getDesktopConversationCopy('en').actions;
+  assert.deepEqual(calls, [{
+    title: en.imageAttachmentNotDirectTitle,
+    description: en.imageAttachmentNotDirectDescription,
+  }]);
+
+  await probe.render('session-zh', 'zh-CN');
+  await act(() => probe.latest().attachFilePaths([image]));
+  const zh = getDesktopConversationCopy('zh-CN').actions;
+  assert.deepEqual(calls[1], {
+    title: zh.imageAttachmentNotDirectTitle,
+    description: zh.imageAttachmentNotDirectDescription,
+  });
+
+  probe.latest().imageNoticeLifecycle.transfer('session-zh', 'session-transferred');
+  await probe.render('session-transferred', 'zh-CN');
+  await act(() => probe.latest().attachFilePaths([image]));
+  assert.equal(calls.length, 2);
+
+  nextModel = undefined;
+  await probe.render('session-no-target');
+  await act(() => probe.latest().attachFilePaths([image]));
+  nextModel = {
+    llmConnectionId: 'connection-test',
+    llmConnectionSlug: 'test',
+    model: 'vision-model',
+  };
+  await probe.render('session-vision');
+  await act(() => probe.latest().attachFilePaths([image]));
+  assert.equal(calls.length, 2);
+
+  nextModel = {
+    llmConnectionId: 'connection-test',
+    llmConnectionSlug: 'test',
+    model: 'text-model',
+  };
+  await probe.render('session-reset');
+  await act(() => probe.latest().attachFilePaths([image]));
+  probe.latest().imageNoticeLifecycle.reset('session-reset');
+  await act(() => probe.latest().attachFilePaths([image]));
+  assert.equal(calls.length, 4);
 });
 
 test('retracted queue attachments can be restored and submitted without re-ingest', async () => {
@@ -236,4 +367,96 @@ test('files chosen in the native dialog land in the composer now on screen', asy
     probe.latest().pendingAttachments.map((item) => item.displayName),
     ['chosen.txt'],
   );
+});
+
+test('files dropped while a session switch is mid-sniff land in the composer now on screen', async () => {
+  const probe = await mountProbe((options) =>
+    useComposerAttachments({
+      ...options,
+      toastApi: { error() {} },
+      service: idleAttachmentService,
+    }),
+  );
+  await probe.render(NEW_TASK_PENDING_KEY);
+
+  // fileToPending reads the leading bytes before staging; that read is async,
+  // so the surface can change before it resolves. The file must land where the
+  // user is looking now, not in the bucket bound before the read started.
+  const dropped = deferredImageFile('photo.png');
+  const attaching = probe.latest().attachFilePaths([dropped.file]);
+  await probe.render('session-1');
+  await act(async () => {
+    dropped.resolveRead();
+    await attaching;
+  });
+
+  assert.deepEqual(
+    probe.latest().pendingAttachments.map((item) => item.displayName),
+    ['photo.png'],
+  );
+});
+
+test('dropped files stage by content: a real image named .pdf notices, a disguised .png does not', async () => {
+  const calls: Array<{ title: string }> = [];
+  const probe = await mountProbe((options) =>
+    useComposerAttachments({
+      ...options,
+      toastApi: { error() {} },
+      imageNotice: {
+        notify(title) {
+          calls.push({ title });
+        },
+        // No selected target that supports vision, so a staged image notices.
+        supportsVision: () => false,
+      },
+      service: idleAttachmentService,
+    }),
+  );
+  await probe.render('session-1');
+
+  // A real image behind a `.pdf` name stages as an image — thumbnail path and
+  // the non-vision notice both key off the sniffed kind, not the extension.
+  await act(() =>
+    probe.latest().attachFilePaths([fileWithBytes('report.pdf', 'application/pdf', PNG_MAGIC)]),
+  );
+  assert.equal(probe.latest().pendingAttachments.at(-1)?.kind, 'image');
+  assert.equal(calls.length, 1);
+
+  // A non-image behind a `.png` name and an `image/png` claim does neither: the
+  // unverified claim is downgraded rather than trusted.
+  await act(() =>
+    probe.latest().attachFilePaths([
+      fileWithBytes('photo.png', 'image/png', new TextEncoder().encode('not an image')),
+    ]),
+  );
+  assert.equal(probe.latest().pendingAttachments.at(-1)?.kind, 'other');
+  assert.equal(calls.length, 1);
+});
+
+test('a failed leading-byte read downgrades the declared image claim rather than trusting it', async () => {
+  const calls: Array<{ title: string }> = [];
+  const probe = await mountProbe((options) =>
+    useComposerAttachments({
+      ...options,
+      toastApi: { error() {} },
+      imageNotice: {
+        notify(title) {
+          calls.push({ title });
+        },
+        supportsVision: () => false,
+      },
+      service: idleAttachmentService,
+    }),
+  );
+  await probe.render('session-1');
+
+  // `slice().arrayBuffer()` rejects: the catch must route an empty prefix
+  // through the downgrade, so an `image/png` claim it could not verify stages
+  // as an ordinary file and never fires the vision notice.
+  await act(() =>
+    probe.latest().attachFilePaths([unreadableFile('screenshot.png', 'image/png')]),
+  );
+  assert.equal(probe.latest().pendingAttachments.at(-1)?.kind, 'other');
+  assert.equal(probe.latest().pendingAttachments.at(-1)?.mimeType, 'application/octet-stream');
+  assert.equal(calls.length, 0);
 });

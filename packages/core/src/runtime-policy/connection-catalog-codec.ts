@@ -18,12 +18,21 @@
  */
 
 import {
+  isModelModality,
   isRelayProviderType,
-  PROVIDER_DEFAULTS,
+  effectiveBaseUrl,
+  PROVIDER_REGISTRY,
   providerDefaultsOf,
   validateSlug,
+  type ModelModality,
   type ProviderType,
+  type SlugValidationIssue,
 } from '../llm-connections.js';
+import {
+  CONNECTION_MODEL_DESCRIPTION_MAX_LENGTH,
+  CONNECTION_MODEL_DISPLAY_NAME_MAX_LENGTH,
+  MAX_PREPENDED_FALLBACK_MODELS,
+} from '../model-catalog.js';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   isThinkingLevel,
@@ -32,6 +41,7 @@ import {
 } from '../model-thinking.js';
 import type {
   ConnectionCatalogEntry,
+  ConnectionCredentialTarget,
   ConnectionCatalogEntryDraft,
   ConnectionCatalogEntryUpdate,
   ConnectionModel,
@@ -65,6 +75,22 @@ import {
 export const CONNECTION_CATALOG_MAX_CONNECTIONS = 1_024;
 export const CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION = 2_048;
 export const CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS = 512;
+/**
+ * A resolved entry exists for every stored model, for every enabled id the
+ * inventory never listed, for the connection default when it lists none, and —
+ * on a provider with no model-list endpoint — for every model that provider
+ * ships, which the resolver prepends rather than substitutes.
+ *
+ * That last term is why this cannot be the sum of the two persisted lists
+ * alone: without it, a catalog the storage decoder accepts at its own maxima
+ * resolves to more entries than the wire admits, and the Host's own page is
+ * rejected on arrival, leaving every client with no models to choose from.
+ */
+export const CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION =
+  CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION +
+  CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS +
+  MAX_PREPENDED_FALLBACK_MODELS +
+  1;
 export const CONNECTION_NAME_MAX_LENGTH = 256;
 export const CONNECTION_MODEL_ID_MAX_LENGTH = 512;
 
@@ -372,6 +398,7 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
       'modelSource',
       'modelsFetchedAt',
       'lastTest',
+      'lastTestModelFactsFingerprint',
     ],
     [
       'connectionId',
@@ -440,6 +467,15 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
     ...(item.lastTest === undefined
       ? {}
       : { lastTest: decodeConnectionTestSummary(item.lastTest) }),
+    ...(item.lastTestModelFactsFingerprint === undefined
+      ? {}
+      : {
+          lastTestModelFactsFingerprint: stringValue(
+            item.lastTestModelFactsFingerprint,
+            'connection test model facts fingerprint',
+            128,
+          ),
+        }),
   };
   assertCanonicalValue(value, decoded, 'connection catalog entry');
   return decoded;
@@ -450,6 +486,67 @@ export function decodeConnectionVersionBasis(value: unknown): ConnectionVersionB
   return {
     connectionId: entityIdValue(item.connectionId, 'connection id'),
     revision: positiveRevisionValue(item.revision, 'connection revision'),
+  };
+}
+
+export function canonicalConnectionEffectiveBaseUrl(
+  connection: Pick<ConnectionCatalogEntry, 'providerType' | 'baseUrl'>,
+): string {
+  const endpoint = effectiveBaseUrl(connection);
+  try {
+    return new URL(endpoint).toString();
+  } catch {
+    throw domainError('connection has an invalid effective base URL');
+  }
+}
+
+export function connectionCredentialTarget(
+  connection: Pick<
+    ConnectionCatalogEntry,
+    'connectionId' | 'revision' | 'slug' | 'providerType' | 'baseUrl'
+  >,
+): ConnectionCredentialTarget {
+  return {
+    connectionId: connection.connectionId,
+    revision: connection.revision,
+    slug: connection.slug,
+    providerType: connection.providerType,
+    effectiveBaseUrl: canonicalConnectionEffectiveBaseUrl(connection),
+  };
+}
+
+export function decodeConnectionCredentialTarget(value: unknown): ConnectionCredentialTarget {
+  const item = exactRecord(value, 'connection credential target', [
+    'connectionId',
+    'revision',
+    'slug',
+    'providerType',
+    'effectiveBaseUrl',
+  ]);
+  const version = decodeConnectionVersionBasis({
+    connectionId: item.connectionId,
+    revision: item.revision,
+  });
+  const providerType = decodeProviderType(item.providerType);
+  const effectiveBaseUrl = stringValue(
+    item.effectiveBaseUrl,
+    'connection credential target effective base URL',
+    2_048,
+  );
+  let canonical: string;
+  try {
+    canonical = new URL(effectiveBaseUrl).toString();
+  } catch {
+    throw domainError('connection credential target effective base URL must be valid');
+  }
+  if (canonical !== effectiveBaseUrl) {
+    throw domainError('connection credential target effective base URL must be canonical');
+  }
+  return {
+    ...version,
+    slug: decodeConnectionSlug(item.slug),
+    providerType,
+    effectiveBaseUrl,
   };
 }
 
@@ -465,7 +562,20 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
   const item = exactRecord(
     value,
     'connection model',
-    ['id', 'displayName', 'apiProtocol', 'contextWindow', 'maxOutputTokens', 'capabilities'],
+    [
+      'id',
+      'displayName',
+      'description',
+      'apiProtocol',
+      'contextWindow',
+      'inputLimit',
+      'maxOutputTokens',
+      'knowledgeCutoff',
+      'structuredOutput',
+      'lastUpdated',
+      'capabilities',
+      'modalities',
+    ],
     ['id'],
   );
   if (
@@ -500,11 +610,28 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
       );
     }
   }
+  const modalities =
+    item.modalities === undefined ? undefined : decodeModelModalities(item.modalities);
   return {
     id: decodeConnectionModelId(item.id),
     ...(item.displayName === undefined
       ? {}
-      : { displayName: stringValue(item.displayName, 'model display name', 512) }),
+      : {
+          displayName: stringValue(
+            item.displayName,
+            'model display name',
+            CONNECTION_MODEL_DISPLAY_NAME_MAX_LENGTH,
+          ),
+        }),
+    ...(item.description === undefined
+      ? {}
+      : {
+          description: stringValue(
+            item.description,
+            'model description',
+            CONNECTION_MODEL_DESCRIPTION_MAX_LENGTH,
+          ),
+        }),
     ...(item.apiProtocol === undefined ? {} : { apiProtocol: item.apiProtocol }),
     ...(item.contextWindow === undefined
       ? {}
@@ -512,6 +639,16 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
           contextWindow: integerValue(
             item.contextWindow,
             'model context window',
+            1,
+            Number.MAX_SAFE_INTEGER,
+          ),
+        }),
+    ...(item.inputLimit === undefined
+      ? {}
+      : {
+          inputLimit: integerValue(
+            item.inputLimit,
+            'model input limit',
             1,
             Number.MAX_SAFE_INTEGER,
           ),
@@ -526,8 +663,39 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
             Number.MAX_SAFE_INTEGER,
           ),
         }),
+    ...(item.knowledgeCutoff === undefined
+      ? {}
+      : { knowledgeCutoff: stringValue(item.knowledgeCutoff, 'model knowledge cutoff', 2048) }),
+    ...(item.structuredOutput === undefined
+      ? {}
+      : { structuredOutput: booleanValue(item.structuredOutput, 'model structured output') }),
+    ...(item.lastUpdated === undefined
+      ? {}
+      : { lastUpdated: stringValue(item.lastUpdated, 'model last updated', 2048) }),
     ...(capabilities === undefined ? {} : { capabilities }),
+    ...(modalities === undefined ? {} : { modalities }),
   };
+}
+
+function decodeModelModalities(value: unknown): NonNullable<ConnectionModel['modalities']> {
+  const item = exactRecord(value, 'connection model modalities', ['input', 'output']);
+  if (!Array.isArray(item.input) || !Array.isArray(item.output)) {
+    throw domainError('connection model modalities must contain input and output arrays');
+  }
+  const input = Array.from(item.input, (entry) => decodeModelModality(entry, 'input'));
+  const output = Array.from(item.output, (entry) => decodeModelModality(entry, 'output'));
+  return { input, output };
+}
+
+// Both directions accept the same set. models.dev declares video on either
+// side and pdf on both, so splitting them again only invites one direction to
+// drift behind the catalog it decodes.
+function decodeModelModality(value: unknown, direction: 'input' | 'output'): ModelModality {
+  const modality = stringValue(value, `connection model ${direction} modality`, 16);
+  if (!isModelModality(modality)) {
+    throw domainError(`connection model ${direction} modality is invalid`);
+  }
+  return modality;
 }
 
 export function decodeConnectionTestSummary(value: unknown): ConnectionTestSummary {
@@ -589,7 +757,14 @@ export function normalizeConnectionModelDiscoveryResult(
 export function decodeConnectionSlug(value: unknown): string {
   if (typeof value !== 'string') throw domainError('connection slug must be a string');
   const error = validateSlug(value);
-  if (error) throw domainError(`connection slug: ${error}`);
+  if (error) {
+    const messages = {
+      required: 'Slug is required',
+      format: 'Slug must be lowercase letters, digits, and hyphens',
+      too_long: 'Slug must be 64 characters or fewer',
+    } satisfies Record<SlugValidationIssue, string>;
+    throw domainError(`connection slug: ${messages[error]}`);
+  }
   return value;
 }
 
@@ -663,7 +838,7 @@ export function normalizeCatalogConnectionBaseUrl(
   if (
     override !== undefined &&
     providerType &&
-    PROVIDER_DEFAULTS[providerType].authKind === 'oauth_token'
+    PROVIDER_REGISTRY[providerType].authKind === 'oauth_token'
   ) {
     throw domainError('OAuth provider endpoint cannot be overridden');
   }
@@ -680,7 +855,7 @@ export function decodeCanonicalConnectionBaseUrl(
 }
 
 function canonicalProviderBaseUrl(providerType: ProviderType): string | undefined {
-  const raw = PROVIDER_DEFAULTS[providerType].baseUrl.trim();
+  const raw = PROVIDER_REGISTRY[providerType].baseUrl.trim();
   if (!raw) return undefined;
   try {
     return new URL(raw).toString();

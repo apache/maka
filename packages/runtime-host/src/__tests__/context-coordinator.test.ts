@@ -78,7 +78,11 @@ test('context compaction waits for terminal execution cleanup before preparing',
     },
     sessions: {
       readHeaderSnapshot: async () =>
-        ({ status: 'active', isArchived: false }) as unknown as SessionHeader,
+        ({
+          status: 'active',
+          isArchived: false,
+          llmConnectionId: 'connection-context',
+        }) as unknown as SessionHeader,
     },
     requestDrain: () => {},
     newId: () => compacted.runId,

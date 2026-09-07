@@ -18,13 +18,143 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import fs, { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { registerRuntimeHostArtifactsIpc } from "../runtime-host-artifacts-ipc-main.js";
 
 type Handler = (event: unknown, ...args: any[]) => unknown;
+type StreamArtifact = (
+  sessionId: string,
+  artifactId: string,
+  writeChunk: (chunk: Uint8Array) => Promise<void>,
+) => Promise<number>;
+
+// Exercise the public Save As result and destination bytes together. Faults
+// use real temporary files; only the failing filesystem operation is mocked.
+for (const [fault, reason] of [
+  ["none", null],
+  ["stream", "source_failed"],
+  ["total", "size_mismatch"],
+  ["length", "size_mismatch"],
+  ["rename", "replace_failed"],
+  ["directory", "replace_failed"],
+  ["write", "target_write_failed"],
+  ["sync", "target_write_failed"],
+  ["close", "target_write_failed"],
+] as const) {
+  test(`Save As preserves the destination and reports ${fault} correctly`, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), "maka-save-artifact-"));
+    const target = join(root, "report.txt");
+    const originalPath = fault === "directory" ? join(target, "original.txt") : target;
+    const content = Buffer.from("NEW CONTENT\n中文内容测试：你好，世界。\n");
+    const handlers = new Map<string, Handler>();
+    const injectedError = () => Object.assign(new Error("Injected destination failure"), { code: "EIO" });
+    let injectedCalls = 0;
+    try {
+      if (fault === "directory") await mkdir(target);
+      await writeFile(originalPath, "ORIGINAL");
+      if (fault === "rename") {
+        const rename = fs.rename;
+        t.mock.method(fs, "rename", async (...args: Parameters<typeof rename>) => {
+          if (args[1] === target) {
+            injectedCalls += 1;
+            throw injectedError();
+          }
+          return rename(...args);
+        });
+      }
+      if (fault === "write" || fault === "sync" || fault === "close") {
+        const open = fs.open;
+        t.mock.method(fs, "open", async (...args: Parameters<typeof open>) => {
+          const handle = await open(...args);
+          t.mock.method(handle, fault, async () => {
+            injectedCalls += 1;
+            throw injectedError();
+          }, { times: 1 });
+          return handle;
+        });
+      }
+      syncBuiltinESMExports();
+      registerRuntimeHostArtifactsIpc({
+        ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as Handler) },
+        client: {
+          hostEpoch: "host-1",
+          async getArtifact() {
+            return previewArtifact({ name: "report.txt", kind: "file", mimeType: "text/plain", sizeBytes: content.length });
+          },
+          async streamArtifact(_sessionId: string, _artifactId: string, writeChunk: (chunk: Uint8Array) => Promise<void>) {
+            await writeChunk(content.subarray(0, 4));
+            if (fault === "stream") throw new Error("Interrupted source stream");
+            if (fault !== "length") await writeChunk(content.subarray(4));
+            return content.length + (fault === "total" ? 1 : 0);
+          },
+        } as never,
+        mainWindowController: {
+          showSaveDialog: async () => ({ canceled: false, filePath: target }),
+        } as never,
+        showItemInFolder() {},
+      });
+      const save = handlers.get("app:saveArtifactAs");
+      assert.ok(save);
+      const result = await save({}, "session-1", "artifact-1");
+      if (fault === "directory") {
+        assert.deepEqual(await readdir(target), ["original.txt"]);
+        assert.equal(await readFile(originalPath, "utf8"), "ORIGINAL");
+      } else {
+        assert.equal(await readFile(originalPath, "utf8"), reason ? "ORIGINAL" : content.toString());
+      }
+      assert.deepEqual(result, reason ? { ok: false, reason } : { ok: true, saved: "report.txt" });
+      assert.deepEqual(await readdir(root), ["report.txt"], "no staging or backup remains");
+      if (["rename", "write", "sync", "close"].includes(fault)) assert.equal(injectedCalls, 1);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+function previewArtifact(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "artifact-1",
+    sessionId: "session-1",
+    turnId: "turn-1",
+    createdAt: 1,
+    name: "preview.png",
+    kind: "image",
+    sizeBytes: 4,
+    mimeType: "image/png",
+    status: "live",
+    ...overrides,
+  };
+}
+
+function attachmentReadHandler(
+  artifact: Record<string, unknown>,
+  streamArtifact: StreamArtifact,
+): Handler {
+  const handlers = new Map<string, Handler>();
+  registerRuntimeHostArtifactsIpc({
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as Handler),
+    },
+    client: {
+      hostEpoch: "host-1",
+      async getArtifact() {
+        return artifact;
+      },
+      streamArtifact,
+    } as never,
+    mainWindowController: {} as never,
+    showItemInFolder() {},
+  });
+  const handler = handlers.get("attachments:readBytes");
+  assert.ok(handler);
+  return handler;
+}
 
 test("Runtime Host Artifact IPC preserves previews and streams complete exports", async () => {
   const root = await mkdtemp(join(tmpdir(), "maka-host-artifact-ipc-"));
@@ -33,15 +163,15 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
   const content = Buffer.alloc(70 * 1024, 5);
   const handlers = new Map<string, Handler>();
   const opened: string[] = [];
-  const events: unknown[] = [];
   const artifact = {
     id: "artifact-1",
     sessionId: "session-1",
     turnId: "turn-1",
     createdAt: 1,
     name: "result.bin",
-    kind: "file",
+    kind: "image",
     sizeBytes: content.byteLength,
+    mimeType: "image/png",
     status: "live",
   } as const;
   const client = {
@@ -59,7 +189,7 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
       return { ok: false, reason: "unsupported_mime" };
     },
     async deleteArtifact() {
-      return { kind: "deleted", artifact: { ...artifact, status: "deleted" } };
+      return { kind: "deleted" };
     },
     async streamArtifact(
       _sessionId: string,
@@ -82,7 +212,6 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
       mainWindowController: {
         showSaveDialog: async () => ({ canceled: false, filePath: savedPath }),
       } as never,
-      sendToRenderer: (_channel, event) => events.push(event),
       showItemInFolder: (path) => opened.push(path),
       presentationRoot,
     });
@@ -90,6 +219,14 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
     assert.deepEqual(
       await handlers.get("artifacts:readText")?.({}, "session-1", "artifact-1"),
       { ok: false, reason: "too_large" },
+    );
+    assert.deepEqual(
+      await handlers.get("attachments:readBytes")?.({}, "session-1", "artifact-1"),
+      {
+        ok: true,
+        base64: content.toString("base64"),
+        mimeType: "image/png",
+      },
     );
     assert.deepEqual(
       await handlers.get("app:saveArtifactAs")?.({}, "session-1", "artifact-1"),
@@ -105,8 +242,37 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
     assert.deepEqual(await readFile(opened[0]!), content);
 
     await handlers.get("artifacts:delete")?.({}, "session-1", "artifact-1");
-    assert.equal((events[0] as { reason: string }).reason, "deleted");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("Attachment byte IPC rejects preview-ineligible metadata before streaming", async () => {
+  for (const [overrides, reason] of [
+    [{ id: "artifact-large", sizeBytes: 2 * 1024 * 1024 + 1 }, "too_large"],
+    [{ id: "artifact-svg", name: "vector.svg", mimeType: "image/svg+xml" }, "unsupported_mime"],
+  ] as const) {
+    let streamCalls = 0;
+    const read = attachmentReadHandler(previewArtifact(overrides), async () => {
+      streamCalls += 1;
+      return 0;
+    });
+    assert.deepEqual(await read({}, "session-1", overrides.id), { ok: false, reason });
+    assert.equal(streamCalls, 0);
+  }
+});
+
+test("Attachment byte IPC stops a stream that exceeds its preview admission", async () => {
+  const read = attachmentReadHandler(
+    previewArtifact({ id: "artifact-drifted" }),
+    async (_sessionId, _artifactId, writeChunk) => {
+      await writeChunk(new Uint8Array(2 * 1024 * 1024 + 1));
+      return 2 * 1024 * 1024 + 1;
+    },
+  );
+
+  assert.deepEqual(
+    await read({}, "session-1", "artifact-drifted"),
+    { ok: false, reason: "too_large" },
+  );
 });

@@ -158,6 +158,70 @@ test('stages first and commits only after retirement, writer release, and exact 
   assert.deepEqual(retryEvents, ['stage:2.0.0:desktop-to-cli']);
 });
 
+test('serializes source finalization after exact Ready and before authority commit', async (t) => {
+  const options = await authority(t);
+  const initial = await claimed(options);
+  const events: string[] = [];
+  const result = await handoffLocalHostProcessDeployment(
+    {
+      rootId: ROOT_ID,
+      expectedRevision: initial.revision,
+      transactionId: 'source-finalization',
+      from: DESKTOP,
+      to: CLI,
+      target: TARGET_DEPLOYMENT,
+      activeWorkPolicy: 'refuse_active_work',
+    },
+    {
+      ...adapter(events, 'target_present'),
+      async finalizeTarget(rootId, target) {
+        const intent = await readLocalHostDeploymentRecord(rootId, options);
+        assert.equal(intent?.state.kind, 'handoff');
+        assert.deepEqual(target, TARGET_DEPLOYMENT);
+        events.push('finalize');
+      },
+    },
+    options,
+  );
+
+  assert.equal(result.kind, 'completed');
+  assert.deepEqual(events, [
+    'stage:2.0.0:source-finalization',
+    'retire:refuse_active_work',
+    'ready:2.0.0',
+    'finalize',
+  ]);
+  assert.equal(result.record.state.kind, 'owned');
+});
+
+test('keeps handoff intent recoverable when source finalization fails', async (t) => {
+  const options = await authority(t);
+  const initial = await claimed(options);
+  const result = await handoffLocalHostProcessDeployment(
+    {
+      rootId: ROOT_ID,
+      expectedRevision: initial.revision,
+      transactionId: 'failed-source-finalization',
+      from: DESKTOP,
+      to: CLI,
+      target: TARGET_DEPLOYMENT,
+      activeWorkPolicy: 'refuse_active_work',
+    },
+    {
+      ...adapter([], 'target_present'),
+      finalizeTarget: async () => {
+        throw new Error('package switch failed');
+      },
+    },
+    options,
+  );
+
+  assert.equal(result.kind, 'recovery_required');
+  if (result.kind !== 'recovery_required') return;
+  assert.equal(result.phase, 'finalize_target');
+  assert.equal((await readLocalHostDeploymentRecord(ROOT_ID, options))?.state.kind, 'handoff');
+});
+
 test('replaces a deployment without inventing a second same-owner transaction', async (t) => {
   const options = await authority(t);
   const initial = await claimed(options);

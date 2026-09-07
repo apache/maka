@@ -1,0 +1,54 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import {
+  captureTranscriptReadingAnchor,
+  currentTranscriptRange,
+  loadTranscriptHistory,
+  newestDurablePromptSequence,
+  refreshTranscriptTurnLandmarks,
+  restoreSessionTranscriptRange,
+  transcriptRestoreTarget,
+} from './controller/transcript-reading-position.js';
+
+export const transcriptReadingPosition = {
+  captureAnchor: captureTranscriptReadingAnchor,
+  currentRange: currentTranscriptRange,
+  loadHistory: loadTranscriptHistory,
+  newestDurablePromptSequence,
+  refreshLandmarks: refreshTranscriptTurnLandmarks,
+  restoreRange: restoreSessionTranscriptRange,
+  restoreTarget: transcriptRestoreTarget,
+};
+
+export type {
+  TranscriptHistoryGates,
+  TranscriptHistoryPending,
+} from './controller/transcript-reading-position.js';
+export {
+  deriveTaskReadinessNotice,
+  isTaskSubmissionHardBlocked,
+  resolveTaskReadinessModelTarget,
+  type TaskReadinessNotice,
+} from './model/task-readiness-notice.js';
+export * from './model/session-ui-state.js';
+export type { ConversationServices } from './ports.js';
+export { ConversationServicesProvider } from './services.js';
+export { SessionLocalMessages } from './controller/session-local-messages.js';
+export { restoreTranscriptTailAfterSend } from './controller/transcript-reading-position.js';

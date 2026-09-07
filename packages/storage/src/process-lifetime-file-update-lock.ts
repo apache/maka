@@ -67,9 +67,13 @@ export async function withLegacyFileUpdateLockLease<T>(
   });
 }
 
+/**
+ * The callback may pass the lease fd as an extra child stdio descriptor. The
+ * advisory lock then survives a parent crash until that exact child exits.
+ */
 export async function withProcessLifetimeFileUpdateLock<T>(
   targetPath: string,
-  operation: () => Promise<T>,
+  operation: (inheritableLeaseFd: number) => Promise<T>,
   timeoutMs: number = LOCK_TIMEOUT_MS,
 ): Promise<T> {
   const lockPath = `${targetPath}.lock`;
@@ -86,7 +90,7 @@ export async function withProcessLifetimeFileUpdateLock<T>(
       await recoverSupervisedLegacyLock(lockPath, `${targetPath}.supervised`);
       await acquireLegacyMarker(lockPath, deadline);
       markerCreated = true;
-      return await operation();
+      return await operation(lease.fd);
     } finally {
       try {
         if (markerCreated) await unlink(lockPath).catch(ignoreMissing);

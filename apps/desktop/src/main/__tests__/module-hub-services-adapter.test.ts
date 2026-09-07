@@ -194,6 +194,7 @@ describe('createDesktopModuleHubServices', () => {
       profileId: 'remote-a',
       profileName: 'Remote',
       profileKind: 'remote',
+      profileAccess: 'owner',
       readiness: 'ready',
       hostId: 'host-a',
       isDefault: true,

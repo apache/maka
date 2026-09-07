@@ -25,8 +25,10 @@
 // incompatible protocols end up advertising one epoch. This check runs on the
 // PR merge result and compares it with the synthetic merge's first parent: the
 // current base branch. An incompatible change must move the epoch. A compatible
-// extension may keep it only when a newly added declaration names every changed
-// protocol file, keeping that exception explicit and reviewable.
+// extension may keep it only when a declaration added against the base names every
+// changed protocol file, keeping that exception explicit and reviewable. The
+// `--staged` pre-commit mode judges one commit against HEAD and cannot see the base,
+// so it also honors a declaration the branch amends; the merge result decides.
 
 import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
@@ -53,6 +55,46 @@ export function extractCompatibilityEpoch(source) {
   return Number(matches[0][1]);
 }
 
+const DECLARATION_KEYS = ['epoch', 'files', 'reason'];
+
+export function parseDeclaration(declarationPath, source, headEpoch) {
+  const fail = (detail) => {
+    throw new Error(`Invalid compatible protocol change declaration ${declarationPath}: ${detail}`);
+  };
+  let value;
+  try {
+    value = JSON.parse(source);
+  } catch (error) {
+    fail(`it is not valid JSON (${error.message})`);
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('expected a JSON object');
+  const unknown = Object.keys(value).filter((key) => !DECLARATION_KEYS.includes(key));
+  if (unknown.length > 0) {
+    fail(
+      `unknown key(s) ${unknown.join(', ')}; a declaration holds only ${DECLARATION_KEYS.join(', ')}`,
+    );
+  }
+  if (value.epoch !== headEpoch) {
+    fail(
+      `it declares epoch ${JSON.stringify(value.epoch)} but this branch is at ${headEpoch}. ` +
+        `Another change moved the epoch, so re-pin this declaration to ${headEpoch} and re-read ` +
+        `its reason: it has to still hold against the protocol as it now stands.`,
+    );
+  }
+  if (!Array.isArray(value.files) || value.files.length === 0) {
+    fail('"files" must name at least one changed protocol file');
+  }
+  if (typeof value.reason !== 'string' || value.reason.trim().length === 0) {
+    fail('"reason" must say why the wire cannot observe the change');
+  }
+  for (const file of value.files) {
+    if (typeof file !== 'string' || !file.startsWith(PROTOCOL_DIR)) {
+      fail(`"files" entry ${JSON.stringify(file)} is not a path under ${PROTOCOL_DIR}`);
+    }
+  }
+  return value.files;
+}
+
 export function evaluateEpochCheck({
   baseEpoch,
   headEpoch,
@@ -71,6 +113,15 @@ export function evaluateEpochCheck({
   const compatible = new Set(compatibleProtocolFiles);
   const incompatibleChanges = changedProtocolFiles.filter((file) => !compatible.has(file));
   if (incompatibleChanges.length > 0 && headEpoch === baseEpoch) {
+    const template = JSON.stringify(
+      {
+        epoch: headEpoch,
+        files: incompatibleChanges,
+        reason: '<why the wire cannot observe this change>',
+      },
+      null,
+      2,
+    );
     return {
       ok: false,
       reason:
@@ -79,7 +130,10 @@ export function evaluateEpochCheck({
         `a git conflict (#3313), so every protocol change must land with an epoch the current ` +
         `base has not seen: rebase onto current main and set the epoch past ${baseEpoch}. ` +
         `Changed files without a compatible-change declaration:\n` +
-        `${incompatibleChanges.map((file) => `  ${file}`).join('\n')}`,
+        `${incompatibleChanges.map((file) => `  ${file}`).join('\n')}\n\n` +
+        `If the wire provably cannot observe this change, declare it instead of bumping: ` +
+        `add one ${COMPATIBLE_CHANGE_DIR}<slug>.json, described by the README in that ` +
+        `directory, holding\n${template}`,
     };
   }
   return {
@@ -109,35 +163,56 @@ export function compatibleProtocolFilesBetween(base, head, headEpoch, exec = exe
     exec,
   )
     .split('\n')
-    .filter(Boolean);
+    .filter((file) => file.endsWith('.json'));
   const compatibleFiles = new Set();
   for (const declaration of declarations) {
-    const value = JSON.parse(git(['show', `${head}:${declaration}`], exec));
-    if (
-      !value ||
-      typeof value !== 'object' ||
-      Array.isArray(value) ||
-      value.epoch !== headEpoch ||
-      !Array.isArray(value.files) ||
-      value.files.length === 0 ||
-      typeof value.reason !== 'string' ||
-      value.reason.trim().length === 0 ||
-      Object.keys(value).some((key) => !['epoch', 'files', 'reason'].includes(key))
-    ) {
-      throw new Error(`Invalid compatible protocol change declaration: ${declaration}`);
-    }
-    for (const file of value.files) {
-      if (typeof file !== 'string' || !file.startsWith(PROTOCOL_DIR)) {
-        throw new Error(`Invalid protocol file in compatible change declaration: ${declaration}`);
-      }
-      compatibleFiles.add(file);
-    }
+    const files = parseDeclaration(
+      declaration,
+      git(['show', `${head}:${declaration}`], exec),
+      headEpoch,
+    );
+    for (const file of files) compatibleFiles.add(file);
   }
   return [...compatibleFiles];
 }
 
 export function epochAtRevision(revision, exec = execFileSync) {
   return extractCompatibilityEpoch(git(['show', `${revision}:${EPOCH_FILE}`], exec));
+}
+
+function stagedFile(file, exec = execFileSync) {
+  return git(['show', `:${file}`], exec);
+}
+
+export function evaluateStagedEpochCheck(exec = execFileSync) {
+  const changedProtocolFiles = git(
+    ['diff', '--cached', '--no-renames', '--name-only', 'HEAD', '--', PROTOCOL_DIR],
+    exec,
+  )
+    .split('\n')
+    .filter(Boolean)
+    .filter((file) => !isStagedHeaderOnlyChange(file, exec));
+  // `M` too: a branch amends the declaration it added. The merge-result check counts
+  // only declarations added against the base, so editing a landed one grants nothing.
+  const declarations = git(
+    ['diff', '--cached', '--diff-filter=AM', '--name-only', 'HEAD', '--', COMPATIBLE_CHANGE_DIR],
+    exec,
+  )
+    .split('\n')
+    .filter((file) => file.endsWith('.json'));
+  const compatibleProtocolFiles = [];
+  const headEpoch = extractCompatibilityEpoch(stagedFile(EPOCH_FILE, exec));
+  for (const declaration of declarations) {
+    compatibleProtocolFiles.push(
+      ...parseDeclaration(declaration, stagedFile(declaration, exec), headEpoch),
+    );
+  }
+  return evaluateEpochCheck({
+    baseEpoch: epochAtRevision('HEAD', exec),
+    headEpoch,
+    changedProtocolFiles,
+    compatibleProtocolFiles,
+  });
 }
 
 /**
@@ -174,19 +249,39 @@ export function isHeaderOnlyChange(file, base, head, exec = execFileSync) {
   }
 }
 
+export function isStagedHeaderOnlyChange(file, exec = execFileSync) {
+  const style = classifyPath(file).style;
+  if (!style) return false;
+  try {
+    const before = git(['show', `HEAD:${file}`], exec);
+    const after = stagedFile(file, exec);
+    return applyHeader(before, style) === after;
+  } catch {
+    return false;
+  }
+}
+
 function parseArgs(args) {
-  const parsed = { base: undefined, head: 'HEAD' };
+  const parsed = { base: undefined, head: 'HEAD', staged: false };
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === '--base') parsed.base = args[++index];
     else if (args[index] === '--head') parsed.head = args[++index];
+    else if (args[index] === '--staged') parsed.staged = true;
     else throw new Error(`Unknown argument: ${args[index]}`);
   }
+  if (parsed.staged) return parsed;
   if (!parsed.base) throw new Error('Expected --base <rev> (and optionally --head <rev>)');
   return parsed;
 }
 
 function main(args) {
-  const { base, head } = parseArgs(args);
+  const { base, head, staged } = parseArgs(args);
+  if (staged) {
+    const verdict = evaluateStagedEpochCheck();
+    process.stderr.write(`Protocol epoch guard: ${verdict.reason}\n`);
+    if (!verdict.ok) process.exitCode = 1;
+    return;
+  }
   const headEpoch = epochAtRevision(head);
   const verdict = evaluateEpochCheck({
     baseEpoch: epochAtRevision(base),

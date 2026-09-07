@@ -20,78 +20,78 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  deriveFailedTurnRecovery,
+  describeFailedTurnExecutionState,
   describeTurnErrorClass,
+  deriveFailedTurnSeverity,
 } from '../../renderer/session-status-presentation.js';
 
-const outputFreeFailure = {
-  partialOutputRetained: false,
+const NOTHING_RAN = {
   toolActivityCount: 0,
   erroredToolCount: 0,
 };
 
-describe('failed turn recovery presentation', () => {
+describe('failed turn presentation', () => {
   it('presents persisted provider server errors as provider failures', () => {
-    assert.equal(describeTurnErrorClass('server_error', 'zh'), '模型服务返回错误');
-    assert.equal(describeTurnErrorClass('server_error', 'en'), 'Model service error');
+    assert.match(describeTurnErrorClass('server_error', 'zh-CN'), /模型服务返回错误/);
+    assert.match(describeTurnErrorClass('server_error', 'zh-TW'), /模型服務回傳錯誤/);
+    assert.match(describeTurnErrorClass('server_error', 'en'), /model service returned an error/i);
+    // Before #3758 the adapter persisted these codes with an unknown kind.
+    assert.equal(describeTurnErrorClass('ECONNRESET', 'en'), describeTurnErrorClass('network', 'en'));
   });
 
-  it('does not recommend a byte-identical retry after context overflow', () => {
-    assert.deepEqual(
-      deriveFailedTurnRecovery({ ...outputFreeFailure, errorClass: 'context_overflow' }, 'zh'),
-      { action: 'continue', label: '上下文仍超出限制，请减少附件或开启新任务' },
-    );
-    assert.deepEqual(
-      deriveFailedTurnRecovery({ ...outputFreeFailure, errorClass: 'context_overflow' }, 'en'),
-      {
-        action: 'continue',
-        label: 'Context is still too large; reduce attachments or start a new task',
-      },
+  it('states what to do without promising a resume the UI cannot offer', () => {
+    for (const errorClass of ['rate_limit', 'network', 'timeout']) {
+      assert.match(describeTurnErrorClass(errorClass, 'zh-CN'), /重新发消息|再发消息|发消息/);
+    }
+    assert.doesNotMatch(describeTurnErrorClass('unknown_failure', 'zh-CN'), /重试|重发/);
+    assert.match(describeTurnErrorClass('stream_truncated', 'zh-CN'), /中途断开/);
+    assert.match(describeFailedTurnExecutionState({ ...NOTHING_RAN, retry: { decision: 'declined', because: 'side_effects' } }, 'zh-CN')!, /未自动重试/);
+  });
+
+  it('grades continuable outcomes below outcomes the user must act on', () => {
+    assert.equal(deriveFailedTurnSeverity('app_restarted'), 'warning');
+    assert.equal(deriveFailedTurnSeverity('tool_step_cap_reached'), 'warning');
+    assert.equal(deriveFailedTurnSeverity('permission_required'), 'warning');
+    assert.equal(deriveFailedTurnSeverity('auth'), 'error');
+    assert.equal(deriveFailedTurnSeverity('context_overflow'), 'error');
+    assert.equal(deriveFailedTurnSeverity(undefined), 'error');
+  });
+});
+
+describe('failed turn execution state', () => {
+  it('warns that a completed tool may already have taken effect', () => {
+    // A blind resend after a side-effecting tool can repeat that effect, so
+    // this has to survive alongside a transport failure like `timeout`.
+    const zh = describeFailedTurnExecutionState({ ...NOTHING_RAN, toolActivityCount: 1 }, 'zh-CN');
+    assert.match(zh ?? '', /执行过工具|实际改动/);
+    const en = describeFailedTurnExecutionState({ ...NOTHING_RAN, toolActivityCount: 1 }, 'en');
+    assert.match(en ?? '', /tools already ran/i);
+  });
+
+  it('does not let execution state displace the error class', () => {
+    // The retired recovery derivation ranked these against each other and let
+    // the tool branch win, so `auth` plus an errored tool advised "inspect the
+    // tool result" and dropped the sign-in step. They are separate slots now.
+    const state = { ...NOTHING_RAN, toolActivityCount: 1, erroredToolCount: 1 };
+    assert.match(describeTurnErrorClass('auth', 'zh-CN'), /重新连接或登录/);
+    assert.match(describeFailedTurnExecutionState(state, 'zh-CN') ?? '', /工具执行出错/);
+    assert.match(describeTurnErrorClass('context_overflow', 'zh-CN'), /减少附件|开启新任务/);
+    assert.match(describeFailedTurnExecutionState(state, 'zh-TW') ?? '', /工具執行出錯/);
+  });
+
+  it('does not infer execution guidance from a legacy output hint', () => {
+    assert.equal(describeFailedTurnExecutionState(NOTHING_RAN, 'zh-CN'), undefined);
+    const legacyState = { ...NOTHING_RAN, partialOutputRetained: true };
+    assert.equal(describeFailedTurnExecutionState(legacyState, 'zh-CN'), undefined);
+  });
+
+  it('prefers the most specific state the turn reached', () => {
+    const all = { toolActivityCount: 2, erroredToolCount: 1 };
+    assert.match(describeFailedTurnExecutionState(all, 'zh-CN') ?? '', /工具执行出错/);
+    assert.match(
+      describeFailedTurnExecutionState({ ...all, erroredToolCount: 0 }, 'zh-CN') ?? '',
+      /执行过工具/,
     );
   });
 
-  it('keeps the generic retry fallback for an unknown output-free failure', () => {
-    assert.deepEqual(
-      deriveFailedTurnRecovery({ ...outputFreeFailure, errorClass: 'unknown_failure' }, 'en'),
-      { action: 'retry', label: 'No tools ran; retry directly' },
-    );
-  });
-
-  it('preserves higher-priority retained-output and tool guidance', () => {
-    assert.deepEqual(
-      deriveFailedTurnRecovery(
-        { ...outputFreeFailure, errorClass: 'context_overflow', partialOutputRetained: true },
-        'en',
-      ),
-      { action: 'continue', label: 'Partial output was retained; continue from here' },
-    );
-    assert.deepEqual(
-      deriveFailedTurnRecovery(
-        { ...outputFreeFailure, errorClass: 'context_overflow', toolActivityCount: 1 },
-        'en',
-      ),
-      { action: 'inspect_tool', label: 'Tool history was retained; inspect it before retrying' },
-    );
-    assert.deepEqual(
-      deriveFailedTurnRecovery(
-        { ...outputFreeFailure, errorClass: 'context_overflow', erroredToolCount: 1 },
-        'en',
-      ),
-      { action: 'inspect_tool', label: 'Inspect the tool result before retrying' },
-    );
-    assert.deepEqual(
-      deriveFailedTurnRecovery(
-        { ...outputFreeFailure, errorClass: 'provider_capacity', partialOutputRetained: true },
-        'en',
-      ),
-      { action: 'continue', label: 'Partial output was retained; continue from here' },
-    );
-    assert.deepEqual(
-      deriveFailedTurnRecovery(
-        { ...outputFreeFailure, errorClass: 'provider_capacity', toolActivityCount: 1 },
-        'en',
-      ),
-      { action: 'inspect_tool', label: 'Tool history was retained; inspect it before retrying' },
-    );
-  });
 });

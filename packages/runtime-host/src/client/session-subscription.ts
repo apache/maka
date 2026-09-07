@@ -21,8 +21,11 @@ import { createHash } from 'node:crypto';
 import {
   encodeProtocolMessage,
   type SessionAssistantStreamIdentity,
+  type SessionRuntimeResourcePtyDataFrame,
   type SessionContinuitySnapshot,
   SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+  SESSION_TRANSCRIPT_RANGE_MAX_BYTES,
+  SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES,
   type SubscriptionFrame,
   type SubscriptionOpenResult,
   type SessionTranscriptBootstrap,
@@ -59,6 +62,7 @@ function errorMessage(error: unknown): string {
 }
 
 export interface RuntimeHostSessionSubscription extends AsyncIterable<SubscriptionFrame> {
+  subscribePtyData(listener: (frame: SessionRuntimeResourcePtyDataFrame) => void): () => void;
   readonly hostEpoch: string;
   readonly subscriptionId: string;
   readonly snapshot: SessionContinuitySnapshot;
@@ -110,6 +114,7 @@ export class ClientSessionSubscription
   readonly #releaseTranscriptOverlay: () => Promise<void>;
   readonly #expectedSessionId: string;
   readonly #queue: QueuedFrame[] = [];
+  readonly #ptyListeners = new Set<(frame: SessionRuntimeResourcePtyDataFrame) => void>();
   #queuedBytes = 0;
   #expectedSequence: number;
   #latestProjectionRevision: number;
@@ -153,6 +158,12 @@ export class ClientSessionSubscription
     return this;
   }
 
+  subscribePtyData(listener: (frame: SessionRuntimeResourcePtyDataFrame) => void): () => void {
+    if (this.#done || this.#terminalError || this.#closing) return () => undefined;
+    this.#ptyListeners.add(listener);
+    return () => this.#ptyListeners.delete(listener);
+  }
+
   next(): Promise<IteratorResult<SubscriptionFrame>> {
     const queued = this.#queue.shift();
     if (queued) {
@@ -181,6 +192,7 @@ export class ClientSessionSubscription
   close(): Promise<void> {
     if (this.#done || this.#terminalError) return Promise.resolve();
     this.#closing = true;
+    this.#ptyListeners.clear();
     if (!this.#closeTask) this.#closeTask = this.#requestClose();
     return this.#closeTask;
   }
@@ -235,7 +247,15 @@ export class ClientSessionSubscription
     try {
       assembler.accept(page.fragments);
       let cursor = page.nextCursor;
-      while (assembler.continuationBytes !== null) {
+      let rangeBytes = page.fragments.reduce((total, fragment) => total + fragment.totalBytes, 0);
+      const rangeIdentities = new Set(
+        page.fragments.map((fragment) =>
+          fragment.kind === 'durable' ? fragment.sequence : fragment.messageIndex,
+        ),
+      );
+      let reachedBoundary =
+        page.rangeBoundarySequence === null || rangeIdentities.has(page.rangeBoundarySequence);
+      while (assembler.continuationBytes !== null || !reachedBoundary) {
         if (cursor === null) {
           throw new RuntimeHostSubscriptionError(
             'correlation_changed',
@@ -249,7 +269,10 @@ export class ClientSessionSubscription
           throughSequence: page.throughSequence,
           cursor,
           anchorSequence: null,
-          maxBytes: Math.min(SESSION_TRANSCRIPT_PAGE_MAX_BYTES, assembler.continuationBytes),
+          maxBytes:
+            assembler.continuationBytes === null
+              ? SESSION_TRANSCRIPT_PAGE_MAX_BYTES
+              : Math.min(SESSION_TRANSCRIPT_PAGE_MAX_BYTES, assembler.continuationBytes),
         });
         if (continuation.nextCursor === requestedCursor) {
           throw new RuntimeHostSubscriptionError(
@@ -257,7 +280,22 @@ export class ClientSessionSubscription
             'Session transcript cursor did not advance',
           );
         }
+        for (const fragment of continuation.fragments) {
+          const identity = fragment.kind === 'durable' ? fragment.sequence : fragment.messageIndex;
+          if (!rangeIdentities.has(identity)) {
+            rangeIdentities.add(identity);
+            rangeBytes += fragment.totalBytes;
+          }
+        }
+        if (
+          rangeBytes > SESSION_TRANSCRIPT_RANGE_MAX_BYTES ||
+          rangeIdentities.size > SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES
+        ) {
+          throw new RangeError('Session transcript range exceeds the local capacity limit');
+        }
         assembler.accept(continuation.fragments);
+        reachedBoundary =
+          page.rangeBoundarySequence === null || rangeIdentities.has(page.rangeBoundarySequence);
         cursor = continuation.nextCursor;
       }
       return {
@@ -317,7 +355,9 @@ export class ClientSessionSubscription
     }
     const overlay = await this.#consumeTranscriptOverlay(bootstrap);
     const durable = await this.#loadTranscriptSource(bootstrap.durable);
-    assertCompleteIdentities(durable, bootstrap.throughSequence);
+    if (bootstrap.durableCoverage === 'complete') {
+      assertCompleteIdentities(durable, bootstrap.throughSequence);
+    }
     const messages = durable.map((entry) => entry.value);
     const indexById = new Map<string, number>();
     for (const [index, message] of messages.entries()) {
@@ -477,6 +517,24 @@ export class ClientSessionSubscription
         'Session subscription correlation changed',
       );
     }
+    if (frame.kind === 'subscription.runtime_resource_pty_data') {
+      if (frame.sessionId !== this.#expectedSessionId) {
+        throw new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'PTY Session identity changed',
+        );
+      }
+      // No iterator backlog when nobody is displaying a terminal. Attaching
+      // consumers hydrate from a snapshot, including bytes before attachment.
+      for (const listener of this.#ptyListeners) {
+        try {
+          listener(frame);
+        } catch {
+          /* A display consumer cannot terminate Session state. */
+        }
+      }
+      return;
+    }
     if (frame.sequence !== this.#expectedSequence) {
       throw new RuntimeHostSubscriptionError(
         'sequence_gap',
@@ -503,8 +561,7 @@ export class ClientSessionSubscription
       (frame.kind === 'subscription.session_delta' ||
         frame.kind === 'subscription.session_event' ||
         frame.kind === 'subscription.transcript_advanced' ||
-        frame.kind === 'subscription.session_domain_changed' ||
-        frame.kind === 'subscription.runtime_resource_pty_data') &&
+        frame.kind === 'subscription.session_domain_changed') &&
       frame.sessionId !== this.#expectedSessionId
     ) {
       throw new RuntimeHostSubscriptionError(
@@ -538,6 +595,7 @@ export class ClientSessionSubscription
   }
 
   finish(): void {
+    this.#ptyListeners.clear();
     if (this.#done || this.#terminalError) return;
     this.#doneAfterQueue = true;
     if (this.#queue.length === 0) {
@@ -548,6 +606,7 @@ export class ClientSessionSubscription
   }
 
   fail(error: Error): void {
+    this.#ptyListeners.clear();
     if (this.#done || this.#terminalError) return;
     this.#terminalError = error;
     this.#queue.length = 0;

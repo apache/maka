@@ -19,16 +19,23 @@
 
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import type { IpcMain } from 'electron';
 import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import type { ShellRunUpdate } from '@maka/core/events';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import type {
   ClientCapabilityProvider,
   ConnectOrSpawnRuntimeHostInput,
   RuntimeHostConnection,
 } from '@maka/runtime-host/client';
+import { RuntimeHostOperationError, runHostHandoff } from '@maka/runtime-host/client';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type ClientCapabilityCallFrame,
@@ -50,7 +57,10 @@ import {
   type DesktopRuntimeHostCandidateStartInput,
 } from '../runtime-host-desktop-candidate.js';
 import { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-observation-registry.js';
+import { RuntimeHostReconnectingIpcMain } from '../runtime-host-reconnecting-ipc-main.js';
 import { desktopSessionResourceKey } from '../../shared/runtime-host-identity.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { canRepairManagedRuntimeHostStartup } from '../runtime-host-startup-recovery.js';
 
 const TEST_HOST_ID = 'a'.repeat(64);
 const TEST_TARGET_EPOCH = 'test-target-epoch';
@@ -78,6 +88,143 @@ test('uses the manager-owned launch barrier for local candidate startup', async 
 
   assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
   assert.equal(connectedRoot, 'C:\\workspace');
+});
+
+test('updates a protocol-compatible managed Host before exposing a candidate over its old storage', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-desktop-managed-schema-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  acquireOperationalStateDatabase(root).close();
+  const databasePath = join(root, 'runtime.sqlite');
+  const legacy = new DatabaseSync(databasePath);
+  legacy.exec(`
+    DROP TABLE usage_model_call_attempts;
+    CREATE TABLE usage_model_call_attempts (
+      attempt_id TEXT PRIMARY KEY,
+      completed_at INTEGER NOT NULL,
+      record_json TEXT NOT NULL,
+      session_id TEXT
+    );
+    INSERT INTO usage_model_call_attempts VALUES ('retained', 1, '{}', 'deleted-session');
+    UPDATE operational_schema_migrations SET version = 6 WHERE scope = 'usage';
+  `);
+  legacy.close();
+  const ipc = ipcHarness();
+  const old = connectionHarness('old');
+  const updated = connectionHarness('updated');
+  let starts = 0;
+  let repairs = 0;
+  const candidate = await runHostHandoff({
+    observe: async () => {
+      try {
+        const host = starts++ === 0 ? old : updated;
+        const result = await startDesktopRuntimeHostCandidate({
+          ...deps(ipc),
+          workspaceRoot: root,
+          rootPath: root,
+          candidateEntrypoint: 'unused.js',
+          candidateLaunchBarrier: {
+            connect: async () => ({
+              kind: 'connected',
+              connection: host.connection,
+              registration: { lifecycleMode: 'supervised', pid: 123 },
+            }),
+          },
+        } as unknown as DesktopRuntimeHostCandidateStartInput);
+        assert.equal(result.kind, 'ready');
+        if (result.kind !== 'ready')
+          throw new Error('Expected a ready candidate');
+        return { kind: 'ready', value: result.candidate };
+      } catch (error) {
+        assert.ok(
+          error instanceof Error && canRepairManagedRuntimeHostStartup(error),
+        );
+        return {
+          kind: 'blocked',
+          blocker: {
+            identity: 'managed-schema-before',
+            target: { name: 'Local', location: 'local' },
+            reason: 'repair',
+            mayExitNaturally: false,
+            activity: {
+              connections: 0,
+              activeOperations: 0,
+              processUptimeSeconds: 1,
+              residencies: [],
+            },
+            replacement: {
+              kind: 'repair',
+              canReplaceIdle: true,
+              canInterrupt: true,
+              execute: async (authority) => {
+                repairs += 1;
+                assert.equal(authority, 'refuse_active_work');
+                assert.equal(
+                  old.closeCalls,
+                  1,
+                  'release the old connection before managed update',
+                );
+                assert.equal(
+                  old.capabilityRegistrations,
+                  0,
+                  'do not expose capabilities before storage admission',
+                );
+                assert.equal(ipc.size, 0);
+                const preserved = new DatabaseSync(databasePath, {
+                  readOnly: true,
+                });
+                try {
+                  assert.equal(
+                    preserved
+                      .prepare(
+                        "SELECT version FROM operational_schema_migrations WHERE scope = 'usage'",
+                      )
+                      .get()?.version,
+                    6,
+                  );
+                  assert.equal(
+                    preserved
+                      .prepare(
+                        "SELECT record_json FROM usage_model_call_attempts WHERE attempt_id = 'retained'",
+                      )
+                      .get()?.record_json,
+                    '{}',
+                  );
+                } finally {
+                  preserved.close();
+                }
+                // Simulate the updated owning Host, not Desktop, performing migration.
+                acquireOperationalStateDatabase(root).close();
+                return { kind: 'completed' };
+              },
+            },
+          },
+        };
+      }
+    },
+    openSurface: () => ({
+      update: (view) => assert.equal(view.state, 'progress', 'idle repair needs no consent'),
+      close: () => {},
+    }),
+  });
+  t.after(() => candidate.close());
+  assert.equal(starts, 2);
+  assert.equal(repairs, 1);
+  assert.equal(updated.capabilityRegistrations, 1);
+  const current = acquireOperationalStateDatabase(root, {
+    schemaMigration: 'require_current',
+  });
+  try {
+    assert.equal(
+      current.database
+        .prepare(
+          "SELECT session_id FROM usage_model_call_attempts WHERE attempt_id = 'retained'",
+        )
+        .get()?.session_id,
+      'deleted-session',
+    );
+  } finally {
+    current.close();
+  }
 });
 
 test('formats bounded local Host exit evidence without leaking stderr secrets', () => {
@@ -143,7 +290,7 @@ function createDesktopRuntimeHostCandidate(
     connection,
     candidateDeps,
     observationRegistry,
-    'ephemeral',
+    'owned_ephemeral',
     'local',
   );
 }
@@ -183,12 +330,77 @@ test('owns one complete Desktop candidate generation and can restart cleanly', a
   assert.equal(ipc.size, 0);
 });
 
+test('routes Guest catalog changes through the mount projection authority', async () => {
+  const ipc = ipcHarness();
+  const sharedResource = sharedShellRunUpdate('session-guest');
+  const host = connectionHarness('guest', { runtimeResourceUpdate: sharedResource });
+  const changes: Array<{ reason: string; sessionId?: string }> = [];
+  let catalogChanges = 0;
+  const rendererEvents: Array<{ channel: string; payload: unknown }> = [];
+  const candidate = await createCandidate(
+    host.connection,
+    {
+      ...deps(ipc),
+      emitSessionsChanged: (_scope, reason, sessionId) => {
+        changes.push({ reason, ...(sessionId === undefined ? {} : { sessionId }) });
+      },
+      onGuestSessionCatalogChanged: () => {
+        catalogChanges += 1;
+      },
+      renderer: {
+        send(channel, _scope, payload) {
+          rendererEvents.push({ channel, payload });
+        },
+      },
+    },
+    undefined,
+    'external',
+    'remote',
+    'session_guest',
+  );
+
+  assert.equal(ipc.channels.includes('sessions:list'), false);
+  assert.equal(ipc.channels.includes('sessions:observe'), true);
+  assert.equal(ipc.channels.includes('sessions:transcript:open'), true);
+  assert.equal(ipc.channels.includes('sessions:send'), false);
+  assert.equal(ipc.channels.includes('sessions:stop'), false);
+  assert.equal(ipc.channels.includes('tasks:list'), false);
+  assert.equal(ipc.channels.includes('attachments:readBytes'), true);
+  assert.deepEqual(await ipc.invoke('shell-runs:list', 'session-guest'), [sharedResource]);
+  assert.equal(ipc.channels.includes('shell-runs:attach'), false);
+  await ipc.invoke('sessions:observe', 'session-guest', 'guest-observer');
+  host.pushSubscriptionFrame({
+    kind: 'subscription.session_domain_changed',
+    hostEpoch: 'host-guest',
+    subscriptionId: 'subscription-guest',
+    sequence: 1,
+    sessionId: 'session-guest',
+    domain: 'runtime_resource',
+    resources: [
+      { sourceSessionId: 'session-guest', ref: sharedResource.result.ref },
+    ],
+  });
+  await waitFor(() =>
+    rendererEvents.some(
+      ({ channel, payload }) =>
+        channel === 'shell-runs:update' &&
+        (payload as ShellRunUpdate).result.ref === sharedResource.result.ref,
+    ),
+  );
+  host.publishSessionCatalogChange('session-guest');
+  assert.equal(catalogChanges, 1);
+  assert.deepEqual(changes, []);
+
+  await candidate.close();
+});
+
 test('rejects a stale Host identity when raw Session IDs collide', async () => {
   const ipc = ipcHarness();
   const browserReleased: string[] = [];
   const computerReleased: string[] = [];
   const nativeCapabilities: DesktopRuntimeHostCandidateDeps['nativeCapabilities'] = {
     browserTools: [nativeTool()],
+    resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession: (sessionId) => {
       browserReleased.push(sessionId);
     },
@@ -244,7 +456,7 @@ test('rejects a stale target generation when two profiles share one Host', async
     first.connection,
     deps(ipc),
     undefined,
-    'ephemeral',
+    'owned_ephemeral',
     'local',
   );
   await firstCandidate.close();
@@ -255,7 +467,7 @@ test('rejects a stale target generation when two profiles share one Host', async
     second.connection,
     deps(ipc),
     undefined,
-    'ephemeral',
+    'owned_ephemeral',
     'local',
   );
 
@@ -287,6 +499,42 @@ test('tears down the whole candidate when the Host connection closes', async () 
   assert.equal(host.closeCalls, 1);
 });
 
+test('preserves supported IPC when the connection closes before candidate startup returns', { timeout: 5_000 }, async (t) => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  t.after(() => router.close());
+  const firstHost = connectionHarness('closed-during-start');
+  const replaceCapabilities = firstHost.connection.replaceClientCapabilities;
+  firstHost.connection.replaceClientCapabilities = async (...args) => {
+    const result = await replaceCapabilities(...args);
+    // The final initialization response succeeds, immediately followed by EOF.
+    firstHost.disconnect();
+    return result;
+  };
+  const firstTarget = router.createTarget(TEST_TARGET_EPOCH);
+  const first = await createDesktopRuntimeHostCandidate(firstHost.connection, {
+    ...deps(ipc), ipcMain: firstTarget,
+  });
+  t.after(() => first.close());
+  firstTarget.completeRegistration();
+  router.activate(TEST_TARGET_EPOCH);
+  const pending = ipc.invoke('sessions:list').then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error }),
+  );
+
+  const secondHost = connectionHarness('replacement');
+  const secondTarget = router.createTarget(TEST_TARGET_EPOCH);
+  const second = await createDesktopRuntimeHostCandidate(secondHost.connection, {
+    ...deps(ipc), ipcMain: secondTarget,
+  });
+  t.after(() => second.close());
+  secondTarget.completeRegistration();
+  const result = await pending;
+  assert.ok('value' in result, `supported read was rejected: ${'error' in result ? result.error : ''}`);
+  assert.deepEqual((result.value as SessionCatalogProjection[]).map(({ id }) => id), ['session-replacement']);
+});
+
 test('disposes candidate-scoped product IPC state on reconnect teardown', async () => {
   const ipc = ipcHarness();
   const host = connectionHarness('client-ipc');
@@ -311,6 +559,7 @@ test('starts without registering an empty native capability set', async () => {
     host.connection,
     deps(ipc, {
       browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: emptyComputerUseTools(),
       releaseComputerUseSession() {},
@@ -330,6 +579,7 @@ test('refreshes native capabilities with a new immutable provider snapshot', asy
   const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
     ...deps(ipc, {
       browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: emptyComputerUseTools(),
       releaseComputerUseSession() {},
@@ -384,6 +634,7 @@ test('releases all native Session resources on retirement and generation close',
     host.connection,
     deps(ipc, {
       browserTools: [nativeTool()],
+      resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession: async (sessionId) => {
         browserReleased.push(sessionId);
       },
@@ -490,15 +741,66 @@ test('closes the claimed Host connection when native capability construction fai
         host.connection,
         deps(ipc, {
           browserTools: [invalidTool],
+          resolveBrowserUrl: () => 'https://example.com/',
           releaseBrowserSession() {},
           computerUseTools: emptyComputerUseTools(),
           releaseComputerUseSession() {},
         }),
       ),
-    /tool schema must be an object/,
+    /tool schema root must be an object/,
   );
 
   assert.equal(ipc.size, 0);
+  assert.equal(host.closeCalls, 1);
+});
+
+test('isolates an invalid dynamic MCP tool without dropping the Host connection', async () => {
+  // Per-tool isolation: one bad tool is skipped and the provider still
+  // constructs, so the Host connection stays alive.
+  const ipc = ipcHarness();
+  const host = connectionHarness('invalid-capability');
+  const invalidTool = {
+    ...nativeTool(),
+    parameters: z.string(),
+  } as unknown as MakaTool;
+  const healthyTool = {
+    ...nativeTool(),
+    name: 'healthy_mcp',
+    impl: async () => 'healthy',
+  };
+
+  const candidate = await createDesktopRuntimeHostCandidate(
+    host.connection,
+    deps(ipc, {
+      browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
+      releaseBrowserSession() {},
+      computerUseTools: emptyComputerUseTools(),
+      releaseComputerUseSession() {},
+      additionalGroups: () => [
+        {
+          offerId: 'desktop_mcp',
+          label: 'MCP',
+          description: 'MCP tools',
+          tools: [invalidTool, healthyTool],
+        },
+      ],
+    }),
+  );
+
+  assert.equal(host.capabilityRegistrations, 1);
+  assert.equal(host.closeCalls, 0);
+  assert.deepEqual(
+    await host.invokeCapability({
+      ...capabilityFrame('session-invalid-capability'),
+      offerId: 'desktop_mcp',
+      serverId: 'desktop_mcp',
+      toolName: 'healthy_mcp',
+    }),
+    { content: [{ type: 'text', text: 'healthy' }] },
+  );
+
+  await candidate.close();
   assert.equal(host.closeCalls, 1);
 });
 
@@ -511,6 +813,7 @@ test('does not release or report a Revision the Host retained during cleanup', a
   const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
     ...deps(ipc, {
       browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession: (sessionId) => {
         released.push(`browser:${sessionId}`);
       },
@@ -670,7 +973,6 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
     kind: 'subscription.runtime_resource_pty_data',
     hostEpoch: 'host-second-observer',
     subscriptionId: 'subscription-second-observer',
-    sequence: 1,
     sessionId: 'session-1',
     ref,
     ptySequence: 5,
@@ -778,6 +1080,112 @@ test('retries candidate startup when a restored observation cannot seed', async 
   await observations.close();
 });
 
+test('drops a stale shared Session observation when Guest access is gone', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const firstIpc = ipcHarness();
+  const firstHost = connectionHarness('shared-before-revoke', {
+    sessionId: 'session-1',
+    subscriptionSnapshot: continuitySnapshot(),
+  });
+  const firstCandidate = await createCandidate(
+    firstHost.connection,
+    { ...deps(firstIpc), onGuestSessionCatalogChanged: () => undefined },
+    observations,
+    'external',
+    'remote',
+    'session_guest',
+  );
+  await firstIpc.invoke('sessions:observe', 'session-1', 'observer-1');
+  await firstCandidate.close();
+
+  const changes: Array<{ reason: string; sessionId?: string }> = [];
+  const revokedHost = connectionHarness('shared-after-revoke', {
+    sharedSessionAvailable: false,
+  });
+  const candidate = await createCandidate(
+    revokedHost.connection,
+    {
+      ...deps(ipcHarness()),
+      emitSessionsChanged: (_scope, reason, sessionId) => {
+        changes.push({ reason, ...(sessionId === undefined ? {} : { sessionId }) });
+      },
+      onGuestSessionCatalogChanged: () => undefined,
+    },
+    observations,
+    'external',
+    'remote',
+    'session_guest',
+  );
+
+  assert.deepEqual(observations.trackedSessionIds(), []);
+  assert.deepEqual(changes, [{ reason: 'deleted', sessionId: 'session-1' }]);
+  await candidate.close();
+  await observations.close();
+});
+
+test('forgets an observed Session the Host no longer serves instead of blocking every reconnect', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const firstIpc = ipcHarness();
+  const firstHost = connectionHarness('missing-session-source', {
+    sessionId: 'session-1',
+    subscriptionSnapshot: continuitySnapshot(),
+  });
+  const firstCandidate = await createDesktopRuntimeHostCandidate(
+    firstHost.connection,
+    deps(firstIpc),
+    observations,
+  );
+  await firstIpc.invoke('sessions:observe', 'session-1', 'observer-1');
+  await firstCandidate.close();
+
+  // The replacement Host no longer serves session-1: subscription.open
+  // deterministically answers not_found.
+  const changes: Array<{ reason: string; sessionId?: string }> = [];
+  const missingHost = connectionHarness('missing-session-host', {
+    sessionId: 'session-1',
+    subscriptionError: new RuntimeHostOperationError(
+      'subscription.open',
+      'not_found',
+      'Runtime Host Session was not found',
+    ),
+  });
+  const secondCandidate = await createDesktopRuntimeHostCandidate(
+    missingHost.connection,
+    {
+      ...deps(ipcHarness()),
+      emitSessionsChanged: (_scope, reason, sessionId) => {
+        changes.push({ reason, ...(sessionId === undefined ? {} : { sessionId }) });
+      },
+    },
+    observations,
+  );
+
+  // The stale active registration is forgotten instead of failing the
+  // candidate start, and the renderer is told to drop the Session view.
+  assert.deepEqual(observations.observedSessionIds(), []);
+  assert.ok(
+    changes.some(
+      ({ reason, sessionId }) => reason === 'deleted' && sessionId === 'session-1',
+    ),
+  );
+  await secondCandidate.close();
+
+  // A later reconnect observes new Sessions on the same registry.
+  const thirdIpc = ipcHarness();
+  const thirdHost = connectionHarness('missing-session-recovered', {
+    sessionId: 'session-2',
+  });
+  const thirdCandidate = await createDesktopRuntimeHostCandidate(
+    thirdHost.connection,
+    deps(thirdIpc),
+    observations,
+  );
+  await thirdIpc.invoke('sessions:observe', 'session-2', 'observer-2');
+  assert.deepEqual(observations.observedSessionIds(), ['session-2']);
+  await thirdCandidate.close();
+  await observations.close();
+});
+
 type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
 
 function ipcHarness(onSend?: (channel: string, payload: unknown) => void) {
@@ -844,6 +1252,7 @@ function deps(
   ipcMain: ReturnType<typeof ipcHarness>,
   nativeCapabilities: DesktopRuntimeHostCandidateDeps['nativeCapabilities'] = {
     browserTools: [nativeTool()],
+    resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: emptyComputerUseTools(),
     releaseComputerUseSession() {},
@@ -898,6 +1307,8 @@ function connectionHarness(
     activeAssistantStreams?: readonly SessionAssistantStreamIdentity[];
     subscriptionError?: Error;
     runtimeResourcePty?: ReturnType<typeof ptySnapshot>;
+    runtimeResourceUpdate?: ShellRunUpdate;
+    sharedSessionAvailable?: boolean;
   } = {},
 ) {
   let resolveClosed: (() => void) | undefined;
@@ -909,6 +1320,7 @@ function connectionHarness(
     resolveTurnStarted = resolve;
   });
   const closeSubscriptions = new Set<() => void>();
+  const sessionCatalogListeners = new Set<(frame: { sessionId: string }) => void>();
   let provider: ClientCapabilityProvider | undefined;
   let capabilityRegistrations = 0;
   let capabilityUnregistrations = 0;
@@ -916,6 +1328,7 @@ function connectionHarness(
   let startTurnCalls = 0;
   let runtimeResourceControllerAcquires = 0;
   let activeSubscriptionFrames: AsyncFrameQueue | undefined;
+  const ptyListeners = new Set<(frame: Extract<SubscriptionFrame, { kind: 'subscription.runtime_resource_pty_data' }>) => void>();
   const connection = {
     hostEpoch: `host-${label}`,
     connectionId: `connection-${label}`,
@@ -923,6 +1336,7 @@ function connectionHarness(
     selectedProtocol: 0,
     closed,
     request: async <K extends OperationKey>(operation: K, input: OperationInput<K>) => {
+      if (operation === 'subscription.pty_interest.set') return { subscriptionId: (input as { subscriptionId: string }).subscriptionId };
       if (
         operation === 'session.catalog.query' &&
         (input as { kind?: unknown }).kind === 'list_start'
@@ -934,20 +1348,23 @@ function connectionHarness(
           nextCursor: null,
         };
       }
-      if (operation === 'session.create') {
-        return session((input as { sessionId: string }).sessionId);
-      }
-      if (operation === 'session.configuration.update') {
-        // The Bot adapter pins explore after create; commit it like the
-        // real Host would instead of falling through to the unexpected-
-        // operation guard below.
+      if (operation === 'session.shared.query') {
+        if (options.sharedSessionAvailable === false) return { session: null };
+        const id = options.sessionId ?? `session-${label}`;
         return {
-          kind: 'committed',
           session: {
-            ...session((input as { sessionId: string }).sessionId),
-            permissionMode: 'explore',
+            kind: 'shared_session',
+            id,
+            revision: 1,
+            createdAt: 1,
+            activityAt: 1,
+            name: `Session ${label}`,
+            status: 'idle',
           },
         };
+      }
+      if (operation === 'session.create') {
+        return session((input as { sessionId: string }).sessionId);
       }
       if (operation === 'external-session.source.query') {
         return { adapterIds: ['codex'] };
@@ -979,11 +1396,23 @@ function connectionHarness(
         };
       }
       if (operation === 'runtime.resource.query') {
+        const query = input as { kind: string; sessionId: string; ref?: string };
+        if (query.kind === 'get') {
+          return {
+            kind: 'resource',
+            sessionId: query.sessionId,
+            revision: catalogRevision(`${label}-resource`),
+            resource:
+              options.runtimeResourceUpdate?.result.ref === query.ref
+                ? options.runtimeResourceUpdate
+                : null,
+          };
+        }
         return {
           kind: 'page',
-          sessionId: (input as { sessionId: string }).sessionId,
+          sessionId: query.sessionId,
           revision: catalogRevision(`${label}-resource`),
-          resources: [],
+          resources: options.runtimeResourceUpdate ? [options.runtimeResourceUpdate] : [],
           nextCursor: null,
         };
       }
@@ -1021,7 +1450,7 @@ function connectionHarness(
       if (options.subscriptionError) throw options.subscriptionError;
       const subscriptionFrames = new AsyncFrameQueue();
       activeSubscriptionFrames = subscriptionFrames;
-      const closeSubscription = () => subscriptionFrames.end();
+      const closeSubscription = () => { subscriptionFrames.end(); ptyListeners.clear(); };
       closeSubscriptions.add(closeSubscription);
       const emptyPage = {
         kind: 'page' as const,
@@ -1036,6 +1465,10 @@ function connectionHarness(
       return {
         hostEpoch: `host-${label}`,
         subscriptionId: `subscription-${label}`,
+        subscribePtyData(listener: (frame: Extract<SubscriptionFrame, { kind: 'subscription.runtime_resource_pty_data' }>) => void) {
+          ptyListeners.add(listener);
+          return () => ptyListeners.delete(listener);
+        },
         snapshot: options.subscriptionSnapshot ?? {
           projectionRevision: 1,
           session: { sessionId },
@@ -1064,6 +1497,10 @@ function connectionHarness(
       capabilityUnregistrations += 1;
       return { registrationId: `registration-${label}`, revision: 2 };
     },
+    subscribeSessionCatalogChanges: (listener: (frame: { sessionId: string }) => void) => {
+      sessionCatalogListeners.add(listener);
+      return () => sessionCatalogListeners.delete(listener);
+    },
     close: async () => {
       closeCalls += 1;
       for (const closeSubscription of closeSubscriptions) closeSubscription();
@@ -1079,12 +1516,20 @@ function connectionHarness(
       return provider.call(frame, {
         signal: new AbortController().signal,
         accept: async () => undefined,
+        requestInteraction: async () => assert.fail('Unexpected provider interaction'),
       });
     },
     disconnect: () => resolveClosed?.(),
     pushSubscriptionFrame: (frame: SubscriptionFrame) => {
       assert.ok(activeSubscriptionFrames);
+      if (frame.kind === 'subscription.runtime_resource_pty_data') {
+        for (const listener of ptyListeners) listener(frame);
+        return;
+      }
       activeSubscriptionFrames.push(frame);
+    },
+    publishSessionCatalogChange: (sessionId: string) => {
+      for (const listener of sessionCatalogListeners) listener({ sessionId });
     },
     get capabilityRegistrations() {
       return capabilityRegistrations;
@@ -1172,6 +1617,34 @@ function ptySnapshot(ref: string, buffer: string) {
   };
 }
 
+function sharedShellRunUpdate(sessionId: string): ShellRunUpdate {
+  return {
+    sessionId,
+    ownership: { kind: 'local' },
+    sourceTurnId: 'turn-shared',
+    sourceToolCallId: 'tool-shared',
+    result: {
+      kind: 'shell_run',
+      ref: 'maka://runtime/background-tasks/shared',
+      mode: 'pipes',
+      status: 'running',
+      cwd: '/workspace',
+      cmd: 'echo shared',
+      startedAt: 1,
+      updatedAt: 1,
+      revision: 1,
+      output: {
+        mode: 'pipes',
+        stdout: 'shared output',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        redacted: false,
+      },
+    },
+  };
+}
+
 class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
   readonly #frames: SubscriptionFrame[] = [];
   readonly #waiters: Array<
@@ -1207,11 +1680,7 @@ class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  assert.fail('Timed out waiting for candidate state');
+  await pollFor(predicate, { attempts: 100, message: 'Timed out waiting for candidate state' });
 }
 
 function capabilityFrame(sessionId: string): ClientCapabilityCallFrame {
@@ -1252,6 +1721,7 @@ function session(id: string): SessionCatalogProjection {
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'test-connection',
     connectionLocked: true,
     model: 'test-model',

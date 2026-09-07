@@ -18,6 +18,7 @@
  */
 
 import { z } from 'zod';
+import { runtimeHostWebRtcStunPolicySchema } from '../webrtc-stun-policy.js';
 
 export const RUNTIME_HOST_PEER_MANAGEMENT_FRAME_PREFIX = 'MAKA_RUNTIME_HOST_PEER_MANAGEMENT_V1 ';
 const FRAME_MAX_BYTES = 128 * 1024;
@@ -37,6 +38,8 @@ const STATUS_SCHEMA = z
       .optional(),
     routeHints: z.array(ADDRESS_SCHEMA).max(16),
     coordinationRelays: z.array(ADDRESS_SCHEMA).max(16),
+    automaticRelayDiscovery: z.boolean().optional(),
+    webRtcStunPolicy: runtimeHostWebRtcStunPolicySchema.optional(),
   })
   .strict();
 

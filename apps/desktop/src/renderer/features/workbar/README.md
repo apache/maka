@@ -27,7 +27,12 @@ remounted when the active session changes.
 ## Dependency direction
 
 - Consumers import production APIs from `features/workbar`.
-- Tests and stories may additionally import `features/workbar/testing`.
+- Node test suites may additionally import `features/workbar/testing`.
+- Storybook may additionally import `features/workbar/stories`, which exposes
+  `WorkbarSurface`. It stays out of the production entry because `workbar-host`
+  reaches the surface through `lazy()`, and out of `testing` because that entry
+  is loaded by `node --test` against tsc output while the surface and its tool
+  panels use extensionless relative specifiers only a bundler resolves.
 - Workbar may use shared renderer primitives, core types and Maka UI.
 - Workbar must not import shell composition, Desktop bridge, or main-process implementation.
 - Desktop I/O enters through `WorkbarServices`; tool code does not read
@@ -47,12 +52,18 @@ remounted when the active session changes.
 
 ## Lifecycle invariants
 
-- Review, Tasks, Browser, Files and Inspector tabs are persisted globally.
-- Terminal and Side Chat tabs, preview state and resource metadata are
-  transient.
+- Review, Work Board, Browser, Files and Inspector tabs are persisted globally.
+- Terminal and Side Chat tabs and their resource metadata are transient.
 - `WORKBAR_TOOL_DEFINITIONS` is the authority for persistence, singleton
-  behavior and default placement; storage and controller code consume it
-  rather than maintaining parallel kind lists.
+  behavior, default placement, icon and shortcut; storage, controller and UI
+  code consume it rather than maintaining parallel kind lists.
+- A face is opened and closed only from the strip's `[+]` menu, which lists
+  every registered tool and marks the open ones. Tabs carry no close control:
+  `Tab` renders `endContent` inside its own `<button>`, so a per-tab close
+  would nest a button in a button. Tabs are never reordered, so the strip's
+  order is the order the faces were opened in.
+- How many Terminals or Side Chats exist is each face's own business; only a
+  deliberate open adds a tab.
 - Closing or leaving the owner session stops Terminal resources.
 - A Terminal start is tagged with its source generation. If it resolves after
   a Session switch or controller disposal, the returned resource is stopped

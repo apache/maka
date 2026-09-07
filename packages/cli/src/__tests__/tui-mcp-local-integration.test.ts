@@ -38,11 +38,13 @@ import {
 import {
   HostClientCapabilityCoordinator,
   RuntimePolicyActivationGate,
+  clientCapabilityCoordinatorTestAdmission,
   type ClientCapabilitySnapshot,
 } from '@maka/runtime-host/test-only/client-capability-host';
 import { createMcpConfigStore } from '@maka/storage/mcp-config-store';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { createTuiMcpController, type TuiMcpController } from '../tui-mcp-control.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -70,6 +72,7 @@ test('local TUI discovers, publishes, invokes, republishes, and closes one MCP c
       idleGraceMs: 60_000,
       composition: defineInteractiveRuntimeHostComposition(async () => {
         coordinator = new HostClientCapabilityCoordinator({
+          ...clientCapabilityCoordinatorTestAdmission(),
           activation: new RuntimePolicyActivationGate(),
           onModelToolsChanged: () => undefined,
         });
@@ -216,8 +219,5 @@ function capabilityIsMissing(
 }
 
 async function waitFor(condition: () => boolean | Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 500 && !(await condition()); attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.ok(await condition());
+  await pollFor(condition, { attempts: 500, pollMs: 10 });
 }

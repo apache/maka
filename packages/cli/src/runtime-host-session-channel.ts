@@ -288,6 +288,8 @@ export class RuntimeHostSessionChannel {
     };
     if (answered.outcome.kind === 'question_answer') {
       this.#emit({ type: 'user_question_answer_ack', ...base });
+    } else if (answered.outcome.kind === 'form_answer') {
+      this.#emit({ type: 'form_answer_ack', ...base });
     } else if (answered.outcome.kind === 'sandbox_boundary_decision') {
       this.#emit({
         type: 'sandbox_boundary_decision_ack',

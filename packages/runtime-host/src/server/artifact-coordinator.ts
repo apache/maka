@@ -20,7 +20,7 @@
 import { createHash } from 'node:crypto';
 import { attachmentKindFromMimeType } from '@maka/core/attachments';
 import type { AttachmentRef } from '@maka/core/events';
-import type { ArtifactRecord } from '@maka/core/artifacts';
+import { isArtifactSharedSessionReadable, type ArtifactRecord } from '@maka/core/artifacts';
 import {
   authenticateInteractiveArtifactStoreWriter,
   sanitizeArtifactName,
@@ -42,7 +42,8 @@ import {
   type OperationOutcome,
 } from '../protocol/index.js';
 import { encodeArtifactProjection } from '../protocol/artifact.js';
-import type { ArtifactOperationHandlerMap } from './operation-dispatcher.js';
+import type { RuntimeHostAccessAuthority } from './access-authority.js';
+import type { ArtifactOperationHandlerMap, ConnectionContext } from './operation-dispatcher.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import type { SessionPresenceReader } from './session-presence.js';
 import { ConnectionBoundChunkUploads } from './connection-bound-chunk-uploads.js';
@@ -50,7 +51,6 @@ import { ConnectionBoundChunkUploads } from './connection-bound-chunk-uploads.js
 const MAX_ACTIVE_ARTIFACT_UPLOADS = 16;
 const MAX_STAGED_ARTIFACT_UPLOAD_BYTES = 128 * 1024 * 1024;
 const ARTIFACT_UPLOAD_TTL_MS = 5 * 60 * 1000;
-
 interface ArtifactUploadMetadata {
   readonly attachmentKind: AttachmentRef['kind'];
   readonly name: string;
@@ -63,8 +63,8 @@ export class HostArtifactCoordinator {
   readonly handlers: ArtifactOperationHandlerMap = {
     'artifact.ingest': (input, context) =>
       this.#sessionAdmission.run(input.sessionId, () => this.#ingest(input, context)),
-    'artifact.query': (input) =>
-      this.#sessionAdmission.run(input.sessionId, () => this.#query(input)),
+    'artifact.query': (input, context) =>
+      this.#sessionAdmission.run(input.sessionId, () => this.#query(input, context)),
     'artifact.delete': (input) =>
       this.#sessionAdmission.run(input.sessionId, () => this.#delete(input)),
   };
@@ -73,6 +73,9 @@ export class HostArtifactCoordinator {
   readonly #requestDrain: () => void;
   readonly #sessionAdmission: SessionAdmissionGate;
   readonly #sessions: SessionPresenceReader;
+  readonly #sessionAccessAuthority:
+    | Pick<RuntimeHostAccessAuthority, 'activeSessionGrant'>
+    | undefined;
   readonly #uploads: ConnectionBoundChunkUploads<ArtifactUploadMetadata>;
 
   constructor(
@@ -81,11 +84,13 @@ export class HostArtifactCoordinator {
     sessionAdmission: SessionAdmissionGate,
     sessions: SessionPresenceReader,
     now: () => number = Date.now,
+    sessionAccessAuthority?: Pick<RuntimeHostAccessAuthority, 'activeSessionGrant'>,
   ) {
     this.#store = authenticateInteractiveArtifactStoreWriter(store);
     this.#requestDrain = requestDrain;
     this.#sessionAdmission = sessionAdmission;
     this.#sessions = sessions;
+    this.#sessionAccessAuthority = sessionAccessAuthority;
     this.#uploads = new ConnectionBoundChunkUploads(
       {
         maxActive: MAX_ACTIVE_ARTIFACT_UPLOADS,
@@ -113,7 +118,7 @@ export class HostArtifactCoordinator {
       }
       const entry = await this.#store.getInSession(sessionId, attachment.ref.relativePath);
       const record = entry.record;
-      if (!record || record.status !== 'live') return 'Attachment Artifact was not found';
+      if (!record) return 'Attachment Artifact was not found';
       if (
         record.name !== attachment.name ||
         record.mimeType !== attachment.mimeType ||
@@ -304,16 +309,24 @@ export class HostArtifactCoordinator {
     );
     const record = entry.record;
     if (!record) return { kind: 'missing' };
-    if (record.status !== 'live' || record.source !== 'user_upload' || record.turnId !== uploadId) {
+    if (record.source !== 'user_upload' || record.turnId !== uploadId) {
       return { kind: 'conflict' };
     }
     return { kind: 'committed', record };
   }
 
-  async #query(input: ArtifactQueryInput): Promise<OperationOutcome<'artifact.query'>> {
+  async #query(
+    input: ArtifactQueryInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'artifact.query'>> {
     try {
       if ((await this.#sessions.probeSessionRemoval(input.sessionId)).kind !== 'present') {
         return notFound('artifact.query', 'Session was not found');
+      }
+      let sharedGrantId: string | undefined;
+      if (context.principalKind === 'session_guest') {
+        sharedGrantId = await this.#sharedArtifactGrantId(context.principal, input);
+        if (!sharedGrantId) return notFound('artifact.query', 'Artifact was not found');
       }
       if (input.kind === 'read_text' || input.kind === 'read_binary') {
         if (input.kind === 'read_text') {
@@ -348,13 +361,16 @@ export class HostArtifactCoordinator {
           maxBytes: ARTIFACT_READ_CHUNK_MAX_BYTES,
         });
         if (!chunk.ok) {
-          if (chunk.reason === 'not_found' || chunk.reason === 'deleted') {
+          if (chunk.reason === 'not_found') {
             return notFound('artifact.query', 'Artifact was not found');
           }
           if (chunk.reason === 'out_of_range') {
             return invalidQuery('Artifact chunk offset is invalid');
           }
           return persistenceFailure('artifact.query', 'Artifact content is unavailable');
+        }
+        if (!this.#sharedGrantRemainsActive(context.principal, input.sessionId, sharedGrantId)) {
+          return notFound('artifact.query', 'Artifact was not found');
         }
         return querySuccess(
           encodeArtifactQueryResult({
@@ -371,6 +387,9 @@ export class HostArtifactCoordinator {
 
       if (input.kind === 'get') {
         const entry = await this.#store.getInSession(input.sessionId, input.artifactId);
+        if (!this.#sharedGrantRemainsActive(context.principal, input.sessionId, sharedGrantId)) {
+          return notFound('artifact.query', 'Artifact was not found');
+        }
         return querySuccess(
           encodeArtifactQueryResult({
             kind: 'artifact',
@@ -410,6 +429,38 @@ export class HostArtifactCoordinator {
     }
   }
 
+  async #sharedArtifactGrantId(
+    principalId: string,
+    input: ArtifactQueryInput,
+  ): Promise<string | undefined> {
+    if (input.kind !== 'get' && input.kind !== 'read_chunk') return;
+    const grant = this.#sessionAccessAuthority?.activeSessionGrant(
+      principalId,
+      input.sessionId,
+      'session_observation',
+    );
+    if (!grant) return;
+    const entry = await this.#store.getInSession(input.sessionId, input.artifactId);
+    return entry.record && isArtifactSharedSessionReadable(entry.record)
+      ? grant.grantId
+      : undefined;
+  }
+
+  #sharedGrantRemainsActive(
+    principalId: string,
+    sessionId: string,
+    expectedGrantId: string | undefined,
+  ): boolean {
+    if (!expectedGrantId) return true;
+    return (
+      this.#sessionAccessAuthority?.activeSessionGrant(
+        principalId,
+        sessionId,
+        'session_observation',
+      )?.grantId === expectedGrantId
+    );
+  }
+
   async #delete(input: {
     readonly sessionId: string;
     readonly artifactId: string;
@@ -433,16 +484,13 @@ export class HostArtifactCoordinator {
           ok: false,
           error: {
             code: 'operation_conflict',
-            message: 'Protected runtime evidence cannot be deleted through Runtime Host',
+            message: 'Runtime-owned evidence cannot be deleted independently of its workflow',
           },
         };
       }
       return {
         ok: true,
-        result: encodeArtifactDeleteResult({
-          kind: 'deleted',
-          artifact: encodeArtifactProjection(deleted.record),
-        }),
+        result: encodeArtifactDeleteResult({ kind: 'deleted' }),
       };
     } catch {
       this.#requestDrain();

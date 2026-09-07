@@ -17,6 +17,17 @@
  * under the License.
  */
 
+export { RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV } from './retirement-cancellation.js';
+export {
+  RUNTIME_HOST_ACTIVATION_ERROR_CODE_MAX_BYTES,
+  RUNTIME_HOST_ACTIVATION_ERROR_MESSAGE_MAX_BYTES,
+  RUNTIME_HOST_ACTIVATION_FRAME_MAX_BYTES,
+  RUNTIME_HOST_ACTIVATION_FRAME_PREFIX,
+  decodeRuntimeHostActivationFrame,
+  encodeRuntimeHostActivationFrame,
+  type RuntimeHostActivationFrame,
+  type RuntimeHostActivationResult,
+} from './activation-frame.js';
 export {
   RUNTIME_HOST_ACCESS_MANAGEMENT_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_ACCESS_MANAGEMENT_ERROR_MESSAGE_MAX_BYTES,
@@ -28,6 +39,19 @@ export {
   type RuntimeHostAccessManagementFrame,
 } from './access-management-frame.js';
 export { runtimeHostAccessCredentialFingerprint } from '../access-credential-identity.js';
+export {
+  decodeRuntimeHostWebRtcStunPolicy,
+  resolveRuntimeHostWebRtcStunUrls,
+  type RuntimeHostWebRtcStunPolicy,
+} from '../webrtc-stun-policy.js';
+export {
+  RUNTIME_HOST_PEER_MESH_MANAGEMENT_FRAME_MAX_BYTES,
+  RUNTIME_HOST_PEER_MESH_MANAGEMENT_FRAME_PREFIX,
+  decodeRuntimeHostPeerMeshManagementFrame,
+  encodeRuntimeHostPeerMeshManagementFrame,
+  type RuntimeHostPeerMeshManagementAction,
+  type RuntimeHostPeerMeshManagementFrame,
+} from './peer-mesh-management-frame.js';
 export { resolveRuntimeHostManagedServiceId } from './managed-service-target.js';
 export {
   RUNTIME_HOST_PEER_MANAGEMENT_FRAME_PREFIX,
@@ -41,6 +65,8 @@ export {
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_PEER_WEBRTC_STUN_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
   RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
@@ -50,6 +76,7 @@ export {
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   decodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostServiceManagementFrame,
+  type RuntimeHostServiceErrorCode,
   type RuntimeHostServiceManagementAction,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostManagedUpdatePolicy,
@@ -70,17 +97,35 @@ export {
   type RuntimeHostSetupPhase,
 } from './setup-frame.js';
 export {
+  createRuntimeHostOperatorCommand,
+  createRuntimeHostLegacyPosixOperatorCommand,
+  decodeRuntimeHostOperatorCommand,
+  decodeRuntimeHostPosixOperatorCommand,
+  runtimeHostManagedOperatorCommand,
+  runtimeHostManagedOperatorModulePath,
+  runtimeHostOperatorInvocation,
+  type RuntimeHostOperatorCommand,
+  type RuntimeHostOperatorPlatform,
+  type RuntimeHostPosixOperatorCommand,
+  type RuntimeHostLegacyPosixOperatorCommand,
+  type RuntimeHostNodeOperatorCommand,
+} from './operator-command.js';
+export {
+  RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
   compareProductReleaseVersions,
   isProductReleaseVersion,
   isRuntimeHostNpmDeploymentIdentity,
   isSha512PackageIntegrity,
+  resolveRuntimeHostNpmDeploymentLayout,
   type RuntimeHostDeploymentIdentity,
+  type RuntimeHostNpmDeploymentLayout,
   type RuntimeHostNpmDeploymentIdentity,
 } from './update-package-evidence.js';
 export {
   applyLocalHostDeploymentTransition,
   LocalHostDeploymentAuthorityError,
   readLocalHostDeploymentRecord,
+  withLocalHostDeploymentAuthority,
   resolveLocalHostDeploymentAuthorityRoot,
   type LocalHostDeploymentAuthorityOptions,
   type LocalHostDeploymentRecord,
@@ -103,3 +148,35 @@ export {
   type LocalHostProcessDeploymentHandoffResult,
   type LocalHostHandoffActiveWorkPolicy,
 } from './local-process-deployment-handoff.js';
+export {
+  RUNTIME_HOST_MANAGED_DEPLOYMENT_CONFIG_FILE,
+  RuntimeHostManagedDeploymentError,
+  beginRuntimeHostManagedDeploymentTransition,
+  blockRuntimeHostManagedDeploymentTransition,
+  claimRuntimeHostManagedDeployment,
+  commitRuntimeHostManagedDeploymentTransition,
+  commitRuntimeHostManagedDeployment,
+  decodeRuntimeHostManagedDeploymentAuthorityRecord,
+  decodeRuntimeHostManagedDeploymentConfig,
+  readRuntimeHostManagedDeploymentAuthorityRecord,
+  assertRuntimeHostManagedDeploymentAuthorityDurablyAbsent,
+  readRuntimeHostManagedDeploymentConfig,
+  resolveRuntimeHostManagedDeployment,
+  resolveRuntimeHostManagedDeploymentAuthority,
+  resolveRuntimeHostManagedDeploymentAuthorityRoot,
+  resolveRuntimeHostManagedDeploymentConfigPath,
+  rollbackRuntimeHostManagedDeploymentTransition,
+  runtimeHostManagedLaunchClaim,
+  type RuntimeHostManagedDeploymentAuthorityRecord,
+  type RuntimeHostManagedDeploymentAuthorityOptions,
+  type RuntimeHostManagedDeploymentBlocked,
+  type RuntimeHostManagedDeploymentConfig,
+  type RuntimeHostManagedDeploymentTransition,
+  type RuntimeHostManagedDeploymentTransitionInput,
+  type RuntimeHostManagedDeploymentTransitionOperation,
+  type RuntimeHostManagedDeploymentTransitionRecovery,
+  type RuntimeHostManagedLaunchClaim,
+  type RuntimeHostManagedLaunchRejection,
+  type RuntimeHostReconciliationProvider,
+  type RuntimeHostSupervisorProvider,
+} from './managed-deployment.js';

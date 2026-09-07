@@ -208,8 +208,8 @@ describe('screen-lock gate', () => {
 
     for (const args of [
       { action: 'observe', app: 'Fixture' },
-      { action: 'left_click', coordinate: [10, 10], observation_id: 'obs-1' },
       { action: 'click_element', element_id: '5', observation_id: 'obs-1' },
+      { action: 'type', text: 'hello', observation_id: 'obs-1' },
     ]) {
       const result = (await tool.impl(args as never, ctx('session-A'))) as { text: string };
       assert.match(result.text, /screen_locked/, `${args.action} must be refused`);

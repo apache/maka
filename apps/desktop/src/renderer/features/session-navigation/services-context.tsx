@@ -17,27 +17,13 @@
  * under the License.
  */
 
-import { createContext, useContext, type ReactNode } from 'react';
+import { createServicesContext } from '../../application/contracts/feature-services.js';
 import type { SessionNavigationServices } from './ports.js';
 
-const SessionNavigationServicesContext =
-  createContext<SessionNavigationServices | null>(null);
+const { Provider, useServices } = createServicesContext<SessionNavigationServices>('SessionNavigationServicesProvider');
 
-export function SessionNavigationServicesProvider(props: {
-  services: SessionNavigationServices;
-  children?: ReactNode;
-}) {
-  return (
-    <SessionNavigationServicesContext.Provider value={props.services}>
-      {props.children}
-    </SessionNavigationServicesContext.Provider>
-  );
-}
+export const SessionNavigationServicesProvider = Provider;
 
 export function useSessionNavigationServices(): SessionNavigationServices {
-  const services = useContext(SessionNavigationServicesContext);
-  if (!services) {
-    throw new Error('SessionNavigationServicesProvider is missing');
-  }
-  return services;
+  return useServices();
 }

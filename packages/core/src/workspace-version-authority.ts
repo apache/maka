@@ -17,10 +17,11 @@
  * under the License.
  */
 
-import type { RuntimeEvent } from './runtime-event.js';
+import { isCanonicalManagedMutationPathV1, type RuntimeEvent } from './runtime-event.js';
 
 export const WORKSPACE_EPOCH_OPENED_FACT_KIND = 'maka.workspace.epoch_opened' as const;
 export const WORKSPACE_BASELINE_ACCEPTED_FACT_KIND = 'maka.workspace.baseline_accepted' as const;
+export const WORKSPACE_VERSION_ACCEPTED_FACT_KIND = 'maka.workspace.version_accepted' as const;
 export const WORKSPACE_FACT_VERSION = 1 as const;
 export const WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1 =
   'runtime_workspace_version_authority_v1' as const;
@@ -72,6 +73,54 @@ export interface WorkspaceBaselineAcceptedV1 extends WorkspaceBaselineDescriptor
   policyHash: `sha256:${string}`;
 }
 
+export interface WorkspaceSuccessorDescriptorV1 {
+  repositoryId: string;
+  workspaceId: string;
+  workspaceEpochId: string;
+  workspaceVersionId: string;
+  objectFormat: WorkspaceGitObjectFormat;
+  parentWorkspaceVersionId: string;
+  baseAcceptedEventId: string;
+  baseHeadRevision: number;
+  commitOid: string;
+  treeOid: string;
+  policyHash: `sha256:${string}`;
+  treeDeltaDigest: `sha256:${string}`;
+  changedPaths: readonly string[];
+  changedFileCount: number;
+  deletedFileCount: number;
+  executionProfileDigest: `sha256:${string}`;
+}
+
+export interface WorkspaceMutationOriginV1 {
+  operationId: string;
+  dispatchEventId: string;
+  outcomeEventId: string;
+}
+
+export interface WorkspaceVersionAcceptedV1 {
+  protocol: 'workspace_version_accepted_v1';
+  repositoryId: string;
+  workspaceId: string;
+  workspaceEpochId: string;
+  workspaceVersionId: string;
+  objectFormat: WorkspaceGitObjectFormat;
+  parents: readonly [string];
+  origin: { kind: 'tool_mutation' } & WorkspaceMutationOriginV1;
+  baseAcceptedEventId: string;
+  baseHeadRevision: number;
+  commitOid: string;
+  treeOid: string;
+  policyHash: `sha256:${string}`;
+  treeDeltaDigest: `sha256:${string}`;
+  changedPaths: readonly string[];
+  changedFileCount: number;
+  deletedFileCount: number;
+  executionProfileDigest: `sha256:${string}`;
+}
+
+export type WorkspaceAcceptedVersionV1 = WorkspaceBaselineAcceptedV1 | WorkspaceVersionAcceptedV1;
+
 export type RuntimeEventWorkspaceFactEnvelope =
   | {
       kind: typeof WORKSPACE_EPOCH_OPENED_FACT_KIND;
@@ -82,6 +131,11 @@ export type RuntimeEventWorkspaceFactEnvelope =
       kind: typeof WORKSPACE_BASELINE_ACCEPTED_FACT_KIND;
       version: typeof WORKSPACE_FACT_VERSION;
       payload: WorkspaceBaselineAcceptedV1;
+    }
+  | {
+      kind: typeof WORKSPACE_VERSION_ACCEPTED_FACT_KIND;
+      version: typeof WORKSPACE_FACT_VERSION;
+      payload: WorkspaceVersionAcceptedV1;
     };
 
 export interface WorkspaceBaselineAuthorityInput {
@@ -90,6 +144,13 @@ export interface WorkspaceBaselineAuthorityInput {
   committedAt: number;
   epoch: WorkspaceEpochDescriptorV1;
   baseline: WorkspaceBaselineDescriptorV1;
+}
+
+export interface WorkspaceSuccessorAuthorityInput {
+  acceptedEventId: string;
+  committedAt: number;
+  successor: WorkspaceSuccessorDescriptorV1;
+  origin: WorkspaceMutationOriginV1;
 }
 
 export interface WorkspaceAuthorityIdentity {
@@ -119,16 +180,24 @@ export interface ScannedWorkspaceBaselineAuthority {
   authority: WorkspaceAuthorityIdentity;
 }
 
+export interface ScannedWorkspaceSuccessorAuthority {
+  successor: WorkspaceVersionAcceptedV1;
+  acceptedEventId: string;
+  acceptedAt: number;
+  eventSeq: number;
+  authority: WorkspaceAuthorityIdentity;
+}
+
 export interface WorkspaceEpochRecordV1 extends WorkspaceEpochOpenedV1 {
   epochOpenedEventId: string;
   authority: WorkspaceAuthorityIdentity;
   committedAt: number;
 }
 
-export interface WorkspaceVersionRecordV1 extends WorkspaceBaselineAcceptedV1 {
-  baselineAcceptedEventId: string;
+export type WorkspaceVersionRecordV1 = WorkspaceAcceptedVersionV1 & {
+  acceptedEventId: string;
   committedAt: number;
-}
+};
 
 export interface WorkspaceHeadRecordV1 {
   readonly repositoryId: string;
@@ -162,7 +231,9 @@ export type WorkspaceAuthorityIssueCode =
   | 'missing_baseline_version'
   | 'orphan_baseline_version'
   | 'event_order_conflict'
-  | 'baseline_contract_conflict';
+  | 'baseline_contract_conflict'
+  | 'successor_contract_conflict'
+  | 'workspace_head_conflict';
 
 export interface WorkspaceAuthorityIssue {
   code: WorkspaceAuthorityIssueCode;
@@ -172,6 +243,8 @@ export interface WorkspaceAuthorityIssue {
 
 export interface WorkspaceBaselineAuthorityScanResult {
   baselines: ScannedWorkspaceBaselineAuthority[];
+  successors: ScannedWorkspaceSuccessorAuthority[];
+  heads: WorkspaceHeadRecordV1[];
   issues: WorkspaceAuthorityIssue[];
   hasCorruption: boolean;
 }
@@ -268,6 +341,48 @@ export function buildWorkspaceBaselineAuthorityEvents(
   return { epochOpenedEvent, baselineAcceptedEvent };
 }
 
+export function buildWorkspaceSuccessorAuthorityEvent(
+  input: WorkspaceSuccessorAuthorityInput,
+): RuntimeEvent {
+  assertWorkspaceSuccessorAuthorityInput(input);
+  const identity = workspaceAuthorityIdentity(input.successor.workspaceEpochId);
+  const payload: WorkspaceVersionAcceptedV1 = {
+    protocol: 'workspace_version_accepted_v1',
+    repositoryId: input.successor.repositoryId,
+    workspaceId: input.successor.workspaceId,
+    workspaceEpochId: input.successor.workspaceEpochId,
+    workspaceVersionId: input.successor.workspaceVersionId,
+    objectFormat: input.successor.objectFormat,
+    parents: [input.successor.parentWorkspaceVersionId],
+    origin: { kind: 'tool_mutation', ...input.origin },
+    baseAcceptedEventId: input.successor.baseAcceptedEventId,
+    baseHeadRevision: input.successor.baseHeadRevision,
+    commitOid: input.successor.commitOid,
+    treeOid: input.successor.treeOid,
+    policyHash: input.successor.policyHash,
+    treeDeltaDigest: input.successor.treeDeltaDigest,
+    changedPaths: input.successor.changedPaths,
+    changedFileCount: input.successor.changedFileCount,
+    deletedFileCount: input.successor.deletedFileCount,
+    executionProfileDigest: input.successor.executionProfileDigest,
+  };
+  return {
+    id: input.acceptedEventId,
+    ...identity,
+    ts: input.committedAt,
+    partial: false,
+    role: 'system',
+    author: 'system',
+    actions: {
+      workspaceFact: {
+        kind: WORKSPACE_VERSION_ACCEPTED_FACT_KIND,
+        version: WORKSPACE_FACT_VERSION,
+        payload,
+      },
+    },
+  };
+}
+
 export function isRuntimeEventWorkspaceFactEnvelope(
   value: unknown,
 ): value is RuntimeEventWorkspaceFactEnvelope {
@@ -277,6 +392,9 @@ export function isRuntimeEventWorkspaceFactEnvelope(
   }
   if (value.kind === WORKSPACE_BASELINE_ACCEPTED_FACT_KIND) {
     return isWorkspaceBaselineAcceptedV1(value.payload);
+  }
+  if (value.kind === WORKSPACE_VERSION_ACCEPTED_FACT_KIND) {
+    return isWorkspaceVersionAcceptedV1(value.payload);
   }
   return false;
 }
@@ -319,7 +437,8 @@ export function scanWorkspaceBaselineAuthority(
   const issues: WorkspaceAuthorityIssue[] = [];
   const seenEventIds = new Set<string>();
   const epochRows = new Map<string, WorkspaceAuthorityLedgerRow[]>();
-  const versionRows = new Map<string, WorkspaceAuthorityLedgerRow[]>();
+  const baselineRows = new Map<string, WorkspaceAuthorityLedgerRow[]>();
+  const successorRows = new Map<string, WorkspaceAuthorityLedgerRow[]>();
   const versionIds = new Map<string, string>();
 
   for (const row of rows) {
@@ -349,11 +468,13 @@ export function scanWorkspaceBaselineAuthority(
       epochRows.set(epochId, matches);
       continue;
     }
-    const matches = versionRows.get(epochId) ?? [];
+    const target =
+      fact.kind === WORKSPACE_BASELINE_ACCEPTED_FACT_KIND ? baselineRows : successorRows;
+    const matches = target.get(epochId) ?? [];
     matches.push(row);
-    versionRows.set(epochId, matches);
+    target.set(epochId, matches);
     const priorEpoch = versionIds.get(fact.payload.workspaceVersionId);
-    if (priorEpoch !== undefined && priorEpoch !== epochId) {
+    if (priorEpoch !== undefined) {
       issues.push({
         code: 'duplicate_workspace_version',
         eventId: event.id,
@@ -365,14 +486,20 @@ export function scanWorkspaceBaselineAuthority(
   }
 
   const baselines: ScannedWorkspaceBaselineAuthority[] = [];
-  const epochIds = new Set([...epochRows.keys(), ...versionRows.keys()]);
+  const successors: ScannedWorkspaceSuccessorAuthority[] = [];
+  const heads: WorkspaceHeadRecordV1[] = [];
+  const epochIds = new Set([...epochRows.keys(), ...baselineRows.keys(), ...successorRows.keys()]);
   for (const epochId of [...epochIds].sort()) {
     const opened = epochRows.get(epochId) ?? [];
-    const accepted = versionRows.get(epochId) ?? [];
+    const accepted = baselineRows.get(epochId) ?? [];
+    const pendingSuccessors = [...(successorRows.get(epochId) ?? [])].sort(
+      (left, right) =>
+        left.eventSeq - right.eventSeq || left.event.id.localeCompare(right.event.id),
+    );
     if (opened.length === 0) {
       issues.push({
         code: 'orphan_baseline_version',
-        eventId: accepted[0]!.event.id,
+        eventId: (accepted[0] ?? pendingSuccessors[0])!.event.id,
         workspaceEpochId: epochId,
       });
       continue;
@@ -401,15 +528,15 @@ export function scanWorkspaceBaselineAuthority(
       });
       continue;
     }
+    let baseline: ScannedWorkspaceBaselineAuthority;
     try {
-      baselines.push(
-        assertWorkspaceBaselineAuthorityPair({
-          epochOpenedEvent: opened[0]!.event,
-          baselineAcceptedEvent: accepted[0]!.event,
-          epochEventSeq: opened[0]!.eventSeq,
-          baselineEventSeq: accepted[0]!.eventSeq,
-        }),
-      );
+      baseline = assertWorkspaceBaselineAuthorityPair({
+        epochOpenedEvent: opened[0]!.event,
+        baselineAcceptedEvent: accepted[0]!.event,
+        epochEventSeq: opened[0]!.eventSeq,
+        baselineEventSeq: accepted[0]!.eventSeq,
+      });
+      baselines.push(baseline);
     } catch (error) {
       const code =
         error instanceof WorkspaceAuthorityContractError
@@ -420,11 +547,57 @@ export function scanWorkspaceBaselineAuthority(
         eventId: accepted[0]!.event.id,
         workspaceEpochId: epochId,
       });
+      continue;
     }
+
+    let head: WorkspaceHeadRecordV1 = {
+      repositoryId: baseline.epoch.repositoryId,
+      workspaceId: baseline.epoch.workspaceId,
+      workspaceEpochId: baseline.epoch.workspaceEpochId,
+      workspaceVersionId: baseline.baseline.workspaceVersionId,
+      acceptedEventId: baseline.baselineAcceptedEventId,
+      commitOid: baseline.baseline.commitOid,
+      treeOid: baseline.baseline.treeOid,
+      revision: 1,
+    };
+    for (const row of pendingSuccessors) {
+      try {
+        const scanned = assertWorkspaceSuccessorAuthority({
+          baseline,
+          currentHead: head,
+          event: row.event,
+          eventSeq: row.eventSeq,
+        });
+        successors.push(scanned);
+        head = {
+          repositoryId: scanned.successor.repositoryId,
+          workspaceId: scanned.successor.workspaceId,
+          workspaceEpochId: scanned.successor.workspaceEpochId,
+          workspaceVersionId: scanned.successor.workspaceVersionId,
+          acceptedEventId: scanned.acceptedEventId,
+          commitOid: scanned.successor.commitOid,
+          treeOid: scanned.successor.treeOid,
+          revision: head.revision + 1,
+        };
+      } catch (error) {
+        issues.push({
+          code:
+            error instanceof WorkspaceAuthorityContractError
+              ? error.code
+              : 'successor_contract_conflict',
+          eventId: row.event.id,
+          workspaceEpochId: epochId,
+        });
+        break;
+      }
+    }
+    heads.push(head);
   }
 
   return {
     baselines: issues.length === 0 ? baselines : [],
+    successors: issues.length === 0 ? successors : [],
+    heads: issues.length === 0 ? heads : [],
     issues,
     hasCorruption: issues.length > 0,
   };
@@ -434,7 +607,10 @@ class WorkspaceAuthorityContractError extends Error {
   constructor(
     readonly code: Extract<
       WorkspaceAuthorityIssueCode,
-      'event_order_conflict' | 'baseline_contract_conflict'
+      | 'event_order_conflict'
+      | 'baseline_contract_conflict'
+      | 'successor_contract_conflict'
+      | 'workspace_head_conflict'
     >,
     message: string,
   ) {
@@ -503,6 +679,52 @@ function assertWorkspaceBaselineAuthorityPair(input: {
   };
 }
 
+function assertWorkspaceSuccessorAuthority(input: {
+  baseline: ScannedWorkspaceBaselineAuthority;
+  currentHead: WorkspaceHeadRecordV1;
+  event: RuntimeEvent;
+  eventSeq: number;
+}): ScannedWorkspaceSuccessorAuthority {
+  const lane = validateWorkspaceFactEventLane(input.event);
+  const fact = input.event.actions?.workspaceFact;
+  if (!lane.ok || fact?.kind !== WORKSPACE_VERSION_ACCEPTED_FACT_KIND) {
+    throw new WorkspaceAuthorityContractError(
+      'successor_contract_conflict',
+      'Invalid workspace successor authority event lane',
+    );
+  }
+  const successor = fact.payload;
+  const expectedSeq = input.currentHead.revision + 2;
+  if (input.eventSeq !== expectedSeq) {
+    throw new WorkspaceAuthorityContractError(
+      'event_order_conflict',
+      'Workspace successor facts must form one contiguous authority sequence',
+    );
+  }
+  if (
+    successor.repositoryId !== input.baseline.epoch.repositoryId ||
+    successor.workspaceId !== input.baseline.epoch.workspaceId ||
+    successor.workspaceEpochId !== input.baseline.epoch.workspaceEpochId ||
+    successor.objectFormat !== input.baseline.epoch.objectFormat ||
+    successor.policyHash !== input.baseline.epoch.policyHash ||
+    successor.parents[0] !== input.currentHead.workspaceVersionId ||
+    successor.baseAcceptedEventId !== input.currentHead.acceptedEventId ||
+    successor.baseHeadRevision !== input.currentHead.revision
+  ) {
+    throw new WorkspaceAuthorityContractError(
+      'workspace_head_conflict',
+      'Workspace successor does not advance the current canonical head',
+    );
+  }
+  return {
+    successor,
+    acceptedEventId: input.event.id,
+    acceptedAt: input.event.ts,
+    eventSeq: input.eventSeq,
+    authority: workspaceAuthorityIdentity(successor.workspaceEpochId),
+  };
+}
+
 function assertWorkspaceBaselineAuthorityInput(input: WorkspaceBaselineAuthorityInput): void {
   if (
     !EVENT_ID_PATTERN.test(input.epochOpenedEventId) ||
@@ -515,6 +737,18 @@ function assertWorkspaceBaselineAuthorityInput(input: WorkspaceBaselineAuthority
     input.baseline.treeOid !== input.epoch.sourceTreeOid
   ) {
     throw new Error('Invalid workspace baseline authority input');
+  }
+}
+
+function assertWorkspaceSuccessorAuthorityInput(input: WorkspaceSuccessorAuthorityInput): void {
+  if (
+    !EVENT_ID_PATTERN.test(input.acceptedEventId) ||
+    !Number.isSafeInteger(input.committedAt) ||
+    input.committedAt < 0 ||
+    !isWorkspaceSuccessorDescriptor(input.successor) ||
+    !isWorkspaceMutationOrigin(input.origin)
+  ) {
+    throw new Error('Invalid workspace successor authority input');
   }
 }
 
@@ -592,6 +826,85 @@ function isWorkspaceBaselineAcceptedV1(value: unknown): value is WorkspaceBaseli
     return false;
   }
   return isWorkspaceBaselineDescriptor(value, value.objectFormat);
+}
+
+function isWorkspaceVersionAcceptedV1(value: unknown): value is WorkspaceVersionAcceptedV1 {
+  if (
+    !hasExactKeys(value, [
+      'protocol',
+      'repositoryId',
+      'workspaceId',
+      'workspaceEpochId',
+      'workspaceVersionId',
+      'objectFormat',
+      'parents',
+      'origin',
+      'baseAcceptedEventId',
+      'baseHeadRevision',
+      'commitOid',
+      'treeOid',
+      'policyHash',
+      'treeDeltaDigest',
+      'changedPaths',
+      'changedFileCount',
+      'deletedFileCount',
+      'executionProfileDigest',
+    ]) ||
+    value.protocol !== 'workspace_version_accepted_v1' ||
+    !isWorkspaceSuccessorDescriptor({
+      ...value,
+      parentWorkspaceVersionId: Array.isArray(value.parents) ? value.parents[0] : undefined,
+    }) ||
+    !Array.isArray(value.parents) ||
+    value.parents.length !== 1 ||
+    !hasExactKeys(value.origin, ['kind', 'operationId', 'dispatchEventId', 'outcomeEventId']) ||
+    value.origin.kind !== 'tool_mutation' ||
+    !isWorkspaceMutationOrigin(value.origin)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isWorkspaceSuccessorDescriptor(value: unknown): value is WorkspaceSuccessorDescriptorV1 {
+  if (!isRecord(value)) return false;
+  return (
+    isIdentifier(value.repositoryId, 'repositoryId') &&
+    isIdentifier(value.workspaceId, 'workspaceId') &&
+    isIdentifier(value.workspaceEpochId, 'workspaceEpochId') &&
+    isIdentifier(value.workspaceVersionId, 'workspaceVersionId') &&
+    isIdentifier(value.parentWorkspaceVersionId, 'workspaceVersionId') &&
+    EVENT_ID_PATTERN.test(String(value.baseAcceptedEventId)) &&
+    value.workspaceVersionId !== value.parentWorkspaceVersionId &&
+    isObjectFormat(value.objectFormat) &&
+    Number.isSafeInteger(value.baseHeadRevision) &&
+    Number(value.baseHeadRevision) > 0 &&
+    isGitOid(value.commitOid, value.objectFormat) &&
+    isGitOid(value.treeOid, value.objectFormat) &&
+    isSha256Digest(value.policyHash) &&
+    isSha256Digest(value.treeDeltaDigest) &&
+    isCanonicalManagedMutationPathSet(value.changedPaths) &&
+    isNonNegativeSafeInteger(value.changedFileCount) &&
+    value.changedFileCount === value.changedPaths.length &&
+    isNonNegativeSafeInteger(value.deletedFileCount) &&
+    isSha256Digest(value.executionProfileDigest)
+  );
+}
+
+function isCanonicalManagedMutationPathSet(value: unknown): value is readonly string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 32) return false;
+  if (!value.every(isCanonicalManagedMutationPathV1)) return false;
+  return value.every((path, index) => index === 0 || value[index - 1]! < path);
+}
+
+function isWorkspaceMutationOrigin(value: unknown): value is WorkspaceMutationOriginV1 {
+  if (!isRecord(value)) return false;
+  return (
+    EVENT_ID_PATTERN.test(String(value.operationId)) &&
+    EVENT_ID_PATTERN.test(String(value.dispatchEventId)) &&
+    EVENT_ID_PATTERN.test(String(value.outcomeEventId)) &&
+    value.dispatchEventId !== value.outcomeEventId
+  );
 }
 
 function isWorkspaceBaselineDescriptor(

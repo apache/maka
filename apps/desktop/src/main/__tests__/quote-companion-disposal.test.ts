@@ -17,9 +17,13 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
-import type { SessionSummary, TurnRecord } from '@maka/core/session';
+import type {
+  SessionSummary,
+  TurnRecord,
+} from '@maka/core/session';
 import {
   abandonPendingCompanionCopy,
   createFakeWorkbarServices,
@@ -28,17 +32,6 @@ import {
   type PerformCompanionTurnDeps,
   type WorkbarServices,
 } from '../../renderer/features/workbar/testing.js';
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((next, fail) => {
-    resolve = next;
-    reject = fail;
-  });
-  return { promise, resolve, reject };
-}
-
 function session(id: string): SessionSummary {
   return {
     id,

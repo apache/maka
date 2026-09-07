@@ -30,9 +30,7 @@ test('owner connection code round-trips its bounded direct-peer pairing payload'
     rootId: 'a'.repeat(64),
     transport: {
       kind: 'libp2p-direct' as const,
-      peerId: '12D3KooWpeer',
-      routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
-      coordinationRelays: [],
+      reachability: reachability(['/ip4/192.0.2.1/udp/41000/quic-v1']),
     },
     credential: 'pending-credential',
   };
@@ -50,11 +48,25 @@ test('owner connection code rejects unversioned and route-less payloads', () => 
       rootId: 'a'.repeat(64),
       transport: {
         kind: 'libp2p-direct',
-        peerId: '12D3KooWpeer',
-        routeHints: [],
-        coordinationRelays: [],
+        reachability: reachability([]),
       },
       credential: 'pending-credential',
     }),
   );
 });
+
+function reachability(directRoutes: readonly string[]) {
+  return {
+    lease: {
+      version: 1 as const,
+      peerId: '12D3KooWpeer',
+      revision: 1,
+      issuedAt: 1,
+      expiresAt: 2,
+      directRoutes,
+      coordinationRoutes: [],
+    },
+    publicKey: Buffer.from('public').toString('base64url'),
+    signature: Buffer.from('signature').toString('base64url'),
+  };
+}

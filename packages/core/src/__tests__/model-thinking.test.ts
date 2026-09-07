@@ -24,7 +24,6 @@ import {
   normalizeRelayModelProfiles,
   relayModelProfile,
   resolveThinkingLevel,
-  deriveThinkingChoices,
   thinkingOptionsForModel,
   thinkingVariantsForConnection,
   thinkingVariantsForModel,

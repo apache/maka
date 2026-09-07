@@ -18,11 +18,16 @@
  */
 
 import { useState, type Dispatch, type SetStateAction } from 'react';
-import type { ThemePalette, ThemePreference } from '@maka/core/settings';
+import {
+  DEFAULT_TERMINAL_FONT_SIZE,
+  DEFAULT_UI_FONT_SIZE,
+  type ThemePalette,
+  type ThemePreference,
+} from '@maka/core/settings';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
 import { createUiLocaleUpdateGate } from './settings/ui-locale-update-gate';
-import { applyTheme, applyThemePalette } from './theme';
+import { applyTerminalFontSize, applyTheme, applyThemePalette, applyUiFontSize } from './theme';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
 
 type ToastApi = {
@@ -92,6 +97,12 @@ export function useShellAppearance({
       setThemePalette(palette);
       applyTheme(pref);
       applyThemePalette(palette);
+      // Font appearance has no app-shell state of its own: theme.ts holds the
+      // current values and live terminals subscribe for updates, so applying
+      // here is the whole hydration step. Invalid/absent values fail closed to
+      // the defaults inside the apply functions.
+      applyUiFontSize(next.appearance.uiFontSize ?? DEFAULT_UI_FONT_SIZE);
+      applyTerminalFontSize(next.appearance.terminalFontSize ?? DEFAULT_TERMINAL_FONT_SIZE);
     } else {
       const copy = getShellCopy(uiLocale).app;
       toastApi.error(

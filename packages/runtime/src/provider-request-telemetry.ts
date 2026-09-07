@@ -19,24 +19,20 @@
 
 import {
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+  type HistoryCompactRoute,
   type ModelCallAttempt,
   type ModelCallKind,
   type ModelCallUsageBasis,
+  type PromptComposition,
 } from '@maka/core/model-call-attempt';
 import type { PricingConfig } from '@maka/core/usage-stats/types';
-import {
-  capturePreparedProviderRequest,
-  type PreparedProviderRequestCapture,
-  type PreparedRequestSegment,
-} from './request-shape.js';
+import { preparedPromptComposition } from './request-shape.js';
 import { rawFinishReasonString } from './model-protocol.js';
-import {
-  providerFailureDiagnostic,
-  type ProviderFailureDiagnostic,
-} from './provider-error-classification.js';
+import { providerFailureDiagnostic } from './provider-error-classification.js';
 import { latestContextProjectionInput } from './latest-context-snapshot.js';
 import type { ContextDiagnosticsCompaction } from './context-diagnostics.js';
 import type { ModelCallCommit } from '@maka/core/agent-run';
+import { computeCost } from './telemetry/cost.js';
 
 export type ProviderRequestCacheValueSource = 'provider' | 'derived';
 
@@ -67,55 +63,6 @@ export interface ProviderRequestUsageLike {
 
 export type ProviderRequestAttemptStatus = 'completed' | 'failed' | 'interrupted' | 'aborted';
 
-export interface ProviderRequestCaptureRecord extends PreparedProviderRequestCapture {
-  traceId: string;
-  captureId: string;
-  turnId: string;
-  step: number;
-  providerId: string;
-  modelId: string;
-}
-
-export interface ProviderRequestCaptureRef {
-  captureId: string;
-  artifactId: string;
-}
-
-export type ProviderRequestCaptureLedgerRecord = Omit<
-  ProviderRequestCaptureRecord,
-  'serializedRequest'
-> & {
-  artifactId: string;
-};
-
-export interface ProviderRequestAttemptRecord extends ProviderRequestUsage {
-  traceId: string;
-  attemptId: string;
-  turnId: string;
-  step: number;
-  attempt: number;
-  /**
-   * Present only when a capture sink is wired. The request shape below is
-   * computed locally and always present; these two are the join keys to the
-   * persisted artifact, so they are absent when there is nothing to join to.
-   */
-  captureId?: string;
-  captureArtifactId?: string;
-  providerId: string;
-  modelId: string;
-  contextWindow?: number;
-  requestHash: string;
-  requestBytes: number;
-  segments: PreparedRequestSegment[];
-  startedAt: number;
-  completedAt: number;
-  status: ProviderRequestAttemptStatus;
-  finishReason?: string;
-  failure?: ProviderFailureDiagnostic;
-  latencyMs: number;
-  timeToFirstTokenMs?: number;
-}
-
 /**
  * Cost resolved at the moment a call settles, plus the basis it was resolved
  * against. Recording the basis alongside the amount is what makes a stored
@@ -134,15 +81,6 @@ export interface ProviderRequestTrackerInput {
   now: () => number;
   newId: () => string;
   /**
-   * Request-body capture sink. Optional because capture is a diagnostic, and
-   * metering must not depend on one: a deployment with capture switched off
-   * still settles canonical records, it just has no artifact to join them to.
-   */
-  persistCapture?: (
-    capture: ProviderRequestCaptureRecord,
-  ) => Promise<Pick<ProviderRequestCaptureRef, 'artifactId'>>;
-  recordAttempt: (attempt: ProviderRequestAttemptRecord) => void | Promise<void>;
-  /**
    * Durable run metadata that must exist before any physical provider call.
    * Kept outside accounting because a dispatch gate is an execution contract,
    * not a metering concern.
@@ -153,7 +91,7 @@ export interface ProviderRequestTrackerInput {
    * Canonical metering. Present as a unit or not at all: a `ModelCallAttempt`
    * without session, run, and kind is unattributable, so identity and sink are
    * wired together rather than as independently optional fields. Absent leaves
-   * the tracker purely diagnostic, which is what the capture-only tests use.
+   * the tracker purely diagnostic.
    */
   accounting?: ModelCallAccountingInput;
 }
@@ -194,11 +132,138 @@ export interface ModelCallAccountingInput {
   assertReady?: () => void;
 }
 
-export interface ProviderRequestCaptureRecorderInput {
-  persistArtifact: (
-    capture: ProviderRequestCaptureRecord,
-  ) => Promise<Pick<ProviderRequestCaptureRef, 'artifactId'>>;
-  recordLedger: (capture: ProviderRequestCaptureLedgerRecord) => Promise<void>;
+export interface ProviderRequestTelemetryInput {
+  sessionId: string;
+  connectionSlug?: string;
+  providerId?: string;
+  defaultModelId: string;
+  now: () => number;
+  newId: () => string;
+  resolveContextWindow: (modelId: string) => number | undefined;
+  resolvePricing: (modelId: string) => PricingConfig | null;
+  recordModelCallAttempt?: (commit: ModelCallCommit<ModelCallAttempt>) => void | Promise<void>;
+  assertModelCallAccountingReady?: () => void;
+  beforeRunProviderDispatch?: (input: {
+    sessionId: string;
+    turnId: string;
+    runId: string;
+  }) => void | Promise<void>;
+}
+
+export interface CreateProviderRequestTrackerInput {
+  turnId: string;
+  callKind: ModelCallKind;
+  modelId: string;
+  historyCompactRoute?: ModelCallAttempt['historyCompactRoute'];
+  runId: string | undefined;
+}
+
+/** Session-scoped construction and pricing for physical provider requests. */
+export class ProviderRequestTelemetry {
+  constructor(private readonly input: ProviderRequestTelemetryInput) {}
+
+  normalizedUsageCostUsd(usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheHitInputTokens: number;
+    cacheMissInputTokens: number;
+    cacheWriteInputTokens: number;
+  }): number | undefined {
+    const pricing = this.resolvePricing(this.input.defaultModelId);
+    if (!pricing) return undefined;
+    try {
+      return computeCost(usage, pricing).totalCost;
+    } catch {
+      return undefined;
+    }
+  }
+
+  createTracker(input: CreateProviderRequestTrackerInput): ProviderRequestTracker | undefined {
+    const accounting = this.accounting(input.callKind, {
+      modelId: input.modelId,
+      ...(input.runId ? { runId: input.runId } : {}),
+      ...(input.historyCompactRoute ? { historyCompactRoute: input.historyCompactRoute } : {}),
+    });
+    const beforeDispatch =
+      input.runId && this.input.beforeRunProviderDispatch
+        ? () =>
+            this.input.beforeRunProviderDispatch?.({
+              sessionId: this.input.sessionId,
+              turnId: input.turnId,
+              runId: input.runId!,
+            })
+        : undefined;
+    if (!accounting && !beforeDispatch) return undefined;
+    return new ProviderRequestTracker({
+      traceId: this.input.newId(),
+      turnId: input.turnId,
+      contextWindow: this.input.resolveContextWindow(input.modelId),
+      now: this.input.now,
+      newId: this.input.newId,
+      ...(beforeDispatch ? { beforeDispatch } : {}),
+      ...(accounting ? { accounting } : {}),
+    });
+  }
+
+  private accounting(
+    callKind: ModelCallKind,
+    identity: {
+      runId?: string;
+      modelId?: string;
+      historyCompactRoute?: ModelCallAttempt['historyCompactRoute'];
+    },
+  ): ModelCallAccountingInput | undefined {
+    const record = this.input.recordModelCallAttempt;
+    if (!record) return undefined;
+    const modelId = identity.modelId ?? this.input.defaultModelId;
+    return {
+      sessionId: this.input.sessionId,
+      resolveRunId: () => identity.runId,
+      ...(this.input.connectionSlug ? { connectionSlug: this.input.connectionSlug } : {}),
+      ...(this.input.providerId ? { providerId: this.input.providerId } : {}),
+      callKind,
+      ...(identity.historyCompactRoute
+        ? { historyCompactRoute: identity.historyCompactRoute }
+        : {}),
+      record,
+      resolveCost: (usage) => this.resolveCost(usage, modelId),
+      ...(this.input.assertModelCallAccountingReady
+        ? { assertReady: this.input.assertModelCallAccountingReady }
+        : {}),
+    };
+  }
+
+  private resolveCost(
+    usage: ProviderRequestUsage,
+    modelId: string,
+  ): ResolvedModelCallCost | undefined {
+    const pricing = this.resolvePricing(modelId);
+    if (!pricing) return undefined;
+    try {
+      const costUsd = computeCost(
+        {
+          inputTokens: usage.inputTokens ?? 0,
+          outputTokens: usage.outputTokens ?? 0,
+          cacheHitInputTokens: usage.cacheReadInputTokens ?? 0,
+          cacheMissInputTokens: usage.cacheMissInputTokens ?? 0,
+          cacheWriteInputTokens: usage.cacheWriteInputTokens ?? 0,
+        },
+        pricing,
+      ).totalCost;
+      if (costUsd === undefined || !Number.isFinite(costUsd)) return undefined;
+      return { costUsd, pricingRates: pricing };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private resolvePricing(modelId: string): PricingConfig | undefined {
+    try {
+      return this.input.resolvePricing(modelId) ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
 }
 
 export interface TrackProviderStreamInput {
@@ -217,6 +282,8 @@ export interface TrackProviderStreamInput {
    * may never have seen.
    */
   historyCompactBoundary?: ContextDiagnosticsCompaction;
+  /** Physical history-compaction route used by this provider request. */
+  historyCompactRoute?: HistoryCompactRoute;
 }
 
 export interface TrackProviderGenerateInput {
@@ -224,6 +291,8 @@ export interface TrackProviderGenerateInput {
   modelId: string;
   /** As `TrackProviderStreamInput.historyCompactBoundary`. */
   historyCompactBoundary?: ContextDiagnosticsCompaction;
+  /** Physical history-compaction route used by this provider request. */
+  historyCompactRoute?: HistoryCompactRoute;
   params: Record<string, unknown>;
   abortSignal?: AbortSignal;
   doGenerate: () => PromiseLike<ProviderGenerateResult>;
@@ -255,6 +324,7 @@ export function withProviderGenerateTracking(input: {
   wrapLanguageModel: (input: Record<string, unknown>) => unknown;
   tracker: ProviderRequestTracker;
   abortSignal?: AbortSignal;
+  historyCompactRoute?: HistoryCompactRoute;
 }): unknown {
   return input.wrapLanguageModel({
     model: input.model,
@@ -265,6 +335,7 @@ export function withProviderGenerateTracking(input: {
           modelId: model.modelId,
           params,
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+          ...(input.historyCompactRoute ? { historyCompactRoute: input.historyCompactRoute } : {}),
           doGenerate,
         }),
     },
@@ -277,6 +348,8 @@ export function withProviderStreamTracking(input: {
   wrapLanguageModel: (input: Record<string, unknown>) => unknown;
   tracker: ProviderRequestTracker;
   abortSignal?: AbortSignal;
+  historyCompactRoute?: HistoryCompactRoute;
+  historyCompactBoundary?: ContextDiagnosticsCompaction;
 }): unknown {
   return input.wrapLanguageModel({
     model: input.model,
@@ -287,23 +360,14 @@ export function withProviderStreamTracking(input: {
           modelId: model.modelId,
           params,
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+          ...(input.historyCompactRoute ? { historyCompactRoute: input.historyCompactRoute } : {}),
+          ...(input.historyCompactBoundary
+            ? { historyCompactBoundary: input.historyCompactBoundary }
+            : {}),
           doStream,
         }),
     },
   });
-}
-
-export function createProviderRequestCaptureRecorder(
-  input: ProviderRequestCaptureRecorderInput,
-): (
-  capture: ProviderRequestCaptureRecord,
-) => Promise<Pick<ProviderRequestCaptureRef, 'artifactId'>> {
-  return async (capture) => {
-    const artifact = await input.persistArtifact(capture);
-    const { serializedRequest: _serializedRequest, ...metadata } = capture;
-    await input.recordLedger({ ...metadata, artifactId: artifact.artifactId });
-    return artifact;
-  };
 }
 
 export interface ProviderStreamResult {
@@ -318,12 +382,6 @@ export interface ProviderGenerateResult {
   request?: unknown;
   response?: unknown;
   [key: string]: unknown;
-}
-
-interface StoredCapture {
-  capture: ProviderRequestCaptureRecord;
-  /** Absent when no capture sink is wired: there is no artifact to point at. */
-  ref?: ProviderRequestCaptureRef;
 }
 
 const CANONICAL_USAGE_FIELDS = [
@@ -363,7 +421,6 @@ function modelCallUsageFields(
 export class ProviderRequestTracker {
   private step = 0;
   private readonly attemptsByStep = new Map<number, number>();
-  private readonly captures = new Map<string, Promise<StoredCapture>>();
   /**
    * One logical call per step. Retries of the same step are further attempts of
    * that call, not new calls, so they share this id.
@@ -386,10 +443,10 @@ export class ProviderRequestTracker {
     throwIfAbortedBeforeDispatch(input.abortSignal);
     this.input.accounting?.assertReady?.();
     const step = this.step;
-    const capture = await this.capture(step, input);
+    const composition = preparedPromptComposition(secretFreeParams(input.params));
     throwIfAbortedBeforeDispatch(input.abortSignal);
     let sawOutput = false;
-    const attempt = this.beginAttempt(step, capture, input);
+    const attempt = this.beginAttempt(step, composition, input);
 
     let result: ProviderStreamResult;
     try {
@@ -455,9 +512,9 @@ export class ProviderRequestTracker {
     throwIfAbortedBeforeDispatch(input.abortSignal);
     this.input.accounting?.assertReady?.();
     const step = this.step;
-    const capture = await this.capture(step, input);
+    const composition = preparedPromptComposition(secretFreeParams(input.params));
     throwIfAbortedBeforeDispatch(input.abortSignal);
-    const attempt = this.beginAttempt(step, capture, input);
+    const attempt = this.beginAttempt(step, composition, input);
     try {
       const result = await input.doGenerate();
       await attempt.finalize(input.abortSignal?.aborted ? 'aborted' : 'completed', {
@@ -473,10 +530,10 @@ export class ProviderRequestTracker {
 
   private beginAttempt(
     step: number,
-    capture: StoredCapture,
+    composition: PromptComposition | undefined,
     input: Pick<
       TrackProviderStreamInput | TrackProviderGenerateInput,
-      'providerId' | 'modelId' | 'abortSignal' | 'historyCompactBoundary'
+      'providerId' | 'modelId' | 'abortSignal' | 'historyCompactBoundary' | 'historyCompactRoute'
     >,
   ): {
     observeOutput(): void;
@@ -522,48 +579,78 @@ export class ProviderRequestTracker {
       const contextWindow = positiveInteger(this.input.contextWindow);
       const failure =
         finish?.error !== undefined ? providerFailureDiagnostic(finish.error) : undefined;
-      const record: ProviderRequestAttemptRecord = {
-        traceId: this.input.traceId,
-        attemptId,
-        turnId: this.input.turnId,
-        step,
-        attempt,
-        ...(capture.ref
-          ? {
-              captureId: capture.ref.captureId,
-              captureArtifactId: capture.ref.artifactId,
-            }
-          : {}),
-        providerId: input.providerId,
-        modelId: input.modelId,
-        ...(contextWindow !== undefined ? { contextWindow } : {}),
-        requestHash: capture.capture.requestHash,
-        requestBytes: capture.capture.requestBytes,
-        segments: capture.capture.segments,
-        startedAt,
-        completedAt,
-        status,
-        ...(finish?.reason !== undefined ? { finishReason: finish.reason } : {}),
-        ...(failure !== undefined ? { failure } : {}),
-        latencyMs: Math.max(0, completedAt - startedAt),
-        ...(timeToFirstTokenMs !== undefined ? { timeToFirstTokenMs } : {}),
-        ...(usage ?? {}),
-      };
+      const finishReason = finish?.reason;
+      const firstTokenMs = timeToFirstTokenMs;
       accountingSettlement = accountingSettlement.then(async () => {
-        try {
-          await this.input.recordAttempt(record);
-        } catch {
-          // Attempt telemetry is diagnostic. The provider outcome remains authoritative.
-        }
-        await this.emitModelCallAttempt(record, {
+        const accounting = this.input.accounting;
+        if (!accounting) return;
+        const runId = accounting.resolveRunId();
+        if (runId === undefined) return;
+
+        const usageBasis = resolveUsageBasis(usage);
+        const cost = usage ? accounting.resolveCost?.(usage) : undefined;
+        const priced = cost?.costUsd !== undefined;
+
+        const record: ModelCallAttempt = {
+          schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
           logicalCallId,
-          usage,
-          contextWindow,
-          // Frozen when THIS request was prepared, so a checkpoint published
-          // mid-flight by another turn cannot be sealed into a prompt built
-          // before it existed.
-          historyCompactBoundary: input.historyCompactBoundary,
-        });
+          attemptId,
+          traceId: this.input.traceId,
+          sessionId: accounting.sessionId,
+          runId,
+          turnId: this.input.turnId,
+          ...(accounting.connectionSlug !== undefined
+            ? { connectionSlug: accounting.connectionSlug }
+            : {}),
+          step: Math.max(0, step),
+          attempt: Math.max(0, attempt - 1),
+          callKind: accounting.callKind,
+          ...((input.historyCompactRoute ?? accounting.historyCompactRoute) !== undefined
+            ? { historyCompactRoute: input.historyCompactRoute ?? accounting.historyCompactRoute }
+            : {}),
+          providerId: accounting.providerId ?? input.providerId,
+          modelId: input.modelId,
+          ...(contextWindow !== undefined ? { contextWindow } : {}),
+          ...(composition ? { promptComposition: composition } : {}),
+          startedAt,
+          completedAt,
+          latencyMs: Math.max(0, completedAt - startedAt),
+          ...(firstTokenMs !== undefined ? { timeToFirstTokenMs: firstTokenMs } : {}),
+          status,
+          ...(finishReason !== undefined ? { finishReason } : {}),
+          ...(failure ?? {}),
+          usageBasis,
+          ...(usageBasis === 'missing' ? {} : modelCallUsageFields(usage)),
+          costBasis: priced ? 'priced' : 'unpriced',
+          ...(priced
+            ? {
+                costUsd: cost?.costUsd,
+                ...(cost?.pricingRevision !== undefined
+                  ? { pricingRevision: cost.pricingRevision }
+                  : {}),
+                ...(cost?.pricingRates !== undefined ? { pricingRates: cost.pricingRates } : {}),
+              }
+            : {}),
+        };
+
+        // Only a completed MAIN call describes the conversation's own context, so
+        // only that one carries the derived row. A failed, aborted or compaction
+        // call commits its metering alone and leaves the last answer standing.
+        const latestContext =
+          record.callKind === 'main' && record.status === 'completed'
+            ? latestContextProjectionInput(
+                record,
+                record.promptComposition,
+                input.historyCompactBoundary,
+              )
+            : undefined;
+
+        try {
+          await accounting.record({ attempt: record, ...(latestContext ? { latestContext } : {}) });
+        } catch {
+          // Reported through the run's accounting-incomplete signal by the sink
+          // itself. Settlement must not fail the turn the call already completed.
+        }
       });
       await accountingSettlement;
     };
@@ -584,168 +671,12 @@ export class ProviderRequestTracker {
     }
     return { observeOutput, finalize };
   }
-
-  /**
-   * Projects a settled attempt into the canonical accounting record.
-   *
-   * Never throws. This runs from the stream's `pull` handler, where a rejection
-   * would reach `controller.error` and fail an otherwise-complete model
-   * response. The dispatch-time gate is `assertAccountingReady`; a failure here
-   * means the call happened and was billed but went unrecorded, which is
-   * reported, not raised.
-   */
-  private async emitModelCallAttempt(
-    record: ProviderRequestAttemptRecord,
-    context: {
-      logicalCallId: string;
-      usage: ProviderRequestUsage | undefined;
-      contextWindow: number | undefined;
-      historyCompactBoundary: ContextDiagnosticsCompaction | undefined;
-    },
-  ): Promise<void> {
-    const accounting = this.input.accounting;
-    if (!accounting) return;
-    const runId = accounting.resolveRunId();
-    if (runId === undefined) return;
-
-    const usage = context.usage;
-    const usageBasis = resolveUsageBasis(usage);
-    const cost = usage ? accounting.resolveCost?.(usage) : undefined;
-    const priced = cost?.costUsd !== undefined;
-
-    const attempt: ModelCallAttempt = {
-      schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
-      logicalCallId: context.logicalCallId,
-      attemptId: record.attemptId,
-      traceId: record.traceId,
-      sessionId: accounting.sessionId,
-      runId,
-      turnId: record.turnId,
-      ...(accounting.connectionSlug !== undefined
-        ? { connectionSlug: accounting.connectionSlug }
-        : {}),
-      // The physical ordinals are one-based on the diagnostic record; the
-      // canonical record counts retries from zero.
-      step: Math.max(0, record.step),
-      attempt: Math.max(0, record.attempt - 1),
-      callKind: accounting.callKind,
-      ...(accounting.historyCompactRoute !== undefined
-        ? { historyCompactRoute: accounting.historyCompactRoute }
-        : {}),
-      providerId: accounting.providerId ?? record.providerId,
-      modelId: record.modelId,
-      ...(context.contextWindow !== undefined ? { contextWindow: context.contextWindow } : {}),
-      ...(record.captureArtifactId !== undefined
-        ? { captureArtifactId: record.captureArtifactId }
-        : {}),
-      startedAt: record.startedAt,
-      completedAt: record.completedAt,
-      latencyMs: record.latencyMs,
-      ...(record.timeToFirstTokenMs !== undefined
-        ? { timeToFirstTokenMs: record.timeToFirstTokenMs }
-        : {}),
-      status: record.status,
-      ...(record.finishReason !== undefined ? { finishReason: record.finishReason } : {}),
-      ...(record.failure ?? {}),
-      usageBasis,
-      ...(usageBasis === 'missing' ? {} : modelCallUsageFields(usage)),
-      costBasis: priced ? 'priced' : 'unpriced',
-      ...(priced
-        ? {
-            costUsd: cost?.costUsd,
-            ...(cost?.pricingRevision !== undefined
-              ? { pricingRevision: cost.pricingRevision }
-              : {}),
-            ...(cost?.pricingRates !== undefined ? { pricingRates: cost.pricingRates } : {}),
-          }
-        : {}),
-    };
-
-    // Only a completed MAIN call describes the conversation's own context, so
-    // only that one carries the derived row. A failed, aborted or compaction
-    // call commits its metering alone and leaves the last answer standing.
-    const latestContext =
-      attempt.callKind === 'main' && attempt.status === 'completed'
-        ? latestContextProjectionInput(attempt, record.segments, context.historyCompactBoundary)
-        : undefined;
-
-    try {
-      await accounting.record({ attempt, ...(latestContext ? { latestContext } : {}) });
-    } catch {
-      // Reported through the run's accounting-incomplete signal by the sink
-      // itself. Settlement must not fail the turn the call already completed.
-    }
-  }
-
-  private async capture(
-    step: number,
-    input: TrackProviderStreamInput | TrackProviderGenerateInput,
-  ): Promise<StoredCapture> {
-    const prepared = preparedCapture(input.providerId, input.modelId, input.params);
-    const key = `${step}:${prepared.requestHash}`;
-    const existing = this.captures.get(key);
-    if (existing) return await existing;
-
-    const persistCapture = this.input.persistCapture;
-    const pending = (async (): Promise<StoredCapture> => {
-      const captureId = this.input.newId();
-      const capture: ProviderRequestCaptureRecord = {
-        ...prepared,
-        traceId: this.input.traceId,
-        captureId,
-        turnId: this.input.turnId,
-        step,
-        providerId: input.providerId,
-        modelId: input.modelId,
-      };
-      // The request shape on `capture` is computed here and needs no sink. Only
-      // the artifact join keys depend on one, so without it the attempt still
-      // carries hash, bytes, and segments — it just points at nothing.
-      if (!persistCapture) return { capture };
-      const persisted = await persistCapture(capture);
-      return { capture, ref: { captureId, artifactId: persisted.artifactId } };
-    })();
-    this.captures.set(key, pending);
-    try {
-      return await pending;
-    } catch (error) {
-      this.captures.delete(key);
-      throw error;
-    }
-  }
 }
 
 function throwIfAbortedBeforeDispatch(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
     throw new DOMException('The provider request was cancelled before dispatch', 'AbortError');
   }
-}
-
-function preparedCapture(
-  providerId: string,
-  modelId: string,
-  params: Record<string, unknown>,
-): PreparedProviderRequestCapture {
-  const safeParams = secretFreeParams(params);
-  const prompt = Array.isArray(safeParams.prompt) ? safeParams.prompt : [];
-  const instructions: unknown[] = [];
-  const messages: unknown[] = [];
-  for (const item of prompt) {
-    const record = asRecord(item);
-    if (record?.role === 'system') instructions.push(record.content);
-    else messages.push(item);
-  }
-  const tools = Array.isArray(safeParams.tools) ? safeParams.tools : [];
-  const providerOptions = asRecord(safeParams.providerOptions);
-  return capturePreparedProviderRequest({
-    providerId,
-    modelId,
-    instructions,
-    messages,
-    tools,
-    ...(providerOptions ? { providerOptions } : {}),
-    requestPayload: safeParams,
-  });
 }
 
 function secretFreeParams(params: Record<string, unknown>): Record<string, unknown> {

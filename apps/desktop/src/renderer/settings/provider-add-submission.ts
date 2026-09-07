@@ -18,14 +18,73 @@
  */
 
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
   providerSupportsModelDiscovery,
   validateSlug,
+  type ModelInfo,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import type { CreateConnectionInput, LlmConnection } from '@maka/core/llm-connections';
+import type {
+  CreateConnectionInput,
+  IdentifiedLlmConnection,
+  SlugValidationIssue,
+} from '@maka/core/llm-connections';
+export type ApiKeyOnboardingRoute =
+  | { readonly kind: 'host' }
+  | {
+      readonly kind: 'legacy';
+      readonly reason:
+        | 'provider_auth'
+        | 'custom_endpoint'
+        | 'cloudflare'
+        | 'request_headers'
+        | 'request_body';
+    };
+
+export function shouldShowManagedOnboardingOutcomeUnknown(
+  hasSaveUncertainty: boolean,
+  busy: boolean,
+): boolean {
+  return hasSaveUncertainty && !busy;
+}
+
+/** Decide the only writer before either writer performs a side effect. */
+export function apiKeyOnboardingRoute(input: {
+  readonly providerType: ProviderType;
+  readonly requestHeaderCount: number;
+  readonly hasRequestBodyOverlay: boolean;
+}): ApiKeyOnboardingRoute {
+  const definition = PROVIDER_REGISTRY[input.providerType];
+  if (!providerAuthSupportsApiKey(input.providerType) || definition.authKind !== 'api_key') {
+    return { kind: 'legacy', reason: 'provider_auth' };
+  }
+  if (input.providerType === 'cloudflare-workers-ai') {
+    return { kind: 'legacy', reason: 'cloudflare' };
+  }
+  if (!definition.baseUrl) return { kind: 'legacy', reason: 'custom_endpoint' };
+  if (input.requestHeaderCount > 0) return { kind: 'legacy', reason: 'request_headers' };
+  if (input.hasRequestBodyOverlay) return { kind: 'legacy', reason: 'request_body' };
+  return { kind: 'host' };
+}
+
+export function stableOnboardingModels(models: readonly ModelInfo[]): ModelInfo[] {
+  return [...models].sort((left, right) => {
+    const leftLabel = left.displayName?.trim() || left.id;
+    const rightLabel = right.displayName?.trim() || right.id;
+    return leftLabel.localeCompare(rightLabel) || left.id.localeCompare(right.id);
+  });
+}
+
+export function initialOnboardingModelIds(
+  models: readonly ModelInfo[],
+  recommendedModelId: string,
+): string[] {
+  if (models.some((model) => model.id === recommendedModelId)) return [recommendedModelId];
+  const first = stableOnboardingModels(models)[0];
+  return first ? [first.id] : [];
+}
 
 /**
  * The two decisions 添加连接 makes that are not layout: which fields a provider
@@ -42,7 +101,7 @@ import type { CreateConnectionInput, LlmConnection } from '@maka/core/llm-connec
 export type AddProviderField = 'slug' | 'apiKey' | 'accountId' | 'baseUrl' | 'form';
 
 export type AddProviderIssue =
-  | { readonly field: 'slug'; readonly reason: 'invalid'; readonly detail: string }
+  | { readonly field: 'slug'; readonly reason: 'invalid'; readonly detail: SlugValidationIssue }
   | { readonly field: 'slug'; readonly reason: 'duplicate' }
   | { readonly field: 'apiKey'; readonly reason: 'required' }
   | { readonly field: 'accountId'; readonly reason: 'required' }
@@ -72,7 +131,7 @@ export interface AddProviderDraft {
  * either would demand a guess about a catalog the app is about to fetch.
  */
 export function validateAddProviderDraft(draft: AddProviderDraft): AddProviderIssue | null {
-  const defaults = PROVIDER_DEFAULTS[draft.providerType];
+  const defaults = PROVIDER_REGISTRY[draft.providerType];
   const slugIssue = validateSlug(draft.slug);
   if (slugIssue) return { field: 'slug', reason: 'invalid', detail: slugIssue };
   if (draft.existingSlugs.includes(draft.slug)) return { field: 'slug', reason: 'duplicate' };
@@ -93,7 +152,7 @@ export function validateAddProviderDraft(draft: AddProviderDraft): AddProviderIs
 }
 
 export interface CreatedProvider {
-  readonly connection: LlmConnection;
+  readonly connection: IdentifiedLlmConnection;
   /**
    * Present when the catalog fetch that follows creation threw. The connection
    * exists either way — discovery is a convenience on top of a successful
@@ -104,8 +163,8 @@ export interface CreatedProvider {
 }
 
 export interface ProviderCreationBridge {
-  create(input: CreateConnectionInput): Promise<LlmConnection>;
-  fetchModels(slug: string): Promise<unknown>;
+  create(input: CreateConnectionInput): Promise<IdentifiedLlmConnection>;
+  fetchModels(connection: { readonly connectionId: string; readonly slug: string }): Promise<unknown>;
 }
 
 /**
@@ -123,7 +182,7 @@ export async function createProviderWithDiscovery(
   const connection = await bridge.create(input);
   if (!providerSupportsModelDiscovery(input.providerType)) return { connection };
   try {
-    await bridge.fetchModels(connection.slug);
+    await bridge.fetchModels({ connectionId: connection.connectionId, slug: connection.slug });
   } catch (modelDiscoveryError) {
     return { connection, modelDiscoveryError };
   }

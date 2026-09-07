@@ -23,15 +23,28 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
+import type { ReadImageSnapshotReader } from '@maka/core/context-offload';
 import { type StorageRef } from '@maka/core/events';
 import {
   createArtifactAttachmentResourceReader,
   createAttachmentByteReader,
+  createReadImageSnapshotPlanner,
   createReadImageSnapshotter,
 } from '../artifact-attachments.js';
-import { createSqliteArtifactStore as createArtifactStore } from '../artifact-store.js';
+import {
+  createSqliteArtifactStoreWriteAuthority,
+  type ArtifactAuthorityStore,
+} from '../artifact-store.js';
 
 const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+async function listArtifacts(store: ArtifactAuthorityStore, sessionId: string) {
+  return (await store.listPage(sessionId, { offset: 0, limit: Number.MAX_SAFE_INTEGER })).records;
+}
+
+function readArtifactBinary(store: ArtifactAuthorityStore, artifactId: string) {
+  return store.readBinaryInSession('session-1', artifactId);
+}
 
 describe('artifact attachment authority', () => {
   test('reads only live user-uploaded text within the invoking Session', async () => {
@@ -58,7 +71,7 @@ describe('artifact attachment authority', () => {
         reader.readAttachmentResource('session-2', 'notes-1', signal),
         /not found in this Session/,
       );
-      await store.delete('notes-1');
+      await store.deleteUserArtifactInSession('session-1', 'notes-1');
       await assert.rejects(
         reader.readAttachmentResource('session-1', 'notes-1', signal),
         /not found in this Session/,
@@ -75,6 +88,7 @@ describe('artifact attachment authority', () => {
         name: 'image.png',
         kind: 'image',
         content: png,
+        source: 'tool_result',
         now: 1,
       });
       const reader = createAttachmentByteReader({
@@ -85,10 +99,10 @@ describe('artifact attachment authority', () => {
         ok: true,
         bytes: Buffer.from(png),
       });
-      await store.delete('image-1');
+      await store.deleteUserArtifactInSession('session-1', 'image-1');
       assert.deepEqual(await reader(sessionFileRef('image-1')), {
         ok: false,
-        reason: 'deleted',
+        reason: 'not_found',
       });
       assert.deepEqual(await reader(sessionFileRef('image-1', 'other-session')), {
         ok: false,
@@ -106,6 +120,7 @@ describe('artifact attachment authority', () => {
         name: 'large.png',
         kind: 'image',
         content: new Uint8Array(MAX_ATTACHMENT_BYTES + 1).fill(0x89),
+        source: 'tool_result',
         now: 1,
       });
       const reader = createAttachmentByteReader({
@@ -121,6 +136,59 @@ describe('artifact attachment authority', () => {
         ok: false,
         reason: 'too_large',
       });
+      const unavailableReader = createAttachmentByteReader({
+        artifactStore: store,
+        sessionId: 'session-1',
+        readImageSnapshotsUnavailable: true,
+      });
+      assert.deepEqual(await unavailableReader(sessionContextRef('ref-1')), {
+        ok: false,
+        reason: 'unavailable',
+      });
+    });
+  });
+
+  test('routes durable context refs through the Session-bound snapshot reader', async () => {
+    await withStore(async (store) => {
+      const reads: string[] = [];
+      const readImageSnapshots: ReadImageSnapshotReader = {
+        async read(ref) {
+          reads.push(ref.refId);
+          if (ref.refId === 'missing') return { ok: false, reason: 'not_found' };
+          return {
+            ok: true,
+            record: {
+              refId: ref.refId,
+              sessionId: ref.sessionId,
+              owner: { kind: 'read_image_snapshot', ownerId: 'owner-1' },
+              blobId: 'a'.repeat(64),
+              sizeBytes: png.byteLength,
+              mediaType: 'image/png',
+              createdAt: 1,
+            },
+            bytes: png,
+          };
+        },
+      };
+      const reader = createAttachmentByteReader({
+        artifactStore: store,
+        sessionId: 'session-1',
+        readImageSnapshots,
+      });
+
+      assert.deepEqual(await reader(sessionContextRef('ref-1')), {
+        ok: true,
+        bytes: png,
+      });
+      assert.deepEqual(await reader(sessionContextRef('missing')), {
+        ok: false,
+        reason: 'not_found',
+      });
+      assert.deepEqual(await reader(sessionContextRef('ref-2', 'other-session')), {
+        ok: false,
+        reason: 'session_mismatch',
+      });
+      assert.deepEqual(reads, ['ref-1', 'missing']);
     });
   });
 
@@ -142,6 +210,7 @@ describe('artifact attachment authority', () => {
         name: 'unknown.bin',
         kind: 'file',
         content: Uint8Array.from([0, 1, 2, 3]),
+        source: 'tool_result',
         now: 1,
       });
       assert.deepEqual(await reader(sessionFileRef('unknown-binary')), {
@@ -163,7 +232,79 @@ describe('artifact attachment authority', () => {
         }),
         /Image exceeds the 5MB model input limit/,
       );
-      assert.deepEqual(await store.list('session-1'), []);
+      assert.deepEqual(await listArtifacts(store, 'session-1'), []);
+    });
+  });
+
+  test('snapshotter reuses one content-addressed artifact for the same turn image', async () => {
+    await withStore(async (store) => {
+      const snapshot = createReadImageSnapshotter(store);
+      const input = {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        name: 'Tool Result image',
+        bytes: Uint8Array.from([1, 2, 3]),
+        mimeType: 'image/png',
+      };
+
+      const first = await snapshot(input);
+      const repeated = await snapshot(input);
+
+      assert.deepEqual(repeated, first);
+      assert.equal((await listArtifacts(store, 'session-1')).length, 1);
+    });
+  });
+
+  test('protects a durable projection image until its Session is purged', async () => {
+    await withStore(async (store) => {
+      const ref = await createReadImageSnapshotter(store)({
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        name: 'Tool Result image',
+        bytes: png,
+        mimeType: 'image/png',
+      });
+
+      assert.equal(
+        (await store.deleteUserArtifactInSession('session-1', ref.relativePath)).kind,
+        'protected',
+      );
+      assert.equal((await readArtifactBinary(store, ref.relativePath)).ok, true);
+      await store.purgeSessionArtifacts('session-1');
+      assert.deepEqual(await readArtifactBinary(store, ref.relativePath), {
+        ok: false,
+        reason: 'not_found',
+      });
+    });
+  });
+
+  test('planner derives the final ref without publishing before commit', async () => {
+    await withStore(async (store) => {
+      const bytes = png.slice();
+      const input = {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        name: 'Tool Result image',
+        bytes,
+        mimeType: 'image/png',
+      };
+      const plan = createReadImageSnapshotPlanner(store)(input);
+
+      assert.deepEqual(await listArtifacts(store, 'session-1'), []);
+      bytes[0] = 0;
+      input.name = 'mutated after prepare';
+      await Promise.all([plan.persist(), plan.persist()]);
+      const published = await listArtifacts(store, 'session-1');
+      assert.deepEqual(
+        published.map((artifact) => artifact.id),
+        [plan.ref.relativePath],
+      );
+      assert.equal(published[0]?.name, 'Tool Result image');
+      assert.deepEqual(await readArtifactBinary(store, plan.ref.relativePath), {
+        ok: true,
+        base64: Buffer.from(png).toString('base64'),
+        mimeType: 'image/png',
+      });
     });
   });
 });
@@ -172,15 +313,18 @@ function sessionFileRef(relativePath: string, sessionId = 'session-1'): StorageR
   return { kind: 'session_file', sessionId, relativePath };
 }
 
-async function withStore(
-  run: (store: ReturnType<typeof createArtifactStore>) => Promise<void>,
-): Promise<void> {
+function sessionContextRef(refId: string, sessionId = 'session-1'): StorageRef {
+  return { kind: 'session_context', sessionId, refId };
+}
+
+async function withStore(run: (store: ArtifactAuthorityStore) => Promise<void>): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-artifact-attachment-'));
-  const store = createArtifactStore(root);
+  const authority = createSqliteArtifactStoreWriteAuthority(root);
   try {
+    const { store } = authority;
     await run(store);
   } finally {
-    store.close?.();
+    authority.close();
     await rm(root, { recursive: true, force: true });
   }
 }

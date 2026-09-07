@@ -22,21 +22,35 @@ import { applyAppIcon } from './app-icon-surface.js';
 import { installApplicationMenu } from './application-menu.js';
 import { resolveDockPresentation } from './dock-presentation.js';
 import type { createMainWindowController } from './main-window.js';
+import type { WindowRevealMode } from './window-reveal.js';
 
 interface DesktopShellPresentationDeps {
-  readonly startHidden: boolean;
   readonly mainWindowController: ReturnType<typeof createMainWindowController>;
   readonly focusOrCreateWindow: () => void;
-  readonly onIconError: (error: unknown) => void;
 }
 
 /** Install the process-scoped Desktop presentation shared by both Runtime owners. */
 export function installDesktopShellPresentation(
   deps: DesktopShellPresentationDeps,
 ): void {
+  installApplicationMenu({
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    dispatch: (command) => {
+      if (deps.mainWindowController.hasOpenWindows()) {
+        deps.mainWindowController.send('window:command', { id: command });
+      } else {
+        deps.focusOrCreateWindow();
+      }
+    },
+  });
+}
+
+/** The Dock must be branded before any asynchronous Host work begins. */
+export function installDesktopStartupBranding(revealMode: WindowRevealMode): void {
   const dockPresentation = resolveDockPresentation(
     process.platform,
-    deps.startHidden,
+    revealMode,
   );
   if (app.dock) {
     if (dockPresentation === 'hide') {
@@ -53,19 +67,8 @@ export function installDesktopShellPresentation(
       // is readable synchronously — the stored `theme` preference is not. So a
       // user whose in-app theme disagrees with the OS still sees one swap, the
       // same as before; what this avoids is every default install swapping.
-      applyAppIcon(startupAppIcon(nativeTheme.shouldUseDarkColors), deps.onIconError);
+      applyAppIcon(startupAppIcon(nativeTheme.shouldUseDarkColors), (error) =>
+        console.error('[icon] failed to set startup icon:', error));
     }
   }
-
-  installApplicationMenu({
-    platform: process.platform,
-    isPackaged: app.isPackaged,
-    dispatch: (command) => {
-      if (deps.mainWindowController.hasOpenWindows()) {
-        deps.mainWindowController.send('window:command', { id: command });
-      } else {
-        deps.focusOrCreateWindow();
-      }
-    },
-  });
 }

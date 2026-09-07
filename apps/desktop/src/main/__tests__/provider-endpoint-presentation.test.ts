@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import {
   endpointCarriesCredentials,
   providerEndpointPresentation,
@@ -34,12 +34,12 @@ test('fixed Alibaba access paths expose their distinct effective endpoints read-
   const tokenPlanChina = providerEndpointPresentation({ providerType: 'alibaba-token-plan-cn' });
 
   assert.deepEqual(api, {
-    value: PROVIDER_DEFAULTS.alibaba.baseUrl,
+    value: PROVIDER_REGISTRY.alibaba.baseUrl,
     editable: false,
     emptyState: 'missing',
   });
   assert.deepEqual(tokenPlanChina, {
-    value: PROVIDER_DEFAULTS['alibaba-token-plan-cn'].baseUrl,
+    value: PROVIDER_REGISTRY['alibaba-token-plan-cn'].baseUrl,
     editable: false,
     emptyState: 'missing',
   });
@@ -118,7 +118,7 @@ test('custom relays and local runtimes retain endpoint editing', () => {
   assert.deepEqual(
     providerEndpointPresentation({ providerType: 'ollama' }),
     {
-      value: PROVIDER_DEFAULTS.ollama.baseUrl,
+      value: PROVIDER_REGISTRY.ollama.baseUrl,
       editable: true,
       emptyState: 'missing',
     },
@@ -140,7 +140,7 @@ test('derived and OAuth endpoints remain visible but read-only', () => {
   assert.deepEqual(
     providerEndpointPresentation({ providerType: 'openai-codex' }),
     {
-      value: PROVIDER_DEFAULTS['openai-codex'].baseUrl,
+      value: PROVIDER_REGISTRY['openai-codex'].baseUrl,
       editable: false,
       emptyState: 'managed',
     },
@@ -161,7 +161,7 @@ test('providers with model-level endpoint overrides say so when showing the defa
   assert.deepEqual(
     providerEndpointPresentation({ providerType: 'zenmux' }),
     {
-      value: PROVIDER_DEFAULTS.zenmux.baseUrl,
+      value: PROVIDER_REGISTRY.zenmux.baseUrl,
       editable: false,
       emptyState: 'missing',
       modelOverrides: true,
@@ -170,7 +170,7 @@ test('providers with model-level endpoint overrides say so when showing the defa
   assert.deepEqual(
     providerEndpointPresentation({ providerType: 'cohere' }),
     {
-      value: PROVIDER_DEFAULTS.cohere.baseUrl,
+      value: PROVIDER_REGISTRY.cohere.baseUrl,
       editable: false,
       emptyState: 'missing',
       modelOverrides: true,

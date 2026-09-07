@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { nextId, withTimeout } from '@maka/core/test-only/async-primitives';
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -29,6 +30,7 @@ import {
   type MakaTool,
   type MakaToolContext,
 } from '../tool-runtime.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 describe('AdmissionLimiter', () => {
   test('grants waiting permits in FIFO order and makes release idempotent', async () => {
@@ -93,8 +95,8 @@ describe('AdmissionLimiter', () => {
   });
 });
 
-describe('ToolRuntime child-agent run permits', () => {
-  test('caps real child runs spawned inside one admitted subagent tool', async () => {
+describe('ToolRuntime child Session run permits', () => {
+  test('caps linked child runs spawned inside one admitted subagent tool', async () => {
     const active = new Set<string>();
     const started: string[] = [];
     const releases = new Map<string, () => void>();
@@ -223,7 +225,7 @@ describe('ToolRuntime child-agent run permits', () => {
 
   test('rejects future child starts from a tool context after its turn ends', async () => {
     let childStarts = 0;
-    let capturedSpawn: MakaToolContext['spawnChildAgent'];
+    let capturedSpawn: MakaToolContext['spawnChildSession'];
     const runtime = buildRuntime(async () => {
       childStarts += 1;
       return {};
@@ -233,7 +235,7 @@ describe('ToolRuntime child-agent run permits', () => {
       description: 'test-only spawn capability capture',
       parameters: {},
       impl: async (_args, ctx) => {
-        capturedSpawn = ctx.spawnChildAgent;
+        capturedSpawn = ctx.spawnChildSession;
         return { kind: 'json', value: { captured: true } };
       },
     };
@@ -243,7 +245,7 @@ describe('ToolRuntime child-agent run permits', () => {
     assert.ok(capturedSpawn);
     await assert.rejects(
       capturedSpawn({
-        spec: childSpec(0),
+        agentProfile: 'local_read',
         prompt: 'late child',
       }),
       /permit scope ended/,
@@ -264,10 +266,10 @@ function childBatchProbeTool(
     parameters: {},
     categoryHint: 'subagent',
     impl: async (_args, ctx) => {
-      if (!ctx.spawnChildAgent) throw new Error('missing spawn capability');
+      if (!ctx.spawnChildSession) throw new Error('missing spawn capability');
       const pending = Array.from({ length: count }, (_, index) =>
-        ctx.spawnChildAgent!({
-          spec: childSpec(index),
+        ctx.spawnChildSession!({
+          agentProfile: 'local_read',
           prompt: `${promptPrefix}-${index}`,
         }),
       );
@@ -291,12 +293,12 @@ function sequentialFailureProbeTool(count: number): MakaTool {
     parameters: {},
     categoryHint: 'subagent',
     impl: async (_args, ctx) => {
-      if (!ctx.spawnChildAgent) throw new Error('missing spawn capability');
+      if (!ctx.spawnChildSession) throw new Error('missing spawn capability');
       let rejected = 0;
       for (let index = 0; index < count; index += 1) {
         try {
-          await ctx.spawnChildAgent({
-            spec: childSpec(index),
+          await ctx.spawnChildSession({
+            agentProfile: 'local_read',
             prompt: `failure-${index}`,
           });
         } catch {
@@ -308,16 +310,8 @@ function sequentialFailureProbeTool(count: number): MakaTool {
   };
 }
 
-function childSpec(index: number) {
-  return {
-    id: `test-child-${index}`,
-    name: `Test Child ${index}`,
-    systemPrompt: 'Test child.',
-  };
-}
-
 function buildRuntime(
-  spawnChildAgent: NonNullable<ConstructorParameters<typeof ToolRuntime>[0]['spawnChildAgent']>,
+  spawnChildSession: NonNullable<ConstructorParameters<typeof ToolRuntime>[0]['spawnChildSession']>,
 ): ToolRuntime {
   return createTestToolRuntime({
     sessionId: 'session-1',
@@ -329,7 +323,7 @@ function buildRuntime(
     now: () => 1,
     getPermissionPauseTarget: () => null,
     runId: 'parent-run',
-    spawnChildAgent,
+    spawnChildSession,
   });
 }
 
@@ -387,30 +381,6 @@ function testConnection(): LlmConnection {
     updatedAt: 1,
   };
 }
-
-function nextId(): () => string {
-  let id = 0;
-  return () => `id-${++id}`;
-}
-
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for condition');
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
+  await pollFor(predicate, { timeoutMs, message: 'Timed out waiting for condition' });
 }

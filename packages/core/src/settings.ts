@@ -40,6 +40,7 @@ import type { UsageProvenance } from './usage-ledger-merge.js';
 import {
   UI_LOCALE_PREFERENCES,
   isUiLocalePreference,
+  normalizeUiLocalePreference,
   type UiLocalePreference,
 } from './ui-locale.js';
 import { normalizeSubagentSettings, type SubagentSettings } from './subagent-settings.js';
@@ -99,9 +100,44 @@ export interface NetworkProxySettings {
   port: number;
   authEnabled: boolean;
   username: string;
-  password: string;
   bypassList: string[];
   autoBypassDomains: string[];
+}
+
+export interface NetworkProxyCredentialTarget {
+  readonly protocol: ProxyProtocol;
+  readonly host: string;
+  readonly port: number;
+  readonly username: string;
+}
+
+export function networkProxyCredentialTarget(
+  proxy: Pick<NetworkProxySettings, 'protocol' | 'host' | 'port' | 'username'>,
+): NetworkProxyCredentialTarget {
+  return {
+    protocol: proxy.protocol,
+    host: proxy.host.trim().toLowerCase(),
+    port: proxy.port,
+    username: proxy.username,
+  };
+}
+
+export type NetworkProxyCredentialOperation =
+  | {
+      kind: 'replace';
+      secret: string;
+      expectedTarget?: NetworkProxyCredentialTarget;
+    }
+  | { kind: 'delete' };
+
+/** A write-only proxy patch. Credential operations are never persisted. */
+export type NetworkProxySettingsPatch = Partial<NetworkProxySettings> & {
+  credential?: NetworkProxyCredentialOperation;
+};
+
+/** Runtime Host read projection; the saved secret itself never crosses IPC. */
+export interface RuntimeHostNetworkProxySettings extends NetworkProxySettings {
+  readonly passwordConfigured: boolean;
 }
 
 /**
@@ -361,6 +397,47 @@ export function appIconForTheme(
   return appearance.appIconDark === undefined ? light : toAppIconChoice(appearance.appIconDark);
 }
 
+/**
+ * UI base font size in px, exposed as a numeric stepper like Codex's
+ * "UI font size". The renderer's type scale is generated from base 14
+ * (`makaTheme.ts`), and every `--font-size-*` token is `rem`, so the applied
+ * document-root font-size scales proportionally as `16 * uiFontSize / 14`.
+ * This scales what is rem-derived — text and Astryx's rem-based icon atoms —
+ * while px-literal spacing and control widths stay fixed, which is why the
+ * range is clamped tightly around the base rather than offered as a free
+ * zoom. It is NOT the density hack removed in `makaTheme.ts`.
+ *
+ * Continuous within a clamped range: a wrong-typed value fails closed to the
+ * default, an out-of-range number clamps to the nearest bound (a valid intent,
+ * just bounded — so an extreme persisted value can't make the UI unusable).
+ */
+export const UI_FONT_SIZE_MIN = 11;
+export const UI_FONT_SIZE_MAX = 22;
+export const DEFAULT_UI_FONT_SIZE = 14;
+
+/** Terminal (xterm) font size in px, same numeric-stepper treatment. */
+export const TERMINAL_FONT_SIZE_MIN = 9;
+export const TERMINAL_FONT_SIZE_MAX = 24;
+export const DEFAULT_TERMINAL_FONT_SIZE = 12;
+
+function clampFontSize(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+export function normalizeUiFontSize(value: unknown): number {
+  return clampFontSize(value, UI_FONT_SIZE_MIN, UI_FONT_SIZE_MAX, DEFAULT_UI_FONT_SIZE);
+}
+
+export function normalizeTerminalFontSize(value: unknown): number {
+  return clampFontSize(
+    value,
+    TERMINAL_FONT_SIZE_MIN,
+    TERMINAL_FONT_SIZE_MAX,
+    DEFAULT_TERMINAL_FONT_SIZE,
+  );
+}
+
 export interface AppearanceSettings {
   theme: ThemePreference;
   /** Optional palette override; missing values normalize to `default`. */
@@ -372,6 +449,10 @@ export interface AppearanceSettings {
    * `appIcon` is used in both.
    */
   appIconDark?: AppIconChoice;
+  /** Optional UI base font size in px. Missing normalizes to the default. */
+  uiFontSize?: number;
+  /** Optional terminal font size in px. Missing normalizes to the default. */
+  terminalFontSize?: number;
 }
 
 export interface PersonalizationSettings {
@@ -507,6 +588,12 @@ export interface AppSettings {
   subagents: SubagentSettings;
 }
 
+export interface RuntimeHostAppSettings extends Omit<AppSettings, 'network'> {
+  network: {
+    proxy: RuntimeHostNetworkProxySettings;
+  };
+}
+
 export interface UsageRequestLog {
   id: string;
   ts: number;
@@ -597,6 +684,7 @@ export type SettingsTestResultCode =
   | 'proxy_reachable'
   | 'proxy_disabled'
   | 'proxy_configuration_missing'
+  | 'proxy_credential_missing'
   | 'proxy_timeout'
   | 'proxy_http_error'
   | 'proxy_unreachable'
@@ -604,11 +692,19 @@ export type SettingsTestResultCode =
   | 'bot_token_missing'
   | 'bot_token_invalid'
   | 'bot_app_credentials_missing'
+  | 'slack_tokens_missing'
+  | 'wecom_credentials_missing'
+  | 'dingtalk_credentials_missing'
+  | 'dingtalk_no_access_token'
+  | 'qq_credentials_missing'
+  | 'qq_no_access_token'
+  | 'wechat_bridge_url_invalid'
+  | 'wechat_ilink_credentials_incomplete'
   | 'bot_connection_failed';
 
 export type UpdateAppSettingsInput = Partial<{
   network: Partial<{
-    proxy: Partial<NetworkProxySettings>;
+    proxy: NetworkProxySettingsPatch;
   }>;
   botChat: BotChatSettingsPatch;
   usage: Partial<UsageSettings>;
@@ -636,8 +732,8 @@ export interface UpdateAppSettingsWarnings {
   personalization?: PersonalizationSettingsWarning[];
 }
 
-export interface UpdateAppSettingsResult {
-  settings: AppSettings;
+export interface UpdateAppSettingsResult<TSettings extends AppSettings = AppSettings> {
+  settings: TSettings;
   warnings?: UpdateAppSettingsWarnings;
 }
 
@@ -661,7 +757,6 @@ export function createDefaultSettings(): AppSettings {
         port: 7890,
         authEnabled: false,
         username: '',
-        password: '',
         bypassList: ['metaso.cn', 'baidu.com'],
         autoBypassDomains: DEFAULT_PROXY_BYPASS_DOMAINS,
       },
@@ -678,6 +773,8 @@ export function createDefaultSettings(): AppSettings {
       theme: 'auto',
       palette: 'default',
       appIcon: DEFAULT_APP_ICON,
+      uiFontSize: DEFAULT_UI_FONT_SIZE,
+      terminalFontSize: DEFAULT_TERMINAL_FONT_SIZE,
     },
     personalization: {
       displayName: '',
@@ -716,6 +813,15 @@ export function createDefaultSettings(): AppSettings {
 }
 
 export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInput): AppSettings {
+  const {
+    credential: _credential,
+    password: _legacyPassword,
+    passwordConfigured: _derivedStatus,
+    ...proxyPatch
+  } = (patch.network?.proxy ?? {}) as NetworkProxySettingsPatch & {
+    password?: unknown;
+    passwordConfigured?: unknown;
+  };
   return {
     ...current,
     network: {
@@ -723,7 +829,7 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
       ...(patch.network ?? {}),
       proxy: {
         ...current.network.proxy,
-        ...(patch.network?.proxy ?? {}),
+        ...proxyPatch,
       },
     },
     botChat: mergeBotChatSettings(current.botChat, patch.botChat),
@@ -864,6 +970,10 @@ export function normalizeSettings(input: unknown): AppSettings {
       appIcon: isAppIconChoice(base.appearance.appIcon)
         ? base.appearance.appIcon
         : DEFAULT_APP_ICON,
+      // Wrong-typed → default; out-of-range number → clamped to bounds, so an
+      // extreme persisted value can't drive an unusable root/terminal size.
+      uiFontSize: normalizeUiFontSize(base.appearance.uiFontSize),
+      terminalFontSize: normalizeTerminalFontSize(base.appearance.terminalFontSize),
       // Cleared first, then re-set from the RAW input rather than from `base`:
       // `base` has already been merged over the defaults, which carry a dark
       // icon, so an existing settings file that predates this option would
@@ -877,13 +987,12 @@ export function normalizeSettings(input: unknown): AppSettings {
     // PR-LANG-PREF-0: closed-enum fail-closed for the new
     // `personalization.uiLocale` preference. mergeSettings spreads
     // raw user values, so an unknown value would otherwise reach the
-    // renderer outside the closed reactive-locale contract. Fall back to
-    // 'auto' on any miss.
+    // renderer outside the closed reactive-locale contract. Preserve the
+    // former generic `zh` preference as Simplified Chinese, then fall back to
+    // 'auto' on any other miss.
     personalization: {
       ...base.personalization,
-      uiLocale: isUiLocalePreference(base.personalization.uiLocale)
-        ? base.personalization.uiLocale
-        : 'auto',
+      uiLocale: normalizeUiLocalePreference(base.personalization.uiLocale),
       selectedPetId: normalizeSelectedPetId(base.personalization.selectedPetId),
     },
     botChat: normalizeBotChatSettings(base.botChat, value.botChat),

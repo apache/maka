@@ -19,12 +19,11 @@
 
 # Workspace Version Authority v1：Baseline 事实权威
 
-- 状态：authority foundation 已由 M0 Baseline Open Bundle 接入；仍待前置 PR 合并后从最新 `main`
-  平铺并完成最终 CI
-- 更新日期：2026-08-02
+- 状态：authority foundation 已合并；schema 9 reader/migration、RuntimeEvents、projection reader/rebuild 继续受支持，当前没有生产 baseline writer consumer
+- 更新日期：2026-08-29
 - 主要不变量：经专用 writer 提交的一个 workspace epoch，其 baseline canonical facts 与三个 SQLite projection 对外只能全可见或全不可见
 - 事实权威：immutable RuntimeEvents
-- artifact owner：后续 `GitWorkspaceService`；本切片不执行 Git 命令
+- artifact owner：后续 Gitoxide data plane；本切片不执行 Git 命令
 - 主要发布证明平台：Linux、macOS；Windows 当前仅验证 SQLite 事务与多进程路径
 
 ## 1. 本切片为什么存在
@@ -48,21 +47,20 @@ epoch opened RuntimeEvent
 可删除、可重建、每次读取都要与 canonical facts 交叉验证的 projection。若维护操作或外部损坏只删除
 projection，公开 reader 会 fail closed，直到显式 rebuild；这种损坏态不被伪装成合法的“全不可见”。
 
-本切片只接受 baseline，不接受 mutation。它不创建 internal repository、不创建 worktree、不调用工具，
-也不改变 Desktop/CLI 行为。这种收缩是刻意的：一个 PR 只证明一个主要不变量。
+本节定义的 baseline transaction 只接受 baseline；独立的 successor/mutation authority extension 不属于这个
+历史切片。它不创建 internal repository、不创建 worktree、不调用工具，也不改变 Desktop/CLI 行为。
 
-authority slice 本身只证明事实合同、SQLite 原子写入与 projection 可重建性；M0 Baseline Open Bundle
-在其上增加了生产 composition seam：`ManagedWorkspaceOwner` 持有未导出的 Git receipt capability，
-先持久化并复验 exact receipt，再调用 storage-internal raw writer，SQLite COMMIT 后还会再次复验 Git
-artifact。裸 OID、TypeScript brand、caller 自报的 `verified: true` 或 caller 提供的 policy hash 都不
-构成证据。
+authority slice 本身只证明事实合同、SQLite 原子写入与 projection 可重建性。旧 Git-CLI-shaped
+Baseline Open composition 从未获得生产调用方，现已删除；后续生产 writer 必须由 Gitoxide data plane
+建立新的窄 admission 边界。裸 OID、TypeScript brand、caller 自报的 `verified: true` 或 caller 提供的
+policy hash 都不构成证据。
 
 ## 2. Owner、边界、失败状态与回滚
 
 | 项目 | 决策 |
 |---|---|
 | 协议 owner | `@maka/core` 的 strict fact contract 与 pure scanner |
-| 写入 owner | storage-internal WeakMap writer；不属于 package API，只能由 `ManagedWorkspaceOwner` composition seam 到达 |
+| baseline 写入 owner | storage-internal WeakMap writer；不属于 package API，当前没有 production baseline producer；独立 successor/mutation writer 不由旧 owner 提供 |
 | 原子性边界 | 单个 `BEGIN IMMEDIATE ... COMMIT` SQLite transaction |
 | canonical source | store-owned authority stream 中的两条 immutable RuntimeEvents |
 | disposable state | `runtime_workspace_epochs`、`runtime_workspace_versions`、`runtime_workspace_heads` |
@@ -192,45 +190,15 @@ Writer reservation 同时覆盖：
 
 storage 内部 writer 接受 typed baseline input，由 store 自己构造 RuntimeEvents。它不接受 caller 拼好的
 event，因此 caller 没有机会夹带另一条 semantic lane。该 seam 所在模块不从 `@maka/storage` 导出；
-公开 store 只暴露 capability、reader 与 projection rebuild。当前唯一生产入口由
-`ManagedWorkspaceOwner` 重新验证 durable Git receipt 后调用 raw seam；receipt issuer 与 raw writer
-都不进入 package root exports。
+公开 store 只暴露 capability、reader 与 projection rebuild。baseline raw writer 不进入 package root exports，
+当前没有生产 composition 可以调用它。
 
-## 6. Baseline Open Bundle 时序
+## 6. Baseline writer 状态
 
-```mermaid
-sequenceDiagram
-  participant G as GitWorkspaceService
-  participant O as ManagedWorkspaceOwner
-  participant S as SqliteRuntimeStore
-  participant E as immutable RuntimeEvents
-  participant P as workspace projections
-
-  G->>G: 验证 source repository、commit/tree、fixed materialization profile
-  G->>G: 导入并验证 internal baseline commit/tree
-  G->>O: verified durable receipt (internal capability)
-  O->>S: commitWorkspaceBaselineInternal(receipt-derived input)
-  S->>S: BEGIN IMMEDIATE
-  S->>S: 扫描全部 canonical workspace facts
-  alt exact bundle 已存在
-    S-->>O: created=false
-  else identity 或 payload 冲突
-    S-->>O: fail closed / rollback
-  else authority 为空
-    S->>E: append epoch event (seq=1)
-    S->>E: append baseline event (seq=2)
-    S->>P: insert epoch
-    S->>P: insert version
-    S->>P: set head=baseline
-    S->>S: COMMIT
-    S-->>O: created=true
-  end
-```
-
-Git 验证与 tree-delta 计算故意不放进 SQLite transaction。Baseline Open Bundle 在调用 writer 前读取
-并重新验证 durable receipt，COMMIT 后再次复验；SQLite writer 负责冻结已验证 identity，并保证
-facts/projections 原子提交。该 composition 仍未接 Desktop、CLI、tool 或自动恢复入口。
-`treeDeltaDigest` 必须是 canonical empty-tree → baseline-tree delta 的摘要，不能由 caller 随意填写。
+`commitWorkspaceBaselineInternal` 继续作为 schema 9 authority 的 storage-internal 测试 seam，用于证明
+atomic bundle、exact retry、conflict、crash rollback 与 projection rebuild。旧 Git executable receipt →
+writer composition 已删除；后续 Gitoxide producer 必须重新建立 artifact admission，不能复用或恢复旧
+owner、receipt 或 worktree materialization path。
 
 ## 7. Schema 7–8 与 projection
 
@@ -307,9 +275,9 @@ SQLite read transaction/snapshot；否则并发 writer 可能让读者拼接两�
 
 本表只描述 authority persistence，不能推导 managed worktree 已跨平台可用。
 
-## 10. 明确延期
+## 10. Baseline slice 之外的扩展
 
-以下能力不属于 M0 baseline authority：
+以下能力不由本文的 baseline authority slice 定义；它们可以由独立 authority extension 提供：
 
 - verified Git runtime 探测、source eligibility 与 internal bare repository；
 - managed worktree 创建、owner lifecycle、quarantine 与 repair；
@@ -321,17 +289,13 @@ SQLite read transaction/snapshot；否则并发 writer 可能让读者拼接两�
 - continuation boundary 绑定 workspace version；
 - Desktop/CLI 设置、默认启用或自动恢复。
 
-尤其不能在本协议中提前定义无生产消费者的 mutation 抽象。Mutation fact 必须与真实 Durable Write
-的 T1/T2、tool outcome 引用、session retention 和 head CAS 一起冻结。
+本文不定义 mutation。Successor/mutation fact 必须由其独立 authority 与真实 Durable Write 的 T1/T2、
+tool outcome 引用、session retention 和 head CAS 一起冻结。
 
-## 11. 后续 M0 交付顺序
+## 11. 后续生产接线
 
-### Slice 2：Managed Workspace Owner（已完成）
-
-只证明：Maka 能用一个显式注入且经过校验的 Git runtime 创建并独占 private internal
-repository/worktree lifecycle；外部 drift 被检测后 quarantine。ASF Desktop 不再提供该 runtime，后续实现将
-验证 Apache-2.0/MIT 的 gitoxide backend。旧 Git-CLI-shaped service 仅作为历史/测试实现，不能成为
-新生产 backend 的 identity owner。
+旧 Git-CLI-shaped service、owner、receipt 与 worktree materialization path 已删除，不能成为新生产
+backend 的 identity owner。
 
 当前 Gitoxide 验证栈已拆成三个窄、可独立合并的 enabling-infrastructure 层：isolated short-lived Rust helper、exact helper artifact →
 opaque invocation capability、bounded invocation → opaque repository admission capability。分别见：
@@ -342,29 +306,6 @@ opaque invocation capability、bounded invocation → opaque repository admissio
 - [`gitoxide-repository-admission-capability-v1.zh-CN.md`](./gitoxide-repository-admission-capability-v1.zh-CN.md)
 
 这些基础设施尚未建立 signed packaged-release trust root，也没有 Desktop/CLI/T1 消费者，因此不能据此
-恢复 managed mode。后续生产接线仍需先拍板 ignored dependencies/scratch、identity marker、
-symlink/LFS/submodule/case/filemode 平台政策。
-
-### Slice 3：Baseline Open Bundle（实现中）
-
-只证明：从 eligible clean source HEAD 导入 Maka-owned objects、materialize baseline、验证 tree/cleanliness，
-然后调用本切片的 atomic authority writer。Git artifact 在失败时可作为 orphan GC；只有 RuntimeEvent
-接受后的 commit 才是 canonical workspace version。
-
-完成这两片以后，系统才拥有一个可供工具使用的 managed baseline。真正的 Durable Write 与
-workspace-version/T2 原子接受仍是下一组独立 PR，不能在 host 接线中顺手补入。
-
-Baseline Open 的详细 receipt 合同、组合 owner、crash matrix 与平台承诺见
-[`runtime-managed-workspace-baseline-open-v1.zh-CN.md`](./runtime-managed-workspace-baseline-open-v1.zh-CN.md)。
-
-## 12. 当前验收记录
-
-本分支完成的短门禁：
-
-- core/storage 定向集合：93/93；
-- 其中 workspace authority：3 个 pure contract + 12 个 persistence + 4 个新增多进程/升级场景；
-- runtime read-model 定向集合：59/59；
-- `@maka/storage` 与 `@maka/runtime` build 通过；
-- `git diff --check` 通过。
-
-未运行全仓测试；Windows 本地没有执行被 suite 明确跳过的 Unix process-kill crash proof。
+恢复 managed mode。后续 production writer 必须从真实 Gitoxide artifact admission 出发，并继续复用本
+文档定义的 schema 9 RuntimeEvents 与 projection authority；接线前仍需先拍板 ignored dependencies/scratch、
+identity marker、symlink/LFS/submodule/case/filemode 平台政策。
