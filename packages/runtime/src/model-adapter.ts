@@ -109,6 +109,7 @@ export interface ModelAdapterInput {
   apiKey: string;
   modelId: string;
   modelFactory: ModelFactory;
+  resolvedRuntime?: ResolvedModelRuntime;
   providerOptions?: Record<string, unknown>;
   newId: () => string;
   now: () => number;
@@ -149,7 +150,7 @@ export class ModelAdapter {
   private readonly openAiResponsesTransportState: OpenAiResponsesTransportState;
 
   constructor(private readonly input: ModelAdapterInput) {
-    this.runtime = resolveModelRuntime(input.connection, input.modelId);
+    this.runtime = input.resolvedRuntime ?? resolveModelRuntime(input.connection, input.modelId);
     this.openAiChatReasoningTransportState = createOpenAiChatReasoningTransportState(
       this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
         ? this.runtime.reasoningReplay.requestField

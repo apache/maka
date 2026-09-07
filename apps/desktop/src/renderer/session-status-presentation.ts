@@ -67,9 +67,9 @@ export function isActionableBlocked(reason: SessionBlockedReason | undefined): b
  * Non-actionable blocked sessions read as ordinary resumable sessions
  * (`active`), so every display consumer agrees on the same projection.
  */
-export function normalizeSessionSummaryForDisplay<T extends SessionSummary>(session: T): T {
+export function normalizeSessionSummaryForDisplay<T extends SessionSummary & { localState?: 'pending' | 'cached' }>(session: T): T {
   const liveNormalized: T =
-    session.status === 'running' && session.runningTurnIds?.length === 0
+    session.status === 'running' && (session.runningTurnIds?.length === 0 || session.localState === 'cached')
       ? ({ ...session, status: 'active' as const } as T)
       : session;
   if (

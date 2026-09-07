@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { COMPOSER_INPUT, test, expect } from './fixtures';
+import { awaitSendReady, COMPOSER_INPUT, test, expect } from './fixtures';
 import type { Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -25,6 +25,7 @@ import { join } from 'node:path';
 async function openGitChanges(page: Page) {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('create review session');
+  await awaitSendReady(page);
   await composer.press('Enter');
   await expect(page.getByText(/Fake backend received: create review session/)).toBeVisible();
   await page.getByRole('button', { name: '展开任务工作栏' }).click();
@@ -36,6 +37,7 @@ async function openGitChanges(page: Page) {
 async function createSession(page: Page, prompt: string) {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill(prompt);
+  await awaitSendReady(page);
   await composer.press('Enter');
   await expect(page.getByText(`Fake backend received: ${prompt}`)).toBeVisible();
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
@@ -219,6 +221,7 @@ test('Terminal ownership follows the active Session and stops the old resource',
     .not.toBe('running');
 
   await composer.fill('create replacement session');
+  await awaitSendReady(page);
   await composer.press('Enter');
   await expect(page.getByText('Fake backend received: create replacement session')).toBeVisible();
   await page.getByRole('button', { name: '展开任务工作栏' }).click();

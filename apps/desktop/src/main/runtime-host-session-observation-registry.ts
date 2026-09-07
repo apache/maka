@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { SessionEvent } from "@maka/core/events";
 import { RuntimeHostOperationError } from "@maka/runtime-host/client";
 import type {
   RuntimeHostSessionObserver,
@@ -29,7 +30,9 @@ import type {
   DesktopTranscriptRangeRequest,
 } from '../preload/transcript-contract.js';
 
-type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'observe' | 'unobserve'> &
+type SessionObservationSource = Pick<RuntimeHostSessionObserver, 'unobserve'> & {
+  observe(...args: Parameters<RuntimeHostSessionObserver['observe']>): Promise<readonly SessionEvent[] | void>;
+} &
   Partial<
     Pick<
       RuntimeHostSessionObserver,
@@ -57,9 +60,9 @@ type ObservationTargetBinding = <Payload>(
   target: RuntimeHostRendererTarget<Payload>,
 ) => RuntimeHostRendererTarget<Payload>;
 
-interface ObservationReadiness {
-  readonly promise: Promise<void>;
-  resolve(): void;
+interface ObservationReadiness<T = void> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
   reject(error: Error): void;
 }
 
@@ -97,7 +100,7 @@ interface SessionObservationRegistration {
   readonly messageAdmissions: boolean;
   readonly target: RuntimeHostSessionObserverTarget;
   readonly destroyedListener: () => void;
-  readonly ready: ObservationReadiness;
+  readonly ready: ObservationReadiness<readonly SessionEvent[]>;
   lifecycle: "pending" | "active";
 }
 
@@ -116,10 +119,10 @@ interface TranscriptReadiness {
   reject(error: Error): void;
 }
 
-function observationReadiness(): ObservationReadiness {
-  let resolve!: () => void;
+function observationReadiness<T = void>(): ObservationReadiness<T> {
+  let resolve!: (value: T) => void;
   let reject!: (error: Error) => void;
-  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
     reject = rejectPromise;
   });
@@ -175,7 +178,7 @@ export class RuntimeHostSessionObservationRegistry {
     const restored = await Promise.all(
       [...this.#registrations].map(async ([observerId, registration]) => {
         try {
-          await source.observe(
+          const seed = await source.observe(
             registration.sessionId,
             observerId,
             bindTarget(registration.target),
@@ -188,7 +191,7 @@ export class RuntimeHostSessionObservationRegistry {
             return undefined;
           }
           registration.lifecycle = "active";
-          registration.ready.resolve();
+          registration.ready.resolve(seed ?? []);
           return registration.sessionId;
         } catch (error) {
           if (
@@ -266,7 +269,7 @@ export class RuntimeHostSessionObservationRegistry {
     observerId: string,
     target: RuntimeHostSessionObserverTarget,
     messageAdmissions = false,
-  ): Promise<void> {
+  ): Promise<readonly SessionEvent[]> {
     this.#assertOpen();
     const previous = this.#registrations.get(observerId);
     if (previous) {
@@ -283,7 +286,7 @@ export class RuntimeHostSessionObservationRegistry {
     const destroyedListener = () => {
       void this.#remove(observerId).catch(this.#onError);
     };
-    const ready = observationReadiness();
+    const ready = observationReadiness<readonly SessionEvent[]>();
     void ready.promise.catch(() => undefined);
     const registration: SessionObservationRegistration = {
       sessionId,
@@ -299,7 +302,7 @@ export class RuntimeHostSessionObservationRegistry {
     const source = this.#source;
     if (!source) return registration.ready.promise;
     try {
-      await source.observe(
+      const seed = await source.observe(
         sessionId,
         observerId,
         this.#bindTarget(target),
@@ -310,7 +313,7 @@ export class RuntimeHostSessionObservationRegistry {
         this.#registrations.get(observerId) === registration
       ) {
         registration.lifecycle = "active";
-        registration.ready.resolve();
+        registration.ready.resolve(seed ?? []);
       }
     } catch (error) {
       if (

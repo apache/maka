@@ -3628,6 +3628,79 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     assert.strictEqual(warnings.length, 1);
   });
 
+  test('persists exactly one context_compacted note when manual compaction succeeds', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const compactCalls: Array<{ turnId: string; runtimeContextCount: number }> = [];
+    backends.register('ai-sdk', (ctx) => new CompactingTestBackend(ctx, compactCalls));
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(12_000),
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'bypass' }));
+
+    await drain(manager.sendMessage(session.id, { turnId: 'turn-1', text: 'hello' }));
+    await drain(manager.compactSession(session.id, { turnId: 'turn-compact' }));
+
+    const messages = await manager.getMessages(session.id);
+    const notes = messages.filter(
+      (message) =>
+        message.type === 'system_note' &&
+        message.turnId === 'turn-compact' &&
+        message.kind === 'context_compacted',
+    );
+    // The kernel writes the note on the compaction turn itself, so the row
+    // appears the moment compaction ends — not one send later.
+    assert.strictEqual(notes.length, 1);
+    // And no duplicate failed-open note on a successful compaction.
+    const failed = messages.filter(
+      (message) =>
+        message.type === 'system_note' && message.kind === 'context_compaction_failed_open',
+    );
+    assert.strictEqual(failed.length, 0);
+  });
+
+  test('persists a fail-open note when the backend throws during manual compaction', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    backends.register('ai-sdk', (ctx) => new ThrowingCompactingBackend(ctx));
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(12_000),
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'bypass' }));
+
+    await drain(manager.sendMessage(session.id, { turnId: 'turn-1', text: 'hello' }));
+    let threw = false;
+    try {
+      await drain(manager.compactSession(session.id, { turnId: 'turn-compact' }));
+    } catch {
+      threw = true;
+    }
+    assert.ok(threw, 'a backend that throws surfaces the failure to the caller');
+
+    // A thrown compaction still leaves one durable fail-open row: the internal
+    // compaction turn has no assistant content, so recordFailure alone would
+    // render an empty turn.
+    const notes = (await manager.getMessages(session.id)).filter(
+      (message) =>
+        message.type === 'system_note' &&
+        message.turnId === 'turn-compact' &&
+        message.kind === 'context_compaction_failed_open',
+    );
+    assert.strictEqual(notes.length, 1);
+  });
+
   test('manual compaction stopped before backend start does not write compact artifacts', async () => {
     const store = new MemorySessionStore();
     const readGate = makeGate();
@@ -3681,6 +3754,16 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
       (run) => run.turnId === 'turn-compact',
     );
     assert.strictEqual(compactRun && runtimeInvocationOutcome(compactRun), 'cancelled');
+    // An interrupted compaction leaves no durable transcript row.
+    assert.deepStrictEqual(
+      (await store.readMessages(session.id)).filter(
+        (message) =>
+          message.type === 'system_note' &&
+          (message.kind === 'context_compacted' ||
+            message.kind === 'context_compaction_failed_open'),
+      ),
+      [],
+    );
   });
 
   test('cold manual compaction normalizes only its execution cancellation reason', async () => {
@@ -3840,6 +3923,18 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
       (run) => run.turnId === 'turn-compact',
     );
     assert.strictEqual(compactRun && runtimeInvocationOutcome(compactRun), 'cancelled');
+    // A compaction stopped mid-run leaves no durable transcript row: the note is
+    // written only after the terminal completeEvent commits, and the catch path
+    // skips it while the run is stopped.
+    assert.deepStrictEqual(
+      (await store.readMessages(session.id)).filter(
+        (message) =>
+          message.type === 'system_note' &&
+          (message.kind === 'context_compacted' ||
+            message.kind === 'context_compaction_failed_open'),
+      ),
+      [],
+    );
   });
 
   test('compactSession rejects while a turn is running and writes no compact artifacts', async () => {
@@ -12166,6 +12261,15 @@ class FailOpenCompactingBackend extends TestBackend {
   }
 }
 
+class ThrowingCompactingBackend extends TestBackend {
+  async compactHistory(_input: {
+    turnId: string;
+    runtimeContext: readonly RuntimeEvent[];
+  }): Promise<never> {
+    throw new Error('backend compaction exploded');
+  }
+}
+
 class ActiveTurnBackend extends TestBackend {
   constructor(
     ctx: BackendFactoryContext,
@@ -12790,8 +12894,6 @@ class MemorySessionStore implements SessionStore {
   readonly failNextReadMessagesFor = new Map<string, number>();
   readonly failListTurnsFor = new Set<string>();
   readonly failUpdateHeaderFor = new Set<string>();
-  failNextAppendMessage: ((message: StoredMessage) => boolean) | undefined;
-  failAfterNextAppendMessage: ((message: StoredMessage) => boolean) | undefined;
   disposeCount = 0;
   nextReadHeaderGate: { started: Gate; release: Gate } | undefined;
   nextGraphOperatorProvisionGate: { started: Gate; release: Gate } | undefined;
@@ -13075,15 +13177,7 @@ class MemorySessionStore implements SessionStore {
   }
 
   async appendMessages(sessionId: string, messages: StoredMessage[]): Promise<void> {
-    if (this.failNextAppendMessage && messages.some(this.failNextAppendMessage)) {
-      this.failNextAppendMessage = undefined;
-      throw new Error('append message failed');
-    }
     this.messages.set(sessionId, [...(this.messages.get(sessionId) ?? []), ...messages]);
-    if (this.failAfterNextAppendMessage && messages.some(this.failAfterNextAppendMessage)) {
-      this.failAfterNextAppendMessage = undefined;
-      throw new Error('append message failed');
-    }
   }
 
   async updateHeader(sessionId: string, patch: Partial<SessionHeader>): Promise<SessionHeader> {

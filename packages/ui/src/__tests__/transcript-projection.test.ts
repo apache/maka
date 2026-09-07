@@ -100,6 +100,24 @@ describe('incremental transcript projection', () => {
     assert.notStrictEqual(chinese, english);
   });
 
+  test('a locale change updates the live context-compaction row text', () => {
+    const projection = createTranscriptProjection();
+    // Empty messages keep the settled turns reference stable (NO_TURNS) across
+    // the locale switch, so only the overlay locale guard can re-localize the
+    // live "compacting" row.
+    const liveTurn: LiveTurnProjection = {
+      turnId: 'turn-compact',
+      phase: 'waiting',
+      steps: [],
+      rootExecutionKind: 'context_compact',
+      startedAt: 1,
+    };
+    const english = projection.project({ sessionId: SESSION, messages: [], liveTurn, locale: 'en' });
+    const chinese = projection.project({ sessionId: SESSION, messages: [], liveTurn, locale: 'zh-CN' });
+    assert.equal(english[0]?.notes[0]?.text, 'Compacting context…');
+    assert.equal(chinese[0]?.notes[0]?.text, '正在压缩上下文…');
+  });
+
   test('a shell-run update whose semantics are unchanged affects nothing', () => {
     const projection = createTranscriptProjection();
     const messages = history();

@@ -32,6 +32,7 @@ import {
   evaluateStagedEpochCheck,
   extractCompatibilityEpoch,
   isHeaderOnlyChange,
+  parseDeclaration,
 } from './protocol-epoch-check.mjs';
 import { renderHeader } from './asf-license-headers.mjs';
 import { dirname, join } from 'node:path';
@@ -368,4 +369,160 @@ test('treats added, deleted, and renamed protocol files as real changes', () => 
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
+});
+
+/**
+ * A branch declares its protocol files in one declaration, so a later commit
+ * that touches another file amends the declaration it already added rather than
+ * adding a second one. The staged check sees that as a modification.
+ */
+test('accepts a declaration amended by a later commit on the same branch', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'maka-protocol-epoch-amend-'));
+  const epochPath = join(repo, EPOCH_FILE);
+  const protocolDirectory = dirname(epochPath);
+  const declarationPath = join(repo, COMPATIBLE_CHANGE_DIR, 'example.json');
+  const first = 'packages/runtime-host/src/protocol/first.ts';
+  const second = 'packages/runtime-host/src/protocol/second.ts';
+  const runGit = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' });
+  const runInFixture = (file, args, options) =>
+    execFileSync(file, args, { ...options, cwd: repo, encoding: 'utf8' });
+  const declare = (files) =>
+    writeFileSync(
+      declarationPath,
+      JSON.stringify({ epoch: 27, files, reason: 'Renames a local helper the wire never sees' }),
+    );
+
+  try {
+    runGit('init', '--initial-branch=main');
+    runGit('config', 'user.email', 'epoch-guard@example.invalid');
+    runGit('config', 'user.name', 'Epoch Guard Test');
+    runGit('config', 'commit.gpgSign', 'false');
+    mkdirSync(protocolDirectory, { recursive: true });
+    mkdirSync(join(repo, COMPATIBLE_CHANGE_DIR), { recursive: true });
+    writeFileSync(epochPath, 'export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 27 as const;\n');
+    writeFileSync(join(repo, first), 'export const first = 1;\n');
+    writeFileSync(join(repo, second), 'export const second = 1;\n');
+    runGit('add', '.');
+    runGit('commit', '-m', 'base');
+
+    writeFileSync(join(repo, first), 'export const first = 2;\n');
+    declare([first]);
+    // The directory documents itself; only its .json files are declarations.
+    writeFileSync(join(repo, COMPATIBLE_CHANGE_DIR, 'README.md'), '# Compatible changes\n');
+    runGit('add', '.');
+    assert.equal(evaluateStagedEpochCheck(runInFixture).ok, true);
+    runGit('commit', '-m', 'declare the first file');
+
+    writeFileSync(join(repo, second), 'export const second = 2;\n');
+    runGit('add', second);
+    const undeclared = evaluateStagedEpochCheck(runInFixture);
+    assert.equal(undeclared.ok, false);
+    assert.match(undeclared.reason, /second\.ts/);
+
+    declare([first, second]);
+    runGit('add', '.');
+    assert.equal(evaluateStagedEpochCheck(runInFixture).ok, true);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The staged check accepts an amended declaration; the merge-result check still
+ * counts only declarations added against the base, so editing one that already
+ * landed on the base branch buys no exemption.
+ */
+test('refuses a landed declaration edited to cover a new protocol file', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'maka-protocol-epoch-landed-'));
+  const epochPath = join(repo, EPOCH_FILE);
+  const protocolDirectory = dirname(epochPath);
+  const declarationPath = join(repo, COMPATIBLE_CHANGE_DIR, 'landed.json');
+  const covered = 'packages/runtime-host/src/protocol/covered.ts';
+  const smuggled = 'packages/runtime-host/src/protocol/smuggled.ts';
+  const runGit = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' });
+  const runInFixture = (file, args, options) =>
+    execFileSync(file, args, { ...options, cwd: repo, encoding: 'utf8' });
+
+  try {
+    runGit('init', '--initial-branch=main');
+    runGit('config', 'user.email', 'epoch-guard@example.invalid');
+    runGit('config', 'user.name', 'Epoch Guard Test');
+    mkdirSync(protocolDirectory, { recursive: true });
+    mkdirSync(join(repo, COMPATIBLE_CHANGE_DIR), { recursive: true });
+    writeFileSync(epochPath, 'export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 27 as const;\n');
+    writeFileSync(join(repo, covered), 'export const covered = 1;\n');
+    writeFileSync(join(repo, smuggled), 'export const smuggled = 1;\n');
+    writeFileSync(
+      declarationPath,
+      JSON.stringify({ epoch: 27, files: [covered], reason: 'Landed on the base branch' }),
+    );
+    runGit('add', '.');
+    runGit('commit', '-m', 'base with a landed declaration');
+    runGit('tag', 'base');
+
+    writeFileSync(join(repo, smuggled), 'export const smuggled = 2;\n');
+    writeFileSync(
+      declarationPath,
+      JSON.stringify({ epoch: 27, files: [covered, smuggled], reason: 'Edited after landing' }),
+    );
+    runGit('add', '.');
+    runGit('commit', '-m', 'edit the landed declaration');
+
+    assert.deepEqual(compatibleProtocolFilesBetween('base', 'HEAD', 27, runInFixture), []);
+    const verdict = evaluateEpochCheck({
+      baseEpoch: 27,
+      headEpoch: 27,
+      changedProtocolFiles: changedProtocolFilesBetween('base', 'HEAD', runInFixture),
+      compatibleProtocolFiles: compatibleProtocolFilesBetween('base', 'HEAD', 27, runInFixture),
+    });
+    assert.equal(verdict.ok, false);
+    assert.match(verdict.reason, /smuggled\.ts/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('names what makes a declaration invalid, and tells a stale one to re-pin', () => {
+  const path = `${COMPATIBLE_CHANGE_DIR}example.json`;
+  const declaration = (overrides) =>
+    JSON.stringify({
+      epoch: 28,
+      files: ['packages/runtime-host/src/protocol/turn.ts'],
+      reason: 'Renames a local helper',
+      ...overrides,
+    });
+
+  assert.deepEqual(parseDeclaration(path, declaration({}), 28), [
+    'packages/runtime-host/src/protocol/turn.ts',
+  ]);
+  assert.throws(() => parseDeclaration(path, declaration({}), 29), /re-pin this declaration to 29/);
+  assert.throws(() => parseDeclaration(path, declaration({ files: [] }), 28), /"files" must name/);
+  assert.throws(
+    () => parseDeclaration(path, declaration({ reason: ' ' }), 28),
+    /"reason" must say/,
+  );
+  assert.throws(
+    () => parseDeclaration(path, declaration({ note: 'x' }), 28),
+    /unknown key\(s\) note/,
+  );
+  assert.throws(
+    () => parseDeclaration(path, declaration({ files: ['packages/core/src/turn.ts'] }), 28),
+    /is not a path under/,
+  );
+  assert.throws(() => parseDeclaration(path, '{', 28), /not valid JSON/);
+});
+
+test('offers a paste-ready declaration when a protocol change has no epoch to show for it', () => {
+  const verdict = evaluateEpochCheck({
+    baseEpoch: 27,
+    headEpoch: 27,
+    changedProtocolFiles: ['packages/runtime-host/src/protocol/codec.ts'],
+  });
+  assert.equal(verdict.ok, false);
+  const template = verdict.reason.slice(verdict.reason.indexOf('{'));
+  assert.deepEqual(JSON.parse(template), {
+    epoch: 27,
+    files: ['packages/runtime-host/src/protocol/codec.ts'],
+    reason: '<why the wire cannot observe this change>',
+  });
 });

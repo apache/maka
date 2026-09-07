@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { expect, test, COMPOSER_INPUT } from './fixtures';
+import { awaitSendReady, expect, test, COMPOSER_INPUT } from './fixtures';
 
 // This stays in Electron: the physical pointer leaves the renderer viewport,
 // and Chromium pointer capture must route its release back to the owning Turn.
@@ -27,6 +27,7 @@ test('a transcript drag releases outside the window through its owning Turn', as
   await page.setViewportSize({ width: 1200, height: 800 });
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('pointer capture source');
+  await awaitSendReady(page);
   await composer.press('Enter');
 
   // Select from a settled answer. Selecting from a streaming one is broken for

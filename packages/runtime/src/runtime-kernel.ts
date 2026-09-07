@@ -1063,6 +1063,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       return;
     }
 
+    let notedTerminal = false;
     try {
       if (run.isStopped()) return;
       if (!begin.backend.compactHistory) {
@@ -1104,6 +1105,15 @@ export class RuntimeKernel implements RuntimeKernelLike {
       // refused, and the reader would never learn the summary was skipped.
       if (result.outcome.kind === 'failed') {
         await run.recordSystemNote('context_compaction_failed_open').catch(() => {});
+        notedTerminal = true;
+      } else if (result.outcome.kind === 'compacted') {
+        // Explicit compaction runs on its own turn and never enters the
+        // send-flow note block, so the "compacted" note is written here. The
+        // next user send passively replays this standalone checkpoint, which
+        // `shouldAppendContextCompactedNote` suppresses, so there is no
+        // duplicate.
+        await run.recordSystemNote('context_compacted').catch(() => {});
+        notedTerminal = true;
       }
       await run.acceptMappedEvent(
         tokenUsageEvent,
@@ -1121,6 +1131,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
       if (run.isStopped()) return;
       yield completeEvent;
     } catch (error) {
+      // A thrown compaction still owns a fail-open note — but not when the throw
+      // is a stop, which must leave no row. The note goes ahead of the failure
+      // because the ledger seals on its terminal fact; the internal compaction
+      // Turn has no user timeline for a failure banner.
+      if (!notedTerminal && !run.isStopped()) {
+        await run.recordSystemNote('context_compaction_failed_open').catch(() => {});
+      }
       await run.recordFailure(error);
       throw error;
     } finally {

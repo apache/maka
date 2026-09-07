@@ -146,6 +146,7 @@ function subscription(
   lifecycle: string[],
 ): RuntimeHostSessionSubscription {
   return {
+    subscribePtyData: () => () => undefined,
     hostEpoch: 'host-1',
     subscriptionId: `subscription-${sessionId}`,
     activeAssistantStreams: [],

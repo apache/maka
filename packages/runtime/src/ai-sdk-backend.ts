@@ -77,7 +77,7 @@ import {
   type MemoryExtractionSourceSnapshot,
   type MemoryExtractionTrigger,
 } from './memory-extraction.js';
-import { modelUsesNativeOpenAiResponses, resolveModelRuntime } from './model-runtime.js';
+import { resolveModelRuntime } from './model-runtime.js';
 import { routeApplyPatchTools } from './apply-patch-profile.js';
 import { bindToolResultArchiveDecoder } from './tool-result-archive-capability.js';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
@@ -314,15 +314,17 @@ export class AiSdkBackend implements AgentBackend {
     // One resolved options value for every reader: the main call, the
     // auxiliary memory-extraction call, and the provider request all use the
     // same options value, so they cannot disagree on what was sent.
+    const runtime = resolveModelRuntime(input.connection, input.modelId);
     this.resolvedProviderOptions =
       input.providerOptions ??
-      buildProviderOptions(input.connection, input.modelId, input.header.thinkingLevel);
+      buildProviderOptions(input.connection, input.modelId, input.header.thinkingLevel, runtime);
     this.modelAdapter = new ModelAdapter({
       sessionId: input.sessionId,
       connection: input.connection,
       apiKey: input.apiKey,
       modelId: input.modelId,
       modelFactory: input.modelFactory,
+      resolvedRuntime: runtime,
       // `input.providerOptions` is an override escape hatch: when set it owns
       // the whole provider-options namespace (including reasoning effort), and
       // the computed defaults are dropped entirely. Keep providerOptions the
@@ -351,7 +353,6 @@ export class AiSdkBackend implements AgentBackend {
       assertModelCallAccountingReady: input.assertModelCallAccountingReady,
       beforeRunProviderDispatch: input.beforeRunProviderDispatch,
     });
-    const runtime = resolveModelRuntime(input.connection, input.modelId);
     const applyPatchProfile = runtime.applyPatchProfile;
     this.messageProjection = new AiSdkMessageProjection({
       modelAdapter: this.modelAdapter,
@@ -401,7 +402,7 @@ export class AiSdkBackend implements AgentBackend {
             );
             if (turn) turn.memoryExtractRequested = true;
           },
-          ...(modelUsesNativeOpenAiResponses(input.connection, input.modelId)
+          ...(input.connection.providerType === 'openai' && runtime.wire === 'openai-responses'
             ? { unsupportedReason: 'provider_unsupported' as const }
             : {}),
         })

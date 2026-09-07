@@ -290,3 +290,26 @@ export function captureTranscriptReadingAnchor<Message>(options: {
     // A stale range says nothing new about the reader's current intent.
   }
 }
+
+/** Sending restores the tail in the background; local admission never waits for it. */
+export async function restoreTranscriptTailAfterSend<Message>(options: {
+  readonly sessionId: string;
+  readonly controller: {
+    readonly store: {
+      range(): { readonly sessionId: string; readonly hasNewer: boolean };
+      snapshot(): { readonly messages: readonly Message[] };
+    };
+    loadLatest(): Promise<void>;
+  } | undefined;
+  readonly isCurrent: () => boolean;
+  readonly setMessages: (messages: Message[]) => void;
+}): Promise<void> {
+  try {
+    const { controller } = options;
+    if (!controller || !currentTranscriptRange(controller, options.sessionId)?.hasNewer) return;
+    await controller.loadLatest();
+    if (options.isCurrent()) options.setMessages([...controller.store.snapshot().messages]);
+  } catch {
+    // Unopened/offline history must not prevent saving the user's message.
+  }
+}
