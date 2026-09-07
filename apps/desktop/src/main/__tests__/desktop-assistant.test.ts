@@ -145,7 +145,9 @@ test('hiding keeps ownership; recovery is bounded, reports dispatched input, and
   let sessionId = '';
   let stops = 0;
   let attempts = 0;
+  let observations = 0;
   let mode: 'before' | 'after' | 'success' = 'before';
+  const outcomes: ('before' | 'after' | 'success')[] = [];
   const frame = {};
   const window = Object.assign(new EventEmitter(), { id: 1, mainFrame: frame, isDestroyed: () => false, send() {} }) as unknown as WebContents;
   const client = {
@@ -154,13 +156,14 @@ test('hiding keeps ownership; recovery is bounded, reports dispatched input, and
     createSession: async (input: { sessionId: string }) => { sessionId = input.sessionId; },
     submitMessage: async () => ({ disposition: 'accepted' }),
   } as unknown as DesktopRuntimeHostClient;
-  t.mock.method(DesktopAssistantUi.prototype, 'observe', async () => ({ section: null, language: 'en', theme: 'light', accessibility: '', controls: [] }));
+  t.mock.method(DesktopAssistantUi.prototype, 'observe', async () => { observations++; return { section: null, language: 'en', theme: 'light', accessibility: '', controls: [] }; });
   t.mock.method(DesktopAssistantUi.prototype, 'begin', async () => {});
   t.mock.method(RuntimeHostSessionObserver.prototype, 'observe', async () => {});
   t.mock.method(DesktopAssistantUi.prototype, 'execute', async function(this: DesktopAssistantUi) {
     attempts++;
-    if (mode === 'after') this.dispatchedInputs++;
-    if (mode !== 'success') throw new Error('Control changed');
+    const outcome = outcomes.shift() ?? mode;
+    if (outcome === 'after') this.dispatchedInputs++;
+    if (outcome !== 'success') throw new Error('Control changed');
     return { verified: false, dispatched: true };
   });
   const assistant = createDesktopAssistant({
@@ -176,9 +179,21 @@ test('hiding keeps ownership; recovery is bounded, reports dispatched input, and
   assert.equal(stops, 0);
   const entry = assistant.group.tools[0]!;
   const tool = 'tool' in entry ? entry.tool : entry;
-  const act = async () => await tool.impl({ operation: 'act', actions: [{ kind: 'click', ref: 'current' }] }, { sessionId, turnId: 'turn', toolCallId: 'call', cwd: directory, abortSignal: new AbortController().signal, emitOutput() {} }) as { recoverable?: boolean; inputDispatched?: boolean; requiresNewRequest?: boolean };
+  const act = async (refs = ['current']) => await tool.impl({ operation: 'act', actions: refs.map((ref) => ({ kind: 'click', ref })) }, { sessionId, turnId: 'turn', toolCallId: 'call', cwd: directory, abortSignal: new AbortController().signal, emitOutput() {} }) as { completed: unknown[]; recoverable?: boolean; inputDispatched?: boolean; requiresNewRequest?: boolean };
+  outcomes.push('success', 'before');
+  const partial = await act(['first', 'changed', 'last']);
+  assert.equal(partial.completed.length, 1);
+  assert.equal(partial.recoverable, true);
+  assert.equal(attempts, 2, 'a changed control stops the remainder of a batch');
+  mode = 'success';
+  const beforeBatchObservation = observations;
+  assert.equal((await act(['changed', 'last'])).completed.length, 2);
+  assert.equal(attempts, 4, 'recovery does not repeat the completed first action');
+  assert.equal(observations, beforeBatchObservation + 1, 'a successful batch needs one result observation');
+  mode = 'before';
+  const beforeFailure = attempts;
   assert.deepEqual(await act().then(({ recoverable, inputDispatched }) => ({ recoverable, inputDispatched })), { recoverable: true, inputDispatched: false });
-  assert.equal(attempts, 1, 'the controller must not blindly repeat an action');
+  assert.equal(attempts, beforeFailure + 1, 'the controller must not blindly repeat an action');
   mode = 'after';
   assert.equal((await act()).inputDispatched, true);
   mode = 'success';

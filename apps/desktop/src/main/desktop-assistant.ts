@@ -37,9 +37,10 @@ import type { DesktopAssistantAction, DesktopAssistantSnapshot } from '../shared
 
 /** Product paths are stable; coordinates are resolved afresh for every action. */
 const PRODUCT_MAP = {
+  planning: 'For language, theme and displayName changes, use the known kind:set actions and combine requested settings in one act call. Do not recreate their routes with generic clicks. Batch other consecutive actions when all their controls are already known from the current observation; observe again when a new page or menu must reveal the next control.',
   asynchronousResults: 'Task creation and replies may take time. After sending, observe with waitMs: 2000 while the task loads or runs, up to 30 seconds. A transient read error immediately after creation is not a final failure. Never resend while waiting. If the interface remains unchanged or failed after that bound, report the blocker.',
   app: { newTask: 'New task from the sidebar', extensions: 'Skills and MCP extensions from the sidebar', automations: 'Scheduled tasks from the sidebar', app: 'Return from Settings to the application. Tasks are in the sidebar; task actions are in each task menu. Project selection is in the top bar; task files, review and activity are in the workbar.' },
-  interaction: 'Use controls[].ref from the latest observation for click, hover, type, key or scroll. Numeric refs in accessibility text are informational only. Execute one referenced action at a time, then inspect the new observation. Generic dispatch is not proof that the user goal succeeded. Terminal, embedded browser, external browser links and secret fields are excluded. Execute the user-requested actions directly, including existing application confirmation dialogs. Do not add a confirmation question for work the user already requested.',
+  interaction: 'Use controls[].ref from the latest observation for click, hover, type, key or scroll. Numeric refs in accessibility text are informational only. Up to eight known actions can run in order; each target is revalidated before input and a failure stops the remaining batch. Inspect the returned observation and completed steps before continuing; generic dispatch is not proof that the user goal succeeded. Terminal, embedded browser, external browser links and secret fields are excluded. Execute the user-requested actions directly, including existing application confirmation dialogs. Do not add a confirmation question for work the user already requested.',
   settings: SETTINGS_SECTIONS.map((section) => ({
     section, operation: 'navigate', path: ['settings.open', `settings.${section}`],
   })),
@@ -200,7 +201,7 @@ export function createDesktopAssistant(deps: AssistantDeps) {
   };
   const tool: MakaTool = {
     name: 'control',
-    description: 'Observe and operate the Maka application through current control references or known navigation paths. Terminal, embedded browser, external links and secret fields are excluded. Use one referenced action per call and inspect the returned observation; dispatch alone does not verify success. Execute requested actions directly, including application confirmation dialogs. Input uses real controls with a visible cursor. Visual returns a cropped visible language/theme control.',
+    description: 'Operate Maka with up to eight ordered actions per call. For language, theme and displayName, use kind:set and batch requested preferences together. Batch generic actions only with controls[].ref already known from the current observation; each target is checked before input and a failure stops the remaining actions. Observe after opening a page or menu to discover new controls. Inspect completed steps and the returned observation; dispatch alone does not verify success. Terminal, embedded browser, external links and secret fields are excluded. Execute requested actions directly, including application confirmation dialogs. Input uses real controls with a visible cursor. Visual returns a cropped visible language/theme control.',
     parameters: z.object({ operation: z.enum(['observe', 'visual', 'act']), actions: z.array(actionSchema).max(8).optional(), waitMs: z.number().int().min(0).max(5000).optional().describe('For observe only: wait before reading asynchronous UI results. Never repeats input.') }).strict(),
     impl: async (input, ctx) => {
       if (controlBusy) throw new Error('Another Desktop control call is still running; wait for its result');
@@ -220,7 +221,6 @@ export function createDesktopAssistant(deps: AssistantDeps) {
         return { image: await ui.visual() };
       }
       if (!args.actions?.length) throw new Error('Provide at least one action');
-      if (args.actions.some((action) => 'ref' in action) && args.actions.length !== 1) throw new Error('Observe after each referenced action before choosing the next control');
       if (consecutiveFailures >= 3) return { interrupted: true, error: actionFailure, requiresNewRequest: true };
       const completed = [];
       let inputBeforeAction = ui.dispatchedInputs;
