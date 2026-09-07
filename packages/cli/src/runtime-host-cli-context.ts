@@ -37,6 +37,11 @@ import {
   LOCAL_RUNTIME_HOST_PROFILE,
   readRuntimeHostConnectionCatalog,
   RuntimeHostPermanentReconnectError,
+  RuntimeHostRemoteCompatibilityError,
+  runHostHandoff,
+  type OpenHostHandoffSurface,
+  type HostHandoffReplacement,
+  type HostHandoffObservation,
   runtimeHostStartupError,
   type RuntimeHostConnection,
   type RuntimeHostProfile,
@@ -46,13 +51,15 @@ import {
 } from '@maka/runtime-host/client';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-  RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  type HostRegistration,
-  type HostIncompatible,
 } from '@maka/runtime-host/protocol';
 import { readLocalHostDeploymentRecord } from '@maka/runtime-host/operator';
 import { resolveMakaClientDataRoot } from '@maka/storage/workspace-root';
+import { resolveRuntimeHostNpmGlobalInstallation } from './runtime-host-cli-installation.js';
+import {
+  restartRuntimeHostNpmGlobalDeployment,
+  runtimeHostNpmGlobalSourceRetirementAvailable,
+} from './runtime-host-local-handoff.js';
 
 /**
  * The mode a new Session starts in belongs to the Host: `session.create`
@@ -74,18 +81,6 @@ export async function readHostChatDefaultPermissionMode(
   connection: Pick<RuntimeHostConnection, 'request'>,
 ): Promise<ChatDefaultPermissionMode> {
   return (await connection.request('runtime.policy.query', {})).policy.chatDefaults.permissionMode;
-}
-
-export class RuntimeHostCliConflictError extends RuntimeHostPermanentReconnectError {
-  readonly code = 'RUNTIME_HOST_RESTART_REQUIRED';
-
-  constructor(
-    readonly handshake: HostIncompatible,
-    readonly registration: HostRegistration,
-  ) {
-    super(formatRuntimeHostCliConflict(handshake, registration));
-    this.name = 'RuntimeHostCliConflictError';
-  }
 }
 
 export interface RuntimeHostCliConnectionOnlyContext {
@@ -114,6 +109,7 @@ export interface RuntimeHostCliConnectionInput {
   readonly clientDataRoot?: string;
   readonly interactiveSsh?: boolean;
   readonly signal?: AbortSignal;
+  readonly handoffSurface?: OpenHostHandoffSurface;
 }
 
 export interface RuntimeHostCliTarget {
@@ -132,6 +128,9 @@ interface RuntimeHostCliContextDeps {
   readonly readDeploymentRecord: typeof readLocalHostDeploymentRecord;
   readonly createPeerClient: typeof createRuntimeHostPeerClientFromEnvironment;
   readonly profileCatalog?: RuntimeHostProfileCatalog;
+  readonly resolveInstallation: typeof resolveRuntimeHostNpmGlobalInstallation;
+  readonly restartDeployment: typeof restartRuntimeHostNpmGlobalDeployment;
+  readonly sourceRetirementAvailable: typeof runtimeHostNpmGlobalSourceRetirementAvailable;
 }
 
 export async function connectRuntimeHostCli(
@@ -168,6 +167,9 @@ export async function connectRuntimeHostCliConnection(
     ),
     readDeploymentRecord: readLocalHostDeploymentRecord,
     createPeerClient: createRuntimeHostPeerClientFromEnvironment,
+    resolveInstallation: resolveRuntimeHostNpmGlobalInstallation,
+    restartDeployment: restartRuntimeHostNpmGlobalDeployment,
+    sourceRetirementAvailable: runtimeHostNpmGlobalSourceRetirementAvailable,
     ...overrides,
   };
   const resolvedProfile = await resolveHostProfile(input, deps);
@@ -193,65 +195,150 @@ export async function connectRuntimeHostCliConnection(
     signal?: AbortSignal,
     sshInteraction: 'batch' | 'inherit' = 'batch',
   ): Promise<RuntimeHostConnection> => {
-    if (profile.kind !== 'local') {
-      return deps.connectProfile({
-        profile,
-        ...(resolvedProfile.credential ? { credential: resolvedProfile.credential } : {}),
-        clientInstanceId,
-        sshInteraction,
-        ...(peerClient ? { peerClient } : {}),
+    const observe = async (): Promise<HostHandoffObservation<RuntimeHostConnection>> => {
+      if (profile.kind !== 'local') {
+        try {
+          const connection = await deps.connectProfile({
+            profile,
+            ...(resolvedProfile.credential ? { credential: resolvedProfile.credential } : {}),
+            clientInstanceId,
+            sshInteraction,
+            ...(peerClient ? { peerClient } : {}),
+            ...(signal ? { signal } : {}),
+          });
+          return { kind: 'ready', value: connection };
+        } catch (error) {
+          if (!(error instanceof RuntimeHostRemoteCompatibilityError)) throw error;
+          return {
+            kind: 'blocked',
+            blocker: {
+              identity: JSON.stringify([profile, error.hostEpoch, error.details]),
+              target: {
+                name: profile.name,
+                location: 'remote',
+                rootId: profile.rootId,
+                hostEpoch: error.hostEpoch,
+              },
+              reason: 'upgrade',
+              mayExitNaturally: false,
+              diagnostic: error.message,
+            },
+          };
+        }
+      }
+      let connected = await deps.connectOrSpawn({
+        ...connectInput,
         ...(signal ? { signal } : {}),
       });
-    }
-    let connected = await deps.connectOrSpawn({
-      ...connectInput,
-      ...(signal ? { signal } : {}),
-    });
-    if (connected.kind === 'failed' && connected.reason === 'managed_root_requires_operator') {
-      await deps.activateLocalManagedHost({
-        rootPath: input.rootPath,
-        ...(signal ? { signal } : {}),
-      });
-      signal?.throwIfAborted();
-      // Rejoin over Local IPC. The operator retains launch and update authority.
-      const activated = await deps.connectActivatedHost(connectInput);
-      if (activated.kind === 'connected') {
-        if (signal?.aborted) {
+      if (connected.kind === 'failed' && connected.reason === 'managed_root_requires_operator') {
+        await deps.activateLocalManagedHost({
+          rootPath: input.rootPath,
+          ...(signal ? { signal } : {}),
+        });
+        signal?.throwIfAborted();
+        // The installed operator owns launch. Compatibility is still projected
+        // by the same handoff journey as an already-running managed Host.
+        const activated = await deps.connectActivatedHost(connectInput);
+        if (activated.kind === 'unavailable' || activated.kind === 'draining') {
+          throw new Error(
+            `The installed Runtime Host was activated but the local CLI could not join it (${activated.kind === 'unavailable' ? activated.reason : activated.kind}). Use a compatible CLI or update the managed Host through its configured operator.`,
+          );
+        }
+        if (activated.kind === 'connected' && signal?.aborted) {
           await activated.connection.close();
           signal.throwIfAborted();
         }
         connected = activated;
-      } else {
-        const ConnectionError =
-          activated.kind === 'incompatible' || activated.kind === 'upgrade_required'
-            ? RuntimeHostPermanentReconnectError
-            : Error;
-        throw new ConnectionError(
-          `The installed Runtime Host was activated but the local CLI could not join it (${activated.kind === 'unavailable' ? activated.reason : activated.kind}). Use a compatible CLI or update the managed Host through its configured operator.`,
-        );
       }
-    }
-    if (connected.kind === 'incompatible') {
-      throw new RuntimeHostCliConflictError(connected.handshake, connected.registration);
-    }
-    if (connected.kind === 'upgrade_required') {
-      throw new RuntimeHostPermanentReconnectError(
-        'RUNTIME_HOST_RESTART_REQUIRED: An older Runtime Host build is still running. Restart it, or wait for its background work to finish.',
-      );
-    }
-    if (connected.kind === 'failed') {
-      throw runtimeHostStartupError(connected.reason, connected.diagnostic);
-    }
-    if (connected.registration.generation?.startsWith('npm-global-handoff:')) {
-      const record = await deps.readDeploymentRecord(connected.registration.rootId);
-      if (record?.state.kind !== 'owned' || record.state.owner.kind !== 'cli') {
-        await connected.connection.close().catch(() => undefined);
-        throw new RuntimeHostPermanentReconnectError(
-          'RUNTIME_HOST_RECOVERY_REQUIRED: The staged local Runtime Host is Ready, but its installation ownership was not durably committed.',
-        );
+      if (connected.kind === 'incompatible' || connected.kind === 'upgrade_required') {
+        const record = await deps.readDeploymentRecord(connected.registration.rootId);
+        let replacement: HostHandoffReplacement | undefined;
+        let installation;
+        if (connected.registration.lifecycleMode === 'ephemeral') {
+          try {
+            installation = await deps.resolveInstallation();
+          } catch {
+            /* No persistent installation authority. */
+          }
+          const owner = record?.state.kind === 'handoff' ? record.state.from : record?.state.owner;
+          if (
+            installation &&
+            (!owner ||
+              (owner.kind === installation.owner.kind &&
+                owner.installationId === installation.owner.installationId))
+          ) {
+            const expectedInstallation = installation;
+            const canInterrupt = record
+              ? await deps
+                  .sourceRetirementAvailable({
+                    rootId: connected.registration.rootId,
+                    owner: installation.owner,
+                    source: record.state.selected,
+                  })
+                  .catch(() => false)
+              : false;
+            replacement = {
+              kind: record?.state.kind === 'handoff' ? 'repair' : 'replace',
+              canReplaceIdle: true,
+              canInterrupt,
+              execute: async (activeWorkPolicy, _progress, _consent, attemptSignal) => {
+                const result = await deps.restartDeployment({
+                  rootPath: input.rootPath,
+                  registration: connected.registration,
+                  activeWorkPolicy,
+                  expectedInstallation,
+                  ...(attemptSignal ? { signal: attemptSignal } : {}),
+                });
+                if (result.kind === 'completed') return { kind: 'completed' };
+                if (result.kind === 'active_work') return { kind: 'active_work' };
+                if (
+                  result.kind === 'changed' ||
+                  result.kind === 'rejected' ||
+                  result.kind === 'operator_required'
+                )
+                  return { kind: 'changed' };
+                return {
+                  kind: 'recovery_required',
+                  diagnostic: `Local service recovery is required at ${result.phase}`,
+                };
+              },
+            };
+          }
+        }
+        return {
+          kind: 'blocked',
+          blocker: {
+            identity: JSON.stringify([connected.registration, record, installation]),
+            target: {
+              name: profile.name,
+              location: 'local',
+              rootId: connected.registration.rootId,
+              hostEpoch: connected.registration.hostEpoch,
+            },
+            reason: record?.state.kind === 'handoff' ? 'repair' : 'upgrade',
+            ...(connected.handshake?.activity ? { activity: connected.handshake.activity } : {}),
+            mayExitNaturally:
+              connected.registration.lifecycleMode === 'ephemeral' &&
+              connected.handshake?.replacement === 'wait_for_idle_exit',
+            ...(replacement ? { replacement } : {}),
+          },
+        };
       }
-    }
-    return connected.connection;
+      if (connected.kind === 'failed') {
+        throw runtimeHostStartupError(connected.reason, connected.diagnostic);
+      }
+      if (connected.registration.generation?.startsWith('npm-global-handoff:')) {
+        const record = await deps.readDeploymentRecord(connected.registration.rootId);
+        if (record?.state.kind !== 'owned' || record.state.owner.kind !== 'cli') {
+          await connected.connection.close().catch(() => undefined);
+          throw new RuntimeHostPermanentReconnectError(
+            'RUNTIME_HOST_RECOVERY_REQUIRED: The staged local Runtime Host is Ready, but its installation ownership was not durably committed.',
+          );
+        }
+      }
+      return { kind: 'ready', value: connected.connection };
+    };
+    return runHostHandoff({ observe, signal, openSurface: input.handoffSurface });
   };
   let initialConnection: RuntimeHostConnection | undefined;
   let connection: Awaited<ReturnType<typeof createRuntimeHostReconnectingConnection>> | undefined;
@@ -362,54 +449,6 @@ async function resolveHostProfile(
   const root = input.clientDataRoot ?? resolveMakaClientDataRoot();
   const catalog = deps.profileCatalog ?? createClientRuntimeHostProfileCatalog(root);
   return catalog.resolve(input.profileId);
-}
-
-function formatRuntimeHostCliConflict(
-  handshake: HostIncompatible,
-  registration: HostRegistration,
-): string {
-  const lines = [
-    'RUNTIME_HOST_RESTART_REQUIRED: An older Runtime Host is still running and cannot accept this client.',
-    `Local Runtime Host: PID ${registration.pid}; lifecycle ${registration.lifecycleMode ?? 'unknown'}; compatibility epoch ${registration.compatibilityEpoch}.`,
-  ];
-  if (registration.lifecycleMode === 'ephemeral') {
-    lines.push('The ephemeral Host is not currently idle and cannot be replaced by this Client.');
-  } else if (registration.lifecycleMode === 'service') {
-    lines.push(
-      'This service Host is managed by its operator and cannot be replaced by this Client.',
-    );
-  } else {
-    lines.push('This Host cannot be replaced by this Client.');
-  }
-  if (handshake.compatibilityEpoch < RUNTIME_HOST_COMPATIBILITY_EPOCH) {
-    lines.push(
-      registration.lifecycleMode === 'service'
-        ? 'Use the service operator to inspect or upgrade the Host.'
-        : 'Use a previous compatible Maka build to inspect the Host and finish or clear any retained work. Stop the Host only after deciding that interruption is safe.',
-    );
-  } else {
-    lines.push(
-      `Host protocol ${handshake.protocolMin}-${handshake.protocolMax}; CLI protocol ${RUNTIME_HOST_PROTOCOL_VERSION}.`,
-    );
-  }
-  return lines.join('\n');
-}
-
-export function shouldRetryRuntimeHostConflict(answer: string): boolean {
-  const normalized = answer.trim().toLowerCase();
-  return normalized === 'w' || normalized === 'wait';
-}
-
-export type RuntimeHostCliConflictDecision = 'restart' | 'wait' | 'cancel';
-
-export function resolveRuntimeHostCliConflictDecision(
-  answer: string,
-  canRestart: boolean,
-): RuntimeHostCliConflictDecision {
-  const normalized = answer.trim().toLowerCase();
-  if (canRestart && (normalized === 'r' || normalized === 'restart')) return 'restart';
-  if (normalized === 'w' || normalized === 'wait') return 'wait';
-  return 'cancel';
 }
 
 export function resolveRuntimeHostCliTarget(

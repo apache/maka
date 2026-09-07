@@ -173,6 +173,7 @@ export type RuntimeHostCliCommand =
       websocketPath?: string;
       expectedTarget?: RuntimeHostManagedServiceTarget;
       expectedConfigFingerprint?: string;
+      expectedHost?: RuntimeHostExpectedHost;
       retainManagedDeployment?: true;
       allowInterruptActiveTasks?: true;
     }
@@ -873,7 +874,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
             },
           }
         : {}),
-      ...(action === 'update'
+      ...(action === 'update' || action === 'restart'
         ? {
             '--expected-host-json': (value: string) => {
               if (expectedHost !== undefined) return error('Duplicate --expected-host-json');
@@ -998,10 +999,13 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
       ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
     };
   }
+  if (expectedHost && !options.managedRootId)
+    return error('--expected-host-json requires --managed-root-id');
   return {
     kind: 'runtime-host-service-manage',
     action,
     ...options,
+    ...(expectedHost ? { expectedHost } : {}),
     ...(clientDataRoot ? { clientDataRoot } : {}),
     ...(options.managedRootId ? { managedRootId: options.managedRootId } : {}),
     ...(retainManagedDeployment ? { retainManagedDeployment: true } : {}),

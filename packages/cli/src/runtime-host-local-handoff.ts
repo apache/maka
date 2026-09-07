@@ -21,6 +21,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, posix, resolve, win32 } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   claimLocalHostProcessDeployment,
   handoffLocalHostProcessDeployment,
@@ -134,6 +135,7 @@ export interface RuntimeHostNpmGlobalReconciliationRequest {
 }
 
 export type RuntimeHostNpmGlobalRestartResult =
+  | { readonly kind: 'changed' }
   | LocalHostProcessDeploymentClaimResult
   | LocalHostProcessDeploymentHandoffResult
   | {
@@ -154,10 +156,13 @@ export async function restartRuntimeHostNpmGlobalDeployment(
     readonly installationOptions?: Parameters<typeof resolveRuntimeHostNpmGlobalInstallation>[0];
     readonly deploymentPathOptions?: RuntimeHostLocalDeploymentPathOptions;
     readonly activeWorkPolicy?: 'refuse_active_work' | 'interrupt_active_work';
+    readonly signal?: AbortSignal;
+    readonly expectedInstallation?: RuntimeHostNpmGlobalInstallation;
   },
   authorityOptions: LocalHostDeploymentAuthorityOptions = {},
   overrides: Partial<RuntimeHostLocalRestartDeps> = {},
 ): Promise<RuntimeHostNpmGlobalRestartResult> {
+  input.signal?.throwIfAborted();
   if (input.registration.lifecycleMode !== 'ephemeral') {
     return {
       kind: 'operator_required',
@@ -178,6 +183,9 @@ export async function restartRuntimeHostNpmGlobalDeployment(
     ...overrides,
   };
   const installation = await deps.resolveInstallation(input.installationOptions);
+  if (input.expectedInstallation && !isDeepStrictEqual(installation, input.expectedInstallation)) {
+    return { kind: 'changed' };
+  }
   const current = await deps.readRecord(input.registration.rootId, authorityOptions);
   const sourceOwner = current?.state.kind === 'handoff' ? current.state.from : current?.state.owner;
   if (sourceOwner && !sameOwner(sourceOwner, installation.owner)) {
@@ -264,6 +272,7 @@ export async function restartRuntimeHostNpmGlobalDeployment(
     stagedTarget: RuntimeHostLocalStagedDeployment,
     inheritableAuthorityLeaseFd: number,
   ): Promise<{ readonly kind: 'target_present' | 'active_work' }> => {
+    input.signal?.throwIfAborted();
     if (rootId !== input.registration.rootId) {
       throw new RuntimeHostLocalHandoffError(
         'root_changed',
@@ -327,6 +336,7 @@ export async function restartRuntimeHostNpmGlobalDeployment(
         expectedHostEpoch: registration.hostEpoch,
         activeWorkPolicy,
         inheritableAuthorityLeaseFd,
+        ...(input.signal ? { signal: input.signal } : {}),
       });
       if (retired === 'active_work') return { kind: 'active_work' };
       if (retired === 'operator_required') {
@@ -638,6 +648,25 @@ async function requireCandidateEntrypoint(packageRoot: string): Promise<string> 
     throw invalidStagedPackage('The staged Runtime Host candidate is redirected');
   }
   return candidate;
+}
+
+/** Read-only capability check against the same verified source package the transaction uses. */
+export async function runtimeHostNpmGlobalSourceRetirementAvailable(input: {
+  readonly rootId: string;
+  readonly owner: RuntimeHostNpmGlobalInstallation['owner'];
+  readonly source: RuntimeHostUpdateCandidate;
+  readonly deploymentPathOptions?: RuntimeHostLocalDeploymentPathOptions;
+}): Promise<boolean> {
+  const source = await openRuntimeHostNpmGlobalStagedDeployment(
+    {
+      rootId: input.rootId,
+      owner: input.owner,
+      target: input.source,
+      transactionId: 'source-capability-probe',
+    },
+    input.deploymentPathOptions,
+  );
+  return hasSourceRetirementHelper(source);
 }
 
 async function hasSourceRetirementHelper(

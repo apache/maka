@@ -101,7 +101,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 121 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 122 as const;
+// 122: Authenticated physical handoff continuations retain logical Turn identity.
+// Older peers cannot decode the handoff source and sealed invocation facts.
 // 121: Host diagnostics report `upgradeBlockingActivity`, the Host's
 // authoritative activity answer for maintenance probes, computed by the same
 // authority that gates `host.upgrade.prepare`. Older Clients reject the
@@ -381,6 +383,8 @@ export interface ClientHello {
   compositionId: string;
   generation?: string;
   takeover?: { expectedHostEpoch: string };
+  /** Opt in before a Host adds maintenance evidence to the strict activity record. */
+  activitySnapshotVersion?: 2;
 }
 
 export interface HostAccepted {
@@ -393,6 +397,7 @@ export interface HostAccepted {
   compositionId: string;
   compositionRevision: string;
   state: Exclude<HostLifecycleState, 'draining'>;
+  cooperativeHandoff?: true;
 }
 
 export interface HostIncompatible {
@@ -489,6 +494,7 @@ export function decodeClientFrame(value: unknown): ClientFrame {
     }
     return {
       kind: 'hello',
+      ...(frame.activitySnapshotVersion === 2 ? { activitySnapshotVersion: 2 as const } : {}),
       clientInstanceId: requireClientInstanceId(frame.clientInstanceId),
       protocolMin,
       protocolMax,
@@ -507,8 +513,12 @@ export function decodeClientFrame(value: unknown): ClientFrame {
 export function decodeHostFrame(value: unknown): HostFrame {
   const frame = requireRecord(value, 'host frame');
   if (frame.kind === 'accepted') {
+    if (frame.cooperativeHandoff !== undefined && frame.cooperativeHandoff !== true) {
+      throw invalidProtocolFrame('Invalid Runtime Host cooperative handoff capability');
+    }
     return {
       kind: 'accepted',
+      ...(frame.cooperativeHandoff === true ? { cooperativeHandoff: true as const } : {}),
       rootId: requireHostRootId(frame.rootId),
       hostEpoch: requireId(frame.hostEpoch, 'hostEpoch'),
       connectionId: requireId(frame.connectionId, 'connectionId'),

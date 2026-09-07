@@ -167,14 +167,7 @@ export const ALLOWED_VISIBLE_LITERALS = {
     'unchanged',
   ],
   'packages/cli/src/pi-tui-pickers.ts': ['/skill:${…}', '/skill:${…}', 'Auto', 'Full access'],
-  'packages/cli/src/runtime-host-tui-command.ts': [
-    'Maka',
-    'Maka — ${…}',
-    'Maka',
-    'Restart this local Host if it is idle, wait for it to exit, or cancel? [r/w/C] ',
-    'Wait only if the existing Host is expected to exit, or cancel? [w/C] ',
-    'The existing Runtime Host still owns active or durable work and was not interrupted.\n',
-  ],
+  'packages/cli/src/runtime-host-tui-command.ts': ['Maka', 'Maka — ${…}', 'Maka'],
 };
 
 function staticText(node) {

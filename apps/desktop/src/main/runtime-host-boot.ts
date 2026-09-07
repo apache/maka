@@ -134,7 +134,6 @@ import {
   defaultRuntimeHostRecoveryDialog,
   showMainRendererProcessGoneDialog,
   showMessageBoxWithDiagnostics,
-  showRuntimeHostStartupRecoveryDialog,
 } from "./native-diagnostic-dialog.js";
 import { getNativeDiagnosticDialogCopy } from "./native-diagnostic-dialog-copy.js";
 import {
@@ -189,15 +188,10 @@ import {
   type RuntimeHostDesktopManager,
 } from "./runtime-host-desktop-manager.js";
 import {
-  canRepairManagedRuntimeHostStartup,
-  DesktopRuntimeHostStartupRecoveryCancelledError,
-  startDesktopRuntimeHostWithRecovery,
-} from "./runtime-host-startup-recovery.js";
-import {
   buildRuntimeHostActiveQuitDialog,
 } from "./runtime-host-quit-copy.js";
 import { prepareRuntimeHostQuit } from "./runtime-host-quit.js";
-import { createRuntimeHostUpgradePrompts } from "./runtime-host-upgrade-dialog.js";
+import { createDesktopHostHandoffSurface } from './startup-presentation.js';
 import { registerRuntimeHostMemoryIpc } from "./runtime-host-memory-ipc-main.js";
 import {
   createDesktopRuntimeHostProfileService,
@@ -1137,10 +1131,7 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
       runtimeHostProfileService.resolveCollaborationConnectionTarget(profile),
   },
   {
-    upgradePrompts: createRuntimeHostUpgradePrompts(
-      () => desktopLocale.resolve(),
-      showStartupDiagnosticDialog,
-    ),
+    handoffSurface: createDesktopHostHandoffSurface(() => desktopLocale.resolve()),
     onTargetStateChanged: (state) => {
       const profileAccess = runtimeHostProfileAccess(state.target.profile);
       const hostId = state.readiness === "ready"
@@ -1236,14 +1227,10 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
       });
     },
     recoverLocalHost: (signal) => localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart(signal),
+    resolveStartupRepair: (error, signal) => localRuntimeHostRemoteAccess.resolveStartupRepair(error, signal),
     resolveLocalHostReplacement: (registration, signal) =>
       localRuntimeHostRemoteAccess.resolveConflictingHostReplacement(registration, signal),
     onFatalError: (error, target) => {
-      if (
-        !runtimeHostManager &&
-        target.profile.kind === "local" &&
-        canRepairManagedRuntimeHostStartup(error)
-      ) return;
       if (error instanceof RuntimeHostUpgradeCancelledError) {
         if (target.profile.kind === "local") app.quit();
         return;
@@ -1253,51 +1240,9 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
     },
   },
 );
-runtimeHostManager = await startDesktopRuntimeHostWithRecovery({
-  start: async () => {
-    updateDesktopStartupProgress('connect');
-    await localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart();
-    return startLocalRuntimeHostManager();
-  },
-  repair: async ({ allowManualUpdate, allowInterruptActiveTasks }) => {
-    updateDesktopStartupProgress('package');
-    console.warn('[runtime-host] repairing the managed Local Host before startup');
-    const result = await localRuntimeHostRemoteAccess.repairManagedStartup({
-      allowManualUpdate,
-      allowInterruptActiveTasks,
-    });
-    console.log(`[runtime-host] managed Local Host repair result: ${result.kind}`);
-    return result;
-  },
-  prompt: async (input) => {
-    updateDesktopStartupProgress('attention');
-    console.error('[runtime-host] managed Local Host startup recovery requires attention:', {
-      startupError: input.startupError,
-      repairError: input.repairError,
-      activeTasks: input.activeTasks,
-    });
-    const locale = await desktopLocale.resolve();
-    return showRuntimeHostStartupRecoveryDialog(input, {
-      locale,
-      showMessageBox: (options) => showDesktopMessageBox(options, { locale }),
-      copyDiagnostics: () =>
-        copyDesktopDiagnosticReport(
-          desktopDiagnostics,
-          createDesktopStartupDiagnosticInput({
-            title: 'Runtime Host startup recovery',
-            description: input.startupError.message,
-            details: [input.startupError.stack, input.repairError?.stack]
-              .filter(Boolean)
-              .join('\n\n'),
-          }),
-        ),
-    });
-  },
-}).catch((error: unknown) => {
-  if (
-    error instanceof RuntimeHostUpgradeCancelledError ||
-    error instanceof DesktopRuntimeHostStartupRecoveryCancelledError
-  ) {
+updateDesktopStartupProgress('connect');
+runtimeHostManager = await startLocalRuntimeHostManager().catch((error: unknown) => {
+  if (error instanceof RuntimeHostUpgradeCancelledError) {
     app.quit();
     return new Promise<never>(() => undefined);
   }

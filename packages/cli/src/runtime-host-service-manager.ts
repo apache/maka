@@ -240,6 +240,7 @@ export interface RuntimeHostManagedServiceInput {
   readonly cliPath: string;
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
   readonly expectedConfigFingerprint?: string;
+  readonly expectedHost?: { readonly hostEpoch: string; readonly pid: number };
   readonly allowInterruptActiveTasks?: boolean;
 }
 
@@ -333,6 +334,12 @@ export async function manageRuntimeHostService(
   backend: RuntimeHostServiceBackend,
   overrides: Partial<RuntimeHostServiceManagerDeps> = {},
 ): Promise<RuntimeHostManagedServiceResult> {
+  if (input.expectedHost) {
+    throw new RuntimeHostServiceManagerError(
+      'target_mismatch',
+      'An exact Host fence requires the canonical managed deployment operator',
+    );
+  }
   const deps = runtimeHostServiceManagerDeps(overrides);
   const configPath = resolveRuntimeHostManagedServiceConfigPath(input.clientDataRoot);
   const configDirectory = dirname(configPath);

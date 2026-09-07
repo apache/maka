@@ -160,7 +160,7 @@ const decodeStoredMessage = (value: unknown): StoredMessage =>
 const MAX_OPTIMISTIC_ATTEMPTS = 3;
 const MAX_SESSION_REVISION_ATTEMPTS = 8;
 const MAX_PRICING_SNAPSHOT_ATTEMPTS = 3;
-const RUNTIME_HOST_RETIREMENT_TIMEOUT_MS = 5_000;
+const RUNTIME_HOST_RETIREMENT_TIMEOUT_MS = 15_000;
 
 export type DesktopSessionConfigurationPatch = SessionConfigurationPatch;
 

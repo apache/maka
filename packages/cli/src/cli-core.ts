@@ -496,6 +496,7 @@ export async function runMakaCli(
         ...(command.expectedConfigFingerprint
           ? { expectedConfigFingerprint: command.expectedConfigFingerprint }
           : {}),
+        ...(command.expectedHost ? { expectedHost: command.expectedHost } : {}),
         ...(command.retainManagedDeployment ? { retainManagedDeployment: true } : {}),
         ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
       });

@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { RunHandoffGate } from '../run-handoff-gate.js';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
@@ -5797,6 +5798,125 @@ describe('AiSdkBackend model history', () => {
     );
     const usage = events.find((event) => event.type === 'token_usage');
     assert.equal(usage?.type === 'token_usage' ? usage.total : undefined, 2);
+  });
+
+  for (const decision of ['cancel', 'commit', 'stop'] as const) {
+    test(`cooperative handoff ${decision} waits for the settled tool and gates the next request`, {
+      timeout: 5_000,
+    }, async () => {
+      const loop = countingToolLoopModel();
+      const durable = durableTurnHarness('turn-1', 'hi');
+      const toolEntered = makeGate();
+      const finishTool = makeGate();
+      const gate = new RunHandoffGate();
+      const request = gate.request(new AbortController().signal);
+      let reached = false;
+      void request.ready.then((ready) => {
+        reached = ready;
+      });
+      let effects = 0;
+      const backend = createTestAiSdkBackend({
+        sessionId: 'session-1',
+        header: header(),
+        appendMessage: async () => {},
+        connection: connection(),
+        apiKey: 'sk-test',
+        modelId: 'mock-model-id',
+        modelFactory: () => loop.model,
+        tools: [
+          {
+            name: 'Read',
+            description: 'count effects',
+            parameters: z.object({ path: z.string() }),
+            impl: async () => {
+              toolEntered.release();
+              await finishTool.promise;
+              effects += 1;
+              return { ok: true };
+            },
+          },
+        ],
+        loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+        newId: idGenerator(),
+        now: monotonicClock(),
+      });
+      const events: SessionEvent[] = [];
+      const running = (async () => {
+        for await (const event of backend.send(
+          durable.input({
+            maxSteps: 2,
+            handoffBoundary: (signal, remainingSteps) => {
+              assert.equal(remainingSteps, 1);
+              assert.equal(
+                events.some((event) => event.type === 'tool_result'),
+                true,
+              );
+              return gate.reachBoundary(signal);
+            },
+          }),
+        )) {
+          durable.record(event);
+          events.push(event);
+        }
+      })();
+      await toolEntered.promise;
+      assert.equal(reached, false);
+      assert.equal(effects, 0);
+      finishTool.release();
+      assert.equal(await request.ready, true);
+      assert.equal(loop.callCount(), 1);
+      assert.equal(effects, 1);
+      if (decision === 'commit') assert.equal(request.commit(), true);
+      else if (decision === 'cancel') request.cancel();
+      else await backend.stop('user_stop');
+      await running;
+      assert.equal(loop.callCount(), decision === 'cancel' ? 2 : 1);
+      assert.equal(effects, decision === 'cancel' ? 2 : 1);
+      assert.equal(
+        events.some((event) => event.type === 'complete'),
+        decision !== 'commit',
+      );
+      assert.equal(
+        events.some((event) => event.type === 'abort'),
+        decision === 'stop',
+      );
+      if (decision === 'commit')
+        assert.equal(
+          events.some((event) => event.type === 'token_usage'),
+          true,
+        );
+    });
+  }
+
+  test('a natural final answer does not enter the handoff gate', async () => {
+    let boundaries = 0;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => textCompletionModel('done'),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({
+      turnId: 'turn-1',
+      text: 'hi',
+      handoffBoundary: async () => {
+        boundaries += 1;
+        return 'pause';
+      },
+    }))
+      events.push(event);
+    assert.equal(boundaries, 0);
+    assert.equal(
+      events.some((event) => event.type === 'complete'),
+      true,
+    );
   });
 
   test('aborting during post-stream persistence wins over step-limit completion', async () => {

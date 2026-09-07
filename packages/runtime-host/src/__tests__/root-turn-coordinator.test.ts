@@ -21,8 +21,13 @@ import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { readInvocation, seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
+import {
+  readLogicalRuntimeExecution,
+  readLogicalRuntimeExecutionForRun,
+} from '@maka/core/runtime-logical-execution';
 import { runtimeInvocationFailureClass } from '@maka/runtime/runtime-event-read-model';
 import { randomUUID } from 'node:crypto';
+import { createSessionTranscriptReader } from '../server/session-transcript-reader.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -2676,6 +2681,8 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       hostEpoch,
       root: rootPort,
       durableProof: {
+        readLogicalExecution: (identity) =>
+          readLogicalRuntimeExecutionForRun(stores.runtimeEventStore, identity),
         readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
           stores.agentRunStore.readRootTurnSourceMessageReceipt(sessionId, messageId),
         readImmutableSteeringMessageProof: (sessionId, messageId) =>
@@ -5138,8 +5145,393 @@ async function registerSessionCapability(
   assert.equal(replaced.ok, true);
 }
 
+for (const stopAfterSeal of [false, true]) {
+  test(`physical handoff ${stopAfterSeal ? 'Stop after seal' : 'completion'} keeps the original Root admission`, {
+    timeout: 10_000,
+  }, async () => {
+    const entered = deferred<void>();
+    const boundary = deferred<void>();
+    const sealPersisted = deferred<void>();
+    const releaseSeal = deferred<void>();
+    let dispatches = 0;
+    const fixture = await createFailureFixture({
+      continuationSafety: { workspaceIdentity: 'handoff-workspace', availableToolNames: [] },
+      withInteractions: true,
+      ...(stopAfterSeal
+        ? {
+            afterHandoffSeal: async () => {
+              sealPersisted.resolve();
+              await releaseSeal.promise;
+            },
+          }
+        : {}),
+      registerBackend: (backends) =>
+        backends.register(
+          'ai-sdk',
+          (context) =>
+            new (class extends FakeBackend {
+              override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+                dispatches += 1;
+                if (!input.continuation) {
+                  entered.resolve();
+                  await boundary.promise;
+                  if ((await input.handoffBoundary!(new AbortController().signal, 2)) === 'pause')
+                    return;
+                } else assert.equal(input.maxSteps, 2);
+                yield {
+                  type: 'complete',
+                  id: randomUUID(),
+                  turnId: input.turnId,
+                  ts: Date.now(),
+                  stopReason: 'end_turn',
+                };
+              }
+            })(context),
+        ),
+    });
+    try {
+      const started = await fixture.interactiveTurns.handlers['turn.start'](
+        {
+          sessionId: fixture.sessionId,
+          turnId: 'handoff-turn',
+          content: { text: 'continue work' },
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency),
+      );
+      assertStartedTurn(started);
+      if (!started.ok) throw new Error('Expected started Turn');
+      await entered.promise;
+      const rootRunId = started.result.turn.runId;
+      const request = fixture.manager.requestRunHandoff(
+        fixture.sessionId,
+        rootRunId,
+        {
+          protocol: 'runtime_handoff_pause_v1',
+          handoffId: 'handoff',
+          hostEpoch: fixture.hostEpoch,
+          rootRunId,
+          successorRunId: 'successor-run',
+          successorInvocationId: 'successor-run',
+          claimId: 'handoff-claim',
+        },
+        new AbortController().signal,
+      );
+      assert.ok(request);
+      boundary.resolve();
+      assert.equal(await request.ready, true);
+      assert.equal(request.commit(), true);
+      let stopping: Promise<void> | undefined;
+      if (stopAfterSeal) {
+        await sealPersisted.promise;
+        stopping = fixture.coordinator.stopRoot({
+          sessionId: fixture.sessionId,
+          turnId: 'handoff-turn',
+          runId: rootRunId,
+        });
+        void stopping.catch(() => {});
+        await fixture.sessionAdmission.run(fixture.sessionId, () => {});
+        releaseSeal.resolve();
+      }
+      assert.equal(await request.sealed, true);
+      releaseSeal.resolve();
+      await stopping;
+      await fixture.coordinator.whenIdle(fixture.sessionId);
+      const logical = await readLogicalRuntimeExecution(fixture.stores.runtimeEventStore, {
+        sessionId: fixture.sessionId,
+        turnId: 'handoff-turn',
+        runId: rootRunId,
+      });
+      assert.equal(dispatches, stopAfterSeal ? 1 : 2);
+      assert.equal(logical?.tip.terminalEvent?.status, stopAfterSeal ? 'aborted' : 'completed');
+      assert.equal(logical?.tip.runId, 'successor-run');
+      assert.equal(
+        (
+          await fixture.stores.agentRunStore.readRootTurnAdmission(
+            fixture.sessionId,
+            'handoff-turn',
+          )
+        )?.runId,
+        rootRunId,
+      );
+      assert.equal(fixture.drainRequested(), false);
+    } finally {
+      boundary.resolve();
+      releaseSeal.resolve();
+      await fixture.coordinator.close();
+      await fixture.messages.close();
+      await fixture.dispose();
+    }
+  });
+}
+
+test('repeated handoffs preserve one logical admission, decreasing budget and exactly-once steering', {
+  timeout: 10_000,
+}, async () => {
+  const entered = Array.from({ length: 3 }, () => deferred<void>());
+  const release = Array.from({ length: 3 }, () => deferred<void>());
+  let dispatches = 0;
+  const injected: string[] = [];
+  const fixture = await createFailureFixture({
+    continuationSafety: { workspaceIdentity: 'handoff-workspace', availableToolNames: [] },
+    withInteractions: true,
+    registerBackend: (backends) =>
+      backends.register(
+        'ai-sdk',
+        (context) =>
+          new (class extends FakeBackend {
+            override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+              const attempt = dispatches++;
+              assert.ok(attempt < 3, 'handoff cannot create an extra logical turn');
+              assert.equal(input.maxSteps, 5 - attempt);
+              yield {
+                type: attempt === 2 ? 'text_delta' : 'text_complete',
+                id: randomUUID(),
+                turnId: input.turnId,
+                ts: Date.now(),
+                messageId: `assistant-${attempt}`,
+                text: `answer ${attempt}`,
+              };
+              entered[attempt]!.resolve();
+              await release[attempt]!.promise;
+              assert.ok(input.pullSteering, 'successors retain the logical message owner');
+              const leases = input.pullSteering();
+              assert.equal(leases.length, 1);
+              for (const lease of leases) {
+                yield {
+                  type: 'steering_message',
+                  id: randomUUID(),
+                  turnId: input.turnId,
+                  ts: Date.now(),
+                  messageId: lease.messageId,
+                  content: lease.content,
+                  ...(lease.submittedContentDigest
+                    ? { submittedContentDigest: lease.submittedContentDigest }
+                    : {}),
+                };
+                input.ackSteering?.([lease.id]);
+                injected.push(lease.messageId);
+              }
+              if (
+                attempt < 2 &&
+                (await input.handoffBoundary!(new AbortController().signal, 4 - attempt)) ===
+                  'pause'
+              )
+                return;
+              yield {
+                type: 'complete',
+                id: randomUUID(),
+                turnId: input.turnId,
+                ts: Date.now(),
+                stopReason: 'end_turn',
+              };
+            }
+          })(context),
+      ),
+  });
+  try {
+    const started = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'repeated-handoff',
+        content: { text: 'continue' },
+        maxSteps: 5,
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assertStartedTurn(started);
+    if (!started.ok) throw new Error('Expected started Turn');
+    const rootRunId = started.result.turn.runId;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await entered[attempt]!.promise;
+      if (attempt === 2) {
+        const transcript = createSessionTranscriptReader({
+          stores: fixture.stores,
+          canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+        });
+        const overlay = await transcript.readActiveOverlay(fixture.sessionId, {
+          sessionId: fixture.sessionId,
+          turnId: 'repeated-handoff',
+          runId: rootRunId,
+          status: 'running',
+        });
+        assert.deepEqual(
+          overlay.filter((message) => message.type === 'assistant').map((message) => message.id),
+          ['assistant-0', 'assistant-1', 'assistant-2'],
+        );
+      }
+      const submitted = await fixture.messages.handlers['turn.message.submit'](
+        {
+          originHostEpoch: fixture.hostEpoch,
+          sessionId: fixture.sessionId,
+          messageId: `steer-${attempt}`,
+          content: { text: `instruction ${attempt}` },
+          placement: 'current_turn',
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency),
+      );
+      assert.equal(submitted.ok && submitted.result.disposition, 'steering');
+      if (attempt < 2) {
+        const request = fixture.manager.requestRunHandoff(
+          fixture.sessionId,
+          attempt === 0 ? rootRunId : `successor-${attempt}`,
+          {
+            protocol: 'runtime_handoff_pause_v1',
+            handoffId: `handoff-${attempt}`,
+            hostEpoch: fixture.hostEpoch,
+            rootRunId,
+            successorRunId: `successor-${attempt + 1}`,
+            successorInvocationId: `successor-${attempt + 1}`,
+            claimId: `handoff-claim-${attempt}`,
+          },
+          new AbortController().signal,
+        );
+        assert.ok(request);
+        release[attempt]!.resolve();
+        assert.equal(await request.ready, true);
+        assert.equal(request.commit(), true);
+        assert.equal(await request.sealed, true);
+      } else release[attempt]!.resolve();
+    }
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+    const logical = await readLogicalRuntimeExecution(fixture.stores.runtimeEventStore, {
+      sessionId: fixture.sessionId,
+      turnId: 'repeated-handoff',
+      runId: rootRunId,
+    });
+    assert.deepEqual(logical?.runIds, [rootRunId, 'successor-1', 'successor-2']);
+    assert.equal(logical?.tip.terminalEvent?.status, 'completed');
+    assert.deepEqual(injected, ['steer-0', 'steer-1', 'steer-2']);
+    assert.equal(
+      (await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(fixture.sessionId))
+        .length,
+      1,
+    );
+    assert.equal(
+      (
+        await fixture.coordinator.read({
+          sessionId: fixture.sessionId,
+          turnId: 'repeated-handoff',
+          runId: rootRunId,
+        })
+      ).status,
+      'completed',
+    );
+    assert.deepEqual(fixture.messages.projection(fixture.sessionId).steering, []);
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    for (const gate of release) gate.resolve();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+for (const decision of ['cancel', 'resume', 'detach', 'blocked'] as const) {
+  test(`Root cooperative handoff ${decision} preserves logical ownership`, {
+    timeout: 10_000,
+  }, async () => {
+    const boundary = deferred<void>();
+    const originalContinue = deferred<void>();
+    const requested = deferred<void>();
+    let dispatches = 0;
+    const fixture = await createFailureFixture({
+      continuationSafety: {
+        workspaceIdentity: 'handoff-workspace',
+        availableToolNames: [],
+        backgroundOperationsSettled: decision !== 'blocked',
+      },
+      withInteractions: true,
+      registerBackend: (backends) =>
+        backends.register(
+          'ai-sdk',
+          (context) =>
+            new (class extends FakeBackend {
+              override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+                dispatches += 1;
+                if (!input.continuation) {
+                  await boundary.promise;
+                  if ((await input.handoffBoundary!(new AbortController().signal, 2)) === 'pause')
+                    return;
+                  if (decision === 'blocked') await originalContinue.promise;
+                }
+                yield {
+                  type: 'complete',
+                  id: randomUUID(),
+                  turnId: input.turnId,
+                  ts: Date.now(),
+                  stopReason: 'end_turn',
+                };
+              }
+            })(context),
+        ),
+    });
+    let recovery: RootTurnCoordinator | undefined;
+    try {
+      const request = fixture.manager.requestRunHandoff.bind(fixture.manager);
+      fixture.manager.requestRunHandoff = (...args) => {
+        const result = request(...args);
+        requested.resolve();
+        return result;
+      };
+      const started = await fixture.interactiveTurns.handlers['turn.start'](
+        {
+          sessionId: fixture.sessionId,
+          turnId: 'cooperative-turn',
+          content: { text: 'continue work' },
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency),
+      );
+      assertStartedTurn(started);
+      if (!started.ok) throw new Error('Expected started Turn');
+      const identity = {
+        sessionId: fixture.sessionId,
+        turnId: 'cooperative-turn',
+        runId: started.result.turn.runId,
+      };
+      const preparing = fixture.coordinator.prepareHandoff(
+        fixture.hostEpoch,
+        new AbortController().signal,
+      );
+      await requested.promise;
+      boundary.resolve();
+      const preparation = await preparing;
+      if (decision === 'blocked') {
+        assert.equal(preparation, undefined);
+        originalContinue.resolve();
+      } else {
+        assert.ok(preparation);
+        assert.equal(fixture.coordinator.prepare('another-session').kind, 'busy');
+        if (decision !== 'cancel') assert.equal(await preparation.seal(), true);
+        if (decision === 'detach') {
+          fixture.coordinator.beginDrain();
+          await preparation.detach();
+          await fixture.coordinator.close();
+          assert.equal((await fixture.coordinator.read(identity)).status, 'running');
+          assert.equal(dispatches, 1);
+          recovery = fixture.createRecoveryCoordinator();
+          await recovery.prepareRecovery();
+          await fixture.manager.recoverInterruptedSessionsStrict(fixture.stores);
+          await recovery.recover();
+        } else preparation.cancel();
+      }
+      await (recovery ?? fixture.coordinator).whenIdle(fixture.sessionId);
+      const logical = await readLogicalRuntimeExecution(fixture.stores.runtimeEventStore, identity);
+      assert.equal(logical?.tip.terminalEvent?.status, 'completed');
+      assert.equal(dispatches, decision === 'cancel' || decision === 'blocked' ? 1 : 2);
+      assert.equal(fixture.drainRequested(), false);
+    } finally {
+      boundary.resolve();
+      originalContinue.resolve();
+      await (recovery ?? fixture.coordinator).close();
+      await fixture.messages.close();
+      await fixture.dispose();
+    }
+  });
+}
+
 async function createFailureFixture(options: {
   registerBackend(backends: BackendRegistry): void;
+  afterHandoffSeal?(): Promise<void>;
   directoryHostId?: string;
   corruptSessionRole?: boolean;
   legacyConnectionIdentity?: boolean;
@@ -5152,6 +5544,7 @@ async function createFailureFixture(options: {
   clientCapabilities?: HostClientCapabilityCoordinator;
   continuationSafety?: {
     workspaceIdentity: string;
+    backgroundOperationsSettled?: boolean;
     availableToolNames: readonly string[] | ((sessionId: string) => readonly string[]);
   };
   agentGraphEpochs?: {
@@ -5252,6 +5645,8 @@ async function createFailureFixture(options: {
     hostEpoch,
     root: rootPort,
     durableProof: {
+      readLogicalExecution: (identity) =>
+        readLogicalRuntimeExecutionForRun(stores.runtimeEventStore, identity),
       readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
         stores.agentRunStore.readRootTurnSourceMessageReceipt(sessionId, messageId),
       readImmutableSteeringMessageProof: (sessionId, messageId) =>
@@ -5301,7 +5696,18 @@ async function createFailureFixture(options: {
   const managerDeps = {
     store: stores.sessionStore,
     runStore: stores.agentRunStore,
-    runtimeEventStore: stores.runtimeEventStore,
+    runtimeEventStore: options.afterHandoffSeal
+      ? {
+          ...stores.runtimeEventStore,
+          appendRuntimeEvent: async (
+            ...args: Parameters<typeof stores.runtimeEventStore.appendRuntimeEvent>
+          ) => {
+            const result = await stores.runtimeEventStore.appendRuntimeEvent(...args);
+            if (args[2].actions?.handoffPause) await options.afterHandoffSeal!();
+            return result;
+          },
+        }
+      : stores.runtimeEventStore,
     backends,
     ...(options.childTools ? { childTools: options.childTools } : {}),
     newId: randomUUID,
@@ -5310,9 +5716,11 @@ async function createFailureFixture(options: {
     ...(options.continuationSafety
       ? {
           safeBoundaryResumeEnabled: true,
+          toolBoundaryProtocol: 't1_after_preflight_v1' as const,
           inspectContinuationSafety: async (sessionId: string) => ({
             workspaceIdentity: options.continuationSafety!.workspaceIdentity,
-            backgroundOperationsSettled: true,
+            backgroundOperationsSettled:
+              options.continuationSafety!.backgroundOperationsSettled ?? true,
             availableToolNames:
               typeof options.continuationSafety!.availableToolNames === 'function'
                 ? options.continuationSafety!.availableToolNames(sessionId)

@@ -79,27 +79,21 @@ test('resolves persisted locale before first post-settings recovery prompt', () 
     rendererRecoveryStart,
     bootSource.indexOf('resolveBrowserDialogParent =', rendererRecoveryStart),
   );
-  const hostRecoveryStart = bootSource.indexOf('prompt: async (input)');
-  const hostRecovery = bootSource.slice(
-    hostRecoveryStart,
-    bootSource.indexOf('}).catch((error: unknown)', hostRecoveryStart),
-  );
   const defaultHostRecoveryStart = bootSource.indexOf(
     'async function promptForDefaultRuntimeHostRecovery',
   );
   const defaultHostRecovery = bootSource.slice(defaultHostRecoveryStart);
 
   assert.match(rendererRecovery, /const locale = await desktopLocale\.resolve\(\)/u);
-  assert.match(hostRecovery, /const locale = await desktopLocale\.resolve\(\)/u);
+  assert.match(bootSource, /handoffSurface: createDesktopHostHandoffSurface\(\(\) => desktopLocale\.resolve\(\)\)/u);
   assert.match(defaultHostRecovery, /const locale = await desktopLocale\.resolve\(\)/u);
   assert.doesNotMatch(rendererRecovery, /desktopLocale\.current\(\)/u);
-  assert.doesNotMatch(hostRecovery, /desktopLocale\.current\(\)/u);
   assert.doesNotMatch(defaultHostRecovery, /resolveSystemUiLocale/u);
 });
 
 test('lets the Runtime Host migrate its State Root before Desktop opens shared tables', () => {
   const hostStart = bootSource.indexOf(
-    'runtimeHostManager = await startDesktopRuntimeHostWithRecovery',
+    'runtimeHostManager = await startLocalRuntimeHostManager',
   );
   const workBoardOpen = bootSource.indexOf(
     'store: createWorkBoardStore(workspaceRoot',

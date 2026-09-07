@@ -21,6 +21,7 @@ import { type ContextCompactionOutcome } from '@maka/core/events';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
 import { readRunInvocation } from '@maka/core/runtime-event-store';
+import { readLogicalRuntimeExecution } from '@maka/core/runtime-logical-execution';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import { classifyTerminalRuntimeLedger } from '@maka/runtime/terminal-run-commit';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
@@ -49,8 +50,10 @@ export async function readCanonicalTurnSnapshot(
     throw new Error('Admitted Turn identity does not match its invocation');
   }
 
-  const runtimeEvents = await stores.runtimeEventStore.readImmutableRuntimeEvents(sessionId, runId);
-  const terminal = classifyTerminalRuntimeLedger(run, runtimeEvents);
+  const logical = await readLogicalRuntimeExecution(stores.runtimeEventStore, identity, run);
+  if (!logical) throw new Error('Admitted logical execution disappeared');
+  if (logical.pendingHandoff) return { sessionId, turnId, runId, status: 'running' };
+  const terminal = classifyTerminalRuntimeLedger(logical.tip, logical.events);
   if (terminal.kind === 'fact') {
     const fact = terminal.fact;
     if (fact.runStatus === 'completed') {
@@ -101,7 +104,7 @@ export async function readCanonicalTurnSnapshot(
   }
   // No terminal event means the run is still open. Whether it is parked is the
   // pending-interaction store's answer, not something the run restates.
-  const parked = await hasPendingInteraction(stores, sessionId, runId);
+  const parked = await hasPendingInteraction(stores, sessionId, logical.tip.runId);
   return { sessionId, turnId, runId, status: parked ? 'waiting_for_user' : 'running' };
 }
 

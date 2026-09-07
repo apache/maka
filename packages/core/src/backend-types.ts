@@ -63,7 +63,7 @@ export interface BackendSendInput {
   /** Caller-generated turn id shared by the persisted UserMessage and every emitted event. */
   turnId: string;
   /** Trusted per-turn cap on provider tool-call steps. */
-  maxSteps?: number;
+  maxSteps?: number | null;
   /** Trusted effective orchestration snapshot for this run. */
   orchestration?: EffectiveOrchestration;
   /** Trusted per-run tool protocol override. Direct remains the default. */
@@ -98,6 +98,14 @@ export interface BackendSendInput {
   runtimeContextInvocations?: readonly RuntimeInvocationRecord[];
   /** Continue from an already committed RuntimeEvent boundary without adding another user turn. */
   continuation?: RuntimeContinuationMetadata;
+  /** Runtime-owned reversible gate, called only before another provider step,
+   * after the preceding provider/tool events have been durably consumed.
+   * `pause` ends this physical stream without emitting logical completion.
+   */
+  handoffBoundary?: (
+    signal: AbortSignal,
+    remainingSteps: number | null,
+  ) => Promise<'continue' | 'pause'>;
   /**
    * Steering pull — a LEASE, and the single atomic commit point of delivery.
    * Backends that support mid-turn steering call this at every step boundary;

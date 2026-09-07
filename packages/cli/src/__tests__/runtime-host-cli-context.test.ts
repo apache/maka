@@ -28,6 +28,7 @@ import {
   createClientRuntimeHostProfileCatalog,
   RuntimeHostRemoteCompatibilityError,
   RuntimeHostStartupError,
+  HostHandoffRequiredError,
   type RuntimeHostConnection,
   type RuntimeHostProfileCatalog,
   type RemoteRuntimeHostProfile,
@@ -43,9 +44,6 @@ import {
 import {
   connectRuntimeHostCli,
   connectRuntimeHostCliConnection,
-  resolveRuntimeHostCliConflictDecision,
-  RuntimeHostCliConflictError,
-  shouldRetryRuntimeHostConflict,
 } from '../runtime-host-cli-context.js';
 
 const V0_1_11_HOST_COMPATIBILITY_EPOCH = 25;
@@ -238,6 +236,10 @@ test('non-interactive CLI reports how to retire an incompatible Runtime Host', a
     connectRuntimeHostCli(
       { rootPath: '/runtime-host-root' },
       {
+        readDeploymentRecord: async () => undefined,
+        resolveInstallation: async () => {
+          throw new Error('Not installed globally');
+        },
         connectOrSpawn: async () => ({
           kind: 'incompatible',
           registration: hostRegistration({
@@ -258,19 +260,11 @@ test('non-interactive CLI reports how to retire an incompatible Runtime Host', a
       },
     ),
     (error: unknown) => {
-      assert.ok(error instanceof RuntimeHostCliConflictError);
-      assert.equal(error.code, 'RUNTIME_HOST_RESTART_REQUIRED');
-      assert.match(
-        error.message,
-        new RegExp(
-          `PID 42; lifecycle ephemeral; compatibility epoch ${V0_1_11_HOST_COMPATIBILITY_EPOCH}`,
-        ),
-      );
-      assert.match(
-        error.message,
-        /ephemeral Host is not currently idle and cannot be replaced by this Client/,
-      );
-      assert.match(error.message, /previous compatible Maka build/);
+      assert.ok(error instanceof HostHandoffRequiredError);
+      assert.equal(error.view.reason, 'operator_required');
+      assert.equal(error.view.activity, undefined);
+      assert.deepEqual(error.view.actions, ['cancel', 'retry']);
+      assert.match(error.message, /operator/);
       return true;
     },
   );
@@ -281,6 +275,7 @@ test('CLI explains a service Host without inventing resident work', async () => 
     connectRuntimeHostCli(
       { rootPath: '/runtime-host-root' },
       {
+        readDeploymentRecord: async () => undefined,
         connectOrSpawn: async () => ({
           kind: 'incompatible',
           registration: hostRegistration({ lifecycleMode: 'service' }),
@@ -299,29 +294,14 @@ test('CLI explains a service Host without inventing resident work', async () => 
       },
     ),
     (error: unknown) => {
-      assert.ok(error instanceof RuntimeHostCliConflictError);
-      assert.match(error.message, /service Host is managed by its operator/);
-      assert.match(error.message, /service operator to inspect or upgrade/);
+      assert.ok(error instanceof HostHandoffRequiredError);
+      assert.equal(error.view.reason, 'operator_required');
+      assert.equal(error.view.mayExitNaturally, false);
+      assert.match(error.message, /operator/);
       assert.doesNotMatch(error.message, /not idle/);
       return true;
     },
   );
-});
-
-test('Runtime Host conflict waits only after an explicit wait answer', () => {
-  assert.equal(shouldRetryRuntimeHostConflict('w'), true);
-  assert.equal(shouldRetryRuntimeHostConflict(' wait '), true);
-  assert.equal(shouldRetryRuntimeHostConflict(' W '), true);
-  assert.equal(shouldRetryRuntimeHostConflict('WAIT'), true);
-  assert.equal(shouldRetryRuntimeHostConflict(''), false);
-  assert.equal(shouldRetryRuntimeHostConflict('c'), false);
-  assert.equal(shouldRetryRuntimeHostConflict('cancel'), false);
-  assert.equal(shouldRetryRuntimeHostConflict('unexpected'), false);
-  assert.equal(resolveRuntimeHostCliConflictDecision('r', true), 'restart');
-  assert.equal(resolveRuntimeHostCliConflictDecision(' restart ', true), 'restart');
-  assert.equal(resolveRuntimeHostCliConflictDecision('r', false), 'cancel');
-  assert.equal(resolveRuntimeHostCliConflictDecision('w', true), 'wait');
-  assert.equal(resolveRuntimeHostCliConflictDecision('', true), 'cancel');
 });
 
 test('CLI reports an actionable stored-data startup failure', async () => {
@@ -604,28 +584,14 @@ test('remote profiles preserve shared compatibility errors', async () => {
           },
         ),
       (error: unknown) => {
-        assert.ok(error instanceof RuntimeHostRemoteCompatibilityError);
-        assert.equal(error.code, 'RUNTIME_HOST_REMOTE_INCOMPATIBLE');
+        assert.ok(error instanceof HostHandoffRequiredError);
+        assert.deepEqual(error.view.actions, ['cancel', 'retry']);
+        assert.equal(error.view.target.hostEpoch, handshake.hostEpoch);
         assert.equal(
-          error.message,
+          error.view.diagnostic,
           new RuntimeHostRemoteCompatibilityError(profile.id, handshake).message,
         );
-        assert.deepEqual(error.details, {
-          profileId: profile.id,
-          client: {
-            compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
-            protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
-            protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
-            compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-          },
-          host: {
-            compatibilityEpoch: handshake.compatibilityEpoch,
-            protocolMin: handshake.protocolMin,
-            protocolMax: handshake.protocolMax,
-            compositionId: handshake.compositionId,
-            compositionRevision: handshake.compositionRevision,
-          },
-        });
+        assert.equal(error.view.target.rootId, profile.rootId);
         return true;
       },
     );

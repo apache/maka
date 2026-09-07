@@ -34,6 +34,11 @@
  */
 
 import {
+  isRuntimeHandoffPause,
+  runtimeHandoffPause,
+  type RuntimeHandoffPause,
+} from './runtime-handoff.js';
+import {
   isMessageContent,
   normalizeMessageContent,
   type MessageContent,
@@ -305,6 +310,17 @@ export type RuntimeInvocationOpenSource =
       sourceRuntimeEventHighWater: number;
       claimId?: string;
       boundaryDigest?: `sha256:${string}`;
+    }
+  | {
+      /** A new physical attempt under the original logical Turn admission. */
+      kind: 'handoff';
+      rootRunId: string;
+      sourceInvocationId: string;
+      sourceRunId: string;
+      sourceTurnId: string;
+      sourceRuntimeEventHighWater: number;
+      claimId: string;
+      boundaryDigest: `sha256:${string}`;
     };
 
 /**
@@ -489,6 +505,8 @@ export interface RuntimeEventPermissionClosureAccepted {
  * event without `actions.endInvocation` MUST assert a terminal `status`.
  */
 export interface RuntimeEventActions {
+  /** Durable physical pause; does not complete or cancel the owning logical Turn. */
+  handoffPause?: RuntimeHandoffPause;
   /** Patch applied to invocation-scoped runtime state. */
   stateDelta?: Record<string, unknown>;
   /** Artifact key → primitive delta (size/bytes/version counters, etc.). */
@@ -744,6 +762,21 @@ const INVOCATION_CONTINUATION_SOURCE_SHAPE = defineObjectShape<
 const INVOCATION_FRESH_SOURCE_SHAPE = defineObjectShape<
   Extract<RuntimeInvocationOpenSource, { kind: 'fresh' }>
 >()(['kind'], []);
+const INVOCATION_HANDOFF_SOURCE_SHAPE = defineObjectShape<
+  Extract<RuntimeInvocationOpenSource, { kind: 'handoff' }>
+>()(
+  [
+    'kind',
+    'rootRunId',
+    'sourceInvocationId',
+    'sourceRunId',
+    'sourceTurnId',
+    'sourceRuntimeEventHighWater',
+    'claimId',
+    'boundaryDigest',
+  ],
+  [],
+);
 const INVOCATION_ROOT_SHAPES = {
   user: defineObjectShape<Extract<RuntimeInvocationRootAuthority, { kind: 'user' }>>()(
     ['kind'],
@@ -769,6 +802,7 @@ const INVOCATION_ROOT_SHAPES = {
 const RUNTIME_ACTIONS_SHAPE = defineObjectShape<RuntimeEventActions>()(
   [],
   [
+    'handoffPause',
     'stateDelta',
     'artifactDelta',
     'permissionRequest',
@@ -933,6 +967,7 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
   ) {
     throw new Error('Invalid RuntimeEvent schema');
   }
+  runtimeHandoffPause(value as unknown as RuntimeEvent);
   if (isRecord(value.content) && value.content.kind === 'text') {
     return {
       ...value,
@@ -1134,8 +1169,14 @@ function isRuntimeInvocationOpenSource(value: unknown): value is RuntimeInvocati
   if (!isRecord(value)) return false;
   if (value.kind === 'fresh') return hasExactShape(value, INVOCATION_FRESH_SOURCE_SHAPE);
   return (
-    value.kind === 'continuation' &&
-    hasExactShape(value, INVOCATION_CONTINUATION_SOURCE_SHAPE) &&
+    ((value.kind === 'continuation' &&
+      hasExactShape(value, INVOCATION_CONTINUATION_SOURCE_SHAPE)) ||
+      (value.kind === 'handoff' &&
+        hasExactShape(value, INVOCATION_HANDOFF_SOURCE_SHAPE) &&
+        isNonEmptyString(value.rootRunId) &&
+        isNonEmptyString(value.claimId) &&
+        isSha256Digest(value.boundaryDigest) &&
+        (value.sourceRuntimeEventHighWater as number) > 0)) &&
     isNonEmptyString(value.sourceInvocationId) &&
     isNonEmptyString(value.sourceRunId) &&
     isNonEmptyString(value.sourceTurnId) &&
@@ -1188,6 +1229,7 @@ function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
     return false;
   }
   return (
+    (value.handoffPause === undefined || isRuntimeHandoffPause(value.handoffPause)) &&
     (value.stateDelta === undefined || isRecord(value.stateDelta)) &&
     (value.artifactDelta === undefined ||
       (isRecord(value.artifactDelta) &&

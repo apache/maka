@@ -306,6 +306,34 @@ test('installed release skew is rejected before staging or authority mutation', 
   assert.deepEqual(await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot }), claimed.record);
 });
 
+test('a changed npm installation invalidates handoff consent before staging or authority mutation', async () => {
+  const installation = {
+    owner: CLI_OWNER,
+    observedRelease: {
+      version: TARGET.version,
+      packageRoot: '/installation',
+      cliPath: '/installation/dist/cli.js',
+    },
+  };
+  const result = await restartRuntimeHostNpmGlobalDeployment(
+    {
+      rootPath: '/root-under-test',
+      registration: hostRegistration(),
+      expectedInstallation: installation,
+    },
+    {},
+    {
+      resolveInstallation: async () => ({
+        ...installation,
+        observedRelease: { ...installation.observedRelease, version: '9.0.0' },
+      }),
+      readRecord: async () => assert.fail('changed installation cannot enter deployment authority'),
+      resolveCandidate: async () => assert.fail('changed installation cannot stage a target'),
+    },
+  );
+  assert.deepEqual(result, { kind: 'changed' });
+});
+
 test('explicit npm-global restart claims an exact staged legacy takeover', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-local-restart-'));
   t.after(() => rm(base, { recursive: true, force: true }));
