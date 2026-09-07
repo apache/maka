@@ -172,6 +172,13 @@ describe('models.dev provider conformance', () => {
         );
         assert.equal(discovery.ok, true);
         if (!discovery.ok) throw new Error('Discovery failed');
+        assert.deepEqual(
+          discovery.models.map(({ id, apiProtocol }) => ({ id, apiProtocol })),
+          [
+            { id: 'claude-route', apiProtocol: 'anthropic-messages' },
+            { id: 'new-route', apiProtocol: undefined },
+          ],
+        );
         assert.equal(
           (
             await stores.operations.completeModelFetch(prepared.ticket, {

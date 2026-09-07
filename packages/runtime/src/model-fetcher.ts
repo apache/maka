@@ -282,9 +282,9 @@ async function fetchProviderModelsStrict(
         .filter((model): model is ModelInfo => model !== null);
       if (discovery.modelProtocols === 'commandcode') {
         for (const model of models) {
-          model.apiProtocol = /^(?:anthropic\/)?claude-/i.test(model.id)
-            ? 'anthropic-messages'
-            : 'openai-chat';
+          if (/^(?:anthropic\/)?claude-/i.test(model.id)) {
+            model.apiProtocol = 'anthropic-messages';
+          }
         }
       }
       return filterDiscoveredModels(models, discovery.filter);
