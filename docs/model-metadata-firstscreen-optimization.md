@@ -17,6 +17,8 @@
   under the License.
 -->
 
+> **Audit note (2026-09-04, #4711):** This optimization is **partially** implemented. Verified done: `OnboardingHero` no longer imports `RECOMMENDED_PROVIDER_TYPES` at runtime (it uses a local `FIRST_RUN_PROVIDER_TYPES` constant; `onboarding-hero.tsx:27` is `import type` only). Not done: a static import chain still reaches `provider-registry` from the first screen — `main.tsx` → `app.tsx` → `app-shell.tsx` → `app-shell-overlays.tsx` → `app-shell-command-actions.ts` → `command-palette-commands.ts` → `isRetiredProvider` (a value import) → `providerDefaultsOf` → `PROVIDER_REGISTRY`, which is constructed from the generated models.dev tables (`provider-registry.ts:24`). Tree-shaking cannot drop it: `PROVIDER_REGISTRY` is a used constant. The document is retained as a live design record until that chain is broken (e.g. by extracting the small retirement predicate out of `provider-registry`).
+
 # perf(desktop): remove models.dev metadata from the renderer startup path
 
 <details open>
