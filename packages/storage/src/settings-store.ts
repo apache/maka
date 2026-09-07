@@ -192,11 +192,10 @@ class FileSettingsStore implements SettingsStore {
   private async write(settings: AppSettings): Promise<void> {
     // SettingsStore does not own the workspace directory's permission policy:
     // sibling stores such as MCP config may independently harden the same root.
-    // Keep creation here plain; settings.json itself is 0600 because it carries
-    // plaintext credentials (bot secrets, proxy password).
+    // Keep both directory creation and the historical umask-derived file mode.
     await mkdir(dirname(this.settingsPath), { recursive: true });
     await writeAtomicFile(this.settingsPath, JSON.stringify(settings, null, 2) + '\n', {
-      fileMode: 0o600,
+      fileMode: 0o666 & ~process.umask(),
     });
   }
 

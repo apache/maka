@@ -31,8 +31,9 @@ import {
   type McpServerConfig,
   type McpStdioServerConfig,
 } from '@maka/core/mcp';
-import { hardenDirectory, writeAtomicFile } from './atomic-file-write.js';
+import { writeAtomicFile } from './atomic-file-write.js';
 import { withProcessLifetimeFileUpdateLock } from './process-lifetime-file-update-lock.js';
+import { hardenDirectory } from './stable-storage.js';
 
 const MAX_SERVERS = 100;
 const MAX_ID_LENGTH = 128;

@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 25 |
+| portable-candidate | 26 |
 | platform-contract | 31 |
 
-Total Windows-excluded declarations: **83**
+Total Windows-excluded declarations: **84**
 
 ## Inventory
 
@@ -80,8 +80,6 @@ Total Windows-excluded declarations: **83**
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` removes its temp file and rethrows after a chmod failure | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` creates the target 0600 on POSIX | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` re-chmods a pre-existing world-readable target to 0600 on the next write | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` hardenDirectory creates a 0700 directory chain | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` hardenDirectory re-chmods a pre-existing world-accessible directory to 0700 | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` refuses to write through a pre-planted symlink at the temp path | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` accepts a POSIX package bin symlink whose target remains inside the dependency root | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` isolates published POSIX content from a producer-retained writable handle | `process.platform === 'win32'` |
@@ -104,8 +102,10 @@ Total Windows-excluded declarations: **83**
 | portable-candidate | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` disabling proxy authentication commits policy before deleting its credential | `process.platform === 'win32' ? 'POSIX file handles are required to inject persistence failures' : false` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` successor recovery removes credentials orphaned by an interrupted connection removal | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` fails closed on final symlinks, FIFOs, and oversized documents without changing bytes | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/settings-store-onboarding.test.ts` writes settings.json owner-only (0600) and leaves no temp file behind | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-onboarding.test.ts` preserves a restrictive umask-derived settings.json mode and leaves no temp file behind | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` rejects a symlink instead of following it | `process.platform === 'win32' ? 'POSIX no-follow semantics are required' : false` |
+| portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` hardenDirectory creates a 0700 directory chain | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` hardenDirectory re-chmods a pre-existing world-accessible directory to 0700 | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/usage-stores.test.ts` classifies a renamed or replaced live root as a draining persistence failure | `process.platform === 'win32' ? 'Windows does not permit renaming a directory with an open SQLite database' : false` |
 | platform-contract | `packages/storage/src/__tests__/workspace-identity.test.ts` an unmarked read-only workspace fails without leaving marker state | `process.platform === 'win32' ? 'POSIX permissions are required to create a read-only workspace fixture' : false` |
 | portable-candidate | `scripts/release-cli-eval-support.test.mjs` preserves the primary process failure when diagnostics cannot be read | `process.platform === 'win32'` |

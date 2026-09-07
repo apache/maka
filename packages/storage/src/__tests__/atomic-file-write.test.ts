@@ -19,9 +19,7 @@
 
 import assert from 'node:assert/strict';
 import {
-  chmod,
   lstat,
-  mkdir,
   mkdtemp,
   open,
   readdir,
@@ -36,13 +34,13 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   AtomicFileWriteCommitUnknownError,
-  hardenDirectory,
   writeAtomicFile,
   type AtomicFileWriteDependencies,
   type AtomicFileWriteHandle,
 } from '../atomic-file-write.js';
 
 const isPosix = process.platform !== 'win32';
+const ownerOnlyFile = { fileMode: 0o600 } as const;
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), 'maka-atomic-write-'));
@@ -57,7 +55,7 @@ describe('writeAtomicFile', () => {
   test('writes the exact bytes and leaves no temp file behind', async () => {
     await withTempDir(async (dir) => {
       const path = join(dir, 'settings.json');
-      await writeAtomicFile(path, '{"a":1}\n');
+      await writeAtomicFile(path, '{"a":1}\n', ownerOnlyFile);
       assert.equal(await readFile(path, 'utf8'), '{"a":1}\n');
       assert.deepEqual(await readdir(dir), ['settings.json']);
     });
@@ -71,7 +69,7 @@ describe('writeAtomicFile', () => {
         const fault = new Error(`${failurePhase} failed`);
         await assert.rejects(
           () =>
-            writeAtomicFile(path, '{"a":1}\n', undefined, {
+            writeAtomicFile(path, '{"a":1}\n', ownerOnlyFile, {
               randomUUID: () => 'fault',
               open: faultingOpen(temporaryPath, failurePhase, fault),
             }),
@@ -91,7 +89,7 @@ describe('writeAtomicFile', () => {
       const fault = new Error('chmod failed');
       await assert.rejects(
         () =>
-          writeAtomicFile(path, '{"a":1}\n', undefined, {
+          writeAtomicFile(path, '{"a":1}\n', ownerOnlyFile, {
             randomUUID: () => 'fault',
             open: faultingOpen(temporaryPath, 'chmod', fault),
           }),
@@ -105,7 +103,7 @@ describe('writeAtomicFile', () => {
     await withTempDir(async (dir) => {
       const path = join(dir, 'settings.json');
       const phases: string[] = [];
-      await writeAtomicFile(path, '{"a":1}\n', undefined, {
+      await writeAtomicFile(path, '{"a":1}\n', ownerOnlyFile, {
         open: async (temporaryPath, flags, mode) => {
           const handle = await open(temporaryPath, flags, mode);
           return {
@@ -146,7 +144,7 @@ describe('writeAtomicFile', () => {
       const fault = new Error('dirsync failed');
       await assert.rejects(
         () =>
-          writeAtomicFile(path, '{"a":1}\n', undefined, {
+          writeAtomicFile(path, '{"a":1}\n', ownerOnlyFile, {
             syncDirectory: async () => {
               throw fault;
             },
@@ -169,7 +167,7 @@ describe('writeAtomicFile', () => {
   test('creates the target 0600 on POSIX', { skip: process.platform === 'win32' }, async () => {
     await withTempDir(async (dir) => {
       const path = join(dir, 'settings.json');
-      await writeAtomicFile(path, '{}\n');
+      await writeAtomicFile(path, '{}\n', ownerOnlyFile);
       assert.equal((await stat(path)).mode & 0o777, 0o600);
     });
   });
@@ -181,32 +179,9 @@ describe('writeAtomicFile', () => {
       const path = join(dir, 'settings.json');
       // A file created with a loose mode by an older writer.
       await writeFile(path, '{}\n', { encoding: 'utf8', mode: 0o644 });
-      await writeAtomicFile(path, '{"a":1}\n');
+      await writeAtomicFile(path, '{"a":1}\n', ownerOnlyFile);
       assert.equal((await stat(path)).mode & 0o777, 0o600);
       assert.equal(await readFile(path, 'utf8'), '{"a":1}\n');
-    });
-  });
-
-  test('hardenDirectory creates a 0700 directory chain', {
-    skip: process.platform === 'win32',
-  }, async () => {
-    await withTempDir(async (dir) => {
-      const targetDir = join(dir, 'secrets', 'sub');
-      await hardenDirectory(targetDir);
-      assert.equal((await stat(join(dir, 'secrets'))).mode & 0o777, 0o700);
-      assert.equal((await stat(targetDir)).mode & 0o777, 0o700);
-    });
-  });
-
-  test('hardenDirectory re-chmods a pre-existing world-accessible directory to 0700', {
-    skip: process.platform === 'win32',
-  }, async () => {
-    await withTempDir(async (dir) => {
-      const loose = join(dir, 'loose');
-      await mkdir(loose, { recursive: true, mode: 0o777 });
-      await chmod(loose, 0o777); // mkdir's mode only applies on creation
-      await hardenDirectory(loose);
-      assert.equal((await stat(loose)).mode & 0o777, 0o700);
     });
   });
 
@@ -222,7 +197,7 @@ describe('writeAtomicFile', () => {
       const plantedTemp = join(dir, '.credentials.json.planted.tmp');
       await symlink(plantedTarget, plantedTemp);
       await assert.rejects(
-        () => writeAtomicFile(path, '{}\n', undefined, { randomUUID: () => 'planted' }),
+        () => writeAtomicFile(path, '{}\n', ownerOnlyFile, { randomUUID: () => 'planted' }),
         { code: 'EEXIST' },
       );
       assert.equal(await readFile(plantedTarget, 'utf8'), 'do not touch\n');

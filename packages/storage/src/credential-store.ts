@@ -19,8 +19,9 @@
 
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { hardenDirectory, writeAtomicFile } from './atomic-file-write.js';
+import { writeAtomicFile } from './atomic-file-write.js';
 import { withFileUpdateLock } from './file-update-lock.js';
+import { hardenDirectory } from './stable-storage.js';
 
 /**
  * Pure-Node credential store. Shared by the desktop app and any

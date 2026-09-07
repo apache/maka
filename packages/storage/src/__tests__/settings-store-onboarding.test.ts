@@ -360,10 +360,11 @@ describe('SettingsStore.get file recovery', () => {
     }
   });
 
-  it('writes settings.json owner-only (0600) and leaves no temp file behind', {
+  it('preserves a restrictive umask-derived settings.json mode and leaves no temp file behind', {
     skip: process.platform === 'win32',
   }, async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-settings-mode-'));
+    const previousUmask = process.umask(0o027);
     try {
       const store = createSettingsStore(workspaceRoot);
 
@@ -372,10 +373,11 @@ describe('SettingsStore.get file recovery', () => {
       assert.deepEqual(await readdir(workspaceRoot), ['settings.json']);
       assert.equal(
         (await stat(join(workspaceRoot, 'settings.json'))).mode & 0o777,
-        0o600,
-        'settings.json carries plaintext credentials (bot secrets, proxy password)',
+        0o640,
+        'settings.json retains the mode produced by the legacy default and current umask',
       );
     } finally {
+      process.umask(previousUmask);
       await rm(workspaceRoot, { recursive: true, force: true });
     }
   });

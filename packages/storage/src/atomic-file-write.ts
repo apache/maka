@@ -18,14 +18,14 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, open, rename, rm } from 'node:fs/promises';
+import { open, rename, rm } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { syncDirectory } from './stable-storage.js';
 
 /**
- * Owner-only atomic writer shared by the legacy settings, MCP, and credentials
- * JSON stores. It publishes an exclusive hidden temp file with rename and
- * removes that temp on failures before publication.
+ * Atomic writer shared by the legacy settings, MCP, and credentials JSON
+ * stores. It publishes an exclusive hidden temp file with rename and removes
+ * that temp on failures before publication.
  *
  * Durability support depends on the platform and storage stack:
  *  - Linux and POSIX systems other than macOS: sync the temp file before
@@ -36,17 +36,17 @@ import { syncDirectory } from './stable-storage.js';
  *  - Windows: sync the temp file before rename, but parent-directory sync is a
  *    no-op because Node does not provide an equivalent directory fence.
  *
- * File chmod policy is a documented invariant of this module, not a per-call
- * choice:
- *  - file chmod: fail-loud on POSIX, skipped on Windows (no POSIX mode).
- *    Applies after the exclusive open so umask can never loosen the file.
+ * The caller owns the final file-mode policy. The writer applies that mode
+ * through the open handle before synchronization, fail-loud on POSIX and
+ * skipped on Windows (no POSIX mode). Callers may supply an exact private mode
+ * or one already derived from the process umask.
  * Directory creation and permission policy belong to each caller.
  */
 
 export interface AtomicFileWriteOptions {
-  /** Mode for the final file. The temp is opened with it and re-chmod'd, so a
-   * pre-existing looser target is always tightened on the next write. */
-  fileMode?: number;
+  /** Effective mode to apply to the temporary file before it is synchronized
+   * and published. */
+  fileMode: number;
 }
 
 /** The fs surface `writeAtomicFile` needs; injectable for fault-injection
@@ -82,11 +82,11 @@ export class AtomicFileWriteCommitUnknownError extends Error {
 export async function writeAtomicFile(
   path: string,
   contents: string,
-  options: AtomicFileWriteOptions = {},
+  options: AtomicFileWriteOptions,
   dependencies: Partial<AtomicFileWriteDependencies> = {},
 ): Promise<void> {
   const deps = { ...defaultDependencies, ...dependencies };
-  const fileMode = options.fileMode ?? 0o600;
+  const { fileMode } = options;
   const tempPath = join(dirname(path), `.${basename(path)}.${deps.randomUUID()}.tmp`);
   // Only the entry this call created — and hasn't renamed away — may be
   // cleaned up. A pre-existing file or planted symlink the 'wx' open refused
@@ -119,18 +119,4 @@ export async function writeAtomicFile(
     if (published) throw new AtomicFileWriteCommitUnknownError({ cause: error });
     throw error;
   }
-}
-
-/**
- * Create (or harden) an owner-only directory: recursive mkdir plus a
- * fail-closed chmod, since mkdir's mode only applies on creation. Callers that
- * store secrets use this before creating their file or update lock.
- */
-export async function hardenDirectory(dir: string, mode: number = 0o700): Promise<void> {
-  await mkdir(dir, { recursive: true, mode });
-  if (process.platform === 'win32') {
-    await chmod(dir, mode).catch(() => {});
-    return;
-  }
-  await chmod(dir, mode);
 }
