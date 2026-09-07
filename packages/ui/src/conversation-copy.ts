@@ -554,7 +554,7 @@ const CONVERSATION_COPY = {
       systemNotes: {
         contextCompacting: '正在压缩上下文…',
         contextCompacted: '已压缩较早的上下文。',
-        contextCompactionFailedOpen: '上下文压缩失败；会话已继续，未生成新摘要。',
+        contextCompactionFailedOpen: '上下文压缩失败，Maka 已继续处理你的请求。',
         contextProviderDropping: (used, prior) =>
           `供应商在丢弃或改写上下文：追加了内容，它报告的输入却是 ${used.toLocaleString('zh-CN')} tokens，与之前的 ${prior.toLocaleString('zh-CN')} 相比没有增长。在连接设置里为该模型声明上下文窗口，让 Maka 先行压缩。`,
         contextWindowSuggestion: (tokens, declared) =>
@@ -713,7 +713,7 @@ const CONVERSATION_COPY = {
       systemNotes: {
         contextCompacting: '正在壓縮上下文…',
         contextCompacted: '已壓縮較早的上下文。',
-        contextCompactionFailedOpen: '上下文壓縮失敗；會話已繼續，未產生新摘要。',
+        contextCompactionFailedOpen: '上下文壓縮失敗，Maka 已繼續處理你的請求。',
         contextProviderDropping: (used, prior) =>
           `供應商在丟棄或改寫上下文：追加了內容，它報告的輸入卻是 ${used.toLocaleString('zh-TW')} tokens，與之前的 ${prior.toLocaleString('zh-TW')} 相比沒有成長。在連線設定裡為該模型宣告上下文視窗，讓 Maka 先行壓縮。`,
         contextWindowSuggestion: (tokens, declared) =>
@@ -898,7 +898,7 @@ const CONVERSATION_COPY = {
       systemNotes: {
         contextCompacting: 'Compacting context…',
         contextCompacted: 'Earlier context compacted.',
-        contextCompactionFailedOpen: 'Context compaction failed; the session continued without a new summary.',
+        contextCompactionFailedOpen: 'Context compaction failed. Maka continued with your request.',
         contextProviderDropping: (used, prior) =>
           `The provider is dropping or rewriting context: content was appended, and it counted ${used.toLocaleString('en-US')} input tokens against ${prior.toLocaleString('en-US')} before, which is no growth. Declare a context window for this model in the connection settings so Maka compacts first.`,
         contextWindowSuggestion: (tokens, declared) =>
