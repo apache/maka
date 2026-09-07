@@ -31,7 +31,7 @@
 // legible in both light and dark themes; viewBox is the upstream 24×24.
 
 import type { ProviderType } from '@maka/core/llm-connections';
-import { Cpu, ICON_SIZE } from '@maka/ui/icons';
+import { GenericProviderMark } from '../features/connection-settings';
 import type { ReactElement } from 'react';
 import { siMinimax } from 'simple-icons';
 import alibabaBrandMark from '../assets/provider-brands/alibabacloud.svg';
@@ -406,7 +406,7 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
     case 'github-copilot':
       // Primer Octicons does not license GitHub logos under its MIT terms.
       // Keep the provider identifiable by name without redistributing the mark.
-      return <Cpu size={ICON_SIZE.plate} aria-hidden="true" />;
+      return <GenericProviderMark />;
     case 'google':
       return <Gemini />;
     case 'deepseek':
@@ -456,6 +456,6 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
     case 'volcengine-agent-plan':
       return <img src={volcengineBrandMark} alt="" />;
     default:
-      return <Cpu size={ICON_SIZE.plate} aria-hidden="true" />;
+      return <GenericProviderMark />;
   }
 }
