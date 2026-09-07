@@ -410,3 +410,45 @@ test('changing thinking level keeps the draft caret', async () => {
   assert.equal(caret.startContainer, dom.editable().firstChild);
   assert.equal(caret.startOffset, 6);
 });
+
+test('cancelling a thinking menu recaptures a caret moved before the next choice', async () => {
+  const dom = harness();
+  const props = {
+    ...withDraft('session-a', 'draft in the middle'),
+    draftKey: 'session-a',
+    activeSession: {
+      id: 'session-a',
+      llmConnectionId: 'connection-a',
+      llmConnectionSlug: 'connection-a',
+      model: 'model-a',
+    } as never,
+    activeThinkingLevels: ['low'] as never,
+    activeThinkingLevel: undefined,
+    onThinkingLevelChange: () => undefined,
+  };
+  await dom.render(props);
+  await dom.focus(dom.editable());
+  await dom.setCaret(6);
+
+  const selector = document.querySelector('.maka-thinking-level-selector');
+  assert.ok(selector, 'the thinking-level selector did not render');
+  await dom.pointerDown(selector as HTMLElement);
+  await dom.click(selector as HTMLElement);
+  await dom.click(dom.outside());
+
+  await dom.setCaret(2);
+  await dom.pointerDown(selector as HTMLElement);
+  await dom.click(selector as HTMLElement);
+  const low = [...document.querySelectorAll('[role="menuitemradio"]')].find((option) =>
+    option.textContent?.includes('Low'),
+  );
+  assert.ok(low, 'the thinking-level menu did not render the low option');
+  await dom.click(low as HTMLElement);
+  await dom.render({ ...props, activeThinkingLevel: 'low' as never });
+  await dom.flushAnimationFrames();
+
+  const caret = dom.selected.at(-1);
+  if (!caret) throw new Error('the thinking-level change removed the draft selection');
+  assert.equal(caret.startContainer, dom.editable().firstChild);
+  assert.equal(caret.startOffset, 2);
+});
