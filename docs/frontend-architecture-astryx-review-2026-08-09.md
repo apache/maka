@@ -3,10 +3,10 @@ doc_id: frontend-architecture-astryx-review-2026-08-09
 title: "Frontend architecture & Astryx coverage review"
 language: en
 source_language: en
-implementation_status: current
-document_status: current
+implementation_status: historical
+document_status: historical
 translation_status: source-only
-last_verified: 2026-09-04
+last_verified: 2026-09-05
 owners:
   - maka-backend
 ---
