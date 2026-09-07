@@ -18,6 +18,7 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
+import { desktopAssistantBridge } from './desktop-assistant.js';
 import {
   isRuntimeHostProfileKind,
   type RuntimeHostProfileKind,
@@ -1368,6 +1369,7 @@ const browserSelection = createBrowserSelectionCoordinator(runtimeHostSessionRef
 }, browserDocumentId);
 
 const makaBridge = {
+  desktopAssistant: desktopAssistantBridge,
   runtimeHost,
   sessionCollaboration: {
     async prepareInvitation(sessionId, preset, allowInsecure = false) {

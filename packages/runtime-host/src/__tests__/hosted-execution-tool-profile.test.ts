@@ -139,3 +139,25 @@ test('the WorkHub coordination profile has conversational authority but zero too
   };
   assert.deepEqual(projectHostedExecutionTools([productTool], 'workhub-coordination-v1'), []);
 });
+
+test('Desktop assistant cannot inherit terminal, browser, or filesystem tools', () => {
+  const makeTool = (name: string): MakaTool => ({
+    name,
+    description: name,
+    parameters: z.object({}),
+    impl: async () => name,
+  });
+  const control = makeTool('mcp__desktop_assistant__control');
+  const tools = [
+    makeTool('Bash'),
+    makeTool('Read'),
+    makeTool('mcp__desktop_browser__browser_navigate'),
+    control,
+  ];
+  assert.deepEqual(projectHostedExecutionTools(tools, 'desktop-assistant-v1'), [control]);
+  assert.throws(
+    () => projectHostedExecutionTools(tools.slice(0, 3), 'desktop-assistant-v1'),
+    /Hosted tool profile is unavailable/,
+  );
+  assert.equal(hostedExecutionRunProfile('desktop-assistant-v1')?.memoryExtraction, false);
+});

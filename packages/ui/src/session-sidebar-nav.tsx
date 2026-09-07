@@ -164,6 +164,7 @@ export function SessionSidebarFooter() {
       <div className="maka-sidebar-footer-row">
         <div className="maka-sidebar-footer-row-primary">
           <SideNavItem
+            data-maka-assistant-target="settings.open"
             label={copy.settings}
             icon={Settings}
             size="md"

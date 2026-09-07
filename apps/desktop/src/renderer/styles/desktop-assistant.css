@@ -1,0 +1,55 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+.desktopAssistant {
+  position: fixed; z-index: 1200; bottom: 32px; left: 50%; transform: translateX(-50%);
+  width: min(580px, calc(100vw - 48px)); border: 1px solid var(--border-soft);
+  border-radius: 20px; padding: 12px; color: var(--foreground);
+  background: color-mix(in oklab, var(--surface-overlay) 96%, transparent);
+  backdrop-filter: blur(24px) saturate(140%); box-shadow: 0 16px 64px #0002, 0 2px 8px #0001;
+  -webkit-app-region: no-drag;
+}
+.desktopAssistantHeader { display: flex; align-items: center; gap: 8px; padding: 0 2px 8px; font-size: 12px; }
+.desktopAssistantIdentity { display: flex; align-items: center; gap: 8px; font-weight: 600; white-space: nowrap; }
+.desktopAssistantDot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-solid); }
+.desktopAssistantDot.isBusy { animation: assistantPulse 1.3s ease-in-out infinite; }
+.desktopAssistantStatus { flex: 1; text-align: right; color: var(--muted-foreground); font-size: 11px; }
+.desktopAssistantMessages { max-height: min(360px, 48vh); overflow: auto; overscroll-behavior: contain; padding: 8px 4px; display: flex; flex-direction: column; gap: 12px; }
+.desktopAssistantMessage { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; font-size: 13px; padding: 8px 12px; }
+.desktopAssistantMessage.user { align-self: flex-end; max-width: 90%; border-radius: 14px 14px 4px 14px; background: color-mix(in oklab, var(--accent) 12%, var(--surface-overlay)); }
+.desktopAssistantHint { font-size: 12px; color: var(--muted-foreground); padding: 8px; }
+.desktopAssistantComposer { display: flex; align-items: flex-end; gap: 8px; border-radius: 12px; background: var(--background); border: 1px solid var(--border-soft); padding: 10px; }
+.desktopAssistantComposer textarea { flex: 1; min-width: 0; border: 0; outline: 0; resize: none; font: inherit; font-size: 14px; line-height: 1.6; color: inherit; background: transparent; }
+.desktopAssistantComposer:focus-within { box-shadow: 0 0 0 2px color-mix(in oklab, var(--focus-ring) 45%, transparent); }
+.desktopAssistantFooter { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+.desktopAssistantModel { max-width: 260px; }
+.desktopAssistantMessage.assistant { white-space: normal; }
+.desktopAssistantError { color: var(--destructive-text); font-size: 12px; padding: 0 8px; }
+.desktopAssistantCompact { width: min(410px, calc(100vw - 48px)); bottom: 16px; border-radius: 40px; }
+.desktopAssistantCompact .desktopAssistantHeader { padding-bottom: 0; }
+.desktopAssistantLauncher { position: fixed; z-index: 1100; bottom: 18px; right: 20px; -webkit-app-region: no-drag; }
+.desktopAssistantCursor { position: fixed; z-index: 1300; top: 0; left: 0; pointer-events: none; color: var(--accent-solid); filter: drop-shadow(0 2px 3px #0005); transition: transform 320ms cubic-bezier(.22,.61,.36,1); }
+.desktopAssistantCursor svg { stroke: white; stroke-width: 1.5; }
+.desktopAssistantCursor span { display: block; position: absolute; left: 20px; top: 23px; padding: 2px 6px; border-radius: 8px; background: var(--accent-solid); color: white; font-size: 10px; }
+.desktopAssistantCursor.isClicking::before { content: ''; position: absolute; width: 32px; height: 32px; left: -16px; top: -16px; border-radius: 50%; border: 2px solid var(--accent-solid); animation: assistantClick .4s ease-out both; }
+@keyframes assistantPulse { 50% { opacity: .4; } }
+@keyframes assistantClick { to { transform: scale(1.7); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .desktopAssistantCursor { transition: none; } .desktopAssistantDot.isBusy, .desktopAssistantCursor.isClicking::before { animation: none; } }
+
+.desktopAssistantComposer textarea::placeholder { color: var(--muted-foreground); opacity: 1; }

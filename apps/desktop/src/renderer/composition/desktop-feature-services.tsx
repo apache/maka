@@ -20,6 +20,8 @@
 import type { ReactNode } from 'react';
 import { ConversationServicesProvider } from '../features/conversation';
 import { createDesktopConversationServices } from '../platform/desktop/create-conversation-services';
+import { DesktopAssistantServicesProvider } from '../features/desktop-assistant';
+import { createDesktopAssistantServices } from '../platform/desktop/create-desktop-assistant-services';
 import { AppUpdateServicesProvider } from '../features/app-update/index.js';
 import { ConnectionSettingsServicesProvider } from '../features/connection-settings';
 import { GoalServicesProvider } from '../features/goals';
@@ -47,6 +49,7 @@ export function createDesktopFeatureServices() {
   return {
     appUpdate: createDesktopAppUpdateServices(),
     conversation: createDesktopConversationServices(),
+    desktopAssistant: createDesktopAssistantServices(),
     connectionSettings: createDesktopConnectionSettingsServices(),
     goal: createDesktopGoalServices(),
     moduleHub: createDesktopModuleHubServices(),
@@ -77,7 +80,7 @@ export function DesktopFeatureServicesProvider(props: {
                     <GoalServicesProvider services={props.services.goal}>
                       <WorkbarServicesProvider services={props.services.workbar}>
                         <ConversationServicesProvider services={props.services.conversation}>
-                          {props.children}
+                          <DesktopAssistantServicesProvider services={props.services.desktopAssistant}>{props.children}</DesktopAssistantServicesProvider>
                         </ConversationServicesProvider>
                       </WorkbarServicesProvider>
                     </GoalServicesProvider>

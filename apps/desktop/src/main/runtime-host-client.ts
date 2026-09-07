@@ -697,7 +697,7 @@ export class DesktopRuntimeHostClient {
   async listSessions(): Promise<SessionCatalogProjection[]> {
     this.#assertOpen();
     try {
-      return (await readRuntimeHostSessions(this.connection)).map(requireSessionProjection);
+      return (await readRuntimeHostSessions(this.connection)).map(requireSessionProjection).filter((session) => !session.labels.includes('mode:desktop_assistant'));
     } catch (error) {
       if (error instanceof DesktopRuntimeHostClientError) throw error;
       if (!(error instanceof RuntimeHostCatalogReadError)) throw error;

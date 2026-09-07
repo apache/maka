@@ -712,6 +712,7 @@ export interface DesktopSessionUsageSummary extends UsageSummaryV2 {
 
 export interface MakaBridge {
   sessionLocal: import('../shared/session-local-contract.js').DesktopSessionLocalBridge;
+  desktopAssistant: import('../shared/desktop-assistant.js').DesktopAssistantBridge;
   sessionCollaboration: {
     prepareInvitation(
       sessionId: string,

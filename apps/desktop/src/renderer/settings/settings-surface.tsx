@@ -834,7 +834,7 @@ function SettingsSurfaceContent(
   }
 
   return (
-    <div className="settingsSurface" data-modal="true">
+    <div className="settingsSurface" data-modal="true" data-maka-assistant-section={section}>
       <Layout
         height="fill"
         padding={0}
@@ -874,6 +874,7 @@ function SettingsSurfaceContent(
                   {items.map((item) => (
                     <SideNavItem
                       key={item.id}
+                      data-maka-assistant-target={`settings.${item.id}`}
                       label={item.label}
                       icon={<item.Icon size={ICON_SIZE.chrome} aria-hidden="true" />}
                       isSelected={section === item.id}

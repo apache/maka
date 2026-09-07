@@ -135,6 +135,37 @@ function tool(name: string): MakaTool {
     impl: async () => name,
   };
 }
+test('Desktop assistant admits only its control capability and respects a bound child ceiling', () => {
+  const control: MakaTool = {
+    name: 'mcp__desktop_assistant__control',
+    description: 'Control Maka',
+    parameters: {},
+    impl: async () => 'ok',
+  };
+  const unrelated: MakaTool = {
+    name: 'mcp__desktop_browser__browser_navigate',
+    description: 'Browser',
+    parameters: {},
+    impl: async () => 'ok',
+  };
+  const composer = createFixtureComposer({
+    toolProfile: 'desktop-assistant-v1',
+    clientCapabilities: { tools: [control, unrelated], groups: [] },
+  });
+  assert.deepEqual(
+    composer.tools.map((tool) => tool.name),
+    [control.name],
+  );
+  assert.throws(
+    () =>
+      createFixtureComposer({
+        toolProfile: 'desktop-assistant-v1',
+        boundTools: [],
+        clientCapabilities: { tools: [control], groups: [] },
+      }),
+    /Hosted tool profile is unavailable/,
+  );
+});
 
 function createFixtureComposer(
   overrides: Partial<Parameters<typeof createInteractiveRunComposer>[0]> = {},

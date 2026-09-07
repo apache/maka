@@ -832,6 +832,7 @@
           "./features/app-update/index.js": 1,
           "./features/conversation": 1,
           "./features/conversation/index.js": 1,
+          "./features/desktop-assistant": 1,
           "./features/goals": 1,
           "./features/module-hub": 1,
           "./features/session-collaboration": 1,

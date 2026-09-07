@@ -76,6 +76,7 @@ import { createSettingsStore } from "@maka/storage/settings-store";
 import { resolveStorageRoot } from "@maka/storage/root-authority";
 
 import { createMcpOAuthController } from "./mcp-oauth-controller.js";
+import { createDesktopAssistant } from "./desktop-assistant.js";
 import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
 import {
@@ -866,6 +867,29 @@ const currentDesktopWorkspaceTarget = async (
   }
   return workspace;
 };
+const desktopAssistant = createDesktopAssistant({
+  ipcMain,
+  statePath: join(userDataDir, 'desktop-assistant.json'),
+  window: () => {
+    const window = mainWindowController.browserWindow();
+    if (!window) throw new Error('Maka window is unavailable');
+    return window.webContents;
+  },
+  readSettings: () => settingsStore.get(),
+  host: async () => {
+    const current = runtimeHostManager?.current();
+    if (!current?.candidate) throw new Error('Connect to a Runtime Host first');
+    const target = runtimePolicyTargetsByEpoch.get(current.epoch);
+    if (!target) throw new Error('Runtime Host is reconnecting');
+    const workspace: WorkspaceTarget = runtimeHostProfileUsesHostWorkspace(target.policy.kind)
+      ? await currentDesktopWorkspaceTarget(target.policy)
+      : { kind: 'host_path', path: workspaceRoot };
+    return { client: current.candidate.client, workspace, stop: (id) => current.candidate!.stopSession(id) };
+  },
+  isCurrent: (client) => runtimeHostManager?.current()?.candidate?.client === client,
+  clients: () => [...runtimePolicyTargetsByEpoch.values()].filter((target) => target.isActive()).map((target) => target.client),
+});
+app.on('will-quit', () => { void desktopAssistant.close(); });
 const mcpCapabilityPublisher = createCapabilityRevisionPublisher(() =>
   mcpManager.toolSnapshot().revision,
 );
@@ -1062,6 +1086,7 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
           else mcpServers.set(identified.serverId, [identified]);
         }
         return [
+          desktopAssistant.group,
           {
             offerId: "desktop_settings",
             label: "Client settings",
@@ -1335,6 +1360,7 @@ updateDesktopStartupProgress('renderer');
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
 sessionLocal.wake();
+void desktopAssistant.cleanup().catch((error) => console.error('[desktop-assistant] retention cleanup failed', error));
 await guestSessionMountService.start().catch((error: unknown) => {
   console.error('[runtime-host] shared Sessions could not be restored:', error);
 });

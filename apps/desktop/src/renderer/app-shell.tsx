@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { DesktopAssistantRoot } from './features/desktop-assistant';
 import {
   useCallback,
   useEffect,
@@ -270,15 +271,11 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
         <ToastProvider errorAction={errorToastAction}>
           <ErrorBoundary locale={uiLocale}>
             <AppUpdateProvider>
+              <DesktopAssistantRoot />
               <TaskEntry.TaskEntryRoot>
                 {(taskEntry) => (
                   <AppShellContent
-                    initialOnboardingSnapshot={initialOnboardingSnapshot}
-                    taskEntry={taskEntry}
-                    uiLocale={uiLocale}
-                    uiLocaleOverride={uiLocaleOverride}
-                    setUiLocaleOverride={setUiLocaleOverride}
-                    setUiLocalePreference={setUiLocalePreference}
+                    {...{ initialOnboardingSnapshot, taskEntry, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
                   />
                 )}
               </TaskEntry.TaskEntryRoot>
