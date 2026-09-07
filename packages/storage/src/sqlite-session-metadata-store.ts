@@ -4022,7 +4022,9 @@ export class SqliteSessionMetadataStore {
     return rows.map(decodeAgentGraphSupervisorWakeAttemptRow);
   }
 
-  async listRetryableAgentGraphSupervisorWakes(): Promise<AgentGraphSupervisorWakeRecord[]> {
+  async listRetryableAgentGraphSupervisorWakes(
+    rootSessionId?: string,
+  ): Promise<AgentGraphSupervisorWakeRecord[]> {
     this.assertOpen();
     const rows = this.db
       .prepare(
@@ -4041,11 +4043,15 @@ export class SqliteSessionMetadataStore {
           created_at AS createdAt,
           updated_at AS updatedAt
         FROM agent_graph_supervisor_wakes
-        WHERE status = 'retryable_failed'
+        WHERE status IN ('pending', 'retryable_failed')
+          AND (? IS NULL OR root_session_id = ?)
         ORDER BY updated_at ASC, graph_id ASC, wake_id ASC
       `,
       )
-      .all() as unknown as AgentGraphSupervisorWakeRow[];
+      .all(
+        rootSessionId ?? null,
+        rootSessionId ?? null,
+      ) as unknown as AgentGraphSupervisorWakeRow[];
     return rows.map(decodeAgentGraphSupervisorWakeRow);
   }
 

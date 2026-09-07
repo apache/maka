@@ -26,6 +26,7 @@ import {
   AgentGraphSupervisorWakeCoordinator,
   recoverAgentGraphSupervisorContextOverflow,
   type AgentGraphSupervisorWakeDiagnostic,
+  type AgentGraphSupervisorWakeInput,
   type AgentGraphSupervisorTurnOutcome,
 } from '../agent-graph-supervisor-wake.js';
 import { SessionActivityRegistry, type GoalTurnOutcome } from '../goal-turn-lifecycle.js';
@@ -897,6 +898,211 @@ describe('Agent Graph supervisor wake delivery', () => {
       await coordinator.close();
       store.close();
     }
+  });
+});
+
+describe('Plan pauses durable Graph delivery', () => {
+  async function fixture(t: import('node:test').TestContext) {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    const activityRegistry = new SessionActivityRegistry();
+    const state = { paused: true, available: true, starts: 0, errors: [] as unknown[] };
+    const input: AgentGraphSupervisorWakeInput = {
+      activityRegistry,
+      wakeStore: store,
+      readSnapshot: async () => snapshot(),
+      isSessionPaused: async () => state.paused,
+      isSessionDeliverable: async () => state.available,
+      startTurn: async (_sessionId, turn) => {
+        state.starts += 1;
+        return { kind: 'completed', turnId: turn.turnId };
+      },
+      inspectAttempt: async () => 'missing',
+      onError: (_sessionId, error) => {
+        state.errors.push(error);
+      },
+      newId: sequentialIds(),
+    };
+    const coordinator = new AgentGraphSupervisorWakeCoordinator(input);
+    t.after(async () => {
+      await coordinator.close();
+      store.close();
+    });
+    const wake = () => store.readAgentGraphSupervisorWake('graph-1', 'graph-1:snapshot-1');
+    return { store, activityRegistry, state, input, coordinator, wake };
+  }
+
+  test('persists a new milestone in Plan and resumes it once without a new Graph event', async (t) => {
+    const f = await fixture(t);
+    await f.coordinator.notify('root-session', reconciliation());
+    assert.equal((await f.wake())?.status, 'pending');
+    assert.equal((await f.wake())?.attemptCount, 0);
+    // Graph (unlike Swarm) cannot reconstruct a milestone from notify(session) alone.
+    await f.coordinator.notify('root-session');
+    assert.equal(f.state.starts, 0);
+    f.state.paused = false;
+    await Promise.all([
+      f.coordinator.notifySessionResumed('root-session'),
+      f.coordinator.notifySessionResumed('root-session'),
+    ]);
+    await f.coordinator.waitForIdle();
+    await f.coordinator.notifySessionResumed('root-session');
+    await f.coordinator.waitForIdle();
+    assert.equal(f.state.starts, 1);
+    assert.equal((await f.wake())?.status, 'delivered');
+    assert.deepEqual(f.state.errors, []);
+  });
+
+  test('startup preserves a failed Plan wake without adding attempts', async (t) => {
+    const f = await fixture(t);
+    await createRunningAttempt(f.store);
+    await f.store.completeAgentGraphSupervisorWakeAttempt({
+      graphId: 'graph-1',
+      wakeId: 'graph-1:snapshot-1',
+      attemptId: 'crashed-attempt',
+      status: 'retryable_failed',
+      failureReason: 'plan mode',
+    });
+    await f.coordinator.recover();
+    await f.coordinator.waitForIdle();
+    assert.equal((await f.wake())?.attemptCount, 1);
+    assert.equal((await f.wake())?.status, 'retryable_failed');
+    assert.equal(f.state.starts, 0);
+    assert.deepEqual(f.state.errors, []);
+    f.state.paused = false;
+    await f.coordinator.notifySessionResumed('root-session');
+    await f.coordinator.waitForIdle();
+    assert.equal(f.state.starts, 1);
+  });
+
+  test('rechecks Plan after waiting for activity before creating an attempt', async (t) => {
+    const f = await fixture(t);
+    f.state.paused = false;
+    const lease = f.activityRegistry.reserve('root-session');
+    const acquiring = deferred<void>();
+    const acquire = f.activityRegistry.acquire.bind(f.activityRegistry);
+    f.activityRegistry.acquire = async (...args) => {
+      acquiring.resolve();
+      return acquire(...args);
+    };
+    const delivery = f.coordinator.notify('root-session', reconciliation());
+    await acquiring.promise;
+    f.state.paused = true;
+    lease.release();
+    await delivery;
+    assert.equal((await f.wake())?.attemptCount, 0);
+    assert.equal(f.state.starts, 0);
+    assert.deepEqual(f.state.errors, []);
+  });
+
+  test('does not lose a resume while the previous pause check is still unwinding', async (t) => {
+    const f = await fixture(t);
+    const checked = deferred<void>();
+    const releaseCheck = deferred<void>();
+    let first = true;
+    f.input.isSessionPaused = async () => {
+      const paused = f.state.paused;
+      if (first) {
+        first = false;
+        checked.resolve();
+        await releaseCheck.promise;
+      }
+      return paused;
+    };
+    const delivery = f.coordinator.notify('root-session', reconciliation());
+    await checked.promise;
+    f.state.paused = false;
+    const resumed = f.coordinator.notifySessionResumed('root-session');
+    releaseCheck.resolve();
+    await Promise.all([delivery, resumed]);
+    await f.coordinator.waitForIdle();
+    assert.equal(f.state.starts, 1);
+    assert.equal((await f.wake())?.status, 'delivered');
+  });
+
+  for (const stillPaused of [true, false]) {
+    test(`final admission pause remains retryable without Host error (still Plan: ${stillPaused})`, async (t) => {
+      const f = await fixture(t);
+      f.state.paused = false;
+      f.input.startTurn = async (_sessionId, turn) => {
+        f.state.starts += 1;
+        if (f.state.starts > 1) return { kind: 'completed', turnId: turn.turnId };
+        f.state.paused = stillPaused;
+        return { kind: 'paused', turnId: turn.turnId, reason: 'plan mode' };
+      };
+      await f.coordinator.notify('root-session', reconciliation());
+      await f.coordinator.waitForIdle();
+      assert.equal(f.state.starts, stillPaused ? 1 : 2);
+      assert.equal((await f.wake())?.status, stillPaused ? 'retryable_failed' : 'delivered');
+      assert.deepEqual(f.state.errors, []);
+    });
+  }
+
+  test('foreground Plan execution settles before its deferred wake can create an attempt', async (t) => {
+    const f = await fixture(t);
+    await f.coordinator.notify('root-session', reconciliation());
+    const foreground = deferred<void>();
+    const waiting = deferred<void>();
+    f.input.whenSessionExecutionIdle = () => {
+      waiting.resolve();
+      return foreground.promise;
+    };
+    f.state.paused = false;
+    const resumed = f.coordinator.notifySessionResumed('root-session');
+    await waiting.promise;
+    assert.equal((await f.wake())?.attemptCount, 0);
+    assert.equal(f.state.starts, 0);
+    foreground.resolve();
+    await resumed;
+    await f.coordinator.waitForIdle();
+    assert.equal(f.state.starts, 1);
+  });
+
+  test('stop during deferred foreground recovery supersedes the wake without restarting', async (t) => {
+    const f = await fixture(t);
+    await f.coordinator.notify('root-session', reconciliation());
+    const foreground = deferred<void>();
+    const waiting = deferred<void>();
+    f.input.whenSessionExecutionIdle = () => {
+      waiting.resolve();
+      return foreground.promise;
+    };
+    f.state.paused = false;
+    void f.coordinator.notifySessionResumed('root-session');
+    await waiting.promise;
+    await f.coordinator.runWithSessionWakesSuppressed('root-session', async () => {});
+    await f.coordinator.waitForIdle();
+    assert.equal((await f.wake())?.status, 'superseded');
+    assert.equal(f.state.starts, 0);
+    assert.deepEqual(f.state.errors, []);
+  });
+
+  test('resume only delivers its Session and archive still supersedes paused wakes', async (t) => {
+    const f = await fixture(t);
+    await f.coordinator.notify('root-session', reconciliation());
+    await f.store.claimAgentGraphSupervisorWake({
+      schemaVersion: 1,
+      graphId: 'graph-2',
+      wakeId: 'graph-2:snapshot-1',
+      snapshotVersion: 'snapshot-1',
+      rootSessionId: 'other-session',
+    });
+    f.state.paused = false;
+    await f.coordinator.notifySessionResumed('root-session');
+    await f.coordinator.waitForIdle();
+    assert.equal(f.state.starts, 1);
+    assert.equal(
+      (await f.store.readAgentGraphSupervisorWake('graph-2', 'graph-2:snapshot-1'))?.status,
+      'pending',
+    );
+    f.state.available = false;
+    f.state.paused = true;
+    await f.coordinator.notifySessionResumed('other-session');
+    await f.coordinator.waitForIdle();
+    assert.equal(
+      (await f.store.readAgentGraphSupervisorWake('graph-2', 'graph-2:snapshot-1'))?.status,
+      'superseded',
+    );
+    assert.deepEqual(f.state.errors, []);
   });
 });
 

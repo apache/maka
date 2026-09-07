@@ -47,7 +47,9 @@ import { SessionManager, type BackendFactory } from '@maka/runtime/session-manag
 import { workHubDirectStopAbortSource } from '@maka/runtime/session-manager';
 import { fingerprintAgentGraphRunnableIntent } from '@maka/runtime/stream-graph-admission';
 import type { AgentGraphRunnableIntent } from '@maka/runtime/stream-graph-readiness';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
+import { openInteractivePlanStoreForWrite } from '@maka/storage/plan-authority';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { createSessionStore } from '@maka/storage/session-store';
 import {
@@ -1983,6 +1985,201 @@ test('production composition validates graph stop before aborting a claimed chil
     }
   });
 });
+
+for (const resumeVia of [
+  'configuration',
+  'plan.control',
+  'plan.turn.start',
+  'account-selection',
+] as const) {
+  test(`production Graph recovery keeps a paused wake durable through startup and resumes once via ${resumeVia}`, async () => {
+    await withCompositionRoot(async ({ root, owner }) => {
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const connectionId = await configureFakeDefaultTarget(owner);
+      const missingConnection = resumeVia === 'account-selection';
+      const session = await stores.sessionStore.create({
+        cwd: root,
+        ...(missingConnection ? {} : { llmConnectionId: connectionId }),
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'explore',
+        collaborationMode: missingConnection ? 'agent' : 'plan',
+      });
+      const graphId = agentGraphIdForRootSession(session.id);
+      let graphStore = createAgentGraphControlStore(root);
+      await graphStore.commitAgentGraphScheduleUpdate({
+        schemaVersion: 1,
+        graphId,
+        updateId: `graph_update_${'a'.repeat(32)}`,
+        updateFingerprint: `sha256:${'a'.repeat(64)}`,
+        source: {
+          sessionId: session.id,
+          runId: 'historical-run',
+          turnId: 'historical-turn',
+          toolCallId: 'historical-tool',
+        },
+        addWork: [],
+        stop: [{ targetId: 'historical-work', reason: 'historical checkpoint' }],
+      });
+      const client = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'plan-graph-test',
+        principal: 'local_os_user' as const,
+        acquireResidency: () => ({ release() {} }),
+      };
+      let drains = 0;
+      const context = {
+        ...compositionContext(owner),
+        requestDrain: () => {
+          drains += 1;
+        },
+      };
+      const overrides = {
+        primaryBackendFactory: (backendContext: ConstructorParameters<typeof FakeBackend>[0]) =>
+          new FakeBackend(backendContext),
+      };
+      let restartedOwner: InteractiveRootOwner | undefined;
+      let composition = await createExecutionRuntimeHostComposition(context, {}, overrides);
+      try {
+        await composition.recover();
+        const queried = await composition.handlers['agent.graph.query'](
+          { rootSessionId: session.id },
+          client,
+        );
+        assert.ok(queried.ok);
+        const snapshot = queried.result;
+        const wakeId = `${graphId}:${snapshot.snapshotVersion}`;
+        await graphStore.claimAgentGraphSupervisorWake({
+          schemaVersion: 1,
+          graphId,
+          wakeId,
+          snapshotVersion: snapshot.snapshotVersion,
+          rootSessionId: session.id,
+        });
+        await graphStore.beginAgentGraphSupervisorWakeAttempt({
+          graphId,
+          wakeId,
+          attemptId: 'failed-plan-attempt',
+          turnId: 'failed-plan-turn',
+        });
+        await graphStore.completeAgentGraphSupervisorWakeAttempt({
+          graphId,
+          wakeId,
+          attemptId: 'failed-plan-attempt',
+          status: 'retryable_failed',
+          failureReason: missingConnection
+            ? 'This Session requires an explicit account selection before it can run.'
+            : 'Background and delegated roots cannot execute while the Session is in Plan mode.',
+        });
+        graphStore.close();
+        await composition.close();
+        await owner.close();
+        restartedOwner = await tryAcquireInteractiveRootOwner(owner.capability);
+        assert.ok(restartedOwner);
+        composition = await createExecutionRuntimeHostComposition(
+          { ...context, owner: restartedOwner },
+          {},
+          overrides,
+        );
+        await composition.recover();
+        graphStore = createAgentGraphControlStore(root);
+        // A live query after recovery verifies the Graph authority was not drained.
+        assert.ok(
+          (await composition.handlers['agent.graph.query']({ rootSessionId: session.id }, client))
+            .ok,
+        );
+        const recoveredStores = await openInteractiveExecutionStoresForWrite(restartedOwner.lease);
+        assert.equal(
+          (await graphStore.readAgentGraphSupervisorWake(graphId, wakeId))?.attemptCount,
+          1,
+        );
+        assert.equal(
+          (await recoveredStores.sessionStore.readHeaderSnapshot(session.id)).collaborationMode,
+          missingConnection ? 'agent' : 'plan',
+        );
+        assert.equal(
+          (await recoveredStores.runtimeEventStore.listSessionInvocations(session.id)).length,
+          0,
+        );
+        let replay: (() => Promise<unknown>) | undefined;
+        if (resumeVia === 'configuration' || missingConnection) {
+          const header = await recoveredStores.sessionStore.readHeaderRecordSnapshot(session.id);
+          const changed = await composition.handlers['session.configuration.update'](
+            {
+              sessionId: session.id,
+              expectedRevision: header.revision,
+              patch: missingConnection
+                ? {
+                    modelTarget: {
+                      kind: 'explicit',
+                      connectionId,
+                      connectionSlug: 'fake',
+                      model: 'fake-model',
+                    },
+                  }
+                : { collaborationMode: 'agent' },
+            },
+            client,
+          );
+          assert.ok(changed.ok);
+        } else {
+          const plans = await openInteractivePlanStoreForWrite(restartedOwner.lease);
+          const submitted = await plans.submitProposal({
+            sessionId: session.id,
+            operationId: 'submit-plan',
+            turnId: 'proposal-turn',
+            title: 'Resume graph work',
+            steps: [
+              {
+                id: 'step-1',
+                title: 'Review checkpoint',
+                description: 'Inspect the pending graph checkpoint',
+              },
+            ],
+          });
+          assert.equal(submitted.event.type, 'plan_submitted');
+          if (submitted.event.type !== 'plan_submitted') throw new Error('Missing proposal');
+          const approval = {
+            kind: 'approve_proposal' as const,
+            sessionId: session.id,
+            proposalId: submitted.event.proposal.proposalId,
+            expectedRevision: submitted.event.proposal.revision,
+            expectedStoreVersion: submitted.event.storeVersion,
+          };
+          if (resumeVia === 'plan.control') {
+            const request = { ...approval, operationId: 'approve-plan' };
+            assert.ok((await composition.handlers['plan.control'](request, client)).ok);
+            replay = () => composition.handlers['plan.control'](request, client);
+          } else {
+            const request = { ...approval, turnId: 'foreground-plan-turn' };
+            assert.ok((await composition.handlers['plan.turn.start'](request, client)).ok);
+            replay = () => composition.handlers['plan.turn.start'](request, client);
+          }
+        }
+        await waitFor(
+          async () =>
+            (await graphStore.readAgentGraphSupervisorWake(graphId, wakeId))?.status ===
+            'delivered',
+          10_000,
+        );
+        assert.equal(
+          (await graphStore.readAgentGraphSupervisorWake(graphId, wakeId))?.attemptCount,
+          2,
+        );
+        await replay?.();
+        assert.equal(
+          (await recoveredStores.runtimeEventStore.listSessionInvocations(session.id)).length,
+          resumeVia === 'plan.turn.start' ? 2 : 1,
+        );
+        assert.equal(drains, 0);
+      } finally {
+        graphStore.close();
+        await composition.close();
+        await restartedOwner?.close();
+      }
+    });
+  });
+}
 
 function compositionContext(owner: InteractiveRootOwner) {
   return {

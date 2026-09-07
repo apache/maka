@@ -60,7 +60,11 @@ type PlanRuntime = Pick<
 
 type AdmittedPlanControlRequest =
   | { readonly kind: 'ordinary'; readonly input: PlanControlInput }
-  | { readonly kind: 'plan_turn'; readonly input: PlanTurnStartInput };
+  | {
+      readonly kind: 'plan_turn';
+      readonly input: PlanTurnStartInput;
+      readonly onExecutionResumed: () => void;
+    };
 
 export interface HostPlanCoordinatorInput {
   readonly store: InteractivePlanStoreWriter;
@@ -69,6 +73,7 @@ export interface HostPlanCoordinatorInput {
   readonly sessionAdmission: SessionAdmissionGate;
   readonly isSessionActive: (sessionId: string) => boolean;
   readonly refreshContinuity: (sessionId: string, lease: SessionAdmissionLease) => Promise<void>;
+  readonly onExecutionResumed?: (sessionId: string) => void;
   readonly onProjectionChanged: (sessionId: string) => void;
   readonly requestDrain: () => void;
   readonly root: Pick<RootTurnCoordinator, 'startHostedExternalTransition'>;
@@ -91,6 +96,7 @@ export class HostPlanCoordinator {
   readonly #sessionAdmission: SessionAdmissionGate;
   readonly #isSessionActive: (sessionId: string) => boolean;
   readonly #refreshContinuity: HostPlanCoordinatorInput['refreshContinuity'];
+  readonly #onExecutionResumed: HostPlanCoordinatorInput['onExecutionResumed'];
   readonly #onProjectionChanged: HostPlanCoordinatorInput['onProjectionChanged'];
   readonly #requestDrain: () => void;
   readonly #root: HostPlanCoordinatorInput['root'];
@@ -102,6 +108,7 @@ export class HostPlanCoordinator {
     this.#sessionAdmission = input.sessionAdmission;
     this.#isSessionActive = input.isSessionActive;
     this.#refreshContinuity = input.refreshContinuity;
+    this.#onExecutionResumed = input.onExecutionResumed;
     this.#onProjectionChanged = input.onProjectionChanged;
     this.#requestDrain = input.requestDrain;
     this.#root = input.root;
@@ -111,6 +118,7 @@ export class HostPlanCoordinator {
     input: PlanTurnStartInput,
     context: ConnectionContext,
   ): Promise<OperationOutcome<'plan.turn.start'>> {
+    let executionResumed = false;
     let plan: PlanControlResult | undefined;
     let planFailure: Extract<OperationOutcome<'plan.control'>, { ok: false }> | undefined;
     const turn = await this.#root.startHostedExternalTransition(
@@ -120,7 +128,16 @@ export class HostPlanCoordinator {
         inputDigest: planTurnInputDigest(input),
         archivedMessage: 'Cannot start Plan execution in an archived Session',
         prepareContent: async (lease) => {
-          const outcome = await this.#control({ kind: 'plan_turn', input }, lease);
+          const outcome = await this.#control(
+            {
+              kind: 'plan_turn',
+              input,
+              onExecutionResumed: () => {
+                executionResumed = true;
+              },
+            },
+            lease,
+          );
           if (!outcome.ok) {
             planFailure = outcome;
             return {
@@ -137,6 +154,8 @@ export class HostPlanCoordinator {
       },
       context,
     );
+    // Foreground admission must finish before recovery can schedule background work.
+    if (executionResumed) this.#onExecutionResumed?.(input.sessionId);
     if (planFailure) return { ok: false, error: planFailure.error };
     if (!turn.ok) return { ok: false, error: turn.error };
     if (!plan) {
@@ -221,6 +240,10 @@ export class HostPlanCoordinator {
       const result = await this.#applyControl(input);
       this.#onProjectionChanged(input.sessionId);
       await this.#refreshContinuity(input.sessionId, lease);
+      if (!replay && (input.kind === 'approve_proposal' || input.kind === 'resume_execution')) {
+        if (request.kind === 'plan_turn') request.onExecutionResumed();
+        else this.#onExecutionResumed?.(input.sessionId);
+      }
       return { ok: true, result: projectControlResult(result) };
     } catch (error) {
       return this.#controlFailure(error);

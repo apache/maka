@@ -2138,6 +2138,60 @@ test('Agent Graph supervisor wake waits for root idle and binds one durable exec
   }
 });
 
+for (const pausedBy of ['plan', 'missing-account'] as const) {
+  test(`Agent Graph final admission paused by ${pausedBy} creates no root admission or Host drain`, async () => {
+    const fixture = await createFailureFixture({
+      collaborationMode: pausedBy === 'plan' ? 'plan' : 'agent',
+      legacyConnectionIdentity: pausedBy === 'missing-account',
+      registerBackend: (backends) =>
+        backends.register('ai-sdk', () => {
+          throw new Error('Paused admission must not construct a backend');
+        }),
+    });
+    try {
+      const graphId = agentGraphIdForRootSession(fixture.sessionId);
+      const turnId = 'plan-blocked-graph-turn';
+      const outcome = await graphExecutions(fixture).run(
+        fixture.sessionId,
+        {
+          turnId,
+          text: 'Inspect the durable graph.',
+          turnOrchestration: { mode: 'graph', source: 'host_api' },
+          origin: {
+            kind: 'agent_graph',
+            graphId,
+            wakeId: `${graphId}:plan`,
+            attemptId: 'plan-attempt',
+          },
+        },
+        new AbortController().signal,
+        async () => true,
+      );
+      assert.deepEqual(outcome, {
+        kind: 'paused',
+        turnId,
+        reason:
+          pausedBy === 'plan'
+            ? 'Background and delegated roots cannot execute while the Session is in Plan mode.'
+            : 'This Session requires an explicit account selection before it can run.',
+      });
+      assert.equal(
+        await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, turnId),
+        undefined,
+      );
+      assert.equal(
+        (await fixture.stores.runtimeEventStore.listSessionInvocations(fixture.sessionId)).length,
+        0,
+      );
+      assert.equal(fixture.drainRequested(), false);
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.messages.close();
+      await fixture.dispose();
+    }
+  });
+}
+
 test('Agent Graph supervisor wake preserves structured context-overflow outcomes', async () => {
   const fixture = await createFailureFixture({
     registerBackend: (backends) =>
@@ -5565,6 +5619,7 @@ async function createFailureFixture(options: {
   afterHandoffSeal?(): Promise<void>;
   directoryHostId?: string;
   corruptSessionRole?: boolean;
+  collaborationMode?: 'agent' | 'plan';
   legacyConnectionIdentity?: boolean;
   childTools?: MakaTool[];
   wrapAdmissionStore?(store: RootTurnAdmissionStore): RootTurnAdmissionStore;
@@ -5608,6 +5663,7 @@ async function createFailureFixture(options: {
     : undefined;
   const session = await stores.sessionStore.create({
     cwd: capability.canonicalPath,
+    collaborationMode: options.collaborationMode,
     ...(options.legacyConnectionIdentity
       ? {}
       : { llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }),

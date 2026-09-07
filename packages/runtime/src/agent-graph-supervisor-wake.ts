@@ -26,6 +26,7 @@ import type { ContextCompactionOutcome } from '@maka/core/events';
 import { type SessionEvent } from '@maka/core/events';
 import { type UserMessageInput } from '@maka/core/runtime-inputs';
 import type { RuntimeInvocationOutcome } from '@maka/core/runtime-invocation';
+import { waitForIdleOrAbort } from './goal-turn-lifecycle.js';
 import type {
   GoalTurnOutcome,
   SessionActivityLease,
@@ -98,7 +99,8 @@ export interface AgentGraphSupervisorContextRecoveryDiagnostic {
 export type AgentGraphSupervisorTurnOutcome =
   | GoalTurnOutcome
   | { kind: 'context_overflow'; turnId: string; reason: string }
-  | { kind: 'superseded'; turnId: string; reason: string };
+  | { kind: 'superseded'; turnId: string; reason: string }
+  | { kind: 'paused'; turnId: string; reason: string };
 
 export async function recoverAgentGraphSupervisorContextOverflow(input: {
   rootSessionId: string;
@@ -235,6 +237,10 @@ export interface AgentGraphSupervisorWakeInput {
   ): Promise<AgentGraphSupervisorContextRecoveryDiagnostic | void>;
   newId(): string;
   isSessionDeliverable?(rootSessionId: string): Promise<boolean>;
+  /** Temporary execution policy: preserve the durable wake without admitting an attempt. */
+  isSessionPaused?(rootSessionId: string): Promise<boolean>;
+  /** Foreground Plan execution owns the root before background recovery resumes. */
+  whenSessionExecutionIdle?(rootSessionId: string): Promise<void> | undefined;
   /** Keep an external host alive while a durable wake is admitted or delivered. */
   acquireResidency?(rootSessionId: string): SessionActivityLease;
   maxDeliveryAttempts?: number;
@@ -327,6 +333,32 @@ export class AgentGraphSupervisorWakeCoordinator {
     return recovered;
   }
 
+  /** Resume durable checkpoints after an explicit Session execution-mode transition. */
+  notifySessionResumed(rootSessionId: string): Promise<void> | undefined {
+    if (this.#closed || this.#sessionWakesSuppressed(rootSessionId)) return undefined;
+    // Capture before tracking this task. A pause check may already have read the
+    // old mode; waiting for its task to exit prevents pendingWakeIds from eating
+    // the resume edge. Never wait for this task itself.
+    const pending = [...(this.#tasksBySession.get(rootSessionId) ?? [])];
+    return this.#runTracked(rootSessionId, async (abortSignal) => {
+      try {
+        await Promise.all(pending);
+        const foreground = this.#input.whenSessionExecutionIdle?.(rootSessionId);
+        if (foreground) await waitForIdleOrAbort(foreground, abortSignal);
+        abortSignal.throwIfAborted();
+        for (const wake of await this.#input.wakeStore.listRetryableAgentGraphSupervisorWakes(
+          rootSessionId,
+        )) {
+          this.#scheduleRecoveredWake(wake);
+        }
+      } catch (error) {
+        if (!this.#closed && !isAbortError(error)) {
+          await notifyError(this.#input.onError, rootSessionId, error);
+        }
+      }
+    });
+  }
+
   async waitForIdle(): Promise<void> {
     while (this.#tasks.size > 0) await Promise.all([...this.#tasks]);
   }
@@ -412,7 +444,12 @@ export class AgentGraphSupervisorWakeCoordinator {
   }
 
   #scheduleRecoveredWake(wake: AgentGraphSupervisorWakeRecord): void {
-    if (this.#closed || this.#pendingWakeIds.has(wake.wakeId)) return;
+    if (
+      this.#closed ||
+      this.#sessionWakesSuppressed(wake.rootSessionId) ||
+      this.#pendingWakeIds.has(wake.wakeId)
+    )
+      return;
     this.#pendingWakeIds.add(wake.wakeId);
     void this.#runTracked(wake.rootSessionId, async (abortSignal) => {
       try {
@@ -453,6 +490,7 @@ export class AgentGraphSupervisorWakeCoordinator {
       await this.#supersedeSession(wake.rootSessionId, 'session_unavailable');
       return;
     }
+    if (await this.#isSessionPaused(wake.rootSessionId)) return;
     const snapshot = await this.#input.readSnapshot(wake.rootSessionId);
     if (snapshot.graphId !== wake.graphId) {
       await this.#input.wakeStore.supersedeAgentGraphSupervisorWakes({
@@ -488,10 +526,16 @@ export class AgentGraphSupervisorWakeCoordinator {
         await this.#supersedeSession(wake.rootSessionId, 'session_unavailable');
         return;
       }
+      if (await this.#isSessionPaused(wake.rootSessionId)) return;
       let overflowAttempt: { attemptId: string; turnId: string; failureReason: string } | undefined;
       const activity = await this.#input.activityRegistry.acquire(wake.rootSessionId, abortSignal);
       try {
         if (this.#closed || this.#sessionWakesSuppressed(wake.rootSessionId)) return;
+        if (!(await this.#isSessionDeliverable(wake.rootSessionId))) {
+          await this.#supersedeSession(wake.rootSessionId, 'session_unavailable');
+          return;
+        }
+        if (await this.#isSessionPaused(wake.rootSessionId)) return;
         const attemptId = this.#input.newId();
         const turnId = this.#input.newId();
         const admission = await this.#input.wakeStore.beginAgentGraphSupervisorWakeAttempt({
@@ -544,6 +588,13 @@ export class AgentGraphSupervisorWakeCoordinator {
               status: 'superseded',
               failureReason: outcome.reason,
             });
+            return;
+          }
+          if (outcome.kind === 'paused') {
+            await this.#markRetryable(wake.graphId, wake.wakeId, attemptId, outcome.reason);
+            if (await this.#isSessionPaused(wake.rootSessionId)) return;
+            // The mode may have changed back while final admission unwound.
+            void this.notifySessionResumed(wake.rootSessionId);
             return;
           }
           if (outcome.kind === 'suspended') {
@@ -672,6 +723,10 @@ export class AgentGraphSupervisorWakeCoordinator {
       status: 'retryable_failed',
       failureReason: failureReason.slice(0, 4_000) || 'unknown failure',
     });
+  }
+
+  async #isSessionPaused(rootSessionId: string): Promise<boolean> {
+    return (await this.#input.isSessionPaused?.(rootSessionId)) ?? false;
   }
 
   async #isSessionDeliverable(rootSessionId: string): Promise<boolean> {
@@ -835,7 +890,7 @@ export function isAgentGraphSupervisorMilestone(
 function wakeOutcomeFailure(
   outcome: Exclude<AgentGraphSupervisorTurnOutcome, { kind: 'completed' | 'superseded' }>,
 ): string {
-  if (outcome.kind === 'context_overflow') return outcome.reason;
+  if (outcome.kind === 'context_overflow' || outcome.kind === 'paused') return outcome.reason;
   if (outcome.kind === 'errored' || outcome.kind === 'suspended') {
     return `${outcome.kind}: ${outcome.reason}`;
   }
