@@ -49,7 +49,10 @@ import {
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
 import { PROVIDER_REGISTRY, reconcileConnectionAfterModelFetch } from '@maka/core/llm-connections';
-import { modelIdAliasesForProvider } from '@maka/core/model-metadata';
+import {
+  modelIdAliasesForProvider,
+  providerReportsCompleteModelCatalog,
+} from '@maka/core/model-metadata';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import { pruneRelayModelProfiles } from '@maka/core/model-thinking';
 import { deepFreeze, nextRevision, record, revision, unique } from './codec.js';
@@ -469,10 +472,7 @@ export class ConnectionCatalogDocumentOwner {
       result.models,
       {
         aliases: modelIdAliasesForProvider(previous.providerType),
-        // GitHub Copilot's filtered /models response is the account's complete
-        // usable catalog. Unlike generic provider snapshots, omission here is
-        // an entitlement answer and must remove bootstrap/stale ids.
-        authoritative: previous.providerType === 'github-copilot',
+        authoritative: providerReportsCompleteModelCatalog(previous.providerType),
       },
     );
     // Discovery MOVES a target: a provider's model rename carries the default

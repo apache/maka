@@ -407,6 +407,13 @@ function normalizeConnectionEffectModels(models: ModelInfo[]): readonly ModelInf
   }
 }
 
+export class GitHubCopilotModelPolicyError extends Error {
+  constructor() {
+    super('GitHub Copilot model policy is not enabled');
+    this.name = 'GitHubCopilotModelPolicyError';
+  }
+}
+
 export async function fetchGitHubCopilotModels(
   baseUrl: string,
   accessToken: string,
@@ -426,11 +433,16 @@ export async function fetchGitHubCopilotModels(
     throw new ConnectionEffectHttpError(response.status);
   }
   const payload = await readProviderJson<{ data?: unknown }>(response);
-  return providerObjectArray<RawGitHubCopilotModel>(
+  const rawModels = providerObjectArray<RawGitHubCopilotModel>(
     payload.data,
     'GitHub Copilot models',
     true,
-  ).flatMap(toGitHubCopilotModelInfo);
+  );
+  const models = rawModels.flatMap(toGitHubCopilotModelInfo);
+  if (models.length === 0 && rawModels.some(isGitHubCopilotModelBlockedByPolicy)) {
+    throw new GitHubCopilotModelPolicyError();
+  }
+  return models;
 }
 
 type RawOpenAiCodexModel = {
@@ -588,6 +600,26 @@ function isGitHubCopilotModelPolicyEnabled(policy: unknown): boolean {
   if (policy === undefined) return true;
   if (!policy || typeof policy !== 'object' || Array.isArray(policy)) return false;
   return (policy as Record<string, unknown>).state === 'enabled';
+}
+
+function isGitHubCopilotModelBlockedByPolicy(model: RawGitHubCopilotModel): boolean {
+  if (
+    typeof model.id !== 'string' ||
+    !model.id ||
+    model.model_picker_enabled !== true ||
+    model.capabilities?.supports?.tool_calls !== true ||
+    !Array.isArray(model.supported_endpoints) ||
+    !model.supported_endpoints.some((endpoint) =>
+      ['/v1/messages', '/responses', '/chat/completions'].includes(endpoint),
+    )
+  ) {
+    return false;
+  }
+  if (!model.policy || typeof model.policy !== 'object' || Array.isArray(model.policy)) {
+    return false;
+  }
+  const state = (model.policy as Record<string, unknown>).state;
+  return state === 'disabled' || state === 'unconfigured';
 }
 
 async function fetchCohereModels(
@@ -930,6 +962,7 @@ function nextProviderPageToken(value: unknown): string | undefined {
 }
 
 function classifyDiscoveryError(error: unknown): ConnectionEffectError {
+  if (error instanceof GitHubCopilotModelPolicyError) return { kind: 'auth' };
   if (error instanceof ConnectionEffectFetchError) return { kind: error.kind };
   if (error instanceof ConnectionEffectHttpError) {
     return classifyConnectionEffectStatus(error.status);

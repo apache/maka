@@ -503,9 +503,6 @@ export function reconcileConnectionAfterModelFetch(
     const enabledModelIds = connection.hasModelInventory
       ? previousEnabled.filter((id) => live.has(id))
       : liveIds;
-    if (enabledModelIds.length === 0 && previousEnabled.length > 0 && liveIds.length > 0) {
-      enabledModelIds.push(liveIds[0]!);
-    }
     const defaultModel = enabledModelIds.includes(previousDefault)
       ? previousDefault
       : (enabledModelIds[0] ?? '');

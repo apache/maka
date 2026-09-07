@@ -168,6 +168,20 @@ test('an authoritative account catalog removes unavailable bootstrap and stale m
     ),
     { defaultModel: 'account-available', enabledModelIds: ['account-available'] },
   );
+  // Losing every selected model does not silently opt the user into the first
+  // catalogue entry. A model that later returns remains available but opt-in.
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      {
+        defaultModel: 'withdrawn',
+        enabledModelIds: ['withdrawn'],
+        hasModelInventory: true,
+      },
+      [{ id: 'replacement' }],
+      { authoritative: true },
+    ),
+    { defaultModel: '', enabledModelIds: [] },
+  );
 });
 
 test('model reconciliation never invents a default the user cleared', () => {
