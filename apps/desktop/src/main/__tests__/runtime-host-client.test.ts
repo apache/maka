@@ -153,7 +153,6 @@ function subscription(
     activeAssistantStreams: [],
     transcriptBootstrap: {
       throughSequence: null,
-      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: emptyTranscriptPage(sessionId, 'durable'),
       overlay: emptyTranscriptPage(sessionId, 'overlay'),
