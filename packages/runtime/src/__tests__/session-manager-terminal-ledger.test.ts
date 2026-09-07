@@ -246,6 +246,29 @@ describe('SessionManager terminal ledger invariants', () => {
     assert.strictEqual(turnState.errorClass, 'tool_failed');
   });
 
+  test('an ordinary send leaves session_messages empty', async () => {
+    const store = new TinySessionStore();
+    const { manager, session } = await makeHarness(
+      [
+        { type: 'text_delta', messageId: 'message-1', text: 'hi' },
+        { type: 'complete', stopReason: 'end_turn' },
+      ],
+      { store },
+    );
+
+    await drain(manager.sendMessage(session.id, { turnId: 'turn-1', text: 'hello' }));
+
+    // The absence this cutover is named for: restore the second write anywhere
+    // on the send path and this row count stops being zero.
+    assert.deepStrictEqual(await store.readMessages(session.id), []);
+    // ...and the prompt is still readable, from the ledger alone.
+    const messages = await manager.getMessages(session.id);
+    assert.strictEqual(
+      messages.some((message) => message.type === 'user' && message.text === 'hello'),
+      true,
+    );
+  });
+
   test('stopSession keeps renderer abortSource on terminal facts and run headers', async () => {
     const store = new TinySessionStore();
     const runStore = new TinyAgentRunStore();
