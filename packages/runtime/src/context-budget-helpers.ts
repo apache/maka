@@ -50,21 +50,8 @@ export function turnKey(event: RuntimeEvent): string {
   return event.turnId || '<unknown-turn>';
 }
 
-export function uniqueSorted(values: readonly string[]): string[] {
-  return [...new Set(values.filter((value) => value.length > 0))].sort();
-}
-
 export function sha256(text: string): string {
   return createHash('sha256').update(text).digest('hex');
-}
-
-export function stableStringify(value: unknown): string {
-  if (value === undefined) return '';
-  try {
-    return JSON.stringify(value) ?? '';
-  } catch {
-    return String(value);
-  }
 }
 
 export function finitePositive(value: number | undefined): number | undefined {
@@ -75,8 +62,4 @@ export function finitePositive(value: number | undefined): number | undefined {
 
 export function utf8ByteLength(text: string): number {
   return Buffer.byteLength(text, 'utf8');
-}
-
-export function optionalNonNegativeFiniteNumber(value: unknown): boolean {
-  return value === undefined || (typeof value === 'number' && Number.isFinite(value) && value >= 0);
 }

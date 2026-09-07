@@ -182,8 +182,6 @@ interface RuntimeHostKernelCommonOptions {
   };
 }
 
-export type RuntimeHostLifecycleMode = 'ephemeral' | 'service';
-
 export type RuntimeHostKernelOptions = RuntimeHostKernelCommonOptions &
   (
     | {
