@@ -148,6 +148,8 @@ export interface RuntimeHostComposition {
   releaseConnection?(connectionId: string): void;
   beginDrain(): void;
   recover(): Promise<void>;
+  /** Synchronously schedules optional work after Ready registration is published. */
+  startMaintenance?(): void;
   close(): Promise<void>;
 }
 
@@ -401,6 +403,7 @@ export class RuntimeHostKernel {
     }
     this.#state = 'ready';
     await this.#publishRegistration();
+    if (!this.#shutdownRequested) this.#composition?.startMaintenance?.();
     this.#scheduleIdleIfNeeded();
   }
 

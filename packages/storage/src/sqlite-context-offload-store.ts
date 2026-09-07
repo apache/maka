@@ -387,7 +387,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     return this.#runManagedValueMutation(async () => {
       this.#assertOpen();
       if (this.#hasPendingFileDeletions()) {
-        await this.#drainPendingFileDeletions(input.maxBlobs);
+        await this.#drainPendingFileDeletions(input.maxBlobs, input.maxBytes);
         return {
           deletedBlobs: 0,
           deletedBytes: 0,
@@ -482,7 +482,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
           hasMore: rows.length > selected.length,
         };
       });
-      await this.#drainPendingFileDeletions(input.maxBlobs);
+      await this.#drainPendingFileDeletions(input.maxBlobs, input.maxBytes);
       return {
         ...collected,
         hasMore: collected.hasMore || this.#hasPendingFileDeletions(),
@@ -1001,11 +1001,20 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     });
   }
 
-  async #drainPendingFileDeletions(limit: number): Promise<void> {
+  async #drainPendingFileDeletions(limit: number, maxBytes: number): Promise<void> {
     const rows = this.#database
-      .prepare('SELECT locator FROM context_file_deletions ORDER BY enqueued_at, locator LIMIT ?')
-      .all(limit) as Array<{ locator?: unknown }>;
+      .prepare(
+        'SELECT locator, size_bytes FROM context_file_deletions ORDER BY enqueued_at, locator LIMIT ?',
+      )
+      .all(limit) as Array<{ locator?: unknown; size_bytes: number }>;
+    let bytes = 0;
     for (const row of rows) {
+      const size = readNonNegativeInteger(row.size_bytes, 'Pending context file deletion bytes');
+      if (exceedsLimit(bytes, size, maxBytes)) {
+        if (bytes === 0) throw new Error('Context garbage byte limit cannot fit pending file');
+        break;
+      }
+      bytes += size;
       const locator = decodeManagedFileLocator(row.locator);
       if (!locator) throw new Error('Invalid pending context file deletion locator');
       await this.#drainFileDeletion(locator);

@@ -21,6 +21,7 @@ import { withTimeout } from '@maka/core/test-only/async-primitives';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { execFile, fork, type ChildProcess } from 'node:child_process';
 import {
   chmod,
@@ -55,7 +56,7 @@ import {
   type DetachedCandidateLaunch,
   type DetachedCandidateInput,
 } from '../client/launcher.js';
-import { readHostRegistration } from '../control/registration.js';
+import { readHostRegistration, RUNTIME_HOST_REGISTRATION_FILE } from '../control/registration.js';
 import {
   readCandidateStartupDiagnostic,
   writeCandidateStartupDiagnostic,
@@ -836,6 +837,7 @@ describe('non-serving Runtime Host kernel', () => {
       const factoryReleased = new Promise<void>((resolve) => {
         releaseFactory = resolve;
       });
+      let maintenanceStarts = 0;
       const unavailable = async () =>
         ({
           ok: false,
@@ -866,6 +868,13 @@ describe('non-serving Runtime Host kernel', () => {
             },
             beginDrain() {},
             async recover() {},
+            startMaintenance() {
+              const registration = JSON.parse(
+                readFileSync(join(owner.controlDirectory, RUNTIME_HOST_REGISTRATION_FILE), 'utf8'),
+              );
+              assert.equal(registration.state, 'ready');
+              maintenanceStarts += 1;
+            },
             async close() {},
           };
         }),
@@ -877,6 +886,7 @@ describe('non-serving Runtime Host kernel', () => {
         const registration = await readHostRegistration(owner.controlDirectory);
         assert.ok(registration);
         assert.equal(registration.state, 'recovering');
+        assert.equal(maintenanceStarts, 0);
         transport = new FramedTransport(await openSocket(registration.endpoint));
         await writeClientFrame(transport, {
           kind: 'hello',
@@ -916,6 +926,7 @@ describe('non-serving Runtime Host kernel', () => {
         host = await hostTask.catch(() => undefined);
         await host?.close().catch(() => undefined);
       }
+      assert.equal(maintenanceStarts, 1);
     });
   });
 
@@ -1525,6 +1536,7 @@ describe('non-serving Runtime Host kernel', () => {
           lifecycle.push('factory-return');
           return testComposition({
             beginDrain: () => lifecycle.push('begin-drain'),
+            startMaintenance: () => lifecycle.push('maintenance'),
             recover: async () => {
               lifecycle.push('recover');
             },
@@ -3350,7 +3362,9 @@ describe('non-serving Runtime Host kernel', () => {
 });
 
 function testComposition(
-  overrides: Partial<Pick<RuntimeHostComposition, 'beginDrain' | 'recover' | 'close'>> = {},
+  overrides: Partial<
+    Pick<RuntimeHostComposition, 'beginDrain' | 'recover' | 'close' | 'startMaintenance'>
+  > = {},
 ): RuntimeHostComposition {
   return {
     handlers: createUnavailableDomainOperationHandlers(),

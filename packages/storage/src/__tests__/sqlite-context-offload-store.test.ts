@@ -387,7 +387,7 @@ test('recovers deterministic managed-file staging after process exit', async (t)
   assert.equal((await recovered.usage()).physicalBytes, 0);
 });
 
-test('reports continuation while pending managed-file deletions remain', async (t) => {
+test('bounds pending managed-file deletion bytes and reports continuation', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-offload-pending-files-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const values = ['pending-one', 'pending-two', 'pending-three'];
@@ -413,11 +413,14 @@ test('reports continuation while pending managed-file deletions remain', async (
   t.after(() => recovered.close());
   const totalBytes = values.reduce((total, value) => total + Buffer.byteLength(value), 0);
   assert.equal((await recovered.usage()).physicalBytes, totalBytes);
+  const byteBudget = Math.max(...values.map((value) => Buffer.byteLength(value)));
   for (const hasMore of [true, true, false]) {
+    const before = (await recovered.usage()).physicalBytes;
     assert.deepEqual(
-      await recovered.collectGarbage({ olderThan: 1, maxBlobs: 1, maxBytes: totalBytes }),
+      await recovered.collectGarbage({ olderThan: 1, maxBlobs: 64, maxBytes: byteBudget }),
       { deletedBlobs: 0, deletedBytes: 0, hasMore },
     );
+    assert.ok(before - (await recovered.usage()).physicalBytes <= byteBudget);
   }
   assert.equal((await recovered.usage()).physicalBytes, 0);
 });
