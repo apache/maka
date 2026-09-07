@@ -1231,6 +1231,9 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
     resolveLocalHostReplacement: (registration, signal) =>
       localRuntimeHostRemoteAccess.resolveConflictingHostReplacement(registration, signal),
     onFatalError: (error, target) => {
+      // Initial failure is handled after manager.start() has closed its own
+      // observations. Do not quit before startup-owned resources are drained.
+      if (!runtimeHostManager) return;
       if (error instanceof RuntimeHostUpgradeCancelledError) {
         if (target.profile.kind === "local") app.quit();
         return;
@@ -1240,8 +1243,31 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
     },
   },
 );
+let workBoardIpc: ReturnType<typeof registerWorkBoardIpc> | undefined;
+let runtimeHostDesktopShutdown: Promise<void> | undefined;
+// The first Host handoff can be cancelled before the main window exists.
+// Install the same cleanup owner used by normal quit before that handoff.
+const quitCoordinator = createAppQuitCoordinator({
+  prepareToQuit: prepareRuntimeHostDesktopQuit,
+  cleanup: closeRuntimeHostDesktop,
+  focusOrCreateWindow: (signal) => {
+    if (!runtimeHostManager) return;
+    if (mainWindowController.hasOpenWindows()) mainWindowController.focus();
+    else return mainWindowController.createWindow(signal);
+  },
+  onPreparationError: (error) => {
+    console.error("[runtime-host] quit retirement failed:", error);
+  },
+  onCleanupError: (error) =>
+    console.error("[runtime-host] shutdown failed:", error),
+  onWindowCreationError: (error) =>
+    console.error("[window] creation failed:", error),
+  resumeQuit: () => app.quit(),
+});
+app.on("before-quit", quitCoordinator.handleBeforeQuit);
 updateDesktopStartupProgress('connect');
-runtimeHostManager = await startLocalRuntimeHostManager().catch((error: unknown) => {
+runtimeHostManager = await startLocalRuntimeHostManager().catch(async (error: unknown) => {
+  await closeRuntimeHostDesktop();
   if (error instanceof RuntimeHostUpgradeCancelledError) {
     app.quit();
     return new Promise<never>(() => undefined);
@@ -1251,7 +1277,7 @@ runtimeHostManager = await startLocalRuntimeHostManager().catch((error: unknown)
 // Runtime Host is the only schema-migration authority for its State Root.
 // Work Board remains a Desktop-owned table, but it opens only after the Host is
 // ready and verifies the schema instead of changing it behind a resident Host.
-const workBoardIpc = registerWorkBoardIpc({
+workBoardIpc = registerWorkBoardIpc({
   ipcMain,
   workspaceRoot,
   mainWindowController,
@@ -1903,22 +1929,6 @@ function emitSessionsChanged(
 }
 
 function wireLifecycle(): void {
-  const quitCoordinator = createAppQuitCoordinator({
-    prepareToQuit: prepareRuntimeHostDesktopQuit,
-    cleanup: closeRuntimeHostDesktop,
-    focusOrCreateWindow: (signal) => {
-      if (mainWindowController.hasOpenWindows()) mainWindowController.focus();
-      else return mainWindowController.createWindow(signal);
-    },
-    onPreparationError: (error) => {
-      console.error("[runtime-host] quit retirement failed:", error);
-    },
-    onCleanupError: (error) =>
-      console.error("[runtime-host] shutdown failed:", error),
-    onWindowCreationError: (error) =>
-      console.error("[window] creation failed:", error),
-    resumeQuit: () => app.quit(),
-  });
   installDesktopShellPresentation({
     mainWindowController,
     focusOrCreateWindow: quitCoordinator.focusOrCreateWindow,
@@ -1934,7 +1944,6 @@ function wireLifecycle(): void {
     if (process.platform !== "darwin" && !isBrowserMessageBoxPresentationActive() &&
       !isDesktopStartupInProgress()) app.quit();
   });
-  app.on("before-quit", quitCoordinator.handleBeforeQuit);
   powerMonitor.on("resume", wakePeerRecoveryAfterResume);
   quitCoordinator.focusOrCreateWindow();
 }
@@ -1952,7 +1961,11 @@ async function prepareRuntimeHostDesktopQuit(): Promise<'ready' | 'cancelled'> {
   return preparation;
 }
 
-async function closeRuntimeHostDesktop(): Promise<void> {
+function closeRuntimeHostDesktop(): Promise<void> {
+  return runtimeHostDesktopShutdown ??= disposeRuntimeHostDesktop();
+}
+
+async function disposeRuntimeHostDesktop(): Promise<void> {
   powerMonitor.off("resume", wakePeerRecoveryAfterResume);
   clientSettingsWatcher.stop();
   updateService.dispose();
@@ -1982,7 +1995,7 @@ async function closeRuntimeHostDesktop(): Promise<void> {
     runtimeHostOnboarding.close(),
     localRuntimeHostRemoteAccess.close(),
     runtimeHostSetupPackage.close(),
-    Promise.resolve().then(() => workBoardIpc.close()),
+    Promise.resolve().then(() => workBoardIpc?.close()),
     runtimeHostSshTerminal.close(),
     botRegistry.stopAll(),
     mcpManager.close(),

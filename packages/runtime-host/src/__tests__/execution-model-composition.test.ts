@@ -770,6 +770,66 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
   }
 });
 
+test('handoff composition preparation commits the provider composition without dispatch', async () => {
+  const provider = await startProvider();
+  const snapshots: ReturnType<typeof decodeRunCompositionSnapshot>[] = [];
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        recordRunComposition: async (_runId, snapshot) => {
+          snapshots.push(decodeRunCompositionSnapshot(snapshot));
+        },
+      }),
+    );
+    await backend.prepareRunComposition({ runId: 'prepared-run', turnId: 'prepared-turn' });
+    assert.equal(snapshots.length, 1);
+    assert.equal(provider.requests.length, 0);
+    for await (const _event of backend.send({
+      invocationId: 'prepared-invocation',
+      runId: 'prepared-run',
+      turnId: 'prepared-turn',
+      text: 'Use the prepared composition.',
+      context: [],
+    })) {
+      // The provider gate must commit the same resolved composition.
+    }
+    assert.ok(provider.requests.length > 0);
+    assert.ok(snapshots.length > 1);
+    for (const snapshot of snapshots) assert.deepEqual(snapshot, snapshots[0]);
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
+test('handoff composition preparation fails closed without a durable recorder', async () => {
+  const provider = await startProvider();
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+      }),
+    );
+    await assert.rejects(
+      backend.prepareRunComposition({ runId: 'unrecorded-run', turnId: 'unrecorded-turn' }),
+      /no durable Run Composition preparation authority/,
+    );
+    assert.equal(provider.requests.length, 0);
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
 test('provider dispatch fails closed when the Run Composition commit fails', async () => {
   const provider = await startProvider();
   let commits = 0;

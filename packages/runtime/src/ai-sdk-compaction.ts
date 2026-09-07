@@ -872,13 +872,16 @@ export class AiSdkCompaction {
       headAnchor.sessionId !== this.sessionId ||
       headAnchor.turnId !== input.turnId ||
       headAnchor.role !== 'user' ||
-      headAnchor.author !== 'user' ||
+      (headAnchor.author !== 'user' && headAnchor.author !== 'host') ||
       !isHistoryCompactContentEvent(headAnchor)
     ) {
       return undefined;
     }
+    // Handoff replay is an authenticated predecessor prefix, including the
+    // current logical Turn. The live reader remains physical-run scoped.
+    const handoff = input.continuation?.sourceTurnId === input.turnId;
     const priorContentEvents = (input.runtimeContext ?? [])
-      .filter((event) => event.turnId !== input.turnId)
+      .filter((event) => handoff || event.turnId !== input.turnId)
       .filter(isHistoryCompactContentEvent);
     const state = new MidTurnCapacityCompactState(
       headAnchor,
@@ -962,9 +965,8 @@ export class AiSdkCompaction {
           state.replyReserveTokens = replyReserveTokens(lastUsage?.outputTokens);
         }
       }
-      // The turn's first request folds as a pre_turn boundary, like the
-      // reactive step-0 recovery; later steps fold mid_turn.
-      const phase = options.stepNumber === 0 ? 'pre_turn' : 'mid_turn';
+      // Physical step zero may already be mid-Turn after a handoff.
+      const phase = state.compactionPhase(options.stepNumber);
       // A skipped trigger is never silent: every failure-driven skip records a
       // failedOpen decision.
       const failOpen = (failOpenReason: string): RequestProjection | undefined => {
@@ -1140,15 +1142,15 @@ export class AiSdkCompaction {
     const currentTurnEvents = turnLedger
       .filter((event) => event.turnId === turnId)
       .filter(isHistoryCompactContentEvent);
-    // The head anchor is persisted before backend.send() is invoked, so
-    // its absence is a wiring error, not replication lag — fail open now.
-    if (!currentTurnEvents.some((event) => event.id === state.headAnchor.id)) {
+    const orderedEvents = [...state.priorContentEvents, ...currentTurnEvents];
+    // A fresh anchor belongs to the live ledger; after handoff it belongs to
+    // the authenticated predecessor prefix. Neither path manufactures it.
+    if (!orderedEvents.some((event) => event.id === state.headAnchor.id)) {
       return {
         decision: 'fail',
         diagnosticReason: 'head_anchor_not_durable',
       };
     }
-    const orderedEvents = [...state.priorContentEvents, ...currentTurnEvents];
     const memoryDecision = input.memoryCompactionDecision?.();
     const plan = await planHistoryCompaction({
       sessionId: this.sessionId,
@@ -1322,7 +1324,7 @@ export class AiSdkCompaction {
       return { messages: imageOmission.messages };
     }
 
-    const phase = input.stepNumber === 0 ? 'pre_turn' : 'mid_turn';
+    const phase = state.compactionPhase(input.stepNumber);
     // Entering the module spends the send's one attempt whether or not a fold
     // comes out of it; only a selected projection sets `applied`.
     state.compactionAttemptedThisSend = true;
@@ -1575,6 +1577,13 @@ export class MidTurnCapacityCompactState {
      */
     readonly capacity: number | undefined,
   ) {}
+
+  compactionPhase(stepNumber: number): 'pre_turn' | 'mid_turn' {
+    return stepNumber === 0 &&
+      !this.priorContentEvents.some((event) => event.id === this.headAnchor.id)
+      ? 'pre_turn'
+      : 'mid_turn';
+  }
 }
 
 /**

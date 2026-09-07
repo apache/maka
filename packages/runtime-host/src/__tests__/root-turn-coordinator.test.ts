@@ -21,6 +21,7 @@ import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { readInvocation, seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
+import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import {
   readLogicalRuntimeExecution,
   readLogicalRuntimeExecutionForRun,
@@ -5145,6 +5146,18 @@ async function registerSessionCapability(
   assert.equal(replaced.ok, true);
 }
 
+const HANDOFF_TEST_COMPOSITION = createRunCompositionSnapshot({
+  composerId: 'test.handoff',
+  composerRevision: '1',
+  sourceRevisions: [],
+  baseSystemPromptHash: `sha256:${'0'.repeat(64)}`,
+  toolCatalogHash: `sha256:${'0'.repeat(64)}`,
+  toolAvailabilityHash: `sha256:${'0'.repeat(64)}`,
+  baseProviderOptionsHash: `sha256:${'0'.repeat(64)}`,
+  toolNames: [],
+  contextWindow: null,
+});
+
 for (const stopAfterSeal of [false, true]) {
   test(`physical handoff ${stopAfterSeal ? 'Stop after seal' : 'completion'} keeps the original Root admission`, {
     timeout: 10_000,
@@ -5170,7 +5183,13 @@ for (const stopAfterSeal of [false, true]) {
           'ai-sdk',
           (context) =>
             new (class extends FakeBackend {
+              async prepareRunComposition(input: { runId: string; turnId: string }): Promise<void> {
+                await context.recordRunComposition!(input.runId, HANDOFF_TEST_COMPOSITION);
+              }
+
               override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+                assert.ok(input.runId);
+                await this.prepareRunComposition({ runId: input.runId, turnId: input.turnId });
                 dispatches += 1;
                 if (!input.continuation) {
                   entered.resolve();
@@ -5279,7 +5298,13 @@ test('repeated handoffs preserve one logical admission, decreasing budget and ex
         'ai-sdk',
         (context) =>
           new (class extends FakeBackend {
+            async prepareRunComposition(input: { runId: string; turnId: string }): Promise<void> {
+              await context.recordRunComposition!(input.runId, HANDOFF_TEST_COMPOSITION);
+            }
+
             override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+              assert.ok(input.runId);
+              await this.prepareRunComposition({ runId: input.runId, turnId: input.turnId });
               const attempt = dispatches++;
               assert.ok(attempt < 3, 'handoff cannot create an extra logical turn');
               assert.equal(input.maxSteps, 5 - attempt);
@@ -5446,7 +5471,13 @@ for (const decision of ['cancel', 'resume', 'detach', 'blocked'] as const) {
           'ai-sdk',
           (context) =>
             new (class extends FakeBackend {
+              async prepareRunComposition(input: { runId: string; turnId: string }): Promise<void> {
+                await context.recordRunComposition!(input.runId, HANDOFF_TEST_COMPOSITION);
+              }
+
               override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+                assert.ok(input.runId);
+                await this.prepareRunComposition({ runId: input.runId, turnId: input.turnId });
                 dispatches += 1;
                 if (!input.continuation) {
                   await boundary.promise;

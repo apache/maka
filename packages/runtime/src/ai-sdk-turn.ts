@@ -2890,9 +2890,11 @@ export class AiSdkTurn {
         diagnostics: [],
       };
     }
-    const rawPriorRuntimeContext = input.runtimeContext.filter(
-      (event) => event.turnId !== input.turnId,
-    );
+    // A handoff changes the physical Run, not the logical Turn. Its admitted
+    // replay is all predecessor history, including events with this turnId.
+    const rawPriorRuntimeContext = input.continuation
+      ? input.runtimeContext
+      : input.runtimeContext.filter((event) => event.turnId !== input.turnId);
     // Everything below reads EFFECTIVE model history: raw events folded through
     // the durable projection-transition reducer (#4283). Replay, budgeting and
     // compaction share one input, so no RuntimeEvent replay path can resurrect

@@ -35,16 +35,19 @@ function harness() {
   let documentUrl = '';
   let options: BrowserWindowConstructorOptions | undefined;
   let openWindow!: () => { action: string };
+  let contentSize = [520, 350];
+  let measuredHeight = 350;
   const scripts: string[] = [];
   const errors: unknown[] = [];
   const contents = Object.assign(new EventEmitter(), {
     setWindowOpenHandler(handler: typeof openWindow) { openWindow = handler; },
-    async executeJavaScript(source: string) { scripts.push(source); },
+    async executeJavaScript(source: string) { scripts.push(source); return measuredHeight; },
   });
   const window = Object.assign(new EventEmitter(), {
     webContents: contents,
     setMenuBarVisibility() {},
-    setSize() {},
+    getContentSize() { return contentSize; },
+    setContentSize(width: number, height: number) { contentSize = [width, height]; },
     isDestroyed: () => destroyed,
     isMinimized: () => minimized,
     destroy() { destroyed = true; },
@@ -77,9 +80,33 @@ function harness() {
     get minimized() { return minimized; },
     get visible() { return visible; },
     get openWindow() { return openWindow; },
+    get contentSize() { return contentSize; },
+    setMeasuredHeight(height: number) { measuredHeight = height; },
   };
 }
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test('fits content instead of reserving an empty handoff panel and bounds long diagnoses', async () => {
+  const h = harness();
+  h.resolveLoad();
+  await flush();
+  const view: HostHandoffView = { revision: 'sized', state: 'attention',
+    reason: 'busy', mayExitNaturally: false, defaultAction: 'cancel',
+    actions: ['cancel'], target: { name: 'Local', location: 'local' } };
+  h.setMeasuredHeight(368);
+  h.progress.handoff(view, () => {}, 'en');
+  await flush();
+  assert.deepEqual(h.contentSize, [560, 368]);
+  h.setMeasuredHeight(900);
+  h.progress.handoff({ ...view, revision: 'long' }, () => {}, 'en');
+  await flush();
+  assert.deepEqual(h.contentSize, [560, 640]);
+  h.setMeasuredHeight(350);
+  h.progress.clearHandoff();
+  await flush();
+  assert.deepEqual(h.contentSize, [520, 350]);
+  h.progress.close();
+});
 
 test('shows the latest real phase after loading and minimizes without terminating startup', async () => {
   const h = harness();

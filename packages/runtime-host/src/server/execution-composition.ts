@@ -1454,10 +1454,9 @@ export async function createExecutionRuntimeHostComposition(
                 : 'WorkHub delegated execution is not resumable',
             );
           }
-          if (
-            plan.result.sourceRunId !== source.runId ||
-            plan.result.sourceTurnId !== source.turnId
-          ) {
+          // Root planning authenticates handoff membership. Its source may be
+          // a physical successor of this same logical Turn, never another Turn.
+          if (plan.result.sourceTurnId !== source.turnId) {
             throw new WorkHubActionEffectFailure(
               'operation_conflict',
               'WorkHub resume source lineage changed during planning',

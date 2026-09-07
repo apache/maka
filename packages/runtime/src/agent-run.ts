@@ -164,6 +164,8 @@ export interface AgentRunInput {
   claimedOpening?: RuntimeEventInvocationOpenedContent;
   /** Authenticated source authority is not part of provider-visible replay. */
   handoffSourceOpening?: RuntimeEventInvocationOpenedContent;
+  /** Durable composition of the authenticated sealed handoff source. */
+  handoffSourceComposition?: RunCompositionSnapshot;
   /** The moment that claim was taken; the target invocation opens at it. */
   claimedOpenedAt?: number;
   /** Commits the claimed continuation provider-call T1 after Run creation. */
@@ -255,6 +257,7 @@ export class AgentRun {
   private traceWriteError: string | undefined;
   private runComposition: RunCompositionSnapshot | undefined;
   private runCompositionWrite: Promise<void> | undefined;
+  private runCompositionCommitted = false;
   private failureClass: string | undefined;
   private failureMessage: string | undefined;
   private lastTs = 0;
@@ -293,6 +296,9 @@ export class AgentRun {
       userInput: cloneAndFreezeRuntimeSnapshot(input.userInput),
       ...(input.effectiveOrchestration
         ? { effectiveOrchestration: cloneAndFreezeRuntimeSnapshot(input.effectiveOrchestration) }
+        : {}),
+      ...(input.handoffSourceComposition
+        ? { handoffSourceComposition: decodeRunCompositionSnapshot(input.handoffSourceComposition) }
         : {}),
     };
     this.input = acceptedInput;
@@ -424,9 +430,11 @@ export class AgentRun {
         ) {
           throw new Error('Handoff preview requires the currently held Runtime boundary');
         }
+        this.assertRunCompositionCommitted();
         return pending.preview;
       },
       commit: () => {
+        this.assertRunCompositionCommitted();
         if (this.handoffRequest !== pending || !gate.commit()) return false;
         pending.committed = true;
         return true;
@@ -582,6 +590,17 @@ export class AgentRun {
       return Promise.reject(new Error('AgentRun store is not configured'));
     }
     const normalized = decodeRunCompositionSnapshot(snapshot);
+    const expected = this.input.handoffSourceComposition;
+    if (
+      expected &&
+      (normalized.baseSystemPromptHash !== expected.baseSystemPromptHash ||
+        normalized.toolCatalogHash !== expected.toolCatalogHash ||
+        normalized.toolAvailabilityHash !== expected.toolAvailabilityHash ||
+        normalized.baseProviderOptionsHash !== expected.baseProviderOptionsHash ||
+        normalized.contextWindow !== expected.contextWindow)
+    ) {
+      return Promise.reject(new Error('Handoff Run Composition execution semantics changed'));
+    }
     if (this.runComposition && !isDeepStrictEqual(this.runComposition, normalized)) {
       return Promise.reject(new Error('AgentRun Run Composition changed after resolution'));
     }
@@ -600,14 +619,26 @@ export class AgentRun {
           ts: this.input.now(),
           data: { runComposition: normalized },
         },
-        { durable: this.requiresDurablePersistence() },
+        {
+          durable:
+            this.requiresDurablePersistence() ||
+            this.input.runtimeEventStore?.durability === 'canonical',
+        },
       );
+    }).then(() => {
+      this.runCompositionCommitted = true;
     });
     this.runCompositionWrite = write;
     return write.catch((error: unknown) => {
       if (this.runCompositionWrite === write) this.runCompositionWrite = undefined;
       throw error;
     });
+  }
+
+  assertRunCompositionCommitted(): void {
+    if (!this.runCompositionCommitted) {
+      throw new Error('Cooperative handoff requires a durably committed Run Composition');
+    }
   }
 
   /**
@@ -1205,6 +1236,7 @@ export class AgentRun {
         // Stop may have claimed the logical outcome during the flush. Reserving
         // the pause below is synchronous up to its first write, so only one wins.
         if (!this.stopped && !this.failureClass && !this.terminalClaim) {
+          this.assertRunCompositionCommitted();
           await this.recordRuntimeEvents([handoff.preview!], { requireTerminalWrite: true });
           this.terminalRunFactCommitted = true;
           if (this.active) await this.input.hooks.unregisterRun(this.active, this);

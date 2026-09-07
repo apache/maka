@@ -22,6 +22,10 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import {
+  applyLocalHostDeploymentTransition,
+  readLocalHostDeploymentRecord,
+} from '@maka/runtime-host/operator';
 import { gzipSync } from 'node:zlib';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -39,6 +43,99 @@ import type { RuntimeHostLocalProcessLifecycleAdapter } from '../runtime-host-lo
 const ROOT_ID = 'b'.repeat(64);
 const INTEGRITY = `sha512-${Buffer.alloc(64, 4).toString('base64')}`;
 const OWNER = { kind: 'cli' as const, installationId: 'npm-global:slot' };
+
+test('TUI update refuses a changed Host epoch under its existing authority lease before retirement or install', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-update-epoch-fence-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const authorityOptions = { authorityRoot: join(base, 'authority') };
+  const previous = { kind: 'npm_registry' as const, version: '1.0.0', integrity: INTEGRITY };
+  const target = { ...previous, version: '2.0.0' };
+  const claimed = await applyLocalHostDeploymentTransition(
+    ROOT_ID,
+    {
+      kind: 'claim',
+      owner: OWNER,
+      selected: previous,
+    },
+    authorityOptions,
+  );
+  assert.ok(claimed.record);
+  let observations = 0;
+  let closes = 0;
+  const result = await runRuntimeHostInstalledUpdateCoordinator(
+    {
+      rootPath: '/state',
+      archivePath: '/archive.tgz',
+      installedPackageRoot: '/installed',
+      installedCliPath: '/installed/dist/cli.js',
+      currentVersion: '1.0.0',
+      target,
+      allowInterruptActiveTasks: false,
+      expectedSource: {
+        rootId: ROOT_ID,
+        deploymentRevision: claimed.record.revision,
+        ownerInstallationId: OWNER.installationId,
+        hostEpoch: 'old-host',
+      },
+    },
+    authorityOptions,
+    {
+      resolveInstallation: async () => ({
+        owner: OWNER,
+        observedRelease: {
+          version: '1.0.0',
+          packageRoot: '/installed',
+          cliPath: '/installed/dist/cli.js',
+        },
+      }),
+      resolveRoot: async () =>
+        ({ kind: 'interactive', canonicalPath: '/state', rootId: ROOT_ID }) as never,
+      withArchive: async (_target, archivePath, use) =>
+        use({ archivePath, packageRoot: '/target' }),
+      prepareStaged: async () => ({
+        version: target.version,
+        root: '/staged',
+        packageRoot: '/staged',
+        cliPath: '/staged/dist/cli.js',
+        candidateEntrypoint: '/staged/candidate.js',
+        launchGeneration: 'new-target',
+        cleanup: async () => {},
+        rollback: async () => {},
+      }),
+      connectExisting: async () => {
+        observations += 1;
+        if (observations === 2) {
+          // Real reconcile has taken the deployment lease and written its intent.
+          assert.equal(
+            (await readLocalHostDeploymentRecord(ROOT_ID, authorityOptions))?.state.kind,
+            'handoff',
+          );
+        }
+        return {
+          kind: 'connected',
+          registration: registration({
+            hostEpoch: observations === 1 ? 'old-host' : 'successor-host',
+          }),
+          connection: {
+            close: async () => {
+              closes += 1;
+            },
+          } as never,
+        };
+      },
+      prepareRetirement: async () => assert.fail('stale consent must not retire the successor'),
+      activateTarget: async () => assert.fail('stale consent must not activate another Host'),
+      installArchive: async () =>
+        assert.fail('stale consent must not replace the npm installation'),
+    },
+  );
+  assert.equal(result, 1); // Existing transaction truthfully reports recovery_required.
+  assert.equal(observations, 2);
+  assert.equal(closes, 2);
+  const pending = await readLocalHostDeploymentRecord(ROOT_ID, authorityOptions);
+  assert.equal(pending?.state.kind, 'handoff');
+  assert.deepEqual(pending?.state.selected, previous);
+});
 
 function tarHeader(name: string, size: number, type: string): Buffer {
   const header = Buffer.alloc(512);

@@ -404,6 +404,7 @@ export async function runMakaCli(
             : { compatibility: command.targetCompatibility }),
         },
         allowInterruptActiveTasks: command.allowInterruptActiveTasks,
+        ...(command.expectedSource ? { expectedSource: command.expectedSource } : {}),
       });
     }
     case 'runtime-host-local-update-activate': {

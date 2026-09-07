@@ -24,6 +24,8 @@ import { join } from 'node:path';
 import test from 'node:test';
 import {
   applyLocalHostDeploymentTransition,
+  claimLocalHostProcessDeployment,
+  handoffLocalHostProcessDeployment,
   readLocalHostDeploymentRecord,
   type RuntimeHostInstallationOwner,
 } from '@maka/runtime-host/operator';
@@ -36,6 +38,7 @@ import {
 } from '@maka/runtime-host/protocol';
 import {
   reconcileRuntimeHostNpmGlobalDeployment,
+  reconcilePreparedRuntimeHostNpmGlobalDeployment,
   resolveRuntimeHostLocalCliDeploymentRoot,
   restartRuntimeHostNpmGlobalDeployment,
   RuntimeHostLocalHandoffError,
@@ -63,6 +66,91 @@ const PREVIOUS = {
   version: '1.0.0',
   integrity: `sha512-${Buffer.alloc(64, 3).toString('base64')}`,
 };
+
+test('captured update owner is fenced again inside authority after its preliminary read', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-update-source-fence-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const options = { authorityRoot: join(base, 'authority') };
+  const claimed = await applyLocalHostDeploymentTransition(
+    ROOT_ID,
+    {
+      kind: 'claim',
+      owner: CLI_OWNER,
+      selected: PREVIOUS,
+    },
+    options,
+  );
+  assert.ok(claimed.record);
+  const captured = claimed.record;
+  const result = await reconcilePreparedRuntimeHostNpmGlobalDeployment(
+    {
+      rootId: ROOT_ID,
+      transactionId: 'fenced-update',
+      target: TARGET,
+      activeWorkPolicy: 'refuse_active_work',
+      expectedOwner: { revision: captured.revision, owner: CLI_OWNER },
+      installation: {
+        owner: CLI_OWNER,
+        observedRelease: {
+          version: PREVIOUS.version,
+          packageRoot: '/installed',
+          cliPath: '/installed/dist/cli.js',
+        },
+      },
+      staged: {
+        version: TARGET.version,
+        root: '/staged',
+        packageRoot: '/staged',
+        cliPath: '/staged/dist/cli.js',
+        candidateEntrypoint: '/staged/candidate.js',
+        launchGeneration: 'fenced-update',
+        cleanup: async () => {},
+        rollback: async () => {},
+      },
+    },
+    {
+      prepareUnownedHostCutover: async () => assert.fail('must not claim a changed owner'),
+      prepareHostCutover: async () => assert.fail('must not retire a changed owner'),
+      observeWriterRelease: async () => assert.fail('must not observe writer release'),
+      activateTarget: async () => assert.fail('must not activate'),
+      verifyTargetReady: async () => assert.fail('must not verify target'),
+    },
+    options,
+    {
+      claim: claimLocalHostProcessDeployment,
+      handoff: handoffLocalHostProcessDeployment,
+      readRecord: async () => {
+        // A real competing owner transition lands after the observation but
+        // before the update takes its authority lease. The old CAS must survive.
+        await applyLocalHostDeploymentTransition(
+          ROOT_ID,
+          {
+            kind: 'release',
+            expectedRevision: captured.revision,
+            owner: CLI_OWNER,
+          },
+          options,
+        );
+        await applyLocalHostDeploymentTransition(
+          ROOT_ID,
+          {
+            kind: 'claim',
+            owner: DESKTOP_OWNER,
+            selected: PREVIOUS,
+          },
+          options,
+        );
+        return captured;
+      },
+    },
+  );
+  assert.equal(result.kind, 'rejected');
+  if (result.kind !== 'rejected') assert.fail('source owner fence must reject');
+  assert.equal(result.reason, 'owner_changed');
+  const current = await readLocalHostDeploymentRecord(ROOT_ID, options);
+  assert.equal(current?.state.kind, 'owned');
+  if (current?.state.kind === 'owned') assert.deepEqual(current.state.owner, DESKTOP_OWNER);
+});
 
 test('local CLI deployment roots are stable for one OS account and isolated by owner and root', () => {
   const first = resolveRuntimeHostLocalCliDeploymentRoot(ROOT_ID, CLI_OWNER, {

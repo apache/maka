@@ -472,6 +472,11 @@ export async function reconcilePreparedRuntimeHostNpmGlobalDeployment(
   request: RuntimeHostNpmGlobalReconciliationRequest & {
     readonly installation: RuntimeHostNpmGlobalInstallation;
     readonly staged: RuntimeHostLocalStagedDeployment;
+    /** Captured owner observation, not permission to follow a later owner. */
+    readonly expectedOwner?: {
+      readonly revision: string;
+      readonly owner: RuntimeHostInstallationOwner;
+    };
   },
   lifecycle: RuntimeHostLocalProcessLifecycleAdapter,
   authorityOptions: LocalHostDeploymentAuthorityOptions = {},
@@ -496,6 +501,17 @@ export async function reconcilePreparedRuntimeHostNpmGlobalDeployment(
     return request.staged;
   };
   const current = await overrides.readRecord(request.rootId, authorityOptions);
+  if (
+    request.expectedOwner &&
+    (current?.state.kind !== 'owned' ||
+      current.revision !== request.expectedOwner.revision ||
+      !sameOwner(current.state.owner, request.expectedOwner.owner))
+  ) {
+    throw new RuntimeHostLocalHandoffError(
+      'source_owner_mismatch',
+      'The observed local Host owner changed before update reconciliation',
+    );
+  }
   if (!current) {
     return overrides.claim(
       {
@@ -512,10 +528,14 @@ export async function reconcilePreparedRuntimeHostNpmGlobalDeployment(
   return overrides.handoff(
     {
       rootId: request.rootId,
-      expectedRevision: current.revision,
+      // The same captured CAS token is checked again by begin_handoff under
+      // the authority lock. Never substitute a newly observed owner revision.
+      expectedRevision: request.expectedOwner?.revision ?? current.revision,
       transactionId:
         current.state.kind === 'handoff' ? current.state.transactionId : request.transactionId,
-      from: current.state.kind === 'handoff' ? current.state.from : current.state.owner,
+      from:
+        request.expectedOwner?.owner ??
+        (current.state.kind === 'handoff' ? current.state.from : current.state.owner),
       to: request.installation.owner,
       target: request.target,
       activeWorkPolicy: request.activeWorkPolicy,
@@ -580,7 +600,7 @@ export async function prepareRuntimeHostNpmGlobalStagedDeployment(
   };
 }
 
-async function openRuntimeHostNpmGlobalStagedDeployment(
+export async function openRuntimeHostNpmGlobalStagedDeployment(
   input: {
     readonly rootId: string;
     readonly owner: RuntimeHostInstallationOwner & { readonly kind: 'cli' };

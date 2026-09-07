@@ -81,6 +81,15 @@ export interface RuntimeHostInstalledUpdateCoordinatorInput {
   readonly currentVersion: string;
   readonly target: RuntimeHostUpdateCandidate;
   readonly allowInterruptActiveTasks: boolean;
+  /** Optional observed-source consent; ordinary explicit CLI updates keep their existing policy. */
+  readonly expectedSource?: RuntimeHostInstalledUpdateExpectedSource;
+}
+
+export interface RuntimeHostInstalledUpdateExpectedSource {
+  readonly rootId: string;
+  readonly deploymentRevision: string;
+  readonly ownerInstallationId: string;
+  readonly hostEpoch: string;
 }
 
 export async function runRuntimeHostInstalledUpdateCoordinator(
@@ -112,6 +121,13 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
     );
   }
   const root = await deps.resolveRoot({ path: input.rootPath, kind: 'interactive' });
+  if (
+    input.expectedSource &&
+    (root.rootId !== input.expectedSource.rootId ||
+      installation.owner.installationId !== input.expectedSource.ownerInstallationId)
+  ) {
+    throw new Error('The observed local Host installation owner changed before update.');
+  }
   const transactionId = updateTransactionId(root.rootId, installation, input.target);
 
   return deps.withArchive(input.target, input.archivePath, async ({ packageRoot, archivePath }) => {
@@ -151,6 +167,17 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
     };
     const prepare = async (inheritableAuthorityLeaseFd: number) => {
       observation = await observeCurrentHost(input.rootPath, root.rootId, deps);
+      // This callback runs under the existing deployment-authority lease.
+      // Do not turn the TUI's consent for one observed Host into retirement of
+      // a successor that appeared while the archive/coordinator was prepared.
+      if (
+        input.expectedSource &&
+        observation.registration?.hostEpoch !== input.expectedSource.hostEpoch
+      ) {
+        await observation.connection?.close();
+        observation = {};
+        throw new Error('The observed Runtime Host changed before update retirement.');
+      }
       if (observation.registration && observation.registration.lifecycleMode !== 'ephemeral') {
         throw new Error('Only an ephemeral local Runtime Host can be updated by this CLI');
       }
@@ -209,6 +236,17 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
             : 'refuse_active_work',
           installation,
           staged,
+          ...(input.expectedSource
+            ? {
+                expectedOwner: {
+                  revision: input.expectedSource.deploymentRevision,
+                  owner: {
+                    kind: 'cli' as const,
+                    installationId: input.expectedSource.ownerInstallationId,
+                  },
+                },
+              }
+            : {}),
         },
         {
           prepareUnownedHostCutover: (_rootId, _target, _staged, _policy, leaseFd) =>

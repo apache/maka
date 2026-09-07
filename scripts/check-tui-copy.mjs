@@ -37,6 +37,8 @@ export const COVERED_FILES = [
   'packages/cli/src/tui-session-status.ts',
   'packages/cli/src/runtime-host-onboarding.ts',
   'packages/cli/src/runtime-host-tui-command.ts',
+  'packages/cli/src/runtime-host-tui-owner.ts',
+  'packages/cli/src/tui-host-owner-copy.ts',
   'packages/cli/src/tui-attention.ts',
   'packages/cli/src/tui-copy-command.ts',
   'packages/cli/src/tui-shortcut-copy.ts',

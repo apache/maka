@@ -20,7 +20,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { BackendStopMode } from '@maka/core/backend-types';
-import { readLogicalRuntimeExecution } from '@maka/core/runtime-logical-execution';
+import {
+  readLogicalRuntimeExecution,
+  readLogicalRuntimeExecutionForRun,
+} from '@maka/core/runtime-logical-execution';
+import { runtimeHandoffPause } from '@maka/core/runtime-handoff';
 import type {
   RootExecutionDescriptor,
   RuntimeInvocationRecord,
@@ -554,10 +558,15 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     }
     let latest = origin;
     while (true) {
+      const run = await this.readRunIfPresent(latest.sessionId, latest.runId);
+      const physical =
+        run?.terminalEvent && runtimeHandoffPause(run.terminalEvent)
+          ? (await readLogicalRuntimeExecution(this.stores.runtimeEventStore, latest, run))?.tip
+          : run;
       const continuation = await this.stores.agentRunStore.readRootTurnContinuationAdmission(
         identity.sessionId,
         latest.turnId,
-        latest.runId,
+        physical?.runId ?? latest.runId,
       );
       if (!continuation) break;
       latest = continuation;
@@ -2227,9 +2236,19 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   }
 
   private async planTurnResume(input: TurnResumeQueryInput): Promise<TurnResumePlan> {
-    const plan = input.sourceRunId
+    let sourceRunId = input.sourceRunId;
+    if (sourceRunId) {
+      const run = await this.readRunIfPresent(input.sessionId, sourceRunId);
+      if (run?.terminalEvent && runtimeHandoffPause(run.terminalEvent)) {
+        const logical = await readLogicalRuntimeExecutionForRun(this.stores.runtimeEventStore, run);
+        // Queries may name the stable public root. The returned plan and the
+        // subsequent start must still bind the exact physical source/high-water.
+        sourceRunId = logical?.tip.runId ?? sourceRunId;
+      }
+    }
+    const plan = sourceRunId
       ? await this.manager.planAuthoritativeSafeBoundaryContinuation(input.sessionId, {
-          sourceRunId: input.sourceRunId,
+          sourceRunId,
           ...(input.expectedRuntimeEventHighWater !== undefined
             ? {
                 expectedRuntimeEventHighWater: input.expectedRuntimeEventHighWater,

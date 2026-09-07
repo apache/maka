@@ -603,6 +603,9 @@ export interface SessionStore {
   ): Promise<SandboxBoundaryRequest>;
   listPendingSandboxBoundaryRequests?(sessionId: string): Promise<SandboxBoundaryRequest[]>;
   listSandboxBoundaryRestartClosures?(sessionId: string): Promise<SandboxBoundaryRequest[]>;
+  hasExplicitSandboxBoundaryDenial?(
+    identities: readonly { sessionId: string; runId: string; turnId: string }[],
+  ): Promise<boolean>;
   settleSandboxBoundaryRequest?(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement>;

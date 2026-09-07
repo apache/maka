@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
+import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import { runtimeHandoffPause } from '@maka/core/runtime-handoff';
@@ -73,6 +74,17 @@ import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 const require = createRequire(import.meta.url);
 const FAKE_CONNECTION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const CONTEXT_OFFLOAD_DATABASE_NAME = 'context-offload.sqlite';
+const HANDOFF_TEST_COMPOSITION = createRunCompositionSnapshot({
+  composerId: 'test.handoff',
+  composerRevision: '1',
+  sourceRevisions: [],
+  baseSystemPromptHash: `sha256:${'0'.repeat(64)}`,
+  toolCatalogHash: `sha256:${'0'.repeat(64)}`,
+  toolAvailabilityHash: `sha256:${'0'.repeat(64)}`,
+  baseProviderOptionsHash: `sha256:${'0'.repeat(64)}`,
+  toolNames: [],
+  contextWindow: null,
+});
 
 test('production composition resumes a sealed logical Root after all stores and runtime owners reopen', {
   timeout: 20_000,
@@ -84,7 +96,13 @@ test('production composition resumes a sealed logical Root after all stores and 
     let dispatches = 0;
     const backendFactory: BackendFactory = (context) =>
       new (class extends FakeBackend {
+        async prepareRunComposition(input: { runId: string; turnId: string }): Promise<void> {
+          await context.recordRunComposition!(input.runId, HANDOFF_TEST_COMPOSITION);
+        }
+
         override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+          assert.ok(input.runId);
+          await this.prepareRunComposition({ runId: input.runId, turnId: input.turnId });
           dispatches += 1;
           if (!input.continuation) {
             assert.equal(input.maxSteps, 4);
@@ -104,7 +122,10 @@ test('production composition resumes a sealed logical Root after all stores and 
         }
       })(context);
     const residencies = new HostResidencyRegistry();
-    const first = await createCapturedExecutionComposition(owner, { primaryBackendFactory: backendFactory, residencies });
+    const first = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: backendFactory,
+      residencies,
+    });
     let successorOwner: InteractiveRootOwner | undefined;
     let successor: Awaited<ReturnType<typeof createCapturedExecutionComposition>> | undefined;
     try {
@@ -164,7 +185,9 @@ test('production composition resumes a sealed logical Root after all stores and 
         await resolveStorageRoot({ path: root, kind: 'interactive' }),
       );
       assert.ok(successorOwner);
-      successor = await createCapturedExecutionComposition(successorOwner, { primaryBackendFactory: backendFactory });
+      successor = await createCapturedExecutionComposition(successorOwner, {
+        primaryBackendFactory: backendFactory,
+      });
       const stores = await openInteractiveExecutionStoresForWrite(successorOwner.lease);
       await waitFor(
         async () =>
@@ -832,11 +855,32 @@ test('WorkHub creates new work through the production assignment composition', a
   });
 });
 
-test('WorkHub Stop retires the running continuation after Resume', async () => {
+test('WorkHub Resume and Stop follow logical lineage across repeated physical handoffs', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const connectionId = await configureFakeDefaultTarget(owner);
+    let pauseNext = true;
+    let boundary = deferred<void>();
+    const primaryBackendFactory: BackendFactory = (backendContext) =>
+      new (class extends FakeBackend {
+        async prepareRunComposition(input: { runId: string; turnId: string }): Promise<void> {
+          await backendContext.recordRunComposition!(input.runId, HANDOFF_TEST_COMPOSITION);
+        }
+
+        override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+          assert.ok(input.runId);
+          await this.prepareRunComposition({ runId: input.runId, turnId: input.turnId });
+          if (backendContext.header.name === 'Payments' && pauseNext) {
+            pauseNext = false;
+            await boundary.promise;
+            assert.equal(await input.handoffBoundary!(new AbortController().signal, null), 'pause');
+            return;
+          }
+          yield* super.send(input);
+        }
+      })(backendContext);
     let { composition, manager } = await createCapturedExecutionComposition(owner, {
       safeBoundaryResume: true,
+      primaryBackendFactory,
     });
     const context = {
       hostEpoch: 'execution-composition-test',
@@ -848,6 +892,40 @@ test('WorkHub Stop retires the running continuation after Resume', async () => {
     let restartedOwner: InteractiveRootOwner | undefined;
     let continuation: { turnId: string; runId: string } | undefined;
     let targetSessionId: string | undefined;
+    const handoffAndReopen = async () => {
+      const requested = deferred<void>();
+      const request = manager.requestRunHandoff.bind(manager);
+      manager.requestRunHandoff = (...args) => {
+        const result = request(...args);
+        requested.resolve();
+        return result;
+      };
+      const preparing = composition.prepareHandoff!(
+        context.hostEpoch,
+        new AbortController().signal,
+      );
+      await requested.promise;
+      boundary.resolve();
+      const preparation = await preparing;
+      assert.ok(preparation);
+      assert.equal(await preparation.seal(), true);
+      assert.ok(await preparation.residencies());
+      await preparation.detach();
+      composition.beginDrain();
+      await composition.close();
+      closed = true;
+      await owner.close();
+      restartedOwner = await tryAcquireInteractiveRootOwner(
+        await resolveStorageRoot({ path: root, kind: 'interactive' }),
+      );
+      assert.ok(restartedOwner);
+      owner = restartedOwner;
+      ({ composition, manager } = await createCapturedExecutionComposition(owner, {
+        safeBoundaryResume: true,
+        primaryBackendFactory,
+      }));
+      closed = false;
+    };
     try {
       const target = await manager.createSession({
         cwd: root,
@@ -888,11 +966,14 @@ test('WorkHub Stop retires the running continuation after Resume', async () => {
       );
       assert.equal(original.ok, true);
       if (!original.ok) return;
+      await handoffAndReopen();
       await composition.handlers['turn.stop'](
         { sessionId: target.id, turnId: original.result.turnId, runId: original.result.runId },
         context,
       );
 
+      pauseNext = true;
+      boundary = deferred<void>();
       const resumed = await composition.handlers['workhub.coordination.act'](
         {
           actionId: 'workhub-resume-stop-resume',
@@ -920,6 +1001,7 @@ test('WorkHub Stop retires the running continuation after Resume', async () => {
       if (!resumedTurn.ok) return;
       continuation = { turnId: resumedTurn.result.turnId, runId: resumedTurn.result.runId };
       assert.equal(resumedTurn.result.status, 'running');
+      await handoffAndReopen();
 
       // Lose the response, interrupt the continuation, then discard all
       // in-memory Gate replay state by reopening the production composition.
@@ -1997,7 +2079,8 @@ async function createCapturedExecutionComposition(
 }> {
   const originalRecover = SessionManager.prototype.recoverInterruptedSessionsStrict;
   const originalSafeBoundaryResume = process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME;
-  const primaryBackendFactory = options.primaryBackendFactory ?? ((context) => new FakeBackend(context));
+  const primaryBackendFactory =
+    options.primaryBackendFactory ?? ((context) => new FakeBackend(context));
   const residencies = options.residencies;
   let manager: SessionManager | undefined;
   SessionManager.prototype.recoverInterruptedSessionsStrict = async function (stores) {

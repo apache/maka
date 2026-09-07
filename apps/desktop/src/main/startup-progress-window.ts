@@ -89,7 +89,7 @@ export function createStartupProgressWindow(input: {
 }): StartupProgressWindow {
   const copy = COPY[input.locale];
   const win = input.createWindow({
-    width: 520, height: 390, title: 'Maka', icon: input.icon,
+    width: 520, height: 350, useContentSize: true, title: 'Maka', icon: input.icon,
     show: false, resizable: false, maximizable: false, fullscreenable: false,
     backgroundColor: input.dark ? '#1c1d21' : '#ffffff',
     webPreferences: {
@@ -99,21 +99,35 @@ export function createStartupProgressWindow(input: {
   });
   let closed = false;
   let loaded = false;
+  let presentationRevision = 0;
   let phase: StartupPhase = 'prepare';
   let handoff: { view: HostHandoffView; submit(revision: string, action: HostHandoffAction): void; locale: UiLocale } | undefined;
-  const execute = (source: string) => {
+  const execute = (source: string, accept?: (result: unknown) => void) => {
     if (!closed && loaded && !win.isDestroyed()) {
-      void win.webContents.executeJavaScript(source).catch(input.onError);
+      void win.webContents.executeJavaScript(source).then(accept).catch(input.onError);
     }
   };
   const publish = () => {
+    if (closed || !loaded || win.isDestroyed()) return;
+    const revision = ++presentationRevision;
+    const width = handoff ? 560 : 520;
+    const [currentWidth, currentHeight] = win.getContentSize();
+    if (currentWidth !== width) win.setContentSize(width, currentHeight);
+    const fitContent = (height: unknown) => {
+      if (closed || win.isDestroyed() || revision !== presentationRevision ||
+          typeof height !== 'number' || !Number.isFinite(height)) return;
+      const fittedHeight = Math.max(240, Math.min(640, Math.ceil(height)));
+      if (win.getContentSize()[1] !== fittedHeight) win.setContentSize(width, fittedHeight);
+    };
     if (handoff) {
       const presentation = formatHostHandoff(handoff.view, handoff.locale);
       execute('window.renderHandoff(' + JSON.stringify({ ...presentation, revision: handoff.view.revision,
-        state: handoff.view.state, diagnostic: handoff.view.diagnostic }) + ');');
+        state: handoff.view.state, diagnostic: handoff.view.diagnostic }) +
+        '); document.body.getBoundingClientRect().height;', fitContent);
     } else execute(
       'window.renderHandoff(null); document.getElementById("phase").textContent = ' + JSON.stringify(copy.phases[phase]) +
-      '; document.body.dataset.phase = ' + JSON.stringify(phase) + ';',
+      '; document.body.dataset.phase = ' + JSON.stringify(phase) +
+      '; document.body.getBoundingClientRect().height;', fitContent,
     );
   };
   const close = () => {
@@ -171,10 +185,8 @@ export function createStartupProgressWindow(input: {
     update(next) { phase = next; publish(); },
     handoff(view, submit, locale) {
       if (closed || win.isDestroyed()) { submit(view.revision, 'cancel'); return; }
-      const first = handoff === undefined;
       const needsAttention = handoff?.view.state !== 'attention' && view.state === 'attention';
       handoff = { view, submit, locale };
-      if (first && !closed && !win.isDestroyed()) win.setSize(560, 540);
       publish();
       if (loaded && needsAttention) {
         if (win.isMinimized()) win.restore();
@@ -183,7 +195,6 @@ export function createStartupProgressWindow(input: {
     },
     clearHandoff() {
       handoff = undefined;
-      if (!closed && !win.isDestroyed()) win.setSize(520, 390);
       publish();
     },
     focus() {

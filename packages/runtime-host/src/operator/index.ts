@@ -125,6 +125,7 @@ export {
   applyLocalHostDeploymentTransition,
   LocalHostDeploymentAuthorityError,
   readLocalHostDeploymentRecord,
+  withLocalHostDeploymentAuthority,
   resolveLocalHostDeploymentAuthorityRoot,
   type LocalHostDeploymentAuthorityOptions,
   type LocalHostDeploymentRecord,

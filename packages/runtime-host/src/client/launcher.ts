@@ -98,6 +98,9 @@ export function launchDetachedRuntimeHostCandidate(
   const startupFailure = readStartupFailure(exited, startupAttemptId);
   const spawned = spawnedPid(child).then(({ pid }) => {
     child.unref();
+    // The guard observes launcher death; its IPC channel must not prevent
+    // that launcher from exiting naturally after its own work has finished.
+    child.channel?.unref();
     return { pid, startupAttemptId, exited, startupFailure };
   });
   return { spawned };

@@ -55,7 +55,10 @@ import {
 } from '@maka/runtime-host/protocol';
 import { readLocalHostDeploymentRecord } from '@maka/runtime-host/operator';
 import { resolveMakaClientDataRoot } from '@maka/storage/workspace-root';
-import { resolveRuntimeHostNpmGlobalInstallation } from './runtime-host-cli-installation.js';
+import {
+  isTemporaryNpxInstallation,
+  resolveRuntimeHostNpmGlobalInstallation,
+} from './runtime-host-cli-installation.js';
 import {
   restartRuntimeHostNpmGlobalDeployment,
   runtimeHostNpmGlobalSourceRetirementAvailable,
@@ -129,6 +132,7 @@ interface RuntimeHostCliContextDeps {
   readonly createPeerClient: typeof createRuntimeHostPeerClientFromEnvironment;
   readonly profileCatalog?: RuntimeHostProfileCatalog;
   readonly resolveInstallation: typeof resolveRuntimeHostNpmGlobalInstallation;
+  readonly isTemporaryNpxInstallation: typeof isTemporaryNpxInstallation;
   readonly restartDeployment: typeof restartRuntimeHostNpmGlobalDeployment;
   readonly sourceRetirementAvailable: typeof runtimeHostNpmGlobalSourceRetirementAvailable;
 }
@@ -168,6 +172,7 @@ export async function connectRuntimeHostCliConnection(
     readDeploymentRecord: readLocalHostDeploymentRecord,
     createPeerClient: createRuntimeHostPeerClientFromEnvironment,
     resolveInstallation: resolveRuntimeHostNpmGlobalInstallation,
+    isTemporaryNpxInstallation,
     restartDeployment: restartRuntimeHostNpmGlobalDeployment,
     sourceRetirementAvailable: runtimeHostNpmGlobalSourceRetirementAvailable,
     ...overrides,
@@ -184,12 +189,17 @@ export async function connectRuntimeHostCliConnection(
     profile.kind === 'remote' && profile.transport.kind === 'libp2p-direct'
       ? deps.createPeerClient()
       : undefined;
+  // A temporary package is evidence for invocation lifetime, never deployment
+  // authority. This only guards candidates we create; using an existing Host
+  // leaves that Host's ownership and lifetime unchanged.
+  const invocationOwned = profile.kind === 'local' && (await deps.isTemporaryNpxInstallation());
   const connectInput = {
     rootPath: input.rootPath,
     protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
     clientInstanceId,
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
     candidateEntrypoint: deps.executionCandidateEntrypoint,
+    ...(invocationOwned ? { closeOnLauncherExit: true } : {}),
   } as const;
   const connect = async (
     signal?: AbortSignal,

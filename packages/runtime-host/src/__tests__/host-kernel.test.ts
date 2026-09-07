@@ -2152,6 +2152,34 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  for (const ending of ['natural exit', 'crash'] as const) {
+    test(`an invocation-owned detached Host retires after launcher ${ending}`, async () => {
+      await withHostPaths(async (paths) => {
+        const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+        const launcher = paths.resources.trackChild(
+          fork(
+            new URL('./fixtures/detached-launcher.js', import.meta.url),
+            [paths.root, capability.rootId, 'invocation-owned'],
+            { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
+          ),
+        );
+        const launchedPid = paths.resources.trackPid(await waitForLaunch(launcher));
+        const connected = await retryConnect(paths, CURRENT_PROTOCOL);
+        assert.equal(connected.kind, 'connected');
+        if (connected.kind !== 'connected') return;
+        assert.equal(connected.registration.pid, launchedPid);
+
+        if (ending === 'natural exit') launcher.send('exit-naturally');
+        else launcher.kill('SIGKILL');
+        await withTimeout(waitForExit(launcher), 5_000, 'Host guard kept its launcher alive');
+        if (ending === 'natural exit') assert.equal(launcher.exitCode, 0);
+        await withTimeout(connected.connection.closed, 5_000, 'Host survived its invocation');
+        await waitForProcessExit(launchedPid);
+        paths.resources.forgetPid(launchedPid);
+      });
+    });
+  }
+
   test('an authority-supervised Candidate exits if its launch owner is killed', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });

@@ -53,6 +53,8 @@ export interface RuntimeContinuationMetadata {
   sourceRunId: string;
   sourceTurnId: string;
   sourceRuntimeEventHighWater: number;
+  /** Restored by Runtime from authoritative decisions on the authenticated continuation chain. */
+  sandboxBoundaryDenied?: boolean;
 }
 
 export interface BackendSendInput {
@@ -235,6 +237,12 @@ export type BackendSessionEvent = Exclude<
 export interface AgentBackend {
   readonly kind: PersistedBackendKind;
   readonly sessionId: string;
+  /**
+   * Resolve the same composition used by send and commit it through the Run
+   * recorder, without dispatching provider or tool work. Required for handoff;
+   * backends without this capability must not resume a cooperative pause.
+   */
+  prepareRunComposition?(input: { runId: string; turnId: string }): Promise<void>;
   send(input: BackendSendInput): AsyncIterable<SessionEvent>;
   compactHistory?(input: BackendCompactHistoryInput): Promise<BackendCompactHistoryResult>;
   stop(reason: 'user_stop' | 'redirect', mode?: BackendStopMode): Promise<void>;

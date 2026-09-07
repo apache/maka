@@ -1151,44 +1151,23 @@ describe('AiSdkBackend sandbox boundary convergence', () => {
     await backend.dispose();
   });
 
-  test('routes a denied Code Mode boundary retry through the same finalization latch', async () => {
-    let streamCalls = 0;
-    const model = new MockLanguageModelV4({
-      doStream: async () => {
-        streamCalls += 1;
-        const chunks: LanguageModelV4StreamPart[] =
-          streamCalls === 1
-            ? [
-                { type: 'stream-start', warnings: [] },
-                {
-                  type: 'tool-call',
-                  toolCallId: 'code-boundary-request',
-                  toolName: 'request_sandbox_boundary',
-                  input: JSON.stringify({
-                    expansion: { network: { enabled: true } },
-                    justification: 'Use the network.',
-                  }),
-                },
-                {
-                  type: 'finish',
-                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-                  usage: emptyUsage(),
-                },
-              ]
-            : streamCalls === 2
+  for (const inheritedDenial of [false, true]) {
+    test(`routes a ${inheritedDenial ? 'continued' : 'fresh'} Code Mode denial through the same finalization latch`, async () => {
+      let streamCalls = inheritedDenial ? 1 : 0;
+      const model = new MockLanguageModelV4({
+        doStream: async () => {
+          streamCalls += 1;
+          const chunks: LanguageModelV4StreamPart[] =
+            streamCalls === 1
               ? [
                   { type: 'stream-start', warnings: [] },
                   {
                     type: 'tool-call',
-                    toolCallId: 'code-boundary-retry',
-                    toolName: 'exec',
+                    toolCallId: 'code-boundary-request',
+                    toolName: 'request_sandbox_boundary',
                     input: JSON.stringify({
-                      code: [
-                        'return await tools.request_sandbox_boundary({',
-                        '  expansion: { network: { enabled: true } },',
-                        '  justification: "Try another expansion."',
-                        '})',
-                      ].join('\n'),
+                      expansion: { network: { enabled: true } },
+                      justification: 'Use the network.',
                     }),
                   },
                   {
@@ -1197,108 +1176,168 @@ describe('AiSdkBackend sandbox boundary convergence', () => {
                     usage: emptyUsage(),
                   },
                 ]
-              : [
-                  { type: 'stream-start', warnings: [] },
-                  { type: 'text-start', id: 'code-boundary-final' },
-                  {
-                    type: 'text-delta',
-                    id: 'code-boundary-final',
-                    delta: 'The denied boundary remains unchanged.',
+              : streamCalls === 2
+                ? [
+                    { type: 'stream-start', warnings: [] },
+                    {
+                      type: 'tool-call',
+                      toolCallId: 'code-boundary-retry',
+                      toolName: 'exec',
+                      input: JSON.stringify({
+                        code: [
+                          'return await tools.request_sandbox_boundary({',
+                          '  expansion: { network: { enabled: true } },',
+                          '  justification: "Try another expansion."',
+                          '})',
+                        ].join('\n'),
+                      }),
+                    },
+                    {
+                      type: 'finish',
+                      finishReason: {
+                        unified: 'tool-calls',
+                        raw: 'tool_calls',
+                      },
+                      usage: emptyUsage(),
+                    },
+                  ]
+                : [
+                    { type: 'stream-start', warnings: [] },
+                    { type: 'text-start', id: 'code-boundary-final' },
+                    {
+                      type: 'text-delta',
+                      id: 'code-boundary-final',
+                      delta: 'The denied boundary remains unchanged.',
+                    },
+                    { type: 'text-end', id: 'code-boundary-final' },
+                    {
+                      type: 'finish',
+                      finishReason: { unified: 'stop', raw: 'stop' },
+                      usage: emptyUsage(),
+                    },
+                  ];
+          return {
+            stream: simulateReadableStream({
+              chunks,
+              initialDelayInMs: null,
+              chunkDelayInMs: null,
+            }),
+          };
+        },
+      });
+      const durable = durableTurnHarness('turn-code-boundary-denial', 'Use Code Mode safely.');
+      const managed = createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0);
+      let pendingRequest:
+        | Awaited<ReturnType<NonNullable<AiSdkBackendInput['createSandboxBoundaryRequest']>>>
+        | undefined;
+      let createCalls = 0;
+      const backend = createTestAiSdkBackend({
+        sessionId: 'session-1',
+        header: header(),
+        appendMessage: async () => {},
+        connection: connection(),
+        apiKey: 'sk-test',
+        modelId: 'mock-model-id',
+        modelFactory: () => model,
+        tools: [buildRequestSandboxBoundaryTool()],
+        readExecutionBoundary: async () => managed,
+        createSandboxBoundaryRequest: async (input) => {
+          createCalls += 1;
+          pendingRequest = {
+            ...input,
+            status: 'pending',
+            baseRevision: 0,
+            createdAt: 1,
+          };
+          return pendingRequest;
+        },
+        settleSandboxBoundaryRequest: async () => {
+          assert.ok(pendingRequest);
+          pendingRequest = {
+            ...pendingRequest,
+            status: 'denied',
+            settledAt: 2,
+          };
+          return { request: pendingRequest, boundary: managed, changed: false };
+        },
+        maxSteps: 5,
+        loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+        newId: idGenerator(),
+        now: monotonicClock(),
+      });
+      const events: SessionEvent[] = [];
+      const consuming = collectEvents(
+        backend.send(
+          durable.input({
+            toolMode: 'code_mode',
+            ...(inheritedDenial
+              ? {
+                  runtimeContext: [durable.anchor],
+                  continuation: {
+                    sourceInvocationId: 'source-invocation',
+                    sourceRunId: 'source-run',
+                    sourceTurnId: 'source-turn',
+                    sourceRuntimeEventHighWater: 1,
+                    sandboxBoundaryDenied: true,
                   },
-                  { type: 'text-end', id: 'code-boundary-final' },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'stop', raw: 'stop' },
-                    usage: emptyUsage(),
-                  },
-                ];
-        return {
-          stream: simulateReadableStream({
-            chunks,
-            initialDelayInMs: null,
-            chunkDelayInMs: null,
+                }
+              : {}),
           }),
-        };
-      },
-    });
-    const durable = durableTurnHarness('turn-code-boundary-denial', 'Use Code Mode safely.');
-    const managed = createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0);
-    let pendingRequest:
-      | Awaited<ReturnType<NonNullable<AiSdkBackendInput['createSandboxBoundaryRequest']>>>
-      | undefined;
-    let createCalls = 0;
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [buildRequestSandboxBoundaryTool()],
-      readExecutionBoundary: async () => managed,
-      createSandboxBoundaryRequest: async (input) => {
-        createCalls += 1;
-        pendingRequest = {
-          ...input,
-          status: 'pending',
-          baseRevision: 0,
-          createdAt: 1,
-        };
-        return pendingRequest;
-      },
-      settleSandboxBoundaryRequest: async () => {
-        assert.ok(pendingRequest);
-        pendingRequest = { ...pendingRequest, status: 'denied', settledAt: 2 };
-        return { request: pendingRequest, boundary: managed, changed: false };
-      },
-      maxSteps: 5,
-      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-    const events: SessionEvent[] = [];
-    const consuming = collectEvents(
-      backend.send(durable.input({ toolMode: 'code_mode' })),
-      events,
-      durable.record,
-    );
+        ),
+        events,
+        durable.record,
+      );
 
-    await waitFor(() => events.some((event) => event.type === 'sandbox_boundary_request'));
-    const request = events.find((event) => event.type === 'sandbox_boundary_request');
-    assert.ok(request?.type === 'sandbox_boundary_request');
-    await backend.respondToSandboxBoundary({ requestId: request.requestId, decision: 'deny' });
-    await consuming;
+      if (!inheritedDenial) {
+        await waitFor(() => events.some((event) => event.type === 'sandbox_boundary_request'));
+        const request = events.find((event) => event.type === 'sandbox_boundary_request');
+        assert.ok(request?.type === 'sandbox_boundary_request');
+        await backend.respondToSandboxBoundary({
+          requestId: request.requestId,
+          decision: 'deny',
+        });
+      }
+      await consuming;
 
-    assert.equal(streamCalls, 3);
-    assert.equal(createCalls, 1);
-    assert.equal(events.filter((event) => event.type === 'sandbox_boundary_request').length, 1);
-    assert.equal(
-      events.filter(
-        (event) => event.type === 'tool_start' && event.toolName === 'request_sandbox_boundary',
-      ).length,
-      2,
-    );
-    assert.doesNotMatch(
-      JSON.stringify(model.doStreamCalls[1]?.tools ?? []),
-      /request_sandbox_boundary/u,
-    );
-    assert.match(JSON.stringify(model.doStreamCalls[1]?.tools ?? []), /exec/u);
-    assert.deepEqual(model.doStreamCalls[2]?.tools ?? [], []);
-    assert.match(JSON.stringify(model.doStreamCalls[2]?.prompt), /sandbox_boundary_finalization/u);
-    assert.equal(
-      events.find((event) => event.type === 'complete')?.stopReason,
-      'permission_handoff',
-    );
-    await backend.dispose();
-  });
+      const inheritedOffset = inheritedDenial ? 1 : 0;
+      assert.equal(streamCalls, 3);
+      assert.equal(createCalls, 1 - inheritedOffset);
+      assert.equal(
+        events.filter((event) => event.type === 'sandbox_boundary_request').length,
+        1 - inheritedOffset,
+      );
+      assert.equal(
+        events.filter(
+          (event) => event.type === 'tool_start' && event.toolName === 'request_sandbox_boundary',
+        ).length,
+        2 - inheritedOffset,
+      );
+      assert.doesNotMatch(
+        JSON.stringify(model.doStreamCalls[1 - inheritedOffset]?.tools ?? []),
+        /request_sandbox_boundary/u,
+      );
+      assert.match(JSON.stringify(model.doStreamCalls[1 - inheritedOffset]?.tools ?? []), /exec/u);
+      assert.deepEqual(model.doStreamCalls[2 - inheritedOffset]?.tools ?? [], []);
+      assert.match(
+        JSON.stringify(model.doStreamCalls[2 - inheritedOffset]?.prompt),
+        /sandbox_boundary_finalization/u,
+      );
+      assert.equal(
+        events.find((event) => event.type === 'complete')?.stopReason,
+        'permission_handoff',
+      );
+      await backend.dispose();
+    });
+  }
 
   test('bounds varied invalid declarations before creating a boundary request', async () => {
     const invalidCalls = [
       { expansion: {}, justification: 'Missing permission.' },
       {
         expansion: {
-          filesystem: { entries: [{ path: '.', access: 'read', scope: 'exact' }] },
+          filesystem: {
+            entries: [{ path: '.', access: 'read', scope: 'exact' }],
+          },
         },
         justification: 'Read this path.',
       },

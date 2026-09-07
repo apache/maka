@@ -39,6 +39,7 @@ import {
 } from '@maka/runtime-host/protocol';
 import type { RuntimeHostManagedServiceTarget } from './runtime-host-service-manager.js';
 import { hasEphemeralRuntimeHostPeerPort } from './runtime-host-peer-artifact.js';
+import type { RuntimeHostInstalledUpdateExpectedSource } from './runtime-host-installed-update-coordinator.js';
 
 type RuntimeHostCliError = { kind: 'error'; message: string; exitCode: number };
 
@@ -81,6 +82,7 @@ export type RuntimeHostCliCommand =
       targetIntegrity: string;
       targetCompatibility?: number;
       allowInterruptActiveTasks: boolean;
+      expectedSource?: RuntimeHostInstalledUpdateExpectedSource;
     }
   | {
       kind: 'runtime-host-local-update-activate';
@@ -478,6 +480,10 @@ function parseLocalUpdateApply(argv: string[]): RuntimeHostCliCommand {
     '--target-version',
     '--target-integrity',
     '--target-compatibility',
+    '--expected-root-id',
+    '--expected-deployment-revision',
+    '--expected-owner-installation-id',
+    '--expected-host-epoch',
   ]);
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -529,6 +535,30 @@ function parseLocalUpdateApply(argv: string[]): RuntimeHostCliCommand {
   ) {
     return error('runtime-host local-update-apply compatibility is invalid');
   }
+  const expectedValues = [
+    '--expected-root-id',
+    '--expected-deployment-revision',
+    '--expected-owner-installation-id',
+    '--expected-host-epoch',
+  ].map((name) => values.get(name));
+  let expectedSource: RuntimeHostInstalledUpdateExpectedSource | undefined;
+  if (expectedValues.some((value) => value !== undefined)) {
+    if (!expectedValues.every((value) => value !== undefined && isSafeIdentity(value))) {
+      return error(
+        'runtime-host local-update-apply requires one complete expected source identity',
+      );
+    }
+    const [rootId, deploymentRevision, ownerInstallationId, hostEpoch] = expectedValues as string[];
+    if (!/^[a-f0-9]{64}$/u.test(rootId!)) {
+      return error('runtime-host local-update-apply expected Root identity is invalid');
+    }
+    expectedSource = {
+      rootId: rootId!,
+      deploymentRevision: deploymentRevision!,
+      ownerInstallationId: ownerInstallationId!,
+      hostEpoch: hostEpoch!,
+    };
+  }
   return {
     kind: 'runtime-host-local-update-apply',
     rootPath,
@@ -540,6 +570,7 @@ function parseLocalUpdateApply(argv: string[]): RuntimeHostCliCommand {
     targetIntegrity,
     ...(targetCompatibility === undefined ? {} : { targetCompatibility }),
     allowInterruptActiveTasks,
+    ...(expectedSource ? { expectedSource } : {}),
   };
 }
 

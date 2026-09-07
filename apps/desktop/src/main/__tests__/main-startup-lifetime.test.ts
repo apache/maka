@@ -56,12 +56,39 @@ test('retains process lifetime before a standalone startup dialog can close', ()
   );
   const windowAllClosed = bootSource.slice(
     windowAllClosedStart,
-    bootSource.indexOf('app.on("before-quit"', windowAllClosedStart),
+    bootSource.indexOf('powerMonitor.on("resume"', windowAllClosedStart),
   );
   assert.match(
     windowAllClosed,
     /process\.platform !== "darwin" && !isBrowserMessageBoxPresentationActive\(\) &&\s*!isDesktopStartupInProgress\(\)/u,
   );
+});
+
+test('registers one shared quit cleanup before the initial Host handoff', () => {
+  const hostStart = bootSource.indexOf('runtimeHostManager = await startLocalRuntimeHostManager');
+  const quitRegistration = bootSource.indexOf('app.on("before-quit", quitCoordinator.handleBeforeQuit)');
+  const workBoardDeclaration = bootSource.indexOf('let workBoardIpc:');
+  assert.ok(workBoardDeclaration >= 0 && workBoardDeclaration < quitRegistration);
+  assert.ok(quitRegistration >= 0 && quitRegistration < hostStart);
+  assert.equal(bootSource.match(/createAppQuitCoordinator\(\{/gu)?.length, 1);
+  assert.equal(bootSource.match(/app\.on\("before-quit"/gu)?.length, 1);
+  assert.match(bootSource, /cleanup: closeRuntimeHostDesktop/u);
+  assert.match(bootSource, /return runtimeHostDesktopShutdown \?\?= disposeRuntimeHostDesktop\(\)/u);
+  assert.match(bootSource, /workBoardIpc\?\.close\(\)/u);
+});
+
+test('drains startup resources before cancellation quit or fatal presentation', () => {
+  const callbackStart = bootSource.indexOf('onFatalError: (error, target) => {');
+  const callback = bootSource.slice(callbackStart, bootSource.indexOf('\n);', callbackStart));
+  assert.ok(callback.indexOf('if (!runtimeHostManager) return;') < callback.indexOf('app.quit()'));
+
+  const hostStart = bootSource.indexOf('runtimeHostManager = await startLocalRuntimeHostManager');
+  const failure = bootSource.slice(hostStart, bootSource.indexOf('// Runtime Host is the only', hostStart));
+  const cleanup = failure.indexOf('await closeRuntimeHostDesktop()');
+  assert.ok(cleanup >= 0 && cleanup < failure.indexOf('app.quit()'));
+  assert.ok(cleanup < failure.indexOf('throw error'));
+  assert.doesNotMatch(failure, /retireOwnedLocalHost|forceTerminate/u);
+  assert.match(bootSource, /await runtimeHostPeerMeshComponent\?\.close\(\)[\s\S]*await runtimeHostPeerEndpointOwner\?\.close\(\)/u);
 });
 
 test('presents startup before Host boot and hands off only when the main window is shown', () => {

@@ -128,6 +128,48 @@ test('connection-only CLI bootstrap does not read the model connection catalog',
   await context.close();
 });
 
+for (const temporary of [true, false]) {
+  test(`${temporary ? 'npx' : 'ordinary'} CLI preserves an existing Host and guards only npx candidate launches`, async () => {
+    let closes = 0;
+    const connection = {
+      rootId: 'root-id',
+      hostEpoch: 'host-existing',
+      connectionId: 'connection-id',
+      selectedProtocol: 0,
+      closed: new Promise<void>(() => {}),
+      status: async () => ({ state: 'ready' }),
+      subscribeConfigurationChanges: () => () => {},
+      subscribeConnectionCatalogChanges: () => () => {},
+      subscribeProjectCatalogChanges: () => () => {},
+      subscribeSessionCatalogChanges: () => () => {},
+      subscribeScheduledTaskChanges: () => () => {},
+      request: async () => {
+        throw new Error('Disconnect must not retire the existing Host');
+      },
+      close: async () => {
+        closes += 1;
+      },
+    } as unknown as RuntimeHostConnection;
+    const context = await connectRuntimeHostCliConnection(
+      { rootPath: '/runtime-host-root' },
+      {
+        isTemporaryNpxInstallation: async () => temporary,
+        resolveInstallation: async () => {
+          throw new Error('No deployment mutation was requested');
+        },
+        connectOrSpawn: async (input) => {
+          assert.equal(input.closeOnLauncherExit, temporary ? true : undefined);
+          assert.equal(input.generation, undefined);
+          assert.equal(input.takeoverHostEpoch, undefined);
+          return connectedHostResult(connection);
+        },
+      },
+    );
+    await context.close();
+    assert.equal(closes, 1);
+  });
+}
+
 test('CLI refuses a staged Host whose durable installation claim is missing', async () => {
   let closes = 0;
   await assert.rejects(
@@ -346,6 +388,9 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
     {
       connectOrSpawn: async () => {
         throw new Error('remote profile must not use local discovery');
+      },
+      isTemporaryNpxInstallation: async () => {
+        throw new Error('A remote connection must not inspect local invocation provenance');
       },
       connectProfile: async (input) => {
         remoteInput = input;

@@ -18,6 +18,7 @@
  */
 
 import type { AgentRunStore } from '@maka/core/agent-run';
+import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import {
   decodeRuntimeBoundaryCursor,
@@ -788,6 +789,25 @@ export class RuntimeKernel implements RuntimeKernelLike {
     );
     assertContinuationSourceUnchanged(continuation, sourceRun, sourceEvents);
     await this.revalidateContinuationSafety(continuation);
+    if (!this.deps.store.hasExplicitSandboxBoundaryDenial) {
+      throw new Error('Continuation requires authoritative sandbox boundary decision lookup');
+    }
+    const inheritedSandboxBoundaryDenied = await this.deps.store.hasExplicitSandboxBoundaryDenial(
+      continuation.boundary!.segments.map((segment) => segment.identity),
+    );
+
+    const handoffSourceComposition =
+      continuation.handoffRootRunId !== undefined
+        ? agentRunCompositionFromEvents(
+            await this.deps.runStore.readEvents(continuation.sessionId, sourceRun.runId),
+          )
+        : undefined;
+    if (continuation.handoffRootRunId !== undefined && !handoffSourceComposition) {
+      throw new RuntimeContinuationRevalidationError(
+        'source_identity_changed',
+        'Cooperative handoff source has no durable Run Composition',
+      );
+    }
 
     const userInput: UserMessageInput = {
       turnId: continuation.turnId,
@@ -867,7 +887,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       // still authorises the run about to execute.
       claimedOpening: claim.targetOpening,
       ...(continuation.handoffRootRunId !== undefined
-        ? { handoffSourceOpening: sourceRun.opening }
+        ? { handoffSourceOpening: sourceRun.opening, handoffSourceComposition }
         : {}),
       claimedOpenedAt: claimedAt,
       effectiveToolMode,
@@ -956,6 +976,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       },
       options,
       () => this.revalidateContinuationSafety(continuation),
+      inheritedSandboxBoundaryDenied,
     );
   }
 
@@ -1320,6 +1341,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     messageOwner?: RuntimeMessageRunIdentity,
     options: ResumeContinuationOptions = {},
     revalidateSafety?: () => Promise<void>,
+    inheritedSandboxBoundaryDenied = false,
   ): AsyncIterable<SessionEvent> {
     const sessionEvents = new DeliveryAckQueue<SessionEvent>();
     const { abortController, release: releaseExecutionAbort } =
@@ -1383,6 +1405,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
               })(),
         ...(run.toolBoundaryProtocol ? { toolBoundaryProtocol: run.toolBoundaryProtocol } : {}),
       });
+      continuationMetadata.sandboxBoundaryDenied = inheritedSandboxBoundaryDenied;
     } catch (error) {
       releaseExecutionAbort();
       await this.finalizeFailedRunStart(owners, run, execution, error);
@@ -1401,6 +1424,20 @@ export class RuntimeKernel implements RuntimeKernelLike {
       backend: begin.backend,
       stopBackend,
       beforeDispatch: () => this.assertRunCanDispatch(run, begin.backend),
+      ...(continuation.handoffRootRunId !== undefined
+        ? {
+            prepareBeforeDispatch: async () => {
+              this.assertRunCanDispatch(run, begin.backend);
+              if (!begin.backend.prepareRunComposition) {
+                throw new Error(
+                  'Backend does not support cooperative handoff composition preparation',
+                );
+              }
+              await begin.backend.prepareRunComposition({ runId: run.runId, turnId: run.turnId });
+              run.assertRunCompositionCommitted();
+            },
+          }
+        : {}),
       hasCommittedHandoff: () => run.hasCommittedHandoff(),
       ...(interactionRun ? { hostedInteraction: interactionRun } : {}),
       abortSignal: abortController.signal,
@@ -1417,7 +1454,20 @@ export class RuntimeKernel implements RuntimeKernelLike {
         continuation: continuationMetadata,
         ...runtimeSteeringInput(owners.messageOwner),
         ...(continuation.handoffRootRunId !== undefined
-          ? { maxSteps: continuation.handoffRemainingSteps }
+          ? {
+              maxSteps: continuation.handoffRemainingSteps,
+              // The original user anchor remains in the authenticated replay;
+              // a physical successor must not invent another user message.
+              headAnchorRuntimeEvent: continuation.runtimeContext.find(
+                (event) =>
+                  event.runId === continuation.handoffRootRunId &&
+                  event.turnId === continuation.turnId &&
+                  event.role === 'user' &&
+                  (event.author === 'user' || event.author === 'host') &&
+                  event.content?.kind === 'text' &&
+                  event.content.steering !== true,
+              ),
+            }
           : {}),
         handoffBoundary: (signal, remainingSteps) =>
           run.reachHandoffBoundary(signal, remainingSteps),
@@ -1661,6 +1711,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     hostedInteraction?: HostedInteractionBridge;
     abortSignal: AbortSignal;
     eventContext: RuntimeEventMapContext;
+    prepareBeforeDispatch?: () => Promise<void>;
     beforeDispatch: () => void;
     hasCommittedHandoff?: () => boolean;
     onSessionEvent: (sessionEvent: SessionEvent, runtimeEvent: RuntimeEvent) => Promise<void>;
@@ -1688,6 +1739,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
     let terminalAccepted = false;
     let errorSeen = false;
     try {
+      if (input.prepareBeforeDispatch) await input.prepareBeforeDispatch();
+      // Keep the final stop/admission check synchronous with backend.send.
       input.beforeDispatch();
       for await (const sessionEvent of input.backend.send({
         ...backendInput,

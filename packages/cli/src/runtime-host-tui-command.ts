@@ -33,7 +33,9 @@ import { createRuntimeHostOnboardingSurface } from './runtime-host-onboarding.js
 import type { MakaPiTuiTurnActivitySurface } from './pi-tui-contracts.js';
 import { runMakaPiTui } from './pi-tui-runner.js';
 import { createRuntimeHostTuiContext } from './runtime-host-tui-context.js';
+import { describeTuiHost, prepareTuiHostOwnerAction } from './runtime-host-tui-owner.js';
 import type { MakaSessionDriver } from './session-driver.js';
+import { getTuiHostOwnerCopy } from './tui-host-owner-copy.js';
 
 export interface RunRuntimeHostTuiInput {
   readonly cliCommand: string;
@@ -49,6 +51,7 @@ export interface RunRuntimeHostTuiInput {
 }
 
 export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<number> {
+  const ownerCopy = getTuiHostOwnerCopy(input.locale);
   const foreignSessions = createForeignSessionStore();
   const contextInput = {
     ...(process.stdin.isTTY ? { handoffSurface: createCliHostHandoffSurface(input.locale) } : {}),
@@ -75,6 +78,8 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
     if (!configured) throw error;
     context = await createRuntimeHostTuiContext(contextInput);
   }
+  let ownerAction: (() => Promise<number>) | undefined;
+  let contextOpen = true;
   try {
     await runMakaPiTui({
       driver: context.driver,
@@ -104,6 +109,24 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       onboarding: context.onboarding,
       ...(context.mcp ? { mcp: context.mcp } : {}),
       recap: context.recap,
+      hostControl: {
+        status: () => describeTuiHost({ ...context, locale: input.locale }),
+        prepare: async (action, confirm) => {
+          if (ownerAction || !contextOpen) throw new Error(ownerCopy.pending);
+          const execute = await prepareTuiHostOwnerAction({
+            profile: context.profile,
+            connection: context.connection,
+            rootPath: input.workspaceRoot,
+            locale: input.locale,
+            action,
+            confirm,
+          });
+          if (!execute) return false;
+          if (!contextOpen || ownerAction) throw new Error(ownerCopy.disconnected);
+          ownerAction = execute;
+          return true;
+        },
+      },
       ...(runtimeHostProfileUsesHostWorkspace(context.profile.kind)
         ? {
             sessionListScope: 'all' as const,
@@ -127,11 +150,14 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
         : {}),
     });
     if (hint) process.stdout.write(`${hint}\n`);
-    return 0;
   } finally {
+    contextOpen = false;
     await context.driver.cleanupOwnedSideConversations().catch(() => undefined);
     await context.close();
   }
+  // No reconnecting client remains to respawn a stopped Host, and an updater
+  // can use the restored terminal without competing with the TUI renderer.
+  return ownerAction ? ownerAction() : 0;
 }
 
 async function runFirstRunOnboarding(
