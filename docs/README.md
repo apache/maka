@@ -57,6 +57,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - [WorkHub domain language](./workhub-domain-language.md)
 - [WorkHub Coordination Session ADR](./architecture/workhub-coordination-session-adr.md)
 - [Runtime resume architecture](./architecture/runtime-resume-architecture.md) ([中文](./architecture/runtime-resume-architecture.zh-CN.md))
+- [Runtime PDF rejection recovery](./architecture/runtime-pdf-rejection-recovery.md)
 - [Runtime Host architecture](./architecture/runtime-host-architecture.md) ([中文](./architecture/runtime-host-architecture.zh-CN.md))
 - [Remote Runtime Host setup](./runtime-host-remote-access.md) ([中文](./runtime-host-remote-access.zh-CN.md))
 - [Runtime resume extraction ledger](./architecture/runtime-resume-extraction-ledger.zh-CN.md)
