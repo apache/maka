@@ -814,7 +814,25 @@
 /* Astryx `Banner` paints the failed-turn surface; this only sets the block
    rhythm between it and the timeline entry above it. */
 .maka-turn-failure-unavailable { display: block; }
-.maka-turn-failure-detail { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; color: var(--foreground); }
+/* Keep Banner's immediate height change and built-in chevron rotation.
+   Animating height repeatedly lays out the transcript and triggers its
+   ResizeObserver-driven scroll following; that cost grows with history.
+   Only fade the newly mounted detail, without delaying layout or removal. */
+.maka-turn-failure-detail {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  color: var(--foreground);
+  animation: maka-turn-failure-enter var(--duration-fast) var(--ease-standard);
+}
+@keyframes maka-turn-failure-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .maka-turn-failure-detail { animation: none; }
+}
 .maka-turn-failed-banner { margin-block: var(--space-1) var(--space-0-5); }
 
 .maka-turn-lineage-row,
