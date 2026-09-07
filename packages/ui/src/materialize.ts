@@ -481,7 +481,7 @@ export function overlayLiveTurn(
         role: "system",
         text: getConversationCopy(locale).messages.systemNotes.contextCompacting,
         compactionState: "running",
-        ts: liveTurn.startedAt ?? existing.startedAt,
+        ts: existing.startedAt,
       };
       return turns.map((turn, index) =>
         index === targetIndex ? { ...turn, notes: [...turn.notes, note] } : turn,
@@ -500,7 +500,7 @@ export function overlayLiveTurn(
             role: "system",
             text: getConversationCopy(locale).messages.systemNotes.contextCompacting,
             compactionState: "running",
-            ts: liveTurn.startedAt,
+            ts: startedAt,
           },
         ],
         timeline: [],

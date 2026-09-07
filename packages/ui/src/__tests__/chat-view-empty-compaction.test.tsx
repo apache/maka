@@ -101,7 +101,7 @@ for (const [kind, state, variant] of [
   });
 }
 
-test('compaction clock uses the live Host start and disappears when the durable note takes over', async () => {
+test('compaction clock uses the recorded Turn start and disappears when the durable note takes over', async () => {
   const previous = { window: globalThis.window, document: globalThis.document };
   const actGlobals = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
   const previousAct = actGlobals.IS_REACT_ACT_ENVIRONMENT;
@@ -117,7 +117,7 @@ test('compaction clock uses the live Host start and disappears when the durable 
             type: 'turn_state',
             id: 'running',
             turnId: 'compact',
-            ts: Date.now() - 60_000,
+            ts: Date.now() - 25_000,
             status: 'running',
             partialOutputRetained: false,
           },
@@ -129,7 +129,7 @@ test('compaction clock uses the live Host start and disappears when the durable 
         phase: 'waiting',
         steps: [],
         rootExecutionKind: 'context_compact',
-        startedAt: Date.now() - 25_000,
+        startedAt: Date.now() - 10_000,
       },
       'en',
     );

@@ -616,7 +616,7 @@ export const TurnView = memo(function TurnView(props: {
             <span className="maka-compaction-status">
               {note.compactionState === "running" && <Spinner size="sm" shade="subtle" aria-hidden="true" />}
               <span>{note.text}</span>
-              {note.compactionState === "running" && <TurnElapsedTime startedAt={note.ts} />}
+              {note.compactionState === "running" && <TurnElapsedTime startedAt={turn.startedAt} />}
             </span>
           ) : note.text}
         </ChatSystemMessage>
