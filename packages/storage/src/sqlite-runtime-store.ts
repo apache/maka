@@ -743,9 +743,7 @@ export class SqliteRuntimeStore
                 AND runtime_events.event_kind = 'invocation_opened'
             )
         )
-        WHERE (:invocationId IS NULL OR invocation_id = :invocationId)
-          AND (:runId IS NULL OR run_id = :runId)
-          AND (
+        WHERE (
             :beforeOpenedAt IS NULL
             OR opened_at < :beforeOpenedAt
             OR (opened_at = :beforeOpenedAt AND invocation_id < :beforeInvocationId)
@@ -755,8 +753,8 @@ export class SqliteRuntimeStore
       `)
       .all({
         sessionId,
-        invocationId: options.invocationId ?? null,
-        runId: options.runId ?? null,
+        ...(options.invocationId === undefined ? {} : { invocationId: options.invocationId }),
+        ...(options.runId === undefined ? {} : { runId: options.runId }),
         beforeOpenedAt: options.before?.openedAt ?? null,
         beforeInvocationId: options.before?.invocationId ?? null,
         limit: options.limit ?? -1,
