@@ -24,18 +24,34 @@ import { Dialog } from '@astryxdesign/core/Dialog';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
 import { useEffect, useRef, useState } from 'react';
 import type { MermaidConfig } from 'mermaid';
+import mermaidPackage from 'mermaid/package.json' with { type: 'json' };
 import { ICON_SIZE, Maximize2, Minimize2, Scan, ZoomIn, ZoomOut } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
 export const MAX_MERMAID_SOURCE_LENGTH = 20_000;
 export const MAX_MERMAID_EDGES = 500;
+export const MERMAID_RENDER_CACHE_LIMIT = 24;
+export const MERMAID_RENDER_CACHE_MAX_CHARS = 4 * 1024 * 1024;
 export const MIN_MERMAID_ZOOM = 0.5;
 export const MAX_MERMAID_ZOOM = 3;
 export const MERMAID_ZOOM_STEP = 0.25;
 const MIN_MERMAID_VIEWPORT_HEIGHT = 112;
 const MAX_MERMAID_VIEWPORT_HEIGHT = 480;
 const MAX_MERMAID_VIEWPORT_HEIGHT_RATIO = 0.55;
+const MERMAID_RENDER_CACHE_SCHEMA_VERSION = 1;
+const MERMAID_ID_REFERENCE_ATTRIBUTES = new Set([
+  'aria-activedescendant',
+  'aria-controls',
+  'aria-describedby',
+  'aria-details',
+  'aria-errormessage',
+  'aria-flowto',
+  'aria-labelledby',
+  'aria-owns',
+  'for',
+  'headers',
+]);
 
 type MermaidTheme = 'default' | 'dark';
 
@@ -50,9 +66,25 @@ type MermaidViewportLayout = {
   viewportHeight: number;
 };
 
+type MermaidRenderTemplate = {
+  svg: string;
+  namespace: string;
+  naturalWidth: number;
+  naturalHeight: number;
+};
+
+type MermaidRenderInFlight = {
+  promise: Promise<MermaidRenderTemplate | null>;
+  consumers: Set<() => boolean>;
+};
+
 let mermaidModule: Promise<typeof import('mermaid').default> | undefined;
 let renderQueue: Promise<void> = Promise.resolve();
 let diagramSequence = 0;
+const MERMAID_RENDERER_VERSION = `${mermaidPackage.version}:${MERMAID_RENDER_CACHE_SCHEMA_VERSION}`;
+const mermaidRenderCache = new Map<string, MermaidRenderTemplate>();
+const mermaidRenderInFlight = new Map<string, MermaidRenderInFlight>();
+let mermaidRenderCacheChars = 0;
 
 export function createMermaidConfig(theme: MermaidTheme): MermaidConfig {
   return {
@@ -72,7 +104,82 @@ function loadMermaid() {
   return mermaidModule;
 }
 
-function sanitizeRenderedMermaidSvg(svg: string): string {
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function replaceMermaidLocalUrlReferences(
+  value: string,
+  replacements: ReadonlyMap<string, string>,
+): string {
+  return value.replace(
+    /url\(\s*(['"]?)#([^\s)'"}]+)\1\s*\)/g,
+    (match, quote: string, id: string) => {
+      const replacement = replacements.get(id);
+      return replacement ? `url(${quote}#${replacement}${quote})` : match;
+    },
+  );
+}
+
+function replaceMermaidStyleIdReferences(
+  value: string,
+  replacements: ReadonlyMap<string, string>,
+): string {
+  let rewritten = replaceMermaidLocalUrlReferences(value, replacements);
+  for (const [id, replacement] of replacements) {
+    const selector = new RegExp(
+      `(^|[\\s,>+~}(.])#${escapeRegExp(id)}(?=$|[\\s,.:>+~{\\[])`,
+      'gm',
+    );
+    rewritten = rewritten.replace(selector, `$1#${replacement}`);
+  }
+  return rewritten;
+}
+
+function namespaceRenderedMermaidIds(documentNode: Document, namespace: string): void {
+  const replacements = new Map<string, string>();
+  for (const element of documentNode.querySelectorAll('[id]')) {
+    const id = element.getAttribute('id');
+    if (!id || id.includes(namespace)) continue;
+    let replacement = replacements.get(id);
+    if (!replacement) {
+      replacement = `${namespace}-scoped-${replacements.size}`;
+      replacements.set(id, replacement);
+    }
+    element.setAttribute('id', replacement);
+  }
+  if (replacements.size === 0) return;
+
+  for (const element of documentNode.querySelectorAll('*')) {
+    for (const attribute of Array.from(element.attributes)) {
+      if (attribute.name.toLowerCase() === 'id') continue;
+      const name = attribute.name.toLowerCase();
+      let value = replaceMermaidLocalUrlReferences(attribute.value, replacements);
+      if ((name === 'href' || name.endsWith(':href')) && value.startsWith('#')) {
+        const replacement = replacements.get(value.slice(1));
+        if (replacement) value = `#${replacement}`;
+      } else if (MERMAID_ID_REFERENCE_ATTRIBUTES.has(name)) {
+        value = value
+          .split(/(\s+)/)
+          .map((token) => replacements.get(token) ?? token)
+          .join('');
+      } else if (name === 'begin' || name === 'end') {
+        for (const [id, replacement] of replacements) {
+          value = value.replace(
+            new RegExp(`(^|;\\s*)${escapeRegExp(id)}(?=\\.)`, 'g'),
+            `$1${replacement}`,
+          );
+        }
+      }
+      if (value !== attribute.value) element.setAttribute(attribute.name, value);
+    }
+  }
+  for (const style of documentNode.querySelectorAll('style')) {
+    style.textContent = replaceMermaidStyleIdReferences(style.textContent ?? '', replacements);
+  }
+}
+
+function sanitizeRenderedMermaidSvg(svg: string, namespace: string): string {
   const documentNode = new DOMParser().parseFromString(svg, 'image/svg+xml');
   if (documentNode.querySelector('parsererror')) throw new Error('Invalid Mermaid SVG output');
 
@@ -94,8 +201,54 @@ function sanitizeRenderedMermaidSvg(svg: string): string {
       }
     }
   }
+  namespaceRenderedMermaidIds(documentNode, namespace);
 
   return new XMLSerializer().serializeToString(documentNode.documentElement);
+}
+
+function mermaidRenderCacheKey(code: string, theme: MermaidTheme): string {
+  return `${MERMAID_RENDERER_VERSION}\0${theme}\0${code}`;
+}
+
+function touchMermaidRenderCacheEntry(key: string, entry: MermaidRenderTemplate): void {
+  mermaidRenderCache.delete(key);
+  mermaidRenderCache.set(key, entry);
+}
+
+function trimMermaidRenderCache(): void {
+  while (
+    mermaidRenderCache.size > MERMAID_RENDER_CACHE_LIMIT
+    || mermaidRenderCacheChars > MERMAID_RENDER_CACHE_MAX_CHARS
+  ) {
+    const oldestKey = mermaidRenderCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    mermaidRenderCacheChars -= mermaidRenderCache.get(oldestKey)?.svg.length ?? 0;
+    mermaidRenderCache.delete(oldestKey);
+  }
+}
+
+function writeMermaidRenderCache(key: string, template: MermaidRenderTemplate): void {
+  if (template.svg.length > MERMAID_RENDER_CACHE_MAX_CHARS) return;
+  const existing = mermaidRenderCache.get(key);
+  if (existing) mermaidRenderCacheChars -= existing.svg.length;
+  mermaidRenderCache.delete(key);
+  mermaidRenderCache.set(key, template);
+  mermaidRenderCacheChars += template.svg.length;
+  trimMermaidRenderCache();
+}
+
+function nextMermaidRenderId(kind: 'template' | 'instance', code = ''): string {
+  let id: string;
+  do id = `maka-mermaid-${kind}-${++diagramSequence}`;
+  while (code.includes(id));
+  return id;
+}
+
+function instantiateMermaidSvg(template: MermaidRenderTemplate): string {
+  return template.svg.replaceAll(
+    template.namespace,
+    nextMermaidRenderId('instance', template.svg),
+  );
 }
 
 /**
@@ -107,22 +260,50 @@ function renderMermaid(
   code: string,
   theme: MermaidTheme,
   shouldRender: () => boolean,
-): Promise<string | null> {
-  const task = renderQueue.then(async () => {
-    if (!shouldRender()) return null;
+): Promise<MermaidRenderTemplate | null> {
+  if (!shouldRender()) return Promise.resolve(null);
+  const cacheKey = mermaidRenderCacheKey(code, theme);
+  const cached = mermaidRenderCache.get(cacheKey);
+  if (cached) {
+    touchMermaidRenderCacheEntry(cacheKey, cached);
+    return Promise.resolve(shouldRender() ? cached : null);
+  }
+
+  const inFlight = mermaidRenderInFlight.get(cacheKey);
+  if (inFlight) {
+    inFlight.consumers.add(shouldRender);
+    return inFlight.promise.then((template) => shouldRender() ? template : null);
+  }
+
+  const consumers = new Set([shouldRender]);
+  const promise = renderQueue.then(async () => {
+    if (![...consumers].some((isActive) => isActive())) return null;
     const mermaid = await loadMermaid();
-    if (!shouldRender()) return null;
+    if (![...consumers].some((isActive) => isActive())) return null;
     mermaid.initialize(createMermaidConfig(theme));
-    const id = `maka-mermaid-${++diagramSequence}`;
+    const id = nextMermaidRenderId('template', code);
     const { svg } = await mermaid.render(id, code);
-    return sanitizeRenderedMermaidSvg(svg);
+    const sanitizedSvg = sanitizeRenderedMermaidSvg(svg, id);
+    const { width: naturalWidth, height: naturalHeight } = mermaidViewBoxSize(sanitizedSvg);
+    return { svg: sanitizedSvg, namespace: id, naturalWidth, naturalHeight };
+  });
+  const entry = { promise, consumers };
+  mermaidRenderInFlight.set(cacheKey, entry);
+  void promise.then(
+    (template) => {
+      if (template) writeMermaidRenderCache(cacheKey, template);
+    },
+    () => {},
+  ).finally(() => {
+    if (mermaidRenderInFlight.get(cacheKey) === entry) mermaidRenderInFlight.delete(cacheKey);
+    consumers.clear();
   });
 
-  renderQueue = task.then(
+  renderQueue = promise.then(
     () => undefined,
     () => undefined,
   );
-  return task;
+  return promise.then((template) => shouldRender() ? template : null);
 }
 
 function currentMermaidTheme(): MermaidTheme {
@@ -217,10 +398,14 @@ export function MermaidDiagram(props: {
     setViewportLayout(null);
     setState({ status: 'loading' });
     void renderMermaid(props.code, theme, () => !cancelled).then(
-      (svg) => {
-        if (!cancelled && svg) {
-          const { width: naturalWidth, height: naturalHeight } = mermaidViewBoxSize(svg);
-          setState({ status: 'rendered', svg, naturalWidth, naturalHeight });
+      (template) => {
+        if (!cancelled && template) {
+          setState({
+            status: 'rendered',
+            svg: instantiateMermaidSvg(template),
+            naturalWidth: template.naturalWidth,
+            naturalHeight: template.naturalHeight,
+          });
         }
       },
       () => {
