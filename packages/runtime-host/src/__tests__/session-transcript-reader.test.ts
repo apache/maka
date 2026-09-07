@@ -749,6 +749,94 @@ test('reads the WorkHub Coordination transcript from its own rows', async () => 
   );
 });
 
+test('pages a nested Turn the same way a single sweep reads it', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-nested-paging-'));
+  const capability = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  try {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    let counter = 0;
+    const append = (runId: string, overrides: Partial<RuntimeEvent>) =>
+      stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        runId,
+        runtimeEvent(session.id, {
+          id: `${runId}-event-${counter++}`,
+          invocationId: runId,
+          runId,
+          turnId: `turn-${runId}`,
+          ts: counter,
+          ...overrides,
+        }),
+      );
+    const text = (runId: string, body: string) =>
+      append(runId, { role: 'model', author: 'agent', content: { kind: 'text', text: body } });
+
+    // `outer` opens first and ends last; `inner` opens and ends inside it, so
+    // the two Turns share a stretch of the Session's ordinals.
+    await seedInvocation(stores.runtimeEventStore, {
+      sessionId: session.id,
+      runId: 'outer',
+      turnId: 'turn-outer',
+      openedAt: 0,
+    });
+    await text('outer', 'outer before');
+    await seedInvocation(stores.runtimeEventStore, {
+      sessionId: session.id,
+      runId: 'inner',
+      turnId: 'turn-inner',
+      openedAt: 1,
+    });
+    for (let index = 0; index < 4; index++) await text('inner', `inner ${index}`);
+    await append('inner', { status: 'completed', actions: { endInvocation: true } });
+    await text('outer', 'outer after');
+    await append('outer', { status: 'completed', actions: { endInvocation: true } });
+
+    const read = createSessionTranscriptReader({
+      stores,
+      canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+    });
+    const throughSequence = await read.readDurableHighWater(session.id);
+
+    for (const direction of ['older', 'newer'] as const) {
+      const sweep = await read.readDurablePage(session.id, {
+        direction,
+        throughSequence,
+        maxBytes: 1 << 20,
+        maxMessages: 64,
+      });
+      const swept = sweep.fragments.map((fragment) => fragment.sequence);
+
+      const paged: number[] = [];
+      let position: number | undefined;
+      for (let page = 0; page < 32; page++) {
+        const result = await read.readDurablePage(session.id, {
+          direction,
+          throughSequence,
+          ...(position === undefined ? {} : { position }),
+          maxBytes: 1 << 20,
+          maxMessages: 1,
+        });
+        if (result.fragments.length === 0) break;
+        paged.push(...result.fragments.map((fragment) => fragment.sequence));
+        if (result.next?.position === undefined || result.next.position === null) break;
+        position = result.next.position;
+      }
+      assert.deepEqual(paged, swept, direction);
+    }
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 function runtimeEvent(sessionId: string, overrides: Partial<RuntimeEvent>): RuntimeEvent {
   return {
     id: 'event-1',

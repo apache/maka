@@ -287,28 +287,53 @@ function createDurableLedgerTranscriptReader(input: {
     if (throughSequence === null) return;
     const position = request.position ?? (request.direction === 'older' ? throughSequence : 0);
     const throughOrdinal = ordinalOf(throughSequence);
+    const older = request.direction === 'older';
+    const readTurnAt = async (at: number): Promise<RuntimeTranscriptInvocation | undefined> =>
+      at < 0 || at > throughOrdinal
+        ? undefined
+        : (
+            await readTurns(sessionId, {
+              direction: request.direction,
+              throughOrdinal,
+              position: at,
+            })
+          )[0];
     let ordinal = ordinalOf(position);
     let walked = 0;
+    let carried: RuntimeTranscriptInvocation | undefined;
     while (ordinal >= 0 && ordinal <= throughOrdinal) {
-      const turns = await readTurns(sessionId, {
-        direction: request.direction,
-        throughOrdinal,
-        position: ordinal,
-      });
-      if (turns.length === 0) return;
-      for (const turn of turns) {
-        if (request.maxTurns !== undefined && walked >= request.maxTurns) return;
-        walked += 1;
-        const records = (await projectTurn(turn)).filter(
-          ({ sequence }) =>
-            sequence <= throughSequence &&
-            (request.direction === 'older' ? sequence <= position : sequence >= position),
-        );
-        if (request.direction === 'older') records.reverse();
-        yield* records;
+      const first = carried ?? (await readTurnAt(ordinal));
+      carried = undefined;
+      if (first === undefined) return;
+      if (request.maxTurns !== undefined && walked >= request.maxTurns) return;
+      // A page resumes from one record's sequence and drops everything the other
+      // side of it, so what this yields has to be monotone in sequence. Turns
+      // whose ordinal ranges overlap — a nested run inside its parent — are
+      // therefore drained together instead of one after the other.
+      const cluster = [first];
+      let low = first.firstOrdinal;
+      let high = first.lastOrdinal;
+      for (;;) {
+        const next = await readTurnAt(older ? low - 1 : high + 1);
+        if (next === undefined) break;
+        if (older ? next.lastOrdinal < low : next.firstOrdinal > high) {
+          carried = next;
+          break;
+        }
+        cluster.push(next);
+        low = Math.min(low, next.firstOrdinal);
+        high = Math.max(high, next.lastOrdinal);
       }
-      const edge = turns.at(-1)!;
-      ordinal = request.direction === 'older' ? edge.firstOrdinal - 1 : edge.lastOrdinal + 1;
+      walked += cluster.length;
+      const records = (await Promise.all(cluster.map(projectTurn)))
+        .flat()
+        .filter(
+          ({ sequence }) =>
+            sequence <= throughSequence && (older ? sequence <= position : sequence >= position),
+        )
+        .sort((a, b) => (older ? b.sequence - a.sequence : a.sequence - b.sequence));
+      yield* records;
+      ordinal = older ? low - 1 : high + 1;
     }
   };
 
