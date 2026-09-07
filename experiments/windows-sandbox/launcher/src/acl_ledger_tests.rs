@@ -27,10 +27,13 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use crate::acl_ledger::{
-        LEDGER_VERSION, LaunchFailure, Ledger, LedgerRoot, collect_roots, recover_stale,
-        with_acl_grants, write_ledger,
+        LEDGER_VERSION, LaunchFailure, Ledger, LedgerRoot, collect_roots,
+        is_ntfs_junction_reparse_data, recover_stale, with_acl_grants, write_ledger,
     };
     use crate::protocol::{LaunchRequest, NetworkMode};
+    use windows_sys::Win32::System::SystemServices::{
+        IO_REPARSE_TAG_MOUNT_POINT, IO_REPARSE_TAG_SYMLINK,
+    };
 
     // Synthetic AppContainer-shaped SIDs so the tests never touch the real
     // per-app profile. icacls accepts arbitrary `*SID` principals and renders
@@ -395,7 +398,7 @@ mod tests {
 
         // An exact grant mutates only the directory object itself; entries
         // below it receive no ACE, so aliases deeper in the tree stay out of
-        // admission scope exactly like reparse points already do.
+        // admission scope exactly like validated junctions already do.
         let outside = fixture
             .target
             .parent()
@@ -413,6 +416,78 @@ mod tests {
         .expect("exact root skips tree scan");
         assert_eq!(roots.len(), 1);
         assert!(!roots[0].read_recursive);
+    }
+
+    #[test]
+    fn nested_junction_is_excluded_from_recursive_acl_grant() {
+        let fixture = Fixture::new("nested-junction");
+        let target = fixture
+            .target
+            .parent()
+            .expect("fixture base")
+            .join("junction-target");
+        fs::create_dir_all(&target).expect("create junction target");
+        fs::write(target.join("outside.txt"), "outside payload").expect("seed junction target");
+        let junction = fixture.target.join("child").join("junction");
+        let junction_command = format!(
+            "mklink /J \"{}\" \"{}\"",
+            junction.display(),
+            target.display()
+        );
+        let status = Command::new("cmd.exe")
+            .args(["/C", &junction_command])
+            .status()
+            .expect("create nested junction");
+        assert!(status.success(), "create nested junction");
+        let request = launch_request(
+            vec![fixture.target_str()],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let roots = collect_roots(&request).expect("nested junction admits");
+
+        assert_eq!(roots.len(), 1);
+        assert!(roots[0].read_recursive);
+        with_acl_grants(&request, APP_SID, || {
+            assert!(sid_listed(&fixture.target, APP_SID));
+            assert!(!sid_listed(&target, APP_SID));
+            Ok(())
+        })
+        .expect("nested junction target stays outside the recursive grant");
+    }
+
+    fn mount_point_reparse_data(tag: u32, target: &str) -> Vec<u8> {
+        let target: Vec<u16> = target.encode_utf16().collect();
+        let mut data = vec![0_u8; 16 + target.len() * 2];
+        data[..4].copy_from_slice(&tag.to_le_bytes());
+        data[4..6].copy_from_slice(&((8 + target.len() * 2) as u16).to_le_bytes());
+        data[10..12].copy_from_slice(&((target.len() * 2) as u16).to_le_bytes());
+        for (index, unit) in target.iter().enumerate() {
+            let offset = 16 + index * 2;
+            data[offset..offset + 2].copy_from_slice(&unit.to_le_bytes());
+        }
+        data
+    }
+
+    #[test]
+    fn only_drive_backed_mount_points_are_admitted_as_nested_junctions() {
+        let junction = mount_point_reparse_data(IO_REPARSE_TAG_MOUNT_POINT, r"\??\C:\target");
+        assert!(is_ntfs_junction_reparse_data(&junction).expect("parse directory junction"));
+
+        let volume_mount =
+            mount_point_reparse_data(IO_REPARSE_TAG_MOUNT_POINT, r"\??\Volume{1234-5678}\");
+        assert!(
+            !is_ntfs_junction_reparse_data(&volume_mount).expect("parse volume mount"),
+            "volume mount must fail closed"
+        );
+
+        let symlink = mount_point_reparse_data(IO_REPARSE_TAG_SYMLINK, r"\??\C:\target");
+        assert!(
+            !is_ntfs_junction_reparse_data(&symlink).expect("parse symbolic link"),
+            "symbolic link must fail closed"
+        );
     }
 
     fn shared_ledger_dir() -> PathBuf {

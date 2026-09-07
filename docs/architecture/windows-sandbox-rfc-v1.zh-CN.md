@@ -71,7 +71,7 @@ policy 的 SHA-256，再叠加以下 Windows 控制：
 - 通过 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 在创建时原子附加、close 时杀整棵树的 Job Object；
 - 禁止 handle inheritance；
 - 只给编译后的 read/write root 添加 AppContainer ACE，并使用持久 recovery ledger；
-- ACL 修改前递归拒绝 reparse point；
+- 拒绝 reparse point root，并在递归 ACL 授权时不遍历经过验证的嵌套 NTFS junction；
 - 从规范化 command 构造封闭、排序后的环境；
 - 只允许 SYSTEM 和当前用户的本地命名管道，以及有长度上限的 frame。
 
@@ -169,7 +169,7 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 **已强制（未标注者由 #2961 合并强制）：**
 
 - 默认拒绝文件系统，读/写 grant 分离（§6.1）；
-- ACL 修改前拒绝 reparse point 与多硬链接对象（§5/§6.1）；
+- ACL 修改前拒绝 reparse point root 与多硬链接对象，且递归授权时不遍历经过验证的嵌套 NTFS junction（§5/§6.1）；
 - 每次启动使用 request-derived 独立 AppContainer SID + 版本化 ledger + startup reconcile（§6.1/§7.1）；
 - 不授予网络 capability 的 AppContainer token（§6.2）；
 - 创建时原子附加、close 时杀整棵树的 kill-on-close Job（§6.3）；
@@ -179,8 +179,8 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
   中断首次启动、终止并 drain AppContainer Job，并释放本次 ledger/ACE；
 - 打包路径执行 64 次、按波次重复的并发 soak，每次使用互不相同的启动 identity，最后断言无进程与
   ACL-ledger 残留；
-- 打包恶意 child 矩阵覆盖递归 junction 与多硬链接准入、outside 文件、TCP connection 拒绝、宿主 named
-  pipe、ambient 环境、宿主 HKCU、父进程 token、descendant 的 AppContainer/Job 继承，以及 quarantine
+- 打包恶意 child 矩阵覆盖 junction root 准入拒绝、嵌套 junction 不遍历、多硬链接准入、outside 文件、TCP
+  connection 拒绝、宿主 named pipe、ambient 环境、宿主 HKCU、父进程 token、descendant 的 AppContainer/Job 继承，以及 quarantine
   identity 不复用；
 - 按启动的 private desktop **放置(placement)**（§6.3）**(#3174)**:每次生产启动与 readiness probe 均在当前 window station 上创建 alternate desktop,其 DACL 仅授予发起用户、Local System 与该次启动的 AppContainer SID(且只给该 SID 最小非交互权限;并以前置 deny ACE 从 AppContainer 子进程有效携带的发起用户 SID 上剥离 `DESKTOP_SWITCHDESKTOP`/`DESKTOP_HOOKCONTROL`/journal 录制回放),并以 `STARTUPINFOW.lpDesktop` 指向它启动子进程,建不出或授不了即 fail closed。桌面钉在 Low integrity（`S:(ML;;NW;;;LW)`）使授予权限对 Low-IL 子进程通过 MIC,且 heap 经 `CreateDesktopExW` 按启动限额（512 KiB）使受支持并发不会耗尽系统 desktop heap。由于 `lpDesktop` 只选择*初始*桌面,这把 worker 放置到交互 `Default` 桌面之外并对私有桌面做 DACL 保护;这是 placement 加 DACL 保护、**不是**防逃逸边界——没有结构性机制阻止进程内代码 `OpenDesktopW("Default")` + `SetThreadDesktop` 重新挂回,clipboard 也归 window station、仍为共用(no-Win32k mitigation、独立 window station 与 token 边界见下方暂缓门禁);
 - 生产 identity readiness probe（§6.4）**(#3161)**:`--readiness-probe` 真正建立 AppContainer identity/token、kill-on-close Job 与 private desktop 并在该桌面上启动抛弃式受限子进程（`cmd.exe /d /c exit 0`,以 `/d` 关闭 AutoRun 使宿主 shell 定制不能扭曲结果）,使可用性在宿主无法创建边界时 fail closed,而非仅凭打包二进制存在;成功时输出机器可读 attestation（精确 SID 匹配、特定 Job membership、settlement、private-desktop placement）,发布冒烟逐字段断言,使该 gate 不会静默退化为空洞的 exit-0 检查;
@@ -226,7 +226,7 @@ sequenceDiagram
   M-->>H: native path + one-shot manifest
   H->>B: --broker-local manifest
   B->>B: delete manifest; bind PID, nonce, launch digest
-  B->>B: recover ledger; reject reparse tree; grant SID ACE
+  B->>B: recover ledger; reject reparse point root; skip validated nested NTFS junction; grant SID ACE
   B->>J: create kill-on-close Job
   B->>C: create AppContainer process with atomic Job attribute
   C-->>B: bounded exit result
@@ -237,14 +237,14 @@ sequenceDiagram
 ### 7.1 Setup 与持久状态
 
 首个实现不需要 elevated setup。Windows 为每次 launch 创建 request-derived Maka AppContainer profile，打包
-native binary 只给当前 launch 允许的 root 授予其独立 SID。修改前递归拒绝 `FILE_ATTRIBUTE_REPARSE_POINT`，用 `create_new` 和
+native binary 只给当前 launch 允许的 root 授予其独立 SID。拒绝 `FILE_ATTRIBUTE_REPARSE_POINT` root，递归授权时不遍历经过验证的嵌套 NTFS junction；用 `create_new` 和
 `sync_all` 持久化版本化 ledger，并在接收新请求前 reconcile 全部遗留 ledger。正常结束先移除 SID ACE，再
 删除 ledger。全局 kernel mutex 只覆盖 ledger/ACL 修改；每个 launch 在 child settlement 完成前持有独立的
 request-specific kernel lease，因此 recovery 会跳过仍在使用的 ledger，同时不同 launch 仍可并发执行。
 
 ledger 文件名使用 request identity 的 SHA-256，请求控制的路径字符无法逃出目录。`icacls.exe` 从绝对
 `%SystemRoot%\System32` 解析，不经过 shell，并使用 `/L` 操作 link object 而非跟随目标。Windows CI smoke
-证明正常清理、遗留 ledger recovery 和允许目录内 junction 拒绝。crash/power-loss 与并发替换加固仍是发布
+证明正常清理、遗留 ledger recovery、junction root 拒绝，以及允许目录中嵌套 junction 不遍历。crash/power-loss 与并发替换加固仍是发布
 证据，不能当作已满足的假设。
 
 ### 7.2 Broker 与协议
@@ -330,7 +330,7 @@ Windows sandbox job 必须运行真实 child-process 正反测试：
 
 | 类别 | 打包证据 |
 | --- | --- |
-| 文件别名 | outside 拒绝，加递归 junction 与多硬链接准入拒绝 |
+| 文件别名 | outside 拒绝、junction root 准入拒绝、嵌套 junction 不遍历，以及多硬链接准入拒绝 |
 | 网络通道 | 无网络 capability 时拒绝 TCP connect |
 | IPC | 拒绝宿主 named pipe，并只继承显式 handle 列表 |
 | descendant | child 创建被 fail-closed 拒绝，或已创建 descendant 仍持有 AppContainer token 与 kill-on-close Job |

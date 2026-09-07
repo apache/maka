@@ -19,7 +19,16 @@
 
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { after, before, describe, test } from 'node:test';
@@ -186,6 +195,39 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
       (error: unknown) =>
         error instanceof FilesystemWorkerClientError && error.reason === 'grep_unavailable',
     );
+  });
+
+  test('skips a nested junction without granting its target', async () => {
+    const sourceDirectory = join(workspace, 'glob-source');
+    const junctionTarget = join(workspace, 'junction-target');
+    const junction = join(sourceDirectory, 'dependencies', 'linked-package');
+    await mkdir(junctionTarget, { recursive: true });
+    await mkdir(dirname(junction), { recursive: true });
+    await writeFile(join(sourceDirectory, 'main.ts'), 'export const main = true;\n');
+    await writeFile(join(junctionTarget, 'hidden.ts'), 'export const hidden = true;\n');
+    await symlink(junctionTarget, junction, 'junction');
+
+    const ordinaryFiles = await client.execute({
+      operation: { kind: 'glob', path: sourceDirectory, pattern: '**/*.ts' },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'unchecked',
+    });
+    assert.equal(ordinaryFiles.kind, 'glob');
+    if (ordinaryFiles.kind === 'glob') assert.deepEqual(ordinaryFiles.files, ['main.ts']);
+
+    const junctionFiles = await client.execute({
+      operation: {
+        kind: 'glob',
+        path: sourceDirectory,
+        pattern: 'dependencies/linked-package/**/*.ts',
+      },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'unchecked',
+    });
+    assert.equal(junctionFiles.kind, 'glob');
+    if (junctionFiles.kind === 'glob') assert.deepEqual(junctionFiles.files, []);
   });
 
   test('fails closed for unapproved outside paths', async () => {
