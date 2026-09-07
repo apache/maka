@@ -136,8 +136,8 @@ export function createDesktopWorkbarServices(
         return result?.kind === 'retracted' ? result : undefined;
       },
       submitFollowUp: submitSideChatFollowUp,
-      queryCancelledMessages: (sessionId, messageIds) =>
-        bridge.sessions.queryCancelledMessages(sessionId, messageIds),
+      queryMessageExecutions: (sessionId, messageIds) =>
+        bridge.sessions.queryMessageExecutions(sessionId, messageIds),
       retractQueueEntry: (sessionId, entryId) =>
         bridge.sessions.retractQueueEntry(sessionId, entryId),
       promoteQueueEntry: (sessionId, entryId) =>

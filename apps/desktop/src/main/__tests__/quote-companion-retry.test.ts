@@ -2034,7 +2034,6 @@ test('reconciles a queued Side Conversation follow-up that settles before its st
       turnId: 'new-turn',
       ts: 4,
       status: 'completed',
-      partialOutputRetained: true,
     },
   ];
   await act(async () => {
@@ -2204,12 +2203,13 @@ test('retires a cancelled queued Side Conversation message after observation res
       queuedMessageId = messageId;
       return { kind: 'queued' as const };
     },
-    queryCancelledMessages: async (_sessionId, messageIds) => {
+    queryMessageExecutions: async (_sessionId, messageIds) => {
       queriedMessageIds.push([...messageIds]);
       return {
-        cancelledMessageIds: queuedMessageId && messageIds.includes(queuedMessageId)
-          ? [queuedMessageId]
-          : [],
+        resolutions: messageIds.map((messageId) =>
+          messageId === queuedMessageId
+            ? { messageId, state: 'cancelled' as const }
+            : { messageId, state: 'pending' as const }),
       };
     },
   });
@@ -2241,6 +2241,259 @@ test('retires a cancelled queued Side Conversation message after observation res
 
   assert.equal(container.firstElementChild?.getAttribute('data-queue-texts'), '');
   assert.ok(queriedMessageIds.some((messageIds) => messageIds.includes(queuedMessageId as string)));
+});
+
+test('retires durable Side Conversation identities before observation recovery queries', async () => {
+  let rootMessageId: string | undefined;
+  let followUpMessageId: string | undefined;
+  let markSeeded: (() => void) | undefined;
+  let durableMessages: StoredMessage[] = [];
+  const queriedMessageIds: string[][] = [];
+  const { container, emit, send, queue } = await renderOwnershipProbe({
+    subscribeEvents: (_sessionId, _handler, onSeeded) => {
+      markSeeded = onSeeded;
+      onSeeded?.();
+      return () => undefined;
+    },
+    send: async (_sessionId, command) => {
+      rootMessageId = command.turnId;
+      return { ok: true as const, turnId: 'turn-a' };
+    },
+    submitFollowUp: async (_sessionId, placement, _text, messageId) => {
+      assert.equal(placement, 'next_turn');
+      followUpMessageId = messageId;
+      return { kind: 'queued' as const };
+    },
+    readSettledMessages: async () => ({ messages: durableMessages, settled: true }),
+    queryMessageExecutions: async (_sessionId, messageIds) => {
+      queriedMessageIds.push([...messageIds]);
+      return {
+        resolutions: messageIds.map((messageId) => ({
+          messageId,
+          state: 'pending' as const,
+        })),
+      };
+    },
+  });
+
+  await act(async () => {
+    assert.equal(await send('initial prompt'), true);
+    await Promise.resolve();
+  });
+  await act(async () => {
+    assert.equal(await queue('follow-up'), true);
+    await Promise.resolve();
+  });
+  const durableRootMessageId = rootMessageId;
+  const durableFollowUpMessageId = followUpMessageId;
+  assert.ok(durableRootMessageId);
+  assert.ok(durableFollowUpMessageId);
+  durableMessages = [
+    {
+      type: 'user',
+      id: durableRootMessageId,
+      turnId: 'turn-a',
+      ts: 1,
+      text: 'initial prompt',
+    },
+    {
+      type: 'assistant',
+      id: 'assistant-a',
+      turnId: 'turn-a',
+      ts: 2,
+      text: 'answer A',
+      modelId: 'test-model',
+    },
+    {
+      type: 'turn_state',
+      id: 'complete-a',
+      turnId: 'turn-a',
+      ts: 3,
+      status: 'completed',
+    },
+    {
+      type: 'user',
+      id: durableFollowUpMessageId,
+      turnId: 'turn-b',
+      ts: 4,
+      text: 'follow-up',
+    },
+    {
+      type: 'assistant',
+      id: 'assistant-b',
+      turnId: 'turn-b',
+      ts: 5,
+      text: 'answer B',
+      modelId: 'test-model',
+    },
+    {
+      type: 'turn_state',
+      id: 'complete-b',
+      turnId: 'turn-b',
+      ts: 6,
+      status: 'completed',
+    },
+  ];
+
+  await act(async () => {
+    emit(completeEvent('event-complete-a', 'turn-a', 3));
+    emit(messageAdmittedEvent('admission-b', 'turn-b', 4, durableFollowUpMessageId));
+    emit(completeEvent('event-complete-b', 'turn-b', 6));
+    await Promise.resolve();
+  });
+  await waitUntil(
+    () => container.firstElementChild?.getAttribute('data-message-texts')
+      === 'initial prompt|answer A|follow-up|answer B',
+  );
+  assert.equal(container.firstElementChild?.getAttribute('data-transient-count'), '0');
+
+  queriedMessageIds.length = 0;
+  await act(async () => {
+    markSeeded?.();
+    await Promise.resolve();
+  });
+  assert.deepEqual(queriedMessageIds, []);
+});
+
+test('recovers every queued Side Conversation successor across one observation gap', async () => {
+  let rootMessageId: string | undefined;
+  let firstFollowUpId: string | undefined;
+  let secondFollowUpId: string | undefined;
+  let markSeeded: (() => void) | undefined;
+  let durableMessages: StoredMessage[] = [];
+  const executionQueries: string[][] = [];
+  const { container, emit, send, queue } = await renderOwnershipProbe({
+    subscribeEvents: (_sessionId, _handler, onSeeded) => {
+      markSeeded = onSeeded;
+      onSeeded?.();
+      return () => undefined;
+    },
+    send: async (_sessionId, command) => {
+      rootMessageId = command.turnId;
+      return { ok: true as const, turnId: 'turn-a' };
+    },
+    submitFollowUp: async (_sessionId, placement, text, messageId) => {
+      assert.equal(placement, 'next_turn');
+      if (text === 'follow-up one') firstFollowUpId = messageId;
+      else secondFollowUpId = messageId;
+      return { kind: 'queued' as const };
+    },
+    readSettledMessages: async () => ({ messages: durableMessages, settled: true }),
+    queryMessageExecutions: async (_sessionId, messageIds) => {
+      executionQueries.push([...messageIds]);
+      return {
+        resolutions: messageIds.map((messageId) => ({
+          messageId,
+          state: 'owned' as const,
+          turnId: messageId === firstFollowUpId ? 'turn-b' : 'turn-c',
+          runId: messageId === firstFollowUpId ? 'run-b' : 'run-c',
+        })),
+      };
+    },
+  });
+
+  await act(async () => {
+    assert.equal(await send('initial prompt'), true);
+    await Promise.resolve();
+  });
+  await act(async () => {
+    assert.equal(await queue('follow-up one'), true);
+    assert.equal(await queue('follow-up two'), true);
+    await Promise.resolve();
+  });
+  const durableFirstFollowUpId = firstFollowUpId;
+  const durableSecondFollowUpId = secondFollowUpId;
+  const durableRootMessageId = rootMessageId;
+  assert.ok(durableRootMessageId);
+  assert.ok(durableFirstFollowUpId);
+  assert.ok(durableSecondFollowUpId);
+  durableMessages = [
+    {
+      type: 'user',
+      id: durableRootMessageId,
+      turnId: 'turn-a',
+      ts: 0,
+      text: 'initial prompt',
+    },
+    {
+      type: 'assistant',
+      id: 'assistant-a',
+      turnId: 'turn-a',
+      ts: 1,
+      text: 'answer A',
+      modelId: 'test-model',
+    },
+    {
+      type: 'turn_state',
+      id: 'complete-a',
+      turnId: 'turn-a',
+      ts: 2,
+      status: 'completed',
+    },
+    {
+      type: 'user',
+      id: durableFirstFollowUpId,
+      turnId: 'turn-b',
+      ts: 3,
+      text: 'follow-up one',
+    },
+    {
+      type: 'assistant',
+      id: 'assistant-b',
+      turnId: 'turn-b',
+      ts: 4,
+      text: 'answer B',
+      modelId: 'test-model',
+    },
+    {
+      type: 'turn_state',
+      id: 'complete-b',
+      turnId: 'turn-b',
+      ts: 5,
+      status: 'completed',
+    },
+    {
+      type: 'user',
+      id: durableSecondFollowUpId,
+      turnId: 'turn-c',
+      ts: 6,
+      text: 'follow-up two',
+    },
+    {
+      type: 'assistant',
+      id: 'assistant-c',
+      turnId: 'turn-c',
+      ts: 7,
+      text: 'answer C',
+      modelId: 'test-model',
+    },
+    {
+      type: 'turn_state',
+      id: 'complete-c',
+      turnId: 'turn-c',
+      ts: 8,
+      status: 'completed',
+    },
+  ];
+
+  await act(async () => {
+    // Replacement currently replays only the latest terminal root admission.
+    emit(messageAdmittedEvent('admission-c', 'turn-c', 6, durableSecondFollowUpId));
+    emit(completeEvent('event-complete-c', 'turn-c', 8));
+    markSeeded?.();
+    await Promise.resolve();
+  });
+
+  await waitUntil(
+    () => container.firstElementChild?.getAttribute('data-message-texts')
+      === 'initial prompt|answer A|follow-up one|answer B|follow-up two|answer C',
+  );
+  assert.ok(
+    executionQueries.some((messageIds) =>
+      messageIds.includes(durableFirstFollowUpId)),
+  );
+  assert.equal(container.firstElementChild?.getAttribute('data-transient-count'), '0');
+  assert.equal(container.firstElementChild?.getAttribute('data-streaming'), 'false');
 });
 
 test('fails a send when observation seed rejects and resubscribes for retry', async () => {

@@ -48,6 +48,7 @@ import type { Result } from '@maka/core/result';
 import type {
   ContextCompactResult,
   ContextDiagnosticsResult,
+  TurnMessageExecutionQueryResult,
 } from '@maka/runtime-host/protocol';
 import type { MergedUsageSummary } from '@maka/core/usage-ledger-merge';
 import type {
@@ -56,10 +57,6 @@ import type {
 } from '@maka/runtime/shell-run-contract';
 
 export type WorkbarUnsubscribe = () => void;
-
-export interface SideChatCancellationQueryResult {
-  readonly cancelledMessageIds: readonly string[];
-}
 
 export type WorkbarIngestInput =
   | { approvalId: string; name: string; mimeType?: string }
@@ -248,10 +245,10 @@ export interface SideChatSessionPort {
     text: string,
     admissionId: string,
   ): Promise<SideChatFollowUpResult>;
-  queryCancelledMessages(
+  queryMessageExecutions(
     sessionId: string,
     messageIds: readonly string[],
-  ): Promise<SideChatCancellationQueryResult>;
+  ): Promise<TurnMessageExecutionQueryResult>;
   retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
   promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
   updateQueueEntry(

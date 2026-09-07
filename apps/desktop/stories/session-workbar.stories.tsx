@@ -892,7 +892,9 @@ function bridge(options: {
       send: async () => ({ ok: true, turnId: 'story-side-chat-turn' }),
       stop: async () => undefined,
       submitFollowUp: async () => ({ kind: 'started', turnId: 'story-side-chat-turn' }),
-      queryCancelledMessages: async () => ({ cancelledMessageIds: [] }),
+      queryMessageExecutions: async (_sessionId, messageIds) => ({
+        resolutions: messageIds.map((messageId) => ({ messageId, state: 'pending' as const })),
+      }),
       retractQueueEntry: async () => undefined,
       promoteQueueEntry: async () => undefined,
       updateQueueEntry: async () => undefined,

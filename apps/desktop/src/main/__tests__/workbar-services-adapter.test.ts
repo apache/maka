@@ -202,7 +202,7 @@ describe('createDesktopWorkbarServices', () => {
       'more',
       'message-current',
     );
-    await services.sideChat.queryCancelledMessages('fork', ['message-next']);
+    await services.sideChat.queryMessageExecutions('fork', ['message-next']);
     await services.sideChat.retractQueueEntry('fork', 'entry-1');
     await services.sideChat.promoteQueueEntry('fork', 'entry-2');
     await services.sideChat.updateQueueEntry('fork', 'entry-3', 4, 'updated');
@@ -264,7 +264,7 @@ describe('createDesktopWorkbarServices', () => {
         'sessions.stop',
         'sessions.submitMessage',
         'sessions.submitMessage',
-        'sessions.queryCancelledMessages',
+        'sessions.queryMessageExecutions',
         'sessions.retractQueueEntry',
         'sessions.promoteQueueEntry',
         'sessions.updateQueueEntry',
@@ -309,7 +309,7 @@ describe('createDesktopWorkbarServices', () => {
     assert.deepEqual(nextFollowUp, { kind: 'queued' });
     assert.deepEqual(currentFollowUp, { kind: 'queued' });
     assert.deepEqual(
-      calls.find((call) => call.name === 'sessions.queryCancelledMessages')?.args,
+      calls.find((call) => call.name === 'sessions.queryMessageExecutions')?.args,
       ['fork', ['message-next']],
     );
   });

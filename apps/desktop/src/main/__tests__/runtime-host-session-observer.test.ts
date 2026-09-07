@@ -2470,7 +2470,6 @@ test('replays durable admission before a terminal successor on subscription reco
       turnId: 'turn-2',
       ts: 40,
       status: 'completed',
-      partialOutputRetained: true,
     },
   ];
   let openCount = 0;
@@ -2480,7 +2479,6 @@ test('replays durable admission before a terminal successor on subscription reco
         turnId: 'turn-1',
         status: 'completed' as const,
         statusSource: 'recorded' as const,
-        partialOutputRetained: true,
       }],
       openSession: async () => {
         openCount += 1;

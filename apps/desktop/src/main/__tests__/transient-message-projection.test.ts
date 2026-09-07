@@ -26,7 +26,7 @@ import {
   mergeTransientMessageProjection,
   projectQueuedTransientMessages,
   reconcileTransientMessages,
-} from '../../renderer/transient-message-projection.js';
+} from '../../renderer/application/contracts/transient-message-projection.js';
 
 /** The durable Message that replaces the transient row above. */
 function canonicalSend(): StoredMessage {

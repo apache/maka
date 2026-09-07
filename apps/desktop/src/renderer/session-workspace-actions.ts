@@ -41,7 +41,7 @@ import {
   mergeTransientMessageProjection,
   projectQueuedTransientMessages as applyQueuedTransientProjection,
   reconcileTransientMessages,
-} from './transient-message-projection.js';
+} from './application/contracts/transient-message-projection.js';
 
 type RefBox<T> = { current: T };
 

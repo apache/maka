@@ -218,7 +218,6 @@
     "src/renderer/theme.ts",
     "src/renderer/titlebar-dim-color.ts",
     "src/renderer/titlebar-modal-sync.ts",
-    "src/renderer/transient-message-projection.ts",
     "src/renderer/turn-footer-actions.ts",
     "src/renderer/use-active-execution-boundary.ts",
     "src/renderer/use-app-shell-composer-quotes.ts",
@@ -2305,8 +2304,8 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./new-task-reload-intent.js": 1,
-          "./transient-message-projection.js": 1
+          "./application/contracts/transient-message-projection.js": 1,
+          "./new-task-reload-intent.js": 1
         }
       },
       "src/renderer/session-workspace-errors.ts": {
@@ -4161,15 +4160,6 @@
         "dependencyPaths": {
           "./theme": 1
         }
-      },
-      "src/renderer/transient-message-projection.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
       },
       "src/renderer/turn-footer-actions.ts": {
         "bridgePaths": {},
