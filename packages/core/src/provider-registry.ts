@@ -306,62 +306,6 @@ const zenmuxOpenAICompatibleMetadata = Object.fromEntries(
 const zenmuxModelIds = toolCallingModelIds('ZenMux', zenmuxOpenAICompatibleMetadata, [
   'moonshotai/kimi-k2.5',
 ]).filter((id) => GENERATED_MODELS_DEV_METADATA.zenmux[id]?.lifecycle !== 'deprecated');
-/**
- * Command Code GOAT plan baseline, transcribed from the GOAT catalog on
- * commandcode.ai/models. Command Code is not on models.dev, so this shipped
- * list is the offline offer; the remote /provider/v1/models response becomes
- * authoritative as soon as the user saves a plan credential.
- */
-const commandcodeModelIds = [
-  'deepseek-v4-flash',
-  'deepseek-v4-flash-fast',
-  'deepseek-v4-flash-vision-exp',
-  'deepseek-v4-pro',
-  'glm-5-3',
-  'glm-5-3-flash',
-  'glm-5-2',
-  'glm-5-2-fast',
-  'glm-5-1',
-  'glm-5',
-  'qwen3-8-max',
-  'qwen3-8-max-0902',
-  'qwen3-8-flash',
-  'qwen3-8-27b',
-  'qwen3-7-max',
-  'qwen3-7-plus',
-  'qwen3-7-flash',
-  'qwen3-6-max-preview',
-  'qwen3-6-plus',
-  'kimi-k3',
-  'kimi-k2-7-code',
-  'kimi-k2-7-code-highspeed',
-  'kimi-k2-6',
-  'kimi-k2-5',
-  'minimax-m3',
-  'minimax-m2-7',
-  'minimax-m2-5',
-  'mimo-v2-5',
-  'mimo-v2-5-pro',
-  'gpt-5-6-sol',
-  'gpt-5-6-luna',
-  'grok-4-6',
-  'grok-4-5',
-  'gemini-3-8-flash',
-  'gemini-3-7-flash',
-  'step-3-7-flash',
-  'step-3-5-flash',
-  'tencent-hy3',
-  'hy4-preview',
-  'nemotron-3-ultra-550b-a55b',
-  'inkling',
-  'inkling-small',
-  'muse-spark-1-3',
-  'muse-spark-1-3-contributor',
-  'muse-spark-1-2',
-  'muse-spark-1-2-contributor',
-  'longcat-2-0-free',
-  'laguna-s-2-1-free',
-] as const;
 const fireworks = GENERATED_MODELS_DEV_PROVIDER_FACTS['fireworks-ai'];
 if (fireworks.id !== 'fireworks-ai') {
   throw new Error('models.dev Fireworks AI provider facts are missing stable id fireworks-ai');
@@ -1524,7 +1468,7 @@ const providerRegistry = {
     label: 'Command Code',
     baseUrl: 'https://api.commandcode.ai/provider/v1',
     authKind: 'api_key',
-    fallbackModels: [...commandcodeModelIds],
+    fallbackModels: [],
     status: 'ready',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: { kind: 'protocol' },

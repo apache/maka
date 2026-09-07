@@ -295,9 +295,9 @@ export const PROVIDER_DISPLAY_COPY = {
     en: { name: 'OpenCode Free', description: 'Free anonymous OpenCode Zen models — no API key, IP-limited.', badge: 'Free' },
   },
   commandcode: {
-    'zh-CN': { name: 'Command Code', description: 'GOAT 套餐 · OpenAI 兼容', badge: 'Coding' },
-    'zh-TW': { name: 'Command Code', description: 'GOAT 套餐 · OpenAI 相容', badge: 'Coding' },
-    en: { name: 'Command Code', description: 'Command Code GOAT plan · OpenAI-compatible.', badge: 'Coding' },
+    'zh-CN': { name: 'Command Code', description: '使用 Command Code 套餐额度，连接后自动获取模型。', badge: 'Coding' },
+    'zh-TW': { name: 'Command Code', description: '使用 Command Code 方案額度，連線後自動取得模型。', badge: 'Coding' },
+    en: { name: 'Command Code', description: 'Use your Command Code plan credits. Models are fetched when you connect.', badge: 'Coding' },
   },
   groq: {
     'zh-CN': { name: 'Groq', description: 'LPU 高速推理托管开源模型', badge: 'API' },
