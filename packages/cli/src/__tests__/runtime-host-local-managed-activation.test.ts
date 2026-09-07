@@ -33,6 +33,17 @@ import {
 } from '@maka/runtime-host/operator';
 import { activateLocalManagedRuntimeHost } from '../runtime-host-local-managed-activation.js';
 import { connectRuntimeHostCliConnection } from '../runtime-host-cli-context.js';
+import {
+  connectRuntimeHost,
+  HostHandoffCancelledError,
+  HostHandoffRequiredError,
+} from '@maka/runtime-host/client';
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+  type HostIncompatible,
+} from '@maka/runtime-host/protocol';
 
 for (const legacy of [false, true]) {
   test(`local CLI cold-starts through the installed ${legacy ? 'legacy' : 'Node'} operator`, {
@@ -120,6 +131,71 @@ for (const legacy of [false, true]) {
     );
     assert.equal(first.connection.rootId, capability.rootId);
     assert.equal(second.connection.hostEpoch, first.connection.hostEpoch);
+    const observation = await connectRuntimeHost({
+      rootPath: capability.canonicalPath,
+      protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+    });
+    assert.equal(observation.kind, 'connected');
+    if (observation.kind !== 'connected') return;
+    await observation.connection.close();
+    const incompatible = {
+      kind: 'incompatible' as const,
+      registration: observation.registration,
+      handshake: {
+        kind: 'incompatible',
+        hostEpoch: observation.registration.hostEpoch,
+        protocolMin: 0,
+        protocolMax: 0,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+        compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+        compositionRevision: 'legacy',
+        state: 'ready',
+        replacement: 'wait_for_idle_exit',
+      } satisfies HostIncompatible,
+    };
+    // Managed on-demand registers as ephemeral too. Both cold activation and
+    // an already-running conflict must read the actual managed authority, not
+    // offer a local npm owner claim based on that process lifetime label.
+    for (const cold of [true, false]) {
+      let activations = 0;
+      const dependencies = {
+        connectOrSpawn: async () =>
+          cold
+            ? { kind: 'failed' as const, reason: 'managed_root_requires_operator' as const }
+            : incompatible,
+        activateLocalManagedHost: async () => {
+          activations += 1;
+        },
+        connectActivatedHost: async () => incompatible,
+        resolveInstallation: async () => assert.fail('managed Host is not a local npm owner'),
+        restartDeployment: async () => assert.fail('managed Host must never be replaced here'),
+      };
+      await assert.rejects(
+        connectRuntimeHostCliConnection({ rootPath: capability.canonicalPath }, dependencies),
+        (error: unknown) => {
+          assert.ok(error instanceof HostHandoffRequiredError);
+          assert.equal(error.view.reason, 'operator_required');
+          assert.deepEqual(error.view.actions, ['cancel', 'retry']);
+          assert.equal(error.view.mayExitNaturally, false);
+          return true;
+        },
+      );
+      assert.equal(activations, cold ? 1 : 0);
+      await assert.rejects(
+        connectRuntimeHostCliConnection(
+          {
+            rootPath: capability.canonicalPath,
+            handoffSurface: (submit) => ({
+              update: (view) => submit(view.revision, 'cancel'),
+              close() {},
+            }),
+          },
+          dependencies,
+        ),
+        HostHandoffCancelledError,
+      );
+    }
     // Exercise the real operator subprocess failure contract, including nonzero exit.
     await writeFile(
       modulePath,

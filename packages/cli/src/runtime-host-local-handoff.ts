@@ -26,6 +26,7 @@ import {
   claimLocalHostProcessDeployment,
   handoffLocalHostProcessDeployment,
   readLocalHostDeploymentRecord,
+  resolveRuntimeHostManagedDeploymentAuthority,
   type LocalHostDeploymentAuthorityOptions,
   type LocalHostProcessDeploymentClaimAdapter,
   type LocalHostProcessDeploymentClaimResult,
@@ -108,6 +109,7 @@ interface RuntimeHostLocalHandoffDeps {
 }
 
 interface RuntimeHostLocalRestartDeps extends RuntimeHostLocalHandoffDeps {
+  readonly resolveManagedAuthority: typeof resolveRuntimeHostManagedDeploymentAuthority;
   readonly resolveCandidate: typeof resolveRuntimeHostRegistryUpdateCandidate;
   readonly connectExisting: typeof connectExistingRuntimeHost;
   readonly activateTarget: (
@@ -174,6 +176,7 @@ export async function restartRuntimeHostNpmGlobalDeployment(
     withPackage: withRuntimeHostRegistryUpdatePackage,
     prepareDeployment: prepareRuntimeHostPackageDeployment,
     readRecord: readLocalHostDeploymentRecord,
+    resolveManagedAuthority: resolveRuntimeHostManagedDeploymentAuthority,
     claim: claimLocalHostProcessDeployment,
     handoff: handoffLocalHostProcessDeployment,
     resolveCandidate: resolveRuntimeHostRegistryUpdateCandidate,
@@ -182,6 +185,9 @@ export async function restartRuntimeHostNpmGlobalDeployment(
     retireSource: launchRuntimeHostLocalSourceRetirement,
     ...overrides,
   };
+  if (await deps.resolveManagedAuthority(input.registration.rootId)) {
+    return { kind: 'operator_required', reason: 'unowned_host' };
+  }
   const installation = await deps.resolveInstallation(input.installationOptions);
   if (input.expectedInstallation && !isDeepStrictEqual(installation, input.expectedInstallation)) {
     return { kind: 'changed' };
@@ -278,6 +284,9 @@ export async function restartRuntimeHostNpmGlobalDeployment(
         'root_changed',
         'The local Runtime Host State Root changed before restart',
       );
+    }
+    if (await deps.resolveManagedAuthority(rootId)) {
+      throw new Error('The managed Runtime Host requires its operator to perform replacement');
     }
     const observed = await deps.connectExisting({
       rootPath: input.rootPath,

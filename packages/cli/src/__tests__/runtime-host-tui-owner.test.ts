@@ -24,7 +24,10 @@ import {
   type RuntimeHostConnection,
   type RuntimeHostProfile,
 } from '@maka/runtime-host/client';
-import type { LocalHostDeploymentRecord } from '@maka/runtime-host/operator';
+import type {
+  LocalHostDeploymentRecord,
+  resolveRuntimeHostManagedDeploymentAuthority,
+} from '@maka/runtime-host/operator';
 import type { HostDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { describeTuiHost, prepareTuiHostOwnerAction } from '../runtime-host-tui-owner.js';
 
@@ -62,6 +65,7 @@ function fixture() {
   let epoch = 'epoch';
   const events: string[] = [];
   const deps: Deps = {
+    resolveManagedAuthority: async () => undefined,
     resolveInstallation: async () => ({
       owner,
       observedRelease: {
@@ -171,6 +175,99 @@ function fixture() {
     },
   };
 }
+
+function managedAuthority(): NonNullable<
+  Awaited<ReturnType<typeof resolveRuntimeHostManagedDeploymentAuthority>>
+> {
+  return {
+    capability: { kind: 'interactive', canonicalPath: '/root', rootId: 'a'.repeat(64) } as never,
+    record: {
+      schemaVersion: 1,
+      state: 'active',
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+      configRevision: 1,
+      deploymentRoot: '/deployment',
+      root: { path: '/root', id: 'a'.repeat(64) },
+      projectDirectoryRoots: [],
+      launch: {
+        kind: 'exact_package',
+        nodePath: process.execPath,
+        package: {
+          kind: 'npm_registry',
+          version: '1.0.0',
+          integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}`,
+        },
+      },
+      listeners: { localIpc: true },
+      lifecycle: { mode: 'on_demand', availability: 'activation' },
+      reconciliation: { trigger: 'manual' },
+    },
+  };
+}
+
+test('managed on-demand authority defeats a matching old CLI owner for every TUI mutation', async () => {
+  for (const action of [
+    { action: 'stop' },
+    { action: 'restart' },
+    { action: 'update', target: 'next' },
+  ] as const) {
+    const f = fixture();
+    const before = await f.deps.readRecord!('a'.repeat(64));
+    await assert.rejects(
+      prepareTuiHostOwnerAction(
+        { ...f.input, action },
+        {
+          ...f.deps,
+          resolveManagedAuthority: async () => managedAuthority(),
+        },
+      ),
+      /does not own/,
+    );
+    assert.deepEqual(await f.deps.readRecord!('a'.repeat(64)), before);
+    assert.deepEqual(f.events, []);
+  }
+});
+
+test('managed authority appearing inside the TUI action lease fences stop and restart', async () => {
+  for (const action of ['stop', 'restart'] as const) {
+    const f = fixture();
+    const before = await f.deps.readRecord!('a'.repeat(64));
+    let managed = false;
+    const execute = await prepareTuiHostOwnerAction(
+      { ...f.input, action: { action } },
+      {
+        ...f.deps,
+        resolveManagedAuthority: async () => (managed ? managedAuthority() : undefined),
+        withAuthority: async (rootId, operation) => {
+          managed = true;
+          return f.deps.withAuthority!(rootId, operation);
+        },
+        retire: async () => assert.fail('managed authority must prevent source retirement'),
+        activate: async () => assert.fail('managed authority must prevent target activation'),
+      },
+    );
+    assert.ok(execute);
+    await assert.rejects(execute(), /does not own/);
+    assert.deepEqual(await f.deps.readRecord!('a'.repeat(64)), before);
+  }
+});
+
+test('managed authority appearing after TUI update preflight prevents coordinator delegation', async () => {
+  const f = fixture();
+  let managed = false;
+  const execute = await prepareTuiHostOwnerAction(
+    { ...f.input, action: { action: 'update', target: 'next' } },
+    {
+      ...f.deps,
+      resolveManagedAuthority: async () => (managed ? managedAuthority() : undefined),
+      update: async () => assert.fail('managed authority must prevent npm update delegation'),
+    },
+  );
+  assert.ok(execute);
+  managed = true;
+  await assert.rejects(execute(), /does not own/);
+  assert.deepEqual(f.events, []);
+});
 
 test('owner status remains readable for a compatible attached Host without granting mutation rights', async () => {
   const { input } = fixture();

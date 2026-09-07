@@ -53,7 +53,10 @@ import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
-import { readLocalHostDeploymentRecord } from '@maka/runtime-host/operator';
+import {
+  readLocalHostDeploymentRecord,
+  resolveRuntimeHostManagedDeploymentAuthority,
+} from '@maka/runtime-host/operator';
 import { resolveMakaClientDataRoot } from '@maka/storage/workspace-root';
 import {
   isTemporaryNpxInstallation,
@@ -129,6 +132,7 @@ interface RuntimeHostCliContextDeps {
   readonly loadClientInstanceId: typeof loadOrCreateRuntimeHostClientInstanceId;
   readonly executionCandidateEntrypoint: URL;
   readonly readDeploymentRecord: typeof readLocalHostDeploymentRecord;
+  readonly resolveManagedAuthority: typeof resolveRuntimeHostManagedDeploymentAuthority;
   readonly createPeerClient: typeof createRuntimeHostPeerClientFromEnvironment;
   readonly profileCatalog?: RuntimeHostProfileCatalog;
   readonly resolveInstallation: typeof resolveRuntimeHostNpmGlobalInstallation;
@@ -170,6 +174,7 @@ export async function connectRuntimeHostCliConnection(
       import.meta.resolve('@maka/runtime-host/execution-candidate-main'),
     ),
     readDeploymentRecord: readLocalHostDeploymentRecord,
+    resolveManagedAuthority: resolveRuntimeHostManagedDeploymentAuthority,
     createPeerClient: createRuntimeHostPeerClientFromEnvironment,
     resolveInstallation: resolveRuntimeHostNpmGlobalInstallation,
     isTemporaryNpxInstallation,
@@ -261,10 +266,16 @@ export async function connectRuntimeHostCliConnection(
         connected = activated;
       }
       if (connected.kind === 'incompatible' || connected.kind === 'upgrade_required') {
-        const record = await deps.readDeploymentRecord(connected.registration.rootId);
+        const managed = await deps.resolveManagedAuthority(connected.registration.rootId);
+        const record = managed
+          ? undefined
+          : await deps.readDeploymentRecord(connected.registration.rootId);
         let replacement: HostHandoffReplacement | undefined;
         let installation;
-        if (connected.registration.lifecycleMode === 'ephemeral') {
+        // On-demand managed Hosts are also ephemeral processes. Their durable
+        // operator authority, not the process lifetime label, decides who may
+        // replace them (including when the Host was already running).
+        if (!managed && connected.registration.lifecycleMode === 'ephemeral') {
           try {
             installation = await deps.resolveInstallation();
           } catch {
@@ -318,7 +329,12 @@ export async function connectRuntimeHostCliConnection(
         return {
           kind: 'blocked',
           blocker: {
-            identity: JSON.stringify([connected.registration, record, installation]),
+            identity: JSON.stringify([
+              connected.registration,
+              managed?.record,
+              record,
+              installation,
+            ]),
             target: {
               name: profile.name,
               location: 'local',
@@ -328,6 +344,7 @@ export async function connectRuntimeHostCliConnection(
             reason: record?.state.kind === 'handoff' ? 'repair' : 'upgrade',
             ...(connected.handshake?.activity ? { activity: connected.handshake.activity } : {}),
             mayExitNaturally:
+              !managed &&
               connected.registration.lifecycleMode === 'ephemeral' &&
               connected.handshake?.replacement === 'wait_for_idle_exit',
             ...(replacement ? { replacement } : {}),

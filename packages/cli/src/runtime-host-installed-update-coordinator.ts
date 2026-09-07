@@ -28,7 +28,10 @@ import {
   waitForRuntimeHostReady,
   type RuntimeHostConnection,
 } from '@maka/runtime-host/client';
-import { type LocalHostDeploymentAuthorityOptions } from '@maka/runtime-host/operator';
+import {
+  resolveRuntimeHostManagedDeploymentAuthority,
+  type LocalHostDeploymentAuthorityOptions,
+} from '@maka/runtime-host/operator';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
@@ -61,6 +64,7 @@ const OFFLINE_REGISTRY = 'http://127.0.0.1:9/';
 interface RuntimeHostInstalledUpdateCoordinatorDeps {
   readonly resolveInstallation: typeof resolveRuntimeHostNpmGlobalInstallation;
   readonly resolveRoot: typeof resolveStorageRoot;
+  readonly resolveManagedAuthority: typeof resolveRuntimeHostManagedDeploymentAuthority;
   readonly connectExisting: typeof connectExistingRuntimeHost;
   readonly waitForReady: typeof waitForRuntimeHostReady;
   readonly prepareRetirement: typeof prepareConnectedRuntimeHostRetirement;
@@ -100,6 +104,7 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
   const deps: RuntimeHostInstalledUpdateCoordinatorDeps = {
     resolveInstallation: resolveRuntimeHostNpmGlobalInstallation,
     resolveRoot: resolveStorageRoot,
+    resolveManagedAuthority: resolveRuntimeHostManagedDeploymentAuthority,
     connectExisting: connectExistingRuntimeHost,
     waitForReady: waitForRuntimeHostReady,
     prepareRetirement: prepareConnectedRuntimeHostRetirement,
@@ -127,6 +132,9 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
       installation.owner.installationId !== input.expectedSource.ownerInstallationId)
   ) {
     throw new Error('The observed local Host installation owner changed before update.');
+  }
+  if (await deps.resolveManagedAuthority(root.rootId)) {
+    throw new Error('The managed Runtime Host must be updated through its installed operator.');
   }
   const transactionId = updateTransactionId(root.rootId, installation, input.target);
 
@@ -166,6 +174,9 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
       return 'target_present';
     };
     const prepare = async (inheritableAuthorityLeaseFd: number) => {
+      if (await deps.resolveManagedAuthority(root.rootId)) {
+        throw new Error('The managed Runtime Host must be updated through its installed operator.');
+      }
       observation = await observeCurrentHost(input.rootPath, root.rootId, deps);
       // This callback runs under the existing deployment-authority lease.
       // Do not turn the TUI's consent for one observed Host into retirement of

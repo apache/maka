@@ -25,6 +25,7 @@ import test from 'node:test';
 import {
   applyLocalHostDeploymentTransition,
   readLocalHostDeploymentRecord,
+  type resolveRuntimeHostManagedDeploymentAuthority,
 } from '@maka/runtime-host/operator';
 import { gzipSync } from 'node:zlib';
 import {
@@ -38,104 +39,183 @@ import {
   installRuntimeHostNpmGlobalArchive,
   runRuntimeHostInstalledUpdateCoordinator,
 } from '../runtime-host-installed-update-coordinator.js';
-import type { RuntimeHostLocalProcessLifecycleAdapter } from '../runtime-host-local-handoff.js';
+import {
+  reconcilePreparedRuntimeHostNpmGlobalDeployment,
+  type RuntimeHostLocalProcessLifecycleAdapter,
+} from '../runtime-host-local-handoff.js';
 
 const ROOT_ID = 'b'.repeat(64);
 const INTEGRITY = `sha512-${Buffer.alloc(64, 4).toString('base64')}`;
 const OWNER = { kind: 'cli' as const, installationId: 'npm-global:slot' };
 
-test('TUI update refuses a changed Host epoch under its existing authority lease before retirement or install', async (t) => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-update-epoch-fence-'));
-  t.after(() => rm(base, { recursive: true, force: true }));
-  const authorityOptions = { authorityRoot: join(base, 'authority') };
-  const previous = { kind: 'npm_registry' as const, version: '1.0.0', integrity: INTEGRITY };
-  const target = { ...previous, version: '2.0.0' };
-  const claimed = await applyLocalHostDeploymentTransition(
-    ROOT_ID,
-    {
-      kind: 'claim',
-      owner: OWNER,
-      selected: previous,
-    },
-    authorityOptions,
-  );
-  assert.ok(claimed.record);
-  let observations = 0;
-  let closes = 0;
-  const result = await runRuntimeHostInstalledUpdateCoordinator(
-    {
-      rootPath: '/state',
-      archivePath: '/archive.tgz',
-      installedPackageRoot: '/installed',
-      installedCliPath: '/installed/dist/cli.js',
-      currentVersion: '1.0.0',
-      target,
-      allowInterruptActiveTasks: false,
-      expectedSource: {
-        rootId: ROOT_ID,
-        deploymentRevision: claimed.record.revision,
-        ownerInstallationId: OWNER.installationId,
-        hostEpoch: 'old-host',
+function managedAuthority(): NonNullable<
+  Awaited<ReturnType<typeof resolveRuntimeHostManagedDeploymentAuthority>>
+> {
+  return {
+    capability: { kind: 'interactive', canonicalPath: '/state', rootId: ROOT_ID } as never,
+    record: {
+      schemaVersion: 1,
+      state: 'active',
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+      configRevision: 1,
+      deploymentRoot: '/deployment',
+      root: { path: '/state', id: ROOT_ID },
+      projectDirectoryRoots: [],
+      launch: {
+        kind: 'exact_package',
+        nodePath: process.execPath,
+        package: { kind: 'npm_registry', version: '1.0.0', integrity: INTEGRITY },
       },
+      listeners: { localIpc: true },
+      lifecycle: { mode: 'on_demand', availability: 'activation' },
+      reconciliation: { trigger: 'manual' },
     },
-    authorityOptions,
-    {
-      resolveInstallation: async () => ({
+  };
+}
+
+for (const changed of ['host_epoch', 'managed_before_update', 'managed_during_cutover'] as const) {
+  test(`TUI update fences ${changed} despite the matching old CLI owner before retirement or install`, async (t) => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-update-epoch-fence-'));
+    t.after(() => rm(base, { recursive: true, force: true }));
+    const authorityOptions = { authorityRoot: join(base, 'authority') };
+    const previous = { kind: 'npm_registry' as const, version: '1.0.0', integrity: INTEGRITY };
+    const target = { ...previous, version: '2.0.0' };
+    const claimed = await applyLocalHostDeploymentTransition(
+      ROOT_ID,
+      {
+        kind: 'claim',
         owner: OWNER,
-        observedRelease: {
-          version: '1.0.0',
-          packageRoot: '/installed',
-          cliPath: '/installed/dist/cli.js',
+        selected: previous,
+      },
+      authorityOptions,
+    );
+    assert.ok(claimed.record);
+    let observations = 0;
+    let closes = 0;
+    let staged = false;
+    const mutationEffects: string[] = [];
+    let reconciliation:
+      | Awaited<ReturnType<typeof reconcilePreparedRuntimeHostNpmGlobalDeployment>>
+      | undefined;
+    const run = runRuntimeHostInstalledUpdateCoordinator(
+      {
+        rootPath: '/state',
+        archivePath: '/archive.tgz',
+        installedPackageRoot: '/installed',
+        installedCliPath: '/installed/dist/cli.js',
+        currentVersion: '1.0.0',
+        target,
+        allowInterruptActiveTasks: false,
+        expectedSource: {
+          rootId: ROOT_ID,
+          deploymentRevision: claimed.record.revision,
+          ownerInstallationId: OWNER.installationId,
+          hostEpoch: 'old-host',
         },
-      }),
-      resolveRoot: async () =>
-        ({ kind: 'interactive', canonicalPath: '/state', rootId: ROOT_ID }) as never,
-      withArchive: async (_target, archivePath, use) =>
-        use({ archivePath, packageRoot: '/target' }),
-      prepareStaged: async () => ({
-        version: target.version,
-        root: '/staged',
-        packageRoot: '/staged',
-        cliPath: '/staged/dist/cli.js',
-        candidateEntrypoint: '/staged/candidate.js',
-        launchGeneration: 'new-target',
-        cleanup: async () => {},
-        rollback: async () => {},
-      }),
-      connectExisting: async () => {
-        observations += 1;
-        if (observations === 2) {
-          // Real reconcile has taken the deployment lease and written its intent.
+      },
+      authorityOptions,
+      {
+        reconcile: async (...args) => {
+          reconciliation = await reconcilePreparedRuntimeHostNpmGlobalDeployment(...args);
+          return reconciliation;
+        },
+        resolveManagedAuthority: async () => {
+          if (changed === 'managed_before_update') return managedAuthority();
+          if (changed !== 'managed_during_cutover' || !staged) return undefined;
           assert.equal(
             (await readLocalHostDeploymentRecord(ROOT_ID, authorityOptions))?.state.kind,
             'handoff',
           );
-        }
-        return {
-          kind: 'connected',
-          registration: registration({
-            hostEpoch: observations === 1 ? 'old-host' : 'successor-host',
-          }),
-          connection: {
-            close: async () => {
-              closes += 1;
-            },
-          } as never,
-        };
+          return managedAuthority();
+        },
+        resolveInstallation: async () => ({
+          owner: OWNER,
+          observedRelease: {
+            version: '1.0.0',
+            packageRoot: '/installed',
+            cliPath: '/installed/dist/cli.js',
+          },
+        }),
+        resolveRoot: async () =>
+          ({ kind: 'interactive', canonicalPath: '/state', rootId: ROOT_ID }) as never,
+        withArchive: async (_target, archivePath, use) =>
+          use({ archivePath, packageRoot: '/target' }),
+        prepareStaged: async () => {
+          staged = true;
+          return {
+            version: target.version,
+            root: '/staged',
+            packageRoot: '/staged',
+            cliPath: '/staged/dist/cli.js',
+            candidateEntrypoint: '/staged/candidate.js',
+            launchGeneration: 'new-target',
+            cleanup: async () => {},
+            rollback: async () => {},
+          };
+        },
+        connectExisting: async () => {
+          observations += 1;
+          if (observations === 2) {
+            // Real reconcile has taken the deployment lease and written its intent.
+            assert.equal(
+              (await readLocalHostDeploymentRecord(ROOT_ID, authorityOptions))?.state.kind,
+              'handoff',
+            );
+          }
+          return {
+            kind: 'connected',
+            registration: registration({
+              hostEpoch:
+                changed === 'host_epoch' && observations > 1 ? 'successor-host' : 'old-host',
+            }),
+            connection: {
+              close: async () => {
+                closes += 1;
+              },
+            } as never,
+          };
+        },
+        prepareRetirement: async () => {
+          mutationEffects.push('retire');
+          assert.fail('stale consent must not retire the successor');
+        },
+        activateTarget: async () => {
+          mutationEffects.push('activate');
+          assert.fail('stale consent must not activate another Host');
+        },
+        installArchive: async () => {
+          mutationEffects.push('install');
+          assert.fail('stale consent must not replace the npm installation');
+        },
       },
-      prepareRetirement: async () => assert.fail('stale consent must not retire the successor'),
-      activateTarget: async () => assert.fail('stale consent must not activate another Host'),
-      installArchive: async () =>
-        assert.fail('stale consent must not replace the npm installation'),
-    },
-  );
-  assert.equal(result, 1); // Existing transaction truthfully reports recovery_required.
-  assert.equal(observations, 2);
-  assert.equal(closes, 2);
-  const pending = await readLocalHostDeploymentRecord(ROOT_ID, authorityOptions);
-  assert.equal(pending?.state.kind, 'handoff');
-  assert.deepEqual(pending?.state.selected, previous);
-});
+    );
+    if (changed === 'managed_before_update') {
+      await assert.rejects(run, /managed.*operator/);
+      assert.deepEqual(mutationEffects, []);
+      assert.deepEqual(
+        await readLocalHostDeploymentRecord(ROOT_ID, authorityOptions),
+        claimed.record,
+      );
+      return;
+    }
+    const result = await run;
+    assert.deepEqual(mutationEffects, []);
+    assert.equal(result, 1); // Existing transaction truthfully reports recovery_required.
+    assert.equal(reconciliation?.kind, 'recovery_required');
+    if (reconciliation?.kind !== 'recovery_required')
+      assert.fail('the cutover must retain truthful recovery evidence');
+    assert.equal(reconciliation.phase, 'prepare_host_cutover');
+    assert.match(
+      String(reconciliation.cause),
+      changed === 'host_epoch' ? /Host changed/ : /managed.*operator/,
+    );
+    assert.equal(observations, changed === 'host_epoch' ? 2 : 1);
+    assert.equal(closes, observations);
+    const pending = await readLocalHostDeploymentRecord(ROOT_ID, authorityOptions);
+    assert.equal(pending?.state.kind, 'handoff');
+    assert.deepEqual(pending?.state.selected, previous);
+  });
+}
 
 function tarHeader(name: string, size: number, type: string): Buffer {
   const header = Buffer.alloc(512);

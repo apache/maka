@@ -647,7 +647,7 @@ function hostRegistration(overrides: Partial<HostRegistration> = {}): HostRegist
   return {
     kind: 'maka-runtime-host' as const,
     schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
-    rootId: 'root-id',
+    rootId: 'a'.repeat(64),
     hostEpoch: 'host-old',
     endpoint: '/tmp/runtime-host.sock',
     protocolMin: 0,
@@ -818,10 +818,10 @@ test('activated managed Host incompatibility stays operator-owned', async () => 
       },
     ),
     (error: unknown) => {
-      assert.ok(error instanceof Error);
-      assert.ok(!(error instanceof RuntimeHostCliConflictError));
-      assert.match(error.message, /incompatible/);
-      assert.match(error.message, /configured operator/);
+      assert.ok(error instanceof HostHandoffRequiredError);
+      assert.equal(error.view.reason, 'operator_required');
+      assert.deepEqual(error.view.actions, ['cancel', 'retry']);
+      assert.match(error.message, /operator/);
       return true;
     },
   );

@@ -28,6 +28,7 @@ import {
   handoffLocalHostProcessDeployment,
   readLocalHostDeploymentRecord,
   type RuntimeHostInstallationOwner,
+  type resolveRuntimeHostManagedDeploymentAuthority,
 } from '@maka/runtime-host/operator';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -728,57 +729,122 @@ test('source helper failure preserves the durable handoff for recovery', async (
   );
 });
 
-test('a Host epoch change after confirmation cannot retire the replacement process', async (t) => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-local-external-host-race-'));
-  t.after(() => rm(base, { recursive: true, force: true }));
-  const sourcePackageRoot = await selfContainedPackage(base, PREVIOUS.version, {
-    sourceRetirementHelper: true,
-  });
-  const targetPackageRoot = await selfContainedPackage(base, TARGET.version);
-  const authorityRoot = join(base, 'authority');
-  await stageSelectedPackage(base, sourcePackageRoot);
-  await applyLocalHostDeploymentTransition(
-    ROOT_ID,
-    { kind: 'claim', owner: CLI_OWNER, selected: PREVIOUS },
-    { authorityRoot },
-  );
-
-  const result = await restartRuntimeHostNpmGlobalDeployment(
-    {
-      rootPath: join(base, 'root'),
-      registration: hostRegistration(),
-      deploymentPathOptions: { platform: 'linux', homeDir: join(base, 'home') },
+function managedAuthority(): NonNullable<
+  Awaited<ReturnType<typeof resolveRuntimeHostManagedDeploymentAuthority>>
+> {
+  return {
+    capability: { kind: 'interactive', canonicalPath: '/state', rootId: ROOT_ID } as never,
+    record: {
+      schemaVersion: 1,
+      state: 'active',
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+      configRevision: 1,
+      deploymentRoot: '/deployment',
+      root: { path: '/state', id: ROOT_ID },
+      projectDirectoryRoots: [],
+      launch: { kind: 'exact_package', nodePath: process.execPath, package: PREVIOUS },
+      listeners: { localIpc: true },
+      lifecycle: { mode: 'on_demand', availability: 'activation' },
+      reconciliation: { trigger: 'manual' },
     },
-    { authorityRoot },
-    {
-      resolveInstallation: async () => ({
-        owner: CLI_OWNER,
-        observedRelease: {
-          version: TARGET.version,
-          packageRoot: targetPackageRoot,
-          cliPath: join(targetPackageRoot, 'dist', 'cli.js'),
+  };
+}
+
+for (const changed of ['host_epoch', 'managed_before_restart', 'managed_during_cutover'] as const) {
+  test(`local restart fences ${changed} despite a matching old CLI owner`, async (t) => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-local-external-host-race-'));
+    t.after(() => rm(base, { recursive: true, force: true }));
+    const sourcePackageRoot = await selfContainedPackage(base, PREVIOUS.version, {
+      sourceRetirementHelper: true,
+    });
+    const targetPackageRoot = await selfContainedPackage(base, TARGET.version);
+    const authorityRoot = join(base, 'authority');
+    await stageSelectedPackage(base, sourcePackageRoot);
+    const claimed = await applyLocalHostDeploymentTransition(
+      ROOT_ID,
+      { kind: 'claim', owner: CLI_OWNER, selected: PREVIOUS },
+      { authorityRoot },
+    );
+    let staged = false;
+    const mutationEffects: string[] = [];
+
+    const result = await restartRuntimeHostNpmGlobalDeployment(
+      {
+        rootPath: join(base, 'root'),
+        registration: hostRegistration(),
+        deploymentPathOptions: { platform: 'linux', homeDir: join(base, 'home') },
+      },
+      { authorityRoot },
+      {
+        resolveManagedAuthority: async () => {
+          if (changed === 'managed_before_restart') return managedAuthority();
+          if (changed !== 'managed_during_cutover' || !staged) return undefined;
+          assert.equal(
+            (await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot }))?.state.kind,
+            'handoff',
+          );
+          return managedAuthority();
         },
-      }),
-      resolveCandidate: async () => TARGET,
-      withPackage: async (_candidate, use) => use(targetPackageRoot),
-      prepareDeployment: prepareRuntimeHostPackageDeployment,
-      connectExisting: async () =>
-        incompatibleHost(hostRegistration({ hostEpoch: 'replacement-host' })),
-      retireSource: async () => assert.fail('an unconfirmed replacement Host must not retire'),
-      activateTarget: async () => assert.fail('an unconfirmed replacement Host must remain'),
-    },
-  );
+        resolveInstallation: async () => ({
+          owner: CLI_OWNER,
+          observedRelease: {
+            version: TARGET.version,
+            packageRoot: targetPackageRoot,
+            cliPath: join(targetPackageRoot, 'dist', 'cli.js'),
+          },
+        }),
+        resolveCandidate: async () => TARGET,
+        withPackage: async (_candidate, use) => use(targetPackageRoot),
+        prepareDeployment: async (input) => {
+          const target = await prepareRuntimeHostPackageDeployment(input);
+          staged = true;
+          return target;
+        },
+        connectExisting: async () =>
+          incompatibleHost(
+            hostRegistration({
+              hostEpoch: changed === 'host_epoch' ? 'replacement-host' : 'old-host',
+            }),
+          ),
+        retireSource: async () => {
+          mutationEffects.push('retire');
+          assert.fail('an unconfirmed replacement Host must not retire');
+        },
+        activateTarget: async () => {
+          mutationEffects.push('activate');
+          assert.fail('an unconfirmed replacement Host must remain');
+        },
+      },
+    );
 
-  assert.equal(result.kind, 'recovery_required');
-  assert.equal(
-    result.kind === 'recovery_required' ? result.phase : undefined,
-    'prepare_host_cutover',
-  );
-  assert.equal(
-    (await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot }))?.state.kind,
-    'handoff',
-  );
-});
+    assert.deepEqual(mutationEffects, []);
+    if (changed === 'managed_before_restart') {
+      assert.deepEqual(result, { kind: 'operator_required', reason: 'unowned_host' });
+      assert.deepEqual(
+        await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot }),
+        claimed.record,
+      );
+      return;
+    }
+    assert.equal(result.kind, 'recovery_required');
+    if (result.kind !== 'recovery_required')
+      assert.fail('the cutover must retain truthful recovery evidence');
+    assert.match(
+      String(result.cause),
+      changed === 'host_epoch' ? /Host.*changed/ : /managed.*operator/,
+    );
+    assert.equal(
+      result.kind === 'recovery_required' ? result.phase : undefined,
+      'prepare_host_cutover',
+    );
+    assert.equal(
+      (await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot }))?.state.kind,
+      'handoff',
+    );
+    const pending = await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot });
+    assert.deepEqual(pending?.state.selected, PREVIOUS);
+  });
+}
 
 test('external reconciliation asks the activator to adjudicate when npm changes again', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-local-external-installation-race-'));

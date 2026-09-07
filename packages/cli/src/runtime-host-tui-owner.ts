@@ -27,6 +27,7 @@ import {
 } from '@maka/runtime-host/client';
 import {
   readLocalHostDeploymentRecord,
+  resolveRuntimeHostManagedDeploymentAuthority,
   withLocalHostDeploymentAuthority,
 } from '@maka/runtime-host/operator';
 import { isProductReleaseVersion } from '@maka/runtime-host/operator/update-package-evidence';
@@ -48,6 +49,7 @@ type OwnerAction = Parameters<MakaPiTuiHostControl['prepare']>[0];
 interface TuiOwnerDeps {
   resolveInstallation: typeof resolveRuntimeHostNpmGlobalInstallation;
   readRecord: typeof readLocalHostDeploymentRecord;
+  resolveManagedAuthority: typeof resolveRuntimeHostManagedDeploymentAuthority;
   connectExisting: typeof connectExistingRuntimeHost;
   withAuthority: typeof withLocalHostDeploymentAuthority;
   retire: typeof retireRuntimeHostLifecycleOwner;
@@ -76,6 +78,7 @@ export async function prepareTuiHostOwnerAction(
   const deps: TuiOwnerDeps = {
     resolveInstallation: resolveRuntimeHostNpmGlobalInstallation,
     readRecord: readLocalHostDeploymentRecord,
+    resolveManagedAuthority: resolveRuntimeHostManagedDeploymentAuthority,
     connectExisting: connectExistingRuntimeHost,
     withAuthority: withLocalHostDeploymentAuthority,
     retire: retireRuntimeHostLifecycleOwner,
@@ -87,6 +90,7 @@ export async function prepareTuiHostOwnerAction(
   const installation = await deps.resolveInstallation();
   const rootId = input.connection.rootId;
   const hostEpoch = input.connection.hostEpoch;
+  if (await deps.resolveManagedAuthority(rootId)) throw new Error(copy.notOwner);
   const record = await deps.readRecord(rootId);
   if (
     record?.state.kind !== 'owned' ||
@@ -163,6 +167,7 @@ export async function prepareTuiHostOwnerAction(
       throw new Error(copy.installationChanged);
     }
     if (input.action.action === 'update') {
+      if (await deps.resolveManagedAuthority(rootId)) throw new Error(copy.notOwner);
       return deps.update({
         rootPath: input.rootPath,
         selector:
@@ -193,6 +198,7 @@ export async function prepareTuiHostOwnerAction(
               transactionId: `tui-restart:${randomUUID()}`,
             })
           : undefined;
+      if (await deps.resolveManagedAuthority(rootId)) throw new Error(copy.notOwner);
       const retired = await deps.retire({
         rootPath: input.rootPath,
         rootId,
