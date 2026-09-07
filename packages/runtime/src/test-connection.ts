@@ -28,7 +28,7 @@ import {
   type ConnectionTestResult,
   type LlmConnection,
 } from '@maka/core/llm-connections';
-import { anthropicV1Url, googleApiUrl, openResponsesUrl } from './provider-urls.js';
+import { openResponsesUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
 import { fetchGitHubCopilotModels } from './model-fetcher.js';
 import {
@@ -232,22 +232,13 @@ async function testConnectionModel(
   }
   const { adapter, baseUrl, wire } = resolveModelRuntime(connection, testModel);
   const requestHeaders = withOpenCodeSessionHeader(connection.providerType, sessionId);
+  if (connection.providerType === 'github-copilot') {
+    return probeGitHubCopilot(baseUrl, secret, testModel, t0, fetchFn);
+  }
 
   switch (adapter.kind) {
     case 'anthropic':
-      return await probeAnthropic(
-        connection,
-        baseUrl,
-        secret,
-        testModel,
-        t0,
-        fetchFn,
-        requestHeaders,
-      );
-    case 'unavailable':
-      // Unreachable: the guard above returns first. The arm keeps the switch
-      // exhaustive so a newly retired provider cannot slip past it.
-      return retiredProviderTestResult(connection.providerType);
+      return await probeAnthropic(adapter, baseUrl, secret, testModel, t0, fetchFn, requestHeaders);
     case 'openai':
       return wire === 'openai-responses'
         ? await probeOpenAIResponses(baseUrl, secret, testModel, t0, fetchFn, requestHeaders)
@@ -276,8 +267,6 @@ async function testConnectionModel(
             timeoutMs,
             requestHeaders,
           );
-    case 'github-copilot':
-      return await probeGitHubCopilot(baseUrl, secret, testModel, t0, fetchFn);
     case 'google':
       return await probeGoogle(
         baseUrl,
@@ -367,7 +356,10 @@ function retiredProviderTestResult(providerType: string): ConnectionTestResult {
 }
 
 async function probeAnthropic(
-  connection: Pick<ConnectionEffectConnection, 'providerType'>,
+  adapter: Extract<
+    import('./provider-runtime-policy.js').RuntimeProviderAdapter,
+    { kind: 'anthropic' }
+  >,
   baseUrl: string,
   secret: string,
   model: string,
@@ -377,12 +369,15 @@ async function probeAnthropic(
 ): Promise<ConnectionTestResult> {
   const headers: Record<string, string> = {
     ...requestHeaders,
-    'x-api-key': secret,
+    ...(adapter.auth === 'bearer'
+      ? { authorization: `Bearer ${secret}` }
+      : { 'x-api-key': secret }),
     'anthropic-version': '2023-06-01',
     'content-type': 'application/json',
   };
 
-  const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/messages'), {
+  const url = `${stripTrailing(baseUrl)}/messages`;
+  const r = await fetchForConnectionEffect(fetchFn, url, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -482,9 +477,7 @@ async function probeGoogle(
   normalizeBaseUrl: boolean,
   fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ConnectionTestResult> {
-  const url = normalizeBaseUrl
-    ? googleApiUrl(baseUrl, `/models/${encodeURIComponent(model)}:generateContent`, apiKey)
-    : `${stripTrailing(baseUrl)}/models/${encodeURIComponent(model)}:generateContent`;
+  const url = `${stripTrailing(baseUrl)}/models/${encodeURIComponent(model)}:generateContent${normalizeBaseUrl ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
   const r = await fetchForConnectionEffect(fetchFn, url, {
     method: 'POST',
     headers: {

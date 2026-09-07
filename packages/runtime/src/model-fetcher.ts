@@ -280,6 +280,13 @@ async function fetchProviderModelsStrict(
         .filter((model) => discovery.filter !== 'language-models' || model.type === 'language')
         .map(toModelInfo)
         .filter((model): model is ModelInfo => model !== null);
+      if (discovery.modelProtocols === 'commandcode') {
+        for (const model of models) {
+          model.apiProtocol = /^(?:anthropic\/)?claude-/i.test(model.id)
+            ? 'anthropic-messages'
+            : 'openai-chat';
+        }
+      }
       return filterDiscoveredModels(models, discovery.filter);
     }
     case 'google': {

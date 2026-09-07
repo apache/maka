@@ -768,7 +768,7 @@ describe('getAIModel: models.dev registry providers', () => {
           apiKey: 'test-key',
           modelId: 'k3',
         }),
-      /Kimi Coding Plan.*openai-chat.*anthropic-messages/,
+      /Kimi Coding Plan does not support openai-responses/,
     );
   });
 
@@ -1131,5 +1131,17 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
       false,
       JSON.stringify(result.warnings),
     );
+  });
+});
+
+test('explicit Chat selection keeps Grok thinking options on the Chat wire', () => {
+  const connection = {
+    slug: 'xai',
+    defaultModel: 'grok-4.5',
+    providerType: 'xai' as const,
+    models: [{ id: 'grok-4.5', apiProtocol: 'openai-chat' as const }],
+  };
+  assert.deepEqual(buildProviderOptions(connection, 'grok-4.5', 'high'), {
+    xai: { reasoningEffort: 'high' },
   });
 });

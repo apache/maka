@@ -50,12 +50,7 @@ import {
   type OpenAiChatReasoningTransportState,
 } from './openai-chat-reasoning-transport.js';
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
-import {
-  anthropicV1BaseUrl,
-  googleV1BetaBaseUrl,
-  openAiResponsesBaseUrl,
-  openResponsesUrl,
-} from './provider-urls.js';
+import { openResponsesUrl } from './provider-urls.js';
 import { createOpenResponsesCompatibilityFinalizer } from './open-responses-compatibility.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import { runtimeProviderName, type RuntimeProviderAdapter } from './provider-runtime-policy.js';
@@ -106,24 +101,14 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
   } as const;
   const requestFetch = createRequestCustomizationFetch(baseFetch, requestCustomization);
 
-  if (adapter.kind === 'google' && adapter.normalizeBaseUrl === false) {
-    return createGoogle({ apiKey, baseURL, fetch: requestFetch }).chat(modelId);
-  }
-
   switch (adapter.kind) {
     case 'anthropic':
       return createAnthropic({
         ...(adapter.auth === 'bearer' ? { authToken: apiKey } : { apiKey }),
-        baseURL: adapter.normalizeBaseUrl ? anthropicV1BaseUrl(baseURL) : baseURL,
+        baseURL,
         fetch: requestFetch,
         headers: { 'anthropic-beta': ANTHROPIC_BETA },
       }).chat(modelId);
-
-    case 'unavailable':
-      // A retired provider must never reach model construction. The pickers
-      // filter it out and `resolveModelRuntime` refuses earlier; this is the
-      // backstop that keeps a stored connection from silently sending.
-      throw new Error('This provider is retired and can no longer be used to send.');
 
     case 'openai-codex':
       return createOpenAI({
@@ -136,40 +121,10 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         headers: openAiCodexHeaders(apiKey),
       }).responses(modelId);
 
-    case 'github-copilot': {
-      if (wire === 'openai-responses') {
-        return createOpenAI({ apiKey, baseURL, fetch: requestFetch }).responses(modelId);
-      }
-      if (wire === 'anthropic-messages') {
-        return createAnthropic({
-          authToken: apiKey,
-          baseURL: anthropicV1BaseUrl(baseURL),
-          fetch: requestFetch,
-        }).chat(modelId);
-      }
-      if (reasoningReplay.kind !== 'openai-chat-plaintext') {
-        throw new Error('Copilot OpenAI Chat wire requires plaintext reasoning replay');
-      }
-      const reasoningTransport = createOpenAiChatReasoningTransport(
-        requestFetch,
-        openAiChatReasoningTransportState ??
-          createOpenAiChatReasoningTransportState(reasoningReplay.requestField),
-      );
-      return createOpenAICompatible({
-        name: 'github-copilot',
-        apiKey,
-        baseURL,
-        fetch: reasoningTransport.fetch,
-        transformRequestBody: reasoningTransport.transformRequestBody,
-      }).chatModel(modelId);
-    }
-
     case 'openai': {
       const openai = createOpenAI({
         apiKey,
-        // The native adapter appends `/responses`; reduce endpoint-form
-        // overrides back to their base so probe-approved relay URLs work.
-        baseURL: wire === 'openai-responses' && baseURL ? openAiResponsesBaseUrl(baseURL) : baseURL,
+        baseURL,
         fetch:
           !hasRequestCustomization && openAiResponsesTransportState
             ? openAiResponsesTransportState.wrapFetch(requestFetch)
@@ -181,7 +136,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
     case 'google':
       return createGoogle({
         apiKey,
-        baseURL: googleV1BetaBaseUrl(baseURL),
+        baseURL,
         fetch: requestFetch,
       }).chat(modelId);
 
@@ -195,9 +150,6 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         );
       }
       if (wire === 'openai-responses') {
-        if (reasoningReplay.kind !== 'responses') {
-          throw new Error('Responses wire requires a Responses continuation contract');
-        }
         if (reasoningReplay.contract.adapter === 'open-responses') {
           const finalizeBody = createOpenResponsesCompatibilityFinalizer(
             reasoningReplay.contract.compatibility,
@@ -220,9 +172,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         }
         return createOpenAI({
           apiKey,
-          // Endpoint-form overrides (`…/responses`) probe successfully; the
-          // native adapter appends `/responses` itself, so pass the base.
-          baseURL: baseURL ? openAiResponsesBaseUrl(baseURL) : baseURL,
+          baseURL,
           fetch: requestFetch,
         }).responses(modelId);
       }
@@ -233,7 +183,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         requestFetch,
         openAiChatReasoningTransportState ??
           createOpenAiChatReasoningTransportState(reasoningReplay.requestField),
-        connection.providerType === 'kimi-coding-plan',
+        adapter.normalizeUsage,
       );
       const transformRequestBody = adapter.replayAssistantReasoningDetails
         ? composeRequestTransforms(
@@ -497,11 +447,13 @@ export function buildProviderOptions(
   connection: RuntimeExecutionConnection,
   modelId: string,
   thinkingLevel?: ThinkingLevel,
+  runtime = resolveModelRuntime(connection, modelId),
 ): SharedV4ProviderOptions {
   return withParallelToolCallOptions(
     connection,
     modelId,
-    buildThinkingProviderOptions(connection, modelId, thinkingLevel),
+    buildThinkingProviderOptions(connection, modelId, thinkingLevel, runtime),
+    runtime,
   );
 }
 
@@ -509,6 +461,7 @@ function buildThinkingProviderOptions(
   connection: RuntimeExecutionConnection,
   modelId: string,
   thinkingLevel?: ThinkingLevel,
+  runtime = resolveModelRuntime(connection, modelId),
 ): SharedV4ProviderOptions {
   const thinkingOptions = thinkingOptionsForModel(connection.providerType, modelId);
   const level = resolveThinkingLevel(connection, modelId, thinkingLevel);
@@ -523,7 +476,7 @@ function buildThinkingProviderOptions(
       // sweep keeps that tripwire armed.
       if (thinkingLevel === 'off') return {};
       const effort = level ?? 'max';
-      if (connection.models?.find((model) => model.id === modelId)?.apiProtocol === 'openai-chat') {
+      if (runtime.wire === 'openai-chat') {
         // The kimiCodingPlan provider-options namespace is the
         // openai-compatible adapter name; ai-sdk resolves its camelCase
         // alias to the kimi-coding-plan schema key (reasoning_effort).
@@ -599,7 +552,7 @@ function buildThinkingProviderOptions(
       };
     }
     case 'openai': {
-      const usesResponses = resolveModelRuntime(connection, modelId).wire === 'openai-responses';
+      const usesResponses = runtime.wire === 'openai-responses';
       const reasoningEffort =
         level === 'off'
           ? 'none'
@@ -622,9 +575,7 @@ function buildThinkingProviderOptions(
       };
     case 'xai':
     case 'xai-oauth':
-      // Only grok-4.5 needs the Responses reasoning extras; every other xAI
-      // model serves the plain OpenAI-compatible chat wire handled below.
-      if (modelId === 'grok-4.5') {
+      if (runtime.wire === 'openai-responses') {
         return {
           openai: {
             store: false,
@@ -635,7 +586,7 @@ function buildThinkingProviderOptions(
           },
         };
       }
-      return buildFamilyWire(connection, modelId, level, thinkingOptions, thinkingLevel);
+      return buildFamilyWire(connection, modelId, level, thinkingOptions, thinkingLevel, runtime);
     case 'volcengine-ark':
       return {
         [toCamelCase(connection.providerType)]: {
@@ -680,7 +631,7 @@ function buildThinkingProviderOptions(
     // above (level is defined only when metadata declares it) is what makes
     // this safe to generalize: undeclared models never reach the wire.
     default:
-      return buildFamilyWire(connection, modelId, level, thinkingOptions, thinkingLevel);
+      return buildFamilyWire(connection, modelId, level, thinkingOptions, thinkingLevel, runtime);
   }
 }
 
@@ -688,8 +639,8 @@ function withParallelToolCallOptions(
   connection: RuntimeExecutionConnection,
   modelId: string,
   options: SharedV4ProviderOptions,
+  runtime: ResolvedModelRuntime,
 ): SharedV4ProviderOptions {
-  const runtime = resolveModelRuntime(connection, modelId);
   if (runtime.parallelToolCalls === undefined) return options;
 
   let providerKey: string;
@@ -697,16 +648,9 @@ function withParallelToolCallOptions(
   if (runtime.adapter.kind === 'openai' || runtime.adapter.kind === 'openai-codex') {
     providerKey = 'openai';
     optionKey = 'parallelToolCalls';
-  } else if (runtime.adapter.kind === 'github-copilot') {
-    if (runtime.wire === 'anthropic-messages') return options;
-    providerKey = runtime.wire === 'openai-responses' ? 'openai' : 'githubCopilot';
-    optionKey = runtime.wire === 'openai-responses' ? 'parallelToolCalls' : 'parallel_tool_calls';
   } else if (runtime.adapter.kind === 'openai-compatible') {
     if (runtime.wire === 'openai-responses') {
-      if (
-        runtime.reasoningReplay.kind !== 'responses' ||
-        runtime.reasoningReplay.contract.adapter !== 'openai'
-      ) {
+      if (runtime.reasoningReplay.contract.adapter !== 'openai') {
         return options;
       }
       providerKey = 'openai';
@@ -735,8 +679,9 @@ function buildFamilyWire(
   level: ThinkingLevel | undefined,
   thinkingOptions: ThinkingOptions | undefined,
   requestedLevel: ThinkingLevel | undefined,
+  runtime: ResolvedModelRuntime,
 ): SharedV4ProviderOptions {
-  const { adapter, wire, reasoningReplay } = resolveModelRuntime(connection, modelId);
+  const { adapter, wire, reasoningReplay } = runtime;
   const explicitReasoningEffort = level ? (level === 'off' ? 'none' : level) : undefined;
   const serviceTier =
     wire === 'openai-responses' &&
@@ -750,9 +695,6 @@ function buildFamilyWire(
   // consumes a provider-native reasoningEffort through the same namespace,
   // keyed by the provider name getAIModel passes to createOpenResponses.
   if (wire === 'openai-responses') {
-    if (reasoningReplay.kind !== 'responses') {
-      throw new Error('Responses wire requires a Responses continuation contract');
-    }
     // Connection-aware: a relay model's declared variants count too.
     const reasons = thinkingVariantsForConnection(connection, modelId).length > 0;
     if (reasoningReplay.contract.adapter === 'open-responses') {
@@ -834,16 +776,6 @@ function buildFamilyWire(
             ? { thinking: { type: 'disabled' as const } }
             : {},
       };
-    case 'github-copilot': {
-      // Copilot routes per account-declared model protocol (mirrors the
-      // getAIModel case), defaulting to its OpenAI-compatible chat wire. Its
-      // Responses protocol is answered by the wire branch above.
-      const copilotProtocol = connection.models?.find((model) => model.id === modelId)?.apiProtocol;
-      if (copilotProtocol === 'anthropic-messages') {
-        return level !== 'off' ? { anthropic: { effort: level } } : {};
-      }
-      return { githubCopilot: { reasoningEffort: explicitReasoningEffort } };
-    }
     default:
       return {};
   }
