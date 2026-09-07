@@ -1513,6 +1513,7 @@ export const TitlebarParentReturn: Story = {
           <TitlebarSessionIdentity
             key={level}
             sessionName={names[level]!}
+            project={{ name: 'maka-agent', path: '/workspace/maka-agent', onOpenFolder: noop }}
             onRenameSession={noop}
             parentSession={level > 0 ? { name: names[level - 1]!, onOpen: () => setLevel(level - 1) } : undefined}
           />
@@ -1522,11 +1523,17 @@ export const TitlebarParentReturn: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    expect(canvas.queryByRole('button', { name: '项目信息' })).toBeNull();
+    await userEvent.click(canvas.getByRole('button', { name: '复现登录失败 任务操作' }));
+    const page = within(canvasElement.ownerDocument.body);
+    expect(await page.findByRole('menuitem', { name: '复制路径' })).toBeVisible();
+    await userEvent.keyboard('{Escape}');
     await userEvent.click(canvas.getByRole('button', { name: '返回父任务「检查登录功能」' }));
     expect(canvas.getByRole('button', { name: '检查登录功能 — 重命名任务' })).toBeVisible();
     await userEvent.click(canvas.getByRole('button', { name: '返回父任务「发布新版网站」' }));
     expect(canvas.getByRole('button', { name: '发布新版网站 — 重命名任务' })).toBeVisible();
     expect(canvas.queryByRole('button', { name: /返回父任务/ })).toBeNull();
+    expect(canvas.getByRole('button', { name: '项目信息' })).toBeVisible();
   },
 };
 
@@ -3121,7 +3128,7 @@ export const TitlebarWithWideWorkbar: Story = {
     const frame = canvasElement.querySelector<HTMLElement>('.appFrame')!;
     const title = canvasElement.querySelector<HTMLElement>('.maka-titlebar-identity')!;
     const workbar = canvasElement.querySelector<HTMLElement>('.maka-session-workbar[data-placement="right"]')!;
-    const menuButton = title.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+    const menuButton = title.querySelector<HTMLButtonElement>('[aria-label$="任务操作"]')!;
     const bounds = () => {
       const box = title.getBoundingClientRect();
       const boundary = window.innerWidth > 990
@@ -3155,6 +3162,11 @@ export const TitlebarWithWideWorkbar: Story = {
     const page = within(canvasElement.ownerDocument.body);
     await userEvent.click(await page.findByRole('menuitem', { name: '重命名' }));
     await waitFor(() => expect(document.activeElement).toBe(title.querySelector('input')));
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(within(title).getByRole('button', { name: '项目信息' }));
+    await waitFor(() => expect(page.getByRole('menuitem', { name: '打开项目文件夹' })).toBeVisible());
+    await waitFor(() => expect(page.getByRole('menuitem', { name: '复制路径' })).toBeVisible());
+    expect(within(page.getByRole('menu', { name: '项目信息' })).queryByRole('menuitem', { name: '重命名' })).toBeNull();
     await userEvent.keyboard('{Escape}');
     titlebarShare.mockClear();
     await userEvent.click(menuButton);
