@@ -73,7 +73,12 @@ type OpenAiCompatibleRuntimeAdapter = OpenAiCompatibleRuntimeAdapterBase &
   );
 
 type ProviderRuntimeAdapterDefinition =
-  | { kind: 'anthropic'; auth: 'api-key' | 'bearer'; normalizeBaseUrl: boolean }
+  | {
+      kind: 'anthropic';
+      auth: 'api-key' | 'bearer';
+      normalizeBaseUrl: boolean;
+      includeBetaHeaders?: false;
+    }
   /**
    * No Runtime adapter claims this provider, so nothing can be sent through it.
    * Distinct from a provider that was never wired: see `retired`.
@@ -1621,7 +1626,12 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider', includeUsage: false },
     protocolAdapters: {
-      'anthropic-messages': { kind: 'anthropic', auth: 'bearer', normalizeBaseUrl: true },
+      'anthropic-messages': {
+        kind: 'anthropic',
+        auth: 'bearer',
+        normalizeBaseUrl: true,
+        includeBetaHeaders: false,
+      },
       'openai-responses': { kind: 'openai', apiProtocol: 'openai-responses' },
     },
     modelDiscovery: { kind: 'protocol', auth: 'github-copilot' },

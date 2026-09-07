@@ -1145,3 +1145,46 @@ test('explicit Chat selection keeps Grok thinking options on the Chat wire', () 
     xai: { reasoningEffort: 'high' },
   });
 });
+
+test('Copilot Messages preserves bearer auth without the generic Anthropic beta opt-ins', async () => {
+  for (const providerType of ['github-copilot', 'anthropic'] as const) {
+    let headers = new Headers();
+    const model = getAIModel({
+      connection: {
+        ...conn(providerType),
+        models: [{ id: 'claude-test', apiProtocol: 'anthropic-messages' }],
+      },
+      apiKey: 'test-key',
+      modelId: 'claude-test',
+      fetch: async (_input, init) => {
+        headers = new Headers(init?.headers);
+        return new Response(
+          JSON.stringify({
+            id: 'msg-test',
+            type: 'message',
+            role: 'assistant',
+            model: 'claude-test',
+            content: [{ type: 'text', text: 'ok' }],
+            stop_reason: 'end_turn',
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      },
+    });
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    });
+    assert.equal(
+      headers.get('anthropic-beta'),
+      providerType === 'github-copilot'
+        ? null
+        : 'interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14',
+    );
+    if (providerType === 'github-copilot') {
+      assert.equal(headers.get('authorization'), 'Bearer test-key');
+      assert.equal(headers.get('x-api-key'), null);
+    }
+  }
+});

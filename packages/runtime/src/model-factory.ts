@@ -107,7 +107,8 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         ...(adapter.auth === 'bearer' ? { authToken: apiKey } : { apiKey }),
         baseURL,
         fetch: requestFetch,
-        headers: { 'anthropic-beta': ANTHROPIC_BETA },
+        headers:
+          adapter.includeBetaHeaders === false ? undefined : { 'anthropic-beta': ANTHROPIC_BETA },
       }).chat(modelId);
 
     case 'openai-codex':
