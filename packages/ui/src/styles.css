@@ -243,7 +243,9 @@
 .maka-turn-status-label { font-weight: var(--font-weight-medium); }
 .maka-turn-status-separator { color: var(--foreground-alpha-16); }
 /* Tabular figures so a ticking clock changes glyphs without changing width. */
-.maka-turn-elapsed { font-variant-numeric: tabular-nums; }
+.maka-turn-elapsed { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.maka-turn-elapsed:empty { display: none; }
+.maka-compaction-status { display: inline-flex; align-items: center; gap: 8px; font: var(--maka-text-body); vertical-align: top; }
 /* #1879: an Astryx `Badge variant="yellow"` now — the warning tone it used to
    draw by hand (hairline + 5% wash) is a variant, and the box comes with it.
    Product CSS keeps only what is layout: it is a block-level note under the
