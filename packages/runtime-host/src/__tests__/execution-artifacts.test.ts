@@ -19,6 +19,14 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
+import { openToolResultArchiveEvidenceReader } from '@maka/storage/tool-result-archive-evidence';
+import {
+  buildModelProjectionTransition,
+  durableToolResultProjectionDigest,
+} from '@maka/core/model-projection-transition';
+import { buildLedgerArchivedToolResultPlaceholder } from '@maka/runtime/tool-result-archive';
+import { parseToolResultArchiveResourceRef } from '@maka/runtime/tool-result-archive-resource';
 import { mkdir, mkdtemp, rm, stat, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,6 +42,179 @@ import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storag
 import { createHostExecutionArtifactServices } from '../server/execution-artifacts.js';
 import { restoreArtifactV1Shape } from './fixtures/artifact-v1.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+
+test('production archive services prepare ledger writes, keep legacy reads, and replay after reopen', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-ledger-archive-host-'));
+  const owner = await tryAcquireInteractiveRootOwner(
+    await resolveStorageRoot({ path: root, kind: 'interactive' }),
+  );
+  assert.ok(owner);
+  const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+  let evidence = await openToolResultArchiveEvidenceReader(owner.lease);
+  const db = new DatabaseSync(join(root, 'runtime.sqlite'));
+  try {
+    const projection = { version: 1 as const, kind: 'text' as const, text: 'durable ledger body' };
+    const serializedResult = JSON.stringify(projection.text);
+    const bodySha256 = createHash('sha256').update(serializedResult).digest('hex');
+    const event = {
+      id: 'response',
+      sessionId: 'session',
+      runId: 'run',
+      invocationId: 'invocation',
+      turnId: 'turn',
+      ts: 1,
+      partial: false,
+      author: 'tool',
+      role: 'tool',
+      content: {
+        kind: 'function_response',
+        id: 'call',
+        name: 'Read',
+        result: 'raw execution body',
+        modelProjection: projection,
+      },
+    };
+    db.prepare(
+      'INSERT INTO runtime_events(event_id, session_id, invocation_id, run_id, turn_id, event_seq, event_kind, payload_json, committed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'response',
+      'session',
+      'invocation',
+      'run',
+      'turn',
+      1,
+      'function_response',
+      JSON.stringify(event),
+      1,
+    );
+    const old = await artifacts.create({
+      id: 'legacy-archive',
+      sessionId: 'session',
+      turnId: 'turn',
+      name: 'legacy.json',
+      kind: 'file',
+      content: serializedResult,
+      source: 'tool_result_archive',
+    });
+    const input = {
+      sessionId: 'session',
+      runtimeEventId: 'response',
+      turnId: 'turn',
+      toolCallId: 'call',
+      toolName: 'Read',
+      serializedResult,
+      bodySha256,
+      originalBytes: Buffer.byteLength(serializedResult),
+      originalEstimatedTokens: 10,
+      rewriteVersion: 1,
+      sourceProjectionDigest: durableToolResultProjectionDigest(projection),
+      reason: 'stale_tool_result_pruned_before_compact' as const,
+    };
+    const make = () =>
+      createHostExecutionArtifactServices({
+        artifacts,
+        archiveEvidence: evidence,
+        sessionAdmission: new SessionAdmissionGate(),
+        sessions: { probeSessionRemoval: async () => ({ kind: 'present' }) },
+        requestDrain: () => assert.fail('archive failure must not drain'),
+      });
+    let services = make();
+    const prepared = await services.toolResultArchive.services.archiveToolResult(input);
+    assert.ok(prepared?.ledger);
+    assert.equal(typeof prepared.commitTransition, 'function');
+    assert.equal((await artifacts.listPage('session', { offset: 0, limit: 10 })).total, 1);
+    const placeholder = buildLedgerArchivedToolResultPlaceholder({ ...input, storage: 'ledger' });
+    const transition = buildModelProjectionTransition({
+      sessionId: 'session',
+      target: {
+        runtimeEventId: 'response',
+        part: 'tool_result',
+        toolCallId: 'call',
+        toolName: 'Read',
+      },
+      sourceProjection: projection,
+      replacement: { version: 1, kind: 'json', value: placeholder as never },
+      now: 2,
+    });
+    db.prepare('INSERT INTO core_agent_runs(session_id, run_id, created_at) VALUES (?, ?, ?)').run(
+      'session',
+      'run',
+      1,
+    );
+    const persist = async () => {
+      db.prepare('INSERT INTO core_agent_run_events VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+        'session',
+        'run',
+        1,
+        transition.transitionId,
+        'model_projection_transition_recorded',
+        2,
+        JSON.stringify({
+          id: transition.transitionId,
+          type: 'model_projection_transition_recorded',
+          sessionId: 'session',
+          runId: 'run',
+          turnId: 'turn',
+          ts: 2,
+          data: { runtimeEventId: 'response', part: 'tool_result', transition },
+        }),
+      );
+    };
+    assert.equal(await prepared.commitTransition!(transition, persist), true);
+    assert.equal(
+      await prepared.commitTransition!(transition, async () =>
+        assert.fail('stale preparation must not append'),
+      ),
+      false,
+    );
+    evidence.close();
+    evidence = await openToolResultArchiveEvidenceReader(owner.lease);
+    services = make();
+    assert.deepEqual(
+      await services.toolResultArchive.services.readToolResultArchive({
+        ...placeholder,
+        sessionId: 'session',
+      }),
+      { ok: true, serializedResult },
+    );
+    assert.equal(
+      (
+        await services.toolResultArchive.services.readToolResultArchive({
+          ...placeholder,
+          sessionId: 'other',
+        })
+      ).ok,
+      false,
+    );
+    const identity = parseToolResultArchiveResourceRef(placeholder.resourceRef!);
+    assert.ok(identity);
+    assert.deepEqual(
+      await services.toolResultArchive.services.readArchivedToolResultResource({
+        ...identity,
+        sessionId: 'session',
+        maxBytes: input.originalBytes,
+      }),
+      { ok: true, serializedResult },
+    );
+    assert.deepEqual(
+      await services.toolResultArchive.services.readArchivedToolResultResource({
+        artifactId: old.id,
+        bodySha256,
+        originalBytes: input.originalBytes,
+        sessionId: 'session',
+        maxBytes: input.originalBytes,
+      }),
+      { ok: true, serializedResult },
+    );
+  } finally {
+    db.close();
+    evidence.close();
+    artifacts.close();
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+    await rm(owner.controlDirectory, { recursive: true, force: true });
+  }
+});
 
 test('a refused projection preserves a shared image until Session cleanup', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-shared-projection-'));
@@ -199,12 +380,20 @@ test('Hosted execution publishes contained Tool Artifacts and durable result arc
       reason: 'stale_tool_result_pruned_before_compact' as const,
       bodySha256,
     };
-    const archived = await services.toolResultArchive.services.archiveToolResult(archiveInput);
-    assert.ok(archived, 'the host archive writer always reports where it stored the body');
-    assert.deepEqual(
+    assert.equal(
       await services.toolResultArchive.services.archiveToolResult(archiveInput),
-      archived,
+      undefined,
+      'without ledger evidence the Host must not fall back to publishing an Artifact',
     );
+    const legacy = await store.create({
+      sessionId: archiveInput.sessionId,
+      turnId: archiveInput.turnId,
+      name: 'legacy.json',
+      kind: 'file',
+      content: serializedResult,
+      source: 'tool_result_archive',
+    });
+    const archived = { artifactId: legacy.id };
     assert.deepEqual(
       await services.toolResultArchive.services.readToolResultArchive({
         ...archiveInput,

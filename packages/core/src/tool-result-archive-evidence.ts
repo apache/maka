@@ -26,6 +26,7 @@ export type ToolResultArchiveEvidence =
       readonly ok: true;
       readonly event: RuntimeEvent;
       readonly transitions: readonly AgentRunEvent[];
+      readonly storedBytes?: number;
     }
   | { readonly ok: false; readonly reason: 'not_found' | 'too_large' | 'corrupt' | 'unavailable' };
 

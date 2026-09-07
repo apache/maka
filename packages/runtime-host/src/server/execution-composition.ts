@@ -208,6 +208,7 @@ import {
 } from './web-search-tool.js';
 import { createHostWebFetchService, createHostWebFetchToolFromService } from './web-fetch-tool.js';
 import { createHostExecutionArtifactServices } from './execution-artifacts.js';
+import { openToolResultArchiveEvidenceReader } from '@maka/storage/tool-result-archive-evidence';
 import {
   createRuntimeHostWorkspaceExecutionComposition,
   RuntimeHostWorkspaceExecutionError,
@@ -290,6 +291,7 @@ export async function createExecutionRuntimeHostComposition(
   let pluginPlatform: HostPluginPlatform | undefined;
   let manager: SessionManager | undefined;
   let modelMetadataRefresh: ReturnType<typeof startHostModelMetadataRefresh> | undefined;
+  let archiveEvidence: Awaited<ReturnType<typeof openToolResultArchiveEvidenceReader>> | undefined;
   try {
     const pluginRoot = new Context();
     const pluginTools = new PluginToolService(pluginRoot);
@@ -426,7 +428,9 @@ export async function createExecutionRuntimeHostComposition(
       onProjectionChanged: (update) =>
         requireContinuity(continuity).enqueueRuntimeResourceChanged(update),
     });
+    archiveEvidence = await openToolResultArchiveEvidenceReader(context.owner.lease);
     const executionArtifacts = createHostExecutionArtifactServices({
+      archiveEvidence,
       artifacts: openedArtifactStore,
       requestDrain: context.requestDrain,
       sessionAdmission,
@@ -1900,6 +1904,7 @@ export async function createExecutionRuntimeHostComposition(
           () => oauth?.beginDrain(),
         ],
         close: [
+          () => archiveEvidence?.close(),
           () => modelMetadataRefresh?.close(),
           () => connectionEffects.close(),
           () =>
@@ -2156,6 +2161,7 @@ export async function createExecutionRuntimeHostComposition(
     };
   } catch (error) {
     const errors: unknown[] = [error];
+    archiveEvidence?.close();
     try {
       await modelMetadataRefresh?.close();
     } catch (closeError) {

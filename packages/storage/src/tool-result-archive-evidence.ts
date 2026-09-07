@@ -114,7 +114,7 @@ export async function openToolResultArchiveEvidenceReader(
               if (transition.sessionId !== sessionId) return { ok: false, reason: 'corrupt' };
               transitions.push(transition);
             }
-            return { ok: true, event, transitions };
+            return { ok: true, event, transitions, storedBytes: bytes };
           });
         });
       } catch {

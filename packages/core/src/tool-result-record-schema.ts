@@ -65,7 +65,7 @@ const ARCHIVED_SHAPE = defineObjectShape<Result<'archived_tool_result'>>()(
     'rewriteVersion',
     'reason',
   ],
-  ['artifactId', 'bodySha256'],
+  ['artifactId', 'resourceRef', 'bodySha256'],
 );
 const IMAGE_SHAPE = defineObjectShape<Result<'image'>>()(['kind', 'mimeType', 'ref'], []);
 const SUMMARY_SHAPE = defineObjectShape<Result<'summary'>>()(
@@ -242,6 +242,7 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
         typeof value.toolCallId === 'string' &&
         typeof value.toolName === 'string' &&
         isOptionalString(value.artifactId) &&
+        isOptionalString(value.resourceRef) &&
         isOptionalString(value.bodySha256) &&
         isFiniteNumber(value.originalEstimatedTokens) &&
         isFiniteNumber(value.originalBytes) &&
