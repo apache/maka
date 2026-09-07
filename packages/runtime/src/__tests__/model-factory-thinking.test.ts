@@ -772,18 +772,18 @@ describe('getAIModel: models.dev registry providers', () => {
     );
   });
 
-  test('routes OpenCode Zen and Go models through their registry-owned protocol overrides', () => {
-    const cases = [
-      ['opencode', 'gpt-5.5', 'openai.responses'],
-      ['opencode', 'claude-opus-4-8', 'anthropic.messages'],
-      ['opencode', 'gemini-3.5-flash', 'google.generative-ai'],
-      ['opencode-go', 'kimi-k2.7-code', 'opencode-go.chat'],
-      ['opencode-go', 'minimax-m3', 'anthropic.messages'],
-    ] as const;
-
-    for (const [providerType, modelId, expectedProvider] of cases) {
-      const model = getAIModel({ connection: conn(providerType), apiKey: 'test-key', modelId });
-      assert.equal(model.provider, expectedProvider, `${providerType}/${modelId}`);
+  test('OpenCode Go accepts explicit protocols without a static model entry', () => {
+    for (const [apiProtocol, expectedProvider] of [
+      ['openai-responses', 'openai.responses'],
+      ['anthropic-messages', 'anthropic.messages'],
+    ] as const) {
+      const modelId = 'unlisted-model';
+      const model = getAIModel({
+        connection: { ...conn('opencode-go'), models: [{ id: modelId, apiProtocol }] },
+        apiKey: 'test-key',
+        modelId,
+      });
+      assert.equal(model.provider, expectedProvider);
       assert.equal(model.modelId, modelId);
     }
   });

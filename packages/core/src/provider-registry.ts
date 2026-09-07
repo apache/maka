@@ -1202,6 +1202,10 @@ const providerRegistry = {
     fallbackModels: opencodeGoModelIds,
     status: 'ready',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    protocolAdapters: {
+      'anthropic-messages': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
+      'openai-responses': { kind: 'openai', apiProtocol: 'openai-responses' },
+    },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
