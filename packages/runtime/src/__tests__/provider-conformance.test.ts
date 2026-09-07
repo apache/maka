@@ -783,24 +783,35 @@ describe('models.dev provider conformance', () => {
             policy: { state: 'enabled' },
             capabilities: { supports: { tool_calls: true } },
           },
+          {
+            id: 'claude-sonnet-4.6',
+            model_picker_enabled: true,
+            supported_endpoints: ['/v1/messages'],
+            policy: { state: 'enabled' },
+            capabilities: { supports: { tool_calls: true } },
+          },
         ],
       });
     });
-    const result = await testConnection(
-      {
-        slug: 'github-copilot',
-        name: 'GitHub Copilot',
-        providerType: 'github-copilot',
-        baseUrl: server.url,
-        defaultModel: 'gpt-5.4',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
-      },
-      'github-account-token',
-    );
-
-    assert.deepEqual(result, { ok: true, latencyMs: result.latencyMs, modelTested: 'gpt-5.4' });
+    const connection: LlmConnection = {
+      slug: 'github-copilot',
+      name: 'GitHub Copilot',
+      providerType: 'github-copilot',
+      baseUrl: server.url,
+      defaultModel: 'gpt-5.4',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    connection.models = await fetchProviderModels(connection, 'github-account-token');
+    assert.deepEqual(connection.models.map((model) => model.id).sort(), [
+      'claude-sonnet-4.6',
+      'gpt-5.4',
+    ]);
+    for (const model of connection.models) {
+      const result = await testConnection(connection, 'github-account-token', model.id);
+      assert.deepEqual(result, { ok: true, latencyMs: result.latencyMs, modelTested: model.id });
+    }
   });
 
   test('GitHub Copilot connection probe rejects an account that cannot discover models', async () => {

@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   PROVIDER_REGISTRY,
+  effectiveBaseUrl,
   providerDefaultsOf,
   providerFallbackModelIds,
   connectionModelsEnumerateAccount,
@@ -230,11 +231,11 @@ async function testConnectionModel(
   if (providerDefaultsOf(connection.providerType)?.runtimeAdapter.kind === 'unavailable') {
     return retiredProviderTestResult(connection.providerType);
   }
+  if (connection.providerType === 'github-copilot') {
+    return probeGitHubCopilot(effectiveBaseUrl(connection), secret, testModel, t0, fetchFn);
+  }
   const { adapter, baseUrl, wire } = resolveModelRuntime(connection, testModel);
   const requestHeaders = withOpenCodeSessionHeader(connection.providerType, sessionId);
-  if (connection.providerType === 'github-copilot') {
-    return probeGitHubCopilot(baseUrl, secret, testModel, t0, fetchFn);
-  }
 
   switch (adapter.kind) {
     case 'anthropic':
