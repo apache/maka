@@ -2896,11 +2896,78 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(rendered, /● Read/);
     // The compact row names the failure even without ANSI color; free-text
     // error content stays out of the row and remains available when expanded.
-    assert.match(rendered, /\(error · 1 line · 32 bytes\)/);
+    assert.match(rendered, /● Read.*\(failed\)/);
+    // Error-text size must not look like successfully read resource content.
+    assert.doesNotMatch(rendered, /32 bytes/);
     assert.doesNotMatch(rendered, /background task no longer exists/);
     assert.ok(
       visibleWidth(rendered.split('\n').find((line) => line.includes('● Read')) ?? '') <= 80,
     );
+  });
+
+  test('keeps generic compact text outcomes distinct by real presentation status', () => {
+    const cases = [
+      {
+        id: 'generic-success',
+        toolName: 'mcp__local__result',
+        args: {},
+        isError: false,
+        content: { kind: 'text', text: 'ok\n' } as const,
+        expected: '(1 line · 3 bytes)',
+      },
+      {
+        id: 'generic-error',
+        toolName: 'mcp__local__result',
+        args: {},
+        isError: true,
+        content: { kind: 'text', text: 'failed because of a bad input' } as const,
+        expected: '(failed)',
+      },
+      {
+        id: 'subagent-failed',
+        toolName: 'agent_spawn',
+        args: { profile: 'local_read', task: 'read' },
+        isError: true,
+        content: subagentResult({ status: 'failed', summary: 'child failed' }),
+        expected: '(failed)',
+      },
+      {
+        id: 'subagent-aborted',
+        toolName: 'agent_spawn',
+        args: { profile: 'local_read', task: 'read' },
+        isError: true,
+        content: subagentResult({ status: 'cancelled', summary: 'child stopped' }),
+        expected: '(aborted)',
+      },
+    ];
+
+    for (const testCase of cases) {
+      const state = createMakaPiTranscriptState();
+      applyMakaSessionEventToTranscript(
+        state,
+        event({
+          type: 'tool_start',
+          toolUseId: testCase.id,
+          toolName: testCase.toolName,
+          args: testCase.args,
+        }),
+      );
+      applyMakaSessionEventToTranscript(
+        state,
+        event({
+          type: 'tool_result',
+          toolUseId: testCase.id,
+          isError: testCase.isError,
+          content: testCase.content,
+        }),
+      );
+
+      const rendered = renderMakaPiTranscript(state, meta(), 120).map(stripAnsi).join('\n');
+      assert.match(rendered, new RegExp(`\\(${testCase.expected.slice(1, -1)}\\)`));
+      if (testCase.expected === '(failed)' || testCase.expected === '(aborted)') {
+        assert.doesNotMatch(rendered, /bytes/);
+      }
+    }
   });
 
   test('surfaces a failed poll at the tail without rewriting scrollback', () => {
