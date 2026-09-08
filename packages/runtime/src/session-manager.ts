@@ -137,7 +137,10 @@ import type {
   RuntimeInvocationRootAuthority,
   ToolBoundaryProtocol,
 } from '@maka/core/runtime-event';
-import type { RunCompositionSnapshot } from '@maka/core/run-composition';
+import type {
+  RequestCompositionSnapshotInput,
+  RunCompositionSnapshot,
+} from '@maka/core/run-composition';
 import type {
   SubagentWorkspaceBinding,
   SubagentWorktreeExecutor,
@@ -711,6 +714,11 @@ export interface BackendFactoryContext {
   recordSystemNote?: (kind: RuntimeSystemNoteKind, turnId: string, data?: unknown) => Promise<void>;
   /** Immutable Run policy snapshot; provider dispatch waits for this durable commit. */
   recordRunComposition?: (runId: string, snapshot: RunCompositionSnapshot) => Promise<void>;
+  /** Append-only logical request surface; provider dispatch waits for this durable epoch. */
+  recordRequestComposition?: (
+    runId: string,
+    snapshot: RequestCompositionSnapshotInput,
+  ) => Promise<string>;
   loadHistoryCompactCheckpoint?: () => Promise<HistoryCompactCheckpoint | undefined>;
   recordHistoryCompactCheckpoint?: (
     checkpoint: HistoryCompactCheckpoint,

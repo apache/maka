@@ -78,6 +78,9 @@ import {
   validateShellPreference,
 } from '@maka/runtime/shell-detect';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
+import { Context } from '@maka/runtime/plugin-kernel';
+import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
+import { PluginToolService } from '@maka/runtime/plugin-tool-service';
 import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
 import { isHostedExecutionTerminal } from './hosted-execution-authority.js';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -285,9 +288,15 @@ export async function createExecutionRuntimeHostComposition(
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
   let goalExecutions: HostGoalExecutionCoordinator | undefined;
   let pluginPlatform: HostPluginPlatform | undefined;
+  let manager: SessionManager | undefined;
   let modelMetadataRefresh: ReturnType<typeof startHostModelMetadataRefresh> | undefined;
   try {
-    pluginPlatform = new HostPluginPlatform(context.owner.controlDirectory);
+    const pluginRoot = new Context();
+    const pluginTools = new PluginToolService(pluginRoot);
+    pluginPlatform = new HostPluginPlatform(context.owner.controlDirectory, {
+      composition: new MakaCompositionLoader({ root: pluginRoot }),
+      tools: pluginTools,
+    });
     const pluginPlatformCoordinator = new HostPluginPlatformCoordinator(pluginPlatform);
     const openedProjectCatalog = storage.projectCatalog;
     const runtimePolicyStores = storage.runtimePolicy;
@@ -354,7 +363,6 @@ export async function createExecutionRuntimeHostComposition(
     const memoryExtractionLane = new MemoryExtractionSessionLane();
     let runtimeResources: HostRuntimeResourceCoordinator | undefined;
     let continuity: SessionContinuityCoordinator | undefined;
-    let manager: SessionManager | undefined;
     let graphCoordinator: AgentGraphCoordinator | undefined;
     let graphSupervisorWake: AgentGraphSupervisorWakeCoordinator | undefined;
     const graphWakeActivities = new SessionActivityRegistry();
@@ -766,6 +774,8 @@ export async function createExecutionRuntimeHostComposition(
         hostTools,
         resolveRootTools: (sessionId) =>
           requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
+        resolvePluginTools: (sessionId, coreTools) =>
+          pluginTools.resolveContributions(sessionId, coreTools),
         parentAgentTools: childAgentTools.parentTools,
         childTools: childAgentTools.childTools,
         worktreePatchWriteBackAvailable: true,
@@ -1135,7 +1145,7 @@ export async function createExecutionRuntimeHostComposition(
       });
     };
     const registerBackendInvalidation = (): void => {
-      observeBackendInvalidation(manager.refreshIdleBackends());
+      observeBackendInvalidation(requireSessionManager(manager).refreshIdleBackends());
     };
     const registerConfigurationMutation = (): void => {
       hostChanges.publishConfiguration();
@@ -1156,7 +1166,7 @@ export async function createExecutionRuntimeHostComposition(
       acquireResidency: () => context.acquireResidency('oauth'),
       invalidateBackends: () => {
         hostChanges.publishConfiguration();
-        return manager.refreshIdleBackends();
+        return requireSessionManager(manager).refreshIdleBackends();
       },
       onFatal: (error) => {
         if (poisonFailure) return;
@@ -1892,7 +1902,10 @@ export async function createExecutionRuntimeHostComposition(
         close: [
           () => modelMetadataRefresh?.close(),
           () => connectionEffects.close(),
-          () => (backendInvalidationPoisoned ? undefined : manager.refreshIdleBackends()),
+          () =>
+            backendInvalidationPoisoned
+              ? undefined
+              : requireSessionManager(manager).refreshIdleBackends(),
           () => skills.close(),
           () => oauth?.close(),
           () => {
@@ -1960,8 +1973,8 @@ export async function createExecutionRuntimeHostComposition(
           executions: async () => {
             await coordinator.prepareRecovery();
             await interactions.recoverPendingAfterHostRestart();
-            await manager.recoverInterruptedSessionsStrict(stores);
-            await manager.recoverChildWorkspacePatches(
+            await requireSessionManager(manager).recoverInterruptedSessionsStrict(stores);
+            await requireSessionManager(manager).recoverChildWorkspacePatches(
               recoverySessions.flatMap((session) =>
                 session.subagentWorkspace ? [session.id] : [],
               ),

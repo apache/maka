@@ -20,11 +20,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  createRequestCompositionSnapshot,
+  COMPOSITION_MAX_TOOLS,
+  decodeRequestCompositionSnapshot,
   decodeRunCompositionSnapshot,
+  REQUEST_COMPOSITION_SCHEMA_VERSION,
   RUN_COMPOSITION_SCHEMA_VERSION,
 } from '../run-composition.js';
 
-test('Run Composition snapshots reject ambiguous toolsets and malformed hashes', () => {
+test('Run Composition snapshots retain the persisted v1 bootstrap shape', () => {
   const valid = {
     schemaVersion: RUN_COMPOSITION_SCHEMA_VERSION,
     composerId: 'maka.interactive',
@@ -38,21 +42,84 @@ test('Run Composition snapshots reject ambiguous toolsets and malformed hashes',
     contextWindow: null,
   };
 
+  assert.equal(decodeRunCompositionSnapshot(valid).schemaVersion, 1);
+
   for (const candidate of [
+    { ...valid, schemaVersion: 2 },
     { ...valid, baseSystemPromptHash: 'sha256:short' },
     { ...valid, toolNames: ['Write', 'Read'] },
     { ...valid, toolNames: ['Read', 'Read'] },
-    {
-      ...valid,
-      sourceRevisions: [
-        { id: 'skill-catalog', revision: 'skills-0' },
-        { id: 'runtime-policy', revision: '1' },
-      ],
-    },
-    { ...valid, sourceRevisions: [{ id: 'skill-catalog', revision: '' }] },
   ]) {
     assert.throws(() => decodeRunCompositionSnapshot(candidate));
   }
+});
+
+test('Request Composition snapshots canonicalize complete model-visible tool surfaces', () => {
+  const snapshot = createRequestCompositionSnapshot(
+    {
+      compositionId: 'composition-1',
+      step: 1,
+      sourceRevisions: [{ id: 'skill-catalog', revision: 'skills-1' }],
+      systemPromptHash: hash('1'),
+      toolCatalogHash: hash('2'),
+      toolAvailabilityHash: hash('3'),
+      providerOptionsHash: hash('4'),
+      toolNames: ['Write', 'Read'],
+      toolSchemas: [
+        { name: 'Write', description: 'write', inputSchema: { type: 'object' } },
+        { name: 'Read', description: 'read', inputSchema: { type: 'object' } },
+      ],
+    },
+    'change',
+  );
+  assert.equal(snapshot.schemaVersion, REQUEST_COMPOSITION_SCHEMA_VERSION);
+  assert.deepEqual(snapshot.toolNames, ['Read', 'Write']);
+  assert.deepEqual(
+    snapshot.toolSchemas.map((schema) => schema.name),
+    ['Read', 'Write'],
+  );
+  assert.throws(() =>
+    decodeRequestCompositionSnapshot({ ...snapshot, toolNames: ['Read', 'Read'] }),
+  );
+});
+
+test('Request Composition applies one fail-closed bound to names and schemas', () => {
+  const toolNames = Array.from(
+    { length: COMPOSITION_MAX_TOOLS },
+    (_, index) => `tool-${index.toString().padStart(3, '0')}`,
+  );
+  const toolSchemas = toolNames.map((name) => ({
+    name,
+    description: name,
+    inputSchema: { type: 'object' },
+  }));
+  const valid = {
+    schemaVersion: REQUEST_COMPOSITION_SCHEMA_VERSION,
+    compositionId: 'composition-bounded',
+    step: 0,
+    reason: 'initial',
+    sourceRevisions: [],
+    systemPromptHash: hash('1'),
+    toolCatalogHash: hash('2'),
+    toolAvailabilityHash: hash('3'),
+    providerOptionsHash: hash('4'),
+    toolNames,
+    toolSchemas,
+  } as const;
+
+  assert.equal(decodeRequestCompositionSnapshot(valid).toolNames.length, COMPOSITION_MAX_TOOLS);
+  assert.throws(() =>
+    decodeRequestCompositionSnapshot({ ...valid, toolNames: [...toolNames, 'tool-overflow'] }),
+  );
+  assert.throws(() =>
+    decodeRequestCompositionSnapshot({
+      ...valid,
+      toolSchemas: [
+        ...toolSchemas,
+        { name: 'tool-overflow', description: 'overflow', inputSchema: { type: 'object' } },
+      ],
+    }),
+  );
 });
 
 function hash(seed: string): `sha256:${string}` {

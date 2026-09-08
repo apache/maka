@@ -56,6 +56,86 @@ test('Deep Research keeps standard inspection tools and its durable workspace to
   }
 });
 
+test('the composer resolves scoped Tool additions without rebuilding the backend', () => {
+  let additions: readonly MakaTool[] = [];
+  const dynamic = tool('dynamic_tool');
+  const composer = createFixtureComposer({ resolveAdditionalTools: () => additions });
+
+  assert.equal(
+    composer.tools.some(({ name }) => name === dynamic.name),
+    false,
+  );
+  additions = [dynamic];
+  assert.equal(
+    composer.resolveTools?.().some(({ name }) => name === dynamic.name),
+    true,
+  );
+});
+
+test('the composer keeps Host bindings stable while resampling scoped Tool additions', () => {
+  let additions: readonly MakaTool[] = [];
+  const composer = createFixtureComposer({ resolveAdditionalTools: () => additions });
+  const initialRead = composer.tools.find(({ name }) => name === 'Read');
+  assert.ok(initialRead);
+
+  additions = [tool('dynamic_tool')];
+  const next = composer.resolveTools?.() ?? [];
+  assert.equal(
+    next.find(({ name }) => name === 'Read'),
+    initialRead,
+  );
+  assert.equal(
+    next.some(({ name }) => name === 'dynamic_tool'),
+    true,
+  );
+});
+
+test('scoped Tool resolution receives the complete stable Host binding', () => {
+  let observedHostTools: readonly MakaTool[] = [];
+  const composer = createFixtureComposer({
+    hostTools: [tool('host_extension')],
+    resolveAdditionalTools: (hostTools) => {
+      observedHostTools = hostTools;
+      return [tool('plugin_extension')];
+    },
+  });
+
+  assert.equal(
+    observedHostTools.some(({ name }) => name === 'Read'),
+    true,
+  );
+  assert.equal(
+    observedHostTools.some(({ name }) => name === 'host_extension'),
+    true,
+  );
+  assert.equal(
+    composer.tools.some(({ name }) => name === 'plugin_extension'),
+    true,
+  );
+});
+
+test('an explicit tool profile remains an exact ceiling over scoped Tool additions', () => {
+  const composer = createFixtureComposer({
+    toolProfile: 'headless-coding-v1',
+    resolveAdditionalTools: () => [tool('Read'), tool('plugin_only')],
+  });
+
+  assert.equal(
+    composer.resolveTools?.().some(({ name }) => name === 'plugin_only'),
+    false,
+  );
+  assert.equal(composer.resolveTools?.().filter(({ name }) => name === 'Read').length, 1);
+});
+
+function tool(name: string): MakaTool {
+  return {
+    name,
+    description: name,
+    parameters: {},
+    impl: async () => name,
+  };
+}
+
 function createFixtureComposer(
   overrides: Partial<Parameters<typeof createInteractiveRunComposer>[0]> = {},
 ) {
