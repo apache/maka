@@ -2845,7 +2845,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             label: summary.title,
             description: `↩ resume from ${foreignSourceLabel(summary.source)}`,
           },
-          searchText: `${summary.title} ${summary.id} ${summary.source}`.toLocaleLowerCase(),
+          searchText:
+            `${summary.title} ${summary.id} ${summary.cwd} ${summary.source}`.toLocaleLowerCase(),
         });
       }
       const closeOverlay = () => {

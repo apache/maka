@@ -4837,6 +4837,11 @@ describe('Maka Pi TUI runner', () => {
         llmConnectionSlug: 'conn-a',
       },
       {
+        ...fakeSessionSummary('current-second', '/repo', 'Current second'),
+        model: 'model-a',
+        llmConnectionSlug: 'conn-a',
+      },
+      {
         ...fakeSessionSummary('other-session', '/other/repo', 'Other chat'),
         model: 'model-b',
         llmConnectionSlug: 'conn-b',
@@ -4855,7 +4860,13 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('/session');
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Current chat'));
+    terminal.input('\x1b[B');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('→ Current second'));
+    terminal.input('\t');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('→ Current second'));
     terminal.input('Other');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Other chat'));
+    terminal.input('\t');
     await waitFor(() =>
       plainTerminalOutput(terminal.screenOutput()).includes('No matching sessions'),
     );
@@ -4977,6 +4988,10 @@ describe('Maka Pi TUI runner', () => {
     // The foreign row is labeled by its title and marked as a resume-from row.
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('Prior parser work'));
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('resume from Claude Code'));
+
+    // Foreign cwd participates in the advertised path search.
+    terminal.input('repo');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Prior parser work'));
 
     terminal.input('\r');
     await waitFor(() => readDigestCalls === 1);

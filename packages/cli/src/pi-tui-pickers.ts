@@ -859,6 +859,9 @@ export class SessionSearchOverlay implements Component {
     );
     const selectedIndex = this.filtered.findIndex(({ item }) => item.value === this.selectedValue);
     if (selectedIndex >= 0) list.setSelectedIndex(selectedIndex);
+    list.onSelectionChange = (item) => {
+      this.selectedValue = item.value;
+    };
     list.onSelect = (item) => {
       this.selectedValue = item.value;
       this.input.onSelect(item);
