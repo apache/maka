@@ -82,6 +82,46 @@ test('an element that is its own parent is a root, not a hang', () => {
   assert.deepEqual(lines(text).slice(1), ['5 AXGroup']);
 });
 
+test('window selected text is written in the header so the model can read it', () => {
+  const text = renderObservationForModel({
+    ...observation([{ elementId: '0', role: 'AXTextField', label: 'Body', value: 'hello' }]),
+    selectedText: { text: 'hello world', truncated: false },
+  });
+  assert.match(lines(text)[0] ?? '', /selected_text="hello world"/);
+  assert.doesNotMatch(lines(text)[0] ?? '', /truncated=true/);
+});
+
+test('executor-truncated selected text keeps the truncated flag', () => {
+  const text = renderObservationForModel({
+    ...observation([{ elementId: '0', role: 'AXTextField' }]),
+    selectedText: { text: 'partial', truncated: true },
+  });
+  assert.match(lines(text)[0] ?? '', /selected_text="partial"\(truncated=true\)/);
+});
+
+test('selected text in a focused secure field is withheld', () => {
+  const text = renderObservationForModel({
+    ...observation([
+      {
+        elementId: '0',
+        role: 'AXTextField',
+        subrole: 'AXSecureTextField',
+        focused: true,
+      },
+    ]),
+    selectedText: { text: 'hunter2', truncated: false },
+  });
+  assert.match(lines(text)[0] ?? '', /selected_text=withheld\(secure_field\)/);
+  assert.doesNotMatch(lines(text)[0] ?? '', /hunter2/);
+});
+
+test('an observation without selected text does not mention it', () => {
+  const text = renderObservationForModel(
+    observation([{ elementId: '0', role: 'AXButton', label: 'OK' }]),
+  );
+  assert.doesNotMatch(lines(text)[0] ?? '', /selected_text/);
+});
+
 test('a post-action no-change observation says so without repeating the tree', () => {
   const text = renderObservationForModel({
     ...observation([{ elementId: '0', role: 'AXWindow', label: 'Main' }]),

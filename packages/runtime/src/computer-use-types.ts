@@ -23,6 +23,7 @@ import type {
   ComputerUseEffect,
   ComputerUseErrorCode,
   ComputerUsePageIdentity,
+  ComputerUseSelectedText,
   CuAction,
   CuPoint,
 } from '@maka/core/computer-use';
@@ -234,6 +235,14 @@ export interface CuObservation {
    * route. This says the list is a prefix, not an inventory.
    */
   truncated?: boolean;
+  /**
+   * Text currently selected in the target window, from the executor snapshot.
+   *
+   * `select_text` names a range; this is the only account of what came out of
+   * it. Absent when the executor reported none. Model rendering must truncate
+   * and must not persist this into the call record.
+   */
+  selectedText?: ComputerUseSelectedText;
   elements: CuObservedElement[];
   screenshot?: CuScreenshot;
 }
