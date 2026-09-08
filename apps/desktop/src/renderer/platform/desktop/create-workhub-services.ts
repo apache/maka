@@ -95,7 +95,7 @@ export function createDesktopWorkHubServices(
         bridge.transcripts.open(
           sessionId,
           (batch) => {
-            if (signal.aborted) return;
+            if (signal.aborted || !store.accepts(batch)) return;
             if (store.accept(batch) || batch.ready) handler(store.snapshot());
           },
           (cancel) => {

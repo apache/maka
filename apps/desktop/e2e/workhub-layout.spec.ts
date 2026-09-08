@@ -136,7 +136,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect(editor).toBeVisible();
   await expect(editor).toHaveText('Keep this draft while folding the conversation.');
   await expect(workhub.getByRole('button', { name: /^(隐藏|Hide)$/ })).toHaveCount(0);
-  await expect.poll(() => workhub.evaluate(() => Math.abs(innerHeight - document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBeLessThanOrEqual(1);
+  await expect.poll(() => workhub.evaluate(() => innerHeight === Math.ceil(document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBe(true);
   await expect.poll(floatingBottom).toBe(anchoredBottom);
   const compactHeight = await workhub.evaluate(() => innerHeight);
   await model.click();

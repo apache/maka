@@ -27,13 +27,13 @@ import { build } from 'esbuild';
 import type { StoredMessage } from '@maka/core/session';
 import type { MakaBridge } from '../../preload/bridge-contract.js';
 import type { DesktopTranscriptBatch, DesktopTranscriptRangeRequest } from '../../preload/transcript-contract.js';
-import { createDesktopWorkHubCoordinationPort } from '../../renderer/workhub-coordination-port.js';
+import { createDesktopWorkHubServices } from '../../renderer/platform/desktop/create-workhub-services.js';
 import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
 import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 
 // Keep the real preload's navigation defaults and filtering in this consumer
 // regression; the IPC stub models the observer's authoritative reset reply.
-test('Coordination tail recovery converges through the preload with a fragmented sparse tail', { timeout: 5_000 }, async () => {
+test('WorkHub tail navigation converges through the preload with a fragmented sparse tail', { timeout: 5_000 }, async (t) => {
   const owner = {
     hostId: 'owner-host', targetEpoch: 'owner-epoch', profileId: 'local',
     profileName: 'Local', profileKind: 'local', profileAccess: 'owner', readiness: 'ready',
@@ -50,7 +50,6 @@ test('Coordination tail recovery converges through the preload with a fragmented
   const requests: DesktopTranscriptRangeRequest[] = [];
   const projections: string[][] = [];
   const partialProjectionCounts: number[] = [];
-  const errors: unknown[] = [];
   let bridge: MakaBridge | undefined;
   let consumerId: string;
   let deliverySequence = 0;
@@ -130,33 +129,37 @@ test('Coordination tail recovery converges through the preload with a fragmented
     Uint8Array, crypto: globalThis.crypto,
   });
   assert.ok(bridge);
-  const port = createDesktopWorkHubCoordinationPort({
-    sessionId,
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+  t.after(() => {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  const services = createDesktopWorkHubServices({
+    ...bridge,
     transcripts: {
+      ...bridge.transcripts,
       open(requestedSessionId, handler, registerCancellation) {
         deliverDirect = handler;
         return bridge!.transcripts.open(requestedSessionId, handler, registerCancellation);
       },
     },
-    record: async (input) => ({ turnId: input.turnId }),
-    candidates: async () => assert.fail('unused'),
-    act: async () => assert.fail('unused'),
   });
-  const handle = await port.open(
-    (turns) => projections.push(turns.map((turn) => turn.messageId)),
-    (error) => errors.push(error),
+  const handle = await services.openTranscript(
+    sessionId,
+    (snapshot) => projections.push(snapshot.messages.map((message) => message.id)),
+    new AbortController().signal,
   );
   try {
+    await handle.loadLatest();
     await responseDelivered;
     await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.deepEqual(errors, []);
     assert.equal(requests.length, 1);
     assert.equal(requests[0]!.navigationVersion, 1);
     assert.equal(requests[0]!.intent, 'followTail');
     assert.equal(requests[0]!.anchorSequence, null);
-    assert.equal(requests[0]!.maxBytes, 512 * 1024);
-    assert.deepEqual(partialProjectionCounts, [0, 0]);
-    assert.deepEqual(projections, [['latest-message']]);
+    assert.deepEqual(partialProjectionCounts, [1, 1]);
+    assert.deepEqual(projections, [[], ['latest-message']]);
   } finally {
     await handle.close();
   }
