@@ -89,6 +89,17 @@ const CHILD_INSTRUCTION_BOUNDARY = [
   'The child does not implicitly inherit local Memory or personalization context; required background must be included explicitly in the task.',
 ].join(' ');
 
+function buildSkillCreationPrompt(workspaceSkillDirectory: string | undefined): string | undefined {
+  if (!workspaceSkillDirectory) return undefined;
+  return [
+    'Local Skill creation:',
+    `- The authoritative install directory for a default workspace Skill is ${workspaceSkillDirectory}.`,
+    '- Create the Skill directly at <that directory>/<skill-id>/SKILL.md. Do not guess another Maka data directory, use a temporary directory, or create a separate lock file.',
+    '- After writing, read that exact SKILL.md back and verify the file exists and contains the intended content before reporting that the Skill was created.',
+    '- If the user explicitly requests a project-level, user-level, or managed-source Skill, follow that requested scope and its authoritative path instead.',
+  ].join('\n');
+}
+
 export interface InteractiveRunComposerInput {
   readonly runtimePolicy: RuntimePolicySnapshot;
   readonly skills: HostSkillCatalogCoordinator;
@@ -201,6 +212,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
           hostCapabilities,
           input.skillBudget,
         );
+        const skillCreation = buildSkillCreationPrompt(inventory.workspaceSkillDirectory);
         context.emitSkillCatalogTrace?.('Skill catalog selection completed', {
           policyVersion: skills.report.policyVersion,
           budgetChars: skills.report.budgetChars,
@@ -216,6 +228,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
         const text = childInstruction
           ? joinFragments([
               skills.text,
+              skillCreation,
               workspaceInstructions,
               CHILD_INSTRUCTION_BOUNDARY,
               childInstruction,
@@ -223,6 +236,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
           : assembleMainSessionSystemPrompt([
               buildPersonalizationPromptFragment(promptState.policy.personalization).text,
               skills.text,
+              skillCreation,
               workspaceInstructions,
               promptState.memory,
               input.plan?.mode === 'plan'

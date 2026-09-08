@@ -492,6 +492,8 @@ test('starter creation uses the shared template and reuses the lowest valid star
   const fixture = await createFixture();
   const repository = fixture.repository();
   const initial = await start(repository, fixture.project, 'governance');
+  const model = await repository.readCanonicalModelInventory({ projectRoot: fixture.project });
+  assert.equal(model.workspaceSkillDirectory, join(fixture.root, 'skills'));
   const created = await repository.mutate({
     expectedRevision: initial.revision,
     mutation: { kind: 'create_starter' },

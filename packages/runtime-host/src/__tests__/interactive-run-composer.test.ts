@@ -35,6 +35,39 @@ test('the interactive tool surface does not expose the retired ExploreAgent tool
   );
 });
 
+test('interactive prompts name the authoritative Skill install directory with an empty catalog', async () => {
+  const workspaceSkillDirectory = '/maka-dev/workspaces/default/skills';
+  const composer = createInteractiveRunComposer({
+    runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
+    skills: {
+      readCanonicalModelInventory: async () => ({
+        inventory: [],
+        workspaceSkillDirectory,
+      }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {
+      readPromptProjection: async () => ({
+        bundleRevision: null,
+        memoryRevision: null,
+        body: undefined,
+      }),
+    } as unknown as HostMemoryCoordinator,
+    sessionTodo: {} as SessionTodoToolStore,
+    builtinTools: {},
+  });
+
+  const prompt = await composer.resolveSystemPrompt({
+    sessionId: 'skill-creation-session',
+    turnId: 'skill-creation-turn',
+    cwd: '/maka-dev/workspaces/default',
+  });
+  assert.match(
+    prompt.text ?? '',
+    /authoritative install directory.*\/maka-dev\/workspaces\/default\/skills/u,
+  );
+  assert.match(prompt.text ?? '', /read that exact SKILL\.md back/u);
+});
+
 test('Deep Research keeps standard inspection tools and its durable workspace tools', () => {
   const tool = (name: string): MakaTool => ({
     name,
