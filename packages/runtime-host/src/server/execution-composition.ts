@@ -19,9 +19,11 @@
 
 import { copyWorkHubAttachmentsToTarget } from './workhub-message-attachments.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
+import { attachmentKindFromMimeType, MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
 import type { ContextOffloadLimits } from '@maka/core/context-offload';
 import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
+import type { AttachmentRef } from '@maka/core/events';
+import type { ArtifactKind, ArtifactRecord } from '@maka/core/artifacts';
 import { NO_REAL_CONNECTION_CODE } from '@maka/core/connection-error-copy';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
@@ -49,6 +51,7 @@ import {
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
 import { buildHistoryTools } from '@maka/runtime/history-tools';
+import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
 import { buildHostCapabilitiesFromBinding } from '@maka/runtime/skills';
@@ -81,8 +84,12 @@ import {
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { Context } from '@maka/runtime/plugin-kernel';
 import { PluginAgentService } from '@maka/runtime/plugin-agent-service';
+import { PluginAttachmentService } from '@maka/runtime/plugin-attachment-service';
 import { PluginApprovalService } from '@maka/runtime/plugin-approval-service';
+import { PluginFilesystemService } from '@maka/runtime/plugin-fs-service';
+import { PluginShellService } from '@maka/runtime/plugin-shell-service';
 import { PluginUserQuestionService } from '@maka/runtime/plugin-user-question-service';
+import { PluginWebService } from '@maka/runtime/plugin-web-service';
 import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
 import { PluginToolService } from '@maka/runtime/plugin-tool-service';
 import { PluginSystemPromptService } from '@maka/runtime/plugin-system-prompt-service';
@@ -300,8 +307,12 @@ export async function createExecutionRuntimeHostComposition(
   try {
     const pluginRoot = new Context();
     const pluginAgents = new PluginAgentService(pluginRoot);
+    const pluginAttachments = new PluginAttachmentService(pluginRoot, pluginAgents);
     new PluginApprovalService(pluginRoot, pluginAgents);
     new PluginUserQuestionService(pluginRoot, pluginAgents);
+    const pluginFilesystem = new PluginFilesystemService(pluginRoot, pluginAgents);
+    const pluginShell = new PluginShellService(pluginRoot, pluginAgents);
+    const pluginWeb = new PluginWebService(pluginRoot, pluginAgents);
     const pluginTools = new PluginToolService(pluginRoot, { agents: pluginAgents });
     const pluginSystemPrompt = new PluginSystemPromptService(pluginRoot);
     pluginPlatform = new HostPluginPlatform(context.owner.controlDirectory, {
@@ -478,11 +489,122 @@ export async function createExecutionRuntimeHostComposition(
       ...(sandboxManager ? { sandboxManager } : {}),
       ...(filesystemWorker ? { filesystemWorker } : {}),
     };
+    const invokeBuiltin = async (
+      name: string,
+      args: unknown,
+      invocation: import('@maka/runtime/plugin-agent-service').PluginAgentInvocation,
+    ) => {
+      if (!invocation.toolContext) throw new Error(`${name} requires an active Tool invocation`);
+      const policy = await runtimePolicyStores.runtimePolicy.getSnapshot();
+      const tool = buildBuiltinTools({
+        ...builtinTools,
+        shell: resolveTurnShellPlan(policy.policy.shell),
+      }).find((candidate) => candidate.name === name);
+      if (!tool) throw new Error(`Builtin capability is unavailable: ${name}`);
+      return tool.impl(args, invocation.toolContext);
+    };
+    pluginFilesystem.bindRuntime({
+      execute: (operation, invocation) => {
+        switch (operation.kind) {
+          case 'read':
+            return invokeBuiltin('Read', operation, invocation);
+          case 'write':
+            return invokeBuiltin('Write', operation, invocation);
+          case 'edit':
+            return invokeBuiltin(
+              'Edit',
+              {
+                path: operation.path,
+                old_string: operation.oldString,
+                new_string: operation.newString,
+              },
+              invocation,
+            );
+          case 'glob':
+            return invokeBuiltin(
+              'Glob',
+              { pattern: operation.pattern, cwd: operation.path },
+              invocation,
+            );
+          case 'grep':
+            return invokeBuiltin(
+              'Grep',
+              { pattern: operation.pattern, path: operation.path, glob: operation.glob },
+              invocation,
+            );
+          case 'apply_patch':
+            return invokeBuiltin('apply_patch', operation.patch, invocation);
+        }
+      },
+    });
+    pluginShell.bindRuntime({
+      run: (options, invocation) =>
+        invokeBuiltin(
+          'Bash',
+          {
+            command: options.command,
+            timeout_ms: options.timeoutMs,
+            run_in_background: options.background,
+            pty: options.pty,
+          },
+          invocation,
+        ),
+      read: (ref, invocation) =>
+        runtimeResources.readRuntimeResource(invocation.sessionId, ref, invocation.abortSignal),
+      write: (ref, input, invocation) =>
+        runtimeResources.writeStdin({
+          sessionId: invocation.sessionId,
+          ref,
+          input,
+          abortSignal: invocation.abortSignal,
+          caller: 'model',
+        }),
+      stop: (ref, invocation) =>
+        runtimeResources.stopBackgroundTask(invocation.sessionId, ref, invocation.abortSignal),
+    });
+    pluginAttachments.bindRuntime({
+      create: async (input, invocation) => {
+        const record = await openedArtifactStore.create({
+          sessionId: invocation.sessionId,
+          turnId: invocation.turnId,
+          name: input.name,
+          kind: pluginAttachmentArtifactKind(input.mimeType, input.name),
+          content: input.content,
+          mimeType: input.mimeType,
+          source: 'tool_result',
+          ...(input.summary ? { summary: input.summary } : {}),
+        });
+        return pluginAttachmentRef(record);
+      },
+      read: async (attachment, invocation) => {
+        if (
+          attachment.ref.kind !== 'session_file' ||
+          attachment.ref.sessionId !== invocation.sessionId
+        ) {
+          throw new Error('Attachment is outside the current Session');
+        }
+        const result = await openedArtifactStore.readBinaryInSession(
+          invocation.sessionId,
+          attachment.ref.relativePath,
+        );
+        if (!result.ok) throw new Error(`Attachment read failed: ${result.reason}`);
+        return Uint8Array.from(Buffer.from(result.base64, 'base64'));
+      },
+      list: async (invocation) =>
+        (await openedArtifactStore.listTurnArtifacts(invocation.sessionId, invocation.turnId)).map(
+          pluginAttachmentRef,
+        ),
+    });
     const webSearchService = createHostWebSearchService({
       policy: runtimePolicyStores.operations,
     });
     const webFetchService = createHostWebFetchService({
       policy: runtimePolicyStores.operations,
+    });
+    pluginWeb.bindRuntime({
+      search: ({ query, limit, abortSignal }) =>
+        webSearchService.search({ query, limit, ...(abortSignal ? { abortSignal } : {}) }),
+      fetch: (input) => webFetchService.fetch(input),
     });
     const historyTools = buildHistoryTools({
       listSessions: () => requireSessionManager(manager).listSessions(),
@@ -2526,6 +2648,26 @@ function requireGraphSupervisorWake(
 function requireGoal(coordinator: HostGoalCoordinator | undefined): HostGoalCoordinator {
   if (!coordinator) throw new Error('Runtime Host Goal coordinator is not composed');
   return coordinator;
+}
+
+function pluginAttachmentArtifactKind(mimeType: string, name: string): ArtifactKind {
+  const kind = attachmentKindFromMimeType(mimeType, name);
+  return kind === 'image' || kind === 'pdf' ? kind : 'file';
+}
+
+function pluginAttachmentRef(record: ArtifactRecord): AttachmentRef {
+  const mimeType = record.mimeType ?? 'application/octet-stream';
+  return {
+    kind: attachmentKindFromMimeType(mimeType, record.name),
+    name: record.name,
+    mimeType,
+    bytes: record.sizeBytes,
+    ref: {
+      kind: 'session_file',
+      sessionId: record.sessionId,
+      relativePath: record.relativePath,
+    },
+  };
 }
 
 /** Every run this Session has opened, named by the event spine that defines it. */
