@@ -43,6 +43,49 @@ import { OPERATIONAL_STATE_DATABASE_NAME } from '../operational-state-store.js';
 import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
 
 describe('SQLite SessionStore', () => {
+  test('stable branch title provenance survives reopening without requiring it on legacy headers', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-branch-title-origin-'));
+    const store = createSessionStore(root);
+    const origin = { base: 'Review (2026)', name: 'Review (2026) (1)' };
+    try {
+      const legacy = await store.create(makeInput({ cwd: root, name: 'Review (2026)' }));
+      assert.equal(normalizeSessionHeader(legacy).branchNameOrigin, undefined);
+      const created = await store.createStableSession({
+        sessionId: 'numbered-branch',
+        requestFingerprint: `sha256:${'c'.repeat(64)}`,
+        input: { ...makeInput({ cwd: root, name: origin.name }), branchNameOrigin: origin },
+      });
+      assert.equal(created.kind, 'created');
+      assert.deepEqual(
+        (await store.readHeaderSnapshot('numbered-branch')).branchNameOrigin,
+        origin,
+      );
+      for (const invalid of [
+        null,
+        {},
+        { base: 7, name: origin.name },
+        { base: '', name: origin.name },
+      ]) {
+        assert.throws(
+          () => normalizeSessionHeader({ ...legacy, branchNameOrigin: invalid } as SessionHeader),
+          /malformed fields/,
+        );
+      }
+    } finally {
+      await store.close?.();
+    }
+    const reopened = createSessionStore(root);
+    try {
+      assert.deepEqual(
+        (await reopened.readHeaderSnapshot('numbered-branch')).branchNameOrigin,
+        origin,
+      );
+    } finally {
+      await reopened.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('requires the reserved WorkHub Coordination identity and role together', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-coordination-identity-role-'));
     const store = createSessionStore(root);

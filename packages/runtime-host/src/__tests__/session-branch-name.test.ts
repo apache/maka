@@ -21,6 +21,9 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { SESSION_NAME_MAX_CODE_POINTS } from '@maka/core/session-name';
+import type { SessionHeaderPatch } from '@maka/core/session';
+import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import { tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import type { RuntimeHostConnection } from '../client/index.js';
 import type { SessionCatalogItem } from '../protocol/index.js';
 import {
@@ -28,9 +31,67 @@ import {
   requireStartedTurn,
   waitForTerminalTurn,
   withExecutionRoot,
+  type ExecutionFixture,
 } from './fixtures/execution-host-suite.js';
 
 const SOURCE_TURN_ID = 'branch-name-source-turn';
+
+// Mutate only while the Host is stopped, to model valid pre-feature metadata.
+async function seedHeader(fixture: ExecutionFixture, sessionId: string, patch: SessionHeaderPatch) {
+  const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
+  assert.ok(owner);
+  try {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    try {
+      await stores.sessionStore.updateHeader(sessionId, patch);
+    } finally {
+      await stores.sessionStore.close?.();
+    }
+  } finally {
+    await owner.close();
+  }
+}
+
+test('legacy auto-titled branches preserve literal numeric endings across restart', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    let legacyId: string;
+    let renamedAutoId: string;
+    try {
+      await settleSource(client, fixture.sessionId);
+      legacyId = (await branch(client, fixture.sessionId)).id;
+      renamedAutoId = (await branch(client, fixture.sessionId)).id;
+    } finally {
+      await client.close();
+      await fixture.stopHost(host);
+    }
+    await seedHeader(fixture, fixture.sessionId, {
+      name: 'Review project (2026)',
+      titleIsManual: false,
+    });
+    await seedHeader(fixture, legacyId, {
+      name: 'Review project (2026)',
+      titleIsManual: false,
+      branchNameOrigin: undefined,
+    });
+    await seedHeader(fixture, renamedAutoId, { name: 'Automatic (2030)', titleIsManual: false });
+    await fixture.startHost();
+    const restarted = await connectClient(fixture.root);
+    try {
+      const first = await branch(restarted, legacyId);
+      assert.equal(first.name, 'Review project (2026) (1)');
+      assert.equal((await branch(restarted, first.id)).name, 'Review project (2026) (2)');
+      assert.equal((await read(restarted, legacyId)).name, 'Review project (2026)');
+      assert.equal((await branch(restarted, renamedAutoId)).name, 'Automatic (2030) (1)');
+      // Even renaming to the recorded generated name makes the title literal.
+      await rename(restarted, first.id, first.name);
+      assert.equal((await branch(restarted, first.id)).name, 'Review project (2026) (1) (1)');
+    } finally {
+      await restarted.close();
+    }
+  });
+});
 
 function session(projection: SessionCatalogItem) {
   assert.ok(!('reason' in projection), 'Expected a wire-representable Session');
@@ -177,6 +238,21 @@ test('concurrent branches from different sources reserve unique code-point-bound
         assert.equal(Array.from(created.name).length, SESSION_NAME_MAX_CODE_POINTS);
         assert.equal((await read(tui, created.id)).name, created.name);
       }
+      // Crossing a suffix-width boundary must recover the original base,
+      // not reuse an already truncated title from a two-digit branch.
+      const twoDigit = branches.find(({ name }) => name.endsWith(' (10)'))!;
+      await rename(desktop, branches.find(({ name }) => name.endsWith(' (1)'))!.id, 'Released');
+      assert.equal(
+        (
+          await branch(
+            desktop,
+            twoDigit.id,
+            undefined,
+            twoDigit.parentSessionId === fixture.sessionId ? SOURCE_TURN_ID : 'other-source-turn',
+          )
+        ).name,
+        '😀'.repeat(SESSION_NAME_MAX_CODE_POINTS - ' (1)'.length) + ' (1)',
+      );
       assert.equal((await read(desktop, fixture.sessionId)).name, name);
       assert.equal((await read(tui, otherSourceId)).name, name);
     } finally {

@@ -103,6 +103,7 @@ interface ConversationCopyAdmissionRetry {
   readonly sessionIds: readonly string[];
 }
 type ConversationCopyCreateInput = CreateSessionInput & {
+  branchNameOrigin?: SessionHeader['branchNameOrigin'];
   readonly conversationCopy: SessionConversationCopy;
 };
 
@@ -488,7 +489,8 @@ export class HostSessionRevisionCoordinator {
     const create = async () => {
       if (kind === 'branch') {
         const headers = await this.#stores.sessionStore.listHeaders();
-        createInput.name = nextBranchName(sourceHeader, headers);
+        createInput.branchNameOrigin = nextBranchName(sourceHeader, headers);
+        createInput.name = createInput.branchNameOrigin.name;
       }
       return this.#stores.sessionStore.createStableSession(
         {
@@ -737,6 +739,9 @@ export class HostSessionRevisionCoordinator {
       collaborationMode: source.collaborationMode ?? 'agent',
       orchestrationMode: source.orchestrationMode ?? 'default',
       name: source.name,
+      ...(kind === 'revision' && source.branchNameOrigin
+        ? { branchNameOrigin: source.branchNameOrigin }
+        : {}),
       labels:
         kind === 'side_conversation'
           ? [...new Set([...source.labels, SIDE_CONVERSATION_SESSION_LABEL])]
@@ -933,12 +938,16 @@ export class HostSessionRevisionCoordinator {
   }
 }
 
-function nextBranchName(source: SessionHeader, headers: readonly SessionHeader[]): string {
-  // Revisions retain their branch lineage; manual names and side conversations
-  // are literal titles, even when they happen to end in a number.
+function nextBranchName(
+  source: SessionHeader,
+  headers: readonly SessionHeader[],
+): NonNullable<SessionHeader['branchNameOrigin']> {
+  // Only persisted provenance establishes that a suffix was generated here.
+  // Legacy auto-titled branches may have literal numeric endings. A rename
+  // invalidates the recorded name, while revisions retain its provenance.
   const base =
-    source.parentSessionId && !source.titleIsManual && !source.conversationCopy?.intent
-      ? source.name.replace(/ \([1-9]\d*\)$/u, '')
+    !source.titleIsManual && source.branchNameOrigin?.name === source.name
+      ? source.branchNameOrigin.base
       : source.name;
   const codePoints = Array.from(base);
   const names = new Set(headers.map((header) => header.name));
@@ -946,7 +955,7 @@ function nextBranchName(source: SessionHeader, headers: readonly SessionHeader[]
     const suffix = ` (${index})`;
     const limit = SESSION_NAME_MAX_CODE_POINTS - suffix.length;
     const name = codePoints.slice(0, limit).join('').trimEnd() + suffix;
-    if (!names.has(name)) return name;
+    if (!names.has(name)) return { base, name };
   }
 }
 

@@ -243,6 +243,8 @@ export interface SessionHeader {
   // User metadata
   name: string;
   titleIsManual: boolean;
+  /** Host-generated branch title and its untruncated base; absent on legacy Sessions. */
+  branchNameOrigin?: { readonly base: string; readonly name: string };
   isFlagged: boolean;
   labels: string[];
 
