@@ -144,10 +144,13 @@ maka runtime-host service check-update --target "$version" --json
 selector 传给 `service update --target`。该路径会先校验 archive 与解包后的 manifest，再委托给
 现有的精确 package 更新事务；需要人工审查的候选不会改变当前 Host。
 
-Installation owner 可以持久化一个更新目标，并通过同一套已验证事务执行 reconciliation：
+Installation owner 可以持久化一个更新目标，并通过同一套已验证事务执行 reconciliation。持久化
+上面解析出的精确 nightly 版本：不存在 `nightly` 这个 target 名，而 `latest` 指向早期 alpha，
+reconciliation 会把对一个 nightly 安装而言更旧的候选判为降级。因此要跟随每日推进的 nightly，
+就需要重新解析当前版本，并用新值再次运行 `update-policy`：
 
 ```sh
-maka runtime-host service update-policy --target latest \
+maka runtime-host service update-policy --target "$version" \
   --expected-service-id <service-id> \
   --expected-root-path <state-root> \
   --expected-root-id <root-id>

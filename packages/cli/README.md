@@ -160,10 +160,13 @@ to the existing exact-package update transaction, and does not mutate a candidat
 manual review.
 
 The installation owner can persist one update target and reconcile it with the same verified
-transaction:
+transaction. Pin the exact nightly version resolved above: there is no `nightly` target name,
+and `latest` holds the early alpha, which the reconciliation assesses as a downgrade for a
+nightly installation. Following successive nightlies therefore means resolving the current
+version again and re-running `update-policy` with the fresh value:
 
 ```sh
-maka runtime-host service update-policy --target latest \
+maka runtime-host service update-policy --target "$version" \
   --expected-service-id <service-id> \
   --expected-root-path <state-root> \
   --expected-root-id <root-id>
