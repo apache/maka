@@ -2255,20 +2255,41 @@ describe('non-serving Runtime Host kernel', () => {
       // `connection.closed` does not: it is that Client's own transport, and
       // the Client aborts it after its liveness probe goes unanswered for two
       // seconds. A Host that is merely busy therefore resolves it while still
-      // running, and gating the exit assertion on it starts the exit budget at
-      // a moment that has nothing to do with the Host's shutdown.
+      // running, so it is used only as a post-exit consistency check below.
       //
-      // Releasing the gate lets startup return promptly, `bind()` fires the
-      // loss recorded above, and the kernel closes the Host under
-      // `shutdownGraceMs` (10 s), after which it force-terminates. The
-      // deadline is that grace plus margin — twenty seconds — which sits
-      // below the launcher's 60 s idle grace, so it cannot be satisfied by a
-      // Candidate that merely went idle. The assertion observes the real
+      // Startup — composition creation and recovery included — runs after the
+      // release and is not bounded by the kernel's shutdown grace, so the exit
+      // budget must not start at the release. The entry's `onWon` marker is
+      // the explicit guard-bound boundary that starts it instead: the
+      // launch-owner guard has bound and the pre-bind recorded loss is being
+      // acted on, so everything the 20-second deadline covers (the
+      // `shutdownGraceMs` close plus margin — which sits below the launcher's
+      // 60 s idle grace, so it cannot be satisfied by a Candidate that merely
+      // went idle) happens after the marker.
+      //
+      // The race below keeps that boundary honest without breaking local
+      // Windows runs: there the Candidate can be terminated abruptly the
+      // moment its launcher dies — no JS exit event, so no bind and no marker
+      // — and `isProcessAlive` releasing the wait only records that platform
+      // limitation, while a Candidate still alive without a marker past the
+      // deadline is a failure. The assertion observes the real
       // operating-system PID: the kernel resolving its `closed` promise does
-      // not by itself mean the OS process has exited. Local Windows runs
-      // terminate such grandchildren abruptly without a JS exit event, so
-      // only CI verdicts count as cross-platform evidence here.
+      // not by itself mean the OS process has exited, so only CI verdicts
+      // count as cross-platform evidence here.
       writeFileSync(releaseMarker, String(Date.now()));
+      const boundMarker = join(paths.base, 'authority-lease-probe.bound');
+      const boundDeadline = Date.now() + 10_000;
+      while (
+        !existsSync(boundMarker) &&
+        isProcessAlive(launchedPid) &&
+        Date.now() < boundDeadline
+      ) {
+        await sleep(20);
+      }
+      assert.ok(
+        existsSync(boundMarker) || !isProcessAlive(launchedPid),
+        'gated-recovery entry never reached its guard bind',
+      );
       await waitForProcessExit(launchedPid, 20_000);
       await withTimeout(
         connected.connection.closed,

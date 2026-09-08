@@ -29,7 +29,10 @@
  * launcher at that point, and releasing the gate afterwards lets startup
  * return promptly so the recorded loss closes the Host under the kernel's
  * `shutdownGraceMs`. The run still goes through the real Runtime Host
- * composition — only its start is held at the gate.
+ * composition — only its start is held at the gate. The `onWon` hook adds
+ * the second boundary the test needs: a marker written right after the
+ * guard binds, so the exit budget starts at the bind rather than at the
+ * release, which only unblocks startup.
  */
 import { existsSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -41,8 +44,17 @@ const rootPath = process.argv[rootArgumentIndex];
 if (!rootPath) throw new Error('gated-recovery entry requires --root');
 const stallMarker = join(dirname(rootPath), 'authority-lease-probe.stalled');
 const releaseMarker = join(dirname(rootPath), 'authority-lease-probe.release');
+const boundMarker = join(dirname(rootPath), 'authority-lease-probe.bound');
 
 await runExecutionCandidateEntry(process.argv.slice(2), import.meta.url, {
+  // `onWon` fires right after the launch-owner guard binds (candidate-entry
+  // binds before invoking it), so this marker is the test's explicit
+  // guard-bound boundary: the pre-bind recorded loss starts acting only past
+  // it, which is where the exit budget under test actually begins.
+  onWon: () => {
+    writeFileSync(boundMarker, String(Date.now()));
+    return () => undefined;
+  },
   dependencies: {
     createComposition: async (context, compositionOptions) => {
       writeFileSync(stallMarker, String(Date.now()));
