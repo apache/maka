@@ -324,6 +324,7 @@ export class DesktopTranscriptRangeStore {
   readonly #retiredGenerations = new Set<string>();
   #sourceSessionId: string | undefined;
   #generation: string | undefined;
+  #liveGeneration: string | undefined;
   #hostEpoch: string | undefined;
   #durableThrough: number | null = null;
   #oldestSequence: number | null = null;
@@ -469,8 +470,15 @@ export class DesktopTranscriptRangeStore {
     if (batch.sessionId !== this.#expectedSessionId) {
       throw new Error('Desktop transcript belongs to a different Session');
     }
-    if (this.#generation && this.#generation !== batch.generation) {
+    if (this.#generation?.startsWith('cached:') && this.#generation !== batch.generation) {
       this.#retiredGenerations.add(this.#generation);
+    }
+    // Cached resets are provisional; only a new live replica retires the previous one.
+    if (!batch.generation.startsWith('cached:')) {
+      if (this.#liveGeneration && this.#liveGeneration !== batch.generation) {
+        this.#retiredGenerations.add(this.#liveGeneration);
+      }
+      this.#liveGeneration = batch.generation;
     }
     this.#durable.clear();
     this.#overlay.clear();
