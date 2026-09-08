@@ -101,10 +101,11 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 131 as const;
-// 131: Message admission accepts an empty-text Message that carries a quote or
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 132 as const;
+// 132: Message admission accepts an empty-text Message that carries a quote or
 // an attachment (#4804). Peers older than this epoch reject that frame at
 // admission, so the pair must refuse each other at the handshake.
+// 131: Logical model steps bind durable Request Composition identities.
 // 130: Turn contributions carry the optional bounded `failureMessage` diagnostic.
 // Epoch-129 peers reject this added field on the strict contribution shape.
 // 129: Turn states and Turn records drop `partialOutputRetained`. The fact was
