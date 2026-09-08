@@ -21,6 +21,12 @@ import { FAKE_HOLD_OPEN_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import { awaitSendReady, COMPOSER_INPUT, expect, test, getWorkHubPage } from './fixtures';
 
 test('WorkHub uses its coordination model and shared attachment composer', async ({ sessionLocalWindow: { page, app } }) => {
+  await page.evaluate(async () => {
+    const { connections } = await window.maka.connections.getSnapshot();
+    const connection = connections.find((entry) => entry.slug === 'e2e')!;
+    const ids = ['claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001', 'claude-opus-4-5-20251101'];
+    await window.maka.connections.update({ connectionId: connection.connectionId, slug: connection.slug }, { enabledModelIds: ids, models: ids.map((id) => ({ id })) });
+  });
   await page.locator(COMPOSER_INPUT).fill('WorkHub navigation regression');
   await awaitSendReady(page);
   await page.locator(COMPOSER_INPUT).press('Enter');
@@ -147,6 +153,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await model.click();
   const wheel = workhub.getByRole('listbox');
   await expect(wheel).toBeVisible();
+  await expect(wheel.getByRole('option')).toHaveCount(3);
   await expect(workhub.locator('.workHubHistory')).toBeHidden();
   await expect.poll(() => workhub.evaluate(() => innerHeight)).toBeGreaterThan(compactHeight);
   await expect.poll(floatingBottom).toBe(anchoredBottom);
@@ -158,6 +165,23 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     const viewport = element.getBoundingClientRect();
     return Math.abs((selected.top + selected.bottom - viewport.top - viewport.bottom) / 2);
   })).toBeLessThanOrEqual(1);
+  expect(await workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId)).toBe(modelBeforeBrowsing);
+  await wheel.press('Escape');
+  await model.click();
+  await expect(wheel.getByRole('option')).toHaveCount(3);
+  await expect.poll(() => workhub.evaluate(() => innerHeight === Math.ceil(document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBe(true);
+  const dragInitialTop = await wheel.evaluate((element) => element.scrollTop);
+  const dragDistance = dragInitialTop > 0 ? 32 : -32;
+  const wheelBounds = (await wheel.boundingBox())!;
+  const dragX = wheelBounds.x + wheelBounds.width / 2;
+  const dragY = wheelBounds.y + wheelBounds.height / 2;
+  await workhub.mouse.move(dragX, dragY);
+  await workhub.mouse.down();
+  await workhub.mouse.move(dragX, dragY + dragDistance, { steps: 8 });
+  await expect.poll(() => wheel.evaluate((element) => element.scrollTop)).toBe(dragInitialTop - dragDistance);
+  await workhub.mouse.up();
+  await expect(wheel).toBeVisible();
+  await expect.poll(() => wheel.evaluate((element) => element.scrollTop)).toBe(Math.round((dragInitialTop - dragDistance) / 44) * 44);
   expect(await workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId)).toBe(modelBeforeBrowsing);
   await wheel.press('ArrowDown');
   await wheel.press('Escape');

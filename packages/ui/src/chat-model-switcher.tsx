@@ -85,9 +85,18 @@ function ModelWheel(props: {
 }) {
   const id = useId();
   const viewport = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ pointerId: number; startY: number; scrollTop: number; moved: boolean } | undefined>(undefined);
   const choices = props.groups.flatMap((group) => group.choices.map((choice) => ({ choice, heading: group.heading, value: exactModelChoiceValue(choice.connectionId, choice.connectionSlug, choice.model) })));
   const [preview, setPreview] = useState(() => Math.max(0, choices.findIndex((entry) => entry.value === props.currentValue)));
   const rowHeight = 44;
+  const finishDrag = (element: HTMLDivElement) => {
+    if (!element.dataset.dragging) return;
+    delete element.dataset.dragging;
+    element.scrollTo({
+      top: Math.round(element.scrollTop / rowHeight) * rowHeight,
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+    });
+  };
   useLayoutEffect(() => {
     if (!viewport.current) return;
     viewport.current.scrollTop = preview * rowHeight;
@@ -98,6 +107,31 @@ function ModelWheel(props: {
       style={{ height: rowHeight * 3, paddingBlock: rowHeight }}
       onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) props.onClose(false); }}
       onScroll={(event) => setPreview(Math.max(0, Math.min(choices.length - 1, Math.round(event.currentTarget.scrollTop / rowHeight))))}
+      onPointerDown={(event) => {
+        drag.current = undefined;
+        if (props.disabled || event.button !== 0 || event.pointerType !== 'mouse') return;
+        drag.current = { pointerId: event.pointerId, startY: event.clientY, scrollTop: event.currentTarget.scrollTop, moved: false };
+      }}
+      onPointerMove={(event) => {
+        const gesture = drag.current;
+        if (!gesture || gesture.pointerId !== event.pointerId || !(event.buttons & 1)) return;
+        const distance = event.clientY - gesture.startY;
+        if (!gesture.moved && Math.abs(distance) < 5) return;
+        if (!gesture.moved) {
+          gesture.moved = true;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          event.currentTarget.dataset.dragging = 'true';
+        }
+        event.preventDefault();
+        event.currentTarget.scrollTop = gesture.scrollTop - distance;
+      }}
+      onPointerUp={(event) => finishDrag(event.currentTarget)}
+      onPointerCancel={(event) => { finishDrag(event.currentTarget); drag.current = undefined; }}
+      onLostPointerCapture={(event) => finishDrag(event.currentTarget)}
+      onClickCapture={(event) => {
+        if (drag.current?.moved) { event.preventDefault(); event.stopPropagation(); }
+        drag.current = undefined;
+      }}
       onKeyDown={(event) => {
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); props.onClose(true); return; }
         if (props.disabled) return;
