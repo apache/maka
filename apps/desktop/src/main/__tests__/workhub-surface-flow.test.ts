@@ -154,6 +154,9 @@ test('durable delegation renders every projected target state as a navigable res
     );
     assert.match(markup, /<button/u);
     assert.match(markup, /Payments/u);
+    assert.match(markup, /data-work-session-id="payment"/u);
+    assert.match(markup, /workhub-message-identity/u);
+    assert.match(markup, /--workhub-work-hue:/u);
     assert.match(markup, /Active link/u);
     assert.match(markup, new RegExp(label, 'u'));
     assert.match(markup, new RegExp(`data-state="${state}"`, 'u'));

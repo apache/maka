@@ -25,7 +25,7 @@ import { normalizeSessionSendCommand } from '../permission-response-guard.js';
 import {
   useComposerAttachments,
   type ComposerAttachmentService,
-} from '../../renderer/use-composer-attachments.js';
+} from '../../renderer/features/conversation/index.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
 afterEach(cleanupFakeDom);

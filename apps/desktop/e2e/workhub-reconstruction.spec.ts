@@ -58,6 +58,14 @@ test('WorkHub rebuilds delegated execution feedback after navigating away and ba
   await workHubComposer.press('Enter');
   const routedTurn = page.locator('.workhub-turn', { hasText: routedPrompt });
   await expect(routedTurn.locator('.workhub-submitted')).toBeVisible();
+  await expect(routedTurn.locator('.workhub-message-identity')).toContainText(sessionName!);
+  const workIdentity = await routedTurn.getAttribute('data-work-session-id');
+  expect(workIdentity).toBeTruthy();
+  const identityColor = await routedTurn.evaluate((element) =>
+    getComputedStyle(element).getPropertyValue('--workhub-work-color'),
+  );
+  expect(identityColor).toContain('oklch');
+
   await routedTurn.locator('.workhub-submitted > button').click();
   await expect(page.getByRole('region', { name: 'WorkHub' })).toBeHidden();
 
@@ -74,6 +82,11 @@ test('WorkHub rebuilds delegated execution feedback after navigating away and ba
     page.locator('.workhub-projected-turn', { hasText: routedPrompt })
       .locator('.workhub-submitted-state'),
   ).toHaveText('关联有效 · 已完成');
+  await expect(routedTurn).toHaveAttribute('data-work-session-id', workIdentity!);
+  expect(await routedTurn.evaluate((element) =>
+    getComputedStyle(element).getPropertyValue('--workhub-work-color'),
+  )).toBe(identityColor);
+
 });
 
 test('WorkHub replaces the exact linked delegation across Sessions', async ({

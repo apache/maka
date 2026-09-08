@@ -351,7 +351,11 @@ export interface MakaContributionContext extends MakaContributionIdentity {
 }
 
 export interface MakaPluginTransaction {
-  stage(label: string, register: () => () => void | Promise<void>, owner?: Context): void;
+  stage(
+    label: string,
+    register: () => () => void | Promise<void>,
+    owner?: Context,
+  ): () => Promise<void>;
   commit(): void | Promise<void>;
   rollback(): void | Promise<void>;
 }
@@ -515,12 +519,11 @@ export function registerPluginContribution(
   ctx: Context,
   label: string,
   register: () => () => void | Promise<void>,
-): void {
+): () => Promise<void> {
   if (ctx.makaTransaction) {
-    ctx.makaTransaction.stage(label, register, ctx);
-    return;
+    return ctx.makaTransaction.stage(label, register, ctx);
   }
-  registerPluginEffect(ctx, label, register);
+  return registerPluginEffect(ctx, label, register);
 }
 
 export class MakaPluginTransactionBuffer implements MakaPluginTransaction {
@@ -528,15 +531,20 @@ export class MakaPluginTransactionBuffer implements MakaPluginTransaction {
     readonly label: string;
     readonly register: () => () => void | Promise<void>;
     readonly owner: Context;
+    cancelled: boolean;
+    release?: () => Promise<void>;
   }> = [];
   #state: 'staging' | 'committed' | 'rolled_back' = 'staging';
 
   constructor(private readonly context: Context) {}
 
-  stage(label: string, register: () => () => void | Promise<void>, owner = this.context): void {
+  stage(
+    label: string,
+    register: () => () => void | Promise<void>,
+    owner = this.context,
+  ): () => Promise<void> {
     if (this.#state === 'committed') {
-      registerPluginEffect(owner, label, register);
-      return;
+      return registerPluginEffect(owner, label, register);
     }
     if (this.#state === 'rolled_back') {
       throw new MakaPluginRuntimeError(
@@ -544,7 +552,23 @@ export class MakaPluginTransactionBuffer implements MakaPluginTransaction {
         `Cannot stage contribution after transaction is ${this.#state}`,
       );
     }
-    this.#registrations.push({ label, register, owner });
+    const item: {
+      readonly label: string;
+      readonly register: () => () => void | Promise<void>;
+      readonly owner: Context;
+      cancelled: boolean;
+      release?: () => Promise<void>;
+    } = {
+      label,
+      register,
+      owner,
+      cancelled: false,
+    };
+    this.#registrations.push(item);
+    return async () => {
+      item.cancelled = true;
+      await item.release?.();
+    };
   }
 
   async commit(): Promise<void> {
@@ -558,7 +582,9 @@ export class MakaPluginTransactionBuffer implements MakaPluginTransaction {
     const registered: Array<() => Promise<void>> = [];
     try {
       for (const item of this.#registrations) {
-        registered.push(registerPluginEffect(item.owner, item.label, item.register));
+        if (item.cancelled) continue;
+        item.release = registerPluginEffect(item.owner, item.label, item.register);
+        registered.push(item.release);
       }
       this.#state = 'committed';
       this.#registrations.length = 0;

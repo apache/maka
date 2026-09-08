@@ -120,6 +120,7 @@ export interface WorkHubProjectedTurn {
 }
 
 export interface WorkHubCoordinationTurn {
+  attachments?: WorkHubCoordinationActInput['attachments'];
   messageId: string;
   turnId: string;
   text: string;
@@ -160,6 +161,8 @@ export interface WorkHubProjection {
 }
 
 export interface WorkHubSubmitInput {
+  attachments?: WorkHubCoordinationActInput['attachments'];
+  newWorkDefaults?: WorkHubCoordinationActInput['newWorkDefaults'];
   requestId: string;
   text: string;
   retryAction?: true;
@@ -583,13 +586,13 @@ export function createWorkHubController(deps: {
         text: input.text,
         sessions: ordinary,
       });
-      const resume = await submitNamedDelegationAction(input, resumeDecision, 'resume', routingStrategy.strategyId);
+      const resume = input.attachments?.length ? undefined : await submitNamedDelegationAction(input, resumeDecision, 'resume', routingStrategy.strategyId);
       if (resume) return resume;
       const stopDecision = submissionPolicy.resolveStop({
         text: input.text,
         sessions: ordinary,
       });
-      const stop = await submitNamedDelegationAction(input, stopDecision, 'stop', routingStrategy.strategyId);
+      const stop = input.attachments?.length ? undefined : await submitNamedDelegationAction(input, stopDecision, 'stop', routingStrategy.strategyId);
       if (stop) return stop;
       const candidateSet = await coordination.candidates();
       const candidateBySessionId = new Map(
@@ -657,6 +660,7 @@ export function createWorkHubController(deps: {
         await coordination.act({
           actionId: input.requestId,
           userText: input.text,
+          ...(input.attachments ? { attachments: input.attachments } : {}),
           proposal: { disposition: 'answer_here' },
         });
         return {
@@ -676,6 +680,8 @@ export function createWorkHubController(deps: {
           ? {
               actionId: input.requestId,
               userText: input.text,
+          ...(input.attachments ? { attachments: input.attachments } : {}),
+              ...(input.newWorkDefaults ? { newWorkDefaults: input.newWorkDefaults } : {}),
               confirmation: { kind: 'user_correction' },
               proposal: {
                 disposition: 'replace',
@@ -686,6 +692,8 @@ export function createWorkHubController(deps: {
           : {
               actionId: input.requestId,
               userText: input.text,
+          ...(input.attachments ? { attachments: input.attachments } : {}),
+              ...(input.newWorkDefaults ? { newWorkDefaults: input.newWorkDefaults } : {}),
               proposal: { disposition: 'create_new', title },
             });
         if (
@@ -731,6 +739,7 @@ export function createWorkHubController(deps: {
         ? {
             actionId: input.requestId,
             userText: input.text,
+          ...(input.attachments ? { attachments: input.attachments } : {}),
             candidateSetId: candidateSet.candidateSetId,
             confirmation: { kind: 'user_correction' },
             proposal: {
@@ -745,6 +754,7 @@ export function createWorkHubController(deps: {
         : {
             actionId: input.requestId,
             userText: input.text,
+          ...(input.attachments ? { attachments: input.attachments } : {}),
             candidateSetId: candidateSet.candidateSetId,
             proposal: {
               disposition: 'delegate_existing',

@@ -314,6 +314,8 @@ export const Composer = forwardRef<
     pendingDirectories?: readonly import('@maka/core/events').DirectoryReference[];
     onRemoveDirectory?(index: number): void;
     onAttachFilePaths?(files: File[]): void | Promise<void>;
+    /** Hosts that can submit context without a text prompt opt in. */
+    allowAttachmentOnlySend?: boolean;
     pendingAttachments?: readonly {
       displayName: string;
       kind: AttachmentRef['kind'];
@@ -1265,7 +1267,7 @@ export const Composer = forwardRef<
     // `text`. The optional metadata below is a send-time rendering snapshot of
     // file chips that still exist in the editor, not a second draft state.
     const text = composerWireText(textPort.getValue());
-    if (!text) return;
+    if (!text && !(props.allowAttachmentOnlySend && props.pendingAttachments?.length)) return;
     const editable = editableNode();
     const workspaceFileReferences = editable ? workspaceFileReferencePositions(editable) : [];
     const submittedDraftKey = activeDraftKey();
@@ -1453,7 +1455,7 @@ export const Composer = forwardRef<
     props.sendBlocked ||
     sendPending ||
     importActionBusy ||
-    !text.trim() ||
+    (!text.trim() && !(props.allowAttachmentOnlySend && props.pendingAttachments?.length)) ||
     noModelConnection;
   // The disabled Send is explanatory only in the no-model dead-end; other
   // disabled reasons (empty draft, in-flight import) keep the neutral label.

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useState } from 'react';
+import { useContext, useState, type CSSProperties } from 'react';
 import type { WorkHubRailCopy } from '../../../locales/workhub-copy.js';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { Button, dotForStatus, presentSessionStatus } from '@maka/ui';
@@ -29,6 +29,8 @@ import {
   type WorkHubWorkFilter,
 } from '../model/anchor-rail.js';
 
+import { WorkHubHighlightContext, workHubIdentityHue } from './workhub-work-identity.js';
+
 export function WorkHubNavigationRail(props: {
   readonly locale: UiLocale;
   readonly sessions: readonly WorkHubAnchorSession[];
@@ -37,6 +39,7 @@ export function WorkHubNavigationRail(props: {
   readonly copy: WorkHubRailCopy;
   readonly onOpenSession: (sessionId: string) => void;
 }) {
+  const highlight = useContext(WorkHubHighlightContext);
   const [filter, setFilter] = useState<WorkHubWorkFilter>('all');
   const anchors = deriveWorkHubAnchors({
     sessions: props.sessions,
@@ -79,7 +82,15 @@ export function WorkHubNavigationRail(props: {
               return (
                 <ListItem
                   key={anchor.target.sessionId}
-                  label={anchor.sessionName}
+                  className="workhub-work-identity workhub-navigation-item"
+                  style={{ '--workhub-work-hue': workHubIdentityHue(anchor.target.sessionId) } as CSSProperties}
+                  data-work-session-id={anchor.target.sessionId}
+                  data-work-highlighted={highlight.sessionId === anchor.target.sessionId}
+                  onMouseEnter={() => highlight.highlight(anchor.target.sessionId)}
+                  onMouseLeave={() => highlight.highlight(undefined)}
+                  onFocus={() => highlight.highlight(anchor.target.sessionId)}
+                  onBlur={() => highlight.highlight(undefined)}
+                  label={<span className="workhub-navigation-label">{anchor.sessionName}</span>}
                   description={`${anchor.target.sessionId === props.focusSessionId ? props.copy.focused : anchor.projectName} · ${state}`}
                   startContent={variant ? <StatusDot variant={variant} label={state} /> : undefined}
                   isSelected={anchor.target.sessionId === props.focusSessionId}

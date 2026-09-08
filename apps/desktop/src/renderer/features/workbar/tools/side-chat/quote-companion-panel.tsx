@@ -36,7 +36,8 @@ import {
 import type { SessionSummary } from '@maka/core/session';
 import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { useQuoteCompanion } from './use-quote-companion';
-import { useComposerAttachments } from '../../../../use-composer-attachments';
+import { useComposerAttachments } from '@maka/ui/use-composer-attachments';
+import { localizedShellErrorMessage } from '../../../../locales/shell-copy.js';
 import { useComposerMentionsContext } from '../../../../composer-mentions.js';
 import { preflightAttachmentItems } from '../../../../attachment-preflight';
 import { toComposerIngestItems } from '../../../../composer-attachments';
@@ -138,6 +139,8 @@ export function QuoteCompanionPanel(props: {
     removeAttachment,
     clearSubmittedAttachments,
   } = useComposerAttachments({
+    copy: getDesktopConversationCopy(locale).actions,
+    formatError: (error, fallback) => localizedShellErrorMessage(error, fallback, locale),
     draftKey,
     toastApi: toast,
     service: attachments,

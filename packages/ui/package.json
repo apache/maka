@@ -12,7 +12,10 @@
     "./assistant-stream": "./dist/assistant-stream.js",
     "./icons": "./dist/icons.js",
     "./maka-uri": "./dist/maka-uri.js",
-    "./styles.css": "./src/styles.css"
+    "./styles.css": "./src/styles.css",
+    "./composer-attachments": "./dist/composer-attachments.js",
+    "./pending-items": "./dist/pending-items.js",
+    "./use-composer-attachments": "./dist/use-composer-attachments.js"
   },
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",
