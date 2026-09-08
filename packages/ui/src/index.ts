@@ -67,6 +67,7 @@ export * from './tool-output-stream.js';
 export * from './ui.js';
 export * from './utils.js';
 export * from './platform-shortcut-text.js';
+export * from './transcript-viewport-navigation.js';
 
 // Maka-owned product assets and compositions remain public only where they do
 // not duplicate a published Astryx component authority.

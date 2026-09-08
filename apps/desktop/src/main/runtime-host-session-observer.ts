@@ -129,6 +129,9 @@ interface TranscriptConsumer {
   readonly consumerId: string;
   readonly target: RuntimeHostTranscriptTarget;
   generation: string;
+  navigationVersion: number;
+  navigationPending: boolean;
+  navigationRequest?: DesktopTranscriptRangeRequest;
   deliverySequence: number;
   deliveryBytes: number;
   deliveryTask?: Promise<void>;
@@ -293,6 +296,8 @@ export class RuntimeHostSessionObserver {
       consumerId,
       target,
       generation: replica.generation,
+      navigationVersion: 0,
+      navigationPending: false,
       deliverySequence: 0,
       deliveryBytes: 0,
       resetRequested: false,
@@ -332,10 +337,11 @@ export class RuntimeHostSessionObserver {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    await this.#runTranscriptRangeOperation(request, targetId, (replica) =>
+    await this.#runTranscriptRangeOperation(request, targetId, (replica, token) =>
       replica.loadBefore(
         request.anchorSequence,
         requireTranscriptRangeBytes(request.maxBytes),
+        token,
       ),
     );
   }
@@ -344,13 +350,21 @@ export class RuntimeHostSessionObserver {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    await this.#runTranscriptRangeOperation(request, targetId, (replica) => {
+    await this.#runTranscriptRangeOperation(request, targetId, (replica, token) => {
+      if (request.intent === 'followTail') {
+        return replica.followLatest(requireTranscriptRangeBytes(request.maxBytes), token);
+      }
+      if (request.readingTurnId !== undefined) {
+        return replica.readAt(request.anchorSequence, token, request.readingTurnId);
+      }
       if (request.anchorSequence === null) {
         throw new Error('Desktop transcript around request requires an anchor');
       }
+      if (request.preserveRange) return replica.readAt(request.anchorSequence, token);
       return replica.loadAround(
         request.anchorSequence,
         requireTranscriptRangeBytes(request.maxBytes),
+        token,
       );
     });
   }
@@ -359,10 +373,11 @@ export class RuntimeHostSessionObserver {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    await this.#runTranscriptRangeOperation(request, targetId, (replica) =>
+    await this.#runTranscriptRangeOperation(request, targetId, (replica, token) =>
       replica.loadAfter(
         request.anchorSequence,
         requireTranscriptRangeBytes(request.maxBytes),
+        token,
       ),
     );
   }
@@ -370,18 +385,40 @@ export class RuntimeHostSessionObserver {
   async #runTranscriptRangeOperation(
     request: DesktopTranscriptRangeRequest,
     targetId: number | undefined,
-    operation: (replica: DesktopTranscriptReplica) => Promise<void>,
+    operation: (replica: DesktopTranscriptReplica, token: number) => Promise<void>,
   ): Promise<void> {
     const { state, replica, consumer } = this.#requireTranscriptConsumer(request, targetId);
+    const version = request.navigationVersion ?? consumer.navigationVersion;
+    if (!Number.isSafeInteger(version) || version < 0) throw new Error('Invalid transcript navigation version');
+    if (version < consumer.navigationVersion) return;
+    if (request.intent !== undefined && request.intent !== 'history' && request.intent !== 'followTail') {
+      throw new Error('Invalid transcript navigation intent');
+    }
+    consumer.navigationVersion = version;
+    consumer.navigationRequest = request;
+    consumer.navigationPending = true;
+    consumer.resetRequested = true;
+    this.#clearPendingTranscriptChange(consumer);
+    // Admission invalidates in-flight pages immediately, before the replica's
+    // operation queue can run the newer command.
+    const token = replica.setNavigation(request.intent ?? 'history');
     const isCurrent = () =>
       state.replica === replica &&
-      state.transcriptConsumers.get(request.consumerId) === consumer;
-    const task = operation(replica);
+      state.transcriptConsumers.get(request.consumerId) === consumer &&
+      consumer.navigationRequest === request;
     try {
-      await task;
+      await operation(replica, token);
+      if (!isCurrent()) return;
+      consumer.navigationPending = false;
+      // Already dispatched batches remain ACKable; finish draining them before
+      // issuing the authoritative snapshot for this navigation.
       await consumer.deliveryTask;
+      if (!isCurrent()) return;
+      consumer.resetRequested = true;
+      await this.#scheduleTranscriptDelivery(state, consumer);
     } catch (error) {
       if (!isCurrent()) return;
+      consumer.navigationPending = false;
       throw error;
     }
     if (isCurrent()) this.#touchReplica(state);
@@ -1147,7 +1184,14 @@ export class RuntimeHostSessionObserver {
 
   #resetTranscriptConsumers(state: ObservedSessionState): void {
     for (const consumer of [...state.transcriptConsumers.values()]) {
-      this.#requestTranscriptReset(state, consumer);
+      const request = consumer.navigationRequest;
+      if (request && request.hostEpoch === state.replica?.hostEpoch) {
+        const recoveryRequest = { ...request, preserveRange: false };
+        void this.loadTranscriptAround(recoveryRequest, consumer.target.id).catch(() => undefined);
+      } else {
+        consumer.navigationPending = false;
+        this.#requestTranscriptReset(state, consumer);
+      }
     }
   }
 
@@ -1160,6 +1204,7 @@ export class RuntimeHostSessionObserver {
     task = (async () => {
       try {
         while (state.transcriptConsumers.get(consumer.consumerId) === consumer) {
+          if (consumer.navigationPending) return;
           if (consumer.resetRequested) {
             consumer.resetRequested = false;
             this.#clearPendingTranscriptChange(consumer);
@@ -1173,7 +1218,10 @@ export class RuntimeHostSessionObserver {
             try {
               await this.#sendTranscriptBatches(
                 consumer,
-                encodeDesktopTranscriptSnapshot(replica.snapshot()),
+                encodeDesktopTranscriptSnapshot({
+                  ...replica.snapshot(),
+                  navigationVersion: consumer.navigationVersion,
+                }),
               );
             } finally {
               this.#adjustTranscriptDeliveryBytes(consumer, -deliveryBytes);
@@ -1196,6 +1244,7 @@ export class RuntimeHostSessionObserver {
                   sessionId: replica.sessionId,
                   generation: replica.generation,
                   hostEpoch: replica.hostEpoch,
+                  navigationVersion: consumer.navigationVersion,
                 },
                 {
                   durableThrough: pending.durableThrough,
@@ -1370,6 +1419,7 @@ export class RuntimeHostSessionObserver {
   ): Promise<void> {
     const deliveries = new Set<Promise<void>>();
     for (const batch of batches) {
+      if ((batch.navigationVersion ?? 0) !== consumer.navigationVersion || consumer.navigationPending) break;
       let delivery!: Promise<void>;
       delivery = this.#deliverTranscriptBatch(consumer, batch).finally(() => {
         deliveries.delete(delivery);

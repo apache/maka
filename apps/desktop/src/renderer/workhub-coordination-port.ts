@@ -23,7 +23,10 @@ import {
   type StoredMessage,
   type TurnStatus,
 } from '@maka/core/session';
-import { DesktopTranscriptRangeStore } from './desktop-transcript-range-store.js';
+import {
+  createDesktopTranscriptRangeController,
+  DesktopTranscriptRangeStore,
+} from './desktop-transcript-range-store.js';
 import type {
   WorkHubCoordinationPort,
   WorkHubCoordinationTurn,
@@ -74,12 +77,12 @@ export function createDesktopWorkHubCoordinationPort(deps: {
       let completedLatestGeneration: string | undefined;
       let loadingLatestGeneration: string | undefined;
       let latestLoadRevision = 0;
-      let handle: Awaited<ReturnType<typeof deps.transcripts.open>> | undefined;
+      let opened = false;
       const emit = () => {
         handler(projectWorkHubCoordinationTurns(store.snapshot().messages));
       };
       const emitOrCompleteLatest = () => {
-        if (!handle || !ready) return;
+        if (!opened || !ready) return;
         const snapshot = store.snapshot();
         const latestRecordIsIncomplete =
           snapshot.durableThrough !== null &&
@@ -92,13 +95,10 @@ export function createDesktopWorkHubCoordinationPort(deps: {
           const generation = snapshot.generation;
           const revision = latestLoadRevision;
           loadingLatestGeneration = generation;
-          void handle
-            .loadAround(
-              snapshot.durableThrough,
-              WORKHUB_COORDINATION_LATEST_RECORD_MAX_BYTES,
-            )
+          void controller
+            .loadLatest(WORKHUB_COORDINATION_LATEST_RECORD_MAX_BYTES)
             .then(() => {
-              if (latestLoadRevision !== revision) return;
+              if (disposed || latestLoadRevision !== revision) return;
               completedLatestGeneration = generation;
               if (loadingLatestGeneration === generation) loadingLatestGeneration = undefined;
             })
@@ -113,18 +113,23 @@ export function createDesktopWorkHubCoordinationPort(deps: {
         }
         emit();
       };
-      const opened = await deps.transcripts.open(
+      const controller = createDesktopTranscriptRangeController(store, (signal) => deps.transcripts.open(
         deps.sessionId,
         (batch) => {
           if (disposed) return;
           try {
+            if (!store.accepts(batch)) return;
+            const changed = store.accept(batch);
             if (batch.reset) {
               ready = false;
-              latestLoadRevision += 1;
-              completedLatestGeneration = undefined;
-              loadingLatestGeneration = undefined;
+              // Navigation replies reset the range too. Keep their in-flight
+              // guard until the read settles, including sparse durable tails.
+              if (loadingLatestGeneration !== batch.generation) {
+                latestLoadRevision += 1;
+                completedLatestGeneration = undefined;
+                loadingLatestGeneration = undefined;
+              }
             }
-            const changed = store.accept(batch);
             ready ||= batch.ready;
             if (changed || batch.ready) emitOrCompleteLatest();
           } catch (error) {
@@ -132,19 +137,21 @@ export function createDesktopWorkHubCoordinationPort(deps: {
           }
         },
         (cancel) => {
-          if (disposed) cancel();
+          if (signal.aborted) cancel();
+          else signal.addEventListener('abort', cancel, { once: true });
         },
-      ).catch((error) => {
+      ));
+      await controller.ready().catch((error) => {
         onError(error);
         throw error;
       });
-      handle = opened;
+      opened = true;
 
       emitOrCompleteLatest();
       return {
         async close() {
           disposed = true;
-          await handle?.close();
+          await controller.close();
         },
       };
     },

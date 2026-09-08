@@ -27,6 +27,7 @@ import {
   ChatSurfaceLayout,
   ChatView,
   Composer,
+  createTranscriptViewportNavigation,
   deriveTitlebarProjectName,
   TitlebarSessionIdentity,
   ToastProvider,
@@ -2075,11 +2076,20 @@ export const PartialHistoryNotice: Story = {
 
 /** Stops the harness below, so the tail can be read against a settled transcript. */
 let stopTailStream: (() => void) | undefined;
+let startTailStream: (() => void) | undefined;
 
 /** Streams one line per frame into a live Turn. */
 function StreamingTailHarness() {
+  const [question, setQuestion] = useState<string>();
+  const [streaming, setStreaming] = useState(false);
+  const [viewportNavigation] = useState(createTranscriptViewportNavigation);
   const [lines, setLines] = useState(1);
   useEffect(() => {
+    startTailStream = () => setStreaming(true);
+    return () => { startTailStream = undefined; };
+  }, []);
+  useEffect(() => {
+    if (!streaming) return;
     // Paced by frames, not by the clock, so it stays in step with the
     // per-frame sampler on a slow runner.
     let frame = 0;
@@ -2099,23 +2109,37 @@ function StreamingTailHarness() {
       stop();
       stopTailStream = undefined;
     };
-  }, []);
+  }, [streaming]);
   return (
     <ComposedShell
-      session={{ status: 'running', streaming: true }}
+      session={{ status: question ? 'running' : 'active', streaming: Boolean(question) }}
+      composer={{
+        onSend: (text) => {
+          // Production publishes this once before admitting the sent Message.
+          // Controller/store races are covered by the Desktop integration suite;
+          // this story measures what the real ChatView does with that command.
+          viewportNavigation.followLatest(activeSession.id);
+          setQuestion(text);
+        },
+      }}
       chat={{
-        runningStatus: true,
+        runningStatus: Boolean(question),
+        viewportNavigation,
         messages: [
-          user('msg-tail-1', 'turn-tail', 3, '把转录推过一屏，看看尾巴还跟不跟得住。'),
-          {
-            type: 'turn_state',
-            id: 'state-tail',
-            turnId: 'turn-tail',
-            ts: NOW - 30_000,
-            status: 'running',
-          },
+          user('history-question', 'history-turn', 6, '已有问题。'),
+          assistant('history-answer', 'history-turn', 5, TAIL_LINES.slice(0, 40).join('\n\n')),
+          ...(question ? [
+            user('msg-tail-1', 'turn-tail', 3, question),
+            {
+              type: 'turn_state' as const,
+              id: 'state-tail',
+              turnId: 'turn-tail',
+              ts: NOW - 30_000,
+              status: 'running' as const,
+            },
+          ] : []),
         ],
-        liveTurn: {
+        liveTurn: question ? {
           turnId: 'turn-tail',
           phase: 'streamed',
           steps: [{
@@ -2129,15 +2153,31 @@ function StreamingTailHarness() {
             },
             tools: [],
           }],
-        },
+        } : undefined,
       }}
     />
   );
 }
 
+// Real path: read earlier content in a Session → send another question →
+// follow the growing answer, through the production viewport command port.
 export const StreamingTailFollow: Story = {
   render: () => <StreamingTailHarness />,
-  play: async () => {
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
+    const input = canvasElement.querySelector<HTMLElement>('.maka-composer-editor [contenteditable="true"]');
+    if (!input) throw new Error('The composer input is missing');
+    await userEvent.type(input, 'Second question after reading history.');
+    tailScroller().scrollTop = 0;
+    await painted(6);
+    expect(tailMetrics().distance).toBeGreaterThan(500);
+    expect(dockOffered()).toBe(true);
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => {
+      expect(canvasElement.querySelector('[data-turn-id="turn-tail"]')).not.toBeNull();
+      expect(tailMetrics().distance).toBeLessThanOrEqual(4);
+    });
+    startTailStream?.();
     // The fuse runs out inside the smoke's per-story budget, so a stalled
     // stream fails saying so instead of timing the story out.
     const lag = await measureTailLag(600);

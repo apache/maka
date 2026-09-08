@@ -237,6 +237,7 @@ export function ChatMessageSurface({
         {(goalProjection) => (
           <ChatView
             {...chatViewRest}
+            viewportNavigation={sessionUiController.transcriptViewportNavigation}
             liveTurn={seededLiveTurn}
             // Every branch above reseeds `sessionId` to `activeSessionId`, and a
             // render-phase setState re-runs this body before anything commits, so

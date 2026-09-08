@@ -58,6 +58,7 @@ import {
 } from './chat-turn.js';
 import { useChatScroll } from './use-chat-scroll.js';
 import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
+import type { TranscriptViewportNavigation } from './transcript-viewport-navigation.js';
 import { placeChatConversationItems } from './chat-conversation-items.js';
 import { projectTranscriptRows } from './transcript-row-projection.js';
 import { useUiLocale } from './locale-context.js';
@@ -306,6 +307,7 @@ export function ChatView(props: {
   onScrollTargetHandled?(nonce: number): void;
   /** Runtime-only reading position restored without search focus or highlight. */
   restoreTargetTurn?: { turnId: string; unavailable?: boolean };
+  viewportNavigation?: TranscriptViewportNavigation;
   onReadingAnchorChange?(turnId?: string): void;
   scrollBehavior: ScrollBehavior;
   hasOlderHistory?: boolean;
@@ -613,6 +615,7 @@ export function ChatView(props: {
     target: scrollTargetTurn,
     restoreTarget: props.restoreTargetTurn,
     onTargetHandled: props.onScrollTargetHandled,
+    viewportNavigation: props.viewportNavigation,
     onReadingAnchorChange: props.onReadingAnchorChange,
     behavior: props.scrollBehavior,
     hasOlderHistory: props.hasOlderHistory,

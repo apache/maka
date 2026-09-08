@@ -30,6 +30,7 @@ import type {
 } from './desktop-transcript-replica.js';
 
 interface TranscriptBatchIdentity {
+  readonly navigationVersion?: number;
   readonly sessionId: string;
   readonly generation: string;
   readonly hostEpoch: string;
