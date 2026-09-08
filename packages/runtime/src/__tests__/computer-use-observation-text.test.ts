@@ -115,6 +115,17 @@ test('selected text in a focused secure field is withheld', () => {
   assert.doesNotMatch(lines(text)[0] ?? '', /hunter2/);
 });
 
+test('an oversized selected text is shortened visibly, not silently', () => {
+  const text = renderObservationForModel({
+    ...observation([{ elementId: '0', role: 'AXTextField' }]),
+    selectedText: { text: 'x'.repeat(300), truncated: false },
+  });
+  const header = lines(text)[0] ?? '';
+  assert.match(header, /selected_text=/);
+  assert.match(header, /x{256}\u2026\(\+44 chars\)/);
+  assert.doesNotMatch(header, /x{257}/);
+});
+
 test('an observation without selected text does not mention it', () => {
   const text = renderObservationForModel(
     observation([{ elementId: '0', role: 'AXButton', label: 'OK' }]),
