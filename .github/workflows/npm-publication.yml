@@ -153,11 +153,13 @@ jobs:
           PREDECESSOR_VERSION: ${{ needs.cli.outputs.release_predecessor_version }}
           PREDECESSOR_TARBALL_URL: ${{ needs.cli.outputs.release_predecessor_tarball_url }}
           PREDECESSOR_INTEGRITY: ${{ needs.cli.outputs.release_predecessor_integrity }}
+          PREDECESSOR_SOURCE_COMMIT: ${{ needs.cli.outputs.release_predecessor_source_commit }}
         run: |
           node scripts/release-cli-publication.mjs assert-nightly-predecessor \
             "$PREDECESSOR_VERSION" \
             "$PREDECESSOR_TARBALL_URL" \
-            "$PREDECESSOR_INTEGRITY"
+            "$PREDECESSOR_INTEGRITY" \
+            "$PREDECESSOR_SOURCE_COMMIT"
           current="$(npm view maka-agent dist-tags.nightly --registry https://registry.npmjs.org/)"
           node scripts/product-nightly.mjs assert-channel-advance "$NIGHTLY_VERSION" "$current"
 

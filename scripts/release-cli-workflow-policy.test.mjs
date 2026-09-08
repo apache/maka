@@ -63,7 +63,11 @@ test('CLI validation qualifies exact published State Roots without weakening art
   );
   assert.match(
     workflow,
-    /id: predecessor\n\s+run: node scripts\/release-cli-publication\.mjs resolve-nightly-predecessor "\$GITHUB_OUTPUT"/u,
+    /release_predecessor_source_commit:[\s\S]*?jobs\.state-root-qualification\.outputs\.release_predecessor_source_commit/u,
+  );
+  assert.match(
+    workflow,
+    /id: predecessor\n\s+run: node scripts\/release-cli-publication\.mjs resolve-nightly-predecessor "\$GITHUB_OUTPUT" HEAD/u,
   );
   assert.match(workflow, /state-root-qualification:\n[\s\S]*?needs: build\n/u);
   assert.doesNotMatch(workflow, /needs\.build\.outputs\.release_predecessor/u);
@@ -97,8 +101,17 @@ test('CLI validation qualifies exact published State Roots without weakening art
       name,
     );
   }
+  assert.match(
+    workflow,
+    /PREDECESSOR_SOURCE_COMMIT: \$\{\{ steps\.predecessor\.outputs\.source_commit \}\}/u,
+  );
 
   const steps = workflowSteps(workflow);
+  const qualificationCheckout = workflow.slice(
+    workflow.indexOf('\n  state-root-qualification:'),
+    workflow.indexOf('\n  eval:', workflow.indexOf('\n  state-root-qualification:')),
+  );
+  assert.match(qualificationCheckout, /fetch-depth: 0/u);
   const sandbox = namedStep(steps, 'Require the account-isolation sandbox');
   assert.match(sandbox, /apt-get install --yes bubblewrap/u);
   const qualify = namedStep(steps, 'Qualify the released State Root transitions');
@@ -144,7 +157,17 @@ test('CLI validation qualifies exact published State Roots without weakening art
   const freshness = namedStep(steps, 'Require the qualified Nightly predecessor to remain current');
   assert.match(freshness, /assert-nightly-predecessor/u);
   assert.match(freshness, /steps\.predecessor\.outputs\.version/u);
+  assert.match(
+    freshness,
+    /PREDECESSOR_SOURCE_COMMIT: \$\{\{ steps\.predecessor\.outputs\.source_commit \}\}/u,
+  );
   assert.ok(steps.indexOf(freshness) > steps.indexOf(preserve));
+});
+
+test('forward-roll CI fences the registry predecessor to the checked-out commit', () => {
+  const workflow = readWorkflow('ci.yml');
+  assert.match(workflow, /resolve-nightly-predecessor "\$GITHUB_OUTPUT" HEAD/u);
+  assert.match(workflow, /fetch-depth: 0/u);
 });
 
 test('both supported Node versions validate the tarball even when the first fails', () => {
@@ -177,6 +200,7 @@ test('npm mutations revalidate the exact qualified Nightly predecessor', () => {
   );
   assert.match(nightlyFence, /needs\.cli\.outputs\.release_predecessor_version/u);
   assert.match(nightlyFence, /needs\.cli\.outputs\.release_predecessor_integrity/u);
+  assert.match(nightlyFence, /needs\.cli\.outputs\.release_predecessor_source_commit/u);
   assert.match(nightlyFence, /assert-nightly-predecessor/u);
   assert.ok(nightly.indexOf(nightlyFence) < nightly.indexOf('npm publish'));
 
@@ -184,6 +208,7 @@ test('npm mutations revalidate the exact qualified Nightly predecessor', () => {
   const submit = namedStep(workflowSteps(stage), 'Submit the candidate to npm staging');
   assert.match(submit, /needs\.validate\.outputs\.release_predecessor_version/u);
   assert.match(submit, /needs\.validate\.outputs\.release_predecessor_integrity/u);
+  assert.match(submit, /needs\.validate\.outputs\.release_predecessor_source_commit/u);
   assert.match(submit, /assert-nightly-predecessor/u);
   assert.ok(submit.indexOf('assert-nightly-predecessor') < submit.indexOf('npm stage publish'));
 });

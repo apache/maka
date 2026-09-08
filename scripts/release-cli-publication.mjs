@@ -17,8 +17,9 @@
  * under the License.
  */
 
+import { execFileSync } from 'node:child_process';
 import { appendFileSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { CLI_RELEASE_ARTIFACT_LIMITS } from './release-cli-artifact-policy.mjs';
@@ -30,9 +31,16 @@ import {
 
 const PACKAGE_NAME = 'maka-agent';
 const REGISTRY_ORIGIN = 'https://registry.npmjs.org';
+const REGISTRY_ATTESTATION_PATH = `${REGISTRY_ORIGIN}/-/npm/v1/attestations`;
 const REPOSITORY = 'apache/maka';
 const PUBLICATION_WORKFLOW_PATH = '.github/workflows/npm-publication.yml';
 const REGISTRY_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const SLSA_PROVENANCE_PREDICATE = 'https://slsa.dev/provenance/v1';
+const SLSA_WORKFLOW_BUILD_TYPE =
+  'https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1';
+const REPOSITORY_URL = `https://github.com/${REPOSITORY}`;
+const MAIN_REF = 'refs/heads/main';
 const RELEASE_RECORD_KEYS = [
   'schemaVersion',
   'packageName',
@@ -218,7 +226,92 @@ export async function fetchRegistryRelease({
   return { ...record, tarballPath, sha256 };
 }
 
-export async function resolveRegistryNightlyPredecessor({ fetchImpl = fetch } = {}) {
+export function assertCommitIsAncestor({
+  commit,
+  head = 'HEAD',
+  repoRoot = DEFAULT_REPO_ROOT,
+  exec = execFileSync,
+}) {
+  if (typeof commit !== 'string' || !/^[0-9a-f]{40}$/iu.test(commit)) {
+    throw new Error(`Invalid git commit SHA for ancestor check: ${commit}`);
+  }
+  try {
+    exec('git', ['merge-base', '--is-ancestor', commit, head], {
+      cwd: repoRoot,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+  } catch (error) {
+    if (error?.status === 1) {
+      throw new Error(
+        `Registry Nightly source commit ${commit} is not an ancestor of ${head}; forward-roll baseline must precede the change under test (#4447)`,
+      );
+    }
+    throw new Error(
+      `Unable to verify that Registry Nightly source commit ${commit} is an ancestor of ${head}; the checkout history or commit is unavailable (#4447)`,
+      { cause: error },
+    );
+  }
+}
+
+export function parseRegistryNightlySourceCommit({ version, attestations }) {
+  // Nightlies are published from tarballs, so npm leaves versionMetadata.gitHead
+  // empty. SLSA provenance is the publisher-signed source identity we can fence.
+  if (!Array.isArray(attestations)) {
+    throw new Error(`Registry Nightly ${version} has no valid provenance attestations`);
+  }
+  const expectedSubject = `pkg:npm/${PACKAGE_NAME}@${version}`;
+  const expectedSourceUri = `git+${REPOSITORY_URL}@${MAIN_REF}`;
+  const statement = attestations.map(parseProvenanceStatement).find((candidate) => {
+    const definition = candidate?.predicate?.buildDefinition;
+    const workflow = definition?.externalParameters?.workflow;
+    const dependencies = definition?.resolvedDependencies;
+    return (
+      candidate?._type === 'https://in-toto.io/Statement/v1' &&
+      candidate?.predicateType === SLSA_PROVENANCE_PREDICATE &&
+      candidate?.subject?.some((subject) => subject?.name === expectedSubject) &&
+      definition?.buildType === SLSA_WORKFLOW_BUILD_TYPE &&
+      workflow?.repository === REPOSITORY_URL &&
+      workflow?.ref === MAIN_REF &&
+      workflow?.path === PUBLICATION_WORKFLOW_PATH &&
+      ['schedule', 'workflow_dispatch'].includes(
+        definition?.internalParameters?.github?.event_name,
+      ) &&
+      Array.isArray(dependencies) &&
+      dependencies.some(
+        (dependency) =>
+          dependency?.uri === expectedSourceUri &&
+          /^[0-9a-f]{40}$/iu.test(dependency?.digest?.gitCommit ?? ''),
+      )
+    );
+  });
+  const sourceCommit = statement?.predicate?.buildDefinition?.resolvedDependencies?.find(
+    (dependency) => dependency?.uri === expectedSourceUri,
+  )?.digest?.gitCommit;
+  if (!sourceCommit) {
+    throw new Error(
+      `Registry Nightly ${version} has no valid SLSA source commit for ${REPOSITORY}@${MAIN_REF}`,
+    );
+  }
+  return sourceCommit;
+}
+
+async function fetchRegistryNightlySourceCommit({ version, fetchImpl }) {
+  const attestations = await fetchJson(
+    fetchImpl,
+    `${REGISTRY_ATTESTATION_PATH}/${PACKAGE_NAME}@${version}`,
+    'Nightly provenance attestations',
+    'application/json',
+  );
+  return parseRegistryNightlySourceCommit({ version, attestations: attestations.attestations });
+}
+
+export async function resolveRegistryNightlyPredecessor({
+  fetchImpl = fetch,
+  fencedAncestorHead,
+  includeSourceCommit = fencedAncestorHead !== undefined,
+  repoRoot = DEFAULT_REPO_ROOT,
+  exec = execFileSync,
+} = {}) {
   const packageMetadata = await fetchJson(
     fetchImpl,
     `${REGISTRY_ORIGIN}/${PACKAGE_NAME}`,
@@ -237,6 +330,19 @@ export async function resolveRegistryNightlyPredecessor({ fetchImpl = fetch } = 
     throw new Error('Registry Nightly identity does not match its dist-tag');
   }
 
+  let sourceCommit;
+  if (includeSourceCommit) {
+    sourceCommit = await fetchRegistryNightlySourceCommit({ version, fetchImpl });
+    if (fencedAncestorHead !== undefined) {
+      assertCommitIsAncestor({
+        commit: sourceCommit,
+        head: fencedAncestorHead,
+        repoRoot,
+        exec,
+      });
+    }
+  }
+
   const tarball = `${PACKAGE_NAME}-${version}.tgz`;
   const tarballUrl = parseRegistryTarballUrl(versionMetadata.dist?.tarball, tarball);
   const integrity = parseSha512Integrity(versionMetadata.dist?.integrity);
@@ -244,6 +350,7 @@ export async function resolveRegistryNightlyPredecessor({ fetchImpl = fetch } = 
     version,
     tarballUrl,
     integrity,
+    ...(sourceCommit ? { sourceCommit } : {}),
   };
 }
 
@@ -251,13 +358,18 @@ export async function assertRegistryNightlyPredecessor({
   expectedVersion,
   expectedTarballUrl,
   expectedIntegrity,
+  expectedSourceCommit,
   fetchImpl = fetch,
 }) {
-  const current = await resolveRegistryNightlyPredecessor({ fetchImpl });
+  const current = await resolveRegistryNightlyPredecessor({
+    fetchImpl,
+    includeSourceCommit: expectedSourceCommit !== undefined,
+  });
   if (
     current.version !== expectedVersion ||
     current.tarballUrl !== expectedTarballUrl ||
-    current.integrity !== expectedIntegrity
+    current.integrity !== expectedIntegrity ||
+    current.sourceCommit !== expectedSourceCommit
   ) {
     throw new Error(
       `Qualified npm Nightly predecessor ${expectedVersion} is no longer current; found ${current.version}`,
@@ -621,22 +733,24 @@ async function main() {
     });
     return;
   }
-  if (command === 'resolve-nightly-predecessor' && args.length === 1) {
-    const [output] = args;
-    const predecessor = await resolveRegistryNightlyPredecessor();
+  if (command === 'resolve-nightly-predecessor' && (args.length === 1 || args.length === 2)) {
+    const [output, fencedAncestorHead] = args;
+    const predecessor = await resolveRegistryNightlyPredecessor({ fencedAncestorHead });
     appendOutputs(output, {
       version: predecessor.version,
       tarball_url: predecessor.tarballUrl,
       integrity: predecessor.integrity,
+      ...(predecessor.sourceCommit ? { source_commit: predecessor.sourceCommit } : {}),
     });
     return;
   }
-  if (command === 'assert-nightly-predecessor' && args.length === 3) {
-    const [expectedVersion, expectedTarballUrl, expectedIntegrity] = args;
+  if (command === 'assert-nightly-predecessor' && (args.length === 3 || args.length === 4)) {
+    const [expectedVersion, expectedTarballUrl, expectedIntegrity, expectedSourceCommit] = args;
     await assertRegistryNightlyPredecessor({
       expectedVersion,
       expectedTarballUrl,
       expectedIntegrity,
+      expectedSourceCommit,
     });
     return;
   }

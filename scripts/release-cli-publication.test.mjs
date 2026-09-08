@@ -26,6 +26,7 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { CLI_RELEASE_ARTIFACT_LIMITS } from './release-cli-artifact-policy.mjs';
 import {
+  assertCommitIsAncestor,
   assertRegistryNightlyPredecessor,
   fetchRegistryRelease,
   parseCliNightlyVersion,
@@ -33,6 +34,7 @@ import {
   prepareNightlyRelease,
   prepareSignatureAuditTree,
   prepareStageRelease,
+  parseRegistryNightlySourceCommit,
   resolveRegistryNightlyPredecessor,
   validateRegistryChannels,
   validateSignatureAudit,
@@ -332,6 +334,117 @@ test('a newer Nightly invalidates previously qualified predecessor evidence', as
   );
 });
 
+test('fences the Nightly source commit from SLSA provenance (#4447)', async () => {
+  const ancestorCommit = '1'.repeat(40);
+  const futureCommit = '2'.repeat(40);
+  const fixture = {
+    ...createCandidate('0.2.0-dev.42.20260829', '0.2.0'),
+    sourceCommit: ancestorCommit,
+  };
+  const execStub = (command, args) => {
+    assert.equal(command, 'git');
+    assert.deepEqual(args.slice(0, 3), ['merge-base', '--is-ancestor', ancestorCommit]);
+  };
+
+  const predecessor = await resolveRegistryNightlyPredecessor({
+    fetchImpl: registryFetch({ fixture }),
+    fencedAncestorHead: 'HEAD',
+    exec: execStub,
+  });
+  assert.equal(predecessor.sourceCommit, ancestorCommit);
+
+  const nonAncestorFixture = {
+    ...fixture,
+    sourceCommit: futureCommit,
+  };
+  await assert.rejects(
+    resolveRegistryNightlyPredecessor({
+      fetchImpl: registryFetch({ fixture: nonAncestorFixture }),
+      fencedAncestorHead: 'HEAD',
+      exec: (command, args, options) => {
+        assert.equal(command, 'git');
+        assert.equal(args[2], futureCommit);
+        const error = new Error('not an ancestor');
+        error.status = 1;
+        throw error;
+      },
+    }),
+    /is not an ancestor of HEAD/u,
+  );
+
+  const missingProvenanceFixture = { ...fixture, sourceCommit: undefined };
+  await assert.rejects(
+    resolveRegistryNightlyPredecessor({
+      fetchImpl: registryFetch({ fixture: missingProvenanceFixture }),
+      fencedAncestorHead: 'HEAD',
+      exec: execStub,
+    }),
+    /no valid SLSA source commit/u,
+  );
+
+  assert.throws(
+    () => assertCommitIsAncestor({ commit: 'not-a-sha', exec: execStub }),
+    /Invalid git commit SHA/u,
+  );
+});
+
+test('distinguishes unavailable git history from a non-ancestor source', () => {
+  const commit = '3'.repeat(40);
+  const unavailable = new Error('unknown revision');
+  unavailable.status = 128;
+  assert.throws(
+    () =>
+      assertCommitIsAncestor({
+        commit,
+        head: 'HEAD',
+        exec: () => {
+          throw unavailable;
+        },
+      }),
+    /history or commit is unavailable/u,
+  );
+});
+
+test('revalidates the provenance source commit when predecessor evidence is reused', async () => {
+  const sourceCommit = '5'.repeat(40);
+  const fixture = { ...createCandidate('0.2.0-dev.42.20260829'), sourceCommit };
+  const current = await resolveRegistryNightlyPredecessor({
+    fetchImpl: registryFetch({ fixture }),
+    includeSourceCommit: true,
+  });
+  assert.equal(current.sourceCommit, sourceCommit);
+  await assert.doesNotReject(
+    assertRegistryNightlyPredecessor({
+      expectedVersion: current.version,
+      expectedTarballUrl: current.tarballUrl,
+      expectedIntegrity: current.integrity,
+      expectedSourceCommit: sourceCommit,
+      fetchImpl: registryFetch({ fixture }),
+    }),
+  );
+  await assert.rejects(
+    assertRegistryNightlyPredecessor({
+      expectedVersion: current.version,
+      expectedTarballUrl: current.tarballUrl,
+      expectedIntegrity: current.integrity,
+      expectedSourceCommit: '6'.repeat(40),
+      fetchImpl: registryFetch({ fixture }),
+    }),
+    /is no longer current/u,
+  );
+});
+
+test('rejects provenance that is not for the Maka main publication workflow', () => {
+  assert.throws(
+    () =>
+      parseRegistryNightlySourceCommit({
+        version: '0.2.0-dev.43.20260830',
+        attestations: [nightlyProvenanceBundle('0.2.0-dev.42.20260829', '4'.repeat(40))],
+      }),
+    /no valid SLSA source commit/u,
+  );
+});
+
 test('signature audit must contain Maka provenance for the finalized version', () => {
   const fixture = createPreparedCandidate();
   const verified = {
@@ -585,6 +698,43 @@ function provenanceBundle(mutate = () => {}) {
   };
 }
 
+function nightlyProvenanceBundle(version, sourceCommit) {
+  const statement = {
+    _type: 'https://in-toto.io/Statement/v1',
+    subject: [{ name: `pkg:npm/maka-agent@${version}`, digest: { sha512: 'a'.repeat(128) } }],
+    predicateType: 'https://slsa.dev/provenance/v1',
+    predicate: {
+      buildDefinition: {
+        buildType: 'https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1',
+        externalParameters: {
+          workflow: {
+            repository: 'https://github.com/apache/maka',
+            ref: 'refs/heads/main',
+            path: WORKFLOW_PATH,
+          },
+        },
+        resolvedDependencies: [
+          {
+            uri: 'git+https://github.com/apache/maka@refs/heads/main',
+            digest: { gitCommit: sourceCommit },
+          },
+        ],
+        internalParameters: { github: { event_name: 'schedule' } },
+      },
+      runDetails: { builder: { id: 'https://github.com/actions/runner/github-hosted' } },
+    },
+  };
+  return {
+    predicateType: 'https://slsa.dev/provenance/v1',
+    bundle: {
+      dsseEnvelope: {
+        payloadType: 'application/vnd.in-toto+json',
+        payload: Buffer.from(JSON.stringify(statement)).toString('base64'),
+      },
+    },
+  };
+}
+
 function createCandidate(version = '0.2.0', sourceVersion = version) {
   const root = mkdtempSync(join(tmpdir(), 'maka-cli-publication-'));
   const releaseDirectory = join(root, 'packages/cli/release');
@@ -616,6 +766,14 @@ function registryFetch({ fixture, bytes = fixture.bytes }) {
         name: 'maka-agent',
         version: fixture.version,
         dist: { tarball: tarballUrl, integrity, shasum },
+      });
+    }
+    if (url === `https://registry.npmjs.org/-/npm/v1/attestations/maka-agent@${fixture.version}`) {
+      assert.equal(options.headers?.accept, 'application/json');
+      return Response.json({
+        attestations: fixture.sourceCommit
+          ? [nightlyProvenanceBundle(fixture.version, fixture.sourceCommit)]
+          : [],
       });
     }
     if (url === 'https://registry.npmjs.org/maka-agent') {
