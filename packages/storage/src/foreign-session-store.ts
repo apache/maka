@@ -405,7 +405,7 @@ class FileForeignSessionStore implements ForeignSessionStore {
   ): Promise<ForeignSessionSummary[]> {
     const dbPath = await this.confineOpenCodeDbPath(this.opencodeDbPath);
     if (dbPath === undefined) return [];
-    const rows = await readOpenCodeSessionRows(dbPath);
+    const rows = await readOpenCodeSessionRows(dbPath, now, options.cwd);
     if (rows === undefined) return [];
     const results: ForeignSessionSummary[] = [];
     for (const row of rows) {
@@ -862,8 +862,13 @@ export function codexCwdSqlVariants(path: string): string[] {
 
 /* ----------------------------- OpenCode SQLite ----------------------------- */
 
+interface OpenCodeStatement {
+  all(...params: unknown[]): unknown[];
+  iterate(...params: unknown[]): IterableIterator<unknown>;
+}
+
 interface OpenCodeSqlite {
-  prepare(sql: string): { all(...params: unknown[]): unknown[] };
+  prepare(sql: string): OpenCodeStatement;
   close(): void;
 }
 
@@ -915,6 +920,33 @@ function parseSqliteJsonObject(value: unknown): Record<string, unknown> | undefi
   return parseForeignJsonLine(value);
 }
 
+/** Walk a statement iterator newest-first; stop before holding more than the digest byte cap. */
+function collectSqliteRowsUntilReadCap(iterable: Iterable<unknown>): {
+  rows: Record<string, unknown>[];
+  truncated: boolean;
+} {
+  const rows: Record<string, unknown>[] = [];
+  let used = 0;
+  let truncated = false;
+  for (const value of iterable) {
+    const rec = asObject(value);
+    if (rec === undefined) continue;
+    const dataRaw = rec.data;
+    const nbytes = typeof dataRaw === 'string' ? Buffer.byteLength(dataRaw) : 0;
+    if (nbytes > FOREIGN_SESSION_DIGEST_MAX_READ_BYTES) {
+      truncated = true;
+      continue;
+    }
+    if (used + nbytes > FOREIGN_SESSION_DIGEST_MAX_READ_BYTES) {
+      truncated = true;
+      break;
+    }
+    used += nbytes;
+    rows.push(rec);
+  }
+  return { rows, truncated };
+}
+
 async function withOpenCodeDb<T>(
   dbPath: string,
   read: (db: OpenCodeSqlite) => T,
@@ -947,6 +979,8 @@ async function withOpenCodeDb<T>(
 
 async function readOpenCodeSessionRows(
   dbPath: string,
+  now: number,
+  cwdFilter?: string,
 ): Promise<OpenCodeSessionScanRow[] | undefined> {
   return await withOpenCodeDb(dbPath, (db) => {
     const columns = sqliteTableColumns(db, 'session');
@@ -959,7 +993,33 @@ async function readOpenCodeSessionRows(
       'time_updated',
       'parent_id',
     ].filter((column) => columns.has(column));
-    const raw = db.prepare(`SELECT ${selected.join(', ')} FROM session`).all();
+    // Identifiers below are from this allowlist, never from the DB.
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (columns.has('time_updated')) {
+      where.push('time_updated >= ?');
+      params.push(now - FOREIGN_SESSION_SCAN_MAX_AGE_MS);
+    }
+    if (columns.has('parent_id')) {
+      where.push("(parent_id IS NULL OR parent_id = '')");
+    }
+    // Coarse cwd prefilter before LIMIT so other projects cannot fill the
+    // window. JS still runs normalizePath() as the authority.
+    if (cwdFilter !== undefined) {
+      const variants = [...new Set([cwdFilter, normalizePath(cwdFilter)])];
+      where.push(`directory IN (${variants.map(() => '?').join(', ')})`);
+      params.push(...variants);
+    }
+    const order = columns.has('time_updated')
+      ? 'time_updated DESC'
+      : columns.has('time_created')
+        ? 'time_created DESC'
+        : 'id DESC';
+    const sql =
+      `SELECT ${selected.join(', ')} FROM session` +
+      (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+      ` ORDER BY ${order} LIMIT ${FOREIGN_SESSION_SCAN_MAX_SESSIONS * 2}`;
+    const raw = db.prepare(sql).all(...params);
     const rows: OpenCodeSessionScanRow[] = [];
     for (const value of raw) {
       const rec = asObject(value);
@@ -1008,53 +1068,45 @@ async function readOpenCodeDigestRows(
     const parentId = nonEmptyString(sessionRec.parent_id);
 
     const messageColumns = sqliteTableColumns(db, 'message');
+    let truncated = false;
     const messages: OpenCodeDigestMessage[] = [];
     if (messageColumns.has('id') && messageColumns.has('data')) {
-      const order = messageColumns.has('time_created') ? 'time_created, id' : 'id';
-      const rawMessages = db
-        .prepare(`SELECT id, data FROM message WHERE session_id = ? ORDER BY ${order}`)
-        .all(sessionId);
-      for (const value of rawMessages) {
-        const rec = asObject(value);
-        const id = nonEmptyString(rec?.id);
-        const data = parseSqliteJsonObject(rec?.data);
+      const order = messageColumns.has('time_created') ? 'time_created DESC, id DESC' : 'id DESC';
+      const collected = collectSqliteRowsUntilReadCap(
+        db
+          .prepare(`SELECT id, data FROM message WHERE session_id = ? ORDER BY ${order}`)
+          .iterate(sessionId),
+      );
+      truncated = truncated || collected.truncated;
+      for (const rec of collected.rows.reverse()) {
+        const id = nonEmptyString(rec.id);
+        const data = parseSqliteJsonObject(rec.data);
         if (id === undefined || data === undefined) continue;
         messages.push({ id, data });
       }
     }
 
     const partColumns = sqliteTableColumns(db, 'part');
-    const partsNewestFirst: OpenCodeDigestPart[] = [];
-    let truncated = false;
-    let used = 0;
+    const parts: OpenCodeDigestPart[] = [];
     if (partColumns.has('message_id') && partColumns.has('data')) {
       const order = partColumns.has('time_created') ? 'time_created DESC, id DESC' : 'id DESC';
-      const rawParts = db
-        .prepare(`SELECT message_id, data FROM part WHERE session_id = ? ORDER BY ${order}`)
-        .all(sessionId);
-      for (const value of rawParts) {
-        const rec = asObject(value);
-        const messageId = nonEmptyString(rec?.message_id);
-        const dataRaw = rec?.data;
-        const nbytes = typeof dataRaw === 'string' ? Buffer.byteLength(dataRaw) : 0;
-        if (used + nbytes > FOREIGN_SESSION_DIGEST_MAX_READ_BYTES && partsNewestFirst.length > 0) {
-          truncated = true;
-          break;
-        }
-        if (nbytes > FOREIGN_SESSION_DIGEST_MAX_READ_BYTES) {
-          truncated = true;
-          continue;
-        }
-        const data = parseSqliteJsonObject(dataRaw);
+      const collected = collectSqliteRowsUntilReadCap(
+        db
+          .prepare(`SELECT message_id, data FROM part WHERE session_id = ? ORDER BY ${order}`)
+          .iterate(sessionId),
+      );
+      truncated = truncated || collected.truncated;
+      for (const rec of collected.rows.reverse()) {
+        const messageId = nonEmptyString(rec.message_id);
+        const data = parseSqliteJsonObject(rec.data);
         if (messageId === undefined || data === undefined) continue;
-        used += nbytes;
-        partsNewestFirst.push({ messageId, data });
+        parts.push({ messageId, data });
       }
     }
     return {
       ...(parentId !== undefined ? { parentId } : {}),
       messages,
-      parts: partsNewestFirst.reverse(),
+      parts,
       truncated,
     };
   });

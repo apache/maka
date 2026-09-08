@@ -24,6 +24,8 @@ import { tmpdir } from 'node:os';
 import { join, win32 } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
+  FOREIGN_SESSION_DIGEST_MAX_READ_BYTES,
+  FOREIGN_SESSION_SCAN_MAX_AGE_MS,
   FOREIGN_SESSION_SCAN_MAX_SESSIONS,
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
@@ -647,6 +649,32 @@ describe('foreign session store — OpenCode scan', () => {
       ['ses_one'],
     );
   });
+
+  it('caps listed sessions at 50 and drops rows older than 30 days', async () => {
+    const home = await tempHome();
+    const sessions: OpenCodeSessionSeed[] = [];
+    for (let i = 0; i < FOREIGN_SESSION_SCAN_MAX_SESSIONS + 5; i++) {
+      sessions.push({
+        id: `ses_r${String(i).padStart(3, '0')}`,
+        cwd: '/repo',
+        title: `recent ${i}`,
+        updatedAtMs: NOW - i * 1000,
+      });
+    }
+    sessions.push({
+      id: 'ses_expired',
+      cwd: '/repo',
+      title: 'expired',
+      updatedAtMs: NOW - FOREIGN_SESSION_SCAN_MAX_AGE_MS - 60_000,
+    });
+    await seedOpenCodeDb(home, sessions);
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const all = await store.listSessions();
+    assert.equal(all.length, FOREIGN_SESSION_SCAN_MAX_SESSIONS);
+    assert.equal(all[0]!.id, 'ses_r000');
+    assert.ok(!all.some((s) => s.id === 'ses_expired'));
+    assert.ok(!all.some((s) => s.id === 'ses_r054'));
+  });
 });
 
 describe('foreign session store — digest', () => {
@@ -797,6 +825,56 @@ describe('foreign session store — digest', () => {
         }),
       /child/,
     );
+  });
+
+  it('stops OpenCode digest iteration at the byte cap and keeps the newest text', async () => {
+    const home = await tempHome();
+    const dbPath = await seedOpenCodeDb(home, [
+      {
+        id: 'ses_big',
+        cwd: '/repo',
+        userText: 'OLD_USER_SHOULD_DROP',
+        assistantText: 'NEW_ASSISTANT_KEEP',
+      },
+    ]);
+    const db = new DatabaseSync(dbPath);
+    try {
+      const assistant = db
+        .prepare(`SELECT id FROM message WHERE session_id = ? AND data LIKE '%assistant%'`)
+        .get('ses_big') as { id: string };
+      db.prepare(
+        `UPDATE part SET time_created = time_created + 10000 WHERE message_id = ? AND data LIKE '%NEW_ASSISTANT_KEEP%'`,
+      ).run(assistant.id);
+      const insert = db.prepare(
+        'INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)',
+      );
+      const chunk = 'y'.repeat(Math.floor(FOREIGN_SESSION_DIGEST_MAX_READ_BYTES / 2) + 1024);
+      for (let i = 0; i < 3; i++) {
+        insert.run(
+          `part_fill_${i}`,
+          assistant.id,
+          'ses_big',
+          NOW - 55_000 + i,
+          JSON.stringify({ type: 'tool', tool: 'read', state: { output: chunk } }),
+        );
+      }
+    } finally {
+      db.close();
+    }
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const [session] = await store.listSessions();
+    assert.ok(session);
+    const digest = await store.readDigest(session);
+    assert.ok(
+      digest.warnings.some((w) => w.includes(`${FOREIGN_SESSION_DIGEST_MAX_READ_BYTES}`)),
+      JSON.stringify(digest.warnings),
+    );
+    assert.ok(
+      digest.assistantTexts.some((t) => t.includes('NEW_ASSISTANT_KEEP')),
+      JSON.stringify(digest.assistantTexts),
+    );
+    const flat = JSON.stringify(digest);
+    assert.ok(!flat.includes('OLD_USER_SHOULD_DROP'), flat);
   });
 
   it('refuses a transcript path replaced by an out-of-root symlink', async () => {
