@@ -166,10 +166,9 @@ export class TodoOverlay implements Component {
   handleInput(data: string): void {
     if (isKeyRelease(data)) return;
     if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl('c'))) {
-      this.input.onClose();
+      if (!isKeyRepeat(data)) this.input.onClose();
       return;
     }
-    if (isKeyRepeat(data)) return;
     if (matchesKey(data, Key.up)) this.scrollBy(-1);
     else if (matchesKey(data, Key.down)) this.scrollBy(1);
     else if (matchesKey(data, Key.pageUp)) this.scrollBy(-this.bodyRows);

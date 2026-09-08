@@ -173,6 +173,36 @@ test('TodoOverlay renders status symbols, failure, and scrolls safely', async ()
   assert.equal(closed, true);
 });
 
+test('TodoOverlay permits Kitty scrolling repeats but ignores closing repeats and releases', () => {
+  let closes = 0;
+  const overlay = new TodoOverlay({
+    locale: 'en',
+    getState: () => ({
+      status: 'ready',
+      items: Array.from({ length: 12 }, (_, i) => ({ content: `item-${i}`, status: 'pending' })),
+    }),
+    viewportRows: () => 4,
+    onClose: () => closes++,
+  });
+  const firstRow = () => stripAnsi(overlay.render(80)[1] ?? '').trim();
+  assert.equal(firstRow(), '○ item-0');
+  overlay.handleInput('\x1b[1;1:2B');
+  assert.equal(firstRow(), '○ item-1');
+  overlay.handleInput('\x1b[6;1:2~');
+  assert.equal(firstRow(), '○ item-3');
+  overlay.handleInput('\x1b[1;1:3B');
+  assert.equal(firstRow(), '○ item-3');
+  overlay.handleInput('\x1b[B');
+  assert.equal(firstRow(), '○ item-4');
+  for (const key of ['\x1b[27;1:2u', '\x1b[99;5:2u', '\x1b[27;1:3u']) {
+    overlay.handleInput(key);
+  }
+  assert.equal(closes, 0);
+  overlay.handleInput('\x1b');
+  overlay.handleInput('\x03');
+  assert.equal(closes, 2);
+});
+
 test('TodoOverlay wraps grapheme-safe content and supports Home/End', async () => {
   const state = new CurrentTodoStore({
     read: async () => snapshot([{ content: '👩‍💻 中文内容很长', status: 'pending' }]),
