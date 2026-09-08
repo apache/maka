@@ -34,6 +34,7 @@ export interface WorkHubPresentationSnapshot {
   readonly placement: 'docked' | 'floating';
   readonly floatingVisible: boolean;
   readonly shortcutRegistered: boolean;
+  readonly rendererCrashed: boolean;
 }
 
 export type WorkHubMainNavigation =

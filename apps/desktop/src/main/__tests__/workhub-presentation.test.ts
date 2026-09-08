@@ -230,7 +230,11 @@ test('reopening or docking a crashed conversation creates a ready-gated renderer
     const staleReady = h.command(previous.webContents, 'ready');
     previous.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
     await assert.rejects(staleReady, /owned main frame/);
+    await h.command(h.main.webContents, 'host', host);
+    assert.equal(h.controller.getSnapshot().rendererCrashed, true);
+    assert.equal(h.views.at(-1), previous, 'recovery waits for an explicit user action');
     await recover();
+    assert.equal(h.controller.getSnapshot().rendererCrashed, false);
     const recovered = h.views.at(-1)!;
     assert.notEqual(recovered, previous);
     assert.equal(previous.webContents.isDestroyed(), true);

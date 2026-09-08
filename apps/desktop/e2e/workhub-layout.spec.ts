@@ -236,13 +236,15 @@ test('WorkHub uses its coordination model and shared attachment composer', async
 });
 
 
-test('WorkHub keeps the submitted prompt visible while its agent is still running', async ({ sessionLocalWindow: { page, app } }) => {
+test('WorkHub keeps the submitted prompt visible while its agent is still running', async ({ sessionLocalWindow: { page, app } }, testInfo) => {
   await page.locator(COMPOSER_INPUT).fill('Initialize WorkHub model');
   await awaitSendReady(page);
   await page.locator(COMPOSER_INPUT).press('Enter');
   await expect(page.getByText('Fake backend received: Initialize WorkHub model')).toBeVisible();
   await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
   let workhub = await getWorkHubPage(app);
+  await page.getByRole('button', { name: '展开侧边栏', exact: true }).click();
+  await page.getByRole('button', { name: 'WorkHub', exact: true }).click();
   await workhub.getByRole('button', { name: /浮出工作台|Float WorkHub/ }).click();
   await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'false');
   await workhub.locator(COMPOSER_INPUT).fill(FAKE_HOLD_OPEN_PROMPT);
@@ -256,11 +258,19 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await expect(stop).toBeVisible();
   await expect(prompt).toBeInViewport();
   const coordinationId = await workhub.evaluate(() => window.maka.workHub.resolveCoordinationSession());
+  await workhub.getByRole('button', { name: /^(Return to Maka|收回 Maka)$/ }).click();
+  const dockBounds = await page.locator('.workHubDock').boundingBox();
   await app.evaluate(({ webContents }) => {
     webContents.getAllWebContents().find((contents) => contents.getURL().includes('surface=workhub'))!.forcefullyCrashRenderer();
   });
   await expect.poll(() => workhub.isClosed()).toBe(true);
-  await page.getByRole('button', { name: /^(Bring WorkHub back|收回工作台)$/ }).click();
+  await expect.poll(() => page.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ placement: 'docked', rendererCrashed: true });
+  await page.getByRole('button', { name: 'WorkHub', exact: true }).click();
+  const retry = page.locator('.workHubDock').getByRole('button', { name: /^(Retry|重试)$/ });
+  await expect(retry).toBeVisible();
+  expect(await page.locator('.workHubDock').boundingBox()).toEqual(dockBounds);
+  await page.locator('.workHubDock').screenshot({ path: testInfo.outputPath('workhub-docked-retry.png') });
+  await retry.click();
   workhub = await getWorkHubPage(app);
   expect(await workhub.evaluate(() => window.maka.workHub.resolveCoordinationSession())).toBe(coordinationId);
   prompt = workhub.locator('.maka-user-message').filter({ hasText: FAKE_HOLD_OPEN_PROMPT });

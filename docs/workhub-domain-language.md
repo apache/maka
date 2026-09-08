@@ -91,6 +91,7 @@ focus Maka Desktop. The return button above an expanded conversation explicitly
 docks WorkHub into Desktop. Drafts, attachments, conversation and running state
 survive visibility changes and reparenting because the renderer is not recreated.
 A crashed renderer is disposed and recreated when WorkHub is reopened or docked.
+An empty dock exposes Retry so recovery does not depend on a layout change.
 The new view reconnects to the same Host-owned Session; unsent in-memory drafts
 are not crash-persistent.
 

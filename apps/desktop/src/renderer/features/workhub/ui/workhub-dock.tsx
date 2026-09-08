@@ -32,6 +32,7 @@ export function WorkHubDock({ visible = true }: { visible?: boolean }) {
   const [snapshot, setSnapshot] = useState<WorkHubPresentationSnapshot>();
   const [backdrop, setBackdrop] = useState<string>();
   const [error, setError] = useState<string>();
+  const needsRecovery = snapshot?.placement === 'docked' && snapshot.rendererCrashed;
   const report = (reason: unknown) =>
     setError(reason instanceof Error ? reason.message : String(reason));
   useEffect(() => {
@@ -94,12 +95,13 @@ export function WorkHubDock({ visible = true }: { visible?: boolean }) {
   return (
     <section ref={element} className="workHubDock" hidden={!visible} aria-label={t.title}>
       {backdrop && snapshot?.placement === 'docked' && <img className="workHubDockBackdrop" src={backdrop} alt="" aria-hidden draggable={false} />}
-      {snapshot?.placement === 'floating' && (
+      {(snapshot?.placement === 'floating' || needsRecovery) && (
         <div className="workHubDockPlaceholder">
-          <h2>{t.floating}</h2>
+          <h2>{needsRecovery ? t.reloadRequired : t.floating}</h2>
           <Button
-            label={t.restore}
+            label={needsRecovery ? t.retry : t.restore}
             onClick={() => {
+              setError(undefined);
               void presentation.dock().catch(report);
             }}
           />

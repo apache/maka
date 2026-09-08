@@ -47,6 +47,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   let disposed = false;
   let ipcRegistered = false;
   let rendererReady = false;
+  let rendererCrashed = false;
   let releaseView: (() => void) | undefined;
   let focusPending = false;
   let conversationExpanded = false;
@@ -71,7 +72,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   }
 
   function getSnapshot(): WorkHubPresentationSnapshot {
-    return { placement, floatingVisible: !!floating && !floating.isDestroyed() && floating.isVisible(), shortcutRegistered };
+    return { placement, floatingVisible: !!floating && !floating.isDestroyed() && floating.isVisible(), shortcutRegistered, rendererCrashed };
   }
 
   function send(channel: string, ...args: unknown[]): void {
@@ -104,6 +105,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       preload: deps.preloadPath, contextIsolation: true, nodeIntegration: false,
       sandbox: true, webSecurity: true, allowRunningInsecureContent: false,
     } });
+    rendererCrashed = false;
     view.setVisible(false);
     view.setBackgroundColor('#00000000');
     const release = deps.onViewCreated?.(view.webContents);
@@ -118,9 +120,12 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     contents.once('render-process-gone', (_event, details) => {
       if (!ownsWebContents(contents)) return;
       disposeView();
+      rendererCrashed = true;
+      changed();
       reportError(new Error(`WorkHub renderer exited: ${details.reason}`));
     });
     void loadMainRenderer(view.webContents, entry, 'workhub').catch(reportError);
+    changed();
     return view;
   }
 
@@ -343,7 +348,11 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             }
             if (disposed) return;
             host = value;
-            if (host.visible && placement === 'docked') { attachMainWindow(main!); ensureView(); }
+            if (host.visible && placement === 'docked') {
+              attachMainWindow(main!);
+              // Layout notifications must not turn a crash into a reload loop.
+              if (!rendererCrashed) ensureView();
+            }
             updateDockedBounds();
             return backdrop;
           }
