@@ -381,6 +381,25 @@ test('a semantic action reaches the sink with the point it is aimed at', async (
   });
 });
 
+test('a covered aim point from a real observation stays elevated', async () => {
+  // The hook-only cases cannot see computer-use-tools copying record.obscuringRects
+  // onto overlay context. A rect covering the element centre (220,110) must survive
+  // observe → registerObservation → runWithPresentation.
+  const events = await driveRealTool(
+    { obscuringRects: [{ x: 210, y: 100, width: 20, height: 20 }] },
+    { action: 'click_element', element_id: '5' },
+  );
+  assert.equal((events[0]?.input as { keepElevated?: boolean }).keepElevated, true);
+});
+
+test('an uncovered aim point from a real observation still sinks', async () => {
+  const events = await driveRealTool(
+    { obscuringRects: [{ x: 0, y: 0, width: 10, height: 10 }] },
+    { action: 'click_element', element_id: '5' },
+  );
+  assert.equal((events[0]?.input as { keepElevated?: boolean }).keepElevated, false);
+});
+
 test('an element whose observed frame is outside its window is not aimed at', async () => {
   // A frame that no longer lies inside the window is stale or the element has
   // moved, which is what the executor refuses the action for. Flying the cursor
