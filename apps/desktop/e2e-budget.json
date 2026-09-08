@@ -9,6 +9,10 @@
       "tests": 1,
       "electron": "the folder reference has to survive a renderer reload and still agree with the Host's session record"
     },
+    "composer-session-reference.spec.ts": {
+      "tests": 1,
+      "electron": "the referenced transcript snapshot crosses renderer, preload, main process, and Runtime Host boundaries before the staged quote can be sent"
+    },
     "context-window-save.spec.ts": {
       "tests": 1,
       "electron": "the saved window is read back from the Host's connection snapshot, not from renderer state"
