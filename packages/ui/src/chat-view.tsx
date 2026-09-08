@@ -423,13 +423,12 @@ export function ChatView(props: {
   // transcript a second, independent authority whose outputs then had to be
   // interned by value to line up again.
   const turnPresentation = props.deriveTurnPresentation?.(turns);
-  // #642 single render path: the in-flight answer is injected into the tail
+  // #642 single render path: the in-flight answer is injected into its own
   // turn's TurnView (the SAME node as the eventual committed turn) instead of a
   // separate streaming <section>, so live→settled is a data-source swap, not an
-  // unmount/mount. The streaming turn is always the last turn: the user message
-  // is committed optimistically (showOptimisticUserMessage) before streaming
-  // starts, so `materializeTurns` already emits it — with an empty assistant
-  // timeline — as `turns[last]`. Only the tail TurnView gets a fresh
+  // unmount/mount. The Host may identify a running turn before its prompt
+  // reaches the transcript, so identity and materialization are separate.
+  // Only the identified TurnView gets a fresh
   // `liveStreaming` object per delta (→ it alone re-renders); every sibling
   // gets a stable `undefined` and its memo skips. That the sibling's `turn`
   // prop is also stable is the projection's tested contract, not a property
@@ -441,10 +440,8 @@ export function ChatView(props: {
   // settled branch, whose derived status is `completed`, rendering an actionable
   // footer on a still-running answer (review P2-B). A tool-only tail renders the
   // running tool from its timeline with no empty live bubble.
-  // The model-wait indicator keeps the tail turn "live" too, so its footer stays
-  // the non-actionable placeholder and the indicator injects into the tail turn
-  // (not the fallback section) — it is, by derivation, only ever true when text /
-  // thinking / tools are all absent.
+  // The running indicator rides the whole turn, keeping its footer
+  // non-actionable even between content events.
   //
   // Terminal liveTurn is evidence overlay only (e.g. empty shell_run still needs
   // pre-handoff chunks). It must NOT block footer actions — keeping evidence and
@@ -463,18 +460,29 @@ export function ChatView(props: {
   // content or the row is hidden behind the empty hero.
   const hasLiveCompactionRow = isCompactionLive && (props.liveTurn?.steps.length ?? 0) === 0;
   const liveInFlight = !!(props.liveTurn && !props.liveTurn.terminal) && !isCompactionLive;
-  const streamingActive =
-    liveInFlight || (!props.liveTurn?.terminal && !!props.runningStatus && !isCompactionLive);
-  const tailTurnId = liveInFlight
+  // Ordinary sends may have a Host running ID before any live content arrives.
+  // Unknown or concurrent IDs cannot identify a single owner from row order.
+  const runningTurnId = props.activeSession?.runningTurnIds?.length === 1
+    ? props.activeSession.runningTurnIds[0]
+    : undefined;
+  const identifiedTurnId = liveInFlight
     ? props.liveTurn!.turnId
-    : (streamingActive ? turns[turns.length - 1]?.turnId : undefined);
-  const hasRenderedLiveTurn = tailTurnId !== undefined && turns.some((turn) => turn.turnId === tailTurnId);
+    : runningTurnId;
+  const identifiedTurn = turns.find((turn) => turn.turnId === identifiedTurnId);
+  // A directory refresh may lag the transcript's terminal record. Inferred
+  // legacy status does not supply that evidence; a live projection still wins.
+  const recordedRuntimeTurnEnded = !liveInFlight
+    && identifiedTurn?.statusSource === 'recorded' && identifiedTurn.status !== 'running';
+  const streamingActive = !recordedRuntimeTurnEnded && (
+    liveInFlight || (!props.liveTurn?.terminal && !!props.runningStatus && !isCompactionLive)
+  );
+  const activeTurnId = streamingActive ? identifiedTurnId : undefined;
+  const activeTurn = streamingActive ? identifiedTurn : undefined;
   const pendingRunningStartedAt = transientMessages.findLast((message) =>
     message.transientPlacement === 'current_turn'
-    && (tailTurnId === undefined || message.hostTurnId === undefined || message.hostTurnId === tailTurnId),
+    && (activeTurnId === undefined || message.hostTurnId === undefined || message.hostTurnId === activeTurnId),
   )?.ts ?? props.liveTurn?.startedAt;
-  const boundaryOverlayTurnId = props.liveTurn?.turnId
-    ?? (streamingActive ? tailTurnId : undefined);
+  const boundaryOverlayTurnId = props.liveTurn?.turnId ?? activeTurnId;
   const transcriptRows = useMemo(() => projectTranscriptRows({
     turns,
     hasOlder: props.hasOlderHistory === true,
@@ -604,13 +612,11 @@ export function ChatView(props: {
   const railAlignment = resolveRailAlignedTarget(railClaimRef.current, props.scrollTargetTurn);
   railClaimRef.current = railAlignment.claim;
   const scrollTargetTurn = railAlignment.target;
-  const inlineTransientMessages = tailTurnId
+  const inlineTransientMessages = activeTurn
     ? transientMessages.filter((message) => {
-        const turn = turns.find((candidate) => candidate.turnId === tailTurnId);
         if (
-          turn === undefined
-          || turn.user !== undefined
-          || turn.timeline.some((item) => item.kind === 'user' && item.messageId === message.id)
+          activeTurn.user !== undefined
+          || activeTurn.timeline.some((item) => item.kind === 'user' && item.messageId === message.id)
         ) {
           return false;
         }
@@ -618,7 +624,7 @@ export function ChatView(props: {
         // one only renders inline in the Turn the Host named.
         return (
           message.transientPlacement === 'current_turn'
-          && (message.hostTurnId === undefined || message.hostTurnId === tailTurnId)
+          && (message.hostTurnId === undefined || message.hostTurnId === activeTurnId)
         );
       })
     : [];
@@ -869,7 +875,7 @@ export function ChatView(props: {
                   >
                     <TurnView
                       turn={turn}
-                      transientMessages={turn.turnId === tailTurnId ? inlineTransientMessages : undefined}
+                      transientMessages={turn.turnId === activeTurnId ? inlineTransientMessages : undefined}
                       userLabel={props.userLabel}
                       footerActions={turnPresentation?.footerActionsByTurn[turn.turnId]}
                       onFooterAction={stableTurnFooterAction}
@@ -898,7 +904,7 @@ export function ChatView(props: {
                       }
                       searchHighlighted={highlightedTurnId === turn.turnId}
                       liveStreaming={
-                        turn.turnId === tailTurnId
+                        turn.turnId === activeTurnId
                           ? {
                               onStreamingSettled: props.onStreamingSettled,
                               runningStatus: props.runningStatus,
@@ -925,10 +931,11 @@ export function ChatView(props: {
                   message={message}
                 />
               ))}
-              {/* A send arm already names its Turn, but the transcript may not
-                  contain it yet. Keep feedback below the pending prompt until
-                  that same TurnView can take over. */}
-              {streamingActive && !hasRenderedLiveTurn && (
+              {/* #642 fallback: the live turn has no materialized transcript row
+                  to own the stream yet, so render the answer at the transcript
+                  boundary instead of dropping it or claiming an older turn.
+                  Mutually exclusive with the tail injection above. */}
+              {streamingActive && !activeTurn && (
                 <section className="maka-turn" data-live-streaming="true">
                   <LocalizedChatMessage
                     accessibleLabel={conversationCopy.messages.assistantAriaLabel}
