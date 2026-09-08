@@ -24,6 +24,7 @@ import { act, createElement, StrictMode, useLayoutEffect } from 'react';
 import type { ShellRunUpdate } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import { LocaleProvider } from '@maka/ui';
+import { pendingSessionView } from '../../renderer/pending-session-view.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   createFakeWorkbarServices,
@@ -60,6 +61,15 @@ function shellUpdate(sessionId: string, ref: string): ShellRunUpdate {
     result: { ref },
   } as ShellRunUpdate;
 }
+
+function pendingSession(sessionId: string): SessionSummary {
+  return pendingSessionView({
+    sessionId,
+    name: sessionId,
+    permissionMode: 'ask',
+  });
+}
+
 let latestController: WorkbarController | undefined;
 let controllerRenderSnapshots: Array<{
   activeId: string | undefined;
@@ -623,14 +633,20 @@ describe('useWorkbarController', () => {
   it('keeps Side Chat while the active source awaits its catalog row', async () => {
     const { root } = installReactRenderer();
     const source = session('pending-source');
+    const placeholderChild = pendingSession('pending-child');
+    const child = session('pending-child');
+    child.subagent = { parentSessionId: source.id };
     const services = createFakeWorkbarServices();
 
-    await act(async () => renderController(root, services, input(source, [], [])));
+    await act(async () => renderController(root, services, input(source, [], [source])));
     await act(async () => controller().commands.openTool('side-chat'));
     const panelId = controller().host.quotes?.[0]?.id;
     assert.ok(panelId);
 
-    await act(async () => renderController(root, services, input(source, [], [])));
+    await act(async () =>
+      renderController(root, services, input(placeholderChild, [], [source])),
+    );
+    assert.equal(controller().host.surfaceKey, source.id);
     assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
     assert.equal(
       controller().host.panelsState.right.tabs.some(
@@ -638,6 +654,43 @@ describe('useWorkbarController', () => {
       ),
       true,
     );
+
+    await act(async () =>
+      renderController(root, services, input(child, [], [source, child])),
+    );
+    assert.equal(controller().host.surfaceKey, source.id);
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+  });
+
+  it('keeps the family surface key stable across source revision updates', async () => {
+    const { root } = installReactRenderer();
+    const services = createFakeWorkbarServices();
+    const source = session('source-a');
+    source.revisionRootSessionId = 'source-root';
+    const sourceRevision = session('source-a-revision');
+    sourceRevision.revisionRootSessionId = 'source-root';
+    const child = session('child-a');
+    child.subagent = { parentSessionId: sourceRevision.id };
+
+    await act(async () =>
+      renderController(root, services, input(source, [], [source])),
+    );
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panelId = controller().host.quotes?.[0]?.id;
+    assert.ok(panelId);
+    assert.equal(controller().host.surfaceKey, 'source-root');
+
+    await act(async () =>
+      renderController(root, services, input(sourceRevision, [], [source, sourceRevision, child])),
+    );
+    assert.equal(controller().host.surfaceKey, 'source-root');
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+
+    await act(async () =>
+      renderController(root, services, input(child, [], [source, sourceRevision, child])),
+    );
+    assert.equal(controller().host.surfaceKey, 'source-root');
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
   });
 
   it('keeps the previous family surface through a pending child catalog gap', async () => {

@@ -118,19 +118,24 @@ export function linkedSideConversationFamilyRootId(
     sessions,
     activeSession.id,
   );
+  const logicalSessionsById = new Map(
+    logicalSessions.map((session) => [session.id, session]),
+  );
   const activeRepresentative =
     logicalSessions.find(
       (session) => sessionRevisionFamilyId(session) === sessionRevisionFamilyId(activeSession),
     ) ?? activeSession;
   const visited = new Set<string>();
-  let currentId = activeRepresentative.id;
-  while (!visited.has(currentId)) {
-    visited.add(currentId);
-    const parentId = parentByChildId.get(currentId);
-    if (!parentId) return currentId;
-    currentId = parentId;
+  let currentSession = logicalSessionsById.get(activeRepresentative.id) ?? activeRepresentative;
+  while (!visited.has(currentSession.id)) {
+    visited.add(currentSession.id);
+    const parentId = parentByChildId.get(currentSession.id);
+    if (!parentId) return sessionRevisionFamilyId(currentSession);
+    const parentSession = logicalSessionsById.get(parentId);
+    if (!parentSession) return sessionRevisionFamilyId(currentSession);
+    currentSession = parentSession;
   }
-  return currentId;
+  return sessionRevisionFamilyId(currentSession);
 }
 
 function reachesSession(
