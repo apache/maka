@@ -204,15 +204,15 @@ describe("materializeChat message metadata", () => {
 
     assert.equal(
       materializeChat(messages, "en")[0]?.text,
-      "Context compacted to keep this session within the model window.",
+      "Earlier context compacted.",
     );
     assert.equal(
       materializeChat(messages, "zh-CN")[0]?.text,
-      "已压缩较早的对话内容，以适应模型上下文窗口。",
+      "已压缩较早的上下文。",
     );
     assert.equal(
       materializeTurns(messages, "zh-CN")[0]?.notes[0]?.text,
-      "已压缩较早的对话内容，以适应模型上下文窗口。",
+      "已压缩较早的上下文。",
     );
   });
 
@@ -390,7 +390,6 @@ describe("live content over persisted partial rows", () => {
         turnId: "t1",
         ts: 2,
         status: "running",
-        partialOutputRetained: false,
       },
       {
         type: "assistant",
@@ -446,7 +445,6 @@ describe("unfinished tools take their status from the turn", () => {
         turnId: "t1",
         ts: 2,
         status: "running",
-        partialOutputRetained: false,
       },
       {
         type: "tool_call",
@@ -470,7 +468,6 @@ describe("unfinished tools take their status from the turn", () => {
         turnId: "t1",
         ts: 2,
         status: "failed",
-        partialOutputRetained: false,
       },
       {
         type: "tool_call",
@@ -497,7 +494,6 @@ describe("live tool status over persisted", () => {
         turnId: "t1",
         ts: 2,
         status: "running",
-        partialOutputRetained: false,
       },
       {
         type: "tool_call",
@@ -544,7 +540,6 @@ describe("live tool status over persisted", () => {
         turnId: "t1",
         ts: 2,
         status: "failed",
-        partialOutputRetained: false,
       },
       {
         type: "tool_call",
@@ -599,7 +594,6 @@ describe("live tool status over persisted", () => {
         turnId: "t1",
         ts: 2,
         status: "running",
-        partialOutputRetained: false,
       },
       {
         type: "tool_call",
@@ -659,7 +653,6 @@ describe("live tool status over persisted", () => {
         turnId: "t1",
         ts: 2,
         status: "running",
-        partialOutputRetained: false,
       },
       {
         type: "tool_call",

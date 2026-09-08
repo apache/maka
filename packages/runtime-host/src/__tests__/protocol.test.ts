@@ -443,6 +443,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 117);
   });
 
+  test('publishes a new compatibility epoch for event-addressed transcript cursors', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 118);
+  });
+
   test('publishes a new compatibility epoch for context-compaction transcript state', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 124);
   });

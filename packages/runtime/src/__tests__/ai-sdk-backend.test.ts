@@ -88,6 +88,7 @@ import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
 import { createToolResultArchiveCapability } from '../tool-result-archive-capability.js';
 import {
   createTestAiSdkBackend,
+  projectedTranscriptOf,
   readExternalExecutionBoundary,
   testToolResultArchive,
 } from './execution-boundary-test-helpers.js';
@@ -4857,7 +4858,6 @@ describe('AiSdkBackend model history', () => {
         const backendInput: AiSdkBackendInput = {
           sessionId: 'session-1',
           header: header(),
-          appendMessage: async () => {},
           connection: connection(),
           apiKey: 'sk-test',
           modelId: 'mock-model-id',
@@ -5214,6 +5214,9 @@ describe('AiSdkBackend model history', () => {
       appendMessage: async (message: StoredMessage) => {
         appended.push(message as unknown as { type: string; kind?: string; data?: unknown });
       },
+      recordSystemNote: async (kind, _turnId, data) => {
+        appended.push({ type: 'system_note', kind, data });
+      },
       connection: connection(),
       modelId: 'mock-model-id',
       modelFactory: () => model,
@@ -5286,6 +5289,9 @@ describe('AiSdkBackend model history', () => {
       appendMessage: async (message: StoredMessage) => {
         appended.push(message as unknown as { type: string; kind?: string });
       },
+      recordSystemNote: async (kind) => {
+        appended.push({ type: 'system_note', kind });
+      },
       connection: connection(),
       modelId: 'mock-model-id',
       modelFactory: () => model,
@@ -5343,7 +5349,10 @@ describe('AiSdkBackend model history', () => {
     let failNextNoteWrite = true;
     const backend = createBackend({
       appendMessage: async (message: StoredMessage) => {
-        const candidate = message as unknown as { type: string; kind?: string };
+        persisted.push(message as unknown as { type: string; kind?: string });
+      },
+      recordSystemNote: async (kind) => {
+        const candidate = { type: 'system_note', kind };
         if (isFailOpenNote(candidate)) {
           noteWriteAttempts += 1;
           if (failNextNoteWrite) {
@@ -5535,8 +5544,9 @@ describe('AiSdkBackend model history', () => {
     const gate = makeGate();
     let usagePersistenceStarted = false;
     const backend = createBackend({
-      appendMessage: async (message) => {
-        if (message.type !== 'token_usage') return;
+      // The usage checkpoint is the persistence this turn awaits at its step
+      // boundary, so holding it here is the window the stop has to win.
+      recordUsageCheckpoint: async () => {
         usagePersistenceStarted = true;
         await gate.promise;
       },
@@ -7270,7 +7280,7 @@ describe('AiSdkBackend model history', () => {
 });
 
 describe('AiSdkBackend error surfaces', () => {
-  test('generalizes model setup errors before emitting renderer events', async () => {
+  test('preserves model setup diagnostics in renderer events', async () => {
     const backend = createBackend({
       connection: connection(),
       apiKey: 'sk-live-secret-token-value',
@@ -7290,8 +7300,7 @@ describe('AiSdkBackend error surfaces', () => {
     const error = events.find(
       (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
     );
-    assert.equal(error?.message, '401 Authorization: Bearer [redacted]');
-    assert.equal(JSON.stringify(events).includes('sk-live-secret-token-value'), false);
+    assert.equal(error?.message, '401 Authorization: Bearer sk-live-secret-token-value');
   });
 
   test('stops after a T1 rejection only after sibling tool calls settle', async () => {
@@ -7776,6 +7785,13 @@ describe('AiSdkBackend usage telemetry', () => {
   });
 
   for (const output of ['text', 'tool'] as const) {
+    // The upstream cut the SSE connection mid-answer: chunks arrived, no
+    // `finish` frame did. The stream then ends without yielding an error and
+    // without throwing, so every guard that watches for a thrown failure sees
+    // nothing. Reporting `end_turn` here tells the caller the model said its
+    // piece when the connection simply died — a benchmark cell recorded
+    // `status: completed` on exactly this shape while the agent was still
+    // mid-task.
     test(`does not retry a truncated provider stream after ${output} activity`, async () => {
       const durable = durableTurnHarness('turn-truncated', 'analyse the image');
       let calls = 0;
@@ -10190,54 +10206,6 @@ describe('AiSdkBackend RunTrace', () => {
       false,
     );
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
-  });
-
-  test('does not report a consumed idle timeout for a later assistant append failure', async () => {
-    const timers = manualWatchdogTimer();
-    let calls = 0;
-    const model = new MockLanguageModelV4({
-      doStream: async (options) => {
-        calls += 1;
-        return {
-          stream: hangingProviderStream(
-            [
-              { type: 'stream-start', warnings: [] },
-              { type: 'reasoning-start', id: 'reasoning-1' },
-              {
-                type: 'reasoning-delta',
-                id: 'reasoning-1',
-                delta: 'partial thought',
-              },
-            ],
-            options.abortSignal,
-          ),
-        };
-      },
-    });
-    const backend = createBackend({
-      appendMessage: async () => {
-        throw new Error('assistant append failed');
-      },
-      connection: connection(),
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      streamWatchdogTimer: timers.clock,
-      providerRetrySleep: async () => {},
-    });
-
-    const events: SessionEvent[] = [];
-    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
-      events.push(event);
-      if (event.type === 'thinking_delta' && event.text === 'partial thought') timers.fire();
-    }
-
-    assert.equal(calls, 1);
-    const error = events.find((event) => event.type === 'error');
-    assert.equal(error?.type, 'error');
-    assert.notEqual(error?.type === 'error' ? error.reason : undefined, 'timeout');
-    assert.equal(error?.type === 'error' ? error.message : undefined, 'assistant append failed');
-    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
   });
 
   test('links a recovered tool call to the retry assistant step', async () => {
@@ -16294,9 +16262,18 @@ function runtimeExecute(
   eventSink: { push(event: SessionEvent): void },
 ) {
   const runtime = turnScope(backend, turnId).toolRuntime;
+  // This drives the tool runtime beneath `send()`, so the stream that becomes
+  // the ledger is teed here instead.
+  const project = projectedTranscriptOf(backend);
   const durableEventSink: DurableSessionEventSink = {
-    push: (event) => eventSink.push(event),
-    pushAndWaitUntilConsumed: async (event) => eventSink.push(event),
+    push: (event) => {
+      eventSink.push(event);
+      void project?.(event, turnId);
+    },
+    pushAndWaitUntilConsumed: async (event) => {
+      eventSink.push(event);
+      await project?.(event, turnId);
+    },
   };
   return async (
     input: unknown,

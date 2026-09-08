@@ -694,7 +694,6 @@ test('fences transcript range failures across same-source replica recovery', asy
           events,
           transcriptBootstrap: {
             throughSequence: 1,
-            durableCoverage: 'complete',
             overlayMessageCount: 0,
             durable: bootstrap,
             overlay: { ...bootstrap, source: 'overlay', nextCursor: null },
@@ -990,7 +989,6 @@ test('finishes transcript open and replays a stale range request after replaceme
           events,
           transcriptBootstrap: {
             throughSequence: 0,
-            durableCoverage: 'complete',
             overlayMessageCount: 0,
             durable: {
               kind: 'page',
@@ -2166,7 +2164,6 @@ test("finishes a watched predecessor after initial catch-up recovery", async () 
               turnId: "turn-1",
               ts: 20,
               status: "completed" as const,
-              partialOutputRetained: true,
             },
           ]),
           events: secondEvents,
@@ -2322,7 +2319,6 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
         turnId: 'turn-1',
         status: 'completed' as const,
         statusSource: 'recorded' as const,
-        partialOutputRetained: true,
       }],
       openSession: async () => {
         openCount += 1;

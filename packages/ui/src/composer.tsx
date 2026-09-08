@@ -1254,6 +1254,12 @@ export const Composer = forwardRef<
     [],
   );
 
+  // Sendable content is a non-empty draft *or* staged structured context:
+  // a pure quote/attachment send is a real message (#4804) and must pass the
+  // same gates (send handler, disabled state, send/stop toggle) as text.
+  const hasStagedContext =
+    (props.pendingQuotes?.length ?? 0) > 0 || (props.pendingAttachments?.length ?? 0) > 0;
+
   async function sendCurrent(followUpMode?: FollowUpMode) {
     if (
       props.disabled
@@ -1265,7 +1271,7 @@ export const Composer = forwardRef<
     // `text`. The optional metadata below is a send-time rendering snapshot of
     // file chips that still exist in the editor, not a second draft state.
     const text = composerWireText(textPort.getValue());
-    if (!text) return;
+    if (!text.trim() && !hasStagedContext) return;
     const editable = editableNode();
     const workspaceFileReferences = editable ? workspaceFileReferencePositions(editable) : [];
     const submittedDraftKey = activeDraftKey();
@@ -1453,7 +1459,7 @@ export const Composer = forwardRef<
     props.sendBlocked ||
     sendPending ||
     importActionBusy ||
-    !text.trim() ||
+    (!text.trim() && !hasStagedContext) ||
     noModelConnection;
   // The disabled Send is explanatory only in the no-model dead-end; other
   // disabled reasons (empty draft, in-flight import) keep the neutral label.
@@ -1464,7 +1470,7 @@ export const Composer = forwardRef<
   // returns to Send (the host queues it as a follow-up). Stop is not lost in
   // that window: Esc interrupts from the input, which is where the hands already
   // are.
-  const stopShown = props.streaming === true && !text.trim();
+  const stopShown = props.streaming === true && !text.trim() && !hasStagedContext;
   // The pending plate renders the follow-up queue only: steering entries are
   // already handed to the active Turn and leave the plate at that moment.
   const queueCount = props.queuedMessages?.length ?? 0;

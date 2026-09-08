@@ -22,7 +22,7 @@ import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
 import { stableJsonLength } from './context-budget-helpers.js';
-import { groupEventsByTurn } from './model-history.js';
+import { groupEventsByTurn, formatTextWithInlineRefs } from './model-history.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
 import { fitHistoryCompactMessages } from './history-compact-input-fit.js';
 import type { ModelMessage } from './model-protocol.js';
@@ -121,23 +121,17 @@ function projectSessionRecapMessages(events: readonly RuntimeEvent[]): ModelMess
     const content = event.content;
     if (content?.kind === 'text' && (event.role === 'user' || event.role === 'model')) {
       const text = content.text.trim();
-      if (text.length > 0) {
-        messages.push({ role: event.role === 'user' ? 'user' : 'assistant', content: text });
-      } else {
-        // Model-visible without inline text: a structured-only message must
-        // still leave evidence in the recap instead of vanishing (#4804).
-        const quoteCount = content.quotes?.length ?? 0;
-        const attachmentCount = content.attachments?.length ?? 0;
-        const carriers = [
-          quoteCount > 0 ? `${quoteCount} quote(s)` : undefined,
-          attachmentCount > 0 ? `${attachmentCount} attachment(s)` : undefined,
-        ].filter(Boolean);
-        if (carriers.length > 0) {
-          messages.push({
-            role: event.role === 'user' ? 'user' : 'assistant',
-            content: `[message carried ${carriers.join(' and ')}]`,
-          });
-        }
+      // A message with quotes or attachments is model-visible even when its
+      // text is empty (#4804), and a non-empty text must not erase the
+      // staged refs: both cases render through the shared inline-ref
+      // formatter so the recap carries the actual content, not a count.
+      const hasStructuredContent =
+        (content.quotes?.length ?? 0) > 0 || (content.attachments?.length ?? 0) > 0;
+      if (text.length > 0 || hasStructuredContent) {
+        messages.push({
+          role: event.role === 'user' ? 'user' : 'assistant',
+          content: formatTextWithInlineRefs({ ...content, text }),
+        });
       }
       continue;
     }

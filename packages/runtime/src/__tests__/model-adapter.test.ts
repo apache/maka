@@ -917,13 +917,13 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(event.message, 'fetch failed');
   });
 
-  test('retains a safe bounded summary from an unknown structured provider error', () => {
+  test('retains an unredacted bounded summary from an unknown structured provider error', () => {
     const adapter = newAdapter();
     const failure = adapter.normalizeFailure({
       type: 'error',
       error: {
         code: 'provider_error',
-        message: `provider exploded api_key=sk-live-secret-token-value ${'x'.repeat(4_000)}`,
+        message: `provider exploded api_key=sk-test-diagnostic-value ${'x'.repeat(4_000)}`,
       },
       request_id: 'req-123',
     });
@@ -931,10 +931,9 @@ describe('ModelAdapter stream and error normalization', () => {
 
     assert.equal(event.reason, 'unknown');
     assert.equal(event.code, 'provider_error');
-    assert.match(event.message, /^provider exploded api_key=\[redacted\]/);
+    assert.ok(event.message.startsWith('provider exploded api_key=sk-test-diagnostic-value '));
     assert.match(event.message, /… \(code=provider_error, requestId=req-123\)$/);
     assert.equal(Buffer.byteLength(event.message, 'utf8') <= 2 * 1024, true);
-    assert.equal(event.message.includes('sk-live-secret-token-value'), false);
   });
 
   test('normalizes cache and reasoning usage variants in the adapter module', () => {

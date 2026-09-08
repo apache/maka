@@ -957,7 +957,6 @@ describe('single live-turn handoff', () => {
         turnId: 'turn-compact',
         ts: 3,
         status: 'completed',
-        partialOutputRetained: false,
       },
     ]);
 

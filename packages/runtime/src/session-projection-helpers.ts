@@ -25,30 +25,7 @@ import type {
   SessionHeader,
   SessionStatus,
   TurnRecord,
-  TurnStateMessage,
 } from '@maka/core/session';
-
-export type TurnStateLineage = Partial<
-  Pick<
-    TurnStateMessage,
-    | 'parentTurnId'
-    | 'retriedFromTurnId'
-    | 'regeneratedFromTurnId'
-    | 'branchOfTurnId'
-    | 'parentSessionId'
-  >
->;
-
-export interface BuildTurnStateMessageInput {
-  id: string;
-  turnId: string;
-  ts: number;
-  status: TurnRecord['status'];
-  lineage?: TurnStateLineage;
-  errorClass?: string;
-  retry?: TurnRecord['retry'];
-  abortSource?: string;
-}
 
 export function buildStatusPatch(
   status: SessionStatus,
@@ -59,32 +36,6 @@ export function buildStatusPatch(
     status,
     blockedReason: status === 'blocked' ? (blockedReason ?? 'unknown') : undefined,
     statusUpdatedAt: ts,
-  };
-}
-
-export function buildTurnStateMessage(input: BuildTurnStateMessageInput): TurnStateMessage {
-  const lineage = input.lineage ?? {};
-  return {
-    type: 'turn_state',
-    id: input.id,
-    turnId: input.turnId,
-    ts: input.ts,
-    status: input.status,
-    ...(lineage.parentTurnId ? { parentTurnId: lineage.parentTurnId } : {}),
-    ...(lineage.retriedFromTurnId ? { retriedFromTurnId: lineage.retriedFromTurnId } : {}),
-    ...(lineage.regeneratedFromTurnId
-      ? { regeneratedFromTurnId: lineage.regeneratedFromTurnId }
-      : {}),
-    ...(lineage.branchOfTurnId ? { branchOfTurnId: lineage.branchOfTurnId } : {}),
-    ...(lineage.parentSessionId ? { parentSessionId: lineage.parentSessionId } : {}),
-    ...(input.status === 'aborted' ? { abortedAt: input.ts } : {}),
-    ...(input.status === 'aborted' && input.abortSource ? { abortSource: input.abortSource } : {}),
-    ...(input.status === 'failed'
-      ? {
-          errorClass: input.errorClass ?? 'unknown',
-          ...(input.retry ? { retry: input.retry } : {}),
-        }
-      : {}),
   };
 }
 

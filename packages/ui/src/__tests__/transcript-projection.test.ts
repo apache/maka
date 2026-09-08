@@ -91,11 +91,11 @@ describe('incremental transcript projection', () => {
 
     assert.equal(
       english[0]?.notes[0]?.text,
-      'Context compacted to keep this session within the model window.',
+      'Earlier context compacted.',
     );
     assert.equal(
       chinese[0]?.notes[0]?.text,
-      '已压缩较早的对话内容，以适应模型上下文窗口。',
+      '已压缩较早的上下文。',
     );
     assert.notStrictEqual(chinese, english);
   });
@@ -436,7 +436,7 @@ describe('turn identity moves across structural change classes', () => {
   const base: StoredMessage[] = [
     { type: 'user', id: 'u1', turnId: 'turn-1', ts: 1, text: 'ask' },
     { type: 'assistant', id: 'a1', turnId: 'turn-1', ts: 4, text: 'answer', modelId: 'model-1' },
-    { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'completed', partialOutputRetained: false },
+    { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'completed' },
   ];
 
   const cases: Array<{
@@ -453,8 +453,13 @@ describe('turn identity moves across structural change classes', () => {
       field: 'status',
       refresh: [
         ...base.slice(0, 2),
-        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed', partialOutputRetained: false },
+        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed' },
       ],
+    },
+    {
+      field: 'failureMessage',
+      from: [...base.slice(0, 2), { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed', errorClass: 'rate_limit' }],
+      refresh: [...base.slice(0, 2), { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed', errorClass: 'rate_limit', failureMessage: 'Quota exceeded (status=429, requestId=req-4502)' }],
     },
     {
       field: 'assistant',

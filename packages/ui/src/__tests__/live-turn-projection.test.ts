@@ -717,7 +717,7 @@ describe('reconcileTerminalLiveTurn', () => {
     assert.equal(reconcileTerminalLiveTurn(steeringOnly, []), steeringOnly);
     assert.deepEqual(reconcileTerminalLiveTurn(withSteering, [{
       type: 'turn_state', id: 'state-1', turnId: 'turn-1', ts: 3,
-      status: 'completed', partialOutputRetained: false,
+      status: 'completed',
     }]), toolOnly);
   });
 
@@ -875,7 +875,6 @@ describe('reconcileTerminalLiveTurn', () => {
         turnId: 'turn-1',
         ts: 4,
         status: 'completed',
-        partialOutputRetained: false,
       },
     ]), {
       turnId: 'turn-1',
@@ -1025,7 +1024,7 @@ describe('tool_result_preview live projection', () => {
       },
       {
         type: 'turn_state', id: 'state-1', turnId: 'turn-1', ts: 3,
-        status: 'running', partialOutputRetained: true,
+        status: 'running',
       },
     ], 'en');
     const started = applyLiveTurnEvent(undefined, {
@@ -1115,7 +1114,6 @@ describe('context-compaction live row', () => {
         turnId: 'turn-compact',
         status: 'running' as const,
         statusSource: 'recorded' as const,
-        partialOutputRetained: false,
         tools: [],
         notes: [],
         timeline: [],
@@ -1203,7 +1201,6 @@ describe('context-compaction live row', () => {
         turnId: 'turn-compact',
         ts: 3,
         status: 'completed',
-        partialOutputRetained: false,
       },
     ];
     const reconciled = reconcileTerminalLiveTurn(projection, messages);

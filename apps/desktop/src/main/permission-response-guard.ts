@@ -209,7 +209,14 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
   const displayText =
     value.displayText === undefined ? undefined : normalizeSendText(value.displayText);
   const skillIds = normalizeSessionSkillIds(value.skillIds);
-  if (!text.trim() && skillIds.length === 0) {
+  // A send may carry structured content instead of text (a pure quote or a
+  // pure attachment, #4804). Only the presence is decided here: attachment
+  // state, ownership, and size limits stay with the ingestion checks, and
+  // quotes are normalized below before the command is returned.
+  const quotes = normalizeOptionalQuotes(value.quotes).quotes;
+  const hasAttachmentItems =
+    Array.isArray(value.attachmentItems) && value.attachmentItems.length > 0;
+  if (!text.trim() && skillIds.length === 0 && (quotes?.length ?? 0) === 0 && !hasAttachmentItems) {
     throw new Error('Invalid send text');
   }
   return {
@@ -225,7 +232,7 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
       ? { turnOrchestration: normalizeTurnOrchestration(value.turnOrchestration) }
       : {}),
     ...normalizeOptionalDirectoryReferences(value.directoryReferences),
-    ...normalizeOptionalQuotes(value.quotes),
+    ...(quotes !== undefined ? { quotes } : {}),
     ...normalizeOptionalWorkspaceFileReferences(
       value.workspaceFileReferences,
       displayText ?? text,

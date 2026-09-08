@@ -43,9 +43,8 @@ import type {
   AssistantMessage,
   AssistantStepContentKind,
   AssistantThinkingPart,
+  RuntimeSystemNoteKind,
   SessionHeader,
-  SystemNoteMessage,
-  TokenUsageMessage,
 } from '@maka/core/session';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -103,7 +102,6 @@ import {
   type RepairableAiSdkToolCall,
 } from './model-adapter.js';
 import { persistedOpenAiResponsesStepMessages } from './openai-responses-continuation.js';
-import { nonCanonicalContentOrder } from './runtime-event-read-model.js';
 import {
   composeRequestProjection,
   type DispatchRequestShape,
@@ -855,6 +853,24 @@ export class AiSdkTurn {
     };
   }
 
+  /**
+   * A note about what happened inside this invocation, written to the
+   * invocation's own ledger. Fail-open: the note explains a turn, it is not
+   * what the turn did, so losing it must never end a send that is otherwise
+   * fine. Returns whether the note landed.
+   */
+  private async recordSystemNote(
+    kind: RuntimeSystemNoteKind,
+    turnId: string,
+    data?: unknown,
+  ): Promise<boolean> {
+    if (!this.deps.backend.recordSystemNote) return false;
+    return await this.deps.backend
+      .recordSystemNote(kind, turnId, data)
+      .then(() => true)
+      .catch(() => false);
+  }
+
   // --------------------------------------------------------------------------
   // manual history compaction
   // --------------------------------------------------------------------------
@@ -908,36 +924,6 @@ export class AiSdkTurn {
         return;
       }
       const stepId = currentStepMessageId;
-      const thinkingText = stepThinkingParts.map((part) => part.text).join('');
-      const contentOrder = nonCanonicalContentOrder(stepContentOrder);
-      const msg: AssistantMessage = {
-        type: 'assistant',
-        id: stepId,
-        turnId,
-        ts: this.deps.now(),
-        text: stepText,
-        ...(stepTextProviderOptions !== undefined
-          ? { providerOptions: stepTextProviderOptions }
-          : {}),
-        ...(contentOrder ? { contentOrder } : {}),
-        modelId: this.deps.backend.modelId,
-        ...(hasThinking
-          ? {
-              thinking: {
-                text: thinkingText,
-                ...(stepThinkingParts.length === 1 && stepThinkingParts[0]!.signature !== undefined
-                  ? { signature: stepThinkingParts[0]!.signature }
-                  : {}),
-                ...(stepThinkingParts.length === 1 &&
-                stepThinkingParts[0]!.providerOptions !== undefined
-                  ? { providerOptions: stepThinkingParts[0]!.providerOptions }
-                  : {}),
-                ...(stepThinkingParts.length > 1 ? { parts: stepThinkingParts } : {}),
-              },
-            }
-          : {}),
-      };
-      await this.deps.backend.appendMessage(msg);
       if (hasThinking) {
         for (const part of stepThinkingParts) {
           queue.push({
@@ -1028,33 +1014,16 @@ export class AiSdkTurn {
               decision.boundaryKind === 'historyCompact' && decision.decision === 'failedOpen',
           )
           .at(-1)?.failOpenReason;
-        const note: SystemNoteMessage = {
-          type: 'system_note',
-          id: this.deps.newId(),
-          turnId,
-          ts: this.deps.now(),
-          kind: 'context_compaction_failed_open',
-          ...(failOpenReason !== undefined ? { data: { failOpenReason } } : {}),
-        };
         // Mark written only after the append lands: a failed write must leave
         // the flag down so the settlement fallback can still record the note.
-        contextCompactionFailedOpenNoteWritten = await this.deps.backend
-          .appendMessage(note)
-          .then(() => true)
-          .catch(() => false);
+        contextCompactionFailedOpenNoteWritten = await this.recordSystemNote(
+          'context_compaction_failed_open',
+          turnId,
+          failOpenReason !== undefined ? { failOpenReason } : undefined,
+        );
       }
       if (!contextCompactedNoteWritten && shouldAppendContextCompactedNote(contextBudget)) {
-        const note: SystemNoteMessage = {
-          type: 'system_note',
-          id: this.deps.newId(),
-          turnId,
-          ts: this.deps.now(),
-          kind: 'context_compacted',
-        };
-        contextCompactedNoteWritten = await this.deps.backend
-          .appendMessage(note)
-          .then(() => true)
-          .catch(() => false);
+        contextCompactedNoteWritten = await this.recordSystemNote('context_compacted', turnId);
       }
     };
     // Request index (0-based) at which the active prune last rewrote the
@@ -1746,15 +1715,10 @@ export class AiSdkTurn {
                       : stepUsage.inputTokens <= priorInput)
                   ) {
                     this.deps.session.contextProviderDroppingReported = true;
-                    const note: SystemNoteMessage = {
-                      type: 'system_note',
-                      id: this.deps.newId(),
-                      turnId,
-                      ts: this.deps.now(),
-                      kind: 'context_provider_dropping',
-                      data: { inputTokens: stepUsage.inputTokens, priorInputTokens: priorInput },
-                    };
-                    await this.deps.backend.appendMessage(note).catch(() => {});
+                    await this.recordSystemNote('context_provider_dropping', turnId, {
+                      inputTokens: stepUsage.inputTokens,
+                      priorInputTokens: priorInput,
+                    });
                   }
                   // Fail closed: reset on every step boundary so a missing final
                   // step's usage does not leave a stale value from an earlier step.
@@ -1775,18 +1739,10 @@ export class AiSdkTurn {
                     stepUsage.inputTokens + stepUsage.outputTokens > midTurnState.capacity
                   ) {
                     contextWindowOverrunNoteWritten = true;
-                    const note: SystemNoteMessage = {
-                      type: 'system_note',
-                      id: this.deps.newId(),
-                      turnId,
-                      ts: this.deps.now(),
-                      kind: 'context_window_overrun',
-                      data: {
-                        usedTokens: stepUsage.inputTokens + stepUsage.outputTokens,
-                        declaredContextWindow: midTurnState.capacity,
-                      },
-                    };
-                    await this.deps.backend.appendMessage(note).catch(() => {});
+                    await this.recordSystemNote('context_window_overrun', turnId, {
+                      usedTokens: stepUsage.inputTokens + stepUsage.outputTokens,
+                      declaredContextWindow: midTurnState.capacity,
+                    });
                   }
                   // Nothing declared, and the provider accepted a request past
                   // the window this model reports. Every other signal in this
@@ -1828,15 +1784,10 @@ export class AiSdkTurn {
                       (previousTotal === undefined || previousTotal <= reported);
                     if (reported !== undefined && crossedNow) {
                       contextReportedWindowNoteWritten = true;
-                      const note: SystemNoteMessage = {
-                        type: 'system_note',
-                        id: this.deps.newId(),
-                        turnId,
-                        ts: this.deps.now(),
-                        kind: 'context_reported_window_exceeded',
-                        data: { usedTokens: used, reportedContextWindow: reported },
-                      };
-                      await this.deps.backend.appendMessage(note).catch(() => {});
+                      await this.recordSystemNote('context_reported_window_exceeded', turnId, {
+                        usedTokens: used,
+                        reportedContextWindow: reported,
+                      });
                     }
                   }
                   lastStepInputTokens = stepUsage?.inputTokens;
@@ -2155,20 +2106,12 @@ export class AiSdkTurn {
                 (midTurnState.capacity === undefined || acceptedTotal < midTurnState.capacity)
               ) {
                 contextWindowSuggestionNoteWritten = true;
-                const note: SystemNoteMessage = {
-                  type: 'system_note',
-                  id: this.deps.newId(),
-                  turnId,
-                  ts: this.deps.now(),
-                  kind: 'context_window_suggestion',
-                  data: {
-                    suggestedContextWindow: acceptedTotal,
-                    ...(midTurnState.capacity !== undefined
-                      ? { declaredContextWindow: midTurnState.capacity }
-                      : {}),
-                  },
-                };
-                await this.deps.backend.appendMessage(note).catch(() => {});
+                await this.recordSystemNote('context_window_suggestion', turnId, {
+                  suggestedContextWindow: acceptedTotal,
+                  ...(midTurnState.capacity !== undefined
+                    ? { declaredContextWindow: midTurnState.capacity }
+                    : {}),
+                });
               }
               // A folded projection was selected in this send and the provider
               // still rejects the request. That is worth saying, because the
@@ -2184,14 +2127,7 @@ export class AiSdkTurn {
                 midTurnState?.compactionAppliedThisSend === true
               ) {
                 contextOverflowAfterCompactionNoteWritten = true;
-                const note: SystemNoteMessage = {
-                  type: 'system_note',
-                  id: this.deps.newId(),
-                  turnId,
-                  ts: this.deps.now(),
-                  kind: 'context_overflow_after_compaction',
-                };
-                await this.deps.backend.appendMessage(note).catch(() => {});
+                await this.recordSystemNote('context_overflow_after_compaction', turnId);
               }
               const idleWatchdogRecovery =
                 settledWatchdogTimeout?.phase === 'idle' &&
@@ -2599,14 +2535,6 @@ export class AiSdkTurn {
                   }
                 : {}),
             };
-            const tu: TokenUsageMessage = {
-              type: 'token_usage',
-              id: this.deps.newId(),
-              turnId,
-              ts: this.deps.now(),
-              ...usageFields,
-            };
-            await this.deps.backend.appendMessage(tu).catch(() => {});
             // Settlement fallback: a mid-turn or request-hook fold is only
             // known here. Notes already written at decision time are skipped
             // by the flags inside.
@@ -2664,8 +2592,8 @@ export class AiSdkTurn {
         // Flush the in-flight step's partial text/thinking before the terminal
         // abort/error events. Earlier steps already flushed at their
         // `finish-step`; this keeps their and this step's streamed-out output on
-        // BOTH exits — user stop and provider error / watchdog timeout — so
-        // partialOutputRetained reflects what the user actually saw.
+        // BOTH exits — user stop and provider error / watchdog timeout — so the
+        // transcript keeps what the user actually saw.
         await flushStep().catch(() => {});
         if (this.aborted) {
           queue.push({

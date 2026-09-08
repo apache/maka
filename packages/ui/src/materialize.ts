@@ -49,6 +49,7 @@ import { getConversationCopy } from "./conversation-copy.js";
 export { isCancelledToolResultContent, isInFlightToolStatus, toolResultActivityStatus } from '@maka/core/tool-result-status';
 
 export interface ChatItem {
+  compactionState?: "running" | "compacted" | "failed";
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
@@ -227,6 +228,7 @@ export function materializeChat(
         id: message.id,
         role: "system",
         text: systemNoteLabel(message.kind, message.data, locale),
+        compactionState: message.kind === "context_compacted" ? "compacted" : message.kind === "context_compaction_failed_open" ? "failed" : undefined,
         ts: message.ts,
       });
     }
@@ -415,6 +417,7 @@ export interface TurnViewModel {
   abortedAt?: number;
   abortSource?: string;
   errorClass?: string;
+  failureMessage?: string;
   retry?: import('@maka/core/model-failure').ModelRetryDecision;
   user?: ChatItem;
   tools: ToolActivityItem[];
@@ -478,6 +481,7 @@ export function overlayLiveTurn(
         id: noteId,
         role: "system",
         text: getConversationCopy(locale).messages.systemNotes.contextCompacting,
+        compactionState: "running",
         ts: existing.startedAt,
       };
       return turns.map((turn, index) =>
@@ -496,6 +500,7 @@ export function overlayLiveTurn(
             id: noteId,
             role: "system",
             text: getConversationCopy(locale).messages.systemNotes.contextCompacting,
+            compactionState: "running",
             ts: startedAt,
           },
         ],
@@ -784,6 +789,7 @@ export function materializeTurns(
           ? { abortedAt: record.abortedAt }
           : {}),
         ...(record?.abortSource ? { abortSource: record.abortSource } : {}),
+        ...(record?.failureMessage ? { failureMessage: record.failureMessage } : {}),
         ...(record?.errorClass ? { errorClass: record.errorClass } : {}),
         ...(record?.retry ? { retry: record.retry } : {}),
         tools: [],
@@ -855,6 +861,7 @@ export function materializeTurns(
         id: message.id,
         role: "system",
         text: systemNoteLabel(message.kind, message.data, locale),
+        compactionState: message.kind === "context_compacted" ? "compacted" : message.kind === "context_compaction_failed_open" ? "failed" : undefined,
         ts: message.ts,
       });
     } else if (message.type === "token_usage") {

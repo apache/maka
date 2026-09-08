@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
 import test from 'node:test';
 import {
   decodeSessionTurnsQueryResult,
@@ -48,26 +49,41 @@ test('keeps a full sampled landmark index inside its encoded result budget', () 
   assert.doesNotThrow(() => decodeSessionTurnLandmarksQueryResult(result));
 });
 
-test('keeps legacy assistant presence distinct from retained output', () => {
-  assert.deepEqual(
+test('publishes no Turn until its recorded state is on the page', () => {
+  assert.strictEqual(
     projectSessionTurnContribution({
       turnId: 'turn-1',
       firstSequence: 0,
       latestState: null,
       userPromptPreview: 'hello',
-      hasAssistantMessage: true,
-      hasAssistantOutput: false,
-      hasToolResult: false,
-      hasFailedToolResult: true,
-      hasAbortNote: false,
+    }),
+    undefined,
+  );
+});
+
+test('takes the published Turn from the recorded turn state', () => {
+  assert.deepEqual(
+    projectSessionTurnContribution({
+      turnId: 'turn-1',
+      firstSequence: 0,
+      latestState: {
+        sequence: 4,
+        message: {
+          type: 'turn_state',
+          id: 'state-1',
+          turnId: 'turn-1',
+          ts: 1,
+          status: 'failed',
+        },
+      },
+      userPromptPreview: 'hello',
     }),
     {
       turnId: 'turn-1',
       firstSequence: 0,
       userPromptPreview: 'hello',
-      status: 'completed',
-      statusSource: 'inferred',
-      partialOutputRetained: false,
+      status: 'failed',
+      statusSource: 'recorded',
     },
   );
 });
@@ -84,17 +100,12 @@ test('bounds turn diagnostics before publishing a contribution', () => {
         turnId: 'turn-1',
         ts: 1,
         status: 'failed',
-        partialOutputRetained: false,
         errorClass: '失败'.repeat(100_000),
+        failureMessage: '失败'.repeat(100_000),
         retry: { decision: 'declined', because: 'side_effects' },
       },
     },
     userPromptPreview: 'hello',
-    hasAssistantMessage: false,
-    hasAssistantOutput: false,
-    hasToolResult: false,
-    hasFailedToolResult: false,
-    hasAbortNote: false,
   });
 
   assert.ok(
@@ -110,6 +121,10 @@ test('bounds turn diagnostics before publishing a contribution', () => {
     }),
   );
   const turn = projectSessionTurnContribution(contribution);
+  assert.ok(turn);
+  assert.ok(turn.failureMessage);
+  assert.ok(Buffer.byteLength(turn.failureMessage) <= MODEL_FAILURE_MESSAGE_MAX_BYTES);
+  assert.equal(turn.failureMessage, contribution.latestState!.message.failureMessage);
   assert.deepEqual(turn.retry, { decision: 'declined', because: 'side_effects' });
 });
 
@@ -127,51 +142,9 @@ test('rejects invalid turn-state references before publishing a contribution', (
           ts: 1,
           status: 'completed',
           parentTurnId: 'x'.repeat(129),
-          partialOutputRetained: false,
         },
       },
       userPromptPreview: null,
-      hasAssistantMessage: false,
-      hasAssistantOutput: false,
-      hasToolResult: false,
-      hasFailedToolResult: false,
-      hasAbortNote: false,
     }),
   );
 });
-
-for (const output of ['none', 'assistant', 'tool', 'legacy'] as const) {
-  test(`derives retained output from bounded contributions: ${output}`, () => {
-    const contribution = projectSessionTurnContributionForWire({
-      turnId: 'turn-1',
-      firstSequence: 0,
-      latestState: {
-        sequence: 100,
-        message: {
-          type: 'turn_state',
-          id: 'state',
-          turnId: 'turn-1',
-          ts: 100,
-          status: 'failed',
-          ...(output === 'legacy' ? { partialOutputRetained: true } : {}),
-        },
-      },
-      userPromptPreview: null,
-      hasAssistantMessage: true,
-      hasAssistantOutput: output === 'assistant',
-      hasToolResult: output === 'tool',
-      hasFailedToolResult: false,
-      hasAbortNote: false,
-    });
-    const decoded = decodeSessionTurnsQueryResult({
-      sessionId: 'session-1',
-      throughSequence: 100,
-      contributions: [contribution],
-      nextPosition: null,
-    });
-    assert.equal(
-      projectSessionTurnContribution(decoded.contributions[0]!).partialOutputRetained,
-      output !== 'none',
-    );
-  });
-}

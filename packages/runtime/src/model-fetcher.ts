@@ -114,7 +114,7 @@ type RawGitHubCopilotModel = {
   name?: string;
   model_picker_enabled?: boolean;
   supported_endpoints?: string[];
-  policy?: { state?: string };
+  policy?: unknown;
   capabilities?: {
     limits?: {
       max_context_window_tokens?: number;
@@ -407,6 +407,13 @@ function normalizeConnectionEffectModels(models: ModelInfo[]): readonly ModelInf
   }
 }
 
+export class GitHubCopilotModelPolicyError extends Error {
+  constructor() {
+    super('GitHub Copilot model policy is not enabled');
+    this.name = 'GitHubCopilotModelPolicyError';
+  }
+}
+
 export async function fetchGitHubCopilotModels(
   baseUrl: string,
   accessToken: string,
@@ -426,11 +433,16 @@ export async function fetchGitHubCopilotModels(
     throw new ConnectionEffectHttpError(response.status);
   }
   const payload = await readProviderJson<{ data?: unknown }>(response);
-  return providerObjectArray<RawGitHubCopilotModel>(
+  const rawModels = providerObjectArray<RawGitHubCopilotModel>(
     payload.data,
     'GitHub Copilot models',
     true,
-  ).flatMap(toGitHubCopilotModelInfo);
+  );
+  const models = rawModels.flatMap(toGitHubCopilotModelInfo);
+  if (models.length === 0 && rawModels.some(isGitHubCopilotModelBlockedByPolicy)) {
+    throw new GitHubCopilotModelPolicyError();
+  }
+  return models;
 }
 
 type RawOpenAiCodexModel = {
@@ -530,7 +542,12 @@ function toGitHubCopilotModelInfo(model: RawGitHubCopilotModel): ModelInfo[] {
     typeof model.id !== 'string' ||
     !model.id ||
     model.model_picker_enabled !== true ||
-    model.policy?.state === 'disabled' ||
+    // GitHub historically returned enabled/disabled/unconfigured policy gates.
+    // A policy-free model needs no acknowledgement; when the gate is present,
+    // Maka can use the model only after another client has enabled it. Maka has
+    // no policy-acceptance flow, so fail closed over unconfigured and unknown
+    // states instead of advertising a model that inference will reject.
+    !isGitHubCopilotModelPolicyEnabled(model.policy) ||
     model.capabilities?.supports?.tool_calls !== true
   )
     return [];
@@ -577,6 +594,32 @@ function toGitHubCopilotModelInfo(model: RawGitHubCopilotModel): ModelInfo[] {
       capabilities: { vision, reasoning, functionCalling: true },
     },
   ];
+}
+
+function isGitHubCopilotModelPolicyEnabled(policy: unknown): boolean {
+  if (policy === undefined) return true;
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) return false;
+  return (policy as Record<string, unknown>).state === 'enabled';
+}
+
+function isGitHubCopilotModelBlockedByPolicy(model: RawGitHubCopilotModel): boolean {
+  if (
+    typeof model.id !== 'string' ||
+    !model.id ||
+    model.model_picker_enabled !== true ||
+    model.capabilities?.supports?.tool_calls !== true ||
+    !Array.isArray(model.supported_endpoints) ||
+    !model.supported_endpoints.some((endpoint) =>
+      ['/v1/messages', '/responses', '/chat/completions'].includes(endpoint),
+    )
+  ) {
+    return false;
+  }
+  if (!model.policy || typeof model.policy !== 'object' || Array.isArray(model.policy)) {
+    return false;
+  }
+  const state = (model.policy as Record<string, unknown>).state;
+  return state === 'disabled' || state === 'unconfigured';
 }
 
 async function fetchCohereModels(
@@ -919,6 +962,7 @@ function nextProviderPageToken(value: unknown): string | undefined {
 }
 
 function classifyDiscoveryError(error: unknown): ConnectionEffectError {
+  if (error instanceof GitHubCopilotModelPolicyError) return { kind: 'auth' };
   if (error instanceof ConnectionEffectFetchError) return { kind: error.kind };
   if (error instanceof ConnectionEffectHttpError) {
     return classifyConnectionEffectStatus(error.status);

@@ -256,4 +256,13 @@ describe('AppUpdateProvider render scope', () => {
     });
     await act(async () => root.unmount());
   });
+
+  test('throws for an About reader mounted outside AppUpdateProvider', () => {
+    const { root } = installReactRenderer();
+    assert.throws(
+      () => act(() => root.render(createElement(AboutProbe))),
+      { message: 'AppUpdateProvider is missing' },
+    );
+    assert.equal(aboutRenders, 0);
+  });
 });

@@ -188,7 +188,42 @@ export function SessionHistoryList() {
   const selection = useSessionRailSelection();
   const locale = useUiLocale();
   const listRef = useRef<HTMLDivElement>(null);
+  const secondaryPointerDownRef = useRef(false);
+  const pendingContextMenuTriggerRef = useRef<HTMLElement | null>(null);
   const commands = selection?.commands;
+
+  useEffect(() => {
+    function handlePointerDown(event: PointerEvent) {
+      if (event.button === 2) secondaryPointerDownRef.current = true;
+    }
+
+    function handlePointerUp(event: PointerEvent) {
+      if (event.button !== 2) return;
+      secondaryPointerDownRef.current = false;
+      const trigger = pendingContextMenuTriggerRef.current;
+      pendingContextMenuTriggerRef.current = null;
+      // Run after the pointerup dispatch and its native light-dismiss default
+      // action have both completed. Opening inside this listener is still too
+      // early: the default action would dismiss the newly opened popover.
+      window.setTimeout(() => trigger?.click(), 0);
+    }
+
+    function cancelPendingContextMenu() {
+      secondaryPointerDownRef.current = false;
+      pendingContextMenuTriggerRef.current = null;
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown, { capture: true });
+    document.addEventListener('pointerup', handlePointerUp, { capture: true });
+    document.addEventListener('pointercancel', cancelPendingContextMenu, { capture: true });
+    window.addEventListener('blur', cancelPendingContextMenu);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, { capture: true });
+      document.removeEventListener('pointerup', handlePointerUp, { capture: true });
+      document.removeEventListener('pointercancel', cancelPendingContextMenu, { capture: true });
+      window.removeEventListener('blur', cancelPendingContextMenu);
+    };
+  }, []);
 
   /**
    * The rail's rendered order, read from the DOM at the moment of a click.
@@ -280,6 +315,15 @@ export function SessionHistoryList() {
     const trigger = row.querySelector<HTMLElement>('.maka-session-row-action button');
     event.preventDefault();
     adoptForMenu(sessionId);
+    // Chromium fires `contextmenu` before the secondary-button pointerup on
+    // macOS. Opening a light-dismiss popover here lets that unfinished press
+    // dismiss the new menu as soon as the button is released. Other platforms
+    // may deliver `contextmenu` after pointerup, and keyboard invocations have
+    // no secondary press, so only defer while that pointer is observably down.
+    if (event.button === 2 && secondaryPointerDownRef.current) {
+      pendingContextMenuTriggerRef.current = trigger;
+      return;
+    }
     // Opening the menu re-enters `handleListClickCapture` with a synthetic
     // click, so the adoption is dispatched twice — harmless only because both
     // of its branches are idempotent: `replace` sets the same one row, and
