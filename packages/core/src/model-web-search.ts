@@ -69,9 +69,24 @@ export function resolveHostedWebSearchCapability(
     return null;
   }
   if (stored?.capabilities?.webSearch === true) {
-    return adapter;
+    return adapter.adapter === 'google-grounding' ? googleGroundingCapability(id) : adapter;
   }
   return providerDefaultHostedWebSearchCapability(providerType, id, adapter);
+}
+
+/**
+ * @ai-sdk/google drops function tools when `googleSearch` is present on
+ * pre-Gemini-3 models. Gemini 3+ is the only documented mix that keeps both.
+ */
+export function geminiModelAllowsGoogleSearchToolMix(modelId: string): boolean {
+  return /^gemini-3(?:[.-]|$)/i.test(modelId.trim());
+}
+
+function googleGroundingCapability(modelId: string): HostedWebSearchCapability {
+  return {
+    adapter: 'google-grounding',
+    implemented: geminiModelAllowsGoogleSearchToolMix(modelId),
+  };
 }
 
 function providerHostedWebSearchAdapter(
@@ -140,7 +155,9 @@ function providerDefaultHostedWebSearchCapability(
     case 'openai-responses-compatible':
       return null;
     case 'google':
-      return /^gemini-(?:2\.0|2\.5|3|3\.1|3\.5)(?:[.-]|$)/i.test(modelId) ? capability : null;
+      return /^gemini-(?:2\.0|2\.5|3|3\.1|3\.5)(?:[.-]|$)/i.test(modelId)
+        ? googleGroundingCapability(modelId)
+        : null;
     case 'zai':
     case 'zai-coding-plan':
       return /^glm-(?:4\.5|4\.6|4\.7|5)(?:[.-]|$)/i.test(modelId) ? capability : null;

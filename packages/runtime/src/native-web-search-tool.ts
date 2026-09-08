@@ -18,7 +18,10 @@
  */
 
 import { z } from 'zod';
-import { resolveHostedWebSearchCapability } from '@maka/core/model-web-search';
+import {
+  geminiModelAllowsGoogleSearchToolMix,
+  resolveHostedWebSearchCapability,
+} from '@maka/core/model-web-search';
 import { resolveModelRuntime } from './model-runtime.js';
 import type { HostedWebSearchAdapter } from '@maka/core/model-web-search';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
@@ -114,7 +117,8 @@ export function routeWebSearchTools(input: {
       capability?.implemented === true &&
       (capability.adapter === 'openai-responses' ||
         capability.adapter === 'anthropic-messages' ||
-        capability.adapter === 'google-grounding')
+        (capability.adapter === 'google-grounding' &&
+          geminiModelAllowsGoogleSearchToolMix(input.model)))
     ) {
       selected = buildNativeWebSearchTool({ adapter: capability.adapter });
     }
