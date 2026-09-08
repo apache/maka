@@ -181,6 +181,54 @@ test('PTY callbacks bypass a stalled Session iterator and isolate consumer failu
   await subscription.close();
 });
 
+test('domain callbacks validate identity, support unsubscribe, and stop on close', async () => {
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-domain'),
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected read');
+    },
+  );
+  const domains: string[] = [];
+  const unsubscribe = subscription.subscribeSessionDomainChanges((frame) => {
+    domains.push(frame.domain);
+  });
+  subscription.accept({
+    kind: 'subscription.session_domain_changed',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-domain',
+    sequence: 1,
+    sessionId: 'session-1',
+    domain: 'todo',
+  });
+  assert.deepEqual(domains, ['todo']);
+
+  unsubscribe();
+  subscription.accept({
+    kind: 'subscription.session_domain_changed',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-domain',
+    sequence: 2,
+    sessionId: 'session-1',
+    domain: 'usage',
+  });
+  assert.deepEqual(domains, ['todo']);
+
+  await subscription.close();
+  assert.throws(
+    () =>
+      subscription.accept({
+        kind: 'subscription.session_domain_changed',
+        hostEpoch: 'host-1',
+        subscriptionId: 'subscription-domain',
+        sequence: 3,
+        sessionId: 'other-session',
+        domain: 'todo',
+      }),
+    /Session subscription is closed|Session subscription frame identity changed/,
+  );
+});
+
 test('isolates a sequence gap and continues requests on the same connection', async () => {
   await withProtocolPeer(
     async (transport, hostEpoch, rootId) => {
