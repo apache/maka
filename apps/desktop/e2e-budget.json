@@ -5,6 +5,10 @@
     "Every spec below records the Electron-owned mechanism it needs. If you cannot name one, the test does not belong here."
   ],
   "specs": {
+    "agent-graph.spec.ts": {
+      "tests": 2,
+      "electron": "the panel renders a projection materialized through renderer, preload IPC, main, Runtime Host and SQLite; the liveness CSS and the scroll/focus geometry are asserted in the real compositor window"
+    },
     "composer-directory-reference.spec.ts": {
       "tests": 1,
       "electron": "the folder reference has to survive a renderer reload and still agree with the Host's session record"

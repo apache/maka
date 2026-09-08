@@ -75,7 +75,7 @@ import type { TranscriptHistoryPending } from './features/conversation';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { LiveTurnReconciler } from './live-turn-reconciler';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
-import { AgentGraphPanel } from './agent-graph-panel';
+import { AgentGraphPanel } from './features/agent-graph';
 import { ChatComposerRegion, selectLatestRequestUsage } from './chat-composer-region';
 import {
   WorkbarHost,

@@ -534,6 +534,7 @@ type E2eTestFixtures = {
   renameFocusWindow: { page: Page; app: ElectronApplication };
   parentRemovalWindow: Page;
   railRenderWindow: Page;
+  agentGraphTopologyWindow: Page;
   promptRailWindow: Page;
   partialHistoryWindow: Page;
   requestHeaderRowWindow: Page;
@@ -650,6 +651,15 @@ export const test = base.extend<E2eTestFixtures>({
       },
       use,
     );
+  },
+  agentGraphTopologyWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '[data-testid="agent-graph-topology"]',
+      e2eFixtureScenario: 'agent-graph-topology',
+      locale: 'en',
+      showWindow: true,
+    }, use);
   },
   // A multi-prompt transcript. Each cost assertion gets an isolated Host and
   // renderer so observation state cannot bleed between tests. The window is

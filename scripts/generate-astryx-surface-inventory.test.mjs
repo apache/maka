@@ -30,6 +30,7 @@ import {
   loadAstryxComponents,
   loadMakaUiBarrel,
   parseAstryxDistComponents,
+  renderAstryxSurfaceInventory,
 } from './generate-astryx-surface-inventory.mjs';
 
 const tmpRoots = [];
@@ -282,5 +283,43 @@ describe('analyzeTsx severity (#3868)', () => {
         ),
       /Astryx surface blocker/,
     );
+  });
+});
+
+describe('Astryx native button exception', () => {
+  const astryxComponents = loadAstryxComponents().components;
+  const base = { astryxComponents, makaUiReexports: new Map(), shadowNames: null };
+  const topologyPath = 'apps/desktop/src/renderer/features/agent-graph/ui/agent-graph-topology.tsx';
+
+  test('allows exactly one reviewed topology button callsite', () => {
+    const result = analyzeTsx(topologyPath, 'export const Node = () => <button />;', base);
+
+    assert.equal(result.severity, 'aligned');
+    assert.match(result.gaps, /one native button/);
+  });
+
+  test('does not treat the path as a file-wide exception', () => {
+    const result = analyzeTsx(
+      topologyPath,
+      'export const Nodes = () => <><button /><button /></>;',
+      base,
+    );
+
+    assert.equal(result.severity, 'blocker');
+    assert.match(result.gaps, /raw `<button`/);
+  });
+
+  test('does not report an exception when the callsite is absent', () => {
+    const result = analyzeTsx(topologyPath, 'export const Empty = () => <div />;', base);
+
+    assert.equal(result.severity, 'aligned');
+    assert.doesNotMatch(result.gaps, /one native button/);
+  });
+
+  test('documents reviewed exceptions in the generated severity rules', () => {
+    const result = renderAstryxSurfaceInventory();
+
+    assert.match(result.markdown, /reviewed callsite-specific exception/u);
+    assert.match(result.markdown, /locks the permitted count/u);
   });
 });

@@ -595,7 +595,7 @@ Read the implementation in this order:
 13. `packages/runtime/src/agent-graph-timeline.ts`: reference-only control/data-plane reconstruction, stable order, coverage, and pagination.
 14. `packages/runtime/src/agent-graph-supervisor-wake.ts`: durable return path to the root Agent.
 15. `packages/storage/src/sqlite-session-metadata-schema.ts` and `sqlite-session-metadata-store.ts`: Graph control-plane transactions and timeline metadata snapshot.
-16. `apps/desktop/src/main/main.ts`, `runtime-host-session-domains-ipc-main.ts`, and `apps/desktop/src/renderer/agent-graph-panel.tsx`: product composition and bounded UI. Graph change events travel through the generic session-domains bridge as `agentGraphChanged`; there is no Graph-specific main-process IPC module.
+16. `apps/desktop/src/main/main.ts`, `runtime-host-session-domains-ipc-main.ts`, and `apps/desktop/src/renderer/features/agent-graph/`: product composition and bounded UI. Graph change events travel through the generic session-domains bridge as `agentGraphChanged`; there is no Graph-specific main-process IPC module.
 
 The most relevant contract tests are colocated under:
 

@@ -17,14 +17,24 @@
  * under the License.
  */
 
-import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { getAgentGraphPanelCopy } from '../../renderer/features/agent-graph/testing.js';
+import { createContext, useContext, type ReactNode } from 'react';
+import type { AgentGraphServices } from './ports.js';
 
-test('Traditional Chinese Agent Graph copy does not use Simplified fallbacks', () => {
-  const copy = getAgentGraphPanelCopy('zh-TW');
-  assert.equal(copy.loading, '正在讀取 Graph 狀態…');
-  assert.equal(copy.openSession, '開啟子任務');
-  assert.equal(copy.currentEpoch, '目前');
-  assert.equal(copy.status('active'), '執行中');
-});
+const AgentGraphServicesContext = createContext<AgentGraphServices | null>(null);
+
+export function AgentGraphServicesProvider(props: {
+  readonly services: AgentGraphServices;
+  readonly children?: ReactNode;
+}) {
+  return (
+    <AgentGraphServicesContext.Provider value={props.services}>
+      {props.children}
+    </AgentGraphServicesContext.Provider>
+  );
+}
+
+export function useAgentGraphServices(): AgentGraphServices {
+  const services = useContext(AgentGraphServicesContext);
+  if (!services) throw new Error('AgentGraphServicesProvider is missing');
+  return services;
+}

@@ -17,14 +17,22 @@
  * under the License.
  */
 
-import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { getAgentGraphPanelCopy } from '../../renderer/features/agent-graph/testing.js';
-
-test('Traditional Chinese Agent Graph copy does not use Simplified fallbacks', () => {
-  const copy = getAgentGraphPanelCopy('zh-TW');
-  assert.equal(copy.loading, '正在讀取 Graph 狀態…');
-  assert.equal(copy.openSession, '開啟子任務');
-  assert.equal(copy.currentEpoch, '目前');
-  assert.equal(copy.status('active'), '執行中');
-});
+export { AgentGraphPanel, getAgentGraphPanelCopy } from './ui/agent-graph-panel.js';
+export { AgentGraphServicesProvider } from './services-context.js';
+export type { AgentGraphServices } from './ports.js';
+export {
+  agentGraphEdgePath,
+  agentGraphStatusSemantic,
+  firstScheduledWorkPreview,
+  layoutAgentGraph,
+  revealAgentGraphNode,
+  scheduledWorkPresentation,
+} from './ui/agent-graph-topology.js';
+export { createAgentGraphRefreshScheduler } from './controller/agent-graph-refresh.js';
+export {
+  dismissAgentGraphPanel,
+  isAgentGraphLive,
+  isAgentGraphPanelDismissible,
+  reconcileAgentGraphPanelDismissals,
+  shouldShowAgentGraphPanel,
+} from './model/agent-graph-panel-visibility.js';

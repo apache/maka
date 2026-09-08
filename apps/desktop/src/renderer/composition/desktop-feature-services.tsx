@@ -20,6 +20,7 @@
 import type { ReactNode } from 'react';
 import { ConversationServicesProvider } from '../features/conversation';
 import { createDesktopConversationServices } from '../platform/desktop/create-conversation-services';
+import { AgentGraphServicesProvider } from '../features/agent-graph';
 import { AppUpdateServicesProvider } from '../features/app-update/index.js';
 import { ConnectionSettingsServicesProvider } from '../features/connection-settings';
 import { GoalServicesProvider } from '../features/goals';
@@ -31,6 +32,7 @@ import { WorkHubComposerServicesProvider } from '../features/workhub/index.js';
 import { SessionSettingsServicesProvider } from '../features/session-settings';
 import { TaskEntryServicesProvider } from '../features/task-entry';
 import { WorkbarServicesProvider } from '../features/workbar';
+import { createDesktopAgentGraphServices } from '../platform/desktop/create-agent-graph-services';
 import { createDesktopAppUpdateServices } from '../platform/desktop/create-app-update-services';
 import { createDesktopGoalServices } from '../platform/desktop/create-goal-services';
 import { createDesktopConnectionSettingsServices } from '../platform/desktop/create-connection-settings-services';
@@ -45,6 +47,7 @@ import { createDesktopWorkbarServices } from '../platform/desktop/create-workbar
 
 export function createDesktopFeatureServices() {
   return {
+    agentGraph: createDesktopAgentGraphServices(),
     appUpdate: createDesktopAppUpdateServices(),
     conversation: createDesktopConversationServices(),
     connectionSettings: createDesktopConnectionSettingsServices(),
@@ -66,6 +69,7 @@ export function DesktopFeatureServicesProvider(props: {
 }) {
   return (
     <AppUpdateServicesProvider services={props.services.appUpdate}>
+      <AgentGraphServicesProvider services={props.services.agentGraph}>
       <ConnectionSettingsServicesProvider services={props.services.connectionSettings}>
         <RuntimeHostManagementServicesProvider services={props.services.runtimeHostManagement}>
           <SessionCollaborationServicesProvider services={props.services.sessionCollaboration}>
@@ -89,6 +93,7 @@ export function DesktopFeatureServicesProvider(props: {
           </SessionCollaborationServicesProvider>
         </RuntimeHostManagementServicesProvider>
       </ConnectionSettingsServicesProvider>
+      </AgentGraphServicesProvider>
     </AppUpdateServicesProvider>
   );
 }

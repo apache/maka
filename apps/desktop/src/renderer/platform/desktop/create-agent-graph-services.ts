@@ -17,14 +17,13 @@
  * under the License.
  */
 
-import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { getAgentGraphPanelCopy } from '../../renderer/features/agent-graph/testing.js';
+import type { MakaBridge } from '../../../preload/bridge-contract.js';
+import type { AgentGraphServices } from '../../features/agent-graph';
 
-test('Traditional Chinese Agent Graph copy does not use Simplified fallbacks', () => {
-  const copy = getAgentGraphPanelCopy('zh-TW');
-  assert.equal(copy.loading, '正在讀取 Graph 狀態…');
-  assert.equal(copy.openSession, '開啟子任務');
-  assert.equal(copy.currentEpoch, '目前');
-  assert.equal(copy.status('active'), '執行中');
-});
+export type DesktopAgentGraphBridge = Pick<MakaBridge, 'graphs'>;
+
+export function createDesktopAgentGraphServices(
+  bridge: DesktopAgentGraphBridge = window.maka,
+): AgentGraphServices {
+  return { graphs: bridge.graphs };
+}

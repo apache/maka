@@ -381,12 +381,20 @@ export function loadMakaUiBarrel(repoRoot = root) {
   return result;
 }
 
-const RAW_BUTTON_RE = /<\s*button\b/;
+const RAW_BUTTON_GLOBAL_RE = /<\s*button\b/g;
 const RAW_INPUT_RE = /<\s*input\b/;
 const RAW_SELECT_RE = /<\s*select\b/;
 const RAW_TEXTAREA_RE = /<\s*textarea\b/;
 const RAW_ACTION_ELEMENT_RE =
   /<\s*(span|div)\b(?=[^>]*(?:onClick\s*=|role\s*=\s*['"]button['"]))[^>]*>/g;
+// Astryx Button's overflow-hidden ellipsis wrapper prevents card children from becoming grid items.
+// Each listed surface permits exactly one native button, so this cannot become a file-wide escape hatch.
+const NATIVE_BUTTON_EXCEPTIONS = new Map([
+  [
+    'apps/desktop/src/renderer/features/agent-graph/ui/agent-graph-topology.tsx',
+    'aligned — one native button avoids the Astryx overflow-hidden ellipsis wrapper so card children remain grid items',
+  ],
+]);
 const HEX_RE = /#[0-9a-fA-F]{3,8}\b/;
 const OFF_HEIGHT_RE = /(?:min-)?height:\s*(\d+)px/g;
 const ALLOWED_H = new Set([28, 32, 36]);
@@ -526,7 +534,11 @@ export function analyzeTsx(rel, text, ctx) {
   const code = stripComments(text);
   const named = collectAstryxUsage(code, astryxComponents, makaUiReexports);
   const shadows = shadowNames ? [...shadowNames].sort() : [];
-  const rawButton = RAW_BUTTON_RE.test(code);
+  const rawButtonCount = [...code.matchAll(RAW_BUTTON_GLOBAL_RE)].length;
+  const rawButton = rawButtonCount > 0;
+  const nativeButtonException =
+    rawButtonCount === 1 ? NATIVE_BUTTON_EXCEPTIONS.get(rel) : undefined;
+  const blockingRawButton = rawButton && !nativeButtonException;
   const rawInput = RAW_INPUT_RE.test(code);
   const rawSelect = RAW_SELECT_RE.test(code);
   const rawTextarea = RAW_TEXTAREA_RE.test(code);
@@ -537,7 +549,7 @@ export function analyzeTsx(rel, text, ctx) {
   }
   const gaps = [];
   const admissionGaps = [];
-  if (rawButton) gaps.push('raw `<button` (API Use-the-System)');
+  if (blockingRawButton) gaps.push('raw `<button` (API Use-the-System)');
   if (rawInput) gaps.push('raw `<input` (API Use-the-System)');
   if (rawSelect) gaps.push('raw `<select` (API Use-the-System)');
   if (rawTextarea) gaps.push('raw `<textarea` (API Use-the-System)');
@@ -549,20 +561,22 @@ export function analyzeTsx(rel, text, ctx) {
   for (const name of shadows) {
     gaps.push(`public export \`${name}\` shadows Astryx component (not a re-export)`);
   }
-  if (named.size === 0 && (rawButton || rawInput || rawSelect)) {
+  if (named.size === 0 && (blockingRawButton || rawInput || rawSelect)) {
     gaps.push('no Astryx import/JSX with raw controls (API Use-the-System)');
   }
   let severity = 'aligned';
-  if (rawButton || rawInput || rawSelect) severity = 'blocker';
+  if (blockingRawButton || rawInput || rawSelect) severity = 'blocker';
   else if (shadows.length > 0) severity = 'reimplementation';
   else if (rawTextarea) severity = 'polish';
 
   const note =
     gaps.length > 0
       ? gaps.join('; ')
-      : named.size > 0
-        ? `aligned — uses Astryx (${[...named].sort().slice(0, 8).join(', ')})`
-        : 'aligned — no raw controls; no Astryx JSX usage';
+      : nativeButtonException
+        ? nativeButtonException
+        : named.size > 0
+          ? `aligned — uses Astryx (${[...named].sort().slice(0, 8).join(', ')})`
+          : 'aligned — no raw controls; no Astryx JSX usage';
   return {
     astryx: named.size > 0 ? [...named].sort().join(', ') : 'none',
     admissionGaps,
@@ -692,7 +706,7 @@ export function renderAstryxSurfaceInventory(repoRoot = root) {
   lines.push('## Severity legend');
   lines.push('');
   lines.push(
-    '- **blocker** — raw interactive control with an Astryx twin available (`button`/`input`/`select`).',
+    '- **blocker** — raw interactive control with an Astryx twin available (`button`/`input`/`select`), unless a reviewed callsite-specific exception above documents an incompatible composition constraint and locks the permitted count.',
   );
   lines.push(
     '- **reimplementation** — a public `@maka/ui` export shadows a shipped Astryx component (same name, not a re-export). A neutral signal for review, not proof of a semantic re-implementation.',
@@ -700,7 +714,9 @@ export function renderAstryxSurfaceInventory(repoRoot = root) {
   lines.push(
     '- **polish** — off-rhythm control heights or softer smells; not wrong primitive choice.',
   );
-  lines.push('- **aligned** — no blocker smell found; Astryx usage noted when present.');
+  lines.push(
+    '- **aligned** — no blocker smell found, or a reviewed callsite-specific exception applies; Astryx usage noted when present.',
+  );
   lines.push('');
 
   const markdown = lines.join('\n');

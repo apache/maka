@@ -592,7 +592,7 @@ Graph 位于 foreground fan-out 与独立 workflow runtime 之间：足够动态
 13. `packages/runtime/src/agent-graph-timeline.ts`：reference-only control/data-plane reconstruction、stable order、coverage 与 pagination。
 14. `packages/runtime/src/agent-graph-supervisor-wake.ts`：回到 root Agent 的持久路径。
 15. `packages/storage/src/sqlite-session-metadata-schema.ts` 与 `sqlite-session-metadata-store.ts`：Graph control-plane transaction 与 timeline metadata snapshot。
-16. `apps/desktop/src/main/main.ts`、`runtime-host-session-domains-ipc-main.ts` 与 `apps/desktop/src/renderer/agent-graph-panel.tsx`：产品组合与 bounded UI。Graph 变更事件走通用 session-domains 桥接的 `agentGraphChanged`，没有 Graph 专属的主进程 IPC 模块。
+16. `apps/desktop/src/main/main.ts`、`runtime-host-session-domains-ipc-main.ts` 与 `apps/desktop/src/renderer/features/agent-graph/`：产品组合与 bounded UI。Graph 变更事件走通用 session-domains 桥接的 `agentGraphChanged`，没有 Graph 专属的主进程 IPC 模块。
 
 最相关的 contract tests 位于：
 
