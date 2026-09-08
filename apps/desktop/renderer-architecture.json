@@ -322,7 +322,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 3636
+        "nonTriviaTokens": 3618
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 4,
@@ -707,7 +707,6 @@
           "window.maka.diagnostics.takePreviousMainProcessInterruption": 1,
           "window.maka.notifications.runEnded": 1,
           "window.maka.onboarding.setMilestone": 1,
-          "window.maka.sessions.abandonPlanProposal": 1,
           "window.maka.sessions.compact": 1,
           "window.maka.sessions.getPlanState": 1,
           "window.maka.sessions.listActiveInteractions": 1,
@@ -715,7 +714,6 @@
           "window.maka.sessions.promoteQueueEntry": 1,
           "window.maka.sessions.reorderQueueEntries": 1,
           "window.maka.sessions.retractQueueEntry": 1,
-          "window.maka.sessions.setCollaborationMode": 1,
           "window.maka.sessions.subscribeActiveInteractions": 1,
           "window.maka.sessions.updateQueueEntry": 1,
           "window.maka.settings.getClient": 1,
@@ -856,7 +854,7 @@
           "react": 1
         },
         "importSpecifiers": 104,
-        "nonTriviaTokens": 13402
+        "nonTriviaTokens": 13394
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -1701,6 +1699,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "@maka/core/attachments": 1,
           "@maka/core/redaction": 1,
           "@maka/core/ui-locale": 1
         }

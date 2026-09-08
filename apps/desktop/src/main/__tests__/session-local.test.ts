@@ -706,16 +706,15 @@ test('local submit preserves picked-file approvals until durable admission succe
     largeFiles.push({ path: imagePath, name, size: 33 * 1024 * 1024 });
   }
   const largePicked = approvals.issueApprovals(7, largeFiles);
-  await assert.rejects(
-    () =>
-      submit(
-        { sender: { id: 7 } } as IpcMainInvokeEvent,
-        target.scope,
-        'session-1',
-        'current_turn',
-        { ...draft, messageId: 'too-large', attachmentItems: largePicked },
-      ),
-    /attachment_ingest:total_size_exceeded/,
+  assert.deepEqual(
+    await submit(
+      { sender: { id: 7 } } as IpcMainInvokeEvent,
+      target.scope,
+      'session-1',
+      'current_turn',
+      { ...draft, messageId: 'too-large', attachmentItems: largePicked },
+    ),
+    { ok: false, reason: 'attachment_blocked', code: 'total_size_exceeded' },
   );
   assert.equal(resizeCalls, 0);
   assert.equal(store.get('authority', 'too-large'), undefined);

@@ -17,11 +17,12 @@
  * under the License.
  */
 
+import type { AttachmentIngestBlockedCode } from '@maka/core/attachments';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { SkillInvocationResult } from '@maka/runtime/skill-invocation';
 import { getShellCopy } from './locales/shell-copy.js';
 
-type SkillInvocationToastApi = {
+type FeedbackToastApi = {
   error(
     title: string,
     description?: string,
@@ -30,6 +31,38 @@ type SkillInvocationToastApi = {
   ): void;
   info(title: string, description?: string): void;
 };
+
+type SubmissionFeedback =
+  | { skillInvocation: SkillInvocationResult }
+  | { reason: 'attachment_blocked'; code: AttachmentIngestBlockedCode };
+
+export function showSubmissionFeedback(
+  uiLocale: UiLocale,
+  toastApi: FeedbackToastApi,
+  outcome: SubmissionFeedback,
+  sessionId: string,
+): void {
+  if ('code' in outcome) {
+    showAttachmentIngestBlockedFeedback(uiLocale, toastApi, outcome.code, sessionId);
+    return;
+  }
+  showSkillInvocationFeedback(uiLocale, toastApi, outcome.skillInvocation, sessionId);
+}
+
+function showAttachmentIngestBlockedFeedback(
+  uiLocale: UiLocale,
+  toastApi: FeedbackToastApi,
+  code: AttachmentIngestBlockedCode,
+  sessionId: string,
+): void {
+  const copy = getShellCopy(uiLocale);
+  toastApi.error(
+    copy.chatActions.sendFailedTitle,
+    copy.sessionSettingsActions.attachmentIngestBlocked[code],
+    undefined,
+    { sessionId },
+  );
+}
 
 /** Match main-process persistence for a chip-only optimistic user message. */
 export function skillInvocationDisplayText(
@@ -41,9 +74,9 @@ export function skillInvocationDisplayText(
 }
 
 /** The Composer is the only Desktop surface that invokes Skills (#1433). */
-export function showSkillInvocationFeedback(
+function showSkillInvocationFeedback(
   uiLocale: UiLocale,
-  toastApi: SkillInvocationToastApi,
+  toastApi: FeedbackToastApi,
   skillInvocation: SkillInvocationResult,
   sessionId: string,
 ): void {

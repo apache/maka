@@ -1698,10 +1698,16 @@ export class SessionManager {
           : header.permissionMode;
     const narrows = narrowsExecutionAuthority(current, permissionMode);
     if (narrows && this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前任务正在运行，等结束后再切换沙箱边界。');
+      throw new SessionConfigurationTransitionError(
+        'session_busy',
+        'Execution boundary cannot change while a Turn is running',
+      );
     }
     if (header.status === 'waiting_for_user') {
-      throw new Error('当前有沙箱边界请求正在等待确认，处理后再切换。');
+      throw new SessionConfigurationTransitionError(
+        'session_busy',
+        'Execution boundary cannot change while an Interaction is pending',
+      );
     }
     const boundary = await this.commitExecutionBoundaryTransition(
       sessionId,
@@ -1948,20 +1954,32 @@ export class SessionManager {
       throw new PlanConflictError('Linked child Sessions cannot enter Plan mode');
     }
     if (this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('当前任务正在运行，等结束后再切换协作模式。');
+      throw new SessionConfigurationTransitionError(
+        'session_busy',
+        'Collaboration mode cannot change while a Turn is running',
+      );
     }
     if (previous.status === 'waiting_for_user') {
-      throw new Error('当前有工具调用正在等待确认，处理后再切换协作模式。');
+      throw new SessionConfigurationTransitionError(
+        'session_busy',
+        'Collaboration mode cannot change while an Interaction is pending',
+      );
     }
     const planState = await this.requirePlanStore().readState(sessionId);
     if (mode === 'plan' && planState.activeExecutionId) {
-      throw new Error('当前计划仍在执行，结束或中断后才能切换到 Plan Mode。');
+      throw new SessionConfigurationTransitionError(
+        'session_busy',
+        'An active Plan execution prevents entering Plan mode',
+      );
     }
     const latestProposal = planState.proposals.find(
       (proposal) => proposal.proposalId === planState.latestProposalId,
     );
     if (mode === 'agent' && latestProposal?.status === 'pending_approval') {
-      throw new Error('当前方案正在等待审批，请明确放弃方案后再退出 Plan Mode。');
+      throw new SessionConfigurationTransitionError(
+        'operation_conflict',
+        'A pending Plan proposal must be resolved before leaving Plan mode',
+      );
     }
 
     const next = await this.deps.store.updateHeader(sessionId, {

@@ -17,16 +17,6 @@
  * under the License.
  */
 
-/**
- * Review regression on #4457: the new-task send path runs the renderer-side
- * attachment preflight BEFORE `newTasks.create`, so the main-side token
- * validation never sees an over-limit request. The preflight must reject with
- * the same stable `attachment_ingest:<code>` tokens main rejects with, so the
- * send catch maps the real reason through the locale catalog instead of the
- * generic "try again later" fallback (retrying nine attachments can never
- * succeed) — and an expected rejection must not log an unexpected diagnostic.
- */
-
 import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
@@ -96,4 +86,42 @@ test('a nine-attachment new-task send shows the count reason, creates no session
     0,
     'an expected preflight rejection must not land the unexpected-error diagnostic',
   );
+});
+
+test('a main-side attachment rejection refuses the send instead of leaving it unreconciled', async (context) => {
+  const errorLog = context.mock.method(console, 'error', () => undefined);
+  const created: string[] = [];
+  const toasts: Array<{ title: string; description?: string }> = [];
+  const restoreWindow = installWindow({
+    newTasks: {
+      create: async () => {
+        created.push('session-1');
+        return { id: 'session-1' };
+      },
+    },
+    sessions: {
+      submitMessage: async () => ({ ok: false, reason: 'attachment_blocked', code: 'item_too_large' }),
+    },
+  });
+  try {
+    const actions = createAppShellChatActions({
+      ...createActionsDeps(),
+      uiLocale: 'zh-CN',
+      toastApi: {
+        error: (title, description) => {
+          toasts.push({ title, description });
+        },
+        info: () => undefined,
+      },
+    });
+    const accepted = await actions.send('hello', [fileAttachment(10, 0)]);
+    assert.equal(accepted, false, 'a blocked attachment is a definitive refusal, not an unknown outcome');
+    assert.deepEqual(toasts, [{
+      title: getShellCopy('zh-CN').chatActions.sendFailedTitle,
+      description: getShellCopy('zh-CN').sessionSettingsActions.attachmentIngestBlocked.item_too_large,
+    }]);
+  } finally {
+    restoreWindow();
+  }
+  assert.equal(errorLog.mock.callCount(), 0, 'an expected attachment rejection logs no diagnostic');
 });

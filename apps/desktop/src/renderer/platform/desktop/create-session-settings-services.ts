@@ -18,18 +18,32 @@
  */
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
+import type { DesktopSessionUpdateResult } from '../../../shared/desktop-session-projection.js';
+import { ExpectedOperationError } from '../../application/contracts/operation-diagnostics.js';
 import type { SessionSettingsServices } from '../../features/session-settings';
 
 export type DesktopSessionSettingsBridge = Pick<MakaBridge, 'sessions'>;
+
+export function expectSessionUpdate<Session>(result: DesktopSessionUpdateResult<Session>): Session {
+  if (result.ok) return result.session;
+  throw new ExpectedOperationError(result.code);
+}
 
 export function createDesktopSessionSettingsServices(
   bridge: DesktopSessionSettingsBridge = window.maka,
 ): SessionSettingsServices {
   return {
-    setModelConfiguration: (sessionId, input) =>
-      bridge.sessions.setModelConfiguration(sessionId, input),
-    setPermissionMode: (sessionId, mode) => bridge.sessions.setPermissionMode(sessionId, mode),
-    setOrchestrationMode: (sessionId, mode) =>
-      bridge.sessions.setOrchestrationMode(sessionId, mode),
+    setModelConfiguration: async (sessionId, input) =>
+      expectSessionUpdate(await bridge.sessions.setModelConfiguration(sessionId, input)),
+    setPermissionMode: async (sessionId, mode) =>
+      expectSessionUpdate(await bridge.sessions.setPermissionMode(sessionId, mode)),
+    setOrchestrationMode: async (sessionId, mode) =>
+      expectSessionUpdate(await bridge.sessions.setOrchestrationMode(sessionId, mode)),
+    setCollaborationMode: async (sessionId, mode) =>
+      expectSessionUpdate(await bridge.sessions.setCollaborationMode(sessionId, mode)),
+    abandonPlanProposal: async (sessionId, proposalId) => {
+      const result = await bridge.sessions.abandonPlanProposal(sessionId, proposalId);
+      if (!result.ok) throw new ExpectedOperationError(result.error.code);
+    },
   };
 }

@@ -31,7 +31,11 @@ import {
   messageRefreshErrorMessage,
   openPathActionErrorMessage,
 } from '../../renderer/app-shell-copy.js';
-import { getShellCopy, localizedShellErrorMessage } from '../../renderer/locales/shell-copy.js';
+import {
+  getShellCopy,
+  localizedShellErrorMessage,
+  sessionSettingFailureCopy,
+} from '../../renderer/locales/shell-copy.js';
 import { getPlanModeCopy, planControlFailureCopy } from '../../renderer/locales/plan-mode-copy.js';
 
 test('routes Work Board codes through the shared presenter per locale', (context) => {
@@ -55,26 +59,16 @@ test('routes Work Board codes through the shared presenter per locale', (context
   );
 });
 
-test('maps attachment-ingest tokens per locale at the shared entry', () => {
-  const blocked = new Error("Error invoking remote method 'attachments': Error: attachment_ingest:count_limit");
-  assert.equal(localizedShellErrorMessage(blocked, 'fallback', 'zh-CN'), '一次最多添加 8 个附件。');
+test('session setting failures map expected update codes per locale', () => {
+  const blocked = new ExpectedOperationError('session_busy');
   assert.equal(
-    localizedShellErrorMessage(blocked, 'fallback', 'en'),
-    'At most 8 attachments per message.',
+    sessionSettingFailureCopy('zh-CN', 'permission', blocked).description,
+    '当前任务正在运行或有交互待处理，等结束后再改设置。',
   );
-});
-
-test('the ingest token only matches at the message tail', (context) => {
-  context.mock.method(console, 'error', () => undefined);
-  const bare = 'attachment_ingest:count_limit';
-  const wrapped = "Error invoking remote method 'sessions:send': Error: attachment_ingest:count_limit";
-  assert.equal(localizedShellErrorMessage(new Error(bare), 'fallback', 'zh-CN'), '一次最多添加 8 个附件。');
-  assert.equal(localizedShellErrorMessage(new Error(wrapped), 'fallback', 'en'), 'At most 8 attachments per message.');
-  // Unrelated messages that merely contain the substring keep the fallback
-  // and take the unexpected-error diagnostics path.
-  const sneaky = 'Unable to open /tmp/attachment_ingest:count_limit/report.txt';
-  assert.equal(localizedShellErrorMessage(new Error(sneaky), 'fallback', 'zh-CN'), 'fallback');
-  assert.equal(localizedShellErrorMessage('path attachment_ingest:count_limit extra', 'fallback', 'en'), 'fallback');
+  assert.equal(
+    sessionSettingFailureCopy('en', 'plan', blocked).description,
+    'A task is running or waiting on you. Change this setting after it settles.',
+  );
 });
 
 test('a classified shell failure renders its category without an unexpected diagnostic', (context) => {
@@ -110,16 +104,14 @@ test('maps plan control envelopes per locale at the panel', () => {
   }
 });
 
-
-test('unknown and inherited reason tokens retain the caller fallback', (context) => {
+test('unexpected setting failures keep the caller fallback', (context) => {
   context.mock.method(console, 'error', () => undefined);
   for (const locale of ['zh-CN', 'zh-TW', 'en'] as const) {
-    for (const code of ['future_code', 'constructor']) {
-      const token = `attachment_ingest:${code}`;
-      for (const error of [token, new Error(token)]) {
-        assert.equal(localizedShellErrorMessage(error, 'fallback', locale), 'fallback');
-      }
-    }
+    const copy = getShellCopy(locale).sessionSettingsActions;
+    assert.equal(
+      sessionSettingFailureCopy(locale, 'permission', new Error('boom')).description,
+      copy.permissionFallback,
+    );
   }
 });
 
@@ -214,4 +206,18 @@ test('a classified failure never reaches the diagnostics channel', (context) => 
   assert.equal(errors.mock.callCount(), 0);
   reportUnexpectedError('remote-directory:list', new Error('an opaque backend fault'));
   assert.equal(errors.mock.callCount(), 1);
+});
+
+test('a renderer-owned plan error maps to the actionable failure copy', (context) => {
+  const errors = context.mock.method(console, 'error', () => undefined);
+  const copy = getShellCopy('zh-CN');
+  assert.equal(
+    sessionSettingFailureCopy('zh-CN', 'plan', new ExpectedOperationError('operation_conflict')).description,
+    copy.sessionSettingsActions.updateFailures.operation_conflict,
+  );
+  assert.equal(errors.mock.callCount(), 0);
+  assert.equal(
+    sessionSettingFailureCopy('zh-CN', 'plan', new Error("Error invoking remote method 'plan-mode:abandon': Error: operation_conflict")).description,
+    copy.app.planModeFallback,
+  );
 });

@@ -543,6 +543,8 @@ function createServices(
     setModelConfiguration: async () => ({} as DesktopSessionSummary),
     setPermissionMode: async () => ({} as DesktopSessionSummary),
     setOrchestrationMode: async () => ({} as DesktopSessionSummary),
+    setCollaborationMode: async () => ({} as DesktopSessionSummary),
+    abandonPlanProposal: async () => {},
     ...overrides,
   };
 }

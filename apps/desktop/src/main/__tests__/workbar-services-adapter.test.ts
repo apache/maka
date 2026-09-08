@@ -41,6 +41,7 @@ function createBridgeRecorder(): {
   ]);
   // Adapters that reshape a bridge answer need one to reshape.
   const answers = new Map<string, unknown>([
+    ['sessions.setPermissionMode', { ok: true, session: {} }],
     [
       'sessions.submitMessage',
       {

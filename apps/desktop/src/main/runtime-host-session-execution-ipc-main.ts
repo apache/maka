@@ -19,7 +19,11 @@
 
 import { randomUUID } from "node:crypto";
 import type { IpcMainInvokeEvent } from "electron";
-import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+import {
+  AttachmentIngestBlockedError,
+  MAX_ATTACHMENT_COUNT,
+  type AttachmentIngestBlockedCode,
+} from '@maka/core/attachments';
 import { isSideConversationSession } from '@maka/core/side-conversation';
 import {
   RuntimeHostOperationError,
@@ -181,6 +185,44 @@ export interface RuntimeHostSessionExecutionIpcDeps {
     >;
   };
   newId?: () => string;
+}
+
+type MessageAttachmentResult =
+  | { readonly ok: true; readonly attachments: AttachmentRef[] }
+  | { readonly ok: false; readonly reason: 'attachment_blocked'; readonly code: AttachmentIngestBlockedCode };
+
+async function prepareMessageAttachments(input: {
+  deps: Pick<RuntimeHostSessionExecutionIpcDeps, 'attachmentApprovals' | 'client' | 'resizeImage' | 'stat'>;
+  getSenderId: () => number;
+  sessionId: string;
+  retainedAttachments: readonly AttachmentRef[];
+  attachmentItems: unknown;
+}): Promise<MessageAttachmentResult> {
+  const attachments = retainedAttachmentsForSession(input.sessionId, input.retainedAttachments);
+  try {
+    if (input.attachmentItems !== undefined) {
+      const files = await resolveIngestItems({
+        senderId: input.getSenderId(),
+        items: input.attachmentItems,
+        approvals: input.deps.attachmentApprovals,
+        stat: input.deps.stat,
+      });
+      attachments.push(...await resolveAttachmentRefs({
+        files,
+        resizeImage: input.deps.resizeImage,
+        snapshot: ({ name, mimeType, content }) =>
+          input.deps.client.ingestAttachment({ sessionId: input.sessionId, name, mimeType, content }),
+      }));
+    }
+  } catch (error) {
+    if (error instanceof AttachmentIngestBlockedError) {
+      return { ok: false, reason: 'attachment_blocked', code: error.code };
+    }
+    throw error;
+  }
+  return attachments.length > MAX_ATTACHMENT_COUNT
+    ? { ok: false, reason: 'attachment_blocked', code: 'count_limit' }
+    : { ok: true, attachments };
 }
 
 export interface RuntimeHostSessionObservationIpcDeps {
@@ -379,35 +421,15 @@ export function registerRuntimeHostSessionExecutionIpc(
         throw new Error(`Runtime Host Session not found: ${sessionId}`);
       const sideConversation = isSideConversationSession(session.labels);
       const turnId = command.turnId ?? newId();
-      let attachments = retainedAttachmentsForSession(
+      const attachmentResult = await prepareMessageAttachments({
+        deps,
+        getSenderId: () => event.sender.id,
         sessionId,
-        command.retainedAttachments ?? [],
-      );
-      if (command.attachmentItems !== undefined) {
-        const files = await resolveIngestItems({
-          senderId: event.sender.id,
-          items: command.attachmentItems,
-          approvals: deps.attachmentApprovals,
-          stat: deps.stat,
-        });
-        attachments = [
-          ...attachments,
-          ...(await resolveAttachmentRefs({
-            files,
-            resizeImage: deps.resizeImage,
-            snapshot: ({ name, mimeType, content }) =>
-              deps.client.ingestAttachment({
-                sessionId,
-                name,
-                mimeType,
-                content,
-              }),
-          })),
-        ];
-      }
-      if (attachments.length > MAX_ATTACHMENT_COUNT) {
-        throw new Error("Too many attachments");
-      }
+        retainedAttachments: command.retainedAttachments ?? [],
+        attachmentItems: command.attachmentItems,
+      });
+      if (!attachmentResult.ok) return attachmentResult;
+      const { attachments } = attachmentResult;
       const displayText =
         command.displayText ??
         (command.text.trim().length > 0
@@ -502,35 +524,15 @@ export function registerRuntimeHostSessionExecutionIpc(
       if (!command.messageId) throw new Error("Submitted message has no identity");
       // Host admission validates the target, including reserved Sessions
       // such as WorkHub that intentionally do not appear in the task catalog.
-      let attachments = retainedAttachmentsForSession(
+      const attachmentResult = await prepareMessageAttachments({
+        deps,
+        getSenderId: () => event.sender.id,
         sessionId,
-        command.retainedAttachments ?? [],
-      );
-      if (command.attachmentItems !== undefined) {
-        const files = await resolveIngestItems({
-          senderId: event.sender.id,
-          items: command.attachmentItems,
-          approvals: deps.attachmentApprovals,
-          stat: deps.stat,
-        });
-        attachments = [
-          ...attachments,
-          ...(await resolveAttachmentRefs({
-            files,
-            resizeImage: deps.resizeImage,
-            snapshot: ({ name, mimeType, content }) =>
-              deps.client.ingestAttachment({
-                sessionId,
-                name,
-                mimeType,
-                content,
-              }),
-          })),
-        ];
-      }
-      if (attachments.length > MAX_ATTACHMENT_COUNT) {
-        throw new Error("Too many attachments");
-      }
+        retainedAttachments: command.retainedAttachments ?? [],
+        attachmentItems: command.attachmentItems,
+      });
+      if (!attachmentResult.ok) return attachmentResult;
+      const { attachments } = attachmentResult;
       const displayText =
         command.displayText ??
         (command.text.trim().length > 0

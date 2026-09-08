@@ -293,6 +293,9 @@ export type AttachmentIngestBlockedCode =
   | 'source_expired'
   | 'total_size_exceeded';
 
-export function attachmentIngestBlocked(code: AttachmentIngestBlockedCode): Error {
-  return new Error(`attachment_ingest:${code}`);
+export class AttachmentIngestBlockedError extends Error {
+  constructor(readonly code: AttachmentIngestBlockedCode) {
+    super('Attachment ingest was blocked');
+    this.name = 'AttachmentIngestBlockedError';
+  }
 }

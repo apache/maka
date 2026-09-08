@@ -18,11 +18,16 @@
  */
 
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import { RuntimeHostOperationError, RuntimeHostRequestInterruptedError } from '@maka/runtime-host/client';
 import { prepareIngestItems, resolveAttachmentRefs } from './attachment-ingest.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import { handleReconciledControl, rethrowReconnectableReadFailure, type ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
-import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../shared/workhub-conversation.js';
+import type {
+  WorkHubAnswerInput,
+  WorkHubAnswerResult,
+  WorkHubPrepareAttachmentsResult,
+} from '../shared/workhub-conversation.js';
 import { toDesktopHostSessionSummary } from './runtime-host-session-catalog-ipc-main.js';
 
 type RuntimeHostWorkHubClient = Pick<
@@ -100,14 +105,19 @@ export function registerRuntimeHostWorkHubIpc(
     reconciliationUnavailable: async (attempt) => unknown(attempt),
   });
   ipcMain.handle('workhub:configureModel', (_event, input) => client.configureWorkHubModel(input));
-  ipcMain.handle('workhub:prepareAttachments', async (event, items: unknown) => {
+  ipcMain.handle('workhub:prepareAttachments', async (event, items: unknown): Promise<WorkHubPrepareAttachmentsResult> => {
     if (!options.attachmentIngest) throw new Error('WorkHub attachments are unavailable');
-    const prepared = await prepareIngestItems({ ...options.attachmentIngest, senderId: event.sender.id, items });
-    const refs = await resolveAttachmentRefs({
-      files: prepared.files,
-      resizeImage: options.attachmentIngest.resizeImage,
-      snapshot: ({ name, mimeType, content }) => client.ingestAttachment({ sessionId: WORKHUB_COORDINATION_SESSION_ID, name, mimeType, content }),
-    });
-    return prepared.commit(() => refs);
+    try {
+      const prepared = await prepareIngestItems({ ...options.attachmentIngest, senderId: event.sender.id, items });
+      const refs = await resolveAttachmentRefs({
+        files: prepared.files,
+        resizeImage: options.attachmentIngest.resizeImage,
+        snapshot: ({ name, mimeType, content }) => client.ingestAttachment({ sessionId: WORKHUB_COORDINATION_SESSION_ID, name, mimeType, content }),
+      });
+      return { ok: true, attachments: prepared.commit(() => refs) };
+    } catch (error) {
+      if (error instanceof AttachmentIngestBlockedError) return { ok: false, code: error.code };
+      throw error;
+    }
   });
 }

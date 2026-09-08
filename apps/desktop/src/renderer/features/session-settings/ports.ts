@@ -18,6 +18,7 @@
  */
 
 import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { DesktopSessionSummary } from '../../../shared/desktop-session-projection.js';
@@ -36,4 +37,6 @@ export interface SessionSettingsServices {
     sessionId: string,
     mode: OrchestrationMode,
   ): Promise<DesktopSessionSummary>;
+  setCollaborationMode(sessionId: string, mode: CollaborationMode): Promise<DesktopSessionSummary>;
+  abandonPlanProposal(sessionId: string, proposalId: string): Promise<void>;
 }

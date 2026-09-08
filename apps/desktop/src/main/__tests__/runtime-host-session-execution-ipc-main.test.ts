@@ -28,6 +28,7 @@ import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
 import { type AttachmentRef } from '@maka/core/events';
+import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import {
   MESSAGE_QUEUE_MAX_ENTRIES,
   SESSION_CONTINUITY_SCHEMA_VERSION,
@@ -2198,6 +2199,40 @@ test('does not let an admitted Stop interrupt a replacement Turn', async () => {
   );
   assert.deepEqual(interrupts, []);
   await observer.close();
+});
+
+test('returns the attachment_blocked envelope to the renderer when ingest validation blocks the send', async () => {
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        submitMessage: async () => {
+          throw new Error("A blocked send must never reach the Host");
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => {
+        throw new Error("count validation must not touch the filesystem");
+      },
+      beforeStop() {},
+      newId: () => "turn-1",
+    },
+    ipc,
+  );
+
+  const result = await ipc.invoke("sessions:send", "session-1", {
+    type: "send",
+    text: "too many",
+    attachmentItems: Array.from({ length: MAX_ATTACHMENT_COUNT + 1 }, (_, i) => ({
+      name: `f${i}.txt`,
+      mimeType: "text/plain",
+      base64: Buffer.from("x").toString("base64"),
+    })),
+  });
+  assert.deepEqual(result, { ok: false, reason: "attachment_blocked", code: "count_limit" });
 });
 
 type ExecutionClient = RuntimeHostSessionExecutionIpcDeps["client"];

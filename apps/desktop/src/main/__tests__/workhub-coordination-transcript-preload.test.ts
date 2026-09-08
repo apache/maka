@@ -31,7 +31,9 @@ import type { DesktopTranscriptBatch, DesktopTranscriptRangeRequest } from '../.
 import { createDesktopWorkHubServices } from '../../renderer/platform/desktop/create-workhub-services.js';
 import type { WorkHubTranscriptSnapshot } from '../../renderer/features/workhub/index.js';
 import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
+import type { WorkHubPrepareAttachmentsResult } from '../../shared/workhub-conversation.js';
 import { encodeDesktopTranscriptPage, encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
+import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import type { AttachmentRef } from '@maka/core/events';
 import { MESSAGE_QUEUE_MAX_ENTRIES } from '@maka/runtime-host/protocol';
 
@@ -45,6 +47,10 @@ test('WorkHub upload references round-trip through idle answers, both queue mode
   const uploaded: AttachmentRef = {
     kind: 'doc', name: 'brief.txt', mimeType: 'text/plain', bytes: 5,
     ref: { kind: 'session_file', sessionId: nativeSessionId, relativePath: 'brief.txt' },
+  };
+  let preparationResult: WorkHubPrepareAttachmentsResult = {
+    ok: true,
+    attachments: [uploaded],
   };
   const sent: Array<{ channel: string; attachments: AttachmentRef[] }> = [];
   let bridge!: MakaBridge;
@@ -64,7 +70,7 @@ test('WorkHub upload references round-trip through idle answers, both queue mode
           assert.equal((args[0] as typeof owner).hostId, owner.hostId);
           if (channel === 'workhub:prepareAttachments') {
             assert.deepEqual(structuredClone(args[1]), [{ name: 'brief.txt', mimeType: 'text/plain', base64: 'aGVsbG8=' }]);
-            return [uploaded];
+            return preparationResult;
           }
           if (channel === 'workhub:answer') {
             const input = args[1] as { attachments: AttachmentRef[]; turnId: string };
@@ -103,6 +109,17 @@ test('WorkHub upload references round-trip through idle answers, both queue mode
   }
   assert.deepEqual(structuredClone(sent.map(({ attachments }) => attachments)), [[uploaded], [uploaded], [uploaded]]);
   assert.equal((await services.readAttachmentBytes(sessionId, 'brief.txt')).ok, true);
+  preparationResult = { ok: false, code: 'item_too_large' };
+  await assert.rejects(
+    services.prepareAttachments(sessionId, [
+      { file: new File(['hello'], 'brief.txt', { type: 'text/plain' }) },
+    ]),
+    (error: unknown) => {
+      assert.ok(error instanceof AttachmentIngestBlockedError);
+      assert.equal(error.code, 'item_too_large');
+      return true;
+    },
+  );
   const foreign = [{ ...uploaded, ref: { ...uploaded.ref, kind: 'session_file' as const, sessionId: desktopSessionKey({ hostId: 'foreign-host', sessionId: nativeSessionId }), relativePath: 'brief.txt' } }];
   await assert.rejects(services.answer(sessionId, { turnId: 'foreign', text: 'read this', attachments: foreign }), /another Host or Session/);
   await assert.rejects(services.enqueueMessage(sessionId, 'foreign', 'read this', foreign, 'next_turn'), /another Host or Session/);
