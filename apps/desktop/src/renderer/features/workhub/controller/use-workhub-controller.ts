@@ -21,10 +21,12 @@ import { useEffect, useRef, useState } from 'react';
 import {
   applyLiveTurnEvent,
   armLiveTurn,
+  createTranscriptViewportNavigation,
   reconcileTerminalLiveTurn,
   settleLiveTurnStep,
   useUiLocale,
   type LiveTurnProjection,
+  type TransientUserMessageProjection,
 } from '@maka/ui';
 import type { AttachmentRef } from '@maka/core/events';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
@@ -51,6 +53,8 @@ export function useWorkHubController() {
   const [choices, setChoices] = useState<ChatModelChoice[]>([]);
   const [transcript, setTranscript] = useState(emptyTranscript);
   const transcriptRef = useRef(emptyTranscript);
+  const [viewportNavigation] = useState(createTranscriptViewportNavigation);
+  const [transientMessages, setTransientMessages] = useState<TransientUserMessageProjection[]>([]);
   const [liveTurn, setLiveTurn] = useState<LiveTurnProjection>();
   const [sending, setSending] = useState(false);
   const [stopPending, setStopPending] = useState(false);
@@ -114,6 +118,7 @@ export function useWorkHubController() {
     setChoices([]);
     transcriptRef.current = emptyTranscript;
     setTranscript(emptyTranscript);
+    setTransientMessages([]);
     setLiveTurn(undefined);
     if (!sessionId) return;
     let disposed = false;
@@ -148,6 +153,9 @@ export function useWorkHubController() {
       if (disposed) return;
       transcriptRef.current = snapshot;
       setTranscript(snapshot);
+      setTransientMessages((previous) => previous.filter((pending) =>
+        !snapshot.messages.some((message) => message.type === 'user' && message.turnId === pending.hostTurnId),
+      ));
       setLiveTurn((previous) =>
         previous ? reconcileTerminalLiveTurn(previous, [...snapshot.messages]) : previous,
       );
@@ -189,6 +197,15 @@ export function useWorkHubController() {
           ? previous
           : { sessionId: target, turnId: crypto.randomUUID(), text, attachmentKey };
       pendingSend.current = attempt;
+      setTransientMessages((previous) => [...previous.filter((message) => message.hostTurnId !== attempt.turnId), {
+        id: attempt.turnId, hostTurnId: attempt.turnId, text, ts: Date.now(),
+        attachments: [...attachments], transientPlacement: 'current_turn',
+      }]);
+      viewportNavigation.followLatest(target);
+      // Return a historical range to the tail without delaying message admission.
+      void range.current?.loadLatest().catch((reason: unknown) => {
+        if (currentSessionId.current === target) report(reason);
+      });
       const result = await services.answer(target, {
         turnId: attempt.turnId,
         text,
@@ -201,7 +218,11 @@ export function useWorkHubController() {
         );
       return true;
     } catch (reason) {
-      if (currentSessionId.current === target) report(reason);
+      if (currentSessionId.current === target) {
+        const failedTurnId = pendingSend.current?.turnId;
+        setTransientMessages((previous) => previous.filter((message) => message.hostTurnId !== failedTurnId));
+        report(reason);
+      }
       return false;
     } finally {
       sendingRef.current = false;
@@ -250,6 +271,8 @@ export function useWorkHubController() {
     sessions,
     choices,
     transcript,
+    transientMessages,
+    viewportNavigation,
     liveTurn,
     busy,
     sending,

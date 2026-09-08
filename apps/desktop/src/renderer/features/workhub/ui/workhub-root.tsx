@@ -174,7 +174,7 @@ export function WorkHubRoot() {
               streaming={busy}
               sendBlocked={!controller.sessionId || busy || !session?.model}
               stopPending={controller.stopPending}
-              onSend={controller.send}
+              onSend={(text, attachments) => { setConversationExpanded(true); return controller.send(text, attachments); }}
               onStop={controller.stop}
               activeSession={session}
               activeModel={session?.model}
@@ -219,6 +219,8 @@ export function WorkHubRoot() {
           scrollBehavior="auto"
           onNew={() => composer.current?.focus()}
           messages={[...transcript.messages]}
+          transientMessages={controller.transientMessages}
+          viewportNavigation={controller.viewportNavigation}
           liveTurn={controller.liveTurn}
           onStreamingSettled={controller.streamingSettled}
           runningStatus={busy}

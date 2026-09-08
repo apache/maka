@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { FAKE_HOLD_OPEN_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import { awaitSendReady, COMPOSER_INPUT, expect, test, getWorkHubPage } from './fixtures';
 
 test('WorkHub uses its coordination model and shared attachment composer', async ({ sessionLocalWindow: { page, app } }) => {
@@ -180,4 +181,44 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect.poll(() => workhub.locator('[data-chat-scroll-container]').evaluate((element) => element.scrollTop)).toBe(scrollTop);
   await expect(editor).toHaveText('Keep this draft while folding the conversation.');
   await expect(model).toHaveAttribute('aria-haspopup', 'menu');
+});
+
+
+test('WorkHub keeps the submitted prompt visible while its agent is still running', async ({ sessionLocalWindow: { page, app } }) => {
+  await page.locator(COMPOSER_INPUT).fill('Initialize WorkHub model');
+  await awaitSendReady(page);
+  await page.locator(COMPOSER_INPUT).press('Enter');
+  await expect(page.getByText('Fake backend received: Initialize WorkHub model')).toBeVisible();
+  await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
+  const workhub = await getWorkHubPage(app);
+  await workhub.getByRole('button', { name: /浮出工作台|Float WorkHub/ }).click();
+  await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'false');
+  await workhub.locator(COMPOSER_INPUT).fill(FAKE_HOLD_OPEN_PROMPT);
+  await workhub.getByRole('button', { name: /发送|Send/, exact: true }).click();
+  const prompt = workhub.locator('.maka-user-message').filter({ hasText: FAKE_HOLD_OPEN_PROMPT });
+  await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'true');
+  await expect(prompt).toHaveCount(1);
+  await expect(prompt).toBeInViewport();
+  await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
+  const stop = workhub.locator('.maka-composer').getByRole('button', { name: /^(停止|Stop)$/ });
+  await expect(stop).toBeVisible();
+  await expect(prompt).toBeInViewport();
+  await stop.click();
+  await expect(stop).toHaveCount(0);
+  await expect(workhub.locator('[data-transient-message-id]')).toHaveCount(0);
+  await expect(prompt).toHaveCount(1);
+  await expect(prompt).toBeInViewport();
+  await workhub.reload();
+  await expect(prompt).toHaveCount(1);
+  await workhub.getByRole('button', { name: /收起对话|Collapse conversation/ }).click();
+  await expect(workhub.locator('.workHubHistory')).toBeHidden();
+  await workhub.locator(COMPOSER_INPUT).fill(FAKE_HOLD_OPEN_PROMPT);
+  await workhub.getByRole('button', { name: /发送|Send/, exact: true }).click();
+  await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'true');
+  await expect(prompt).toHaveCount(2);
+  await expect(prompt.last()).toBeInViewport();
+  await stop.click();
+  await expect(stop).toHaveCount(0);
+  await expect(workhub.locator('[data-transient-message-id]')).toHaveCount(0);
+  await expect(prompt).toHaveCount(2);
 });
