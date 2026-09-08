@@ -35,6 +35,10 @@ import { writeAtomicFile } from './atomic-file-write.js';
 import { withProcessLifetimeFileUpdateLock } from './process-lifetime-file-update-lock.js';
 import { hardenDirectory } from './stable-storage.js';
 
+// Consumers reconcile an already-published write through this store's public
+// boundary; the shared atomic writer itself remains internal to storage.
+export { AtomicFileWriteCommitUnknownError } from './atomic-file-write.js';
+
 const MAX_SERVERS = 100;
 const MAX_ID_LENGTH = 128;
 const MAX_STRING_LENGTH = 8_192;
@@ -46,7 +50,10 @@ export interface McpConfigStore {
   /** One cross-process read-transform-write transaction. `apply` sees the
    * current on-disk config and may finish asynchronous effects that must
    * precede the commit, such as retiring credentials. The shared file lock
-   * remains held until the replacement document is durable. */
+   * remains held until the write settles. A write can fail after publication
+   * with AtomicFileWriteCommitUnknownError when durability is unconfirmed:
+   * reload with get() and reconcile consumers before considering a retry.
+   * Never blindly replay apply, whose effects may already have happened. */
   transform(
     apply: (current: McpConfigFile) => McpConfigFile | Promise<McpConfigFile>,
   ): Promise<McpConfigFile>;

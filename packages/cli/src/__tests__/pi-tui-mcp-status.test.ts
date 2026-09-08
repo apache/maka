@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { TUI } from '@earendil-works/pi-tui';
 import type { McpTestResult } from '@maka/core/mcp';
+import { AtomicFileWriteCommitUnknownError } from '@maka/storage/mcp-config-store';
 import { McpManagementOverlay } from '../pi-tui-mcp-status.js';
 import type {
   TuiMcpAction,
@@ -433,6 +434,14 @@ describe('MCP management overlay', () => {
     [{ status: 'failed', reason: 'invalid-config' }, 'invalid-config'],
     [{ status: 'failed', reason: 'credential-cleanup-failed' }, 'credential-cleanup-failed'],
     [{ status: 'failed', reason: 'persist-failed' }, 'persist-failed'],
+    [
+      {
+        status: 'failed',
+        reason: 'commit-unknown',
+        cause: new AtomicFileWriteCommitUnknownError({ cause: new Error('directory sync failed') }),
+      },
+      'commit-unknown',
+    ],
     [{ status: 'failed', reason: 'manager-failed' }, 'manager-failed'],
     [{ status: 'applied', effect: 'published' }, 'published'],
     [{ status: 'applied', effect: 'pending_host' }, 'pending_host'],
