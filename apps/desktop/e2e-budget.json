@@ -71,7 +71,7 @@
     },
     "workhub-layout.spec.ts": {
       "tests": 2,
-      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
+      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; native floating preserves macOS Dock visibility; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
     },
     "workhub-reconstruction.spec.ts": {
       "tests": 1,

@@ -116,8 +116,12 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect(workhub.locator('article').filter({ hasText: 'WorkHub composer sends through its own coordination model.' }).first()).toBeVisible();
   await workhub.locator('[data-chat-scroll-container]').evaluate((element) => { element.scrollTop = element.scrollHeight; });
   await expect(workhub.locator('.astryx-chat-layout-scroll-button > div')).toHaveCSS('opacity', '0');
+  // The macOS hidden-test launch starts without a Dock icon. Establish normal
+  // application visibility before checking the floating-window transition.
+  await app.evaluate(async ({ app }) => { if (process.platform === 'darwin') await app.dock!.show(); });
   await workhub.getByRole('button', { name: /浮出工作台|Float WorkHub/ }).click();
   await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-placement', 'floating');
+  expect(await app.evaluate(({ app }) => process.platform !== 'darwin' || app.dock!.isVisible())).toBe(true);
   const editor = workhub.locator('.maka-composer-editor [contenteditable="true"]');
   await editor.fill('Keep this draft while folding the conversation.');
   const expandedHeight = await workhub.evaluate(() => window.innerHeight);

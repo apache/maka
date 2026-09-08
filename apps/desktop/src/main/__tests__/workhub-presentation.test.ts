@@ -46,6 +46,7 @@ async function harness(animate = false) {
   };
   const windows: FakeWindow[] = [];
   const views: FakeView[] = [];
+  const errors: unknown[] = [];
   let handler: ((event: unknown, command: string, payload?: unknown) => Promise<unknown>) | undefined;
   let unregistered = false;
   let registeredViews = 0;
@@ -114,7 +115,7 @@ async function harness(animate = false) {
   const module = { exports: {} as { createWorkHubPresentation: typeof createWorkHubPresentation } };
   const nodeRequire = createRequire(import.meta.url);
   runInNewContext(output.outputFiles[0]!.text, {
-    module, exports: module.exports, console, process, URL,
+    module, exports: module.exports, console, process, URL, Error,
     Date: class extends Date { static now() { return now; } },
     setTimeout: (callback: () => void, delay: number) => { timers.set(++timerId, { at: now + delay, callback }); return timerId; },
     clearTimeout: (id: number) => timers.delete(id),
@@ -131,12 +132,13 @@ async function harness(animate = false) {
     mainWindow: () => main as unknown as Electron.BrowserWindow,
     ensureMainWindow: async () => main as unknown as Electron.BrowserWindow,
     mainModuleDirectory: '/app/dist/main', preloadPath: '/app/dist/preload/preload.cjs',
+    onError: (error) => errors.push(error),
     onViewCreated: () => { registeredViews++; return () => { releasedViews++; }; },
   });
   controller.attachMainWindow(main as unknown as Electron.BrowserWindow);
   controller.registerIpc();
   const command = (sender: Contents, name: string, payload?: unknown) => handler!({ sender, senderFrame: sender.mainFrame }, name, payload);
-  return { controller, main, windows, views, command, advance, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
+  return { controller, main, windows, views, errors, command, advance, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
 }
 
 test('yields the docked native view to main-window overlays without replacing the conversation', async () => {
@@ -144,6 +146,8 @@ test('yields the docked native view to main-window overlays without replacing th
   const host = { visible: true, rect: { x: 200, y: 40, width: 800, height: 760 } };
   await h.command(h.main.webContents, 'host', host);
   const view = h.views[0]!;
+  h.main.show();
+  await h.command(view.webContents, 'ready');
   assert.equal(view.visible, true);
   const backdrop = await h.command(h.main.webContents, 'host', { ...host, occluded: true });
   assert.equal(backdrop, 'data:image/png;base64,workhub-frame');
@@ -158,6 +162,39 @@ test('yields the docked native view to main-window overlays without replacing th
   assert.equal(view.visible, true);
   assert.equal(view.webContents.captures, 1);
   await assert.rejects(h.command(h.main.webContents, 'host', { ...host, occluded: 'yes' }), /Invalid WorkHub host/);
+  h.controller.dispose();
+});
+
+test('yields and restores the conversation when its compositor frame is unavailable', async () => {
+  const h = await harness();
+  const host = { visible: true, rect: { x: 200, y: 40, width: 800, height: 760 } };
+  await h.command(h.main.webContents, 'host', host);
+  const view = h.views[0]!;
+  const occlude = () => h.command(h.main.webContents, 'host', { ...host, occluded: true });
+  const restore = () => h.command(h.main.webContents, 'host', host);
+  h.main.show();
+  assert.equal(await occlude(), undefined);
+  assert.equal(view.webContents.captures, 0);
+  await restore();
+  await h.command(view.webContents, 'ready');
+  h.main.hide();
+  assert.equal(await occlude(), undefined);
+  assert.equal(view.webContents.captures, 0);
+  await restore();
+  h.main.show();
+  view.webContents.capturePage = async () => { throw new Error('UnknownVizError'); };
+  assert.equal(await occlude(), undefined);
+  assert.equal(view.visible, false);
+  assert.deepEqual(h.errors, []);
+  await restore();
+  assert.equal(view.visible, true);
+  assert.equal(h.views.length, 1);
+  const unexpected = new Error('Unexpected capture failure');
+  view.webContents.capturePage = async () => { throw unexpected; };
+  await occlude();
+  assert.deepEqual(h.errors, [unexpected]);
+  await restore();
+  assert.equal(view.visible, true);
   h.controller.dispose();
 });
 

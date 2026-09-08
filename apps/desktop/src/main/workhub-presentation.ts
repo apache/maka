@@ -170,6 +170,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const height = Math.min(conversationExpanded ? expandedHeight : compactHeight, area.height);
     floating = new BrowserWindow({
       title: 'WorkHub', show: false, width, height,
+      type: process.platform === 'darwin' ? 'panel' : undefined,
       x: area.x + Math.round((area.width - width) / 2), y: Math.max(area.y, area.y + area.height - height - 96),
       minWidth: Math.min(360, width), minHeight: Math.min(80, height),
       alwaysOnTop: true, autoHideMenuBar: true, maximizable: false, fullscreenable: false,
@@ -177,7 +178,9 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       hasShadow: true, roundedCorners: true,
       webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
     });
-    if (process.platform === 'darwin') floating.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    // A macOS panel can accompany fullscreen apps without turning Maka into
+    // a Dock-less accessory application.
+    if (process.platform === 'darwin') floating.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
     floating.on('resize', fitFloating);
     floating.on('close', (event) => {
       if (disposed) return;
@@ -326,9 +329,14 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             // Native child views sit above the main renderer's top layer. Keep
             // a still frame behind its menus/dialogs while yielding native input.
             let backdrop: string | undefined;
-            if (placement === 'docked' && value.visible && value.occluded && !host.occluded && view?.getVisible()) {
+            if (placement === 'docked' && value.visible && value.occluded && !host.occluded && view?.getVisible() &&
+              rendererReady && main?.isVisible() && !main.isMinimized()) {
               try { backdrop = (await view.webContents.capturePage()).toDataURL(); }
-              catch (error) { reportError(error); }
+              catch (error) {
+                // Reparenting or hiding can retire the compositor surface before
+                // capture completes. Menus still work without this optional frame.
+                if (!(error instanceof Error && error.message === 'UnknownVizError')) reportError(error);
+              }
             }
             if (disposed) return;
             host = value;
