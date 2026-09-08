@@ -81,6 +81,8 @@ import {
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { Context } from '@maka/runtime/plugin-kernel';
 import { PluginAgentService } from '@maka/runtime/plugin-agent-service';
+import { PluginApprovalService } from '@maka/runtime/plugin-approval-service';
+import { PluginUserQuestionService } from '@maka/runtime/plugin-user-question-service';
 import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
 import { PluginToolService } from '@maka/runtime/plugin-tool-service';
 import { PluginSystemPromptService } from '@maka/runtime/plugin-system-prompt-service';
@@ -298,6 +300,8 @@ export async function createExecutionRuntimeHostComposition(
   try {
     const pluginRoot = new Context();
     const pluginAgents = new PluginAgentService(pluginRoot);
+    new PluginApprovalService(pluginRoot, pluginAgents);
+    new PluginUserQuestionService(pluginRoot, pluginAgents);
     const pluginTools = new PluginToolService(pluginRoot, { agents: pluginAgents });
     const pluginSystemPrompt = new PluginSystemPromptService(pluginRoot);
     pluginPlatform = new HostPluginPlatform(context.owner.controlDirectory, {
