@@ -27,6 +27,30 @@ import { outputDir, report, summarize } from './report.mjs';
 const server = await startStaticServer('apps/desktop/storybook-static');
 const browser = await chromium.launch({ headless: false });
 const rows = [];
+async function scrollSteps(page) {
+  return page.evaluate(async () => {
+    const root = document.querySelector('[data-chat-scroll-container]');
+    root.scrollTo({ top: root.scrollHeight, behavior: 'instant' });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const result = [];
+    for (let i = 0; i < 8; i++) {
+      const box = root.getBoundingClientRect();
+      const anchor = [...root.querySelectorAll('[data-maka-transcript-boundary]')].find((el) => {
+        const rect = el.getBoundingClientRect();
+        return rect.top >= box.top && rect.top < box.bottom;
+      });
+      if (!anchor) throw new Error('Missing visible reading anchor');
+      const before = anchor.getBoundingClientRect().top;
+      const intended = Math.min(240, root.scrollTop);
+      if (!intended) throw new Error('Empty scrolling workload');
+      root.scrollBy({ top: -intended, behavior: 'instant' });
+      root.dispatchEvent(new Event('scroll'));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      result.push({ intended, moved: anchor.getBoundingClientRect().top - before });
+    }
+    return result;
+  });
+}
 try {
   const page = await browser.newPage({
     viewport: { width: 1400, height: 900 },
@@ -36,6 +60,7 @@ try {
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('Performance.enable');
   const samples = [],
+    coldAnchors = [],
     anchors = [],
     nodes = [],
     heaps = [];
@@ -48,6 +73,8 @@ try {
     await page.waitForFunction(
       () => document.querySelector('[data-chat-scroll-container]')?.scrollHeight > 2700,
     );
+    const coldSteps = await scrollSteps(page);
+    coldAnchors.push(...coldSteps.map((s) => Math.abs(s.moved - s.intended)));
     const started = performance.now();
     const tools = page.getByRole('button', { name: /合成检查 \d+/ });
     assert.equal(await tools.count(), 45, 'All 45 tool disclosures must exist');
@@ -61,28 +88,7 @@ try {
         .waitFor({ state: 'visible' });
     }
     samples.push(performance.now() - started);
-    const steps = await page.evaluate(async () => {
-      const root = document.querySelector('[data-chat-scroll-container]');
-      root.scrollTo({ top: root.scrollHeight, behavior: 'instant' });
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      const result = [];
-      for (let i = 0; i < 8; i++) {
-        const box = root.getBoundingClientRect();
-        const anchor = [...root.querySelectorAll('[data-maka-transcript-boundary]')].find((el) => {
-          const rect = el.getBoundingClientRect();
-          return rect.top >= box.top && rect.top < box.bottom;
-        });
-        if (!anchor) throw new Error('Missing visible reading anchor');
-        const before = anchor.getBoundingClientRect().top;
-        const intended = Math.min(240, root.scrollTop);
-        if (!intended) throw new Error('Empty scrolling workload');
-        root.scrollBy({ top: -intended, behavior: 'instant' });
-        root.dispatchEvent(new Event('scroll'));
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        result.push({ intended, moved: anchor.getBoundingClientRect().top - before });
-      }
-      return result;
-    });
+    const steps = await scrollSteps(page);
     anchors.push(...steps.map((s) => Math.abs(s.moved - s.intended)));
     for (let i = 0; i < 45; i++) {
       await tools
@@ -99,7 +105,8 @@ try {
   }
   for (const [metric, values] of Object.entries({
     'expand-45-dom-ms': samples,
-    'unexpected-anchor-px': anchors,
+    'cold-collapsed-unexpected-anchor-px': coldAnchors,
+    'expanded-unexpected-anchor-px': anchors,
     'dom-nodes-after-close': nodes,
     'heap-bytes-no-gc': heaps,
   }))

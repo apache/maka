@@ -39,6 +39,7 @@ function workload(resources, countEncoding = false, duplicate = false) {
     encodedBytes = 0,
     wireBytes = 0;
   const seen = [];
+  let canonical;
   if (countEncoding)
     JSON.stringify = function (...args) {
       const encoded = Reflect.apply(stringify, JSON, args);
@@ -47,7 +48,7 @@ function workload(resources, countEncoding = false, duplicate = false) {
       return encoded;
     };
   try {
-    const canonical = canonicalRuntimeResources(resources);
+    canonical = canonicalRuntimeResources(resources);
     const revision = runtimeResourceRevision(canonical);
     let cursor = 0;
     do {
@@ -62,7 +63,11 @@ function workload(resources, countEncoding = false, duplicate = false) {
       });
       wireBytes += bytes.length;
       seen.push({ page, bytes });
-      cursor = page.nextCursor === null ? null : Number(page.nextCursor);
+      const next = page.nextCursor === null ? null : Number(page.nextCursor);
+      assert(
+        next === null || (Number.isSafeInteger(next) && next > cursor && next < resources.length),
+      );
+      cursor = next;
     } while (cursor !== null);
   } finally {
     JSON.stringify = stringify;
@@ -83,6 +88,7 @@ function workload(resources, countEncoding = false, duplicate = false) {
       .map((r) => r.result.ref),
   );
   assert(actual.every((r) => r.result.cmd.includes('中文🙂')));
+  assert.deepEqual(actual, canonical);
   return { calls, encodedBytes, wireBytes, pages: seen.length };
 }
 for (const payload of [32, 8192]) {

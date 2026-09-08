@@ -24,6 +24,7 @@ import { withE2eWindow, COMPOSER_INPUT } from '../../apps/desktop/e2e/fixtures';
 import { outputDir, report, summarize } from './report.mjs';
 
 const rows: Array<Record<string, unknown>> = [];
+let browserVersion: unknown;
 const repetitions = 10;
 async function activate(locator: Locator) {
   await expect(locator).toBeVisible();
@@ -51,6 +52,7 @@ async function setup(page: Page) {
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' });
   const cdp = await page.context().newCDPSession(page);
+  browserVersion = await cdp.send('Browser.getVersion');
   await cdp.send('Performance.enable');
   await cdp.send('Profiler.enable');
   await page.evaluate(() => {
@@ -59,25 +61,45 @@ async function setup(page: Page) {
     new PerformanceObserver((list) =>
       samples.push(...list.getEntries().map((e) => e.duration)),
     ).observe({ type: 'longtask', buffered: false });
+    const frames: number[] = [];
+    (window as any).__perfLongFrames = frames;
+    if (PerformanceObserver.supportedEntryTypes.includes('long-animation-frame')) {
+      new PerformanceObserver((list) =>
+        frames.push(...list.getEntries().map((e) => e.duration)),
+      ).observe({ type: 'long-animation-frame' });
+    }
   });
   return cdp;
 }
 function row(scenario: string, metric: string, values: number[]) {
   rows.push({ scenario, metric, ...summarize(values) });
 }
+async function blocking(page: Page, scenario: string) {
+  const samples = await page.evaluate(() => ({
+    tasks: (window as any).__perfLongTasks as number[],
+    frames: (window as any).__perfLongFrames as number[],
+    supportsFrames: PerformanceObserver.supportedEntryTypes.includes('long-animation-frame'),
+  }));
+  row(scenario, 'long-task-count-over-50ms', [samples.tasks.length]);
+  if (samples.tasks.length) row(scenario, 'long-task-ms', samples.tasks);
+  if (samples.supportsFrames) {
+    row(scenario, 'long-animation-frame-count', [samples.frames.length]);
+    if (samples.frames.length) row(scenario, 'long-animation-frame-ms', samples.frames);
+  }
+}
 test.afterAll(async () => {
   if (rows.length)
     await report(
       'frontend-electron',
       {
-        fixture:
-          'existing chat-prompt-rail (120 turns), chat-partial-history (18 oversized turns), fake hold-open backend',
+        browserVersion,
+        fixture: 'existing chat-prompt-rail (120 turns), fake hold-open backend',
         repetitions,
         viewport: '1400x900',
         theme: 'light',
         motion: 'reduce',
         conditions:
-          'One fresh Electron + real Host per case; first action separately cold, ten warm repetitions.',
+          'One fresh Electron + real Host per case; first action separately recorded, ten warm repetitions.',
         limits:
           'DOM-event and preload admission probes, not native input or INP. Latency ends at verified DOM state (includes driver polling), not screen presentation. Stream lag begins at renderer subscription delivery, not provider send. CPU task duration is not power. No wakeup counter on CDP.',
       },
@@ -166,9 +188,7 @@ test('long session switch, older history and idle retention', async () => {
       row('idle-after-repeated-navigation', 'renderer-task-ms-per-3s', [
         (task(after) - task(before)) * 1000,
       ]);
-      const longTasks = await page.evaluate(() => (window as any).__perfLongTasks as number[]);
-      row('navigation', 'long-task-count-over-50ms', [longTasks.length]);
-      if (longTasks.length) row('navigation', 'long-task-ms', longTasks);
+      await blocking(page, 'navigation');
       await cdp.detach();
     },
   );
@@ -260,9 +280,10 @@ test('streaming input, background output and stop', async () => {
           if (!result.ok) throw new Error('Background start rejected');
         }
       }, background);
+      await blocking(page, 'stream-and-background');
       const backgroundTimes: number[] = [];
       for (let i = 0; i < repetitions; i++) {
-        await page.evaluate(
+        const output = page.evaluate(
           async ({ ids, marker }) => {
             await Promise.all(
               ids.map(
@@ -300,6 +321,7 @@ test('streaming input, background output and stop', async () => {
         backgroundTimes.push(
           (await measure('background-input', () => input(page, 'foreground-' + i))).ms,
         );
+        await output;
       }
       row('background-output', 'foreground-input-dom-ms', backgroundTimes);
       await expect(
