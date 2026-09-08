@@ -2248,10 +2248,7 @@ describe('non-serving Runtime Host kernel', () => {
       while (!existsSync(stallMarker) && Date.now() < stallDeadline) {
         await sleep(20);
       }
-      assert.ok(
-        existsSync(stallMarker),
-        'gated-recovery entry never reached its stall window',
-      );
+      assert.ok(existsSync(stallMarker), 'gated-recovery entry never reached its stall window');
       launcher.kill('SIGKILL');
       await waitForExit(launcher);
       // The process is the only thing that reports the claim. A Client's
