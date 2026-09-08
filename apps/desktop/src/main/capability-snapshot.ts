@@ -38,6 +38,7 @@ import { type AppSettings } from '@maka/core/settings';
 import type { CuBackendId } from '@maka/computer-use';
 import type { BotStatus } from '@maka/runtime/bots';
 import type { computerUseServiceHealth } from './computer-use-host.js';
+import { notificationPermissionSnapshot } from './notification-permission.js';
 import {
   mapMediaAccessStatus,
   mediaPermissionActions,
@@ -46,14 +47,14 @@ import {
 
 const MAC_TCC_PERMISSIONS: OsPermissionId[] = ['accessibility', 'screen_recording', 'automation'];
 
-export function buildPermissionSnapshot(now = Date.now(), platform: NodeJS.Platform = process.platform): PermissionSnapshot {
+export async function buildPermissionSnapshot(now = Date.now(), platform: NodeJS.Platform = process.platform): Promise<PermissionSnapshot> {
   return {
     checkedAt: now,
     platform,
     permissions: {
       accessibility: accessibilitySnapshot(now, platform),
       screen_recording: mediaPermissionSnapshot('screen_recording', 'screen', now, platform),
-      notifications: notificationSnapshot(now, platform),
+      notifications: await notificationPermissionSnapshot(now, platform, Notification.isSupported()),
       automation: automationSnapshot(now, platform),
     },
   };
@@ -317,26 +318,6 @@ function mediaPermissionSnapshot(
   } catch (error) {
     return unknownPermission(id, now, generalizedReason(error), platform === 'darwin');
   }
-}
-
-function notificationSnapshot(now: number, platform: NodeJS.Platform): OsPermissionSnapshot {
-  const supported = Notification.isSupported();
-  return {
-    id: 'notifications',
-    status: supported ? 'unknown' : 'unsupported',
-    source: 'electron',
-    checkedAt: now,
-    reason: supported
-      ? platform === 'darwin'
-        ? 'Electron 无法可靠读取 macOS 通知授权状态，请在系统设置中确认'
-        : 'Electron 无法可靠读取当前系统的通知授权状态'
-      : 'Electron 通知能力不可用',
-    canOpenSettings: platform === 'darwin',
-    // Showing a Notification is not an authorization API and does not report
-    // whether macOS delivered or suppressed it. Never present that probe as a
-    // successful permission request.
-    canRequest: false,
-  };
 }
 
 function automationSnapshot(now: number, platform: NodeJS.Platform): OsPermissionSnapshot {

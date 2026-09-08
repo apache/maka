@@ -69,7 +69,7 @@ export function registerRuntimeHostPermissionsIpc(
     (_event, permissionId: unknown) => requestPermissionAccess(permissionId),
   );
   handleReconnectableRead(deps.ipcMain, "capabilities:getSnapshot", async () => {
-    const snapshot = permissions();
+    const snapshot = await permissions();
     return buildCapabilitySnapshotCollection({
       settings: await deps.getSettings(),
       permissions: snapshot,
@@ -80,7 +80,7 @@ export function registerRuntimeHostPermissionsIpc(
   });
   handleReconnectableRead(deps.ipcMain, "health:getSnapshot", async () => {
     const now = Date.now();
-    const permissionSnapshot = permissions(now);
+    const permissionSnapshot = await permissions(now);
     const [settings, connections] = await Promise.all([
       deps.getSettings(),
       deps.listConnections(),

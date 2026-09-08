@@ -110,6 +110,38 @@ Recording changes require restarting the development app. Without
 `MAKA_DEV_TCC`, the permission overlay still runs, but its drag target is the
 npm Electron bundle, which macOS will not accept as a durable grant.
 
+## macOS notification authorization
+
+The Permission Center reads `UNUserNotificationCenter` through a Node-API
+module loaded in the Electron main process. The query belongs to the running
+application bundle: plain Electron, Maka Dev, and packaged Maka have distinct
+notification identities. Never query an independent command-line helper and
+report its authorization as Maka's.
+
+`build:main` and the dev launcher compile `native/notification-settings.mm`
+using Xcode Command Line Tools and the pinned `node-api-headers` development
+dependency. Other platforms skip this build. The module uses Node-API 8 and is
+unpacked from ASAR so electron-builder can sign and load it with the app.
+Knip excludes only this generated `.node` import from source resolution;
+the packaged smoke test verifies its runtime loading.
+
+Queries run off the JS thread with a three-second native callback deadline,
+without requesting authorization, sending a notification, or replacing
+Electron's notification delegate. A new snapshot reads the current setting.
+Denied and not-yet-requested remain distinct; provisional authorization permits
+only quiet delivery. Query/load failures remain unknown with a diagnostic.
+Authorization does not guarantee a banner, sound, or delivery during Focus.
+
+After building Desktop, run this on macOS:
+
+```sh
+npm --workspace @maka/desktop run smoke:notification-settings
+```
+
+This packages and ad-hoc signs a minimal app with the production native module
+and ASAR policy, then queries its fresh application identity. It does not grant
+permission or change the installed Maka application's settings.
+
 ## Three layers
 
 | Layer | Path | Role |
