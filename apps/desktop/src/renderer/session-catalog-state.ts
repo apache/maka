@@ -78,8 +78,11 @@ export const selectActiveSessionId = (state: SessionCatalogState): string | unde
  * selection would re-render every reader that only cares about which sessions
  * exist.
  */
-export const selectAuthoritativeSessionIds = (state: SessionCatalogState): ReadonlySet<string> =>
-  new Set(state.sessions.map(({ id }) => id));
+export const selectAuthoritativeSessionIds = (
+  state: SessionCatalogState,
+): ReadonlySet<string> | undefined =>
+  // The initial empty catalog cannot prove that persisted Sessions were deleted.
+  state.revision > 0 ? new Set(state.sessions.map(({ id }) => id)) : undefined;
 
 /**
  * Owns the controller for the component's lifetime. Deliberately does NOT

@@ -18,7 +18,10 @@
  */
 
 import type { IpcMain } from 'electron';
-import { decodeRuntimeHostOwnerConnectionCode } from '@maka/runtime-host/client';
+import {
+  decodeRuntimeHostOwnerConnectionCode,
+  type RuntimeHostConnection,
+} from '@maka/runtime-host/client';
 import {
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
@@ -138,6 +141,7 @@ export function createDesktopRuntimeHostManagement(input: {
     | DesktopRuntimeHostSetupPackage
     | Promise<DesktopRuntimeHostSetupPackage>;
   readonly currentHostEpoch: (profileId: string) => string | undefined;
+  readonly liveHost: (profileId: string) => Pick<RuntimeHostConnection, 'request'> | undefined;
   readonly awaitUpdatedConnection: (
     profileId: string,
     expectedHostId: string,
@@ -1015,6 +1019,11 @@ export function createDesktopRuntimeHostManagement(input: {
     );
   };
 
+  const getResources = (profileIdValue: unknown) => {
+    const host = input.liveHost(requireProfileId(profileIdValue));
+    return host?.request('host.resources.query', {}, 15_000);
+  };
+
   const channels = {
     run: 'runtime-host-management:run',
     update: 'runtime-host-management:update',
@@ -1028,6 +1037,7 @@ export function createDesktopRuntimeHostManagement(input: {
     reconcileUpdate: 'runtime-host-management:reconcile-update',
     getDirectPeer: 'runtime-host-management:get-direct-peer',
     configureDirectPeer: 'runtime-host-management:configure-direct-peer',
+    getResources: 'runtime-host-management:get-resources',
   } as const;
   input.ipcMain.handle(
     channels.run,
@@ -1078,6 +1088,8 @@ export function createDesktopRuntimeHostManagement(input: {
     reconcileUpdate(profileId));
   input.ipcMain.handle(channels.getDirectPeer, (_event, profileId: unknown) =>
     getDirectPeer(profileId));
+  input.ipcMain.handle(channels.getResources, (_event, profileId: unknown) =>
+    getResources(profileId));
   input.ipcMain.handle(
     channels.configureDirectPeer,
     (

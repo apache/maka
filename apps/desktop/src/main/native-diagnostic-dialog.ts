@@ -44,11 +44,6 @@ interface FatalStartupDiagnosticDialogDeps {
   readonly showMessageBox: (options: MessageBoxOptions) => Promise<MessageBoxReturnValue>;
 }
 
-export interface RuntimeHostStartupRecoveryDialogInput {
-  readonly startupError: Error;
-  readonly repairError?: Error;
-  readonly activeTasks: boolean;
-}
 
 export function defaultRuntimeHostRecoveryDialog(input: {
   readonly locale: UiLocale;
@@ -143,33 +138,6 @@ export async function showMainRendererProcessGoneDialog(
   return result.response === 0 ? 'recover' : 'exit';
 }
 
-export async function showRuntimeHostStartupRecoveryDialog(
-  input: RuntimeHostStartupRecoveryDialogInput,
-  deps: DiagnosticDialogDeps,
-): Promise<'repair' | 'exit'> {
-  const copy = getNativeDiagnosticDialogCopy(deps.locale).runtimeHostRecovery;
-  const detail = [
-    copy.detail,
-    input.activeTasks ? copy.activeTasks : undefined,
-    input.repairError ? copy.repairFailed : undefined,
-  ]
-    .filter(Boolean)
-    .join('\n\n');
-  const result = await showMessageBoxWithDiagnostics(
-    {
-      type: 'warning',
-      title: copy.title,
-      message: copy.message,
-      detail,
-      buttons: [input.activeTasks ? copy.repairAndRestart : copy.repair, copy.exit],
-      defaultId: input.activeTasks || input.repairError ? 1 : 0,
-      cancelId: 1,
-      noLink: true,
-    },
-    deps,
-  );
-  return result.response === 0 ? 'repair' : 'exit';
-}
 
 async function copyDiagnostics(
   copy: () => void | Promise<void>,

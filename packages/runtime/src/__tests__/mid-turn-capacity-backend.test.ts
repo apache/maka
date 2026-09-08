@@ -471,6 +471,17 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     appendMessage: async (message) => {
       messages.push(message);
     },
+    // A note is a runtime event now. The fixture records it in the shape the
+    // read model projects back, so these assertions still read the row a
+    // transcript would show.
+    recordSystemNote: async (kind, turnId, data) => {
+      messages.push({
+        type: 'system_note',
+        kind,
+        turnId,
+        ...(data !== undefined ? { data } : {}),
+      });
+    },
     connection: {
       ...connection(),
       ...(options.providerNative
@@ -597,9 +608,6 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     },
     ...(options.meteredSummarizer
       ? {
-          persistPreparedRequestArtifact: async () => ({
-            artifactId: 'artifact-mid-turn-capture',
-          }),
           recordModelCallAttempt: (commit: ModelCallCommit<ModelCallAttempt>) => {
             commits.push(commit);
             modelCalls.push(commit.attempt);

@@ -27,8 +27,8 @@ export interface WorkbarToolDefinition {
   readonly labelKey: SessionWorkbarTabKind;
   readonly icon:
     | 'activity'
+    | 'file-diff'
     | 'folder'
-    | 'git-branch'
     | 'globe'
     | 'list-todo'
     | 'message-circle-question'
@@ -58,7 +58,9 @@ const WORKBAR_TOOL_DEFINITION_BY_KIND = {
   review: {
     kind: 'review',
     labelKey: 'review',
-    icon: 'git-branch',
+    // The face lists changed files and their diffs, so it carries the diff
+    // glyph. `git-branch` read as "switch branch", which the face never does.
+    icon: 'file-diff',
     shortcut: 'ctrl+shift+g',
     persisted: true,
     singleton: true,
@@ -91,14 +93,6 @@ const WORKBAR_TOOL_DEFINITION_BY_KIND = {
     singleton: true,
     defaultPlacement: 'right',
   },
-  tasks: {
-    kind: 'tasks',
-    labelKey: 'tasks',
-    icon: 'list-todo',
-    persisted: true,
-    singleton: true,
-    defaultPlacement: 'right',
-  },
   'work-board': {
     kind: 'work-board',
     labelKey: 'work-board',
@@ -120,7 +114,12 @@ const WORKBAR_TOOL_DEFINITION_BY_KIND = {
 export type RegisteredWorkbarToolDefinition =
   (typeof WORKBAR_TOOL_DEFINITION_BY_KIND)[SessionWorkbarTabKind];
 
-export const WORKBAR_TOOL_DEFINITIONS: readonly RegisteredWorkbarToolDefinition[] =
+/**
+ * Registry order is the order the launcher and the [+] menu list the faces in.
+ * Typed as the declared shape rather than the const union so a reader can ask
+ * every entry for its optional `shortcut`.
+ */
+export const WORKBAR_TOOL_DEFINITIONS: readonly WorkbarToolDefinition[] =
   Object.values(WORKBAR_TOOL_DEFINITION_BY_KIND);
 
 export function workbarToolDefinition(

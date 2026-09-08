@@ -28,6 +28,7 @@ import { findProjectByIdentity } from '@maka/core/project';
 import type {
   RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
   RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+  OpenHostHandoffSurface,
 } from '@maka/runtime-host/client';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
@@ -119,6 +120,7 @@ export interface RuntimeHostTuiContext {
 }
 
 export interface CreateRuntimeHostTuiContextInput {
+  readonly handoffSurface?: OpenHostHandoffSurface;
   readonly clientDataRoot: string;
   readonly rootPath: string;
   readonly cwd: string;
@@ -134,6 +136,7 @@ export async function createRuntimeHostTuiContext(
     clientDataRoot: input.clientDataRoot,
     rootPath: input.rootPath,
     interactiveSsh: true,
+    ...(input.handoffSurface ? { handoffSurface: input.handoffSurface } : {}),
     ...(input.hostProfileId ? { profileId: input.hostProfileId } : {}),
   });
   const connection = connected.connection;

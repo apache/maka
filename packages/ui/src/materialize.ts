@@ -49,6 +49,7 @@ import { getConversationCopy } from "./conversation-copy.js";
 export { isCancelledToolResultContent, isInFlightToolStatus, toolResultActivityStatus } from '@maka/core/tool-result-status';
 
 export interface ChatItem {
+  compactionState?: "running" | "compacted" | "failed";
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
@@ -189,7 +190,7 @@ function systemNoteLabel(kind: string, data: unknown, locale: UiLocale): string 
 
 export function materializeChat(
   messages: readonly StoredMessage[],
-  locale: UiLocale = "en",
+  locale: UiLocale,
 ): ChatItem[] {
   const items: ChatItem[] = [];
   for (const message of messages) {
@@ -227,6 +228,7 @@ export function materializeChat(
         id: message.id,
         role: "system",
         text: systemNoteLabel(message.kind, message.data, locale),
+        compactionState: message.kind === "context_compacted" ? "compacted" : message.kind === "context_compaction_failed_open" ? "failed" : undefined,
         ts: message.ts,
       });
     }
@@ -415,7 +417,8 @@ export interface TurnViewModel {
   abortedAt?: number;
   abortSource?: string;
   errorClass?: string;
-  partialOutputRetained: boolean;
+  failureMessage?: string;
+  retry?: import('@maka/core/model-failure').ModelRetryDecision;
   user?: ChatItem;
   tools: ToolActivityItem[];
   assistant?: ChatItem;
@@ -455,11 +458,57 @@ export interface TurnViewModel {
 export function overlayLiveTurn(
   turns: readonly TurnViewModel[],
   liveTurn: LiveTurnProjection | undefined,
+  locale: UiLocale,
 ): readonly TurnViewModel[] {
   if (!liveTurn) return turns;
   const targetIndex = turns.findIndex(
     (turn) => turn.turnId === liveTurn.turnId,
   );
+  // A running host-owned context-compaction Turn emits no assistant content.
+  // The Runtime persists a `turn_state:running` row for it, so a settled turn
+  // with this turnId usually already exists (empty). Surface a single
+  // "compacting" system row: merge the note into that existing turn, or
+  // synthesize one if it has not settled yet. The note is deduped by id so
+  // reprojection stays idempotent, and it disappears when the Turn settles
+  // (the live projection drops to undefined and the durable `context_compacted`
+  // note takes over).
+  if (liveTurn.rootExecutionKind === "context_compact" && liveTurn.steps.length === 0) {
+    const noteId = `context-compaction:${liveTurn.turnId}`;
+    if (targetIndex >= 0) {
+      const existing = turns[targetIndex]!;
+      if (existing.notes.some((note) => note.id === noteId)) return turns;
+      const note: ChatItem = {
+        id: noteId,
+        role: "system",
+        text: getConversationCopy(locale).messages.systemNotes.contextCompacting,
+        compactionState: "running",
+        ts: existing.startedAt,
+      };
+      return turns.map((turn, index) =>
+        index === targetIndex ? { ...turn, notes: [...turn.notes, note] } : turn,
+      );
+    }
+    const startedAt = liveTurn.startedAt ?? 0;
+    return [
+      ...turns,
+      {
+        turnId: liveTurn.turnId,
+        status: "running" as const,
+        tools: [],
+        notes: [
+          {
+            id: noteId,
+            role: "system",
+            text: getConversationCopy(locale).messages.systemNotes.contextCompacting,
+            compactionState: "running",
+            ts: startedAt,
+          },
+        ],
+        timeline: [],
+        startedAt,
+      } satisfies TurnViewModel,
+    ];
+  }
   if (
     targetIndex >= 0
     && liveTurn.steps.length === 0
@@ -484,7 +533,6 @@ export function overlayLiveTurn(
       : ({
           turnId: liveTurn.turnId,
           status: "completed" as const,
-          partialOutputRetained: false,
           tools: [],
           notes: [],
           timeline: [],
@@ -703,7 +751,7 @@ const SHELL_RUN_PRESENTATION_STATUS = {
  */
 export function materializeTurns(
   messages: readonly StoredMessage[],
-  locale: UiLocale = "en",
+  locale: UiLocale,
 ): TurnViewModel[] {
   const turnRecords = deriveTurnRecords(messages);
   const turnRecordById = new Map(
@@ -741,8 +789,9 @@ export function materializeTurns(
           ? { abortedAt: record.abortedAt }
           : {}),
         ...(record?.abortSource ? { abortSource: record.abortSource } : {}),
+        ...(record?.failureMessage ? { failureMessage: record.failureMessage } : {}),
         ...(record?.errorClass ? { errorClass: record.errorClass } : {}),
-        partialOutputRetained: record?.partialOutputRetained ?? false,
+        ...(record?.retry ? { retry: record.retry } : {}),
         tools: [],
         notes: [],
         timeline: [],
@@ -812,6 +861,7 @@ export function materializeTurns(
         id: message.id,
         role: "system",
         text: systemNoteLabel(message.kind, message.data, locale),
+        compactionState: message.kind === "context_compacted" ? "compacted" : message.kind === "context_compaction_failed_open" ? "failed" : undefined,
         ts: message.ts,
       });
     } else if (message.type === "token_usage") {

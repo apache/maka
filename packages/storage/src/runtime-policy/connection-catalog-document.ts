@@ -49,7 +49,10 @@ import {
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
 import { PROVIDER_REGISTRY, reconcileConnectionAfterModelFetch } from '@maka/core/llm-connections';
-import { modelIdAliasesForProvider } from '@maka/core/model-metadata';
+import {
+  modelIdAliasesForProvider,
+  providerReportsCompleteModelCatalog,
+} from '@maka/core/model-metadata';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import { pruneRelayModelProfiles } from '@maka/core/model-thinking';
 import { deepFreeze, nextRevision, record, revision, unique } from './codec.js';
@@ -469,15 +472,22 @@ export class ConnectionCatalogDocumentOwner {
       result.models,
       {
         aliases: modelIdAliasesForProvider(previous.providerType),
+        authoritative: providerReportsCompleteModelCatalog(previous.providerType),
       },
     );
     // Discovery MOVES a target: a provider's model rename carries the default
     // across by alias. A default outside the selection the reconciler just
     // decided is its own bug — fail closed where it is still attributable.
     const defaultTarget = currentDefaultTarget
-      ? { connectionId: previous.connectionId, modelId: reconciled.defaultModel }
+      ? reconciled.defaultModel
+        ? { connectionId: previous.connectionId, modelId: reconciled.defaultModel }
+        : null
       : current.defaultTarget;
-    if (currentDefaultTarget && !reconciled.enabledModelIds.includes(reconciled.defaultModel)) {
+    if (
+      currentDefaultTarget &&
+      reconciled.defaultModel &&
+      !reconciled.enabledModelIds.includes(reconciled.defaultModel)
+    ) {
       throw codecError(
         'invalid_document',
         'Model discovery reconciled a default outside its own selection',

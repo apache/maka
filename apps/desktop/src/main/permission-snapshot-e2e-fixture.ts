@@ -21,15 +21,14 @@ import type { OsPermissionSnapshot, OsPermissionState, PermissionSnapshot } from
 
 /**
  * #1361: a typed OS-permission snapshot for the `settings-permissions` e2e
- * fixture.
+ * fixture, which the alignment audit renders.
  *
- * The Permission Center's narrow-layout contract is about what happens when a
- * row carries several grant buttons: the row grid's `auto` actions track used to beat
- * the body's `minmax(0, 1fr)` and squeeze it to 0px, hiding which permission
- * the row was even about. Reading the host's real TCC state cannot exercise
- * that — a fully-granted dev machine renders no buttons at all, and Linux CI
- * reports most permissions as `unsupported`, so the assertion would pass
- * without testing anything.
+ * The page is worth auditing for what happens when a row carries several grant
+ * buttons: the row grid's `auto` actions track used to beat the body's
+ * `minmax(0, 1fr)` and squeeze it to 0px, hiding which permission the row was
+ * even about. Reading the host's real TCC state cannot produce that — a
+ * fully-granted dev machine renders no buttons at all, and Linux CI reports
+ * most permissions as `unsupported`, so the audit would measure an empty page.
  *
  * This fixture pins the states that matter instead:
  *   - `screen_recording` — `not_determined` + requestable + openable, the
@@ -39,8 +38,9 @@ import type { OsPermissionSnapshot, OsPermissionState, PermissionSnapshot } from
  *     ("当前平台不支持", ~101px intrinsic and `whitespace-nowrap` by primitive
  *     contract) and so sets the row's minimum readable width.
  *
- * Mirrors the Storybook fixture in `stories/settings/settings-pages.stories.tsx`
- * so the story baseline and the E2E contract describe the same page.
+ * Mirrors the Storybook fixture in `stories/settings/settings-pages.stories.tsx`,
+ * which is where the row's layout contract is asserted, so the audited page and
+ * the story baseline describe the same states.
  *
  * Production is untouched: this returns null unless the fixture scenario is
  * active, and `registerPermissionsIpc` falls back to `buildPermissionSnapshot`.

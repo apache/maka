@@ -1664,6 +1664,94 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('replaces Copilot bootstrap ids with the account-authorized model catalog', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('copilot-models', 'github-copilot', 'Copilot models'),
+      );
+      const configured = await stores.credentialVault.set({
+        locator: connectionCredential(connection, 'oauth_token'),
+        expected: null,
+        secret: JSON.stringify({
+          access_token: 'github-access',
+          refresh_token: 'github-refresh',
+          expires_at: Number.MAX_SAFE_INTEGER,
+        }),
+      });
+      assert.equal(configured.kind, 'committed');
+
+      const prepared = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(prepared.kind, 'ready');
+      if (prepared.kind !== 'ready') return;
+      const completed = await stores.operations.completeModelFetch(prepared.ticket, {
+        models: [{ id: 'account-available' }, { id: 'account-preview' }],
+        source: 'fetched',
+        fetchedAt: 43,
+      });
+      assert.equal(completed.kind, 'committed');
+      if (completed.kind !== 'committed') return;
+
+      const updated = completed.snapshot.connections[0];
+      assert.deepEqual(updated?.models, [{ id: 'account-available' }, { id: 'account-preview' }]);
+      assert.deepEqual(updated?.enabledModelIds, ['account-available', 'account-preview']);
+      assert.equal(updated?.enabledModelIds.includes('gpt-5'), false);
+    });
+  });
+
+  test('clears a withdrawn Copilot default when authoritative discovery leaves no enabled models', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('copilot-withdrawn-default', 'github-copilot', 'Copilot withdrawn default'),
+      );
+      const configured = await stores.credentialVault.set({
+        locator: connectionCredential(connection, 'oauth_token'),
+        expected: null,
+        secret: JSON.stringify({
+          access_token: 'github-access',
+          refresh_token: 'github-refresh',
+          expires_at: Number.MAX_SAFE_INTEGER,
+        }),
+      });
+      assert.equal(configured.kind, 'committed');
+
+      const firstFetch = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(firstFetch.kind, 'ready');
+      if (firstFetch.kind !== 'ready') return;
+      const firstCompleted = await stores.operations.completeModelFetch(firstFetch.ticket, {
+        models: [{ id: 'old-model' }],
+        source: 'fetched',
+        fetchedAt: 42,
+      });
+      assert.equal(firstCompleted.kind, 'committed');
+      if (firstCompleted.kind !== 'committed') return;
+
+      const defaulted = await stores.connectionCatalog.setDefaultTarget({
+        expectedCatalogRevision: firstCompleted.snapshot.revision,
+        target: { connectionId: connection.connectionId, modelId: 'old-model' },
+      });
+      assert.equal(defaulted.kind, 'committed');
+
+      const secondFetch = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(secondFetch.kind, 'ready');
+      if (secondFetch.kind !== 'ready') return;
+      const refreshed = await stores.operations.completeModelFetch(secondFetch.ticket, {
+        models: [{ id: 'replacement-model' }],
+        source: 'fetched',
+        fetchedAt: 43,
+      });
+      assert.equal(refreshed.kind, 'committed');
+      if (refreshed.kind !== 'committed') return;
+
+      assert.deepEqual(refreshed.snapshot.connections[0]?.enabledModelIds, []);
+      assert.equal(refreshed.snapshot.defaultTarget, null);
+      assert.deepEqual((await stores.connectionCatalog.getSnapshot()).defaultTarget, null);
+    });
+  });
+
   test('keeps the canonical default target when discovery stops listing its model', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(

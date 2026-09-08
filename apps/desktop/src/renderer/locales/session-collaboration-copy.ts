@@ -19,7 +19,7 @@
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
-const ZH = {
+const ZH_CN = {
     shareAction: '分享此任务',
     shareTitle: '分享任务',
     shareDescription: '创建一次性邀请，让另一台 Maka 访问这个任务。',
@@ -72,7 +72,7 @@ const ZH = {
     recoveryStartedBody: '任务已保存在此设备；连接恢复后会自动出现在任务列表中。',
     invalidCode: '邀请码无效',
     connectionFailed: '无法加入共享任务',
-    directPathUnavailable: '未能连接到任务所在的 Runtime Host。请确认当前 Desktop Client 和该 Host 在同一个 Peer Mesh 中，并且存在可用的直连或成员转发路径；可在 Peer Mesh 设置中同步路径并检查成员转发。',
+    directPathUnavailable: '尚未建立直连。请确认分享者在线，并检查双方的 VPN、代理或防火墙；若网络无法打洞，可使用已知 Mesh 节点的转发。',
     insecureTitle: '此连接未加密',
     insecureBody: '访客凭据、完整任务内容和轮次请求可能被同一网络中的第三方截获。仅在你了解并接受风险时继续。',
     shareInsecure: '接受风险并创建',
@@ -84,7 +84,14 @@ const ZH = {
     mountUnavailable: '当前不可用',
     directConnection: '直连',
     memberTransitConnection: '成员转发',
-    disconnect: '断开',
+    disconnect: '从本机移除',
+    openTask: '打开任务',
+    retryConnection: '立即重试',
+    accessRejected: '授权已失效，请向分享者申请新的邀请码。',
+    sessionUnavailable: '分享者已停止共享此任务。',
+    incompatibleHost: '双方 Maka 版本不兼容。请双方更新 Maka 并重启 Runtime Host 后重试。',
+    alias: '别名',
+    saveAlias: '保存别名',
     disconnectFailed: '无法断开共享任务',
     turnRequests: '轮次请求',
     noTurnRequests: '暂无轮次请求',
@@ -119,12 +126,118 @@ const ZH = {
 };
 
 type SessionCollaborationCopy = {
-  readonly [Key in keyof typeof ZH]: (typeof ZH)[Key] extends (
+  readonly [Key in keyof typeof ZH_CN]: (typeof ZH_CN)[Key] extends (
     ...args: infer Args
   ) => string
     ? (...args: Args) => string
     : string;
 };
+
+const ZH_TW = {
+    shareAction: '分享此任務',
+    shareTitle: '分享任務',
+    shareDescription: '建立一次性邀請，讓另一台 Maka 存取這個任務。',
+    enableRemoteAccessTitle: '請先開啟本機遠端存取',
+    enableRemoteAccessBody: '已為你開啟 Runtime Host 設定；開啟遠端存取後即可分享此任務。',
+    disclosureTitle: '分享前請確認',
+    disclosureBody:
+      '對方將看到這個任務已有及之後產生的所有可見內容，包括其中已出現的檔案路徑、憑證或其他機密。撤銷存取只能阻止後續讀取，無法收回對方已複製的內容。',
+    accessLabel: '存取權限',
+    observe: '唯讀',
+    observeHelp: '檢視完整歷史記錄和即時更新',
+    requestTurn: '可請求新輪次',
+    revokeTurnRequests: '撤銷輪次請求權限',
+    requestTurnHelp: '檢視完整內容，並提出需要你逐次核准的新輪次請求',
+    createInvitation: '建立邀請',
+    invitationCode: '一次性邀請碼',
+    invitationHelp: '邀請碼包含連線位址和訪客憑證，不包含擁有者憑證。',
+    coordinationReady: '已包含跨網路協調路徑',
+    coordinationReadyBody:
+      'Runtime Host 已取得 Relay reservation；這能提高不同網路中的裝置成功建立連線的機會。',
+    coordinationUnavailable: '尚未取得 Relay reservation',
+    coordinationUnavailableBody:
+      '此邀請碼目前只包含直接路徑，不同網路中的裝置可能無法連線。可稍後撤銷並重新建立。',
+    copy: '複製邀請碼',
+    copied: '已複製邀請碼',
+    close: '完成',
+    activeAccess: '目前存取',
+    accessUnavailable: '分享管理暫時無法使用；此視窗會自動重試。',
+    guest: '訪客',
+    noAccess: '尚未分享給任何人',
+    pending: '待領取',
+    active: '已連線',
+    revoke: '撤銷',
+    joinAction: '加入分享任務',
+    joinTitle: '加入分享任務',
+    joinDescription: '貼上邀請碼，建立獨立的訪客連線。',
+    code: '邀請碼',
+    pasteInvitation: '貼上邀請碼',
+    clipboardEmpty: '剪貼簿中沒有可貼上的邀請碼。',
+    clipboardUnavailable: '剪貼簿中沒有有效的邀請碼；請手動貼上。',
+    join: '加入',
+    validatingInvitation: '正在驗證邀請碼…',
+    discoveringHost: '正在尋找任務所在的 Runtime Host…',
+    preparingRoute: '正在準備可用路徑…',
+    connectingHost: '正在連線至 Runtime Host…',
+    authenticatingGuest: '正在驗證訪客憑證…',
+    finalizingAccess: '正在確認訪客存取權限…',
+    loadingSession: '正在載入分享任務…',
+    invalidCode: '邀請碼無效',
+    connectionFailed: '無法加入分享任務',
+    directPathUnavailable: '尚未建立直連。請確認分享者在線，並檢查雙方的 VPN、代理或防火牆；若網路無法打洞，可使用已知 Mesh 節點的轉送。',
+    insecureTitle: '此連線未加密',
+    insecureBody: '訪客憑證、完整任務內容和輪次請求可能被同一網路中的第三方攔截。僅在你了解並接受風險時繼續。',
+    shareInsecure: '接受風險並建立',
+    joinInsecure: '接受風險並加入',
+    retainedTasks: '已加入的分享任務',
+    mountConnected: '已連線',
+    mountConnecting: '正在連線',
+    mountReconnecting: '正在重新連線',
+    mountUnavailable: '目前不可用',
+    directConnection: '直連',
+    memberTransitConnection: '成員轉發',
+    disconnect: '從本機移除',
+    openTask: '開啟任務',
+    retryConnection: '立即重試',
+    accessRejected: '授權已失效，請向分享者申請新的邀請碼。',
+    sessionUnavailable: '分享者已停止共用此任務。',
+    incompatibleHost: '雙方 Maka 版本不相容。請雙方更新 Maka 並重新啟動 Runtime Host 後重試。',
+    alias: '別名',
+    saveAlias: '儲存別名',
+    disconnectFailed: '無法中斷分享任務連線',
+    turnRequests: '輪次請求',
+    noTurnRequests: '尚無輪次請求',
+    approve: '核准',
+    reject: '拒絕',
+    turnRequestPlaceholder: '描述你希望發起的新輪次',
+    submitTurnRequest: '請求新輪次',
+    turnRequestSent: '請求已送出，等待擁有者核准',
+  regenerateRequest: '重新生成回答',
+  regenerateRequestSent: '重新生成請求已送出，等待擁有者核准',
+  ownerRegenerateRequestTitle: '訪客請求重新生成回答',
+  turnRequestCount: (count: number) => `${count} 個輪次請求`,
+  turnRequestReconnecting: '正在重新連線 Runtime Host；草稿會保留，連線恢復後即可傳送。',
+  turnRequestWithdrawn: '請求已撤回',
+  withdrawTurnRequest: '撤回',
+  viewSourceTurn: '檢視原輪次',
+  recoveryStarted: '共享任務正在後台連線',
+  recoveryStartedBody: '任務已儲存在此裝置；連線恢復後會自動出現在任務清單中。',
+    turnRequestReconciling: '正在確認 Host 是否已收到請求…',
+    turnRequestPending: '等待核准',
+    turnRequestApproved: '已核准',
+    turnRequestRejected: '已拒絕',
+    turnRequestStarted: '已開始',
+    turnRequestBlocked: '無法開始',
+    turnRequestFailed: '准入失敗',
+    dismissTurnRequest: '關閉',
+    sharedTask: '分享任務',
+    newTurnRequestTitle: (count: number) => count === 1 ? '新的輪次請求' : `${count} 個新的輪次請求`,
+    newTurnRequestSummary: (count: number) => `${count} 個輪次請求正在等待核准`,
+    reviewTurnRequest: '檢視並核准',
+    ownerTurnRequestTitle: '訪客請求開始新輪次',
+    moreTurnRequests: (count: number) => `還有 ${count} 個請求等待核准`,
+    pendingTurnRequestCount: (count: number) => `${count} 個待核准輪次請求`,
+} satisfies SessionCollaborationCopy;
 
 const EN = {
     shareAction: 'Share this task',
@@ -180,7 +293,7 @@ const EN = {
     recoveryStartedBody: 'The task is saved on this device and will appear in the task list when the connection recovers.',
     invalidCode: 'The invitation code is invalid',
     connectionFailed: 'Could not join the shared task',
-    directPathUnavailable: 'Could not reach the Runtime Host for this task. Make sure this Desktop Client and the Host are in the same Peer Mesh and have a usable direct or member-transit path. Sync routes and check member transit in Peer Mesh settings.',
+    directPathUnavailable: 'No direct connection yet. Check that the owner is online and review VPN, proxy, or firewall settings on both devices. If hole punching is unavailable, use an approved Mesh member for transit.',
     insecureTitle: 'This connection is not encrypted',
     insecureBody: 'The Guest credential, complete task content, and Turn requests may be intercepted by others on the network. Continue only if you understand and accept the risk.',
     shareInsecure: 'Accept risk and create',
@@ -192,7 +305,14 @@ const EN = {
     mountUnavailable: 'Unavailable',
     directConnection: 'Direct',
     memberTransitConnection: 'Member transit',
-    disconnect: 'Disconnect',
+    disconnect: 'Remove from this device',
+    openTask: 'Open task',
+    retryConnection: 'Retry now',
+    accessRejected: 'Access is no longer valid. Ask the owner for a new invitation.',
+    sessionUnavailable: 'The owner is no longer sharing this task.',
+    incompatibleHost: 'The Maka versions are incompatible. Update Maka and restart Runtime Host on both devices, then retry.',
+    alias: 'Alias',
+    saveAlias: 'Save alias',
     disconnectFailed: 'Could not disconnect shared task',
     turnRequests: 'Turn requests',
     noTurnRequests: 'No Turn requests yet',
@@ -226,7 +346,7 @@ const EN = {
     pendingTurnRequestCount: (count: number) => `${count} pending Turn ${count === 1 ? 'request' : 'requests'}`,
 } satisfies SessionCollaborationCopy;
 
-const COPY = { zh: ZH, en: EN } satisfies UiCatalog<SessionCollaborationCopy>;
+const COPY = { 'zh-CN': ZH_CN, 'zh-TW': ZH_TW, en: EN } satisfies UiCatalog<SessionCollaborationCopy>;
 
 export function getSessionCollaborationCopy(locale: UiLocale) {
   return COPY[locale];

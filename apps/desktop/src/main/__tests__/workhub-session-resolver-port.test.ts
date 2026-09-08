@@ -23,7 +23,7 @@ import type {
   WorkHubSessionResolution,
   WorkHubSessionResolver,
 } from '../../renderer/application/contracts/workhub-request-intent.js';
-import { createWorkHubRoutePolicy } from '../../renderer/workhub-route-policy.js';
+import { createWorkHubRoutePolicy } from '../../renderer/features/workhub/index.js';
 
 const routable = (sessionId: string, sessionName: string) => ({
   target: { sessionId },

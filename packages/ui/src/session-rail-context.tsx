@@ -27,7 +27,6 @@ import type {
   SessionHistoryGroup,
   SessionRowActions,
 } from './session-history-list.js';
-import type { SidebarUpdateReminder } from './session-sidebar-nav.js';
 
 export type SessionViewMode = 'conversation' | 'project';
 
@@ -51,6 +50,8 @@ export interface SessionRailData {
   /** Pre-grouped rows. Absent means group by recency here. */
   groups?: ReadonlyArray<SessionHistoryGroup>;
   groupVariant: SessionViewMode;
+  /** Human-readable project identity for a session hover card. */
+  sessionProjectName?(session: SessionSummary): string | undefined;
   sessionMeta?(session: SessionSummary): string | undefined;
   sessionBadge?(session: SessionSummary): ReactNode;
   onSelectSession(sessionId: string): void;
@@ -63,12 +64,14 @@ export interface SessionRailData {
  * the column's own geometry.
  *
  * Deliberately a SECOND context rather than more fields on `SessionRailData`.
- * These follow the shell — which section is selected, whether an update is
- * waiting — and they change far more often than the list does, while costing a
- * few dozen fibers against the list's thousand. Splitting them is what lets the
- * chrome follow the shell without dragging the list with it.
+ * These follow the shell — which section is selected, which layout is active —
+ * and they change far more often than the list does, while costing a few dozen
+ * fibers against the list's thousand. Splitting them is what lets the chrome
+ * follow the shell without dragging the list with it. App Update has its own
+ * footer-only projection because download progress is independent of both.
  */
 export interface SessionRailChrome {
+  auxiliaryNavigation?: ReactNode;
   collapsed: boolean;
   onCollapsedChange(collapsed: boolean): void;
   collapseHandleRef?: Ref<SideNavImperativeCollapseHandle>;
@@ -84,8 +87,6 @@ export interface SessionRailChrome {
   onSelect(selection: NavSelection): void;
   onNew(): void;
   onOpenSettings(): void;
-  updateReminder?: SidebarUpdateReminder;
-  onOpenUpdate?(): void;
   workHubEntry?: {
     active: boolean;
     label: string;

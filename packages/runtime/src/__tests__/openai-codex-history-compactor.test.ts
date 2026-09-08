@@ -19,7 +19,11 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import {
+  buildOpenAiCodexHistoryCompactor,
   extractOpenAiCodexCompactionState,
   shouldFallbackFromOpenAiCodexHistoryCompaction,
   withOpenAiCodexHistoryCompactionFallback,
@@ -129,3 +133,128 @@ describe('OpenAI Codex compaction output', () => {
     );
   });
 });
+
+describe('OpenAI Codex compaction input', () => {
+  test('keeps an interrupted late tool step after the intervening assistant step', async () => {
+    const model = compactionModel();
+    const summarize = buildOpenAiCodexHistoryCompactor({
+      resolveModel: () => model,
+      connectionId: 'codex-subscription',
+      modelId: 'gpt-5.3-codex',
+    });
+
+    await summarize({
+      sessionId: 'session-1',
+      turnId: 'turn-current',
+      source: {
+        foldedRuntimeEvents: [
+          assistantTextEvent('text-a', 'shared-step', 'Text A'),
+          assistantTextEvent('text-b', 'intervening-step', 'Text B'),
+          toolCallEvent(),
+          toolResultEvent(),
+        ],
+      },
+    });
+
+    assert.deepEqual(
+      model.doStreamCalls[0]?.prompt.map((message) => ({
+        role: message.role,
+        parts: Array.isArray(message.content)
+          ? message.content.map((part) => (part.type === 'text' ? `text:${part.text}` : part.type))
+          : [`text:${message.content}`],
+      })),
+      [
+        { role: 'assistant', parts: ['text:Text A'] },
+        { role: 'assistant', parts: ['text:Text B'] },
+        { role: 'assistant', parts: ['tool-call'] },
+        { role: 'tool', parts: ['tool-result'] },
+      ],
+    );
+  });
+});
+
+function assistantTextEvent(id: string, stepId: string, text: string): RuntimeEvent {
+  return runtimeEvent({
+    id,
+    role: 'model',
+    author: 'agent',
+    refs: { providerEventId: stepId },
+    content: { kind: 'text', text },
+  });
+}
+
+function toolCallEvent(): RuntimeEvent {
+  return runtimeEvent({
+    id: 'tool-call',
+    role: 'model',
+    author: 'agent',
+    refs: { stepId: 'shared-step' },
+    content: {
+      kind: 'function_call',
+      id: 'read-1',
+      name: 'Read',
+      args: { path: 'notes.md' },
+    },
+  });
+}
+
+function toolResultEvent(): RuntimeEvent {
+  return runtimeEvent({
+    id: 'tool-result',
+    role: 'tool',
+    author: 'tool',
+    content: {
+      kind: 'function_response',
+      id: 'read-1',
+      name: 'Read',
+      result: { kind: 'text', text: 'contents' },
+      isError: false,
+    },
+  });
+}
+
+function runtimeEvent(
+  input: Pick<RuntimeEvent, 'id' | 'role' | 'author'> & Pick<RuntimeEvent, 'content' | 'refs'>,
+): RuntimeEvent {
+  return {
+    id: input.id,
+    invocationId: 'invocation-1',
+    runId: 'run-1',
+    sessionId: 'session-1',
+    turnId: 'turn-previous',
+    ts: 1,
+    partial: false,
+    role: input.role,
+    author: input.author,
+    content: input.content,
+    refs: input.refs,
+  };
+}
+
+function compactionModel(): MockLanguageModelV4 {
+  const chunks: LanguageModelV4StreamPart[] = [
+    { type: 'stream-start', warnings: [] },
+    {
+      type: 'custom',
+      kind: 'openai.compaction',
+      providerMetadata: { openai: { itemId: 'cmp-1', encryptedContent: 'encrypted-1' } },
+    },
+    {
+      type: 'finish',
+      finishReason: { unified: 'stop', raw: 'stop' },
+      usage: {
+        inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: 1, text: 0, reasoning: 0 },
+      },
+    },
+  ];
+  return new MockLanguageModelV4({
+    doStream: {
+      stream: simulateReadableStream({
+        chunks,
+        initialDelayInMs: null,
+        chunkDelayInMs: null,
+      }),
+    },
+  });
+}

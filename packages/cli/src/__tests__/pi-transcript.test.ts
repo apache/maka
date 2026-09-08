@@ -123,7 +123,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(english, /Type a message to start/);
     assert.match(english, /\/session\s+Switch or resume a session/);
 
-    const chinese = renderMakaPiTranscript(state, { ...meta(), uiLocale: 'zh' }, 100)
+    const chinese = renderMakaPiTranscript(state, { ...meta(), uiLocale: 'zh-CN' }, 100)
       .map(stripAnsi)
       .join('\n');
     assert.match(chinese, /陪你把事做完/);
@@ -156,7 +156,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.equal(renderFor('darwin').at(-1), '⌥+↑ take queued messages back to re-edit');
     assert.equal(renderFor('linux').at(-1), 'Alt+↑ take queued messages back to re-edit');
     assert.equal(
-      renderMakaPiPendingQueue(state, 80, 'linux', 'zh').map(stripAnsi).at(-1),
+      renderMakaPiPendingQueue(state, 80, 'linux', 'zh-CN').map(stripAnsi).at(-1),
       'Alt+↑ 取回队列以重新编辑',
     );
   });
@@ -224,7 +224,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.equal(
       stripAnsi(
         renderMakaPiStatusLine(
-          { ...meta(), uiLocale: 'zh', sideConversation: { view: 'side' } },
+          { ...meta(), uiLocale: 'zh-CN', sideConversation: { view: 'side' } },
           200,
         ),
       ),
@@ -243,7 +243,7 @@ describe('Maka Pi TUI transcript', () => {
           renderMakaPiStatusLine(
             {
               ...meta(),
-              uiLocale: 'zh',
+              uiLocale: 'zh-CN',
               sideConversation: { view: 'side', parentStatus },
             },
             200,
@@ -255,7 +255,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(
       stripAnsi(
         renderMakaPiStatusLine(
-          { ...meta(), uiLocale: 'zh', sideConversation: { view: 'parent' } },
+          { ...meta(), uiLocale: 'zh-CN', sideConversation: { view: 'parent' } },
           200,
         ),
       ),
@@ -969,7 +969,6 @@ describe('Maka Pi TUI transcript', () => {
         turnId: 'turn-1',
         ts: 2,
         status: 'running',
-        partialOutputRetained: true,
       },
     ]);
 
@@ -1055,7 +1054,6 @@ describe('Maka Pi TUI transcript', () => {
         turnId: 'turn-1',
         ts: 5,
         status: 'completed',
-        partialOutputRetained: true,
       },
     ]);
 
@@ -1419,7 +1417,6 @@ describe('Maka Pi TUI transcript', () => {
         turnId: 'turn-1',
         ts: 2,
         status: 'completed',
-        partialOutputRetained: false,
       },
     ] satisfies StoredMessage[]);
 
@@ -5129,7 +5126,6 @@ function inFlightBackgroundPollFixture(): {
         turnId: 'turn-1',
         ts: 1,
         status: 'running',
-        partialOutputRetained: true,
       },
       { type: 'tool_call', id: 'bash-bg', turnId: 'turn-1', ts: 2, toolName: 'Bash', args: {} },
       {

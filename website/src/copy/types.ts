@@ -27,6 +27,9 @@ export interface Copy {
   siteName: string;
   positioning: string;
   theme: { toDark: string; toLight: string };
+  // The README hero's alt text, which describes the same scene the social
+  // preview shows; the site test holds it to README.md's `<img alt>`.
+  sceneAlt: string;
   nav: {
     docs: string;
     downloads: string;

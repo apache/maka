@@ -100,6 +100,32 @@ describe('custom pet selection settings', () => {
   });
 });
 
+describe('UI locale preferences', () => {
+  test('preserves every supported preference and migrates the former generic zh value', () => {
+    for (const uiLocale of ['auto', 'zh-CN', 'zh-TW', 'en'] as const) {
+      const normalized = normalizeSettings({
+        personalization: {
+          displayName: '',
+          assistantTone: '',
+          uiLocale,
+          selectedPetId: null,
+        },
+      });
+      assert.strictEqual(normalized.personalization.uiLocale, uiLocale);
+    }
+
+    const normalizedLegacy = normalizeSettings({
+      personalization: {
+        displayName: '',
+        assistantTone: '',
+        uiLocale: 'zh',
+        selectedPetId: null,
+      },
+    });
+    assert.strictEqual(normalizedLegacy.personalization.uiLocale, 'zh-CN');
+  });
+});
+
 test('shell settings default, normalize, and merge through their shared boundary', () => {
   const defaults = createDefaultSettings();
   assert.deepStrictEqual(defaults.shell, { preference: 'auto', executable: '' });

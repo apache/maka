@@ -23,6 +23,7 @@ import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import { isDeepStrictEqual } from 'node:util';
+import { assertHandoffClaimSource } from '@maka/core/runtime-handoff';
 import {
   buildWorkspaceBaselineAuthorityEvents,
   buildWorkspaceSuccessorAuthorityEvent,
@@ -129,23 +130,17 @@ import {
 import type { OperationalStateDatabaseLease } from './operational-state-store.js';
 import { immutableSteeringMessageId, isRuntimeStorageSafeId } from './runtime-event-invariants.js';
 import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-authority.js';
+import {
+  RuntimeTranscriptQuery,
+  TERMINAL_RUNTIME_EVENT_SQL,
+  type RuntimeTranscriptInvocation,
+  type RuntimeTranscriptInvocationRequest,
+  type RuntimeTranscriptLandmark,
+} from './runtime-transcript-query.js';
 
 export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
 
 export type { ToolRecoveryMode } from '@maka/core/runtime-event';
-
-/**
- * `isTerminalRuntimeEvent` asked in SQL.
- *
- * The TypeScript predicate stays the authority; this only lets a query find the
- * terminal event without decoding every row it passes over. Both have to say the
- * same thing, so the SQL half is written once here instead of at each query.
- */
-const TERMINAL_RUNTIME_EVENT_SQL = `(
-            json_extract(payload_json, '$.actions.endInvocation') = 1
-            OR json_extract(payload_json, '$.status')
-              IN ('completed', 'failed', 'aborted', 'cancelled')
-          )`;
 
 const RUNTIME_EVENT_SCAN_BATCH_SIZE = 128;
 const RUNTIME_PARTIAL_SEGMENT_TARGET_BYTES = 64 * 1024;
@@ -548,6 +543,45 @@ export class SqliteRuntimeStore
     return this.readRuntimeEventsSync(sessionId, runId);
   }
 
+  private transcriptQuery(): RuntimeTranscriptQuery {
+    return new RuntimeTranscriptQuery(this.db, (sessionId, invocationId) => {
+      // By invocation rather than by run: both shelves key their opening on it,
+      // so a page's records cost the page instead of the Session's Turns.
+      const opening = this.readInvocationOpeningsSync(sessionId, {
+        direction: 'asc',
+        invocationId,
+      }).at(0);
+      if (!opening) throw new Error(`Transcript invocation ${invocationId} is missing`);
+      return this.completeInvocationRecordSync(opening);
+    });
+  }
+
+  async readTranscriptHighWater(sessionId: string): Promise<number | null> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    return this.readTransaction(() => this.transcriptQuery().highWater(sessionId));
+  }
+
+  async readTranscriptInvocations(
+    sessionId: string,
+    request: RuntimeTranscriptInvocationRequest,
+  ): Promise<RuntimeTranscriptInvocation[]> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    assertInvocationSearchLimit(request.limit);
+    return this.readTransaction(() => this.transcriptQuery().invocations(sessionId, request));
+  }
+
+  async readTranscriptLandmarks(
+    sessionId: string,
+    throughOrdinal: number,
+    limit: number,
+  ): Promise<RuntimeTranscriptLandmark[]> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    assertInvocationSearchLimit(limit);
+    return this.readTransaction(() =>
+      this.transcriptQuery().landmarks(sessionId, throughOrdinal, limit),
+    );
+  }
+
   /**
    * Enumerate a Session's invocations: the opening fact names each one, and its
    * highest-sequence event says whether it ended.
@@ -688,6 +722,8 @@ export class SqliteRuntimeStore
             1 AS from_events
           FROM runtime_events
           WHERE session_id = :sessionId AND event_kind = 'invocation_opened'
+            ${options.runId === undefined ? '' : 'AND run_id = :runId'}
+            ${options.invocationId === undefined ? '' : 'AND invocation_id = :invocationId'}
           UNION ALL
           SELECT
             NULL,
@@ -699,15 +735,15 @@ export class SqliteRuntimeStore
             0
           FROM runtime_legacy_invocation_openings AS legacy
           WHERE legacy.session_id = :sessionId
+            ${options.runId === undefined ? '' : 'AND legacy.run_id = :runId'}
+            ${options.invocationId === undefined ? '' : 'AND legacy.invocation_id = :invocationId'}
             AND NOT EXISTS (
               SELECT 1 FROM runtime_events
               WHERE runtime_events.invocation_id = legacy.invocation_id
                 AND runtime_events.event_kind = 'invocation_opened'
             )
         )
-        WHERE (:invocationId IS NULL OR invocation_id = :invocationId)
-          AND (:runId IS NULL OR run_id = :runId)
-          AND (
+        WHERE (
             :beforeOpenedAt IS NULL
             OR opened_at < :beforeOpenedAt
             OR (opened_at = :beforeOpenedAt AND invocation_id < :beforeInvocationId)
@@ -717,8 +753,8 @@ export class SqliteRuntimeStore
       `)
       .all({
         sessionId,
-        invocationId: options.invocationId ?? null,
-        runId: options.runId ?? null,
+        ...(options.invocationId === undefined ? {} : { invocationId: options.invocationId }),
+        ...(options.runId === undefined ? {} : { runId: options.runId }),
         beforeOpenedAt: options.before?.openedAt ?? null,
         beforeInvocationId: options.before?.invocationId ?? null,
         limit: options.limit ?? -1,
@@ -1165,7 +1201,7 @@ export class SqliteRuntimeStore
         `claim_id = ?
           OR target_invocation_id = ?
           OR target_run_id = ?
-          OR (target_session_id = ? AND target_turn_id = ?)
+          OR (? = 0 AND target_session_id = ? AND target_turn_id = ?)
           OR (
             source_session_id = ?
             AND source_run_id = ?
@@ -1174,6 +1210,7 @@ export class SqliteRuntimeStore
         claim.claimId,
         claim.target.invocationId,
         claim.target.runId,
+        claim.targetOpening.source.kind === 'handoff' ? 1 : 0,
         claim.target.sessionId,
         claim.target.turnId,
         source.identity.sessionId,
@@ -1237,7 +1274,7 @@ export class SqliteRuntimeStore
             `claim_id = ?
               OR target_invocation_id = ?
               OR target_run_id = ?
-              OR (target_session_id = ? AND target_turn_id = ?)
+              OR (? = 0 AND target_session_id = ? AND target_turn_id = ?)
               OR (
                 source_session_id = ?
                 AND source_run_id = ?
@@ -1246,6 +1283,7 @@ export class SqliteRuntimeStore
             claim.claimId,
             claim.target.invocationId,
             claim.target.runId,
+            claim.targetOpening.source.kind === 'handoff' ? 1 : 0,
             claim.target.sessionId,
             claim.target.turnId,
             source.identity.sessionId,
@@ -1449,6 +1487,58 @@ export class SqliteRuntimeStore
         throw new Error(`RuntimeEvent Session ordinal identity mismatch for ${event.id}`);
       }
       return { ordinal: row.ordinal, event };
+    });
+  }
+
+  async resequenceSessionEventOrdinals(sessionId: string): Promise<void> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    this.transaction(() => {
+      // Lifted above the range first: the second statement renumbers into the
+      // space these rows occupy, and (session_id, ordinal) is a primary key.
+      // Shifting up rather than below zero keeps every intermediate value
+      // inside the table's own `ordinal > 0`, and lands them past the 1..N the
+      // renumber assigns, since the count cannot exceed the maximum.
+      const { shift } = this.db
+        .prepare(`
+        SELECT COALESCE(MAX(ordinal), 0) AS shift
+        FROM runtime_session_event_ordinals
+        WHERE session_id = ?
+      `)
+        .get(sessionId) as { shift: number };
+      this.db
+        .prepare(`
+        UPDATE runtime_session_event_ordinals
+        SET ordinal = ordinal + :shift
+        WHERE session_id = :sessionId
+      `)
+        .run({ sessionId, shift });
+      this.db
+        .prepare(`
+        WITH opening AS (
+          SELECT invocation_id, CAST(json_extract(payload_json, '$.ts') AS INTEGER) AS opened_at
+          FROM runtime_events
+          WHERE session_id = :sessionId AND event_kind = 'invocation_opened'
+        ),
+        ordered AS MATERIALIZED (
+          SELECT
+            o.event_id AS event_id,
+            ROW_NUMBER() OVER (
+              ORDER BY COALESCE(opening.opened_at, e.committed_at), e.invocation_id, o.ordinal
+            ) AS ordinal
+          FROM runtime_session_event_ordinals o
+          JOIN runtime_events e ON e.event_id = o.event_id
+          LEFT JOIN opening ON opening.invocation_id = e.invocation_id
+          WHERE o.session_id = :sessionId
+        )
+        UPDATE runtime_session_event_ordinals
+        SET ordinal = (
+          SELECT ordered.ordinal
+          FROM ordered
+          WHERE ordered.event_id = runtime_session_event_ordinals.event_id
+        )
+        WHERE session_id = :sessionId
+      `)
+        .run({ sessionId });
     });
   }
 
@@ -3342,6 +3432,7 @@ export class SqliteRuntimeStore
       target.invocationId,
       target.sessionId,
       target.runId,
+      claim.targetOpening.source.kind === 'handoff' ? 1 : 0,
       target.sessionId,
       target.turnId,
     ] as const;
@@ -3351,7 +3442,7 @@ export class SqliteRuntimeStore
         FROM runtime_events
         WHERE invocation_id = ?
           OR (session_id = ? AND run_id = ?)
-          OR (session_id = ? AND turn_id = ?)
+          OR (? = 0 AND session_id = ? AND turn_id = ?)
         LIMIT 1
       `)
       .get(...values) as { found: number } | undefined;
@@ -3363,7 +3454,7 @@ export class SqliteRuntimeStore
           FROM runtime_partial_snapshots
           WHERE invocation_id = ?
             OR (session_id = ? AND run_id = ?)
-            OR (session_id = ? AND turn_id = ?)
+            OR (? = 0 AND session_id = ? AND turn_id = ?)
           LIMIT 1
         `)
         .get(...values) as { found: number } | undefined) !== undefined
@@ -3393,6 +3484,7 @@ export class SqliteRuntimeStore
 
   private assertContinuationBoundaryMatchesLedger(claim: ContinuationClaimV1): void {
     const lastIndex = claim.boundary.segments.length - 1;
+    let previousPrefix: ImmutableRuntimePrefixV1 | undefined;
     for (const [index, segment] of claim.boundary.segments.entries()) {
       let prefix: ImmutableRuntimePrefixV1;
       try {
@@ -3427,7 +3519,36 @@ export class SqliteRuntimeStore
             : `Continuation ancestor boundary changed for ${segment.identity.runId}`,
         );
       }
+      const opening = prefix.events[0]?.content;
+      const repeatsTurn = previousPrefix?.identity.turnId === prefix.identity.turnId;
+      if (
+        repeatsTurn ||
+        (opening?.kind === 'invocation_opened' && opening.source.kind === 'handoff')
+      ) {
+        if (
+          !previousPrefix ||
+          opening?.kind !== 'invocation_opened' ||
+          opening.source.kind !== 'handoff'
+        ) {
+          throw new Error('Same-turn boundary requires an authenticated handoff edge');
+        }
+        const row = this.readContinuationClaimRow('claim_id = ?', opening.source.claimId);
+        const state = row && this.decodeContinuationClaimStateRow(row);
+        if (
+          !state ||
+          state.startEventId !== prefix.events[0]?.id ||
+          !isDeepStrictEqual(
+            state.claim.boundary.segments,
+            claim.boundary.segments.slice(0, index),
+          ) ||
+          !continuationStartEventMatchesClaim(prefix.events[0], state.claim, state.startKind)
+        ) {
+          throw new Error('Same-turn boundary handoff claim does not authenticate its lineage');
+        }
+        assertHandoffClaimSource(state.claim, previousPrefix);
+      }
       if (index === lastIndex) {
+        assertHandoffClaimSource(claim, prefix);
         const terminalEvents = prefix.events.filter(isTerminalRuntimeEvent);
         const terminal = terminalEvents[0];
         if (terminalEvents.length !== 1 || !terminal || prefix.events.at(-1)?.id !== terminal.id) {
@@ -3436,6 +3557,7 @@ export class SqliteRuntimeStore
           );
         }
       }
+      previousPrefix = prefix;
     }
   }
 
@@ -3601,7 +3723,16 @@ export class SqliteRuntimeStore
     authorizedPendingClaimId?: string,
     exactRetry = false,
   ): void {
-    for (const row of this.readContinuationClaimRows()) {
+    const rows = this.readContinuationClaimRows();
+    const ownClaim = rows.find(
+      (row) =>
+        row.target_session_id === event.sessionId &&
+        row.target_invocation_id === event.invocationId &&
+        row.target_run_id === event.runId &&
+        row.target_turn_id === event.turnId,
+    );
+    const ownHandoff = ownClaim && decodeContinuationClaimRow(ownClaim);
+    for (const row of rows) {
       const claim = decodeContinuationClaimRow(row);
       const source = claim.boundary.segments.find(
         (segment) =>
@@ -3612,12 +3743,18 @@ export class SqliteRuntimeStore
           `RuntimeEvent source boundary is sealed by continuation claim ${claim.claimId}`,
         );
       }
+      if (source && exactRetry) continue;
 
       const target = claim.target;
       const collidesWithTarget =
         event.invocationId === target.invocationId ||
         (event.sessionId === target.sessionId && event.runId === target.runId) ||
-        (event.sessionId === target.sessionId && event.turnId === target.turnId);
+        (event.sessionId === target.sessionId &&
+          event.turnId === target.turnId &&
+          !(
+            ownHandoff?.targetOpening.source.kind === 'handoff' &&
+            ownHandoff.boundary.segments.some((segment) => segment.identity.runId === target.runId)
+          ));
       if (!collidesWithTarget) continue;
       if (
         event.sessionId !== target.sessionId ||

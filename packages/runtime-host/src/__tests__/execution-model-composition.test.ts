@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { deferred } from '@maka/core/test-only/async-primitives';
+import { deferred, waitFor } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -39,7 +39,10 @@ import {
 } from '@maka/core/sandbox-boundary';
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
-import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
+import {
+  decodeRequestCompositionSnapshot,
+  decodeRunCompositionSnapshot,
+} from '@maka/core/run-composition';
 import { readInvocation, testInvocationRecord } from '@maka/runtime/test-only/invocation-fixture';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
@@ -116,6 +119,7 @@ import {
 } from '../server/oauth-execution-authority.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
 import { AgentGraphProviderScenario } from './fixtures/agent-graph-provider-scenario.js';
+import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 
 const MODEL_ID = 'hosted-real-model';
 const API_KEY = 'hosted-provider-key';
@@ -145,7 +149,8 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:aa3ab56a7b67dde133fffe885f4def81735c93015202e31ecb339a84863f6d03';
+  // ArchiveRead now describes both ledger and legacy resource references.
+  'sha256:22809de022f9c46186cae986eda23438efe9dbe6856b57abb0613ea48b51ad9c';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -647,7 +652,6 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
   let runtime = createSqliteRuntimeStore(runtimePath);
   try {
     artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await artifacts.recover();
     await runtime.appendRuntimeEvent(sessionId, runId, head);
     backend = await createHostAiSdkBackend(
       backendCreationFixture({
@@ -737,7 +741,6 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
     assert.ok(owner);
     if (!owner) return;
     artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await artifacts.recover();
     runtime = createSqliteRuntimeStore(runtimePath);
     const recoveredEvents = await runtime.readRuntimeEvents(sessionId, runId);
     backend = await createHostAiSdkBackend(
@@ -772,6 +775,65 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
   }
 });
 
+test('handoff composition preparation commits the provider composition without dispatch', async () => {
+  const provider = await startProvider();
+  const snapshots: ReturnType<typeof decodeRunCompositionSnapshot>[] = [];
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        recordRunComposition: async (_runId, snapshot) => {
+          snapshots.push(decodeRunCompositionSnapshot(snapshot));
+        },
+      }),
+    );
+    await backend.prepareRunComposition({ runId: 'prepared-run', turnId: 'prepared-turn' });
+    assert.equal(snapshots.length, 1);
+    assert.equal(provider.requests.length, 0);
+    for await (const _event of backend.send({
+      invocationId: 'prepared-invocation',
+      runId: 'prepared-run',
+      turnId: 'prepared-turn',
+      text: 'Use the prepared composition.',
+      context: [],
+    })) {
+      // The provider gate reuses the durably prepared immutable baseline.
+    }
+    assert.ok(provider.requests.length > 0);
+    assert.equal(snapshots.length, 1);
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
+test('handoff composition preparation fails closed without a durable recorder', async () => {
+  const provider = await startProvider();
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+      }),
+    );
+    await assert.rejects(
+      backend.prepareRunComposition({ runId: 'unrecorded-run', turnId: 'unrecorded-turn' }),
+      /no durable Run Composition preparation authority/,
+    );
+    assert.equal(provider.requests.length, 0);
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
 test('provider dispatch fails closed when the Run Composition commit fails', async () => {
   const provider = await startProvider();
   let commits = 0;
@@ -795,6 +857,153 @@ test('provider dispatch fails closed when the Run Composition commit fails', asy
       invocationId: 'composition-invocation',
       runId: 'composition-run',
       turnId: 'composition-turn',
+      text: 'This request must not reach the provider.',
+      context: [],
+    })) {
+      events.push(event);
+    }
+
+    assert.equal(commits, 1);
+    assert.equal(provider.requests.length, 0);
+    assert.ok(events.some((event) => event.type === 'error'));
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
+test('a failed Run Composition commit can recover on a later dispatch', async () => {
+  const provider = await startProvider();
+  let commits = 0;
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        recordRunComposition: async (_runId, snapshot) => {
+          commits += 1;
+          decodeRunCompositionSnapshot(snapshot);
+          if (commits === 1) throw new Error('transient Run Composition failure');
+        },
+      }),
+    );
+    for await (const _event of backend.send({
+      invocationId: 'composition-retry-invocation-1',
+      runId: 'composition-retry-run',
+      turnId: 'composition-retry-turn-1',
+      text: 'The first request must fail closed.',
+      context: [],
+    })) {
+      // Drain the failed attempt.
+    }
+    assert.equal(provider.requests.length, 0);
+
+    for await (const _event of backend.send({
+      invocationId: 'composition-retry-invocation-2',
+      runId: 'composition-retry-run',
+      turnId: 'composition-retry-turn-2',
+      text: 'Retry after the authority recovers.',
+      context: [],
+    })) {
+      // Drain the successful retry.
+    }
+
+    assert.equal(commits, 2);
+    assert.equal(provider.requests.length, 1);
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
+test('Run Composition keeps the immutable composer Tool baseline', async () => {
+  const provider = await startProvider();
+  const makeTool = (name: string): MakaTool => ({
+    name,
+    description: name,
+    parameters: z.object({}),
+    impl: async () => name,
+  });
+  const initial = makeTool('initial_tool');
+  const dynamic = makeTool('dynamic_tool');
+  let currentTools: readonly MakaTool[] = [initial];
+  let committedToolNames: readonly string[] = [];
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        createRunComposer: async () => ({
+          composerId: 'test.dynamic-tools',
+          composerRevision: '1',
+          tools: [initial],
+          resolveTools: () => currentTools,
+          resolveSystemPrompt: async () => ({ text: 'test prompt', sourceRevisions: [] }),
+        }),
+        recordRunComposition: async (_runId, snapshot) => {
+          committedToolNames = decodeRunCompositionSnapshot(snapshot).toolNames;
+        },
+      }),
+    );
+    currentTools = [dynamic];
+
+    for await (const _event of backend.send({
+      invocationId: 'composition-baseline-invocation',
+      runId: 'composition-baseline-run',
+      turnId: 'composition-baseline-turn',
+      text: 'Use the current Tool surface.',
+      context: [],
+    })) {
+      // Drain the request.
+    }
+
+    assert.deepEqual(committedToolNames, ['initial_tool']);
+    const requestTools = provider.requests[0]?.body.tools as Array<{
+      function?: { name?: string };
+    }>;
+    assert.equal(
+      requestTools.some((entry) => entry.function?.name === 'dynamic_tool'),
+      true,
+    );
+    assert.equal(
+      requestTools.some((entry) => entry.function?.name === 'initial_tool'),
+      false,
+    );
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
+test('provider dispatch fails closed when the Request Composition epoch commit fails', async () => {
+  const provider = await startProvider();
+  let commits = 0;
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        recordRunComposition: async () => undefined,
+        recordRequestComposition: async () => {
+          commits += 1;
+          throw new Error('Request Composition store unavailable');
+        },
+      }),
+    );
+    const events = [];
+    for await (const event of backend.send({
+      invocationId: 'request-composition-invocation',
+      runId: 'request-composition-run',
+      turnId: 'request-composition-turn',
       text: 'This request must not reach the provider.',
       context: [],
     })) {
@@ -1142,7 +1351,7 @@ test('Codex OAuth history compaction falls back to a text checkpoint after nativ
     assert.equal(attempts[0]?.providerId, 'openai-codex');
     assert.equal(attempts[0]?.historyCompactRoute, 'provider_native');
     assert.equal(attempts[0]?.status, 'failed');
-    assert.equal(attempts[0]?.errorClass, 'RequestRejected');
+    assert.equal(attempts[0]?.errorClass, 'request_rejected');
     assert.equal(attempts[0]?.httpStatus, 400);
     assert.equal(attempts[0]?.providerCode, 'missing_required_parameter');
     assert.equal(attempts[0]?.providerRequestId, 'req-codex-compact');
@@ -1981,7 +2190,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     ]);
     assert.match(JSON.stringify(compactRequests[0]?.body), /context summarization assistant/);
 
-    const messages = await execution.sessionStore.readMessagesSnapshot(session.id);
+    const messages = await readLedgerMessages(execution.runtimeEventStore, session.id);
     const assistant = messages.find(
       (message) => message.type === 'assistant' && message.turnId === turnIds[0],
     );
@@ -2027,9 +2236,10 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(compactUsage.inputTokens, 7);
     assert.equal(compactUsage.outputTokens, 3);
     const capturedRequestCount = mainRequests.length + compactRequests.length;
-    const attempts = await waitForCanonicalAttempts(usageStores, session.id, capturedRequestCount);
-    assert.equal(attempts.length, capturedRequestCount);
-    assert.ok(attempts.every((attempt) => attempt.requestObservation));
+    assert.equal(
+      await waitForCanonicalRequests(usageStores, session.id, capturedRequestCount),
+      capturedRequestCount,
+    );
     const contextDiagnostics = await composition.handlers['context.diagnostics.query'](
       { sessionId: session.id },
       connectionContext,
@@ -2047,22 +2257,6 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     }
 
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    const captureArtifacts = await waitForCaptureArtifacts(
-      artifacts,
-      session.id,
-      capturedRequestCount,
-    );
-    assert.equal(captureArtifacts.length, capturedRequestCount);
-    let summaryCaptureFound = false;
-    for (const artifact of captureArtifacts) {
-      const read = await artifacts.readTextInSession(session.id, artifact.id);
-      if (read.ok && /context summarization assistant/.test(read.text)) {
-        summaryCaptureFound = true;
-        break;
-      }
-    }
-    assert.equal(summaryCaptureFound, true);
-
     const streamRequestsBeforeArtifactFailure = provider.requests.filter(
       (request) => request.body.stream === true,
     ).length;
@@ -2224,24 +2418,47 @@ test('production Host executes and durably supervises an Agent Graph over a real
     assert.equal(initialTerminal.status, 'completed');
 
     graphStore = createAgentGraphControlStore(root);
+    const graph = graphStore;
     const graphId = agentGraphIdForRootSession(session.id);
-    let updates = await graphStore.listAgentGraphScheduleUpdates(graphId);
+    let updates = await graph.listAgentGraphScheduleUpdates(graphId);
     let runs = await execution.runtimeEventStore.listSessionInvocations(session.id);
-    for (let attempt = 0; attempt < 400; attempt += 1) {
-      const wakeRuns = runs.filter(
-        (run) => run.opening.root.kind === 'agent_graph_supervisor_wake',
+    try {
+      await waitFor(
+        async () => {
+          const wakeRuns = runs.filter(
+            (run) => run.opening.root.kind === 'agent_graph_supervisor_wake',
+          );
+          if (
+            updates.at(-1)?.finish &&
+            wakeRuns.length > 0 &&
+            wakeRuns.every((run) => runtimeInvocationOutcome(run) !== undefined) &&
+            liveResidencies === 0
+          ) {
+            return true;
+          }
+          [updates, runs] = await Promise.all([
+            graph.listAgentGraphScheduleUpdates(graphId),
+            execution.runtimeEventStore.listSessionInvocations(session.id),
+          ]);
+          return false;
+        },
+        { timeoutMs: 30_000, pollMs: 10, message: 'graph wake runs did not settle' },
       );
-      if (
-        updates.at(-1)?.finish &&
-        wakeRuns.length > 0 &&
-        wakeRuns.every((run) => runtimeInvocationOutcome(run) !== undefined) &&
-        liveResidencies === 0
-      ) {
-        break;
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
-      updates = await graphStore.listAgentGraphScheduleUpdates(graphId);
-      runs = await execution.runtimeEventStore.listSessionInvocations(session.id);
+    } catch (error) {
+      assert.ok(
+        updates.at(-1)?.finish,
+        JSON.stringify({
+          updateCount: updates.length,
+          lastUpdate: updates.at(-1),
+          runs: runs.map((run) => ({
+            runId: run.runId,
+            status: runtimeInvocationOutcome(run) ?? 'running',
+            root: run.opening.root,
+          })),
+          requests: providerRequestTrace(provider.requests),
+        }),
+      );
+      throw error;
     }
 
     const finish = updates.at(-1)?.finish;
@@ -2269,6 +2486,32 @@ test('production Host executes and durably supervises an Agent Graph over a real
     assert.match(rootComposition?.baseSystemPromptHash ?? '', /^sha256:[a-f0-9]{64}$/u);
     assert.ok(rootComposition?.toolNames.includes('view_agent_graph'));
     const wakeRuns = runs.filter((run) => run.opening.root.kind === 'agent_graph_supervisor_wake');
+    const rootRunEvents = await execution.agentRunStore.readEvents(
+      session.id,
+      initialTerminal.runId,
+    );
+    const requestCompositions = rootRunEvents
+      .filter((event) => event.type === 'request_composition_resolved')
+      .map((event) => decodeRequestCompositionSnapshot(event.data?.snapshot));
+    assert.ok(requestCompositions.length > 0);
+    assert.match(requestCompositions[0]?.systemPromptHash ?? '', /^sha256:[a-f0-9]{64}$/u);
+    assert.ok(
+      requestCompositions.some((snapshot) => snapshot.toolNames.includes('view_agent_graph')),
+    );
+    const requestCompositionIds = new Set(
+      requestCompositions.map((snapshot) => snapshot.compositionId),
+    );
+    const modelAttempts = rootRunEvents.filter(
+      (event) => event.type === 'model_call_attempt_recorded',
+    );
+    assert.ok(modelAttempts.length > 0);
+    assert.ok(
+      modelAttempts.every(
+        (event) =>
+          typeof event.data?.requestCompositionId === 'string' &&
+          requestCompositionIds.has(event.data.requestCompositionId),
+      ),
+    );
     assert.ok(wakeRuns.length > 0);
     assert.ok(wakeRuns.every((run) => runtimeInvocationOutcome(run) === 'completed'));
     assert.ok(wakeRuns.every((run) => run.opening.configuration.orchestrationMode === 'graph'));
@@ -2462,15 +2705,14 @@ test('production Host executes a durable runnable child with an exact tool ceili
     assert.equal(childRuns.length, 1);
     assert.equal(childRuns[0] && runtimeInvocationOutcome(childRuns[0]), 'completed');
     assert.equal(childRuns[0]?.opening.lineage?.parentRunId, undefined);
-    const childMessages = await execution.sessionStore.readMessagesSnapshot(child.id);
+    const childMessages = await readLedgerMessages(execution.runtimeEventStore, child.id);
     assert.equal(
       childMessages.find((message) => message.type === 'assistant')?.text,
       CHILD_AGENT_RESULT_TEXT,
     );
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const childArtifacts = await artifacts.listTurnArtifacts(child.id, childRuns[0]!.turnId);
-    assert.equal(childArtifacts.length, 1);
-    assert.equal(childArtifacts[0]?.source, 'provider_request_capture');
+    assert.equal(childArtifacts.length, 0, 'a child turn no longer stores anything of its own');
     const parentRuntimeEvents = await execution.runtimeEventStore.readRuntimeEvents(
       parent.id,
       terminal.runId,
@@ -2483,7 +2725,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
     const typedSpawnResult = decodeCanonicalToolResultContent(spawnResult.content.result);
     assert.equal(typedSpawnResult.kind, 'subagent');
     assert.deepEqual(
-      (typedSpawnResult as { artifactIds?: readonly string[] }).artifactIds,
+      (typedSpawnResult as { artifactIds?: readonly string[] }).artifactIds ?? [],
       childArtifacts.map((artifact) => artifact.id),
     );
   } finally {
@@ -2679,18 +2921,14 @@ test('production Host publishes and retires an implementation child patch', asyn
     assert.equal(childRuns.length, 1);
     assert.equal(childRuns[0] && runtimeInvocationOutcome(childRuns[0]), 'completed');
     assert.equal(childRuns[0]?.opening.lineage?.parentRunId, undefined);
-    const childMessages = await execution.sessionStore.readMessagesSnapshot(child.id);
+    const childMessages = await readLedgerMessages(execution.runtimeEventStore, child.id);
     assert.equal(
       childMessages.find((message) => message.type === 'assistant')?.text,
       CHILD_AGENT_RESULT_TEXT,
     );
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const childArtifacts = await artifacts.listTurnArtifacts(child.id, childRuns[0]!.turnId);
-    assert.equal(childArtifacts.length, childRequests.length + 2);
-    assert.equal(
-      childArtifacts.filter((artifact) => artifact.source === 'provider_request_capture').length,
-      childRequests.length,
-    );
+    assert.equal(childArtifacts.length, 2);
     assert.ok(
       childArtifacts.some(
         (artifact) => artifact.source === 'tool_result' && artifact.name === 'implementation.txt',
@@ -3821,19 +4059,28 @@ async function startTurn(
   text: string,
   context: ConnectionContext,
 ): Promise<TurnSnapshot> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    const input = { sessionId, turnId, content: { text } };
-    const started = await composition.handlers['turn.start'](input, context);
-    if (started.ok) {
-      if (started.result.kind === 'started') return started.result.turn;
-      throw new Error(`Hosted real-model Skill invocation was blocked: ${JSON.stringify(started)}`);
-    }
-    if (started.error.code !== 'session_busy') {
-      throw new Error(`Hosted real-model Turn start failed: ${JSON.stringify(started.error)}`);
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error('Hosted real-model Session did not become idle');
+  let turn: TurnSnapshot | undefined;
+  await waitFor(
+    async () => {
+      const input = { sessionId, turnId, content: { text } };
+      const started = await composition.handlers['turn.start'](input, context);
+      if (started.ok) {
+        if (started.result.kind === 'started') {
+          turn = started.result.turn;
+          return true;
+        }
+        throw new Error(
+          `Hosted real-model Skill invocation was blocked: ${JSON.stringify(started)}`,
+        );
+      }
+      if (started.error.code !== 'session_busy') {
+        throw new Error(`Hosted real-model Turn start failed: ${JSON.stringify(started.error)}`);
+      }
+      return false;
+    },
+    { timeoutMs: 5_000, pollMs: 10, message: 'Hosted real-model Session did not become idle' },
+  );
+  return turn as TurnSnapshot;
 }
 
 async function waitForTerminal(
@@ -3844,14 +4091,17 @@ async function waitForTerminal(
   context: ConnectionContext,
 ): Promise<TurnSnapshot> {
   let snapshot = initial;
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    if (isTerminal(snapshot)) return snapshot;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    const queried = await composition.handlers['turn.query']({ sessionId, turnId }, context);
-    assert.equal(queried.ok, true);
-    snapshot = queried.result;
-  }
-  throw new Error('Hosted real-model Turn did not become terminal');
+  await waitFor(
+    async () => {
+      if (isTerminal(snapshot)) return true;
+      const queried = await composition.handlers['turn.query']({ sessionId, turnId }, context);
+      assert.equal(queried.ok, true);
+      snapshot = queried.result;
+      return isTerminal(snapshot);
+    },
+    { timeoutMs: 5_000, pollMs: 10, message: 'Hosted real-model Turn did not become terminal' },
+  );
+  return snapshot;
 }
 
 async function waitForUsage(
@@ -3860,65 +4110,74 @@ async function waitForUsage(
   connectionSlug: string,
   callKind: ModelCallKind,
 ): Promise<Extract<UsageQueryResult, { kind: 'logs'; source: 'llm' }>['rows'][number]> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const queried = await composition.handlers['usage.query'](
-      { kind: 'logs', source: 'llm', query: { range: 'all' } },
-      context,
-    );
-    assert.equal(queried.ok, true);
-    if (queried.result.kind === 'logs' && queried.result.source === 'llm') {
-      const row = queried.result.rows.find(
-        (candidate) =>
-          candidate.connectionSlug === connectionSlug &&
-          (candidate.callKind ?? 'main') === callKind,
+  let row: Extract<UsageQueryResult, { kind: 'logs'; source: 'llm' }>['rows'][number] | undefined;
+  await waitFor(
+    async () => {
+      const queried = await composition.handlers['usage.query'](
+        { kind: 'logs', source: 'llm', query: { range: 'all' } },
+        context,
       );
-      if (row) return row;
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      assert.equal(queried.ok, true);
+      if (queried.result.kind === 'logs' && queried.result.source === 'llm') {
+        row = queried.result.rows.find(
+          (candidate) =>
+            candidate.connectionSlug === connectionSlug &&
+            (candidate.callKind ?? 'main') === callKind,
+        );
+      }
+      return row !== undefined;
+    },
+    {
+      timeoutMs: 5_000,
+      pollMs: 10,
+      message: 'Hosted real-model usage attribution was not persisted',
+    },
+  );
+  if (row === undefined) {
+    throw new Error('Hosted real-model usage attribution was not persisted');
   }
-  throw new Error('Hosted real-model usage attribution was not persisted');
+  return row;
 }
 
-async function waitForCanonicalAttempts(
+async function waitForCanonicalRequests(
   usage: InteractiveUsageStoresWriter,
   sessionId: string,
   expectedRequests: number,
-): Promise<readonly ModelCallAttempt[]> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const page = await usage.modelCalls.modelCallAttempts(
-      { from: 0, to: Number.MAX_SAFE_INTEGER },
-      sessionId,
+): Promise<number> {
+  const ask = () => usage.modelCalls.modelCallSummary({ range: 'all', sessionId }, Date.now());
+  let totalRequests = -1;
+  try {
+    await waitFor(
+      async () => {
+        const { projection } = await ask();
+        totalRequests = projection.totalRequests;
+        return totalRequests >= expectedRequests;
+      },
+      {
+        timeoutMs: 5_000,
+        pollMs: 10,
+        message: `Hosted model call attempts did not reach ${expectedRequests}`,
+      },
     );
-    if (page.attempts.length >= expectedRequests) return page.attempts;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  } catch (cause) {
+    // The diagnostic re-read must not swallow the original failure: if the
+    // summary read itself threw, re-throw that instead of the payload dump.
+    let diagnostic: string;
+    try {
+      const { projection, unreadableRecords } = await ask();
+      diagnostic = JSON.stringify({
+        expectedRequests,
+        totalRequests: projection.totalRequests,
+        unreadableRecords,
+      });
+    } catch (readError) {
+      diagnostic = `diagnostic read failed: ${readError instanceof Error ? readError.message : String(readError)}`;
+    }
+    throw new Error(`Hosted canonical model-call attempts were not persisted: ${diagnostic}`, {
+      cause,
+    });
   }
-  const page = await usage.modelCalls.modelCallAttempts(
-    { from: 0, to: Number.MAX_SAFE_INTEGER },
-    sessionId,
-  );
-  throw new Error(
-    `Hosted canonical model-call attempts were not persisted: ${JSON.stringify({
-      expectedRequests,
-      attempts: page.attempts.length,
-      unreadableRecords: page.unreadableRecords,
-    })}`,
-  );
-}
-
-async function waitForCaptureArtifacts(
-  artifacts: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>>,
-  sessionId: string,
-  expectedRequests: number,
-) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const page = await artifacts.listPage(sessionId, { offset: 0, limit: 100 });
-    const captures = page.records.filter(
-      (artifact) => artifact.source === 'provider_request_capture',
-    );
-    if (captures.length >= expectedRequests) return captures;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`Hosted request artifacts did not reach ${expectedRequests}`);
+  return totalRequests;
 }
 
 async function waitForAutomaticMemoryRequestsToSettle(
@@ -3926,27 +4185,34 @@ async function waitForAutomaticMemoryRequestsToSettle(
 ): Promise<void> {
   let stablePolls = 0;
   let previousCount = -1;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const memoryCount = requests.filter((request) =>
-      /Perform the first stage of long-term-memory extraction/.test(JSON.stringify(request.body)),
-    ).length;
-    if (memoryCount > 0 && requests.length === previousCount) stablePolls += 1;
-    else stablePolls = 0;
-    if (stablePolls >= 5) return;
-    previousCount = requests.length;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  try {
+    await waitFor(
+      () => {
+        const memoryCount = requests.filter((request) =>
+          /Perform the first stage of long-term-memory extraction/.test(
+            JSON.stringify(request.body),
+          ),
+        ).length;
+        if (memoryCount > 0 && requests.length === previousCount) stablePolls += 1;
+        else stablePolls = 0;
+        previousCount = requests.length;
+        return stablePolls >= 5;
+      },
+      { timeoutMs: 5_000, pollMs: 10, message: 'memory extraction requests did not settle' },
+    );
+  } catch {
+    throw new Error(
+      `Hosted automatic Memory extraction request did not settle: ${JSON.stringify(
+        requests.map((request) => ({
+          stream: request.body.stream,
+          summary: /context summarization assistant/.test(JSON.stringify(request.body)),
+          memory: /Perform the first stage of long-term-memory extraction/.test(
+            JSON.stringify(request.body),
+          ),
+        })),
+      )}`,
+    );
   }
-  throw new Error(
-    `Hosted automatic Memory extraction request did not settle: ${JSON.stringify(
-      requests.map((request) => ({
-        stream: request.body.stream,
-        summary: /context summarization assistant/.test(JSON.stringify(request.body)),
-        memory: /Perform the first stage of long-term-memory extraction/.test(
-          JSON.stringify(request.body),
-        ),
-      })),
-    )}`,
-  );
 }
 
 function isTerminal(snapshot: TurnSnapshot): boolean {
@@ -3996,6 +4262,7 @@ function backendCreationFixture(input: {
   recordRunTrace?: (event: RunTraceEvent) => unknown;
   runtimeCommitSink?: HostAiSdkBackendInput['runtimeCommitSink'];
   recordRunComposition?: BackendFactoryContext['recordRunComposition'];
+  recordRequestComposition?: BackendFactoryContext['recordRequestComposition'];
   recordHistoryCompactCheckpoint?: BackendFactoryContext['recordHistoryCompactCheckpoint'];
   recordModelCallAttempt?: BackendFactoryContext['recordModelCallAttempt'];
   createFetchTransport?: HostAiSdkBackendInput['createFetchTransport'];
@@ -4059,6 +4326,9 @@ function backendCreationFixture(input: {
         : {}),
       ...(input.recordRunTrace ? { recordRunTrace: input.recordRunTrace } : {}),
       ...(input.recordRunComposition ? { recordRunComposition: input.recordRunComposition } : {}),
+      ...(input.recordRequestComposition
+        ? { recordRequestComposition: input.recordRequestComposition }
+        : {}),
       ...(input.recordHistoryCompactCheckpoint
         ? { recordHistoryCompactCheckpoint: input.recordHistoryCompactCheckpoint }
         : {}),

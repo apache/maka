@@ -54,6 +54,7 @@ import { RelativeTime, StatusDot, useMountedRef, useUiLocale } from '@maka/ui';
 import { SettingsPage, SettingsSection } from './settings-section';
 import { getPermissionCenterCopy, type PermissionCenterCopy } from '../locales/permission-center-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
+import { botStatusReasonCopy } from '../locales/settings-bot-copy';
 import {
   useRuntimeHostSettingsErrorReporter,
   useRuntimeHostSettingsTarget,
@@ -421,10 +422,10 @@ function CapabilityRow(props: {
   const { copy, locale } = props;
   const readinessCopy = copy.readiness[capability.readiness];
   const capabilityLabel = localizedCapabilityLabel(capability, locale);
-  const featureReason = localizedSnapshotText(capability.feature.reason, locale);
-  const configurationReason = localizedSnapshotText(capability.configuration.reason, locale);
-  const runtimeReason = localizedSnapshotText(capability.runtimeProbe.reason, locale);
-  const guidance = localizedCapabilityGuidance(capability, locale, copy);
+  const featureReason = capabilityReasonText(capability.feature.reason, capability.id, locale);
+  const configurationReason = capabilityReasonText(capability.configuration.reason, capability.id, locale);
+  const runtimeReason = capabilityReasonText(capability.runtimeProbe.reason, capability.id, locale);
+  const guidance = localizedCapabilityGuidance(capability, locale);
 
   const layers: Array<{ label: string; value: string; reason?: string }> = [
     {
@@ -487,6 +488,7 @@ function CapabilityRow(props: {
               row grew ~5x. `label position: start` keeps each readout on
               one line (label left, value right) like the <dl> it replaced. */}
           <MetadataList
+            className="settingsCapabilityMetadata"
             columns={2}
             label={{ position: 'start', width: 92 }}
             aria-label={copy.layers.aria(capabilityLabel)}
@@ -497,7 +499,7 @@ function CapabilityRow(props: {
                     an unwrapped reason ran straight into the state value
                     ("探测降级maka-cu 未响应握手…"). */}
                 <VStack gap={0.5}>
-                  <Text type="body" size="sm">{layer.value}</Text>
+                  <Text type="body">{layer.value}</Text>
                   {layer.reason ? (
                     <Text type="supporting" size="sm" color="secondary">{layer.reason}</Text>
                   ) : null}
@@ -507,6 +509,7 @@ function CapabilityRow(props: {
           </MetadataList>
           {capability.osPermissions.length > 0 && (
             <MetadataList
+              className="settingsCapabilityMetadata"
               columns={2}
               label={{ position: 'start', width: 92 }}
               aria-label={copy.requiredPermissionsAria(capabilityLabel)}
@@ -702,17 +705,31 @@ function localizedCapabilityLabel(capability: CapabilitySnapshot, locale: UiLoca
   return capability.label;
 }
 
+// Bot capabilities carry bridge status codes; other producers still emit prose
+// until the capability snapshot codes them.
+function capabilityReasonText(
+  value: string | undefined,
+  capabilityId: CapabilityId,
+  locale: UiLocale,
+): string | undefined {
+  if (!value) return undefined;
+  if (capabilityId.startsWith('bot:')) {
+    const botReason = botStatusReasonCopy(value, locale);
+    if (botReason) return botReason;
+  }
+  return localizedSnapshotText(value, locale);
+}
+
 function localizedSnapshotText(value: string | undefined, locale: UiLocale): string | undefined {
-  if (!value || (locale === 'en' && /[\u3400-\u9fff]/u.test(value))) return undefined;
+  if (!value || (locale !== 'zh-CN' && /[\u3400-\u9fff]/u.test(value))) return undefined;
   return value;
 }
 
 function localizedCapabilityGuidance(
   capability: CapabilitySnapshot,
   locale: UiLocale,
-  copy: PermissionCenterCopy,
 ): readonly string[] {
-  return capability.guidance.filter((item) => locale === 'zh' || !/[\u3400-\u9fff]/u.test(item));
+  return capability.guidance.filter((item) => locale === 'zh-CN' || !/[\u3400-\u9fff]/u.test(item));
 }
 
 function featureTone(state: CapabilitySnapshot['feature']['state']): StatusSemantic {

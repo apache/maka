@@ -33,11 +33,17 @@ export type CliUiLocaleResolution =
 /** Resolve the interactive TUI locale without changing the top-level CLI grammar. */
 export function resolveCliUiLocale(environment: CliEnvironment): CliUiLocaleResolution {
   const rawPreference = environment.MAKA_LOCALE?.trim();
-  const preference = rawPreference ? rawPreference.toLowerCase() : 'auto';
+  const normalizedPreference = rawPreference?.replaceAll('_', '-').toLowerCase() || 'auto';
+  const preference =
+    normalizedPreference === 'zh' || normalizedPreference === 'zh-cn'
+      ? 'zh-CN'
+      : normalizedPreference === 'zh-tw'
+        ? 'zh-TW'
+        : normalizedPreference;
   if (!isUiLocalePreference(preference)) {
     return {
       ok: false,
-      message: `Invalid MAKA_LOCALE ${JSON.stringify(rawPreference)}. Expected zh, en, or auto.`,
+      message: `Invalid MAKA_LOCALE ${JSON.stringify(rawPreference)}. Expected zh-CN, zh-TW, en, or auto.`,
     };
   }
 

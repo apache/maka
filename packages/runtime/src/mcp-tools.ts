@@ -28,6 +28,7 @@ import type {
 } from '@maka/core/mcp';
 import type { InteractionFormInput, InteractionFormResult } from '@maka/core/interaction';
 import type { PermissionMode, ToolCategory } from '@maka/core/permission';
+import { REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH } from '@maka/core/run-composition';
 import { truncateUtf16Safe } from '@maka/core/text-sanitize';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { ToolRecoveryMode } from '@maka/core/runtime-event';
@@ -36,6 +37,10 @@ import type { MakaTool } from './tool-runtime.js';
 
 const MAX_PROVIDER_TOOL_NAME = 64;
 const HASH_CHARS = 10;
+
+function normalizeMcpInputSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  return Object.hasOwn(schema, 'type') ? schema : { ...schema, type: 'object' };
+}
 const MAX_NATIVE_IMAGE_BASE64_CHARS = 20_000_000;
 const MAX_NATIVE_IMAGES = 4;
 const MAX_MODEL_TEXT_CHARS = 200_000;
@@ -107,10 +112,6 @@ export function buildMcpTools(
   return buildMcpToolsWithIdentities(provider, options).map(({ tool }) => tool);
 }
 
-/**
- * Build the proxy tools together with each tool's source MCP identity, read
- * from a single snapshot so the pairing can never drift across a reconnect.
- */
 export function buildMcpToolsWithIdentities(
   provider: McpToolProvider,
   options: BuildMcpToolsOptions = {},
@@ -118,6 +119,7 @@ export function buildMcpToolsWithIdentities(
   const names = new Map<string, string>();
   const snapshot = provider.toolSnapshot();
   return snapshot.tools.map(({ descriptor, binding }) => {
+    const inputSchema = normalizeMcpInputSchema(descriptor.inputSchema);
     const identity = `${descriptor.serverId}\0${descriptor.name}`;
     const name = mcpProxyToolName(descriptor.serverId, descriptor.name);
     const collision = names.get(name);
@@ -130,9 +132,7 @@ export function buildMcpToolsWithIdentities(
       toolName: descriptor.name,
       tool: {
         name,
-        description:
-          descriptor.description?.trim() ||
-          `MCP tool ${descriptor.name} provided by ${descriptor.serverId}`,
+        description: mcpToolDescription(descriptor),
         displayName: descriptor.annotations?.title?.trim() || descriptor.name,
         activityKind: options.activityKindForDescriptor?.(descriptor) ?? 'tool',
         // MCP annotations are advisory provider claims, not a security boundary.
@@ -141,7 +141,9 @@ export function buildMcpToolsWithIdentities(
         categoryHint: options.categoryHint ?? 'network_send',
         ...(options.hostAdmission ? { hostAdmission: options.hostAdmission } : {}),
         ...(options.recoveryMode ? { recoveryMode: options.recoveryMode } : {}),
-        parameters: jsonSchema(descriptor.inputSchema),
+        // The MCP server remains the sole authority for the complete JSON
+        // Schema. Runtime only carries the declaration to the AI SDK.
+        parameters: jsonSchema(inputSchema),
         ...(provider.prepareTool
           ? {
               prepareExecution: async (args: unknown, context) => {
@@ -218,6 +220,13 @@ export function buildMcpToolsWithIdentities(
       } satisfies MakaTool,
     };
   });
+}
+
+function mcpToolDescription(descriptor: McpToolDescriptor): string {
+  const description =
+    descriptor.description?.trim() ||
+    `MCP tool ${descriptor.name} provided by ${descriptor.serverId}`;
+  return description.slice(0, REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH);
 }
 
 export function mcpProxyToolName(serverId: string, toolName: string): string {

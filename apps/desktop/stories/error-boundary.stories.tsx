@@ -38,7 +38,8 @@ const onCopyReport = fn();
 const onReset = fn();
 const onReload = fn();
 
-const resolveLocale = (globals: Record<string, unknown>) => (globals.locale === 'en' ? 'en' : 'zh');
+const resolveLocale = (globals: Record<string, unknown>) =>
+  globals.locale === 'en' ? 'en' : globals.locale === 'zh-TW' ? 'zh-TW' : 'zh-CN';
 
 function fallback(copyState: ErrorBoundaryCopyState) {
   return (_args: unknown, { globals }: { globals: Record<string, unknown> }) => (

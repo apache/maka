@@ -25,16 +25,6 @@
   opacity: var(--opacity-muted);
 }
 
-/* Logo plates match the enabled list (compact 32px) so the page reads as
- * one column of provider rows top to bottom. */
-.providerCatalogRow .providerLogo {
-  width: 32px;
-  height: 32px;
-  /* No radius here: --radius-plate is a ratio, so the size change alone
-     keeps this plate the same shape as the 44px one. Restating a fixed
-     px would re-introduce the size drift PR-UI-13 removed. */
-}
-
 /* Gated providers carry a real trailing state badge in ItemActions (not an
  * absolute ::after), tinted by the gate reason. The row itself is a plain
  * div Item with no render prop, so it is inert — the provider-surface gate

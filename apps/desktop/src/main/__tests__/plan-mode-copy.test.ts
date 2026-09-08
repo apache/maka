@@ -22,7 +22,7 @@ import { test } from 'node:test';
 import { getPlanModeCopy } from '../../renderer/locales/plan-mode-copy.js';
 
 test('localizes Plan Mode chrome and abandon confirmation without rewriting plan content', () => {
-  const zh = getPlanModeCopy('zh');
+  const zh = getPlanModeCopy('zh-CN');
   const en = getPlanModeCopy('en');
 
   assert.equal(zh.proposal.statuses.approved, '已批准');

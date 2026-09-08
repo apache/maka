@@ -17,6 +17,9 @@
  * under the License.
  */
 
+import type { AttachmentRef } from '@maka/core/events';
+import { decodeMessageContent } from './turn.js';
+import { isWorkHubCreateDefaults, type WorkHubCreateDefaults } from '@maka/core/session';
 import {
   requireCount,
   requireEntityId,
@@ -80,6 +83,7 @@ export interface WorkHubCoordinationResolveResult {
 export interface WorkHubCoordinationAnswerInput {
   readonly turnId: string;
   readonly text: string;
+  readonly attachments?: AttachmentRef[];
 }
 
 export interface WorkHubCoordinationRecordInput {
@@ -108,6 +112,8 @@ export interface WorkHubCoordinationCandidate {
   readonly workspace: WorkspaceProjection;
   readonly state: WorkHubCoordinationCandidateState;
   readonly updatedAt: number;
+  /** Latest durable linkage for compare-and-swap correction; never model-facing. */
+  readonly latestDelegationActionId?: string;
 }
 
 export type WorkHubCoordinationCandidatesInput = Record<string, never>;
@@ -146,6 +152,12 @@ export type WorkHubCoordinationProposal =
        * links, and on replay from the durable claim this action already owns.
        */
       readonly expects: WorkHubCoordinationStopPreconditions;
+    }
+  | {
+      readonly disposition: 'resume_work';
+      /** Bound reference from candidate discovery; the Gate checks current ownership. */
+      readonly resumesActionId: string;
+      readonly expects: WorkHubCoordinationStopPreconditions;
     };
 
 export interface WorkHubCoordinationStopPreconditions {
@@ -169,6 +181,8 @@ export interface WorkHubCoordinationCreateContext {
 export interface WorkHubCoordinationActInput {
   readonly actionId: string;
   readonly userText: string;
+  readonly newWorkDefaults?: WorkHubCreateDefaults;
+  readonly attachments?: AttachmentRef[];
   readonly proposal: WorkHubCoordinationProposal;
   readonly candidateSetId?: string;
   readonly create?: WorkHubCoordinationCreateContext;
@@ -200,6 +214,12 @@ export type WorkHubCoordinationActResult =
   | {
       readonly disposition: 'stop_work';
       readonly outcome: 'cancelled_pending' | 'stop_delivered' | 'already_terminal' | 'not_owned';
+      readonly targetSessionId: string;
+      readonly targetTurnId?: string;
+    }
+  | {
+      readonly disposition: 'resume_work';
+      readonly outcome: 'resume_started' | 'already_running';
       readonly targetSessionId: string;
       readonly targetTurnId?: string;
     };
@@ -281,8 +301,19 @@ export function decodeWorkHubCoordinationResolveResult(
 export function decodeWorkHubCoordinationAnswerInput(
   value: unknown,
 ): WorkHubCoordinationAnswerInput {
-  const input = requireExactRecord(value, 'WorkHub Coordination answer input', ['turnId', 'text']);
+  const input = requireShapedRecord(
+    value,
+    'WorkHub Coordination answer input',
+    ['turnId', 'text'],
+    ['attachments'],
+  );
   return {
+    ...(input.attachments !== undefined
+      ? {
+          attachments: decodeMessageContent({ text: input.text, attachments: input.attachments })
+            .attachments!,
+        }
+      : {}),
     turnId: requireEntityId(input.turnId, 'WorkHub Coordination Turn id'),
     text: requireUtf8String(
       input.text,
@@ -353,9 +384,25 @@ export function decodeWorkHubCoordinationActInput(value: unknown): WorkHubCoordi
     value,
     'WorkHub Coordination action input',
     ['actionId', 'userText', 'proposal'],
-    ['candidateSetId', 'create', 'confirmation'],
+    ['candidateSetId', 'create', 'confirmation', 'newWorkDefaults', 'attachments'],
   );
   const proposal = decodeWorkHubCoordinationProposal(input.proposal);
+  if (
+    input.newWorkDefaults !== undefined &&
+    (!isWorkHubCreateDefaults(input.newWorkDefaults) ||
+      !(
+        proposal.disposition === 'create_new' ||
+        (proposal.disposition === 'replace' && proposal.target.disposition === 'create_new')
+      ))
+  ) {
+    throw invalidProtocolFrame('Invalid WorkHub creation defaults');
+  }
+  if (
+    input.attachments !== undefined &&
+    !['answer_here', 'delegate_existing', 'create_new', 'replace'].includes(proposal.disposition)
+  ) {
+    throw invalidProtocolFrame('This WorkHub action does not accept attachments');
+  }
   const base = {
     actionId: requireEntityId(input.actionId, 'WorkHub Coordination action id'),
     userText: requireUtf8String(
@@ -364,6 +411,17 @@ export function decodeWorkHubCoordinationActInput(value: unknown): WorkHubCoordi
       WORKHUB_COORDINATION_TEXT_MAX_BYTES,
     ),
     proposal,
+    ...(input.attachments !== undefined
+      ? {
+          attachments: decodeMessageContent({
+            text: input.userText,
+            attachments: input.attachments,
+          }).attachments!,
+        }
+      : {}),
+    ...(input.newWorkDefaults !== undefined
+      ? { newWorkDefaults: input.newWorkDefaults as WorkHubCreateDefaults }
+      : {}),
   };
   if (proposal.disposition === 'delegate_existing') {
     if (
@@ -516,18 +574,42 @@ export function decodeWorkHubCoordinationActResult(value: unknown): WorkHubCoord
           }),
     };
   }
+  if (result.disposition === 'resume_work') {
+    const exact = requireShapedRecord(
+      result,
+      'WorkHub Coordination resume result',
+      ['disposition', 'outcome', 'targetSessionId'],
+      ['targetTurnId'],
+    );
+    if (exact.outcome !== 'resume_started' && exact.outcome !== 'already_running') {
+      throw invalidProtocolFrame('Invalid WorkHub resume outcome');
+    }
+    // Only a started continuation names a Turn: the Host has one to name, and
+    // the other two outcomes changed nothing that could carry an identity.
+    if ((exact.outcome === 'resume_started') !== (exact.targetTurnId !== undefined)) {
+      throw invalidProtocolFrame('Invalid WorkHub resume target Turn');
+    }
+    return {
+      disposition: 'resume_work',
+      outcome: exact.outcome,
+      targetSessionId: requireEntityId(exact.targetSessionId, 'WorkHub target Session id'),
+      ...(exact.targetTurnId === undefined
+        ? {}
+        : {
+            targetTurnId: requireEntityId(exact.targetTurnId, 'WorkHub target Turn id'),
+          }),
+    };
+  }
   throw invalidProtocolFrame('Invalid WorkHub Coordination action disposition');
 }
 
 function decodeWorkHubCoordinationCandidate(value: unknown): WorkHubCoordinationCandidate {
-  const candidate = requireExactRecord(value, 'WorkHub Coordination candidate', [
-    'candidateRef',
-    'sessionId',
-    'sessionName',
-    'workspace',
-    'state',
-    'updatedAt',
-  ]);
+  const candidate = requireShapedRecord(
+    value,
+    'WorkHub Coordination candidate',
+    ['candidateRef', 'sessionId', 'sessionName', 'workspace', 'state', 'updatedAt'],
+    ['latestDelegationActionId'],
+  );
   return {
     candidateRef: requireEntityId(candidate.candidateRef, 'WorkHub candidate ref'),
     sessionId: requireEntityId(candidate.sessionId, 'WorkHub candidate Session id'),
@@ -535,6 +617,14 @@ function decodeWorkHubCoordinationCandidate(value: unknown): WorkHubCoordination
     workspace: decodeWorkspaceProjection(candidate.workspace),
     state: candidateState(candidate.state),
     updatedAt: requireCount(candidate.updatedAt, 'WorkHub candidate update time'),
+    ...(candidate.latestDelegationActionId === undefined
+      ? {}
+      : {
+          latestDelegationActionId: requireEntityId(
+            candidate.latestDelegationActionId,
+            'WorkHub latest delegation action id',
+          ),
+        }),
   };
 }
 
@@ -623,6 +713,18 @@ function decodeWorkHubCoordinationProposal(value: unknown): WorkHubCoordinationP
     const exact = requireExactRecord(proposal, 'WorkHub stop proposal', ['disposition', 'expects']);
     return {
       disposition: 'stop_work',
+      expects: decodeWorkHubCoordinationStopPreconditions(exact.expects),
+    };
+  }
+  if (proposal.disposition === 'resume_work') {
+    const exact = requireExactRecord(proposal, 'WorkHub resume proposal', [
+      'disposition',
+      'expects',
+      'resumesActionId',
+    ]);
+    return {
+      disposition: 'resume_work',
+      resumesActionId: requireEntityId(exact.resumesActionId, 'WorkHub resume assignment'),
       expects: decodeWorkHubCoordinationStopPreconditions(exact.expects),
     };
   }

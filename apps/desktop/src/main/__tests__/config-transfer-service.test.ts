@@ -104,6 +104,27 @@ describe('config-transfer-service', () => {
     assert.deepEqual(writtenMemory, ['# imported memory']);
   });
 
+  it('canonicalizes a legacy zh preference before the imported settings reach observers', async () => {
+    const { deps, updatedSettings } = makeDeps();
+    const bundle = {
+      schemaVersion: 1,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['settings'] as const,
+      data: {
+        settings: {
+          personalization: { uiLocale: 'zh', displayName: 'Maka user' },
+        },
+      },
+    };
+
+    await applyConfigImport(bundle as any, 'skip', deps);
+
+    assert.deepEqual(updatedSettings, [
+      { personalization: { uiLocale: 'zh-CN', displayName: 'Maka user' } },
+    ]);
+  });
+
   it('reports a settings-carried proxy credential skipped by Host target binding', async () => {
     const { deps } = makeDeps({
       settingsStore: {

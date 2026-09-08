@@ -27,8 +27,7 @@ import type { MalformedHistoryCompactSummaryReason } from './history-compact-err
 /**
  * Durable identity of the sectioned summary contract. Stamped on newly built
  * text checkpoints so record, load/repair, and copy can hold them to the
- * complete predicate, while unmarked legacy V2 free-form summaries stay
- * loadable under the truncation-only compatibility policy.
+ * complete predicate.
  */
 export const SECTIONED_SUMMARY_FORMAT = 'sections_v1' as const;
 export type SectionedSummaryFormat = typeof SECTIONED_SUMMARY_FORMAT;
@@ -84,8 +83,8 @@ const LARGE_FOLD_INPUT_TOKENS = 10_000;
 const LARGE_FOLD_SUMMARY_TOKENS_FLOOR = 200;
 
 // Best-effort signals that a provider stopped mid-thought. Fence state is
-// derived by the structural scanner below, so write admission and legacy-load
-// quarantine cannot disagree about Markdown fence semantics. A trailing
+// derived by the structural scanner below, so structural and truncation
+// checks cannot disagree about Markdown fence semantics. A trailing
 // backtick is deliberately absent: it can be the end of a complete fence.
 const TRUNCATED_TAIL_PATTERN = /(?:\.{3}|[:：,，、;；…(（—])\s*$/u;
 
@@ -128,17 +127,6 @@ export function findCheckpointSummaryDefect(
     return 'malformed_summary_too_small_for_fold';
   }
   return undefined;
-}
-
-// Legacy checkpoints predate the section contract, so load recovery may only
-// quarantine writer-agnostic truncation. It still uses the exact same scan and
-// tail predicate as strict write admission above.
-export function findCheckpointSummaryTruncationDefect(
-  summary: string,
-): Extract<CheckpointSummaryDefect, 'malformed_summary_truncated'> | undefined {
-  const trimmed = summary.trim();
-  if (trimmed.length === 0) return undefined;
-  return findTruncationDefect(trimmed, scanSummaryStructure(trimmed));
 }
 
 function findTruncationDefect(

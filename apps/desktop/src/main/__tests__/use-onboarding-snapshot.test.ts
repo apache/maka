@@ -102,7 +102,7 @@ describe('createOnboardingSnapshotPoller', () => {
         onSnapshot: (s) => events.push({ type: 'snap', payload: s }),
         onError: (m) => events.push({ type: 'err', payload: m }),
       },
-      () => 'zh',
+      () => 'zh-CN',
     );
     await poller.pull();
     assert.deepEqual(events, [{ type: 'err', payload: '鉴权失败' }]);
@@ -130,7 +130,7 @@ describe('createOnboardingSnapshotPoller', () => {
           /* not expected */
         },
       },
-      () => 'zh',
+      () => 'zh-CN',
     );
     // Fire two overlapping pulls.
     const pull1 = poller.pull();
@@ -168,7 +168,7 @@ describe('createOnboardingSnapshotPoller', () => {
         onSnapshot: (s) => snaps.push(s),
         onError: (m) => errs.push(m),
       },
-      () => 'zh',
+      () => 'zh-CN',
     );
     const pull1 = poller.pull();
     const pull2 = poller.pull();
@@ -194,7 +194,7 @@ describe('createOnboardingSnapshotPoller', () => {
         onSnapshot: (s) => events.push({ type: 'snap', payload: s }),
         onError: (m) => events.push({ type: 'err', payload: m }),
       },
-      () => 'zh',
+      () => 'zh-CN',
     );
 
     const pull = poller.pull();
@@ -219,7 +219,7 @@ describe('createOnboardingSnapshotPoller', () => {
         onSnapshot: (s) => events.push({ type: 'snap', payload: s }),
         onError: (m) => events.push({ type: 'err', payload: m }),
       },
-      () => 'zh',
+      () => 'zh-CN',
     );
 
     const pull = poller.pull();
@@ -238,7 +238,7 @@ describe('createOnboardingSnapshotPoller', () => {
         onSnapshot: (s) => events.push({ type: 'snap', payload: s }),
         onError: (m) => events.push({ type: 'err', payload: m }),
       },
-      () => 'zh',
+      () => 'zh-CN',
     );
 
     poller.dispose();

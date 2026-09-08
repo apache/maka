@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { AssistantStepContentKind, StoredMessage, TurnStatus } from '@maka/core/session';
 import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
@@ -57,7 +59,6 @@ export type RuntimeEventReadModelDiagnosticCode =
   | 'archived_tool_result_placeholder'
   | 'generated_id'
   | 'tool_use_id_mismatch'
-  | 'missing_legacy_message'
   | 'unexpected_projected_message';
 
 /**
@@ -82,7 +83,6 @@ const RUNTIME_EVENT_READ_MODEL_DIAGNOSTIC_SEVERITY: Record<
   archived_tool_result_placeholder: 'soft',
   generated_id: 'soft',
   tool_use_id_mismatch: 'hard',
-  missing_legacy_message: 'soft',
   unexpected_projected_message: 'soft',
 };
 
@@ -145,6 +145,8 @@ export interface RuntimeEventReadModelDiagnostic {
 export interface RuntimeEventReadModelProjection {
   messages: StoredMessage[];
   diagnostics: RuntimeEventReadModelDiagnostic[];
+  /** The id of the event each message was projected from, by position. */
+  sourceEventIds: string[];
 }
 
 export interface ProjectRuntimeEventsToStoredMessagesOptions {
@@ -157,11 +159,6 @@ export interface ProjectRuntimeEventsToStoredMessagesOptions {
 export interface ArchivedToolResultReadModelStatus {
   runtimeEventId: string;
   status: Extract<ToolResultContent, { kind: 'archived_tool_result' }>['status'];
-}
-
-export interface RuntimeReadModelCompatibilityResult {
-  compatible: boolean;
-  diagnostics: RuntimeEventReadModelDiagnostic[];
 }
 
 export interface RuntimeEventTerminalFact {
@@ -227,8 +224,23 @@ export function projectRuntimeEventsToStoredMessages(
     contentOrderByMessageId: new Map(),
   };
   const messages: StoredMessage[] = [];
+  /**
+   * Which event each message came out of, by position.
+   *
+   * A message belongs to the event being read when it was appended: nothing
+   * rewrites an earlier message, so the rows that appear while one event is
+   * handled are exactly that event's rows. A durable reader numbers its pages
+   * from this, which is why it is recorded here rather than rediscovered.
+   */
+  const sourceEventIds: string[] = [];
+  let reading: RuntimeEvent | undefined;
+  const attributeEmitted = (): void => {
+    while (sourceEventIds.length < messages.length) sourceEventIds.push(reading!.id);
+  };
 
   for (const event of events) {
+    attributeEmitted();
+    reading = event;
     recordStepContentOrder(event, state);
     if (isPartialRuntimeEvent(event)) {
       diagnostic(state, event, 'partial_skipped', 'partial RuntimeEvent skipped');
@@ -250,6 +262,9 @@ export function projectRuntimeEventsToStoredMessages(
           break;
         case 'thinking':
           projected = projectThinking(event, state, messages) || projected;
+          break;
+        case 'system_note':
+          projected = projectSystemNote(event, state, messages) || projected;
           break;
         case 'invocation_opened':
           // The opening fact records route, configuration and lineage once per
@@ -361,6 +376,11 @@ export function projectRuntimeEventsToStoredMessages(
       projected = true;
     }
 
+    if (event.actions?.handoffPause) {
+      // Physical pause is not a logical Turn outcome or a chat message.
+      projected = true;
+    }
+
     if (event.actions?.runtimeProtocol) {
       // The protocol marker records which runtime contracts were live from a
       // run's first event. RecoveryResolver reads it; it has no chat row.
@@ -394,7 +414,7 @@ export function projectRuntimeEventsToStoredMessages(
       projected = projectTokenUsage(event, state, messages) || projected;
     }
 
-    if (isTerminalRuntimeEvent(event)) {
+    if (isTerminalRuntimeEvent(event) && !event.actions?.handoffPause) {
       projected = projectTerminalTurnState(event, state, messages) || projected;
     }
 
@@ -434,7 +454,70 @@ export function projectRuntimeEventsToStoredMessages(
     }
   }
 
-  return { messages, diagnostics: state.diagnostics };
+  attributeEmitted();
+  return { messages, diagnostics: state.diagnostics, sourceEventIds };
+}
+
+/**
+ * A running invocation's events as the transcript should show them right now.
+ *
+ * Two things separate a live run from a finished one. Its last text or thinking
+ * event is still arriving, so it is presented as settled rather than withheld;
+ * and a step that has only thought so far has no assistant row to hang that
+ * thinking on, so an empty one is opened for it. Neither changes the ledger:
+ * both are how the same events read before the run ends.
+ */
+export function activePresentationRuntimeEvents(events: readonly RuntimeEvent[]): RuntimeEvent[] {
+  const textMessages = new Set<string>();
+  const lastThinkingByMessage = new Map<string, RuntimeEvent>();
+
+  for (const event of events) {
+    const content = event.content;
+    if (event.role !== 'model' || (content?.kind !== 'text' && content?.kind !== 'thinking')) {
+      continue;
+    }
+    const messageKey = activeMessageKey(event);
+    if (content.kind === 'text') textMessages.add(messageKey);
+    else lastThinkingByMessage.set(messageKey, event);
+  }
+
+  const syntheticAfter = new Map<RuntimeEvent, RuntimeEvent[]>();
+  for (const [messageKey, thinking] of lastThinkingByMessage) {
+    if (textMessages.has(messageKey)) continue;
+    const existing = syntheticAfter.get(thinking) ?? [];
+    existing.push(emptyAssistantText(thinking));
+    syntheticAfter.set(thinking, existing);
+  }
+
+  const presented: RuntimeEvent[] = [];
+  for (const event of events) {
+    presented.push(settledPresentationEvent(event));
+    presented.push(...(syntheticAfter.get(event) ?? []));
+  }
+  return presented;
+}
+
+function activeMessageKey(event: RuntimeEvent): string {
+  const messageId = event.refs?.providerEventId ?? event.refs?.storedMessageId ?? event.id;
+  return `${event.runId}\0${messageId}`;
+}
+
+function settledPresentationEvent(event: RuntimeEvent): RuntimeEvent {
+  const content = event.content;
+  return event.partial &&
+    event.role === 'model' &&
+    (content?.kind === 'text' || content?.kind === 'thinking')
+    ? { ...event, partial: false }
+    : event;
+}
+
+function emptyAssistantText(thinking: RuntimeEvent): RuntimeEvent {
+  return {
+    ...thinking,
+    id: `${thinking.id}:active-transcript-empty-text`,
+    partial: false,
+    content: { kind: 'text', text: '' },
+  };
 }
 
 export function projectRuntimeEventsToStoredMessagesWithArchiveStatuses(
@@ -475,6 +558,7 @@ export function applyArchivedToolResultReadModelStatuses(
           toolCallId: placeholder.toolCallId,
           toolName: placeholder.toolName,
           artifactId: placeholder.artifactId,
+          ...(placeholder.rewriteVersion === 2 ? { resourceRef: placeholder.resourceRef } : {}),
           bodySha256: placeholder.bodySha256,
           originalEstimatedTokens: placeholder.originalEstimatedTokens,
           originalBytes: placeholder.originalBytes,
@@ -484,39 +568,6 @@ export function applyArchivedToolResultReadModelStatuses(
       },
     };
   });
-}
-
-export function compareRuntimeReadModelMessages(
-  projected: readonly StoredMessage[],
-  legacy: readonly StoredMessage[],
-): RuntimeReadModelCompatibilityResult {
-  const diagnostics: RuntimeEventReadModelDiagnostic[] = [];
-  const projectedCounts = countSemanticMessages(projected);
-  const legacyCounts = countSemanticMessages(legacy);
-
-  for (const [key, count] of legacyCounts) {
-    const projectedCount = projectedCounts.get(key) ?? 0;
-    if (projectedCount < count) {
-      diagnostics.push({
-        code: 'missing_legacy_message',
-        message: 'projected RuntimeEvent read model is missing a legacy semantic message',
-        detail: JSON.parse(key) as unknown,
-      });
-    }
-  }
-
-  for (const [key, count] of projectedCounts) {
-    const legacyCount = legacyCounts.get(key) ?? 0;
-    if (legacyCount < count) {
-      diagnostics.push({
-        code: 'unexpected_projected_message',
-        message: 'projected RuntimeEvent read model has no matching legacy semantic message',
-        detail: JSON.parse(key) as unknown,
-      });
-    }
-  }
-
-  return { compatible: diagnostics.length === 0, diagnostics };
 }
 
 export function classifyRuntimeEventTerminalFact(
@@ -920,6 +971,9 @@ function projectFunctionResponse(
         toolName: archivedPlaceholder.toolName,
         artifactId: archivedPlaceholder.artifactId,
         bodySha256: archivedPlaceholder.bodySha256,
+        ...(archivedPlaceholder.rewriteVersion === 2
+          ? { resourceRef: archivedPlaceholder.resourceRef }
+          : {}),
         originalEstimatedTokens: archivedPlaceholder.originalEstimatedTokens,
         originalBytes: archivedPlaceholder.originalBytes,
         rewriteVersion: archivedPlaceholder.rewriteVersion,
@@ -1016,6 +1070,9 @@ function projectPermissionDecision(
     );
     return false;
   }
+  // The prompt's own wording when the request survived, and the decision's copy
+  // of it when the decision is all that is left.
+  const hint = request?.hint ?? decision.hint;
   messages.push({
     type: 'permission_decision',
     id: decision.requestId,
@@ -1030,7 +1087,7 @@ function projectPermissionDecision(
     ...(decision.reviewer !== undefined ? { reviewer: decision.reviewer } : {}),
     ...(decision.rationale !== undefined ? { rationale: decision.rationale } : {}),
     ...(decision.riskLevel !== undefined ? { riskLevel: decision.riskLevel } : {}),
-    ...(request?.hint !== undefined ? { hint: request.hint } : {}),
+    ...(hint !== undefined ? { hint } : {}),
   });
   return true;
 }
@@ -1172,12 +1229,6 @@ function projectTerminalTurnState(
   }
   const abortSource = status === 'aborted' ? abortSourceFromRuntime(event) : undefined;
   const failureClass = status === 'failed' ? failureClassFromRuntimeEvent(event) : undefined;
-  const partialOutputRetained = messages.some(
-    (message) =>
-      message.turnId === event.turnId &&
-      ((message.type === 'assistant' && message.text.trim().length > 0) ||
-        message.type === 'tool_result'),
-  );
   messages.push({
     type: 'turn_state',
     id: stableMessageId(event, state, 'turn_state'),
@@ -1194,7 +1245,14 @@ function projectTerminalTurnState(
     ...(status === 'aborted' ? { abortedAt: event.ts } : {}),
     ...(abortSource ? { abortSource } : {}),
     ...(status === 'failed' ? { errorClass: failureClass ?? 'unknown' } : {}),
-    partialOutputRetained,
+    ...(status === 'failed' && event.content?.kind === 'error' && event.content.message
+      ? {
+          failureMessage: truncateUtf8(event.content.message, MODEL_FAILURE_MESSAGE_MAX_BYTES, '…'),
+        }
+      : {}),
+    ...(status === 'failed' && event.content?.kind === 'error' && event.content.retry
+      ? { retry: event.content.retry }
+      : {}),
   });
   if (failureClass === 'tool_step_cap_reached') {
     messages.push({
@@ -1208,6 +1266,29 @@ function projectTerminalTurnState(
   // An omitted failure class or abort source is `classifyRuntimeEventTerminalFact`'s
   // observation to make. Repeating it here would only turn a transcript row that
   // already reads `unknown` into an unreadable Session.
+  return true;
+}
+
+/**
+ * The note row of an invocation that wrote one.
+ *
+ * There is nothing to reconcile: the event carries the kind and the payload the
+ * row is made of, so the row is the event said back in the transcript's shape.
+ */
+function projectSystemNote(
+  event: RuntimeEvent,
+  state: ProjectionState,
+  messages: StoredMessage[],
+): boolean {
+  if (event.content?.kind !== 'system_note') return false;
+  messages.push({
+    type: 'system_note',
+    id: stableMessageId(event, state, 'system_note'),
+    turnId: event.turnId,
+    ts: event.ts,
+    kind: event.content.note,
+    ...(event.content.data !== undefined ? { data: structuredClone(event.content.data) } : {}),
+  });
   return true;
 }
 
@@ -1485,135 +1566,4 @@ function isRuntimeEventDiagnosticDetail(
     typeof detail.runId === 'string' &&
     typeof detail.turnId === 'string'
   );
-}
-
-function countSemanticMessages(messages: readonly StoredMessage[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const message of messages) {
-    const key = stableSemanticKey(semanticMessage(message));
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  return counts;
-}
-
-function stableSemanticKey(value: unknown): string {
-  return JSON.stringify(sortSemanticValue(value));
-}
-
-function sortSemanticValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(sortSemanticValue);
-  }
-  if (!value || typeof value !== 'object') {
-    return value;
-  }
-  return Object.fromEntries(
-    Object.keys(value as Record<string, unknown>)
-      .sort()
-      .map((key) => [key, sortSemanticValue((value as Record<string, unknown>)[key])]),
-  );
-}
-
-function semanticMessage(message: StoredMessage): unknown {
-  switch (message.type) {
-    case 'user':
-      return {
-        type: message.type,
-        turnId: message.turnId,
-        text: message.text,
-        displayText: message.displayText,
-        origin: message.origin,
-        attachments: message.attachments ?? [],
-        directoryReferences: message.directoryReferences,
-        quotes: message.quotes ?? [],
-      };
-    case 'assistant':
-      return {
-        type: message.type,
-        turnId: message.turnId,
-        text: message.text,
-        modelId: message.modelId,
-        thinking: message.thinking,
-      };
-    case 'tool_call':
-      return {
-        type: message.type,
-        turnId: message.turnId,
-        toolUseId: message.id,
-        toolName: message.toolName,
-        activityKind: message.activityKind,
-        displayName: message.displayName,
-        intent: message.intent,
-        args: message.args,
-      };
-    case 'tool_result':
-      return {
-        type: message.type,
-        turnId: message.turnId,
-        toolUseId: message.toolUseId,
-        isError: message.isError,
-        content: message.content,
-        durationMs: message.durationMs,
-      };
-    case 'permission_decision':
-      return {
-        type: message.type,
-        turnId: message.turnId,
-        toolUseId: message.toolUseId,
-        toolName: message.toolName,
-        decision: message.decision,
-        rememberForTurn: message.rememberForTurn,
-        hint: message.hint,
-      };
-    case 'token_usage':
-      return {
-        type: message.type,
-        turnId: message.turnId,
-        input: message.input,
-        output: message.output,
-        cacheHitInput: message.cacheHitInput,
-        cacheMissInput: message.cacheMissInput,
-        cacheMissInputSource: message.cacheMissInputSource,
-        cacheWriteInput: message.cacheWriteInput,
-        reasoning: message.reasoning,
-        total: message.total,
-        rawFinishReason: message.rawFinishReason,
-        runtimeSteps: message.runtimeSteps,
-        cacheRead: message.cacheRead,
-        cacheCreation: message.cacheCreation,
-        costUsd: message.costUsd,
-        systemPromptHash: message.systemPromptHash,
-        contextRemaining: message.contextRemaining,
-        prefixHash: message.prefixHash,
-        prefixChangeReason: message.prefixChangeReason,
-        requestShapeHash: message.requestShapeHash,
-        requestShapeChangeReason: message.requestShapeChangeReason,
-        promptSegments: message.promptSegments,
-        contextBudget: message.contextBudget,
-        providerRequestTraceId: message.providerRequestTraceId,
-        lastRequestAnchor: message.lastRequestAnchor,
-      };
-    case 'turn_state':
-      return {
-        type: message.type,
-        turnId: message.turnId,
-        status: message.status,
-        parentTurnId: message.parentTurnId,
-        retriedFromTurnId: message.retriedFromTurnId,
-        regeneratedFromTurnId: message.regeneratedFromTurnId,
-        branchOfTurnId: message.branchOfTurnId,
-        parentSessionId: message.parentSessionId,
-        abortedAt: message.abortedAt,
-        abortSource: message.abortSource,
-        errorClass: message.errorClass,
-        partialOutputRetained: message.partialOutputRetained,
-      };
-    case 'system_note':
-      return {
-        type: message.type,
-        turnId: message.turnId,
-        kind: message.kind,
-        data: message.data,
-      };
-  }
 }

@@ -33,6 +33,7 @@ import {
   type ResponseFrameFor,
 } from '../protocol/index.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from '../protocol/host-status.js';
+import { HOST_RESOURCE_OPERATION_SPECS } from '../protocol/host-resources.js';
 import { ACCESS_AUTHORITY_OPERATION_SPECS } from '../protocol/access-authority.js';
 import { SESSION_COLLABORATION_OPERATION_SPECS } from '../protocol/session-collaboration.js';
 import { PEER_MESH_OPERATION_SPECS } from '../protocol/peer-mesh.js';
@@ -83,6 +84,8 @@ export interface ConnectionContext {
   credentialId?: string;
   credentialClientInstanceId?: string;
   clientInstanceId?: string;
+  /** EOF/teardown latch; dispatched operations opt in to cancellation. */
+  inputClosedSignal?: AbortSignal;
   turnAdmissionAuthorization?: RootTurnAdmissionAuthorization;
   acquireResidency(): OperationResidency;
 }
@@ -109,6 +112,7 @@ export type OperationHandlerMap = {
  */
 const HOST_CORE_SPEC_OBJECTS = [
   HOST_BOOTSTRAP_OPERATION_SPECS,
+  HOST_RESOURCE_OPERATION_SPECS,
   ACCESS_AUTHORITY_OPERATION_SPECS,
   SESSION_COLLABORATION_OPERATION_SPECS,
   PEER_MESH_OPERATION_SPECS,

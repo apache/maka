@@ -266,7 +266,7 @@ function normalizeBrowserMessageBoxPresentation(
     defaultId,
     cancelId,
     dark: appearance.dark,
-    locale: appearance.locale === 'zh' ? 'zh' : 'en',
+    locale: appearance.locale,
     palette: isThemePalette(appearance.palette) ? appearance.palette : 'default',
   };
 }
@@ -348,7 +348,7 @@ export function buildBrowserMessageBoxHtml(
 
 function renderBrowserMessageBoxHtml(input: BrowserMessageBoxPresentation): string {
   const nonce = randomUUID().replaceAll('-', '');
-  const closeLabel = input.locale === 'zh' ? '关闭' : 'Close';
+  const closeLabel = input.locale === 'zh-CN' ? '关闭' : input.locale === 'zh-TW' ? '關閉' : 'Close';
   const closeButton = `<button class="window-close" type="button" data-response="${input.cancelId}" aria-label="${closeLabel}">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
   </button>`;
@@ -386,7 +386,7 @@ function renderBrowserMessageBoxHtml(input: BrowserMessageBoxPresentation): stri
         : '<path d="M12 8v5M12 17h.01" />';
 
   return `<!doctype html>
-<html lang="${input.locale === 'zh' ? 'zh-CN' : 'en'}" data-theme="${input.dark ? 'dark' : 'light'}" data-maka-theme="${input.palette}" data-astryx-theme="maka" class="${input.dark ? 'dark' : ''}">
+<html lang="${input.locale}" data-theme="${input.dark ? 'dark' : 'light'}" data-maka-theme="${input.palette}" data-astryx-theme="maka" class="${input.dark ? 'dark' : ''}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">

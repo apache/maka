@@ -11,6 +11,7 @@
     "./artifact-stores": "./dist/artifact-stores.js",
     "./config-transfer": "./dist/config-transfer.js",
     "./context-offload-store": "./dist/context-offload-store.js",
+    "./tool-result-archive-evidence": "./dist/tool-result-archive-evidence.js",
     "./credential-store": "./dist/credential-store.js",
     "./daily-review-authority": "./dist/daily-review-authority.js",
     "./deep-research-authority": "./dist/deep-research-authority.js",
@@ -46,6 +47,7 @@
     "./session-bundle-policy": "./dist/session-bundle-policy.js",
     "./session-copy-cleanup": "./dist/session-copy-cleanup.js",
     "./session-todo-authority": "./dist/session-todo-authority.js",
+    "./session-message-projection": "./dist/session-message-projection.js",
     "./session-store": "./dist/session-store.js",
     "./settings-store": "./dist/settings-store.js",
     "./shell-run-authority": "./dist/shell-run-authority.js",
@@ -69,6 +71,6 @@
   },
   "dependencies": {
     "@maka/core": "0.1.0",
-    "fs-native-extensions": "^1.5.0"
+    "fs-native-extensions": "^1.5.1"
   }
 }

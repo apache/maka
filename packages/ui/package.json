@@ -12,7 +12,11 @@
     "./assistant-stream": "./dist/assistant-stream.js",
     "./icons": "./dist/icons.js",
     "./maka-uri": "./dist/maka-uri.js",
-    "./styles.css": "./src/styles.css"
+    "./testing": "./dist/testing.js",
+    "./styles.css": "./src/styles.css",
+    "./composer-attachments": "./dist/composer-attachments.js",
+    "./pending-items": "./dist/pending-items.js",
+    "./use-composer-attachments": "./dist/use-composer-attachments.js"
   },
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",
@@ -25,15 +29,15 @@
     "@astryxdesign/core": "0.5.2",
     "@maka/core": "0.1.0",
     "clsx": "^2.1.1",
-    "katex": "0.16.47",
-    "lucide-react": "^1.33.0",
-    "mermaid": "^11.17.0",
+    "katex": "0.18.5",
+    "lucide-react": "^1.38.0",
+    "mermaid": "^11.17.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "@types/react-dom": "^19.2.5",
     "linkedom": "^0.18.13"
   }
 }

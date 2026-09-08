@@ -275,9 +275,8 @@ describe('durable Tool Result projection codec', () => {
     assert.equal(writes, 0);
   });
 
-  it('retracts already-published artifacts when a later one cannot be published', async () => {
+  it('refuses the whole projection when a later artifact cannot be published', async () => {
     const published: string[] = [];
-    const retracted: string[] = [];
     let nextId = 0;
     const projection = await encodeDurableToolResultOutputWithArtifacts(
       twoInlineImages(),
@@ -290,40 +289,12 @@ describe('durable Tool Result projection codec', () => {
             if (relativePath === 'artifact-2') throw new Error('artifact store is unavailable');
             published.push(relativePath);
           },
-          retract: async () => {
-            retracted.push(relativePath);
-          },
         };
       },
     );
 
     assert.equal(projection.kind, 'failure');
     assert.deepEqual(published, ['artifact-1']);
-    assert.deepEqual(retracted, ['artifact-1']);
-  });
-
-  it('still refuses the projection when the retraction itself fails', async () => {
-    let nextId = 0;
-    const projection = await encodeDurableToolResultOutputWithArtifacts(
-      twoInlineImages(),
-      'session-1',
-      () => {
-        const relativePath = `artifact-${++nextId}`;
-        return {
-          ref: { kind: 'session_file' as const, sessionId: 'session-1', relativePath },
-          persist: async () => {
-            if (relativePath === 'artifact-2') throw new Error('artifact store is unavailable');
-          },
-          // Reclamation may be delayed; admitting a partially published
-          // projection may not happen at all.
-          retract: async () => {
-            throw new Error('cleanup is unavailable too');
-          },
-        };
-      },
-    );
-
-    assert.equal(projection.kind, 'failure');
   });
 
   it('validates default image refs through the same closed schema', () => {

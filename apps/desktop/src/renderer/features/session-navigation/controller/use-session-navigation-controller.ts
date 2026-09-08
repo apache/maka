@@ -22,6 +22,7 @@ import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary } from '@maka/core/session';
 import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import {
+  deriveTitlebarProjectName,
   useUiLocale,
   type SessionHistoryGroup,
   type SessionRailSelection,
@@ -57,6 +58,7 @@ export interface UseSessionNavigationControllerInput {
 export interface SessionNavigationSelectors {
   groups: SessionHistoryGroup[];
   worktreeSessionIds: ReadonlySet<string>;
+  sessionProjectName(session: SessionSummary): string | undefined;
   sessionMeta(session: SessionSummary): string | undefined;
 }
 
@@ -141,6 +143,24 @@ export function useSessionNavigationController(
     () => new Map(rail.sessions.map((session) => [session.id, session])),
     [rail.sessions],
   );
+  const projectNameByIdentity = useMemo(() => {
+    const names = new Map<string, string>();
+    for (const project of input.projects) {
+      names.set(project.id, project.name);
+      for (const alias of project.aliases ?? []) names.set(alias, project.name);
+    }
+    return names;
+  }, [input.projects]);
+  const sessionProjectName = useCallback(
+    (session: SessionSummary): string | undefined =>
+      deriveTitlebarProjectName({
+        projectName: session.projectId
+          ? projectNameByIdentity.get(session.projectId)
+          : undefined,
+        projectPath: session.cwd,
+      }),
+    [projectNameByIdentity],
+  );
   const sessionMeta = useCallback(
     (session: SessionSummary): string | undefined => {
       const projected: SessionNavigationSession | undefined = sessionById.get(session.id);
@@ -152,8 +172,8 @@ export function useSessionNavigationController(
   );
 
   const selectors = useMemo<SessionNavigationSelectors>(
-    () => ({ groups, worktreeSessionIds, sessionMeta }),
-    [groups, sessionMeta, worktreeSessionIds],
+    () => ({ groups, worktreeSessionIds, sessionProjectName, sessionMeta }),
+    [groups, sessionMeta, sessionProjectName, worktreeSessionIds],
   );
 
   const selection = useSessionSelection({

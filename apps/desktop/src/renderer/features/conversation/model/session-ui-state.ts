@@ -20,7 +20,7 @@
 import { useRef } from 'react';
 import type { MessageQueueEntryProjection, ShellRunUpdate } from '@maka/core/events';
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
-import { confirmLiveTurn, type InteractionQueues, type LiveTurnProjection } from '@maka/ui';
+import { confirmLiveTurn, createTranscriptViewportNavigation, type InteractionQueues, type LiveTurnProjection } from '@maka/ui';
 import { createObservableState } from './observable-state.js';
 
 type StateUpdater<T> = (updater: (current: T) => T) => void;
@@ -155,6 +155,7 @@ export function createAppShellSessionUiStateController(
   // controller still owns the same deletion lifetime as every other Session
   // UI registry.
   const transcriptReadingAnchors = createTranscriptReadingAnchorRegistry();
+  const transcriptViewportNavigation = createTranscriptViewportNavigation();
 
   // The ref mirrors whatever is about to become current, so it is already
   // correct when the synchronous notification reaches a listener that reads it.
@@ -208,6 +209,7 @@ export function createAppShellSessionUiStateController(
     liveTurnBySessionRef,
     sessionEventHealthBySessionRef: sessionEventHealthBySession.ref,
     transcriptReadingAnchorBySessionRef: transcriptReadingAnchors.ref,
+    transcriptViewportNavigation,
     setMessageLoadErrorBySession: createMapSetter('messageLoadErrorBySession'),
     messageRetryPending: createPendingClaim('messageRetryPendingBySession'),
     stopPending: createPendingClaim('stopPendingBySession'),

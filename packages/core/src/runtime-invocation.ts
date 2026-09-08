@@ -228,7 +228,7 @@ export function isSessionInlineInvocation(opening: RuntimeEventInvocationOpenedC
   const lineage = opening.lineage;
   return (
     lineage?.parentRunId === undefined ||
-    (opening.source.kind === 'continuation' && lineage.agentId === undefined)
+    (opening.source.kind !== 'fresh' && lineage.agentId === undefined)
   );
 }
 

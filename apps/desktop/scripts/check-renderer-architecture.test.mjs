@@ -55,6 +55,7 @@ function emptyDebt(overrides = {}) {
 }
 
 function architectureConfig({
+  controllerOwners = [],
   legacyAppShellClosureDebt,
   legacyFeatureImports = [],
   legacyFiles = {},
@@ -71,6 +72,11 @@ function architectureConfig({
     legacyGrowthDirectories: [...legacyGrowthDirectories].sort(),
     legacyFeatureImports: [...legacyFeatureImports].sort(),
     legacyPlatformImports: [...legacyPlatformImports].sort(),
+    controllerOwners: [...controllerOwners].sort((left, right) =>
+      `${left.implementation}#${left.symbol}`.localeCompare(
+        `${right.implementation}#${right.symbol}`,
+      ),
+    ),
     legacyAppShell: {
       files: legacyFiles,
       closure: legacyAppShellClosureDebt ?? {},
@@ -2218,14 +2224,20 @@ describe('renderer architecture checker fixtures', () => {
     const appShellPath = 'src/renderer/app-shell.tsx';
     const appShellSource = `
       import { AlphaHost } from './features/alpha/index.js';
-      import type { SessionScope } from './application/contracts/session-scope.js';
-      export function AppShell(props: { readonly scope: SessionScope }) {
-        return <AlphaHost scope={props.scope} />;
+      import { defaultSessionScope } from './application/contracts/session-scope.js';
+      export function AppShell() {
+        return <AlphaHost scope={defaultSessionScope} />;
       }
     `;
-    const currentDebt = debtForSource(appShellSource, appShellPath);
+    const currentDebt = {
+      ...debtForSource(appShellSource, appShellPath),
+      importDeclarations: 0,
+      importSpecifiers: 0,
+    };
     const baseDebt = {
       ...currentDebt,
+      importDeclarations: 2,
+      importSpecifiers: 2,
       dependencyPaths: {
         './legacy-alpha-owner.js': 1,
         './legacy-session-owner.js': 1,
@@ -2256,7 +2268,7 @@ describe('renderer architecture checker fixtures', () => {
           export function AlphaHost(_props: unknown) { return null; }
         `,
         'src/renderer/application/contracts/session-scope.ts': `
-          export interface SessionScope { readonly sessionId?: string }
+          export const defaultSessionScope = { sessionId: undefined };
         `,
       },
       (desktopRoot) => {
@@ -2264,6 +2276,37 @@ describe('renderer architecture checker fixtures', () => {
       },
     );
   });
+
+  for (const [targetPath, pricing] of [
+    ['src/renderer/application/contracts/fixture-diagnostics.ts', 'free'],
+    ['src/renderer/application/sessions/fixture-service.ts', 'priced'],
+  ]) {
+    it(`${pricing === 'free' ? 'exempts' : 'prices'} AppShell import specifiers from ${targetPath}`, async () => {
+      const specifier = `./${targetPath.slice('src/renderer/'.length).replace(/\.ts$/u, '.js')}`;
+      await withDesktopFixture(
+        {
+          [TRANSITIVE_APP_SHELL_PATH]: `
+            import { reportFixture } from '${specifier}';
+            export const AppShell = reportFixture('shell');
+          `,
+          [targetPath]: `export function reportFixture(scope: string): string { return scope; }`,
+        },
+        (desktopRoot) => {
+          const currentConfig = generateArchitectureConfig(desktopRoot, transitiveAppShellSeedConfig());
+          const baseConfig = structuredClone(currentConfig);
+          Object.assign(baseConfig.legacyAppShell.files[TRANSITIVE_APP_SHELL_PATH], {
+            importDeclarations: 0,
+            importSpecifiers: 0,
+            dependencyPaths: {},
+          });
+          const priced = violationsFor(desktopRoot, currentConfig, baseConfig).some((violation) =>
+            violation.startsWith(`${TRANSITIVE_APP_SHELL_PATH}: importSpecifiers debt increased`),
+          );
+          assert.equal(priced, pricing === 'priced');
+        },
+      );
+    });
+  }
 
   it('rejects replacing legacy AppShell debt with a feature private import', async () => {
     const appShellPath = 'src/renderer/app-shell.tsx';
@@ -2304,6 +2347,447 @@ describe('renderer architecture checker fixtures', () => {
           violationsFor(desktopRoot, currentConfig, baseConfig),
           /^src\/renderer\/app-shell\.tsx: new dependency debt \.\/features\/alpha\/controller\.js$/u,
         );
+      },
+    );
+  });
+
+  it('enforces a unique feature owner for registered controllers', async () => {
+    const controllerOwner = {
+      implementation:
+        'src/renderer/features/alpha/controller/use-alpha-controller.ts',
+      symbol: 'useAlphaController',
+      owner: 'src/renderer/features/alpha/ui/alpha-provider.tsx',
+      ownerSymbol: 'AlphaProvider',
+      count: 1,
+    };
+    await withDesktopFixture(
+      {
+        [controllerOwner.implementation]: `
+          export interface AlphaController { readonly ready: boolean }
+          export function useAlphaController(): AlphaController {
+            return { ready: true };
+          }
+        `,
+        [controllerOwner.owner]: `
+          import { useAlphaController as useController } from '../controller/use-alpha-controller.js';
+          export function AlphaProvider() {
+            const controller = useController();
+            return controller.ready ? null : null;
+          }
+        `,
+        'src/renderer/features/alpha/index.ts': `
+          export { AlphaProvider } from './ui/alpha-provider.js';
+        `,
+        'src/renderer/features/alpha/testing.ts': `
+          import type { AlphaController } from './controller/use-alpha-controller.js';
+          export {
+            useAlphaController,
+            type AlphaController,
+          } from './controller/use-alpha-controller.js';
+        `,
+      },
+      (desktopRoot) => {
+        const config = architectureConfig({ controllerOwners: [controllerOwner] });
+        assert.deepEqual(
+          violationsFor(desktopRoot, config, architectureConfig()),
+          [],
+        );
+        assertHasViolation(
+          violationsFor(
+            desktopRoot,
+            architectureConfig({
+              controllerOwners: [
+                {
+                  ...controllerOwner,
+                  owner:
+                    'src/renderer/features/alpha/ui/alpha-provider.test.tsx',
+                },
+              ],
+            }),
+          ),
+          /owner must be a production feature implementation file/u,
+        );
+      },
+    );
+  });
+
+  it('keeps the registered owner as a JSX-only component inside its own file', async () => {
+    const controllerOwner = {
+      implementation:
+        'src/renderer/features/alpha/controller/use-alpha-controller.ts',
+      symbol: 'useAlphaController',
+      owner: 'src/renderer/features/alpha/ui/alpha-provider.tsx',
+      ownerSymbol: 'AlphaProvider',
+      count: 1,
+    };
+    await withDesktopFixture(
+      {
+        [controllerOwner.implementation]: `
+          export function useAlphaController() { return true; }
+        `,
+        [controllerOwner.owner]: `
+          import { useAlphaController } from '../controller/use-alpha-controller.js';
+          export function AlphaProvider() { useAlphaController(); return null; }
+          export const controllerFactory = (props) => AlphaProvider(props);
+        `,
+        'src/renderer/features/alpha/index.ts': `
+          export { AlphaProvider, controllerFactory } from './ui/alpha-provider.js';
+        `,
+      },
+      (desktopRoot) => {
+        assertHasViolation(
+          violationsFor(
+            desktopRoot,
+            architectureConfig({ controllerOwners: [controllerOwner] }),
+          ),
+          /owner must expose AlphaProvider only as a JSX component/u,
+        );
+      },
+    );
+  });
+
+  it('binds controller calls to the registered import instead of a same-name hook', async () => {
+    const controllerOwner = {
+      implementation:
+        'src/renderer/features/alpha/controller/use-alpha-controller.ts',
+      symbol: 'useAlphaController',
+      owner: 'src/renderer/features/alpha/ui/alpha-provider.tsx',
+      ownerSymbol: 'AlphaProvider',
+      count: 1,
+    };
+    await withDesktopFixture(
+      {
+        [controllerOwner.implementation]: `
+          export function useAlphaController() { return 'registered'; }
+        `,
+        [controllerOwner.owner]: `
+          import { useAlphaController } from '../controller/use-alpha-controller.js';
+          import { useAlphaController as useOtherController } from '../other-controller.js';
+          export function AlphaProvider() { return useOtherController(); }
+        `,
+        'src/renderer/features/alpha/other-controller.ts': `
+          export function useAlphaController() { return 'other'; }
+        `,
+        'src/renderer/features/alpha/index.ts': `
+          export { AlphaProvider } from './ui/alpha-provider.js';
+        `,
+      },
+      (desktopRoot) => {
+        assertHasViolation(
+          violationsFor(
+            desktopRoot,
+            architectureConfig({ controllerOwners: [controllerOwner] }),
+          ),
+          /must call the controller 1 time\(s\), received 0/u,
+        );
+      },
+    );
+  });
+
+  it('requires consumers to mount the registered owner through JSX', async () => {
+    const controllerOwner = {
+      implementation:
+        'src/renderer/features/alpha/controller/use-alpha-controller.ts',
+      symbol: 'useAlphaController',
+      owner: 'src/renderer/features/alpha/ui/alpha-provider.tsx',
+      ownerSymbol: 'AlphaProvider',
+      count: 1,
+    };
+    await withDesktopFixture(
+      {
+        [controllerOwner.implementation]: `
+          export function useAlphaController() { return true; }
+        `,
+        [controllerOwner.owner]: `
+          import { useAlphaController } from '../controller/use-alpha-controller.js';
+          export function AlphaProvider() { useAlphaController(); return null; }
+        `,
+        'src/renderer/features/alpha/index.ts': `
+          export { AlphaProvider } from './ui/alpha-provider.js';
+        `,
+        'src/renderer/composition/direct-provider.ts': `
+          import * as Alpha from '../features/alpha';
+          export const direct = Alpha.AlphaProvider({});
+        `,
+        'src/renderer/composition/aliased-provider.ts': `
+          import * as Alpha from '../features/alpha/index.js';
+          const Provider = Alpha.AlphaProvider;
+          export const direct = Provider({});
+        `,
+        'src/renderer/composition/runtime-provider.ts': `
+          const Alpha = require('../features/alpha');
+          export const direct = Alpha.AlphaProvider({});
+        `,
+        'src/renderer/composition/provider-barrel.ts': `
+          export { AlphaProvider as controllerFactory } from '../features/alpha/index.js';
+        `,
+        'src/renderer/features/alpha/ui/provider-factory.ts': `
+          import { AlphaProvider } from './alpha-provider.js';
+          export const controllerFactory = AlphaProvider;
+        `,
+      },
+      (desktopRoot) => {
+        const violations = violationsFor(
+          desktopRoot,
+          architectureConfig({ controllerOwners: [controllerOwner] }),
+        );
+        assertHasViolation(
+          violations,
+          /direct-provider\.ts must mount AlphaProvider through JSX/u,
+        );
+        assertHasViolation(
+          violations,
+          /aliased-provider\.ts must mount AlphaProvider through JSX/u,
+        );
+        assertHasViolation(
+          violations,
+          /runtime-provider\.ts must import AlphaProvider statically and mount it through JSX/u,
+        );
+        assertHasViolation(
+          violations,
+          /provider-barrel\.ts must not re-export AlphaProvider from the public feature entry/u,
+        );
+        assertHasViolation(
+          violations,
+          /provider-factory\.ts must consume AlphaProvider through the public feature entry/u,
+        );
+      },
+    );
+  });
+
+  it('rejects controller imports, runtime loading, and public re-exports outside the owner', async () => {
+    const controllerOwner = {
+      implementation:
+        'src/renderer/features/alpha/controller/use-alpha-controller.ts',
+      symbol: 'useAlphaController',
+      owner: 'src/renderer/features/alpha/ui/alpha-provider.tsx',
+      ownerSymbol: 'AlphaProvider',
+      count: 1,
+    };
+    await withDesktopFixture(
+      {
+        [controllerOwner.implementation]: `
+          export function useAlphaController() { return true; }
+        `,
+        [controllerOwner.owner]: `
+          import { useAlphaController } from '../controller/use-alpha-controller.js';
+          export function AlphaProvider() { useAlphaController(); return null; }
+        `,
+        'src/renderer/features/alpha/secondary-owner.ts': `
+          import { useAlphaController as useSecondary } from './controller/use-alpha-controller.js';
+          export const secondary = () => useSecondary();
+        `,
+        'src/renderer/features/alpha/default-owner.ts': `
+          import controller from './controller/use-alpha-controller.js';
+          export const defaultOwner = controller;
+        `,
+        'src/renderer/features/alpha/other-value-owner.ts': `
+          import { helper } from './controller/use-alpha-controller.js';
+          export const otherOwner = helper;
+        `,
+        'src/renderer/features/alpha/query-owner.ts': `
+          import { useAlphaController } from './controller/use-alpha-controller.js?raw';
+          export const queryOwner = () => useAlphaController();
+        `,
+        'src/renderer/features/alpha/dynamic-owner.ts': `
+          export const loadController = () => import('./controller/use-alpha-controller.js');
+        `,
+        'src/renderer/features/alpha/private-controller.ts': `
+          export { useAlphaController } from './controller/use-alpha-controller.js';
+        `,
+        'src/renderer/features/alpha/index.ts': `
+          export { default as useAlphaController } from './controller/use-alpha-controller.js';
+        `,
+      },
+      (desktopRoot) => {
+        const violations = violationsFor(
+          desktopRoot,
+          architectureConfig({ controllerOwners: [controllerOwner] }),
+        );
+        assertHasViolation(
+          violations,
+          /controller implementation is imported by non-owner .*secondary-owner\.ts/u,
+        );
+        assertHasViolation(
+          violations,
+          /controller implementation is imported by non-owner .*default-owner\.ts/u,
+        );
+        assertHasViolation(
+          violations,
+          /controller implementation is imported by non-owner .*other-value-owner\.ts/u,
+        );
+        assertHasViolation(
+          violations,
+          /controller implementation is imported by non-owner .*query-owner\.ts/u,
+        );
+        assertHasViolation(
+          violations,
+          /controller implementation is referenced by non-owner .*dynamic-owner\.ts/u,
+        );
+        assertHasViolation(
+          violations,
+          /controller implementation is re-exported by .*private-controller\.ts/u,
+        );
+        assertHasViolation(
+          violations,
+          /controller implementation is re-exported by .*index\.ts/u,
+        );
+        assertHasViolation(
+          violations,
+          /public feature entry must not expose the controller/u,
+        );
+      },
+    );
+  });
+
+  it('requires the registered owner to import and call its controller exactly once', async () => {
+    const controllerOwner = {
+      implementation:
+        'src/renderer/features/alpha/controller/use-alpha-controller.ts',
+      symbol: 'useAlphaController',
+      owner: 'src/renderer/features/alpha/ui/alpha-provider.tsx',
+      ownerSymbol: 'AlphaProvider',
+      count: 1,
+    };
+    await withDesktopFixture(
+      {
+        [controllerOwner.implementation]: `
+          export function useAlphaController() { return true; }
+        `,
+        [controllerOwner.owner]: `
+          import { useAlphaController } from '../controller/use-alpha-controller.js';
+          export function AlphaProvider() {
+            useAlphaController();
+            useAlphaController();
+            return null;
+          }
+        `,
+      },
+      (desktopRoot) => {
+        assertHasViolation(
+          violationsFor(
+            desktopRoot,
+            architectureConfig({ controllerOwners: [controllerOwner] }),
+          ),
+          /must call the controller 1 time\(s\), received 2/u,
+        );
+      },
+    );
+  });
+
+  it('ratchets controller owner contracts against their base configuration', async () => {
+    const controllerOwner = {
+      implementation:
+        'src/renderer/features/alpha/controller/use-alpha-controller.ts',
+      symbol: 'useAlphaController',
+      owner: 'src/renderer/features/alpha/ui/alpha-provider.tsx',
+      ownerSymbol: 'AlphaProvider',
+      count: 1,
+    };
+    const alternateOwner = {
+      ...controllerOwner,
+      owner: 'src/renderer/features/alpha/ui/alternate-provider.tsx',
+    };
+    await withDesktopFixture(
+      {
+        [controllerOwner.implementation]: `
+          export function useAlphaController() { return true; }
+        `,
+        [alternateOwner.owner]: `
+          import { useAlphaController } from '../controller/use-alpha-controller.js';
+          export function AlternateProvider() { useAlphaController(); return null; }
+        `,
+      },
+      (desktopRoot) => {
+        const base = architectureConfig({ controllerOwners: [controllerOwner] });
+        assertHasViolation(
+          violationsFor(desktopRoot, architectureConfig(), base),
+          /historical controller owner entries cannot be removed/u,
+        );
+        assertHasViolation(
+          violationsFor(
+            desktopRoot,
+            architectureConfig({ controllerOwners: [alternateOwner] }),
+            base,
+          ),
+          /historical controller owner cannot change/u,
+        );
+
+        const retiredBase = architectureConfig({
+          controllerOwners: [{ ...controllerOwner, count: 0 }],
+        });
+        assertHasViolation(
+          violationsFor(
+            desktopRoot,
+            architectureConfig({ controllerOwners: [controllerOwner] }),
+            retiredBase,
+          ),
+          /controller call count cannot increase from 0 to 1/u,
+        );
+      },
+    );
+  });
+
+  it('allows a registered controller to retire without allowing it to return', async () => {
+    const activeOwner = {
+      implementation:
+        'src/renderer/features/alpha/controller/use-alpha-controller.ts',
+      symbol: 'useAlphaController',
+      owner: 'src/renderer/features/alpha/ui/alpha-provider.tsx',
+      ownerSymbol: 'AlphaProvider',
+      count: 1,
+    };
+    const retiredOwner = { ...activeOwner, count: 0 };
+    await withDesktopFixture(
+      {
+        [activeOwner.implementation]: `
+          export function useAlphaController() { return true; }
+        `,
+        [activeOwner.owner]: `
+          export function AlphaProvider() { return null; }
+        `,
+        'src/renderer/features/alpha/index.ts': `
+          export { AlphaProvider } from './ui/alpha-provider.js';
+        `,
+      },
+      (desktopRoot) => {
+        assert.deepEqual(
+          violationsFor(
+            desktopRoot,
+            architectureConfig({ controllerOwners: [retiredOwner] }),
+            architectureConfig({ controllerOwners: [activeOwner] }),
+          ),
+          [],
+        );
+      },
+    );
+  });
+
+  it('preserves hand-authored controller owner policy when regenerating debt', async () => {
+    const controllerOwner = {
+      implementation:
+        'src/renderer/features/alpha/controller/use-alpha-controller.ts',
+      symbol: 'useAlphaController',
+      owner: 'src/renderer/features/alpha/ui/alpha-provider.tsx',
+      ownerSymbol: 'AlphaProvider',
+      count: 1,
+    };
+    await withDesktopFixture(
+      {
+        [controllerOwner.implementation]: `
+          export function useAlphaController() { return true; }
+        `,
+        [controllerOwner.owner]: `
+          import { useAlphaController } from '../controller/use-alpha-controller.js';
+          export function AlphaProvider() { useAlphaController(); return null; }
+        `,
+      },
+      (desktopRoot) => {
+        const generated = generateArchitectureConfig(
+          desktopRoot,
+          architectureConfig({ controllerOwners: [controllerOwner] }),
+        );
+        assert.deepEqual(generated.controllerOwners, [controllerOwner]);
       },
     );
   });
@@ -2380,6 +2864,29 @@ describe('validated copy catalog dependencies', () => {
           violationsFor(desktopRoot, currentConfig, baseWithoutCatalog(currentConfig)),
           [],
         );
+      },
+    );
+  });
+
+  it('does not price a catalog\'s own bare package runtime import', async () => {
+    await withDesktopFixture(
+      transitiveAppShellFiles(
+        `
+          import { FIXTURE_COPY } from './locales/fixture-copy.js';
+          export const legacySessionHelper = FIXTURE_COPY.en.notice;
+        `,
+        {
+          [CATALOG_PATH]: catalogSource(`
+            import { lookupCopy } from '@maka/core/ui-locale';
+            export const noticeFor = (code: string) => lookupCopy(FIXTURE_COPY.en, code);
+          `),
+        },
+      ),
+      (desktopRoot) => {
+        const currentConfig = generateArchitectureConfig(desktopRoot, catalogSeedConfig());
+        const baseConfig = structuredClone(currentConfig);
+        baseConfig.legacyAppShell.closure[CATALOG_PATH].dependencyPaths = {};
+        assert.deepEqual(violationsFor(desktopRoot, currentConfig, baseConfig), []);
       },
     );
   });
@@ -2469,6 +2976,195 @@ describe('validated copy catalog dependencies', () => {
           violationsFor(desktopRoot, currentConfig, baseWithoutCatalog(currentConfig)),
           [],
         );
+      },
+    );
+  });
+
+  it('exempts a validated catalog\'s own type-only contract imports from dependency debt', async () => {
+    await withDesktopFixture(
+      transitiveAppShellFiles(
+        `
+          import { FIXTURE_COPY } from './locales/fixture-copy.js';
+          export const legacySessionHelper = FIXTURE_COPY.en.byCode.missing;
+        `,
+        {
+          [CATALOG_PATH]: `
+            import type { UiCatalog } from '@maka/core/ui-locale';
+            import type { FixtureErrorCode } from '../fixture-contract.js';
+            export interface FixtureCopy { readonly byCode: Record<FixtureErrorCode, string>; }
+            export const FIXTURE_COPY = {
+              en: { byCode: { missing: 'Missing' } },
+              zh: { byCode: { missing: '缺失' } },
+            } satisfies UiCatalog<FixtureCopy>;
+          `,
+          'src/renderer/fixture-contract.ts': `export type FixtureErrorCode = 'missing';`,
+        },
+      ),
+      (desktopRoot) => {
+        const currentConfig = generateArchitectureConfig(desktopRoot, catalogSeedConfig());
+        const baseConfig = baseWithoutCatalog(currentConfig);
+        delete baseConfig.legacyAppShell.closure['src/renderer/fixture-contract.ts'];
+        baseConfig.legacyRendererFiles = baseConfig.legacyRendererFiles.filter(
+          (path) => path !== 'src/renderer/fixture-contract.ts',
+        );
+        const violations = violationsFor(desktopRoot, currentConfig, baseConfig);
+        assert.ok(
+          !violations.some((violation) => violation.includes('fixture-copy')),
+          `type-only contract import must carry no debt, received:\n${violations.join('\n')}`,
+        );
+      },
+    );
+  });
+
+  const IMPORT_FORMS = [
+    [`import type { A } from './x.js'; export type B = A;`, 0, 0, {}],
+    [`import { type A } from './x.js'; export type B = A;`, 0, 0, {}],
+    [`export type { A } from './x.js';`, 0, 0, {}],
+    [`export type * from './x.js';`, 0, 0, {}],
+    [`export type B = import('./x.js').A;`, 0, 0, {}],
+    [`import { a, type A } from './x.js'; export const b: A = a;`, 1, 1, { './x.js': 1 }],
+    [`import './x.js';`, 1, 0, { './x.js': 1 }],
+    [`export * from './x.js';`, 0, 0, { './x.js': 1 }],
+  ];
+
+  for (const [source, importDeclarations, importSpecifiers, dependencyPaths] of IMPORT_FORMS) {
+    it(`prices only the runtime part of \`${source.split(';')[0]}\``, () => {
+      const debt = debtForSource(source, 'src/renderer/fixture.ts');
+      assert.deepEqual(
+        { importDeclarations: debt.importDeclarations, importSpecifiers: debt.importSpecifiers, dependencyPaths: debt.dependencyPaths },
+        { importDeclarations, importSpecifiers, dependencyPaths },
+      );
+    });
+  }
+
+  it('records no dependency debt for a new type-only import anywhere in the closure', async () => {
+    await withDesktopFixture(
+      transitiveAppShellFiles(
+        `
+          import type { LegacyShape } from './legacy-session-store.js';
+          export const legacySessionHelper: LegacyShape = { kind: 'legacy' };
+        `,
+        {
+          'src/renderer/legacy-session-store.ts': `export interface LegacyShape { kind: string }`,
+        },
+      ),
+      (desktopRoot) => {
+        const currentConfig = generateArchitectureConfig(desktopRoot, catalogSeedConfig());
+        const baseConfig = structuredClone(currentConfig);
+        baseConfig.legacyAppShell.closure[TRANSITIVE_LEGACY_HELPER_PATH].dependencyPaths = {};
+        delete baseConfig.legacyAppShell.closure['src/renderer/legacy-session-store.ts'];
+        baseConfig.legacyRendererFiles = baseConfig.legacyRendererFiles.filter(
+          (path) => path !== 'src/renderer/legacy-session-store.ts',
+        );
+        const violations = violationsFor(desktopRoot, currentConfig, baseConfig);
+        assert.ok(
+          !violations.some((violation) => violation.includes('dependency debt')),
+          `type-only edge must carry no debt, received:\n${violations.join('\n')}`,
+        );
+      },
+    );
+  });
+
+  it('starts counting the moment a type-only edge turns into a runtime import', async () => {
+    await withDesktopFixture(
+      transitiveAppShellFiles(
+        `
+          import { legacySessionStore } from './legacy-session-store.js';
+          export const legacySessionHelper = legacySessionStore;
+        `,
+        {
+          'src/renderer/legacy-session-store.ts': `export const legacySessionStore = 'legacy';`,
+        },
+      ),
+      (desktopRoot) => {
+        const currentConfig = generateArchitectureConfig(desktopRoot, catalogSeedConfig());
+        const baseConfig = structuredClone(currentConfig);
+        // The base recorded the same edge as type-only: no debt entry.
+        baseConfig.legacyAppShell.closure[TRANSITIVE_LEGACY_HELPER_PATH].dependencyPaths = {};
+        const violations = violationsFor(desktopRoot, currentConfig, baseConfig);
+        assertHasViolation(
+          violations,
+          /^src\/renderer\/legacy-session-helper\.ts: new dependency debt \.\/legacy-session-store\.js$/u,
+        );
+      },
+    );
+  });
+
+  const NEW_EDGE_TARGETS = [
+    ['src/renderer/application/contracts/fixture-diagnostics.ts', 'free'],
+    ['src/renderer/shell/fixture-shell.ts', 'free'],
+    ['src/renderer/features/alpha/index.ts', 'free'],
+    ['src/renderer/application/sessions/fixture-service.ts', 'priced'],
+    ['src/renderer/features/alpha/fixture-internal.ts', 'priced'],
+  ];
+
+  for (const [targetPath, pricing] of NEW_EDGE_TARGETS) {
+    it(`${pricing === 'free' ? 'exempts' : 'prices'} a new legacy edge to ${targetPath}`, async () => {
+      const specifier = `./${targetPath.slice('src/renderer/'.length).replace(/\.ts$/u, '.js')}`;
+      await withDesktopFixture(
+        transitiveAppShellFiles(
+          `
+            import { reportFixture } from '${specifier}';
+            export const legacySessionHelper = reportFixture('legacy');
+          `,
+          { [targetPath]: `export function reportFixture(scope: string): string { return scope; }` },
+        ),
+        (desktopRoot) => {
+          const currentConfig = generateArchitectureConfig(desktopRoot, catalogSeedConfig());
+          const baseConfig = structuredClone(currentConfig);
+          baseConfig.legacyAppShell.closure[TRANSITIVE_LEGACY_HELPER_PATH].dependencyPaths = {};
+          const violations = violationsFor(desktopRoot, currentConfig, baseConfig);
+          const priced = violations.some((violation) =>
+            violation.startsWith(`${TRANSITIVE_LEGACY_HELPER_PATH}: new dependency debt`),
+          );
+          assert.equal(priced, pricing === 'priced', violations.join('\n'));
+        },
+      );
+    });
+  }
+
+  it('rejects a legacy type-only edge into an application implementation as a hard violation', async () => {
+    await withDesktopFixture(
+      transitiveAppShellFiles(
+        `
+          import type { FixtureService } from './application/sessions/fixture-service.js';
+          export const legacySessionHelper: FixtureService = { kind: 'legacy' };
+        `,
+        { 'src/renderer/application/sessions/fixture-service.ts': `export interface FixtureService { kind: string }` },
+      ),
+      (desktopRoot) => {
+        const currentConfig = generateArchitectureConfig(desktopRoot, catalogSeedConfig());
+        const violations = violationsFor(desktopRoot, currentConfig, structuredClone(currentConfig));
+        assertHasViolation(
+          violations,
+          /^src\/renderer\/legacy-session-helper\.ts: legacy renderer code imports application implementation instead of a public entry: \.\/application\/sessions\/fixture-service\.js$/u,
+        );
+        assert.ok(!violations.some((violation) => violation.includes('dependency debt')), violations.join('\n'));
+      },
+    );
+  });
+
+  it('keeps pricing every non-catalog edge for a root entry', async () => {
+    const source = `
+      import { AlphaFeature } from './features/alpha/index.js';
+      import { FIXTURE_COPY } from './locales/fixture-copy.js';
+      export const main = [AlphaFeature, FIXTURE_COPY];
+    `;
+    await withDesktopFixture(
+      {
+        [RENDERER_ENTRY_PATH]: source,
+        'src/renderer/features/alpha/index.ts': `export const AlphaFeature = 'alpha';`,
+        [CATALOG_PATH]: catalogSource(),
+      },
+      (desktopRoot) => {
+        const seedConfig = rendererEntrySeedConfig();
+        seedConfig.legacyGrowthDirectories = ['src/renderer/locales'];
+        const currentConfig = generateArchitectureConfig(desktopRoot, seedConfig);
+        const baseConfig = structuredClone(currentConfig);
+        baseConfig.rootDebt[RENDERER_ENTRY_PATH].dependencyPaths = {};
+        const violations = violationsFor(desktopRoot, currentConfig, baseConfig);
+        assertHasViolation(violations, /^src\/renderer\/main\.tsx: new dependency debt \.\/features\/alpha\/index\.js$/u);
+        assert.ok(!violations.some((violation) => violation.includes('fixture-copy')), violations.join('\n'));
       },
     );
   });

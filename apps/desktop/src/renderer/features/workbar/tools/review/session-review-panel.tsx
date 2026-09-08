@@ -27,7 +27,7 @@ import { Section } from '@astryxdesign/core/Section';
 import { Skeleton } from '@astryxdesign/core/Skeleton';
 import { Text } from '@astryxdesign/core/Text';
 import { redactSecrets as displayRedactSecrets } from '@maka/core/display-redaction';
-import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { type GitReviewReadResult } from '@maka/core/git-review';
 import { DiffCodePreview, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, GitBranch } from '@maka/ui/icons';
@@ -76,9 +76,7 @@ export function SessionReviewPanel(props: {
     } catch (nextError) {
       if (revision === revisionRef.current) {
         setError(
-          locale === 'zh'
-            ? generalizedErrorMessageChinese(nextError, copy.loadFailed)
-            : generalizedErrorMessage(nextError, copy.loadFailed),
+          generalizedErrorMessageForLocale(nextError, copy.loadFailed, locale),
         );
       }
     } finally {

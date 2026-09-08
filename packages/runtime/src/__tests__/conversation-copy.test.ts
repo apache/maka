@@ -18,6 +18,10 @@
  */
 
 import assert from 'node:assert/strict';
+import {
+  createLedgerToolResultArchiveReader,
+  createLedgerArchiveResourceReader,
+} from '../ledger-tool-result-archive-reader.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,6 +36,7 @@ import { decodeModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import {
   buildModelProjectionTransition,
+  durableToolResultProjectionDigest,
   MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
   type ModelProjectionTransition,
 } from '@maka/core/model-projection-transition';
@@ -43,6 +48,7 @@ import {
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
+import { sectionedSummary } from './history-compact-test-fixtures.js';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import {
@@ -61,10 +67,16 @@ import {
   matchHistoryCompactCheckpointPrefix,
   validateHistoryCompactCheckpointShape,
 } from '../history-compact-checkpoint.js';
-import { isHistoryCompactContentEvent } from '../history-compaction.js';
+import {
+  isHistoryCompactContentEvent,
+  applyRuntimeEventHistoryCompact,
+} from '../history-compaction.js';
 import { RuntimeReadModel, type RuntimeReadModelSessionView } from '../runtime-read-model.js';
 import { buildToolOperationId } from '../runtime-commit-sink.js';
-import { buildToolResultArchiveResourceRef } from '../tool-result-archive-resource.js';
+import {
+  buildToolResultArchiveResourceRef,
+  readToolResultArchiveResource,
+} from '../tool-result-archive-resource.js';
 import { sha256 } from '../context-budget-helpers.js';
 import {
   baseToolResultProjection,
@@ -78,6 +90,8 @@ import {
 } from '../tool-result-archive-transition.js';
 import {
   buildArchivedToolResultPlaceholder,
+  buildLedgerArchivedToolResultPlaceholder,
+  type ArchivedToolResultPlaceholder,
   isArchivedToolResultPlaceholder,
 } from '../tool-result-archive.js';
 import { testInvocationOpening, testInvocationRecord } from './invocation-fixture.js';
@@ -1001,16 +1015,31 @@ test('conversation copy rewrites owned references without changing opaque tool p
     preserved.type === 'user' ? preserved.attachments?.[0]?.ref : undefined,
     messages[0]?.type === 'user' ? messages[0].attachments?.[0]?.ref : undefined,
   );
-  for (const message of [messages[2]!, messages[3]!]) {
-    assert.throws(
-      () =>
-        rewriteConversationCopyMessage(message, {
-          ...references,
-          artifactIds: new Map(),
-        }),
-      /missing Artifact artifact-source/,
-    );
-  }
+  // An archived tool result's Artifact holds that result's own bytes, and the
+  // two are removed together, so a copy that lost it has lost what a reader
+  // will ask for.
+  assert.throws(
+    () =>
+      rewriteConversationCopyMessage(messages[2]!, {
+        ...references,
+        artifactIds: new Map(),
+      }),
+    /missing Artifact artifact-source/,
+  );
+  // A child result is the opposite case: it lists every Artifact its turn
+  // held, in a ledger that cannot be rewritten, so an id in it outlives what
+  // it named. The copy carries what is still there and drops the rest, rather
+  // than making a whole Session uncopyable over a reclaimed byte nobody reads.
+  const reclaimed = rewriteConversationCopyMessage(messages[3]!, {
+    ...references,
+    artifactIds: new Map(),
+  });
+  assert.deepEqual(
+    reclaimed.type === 'tool_result' && reclaimed.content.kind === 'agent_swarm'
+      ? reclaimed.content.items[0]?.artifactIds
+      : undefined,
+    [],
+  );
   assert.throws(
     () =>
       rewriteConversationCopyMessage(messages[3]!, {
@@ -1602,6 +1631,96 @@ test('conversation copy rewrites the nested identity of a model call attempt', a
   }
 });
 
+test('conversation copy survives a capture the store has already reclaimed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-reclaimed-capture-'));
+  try {
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    await seedRun(runtimeEventStore, {
+      runId: 'run-source',
+      invocationId: 'invocation-source',
+      turnId: 'turn-1',
+      cwd: root,
+    });
+    for (const event of [
+      runtimeEvent({
+        id: 'event-user',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'copy this turn' },
+      }),
+      runtimeEvent({ id: 'event-terminal', ts: 2, status: 'completed' }),
+    ]) {
+      await runtimeEventStore.appendRuntimeEvent('session-source', 'run-source', event);
+    }
+    await runStore.appendEvent('session-source', 'run-source', {
+      type: 'model_call_attempt_recorded',
+      id: 'attempt-source',
+      runId: 'run-source',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 2,
+      data: {
+        schemaVersion: 1,
+        logicalCallId: 'logical-source',
+        attemptId: 'attempt-source',
+        traceId: 'trace-source',
+        sessionId: 'session-source',
+        runId: 'run-source',
+        turnId: 'turn-1',
+        step: 0,
+        attempt: 0,
+        callKind: 'main',
+        providerId: 'provider',
+        modelId: 'model',
+        captureArtifactId: 'artifact-gone',
+        startedAt: 1,
+        completedAt: 2,
+        latencyMs: 1,
+        status: 'completed',
+        usageBasis: 'reported',
+        inputTokens: 10,
+        outputTokens: 5,
+        costBasis: 'priced',
+        costUsd: 0.01,
+      },
+    });
+    const source = await new RuntimeReadModel({
+      runtimeEventStore,
+    }).getSessionView('session-source');
+
+    // The sweep purged the capture Artifact, so the copy never sees it. Before
+    // the join keys were made droppable this threw and no Session holding a
+    // historical model call could be branched or copied again.
+    await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+      copiedMessages: source.messages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-target',
+        artifactIds: new Map(),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => crypto.randomUUID(),
+    });
+    const [targetRun] = await runtimeEventStore.listSessionInvocations('session-target');
+    assert.ok(targetRun);
+    const events = await runStore.readEvents('session-target', targetRun.runId);
+    const attempt = events.find((event) => event.type === 'model_call_attempt_recorded');
+    assert.ok(attempt, 'the attempt itself still copies');
+    assert.equal(attempt.data?.captureArtifactId, undefined);
+    // Still a valid accounting authority without the join.
+    const decoded = decodeModelCallAttempt(attempt.data);
+    assert.equal(decoded.attemptId, attempt.id);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('conversation copy repairs a model call attempt stranded by a pre-fix copy', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-model-call-legacy-'));
   try {
@@ -1821,8 +1940,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-source',
       coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
-      summary: 'The source turn called one opaque tool.',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('The source turn called one opaque tool.'),
       highWaterSeq: 3,
     });
     const providerCheckpoint = buildHistoryCompactCheckpoint({
@@ -1989,28 +2107,36 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
     const source = await new RuntimeReadModel({
       runtimeEventStore,
     }).getSessionView('session-source');
-    await assert.rejects(
-      async () =>
-        cloneConversationRuntimeLedger({
-          plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
-          copiedMessages: source.messages,
-          referenceMap: {
-            mode: 'exact',
-            linkedChildren: { mode: 'reject' },
-            sourceSessionId: 'session-source',
-            targetSessionId: 'session-missing-artifact',
-            artifactIds: new Map([['artifact-source', 'artifact-target']]),
-            relativePaths: new Map(),
-          },
-          runStore,
-          runtimeEventStore,
-          newId: () => crypto.randomUUID(),
-        }),
-      /missing Artifact artifact-deleted/,
+    // The child result names an Artifact the copy has no mapping for, because
+    // it was reclaimed after the ledger recorded it. The copy carries the run
+    // and drops that one id, rather than making the Session uncopyable.
+    const withReclaimed = await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+      copiedMessages: source.messages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-missing-artifact',
+        artifactIds: new Map([['artifact-source', 'artifact-target']]),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => crypto.randomUUID(),
+    });
+    const reclaimedResult = withReclaimed.copiedMessages.find(
+      (message) => message.type === 'tool_result' && message.content.kind === 'subagent',
     );
     assert.deepEqual(
-      await runtimeEventStore.listSessionInvocations('session-missing-artifact'),
+      reclaimedResult?.type === 'tool_result' && reclaimedResult.content.kind === 'subagent'
+        ? reclaimedResult.content.artifactIds
+        : undefined,
       [],
+    );
+    assert.equal(
+      (await runtimeEventStore.listSessionInvocations('session-missing-artifact')).length,
+      1,
     );
     // A copied run and its copied invocation share one fresh identity, so the
     // copy mints one id here rather than two.
@@ -2288,8 +2414,7 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-source',
       coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
-      summary: 'Both retained turns are complete.',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('Both retained turns are complete.'),
       highWaterSeq: 5,
     });
     await runStore.appendEvent('session-source', 'run-2', {
@@ -2403,8 +2528,7 @@ test('conversation copy drops a checkpoint from a superseded source policy inste
     const current = buildHistoryCompactCheckpoint({
       sessionId: 'session-source',
       coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
-      summary: 'Everything so far is complete.',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('Everything so far is complete.'),
       highWaterSeq: 5,
     });
     const legacyPolicyCheckpoint = {
@@ -2575,8 +2699,7 @@ test('conversation copy rebuilds a resumed child checkpoint over its child run c
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-source',
       coveredRuntimeEvents: childSourceEvents,
-      summary: 'The resumed child retained both child turns.',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('The resumed child retained both child turns.'),
       highWaterSeq: 8,
     });
     await runStore.appendEvent('session-source', 'run-child-2', {
@@ -2681,6 +2804,389 @@ function sourceProjectionTransition(input: {
     replacement: archivedToolResultProjection(placeholder),
     ...(input.previousTransitionId ? { previousTransitionId: input.previousTransitionId } : {}),
     now: input.createdAt,
+  });
+}
+
+for (const inspectFirst of [false, true]) {
+  test(`conversation copy retains archive reference closure and checkpoints (inspect: ${inspectFirst})`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-ledger-copy-'));
+    try {
+      const runStore = createSqliteAgentRunStore(root);
+      const runtimeEventStore = createWorkspaceRuntimeStore(root);
+      await seedRun(runtimeEventStore, {
+        runId: 'run-source',
+        invocationId: 'invocation-source',
+        turnId: 'turn-1',
+        cwd: root,
+      });
+      const imageRef = {
+        kind: 'session_context' as const,
+        sessionId: 'session-source',
+        refId: 'image-source',
+      };
+      const projection: DurableToolResultProjection = {
+        version: 1,
+        kind: 'content',
+        parts: [
+          { kind: 'text', text: 'caption' },
+          { kind: 'artifact', mediaType: 'image/png', ref: imageRef },
+        ],
+      };
+      const result = runtimeEvent({
+        id: 'event-result-ledger',
+        ts: 2,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'tool-1',
+          name: 'Read',
+          result: { kind: 'image', mimeType: 'image/png', ref: imageRef },
+          modelProjection: projection,
+        },
+      });
+      for (const event of [
+        runtimeEvent({
+          id: 'event-user',
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'copy image' },
+        }),
+        runtimeEvent({
+          id: 'event-call',
+          ts: 1.5,
+          role: 'model',
+          author: 'agent',
+          content: {
+            kind: 'function_call',
+            id: 'tool-1',
+            name: 'Read',
+            args: { path: 'image.png' },
+          },
+        }),
+        result,
+      ])
+        await runtimeEventStore.appendRuntimeEvent('session-source', 'run-source', event);
+      const serialized = serializedToolResultProjection(projection);
+      const placeholder = buildLedgerArchivedToolResultPlaceholder({
+        storage: 'ledger',
+        runtimeEventId: result.id,
+        toolCallId: 'tool-1',
+        toolName: 'Read',
+        sourceProjectionDigest: durableToolResultProjectionDigest(projection),
+        bodySha256: sha256(serialized),
+        originalBytes: Buffer.byteLength(serialized),
+        originalEstimatedTokens: 100,
+        reason: 'stale_tool_result_pruned_before_compact',
+      });
+      const transition = buildModelProjectionTransition({
+        sessionId: 'session-source',
+        target: {
+          runtimeEventId: result.id,
+          part: 'tool_result',
+          toolCallId: 'tool-1',
+          toolName: 'Read',
+        },
+        sourceProjection: projection,
+        replacement: archivedToolResultProjection(placeholder),
+        now: 4,
+      });
+      await runStore.appendEvent('session-source', 'run-source', {
+        type: MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
+        id: transition.transitionId,
+        runId: 'run-source',
+        sessionId: 'session-source',
+        turnId: 'turn-1',
+        ts: 4,
+        data: { runtimeEventId: result.id, part: 'tool_result', transition },
+      });
+      const sourceRecords = await runStore.readEvents('session-source', 'run-source');
+      if (inspectFirst) {
+        const resource = createLedgerArchiveResourceReader({
+          read: async () => ({ ok: true, event: result, transitions: sourceRecords }),
+        });
+        const inspected = await readToolResultArchiveResource(
+          {
+            readArchivedToolResultResource: (input) => {
+              assert.equal(input.storage, 'ledger');
+              return input.storage === 'ledger'
+                ? resource(input)
+                : { ok: false, reason: 'not_found' };
+            },
+          },
+          'session-source',
+          { ref: placeholder.resourceRef!, operation: 'inspect' },
+        );
+        await runtimeEventStore.appendRuntimeEvent(
+          'session-source',
+          'run-source',
+          runtimeEvent({
+            id: 'archive-call',
+            ts: 5,
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'archive-tool',
+              name: 'ArchiveRead',
+              args: { ref: placeholder.resourceRef, operation: 'inspect' },
+            },
+          }),
+        );
+        await runtimeEventStore.appendRuntimeEvent(
+          'session-source',
+          'run-source',
+          runtimeEvent({
+            id: 'archive-result',
+            ts: 6,
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'archive-tool',
+              name: 'ArchiveRead',
+              result: { kind: 'json', value: inspected },
+              modelProjection: { version: 1, kind: 'json', value: inspected as never },
+            },
+          }),
+        );
+        const inspectedProjection: DurableToolResultProjection = {
+          version: 1,
+          kind: 'json',
+          value: inspected as never,
+        };
+        const inspectedBody = serializedToolResultProjection(inspectedProjection);
+        const dependentPlaceholder = buildLedgerArchivedToolResultPlaceholder({
+          storage: 'ledger',
+          runtimeEventId: 'archive-result',
+          toolCallId: 'archive-tool',
+          toolName: 'ArchiveRead',
+          sourceProjectionDigest: durableToolResultProjectionDigest(inspectedProjection),
+          bodySha256: sha256(inspectedBody),
+          originalBytes: Buffer.byteLength(inspectedBody),
+          originalEstimatedTokens: 100,
+          reason: 'stale_tool_result_pruned_before_compact',
+        });
+        const dependent = buildModelProjectionTransition({
+          sessionId: 'session-source',
+          target: {
+            runtimeEventId: 'archive-result',
+            part: 'tool_result',
+            toolCallId: 'archive-tool',
+            toolName: 'ArchiveRead',
+          },
+          sourceProjection: inspectedProjection,
+          replacement: archivedToolResultProjection(dependentPlaceholder),
+          now: 7,
+        });
+        await runStore.appendEvent('session-source', 'run-source', {
+          type: MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
+          id: dependent.transitionId,
+          sessionId: 'session-source',
+          runId: 'run-source',
+          turnId: 'turn-1',
+          ts: 7,
+          data: { runtimeEventId: 'archive-result', part: 'tool_result', transition: dependent },
+        });
+      }
+      await runtimeEventStore.appendRuntimeEvent(
+        'session-source',
+        'run-source',
+        runtimeEvent({ id: 'event-terminal', ts: 7, status: 'completed' }),
+      );
+      const compactable = (
+        await runtimeEventStore.readRuntimeEvents('session-source', 'run-source')
+      ).filter(isHistoryCompactContentEvent);
+      const checkpoint = buildHistoryCompactCheckpoint({
+        sessionId: 'session-source',
+        coveredRuntimeEvents: inspectFirst ? compactable : compactable.slice(0, 1),
+        summary: sectionedSummary(
+          inspectFirst ? `Use ${placeholder.resourceRef}` : 'Unrelated user request summary.',
+        ),
+        highWaterName: 'copy-test',
+        highWaterSeq: 1,
+        now: 8,
+      });
+      await runStore.appendEvent('session-source', 'run-source', {
+        type: 'history_compact_checkpoint_recorded',
+        id: 'archive-checkpoint',
+        sessionId: 'session-source',
+        runId: 'run-source',
+        turnId: 'turn-1',
+        ts: 8,
+        data: { checkpoint },
+      });
+      const successor = buildHistoryCompactCheckpoint({
+        sessionId: 'session-source',
+        coveredRuntimeEvents: compactable,
+        summary: sectionedSummary(`Continue with ${placeholder.resourceRef}`),
+        highWaterName: 'copy-test',
+        highWaterSeq: 2,
+        now: 9,
+        previousCheckpointId: checkpoint.checkpointId,
+      });
+      await runStore.appendEvent('session-source', 'run-source', {
+        type: 'history_compact_checkpoint_recorded',
+        id: 'archive-checkpoint-next',
+        sessionId: 'session-source',
+        runId: 'run-source',
+        turnId: 'turn-1',
+        ts: 9,
+        data: { checkpoint: successor },
+      });
+      const source = await new RuntimeReadModel({ runtimeEventStore }).getSessionView(
+        'session-source',
+      );
+      await cloneConversationRuntimeLedger({
+        plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+        copiedMessages: source.messages,
+        referenceMap: {
+          mode: 'exact',
+          linkedChildren: { mode: 'reject' },
+          sourceSessionId: 'session-source',
+          targetSessionId: 'session-target',
+          artifactIds: new Map(),
+          relativePaths: new Map(),
+          contextRefs: new Map([['image-source', 'image-target']]),
+        },
+        runStore,
+        runtimeEventStore,
+        newId: () => crypto.randomUUID(),
+      });
+      const [targetRun] = await runtimeEventStore.listSessionInvocations('session-target');
+      const targetEvents = await runtimeEventStore.readRuntimeEvents(
+        'session-target',
+        targetRun!.runId,
+      );
+      const target = targetEvents.find((event) => event.content?.kind === 'function_response')!;
+      const records = await runStore.readEvents('session-target', targetRun!.runId);
+      const transitions = await loadModelProjectionTransitionsFromRunLedger(
+        runStore,
+        'session-target',
+        [targetRun!.runId],
+      );
+      const copied = transitions.transitions[0]!;
+      assert.ok(copied.replacement.kind === 'json');
+      assert.ok(isArchivedToolResultPlaceholder(copied.replacement.value));
+      const copiedPlaceholder = copied.replacement.value as ArchivedToolResultPlaceholder;
+      assert.equal(copiedPlaceholder.rewriteVersion, 2);
+      assert.notEqual(copiedPlaceholder.bodySha256, placeholder.bodySha256);
+      assert.notEqual(copiedPlaceholder.resourceRef, placeholder.resourceRef);
+      const read = createLedgerToolResultArchiveReader({
+        read: async () => ({
+          ok: true,
+          event: target,
+          transitions: records.filter(
+            (row) =>
+              row.type === MODEL_PROJECTION_TRANSITION_EVENT_TYPE &&
+              row.data?.runtimeEventId === target.id,
+          ),
+        }),
+      });
+      const body = await read({ ...copiedPlaceholder, sessionId: 'session-target' });
+      assert.ok(body.ok);
+      assert.match(body.serializedResult, /image-target/);
+      assert.doesNotMatch(body.serializedResult, /image-source/);
+      if (inspectFirst) {
+        const response = targetEvents.find(
+          (event) =>
+            event.content?.kind === 'function_response' && event.content.name === 'ArchiveRead',
+        );
+        assert.ok(response?.content?.kind === 'function_response');
+        const output = (
+          response.content.result as { value: { ref: string; runtimeEventId: string } }
+        ).value;
+        assert.equal(output.ref, copiedPlaceholder.resourceRef);
+        assert.equal(output.runtimeEventId, target.id);
+        assert.equal(
+          response.content.modelProjection?.kind === 'json'
+            ? (response.content.modelProjection.value as { ref: string }).ref
+            : undefined,
+          output.ref,
+        );
+        const resource = createLedgerArchiveResourceReader({
+          read: async () => ({
+            ok: true,
+            event: target,
+            transitions: records.filter(
+              (row) =>
+                row.type === MODEL_PROJECTION_TRANSITION_EVENT_TYPE &&
+                row.data?.runtimeEventId === target.id,
+            ),
+          }),
+        });
+        const reread = await readToolResultArchiveResource(
+          {
+            readArchivedToolResultResource: (input) =>
+              input.storage === 'ledger' ? resource(input) : { ok: false, reason: 'not_found' },
+          },
+          'session-target',
+          { ref: output.ref, operation: 'read' },
+        );
+        assert.equal((reread as { ok: boolean }).ok, true);
+        const dependent = transitions.transitions.find(
+          (transition) => transition.target.runtimeEventId === response.id,
+        )!;
+        assert.ok(dependent?.replacement.kind === 'json');
+        assert.ok(isArchivedToolResultPlaceholder(dependent.replacement.value));
+        const dependentReader = createLedgerToolResultArchiveReader({
+          read: async () => ({
+            ok: true,
+            event: response,
+            transitions: records.filter(
+              (record) =>
+                record.type === MODEL_PROJECTION_TRANSITION_EVENT_TYPE &&
+                record.data?.runtimeEventId === response.id,
+            ),
+          }),
+        });
+        const dependentBody = await dependentReader({
+          ...(dependent.replacement.value as ArchivedToolResultPlaceholder),
+          sessionId: 'session-target',
+        });
+        assert.ok(dependentBody.ok);
+        assert.equal(JSON.parse(dependentBody.serializedResult).ref, copiedPlaceholder.resourceRef);
+      }
+      const checkpointEvent = records.find(
+        (record) => record.type === 'history_compact_checkpoint_recorded',
+      );
+      const copiedCheckpoint = checkpointEvent?.data?.checkpoint;
+      assert.ok(validateHistoryCompactCheckpointShape(copiedCheckpoint, 'session-target'));
+      assert.equal(copiedCheckpoint.version, 2);
+      assert.equal(
+        matchHistoryCompactCheckpointPrefix(
+          copiedCheckpoint,
+          targetEvents.filter(isHistoryCompactContentEvent),
+        ).reason,
+        undefined,
+      );
+      const replay = applyRuntimeEventHistoryCompact(targetEvents, {
+        enabled: true,
+        checkpoint: copiedCheckpoint,
+      });
+      assert.notDeepEqual(replay.events, targetEvents);
+      if (copiedCheckpoint.version === 2)
+        assert.equal(
+          copiedCheckpoint.summary,
+          inspectFirst
+            ? sectionedSummary(`Use ${copiedPlaceholder.resourceRef}`)
+            : checkpoint.summary,
+        );
+      const copiedSuccessor = records.filter(
+        (record) => record.type === 'history_compact_checkpoint_recorded',
+      )[1]?.data?.checkpoint;
+      assert.ok(validateHistoryCompactCheckpointShape(copiedSuccessor, 'session-target'));
+      assert.equal(copiedSuccessor.previousCheckpointId, copiedCheckpoint.checkpointId);
+      assert.equal(
+        matchHistoryCompactCheckpointPrefix(
+          copiedSuccessor,
+          targetEvents.filter(isHistoryCompactContentEvent),
+        ).reason,
+        undefined,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 }
 

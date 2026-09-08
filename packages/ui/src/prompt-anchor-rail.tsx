@@ -47,6 +47,13 @@ const PREVIEW_DELAY_MS = 120;
 const MAX_PROMPT_RAIL_TICKS = 64;
 /** Distinguish a positive IO overlap from Chromium's zero-area edge contact. */
 const POSITIVE_INTERSECTION_RATIO = 0.000_001;
+/**
+ * The top slice of the scrollport a reader is taken to be reading. Whole
+ * percent, because the observer spells it as a `rootMargin` string and the
+ * geometry seed spells it as a fraction — one number, two spellings, and a
+ * decimal fraction would not survive the round trip exactly.
+ */
+export const READING_BAND_TOP_PERCENT = 34;
 
 /** Quiet frames at the destination that end a jump's hold. */
 const JUMP_SETTLE_QUIET_FRAMES = 3;
@@ -205,6 +212,9 @@ export function observeActivePromptRailVisibility(
 }
 
 export interface PromptAnchorRailTurn {
+  /** Optional host identity color; ordinary Session ticks remain neutral. */
+  accentColor?: string;
+  highlighted?: boolean;
   turnId: string;
   label: string;
   reply?: string;
@@ -233,6 +243,8 @@ export function mergePromptAnchorRailTurns(
 }
 
 export interface PromptAnchorRailProps {
+  /** Presentation-only hover/focus linkage; never navigates the transcript. */
+  onHighlightTurn?: (turn: PromptAnchorRailTurn | undefined) => void;
   turns: readonly PromptAnchorRailTurn[];
   scrollRef: RefObject<HTMLElement | null>;
   /** When the indexed Turn is outside the Host's active transcript range. */
@@ -369,7 +381,7 @@ export function selectPromptRailTickForMountedTurn(input: {
 }
 
 /** Right-edge rail: bounded prompt landmarks that scroll to `[data-turn-id]`. */
-export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateFallback, onNavigateStart }: PromptAnchorRailProps): React.ReactElement | null {
+export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateFallback, onNavigateStart, onHighlightTurn }: PromptAnchorRailProps): React.ReactElement | null {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const [activeSelection, setActiveSelection] = useState<{
     turnId: string;
@@ -528,7 +540,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       readingBandTurnIds.clear();
       for (const turnId of turnIdsIntersecting(
         rootBounds.top,
-        rootBounds.top + rootBounds.height * 0.34,
+        rootBounds.top + rootBounds.height * (READING_BAND_TOP_PERCENT / 100),
       )) {
         readingBandTurnIds.add(turnId);
       }
@@ -565,7 +577,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       resolveActive();
     }, {
       root,
-      rootMargin: '0px 0px -66% 0px',
+      rootMargin: `0px 0px -${100 - READING_BAND_TOP_PERCENT}% 0px`,
       // The positive threshold delivers a callback when an overlap becomes
       // a zero-area boundary touch, which the strict geometry rule excludes.
       threshold: [0, POSITIVE_INTERSECTION_RATIO],
@@ -736,7 +748,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
         className="maka-prompt-rail"
         aria-label={copy.promptRailAriaLabel}
         ref={railRef}
-        onPointerLeave={() => setHoveredIndex(null)}
+        onPointerLeave={() => { setHoveredIndex(null); onHighlightTurn?.(undefined); }}
       >
         {railTurns.map((turn, index) => {
           const isActive = turn.turnId === activeRailTurnId;
@@ -768,12 +780,16 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
                 label={copy.jumpToPrompt(preview)}
                 className="maka-prompt-rail-tick"
                 data-prompt-turn-id={turn.turnId}
+                data-highlighted={turn.highlighted || undefined}
                 data-active={isActive ? 'true' : undefined}
                 aria-current={isActive ? 'true' : undefined}
                 onClick={() => jumpTo(turn)}
-                onPointerEnter={() => setHoveredIndex(index)}
+                onPointerEnter={() => { setHoveredIndex(index); onHighlightTurn?.(turn); }}
+                onFocus={() => onHighlightTurn?.(turn)}
+                onBlur={() => onHighlightTurn?.(undefined)}
                 style={
                   {
+                    color: turn.accentColor,
                     '--maka-prompt-rail-index': index,
                     '--maka-prompt-rail-scale': scale,
                   } as CSSProperties

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { DesktopSessionSummary } from './bridge-contract.js';
+import type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
 
 export interface RuntimeHostSessionCatalogRequest {
   readonly hostId: string;
@@ -210,9 +210,11 @@ function sortSessionCatalogs(sessions: DesktopSessionSummary[]): DesktopSessionS
     }
   }
   return [...unique.values()].sort((left, right) => {
-    if (left.activityAt === undefined || right.activityAt === undefined) {
+    const leftActivity = left.localState === 'pending' ? left.localCreatedAt : left.activityAt;
+    const rightActivity = right.localState === 'pending' ? right.localCreatedAt : right.activityAt;
+    if (leftActivity === undefined || rightActivity === undefined) {
       throw new Error('Runtime Host Session Catalog activity is unavailable');
     }
-    return right.activityAt - left.activityAt || left.id.localeCompare(right.id);
+    return rightActivity - leftActivity || left.id.localeCompare(right.id);
   });
 }

@@ -10,7 +10,10 @@
     "./durable-tool-result-projection": "./dist/durable-tool-result-projection.js",
     "./model-projection-transition": "./dist/model-projection-transition.js",
     "./canonical-runtime-event": "./dist/canonical-runtime-event.js",
+    "./canonical-json": "./dist/canonical-json.js",
     "./runtime-boundary": "./dist/runtime-boundary.js",
+    "./runtime-handoff": "./dist/runtime-handoff.js",
+    "./runtime-logical-execution": "./dist/runtime-logical-execution.js",
     "./runtime-event": "./dist/runtime-event.js",
     "./tool-args-identity": "./dist/tool-args-identity.js",
     "./tool-ledger-scanner": "./dist/tool-ledger-scanner.js",
@@ -35,6 +38,7 @@
     "./plan": "./dist/plan.js",
     "./agent-run": "./dist/agent-run.js",
     "./subagent-workspace": "./dist/subagent-workspace.js",
+    "./model-failure": "./dist/model-failure.js",
     "./model-call-attempt": "./dist/model-call-attempt.js",
     "./model-call-usage-projection": "./dist/model-call-usage-projection.js",
     "./usage-ledger-merge": "./dist/usage-ledger-merge.js",
@@ -52,6 +56,7 @@
     "./user-question": "./dist/user-question.js",
     "./connections": "./dist/connections.js",
     "./context-offload": "./dist/context-offload.js",
+    "./tool-result-archive-evidence": "./dist/tool-result-archive-evidence.js",
     "./attachments": "./dist/attachments.js",
     "./artifacts": "./dist/artifacts.js",
     "./pet": "./dist/pet.js",
@@ -164,6 +169,6 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "intl-messageformat": "11.2.12"
+    "intl-messageformat": "11.2.14"
   }
 }

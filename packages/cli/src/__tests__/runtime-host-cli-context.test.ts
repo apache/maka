@@ -28,6 +28,7 @@ import {
   createClientRuntimeHostProfileCatalog,
   RuntimeHostRemoteCompatibilityError,
   RuntimeHostStartupError,
+  HostHandoffRequiredError,
   type RuntimeHostConnection,
   type RuntimeHostProfileCatalog,
   type RemoteRuntimeHostProfile,
@@ -43,9 +44,6 @@ import {
 import {
   connectRuntimeHostCli,
   connectRuntimeHostCliConnection,
-  resolveRuntimeHostCliConflictDecision,
-  RuntimeHostCliConflictError,
-  shouldRetryRuntimeHostConflict,
 } from '../runtime-host-cli-context.js';
 
 const V0_1_11_HOST_COMPATIBILITY_EPOCH = 25;
@@ -129,6 +127,48 @@ test('connection-only CLI bootstrap does not read the model connection catalog',
   assert.equal(context.connection.connectionId, connection.connectionId);
   await context.close();
 });
+
+for (const temporary of [true, false]) {
+  test(`${temporary ? 'npx' : 'ordinary'} CLI preserves an existing Host and guards only npx candidate launches`, async () => {
+    let closes = 0;
+    const connection = {
+      rootId: 'root-id',
+      hostEpoch: 'host-existing',
+      connectionId: 'connection-id',
+      selectedProtocol: 0,
+      closed: new Promise<void>(() => {}),
+      status: async () => ({ state: 'ready' }),
+      subscribeConfigurationChanges: () => () => {},
+      subscribeConnectionCatalogChanges: () => () => {},
+      subscribeProjectCatalogChanges: () => () => {},
+      subscribeSessionCatalogChanges: () => () => {},
+      subscribeScheduledTaskChanges: () => () => {},
+      request: async () => {
+        throw new Error('Disconnect must not retire the existing Host');
+      },
+      close: async () => {
+        closes += 1;
+      },
+    } as unknown as RuntimeHostConnection;
+    const context = await connectRuntimeHostCliConnection(
+      { rootPath: '/runtime-host-root' },
+      {
+        isTemporaryNpxInstallation: async () => temporary,
+        resolveInstallation: async () => {
+          throw new Error('No deployment mutation was requested');
+        },
+        connectOrSpawn: async (input) => {
+          assert.equal(input.closeOnLauncherExit, temporary ? true : undefined);
+          assert.equal(input.generation, undefined);
+          assert.equal(input.takeoverHostEpoch, undefined);
+          return connectedHostResult(connection);
+        },
+      },
+    );
+    await context.close();
+    assert.equal(closes, 1);
+  });
+}
 
 test('CLI refuses a staged Host whose durable installation claim is missing', async () => {
   let closes = 0;
@@ -238,6 +278,10 @@ test('non-interactive CLI reports how to retire an incompatible Runtime Host', a
     connectRuntimeHostCli(
       { rootPath: '/runtime-host-root' },
       {
+        readDeploymentRecord: async () => undefined,
+        resolveInstallation: async () => {
+          throw new Error('Not installed globally');
+        },
         connectOrSpawn: async () => ({
           kind: 'incompatible',
           registration: hostRegistration({
@@ -258,19 +302,11 @@ test('non-interactive CLI reports how to retire an incompatible Runtime Host', a
       },
     ),
     (error: unknown) => {
-      assert.ok(error instanceof RuntimeHostCliConflictError);
-      assert.equal(error.code, 'RUNTIME_HOST_RESTART_REQUIRED');
-      assert.match(
-        error.message,
-        new RegExp(
-          `PID 42; lifecycle ephemeral; compatibility epoch ${V0_1_11_HOST_COMPATIBILITY_EPOCH}`,
-        ),
-      );
-      assert.match(
-        error.message,
-        /ephemeral Host is not currently idle and cannot be replaced by this Client/,
-      );
-      assert.match(error.message, /previous compatible Maka build/);
+      assert.ok(error instanceof HostHandoffRequiredError);
+      assert.equal(error.view.reason, 'operator_required');
+      assert.equal(error.view.activity, undefined);
+      assert.deepEqual(error.view.actions, ['cancel', 'retry']);
+      assert.match(error.message, /operator/);
       return true;
     },
   );
@@ -281,6 +317,7 @@ test('CLI explains a service Host without inventing resident work', async () => 
     connectRuntimeHostCli(
       { rootPath: '/runtime-host-root' },
       {
+        readDeploymentRecord: async () => undefined,
         connectOrSpawn: async () => ({
           kind: 'incompatible',
           registration: hostRegistration({ lifecycleMode: 'service' }),
@@ -299,29 +336,14 @@ test('CLI explains a service Host without inventing resident work', async () => 
       },
     ),
     (error: unknown) => {
-      assert.ok(error instanceof RuntimeHostCliConflictError);
-      assert.match(error.message, /service Host is managed by its operator/);
-      assert.match(error.message, /service operator to inspect or upgrade/);
+      assert.ok(error instanceof HostHandoffRequiredError);
+      assert.equal(error.view.reason, 'operator_required');
+      assert.equal(error.view.mayExitNaturally, false);
+      assert.match(error.message, /operator/);
       assert.doesNotMatch(error.message, /not idle/);
       return true;
     },
   );
-});
-
-test('Runtime Host conflict waits only after an explicit wait answer', () => {
-  assert.equal(shouldRetryRuntimeHostConflict('w'), true);
-  assert.equal(shouldRetryRuntimeHostConflict(' wait '), true);
-  assert.equal(shouldRetryRuntimeHostConflict(' W '), true);
-  assert.equal(shouldRetryRuntimeHostConflict('WAIT'), true);
-  assert.equal(shouldRetryRuntimeHostConflict(''), false);
-  assert.equal(shouldRetryRuntimeHostConflict('c'), false);
-  assert.equal(shouldRetryRuntimeHostConflict('cancel'), false);
-  assert.equal(shouldRetryRuntimeHostConflict('unexpected'), false);
-  assert.equal(resolveRuntimeHostCliConflictDecision('r', true), 'restart');
-  assert.equal(resolveRuntimeHostCliConflictDecision(' restart ', true), 'restart');
-  assert.equal(resolveRuntimeHostCliConflictDecision('r', false), 'cancel');
-  assert.equal(resolveRuntimeHostCliConflictDecision('w', true), 'wait');
-  assert.equal(resolveRuntimeHostCliConflictDecision('', true), 'cancel');
 });
 
 test('CLI reports an actionable stored-data startup failure', async () => {
@@ -366,6 +388,9 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
     {
       connectOrSpawn: async () => {
         throw new Error('remote profile must not use local discovery');
+      },
+      isTemporaryNpxInstallation: async () => {
+        throw new Error('A remote connection must not inspect local invocation provenance');
       },
       connectProfile: async (input) => {
         remoteInput = input;
@@ -604,28 +629,14 @@ test('remote profiles preserve shared compatibility errors', async () => {
           },
         ),
       (error: unknown) => {
-        assert.ok(error instanceof RuntimeHostRemoteCompatibilityError);
-        assert.equal(error.code, 'RUNTIME_HOST_REMOTE_INCOMPATIBLE');
+        assert.ok(error instanceof HostHandoffRequiredError);
+        assert.deepEqual(error.view.actions, ['cancel', 'retry']);
+        assert.equal(error.view.target.hostEpoch, handshake.hostEpoch);
         assert.equal(
-          error.message,
+          error.view.diagnostic,
           new RuntimeHostRemoteCompatibilityError(profile.id, handshake).message,
         );
-        assert.deepEqual(error.details, {
-          profileId: profile.id,
-          client: {
-            compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
-            protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
-            protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
-            compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-          },
-          host: {
-            compatibilityEpoch: handshake.compatibilityEpoch,
-            protocolMin: handshake.protocolMin,
-            protocolMax: handshake.protocolMax,
-            compositionId: handshake.compositionId,
-            compositionRevision: handshake.compositionRevision,
-          },
-        });
+        assert.equal(error.view.target.rootId, profile.rootId);
         return true;
       },
     );
@@ -636,7 +647,7 @@ function hostRegistration(overrides: Partial<HostRegistration> = {}): HostRegist
   return {
     kind: 'maka-runtime-host' as const,
     schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
-    rootId: 'root-id',
+    rootId: 'a'.repeat(64),
     hostEpoch: 'host-old',
     endpoint: '/tmp/runtime-host.sock',
     protocolMin: 0,
@@ -714,3 +725,104 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
   assert.fail('condition was not reached');
 }
+
+test('local CLI delegates a managed cold start once and reconnects without a launch claim', async () => {
+  const calls: string[] = [];
+  const connection = {
+    rootId: 'root-id',
+    hostEpoch: 'host-epoch',
+    connectionId: 'connection-id',
+    closed: new Promise<void>(() => {}),
+    close: async () => {},
+    subscribeConfigurationChanges: () => () => {},
+    subscribeConnectionCatalogChanges: () => () => {},
+    subscribeProjectCatalogChanges: () => () => {},
+    subscribeSessionCatalogChanges: () => () => {},
+    subscribeScheduledTaskChanges: () => () => {},
+  } as unknown as RuntimeHostConnection;
+  const context = await connectRuntimeHostCliConnection(
+    { rootPath: '/managed-root' },
+    {
+      connectOrSpawn: async (input) => {
+        assert.equal(input.managedLaunchClaim, undefined);
+        calls.push('connect');
+        return calls.length === 1
+          ? { kind: 'failed', reason: 'managed_root_requires_operator' }
+          : connectedHostResult(connection);
+      },
+      connectActivatedHost: async () => {
+        calls.push('connect');
+        return connectedHostResult(connection);
+      },
+      activateLocalManagedHost: async (input) => {
+        assert.equal(input.rootPath, '/managed-root');
+        calls.push('operator');
+      },
+    },
+  );
+  assert.deepEqual(calls, ['connect', 'operator', 'connect']);
+  await context.close();
+});
+
+test('local CLI does not loop if operator activation fails to make the Host available', async () => {
+  let activations = 0;
+  await assert.rejects(
+    connectRuntimeHostCliConnection(
+      { rootPath: '/managed-root' },
+      {
+        connectOrSpawn: async () => ({ kind: 'failed', reason: 'managed_root_requires_operator' }),
+        connectActivatedHost: async () => ({ kind: 'unavailable', reason: 'not_registered' }),
+        activateLocalManagedHost: async () => {
+          activations += 1;
+        },
+      },
+    ),
+    /could not join it \(not_registered\)/,
+  );
+  assert.equal(activations, 1);
+});
+
+test('local CLI propagates operator failure without attempting unmanaged recovery', async () => {
+  let connections = 0;
+  const failure = new Error('operator failed');
+  await assert.rejects(
+    connectRuntimeHostCliConnection(
+      { rootPath: '/managed-root' },
+      {
+        connectOrSpawn: async () => {
+          connections += 1;
+          return { kind: 'failed', reason: 'managed_root_requires_operator' };
+        },
+        activateLocalManagedHost: async () => {
+          throw failure;
+        },
+      },
+    ),
+    (error) => error === failure,
+  );
+  assert.equal(connections, 1);
+});
+
+test('activated managed Host incompatibility stays operator-owned', async () => {
+  await assert.rejects(
+    connectRuntimeHostCliConnection(
+      { rootPath: '/managed-root' },
+      {
+        connectOrSpawn: async () => ({ kind: 'failed', reason: 'managed_root_requires_operator' }),
+        activateLocalManagedHost: async () => {},
+        connectActivatedHost: async () => ({
+          kind: 'incompatible',
+          registration: hostRegistration(),
+          handshake: incompatibleRemoteHandshake(),
+        }),
+      },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof HostHandoffRequiredError);
+      assert.equal(error.view.reason, 'operator_required');
+      assert.deepEqual(error.view.actions, ['cancel', 'retry']);
+      assert.match(error.message, /operator/);
+      return true;
+    },
+  );
+});

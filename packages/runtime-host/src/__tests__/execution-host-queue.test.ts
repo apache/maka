@@ -90,6 +90,7 @@ import {
 } from '../protocol/index.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { FramedTransport } from '../transport/framed-transport.js';
+import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 
 import {
   CONNECTION_EFFECT_MODEL_IDS,
@@ -530,6 +531,11 @@ test('graceful Host shutdown stops and drains an active Turn before releasing ow
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
     const client = await connectClient(fixture.root);
+    const subscription = await client.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
+    const probe = new SubscriptionProbe(subscription);
     const turnId = randomUUID();
     const started = requireStartedTurn(
       await client.request('turn.start', {
@@ -538,10 +544,16 @@ test('graceful Host shutdown stops and drains an active Turn before releasing ow
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
       }),
     );
+    // What this pins is the drain of an ACTIVE Turn, and `turn.start`
+    // returning only says the Turn was admitted. Waiting for the question it
+    // is about to ask is what makes it active, so stopping before that would
+    // leave which state the Host drains up to how fast the machine is.
+    await waitForPendingInteraction(subscription, probe, started.runId);
 
     const exit = await fixture.stopHost(host);
     assert.deepEqual(exit, { code: 0, signal: null });
     await client.closed;
+    await probe.waitForFailure('connection_closed');
 
     const successor = await fixture.startHost();
     const observer = await connectClient(fixture.root);
@@ -762,7 +774,7 @@ test('startup recovery canonically closes pending linked child admissions withou
           assert.equal(terminal.fact.failureClass, 'app_restarted');
         }
         const userMessages: StoredMessage[] = (
-          await stores.sessionStore.readMessages(recovered.sessionId)
+          await readLedgerMessages(stores.runtimeEventStore, recovered.sessionId)
         ).filter((message) => message.type === 'user' && message.turnId === recovered.turnId);
         assert.equal(userMessages.length, recovered.kind === 'linked_child_provider_retry' ? 0 : 1);
         if (recovered.kind !== 'linked_child_provider_retry') {

@@ -103,9 +103,39 @@ test('receives structured incompatibility guidance from the released v0.1.11 Hos
         assert.equal(result.handshake.compatibilityEpoch, V0_1_11_HOST_COMPATIBILITY_EPOCH);
         assert.equal(result.handshake.compositionRevision, V0_1_11_HOST_REVISION);
         assert.equal(result.handshake.replacement, 'blocked_by_residency');
+        assert.deepEqual(result.processIdentity, {
+          startIdentity: 'darwin:1700000000:123456',
+        });
       }
     },
-    { registrationCompatibilityEpoch: V0_1_11_HOST_COMPATIBILITY_EPOCH },
+    {
+      registrationCompatibilityEpoch: V0_1_11_HOST_COMPATIBILITY_EPOCH,
+      registrationLifecycleMode: 'ephemeral',
+      readProcessIdentity: async () => ({
+        startIdentity: 'darwin:1700000000:123456',
+      }),
+    },
+  );
+});
+
+test('process identity query failure does not consume or prevent the incompatible handshake', async () => {
+  await withForgedHandshakePeer(
+    async (transport, hostEpoch, rootId) => {
+      const rawHello = await transport.read(2_000);
+      await admitV0_1_11ClientHello({ rawHello, transport, hostEpoch, rootId });
+      await transport.closed;
+    },
+    async (result) => {
+      assert.equal(result.kind, 'incompatible');
+      if (result.kind === 'incompatible') assert.equal(result.processIdentity, undefined);
+    },
+    {
+      registrationCompatibilityEpoch: V0_1_11_HOST_COMPATIBILITY_EPOCH,
+      registrationLifecycleMode: 'ephemeral',
+      readProcessIdentity: async () => {
+        throw new Error('process identity unavailable');
+      },
+    },
   );
 });
 
@@ -326,8 +356,10 @@ async function withForgedHandshakePeer(
   options: {
     readonly registrationCompatibilityEpoch?: number;
     readonly registrationRootId?: string;
+    readonly registrationLifecycleMode?: 'ephemeral';
     readonly expectConnection?: boolean;
     readonly prepareAfterListen?: boolean;
+    readonly readProcessIdentity?: () => Promise<{ readonly startIdentity: string } | undefined>;
   } = {},
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-handshake-'));
@@ -358,7 +390,9 @@ async function withForgedHandshakePeer(
     hostEpoch,
   });
   const serverTask = deferred<void>();
+  let endpointConnected = false;
   const server = createServer((socket) => {
+    endpointConnected = true;
     void serve(new FramedTransport(socket), hostEpoch, capability.rootId).then(
       serverTask.resolve,
       serverTask.reject,
@@ -382,14 +416,30 @@ async function withForgedHandshakePeer(
       compositionId: 'maka.interactive',
       compositionRevision: '1',
       state: 'ready',
+      ...(options.registrationLifecycleMode
+        ? { lifecycleMode: options.registrationLifecycleMode }
+        : {}),
       pid: process.pid,
       createdAt: new Date().toISOString(),
     });
+    const readProcessIdentity = options.readProcessIdentity;
     const resolved = await connectResolvedRuntimeHost({
       capability,
       controlDirectory,
       clientInstanceId: randomUUID(),
       protocol: PROTOCOL,
+      ...(readProcessIdentity
+        ? {
+            readProcessIdentity: async () => {
+              assert.equal(
+                endpointConnected,
+                false,
+                'process identity must be observed before opening the Host endpoint',
+              );
+              return readProcessIdentity();
+            },
+          }
+        : {}),
     });
     if (resolved.kind === 'election_deadline_elapsed') {
       throw new Error('Unexpected Runtime Host election deadline');

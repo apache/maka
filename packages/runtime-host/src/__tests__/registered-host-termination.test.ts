@@ -26,8 +26,8 @@ import {
   prepareStorageRootControlDirectory,
   resolveStorageRoot,
 } from '@maka/storage/root-authority';
-import { forceTerminateRegisteredRuntimeHostWithDependencies } from '../client/registered-host-termination.js';
-import { writeHostRegistration } from '../control/registration.js';
+import { forceTerminateObservedRegisteredRuntimeHostWithDependencies } from '../client/registered-host-termination.js';
+import { readHostRegistration, writeHostRegistration } from '../control/registration.js';
 import {
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
@@ -35,7 +35,7 @@ import {
   type HostRegistration,
 } from '../protocol/index.js';
 
-test('forced termination remains bound to the registered Host identity', async (t) => {
+test('observed forced termination remains bound to the exact process instance', async (t) => {
   const rootPath = await mkdtemp(join(tmpdir(), 'maka-host-termination-'));
   t.after(() => rm(rootPath, { recursive: true, force: true }));
   const capability = await resolveStorageRoot({ path: rootPath, kind: 'interactive' });
@@ -62,60 +62,78 @@ test('forced termination remains bound to the registered Host identity', async (
     pid: identity.pid,
     createdAt: new Date(0).toISOString(),
   };
+  const processIdentity = {
+    startIdentity: 'darwin:1700000000:123456',
+  };
   let alive = true;
   let terminated = 0;
   let replaceBeforeSignal = false;
-  let stillOwnsProcess = true;
+  let replaceCreatedAtBeforeSignal = false;
+  let replaceProcessBeforeSignal = false;
+  let stillAuthorized = true;
   let releaseOwnershipBeforeSignal = false;
   const dependencies = {
     isProcessAlive: () => alive,
-    settleMs: 0,
-    terminateProcess: async (options: { beforeSignal?: () => boolean | Promise<boolean> }) => {
+    readProcessIdentity: async () => {
+      if (releaseOwnershipBeforeSignal) stillAuthorized = false;
+      return replaceProcessBeforeSignal
+        ? { startIdentity: 'darwin:1700000001:123456' }
+        : processIdentity;
+    },
+    readRegistration: async (directory: string) => {
       if (replaceBeforeSignal) {
         await writeHostRegistration(controlDirectory, { ...registration, hostEpoch: 'successor' });
       }
-      if (releaseOwnershipBeforeSignal) stillOwnsProcess = false;
-      if (options.beforeSignal && !(await options.beforeSignal())) return false;
+      if (replaceCreatedAtBeforeSignal) {
+        await writeHostRegistration(controlDirectory, {
+          ...registration,
+          createdAt: new Date(1).toISOString(),
+        });
+      }
+      return readHostRegistration(directory);
+    },
+    settleMs: 0,
+    signalProcess: () => {
       terminated += 1;
       alive = false;
       return true;
     },
   };
+  const authority = () => ({
+    processIdentity,
+    isCurrent: () => stillAuthorized,
+  });
+  const terminate = () =>
+    forceTerminateObservedRegisteredRuntimeHostWithDependencies(
+      { rootPath, registration },
+      authority(),
+      dependencies,
+    );
 
   await writeHostRegistration(controlDirectory, registration);
   replaceBeforeSignal = true;
-  assert.equal(
-    await forceTerminateRegisteredRuntimeHostWithDependencies(
-      identity,
-      () => stillOwnsProcess,
-      dependencies,
-    ),
-    false,
-  );
+  assert.equal(await terminate(), false);
   assert.equal(terminated, 0);
 
   await writeHostRegistration(controlDirectory, registration);
   replaceBeforeSignal = false;
-  releaseOwnershipBeforeSignal = true;
-  assert.equal(
-    await forceTerminateRegisteredRuntimeHostWithDependencies(
-      identity,
-      () => stillOwnsProcess,
-      dependencies,
-    ),
-    false,
-  );
+  replaceCreatedAtBeforeSignal = true;
+  assert.equal(await terminate(), false);
   assert.equal(terminated, 0);
 
-  stillOwnsProcess = true;
+  await writeHostRegistration(controlDirectory, registration);
+  replaceCreatedAtBeforeSignal = false;
+  releaseOwnershipBeforeSignal = true;
+  assert.equal(await terminate(), false);
+  assert.equal(terminated, 0);
+
+  stillAuthorized = true;
   releaseOwnershipBeforeSignal = false;
-  assert.equal(
-    await forceTerminateRegisteredRuntimeHostWithDependencies(
-      identity,
-      () => stillOwnsProcess,
-      dependencies,
-    ),
-    true,
-  );
+  replaceProcessBeforeSignal = true;
+  assert.equal(await terminate(), false);
+  assert.equal(terminated, 0);
+
+  replaceProcessBeforeSignal = false;
+  assert.equal(await terminate(), true);
   assert.equal(terminated, 1);
 });

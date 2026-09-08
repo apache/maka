@@ -154,6 +154,9 @@ test('durable delegation renders every projected target state as a navigable res
     );
     assert.match(markup, /<button/u);
     assert.match(markup, /Payments/u);
+    assert.match(markup, /data-work-session-id="payment"/u);
+    assert.match(markup, /workhub-message-identity/u);
+    assert.match(markup, /--workhub-work-hue:/u);
     assert.match(markup, /Active link/u);
     assert.match(markup, new RegExp(label, 'u'));
     assert.match(markup, new RegExp(`data-state="${state}"`, 'u'));
@@ -186,7 +189,7 @@ test('durable delegation renders terminal link state instead of stale execution 
       },
       updatedAt: 10,
     };
-    const render = (locale: 'en' | 'zh') => renderToStaticMarkup(
+    const render = (locale: 'en' | 'zh-CN') => renderToStaticMarkup(
       createElement(LocaleProvider, {
         locale,
         children: createElement(AstryxLocaleProvider, {
@@ -200,7 +203,7 @@ test('durable delegation renders terminal link state instead of stale execution 
       }),
     );
     const englishMarkup = render('en');
-    const chineseMarkup = render('zh');
+    const chineseMarkup = render('zh-CN');
 
     assert.match(englishMarkup, new RegExp(english, 'u'));
     assert.doesNotMatch(englishMarkup, />Running</u);
@@ -229,7 +232,7 @@ test('durable creation explicitly announces the new work', () => {
     },
     updatedAt: 10,
   };
-  const render = (locale: 'en' | 'zh') => renderToStaticMarkup(
+  const render = (locale: 'en' | 'zh-CN') => renderToStaticMarkup(
     createElement(LocaleProvider, {
       locale,
       children: createElement(AstryxLocaleProvider, {
@@ -244,7 +247,7 @@ test('durable creation explicitly announces the new work', () => {
   );
 
   assert.match(render('en'), /Created new work:/u);
-  assert.match(render('zh'), /已创建新工作：/u);
+  assert.match(render('zh-CN'), /已创建新工作：/u);
 });
 
 test('surface projection refresh gate rejects older reads after a newer refresh starts', () => {
@@ -343,6 +346,61 @@ test('surface replaces a submitted placeholder with its durable assignment state
     },
     updatedAt: 10,
   }];
+
+  assert.deepEqual(visibleWorkHubConversation(durable, local), {
+    coordination: durable,
+    local: [],
+  });
+});
+
+test('surface replaces resume feedback with the ordinary coordination acknowledgement', () => {
+  const local = [
+    {
+      requestId: 'stop-action',
+      text: 'Stop Payments',
+      state: 'settled' as const,
+      outcome: {
+        kind: 'stop' as const,
+        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+        requestId: 'stop-action',
+        target: { sessionId: 'payments' },
+        outcome: 'stop_delivered' as const,
+      },
+    },
+    {
+      requestId: 'resume-action',
+      text: 'Resume Payments',
+      state: 'settled' as const,
+      outcome: {
+        kind: 'resume' as const,
+        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+        requestId: 'resume-action',
+        target: { sessionId: 'payments' },
+        outcome: 'resume_started' as const,
+      },
+    },
+  ];
+  const durable: WorkHubCoordinationTurn[] = [
+    {
+      messageId: 'stop-record',
+      turnId: 'stop-action',
+      text: 'Stop Payments',
+      state: 'completed',
+      stop: {
+        targetSessionId: 'payments',
+        targetSessionName: 'Payments',
+        outcome: 'stop_delivered',
+      },
+      updatedAt: 10,
+    },
+    {
+      messageId: 'resume-record',
+      turnId: 'resume-action',
+      text: 'Resume Payments',
+      state: 'completed',
+      updatedAt: 20,
+    },
+  ];
 
   assert.deepEqual(visibleWorkHubConversation(durable, local), {
     coordination: durable,
@@ -665,6 +723,14 @@ test('real Session projection creates new guide topics and preserves origin ambi
             targetSessionId: input.proposal.expects.targetSessionId,
           };
         }
+        if (input.proposal.disposition === 'resume_work') {
+          return {
+            disposition: 'resume_work',
+            outcome: 'resume_started',
+            targetSessionId: input.proposal.expects.targetSessionId,
+            targetTurnId: 'resumed-turn',
+          };
+        }
         const targetSessionId = input.proposal.candidateRef.replace(/^candidate-/u, '');
         const admitted = await send(targetSessionId, {
           type: 'send',
@@ -773,6 +839,28 @@ test('successful delegated submission needs no renderer summary write', async ()
   });
   assert.equal(result.kind, 'submitted');
   assert.equal(records, 0);
+});
+
+test('resume records ordinary conversation text without persisting execution fields', async () => {
+  const records: unknown[] = [];
+  const controller = fakeController({
+    submit: async (input) => ({
+      kind: 'resume', strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+      requestId: input.requestId, target: { sessionId: 'payments' }, outcome: 'resume_started',
+    }),
+    record: async (input) => { records.push(input); return { turnId: input.turnId }; },
+  });
+  await submitAndRecordWorkHubSurfaceInput({
+    controller,
+    request: { requestId: 'resume-1', text: 'Resume Payments' },
+    recordedUserText: 'Resume Payments',
+    summary: () => 'Resume requested. See the target Session for current progress.',
+    onSummaryError: () => assert.fail('conversation write must succeed'),
+  });
+  assert.deepEqual(records, [{
+    turnId: 'resume-1', userText: 'Resume Payments',
+    assistantText: 'Resume requested. See the target Session for current progress.', disposition: 'summary',
+  }]);
 });
 
 test('lease retires only after an acknowledged submission', async () => {

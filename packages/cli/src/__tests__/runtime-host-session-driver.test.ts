@@ -2136,7 +2136,6 @@ describe('Runtime Host Maka Session driver', () => {
         turnId: 'turn-running',
         ts: 80,
         status: 'running',
-        partialOutputRetained: true,
       },
     ];
     const subscriptions = [
@@ -2902,6 +2901,9 @@ class FakeConnection {
 }
 
 class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<SubscriptionFrame> {
+  subscribePtyData(): () => void {
+    return () => undefined;
+  }
   readonly hostEpoch = 'host-1';
   readonly activeAssistantStreams = [];
   readonly transcriptBootstrap = null;
@@ -3084,7 +3086,6 @@ function turnStateMessage(
     turnId,
     ts: 80,
     status,
-    partialOutputRetained: true,
   };
 }
 
