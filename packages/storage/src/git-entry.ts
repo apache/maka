@@ -18,8 +18,9 @@
  */
 
 import { execFile } from 'node:child_process';
-import { lstat } from 'node:fs/promises';
-import { join, parse } from 'node:path';
+import { constants as fsConstants, type Stats } from 'node:fs';
+import { access, lstat, readFile } from 'node:fs/promises';
+import { dirname, join, parse, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -28,15 +29,22 @@ export async function hasEnclosingGitEntry(path: string): Promise<boolean> {
   let current = path;
   while (true) {
     const gitPath = join(current, '.git');
+    let present: boolean;
     try {
       await lstat(gitPath);
-      // Keep failures in the selected directory's own metadata visible.
-      if (current === path) return true;
-      return isGitEntry(gitPath);
+      present = true;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+      present = false;
     }
+    if (present) {
+      // Keep failures in the selected directory's own metadata visible.
+      if (current === path) return true;
+      if (await isGitEntry(gitPath)) return true;
+    }
+    // An ancestor Git rejected despite readable metadata is confirmed invalid;
+    // Git itself skips it and keeps searching outward, so continue the walk.
     const parent = parse(current).dir;
     if (parent === current) return false;
     current = parent;
@@ -60,9 +68,55 @@ async function isGitEntry(gitPath: string): Promise<boolean> {
     });
     return true;
   } catch (error) {
-    // This probe exits 128 for invalid Git metadata. Execution failures must
-    // still surface so a missing Git executable cannot downgrade a repository.
-    if ((error as { code?: unknown }).code === 128) return false;
+    // Exit 128 is Git rejecting the entry, but it conflates an invalid format
+    // with unreadable metadata; execution failures must still surface so a
+    // missing Git executable cannot downgrade a repository.
+    if ((error as { code?: unknown }).code === 128) {
+      await assertGitMetadataReadable(gitPath);
+      return false;
+    }
     throw error;
+  }
+}
+
+/**
+ * Git's 128 verdict is trusted format interpretation only when Git could read
+ * the metadata: an unreadable repository is not evidence of an ordinary
+ * directory, so permission and I/O failures surface instead of taking the
+ * no-repository path.
+ */
+async function assertGitMetadataReadable(gitPath: string): Promise<void> {
+  let entryStat: Stats;
+  try {
+    entryStat = await lstat(gitPath);
+    await access(
+      gitPath,
+      entryStat.isDirectory() ? fsConstants.R_OK | fsConstants.X_OK : fsConstants.R_OK,
+    );
+  } catch (error) {
+    throw new Error(`Git metadata is not readable: ${gitPath}`, { cause: error });
+  }
+  if (entryStat.isDirectory()) {
+    await assertGitDirectoryReadable(gitPath);
+    return;
+  }
+  // A gitfile's target is the directory Git actually validated.
+  const pointer = /^gitdir: (.+)$/m.exec(await readFile(gitPath, 'utf8'));
+  if (pointer) {
+    await assertGitDirectoryReadable(resolve(dirname(gitPath), pointer[1].trim()));
+  }
+}
+
+async function assertGitDirectoryReadable(gitDir: string): Promise<void> {
+  for (const name of ['HEAD', 'objects', 'refs']) {
+    const path = join(gitDir, name);
+    try {
+      await access(path, fsConstants.R_OK);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // Missing members are Git's format call; unreadable ones are ours.
+      if (code === 'ENOENT' || code === 'ENOTDIR') continue;
+      throw new Error(`Git metadata is not readable: ${path}`, { cause: error });
+    }
   }
 }
