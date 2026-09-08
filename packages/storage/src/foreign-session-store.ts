@@ -19,7 +19,8 @@
 
 /**
  * Read-only scanner + digest reader over foreign agent session stores
- * (#1057): Claude Code (~/.claude/projects) and Codex (~/.codex).
+ * (#1057): Claude Code (~/.claude/projects), Codex (~/.codex), and
+ * OpenCode (~/.local/share/opencode/opencode.db).
  *
  * Boundary rules, in order of importance:
  *
@@ -28,10 +29,10 @@
  *      capability — that contract exists for Maka's own workspace; foreign
  *      stores belong to other tools and must stay byte-identical.
  *   2. SCOPED. All reads resolve under the configured home directory's
- *      known subtrees (`.claude/projects`, `.codex`). Paths obtained from
- *      foreign metadata (Codex `rollout_path`) are realpath-checked to
- *      still live inside the source root — a hostile row cannot point the
- *      reader at ~/.ssh.
+ *      known subtrees (`.claude/projects`, `.codex`, `.local/share/opencode`).
+ *      Paths obtained from foreign metadata (Codex `rollout_path`) are
+ *      realpath-checked to still live inside the source root — a hostile
+ *      row cannot point the reader at ~/.ssh.
  *   3. BOUNDED. Byte caps from @maka/core/foreign-session apply to every
  *      read (head window for metadata, head+tail window for titles, hard
  *      cap for digests); scan results cap at 50 sessions / 30 days.
@@ -64,6 +65,9 @@ import {
   finishDigest,
   isSafeForeignId,
   normalizeCodexThreadRow,
+  opencodeMessageRole,
+  opencodePartText,
+  opencodeToolFilePaths,
   parseForeignJsonLine,
   pickClaudeTitle,
   pushDigestFile,
@@ -111,6 +115,12 @@ export function isCodexImportEnabled(
   return env.MAKA_IMPORT_CODEX !== '0';
 }
 
+export function isOpenCodeImportEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env.MAKA_IMPORT_OPENCODE !== '0';
+}
+
 export function createForeignSessionStore(
   options: ForeignSessionStoreOptions = {},
 ): ForeignSessionStore {
@@ -131,6 +141,14 @@ class FileForeignSessionStore implements ForeignSessionStore {
     return join(this.homeDir, '.codex');
   }
 
+  private get opencodeRoot(): string {
+    return join(this.homeDir, '.local', 'share', 'opencode');
+  }
+
+  private get opencodeDbPath(): string {
+    return join(this.opencodeRoot, 'opencode.db');
+  }
+
   async availableSources(): Promise<ForeignSessionSource[]> {
     const sources: ForeignSessionSource[] = [];
     if (isClaudeCodeImportEnabled(this.env) && (await isDirectory(this.claudeRoot))) {
@@ -138,6 +156,9 @@ class FileForeignSessionStore implements ForeignSessionStore {
     }
     if (isCodexImportEnabled(this.env) && (await isDirectory(this.codexRoot))) {
       sources.push('codex');
+    }
+    if (isOpenCodeImportEnabled(this.env) && (await isRegularFile(this.opencodeDbPath))) {
+      sources.push('opencode');
     }
     return sources;
   }
@@ -151,6 +172,9 @@ class FileForeignSessionStore implements ForeignSessionStore {
     }
     if (sources.includes('codex')) {
       results.push(...(await this.listCodexSessions(options, now)));
+    }
+    if (sources.includes('opencode')) {
+      results.push(...(await this.listOpenCodeSessions(options, now)));
     }
     results.sort((a, b) => b.updatedAtMs - a.updatedAtMs);
     // Sanitize + redact display metadata at the single return choke point.
@@ -373,9 +397,110 @@ class FileForeignSessionStore implements ForeignSessionStore {
     }
   }
 
+  /* ----------------------------- OpenCode ----------------------------- */
+
+  private async listOpenCodeSessions(
+    options: ForeignSessionScanOptions,
+    now: number,
+  ): Promise<ForeignSessionSummary[]> {
+    const dbPath = await this.confineOpenCodeDbPath(this.opencodeDbPath);
+    if (dbPath === undefined) return [];
+    const rows = await readOpenCodeSessionRows(dbPath);
+    if (rows === undefined) return [];
+    const results: ForeignSessionSummary[] = [];
+    for (const row of rows) {
+      if (row.parentId !== undefined) continue;
+      if (!isSafeForeignId(row.id)) continue;
+      const updatedAtMs = row.timeUpdated ?? row.timeCreated ?? 0;
+      if (now - updatedAtMs > FOREIGN_SESSION_SCAN_MAX_AGE_MS) continue;
+      if (
+        options.cwd !== undefined &&
+        normalizePath(row.directory) !== normalizePath(options.cwd)
+      ) {
+        continue;
+      }
+      results.push({
+        source: 'opencode',
+        id: row.id,
+        title: sanitizeForeignTitle(row.title) || row.id,
+        cwd: row.directory,
+        updatedAtMs,
+        transcriptPath: dbPath,
+      });
+    }
+    return results;
+  }
+
+  /**
+   * Realpath-confine a path to the configured OpenCode home and require it
+   * to be the `opencode.db` file. A hostile summary or a db replaced by a
+   * symlink must not point the reader at ~/.ssh.
+   */
+  private async confineOpenCodeDbPath(path: string): Promise<string | undefined> {
+    try {
+      const real = await realpath(resolve(path));
+      const root = await realpath(this.opencodeRoot);
+      if (real !== root && !real.startsWith(root + sep)) return undefined;
+      if (!(await stat(real)).isFile()) return undefined;
+      if (basename(real) !== 'opencode.db') return undefined;
+      return real;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async readOpenCodeDigest(summary: ForeignSessionSummary): Promise<ForeignSessionDigest> {
+    const dbPath = await this.confineOpenCodeDbPath(summary.transcriptPath);
+    if (dbPath === undefined) {
+      throw new Error('Foreign transcript escaped its source root');
+    }
+    const acc = createDigestAccumulator();
+    const loaded = await readOpenCodeDigestRows(dbPath, summary.id);
+    if (loaded === undefined) {
+      throw new Error('Foreign OpenCode session could not be read');
+    }
+    if (loaded.parentId !== undefined) {
+      throw new Error('Foreign OpenCode session is a child of another session');
+    }
+    if (loaded.truncated) {
+      acc.warnings.push(
+        `transcript is larger than ${FOREIGN_SESSION_DIGEST_MAX_READ_BYTES} bytes; only the trailing window was read`,
+      );
+    }
+    const partsByMessage = new Map<string, Record<string, unknown>[]>();
+    for (const part of loaded.parts) {
+      const existing = partsByMessage.get(part.messageId);
+      if (existing) existing.push(part.data);
+      else partsByMessage.set(part.messageId, [part.data]);
+    }
+    for (const message of loaded.messages) {
+      const role = opencodeMessageRole(message.data);
+      if (role === undefined) continue;
+      const texts: string[] = [];
+      for (const part of partsByMessage.get(message.id) ?? []) {
+        const text = opencodePartText(part);
+        if (text !== undefined) texts.push(text);
+        for (const path of opencodeToolFilePaths(part)) pushDigestFile(acc, path);
+      }
+      const joined = texts.join('\n').trim();
+      if (joined.length > 0) pushDigestMessage(acc, role, joined);
+    }
+    return finishDigest(acc, {
+      source: summary.source,
+      id: summary.id,
+      title: summary.title,
+      cwd: summary.cwd,
+      gitBranch: summary.gitBranch,
+      updatedAtMs: summary.updatedAtMs,
+    });
+  }
+
   /* ------------------------------ Digest ------------------------------ */
 
   async readDigest(summary: ForeignSessionSummary): Promise<ForeignSessionDigest> {
+    if (summary.source === 'opencode') {
+      return this.readOpenCodeDigest(summary);
+    }
     // The transcript path was produced by our own scan, but re-confine it
     // anyway: digests can be requested long after the scan, and the file
     // may have been swapped for a symlink in between.
@@ -460,6 +585,14 @@ class FileForeignSessionStore implements ForeignSessionStore {
 async function isDirectory(path: string): Promise<boolean> {
   try {
     return (await stat(path)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function isRegularFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile();
   } catch {
     return false;
   }
@@ -725,4 +858,204 @@ export function codexCwdSqlVariants(path: string): string[] {
     }
   }
   return [...variants];
+}
+
+/* ----------------------------- OpenCode SQLite ----------------------------- */
+
+interface OpenCodeSqlite {
+  prepare(sql: string): { all(...params: unknown[]): unknown[] };
+  close(): void;
+}
+
+interface OpenCodeSessionScanRow {
+  id: string;
+  title: string;
+  directory: string;
+  timeCreated?: number;
+  timeUpdated?: number;
+  parentId?: string;
+}
+
+interface OpenCodeDigestMessage {
+  id: string;
+  data: Record<string, unknown>;
+}
+
+interface OpenCodeDigestPart {
+  messageId: string;
+  data: Record<string, unknown>;
+}
+
+function sqliteTableColumns(
+  db: OpenCodeSqlite,
+  table: 'session' | 'message' | 'part',
+): Set<string> {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as { name?: unknown }[];
+  return new Set(
+    rows.map((column) => (typeof column.name === 'string' ? column.name : '')).filter(Boolean),
+  );
+}
+
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function parseSqliteJsonObject(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'string') return asObject(value);
+  return parseForeignJsonLine(value);
+}
+
+async function withOpenCodeDb<T>(
+  dbPath: string,
+  read: (db: OpenCodeSqlite) => T,
+): Promise<T | undefined> {
+  let sqlite: typeof import('node:sqlite');
+  try {
+    sqlite = await import('node:sqlite');
+  } catch {
+    return undefined;
+  }
+  let db: OpenCodeSqlite;
+  try {
+    db = new sqlite.DatabaseSync(dbPath, { readOnly: true }) as OpenCodeSqlite;
+  } catch {
+    return undefined;
+  }
+  try {
+    return read(db);
+  } catch {
+    return undefined;
+  } finally {
+    try {
+      db.close();
+    } catch {
+      // Close failures must not replace a usable result (or a read error
+      // already folded into undefined) with a cleanup exception.
+    }
+  }
+}
+
+async function readOpenCodeSessionRows(
+  dbPath: string,
+): Promise<OpenCodeSessionScanRow[] | undefined> {
+  return await withOpenCodeDb(dbPath, (db) => {
+    const columns = sqliteTableColumns(db, 'session');
+    if (!columns.has('id') || !columns.has('directory')) return undefined;
+    const selected = [
+      'id',
+      'title',
+      'directory',
+      'time_created',
+      'time_updated',
+      'parent_id',
+    ].filter((column) => columns.has(column));
+    const raw = db.prepare(`SELECT ${selected.join(', ')} FROM session`).all();
+    const rows: OpenCodeSessionScanRow[] = [];
+    for (const value of raw) {
+      const rec = asObject(value);
+      const id = nonEmptyString(rec?.id);
+      if (id === undefined) continue;
+      rows.push({
+        id,
+        title: nonEmptyString(rec?.title) ?? '',
+        directory: nonEmptyString(rec?.directory) ?? '',
+        ...(finiteNumber(rec?.time_created) !== undefined
+          ? { timeCreated: finiteNumber(rec?.time_created) }
+          : {}),
+        ...(finiteNumber(rec?.time_updated) !== undefined
+          ? { timeUpdated: finiteNumber(rec?.time_updated) }
+          : {}),
+        ...(nonEmptyString(rec?.parent_id) !== undefined
+          ? { parentId: nonEmptyString(rec?.parent_id) }
+          : {}),
+      });
+    }
+    return rows;
+  });
+}
+
+async function readOpenCodeDigestRows(
+  dbPath: string,
+  sessionId: string,
+): Promise<
+  | {
+      parentId?: string;
+      messages: OpenCodeDigestMessage[];
+      parts: OpenCodeDigestPart[];
+      truncated: boolean;
+    }
+  | undefined
+> {
+  return await withOpenCodeDb(dbPath, (db) => {
+    const sessionColumns = sqliteTableColumns(db, 'session');
+    if (!sessionColumns.has('id')) return undefined;
+    const sessionFields = ['id', 'parent_id'].filter((column) => sessionColumns.has(column));
+    const sessionRaw = db
+      .prepare(`SELECT ${sessionFields.join(', ')} FROM session WHERE id = ?`)
+      .all(sessionId)[0];
+    const sessionRec = asObject(sessionRaw);
+    if (sessionRec === undefined) return undefined;
+    const parentId = nonEmptyString(sessionRec.parent_id);
+
+    const messageColumns = sqliteTableColumns(db, 'message');
+    const messages: OpenCodeDigestMessage[] = [];
+    if (messageColumns.has('id') && messageColumns.has('data')) {
+      const order = messageColumns.has('time_created') ? 'time_created, id' : 'id';
+      const rawMessages = db
+        .prepare(`SELECT id, data FROM message WHERE session_id = ? ORDER BY ${order}`)
+        .all(sessionId);
+      for (const value of rawMessages) {
+        const rec = asObject(value);
+        const id = nonEmptyString(rec?.id);
+        const data = parseSqliteJsonObject(rec?.data);
+        if (id === undefined || data === undefined) continue;
+        messages.push({ id, data });
+      }
+    }
+
+    const partColumns = sqliteTableColumns(db, 'part');
+    const partsNewestFirst: OpenCodeDigestPart[] = [];
+    let truncated = false;
+    let used = 0;
+    if (partColumns.has('message_id') && partColumns.has('data')) {
+      const order = partColumns.has('time_created') ? 'time_created DESC, id DESC' : 'id DESC';
+      const rawParts = db
+        .prepare(`SELECT message_id, data FROM part WHERE session_id = ? ORDER BY ${order}`)
+        .all(sessionId);
+      for (const value of rawParts) {
+        const rec = asObject(value);
+        const messageId = nonEmptyString(rec?.message_id);
+        const dataRaw = rec?.data;
+        const nbytes = typeof dataRaw === 'string' ? Buffer.byteLength(dataRaw) : 0;
+        if (used + nbytes > FOREIGN_SESSION_DIGEST_MAX_READ_BYTES && partsNewestFirst.length > 0) {
+          truncated = true;
+          break;
+        }
+        if (nbytes > FOREIGN_SESSION_DIGEST_MAX_READ_BYTES) {
+          truncated = true;
+          continue;
+        }
+        const data = parseSqliteJsonObject(dataRaw);
+        if (messageId === undefined || data === undefined) continue;
+        used += nbytes;
+        partsNewestFirst.push({ messageId, data });
+      }
+    }
+    return {
+      ...(parentId !== undefined ? { parentId } : {}),
+      messages,
+      parts: partsNewestFirst.reverse(),
+      truncated,
+    };
+  });
 }
