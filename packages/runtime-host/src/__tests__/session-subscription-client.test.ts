@@ -421,7 +421,6 @@ test('reassembles a large message from bounded backward pages', async () => {
       const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
       const opened = openResult(hostEpoch, 'subscription-fragmented', {
         throughSequence: 0,
-        durableCoverage: 'complete',
         overlayMessageCount: 0,
         durable: transcriptPage({
           rawBytes: encoded.byteLength - splitAt,
@@ -502,7 +501,6 @@ test('decodes one bounded page without walking the remaining transcript', async 
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-bounded-page', {
       throughSequence: 4,
-      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: {
         ...transcriptPage({
@@ -615,7 +613,6 @@ test('assembles the complete edge Turn while paging newer transcript', async () 
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-newer-turn', {
       throughSequence: 1,
-      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: initial,
       overlay: { ...transcriptPage({ source: 'overlay' }), throughSequence: 1 },
@@ -904,51 +901,7 @@ test('keeps the connection usable when close wins the overlay release race', asy
   );
 });
 
-test('rejects a durable sequence gap', async () => {
-  const message = Buffer.from(
-    JSON.stringify({
-      type: 'user',
-      id: 'user-1',
-      turnId: 'turn-1',
-      ts: 1,
-      text: 'hello',
-    }),
-    'utf8',
-  );
-  const fragment = {
-    kind: 'durable' as const,
-    sequence: 0,
-    byteOffset: 0,
-    totalBytes: message.byteLength,
-    payloadDigest: null,
-    data: message.toString('base64'),
-  };
-  const gap = new ClientSessionSubscription(
-    openResult('host-1', 'subscription-gap', {
-      throughSequence: 1,
-      durableCoverage: 'complete',
-      overlayMessageCount: 0,
-      durable: {
-        ...transcriptPage({
-          rawBytes: message.byteLength,
-          fragments: [{ ...fragment, sequence: 1 }],
-        }),
-        throughSequence: 1,
-      },
-      overlay: { ...transcriptPage({ source: 'overlay' }), throughSequence: 1 },
-    }),
-    async () => undefined,
-    async () => {
-      throw new Error('unexpected page request');
-    },
-  );
-  await assert.rejects(
-    () => gap.loadTranscript(decodeStoredMessage),
-    hasSubscriptionReason('correlation_changed'),
-  );
-});
-
-test('loads a projected durable transcript with intentionally sparse sequences', async () => {
+test('loads a durable transcript whose sequences are sparse', async () => {
   const messages = [0, 2].map((sequence) =>
     Buffer.from(
       JSON.stringify({
@@ -964,7 +917,6 @@ test('loads a projected durable transcript with intentionally sparse sequences',
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-projected', {
       throughSequence: 2,
-      durableCoverage: 'projected',
       overlayMessageCount: 0,
       durable: {
         ...transcriptPage({
@@ -1010,7 +962,6 @@ test('rejects a durable message that does not match its payload digest', async (
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-digest-mismatch', {
       throughSequence: 0,
-      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: transcriptPage({
         rawBytes: message.byteLength,
@@ -1075,7 +1026,6 @@ test('rejects a transcript cursor that does not advance', async () => {
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-stuck-cursor', {
       throughSequence: 0,
-      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: repeated,
       overlay: transcriptPage({ source: 'overlay' }),
@@ -1105,7 +1055,6 @@ test('rejects an overlay that terminates before its declared high-water', async 
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-truncated-overlay', {
       throughSequence: null,
-      durableCoverage: 'complete',
       overlayMessageCount: 2,
       durable: { ...transcriptPage(), throughSequence: null },
       overlay: {
@@ -1197,7 +1146,6 @@ test('acknowledges a complete overlay before waiting for durable continuation pa
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-overlay-release-before-durable', {
       throughSequence: 0,
-      durableCoverage: 'complete',
       overlayMessageCount: 1,
       durable: transcriptPage({
         rawBytes: durableMessage.byteLength - split,
@@ -1271,7 +1219,6 @@ test('close stops transcript pagination after the in-flight page', async () => {
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-closing', {
       throughSequence: 0,
-      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: transcriptPage({
         rawBytes: Math.floor(message.byteLength / 2),
@@ -1638,7 +1585,6 @@ function openResult(
 function transcriptBootstrap(message: Buffer): SessionTranscriptBootstrap {
   return {
     throughSequence: 0,
-    durableCoverage: 'complete',
     overlayMessageCount: 0,
     durable: transcriptPage({
       rawBytes: message.byteLength,
@@ -1660,7 +1606,6 @@ function transcriptBootstrap(message: Buffer): SessionTranscriptBootstrap {
 function overlayBootstrap(message: Buffer): SessionTranscriptBootstrap {
   return {
     throughSequence: null,
-    durableCoverage: 'complete',
     overlayMessageCount: 1,
     durable: { ...transcriptPage(), throughSequence: null },
     overlay: {

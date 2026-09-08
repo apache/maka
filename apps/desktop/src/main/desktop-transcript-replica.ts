@@ -82,7 +82,6 @@ export class DesktopTranscriptReplica {
   readonly generation: string;
   readonly hostEpoch: string;
   readonly #handle: DesktopRuntimeHostSession;
-  readonly #durableCoverage: DesktopRuntimeHostSession['transcriptBootstrap']['durableCoverage'];
   readonly #maxResidentBytes: number;
   readonly #maxResidentTurns: number;
   readonly #maxOverlayBytes: number;
@@ -111,7 +110,6 @@ export class DesktopTranscriptReplica {
     options: DesktopTranscriptReplicaOptions,
   ) {
     this.#handle = handle;
-    this.#durableCoverage = handle.transcriptBootstrap.durableCoverage;
     this.sessionId = handle.snapshot.session.sessionId;
     this.generation = options.generation ?? randomUUID();
     this.hostEpoch = handle.hostEpoch;
@@ -316,6 +314,20 @@ export class DesktopTranscriptReplica {
       anchorSequence: loadTail ? sequence + 1 : sequence === 0 ? null : sequence - 1,
       maxBytes,
     });
+    // A durable sequence is an event ordinal times its stride, so the oldest row
+    // of a Session is at no fixed number and `sequence > 0` cannot answer this.
+    // Ask for one row older than the anchor instead; a jump is user-initiated,
+    // so the extra bounded read is paid once per jump.
+    const older = loadTail
+      ? null
+      : await this.#handle.loadTranscriptPage({
+          source: 'durable',
+          direction: 'older',
+          throughSequence,
+          cursor: null,
+          anchorSequence: sequence,
+          maxBytes: 1,
+        });
     await this.#withDecodedPage(page, (decoded) => {
       this.#assertOpen();
       // `#resident` can flip to false across the `await` above (a concurrent
@@ -338,7 +350,7 @@ export class DesktopTranscriptReplica {
       this.#clearDurable();
       const completedOverlayMessageIds = this.#installDurable(decoded.messages);
       this.#durableThrough = throughSequence;
-      this.#hasOlder = loadTail ? decoded.nextCursor !== null : sequence > 0;
+      this.#hasOlder = loadTail ? decoded.nextCursor !== null : older!.fragments.length > 0;
       this.#hasNewer = loadTail ? false : decoded.nextCursor !== null;
       evictedDurableSequences.push(
         ...this.#evictToBudget(
@@ -472,9 +484,6 @@ export class DesktopTranscriptReplica {
       // drives the session terminal. A discarded replica has no watermark to
       // meet, so return cleanly and let a later resume re-catch-up.
       if (!this.#resident) return;
-      if (this.#durableCoverage === 'complete' && nextSequence !== target + 1) {
-        throw correlationError('Desktop transcript catch-up ended before its watermark');
-      }
       this.#durableThrough = target;
       this.#publish([], [], []);
     }
@@ -532,10 +541,12 @@ export class DesktopTranscriptReplica {
     }
   }
 
+  /**
+   * A durable sequence is an event ordinal times its stride, so the next row is
+   * only ever at or after the previous one plus one — never exactly there.
+   */
   #matchesCoverageStep(sequence: number, firstPossibleSequence: number): boolean {
-    return this.#durableCoverage === 'complete'
-      ? sequence === firstPossibleSequence
-      : sequence >= firstPossibleSequence;
+    return sequence >= firstPossibleSequence;
   }
 
   #publish(

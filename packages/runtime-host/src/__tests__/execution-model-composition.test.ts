@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { deferred } from '@maka/core/test-only/async-primitives';
+import { deferred, waitFor } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -116,6 +116,7 @@ import {
 } from '../server/oauth-execution-authority.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
 import { AgentGraphProviderScenario } from './fixtures/agent-graph-provider-scenario.js';
+import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 
 const MODEL_ID = 'hosted-real-model';
 const API_KEY = 'hosted-provider-key';
@@ -2039,7 +2040,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     ]);
     assert.match(JSON.stringify(compactRequests[0]?.body), /context summarization assistant/);
 
-    const messages = await execution.sessionStore.readMessagesSnapshot(session.id);
+    const messages = await readLedgerMessages(execution.runtimeEventStore, session.id);
     const assistant = messages.find(
       (message) => message.type === 'assistant' && message.turnId === turnIds[0],
     );
@@ -2267,24 +2268,47 @@ test('production Host executes and durably supervises an Agent Graph over a real
     assert.equal(initialTerminal.status, 'completed');
 
     graphStore = createAgentGraphControlStore(root);
+    const graph = graphStore;
     const graphId = agentGraphIdForRootSession(session.id);
-    let updates = await graphStore.listAgentGraphScheduleUpdates(graphId);
+    let updates = await graph.listAgentGraphScheduleUpdates(graphId);
     let runs = await execution.runtimeEventStore.listSessionInvocations(session.id);
-    for (let attempt = 0; attempt < 400; attempt += 1) {
-      const wakeRuns = runs.filter(
-        (run) => run.opening.root.kind === 'agent_graph_supervisor_wake',
+    try {
+      await waitFor(
+        async () => {
+          const wakeRuns = runs.filter(
+            (run) => run.opening.root.kind === 'agent_graph_supervisor_wake',
+          );
+          if (
+            updates.at(-1)?.finish &&
+            wakeRuns.length > 0 &&
+            wakeRuns.every((run) => runtimeInvocationOutcome(run) !== undefined) &&
+            liveResidencies === 0
+          ) {
+            return true;
+          }
+          [updates, runs] = await Promise.all([
+            graph.listAgentGraphScheduleUpdates(graphId),
+            execution.runtimeEventStore.listSessionInvocations(session.id),
+          ]);
+          return false;
+        },
+        { timeoutMs: 30_000, pollMs: 10, message: 'graph wake runs did not settle' },
       );
-      if (
-        updates.at(-1)?.finish &&
-        wakeRuns.length > 0 &&
-        wakeRuns.every((run) => runtimeInvocationOutcome(run) !== undefined) &&
-        liveResidencies === 0
-      ) {
-        break;
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
-      updates = await graphStore.listAgentGraphScheduleUpdates(graphId);
-      runs = await execution.runtimeEventStore.listSessionInvocations(session.id);
+    } catch (error) {
+      assert.ok(
+        updates.at(-1)?.finish,
+        JSON.stringify({
+          updateCount: updates.length,
+          lastUpdate: updates.at(-1),
+          runs: runs.map((run) => ({
+            runId: run.runId,
+            status: runtimeInvocationOutcome(run) ?? 'running',
+            root: run.opening.root,
+          })),
+          requests: providerRequestTrace(provider.requests),
+        }),
+      );
+      throw error;
     }
 
     const finish = updates.at(-1)?.finish;
@@ -2505,7 +2529,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
     assert.equal(childRuns.length, 1);
     assert.equal(childRuns[0] && runtimeInvocationOutcome(childRuns[0]), 'completed');
     assert.equal(childRuns[0]?.opening.lineage?.parentRunId, undefined);
-    const childMessages = await execution.sessionStore.readMessagesSnapshot(child.id);
+    const childMessages = await readLedgerMessages(execution.runtimeEventStore, child.id);
     assert.equal(
       childMessages.find((message) => message.type === 'assistant')?.text,
       CHILD_AGENT_RESULT_TEXT,
@@ -2721,7 +2745,7 @@ test('production Host publishes and retires an implementation child patch', asyn
     assert.equal(childRuns.length, 1);
     assert.equal(childRuns[0] && runtimeInvocationOutcome(childRuns[0]), 'completed');
     assert.equal(childRuns[0]?.opening.lineage?.parentRunId, undefined);
-    const childMessages = await execution.sessionStore.readMessagesSnapshot(child.id);
+    const childMessages = await readLedgerMessages(execution.runtimeEventStore, child.id);
     assert.equal(
       childMessages.find((message) => message.type === 'assistant')?.text,
       CHILD_AGENT_RESULT_TEXT,
@@ -3859,19 +3883,28 @@ async function startTurn(
   text: string,
   context: ConnectionContext,
 ): Promise<TurnSnapshot> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    const input = { sessionId, turnId, content: { text } };
-    const started = await composition.handlers['turn.start'](input, context);
-    if (started.ok) {
-      if (started.result.kind === 'started') return started.result.turn;
-      throw new Error(`Hosted real-model Skill invocation was blocked: ${JSON.stringify(started)}`);
-    }
-    if (started.error.code !== 'session_busy') {
-      throw new Error(`Hosted real-model Turn start failed: ${JSON.stringify(started.error)}`);
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error('Hosted real-model Session did not become idle');
+  let turn: TurnSnapshot | undefined;
+  await waitFor(
+    async () => {
+      const input = { sessionId, turnId, content: { text } };
+      const started = await composition.handlers['turn.start'](input, context);
+      if (started.ok) {
+        if (started.result.kind === 'started') {
+          turn = started.result.turn;
+          return true;
+        }
+        throw new Error(
+          `Hosted real-model Skill invocation was blocked: ${JSON.stringify(started)}`,
+        );
+      }
+      if (started.error.code !== 'session_busy') {
+        throw new Error(`Hosted real-model Turn start failed: ${JSON.stringify(started.error)}`);
+      }
+      return false;
+    },
+    { timeoutMs: 5_000, pollMs: 10, message: 'Hosted real-model Session did not become idle' },
+  );
+  return turn as TurnSnapshot;
 }
 
 async function waitForTerminal(
@@ -3882,14 +3915,17 @@ async function waitForTerminal(
   context: ConnectionContext,
 ): Promise<TurnSnapshot> {
   let snapshot = initial;
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    if (isTerminal(snapshot)) return snapshot;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    const queried = await composition.handlers['turn.query']({ sessionId, turnId }, context);
-    assert.equal(queried.ok, true);
-    snapshot = queried.result;
-  }
-  throw new Error('Hosted real-model Turn did not become terminal');
+  await waitFor(
+    async () => {
+      if (isTerminal(snapshot)) return true;
+      const queried = await composition.handlers['turn.query']({ sessionId, turnId }, context);
+      assert.equal(queried.ok, true);
+      snapshot = queried.result;
+      return isTerminal(snapshot);
+    },
+    { timeoutMs: 5_000, pollMs: 10, message: 'Hosted real-model Turn did not become terminal' },
+  );
+  return snapshot;
 }
 
 async function waitForUsage(
@@ -3898,23 +3934,33 @@ async function waitForUsage(
   connectionSlug: string,
   callKind: ModelCallKind,
 ): Promise<Extract<UsageQueryResult, { kind: 'logs'; source: 'llm' }>['rows'][number]> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const queried = await composition.handlers['usage.query'](
-      { kind: 'logs', source: 'llm', query: { range: 'all' } },
-      context,
-    );
-    assert.equal(queried.ok, true);
-    if (queried.result.kind === 'logs' && queried.result.source === 'llm') {
-      const row = queried.result.rows.find(
-        (candidate) =>
-          candidate.connectionSlug === connectionSlug &&
-          (candidate.callKind ?? 'main') === callKind,
+  let row: Extract<UsageQueryResult, { kind: 'logs'; source: 'llm' }>['rows'][number] | undefined;
+  await waitFor(
+    async () => {
+      const queried = await composition.handlers['usage.query'](
+        { kind: 'logs', source: 'llm', query: { range: 'all' } },
+        context,
       );
-      if (row) return row;
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      assert.equal(queried.ok, true);
+      if (queried.result.kind === 'logs' && queried.result.source === 'llm') {
+        row = queried.result.rows.find(
+          (candidate) =>
+            candidate.connectionSlug === connectionSlug &&
+            (candidate.callKind ?? 'main') === callKind,
+        );
+      }
+      return row !== undefined;
+    },
+    {
+      timeoutMs: 5_000,
+      pollMs: 10,
+      message: 'Hosted real-model usage attribution was not persisted',
+    },
+  );
+  if (row === undefined) {
+    throw new Error('Hosted real-model usage attribution was not persisted');
   }
-  throw new Error('Hosted real-model usage attribution was not persisted');
+  return row;
 }
 
 async function waitForCanonicalRequests(
@@ -3923,19 +3969,39 @@ async function waitForCanonicalRequests(
   expectedRequests: number,
 ): Promise<number> {
   const ask = () => usage.modelCalls.modelCallSummary({ range: 'all', sessionId }, Date.now());
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const { projection } = await ask();
-    if (projection.totalRequests >= expectedRequests) return projection.totalRequests;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  let totalRequests = -1;
+  try {
+    await waitFor(
+      async () => {
+        const { projection } = await ask();
+        totalRequests = projection.totalRequests;
+        return totalRequests >= expectedRequests;
+      },
+      {
+        timeoutMs: 5_000,
+        pollMs: 10,
+        message: `Hosted model call attempts did not reach ${expectedRequests}`,
+      },
+    );
+  } catch (cause) {
+    // The diagnostic re-read must not swallow the original failure: if the
+    // summary read itself threw, re-throw that instead of the payload dump.
+    let diagnostic: string;
+    try {
+      const { projection, unreadableRecords } = await ask();
+      diagnostic = JSON.stringify({
+        expectedRequests,
+        totalRequests: projection.totalRequests,
+        unreadableRecords,
+      });
+    } catch (readError) {
+      diagnostic = `diagnostic read failed: ${readError instanceof Error ? readError.message : String(readError)}`;
+    }
+    throw new Error(`Hosted canonical model-call attempts were not persisted: ${diagnostic}`, {
+      cause,
+    });
   }
-  const { projection, unreadableRecords } = await ask();
-  throw new Error(
-    `Hosted canonical model-call attempts were not persisted: ${JSON.stringify({
-      expectedRequests,
-      totalRequests: projection.totalRequests,
-      unreadableRecords,
-    })}`,
-  );
+  return totalRequests;
 }
 
 async function waitForAutomaticMemoryRequestsToSettle(
@@ -3943,27 +4009,34 @@ async function waitForAutomaticMemoryRequestsToSettle(
 ): Promise<void> {
   let stablePolls = 0;
   let previousCount = -1;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const memoryCount = requests.filter((request) =>
-      /Perform the first stage of long-term-memory extraction/.test(JSON.stringify(request.body)),
-    ).length;
-    if (memoryCount > 0 && requests.length === previousCount) stablePolls += 1;
-    else stablePolls = 0;
-    if (stablePolls >= 5) return;
-    previousCount = requests.length;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  try {
+    await waitFor(
+      () => {
+        const memoryCount = requests.filter((request) =>
+          /Perform the first stage of long-term-memory extraction/.test(
+            JSON.stringify(request.body),
+          ),
+        ).length;
+        if (memoryCount > 0 && requests.length === previousCount) stablePolls += 1;
+        else stablePolls = 0;
+        previousCount = requests.length;
+        return stablePolls >= 5;
+      },
+      { timeoutMs: 5_000, pollMs: 10, message: 'memory extraction requests did not settle' },
+    );
+  } catch {
+    throw new Error(
+      `Hosted automatic Memory extraction request did not settle: ${JSON.stringify(
+        requests.map((request) => ({
+          stream: request.body.stream,
+          summary: /context summarization assistant/.test(JSON.stringify(request.body)),
+          memory: /Perform the first stage of long-term-memory extraction/.test(
+            JSON.stringify(request.body),
+          ),
+        })),
+      )}`,
+    );
   }
-  throw new Error(
-    `Hosted automatic Memory extraction request did not settle: ${JSON.stringify(
-      requests.map((request) => ({
-        stream: request.body.stream,
-        summary: /context summarization assistant/.test(JSON.stringify(request.body)),
-        memory: /Perform the first stage of long-term-memory extraction/.test(
-          JSON.stringify(request.body),
-        ),
-      })),
-    )}`,
-  );
 }
 
 function isTerminal(snapshot: TurnSnapshot): boolean {

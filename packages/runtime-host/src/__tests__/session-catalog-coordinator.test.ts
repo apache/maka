@@ -61,6 +61,7 @@ import {
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
 type CatalogStores = HostSessionCatalogCoordinatorOptions['stores'];
+type CatalogTurnIndex = HostSessionCatalogCoordinatorOptions['turnIndex'];
 type RuntimePolicy = HostSessionCatalogCoordinatorOptions['runtimePolicy'];
 type ConfigurationAuthority = HostSessionCatalogCoordinatorOptions['manager'];
 type SessionContinuity = HostSessionCatalogCoordinatorOptions['continuity'];
@@ -104,8 +105,8 @@ test('reduces turn pages to their encoded wire budget without skipping contribut
   }));
   const requestedLimits: number[] = [];
   const fixture = createFixture({
-    stores: {
-      readTurnContributionsSnapshot: async (_sessionId, _watermark, position, limit) => {
+    turnIndex: {
+      readDurableTurnContributions: async (_sessionId, _watermark, position, limit) => {
         requestedLimits.push(limit);
         const end = Math.min(position + limit, contributions.length);
         return {
@@ -146,6 +147,107 @@ test('reduces turn pages to their encoded wire budget without skipping contribut
     contributions.map((contribution) => contribution.turnId),
   );
   assert.ok(requestedLimits.some((limit) => limit < 128));
+});
+
+test('read marker clears unread only at the ledger transcript tail', async () => {
+  const fixture = createFixture({
+    header: { hasUnread: true },
+    turnIndex: {
+      readDurableRecords: async () => ({
+        throughSequence: 1,
+        records: [
+          {
+            sequence: 1,
+            message: {
+              type: 'assistant',
+              id: 'message-2',
+              turnId: 'turn-1',
+              ts: 20,
+              text: 'answer',
+              modelId: 'fake-model',
+            },
+          },
+          {
+            sequence: 0,
+            message: { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 10, text: 'ask' },
+          },
+        ],
+        nextPosition: null,
+      }),
+    },
+  });
+  const setReadMarker = async (readThroughMessageId: string) => {
+    const outcome = await fixture.coordinator.handlers['session.read_marker.set'](
+      { sessionId: fixture.sessionId, readThroughMessageId },
+      context,
+    );
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok || !('hasUnread' in outcome.result)) assert.fail('Read marker failed');
+    return outcome.result;
+  };
+
+  const behind = await setReadMarker('message-1');
+  assert.equal(behind.hasUnread, true);
+  assert.equal(behind.lastReadMessageId, undefined);
+
+  const caughtUp = await setReadMarker('message-2');
+  assert.equal(caughtUp.hasUnread, false);
+  assert.equal(caughtUp.lastReadMessageId, 'message-2');
+});
+
+test('read marker pages past a hidden tail to reach the newest visible message', async () => {
+  // A Turn that ends on tool traffic can put more hidden records at the tail
+  // than one page holds. Stopping at the page boundary would read the Session
+  // as never caught up and leave it unread for good.
+  const hiddenTail = {
+    throughSequence: 2,
+    records: [
+      {
+        sequence: 2,
+        message: {
+          type: 'turn_state' as const,
+          id: 'turn-state-1',
+          turnId: 'turn-1',
+          ts: 30,
+          status: 'completed' as const,
+        },
+      },
+    ],
+    nextPosition: 1,
+  };
+  const visiblePage = {
+    throughSequence: 2,
+    records: [
+      {
+        sequence: 1,
+        message: {
+          type: 'assistant' as const,
+          id: 'message-2',
+          turnId: 'turn-1',
+          ts: 20,
+          text: 'answer',
+          modelId: 'fake-model',
+        },
+      },
+    ],
+    nextPosition: null,
+  };
+  const fixture = createFixture({
+    header: { hasUnread: true },
+    turnIndex: {
+      readDurableRecords: async (_sessionId, request) =>
+        request.position === undefined ? hiddenTail : visiblePage,
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.read_marker.set'](
+    { sessionId: fixture.sessionId, readThroughMessageId: 'message-2' },
+    context,
+  );
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok || !('hasUnread' in outcome.result)) assert.fail('Read marker failed');
+  assert.equal(outcome.result.hasUnread, false);
+  assert.equal(outcome.result.lastReadMessageId, 'message-2');
 });
 
 test('metadata replacement preserves execution-semantic labels and ignores injected ones', async () => {
@@ -1596,6 +1698,7 @@ function createFixture(
     readonly labels?: readonly string[];
     readonly cwd?: string;
     readonly stores?: Partial<CatalogStores>;
+    readonly turnIndex?: Partial<CatalogTurnIndex>;
     readonly manager?: Partial<ConfigurationAuthority>;
     readonly continuity?: Partial<SessionContinuity>;
     readonly connection?: FixtureConnection;
@@ -1628,17 +1731,10 @@ function createFixture(
       records: [catalogRecord(header, revision)],
       hasMore: false,
     }),
-    markSessionReadThroughMessage: async () => headerSnapshot(header, revision),
     probeStableSessionCreate: async () => ({ kind: 'absent' }),
     readCatalogRecord: async () => catalogRecord(header, revision),
     readExecutionBoundary: async () => createGenesisExecutionBoundary('ask'),
     readHeaderRecordSnapshot: async () => headerSnapshot(header, revision),
-    readTurnContributionsSnapshot: async () => ({
-      throughSequence: null,
-      contributions: [],
-      nextPosition: null,
-    }),
-    readTurnLandmarksSnapshot: async () => ({ throughSequence: null, landmarks: [] }),
     updateHeaderVersioned: async (_sessionId, patch, expectedRevision) => {
       if (expectedRevision !== revision) {
         throw new SessionMetadataVersionConflictError(sessionId, expectedRevision, revision);
@@ -1648,6 +1744,16 @@ function createFixture(
       return headerSnapshot(header, revision);
     },
     ...options.stores,
+  };
+  const turnIndex: CatalogTurnIndex = {
+    readDurableRecords: async () => ({ throughSequence: null, records: [], nextPosition: null }),
+    readDurableTurnContributions: async () => ({
+      throughSequence: null,
+      contributions: [],
+      nextPosition: null,
+    }),
+    readDurableTurnLandmarks: async () => ({ throughSequence: null, landmarks: [] }),
+    ...options.turnIndex,
   };
   const runtimePolicy = options.runtimePolicy ?? runtimePolicyFixture(options.connection ?? {});
   const manager: ConfigurationAuthority = {
@@ -1677,6 +1783,7 @@ function createFixture(
   };
   const coordinator = new HostSessionCatalogCoordinator({
     stores,
+    turnIndex,
     runtimePolicy,
     manager,
     admission: new SessionAdmissionGate(),

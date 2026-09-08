@@ -455,7 +455,6 @@ export function convertTranscript(
         status: 'aborted',
         abortedAt: turn.lastTs,
         abortSource: 'claude-code.interrupt',
-        partialOutputRetained: true,
       });
     } else if (turn.failed) {
       messages.push({
@@ -465,7 +464,6 @@ export function convertTranscript(
         ts: turn.lastTs,
         status: 'failed',
         errorClass: 'claude_code_api_error',
-        partialOutputRetained: true,
       });
     } else if (turn.terminalStop) {
       messages.push({
@@ -474,7 +472,6 @@ export function convertTranscript(
         turnId: turn.turnId,
         ts: turn.lastTs,
         status: 'completed',
-        partialOutputRetained: true,
       });
     } else {
       messages.push({
@@ -485,7 +482,6 @@ export function convertTranscript(
         status: 'aborted',
         abortedAt: turn.lastTs,
         abortSource: EXTERNAL_SNAPSHOT_ABORT_SOURCE,
-        partialOutputRetained: true,
       });
     }
     turn = undefined;

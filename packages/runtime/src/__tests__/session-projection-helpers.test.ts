@@ -21,7 +21,6 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   buildStatusPatch,
-  buildTurnStateMessage,
   isTerminalRunStatus,
   normalizeStopSessionSource,
   statusFromEvent,
@@ -60,56 +59,6 @@ describe('session projection helpers', () => {
       blockedReason: undefined,
       statusUpdatedAt: 101,
     });
-  });
-
-  test('buildTurnStateMessage preserves lineage and terminal status fields', () => {
-    assert.deepStrictEqual(
-      buildTurnStateMessage({
-        id: 'state-1',
-        turnId: 'turn-1',
-        ts: 100,
-        status: 'aborted',
-        lineage: {
-          parentTurnId: 'parent',
-          retriedFromTurnId: 'retry-source',
-          regeneratedFromTurnId: 'regen-source',
-          branchOfTurnId: 'branch-source',
-          parentSessionId: 'parent-session',
-        },
-        abortSource: 'renderer.stop_button',
-      }),
-      {
-        type: 'turn_state',
-        id: 'state-1',
-        turnId: 'turn-1',
-        ts: 100,
-        status: 'aborted',
-        parentTurnId: 'parent',
-        retriedFromTurnId: 'retry-source',
-        regeneratedFromTurnId: 'regen-source',
-        branchOfTurnId: 'branch-source',
-        parentSessionId: 'parent-session',
-        abortedAt: 100,
-        abortSource: 'renderer.stop_button',
-      },
-    );
-
-    assert.partialDeepStrictEqual(
-      buildTurnStateMessage({
-        id: 'state-2',
-        turnId: 'turn-2',
-        ts: 101,
-        status: 'failed',
-      }),
-      {
-        type: 'turn_state',
-        id: 'state-2',
-        turnId: 'turn-2',
-        ts: 101,
-        status: 'failed',
-        errorClass: 'unknown',
-      },
-    );
   });
 
   test('projects terminal run statuses and session terminal events', () => {

@@ -25,7 +25,12 @@
  */
 
 import type { SessionEvent } from '@maka/core/events';
-import type { BackendKind, SessionHeader, StoredMessage } from '@maka/core/session';
+import type {
+  BackendKind,
+  RuntimeSystemNoteKind,
+  SessionHeader,
+  StoredMessage,
+} from '@maka/core/session';
 import type {
   AgentBackend,
   BackendCompactHistoryInput,
@@ -99,7 +104,6 @@ export type {
 } from '@maka/core/backend-types';
 export { INVALID_TOOL_NAME, repairMakaToolCall } from './ai-sdk-tool-repair.js';
 
-export type AppendMessageFn = (m: StoredMessage) => Promise<void>;
 export type ToolTelemetryRecorder = (record: ToolInvocationRecord) => void;
 export type {
   HistoryCompactCheckpointLoader,
@@ -114,8 +118,6 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   header: SessionHeader;
   /** Host-frozen provider endpoint and credential ownership for this backend generation. */
   providerStateIdentity?: `sha256:${string}`;
-  /** Append-message function bound to this session (e.g. SessionStore wrapper). */
-  appendMessage: AppendMessageFn;
   /** Reads the authoritative session boundary immediately before every local tool invocation. */
   readExecutionBoundary: ToolRuntimeInput['readExecutionBoundary'];
   createSandboxBoundaryRequest?: ToolRuntimeInput['createSandboxBoundaryRequest'];
@@ -173,6 +175,11 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   readChildAgentOutput?: ToolRuntimeInput['readChildAgentOutput'];
   /** Optional diagnostic trace hook for explaining a runtime turn without changing renderer events. */
   recordRunTrace?: RunTraceRecorder;
+  /**
+   * Writes one runtime note — something that happened inside this invocation —
+   * to the invocation's RuntimeEvent ledger, which is where its record lives.
+   */
+  recordSystemNote?: (kind: RuntimeSystemNoteKind, turnId: string, data?: unknown) => Promise<void>;
   /**
    * Commits one settled provider request: the canonical attempt and, when it
    * is the completed main call, the derived latest-context row it authorises.
@@ -447,7 +454,6 @@ export class AiSdkBackend implements AgentBackend {
       header: input.header,
       connection: input.connection,
       modelId: input.modelId,
-      appendMessage: input.appendMessage,
       readExecutionBoundary: input.readExecutionBoundary,
       createSandboxBoundaryRequest: input.createSandboxBoundaryRequest,
       settleSandboxBoundaryRequest: input.settleSandboxBoundaryRequest,

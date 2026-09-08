@@ -1026,7 +1026,6 @@ function makeChildToolRuntime(cwd: string): ToolRuntime {
     header: childHeader(cwd),
     connection: testConnection(),
     modelId: 'mock-model',
-    appendMessage: async () => {},
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,

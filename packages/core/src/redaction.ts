@@ -70,6 +70,7 @@ export function redactSecrets(value: string): string {
 
 function redactTextSecrets(value: string): string {
   let next = value;
+  next = redactUrlUserinfoSecrets(next);
   next = redactUrlQuerySecrets(next);
   next = next.replace(QUOTED_SECRET_KEY_VALUE_PATTERN, (match, prefix: string, key: string) =>
     isSensitiveKey(key) ? `${prefix}[redacted]` : match,
@@ -168,6 +169,18 @@ function redactJsonValue(value: unknown): { value: unknown; changed: boolean } {
     changed = changed || redacted.changed;
   }
   return { value: next, changed };
+}
+
+function redactUrlUserinfoSecrets(value: string): string {
+  // Authority runs through the first `/`, `?`, `#`, whitespace, quote, or
+  // angle bracket. If it contains `@`, everything from the host-start through
+  // the last `@` is userinfo. The class matches display-redaction's
+  // streamingTerminator so a bare `https://host` followed later by an
+  // email/`@package` (including across JSON quotes) cannot swallow the gap.
+  // Known boundary: punctuation like commas can still join a bare URL to a
+  // later `@` into one fake credentialed match; a proper fix would restrict
+  // userinfo to the RFC 3986 set instead of exclusion. http(s) only for now.
+  return value.replace(/(https?:\/\/)[^\s"'<>/?#]*@/gi, '$1[redacted]@');
 }
 
 function redactUrlQuerySecrets(value: string): string {

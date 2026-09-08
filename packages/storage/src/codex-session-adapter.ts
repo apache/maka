@@ -451,7 +451,6 @@ function convertCodexRollout(
           ts: timestampFor(record),
           status: failed ? 'failed' : 'completed',
           ...(failed ? { errorClass: 'codex_error' } : {}),
-          partialOutputRetained: true,
         });
         failedTurnIds.delete(turnId);
         if (activeTurnId === turnId) {
@@ -472,7 +471,6 @@ function convertCodexRollout(
           status: 'aborted',
           abortedAt: normalizeEpochMs(payload.completed_at) ?? ts,
           abortSource: stringField(payload, 'reason') ?? 'codex',
-          partialOutputRetained: true,
         });
         if (activeTurnId === turnId) {
           activeTurnId = undefined;

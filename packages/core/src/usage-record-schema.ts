@@ -70,34 +70,6 @@ const COMPACTION_DECISION_SHAPE = defineObjectShape<CompactionDecisionDiagnostic
   ],
 );
 
-const CURRENT_CONTEXT_BUDGET_SHAPE = defineObjectShape<ContextBudgetDiagnostic>()(
-  [
-    'enabled',
-    'estimatedTokensBefore',
-    'estimatedTokensAfter',
-    'keptTurns',
-    'droppedTurns',
-    'keptEvents',
-    'droppedEvents',
-  ],
-  [
-    'policyName',
-    'prunedToolResults',
-    'prunedToolResultEstimatedTokensBefore',
-    'prunedToolResultEstimatedTokensAfter',
-    'archivePlaceholders',
-    'archiveWriteFailures',
-    'unarchivedToolResults',
-    'archivePlaceholderReasonCounts',
-    'activePrunedToolResults',
-    'activeSupersededToolResults',
-    'activeDuplicateToolResults',
-    'activeArchiveFailures',
-    'activeEstimatedTokensSaved',
-    'compactionDecisions',
-  ],
-);
-
 /**
  * Keys written by retired context-budget implementations. They remain
  * accepted only so persisted usage records stay readable; current code cannot
@@ -176,10 +148,34 @@ const RETIRED_CONTEXT_BUDGET_KEYS = [
   'historyRewriteGate',
 ] as const;
 
-const CONTEXT_BUDGET_SHAPE = {
-  required: CURRENT_CONTEXT_BUDGET_SHAPE.required,
-  allowed: new Set([...CURRENT_CONTEXT_BUDGET_SHAPE.allowed, ...RETIRED_CONTEXT_BUDGET_KEYS]),
-};
+const CONTEXT_BUDGET_SHAPE = defineObjectShape<ContextBudgetDiagnostic>()(
+  [
+    'enabled',
+    'estimatedTokensBefore',
+    'estimatedTokensAfter',
+    'keptTurns',
+    'droppedTurns',
+    'keptEvents',
+    'droppedEvents',
+  ],
+  [
+    'policyName',
+    'prunedToolResults',
+    'prunedToolResultEstimatedTokensBefore',
+    'prunedToolResultEstimatedTokensAfter',
+    'archivePlaceholders',
+    'archiveWriteFailures',
+    'unarchivedToolResults',
+    'archivePlaceholderReasonCounts',
+    'activePrunedToolResults',
+    'activeSupersededToolResults',
+    'activeDuplicateToolResults',
+    'activeArchiveFailures',
+    'activeEstimatedTokensSaved',
+    'compactionDecisions',
+  ],
+  RETIRED_CONTEXT_BUDGET_KEYS,
+);
 
 const PROMPT_SEGMENT_KINDS = new Set([
   'system_prompt',
@@ -323,17 +319,13 @@ export interface LastRequestAnchor {
 const LAST_REQUEST_ANCHOR_SHAPE = defineObjectShape<LastRequestAnchor>()(
   ['inputTokens'],
   ['outputTokens', 'modelId', 'connectionId'],
+  ['payloadChars'],
 );
-const RETIRED_LAST_REQUEST_ANCHOR_KEYS = ['payloadChars'] as const;
-const LAST_REQUEST_ANCHOR_DECODE_SHAPE = {
-  required: LAST_REQUEST_ANCHOR_SHAPE.required,
-  allowed: new Set([...LAST_REQUEST_ANCHOR_SHAPE.allowed, ...RETIRED_LAST_REQUEST_ANCHOR_KEYS]),
-};
 
 export function isLastRequestAnchor(value: unknown): value is LastRequestAnchor {
   return (
     isRecord(value) &&
-    hasExactShape(value, LAST_REQUEST_ANCHOR_DECODE_SHAPE) &&
+    hasExactShape(value, LAST_REQUEST_ANCHOR_SHAPE) &&
     isFiniteNumber(value.inputTokens) &&
     value.inputTokens > 0 &&
     (value.outputTokens === undefined ||
