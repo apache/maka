@@ -43,12 +43,16 @@ import type {
   ExternalSessionQuery,
   ExternalSessionSummary,
 } from '@maka/core/external-session';
-import { sanitizeForeignTitle } from '@maka/core/foreign-session';
+import {
+  FOREIGN_SESSION_SCAN_MAX_SESSIONS,
+  sanitizeForeignTitle,
+} from '@maka/core/foreign-session';
 import type { StoredMessage } from '@maka/core/session';
 
 export const OPENCODE_SESSION_ADAPTER_ID = 'opencode';
 
 const EXTERNAL_SNAPSHOT_ABORT_SOURCE = 'external_session_snapshot';
+const OPENCODE_CATALOG_CANDIDATE_LIMIT = FOREIGN_SESSION_SCAN_MAX_SESSIONS;
 
 /** Guards the value interpolated into no SQL, but read back out of one. */
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
@@ -91,8 +95,9 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
     return existsSync(this.#databasePath());
   }
 
-  async listSessions(query?: ExternalSessionQuery): Promise<readonly ExternalSessionSummary[]> {
-    const rows = await this.#readSessions();
+  async listSessions(query: ExternalSessionQuery = {}): Promise<readonly ExternalSessionSummary[]> {
+    if (query.limit !== undefined && query.limit <= 0) return [];
+    const rows = await this.#readSessions(query);
     const summaries: ExternalSessionSummary[] = [];
     for (const row of rows) {
       // A child session is one operator's leg of a parent conversation, not a
@@ -103,7 +108,10 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
       if (externalSessionMatchesQuery(summary, query)) summaries.push(summary);
     }
     summaries.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
-    return summaries;
+    const cursor = query.cursor ?? 0;
+    return query.limit === undefined
+      ? summaries.slice(cursor)
+      : summaries.slice(cursor, cursor + query.limit);
   }
 
   async readSession(sessionId: string): Promise<ExternalMakaSession> {
@@ -166,7 +174,7 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
     }
   }
 
-  async #readSessions(): Promise<readonly SessionRow[]> {
+  async #readSessions(query?: ExternalSessionQuery): Promise<readonly SessionRow[]> {
     // Discovery is allowed to come up empty — the catalog lists whatever
     // sources are present, and an opencode that was installed but never used
     // is a normal state rather than a failure to report.
@@ -185,7 +193,33 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
         'time_archived',
         'parent_id',
       ].filter((column) => columns.has(column));
-      const raw = db.prepare(`SELECT ${selected.join(', ')} FROM session`).all();
+      const where: string[] = [];
+      const params: number[] = [];
+      if (query) {
+        if (columns.has('parent_id')) where.push('parent_id IS NULL');
+        if (!query.includeArchived && columns.has('time_archived')) {
+          where.push('time_archived IS NULL');
+        }
+        if (
+          query.maxAgeMs !== undefined &&
+          query.nowMs !== undefined &&
+          columns.has('time_updated')
+        ) {
+          where.push('(time_updated IS NULL OR time_updated >= ?)');
+          params.push(query.nowMs - query.maxAgeMs);
+        }
+      }
+      const order = columns.has('time_updated')
+        ? ' ORDER BY time_updated DESC, id ASC'
+        : ' ORDER BY id ASC';
+      const statement =
+        `SELECT ${selected.join(', ')} FROM session` +
+        (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+        order +
+        (query ? ' LIMIT ?' : '');
+      const raw = query
+        ? db.prepare(statement).all(...params, OPENCODE_CATALOG_CANDIDATE_LIMIT)
+        : db.prepare(statement).all();
       return raw.map(toSessionRow).filter((row): row is SessionRow => row !== undefined);
     });
   }

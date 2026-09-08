@@ -36,6 +36,14 @@ export interface ExternalSessionQuery {
    * worse than offering no search at all.
    */
   text?: string;
+  /** Number of matching summaries to skip before collecting this page. */
+  cursor?: number;
+  /** Maximum number of matching summaries to return. */
+  limit?: number;
+  /** Optional source-owned freshness window for bounded catalog scans. */
+  maxAgeMs?: number;
+  /** Clock used with `maxAgeMs`; callers pass one value for the whole scan. */
+  nowMs?: number;
 }
 
 /** Lightweight source-native identity used by session pickers and import commands. */
@@ -63,6 +71,14 @@ export function externalSessionMatchesQuery(
 ): boolean {
   if (!query.includeArchived && summary.archived) return false;
   if (query.cwd !== undefined && !sameExternalSessionPath(summary.cwd, query.cwd)) return false;
+  if (
+    query.maxAgeMs !== undefined &&
+    query.nowMs !== undefined &&
+    summary.updatedAt !== undefined &&
+    query.nowMs - summary.updatedAt > query.maxAgeMs
+  ) {
+    return false;
+  }
   const text = normalizeExternalSessionQueryText(query.text);
   if (text === undefined) return true;
   // Title and path, because those are the two things a user remembers about a

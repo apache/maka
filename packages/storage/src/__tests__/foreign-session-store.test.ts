@@ -592,7 +592,7 @@ describe('foreign session store — digest', () => {
     assert.ok(!flat.includes('rm -rf'), flat);
   });
 
-  it('refuses a transcript path replaced by an out-of-root symlink', async () => {
+  it('refuses a transcript path replaced by an out-of-root symlink', async (t) => {
     const home = await tempHome();
     const path = await seedClaudeSession(home, { id: 'sym', cwd: '/repo' });
     const store = createForeignSessionStore({ homeDir: home, env: {} });
@@ -603,7 +603,15 @@ describe('foreign session store — digest', () => {
     await writeFile(secret, 'not yours', 'utf8');
     const { rm } = await import('node:fs/promises');
     await rm(path);
-    await symlink(secret, path);
+    try {
+      await symlink(secret, path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EPERM') {
+        t.skip('symlink creation is not permitted in this Windows test environment');
+        return;
+      }
+      throw error;
+    }
     await assert.rejects(() => store.readDigest(session as ForeignSessionSummary), /escaped/);
   });
 });
