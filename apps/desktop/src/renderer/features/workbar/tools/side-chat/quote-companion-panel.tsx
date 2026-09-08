@@ -348,14 +348,19 @@ export function QuoteCompanionPanel(props: {
                   streaming: companion.streaming,
                   compact: companion.compact,
                   steer: async (text) => {
-                  const accepted = await companion.steer(
+                  // Submitted attachments retire on the confirmed-admission
+                  // boundary, not on the hook's optimistic return: an unknown
+                  // outcome keeps them staged for retry (#4804).
+                  const submitted = pendingAttachments;
+                  const submittedItems =
+                    submitted.length > 0 ? toComposerIngestItems(submitted) : undefined;
+                  return companion.steer(
                     text,
-                    pendingAttachments.length > 0
-                      ? toComposerIngestItems(pendingAttachments)
+                    submittedItems,
+                    submittedItems
+                      ? () => clearSubmittedAttachments(submitted)
                       : undefined,
                   );
-                  if (accepted) clearSubmittedAttachments(pendingAttachments);
-                  return accepted;
                 },
                   send: async () => {
                     try {
@@ -367,16 +372,20 @@ export function QuoteCompanionPanel(props: {
                       );
                       return false;
                     }
+                    // Same admission-boundary retirement as `steer` above.
+                    const submitted = pendingAttachments;
+                    const submittedItems =
+                      submitted.length > 0 ? toComposerIngestItems(submitted) : undefined;
                     const accepted = await companion.send(
                       text,
-                      pendingAttachments.length > 0
-                        ? toComposerIngestItems(pendingAttachments)
+                      submittedItems,
+                      submittedItems
+                        ? () => clearSubmittedAttachments(submitted)
                         : undefined,
                     );
                     if (accepted) {
                       props.onPromptAccepted?.(props.panelId, text);
                     }
-                    if (accepted) clearSubmittedAttachments(pendingAttachments);
                     return accepted;
                   },
                 })

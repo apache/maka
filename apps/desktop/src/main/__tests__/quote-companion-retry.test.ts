@@ -32,6 +32,7 @@ import type {
   TurnRecord,
 } from '@maka/core/session';
 import type { ContextCompactResult } from '@maka/runtime-host/protocol';
+import type { WorkbarIngestInput } from '../../renderer/features/workbar/ports.js';
 import {
   createFakeWorkbarServices,
   dispatchQuoteCompanionInput,
@@ -57,6 +58,11 @@ const originalGlobals = {
 let mountedRoot: Root | undefined;
 const SOURCE_SESSION = session('source-session');
 type SideChatStopTarget = Parameters<WorkbarServices['sideChat']['stop']>[1];
+type SteerFn = (
+  text: string,
+  attachmentItems?: WorkbarIngestInput[],
+  onAdmitted?: () => void,
+) => Promise<boolean>;
 type QueueUpdate = Extract<SessionEvent, { type: 'queue_update' }>;
 type QueueEntry = NonNullable<QueueUpdate['steeringEntries']>[number];
 
@@ -134,7 +140,7 @@ async function renderProbe(
     modelChoices?: readonly ChatModelChoice[];
     ready?: (container: Element) => boolean;
     onSend?: (send: (text: string) => Promise<boolean>) => void;
-    onSteer?: (steer: (text: string) => Promise<boolean>) => void;
+    onSteer?: (steer: SteerFn) => void;
     onStop?: (stop: () => Promise<void>) => void;
     onSetPermissionMode?: (set: (mode: PermissionMode) => Promise<boolean>) => void;
     confirmBypass?: () => Promise<boolean>;
@@ -199,7 +205,7 @@ async function renderOwnershipProbe(
   } = {},
 ) {
   let send!: (text: string) => Promise<boolean>;
-  let steer!: (text: string) => Promise<boolean>;
+  let steer!: SteerFn;
   let stop!: () => Promise<void>;
   let setPermissionMode!: (mode: PermissionMode) => Promise<boolean>;
   let eventHandler: ((event: SessionEvent) => void) | undefined;
@@ -228,7 +234,8 @@ async function renderOwnershipProbe(
   return {
     ...rendered,
     send: (text: string) => send(text),
-    steer: (text: string) => steer(text),
+    steer: (text: string, attachmentItems?: WorkbarIngestInput[], onAdmitted?: () => void) =>
+      steer(text, attachmentItems, onAdmitted),
     stop: () => stop(),
     setPermissionMode: (mode: PermissionMode) => setPermissionMode(mode),
     emit(event: SessionEvent) {
@@ -2012,7 +2019,7 @@ function QuoteCompanionProbe(props: {
 
 function QuoteCompanionOwnershipProbe(props: {
   onSend: (send: (text: string) => Promise<boolean>) => void;
-  onSteer?: (steer: (text: string) => Promise<boolean>) => void;
+  onSteer?: (steer: SteerFn) => void;
   onStop?: (stop: () => Promise<void>) => void;
   onSetPermissionMode?: (set: (mode: PermissionMode) => Promise<boolean>) => void;
   onContextCompactionError?: (sessionId: string, error: unknown) => void;
@@ -2188,4 +2195,98 @@ test('a structured-only steer (empty text with a staged quote) rides the steerin
     steerContents[0]?.quotes?.map((quote) => quote.text),
     ['streaming excerpt'],
   );
+});
+
+test('a steer with staged attachments consumes them only on confirmed admission', async () => {
+  const admissionIds: string[] = [];
+  const rendered = await renderOwnershipProbe(
+    {
+      send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+      steer: async (_sessionId, _text, admissionId) => {
+        const id = admissionId ?? '';
+        admissionIds.push(id);
+        // The reconnect/failure path answers without an admission receipt.
+        return { kind: 'outcome_unknown', messageId: id };
+      },
+    },
+    { pendingQuotes: [] },
+  );
+
+  await act(async () => {
+    assert.equal(await rendered.send('initial prompt'), true);
+    await Promise.resolve();
+  });
+  await waitUntil(
+    () => rendered.container.firstElementChild?.getAttribute('data-streaming') === 'true',
+  );
+
+  const consumed: string[] = [];
+  await act(async () => {
+    assert.equal(
+      await rendered.steer('', [{ approvalId: 'a-1', name: 'notes.txt' }], () => {
+        consumed.push('admitted');
+      }),
+      true,
+    );
+    await Promise.resolve();
+  });
+  // The optimistic accept must not retire the attachments: with no admission
+  // receipt the Message may still be admitted or retracted by the Host.
+  assert.deepEqual(consumed, []);
+
+  // The late admission arrives through the fork's event stream; only now does
+  // the confirmed-admission boundary fire.
+  await act(async () => {
+    rendered.emit(messageAdmittedEvent('steer-late-admit', 'steered-turn', 1, admissionIds[0]));
+  });
+  assert.deepEqual(consumed, ['admitted']);
+});
+
+test('an unknown steer outcome that later retracts keeps the staged attachments', async () => {
+  const admissionIds: string[] = [];
+  const rendered = await renderOwnershipProbe(
+    {
+      send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+      steer: async (_sessionId, _text, admissionId) => {
+        const id = admissionId ?? '';
+        admissionIds.push(id);
+        return { kind: 'outcome_unknown', messageId: id };
+      },
+    },
+    { pendingQuotes: [] },
+  );
+
+  await act(async () => {
+    assert.equal(await rendered.send('initial prompt'), true);
+    await Promise.resolve();
+  });
+  await waitUntil(
+    () => rendered.container.firstElementChild?.getAttribute('data-streaming') === 'true',
+  );
+
+  const consumed: string[] = [];
+  await act(async () => {
+    assert.equal(
+      await rendered.steer('', [{ approvalId: 'a-1', name: 'notes.txt' }], () => {
+        consumed.push('admitted');
+      }),
+      true,
+    );
+    await Promise.resolve();
+  });
+  assert.deepEqual(consumed, []);
+
+  // A retraction releases the Message without consuming anything staged: the
+  // user keeps the attachments and may retry the steer.
+  await act(async () => {
+    rendered.emit({
+      type: 'message_admission',
+      id: 'steer-late-retract',
+      turnId: 'old-turn',
+      ts: 2,
+      messageId: admissionIds[0],
+      outcome: 'retracted',
+    });
+  });
+  assert.deepEqual(consumed, []);
 });

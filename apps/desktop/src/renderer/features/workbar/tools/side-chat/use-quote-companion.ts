@@ -184,11 +184,22 @@ export interface UseQuoteCompanionResult {
   /** Runs `/compact` against the committed companion fork when it is idle. */
   compact: () => Promise<boolean>;
   /** Returns whether the send was accepted; false leaves the draft + staged
-   *  quotes in place so the user can retry. */
-  send: (text: string, attachmentItems?: WorkbarIngestInput[]) => Promise<boolean>;
+   *  quotes in place so the user can retry. `onAdmitted` fires only once the
+   *  Host admission is confirmed (never on an unknown outcome), so callers
+   *  can retire submitted attachments on the same boundary as the quotes. */
+  send: (
+    text: string,
+    attachmentItems?: WorkbarIngestInput[],
+    onAdmitted?: () => void,
+  ) => Promise<boolean>;
   /** Insert text — or a structured-only quote/attachment — into the active
-   *  companion turn at the next model step. */
-  steer: (text: string, attachmentItems?: WorkbarIngestInput[]) => Promise<boolean>;
+   *  companion turn at the next model step. `onAdmitted` follows the same
+   *  confirmed-admission boundary as `send`. */
+  steer: (
+    text: string,
+    attachmentItems?: WorkbarIngestInput[],
+    onAdmitted?: () => void,
+  ) => Promise<boolean>;
   setPermissionMode: (mode: PermissionMode) => Promise<boolean>;
   regenerate: (turnId: string) => Promise<boolean>;
   stop: () => Promise<void>;
@@ -851,6 +862,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     async (
       text: string,
       attachmentItems?: WorkbarIngestInput[],
+      onAdmitted?: () => void,
     ): Promise<boolean> => {
       const trimmed = text.trim();
       if (isExactCompactCommand(trimmed)) return compact();
@@ -890,7 +902,14 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       const admission: PendingAdmission = {
         messageId: turnId,
         events: [],
-        consumeOnAdmission: () => onQuotesConsumed(quoteSnapshot),
+        // Quotes and submitted attachments share one cleanup boundary —
+        // confirmed Host admission (#4804). An unknown outcome keeps them
+        // staged until the reconciliation binds the Turn or a retraction
+        // releases the send, so nothing staged is consumed on a guess.
+        consumeOnAdmission: () => {
+          onQuotesConsumed(quoteSnapshot);
+          onAdmitted?.();
+        },
       };
       setPendingUserMessages((current) => [
         ...current.filter((message) => message.id !== turnId),
@@ -1128,6 +1147,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     async (
       text: string,
       attachmentItems?: WorkbarIngestInput[],
+      onAdmitted?: () => void,
     ): Promise<boolean> => {
       const id = companionIdRef.current;
       const trimmed = text.trim();
@@ -1148,10 +1168,13 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         messageId: admissionId,
         events: [],
         // Quotes stay staged until the Host admits the steering Message; a
-        // failed or retracted steer keeps them available for retry.
-        ...(quoteSnapshot.quotes.length > 0
-          ? { consumeOnAdmission: () => onQuotesConsumed(quoteSnapshot) }
-          : {}),
+        // failed or retracted steer keeps them available for retry. Submitted
+        // attachments share that boundary: an unknown outcome keeps them
+        // staged until reconciliation binds the Turn or the steer retracts.
+        consumeOnAdmission: () => {
+          if (quoteSnapshot.quotes.length > 0) onQuotesConsumed(quoteSnapshot);
+          onAdmitted?.();
+        },
       };
       setPendingAdmission(admission);
       try {
