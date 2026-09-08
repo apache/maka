@@ -29,6 +29,7 @@ import { HostArtifactCoordinator } from '../server/artifact-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { ARTIFACT_READ_CHUNK_MAX_BYTES } from '../protocol/index.js';
+import { buildToolResultArchiveResourceRef } from '@maka/runtime/tool-result-archive-resource';
 
 const connectionContext: ConnectionContext = {
   hostEpoch: 'host-epoch-1',
@@ -36,6 +37,85 @@ const connectionContext: ConnectionContext = {
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };
+
+test('an archive transfer validates the full body once and releases it after the final chunk', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-archive-transfer-'));
+  const owner = await tryAcquireInteractiveRootOwner(
+    await resolveStorageRoot({ path: root, kind: 'interactive' }),
+  );
+  assert.ok(owner);
+  const store = await openInteractiveArtifactStoreForWrite(owner.lease);
+  try {
+    const serializedResult = 'x'.repeat(4 * 1024 * 1024);
+    const ref = buildToolResultArchiveResourceRef({
+      artifactId: 'archive-1',
+      bodySha256: createHash('sha256').update(serializedResult).digest('hex'),
+      originalBytes: serializedResult.length,
+    });
+    let reads = 0;
+    let now = 0;
+    let present = true;
+    const coordinator = new HostArtifactCoordinator(
+      store,
+      () => assert.fail('read must not drain'),
+      new SessionAdmissionGate(),
+      { probeSessionRemoval: async () => (present ? { kind: 'present' } : { kind: 'removed' }) },
+      () => now,
+      undefined,
+      async () => {
+        reads++;
+        return { ok: true, serializedResult };
+      },
+    );
+    const chunks: Buffer[] = [];
+    for (
+      let offset = 0;
+      offset < serializedResult.length;
+      offset += ARTIFACT_READ_CHUNK_MAX_BYTES
+    ) {
+      const result = await coordinator.handlers['artifact.query'](
+        { kind: 'read_archive_chunk', sessionId: 'session-1', ref, offset },
+        connectionContext,
+      );
+      assert.ok(result.ok && result.result.kind === 'archive_chunk');
+      chunks.push(Buffer.from(result.result.chunkBase64, 'base64'));
+    }
+    assert.equal(Buffer.concat(chunks).toString(), serializedResult);
+    assert.equal(reads, 1);
+    await coordinator.handlers['artifact.query'](
+      { kind: 'read_archive_chunk', sessionId: 'session-1', ref, offset: 0 },
+      connectionContext,
+    );
+    assert.equal(reads, 2);
+    const continueRead = (context = connectionContext, sessionId = 'session-1') =>
+      coordinator.handlers['artifact.query'](
+        { kind: 'read_archive_chunk', sessionId, ref, offset: ARTIFACT_READ_CHUNK_MAX_BYTES },
+        context,
+      );
+    await continueRead({ ...connectionContext, connectionId: 'other-connection' });
+    assert.equal(reads, 3, 'connections cannot reuse each other’s validated bodies');
+    await continueRead(connectionContext, 'other-session');
+    assert.equal(reads, 4, 'Sessions cannot reuse each other’s validated bodies');
+    coordinator.releaseConnection(connectionContext.connectionId);
+    await continueRead();
+    assert.equal(reads, 5, 'disconnect releases the transfer');
+    now = 60_000;
+    await continueRead();
+    assert.equal(reads, 6, 'expired transfers are revalidated');
+    present = false;
+    const removed = await continueRead();
+    assert.ok(!removed.ok && removed.error.code === 'not_found');
+    assert.equal(reads, 6);
+    present = true;
+    await continueRead();
+    assert.equal(reads, 7, 'a removed Session cannot leave a reusable snapshot');
+  } finally {
+    store.close();
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+    await rm(owner.controlDirectory, { recursive: true, force: true });
+  }
+});
 
 test('Artifact ingest is connection-bound, replay-safe, and commits one durable AttachmentRef', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-artifact-ingest-'));

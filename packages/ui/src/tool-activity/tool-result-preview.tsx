@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useContext, type ReactNode } from 'react';
 import { isShellOutput, type ShellOutput } from '@maka/core/shell-run';
 import { normalizeSearchUrl } from '@maka/core/search';
 import { ptyHumanTerminalText } from '@maka/core/pty-output-view';
@@ -26,13 +26,16 @@ import { type ToolResultContent } from '@maka/core/events';
 import { Button as UiButton, Link } from '@astryxdesign/core';
 import { ICON_SIZE, AlertCircle, Ban, Check, Clock, Copy, GitBranch, Loader2, Plug, ShieldAlert } from '../icons.js';
 import { redactSecrets } from '../redact.js';
+import { parseUnifiedDiffRows } from '@maka/core/unified-diff';
+import { ToolResultHostContext, ToolResultSessionContext } from './tool-result-context.js';
 import { useClipboardCopyFeedback } from '../clipboard-feedback.js';
 import { useUiLocale } from '../locale-context.js';
 import { cn } from '../ui.js';
-import { formatQuietJsonValue } from './builtin-preview.js';
+import { formatBoundedQuietJsonValue } from '@maka/core/tool-quiet-preview';
+import { SavedToolOutput, ToolTextPreview, ToolOutputScroller } from './tool-text-preview.js';
 import { ToolCodeBlock } from './tool-code-block.js';
 import { DiffCodePreview } from './diff-code-preview.js';
-import { TOOL_LINE_CAP, capLines, formatUserVisibleToolText } from './preview-utils.js';
+import { capLines, formatBytes, readResultText, webFetchReference, formatUserVisibleToolText } from './preview-utils.js';
 import { getToolActivityCopy } from './copy.js';
 import { isSandboxDeniedToolResult } from './sandbox-denial.js';
 
@@ -139,17 +142,59 @@ export function ToolOutputSurface(props: {
   );
 }
 
+function WebFetchPreview(props: {
+  content: Extract<ToolResultContent, { kind: 'text' | 'archived_tool_result' }>;
+  args?: unknown;
+}) {
+  const copy = getToolActivityCopy(useUiLocale());
+  const text = props.content.kind === 'text' ? props.content.text : undefined;
+  const bytes = props.content.kind === 'archived_tool_result' ? props.content.originalBytes : new TextEncoder().encode(props.content.text).byteLength;
+  const truncated = props.content.kind === 'text' && props.content.truncated;
+  const reference = webFetchReference(text ?? '', props.args);
+  return <div data-kind="web_fetch" className="maka-tool-output-stack">
+    <strong className="maka-tool-web-fetch-title">{reference.title}</strong>
+    {reference.href && <Link href={reference.href} isExternalLink>{reference.location}</Link>}
+    <p className={TOOL_OUTPUT_NOTE_CLASS}>
+      {formatBytes(bytes)}{text !== undefined && ` · ${copy.detail.lines(text.split('\n').length)}`}
+      {truncated && ` · ${copy.result.outputTruncated}`}
+    </p>
+  </div>;
+}
+
 /** Routes persisted tool results to bounded, kind-specific preview cards. */
 export function ToolResultPreview(props: {
   content: ToolResultContent;
   toolName?: string;
   args?: unknown;
+  failed?: boolean;
   shellRunSource?: 'owned' | 'unavailable';
   fileDiffActions?: ReactNode;
   actionIdentity?: string;
+  heading?: string;
 }) {
-  const { content } = props;
+  const readText = props.toolName === 'Read' && !props.failed ? readResultText(props.content) : undefined;
+  const content = props.content.kind === 'json' && readText !== undefined
+    ? { kind: 'text' as const, text: readText }
+    : props.content;
   const locale = useUiLocale();
+  const openOutput = useContext(ToolResultHostContext);
+  const sessionId = useContext(ToolResultSessionContext);
+
+  if (content.kind === 'archived_tool_result') {
+    if (props.toolName === 'WebFetch' && !props.failed) {
+      return <WebFetchPreview content={content} args={props.args} />;
+    }
+    const copy = getToolActivityCopy(locale).detail;
+    if (content.status !== 'not_loaded' || (!content.resourceRef && !content.artifactId) || !content.bodySha256 || !openOutput || !sessionId) {
+      return <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.unavailable}</p>;
+    }
+    const identity = { ...(content.resourceRef
+      ? { resourceRef: content.resourceRef }
+      : { artifactId: content.artifactId! }),
+      bodySha256: content.bodySha256, originalBytes: content.originalBytes };
+    return <SavedToolOutput toolName={props.toolName} actionIdentity={props.actionIdentity}
+      source={{ kind: 'archive', sessionId, identity }} />;
+  }
 
   if (content.kind === 'file_diff') {
     return (
@@ -212,12 +257,17 @@ export function ToolResultPreview(props: {
 
   if (content.kind === 'json') {
     // No language: quiet text must stay contiguous (tokenizer splits words).
-    const quiet = formatQuietJsonValue(content.value, locale);
+    const quiet = formatBoundedQuietJsonValue(content.value, locale);
     return (
       <div data-kind="json">
-        <ToolCodeBlock
-          code={formatUserVisibleToolText(quiet.body, locale)}
-          title={quiet.headline ? formatUserVisibleToolText(quiet.headline, locale) : undefined}
+        <ToolTextPreview
+          toolName={props.toolName}
+          text={formatUserVisibleToolText(quiet.body, locale)}
+          truncated={quiet.truncated}
+          savedText={JSON.stringify(content.value)}
+          heading={quiet.headline
+            ? formatUserVisibleToolText(quiet.headline, locale)
+            : props.heading}
           actionIdentity={props.actionIdentity}
         />
       </div>
@@ -225,14 +275,26 @@ export function ToolResultPreview(props: {
   }
 
   if (content.kind === 'text') {
-    const copy = getToolActivityCopy(locale).result;
-    const { body, capped } = capLines(formatUserVisibleToolText(redactSecrets(content.text), locale));
-    const code = capped > 0 ? `${body}\n\n${copy.hiddenLines(capped)}` : body;
+    if (props.toolName === 'WebFetch' && !props.failed) {
+      return <WebFetchPreview content={content} args={props.args} />;
+    }
     return (
       <div data-kind="text">
-        <ToolCodeBlock code={code} actionIdentity={props.actionIdentity} />
+        <ToolTextPreview
+          // No heading: the collapsed row above already carries the invocation,
+          // and it can be an archive ref — repeating it here wraps a raw URI
+          // across the block's title slot.
+          text={formatUserVisibleToolText(redactSecrets(content.text), locale)}
+          sourceTruncated={content.truncated}
+          savedText={content.text}
+          actionIdentity={props.actionIdentity}
+        />
       </div>
     );
+  }
+
+  if (content.kind === 'summary') {
+    return <ToolTextPreview text={content.original} actionIdentity={props.actionIdentity} />;
   }
 
   // image / summary / unknown — show a compact descriptor so the user knows
@@ -319,23 +381,42 @@ function FileDiffPreview(props: {
   actions?: ReactNode;
   actionIdentity?: string;
 }) {
-  const copy = getToolActivityCopy(useUiLocale()).result;
+  const activityCopy = getToolActivityCopy(useUiLocale());
   // Apply UI-level redaction then cap the displayed lines. Both are
   // @kenji's PR76 review items: never echo a token a tool happened to dump
   // into a diff (commit body, .env file diff, etc.), and never let a
   // 10k-line diff create 10k React elements.
-  const { body, capped } = capLines(redactSecrets(props.diff));
+  const safe = redactSecrets(props.diff);
+  const preview = capLines(safe, { lines: 60, chars: 6_000 });
+  let body = preview.body;
+  if (preview.hiddenChars > 0) {
+    const rows = parseUnifiedDiffRows(body);
+    const lastHunk = rows.findLastIndex((row) => row.kind === 'hunk');
+    const header = rows[lastHunk]?.text.match(/^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/);
+    if (header && rows.slice(0, lastHunk).some((row) => row.kind === 'hunk')) {
+      const tail = rows.slice(lastHunk + 1);
+      const oldCount = tail.filter((row) => row.oldLine !== undefined).length;
+      const newCount = tail.filter((row) => row.newLine !== undefined).length;
+      if (oldCount < Number(header[1] ?? 1) || newCount < Number(header[2] ?? 1)) {
+        body = body.slice(0, body.lastIndexOf(rows[lastHunk]!.text)).trimEnd();
+      }
+    }
+  }
+  const hiddenChars = safe.length - body.length;
   return (
     <ToolOutputSurface
       kind="file_diff"
       heading={props.paths.length > 0 ? props.paths.join(', ') : undefined}
-      body={body}
+      body={safe}
       actions={props.actions}
       actionIdentity={props.actionIdentity}
     >
       <DiffCodePreview diff={body} paths={props.paths} />
-      {capped > 0 && (
-        <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.hiddenLines(capped)}</p>
+      {hiddenChars > 0 && (
+        <>
+          <p className={TOOL_OUTPUT_NOTE_CLASS}>{activityCopy.detail.previewTruncated}</p>
+          <SavedToolOutput source={{ kind: 'text', text: safe }} actionIdentity={props.actionIdentity} />
+        </>
       )}
     </ToolOutputSurface>
   );
@@ -362,7 +443,7 @@ function TerminalPreview(props: {
     <ToolOutputSurface
       kind="terminal"
       heading={safeCmd}
-      body={props.output ? shellOutputText(props.output, copy) : undefined}
+      body={props.output ? shellOutputText(props.output) : undefined}
       actionIdentity={props.actionIdentity}
     >
       {props.output ? (
@@ -435,7 +516,7 @@ function ShellRunPreview(props: {
     <ToolOutputSurface
       kind="shell_run"
       heading={safeCmd}
-      body={pipeOutput ? shellOutputText(pipeOutput, copy) : undefined}
+      body={pipeOutput ? shellOutputText(pipeOutput) : undefined}
       actionIdentity={props.actionIdentity}
     >
       <p className={TOOL_OUTPUT_NOTE_CLASS}>
@@ -545,50 +626,24 @@ function ShellRunStatus(props: {
   }
 }
 
-/**
- * The output half of a `ToolOutputSurface` — never the command. The command is
- * the surface's header now, so this renders the same `<pre>` well the live
- * stream uses instead of its own bordered CodeBlock card, which used to nest a
- * second border inside the panel and put the command in its title slot.
- */
-/**
- * The plain text a shell body renders, so the surface's copy action can offer
- * the same string the reader is looking at — capped and redacted, with the
- * per-stream "hidden lines" markers the body shows.
- *
- * The body used to be an Astryx CodeBlock, whose own copy button carried this
- * text; the panel replaced that chrome, so the text has to reach the panel's
- * button instead. One function owns it, and the body renders from the same
- * call — a copy that quietly diverged from the pixels would be worse than none.
- */
-function shellOutputText(
-  output: ShellOutput,
-  copy: ReturnType<typeof getToolActivityCopy>['result'],
-): string {
+/** Copy and the bounded viewport use the same retained, redacted output. */
+function shellOutputText(output: ShellOutput): string {
   if (output.mode === 'pty') return redactSecrets(ptyHumanTerminalText(output));
-  const stdout = capLines(redactSecrets(output.stdout));
-  const stderr = capLines(redactSecrets(output.stderr));
-  const parts: string[] = [];
-  if (stdout.body) {
-    parts.push(stdout.capped > 0
-      ? `${stdout.body}\n\n${copy.streamHidden('stdout', stdout.capped)}`
-      : stdout.body);
-  }
-  if (stderr.body) {
-    parts.push(stderr.capped > 0
-      ? `${stderr.body}\n\n${copy.streamHidden('stderr', stderr.capped)}`
-      : stderr.body);
-  }
-  return parts.join('\n');
+  return [output.stdout, output.stderr]
+    .filter(Boolean)
+    .map(text => redactSecrets(text))
+    .join('\n');
 }
 
 function ShellOutputBody(props: {
   output: ShellOutput;
   failed: boolean;
 }) {
-  const copy = getToolActivityCopy(useUiLocale()).result;
-  if (props.output.mode === 'pty') {
-    const text = shellOutputText(props.output, copy);
+  const { output } = props;
+  const activityCopy = getToolActivityCopy(useUiLocale());
+  const copy = activityCopy.result;
+  if (output.mode === 'pty') {
+    const text = shellOutputText(output);
     return (
       <>
         {text ? <PtyTerminalSurface text={text} /> : (
@@ -596,53 +651,37 @@ function ShellOutputBody(props: {
             {props.failed ? copy.noTerminalFrame : copy.noOutputYet}
           </p>
         )}
-        {props.output.truncated && <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.terminalTruncated}</p>}
-        {props.output.redacted && <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.terminalRedacted}</p>}
+        {output.truncated && <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.terminalTruncated}</p>}
+        {output.redacted && <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.terminalRedacted}</p>}
       </>
     );
   }
-  const stdout = capLines(redactSecrets(props.output.stdout));
-  const stderr = capLines(redactSecrets(props.output.stderr));
-  const hiddenLines = stdout.capped + stderr.capped;
-  const runtimeTruncated = props.output.stdoutTruncated || props.output.stderrTruncated;
-  const hasOutput = props.output.stdout.length > 0 || props.output.stderr.length > 0;
-  const code = shellOutputText(props.output, copy);
+  const runtimeTruncated = output.stdoutTruncated || output.stderrTruncated;
+  const hasOutput = output.stdout.length > 0 || output.stderr.length > 0;
+  const code = shellOutputText(output);
   return (
     <>
       {hasOutput
-        ? <pre className={TOOL_OUTPUT_BODY_CLASS}>{code}</pre>
+        ? <ToolOutputScroller
+            className={TOOL_OUTPUT_BODY_CLASS}
+          >{code}</ToolOutputScroller>
         : <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.noOutput}</p>}
-      {(runtimeTruncated || hiddenLines > 0) && (
+      {runtimeTruncated && (
         <p className={TOOL_OUTPUT_NOTE_CLASS}>
-          {hiddenLines > 0 ? copy.streamsTruncated(TOOL_LINE_CAP) : copy.outputTruncated}
+          {copy.outputTruncated}
         </p>
       )}
-      {props.output.redacted && <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.outputRedacted}</p>}
+      {output.redacted && <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.outputRedacted}</p>}
     </>
   );
 }
 
 function PtyTerminalSurface(props: { text: string }) {
-  const ref = useRef<HTMLPreElement>(null);
-  const followTail = useRef(true);
-  useEffect(() => {
-    const element = ref.current;
-    if (element && followTail.current) element.scrollTop = element.scrollHeight;
-  }, [props.text]);
-  return (
-    <pre
-      ref={ref}
-      className={cn(TOOL_OUTPUT_BODY_CLASS, 'maka-pty-terminal-body')}
-      data-stream="pty"
-      style={{ whiteSpace: 'pre', wordBreak: 'normal' }}
-      onScroll={(event) => {
-        const element = event.currentTarget;
-        followTail.current = element.scrollHeight - element.scrollTop - element.clientHeight <= 2;
-      }}
-    >
-      {props.text}
-    </pre>
-  );
+  return <ToolOutputScroller
+    className={cn(TOOL_OUTPUT_BODY_CLASS, 'maka-pty-terminal-body')}
+    data-stream="pty"
+    style={{ whiteSpace: 'pre', wordBreak: 'normal' }}
+  >{props.text}</ToolOutputScroller>;
 }
 
 function isCancelledStatus(status: string | undefined): boolean {

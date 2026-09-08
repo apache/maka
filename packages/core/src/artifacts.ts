@@ -189,6 +189,12 @@ export type ArtifactTextReadResult =
   | { ok: true; text: string }
   | { ok: false; reason: ArtifactReadFailureReason };
 
+/** Identity retained by an archived tool result; verified before exposing its saved bytes. */
+export type ToolResultArchiveIdentity = {
+  originalBytes: number;
+  bodySha256: string;
+} & ({ resourceRef: string; artifactId?: never } | { artifactId: string; resourceRef?: never });
+
 export type ArtifactBinaryReadResult =
   | { ok: true; base64: string; mimeType: string }
   | { ok: false; reason: ArtifactBinaryReadFailureReason };

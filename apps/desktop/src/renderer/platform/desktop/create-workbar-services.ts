@@ -68,6 +68,7 @@ export function createDesktopWorkbarServices(
       subscribeLive: (handler) => bridge.browser.onLive(handler),
     },
     artifacts: {
+      readToolResult: (sessionId, identity) => bridge.artifacts.readToolResult(sessionId, identity),
       list: (sessionId) => bridge.artifacts.list(sessionId),
       readText: (sessionId, artifactId) =>
         bridge.artifacts.readText(sessionId, artifactId),

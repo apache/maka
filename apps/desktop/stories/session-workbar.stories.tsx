@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useState, type CSSProperties } from 'react';
+import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
@@ -26,8 +26,8 @@ import type { GitReviewReadResult, GitReviewSnapshot } from '@maka/core/git-revi
 import type { SessionSummary } from '@maka/core/session';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
-import { ToastProvider } from '@maka/ui';
-import { WorkbarServicesProvider, WorkbarTitlebarActions } from '../src/renderer/features/workbar';
+import { ToastProvider, ToolCallDetail } from '@maka/ui';
+import { WorkbarServicesProvider, WorkbarTitlebarActions, ToolOutputPreviewProvider } from '../src/renderer/features/workbar';
 import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
@@ -920,6 +920,7 @@ function bridge(options: {
  * column. Its 990px media query is what stacks the column in narrow windows.
  */
 function Workbar(props: {
+  conversation?: ReactNode;
   tab?: SessionWorkbarTabKind;
   /** Extra faces opened after `tab`, so the strip can be seen with several. */
   alsoOpen?: readonly Exclude<SessionWorkbarTabKind, 'side-chat' | 'terminal'>[];
@@ -991,6 +992,7 @@ function Workbar(props: {
         } as CSSProperties}
       >
         <div className="mainColumn">
+          {props.conversation}
           {props.collapsible && (
             <WorkbarTitlebarActions
               available
@@ -1561,4 +1563,26 @@ export const TraceEmpty: Story = {
 export const TraceReadFailed: Story = {
   decorators: [bridge({ traceFail: true })],
   render: () => <Workbar tab="inspector" />,
+};
+
+
+// Real path: a retained-output action in chat opens the existing Files preview.
+export const RetainedToolOutput: Story = {
+  decorators: [(Story) => <ToolOutputPreviewProvider><Story /></ToolOutputPreviewProvider>, bridge()],
+  render: () => <Workbar tab="files" conversation={<div className="maka-turn" style={{ padding: 24 }}>
+    <ToolCallDetail item={{ toolUseId: 'retained-read', toolName: 'Read', status: 'completed',
+      args: { path: '/repo/docs/guide.md' }, result: { kind: 'json', value: {
+        content: 'DOCUMENT_START\n' + 'Documentation paragraph.\n'.repeat(12_000) + 'DOCUMENT_END',
+      },
+      },
+    }} />
+  </div>} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole('button', { name: /打开完整输出|開啟完整輸出|Open full output/ }));
+    await waitFor(() => expect(canvasElement.querySelector('.maka-artifact-preview-plain-remainder')?.textContent).toContain('DOCUMENT_END'));
+    expect(canvasElement.querySelector('.mainColumn')?.textContent).not.toContain('DOCUMENT_END');
+    const viewer = canvasElement.querySelector<HTMLElement>('.maka-artifact-preview')!;
+    expect(viewer.scrollHeight).toBeGreaterThan(viewer.clientHeight);
+  },
 };

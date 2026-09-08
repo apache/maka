@@ -107,10 +107,10 @@ function FilePreview(props: { record: ArtifactDescriptor; copy: ArtifactCopy }) 
   return <TextFilePreview name={props.record.name} text={result.value.text} copy={props.copy} />;
 }
 
-function TextFilePreview(props: { name: string; text: string; copy: ArtifactCopy }) {
+export function TextFilePreview(props: { name: string; text: string; copy: ArtifactCopy; complete?: boolean }) {
   const markdown = /\.(?:md|markdown)$/i.test(props.name);
   const [mode, setMode] = useState<'rendered' | 'source'>(markdown ? 'rendered' : 'source');
-  const bounded = boundPreviewText(props.text);
+  const bounded = boundPreviewText(props.text, props.complete);
 
   return (
     <div className="maka-artifact-preview-text" data-mode={mode}>
@@ -255,10 +255,10 @@ type BoundedPreviewText = {
   isDisplayTruncated: boolean;
 };
 
-function boundPreviewText(text: string): BoundedPreviewText {
+function boundPreviewText(text: string, complete = false): BoundedPreviewText {
   const bytes = new TextEncoder().encode(text);
   const decoder = new TextDecoder();
-  const displayText = decoder.decode(utf8Prefix(bytes, TEXT_DISPLAY_LIMIT_BYTES));
+  const displayText = complete ? text : decoder.decode(utf8Prefix(bytes, TEXT_DISPLAY_LIMIT_BYTES));
   const highlightCandidate = decoder.decode(utf8Prefix(bytes, TEXT_HIGHLIGHT_LIMIT_BYTES));
   const lineBreak = highlightCandidate.lastIndexOf('\n');
   let highlightedText = bytes.length > TEXT_HIGHLIGHT_LIMIT_BYTES && lineBreak > 0
@@ -274,7 +274,7 @@ function boundPreviewText(text: string): BoundedPreviewText {
     highlightedText,
     plainRemainder,
     hasPlainRemainder: plainRemainder.length > 0,
-    isDisplayTruncated: bytes.length > TEXT_DISPLAY_LIMIT_BYTES,
+    isDisplayTruncated: !complete && bytes.length > TEXT_DISPLAY_LIMIT_BYTES,
   };
 }
 

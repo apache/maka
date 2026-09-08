@@ -94,6 +94,12 @@ export type ArtifactQueryInput =
   | { readonly kind: 'read_text'; readonly sessionId: string; readonly artifactId: string }
   | { readonly kind: 'read_binary'; readonly sessionId: string; readonly artifactId: string }
   | {
+      readonly kind: 'read_archive_chunk';
+      readonly sessionId: string;
+      readonly ref: string;
+      readonly offset: number;
+    }
+  | {
       readonly kind: 'read_chunk';
       readonly sessionId: string;
       readonly artifactId: string;
@@ -108,6 +114,19 @@ export type ArtifactBinaryPreview =
   | { readonly ok: false; readonly reason: ArtifactBinaryReadFailureReason };
 
 export type ArtifactQueryResult =
+  | {
+      readonly kind: 'archive_unavailable';
+      readonly sessionId: string;
+      readonly reason: ArtifactReadFailureReason;
+    }
+  | {
+      readonly kind: 'archive_chunk';
+      readonly sessionId: string;
+      readonly offset: number;
+      readonly totalBytes: number;
+      readonly chunkBase64: string;
+      readonly nextOffset: number | null;
+    }
   | {
       readonly kind: 'page';
       readonly sessionId: string;
@@ -361,6 +380,20 @@ export function decodeArtifactIngestResult(value: unknown): ArtifactIngestResult
 
 export function decodeArtifactQueryInput(value: unknown): ArtifactQueryInput {
   const input = requireRecord(value, 'artifact query input');
+  if (input.kind === 'read_archive_chunk') {
+    const exact = requireExactRecord(input, 'archive chunk query', [
+      'kind',
+      'sessionId',
+      'ref',
+      'offset',
+    ]);
+    return {
+      kind: 'read_archive_chunk',
+      sessionId: artifactEntityId(exact.sessionId, 'sessionId'),
+      ref: boundedText(exact.ref, 'archive ref', 16384),
+      offset: requireCount(exact.offset, 'archive offset'),
+    };
+  }
   if (input.kind === 'list_start') {
     const exact = requireExactRecord(input, 'artifact list start input', ['kind', 'sessionId']);
     return { kind: 'list_start', sessionId: artifactEntityId(exact.sessionId, 'sessionId') };
@@ -490,11 +523,24 @@ export function decodeArtifactQueryResult(value: unknown): ArtifactQueryResult {
       artifactId: artifactEntityId(exact.artifactId, 'artifactId'),
       preview: decodeBinaryPreview(exact.preview),
     };
-  } else if (result.kind === 'chunk') {
+  } else if (result.kind === 'archive_unavailable') {
+    const exact = requireExactRecord(result, 'archive unavailable', [
+      'kind',
+      'sessionId',
+      'reason',
+    ]);
+    const preview = decodeTextPreview({ ok: false, reason: exact.reason });
+    if (preview.ok) throw invalidProtocolFrame('Invalid archive failure');
+    decoded = {
+      kind: 'archive_unavailable',
+      sessionId: artifactEntityId(exact.sessionId, 'sessionId'),
+      reason: preview.reason,
+    };
+  } else if (result.kind === 'chunk' || result.kind === 'archive_chunk') {
     const exact = requireExactRecord(result, 'artifact chunk result', [
       'kind',
       'sessionId',
-      'artifactId',
+      ...(result.kind === 'chunk' ? ['artifactId'] : []),
       'offset',
       'totalBytes',
       'chunkBase64',
@@ -526,15 +572,17 @@ export function decodeArtifactQueryResult(value: unknown): ArtifactQueryResult {
     ) {
       throw invalidProtocolFrame('Invalid artifact chunk continuation');
     }
-    decoded = {
-      kind: 'chunk',
+    const chunk = {
       sessionId: artifactEntityId(exact.sessionId, 'sessionId'),
-      artifactId: artifactEntityId(exact.artifactId, 'artifactId'),
       offset,
       totalBytes,
       chunkBase64,
       nextOffset,
     };
+    decoded =
+      result.kind === 'chunk'
+        ? { ...chunk, kind: 'chunk', artifactId: artifactEntityId(exact.artifactId, 'artifactId') }
+        : { ...chunk, kind: 'archive_chunk' };
   } else {
     throw invalidProtocolFrame('Invalid artifact query result kind');
   }

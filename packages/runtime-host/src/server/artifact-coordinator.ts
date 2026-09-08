@@ -18,9 +18,18 @@
  */
 
 import { createHash } from 'node:crypto';
+import {
+  parseToolResultArchiveResourceRef,
+  TOOL_RESULT_ARCHIVE_MAX_BYTES,
+  type ToolResultArchiveResourceReader,
+} from '@maka/runtime/tool-result-archive-resource';
 import { attachmentKindFromMimeType } from '@maka/core/attachments';
 import type { AttachmentRef } from '@maka/core/events';
-import { isArtifactSharedSessionReadable, type ArtifactRecord } from '@maka/core/artifacts';
+import {
+  isArtifactSharedSessionReadable,
+  type ArtifactRecord,
+  type ArtifactReadFailureReason,
+} from '@maka/core/artifacts';
 import {
   authenticateInteractiveArtifactStoreWriter,
   sanitizeArtifactName,
@@ -47,6 +56,21 @@ import type { ArtifactOperationHandlerMap, ConnectionContext } from './operation
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import type { SessionPresenceReader } from './session-presence.js';
 import { ConnectionBoundChunkUploads } from './connection-bound-chunk-uploads.js';
+import type { ToolResultArchiveReadFailureReason } from '@maka/runtime/tool-result-archive';
+
+// At most 16 MiB of verified bodies, scoped to active transfers rather than a
+// persistent ref cache. Eviction only costs a fresh validated read.
+const MAX_ARCHIVE_TRANSFERS = 4;
+const ARCHIVE_TRANSFER_TTL_MS = 60_000;
+interface ArchiveTransfer {
+  readonly connectionId: string;
+  readonly sessionId: string;
+  readonly ref: string;
+  readonly expiresAt: number;
+  readonly body: Promise<
+    { ok: true; bytes: Buffer } | { ok: false; reason: ToolResultArchiveReadFailureReason }
+  >;
+}
 
 const MAX_ACTIVE_ARTIFACT_UPLOADS = 16;
 const MAX_STAGED_ARTIFACT_UPLOAD_BYTES = 128 * 1024 * 1024;
@@ -77,6 +101,11 @@ export class HostArtifactCoordinator {
     | Pick<RuntimeHostAccessAuthority, 'activeSessionGrant'>
     | undefined;
   readonly #uploads: ConnectionBoundChunkUploads<ArtifactUploadMetadata>;
+  readonly #archiveTransfers = new Map<string, ArchiveTransfer>();
+  readonly #now: () => number;
+  readonly #readArchive:
+    | ToolResultArchiveResourceReader['readArchivedToolResultResource']
+    | undefined;
 
   constructor(
     store: InteractiveArtifactStoreWriter,
@@ -85,12 +114,15 @@ export class HostArtifactCoordinator {
     sessions: SessionPresenceReader,
     now: () => number = Date.now,
     sessionAccessAuthority?: Pick<RuntimeHostAccessAuthority, 'activeSessionGrant'>,
+    readArchive?: ToolResultArchiveResourceReader['readArchivedToolResultResource'],
   ) {
     this.#store = authenticateInteractiveArtifactStoreWriter(store);
     this.#requestDrain = requestDrain;
     this.#sessionAdmission = sessionAdmission;
     this.#sessions = sessions;
     this.#sessionAccessAuthority = sessionAccessAuthority;
+    this.#readArchive = readArchive;
+    this.#now = now;
     this.#uploads = new ConnectionBoundChunkUploads(
       {
         maxActive: MAX_ACTIVE_ARTIFACT_UPLOADS,
@@ -103,6 +135,9 @@ export class HostArtifactCoordinator {
 
   releaseConnection(connectionId: string): void {
     this.#uploads.releaseConnection(connectionId);
+    for (const [key, transfer] of this.#archiveTransfers) {
+      if (transfer.connectionId === connectionId) this.#archiveTransfers.delete(key);
+    }
   }
 
   async validateTurnAttachments(
@@ -321,12 +356,91 @@ export class HostArtifactCoordinator {
   ): Promise<OperationOutcome<'artifact.query'>> {
     try {
       if ((await this.#sessions.probeSessionRemoval(input.sessionId)).kind !== 'present') {
+        for (const [key, transfer] of this.#archiveTransfers) {
+          if (transfer.sessionId === input.sessionId) this.#archiveTransfers.delete(key);
+        }
         return notFound('artifact.query', 'Session was not found');
       }
       let sharedGrantId: string | undefined;
       if (context.principalKind === 'session_guest') {
         sharedGrantId = await this.#sharedArtifactGrantId(context.principal, input);
         if (!sharedGrantId) return notFound('artifact.query', 'Artifact was not found');
+      }
+      if (input.kind === 'read_archive_chunk') {
+        const unavailable = (reason: ArtifactReadFailureReason) =>
+          querySuccess(
+            encodeArtifactQueryResult({
+              kind: 'archive_unavailable',
+              sessionId: input.sessionId,
+              reason,
+            }),
+          );
+        const identity = parseToolResultArchiveResourceRef(input.ref);
+        if (!identity) return unavailable('not_allowed');
+        if (identity.originalBytes > TOOL_RESULT_ARCHIVE_MAX_BYTES) return unavailable('too_large');
+        if (input.offset > identity.originalBytes) return invalidQuery('Archive offset is invalid');
+        if (!this.#readArchive) return unavailable('read_failed');
+        const now = this.#now();
+        for (const [key, transfer] of this.#archiveTransfers) {
+          if (transfer.expiresAt <= now) this.#archiveTransfers.delete(key);
+        }
+        const key = JSON.stringify([context.connectionId, input.sessionId, input.ref]);
+        let transfer = this.#archiveTransfers.get(key);
+        if (input.offset === 0 || transfer?.ref !== input.ref) {
+          this.#archiveTransfers.delete(key);
+          while (this.#archiveTransfers.size >= MAX_ARCHIVE_TRANSFERS) {
+            this.#archiveTransfers.delete(this.#archiveTransfers.keys().next().value!);
+          }
+          transfer = {
+            connectionId: context.connectionId,
+            sessionId: input.sessionId,
+            ref: input.ref,
+            expiresAt: now + ARCHIVE_TRANSFER_TTL_MS,
+            body: Promise.resolve()
+              .then(() =>
+                this.#readArchive!({
+                  ...identity,
+                  sessionId: input.sessionId,
+                  maxBytes: TOOL_RESULT_ARCHIVE_MAX_BYTES,
+                }),
+              )
+              .then((read) =>
+                read.ok ? { ok: true as const, bytes: Buffer.from(read.serializedResult) } : read,
+              ),
+          };
+          this.#archiveTransfers.set(key, transfer);
+        }
+        const release = () => {
+          // A disconnect or another request may have replaced the entry while
+          // the reader awaited I/O. Never resurrect it or remove its successor.
+          if (this.#archiveTransfers.get(key) === transfer) this.#archiveTransfers.delete(key);
+        };
+        const read = await transfer.body.catch((error) => {
+          release();
+          throw error;
+        });
+        if (!read.ok) release();
+        if (!read.ok)
+          return unavailable(
+            read.reason === 'not_found'
+              ? 'not_found'
+              : read.reason === 'source_mismatch'
+                ? 'not_allowed'
+                : 'read_failed',
+          );
+        const bytes = read.bytes;
+        const end = Math.min(bytes.length, input.offset + ARTIFACT_READ_CHUNK_MAX_BYTES);
+        if (end === bytes.length) release();
+        return querySuccess(
+          encodeArtifactQueryResult({
+            kind: 'archive_chunk',
+            sessionId: input.sessionId,
+            offset: input.offset,
+            totalBytes: bytes.length,
+            chunkBase64: bytes.subarray(input.offset, end).toString('base64'),
+            nextOffset: end < bytes.length ? end : null,
+          }),
+        );
       }
       if (input.kind === 'read_text' || input.kind === 'read_binary') {
         if (input.kind === 'read_text') {

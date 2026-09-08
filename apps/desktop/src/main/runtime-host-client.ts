@@ -18,6 +18,8 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import type { ArtifactTextReadResult } from '@maka/core/artifacts';
+import { TOOL_RESULT_ARCHIVE_MAX_BYTES } from '@maka/runtime/tool-result-archive-resource';
 import type { AttachmentRef, ShellRunUpdate } from "@maka/core/events";
 import type { PlanSessionState, PlanUserControlInput } from "@maka/core/plan";
 import {
@@ -886,6 +888,24 @@ export class DesktopRuntimeHostClient {
       throw invalidProjection("Artifact");
     }
     return result.preview;
+  }
+
+  async readToolResult(sessionId: string, ref: string): Promise<ArtifactTextReadResult> {
+    const chunks: Buffer[] = [];
+    let offset = 0;
+    let total: number | undefined;
+    while (true) {
+      const result = await this.request('artifact.query', { kind: 'read_archive_chunk', sessionId, ref, offset });
+      if (result.kind === 'archive_unavailable' && result.sessionId === sessionId) return { ok: false, reason: result.reason };
+      if (result.kind !== 'archive_chunk' || result.sessionId !== sessionId || result.offset !== offset
+        || (total !== undefined && result.totalBytes !== total) || result.totalBytes > TOOL_RESULT_ARCHIVE_MAX_BYTES) {
+        throw invalidProjection('Archived output');
+      }
+      total = result.totalBytes;
+      chunks.push(Buffer.from(result.chunkBase64, 'base64'));
+      if (result.nextOffset === null) return { ok: true, text: Buffer.concat(chunks).toString('utf8') };
+      offset = result.nextOffset;
+    }
   }
 
   async readArtifactBinary(

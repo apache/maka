@@ -663,6 +663,11 @@
 .maka-tool-output-command-copy[data-copy-feedback="pending"] { cursor: progress; }
 .maka-tool-output-command-copy[data-copy-feedback="copied"] { color: var(--link); }
 .maka-tool-output-command-copy[data-copy-feedback="failed"] { color: var(--destructive); }
+@media (hover: hover) {
+  .maka-tool-call-detail :is(.maka-tool-output-command-copy, .astryx-code-block-copy-button) { opacity: 0; }
+  .maka-tool-call-detail:hover :is(.maka-tool-output-command-copy, .astryx-code-block-copy-button),
+  .maka-tool-call-detail:focus-within :is(.maka-tool-output-command-copy, .astryx-code-block-copy-button) { opacity: 1; }
+}
 .maka-tool-output-body {
   font: var(--maka-text-code);
  max-height: 256px; margin: 0; overflow-y: auto; color: var(--muted-foreground); font-variant-ligatures: none; scroll-behavior: auto; white-space: pre-wrap; word-break: break-word; }
@@ -1140,3 +1145,10 @@
   outline: none;
   box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
 }
+
+.maka-tool-output-scroller { position: relative; min-height: 0; }
+.maka-tool-output-jump { position: absolute; bottom: var(--space-2); right: var(--space-2); }
+
+/* Readability headings can be much longer than the reference card. */
+.maka-tool-web-fetch-title {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

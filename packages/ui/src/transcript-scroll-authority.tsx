@@ -88,7 +88,7 @@ function reachesTranscript(event: Event, root: HTMLElement, direction: 'up' | 'd
   return false;
 }
 
-export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
+export function createTranscriptScrollAuthority(options: { explicitResume?: boolean } = {}): TranscriptScrollAuthority {
   let root: HTMLElement | null = null;
   let pinned = true;
   let awayFromTail = false;
@@ -222,7 +222,9 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         // This schedules no scroll and uses no time-based ignore window.
         requestAnimationFrame(() => requestAnimationFrame(() => {
           if (gesture !== ended || ended.top !== top) return;
-          pinned = ended.direction === 'down' && distanceToTail() <= PIN_THRESHOLD_PX;
+          pinned = !options.explicitResume
+            && ended.direction === 'down'
+            && distanceToTail() <= PIN_THRESHOLD_PX;
           gesture = undefined;
           publish();
           if (pinned) writeToTail();

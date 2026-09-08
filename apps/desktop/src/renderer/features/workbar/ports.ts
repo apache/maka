@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { ToolResultArchiveIdentity } from '@maka/core/artifacts';
 import type {
   QuoteRef,
   SessionEvent,
@@ -125,6 +126,7 @@ export type WorkbarOpenArtifactResult =
     };
 
 export interface WorkbarArtifactsService {
+  readToolResult?(sessionId: string, identity: ToolResultArchiveIdentity): Promise<ArtifactTextReadResult>;
   list(sessionId: string): Promise<ArtifactDescriptor[]>;
   readText(
     sessionId: string,

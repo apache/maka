@@ -878,6 +878,21 @@ interface RecordedRequest {
   input: unknown;
 }
 
+test('assembles archived UTF-8 output across Host chunks and preserves read failures', async () => {
+  const bytes = Buffer.from('中文 retained output '.repeat(2000));
+  const split = 32768;
+  const responses = [0, split].map(offset => ({ kind: 'archive_chunk', sessionId: 'session-1',
+    offset, totalBytes: bytes.length, chunkBase64: bytes.subarray(offset, offset ? undefined : split).toString('base64'),
+    nextOffset: offset ? null : split }));
+  const { client, requests } = clientWithResponses(responses);
+  assert.deepEqual(await client.readToolResult('session-1', 'archive-ref'), { ok: true, text: bytes.toString('utf8') });
+  assert.deepEqual(requests.map(request => request.input), [0, split].map(offset => ({
+    kind: 'read_archive_chunk', sessionId: 'session-1', ref: 'archive-ref', offset,
+  })));
+  const failure = clientWithResponses([{ kind: 'archive_unavailable', sessionId: 'session-1', reason: 'not_found' }]);
+  assert.deepEqual(await failure.client.readToolResult('session-1', 'archive-ref'), { ok: false, reason: 'not_found' });
+});
+
 function clientWithResponses(responses: unknown[]): {
   client: DesktopRuntimeHostClient;
   requests: RecordedRequest[];

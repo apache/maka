@@ -27,7 +27,12 @@ import {
 } from '@maka/core/model-projection-transition';
 import { buildLedgerArchivedToolResultPlaceholder } from '@maka/runtime/tool-result-archive';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
-import { parseToolResultArchiveResourceRef } from '@maka/runtime/tool-result-archive-resource';
+import {
+  buildToolResultArchiveResourceRef,
+  parseToolResultArchiveResourceRef,
+} from '@maka/runtime/tool-result-archive-resource';
+import { HostArtifactCoordinator } from '../server/artifact-coordinator.js';
+import { decodeArtifactQueryInput, decodeArtifactQueryResult } from '../protocol/artifact.js';
 import { mkdir, mkdtemp, rm, stat, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -225,6 +230,78 @@ for (const largeImage of [false, true]) {
       );
       const identity = parseToolResultArchiveResourceRef(placeholder.resourceRef!);
       assert.ok(identity);
+      const coordinator = new HostArtifactCoordinator(
+        artifacts,
+        () => assert.fail('read must not drain'),
+        new SessionAdmissionGate(),
+        { probeSessionRemoval: async () => ({ kind: 'present' }) },
+        Date.now,
+        undefined,
+        services.toolResultArchive.services.readArchivedToolResultResource,
+      );
+      const context = {
+        hostEpoch: 'epoch',
+        connectionId: 'desktop',
+        principal: 'local_os_user',
+        acquireResidency: () => ({ release() {} }),
+      };
+      for (const ref of [
+        placeholder.resourceRef!,
+        buildToolResultArchiveResourceRef({
+          artifactId: old.id,
+          bodySha256,
+          originalBytes: input.originalBytes,
+        }),
+      ]) {
+        const response = await coordinator.handlers['artifact.query'](
+          decodeArtifactQueryInput({
+            kind: 'read_archive_chunk',
+            sessionId: 'session',
+            ref,
+            offset: 0,
+          }),
+          context,
+        );
+        assert.ok(response.ok);
+        assert.deepEqual(decodeArtifactQueryResult(response.result), {
+          kind: 'archive_chunk',
+          sessionId: 'session',
+          offset: 0,
+          totalBytes: input.originalBytes,
+          chunkBase64: Buffer.from(serializedResult).toString('base64'),
+          nextOffset: null,
+        });
+        const denied = await coordinator.handlers['artifact.query'](
+          decodeArtifactQueryInput({
+            kind: 'read_archive_chunk',
+            sessionId: 'other',
+            ref,
+            offset: 0,
+          }),
+          context,
+        );
+        assert.ok(denied.ok);
+        assert.equal(denied.result.kind, 'archive_unavailable');
+        const corrupted = await coordinator.handlers['artifact.query'](
+          decodeArtifactQueryInput({
+            kind: 'read_archive_chunk',
+            sessionId: 'session',
+            ref: ref.replace(bodySha256, '0'.repeat(64)),
+            offset: 0,
+          }),
+          context,
+        );
+        assert.deepEqual(corrupted, {
+          ok: true,
+          result: {
+            kind: 'archive_unavailable',
+            sessionId: 'session',
+            // Ledger evidence rejects a mismatched identity before reading bytes;
+            // legacy artifacts detect the mismatch from the body digest.
+            reason: ref === placeholder.resourceRef ? 'not_allowed' : 'read_failed',
+          },
+        });
+      }
       assert.deepEqual(
         await services.toolResultArchive.services.readArchivedToolResultResource({
           ...identity,

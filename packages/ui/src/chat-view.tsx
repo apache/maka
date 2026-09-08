@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { SessionToolResultProvider } from './tool-activity/tool-result-context.js';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ICON_SIZE,
@@ -778,6 +779,7 @@ export function ChatView(props: {
         );
 
   return (
+    <SessionToolResultProvider value={props.activeSession.id}>
     <SessionAttachmentProvider
       sessionId={props.activeSession.id}
       readBytes={props.onReadAttachmentBytes}
@@ -1008,6 +1010,7 @@ export function ChatView(props: {
       </div>
       </section>
     </SessionAttachmentProvider>
+    </SessionToolResultProvider>
   );
 }
 

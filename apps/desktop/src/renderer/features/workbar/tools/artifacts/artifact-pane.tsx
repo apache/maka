@@ -79,6 +79,8 @@ import { nextArtifactListAction } from './artifact-list-keyboard';
 import { filterUserVisibleArtifacts } from './artifact-visibility';
 import { openPathFailureCopy } from '../../../../open-path';
 import { getArtifactCopy, type ArtifactCopy } from '../../../../locales/artifact-copy';
+import { ToolOutputPreview } from './tool-output-preview.js';
+import { useToolOutputPreview } from './tool-output-preview-context.js';
 import { useWorkbarServices } from '../../services-context.js';
 
 export function ArtifactPane(props: {
@@ -88,6 +90,7 @@ export function ArtifactPane(props: {
   onDismiss?: () => void;
 }) {
   const { sessionId } = props;
+  const toolOutput = useToolOutputPreview();
   const { artifacts } = useWorkbarServices();
   const toast = useToast();
   const locale = useUiLocale();
@@ -446,7 +449,10 @@ export function ArtifactPane(props: {
     }
   }
 
-  return (
+  return <>
+    {toolOutput?.preview?.visible && <ToolOutputPreview key={toolOutput.preview.id} request={toolOutput.preview.request}
+        onClose={() => { setView({ kind: 'list' }); toolOutput.hide(); }} />}
+    {!toolOutput?.preview?.visible && (
     <div className="maka-artifact-pane" role="region" aria-label={copy.pane.panelAria} onKeyDown={handlePaneKeyDown}>
       {activeListError && (
         <Banner
@@ -589,8 +595,8 @@ export function ArtifactPane(props: {
           </div>
         </div>
       ) : null}
-    </div>
-  );
+    </div>)}
+  </>;
 }
 
 // ---- helpers ---------------------------------------------------------------

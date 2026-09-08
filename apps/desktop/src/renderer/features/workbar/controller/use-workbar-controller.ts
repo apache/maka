@@ -36,6 +36,7 @@ import { safeLocalStorageGet, safeLocalStorageSet } from '../../../browser-stora
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
 import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import { sideChatTitleFromPrompt } from '../../../side-chat-command.js';
+import { useToolOutputPreview } from '../tools/artifacts/tool-output-preview-context.js';
 import { useWorkbarServices } from '../services-context.js';
 import type { WorkbarHostModel } from '../ui/workbar-host.js';
 import { SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY } from '../ui/side-chat-close-confirmation.js';
@@ -168,6 +169,8 @@ export function useWorkbarController(
   input: UseWorkbarControllerInput,
 ): WorkbarController {
   const locale = useUiLocale();
+  const toolOutput = useToolOutputPreview();
+  const openedOutput = useRef<unknown>(undefined);
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
   const { browser, sideChat, terminal } = useWorkbarServices();
   const activeSessionId = input.activeSession?.id;
@@ -650,6 +653,15 @@ export function useWorkbarController(
     window.addEventListener('keydown', handleShortcut, true);
     return () => window.removeEventListener('keydown', handleShortcut, true);
   }, [activeSessionId, input.available, input.shellObscured, openTool]);
+
+  useEffect(() => {
+    if (!toolOutput?.preview?.visible) { openedOutput.current = undefined; return; }
+    if (openedOutput.current === toolOutput.preview) return;
+    openedOutput.current = toolOutput.preview;
+    openTool('files');
+  }, [toolOutput?.preview, openTool]);
+  const closeToolOutput = toolOutput?.close;
+  useLayoutEffect(() => () => closeToolOutput?.(), [activeSessionId, closeToolOutput]);
 
   const confirmPendingClose = useCallback(
     (skipFutureConfirmations: boolean) => {

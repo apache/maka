@@ -282,3 +282,56 @@ export const LongIntentGroupNarrow: Story = {
     );
   },
 };
+
+
+// Real path: completed tool calls in a conversation, with retained bodies disclosed on demand.
+export const RetainedToolOutput: Story = {
+  args: { items: [
+    { toolUseId: 'fetch-preview', toolName: 'WebFetch', status: 'completed',
+      args: { url: 'https://example.com/docs' },
+      result: { kind: 'text', text: 'Fetched documentation\n' + 'Documentation paragraph.\n'.repeat(500) } },
+    { toolUseId: 'json-preview', toolName: 'Inspect', status: 'completed', args: {},
+      result: { kind: 'json', value: { warning: 'Results are partial',
+        items: Array.from({ length: 100 }, (_, index) => ({ path: `src/module-${index}.ts`, matches: index })) } } },
+    { toolUseId: 'shell-preview', toolName: 'Bash', status: 'completed', args: { command: 'npm test' },
+      result: { kind: 'terminal', cwd: '/repo', cmd: 'npm test', status: 'completed', exitCode: 0,
+        output: { mode: 'pipes', stdout: 'Starting tests\n' + 'Test passed\n'.repeat(60) + 'All tests passed',
+          stderr: '', stdoutTruncated: false, stderrTruncated: false, redacted: false } } },
+  ] },
+  render: (args) => <div style={{ padding: 16 }}><ToolRowBoard items={args.items} width={860} /></div>,
+};
+
+// Real path: a tool group mixes captured output and a completed call with no output.
+export const MixedToolDisclosure: Story = {
+  args: { items: [' M file.ts', ''].map((text, index) => ({
+    toolUseId: `mixed-disclosure-${index}`, toolName: 'Bash', status: 'completed',
+    args: { command: index ? 'git diff --cached --stat' : 'git status' },
+    result: { kind: 'text', text },
+  })) },
+  render: (args) => <div className="maka-turn" style={{ padding: 16 }}><ToolTrow {...args} /></div>,
+  play: async ({ canvasElement }) => {
+    const group = canvasElement.querySelector<HTMLElement>('.maka-tool-activity-card > [role="button"][aria-controls]');
+    expect(group).not.toBeNull();
+    await userEvent.click(group!);
+    expect(group).toHaveAttribute('aria-expanded', 'true');
+    const rows = Array.from(canvasElement.querySelectorAll<HTMLElement>('[data-slot="chat-tool-call-row"]'));
+    expect(rows).toHaveLength(2);
+    const outputRow = rows.find(row => within(row).queryByText('git status', { exact: true }));
+    const emptyRow = rows.find(row => within(row).queryByText('git diff --cached --stat', { exact: true }));
+    expect(outputRow).toBeVisible();
+    expect(emptyRow).toBeVisible();
+    expect(outputRow).toHaveAttribute('role', 'button');
+    expect(outputRow).toHaveAttribute('aria-expanded', 'false');
+    expect(emptyRow).not.toHaveAttribute('role', 'button');
+    expect(emptyRow).not.toHaveAttribute('aria-expanded');
+    const names = [outputRow!, emptyRow!].map(row => within(row).getByText('Bash', { exact: true }));
+    const first = getComputedStyle(names[0]);
+    const second = getComputedStyle(names[1]);
+    expect(first.fontSize).toBe(second.fontSize);
+    expect(first.fontFamily).toBe(second.fontFamily);
+    expect(first.fontWeight).toBe(second.fontWeight);
+    await userEvent.click(outputRow!);
+    expect(outputRow).toHaveAttribute('aria-expanded', 'true');
+    expect(within(canvasElement).getByText('M file.ts', { exact: true })).toBeVisible();
+  },
+};

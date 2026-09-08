@@ -19,11 +19,22 @@
 
 import type { PtyShellOutput } from './shell-run.js';
 
+export const PTY_TRUNCATED_MARKER = '[terminal snapshot truncated to fit the output limit]';
+
 export function ptyHumanTerminalText(output: PtyShellOutput): string {
   const current = output.alternateScreen
     ? output.screen
     : joinNonEmpty(output.scrollback, output.screen);
-  return current.trim().length > 0 ? current : (output.lastAlternateScreen ?? '');
+  const text = current.trim().length > 0 ? current : (output.lastAlternateScreen ?? '');
+  return output.truncated ? stripTruncatedMarker(text) : text;
+}
+
+function stripTruncatedMarker(text: string): string {
+  return text === PTY_TRUNCATED_MARKER
+    ? ''
+    : text.startsWith(`${PTY_TRUNCATED_MARKER}\n`)
+      ? text.slice(PTY_TRUNCATED_MARKER.length + 1)
+      : text;
 }
 
 export function ptyTuiTerminalRows(output: PtyShellOutput, maxRows = 6): string[] {

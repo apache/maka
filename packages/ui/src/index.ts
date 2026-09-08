@@ -190,3 +190,7 @@ export {
 } from '@astryxdesign/core';
 
 export { PromptAnchorRail, type PromptAnchorRailTurn } from './prompt-anchor-rail.js';
+
+export type { ToolOutputOpenRequest } from './tool-activity/tool-result-context.js';
+export { useClipboardCopyFeedback } from './clipboard-feedback.js';
+export { ToolResultHostProvider } from './tool-activity/tool-result-context.js';
