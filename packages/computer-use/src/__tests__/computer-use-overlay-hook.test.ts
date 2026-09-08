@@ -111,6 +111,55 @@ test('with no window to order against the cursor stays elevated', () => {
   assert.equal((moves[0] as { targetWindowId?: number }).targetWindowId, undefined);
 });
 
+test('a covered aim point stays elevated even with a window to sink onto', () => {
+  // A rect list is not a whole-window cover: the top-edge control can still
+  // be visible. Only the point about to be drawn decides elevation.
+  const { controller, moves } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'click_element' },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetWindowId: 4321,
+      obscuringRects: [{ x: 200, y: 150, width: 20, height: 20 }],
+    },
+  );
+  assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, true);
+});
+
+test('an uncovered aim point still sinks when a window is there to order against', () => {
+  const { controller, moves } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'click_element' },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetWindowId: 4321,
+      obscuringRects: [{ x: 0, y: 0, width: 10, height: 10 }],
+    },
+  );
+  assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, false);
+});
+
+test('missing obscuring rects do not flip a window-bound cursor to stay up', () => {
+  const { controller, moves } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'click_element' },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetWindowId: 4321,
+    },
+  );
+  assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, false);
+});
+
 test('the landing carries the window the cursor has to come back down to', () => {
   // `complete` raises the cursor for the trip to the executor's coordinate, so
   // it is the last thing that can tell the sink which window to sink onto. An
