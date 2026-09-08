@@ -29,14 +29,18 @@ import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import { prepareIngestItems, resolveAttachmentRefs } from './attachment-ingest.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
+import { toDesktopHostSessionSummary } from './runtime-host-session-catalog-ipc-main.js';
 
 type RuntimeHostWorkHubClient = Pick<
   DesktopRuntimeHostClient,
   | 'ingestAttachment'
   | 'actWorkHubCoordination'
+  | 'answerWorkHubCoordination'
+  | 'configureWorkHubModel'
   | 'listWorkHubCoordinationCandidates'
   | 'recordWorkHubCoordination'
   | 'resolveWorkHubCoordinationSession'
+  | 'getWorkHubSession'
 >;
 
 type RendererWorkHubActionInput = Omit<WorkHubCoordinationActInput, 'create'>;
@@ -53,12 +57,15 @@ export function registerRuntimeHostWorkHubIpc(
   ipcMain: Pick<ReconnectableReadIpcMain, 'handle'>,
   options: RuntimeHostWorkHubIpcOptions,
 ): void {
+  ipcMain.handle('workhub:getSession', async () => toDesktopHostSessionSummary(await client.getWorkHubSession()));
   ipcMain.handle('workhub:resolveCoordinationSession', () =>
     client.resolveWorkHubCoordinationSession(),
   );
   ipcMain.handle('workhub:record', (_event, input) =>
     client.recordWorkHubCoordination(input),
   );
+  ipcMain.handle('workhub:answer', (_event, input) => client.answerWorkHubCoordination(input));
+  ipcMain.handle('workhub:configureModel', (_event, input) => client.configureWorkHubModel(input));
   ipcMain.handle('workhub:candidates', () => client.listWorkHubCoordinationCandidates());
   ipcMain.handle('workhub:prepareAttachments', async (event, items: unknown) => {
     if (!options.attachmentIngest) throw new Error('WorkHub attachments are unavailable');

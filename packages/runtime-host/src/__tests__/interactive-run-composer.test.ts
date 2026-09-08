@@ -135,33 +135,42 @@ function tool(name: string): MakaTool {
     impl: async () => name,
   };
 }
-test('Desktop assistant admits only its control capability and respects a bound child ceiling', () => {
-  const control: MakaTool = {
-    name: 'mcp__desktop_assistant__control',
-    description: 'Control Maka',
-    parameters: {},
-    impl: async () => 'ok',
+test('WorkHub v2 binds control, tasks and attachment reading while legacy WorkHub stays tool-free', () => {
+  const control = tool('mcp__desktop_workhub__control');
+  const tasks = tool('mcp__desktop_workhub__tasks');
+  const clientCapabilities = {
+    tools: [control, tasks, tool('Bash'), tool('mcp__desktop_browser__navigate')],
+    groups: [],
   };
-  const unrelated: MakaTool = {
-    name: 'mcp__desktop_browser__browser_navigate',
-    description: 'Browser',
-    parameters: {},
-    impl: async () => 'ok',
-  };
-  const composer = createFixtureComposer({
-    toolProfile: 'desktop-assistant-v1',
-    clientCapabilities: { tools: [control, unrelated], groups: [] },
-  });
   assert.deepEqual(
-    composer.tools.map((tool) => tool.name),
-    [control.name],
+    createFixtureComposer({
+      toolProfile: 'workhub-coordination-v2',
+      clientCapabilities,
+      resolveAdditionalTools: () => [tool('plugin_only'), tool('Read')],
+    }).tools.map(({ name }) => name),
+    [control.name, tasks.name, 'Read'],
+  );
+  assert.deepEqual(
+    createFixtureComposer({
+      toolProfile: 'workhub-coordination-v1',
+      clientCapabilities,
+    }).tools,
+    [],
   );
   assert.throws(
     () =>
       createFixtureComposer({
-        toolProfile: 'desktop-assistant-v1',
-        boundTools: [],
+        toolProfile: 'workhub-coordination-v2',
         clientCapabilities: { tools: [control], groups: [] },
+      }),
+    /Hosted tool profile is unavailable: mcp__desktop_workhub__tasks/,
+  );
+  assert.throws(
+    () =>
+      createFixtureComposer({
+        toolProfile: 'workhub-coordination-v2',
+        boundTools: [],
+        clientCapabilities,
       }),
     /Hosted tool profile is unavailable/,
   );

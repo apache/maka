@@ -18,7 +18,8 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
-import { desktopAssistantBridge } from './desktop-assistant.js';
+import { workHubControlBridge } from './workhub-control.js';
+import { workHubPresentationBridge } from './workhub-presentation.js';
 import {
   isRuntimeHostProfileKind,
   type RuntimeHostProfileKind,
@@ -1369,7 +1370,8 @@ const browserSelection = createBrowserSelectionCoordinator(runtimeHostSessionRef
 }, browserDocumentId);
 
 const makaBridge = {
-  desktopAssistant: desktopAssistantBridge,
+  workHubControl: workHubControlBridge,
+  workHubPresentation: workHubPresentationBridge,
   runtimeHost,
   sessionCollaboration: {
     async prepareInvitation(sessionId, preset, allowInsecure = false) {
@@ -2008,9 +2010,21 @@ const makaBridge = {
     },
   },
   workHub: {
+    async getSession(coordinationSessionId: string) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
+      return projectSessionSummary(scope, await ipcRenderer.invoke('workhub:getSession', scope));
+    },
     async prepareAttachments(coordinationSessionId: string, items: Parameters<MakaBridge['workHub']['prepareAttachments']>[1]) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
       return ipcRenderer.invoke('workhub:prepareAttachments', scope, await encodeIngestItems(items));
+    },
+    async answer(coordinationSessionId: string, input: OperationInput<'workhub.coordination.answer'>) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
+      return ipcRenderer.invoke('workhub:answer', scope, input) as Promise<OperationOutput<'workhub.coordination.answer'>>;
+    },
+    async configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
+      return ipcRenderer.invoke('workhub:configureModel', scope, input) as Promise<OperationOutput<'workhub.coordination.configureModel'>>;
     },
     resolveCoordinationSession(): Promise<string> {
       return resolveDesktopWorkHubCoordinationSession(

@@ -152,7 +152,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
       );
   const clientCapabilityTools =
     input.boundTools !== undefined ||
-    (input.toolProfile !== undefined && input.toolProfile !== 'desktop-assistant-v1')
+    (input.toolProfile !== undefined && input.toolProfile !== 'workhub-coordination-v2')
       ? []
       : (input.clientCapabilities?.tools ?? []);
   const resolveTools = (): readonly MakaTool[] => {

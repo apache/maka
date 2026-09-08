@@ -165,6 +165,36 @@ test('the recovery handle opens the existing exact account-and-model picker', as
       document.querySelector<HTMLElement>('.maka-model-switcher-trigger')?.getAttribute('aria-label') ?? '',
       /GPT-5/,
     );
+
+    selected = undefined;
+    let sends = 0;
+    const second = { ...choice, connectionId: 'connection-second', connectionSlug: 'second', connectionName: 'Second account' };
+    await act(() => root.render(
+      <LocaleProvider locale="en"><Composer ref={composer}
+        activeSession={{ id: 'wheel-session', llmConnectionId: choice.connectionId, llmConnectionSlug: choice.connectionSlug, model: choice.model } as SessionSummary}
+        modelPickerPresentation="wheel" modelChoices={[choice, second]}
+        onModelChange={(input) => { selected = input; }} onSend={() => { sends++; }} onStop={() => undefined} />
+      </LocaleProvider>,
+    ));
+    await act(() => composer.current?.openModelPicker());
+    const browseNext = async () => {
+      const wheel = document.querySelector<HTMLElement>('.maka-model-wheel-viewport');
+      assert.ok(wheel);
+      await act(() => wheel.dispatchEvent(Object.assign(new window.Event('keydown', { bubbles: true, cancelable: true }), { key: 'ArrowDown' })));
+      await act(() => wheel.dispatchEvent(new window.Event('scroll')));
+      return wheel;
+    };
+    let wheel = await browseNext();
+    assert.equal(selected, undefined, 'browsing must not reconfigure the model');
+    await act(() => wheel.dispatchEvent(Object.assign(new window.Event('keydown', { bubbles: true, cancelable: true }), { key: 'Escape' })));
+    assert.equal(Boolean(document.querySelector('.maka-model-wheel-viewport')), false);
+    assert.equal(selected, undefined, 'cancelling leaves the model untouched');
+    await act(() => composer.current?.openModelPicker());
+    wheel = await browseNext();
+    await act(() => wheel.dispatchEvent(Object.assign(new window.Event('keydown', { bubbles: true, cancelable: true }), { key: 'Enter' })));
+    assert.deepEqual(selected, { llmConnectionId: second.connectionId, llmConnectionSlug: second.connectionSlug, model: second.model });
+    assert.equal(sends, 0, 'confirming a model must not send the composer draft');
+    assert.equal(Boolean(document.querySelector('.maka-model-wheel-viewport')), false);
   } finally {
     await act(() => root.unmount());
     Object.assign(globalThis, original);

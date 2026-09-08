@@ -187,6 +187,7 @@ export interface WorkHubDelegationAssignmentInput {
   readonly disposition: WorkHubDelegationDisposition;
   readonly userText: string;
   readonly attachments?: AttachmentRef[];
+  readonly delegationText?: string;
   readonly create?: WorkHubDelegationCreateSpec;
   readonly replacesActionId?: string;
   readonly replacesDelegationId?: string;
@@ -288,10 +289,22 @@ export class WorkHubCoordinationActionGate {
   act(
     input: WorkHubCoordinationActInput,
     context: ConnectionContext,
+    authority: 'user_text' | 'active_model' = 'user_text',
   ): Promise<WorkHubCoordinationActResult> {
     if (!input.userText.trim()) {
       return Promise.reject(
         new WorkHubActionGateFailure('action_conflict', 'WorkHub action text is empty'),
+      );
+    }
+    if (
+      input.delegationText !== undefined &&
+      (!input.delegationText.trim() ||
+        (input.proposal.disposition !== 'delegate_existing' &&
+          input.proposal.disposition !== 'create_new' &&
+          input.proposal.disposition !== 'replace'))
+    ) {
+      return Promise.reject(
+        new WorkHubActionGateFailure('action_conflict', 'Invalid WorkHub delegation text'),
       );
     }
     if (input.proposal.disposition === 'create_new' && !input.proposal.title.trim()) {
@@ -300,7 +313,7 @@ export class WorkHubCoordinationActionGate {
       );
     }
     const fingerprint = actionFingerprint(input);
-    const requestFingerprint = digest(input);
+    const requestFingerprint = digest({ input, authority });
     const replay = this.#actions.get(input.actionId);
     if (replay) {
       if (replay.requestFingerprint !== requestFingerprint) {
@@ -314,7 +327,7 @@ export class WorkHubCoordinationActionGate {
       return replay.result;
     }
 
-    const result = this.#act(input, fingerprint, context);
+    const result = this.#act(input, fingerprint, context, authority);
     const action = { requestFingerprint, result };
     this.#actions.set(input.actionId, action);
     // Successful actions remain a Host-lifetime fast path. Rejections release
@@ -334,11 +347,16 @@ export class WorkHubCoordinationActionGate {
     input: WorkHubCoordinationActInput,
     fingerprint: `sha256:${string}`,
     context: ConnectionContext,
+    authority: 'user_text' | 'active_model',
   ): Promise<WorkHubCoordinationActResult> {
     const proposal = input.proposal;
-    const requestIntent = readWorkHubRequestIntent(input.userText);
+    // The current coordination model interprets its admitted request. Legacy
+    // direct proposals still require text authorization; neither path bypasses
+    // durable identity, candidate freshness or delegated Message ownership.
+    const requestIntent =
+      authority === 'user_text' ? readWorkHubRequestIntent(input.userText) : undefined;
     if (
-      requestIntent.execution === 'ambiguous' &&
+      requestIntent?.execution === 'ambiguous' &&
       proposal.disposition !== 'answer_here' &&
       proposal.disposition !== 'clarify'
     ) {
@@ -387,7 +405,10 @@ export class WorkHubCoordinationActionGate {
       return { disposition: 'clarify', coordinationTurnId: turnId };
     }
     if (proposal.disposition === 'stop_work') {
-      if (input.confirmation?.kind !== 'user_stop' || !requestIntent.stop.imperative) {
+      if (
+        requestIntent &&
+        (input.confirmation?.kind !== 'user_stop' || !requestIntent.stop.imperative)
+      ) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
           'WorkHub stop requires an explicit named command in trusted user text',
@@ -450,7 +471,7 @@ export class WorkHubCoordinationActionGate {
       return this.#stop(requested, source);
     }
     if (proposal.disposition === 'resume_work') {
-      if (!requestIntent.resume.imperative) {
+      if (requestIntent && !requestIntent.resume.imperative) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
           'WorkHub resume requires an explicit named command in trusted user text',
@@ -476,7 +497,8 @@ export class WorkHubCoordinationActionGate {
       const currentTargetName = target.sessionName;
       if (
         !currentTargetName ||
-        !workHubNamedDelegationActionTargetsSession(requestIntent.resume, currentTargetName)
+        (requestIntent &&
+          !workHubNamedDelegationActionTargetsSession(requestIntent.resume, currentTargetName))
       ) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
@@ -487,7 +509,10 @@ export class WorkHubCoordinationActionGate {
     }
 
     if (proposal.disposition === 'create_new') {
-      if (!input.create || !workHubCreationAuthorizesTitle(requestIntent, proposal.title)) {
+      if (
+        !input.create ||
+        (requestIntent && !workHubCreationAuthorizesTitle(requestIntent, proposal.title))
+      ) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
           'WorkHub creation requires an unambiguous instruction and creation context',
@@ -501,7 +526,10 @@ export class WorkHubCoordinationActionGate {
     }
 
     if (proposal.disposition === 'replace') {
-      if (input.confirmation?.kind !== 'user_correction' || !requestIntent.correction.cue) {
+      if (
+        requestIntent &&
+        (input.confirmation?.kind !== 'user_correction' || !requestIntent.correction.cue)
+      ) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
           'WorkHub replacement requires explicit correction in trusted user text',
@@ -523,6 +551,7 @@ export class WorkHubCoordinationActionGate {
       const prepared = await this.#effects.readReplacement(replaced.delegationId);
       if (prepared) {
         if (
+          requestIntent &&
           !isExplicitWorkHubCorrectionText(
             input.userText,
             prepared.disposition,
@@ -553,7 +582,11 @@ export class WorkHubCoordinationActionGate {
         );
         return this.#replace(prepared, context);
       }
-      const replacement = await this.#replacementAssignment(input, replaced);
+      const replacement = await this.#replacementAssignment(
+        input,
+        replaced,
+        authority === 'user_text',
+      );
       await this.#claimAction(
         replacement.actionId,
         'replace',
@@ -749,13 +782,17 @@ export class WorkHubCoordinationActionGate {
   async #replacementAssignment(
     input: WorkHubCoordinationActInput,
     replaced: WorkHubDelegationAssignedMessage,
+    requireTextAuthorization: boolean,
   ): Promise<WorkHubDelegationReplacementInput> {
     if (input.proposal.disposition !== 'replace') {
       throw new WorkHubActionGateFailure('action_conflict', 'Invalid WorkHub replacement');
     }
     const target = input.proposal.target;
     if (target.disposition === 'create_new') {
-      if (!isExplicitWorkHubCorrectionText(input.userText, 'create_new', target.title)) {
+      if (
+        requireTextAuthorization &&
+        !isExplicitWorkHubCorrectionText(input.userText, 'create_new', target.title)
+      ) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
           'WorkHub replacement creation requires explicit non-negated user intent',
@@ -776,6 +813,7 @@ export class WorkHubCoordinationActionGate {
         disposition: 'create_new',
         userText: input.userText,
         ...(input.attachments ? { attachments: input.attachments } : {}),
+        ...(input.delegationText === undefined ? {} : { delegationText: input.delegationText }),
         create: {
           title: target.title,
           workspace: input.create.workspace,
@@ -805,6 +843,7 @@ export class WorkHubCoordinationActionGate {
     }
     this.#assertTarget(destination);
     if (
+      requireTextAuthorization &&
       !isExplicitWorkHubCorrectionText(input.userText, 'delegate_existing', destination.sessionName)
     ) {
       throw new WorkHubActionGateFailure(
@@ -826,6 +865,7 @@ export class WorkHubCoordinationActionGate {
       disposition: 'delegate_existing',
       userText: input.userText,
       ...(input.attachments ? { attachments: input.attachments } : {}),
+      ...(input.delegationText === undefined ? {} : { delegationText: input.delegationText }),
       replacesActionId: replaced.actionId,
       replacesDelegationId: replaced.delegationId,
       replacedTargetSessionId: replaced.targetSessionId,
@@ -1105,6 +1145,7 @@ function delegationAssignment(
     disposition: input.proposal.disposition,
     userText: input.userText,
     ...(input.attachments ? { attachments: input.attachments } : {}),
+    ...(input.delegationText === undefined ? {} : { delegationText: input.delegationText }),
   } as const;
   if (input.proposal.disposition === 'delegate_existing') return base;
   if (!create) {
@@ -1160,6 +1201,7 @@ function actionFingerprint(input: WorkHubCoordinationActInput): `sha256:${string
     userText: input.userText,
     ...(input.attachments ? { attachments: input.attachments } : {}),
     ...(input.newWorkDefaults ? { newWorkDefaults: input.newWorkDefaults } : {}),
+    ...(input.delegationText === undefined ? {} : { delegationText: input.delegationText }),
     disposition: input.proposal.disposition,
     ...(input.proposal.disposition === 'delegate_existing'
       ? { candidateRef: input.proposal.candidateRef }
@@ -1196,6 +1238,7 @@ function replacementActionFingerprint(
     userText: input.userText,
     ...(input.attachments ? { attachments: input.attachments } : {}),
     ...(input.newWorkDefaults ? { newWorkDefaults: input.newWorkDefaults } : {}),
+    ...(input.delegationText === undefined ? {} : { delegationText: input.delegationText }),
     disposition: input.proposal.disposition,
     replacesActionId: input.proposal.replacesActionId,
     target: {
@@ -1287,6 +1330,9 @@ function assignmentInputFromRecord(
     disposition: assignment.disposition,
     userText: assignment.userText,
     ...(assignment.attachments ? { attachments: assignment.attachments } : {}),
+    ...(assignment.delegationText === undefined
+      ? {}
+      : { delegationText: assignment.delegationText }),
     ...(assignment.create ? { create: assignment.create } : {}),
     ...(assignment.replacesActionId && assignment.replacesDelegationId
       ? {
@@ -1308,6 +1354,9 @@ function assignmentInputFromReplacement(
     disposition: replacement.disposition,
     userText: replacement.userText,
     ...(replacement.attachments ? { attachments: replacement.attachments } : {}),
+    ...(replacement.delegationText === undefined
+      ? {}
+      : { delegationText: replacement.delegationText }),
     ...(replacement.create ? { create: replacement.create } : {}),
     replacesActionId: replacement.replacesActionId,
     replacesDelegationId: replacement.replacesDelegationId,

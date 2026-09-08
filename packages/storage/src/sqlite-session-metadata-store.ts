@@ -1186,10 +1186,16 @@ export class SqliteSessionMetadataStore {
     return record;
   }
 
-  async readCatalogRecord(sessionId: string): Promise<SessionMetadataCatalogRecord> {
+  async readCatalogRecord(
+    sessionId: string,
+    roleScope: 'ordinary' | 'recoverable' = 'ordinary',
+  ): Promise<SessionMetadataCatalogRecord> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
-    const role = sqliteOrdinarySessionRolePredicate();
+    const role =
+      roleScope === 'recoverable'
+        ? sqliteRecoverableSessionRolePredicate()
+        : sqliteOrdinarySessionRolePredicate();
     const row = this.db
       .prepare(
         `
@@ -1760,9 +1766,13 @@ export class SqliteSessionMetadataStore {
       assignment.id !== `wha_${suffix}` ||
       assignment.targetMessageId !== `whm_${suffix}` ||
       assignment.delegationId !== `whd_${suffix}` ||
+      !workHubAssignmentAttachmentsMatchTarget(assignment) ||
       !messageContentsEqual(
         admission.content,
-        normalizeMessageContent({ text: assignment.userText }),
+        normalizeMessageContent({
+          text: assignment.delegationText ?? assignment.userText,
+          ...(assignment.targetAttachments ? { attachments: assignment.targetAttachments } : {}),
+        }),
       ) ||
       admission.submittedContentDigest !== messageContentDigest(admission.content) ||
       admission.submittedPlacement !== 'current_turn' ||
@@ -6466,6 +6476,28 @@ function isWorkHubActionOperation(value: unknown): value is WorkHubActionOperati
   );
 }
 
+function workHubAssignmentAttachmentsMatchTarget(
+  assignment: WorkHubDelegationAssignedMessage,
+): boolean {
+  const source = assignment.attachments ?? [];
+  const target = assignment.targetAttachments ?? [];
+  return (
+    source.length === target.length &&
+    source.every((attachment, index) => {
+      const copied = target[index]!;
+      const { ref: sourceRef, ...sourceMetadata } = attachment;
+      const { ref: targetRef, ...targetMetadata } = copied;
+      return (
+        sourceRef.kind === 'session_file' &&
+        sourceRef.sessionId === WORKHUB_COORDINATION_SESSION_ID &&
+        targetRef.kind === 'session_file' &&
+        targetRef.sessionId === assignment.targetSessionId &&
+        isDeepStrictEqual(sourceMetadata, targetMetadata)
+      );
+    })
+  );
+}
+
 function sameWorkHubAssignmentRequest(
   existing: WorkHubDelegationAssignedMessage,
   requested: WorkHubDelegationAssignedMessage,
@@ -6478,6 +6510,8 @@ function sameWorkHubAssignmentRequest(
       targetSessionId: existing.targetSessionId,
       disposition: existing.disposition,
       userText: existing.userText,
+      delegationText: existing.delegationText,
+      attachments: existing.attachments,
       create: existing.create,
       replacesActionId: existing.replacesActionId,
       replacesDelegationId: existing.replacesDelegationId,
@@ -6489,6 +6523,8 @@ function sameWorkHubAssignmentRequest(
       targetSessionId: requested.targetSessionId,
       disposition: requested.disposition,
       userText: requested.userText,
+      delegationText: requested.delegationText,
+      attachments: requested.attachments,
       create: requested.create,
       replacesActionId: requested.replacesActionId,
       replacesDelegationId: requested.replacesDelegationId,

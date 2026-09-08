@@ -22,6 +22,8 @@ import test from 'node:test';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import {
   decodeWorkHubCoordinationActInput,
+  decodeWorkHubCoordinationActFromTurnInput,
+  decodeWorkHubCoordinationConfigureModelInput,
   decodeWorkHubCoordinationActResult,
   decodeWorkHubCoordinationAnswerInput,
   decodeWorkHubCoordinationCandidatesResult,
@@ -47,6 +49,90 @@ test('WorkHub Coordination resolve has a closed empty input and bounded identity
   assert.throws(
     () => decodeWorkHubCoordinationResolveResult({ sessionId: 'coordination', role: 'injected' }),
     (error) => error instanceof RuntimeHostProtocolError,
+  );
+});
+
+test('WorkHub model configuration only accepts a revision and explicit model identity', () => {
+  const input = {
+    expectedRevision: 3,
+    modelTarget: {
+      kind: 'explicit',
+      connectionId: 'connection-1',
+      connectionSlug: 'test',
+      model: 'model-1',
+    },
+  };
+  assert.deepEqual(decodeWorkHubCoordinationConfigureModelInput(input), input);
+  for (const invalid of [
+    { ...input, sessionId: 'another-session' },
+    { ...input, permissionMode: 'bypass' },
+    { ...input, expectedRevision: -1 },
+    { ...input, modelTarget: { kind: 'default' } },
+  ])
+    assert.throws(
+      () => decodeWorkHubCoordinationConfigureModelInput(invalid),
+      RuntimeHostProtocolError,
+    );
+});
+
+test('WorkHub model actions cannot supply user authority or attachment locators', () => {
+  const input = {
+    turnId: 'active-model-turn',
+    actionId: 'tool-call-1',
+    proposal: { disposition: 'create_new', title: 'Login audit' },
+    delegationText: 'Inspect the login retries',
+    create: { workspace: { kind: 'project', projectId: 'maka' } },
+    newWorkDefaults: { permissionMode: 'ask' },
+  };
+  assert.deepEqual(decodeWorkHubCoordinationActFromTurnInput(input), input);
+  for (const extra of [
+    { userText: 'Create a new Session' },
+    { confirmation: { kind: 'user_stop' } },
+    { attachments: [] },
+  ]) {
+    assert.throws(
+      () => decodeWorkHubCoordinationActFromTurnInput({ ...input, ...extra }),
+      RuntimeHostProtocolError,
+    );
+  }
+  assert.throws(
+    () =>
+      decodeWorkHubCoordinationActFromTurnInput({
+        turnId: 'active-model-turn',
+        actionId: 'tool-call-2',
+        proposal: { disposition: 'answer_here' },
+      }),
+    RuntimeHostProtocolError,
+  );
+  assert.equal(HOST_OPERATION_SPECS['workhub.coordination.actFromTurn'].mode, 'command');
+  assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.actFromTurn'), true);
+});
+
+test('delegation content is optional, bounded, and unavailable to stop or resume', () => {
+  const input = {
+    actionId: 'delegate-content',
+    userText: 'Continue payment work and explain it here',
+    delegationText: 'Fix the payment retry state',
+    candidateSetId: `sha256:${'a'.repeat(64)}`,
+    proposal: { disposition: 'delegate_existing', candidateRef: 'candidate-payments' },
+  };
+  assert.deepEqual(decodeWorkHubCoordinationActInput(input), input);
+  for (const delegationText of ['', ' ', 'x'.repeat(48 * 1024 + 1), 7]) {
+    assert.throws(
+      () => decodeWorkHubCoordinationActInput({ ...input, delegationText }),
+      RuntimeHostProtocolError,
+    );
+  }
+  assert.throws(
+    () =>
+      decodeWorkHubCoordinationActInput({
+        actionId: 'stop-content',
+        userText: 'Stop Payments',
+        delegationText: 'Unrelated work',
+        confirmation: { kind: 'user_stop' },
+        proposal: { disposition: 'stop_work', expects: { targetSessionId: 'payments' } },
+      }),
+    RuntimeHostProtocolError,
   );
 });
 

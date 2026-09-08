@@ -22,6 +22,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { normalizeMessageContent } from '@maka/core/events';
+import type { SessionConfigurationTransitionRequest } from '@maka/runtime/session-manager';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
@@ -43,7 +44,9 @@ import type {
   OperationOutcome,
   WorkHubCoordinationActResult,
   WorkHubCoordinationActInput,
+  WorkHubCoordinationActFromTurnInput,
   WorkHubCoordinationAnswerInput,
+  WorkHubCoordinationConfigureModelInput,
   WorkHubCoordinationRecordInput,
 } from '../protocol/index.js';
 import {
@@ -56,7 +59,10 @@ import type {
 } from './operation-dispatcher.js';
 import type { RootTurnCoordinator } from './root-turn-coordinator.js';
 import { SessionAdmissionGate, type SessionAdmissionLease } from './session-admission-gate.js';
-import { SessionOperationFailure } from './session-catalog-coordinator.js';
+import {
+  SessionOperationFailure,
+  projectSessionCatalogRecord,
+} from './session-catalog-coordinator.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import {
   WorkHubActionEffectFailure,
@@ -69,9 +75,9 @@ const CREATE_FINGERPRINT = `sha256:${createHash('sha256')
   .update('maka:workhub-coordination-session:v1', 'utf8')
   .digest('hex')}`;
 const COORDINATION_CWD_DIRECTORY = 'workhub-coordination';
-const COORDINATION_TOOL_PROFILE = 'workhub-coordination-v1' as const;
+const COORDINATION_TOOL_PROFILE = 'workhub-coordination-v2' as const;
 const SYNTHETIC_COORDINATION_MODEL_ID = 'maka-workhub-coordination';
-const COORDINATION_PERMISSION_MODE = 'explore' as const;
+const COORDINATION_PERMISSION_MODE = 'bypass' as const;
 const COORDINATION_COLLABORATION_MODE = 'agent' as const;
 const COORDINATION_ORCHESTRATION_MODE = 'default' as const;
 const COORDINATION_SUMMARY_MESSAGE_KINDS = ['user', 'assistant', 'state'] as const;
@@ -94,6 +100,7 @@ type CoordinationStores = Pick<
   | 'probeSessionRemoval'
   | 'probeStableSessionCreate'
   | 'readHeaderSnapshot'
+  | 'readCatalogRecord'
   | 'readWorkHubAssignment'
   | 'readActiveWorkHubAssignmentsByTarget'
   | 'readWorkHubReplacement'
@@ -108,7 +115,10 @@ type CoordinationStores = Pick<
 
 type CoordinationExecutions = Pick<
   RootTurnCoordinator,
-  'startWorkHubCoordinationMessage' | 'hasRootTurnAdmission'
+  | 'startWorkHubCoordinationMessage'
+  | 'hasRootTurnAdmission'
+  | 'isSessionExecutionIdle'
+  | 'readActiveWorkHubRequest'
 >;
 
 type WorkHubResumeResult =
@@ -140,18 +150,29 @@ export interface HostWorkHubCoordinationCoordinatorOptions {
   readonly sessionActions: CoordinationSessionActions;
   readonly resolveCreateTarget: () => Promise<CoordinationCreateTarget>;
   readonly requestDrain: () => void;
+  readonly transitionConfiguration: (
+    input: SessionConfigurationTransitionRequest,
+  ) => Promise<SessionHeaderSnapshot>;
+  readonly configureModel: (
+    input: WorkHubCoordinationConfigureModelInput,
+  ) => Promise<OperationOutcome<'workhub.coordination.configureModel'>>;
 }
 
 /** Resolves the one durable Coordination Session owned by this Runtime Host. */
 export class HostWorkHubCoordinationCoordinator {
   readonly handlers: WorkHubCoordinationOperationHandlerMap = {
     'workhub.coordination.resolve': () => this.#resolve(),
+    'workhub.coordination.query': () => this.#query(),
+    'workhub.coordination.configureModel': (input) => this.#configureModel(input),
     'workhub.coordination.answer': (input, context) => this.#answer(input, context),
     'workhub.coordination.record': (input) => this.#record(input),
     'workhub.coordination.candidates': () => this.#candidates(),
     'workhub.coordination.act': (input, context) => this.#act(input, context),
+    'workhub.coordination.actFromTurn': (input, context) => this.#actFromTurn(input, context),
   };
 
+  readonly #transitionConfiguration: HostWorkHubCoordinationCoordinatorOptions['transitionConfiguration'];
+  readonly #configureModel: HostWorkHubCoordinationCoordinatorOptions['configureModel'];
   readonly #coordinationCwd: string;
   readonly #stores: CoordinationStores;
   readonly #admission: SessionAdmissionGate;
@@ -163,6 +184,8 @@ export class HostWorkHubCoordinationCoordinator {
   readonly #readDelegationRetirement: HostWorkHubCoordinationCoordinatorOptions['sessionActions']['readDelegationRetirement'];
 
   constructor(options: HostWorkHubCoordinationCoordinatorOptions) {
+    this.#configureModel = options.configureModel;
+    this.#transitionConfiguration = options.transitionConfiguration;
     this.#coordinationCwd = join(options.stateRoot, COORDINATION_CWD_DIRECTORY);
     this.#stores = options.stores;
     this.#readDelegationRetirement = options.sessionActions.readDelegationRetirement;
@@ -249,6 +272,7 @@ export class HostWorkHubCoordinationCoordinator {
         disposition: input.disposition,
         userText: input.userText,
         ...(input.attachments ? { attachments: input.attachments } : {}),
+        ...(input.delegationText === undefined ? {} : { delegationText: input.delegationText }),
         replacesActionId: input.replacesActionId,
         replacesDelegationId: input.replacesDelegationId,
         replacedTargetSessionId: input.replacedTargetSessionId,
@@ -517,12 +541,54 @@ export class HostWorkHubCoordinationCoordinator {
     }
   }
 
+  async #actFromTurn(
+    input: WorkHubCoordinationActFromTurnInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'workhub.coordination.actFromTurn'>> {
+    let content;
+    try {
+      content = await this.#executions.readActiveWorkHubRequest(input.turnId);
+    } catch {
+      return {
+        ok: false,
+        error: {
+          code: 'persistence_failed',
+          message: 'WorkHub active Turn authority is unavailable',
+        },
+      };
+    }
+    if (!content) {
+      return {
+        ok: false,
+        error: {
+          code: 'operation_conflict',
+          message: 'WorkHub action requires its currently active model Turn',
+        },
+      };
+    }
+    const { turnId: _turnId, ...action } = input;
+    const carriesAttachments =
+      action.proposal.disposition === 'delegate_existing' ||
+      action.proposal.disposition === 'create_new' ||
+      action.proposal.disposition === 'replace';
+    return this.#act(
+      {
+        ...action,
+        userText: content.text,
+        ...(carriesAttachments && content.attachments ? { attachments: content.attachments } : {}),
+      },
+      context,
+      'active_model',
+    );
+  }
+
   async #act(
     input: WorkHubCoordinationActInput,
     context: ConnectionContext,
+    authority: 'user_text' | 'active_model' = 'user_text',
   ): Promise<OperationOutcome<'workhub.coordination.act'>> {
     try {
-      return { ok: true, result: await this.#actionGate.act(input, context) };
+      return { ok: true, result: await this.#actionGate.act(input, context, authority) };
     } catch (error) {
       if (error instanceof WorkHubActionEffectFailure) {
         return {
@@ -547,6 +613,25 @@ export class HostWorkHubCoordinationCoordinator {
         error: {
           code: 'persistence_failed',
           message: 'WorkHub action authority is unavailable',
+        },
+      };
+    }
+  }
+
+  async #query(): Promise<OperationOutcome<'workhub.coordination.query'>> {
+    try {
+      return {
+        ok: true,
+        result: projectSessionCatalogRecord(
+          await this.#stores.readCatalogRecord(WORKHUB_COORDINATION_SESSION_ID, 'recoverable'),
+        ),
+      };
+    } catch {
+      return {
+        ok: false,
+        error: {
+          code: 'persistence_failed',
+          message: 'WorkHub Coordination Session state is unavailable',
         },
       };
     }
@@ -776,15 +861,49 @@ export class HostWorkHubCoordinationCoordinator {
   ): Promise<OperationOutcome<'workhub.coordination.resolve'>> {
     if (
       record.header.toolProfile !== undefined &&
+      record.header.toolProfile !== 'workhub-coordination-v1' &&
       record.header.toolProfile !== COORDINATION_TOOL_PROFILE
     ) {
       return identityConflict();
     }
-    if (record.header.cwd === this.#coordinationCwd && validCoordinationHeader(record.header)) {
+    if (
+      record.header.cwd === this.#coordinationCwd &&
+      record.header.toolProfile === COORDINATION_TOOL_PROFILE &&
+      validCoordinationHeader(record.header)
+    ) {
       return success();
+    }
+    // Resolving an old Session is the explicit durable upgrade boundary. Active
+    // or recovering v1 Turns must finish under their original zero-tool ceiling.
+    if (!this.#executions.isSessionExecutionIdle(WORKHUB_COORDINATION_SESSION_ID)) {
+      return validCoordinationHeader(record.header)
+        ? success()
+        : failure(
+            'operation_unavailable',
+            'WorkHub Coordination Session is still executing or recovering',
+          );
     }
     let repaired: SessionHeaderSnapshot;
     try {
+      // Permission mode is a projection of the execution boundary. Transition
+      // through Runtime authority to update both and retire cached backends
+      // before changing the profile. An interrupted upgrade remains closed to
+      // execution until a later resolve completes this versioned repair.
+      const configured = await this.#transitionConfiguration({
+        expectedRevision: record.revision,
+        clearConnectionBlock: false,
+        configuration: {
+          backend: record.header.backend,
+          llmConnectionId: record.header.llmConnectionId,
+          llmConnectionSlug: record.header.llmConnectionSlug,
+          connectionLocked: record.header.connectionLocked,
+          model: record.header.model,
+          thinkingLevel: record.header.thinkingLevel,
+          permissionMode: COORDINATION_PERMISSION_MODE,
+          collaborationMode: COORDINATION_COLLABORATION_MODE,
+          orchestrationMode: COORDINATION_ORCHESTRATION_MODE,
+        },
+      });
       repaired = await this.#stores.updateHeaderVersioned(
         WORKHUB_COORDINATION_SESSION_ID,
         {
@@ -792,22 +911,13 @@ export class HostWorkHubCoordinationCoordinator {
           ...(record.header.toolProfile === COORDINATION_TOOL_PROFILE
             ? {}
             : { toolProfile: COORDINATION_TOOL_PROFILE }),
-          ...(record.header.permissionMode === COORDINATION_PERMISSION_MODE
-            ? {}
-            : { permissionMode: COORDINATION_PERMISSION_MODE }),
-          ...((record.header.collaborationMode ?? 'agent') === COORDINATION_COLLABORATION_MODE
-            ? {}
-            : { collaborationMode: COORDINATION_COLLABORATION_MODE }),
-          ...((record.header.orchestrationMode ?? 'default') === COORDINATION_ORCHESTRATION_MODE
-            ? {}
-            : { orchestrationMode: COORDINATION_ORCHESTRATION_MODE }),
         },
-        record.revision,
+        configured.revision,
       );
     } catch {
       return failure(
         'persistence_failed',
-        'WorkHub Coordination Session workspace could not be relocated',
+        'WorkHub Coordination Session configuration could not be aligned',
       );
     }
     return validCoordinationHeader(repaired.header) && repaired.header.cwd === this.#coordinationCwd
@@ -843,8 +953,9 @@ function validCoordinationIdentityHeader(header: SessionHeader): boolean {
 function validCoordinationHeader(header: SessionHeader): boolean {
   return (
     validCoordinationIdentityHeader(header) &&
-    header.toolProfile === COORDINATION_TOOL_PROFILE &&
-    header.permissionMode === COORDINATION_PERMISSION_MODE &&
+    ((header.toolProfile === COORDINATION_TOOL_PROFILE &&
+      header.permissionMode === COORDINATION_PERMISSION_MODE) ||
+      (header.toolProfile === 'workhub-coordination-v1' && header.permissionMode === 'explore')) &&
     (header.collaborationMode ?? 'agent') === COORDINATION_COLLABORATION_MODE &&
     (header.orchestrationMode ?? 'default') === COORDINATION_ORCHESTRATION_MODE
   );

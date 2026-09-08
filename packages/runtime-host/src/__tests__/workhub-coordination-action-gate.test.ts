@@ -55,6 +55,107 @@ const CONTEXT: ConnectionContext = {
 };
 
 describe('WorkHub Coordination Action Gate', () => {
+  test('delegation content remains separate from authorization and survives durable replay', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const candidates = await gate.candidates();
+    const input = {
+      actionId: 'model-tool-call',
+      userText: 'Continue Payments and explain the result here',
+      delegationText: 'Inspect and fix the payment retry state',
+      candidateSetId: candidates.candidateSetId,
+      proposal: {
+        disposition: 'delegate_existing' as const,
+        candidateRef: candidates.candidates[0]!.candidateRef,
+      },
+    };
+    const result = await gate.act(input, CONTEXT);
+    assert.equal(effects.assignments[0]?.userText, input.userText);
+    assert.equal(effects.assignments[0]?.delegationText, input.delegationText);
+    assert.equal(
+      effects.assignmentRecords.get(input.actionId)?.delegationText,
+      input.delegationText,
+    );
+    assert.deepEqual(await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT), result);
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        { ...input, delegationText: 'Delete all payment work' },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        {
+          actionId: 'generated-authorization',
+          userText: 'How would I create a new Session?',
+          delegationText: 'Create a new Session called Payments',
+          proposal: { disposition: 'create_new', title: 'Payments' },
+          create: { workspace: { kind: 'project', projectId: 'maka' } },
+        },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+  });
+
+  test('replacement intent retains delegated content across a restart before assignment', async () => {
+    const effects = fakeEffects([session('source'), session('destination')]);
+    effects.assignmentRecords.set(
+      'source-action',
+      assignmentRecord(
+        {
+          actionId: 'source-action',
+          actionFingerprint: `sha256:${'a'.repeat(64)}`,
+          targetSessionId: 'source',
+          targetSessionName: 'source',
+          disposition: 'delegate_existing',
+          userText: 'Start source work',
+        },
+        'source-turn',
+      ),
+    );
+    const candidates = await new WorkHubCoordinationActionGate(effects).candidates();
+    const input = {
+      actionId: 'replacement-tool-call',
+      userText: 'No, use destination instead',
+      delegationText: 'Fix the login retries',
+      candidateSetId: candidates.candidateSetId,
+      confirmation: { kind: 'user_correction' as const },
+      proposal: {
+        disposition: 'replace' as const,
+        replacesActionId: 'source-action',
+        target: {
+          disposition: 'delegate_existing' as const,
+          candidateRef: candidates.candidates.find(({ sessionId }) => sessionId === 'destination')!
+            .candidateRef,
+        },
+      },
+    };
+    const assign = effects.assign;
+    effects.assign = async () => {
+      throw new WorkHubActionEffectFailure('internal_failure', 'Interrupted after intent');
+    };
+    await assert.rejects(new WorkHubCoordinationActionGate(effects).act(input, CONTEXT));
+    assert.equal(
+      effects.replacements.get('delegation-source-action')?.delegationText,
+      input.delegationText,
+    );
+    effects.assign = assign;
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        { ...input, delegationText: 'Different work' },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT);
+    assert.equal(
+      effects.assignmentRecords.get(input.actionId)?.delegationText,
+      input.delegationText,
+    );
+  });
+
   test('trusted correction text binds complete target and title identities', () => {
     for (const [text, targetName] of [
       ['No, use "Payments"', 'Payments'],
@@ -2922,6 +3023,7 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
         targetSessionName: input.targetSessionName,
         disposition: input.disposition,
         userText: input.userText,
+        ...(input.delegationText === undefined ? {} : { delegationText: input.delegationText }),
         ...(input.create ? { create: input.create } : {}),
         replacesActionId: input.replacesActionId,
         replacesDelegationId: input.replacesDelegationId,
@@ -3059,6 +3161,7 @@ function assignmentRecord(
     disposition: input.disposition,
     userText: input.userText,
     ...(input.attachments ? { attachments: input.attachments } : {}),
+    ...(input.delegationText === undefined ? {} : { delegationText: input.delegationText }),
     ...(input.create ? { create: input.create } : {}),
     ...(input.replacesActionId ? { replacesActionId: input.replacesActionId } : {}),
     ...(input.replacesDelegationId ? { replacesDelegationId: input.replacesDelegationId } : {}),

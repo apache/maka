@@ -74,8 +74,8 @@
       "electron": "Coordination startup failure comes from the Host, and recovery needs a default model written back to it"
     },
     "workhub-reconstruction.spec.ts": {
-      "tests": 2,
-      "electron": "delegation linkage is rebuilt by the Host across navigation and across Sessions"
+      "tests": 1,
+      "electron": "the same WebContentsView and unsent draft survive reparenting between native main and floating windows"
     },
     "zh-tw-locale.spec.ts": {
       "tests": 1,

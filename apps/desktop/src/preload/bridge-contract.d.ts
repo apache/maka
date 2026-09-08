@@ -712,7 +712,8 @@ export interface DesktopSessionUsageSummary extends UsageSummaryV2 {
 
 export interface MakaBridge {
   sessionLocal: import('../shared/session-local-contract.js').DesktopSessionLocalBridge;
-  desktopAssistant: import('../shared/desktop-assistant.js').DesktopAssistantBridge;
+  workHubControl: import('../shared/workhub-control.js').WorkHubControlBridge;
+  workHubPresentation: import('../shared/workhub-presentation.js').WorkHubPresentationBridge;
   sessionCollaboration: {
     prepareInvitation(
       sessionId: string,
@@ -1009,7 +1010,10 @@ export interface MakaBridge {
     ): () => void;
   };
   workHub: {
+    getSession(coordinationSessionId: string): Promise<DesktopSessionSummary>;
     prepareAttachments(coordinationSessionId: string, items: RendererIngestInput[]): Promise<AttachmentRef[]>;
+    answer(coordinationSessionId: string, input: OperationInput<'workhub.coordination.answer'>): Promise<OperationOutput<'workhub.coordination.answer'>>;
+    configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>): Promise<OperationOutput<'workhub.coordination.configureModel'>>;
     /** Resolve the active Runtime Host's stable coordination conversation. */
     resolveCoordinationSession(): Promise<string>;
     /** Persist one deterministic clarification or routing summary. */

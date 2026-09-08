@@ -3507,6 +3507,132 @@ test('shutdown contains a successor backend start rejected by Interaction drain'
   }
 });
 
+test('WorkHub v2 binds the requesting Desktop before admission while v1 stays unbound', async () => {
+  for (const toolProfile of ['workhub-coordination-v1', 'workhub-coordination-v2'] as const) {
+    const capabilities = new HostClientCapabilityCoordinator({
+      ...clientCapabilityCoordinatorTestAdmission(),
+      activation: new RuntimePolicyActivationGate(),
+      onModelToolsChanged: () => undefined,
+    });
+    const bindings: [string, string | undefined][] = [];
+    capabilities.bindSession = async (sessionId, connectionId) => {
+      bindings.push([sessionId, connectionId]);
+      return { ok: false, message: 'Desktop capability unavailable' };
+    };
+    const fixture = await createFailureFixture({
+      clientCapabilities: capabilities,
+      withInteractions: true,
+      registerBackend: (backends) =>
+        backends.register('ai-sdk', (context) => new FakeBackend(context)),
+    });
+    try {
+      const ordinary = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+      await fixture.stores.sessionStore.createStableSession({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        requestFingerprint: `sha256:${'a'.repeat(64)}`,
+        input: {
+          cwd: ordinary.cwd,
+          llmConnectionId: ordinary.llmConnectionId,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+          toolProfile,
+          permissionMode: toolProfile === 'workhub-coordination-v2' ? 'bypass' : 'explore',
+        },
+      });
+      const turnId = 'workhub-binding-turn';
+      const started = await fixture.coordinator.startWorkHubCoordinationMessage(
+        {
+          sessionId: WORKHUB_COORDINATION_SESSION_ID,
+          turnId,
+          execution: { kind: 'workhub_coordination', inputDigest: `sha256:${'b'.repeat(64)}` },
+          archivedMessage: 'Archived',
+          prepareFreshContent: async () => ({ kind: 'ready', content: { text: 'Hello' } }),
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop-requester'),
+      );
+      const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+        WORKHUB_COORDINATION_SESSION_ID,
+        turnId,
+      );
+      if (toolProfile === 'workhub-coordination-v2') {
+        assert.deepEqual(bindings, [[WORKHUB_COORDINATION_SESSION_ID, 'desktop-requester']]);
+        assert.equal(started.ok, false);
+        assert.equal(admission, undefined);
+      } else {
+        assert.deepEqual(bindings, []);
+        assert.equal(started.ok, true, JSON.stringify(started));
+        assert.ok(admission);
+      }
+    } finally {
+      await fixture.coordinator.close();
+      await capabilities.close();
+      await fixture.dispose();
+    }
+  }
+});
+
+test('active WorkHub authority reads the admitted v2 input and refuses other or completed Turns', async () => {
+  for (const toolProfile of ['workhub-coordination-v1', 'workhub-coordination-v2'] as const) {
+    let backend: BlockingRootBackend | undefined;
+    const fixture = await createFailureFixture({
+      registerBackend: (backends) => {
+        backends.register(
+          'ai-sdk',
+          (context) => (backend = new BlockingRootBackend(context.sessionId)),
+        );
+      },
+    });
+    try {
+      const ordinary = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+      await fixture.stores.sessionStore.createStableSession({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        requestFingerprint: `sha256:${'c'.repeat(64)}`,
+        input: {
+          cwd: ordinary.cwd,
+          llmConnectionId: ordinary.llmConnectionId,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+          toolProfile,
+          permissionMode: toolProfile === 'workhub-coordination-v2' ? 'bypass' : 'explore',
+        },
+      });
+      const turnId = 'live-workhub-turn';
+      const content = { text: 'Continue Payments and explain the result here' };
+      assert.equal(await fixture.coordinator.readActiveWorkHubRequest(turnId), undefined);
+      const started = await fixture.coordinator.startWorkHubCoordinationMessage(
+        {
+          sessionId: WORKHUB_COORDINATION_SESSION_ID,
+          turnId,
+          archivedMessage: 'Archived',
+          execution: { kind: 'workhub_coordination', inputDigest: `sha256:${'d'.repeat(64)}` },
+          prepareFreshContent: async () => ({ kind: 'ready', content }),
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop'),
+      );
+      assert.ok(started.ok, JSON.stringify(started));
+      await backend?.started.promise;
+      assert.deepEqual(
+        await fixture.coordinator.readActiveWorkHubRequest(turnId),
+        toolProfile === 'workhub-coordination-v2' ? content : undefined,
+      );
+      assert.equal(await fixture.coordinator.readActiveWorkHubRequest('other-turn'), undefined);
+      await fixture.coordinator.stopRoot({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        turnId,
+        runId: started.result.runId,
+      });
+      await fixture.coordinator.whenIdle(WORKHUB_COORDINATION_SESSION_ID);
+      assert.equal(await fixture.coordinator.readActiveWorkHubRequest(turnId), undefined);
+    } finally {
+      backend?.release();
+      await fixture.coordinator.close();
+      await fixture.dispose();
+    }
+  }
+});
+
 test('Client Capability ambiguity fails before durable root admission', async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
     ...clientCapabilityCoordinatorTestAdmission(),

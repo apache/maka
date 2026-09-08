@@ -1,0 +1,341 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { BrowserWindow, WebContentsView, globalShortcut, ipcMain, screen } from 'electron';
+import type { WorkHubHost, WorkHubMainNavigation, WorkHubPresentationSnapshot } from '../shared/workhub-presentation.js';
+import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
+import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
+import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
+
+const COMMAND = 'workhub-presentation:command';
+const SHORTCUT = 'CommandOrControl+Shift+K';
+
+export interface WorkHubPresentationDeps {
+  mainWindow(): BrowserWindow | undefined;
+  ensureMainWindow(): Promise<BrowserWindow>;
+  mainModuleDirectory: string;
+  viteDevServerUrl?: string;
+  preloadPath: string;
+  onError?: (error: unknown) => void;
+  onViewCreated?: (contents: Electron.WebContents) => (() => void) | void;
+}
+
+/** One renderer owns the conversation, draft and model selection for its entire lifetime. */
+export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
+  let view: WebContentsView | undefined;
+  let floating: BrowserWindow | undefined;
+  let parent: BrowserWindow | undefined;
+  let host: WorkHubHost = { visible: false, rect: { x: 0, y: 0, width: 0, height: 0 } };
+  let placement: 'docked' | 'floating' = 'docked';
+  let shortcutRegistered = false;
+  let disposed = false;
+  let ipcRegistered = false;
+  let rendererReady = false;
+  let releaseView: (() => void) | undefined;
+  let focusPending = false;
+  let conversationExpanded = true;
+  let expandedHeight = 720;
+  let queue: Promise<unknown> = Promise.resolve();
+  const mainReady = new WeakSet<Electron.WebContents>();
+  const pendingNavigation = new WeakMap<Electron.WebContents, WorkHubMainNavigation>();
+  const mainListeners = new Map<BrowserWindow, () => void>();
+  const entry = resolveMainRendererEntry(deps.mainModuleDirectory, deps.viteDevServerUrl);
+  const reportError = deps.onError ?? ((error: unknown) => console.error('[workhub-presentation]', error));
+
+  function enqueue<T>(operation: () => T | Promise<T>): Promise<T> {
+    const next = queue.then(() => {
+      if (disposed) throw new Error('WorkHub presentation is disposed');
+      return operation();
+    });
+    queue = next.catch(() => undefined);
+    return next;
+  }
+
+  function getSnapshot(): WorkHubPresentationSnapshot {
+    return { placement, floatingVisible: !!floating && !floating.isDestroyed() && floating.isVisible(), shortcutRegistered };
+  }
+
+  function send(channel: string, ...args: unknown[]): void {
+    const main = deps.mainWindow();
+    const contents = [main && !main.isDestroyed() ? main.webContents : undefined, view?.webContents];
+    for (const wc of contents) if (wc && !wc.isDestroyed()) wc.send(channel, ...args);
+  }
+
+  function changed(): void { send('workhub-presentation:changed', getSnapshot()); }
+
+  function focusComposer(): void {
+    focusPending = true;
+    if (!view || view.webContents.isDestroyed() || !rendererReady || !parent || parent.isDestroyed() || !parent.isVisible()) return;
+    if (placement === 'docked' && !host.visible) return;
+    view.webContents.focus();
+    view.webContents.send('workhub-presentation:focus-composer');
+    focusPending = false;
+  }
+
+  function attach(next: BrowserWindow): void {
+    if (!view || parent === next) return;
+    if (parent && !parent.isDestroyed()) parent.contentView.removeChildView(view);
+    next.contentView.addChildView(view);
+    parent = next;
+  }
+
+  function ensureView(): WebContentsView {
+    if (view) return view;
+    view = new WebContentsView({ webPreferences: {
+      preload: deps.preloadPath, contextIsolation: true, nodeIntegration: false,
+      sandbox: true, webSecurity: true, allowRunningInsecureContent: false,
+    } });
+    view.setVisible(false);
+    view.setBackgroundColor('#00000000');
+    const release = deps.onViewCreated?.(view.webContents);
+    releaseView = typeof release === 'function' ? release : undefined;
+    view.webContents.once('destroyed', releaseViewRegistration);
+    installMainWindowPermissionPolicy(view.webContents, entry.url);
+    view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    view.webContents.on('will-navigate', (event) => event.preventDefault());
+    view.webContents.on('will-frame-navigate', (event) => event.preventDefault());
+    view.webContents.on('will-attach-webview', (event) => event.preventDefault());
+    view.webContents.on('render-process-gone', (_event, details) => {
+      rendererReady = false;
+      reportError(new Error(`WorkHub renderer exited: ${details.reason}`));
+    });
+    void loadMainRenderer(view.webContents, entry, 'workhub').catch(reportError);
+    return view;
+  }
+
+  function fitFloating(): void {
+    if (!floating || floating.isDestroyed() || parent !== floating || !view) return;
+    const { width, height } = floating.getContentBounds();
+    view.setBounds({ x: 0, y: 0, width, height });
+  }
+
+  function ensureFloating(): BrowserWindow {
+    if (floating && !floating.isDestroyed()) return floating;
+    const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+    const width = Math.min(520, area.width);
+    const height = Math.min(720, area.height);
+    floating = new BrowserWindow({
+      title: 'WorkHub', show: false, width, height,
+      x: area.x + area.width - width, y: area.y + Math.round((area.height - height) / 2),
+      minWidth: Math.min(360, width), minHeight: Math.min(80, height),
+      alwaysOnTop: true, autoHideMenuBar: true,
+      frame: false, transparent: true, backgroundColor: '#00000000',
+      hasShadow: true, roundedCorners: true,
+      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+    });
+    if (process.platform === 'darwin') floating.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    floating.on('resize', fitFloating);
+    floating.on('close', (event) => {
+      if (disposed) return;
+      event.preventDefault();
+      floating?.hide();
+      changed();
+    });
+    return floating;
+  }
+
+  function updateDockedBounds(): void {
+    const main = deps.mainWindow();
+    if (!view || placement !== 'docked' || !main || main.isDestroyed()) return;
+    attach(main);
+    const zoom = main.webContents.getZoomFactor();
+    const size = main.getContentBounds();
+    const x = Math.max(0, Math.min(size.width, Math.round(host.rect.x * zoom)));
+    const y = Math.max(0, Math.min(size.height, Math.round(host.rect.y * zoom)));
+    const width = Math.max(0, Math.min(size.width - x, Math.round(host.rect.width * zoom)));
+    const height = Math.max(0, Math.min(size.height - y, Math.round(host.rect.height * zoom)));
+    view.setBounds({ x, y, width, height });
+    view.setVisible(host.visible && width > 0 && height > 0);
+    if (host.visible && width > 0 && height > 0 && focusPending) focusComposer();
+  }
+
+  function detach(): void {
+    ensureView();
+    const target = ensureFloating();
+    placement = 'floating';
+    attach(target);
+    fitFloating();
+    view!.setVisible(true);
+    // Summoning follows the pointer's display, including an existing window
+    // that was last used on another monitor.
+    const old = target.getBounds();
+    const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+    const width = Math.min(old.width, area.width);
+    const height = Math.min(old.height, area.height);
+    target.setBounds({ width, height, x: Math.max(area.x, Math.min(old.x, area.x + area.width - width)), y: Math.max(area.y, Math.min(old.y, area.y + area.height - height)) });
+    if (target.isMinimized()) target.restore();
+    target.show();
+    target.focus();
+    focusComposer();
+    changed();
+  }
+
+  async function navigateMain(navigation: WorkHubMainNavigation): Promise<BrowserWindow> {
+    const main = await deps.ensureMainWindow();
+    if (disposed) throw new Error('WorkHub presentation is disposed');
+    attachMainWindow(main);
+    if (main.isMinimized()) main.restore();
+    main.show();
+    main.focus();
+    if (mainReady.has(main.webContents)) main.webContents.send('workhub-presentation:open-main', navigation);
+    else pendingNavigation.set(main.webContents, navigation);
+    return main;
+  }
+
+  async function dock(): Promise<void> {
+    await navigateMain({ kind: 'workhub' });
+    floating?.hide();
+    placement = 'docked';
+    updateDockedBounds();
+    focusComposer();
+    changed();
+  }
+
+  function attachMainWindow(main: BrowserWindow): void {
+    if (mainListeners.has(main)) return;
+    const contents = main.webContents;
+    const onClose = () => {
+      if (disposed || parent !== main || !view) return;
+      // BrowserWindow disposal must never own the conversation's lifetime.
+      attach(ensureFloating());
+      floating!.hide();
+      placement = 'floating';
+      host = { ...host, visible: false };
+      changed();
+    };
+    const onLoading = () => mainReady.delete(contents);
+    contents.on('did-start-loading', onLoading);
+    main.on('close', onClose);
+    main.on('resize', updateDockedBounds);
+    const cleanup = () => {
+      if (!contents.isDestroyed()) contents.removeListener('did-start-loading', onLoading);
+      main.removeListener('close', onClose);
+      main.removeListener('resize', updateDockedBounds);
+      mainListeners.delete(main);
+    };
+    main.once('closed', cleanup);
+    mainListeners.set(main, () => { cleanup(); main.removeListener('closed', cleanup); });
+  }
+
+  function ownsWebContents(contents: Electron.WebContents): boolean {
+    return !!view && !view.webContents.isDestroyed() && view.webContents === contents;
+  }
+
+  function registerIpc(): void {
+    if (ipcRegistered) return;
+    ipcMain.handle(COMMAND, (event, command: unknown, payload: unknown) => {
+      const main = deps.mainWindow();
+      const isMain = !!main && !main.isDestroyed() && main.webContents === event.sender;
+      if ((!isMain && !ownsWebContents(event.sender)) || event.senderFrame !== event.sender.mainFrame) {
+        throw new Error('WorkHub presentation IPC requires an owned main frame');
+      }
+      return enqueue(async () => {
+        switch (command) {
+          case 'snapshot': return getSnapshot();
+          case 'ready':
+            if (!isMain) { rendererReady = true; if (focusPending) focusComposer(); }
+            else {
+              mainReady.add(event.sender);
+              const navigation = pendingNavigation.get(event.sender);
+              if (navigation) {
+                pendingNavigation.delete(event.sender);
+                event.sender.send('workhub-presentation:open-main', navigation);
+              }
+            }
+            return;
+          case 'host': {
+            if (!isMain) throw new Error('Only the main window can place WorkHub');
+            if (!payload || typeof payload !== 'object') throw new Error('Invalid WorkHub host');
+            const value = payload as WorkHubHost;
+            if (typeof value.visible !== 'boolean' || !value.rect ||
+              ![value.rect.x, value.rect.y, value.rect.width, value.rect.height].every((n) => typeof n === 'number' && Number.isFinite(n)) ||
+              value.rect.width < 0 || value.rect.height < 0) throw new Error('Invalid WorkHub host');
+            host = value;
+            if (host.visible && placement === 'docked') { attachMainWindow(main!); ensureView(); }
+            updateDockedBounds();
+            return;
+          }
+          case 'detach': detach(); return;
+          case 'conversation-layout': {
+            if (isMain) throw new Error('Only the WorkHub view can size its conversation');
+            const value = payload as { expanded?: unknown; compactHeight?: unknown } | null;
+            if (!value || typeof value.expanded !== 'boolean' || typeof value.compactHeight !== 'number' || !Number.isFinite(value.compactHeight) || value.compactHeight <= 0) throw new Error('Invalid WorkHub conversation layout');
+            if (placement !== 'floating' || !floating || floating.isDestroyed()) return;
+            const bounds = floating.getBounds();
+            const area = screen.getDisplayMatching(bounds).workArea;
+            if (conversationExpanded && !value.expanded) expandedHeight = bounds.height;
+            const height = Math.min(area.height, Math.max(80, value.expanded ? (conversationExpanded ? bounds.height : expandedHeight) : Math.ceil(value.compactHeight)));
+            const animate = conversationExpanded !== value.expanded;
+            conversationExpanded = value.expanded;
+            if (bounds.height !== height) {
+              floating.setBounds({ ...bounds, height, y: Math.max(area.y, Math.min(bounds.y + bounds.height - height, area.y + area.height - height)) }, animate);
+              fitFloating();
+            }
+            return;
+          }
+          case 'dock': await dock(); return;
+          case 'hide': floating?.hide(); changed(); return;
+          case 'session':
+            if (typeof payload !== 'string' || payload.length > 4096) throw new Error('Invalid session key');
+            parseDesktopSessionKey(payload);
+            await navigateMain({ kind: 'session', sessionKey: payload });
+            return;
+          default: throw new Error('Unknown WorkHub presentation command');
+        }
+      });
+    });
+    ipcRegistered = true;
+  }
+
+  function toggle(): Promise<void> {
+    return enqueue(async () => {
+      if (placement === 'floating') await dock();
+      else detach();
+    });
+  }
+
+  function registerShortcut(): boolean {
+    if (!shortcutRegistered) shortcutRegistered = globalShortcut.register(SHORTCUT, () => { void toggle().catch(reportError); });
+    changed();
+    return shortcutRegistered;
+  }
+
+  function releaseViewRegistration(): void {
+    const release = releaseView;
+    releaseView = undefined;
+    release?.();
+  }
+
+  function dispose(): void {
+    if (disposed) return;
+    disposed = true;
+    if (shortcutRegistered) globalShortcut.unregister(SHORTCUT);
+    if (ipcRegistered) ipcMain.removeHandler(COMMAND);
+    for (const cleanup of mainListeners.values()) cleanup();
+    releaseViewRegistration();
+    if (view && parent && !parent.isDestroyed()) parent.contentView.removeChildView(view);
+    if (view && !view.webContents.isDestroyed()) view.webContents.close({ waitForBeforeUnload: false });
+    if (floating && !floating.isDestroyed()) floating.destroy();
+    view = undefined;
+    floating = undefined;
+    parent = undefined;
+  }
+
+  return { registerIpc, registerShortcut, attachMainWindow, getSnapshot, ownsWebContents, send, show: () => enqueue(detach), toggle, dispose };
+}

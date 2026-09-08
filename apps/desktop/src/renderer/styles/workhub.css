@@ -17,67 +17,6 @@
  * under the License.
  */
 
-/* WorkHub is a conversation surface. These rules intentionally reuse the
-   product chat layout instead of maintaining a second page/composer system. */
-.workhub-surface {
-  display: flex;
-  height: 100%;
-  min-height: 0;
-  flex-direction: column;
-  gap: 0;
-  padding: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-}
-
-.workhub-timeline {
-  display: flex;
-  width: 100%;
-  min-width: 0;
-  min-height: 0;
-  flex: 1 1 auto;
-  flex-direction: column;
-}
-
-.workhub-header,
-.workhub-empty,
-.workhub-turns {
-  width: min(var(--maka-reading-measure), 100%);
-  max-width: var(--maka-reading-measure);
-  margin-inline: auto;
-}
-
-.workhub-header {
-  box-sizing: border-box;
-  align-items: flex-start;
-  margin-top: var(--space-6, 24px);
-  padding: 0 var(--space-4, 16px) 12px;
-}
-
-.workhub-header h1,
-.workhub-empty h2 {
-  margin: 0;
-  font-size: var(--font-size-heading-md, 16px);
-  line-height: 1.25;
-}
-
-.workhub-header p,
-.workhub-empty p {
-  margin: 6px 0 0;
-  color: var(--color-text-secondary, var(--muted-foreground));
-  line-height: 1.55;
-}
-
-.workhub-header > span {
-  padding-top: 3px;
-  font-size: var(--font-size-body-sm, 12px);
-}
-
-.workhub-message-list {
-  flex: 1 1 auto;
-  padding-inline: 0;
-}
-
 .workhub-body {
   display: grid;
   width: 100%;
@@ -141,208 +80,6 @@
   padding: 12px 0;
 }
 
-.workhub-empty {
-  box-sizing: border-box;
-  padding: 72px 16px;
-  border: 0;
-  background: transparent;
-  text-align: center;
-}
-
-.workhub-coordination-retry {
-  margin-top: var(--space-4, 16px);
-}
-
-.workhub-turns {
-  display: flex;
-  flex-direction: column;
-}
-
-.workhub-loading-user {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.workhub-loading-turn {
-  min-height: 172px;
-}
-
-.workhub-turn {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 16px 0;
-}
-
-.workhub-message {
-  width: 100%;
-}
-
-.workhub-user-bubble p,
-.workhub-assistant-bubble p,
-.workhub-result {
-  margin: 0;
-  line-height: 1.65;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.workhub-assistant-bubble > small,
-.workhub-status {
-  color: var(--color-text-secondary, var(--muted-foreground));
-  font-size: var(--font-size-body-sm, 12px);
-}
-
-.workhub-error {
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--color-text-danger, var(--destructive-text));
-}
-
-.workhub-clarification {
-  display: flex;
-  flex-direction: column;
-  margin-top: 12px;
-  padding: 0;
-  border: 0;
-  border-top: 1px solid var(--color-border-subtle, var(--border));
-  border-radius: 0;
-  background: transparent;
-}
-
-.workhub-clarification > button,
-.workhub-submitted > button {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  width: 100%;
-  height: auto;
-  padding: 10px 0;
-  gap: 16px;
-  border: 0;
-  border-bottom: 1px solid var(--color-border-subtle, var(--border));
-  border-radius: 0;
-  background: transparent;
-  color: var(--color-text-primary, var(--foreground));
-  font: inherit;
-  text-align: left;
-}
-
-.workhub-clarification > button:hover,
-.workhub-submitted > button:hover {
-  color: var(--color-accent, var(--accent));
-}
-
-.workhub-clarification > button:focus-visible,
-.workhub-submitted > button:focus-visible {
-  border-radius: var(--radius-control, 6px);
-  outline: 2px solid var(--color-border-focus, var(--ring));
-  outline-offset: 2px;
-}
-
-.workhub-clarification > button:disabled {
-  opacity: 0.55;
-}
-
-.workhub-clarification small,
-.workhub-submitted small,
-.workhub-submitted-state {
-  color: var(--color-text-secondary, var(--muted-foreground));
-  font-size: var(--font-size-body-xs, 12px);
-}
-
-.workhub-clarification small {
-  max-width: 45%;
-  text-align: right;
-}
-
-.workhub-submitted > p:first-child {
-  color: var(--color-text-secondary, var(--muted-foreground));
-}
-
-.workhub-submitted-session {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.workhub-result {
-  margin-top: 12px;
-  color: var(--color-text-secondary, var(--muted-foreground));
-}
-
-.workhub-waiting {
-  margin-top: 12px;
-}
-
-.workhub-waiting small {
-  color: var(--color-text-secondary, var(--muted-foreground));
-  font-size: var(--font-size-body-xs, 12px);
-}
-
-.workhub-return {
-  display: block;
-  width: min(var(--maka-reading-measure), calc(100% - var(--space-8)));
-  margin: 0 auto 8px;
-  padding: 7px 12px;
-  border: 1px solid var(--color-border-subtle, var(--border));
-  border-radius: var(--radius-control, 6px);
-  background: var(--color-background-secondary, var(--muted));
-  color: var(--color-text-secondary, var(--muted-foreground));
-  font: inherit;
-  text-align: left;
-}
-
-.workhub-return:hover {
-  color: var(--color-text-primary, var(--foreground));
-  border-color: var(--color-border-strong, var(--border-strong));
-}
-
-@media (max-width: 720px) {
-  .workhub-header {
-    padding-inline: 16px;
-  }
-
-}
-
-@media (max-width: 1240px) {
-  .workhub-body {
-    display: block;
-  }
-
-  .workhub-conversation-shell,
-  .workhub-header {
-    width: min(var(--maka-reading-measure), calc(100% - 2 * (var(--space-6) + var(--space-3))));
-    margin-inline: auto;
-  }
-
-  .workhub-anchor-rail {
-    position: static;
-    width: min(var(--maka-reading-measure), 100%);
-    max-height: none;
-    margin-inline: auto;
-    padding: 12px 16px 8px;
-    overflow: hidden;
-    border-bottom: 1px solid var(--color-border-subtle, var(--border));
-  }
-
-  .workhub-filters {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-  }
-
-  .workhub-anchors {
-    display: grid;
-    grid-auto-columns: minmax(168px, 1fr);
-    grid-auto-flow: column;
-    overflow-x: auto;
-  }
-
-}
-
 /* Identity sits next to the prompt; shared chat bubbles remain neutral. */
 .workhub-message-identity {
   display: flex;
@@ -361,73 +98,21 @@
   font-size: var(--font-size-body-sm, 12px);
 }
 
-.workhub-bound-turn .workhub-user-bubble,
-.workhub-bound-turn .workhub-assistant-bubble {
-  position: relative;
-}
-
-.workhub-header p {
-  display: none;
-}
-
-.workhub-submitted > button {
-  border-bottom: 0;
-}
-
-.workhub-bound-turn .workhub-assistant-bubble {
-  padding-inline-start: var(--space-3, 12px);
-}
-
-.workhub-bound-turn,
 .workhub-work-identity {
   --workhub-work-color: oklch(0.58 0.1 var(--workhub-work-hue));
   --workhub-work-label: oklch(0.42 0.075 var(--workhub-work-hue));
   --workhub-work-highlight: oklch(0.48 0.18 var(--workhub-work-hue));
 }
 
-.dark .workhub-bound-turn,
 .dark .workhub-work-identity {
   --workhub-work-color: oklch(0.76 0.105 var(--workhub-work-hue));
   --workhub-work-label: oklch(0.8 0.09 var(--workhub-work-hue));
   --workhub-work-highlight: oklch(0.85 0.15 var(--workhub-work-hue));
 }
 
-.workhub-work-rail {
-  position: absolute;
-  top: 4px;
-  bottom: 4px;
-  width: 11px;
-}
-
-.workhub-work-rail::before {
-  position: absolute;
-  inset-block: 0;
-  left: 4px;
-  width: 3px;
-  border-radius: var(--radius-pill, 999px);
-  background: var(--workhub-work-color);
-  transition: background-color 180ms ease-out;
-  content: '';
-}
-
-.workhub-user-bubble > .workhub-work-rail {
-  right: -11px;
-}
-
-.workhub-assistant-bubble > .workhub-work-rail {
-  left: -4px;
-}
-
-.workhub-bound-turn[data-work-highlighted='true'],
 .workhub-work-identity[data-work-highlighted='true'] {
   --workhub-work-color: var(--workhub-work-highlight);
   --workhub-work-label: var(--workhub-work-highlight);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .workhub-work-rail::before {
-    transition: none;
-  }
 }
 
 .workhub-surface {
@@ -460,18 +145,56 @@
   white-space: nowrap;
 }
 
-.workhub-composer-scope {
-  box-sizing: border-box;
-  width: min(var(--maka-reading-measure), calc(100% - 2 * var(--space-6)));
-  margin-inline: auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 0 16px 8px;
-  font-size: var(--font-size-body-sm, 12px);
-  color: var(--color-text-secondary);
+  .workHubLive, .workHubDock { width: 100%; height: 100%; min-width: 0; min-height: 0; }
+  .workHubLive { position: relative; display: flex; flex-direction: column; background: var(--background); }
+  .workHubLive > .maka-chat-layout { flex: 1; min-height: 0; }
+  .workHubLiveWelcome, .workHubDockPlaceholder { display: grid; justify-items: center; align-content: center; gap: var(--space-3); padding: var(--space-6); min-height: 220px; text-align: center; }
+  .workHubDockPlaceholder { height: 100%; }
+  .workHubLiveWelcome p { color: var(--muted-foreground); }
+  .workHubLiveError { padding: var(--space-3); }
+  .workHubComposerSurface { position: relative; width: 100%; }
+  .workHubComposerActions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+  .workHubRevealMark { position: absolute; inset: 32px 0 calc(var(--workhub-composer-height, 96px) + 12px); display: grid; place-items: center; z-index: 3; color: var(--foreground); opacity: 0; pointer-events: none; }
+  .workHubRevealMark svg { filter: drop-shadow(0 2px 12px var(--background)); }
+  .workHubLive[data-conversation-expanded='false'] .workHubRevealMark { visibility: hidden; }
+  .workHubLiveWelcome > svg { color: var(--maka-brand); }
+  .workHubHistory { transition: opacity 180ms ease-out; }
+  .workHubLive[data-conversation-expanded='false'] .workHubHistory { visibility: hidden; opacity: 0; }
+  .workHubWindowControls { position: absolute; inset: 4px 12px auto; height: 28px; display: flex; align-items: center; justify-content: space-between; z-index: 2; -webkit-app-region: drag; }
+  .workHubWindowActions { display: flex; gap: 4px; }
+  .workHubWindowControls button { -webkit-app-region: no-drag; color: var(--muted-foreground); }
+  .workHubWindowControls .workHubCloseButton { width: 18px; height: 18px; min-width: 18px; min-height: 18px; padding: 0; border-radius: 50%; background: color-mix(in oklch, var(--foreground) 13%, transparent); }
+  .workHubLive[data-placement='floating'] {
+    /* The native window owns its outline and corner clipping. */
+    overflow: hidden;
+    padding-top: 32px;
+    background: linear-gradient(145deg, color-mix(in oklch, var(--background) 87%, transparent), color-mix(in oklch, var(--background) 81%, transparent));
+  }
+  .workHubLive[data-placement='floating'] .workhub-anchor-rail { display: none; }
+  .workHubLive[data-placement='floating'] .maka-chat-layout { background: transparent; }
+  .workHubLive[data-placement='floating'] .maka-composer {
+    padding: 0;
+    --_chat-composer-radius: 20px;
+    --color-background-popover: color-mix(in oklch, var(--background) 48%, transparent);
+    --shadow-low: inset 0 0 0 1px color-mix(in oklch, var(--foreground) 9%, transparent);
+    --shadow-med: inset 0 0 0 1px color-mix(in oklch, var(--foreground) 16%, transparent);
+  }
+  .workHubLive[data-placement='floating'] .workHubLiveWelcome { min-height: 280px; }
+  .workHubLive[data-conversation-expanded='false'] { padding-top: 0; }
+  .workHubLive[data-conversation-expanded='false'] .maka-chat-layout { overflow: hidden; scrollbar-width: none; }
+  .workHubLive[data-conversation-expanded='false'] .maka-chat-layout > div:last-child > div:has(> div > .workHubComposerSurface) { padding: 0; }
+  .workHubLive[data-conversation-expanded='false'] .maka-composer { --shadow-low: none; --shadow-med: none; }
+  .workHubLive[data-conversation-expanded='false'] .maka-composer-editor { padding-right: 24px; }
+  .workHubLive[data-conversation-expanded='false'] .maka-composer-editor [contenteditable='true'] { padding-block: 6px; overscroll-behavior-y: contain; scrollbar-gutter: stable; scrollbar-width: thin; scroll-padding-block: 6px; }
+  .workHubLive[data-conversation-expanded='false'] .workHubComposerSurface { -webkit-app-region: drag; }
+  .workHubLive[data-conversation-expanded='false'] .workHubComposerSurface :is(button, input, textarea, [contenteditable='true'], [role='listbox'], [role='option'], a) { -webkit-app-region: no-drag; }
+  .workHubExpandButton { position: absolute; top: 6px; right: 8px; z-index: 2; color: var(--muted-foreground); -webkit-app-region: no-drag; }
+
+html:has(.workHubLive), body:has(.workHubLive), #root:has(.workHubLive) { background: transparent; }
+
+@media (max-width: 900px) {
+  .workhub-body { display: flex; flex-direction: column; gap: var(--space-3); }
+  .workhub-anchor-rail { position: static; width: 100%; max-height: 180px; padding: var(--space-3); }
+  .workhub-anchors { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(180px, 1fr); overflow-x: auto; }
+  .workhub-filters { flex-wrap: nowrap; overflow-x: auto; }
 }
-.workhub-composer-target { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.workhub-composer-target > :last-child { max-width: 240px; min-width: 0; }
-@media (max-width: 600px) { .workhub-composer-scope { flex-wrap: wrap; } }

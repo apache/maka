@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { DesktopAssistantRoot } from './features/desktop-assistant';
+import { WorkHubDock, WorkHubControlOverlay, WorkHubMainNavigation } from './features/workhub';
 import {
   useCallback,
   useEffect,
@@ -124,12 +124,6 @@ import { DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES } from '../preload/transcript-contra
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
-import { createWorkHubController } from './workhub-controller.js';
-import { startWorkHubCoordinationLifecycle } from './workhub-coordination-lifecycle.js';
-import { scopeWorkHubSessionsToCoordinationHost } from './workhub-coordination-host-scope.js';
-import { createDesktopWorkHubSessionPort } from './workhub-session-port.js';
-import { createDesktopWorkHubCoordinationPort } from './workhub-coordination-port.js';
-import { WorkHubCoordinationStatus, WorkHubSurface } from './workhub-surface.js';
 import {
   getShellCopy,
   localizedShellErrorMessage,
@@ -271,7 +265,7 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
         <ToastProvider errorAction={errorToastAction}>
           <ErrorBoundary locale={uiLocale}>
             <AppUpdateProvider>
-              <DesktopAssistantRoot />
+              <WorkHubControlOverlay />
               <TaskEntry.TaskEntryRoot>
                 {(taskEntry) => (
                   <AppShellContent
@@ -444,43 +438,7 @@ function AppShellContent({
   const navSelectionRef = useRef<NavSelection>(navSelection);
   const [workHubEnabled, setWorkHubEnabled] = useState(false);
   const [workHubActive, setWorkHubActive] = useState(false);
-  const [workHubCoordinationSessionId, setWorkHubCoordinationSessionId] = useState<string>();
-  const [workHubCoordinationState, setWorkHubCoordinationState] = useState<
-    'resolving' | 'failed'
-  >('resolving');
-  const workHubCoordinationRetryRef = useRef<() => void>(() => undefined);
-  const workHubCoordinationGenerationRef = useRef(0);
-  const workHubCoordinationSessionIdRef = useRef(workHubCoordinationSessionId);
-  workHubCoordinationSessionIdRef.current = workHubCoordinationSessionId;
   const workHubEnabledRef = useRef(false);
-  useEffect(() => {
-    if (!workHubEnabled || !workHubActive) return;
-    return startWorkHubCoordinationLifecycle({
-      resolve: () => window.maka.workHub.resolveCoordinationSession(),
-      subscribeHostChanges: (handler) =>
-        window.maka.runtimeHostProfiles.subscribeChanges(handler),
-      subscribeAvailabilityChanges: (handler) =>
-        window.maka.connections.subscribeEvents((event) => {
-          if (event.type === 'connection_list_changed') handler();
-        }),
-      onResolving: () => {
-        workHubCoordinationGenerationRef.current += 1;
-        workHubCoordinationSessionIdRef.current = undefined;
-        setWorkHubCoordinationSessionId(undefined);
-        setWorkHubCoordinationState('resolving');
-      },
-      onResolved: (sessionId) => {
-        workHubCoordinationSessionIdRef.current = sessionId;
-        setWorkHubCoordinationSessionId(sessionId);
-        setWorkHubCoordinationState('resolving');
-      },
-      reportFailure: (error, retry) => {
-        workHubCoordinationRetryRef.current = retry;
-        setWorkHubCoordinationState('failed');
-        console.error('[workhub] failed to resolve Coordination Session:', error);
-      },
-    });
-  }, [workHubActive, workHubEnabled]);
   useEffect(() => {
     let disposed = false;
     const refresh = async () => {
@@ -490,12 +448,6 @@ function AppShellContent({
         const becameEnabled = enabled && !workHubEnabledRef.current;
         workHubEnabledRef.current = enabled;
         setWorkHubEnabled(enabled);
-        if (!enabled) {
-          workHubCoordinationGenerationRef.current += 1;
-          workHubCoordinationSessionIdRef.current = undefined;
-          setWorkHubActive(false);
-          setWorkHubCoordinationSessionId(undefined);
-        }
         if (becameEnabled) {
           setWorkHubActive(true);
           setNavSelection({ section: 'sessions' });
@@ -551,7 +503,7 @@ function AppShellContent({
   const sessionHostConnections = useShellConnections({
     toastApi,
     uiLocale,
-    target: { kind: 'session', sessionId: workHubActive ? workHubCoordinationSessionId : ownerActiveId },
+    target: { kind: 'session', sessionId: ownerActiveId },
   });
   const startupConnectionSnapshot = onboarding.snapshot;
   const newTaskUsesDefaultHost = taskEntry.selectors.usesDefaultHost;
@@ -1026,6 +978,7 @@ function AppShellContent({
     [shellCopy],
   );
   const openWorkHub = useCallback(() => {
+    setSettingsOpen(false);
     setNavSelection({ section: 'sessions' });
     setWorkHubActive(true);
   }, [setNavSelection]);
@@ -1276,38 +1229,6 @@ function AppShellContent({
       append: (text: string) => composer.appendText(text),
     };
   }, []);
-  const workHubProjectsRef = useRef(projects);
-  workHubProjectsRef.current = projects;
-  const workHubCoordinationGeneration = workHubCoordinationGenerationRef.current;
-  const workHubController = useMemo(
-    () => createWorkHubController({
-      coordination: createDesktopWorkHubCoordinationPort({
-        sessionId: workHubCoordinationSessionId ?? 'workhub-coordination-unresolved',
-        transcripts: window.maka.transcripts,
-        record: (input) =>
-          window.maka.workHub.record(workHubCoordinationSessionId!, input),
-        candidates: () =>
-          window.maka.workHub.candidates(workHubCoordinationSessionId!),
-        act: (input) =>
-          window.maka.workHub.act(workHubCoordinationSessionId!, input),
-      }),
-      sessions: createDesktopWorkHubSessionPort({
-        sessions: scopeWorkHubSessionsToCoordinationHost(
-          window.maka.sessions,
-          {
-            sessionId: workHubCoordinationSessionId,
-            isCurrent: () =>
-              workHubCoordinationGenerationRef.current === workHubCoordinationGeneration &&
-              workHubCoordinationSessionIdRef.current === workHubCoordinationSessionId,
-          },
-        ),
-        transcripts: window.maka.transcripts,
-        projectName: (projectId) =>
-          workHubProjectsRef.current.find((project) => project.id === projectId)?.name,
-      }),
-    }),
-    [workHubCoordinationGeneration, workHubCoordinationSessionId],
-  );
   // Where a NEW chat starts. Built unconditionally and handed to the composer,
   // which renders it only while no session owns it — the project is fixed once
   // the first message creates one, so there is nothing to pick after that.
@@ -1452,6 +1373,7 @@ function AppShellContent({
     navSelection.section === 'sessions' && !workHubActive && Boolean(activeId);
   const workbar = useWorkbarController({
     available: workbarAvailable,
+    layoutSessionId: activeId,
     activeSession: activeHostSession,
     projectId: currentProjectId,
     projectAliases: currentProject?.aliases ?? [],
@@ -2574,31 +2496,8 @@ function AppShellContent({
           <div className="maka-detail-with-artifacts">
             <div className="mainColumn" data-home-surface={homeSurfaceActive ? 'true' : undefined}>
               <ModuleHub.ModuleHubHost />
-              {workHubEnabled && workHubActive && navSelection.section === 'sessions' ? (
-                workHubCoordinationSessionId ? (
-                  <WorkHubSurface
-                    key={workHubCoordinationSessionId}
-                    controller={workHubController}
-                    leaseScope={workHubCoordinationSessionId}
-                    locale={uiLocale}
-                    {...(activeId ? { initialFocusSessionId: activeId } : {})}
-                    onOpenSession={openSessionInChat}
-                    composerServices={{
-                      sessions,
-                      modelChoices: chatModelChoices,
-                      defaults: { model: newChatModel, permissionMode: newTaskPermissionMode },
-                      confirmBypass: () => confirmBypassPermission(toastApi, uiLocale),
-                      onOpenModelSettings: () => openSettingsSection('models'),
-                    }}
-                  />
-                ) : (
-                  <WorkHubCoordinationStatus
-                    locale={uiLocale}
-                    state={workHubCoordinationState}
-                    onRetry={() => workHubCoordinationRetryRef.current()}
-                  />
-                )
-              ) : (
+              <WorkHubMainNavigation onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
+              <WorkHubDock visible={workHubActive && navSelection.section === 'sessions' && !shellObscured} />
               <ChatSurfaceLayout
                 // ChatView positions this transcript: switching conversations,
                 // following the tail and the moves the reader asks for are one
@@ -2612,7 +2511,7 @@ function AppShellContent({
                 onReturnToTail={activeTranscriptRange?.hasNewer
                   ? () => transcriptReadingCommands.current?.loadHistory('latest')
                   : undefined}
-                hidden={navSelection.section !== 'sessions'}
+                hidden={workHubActive || navSelection.section !== 'sessions'}
                 composer={
                   <>
                     {ownerActiveId ? (
@@ -2731,7 +2630,8 @@ function AppShellContent({
                   activeProviderType={activeConnection?.providerType}
                   latestRequestUsageTokens={selectLatestRequestUsage(messages, activeTranscriptRange, activeModel, activeSessionForModelControls)}
                   onOpenContextUsage={() => commands.openTool('inspector')}
-                  LiveContextUsageProbe={ownerActiveId ? LiveContextUsageProbe : undefined}
+                  LiveContextUsageProbe={LiveContextUsageProbe}
+                  contextUsageSessionId={ownerActiveId}
                   modelChoices={chatModelChoices}
                   modelSwitchHasHistory={modelSwitchHasHistory}
                   hideUnavailableCurrentModel={sessionHealthNotice?.onClickTarget === 'model_picker'}
@@ -2962,7 +2862,6 @@ function AppShellContent({
                   </SessionCollaboration.SessionGuestTurnActionBoundary>
                 ) : null}
               </ChatSurfaceLayout>
-              )}
             </div>
             {/* Collapse hides the Workbar surface without unmounting its tools;
                 dynamic resources therefore keep their existing lifecycle. */}

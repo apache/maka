@@ -697,7 +697,7 @@ export class DesktopRuntimeHostClient {
   async listSessions(): Promise<SessionCatalogProjection[]> {
     this.#assertOpen();
     try {
-      return (await readRuntimeHostSessions(this.connection)).map(requireSessionProjection).filter((session) => !session.labels.includes('mode:desktop_assistant'));
+      return (await readRuntimeHostSessions(this.connection)).map(requireSessionProjection);
     } catch (error) {
       if (error instanceof DesktopRuntimeHostClientError) throw error;
       if (!(error instanceof RuntimeHostCatalogReadError)) throw error;
@@ -975,6 +975,18 @@ export class DesktopRuntimeHostClient {
     return this.request("workhub.coordination.resolve", {});
   }
 
+  async getWorkHubSession(): Promise<SessionCatalogProjection> {
+    return requireSessionProjection(await this.request('workhub.coordination.query', {}));
+  }
+
+  answerWorkHubCoordination(input: OperationInput<'workhub.coordination.answer'>) {
+    return this.request('workhub.coordination.answer', input);
+  }
+
+  configureWorkHubModel(input: OperationInput<'workhub.coordination.configureModel'>) {
+    return this.request('workhub.coordination.configureModel', input);
+  }
+
   listWorkHubCoordinationCandidates() {
     return this.request("workhub.coordination.candidates", {});
   }
@@ -983,6 +995,10 @@ export class DesktopRuntimeHostClient {
     input: OperationInput<"workhub.coordination.act">,
   ): Promise<OperationOutput<"workhub.coordination.act">> {
     return this.request("workhub.coordination.act", input);
+  }
+
+  actWorkHubCoordinationFromTurn(input: OperationInput<'workhub.coordination.actFromTurn'>) {
+    return this.request('workhub.coordination.actFromTurn', input);
   }
 
 

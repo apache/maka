@@ -17,28 +17,99 @@
  * under the License.
  */
 
-import { expect, test } from './fixtures';
+import { expect, test, getWorkHubPage } from './fixtures';
 
-test('WorkHub explains Coordination startup failure and recovers after a default model is set', async ({
-  window: page,
-}) => {
-  await page.evaluate(async () => {
-    await window.maka.connections.setDefaultModel(null);
-    await window.maka.settings.updateClient({ workHub: { enabled: true } });
-  });
-
-  const failure = page.getByRole('alert');
-  await expect(failure).toContainText('WorkHub 暂时无法启动');
-  await expect(failure).toContainText('请检查当前 Runtime Host 的默认模型配置');
-
-  await page.evaluate(async () => {
-    await window.maka.connections.setDefaultModel({
-      slug: 'e2e',
-      model: 'claude-sonnet-4-5-20250929',
+test('WorkHub uses its coordination model and shared attachment composer', async ({ sessionLocalWindow: { page, app } }) => {
+  await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
+  const workhub = await getWorkHubPage(app);
+  const sessionId = await workhub.evaluate(() => window.maka.workHub.resolveCoordinationSession());
+  await expect.poll(async () => workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId)).toBeTruthy();
+  await expect(workhub.locator('.maka-composer-editor [contenteditable="true"]')).toBeVisible();
+  await expect(workhub.getByRole('button', { name: /添加上下文|Add context/ })).toBeEnabled();
+  await expect(workhub.locator('.workhub-composer-scope')).toHaveCount(0);
+  await expect(workhub.locator('.workHubLiveHeader')).toHaveCount(0);
+  const model = workhub.getByRole('button', { name: /切换当前任务模型|Switch.*model|Change.*model/i });
+  await expect(model).toBeEnabled();
+  const configured = await workhub.evaluate(async (id) => {
+    const session = await window.maka.workHub.getSession(id);
+    return window.maka.workHub.configureModel(id, {
+      expectedRevision: session.revision,
+      modelTarget: { kind: 'explicit', connectionId: session.llmConnectionId!, connectionSlug: session.llmConnectionSlug, model: session.model },
     });
+  }, sessionId);
+  expect(configured.kind).toBe('committed');
+  await workhub.locator('.maka-composer-editor [contenteditable="true"]').fill('WorkHub composer sends through its own coordination model.');
+  await expect(workhub.getByRole('button', { name: /发送|Send/, exact: true })).toBeEnabled();
+  await workhub.getByRole('button', { name: /发送|Send/, exact: true }).click();
+  await expect(workhub.locator('[data-message-role="user"], article').filter({ hasText: 'WorkHub composer sends through its own coordination model.' }).first()).toBeVisible();
+  await expect(workhub.locator('.maka-composer').getByRole('button', { name: /^(停止|Stop)$/ })).toHaveCount(0);
+  await workhub.reload();
+  await expect(workhub.locator('article').filter({ hasText: 'WorkHub composer sends through its own coordination model.' }).first()).toBeVisible();
+  await workhub.locator('[data-chat-scroll-container]').evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await expect(workhub.locator('.astryx-chat-layout-scroll-button > div')).toHaveCSS('opacity', '0');
+  await workhub.getByRole('button', { name: /浮出工作台|Float WorkHub/ }).click();
+  await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-placement', 'floating');
+  const editor = workhub.locator('.maka-composer-editor [contenteditable="true"]');
+  await editor.fill('Keep this draft while folding the conversation.');
+  const expandedHeight = await workhub.evaluate(() => window.innerHeight);
+  const floatingBottom = () => app.evaluate(({ BrowserWindow }) => {
+    const bounds = BrowserWindow.getAllWindows().find((window) => window.getTitle() === 'WorkHub')!.getBounds();
+    return bounds.y + bounds.height;
   });
-
-  await expect(page.getByRole('region', { name: 'WorkHub' })).toBeVisible();
-  await expect(page.locator('.workhub-empty')).toContainText('从这里继续所有工作');
-  await expect(page.locator('.workhub-surface .maka-composer-editor')).toBeVisible();
+  const anchoredBottom = await floatingBottom();
+  const scrollTop = await workhub.locator('[data-chat-scroll-container]').evaluate((element) => element.scrollTop);
+  const close = await workhub.getByRole('button', { name: /^(隐藏|Hide)$/ }).boundingBox();
+  const input = await editor.boundingBox();
+  expect(close!.y).toBeLessThan(input!.y);
+  await workhub.getByRole('button', { name: /收起对话|Collapse conversation/ }).click();
+  await expect(workhub.locator('.workHubHistory')).toBeHidden();
+  await expect(workhub.getByRole('button', { name: /滚动到底部|Scroll to bottom/ })).toHaveCount(0);
+  await expect.poll(() => workhub.evaluate(() => window.innerHeight)).toBeLessThan(expandedHeight / 2);
+  await expect(editor).toBeVisible();
+  await expect(editor).toHaveText('Keep this draft while folding the conversation.');
+  await expect(workhub.getByRole('button', { name: /^(隐藏|Hide)$/ })).toHaveCount(0);
+  await expect.poll(() => workhub.evaluate(() => Math.abs(innerHeight - document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBeLessThanOrEqual(1);
+  await expect.poll(floatingBottom).toBe(anchoredBottom);
+  const compactHeight = await workhub.evaluate(() => innerHeight);
+  await model.click();
+  const wheel = workhub.getByRole('listbox');
+  await expect(wheel).toBeVisible();
+  await expect(workhub.locator('.workHubHistory')).toBeHidden();
+  await expect.poll(() => workhub.evaluate(() => innerHeight)).toBeGreaterThan(compactHeight);
+  await expect.poll(floatingBottom).toBe(anchoredBottom);
+  const modelBeforeBrowsing = await workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId);
+  await wheel.hover();
+  await workhub.mouse.wheel(0, 30);
+  await expect.poll(() => wheel.evaluate((element) => {
+    const selected = element.querySelector('[aria-selected="true"]')!.getBoundingClientRect();
+    const viewport = element.getBoundingClientRect();
+    return Math.abs((selected.top + selected.bottom - viewport.top - viewport.bottom) / 2);
+  })).toBeLessThanOrEqual(1);
+  expect(await workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId)).toBe(modelBeforeBrowsing);
+  await wheel.press('ArrowDown');
+  await wheel.press('Escape');
+  await expect(wheel).toHaveCount(0);
+  await expect.poll(() => workhub.evaluate(() => innerHeight)).toBe(compactHeight);
+  await expect(editor).toHaveText('Keep this draft while folding the conversation.');
+  const longDraft = Array.from({ length: 30 }, (_, index) => `第 ${index + 1} 行：长输入应当只在编辑区内滚动。`).join('\n');
+  await editor.fill(longDraft);
+  await expect.poll(() => editor.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await expect.poll(() => editor.evaluate((element) => element.clientHeight)).toBeLessThanOrEqual(132);
+  await expect(workhub.locator('[data-chat-scroll-container]')).toHaveCSS('overflow-y', 'hidden');
+  await expect.poll(floatingBottom).toBe(anchoredBottom);
+  const longInputHeight = await workhub.evaluate(() => innerHeight);
+  await editor.hover();
+  await workhub.mouse.wheel(0, 1000);
+  await expect.poll(() => editor.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect(workhub.getByRole('button', { name: /发送|Send/, exact: true })).toBeVisible();
+  expect(await workhub.evaluate(() => innerHeight)).toBe(longInputHeight);
+  await editor.fill('Keep this draft while folding the conversation.');
+  await expect.poll(() => workhub.evaluate(() => innerHeight)).toBe(compactHeight);
+  await workhub.getByRole('button', { name: /展开对话|Expand conversation/ }).click();
+  await expect(workhub.locator('.workHubHistory')).toBeVisible();
+  await expect.poll(() => workhub.evaluate(() => window.innerHeight)).toBe(expandedHeight);
+  await expect.poll(floatingBottom).toBe(anchoredBottom);
+  await expect.poll(() => workhub.locator('[data-chat-scroll-container]').evaluate((element) => element.scrollTop)).toBe(scrollTop);
+  await expect(editor).toHaveText('Keep this draft while folding the conversation.');
+  await expect(model).toHaveAttribute('aria-haspopup', 'menu');
 });

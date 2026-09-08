@@ -316,6 +316,9 @@ export function ChatView(props: {
   onLoadEarlierHistory?(anchorTurnId?: string): Promise<void> | void;
   onLoadLaterHistory?(anchorTurnId?: string): Promise<void> | void;
   transcriptTurnIndex?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>;
+  /** Optional identity decorations shared with a host's work navigation. */
+  promptRailDecorations?: ReadonlyMap<string, Pick<PromptAnchorRailTurn, 'accentColor' | 'highlighted'>>;
+  onPromptRailHighlight?(turnId: string | undefined): void;
   onLoadTranscriptTurn?(target: { turnId: string; sequence: number }): void;
   /**
    * PR109f: when the active session is a branched session
@@ -513,8 +516,13 @@ export function ChatView(props: {
     return next;
   }, [turns]);
   const promptRailTurns = useMemo(
-    () => mergePromptAnchorRailTurns(loadedPromptRailTurns, props.transcriptTurnIndex),
-    [loadedPromptRailTurns, props.transcriptTurnIndex],
+    () => {
+      const merged = mergePromptAnchorRailTurns(loadedPromptRailTurns, props.transcriptTurnIndex);
+      return props.promptRailDecorations
+        ? merged.map((turn) => ({ ...turn, ...props.promptRailDecorations?.get(turn.turnId) }))
+        : merged;
+    },
+    [loadedPromptRailTurns, props.transcriptTurnIndex, props.promptRailDecorations],
   );
   // Stable event wrappers (advanced-use-latest): parent handlers are
   // recreated per render upstream; routing through refs keeps the
@@ -798,6 +806,7 @@ export function ChatView(props: {
             bottom of the conversation until the reader scrolled there. */}
         <PromptAnchorRail
           turns={promptRailTurns}
+          onHighlightTurn={props.onPromptRailHighlight ? (turn) => props.onPromptRailHighlight?.(turn?.turnId) : undefined}
           scrollRef={scrollRef}
           onNavigateFallback={navigatePromptRailFallback}
           onNavigateStart={scrollAuthority.releasePin}
