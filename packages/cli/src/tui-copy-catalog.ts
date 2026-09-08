@@ -18,6 +18,29 @@
  */
 
 export const TUI_COPY_RESOURCES = {
+  'transcript-reader': {
+    en: {
+      title: 'DETAILED TRANSCRIPT',
+      scope: 'loaded history',
+      hint: 'Esc/Ctrl+O close · Ctrl+E details · / search · ↑↓/PgUp/PgDn · Home/End',
+      matches: 'matches in displayed text',
+      back: 'return',
+    },
+    'zh-CN': {
+      title: '详细记录',
+      scope: '已加载历史',
+      hint: 'Esc/Ctrl+O 返回 · Ctrl+E 详情 · / 搜索 · ↑↓/PgUp/PgDn · Home/End',
+      matches: '处匹配（当前显示内容）',
+      back: '回到原位置',
+    },
+    'zh-TW': {
+      title: '詳細記錄',
+      scope: '已載入歷史',
+      hint: 'Esc/Ctrl+O 返回 · Ctrl+E 詳情 · / 搜尋 · ↑↓/PgUp/PgDn · Home/End',
+      matches: '處符合（目前顯示內容）',
+      back: '回到原位置',
+    },
+  },
   'host-owner': {
     en: {
       unavailable: 'Runtime Host owner controls are unavailable.',
@@ -913,7 +936,7 @@ export const TUI_COPY_RESOURCES = {
         userCommand: '  !<command> — run one shell command visible only to you',
         keybindingsHeading: 'Keybindings',
         keybindings: [
-          '  Ctrl+O — expand or collapse all tool output',
+          '  Ctrl+O — open detailed transcript (Ctrl+E toggles details inside)',
           '  Ctrl+T — expand or collapse all thinking in view',
           '  Scroll the transcript with your terminal or trackpad',
           '  Enter (during a turn) — steer: inject a message into the running turn',
@@ -966,7 +989,7 @@ export const TUI_COPY_RESOURCES = {
         userCommand: '  !<command> — 执行一次仅用户可见的 shell 命令',
         keybindingsHeading: '快捷键',
         keybindings: [
-          '  Ctrl+O — 展开或折叠所有工具输出',
+          '  Ctrl+O — 打开详细记录（其中 Ctrl+E 切换详情）',
           '  Ctrl+T — 展开或折叠视图中的所有思考块',
           '  使用终端或触控板滚动对话记录',
           '  Enter（任务运行中）— 将消息注入当前任务',
@@ -1019,7 +1042,7 @@ export const TUI_COPY_RESOURCES = {
         userCommand: '  !<command> — 執行一次僅使用者可見的 shell 命令',
         keybindingsHeading: '快捷鍵',
         keybindings: [
-          '  Ctrl+O — 展開或摺疊所有工具輸出',
+          '  Ctrl+O — 開啟詳細記錄（其中 Ctrl+E 切換詳情）',
           '  Ctrl+T — 展開或摺疊檢視中的所有思考區塊',
           '  使用終端機或觸控板捲動對話記錄',
           '  Enter（任務執行中）— 將訊息注入目前任務',

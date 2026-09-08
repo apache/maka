@@ -2541,7 +2541,7 @@ describe('Maka Pi TUI runner', () => {
     assert.equal(unsubscribed, true);
   });
 
-  test('keeps tool expansion when kitty protocol reports the Ctrl-O release', async () => {
+  test('keeps the detailed reader open on key release and preserves the draft on close', async () => {
     const terminal = new FakeTerminal();
     const driver = new ToolOutputDriver();
     const run = runMakaPiTui({
@@ -2564,15 +2564,78 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\x1b[111;5u');
     terminal.input('\x1b[111;5:3u');
 
-    // The compact-only annotation leaving the screen proves the card is
-    // still expanded after the release event.
-    await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('(31 lines)'));
-    // Sentinel render ordered after the release event: if the release had
-    // collapsed the card back, this frame would show the annotation again.
-    terminal.input('z');
-    await waitFor(() => editorInputText(terminal) === 'z');
-    assert.equal(plainTerminalOutput(terminal.screenOutput()).includes('(31 lines)'), false);
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    terminal.input('\x05');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('(31 lines)'));
+    terminal.input('\x0f');
+    await waitFor(
+      () => !plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    terminal.input('draft');
+    await waitFor(() => editorInputText(terminal) === 'draft');
+    terminal.input('\x0f');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    terminal.input('\x0f');
+    await waitFor(() => editorInputText(terminal) === 'draft');
+    terminal.input('\x15');
 
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('hides the reader for a pending question and reopens it without losing the draft', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new ReaderThenQuestionDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('run');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('(31 lines)'));
+    terminal.input('draft');
+    await waitFor(() => editorInputText(terminal) === 'draft');
+    terminal.input('\x0f');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+
+    driver.releaseQuestion();
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Choose an approach'),
+    );
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /DETAILED TRANSCRIPT/);
+
+    terminal.input('\r');
+    await waitFor(() => driver.responses.length === 1);
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('(31 lines)'));
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /DETAILED TRANSCRIPT/);
+    terminal.input('\x0f');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    terminal.input('\x0f');
+    await waitFor(
+      () => !plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    assert.equal(editorInputText(terminal), 'draft');
+
+    terminal.input('\x15');
     exitMaka(terminal);
     await Promise.race([
       run,
@@ -2913,7 +2976,7 @@ describe('Maka Pi TUI runner', () => {
       'the transcript viewer to open',
     );
     let screen = plainTerminalOutput(terminal.screenOutput());
-    assert.match(screen, /PgUp\/PgDn page/);
+    assert.match(screen, /PgUp\/PgDn/);
     assert.match(screen, /filler line 40/);
     assert.doesNotMatch(screen, /filler line 1\s/);
 
@@ -9622,6 +9685,80 @@ class ToolOutputDriver extends FakeSessionDriver {
   }
   getSessionId(): string {
     return 'session-1';
+  }
+}
+
+class ReaderThenQuestionDriver extends ToolOutputDriver {
+  readonly responses: UserQuestionResponse[] = [];
+  private release: (() => void) | undefined;
+  private complete: (() => void) | undefined;
+
+  override async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'tool_start',
+      id: 'event-tool-start',
+      turnId: 'turn-1',
+      ts: 1,
+      toolUseId: 'tool-1',
+      toolName: 'Bash',
+      args: { command: 'npm test' },
+    };
+    yield {
+      type: 'tool_result',
+      id: 'event-tool-result',
+      turnId: 'turn-1',
+      ts: 2,
+      toolUseId: 'tool-1',
+      isError: false,
+      content: {
+        kind: 'terminal',
+        cwd: '/repo',
+        cmd: 'npm test',
+        status: 'completed',
+        exitCode: 0,
+        output: pipeOutput(
+          `expanded-tail\n${Array.from({ length: 30 }, (_, i) => `row-${i}`).join('\n')}`,
+        ),
+      },
+    };
+    await new Promise<void>((resolve) => {
+      this.release = resolve;
+    });
+    yield {
+      type: 'user_question_request',
+      id: 'event-question',
+      turnId: 'turn-1',
+      ts: 3,
+      requestId: 'question-1',
+      toolUseId: 'tool-question',
+      questions: [
+        {
+          question: 'Choose an approach',
+          options: [{ label: 'Extend' }, { label: 'Separate' }],
+        },
+      ],
+    };
+    await new Promise<void>((resolve) => {
+      this.complete = resolve;
+    });
+    yield {
+      type: 'complete',
+      id: 'event-complete',
+      turnId: 'turn-1',
+      ts: 4,
+      stopReason: 'end_turn',
+    };
+  }
+
+  releaseQuestion(): void {
+    this.release?.();
+    this.release = undefined;
+  }
+
+  async respondToUserQuestion(response: UserQuestionResponse): Promise<void> {
+    this.responses.push(response);
+    this.complete?.();
+    this.complete = undefined;
   }
 }
 

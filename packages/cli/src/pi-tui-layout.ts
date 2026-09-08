@@ -32,6 +32,7 @@ import {
   type MakaPiTranscriptMetadata,
   type MakaPiTranscriptState,
 } from './pi-transcript.js';
+import type { TranscriptDocument } from './pi-tui-transcript-viewer.js';
 
 interface ViewportAwareEditor extends Component {
   setViewportRows(rows: number): void;
@@ -63,9 +64,9 @@ export class MakaTranscriptComponent implements Component {
    * Render the complete current projection without changing the geometry used
    * by the live terminal-scrollback reconciliation path.
    */
-  createDocumentRenderer(): (width: number) => string[] {
-    // The detached keys and their rendered-line cache live only as long as one
-    // viewer overlay. Closing it releases the complete duplicate projection.
+  createDocumentRenderer(): (width: number, expanded?: boolean) => TranscriptDocument {
+    // The detached keys and their rendered-line cache belong to one Session's
+    // reader. Reopening keeps its position; switching Sessions releases it.
     const entryClones = new WeakMap<MakaPiTranscriptEntry, MakaPiTranscriptEntry>();
     const documentEntry = (entry: MakaPiTranscriptEntry): MakaPiTranscriptEntry => {
       const cached = entryClones.get(entry);
@@ -77,16 +78,33 @@ export class MakaTranscriptComponent implements Component {
       entryClones.set(entry, clone);
       return clone;
     };
-    return (width) =>
-      renderMakaPiTranscript(
-        {
-          ...this.state,
-          entries: this.state.entries.map(documentEntry),
-          renderGeometry: { entryFirstLine: undefined, viewportTop: 0 },
-        },
-        this.metadata(),
-        width,
-      );
+    return (width, expanded) => {
+      const entries = this.state.entries.map(documentEntry);
+      if (expanded !== undefined) {
+        for (const entry of entries) {
+          if (entry.kind === 'tool' || entry.kind === 'thinking') entry.expanded = expanded;
+        }
+      }
+      const detachedState: MakaPiTranscriptState = {
+        ...this.state,
+        entries,
+        renderGeometry: { entryFirstLine: undefined, viewportTop: 0 },
+      };
+      const lines = renderMakaPiTranscript(detachedState, this.metadata(), width);
+      const anchors = entries.flatMap((entry, index) => {
+        if (entry.kind === 'tool' && entry.suppressed) return [];
+        const line = detachedState.renderGeometry.entryFirstLine?.get(entry);
+        if (line === undefined) return [];
+        const id =
+          entry.kind === 'tool'
+            ? `tool:${entry.turnId ?? ''}:${entry.toolUseId}`
+            : 'messageId' in entry
+              ? `${entry.kind}:${entry.messageId}`
+              : `${entry.kind}:${index}`;
+        return [{ id, line }];
+      });
+      return { lines, anchors };
+    };
   }
 }
 
