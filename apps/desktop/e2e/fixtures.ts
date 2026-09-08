@@ -394,7 +394,7 @@ async function seedCurrentProject(workspaceRoot: string, projectRoot: string): P
  * and `launchE2eApp` outside the try, so a readiness timeout left a zombie
  * Electron and a leaked `maka-e2e-*` directory.
  */
-async function withE2eWindow(
+export async function withE2eWindow(
   {
     seed,
     readinessSelector,
