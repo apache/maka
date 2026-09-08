@@ -139,6 +139,11 @@ export interface AgentGraphExecutionStopInput {
   withSupervisorWakesSuppressed(operation: () => Promise<void>): Promise<void>;
 }
 
+export type AgentGraphRetirementDisposition =
+  | { readonly kind: 'clear' }
+  | { readonly kind: 'quiescent_open' }
+  | { readonly kind: 'busy'; readonly status: 'active' | 'waiting' | 'closing' };
+
 interface GraphDriver {
   rootSessionId: string;
   graphId: string;
@@ -389,6 +394,32 @@ export class AgentGraphCoordinator {
 
   async hasLiveSessionState(rootSessionId: string): Promise<boolean> {
     return (await this.readSessionState(rootSessionId)) === 'live';
+  }
+
+  /**
+   * Classify durable graph state for Session retirement without changing the
+   * broader live-state semantics used by recovery and graph epoch selection.
+   */
+  async readRetirementDisposition(rootSessionId: string): Promise<AgentGraphRetirementDisposition> {
+    const snapshot = buildAgentGraphClientSnapshot(
+      await this.#readClientModelInputForGraph(
+        rootSessionId,
+        await this.currentGraphId(rootSessionId),
+      ),
+    );
+    if (snapshot.scheduleRevision === 0) return { kind: 'clear' };
+    switch (snapshot.status) {
+      case 'empty':
+      case 'completed':
+        return { kind: 'clear' };
+      case 'stopped':
+      case 'failed':
+        return { kind: 'quiescent_open' };
+      case 'active':
+      case 'waiting':
+      case 'closing':
+        return { kind: 'busy', status: snapshot.status };
+    }
   }
 
   /**

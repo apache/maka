@@ -243,7 +243,9 @@
 .maka-turn-status-label { font-weight: var(--font-weight-medium); }
 .maka-turn-status-separator { color: var(--foreground-alpha-16); }
 /* Tabular figures so a ticking clock changes glyphs without changing width. */
-.maka-turn-elapsed { font-variant-numeric: tabular-nums; }
+.maka-turn-elapsed { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.maka-turn-elapsed:empty { display: none; }
+.maka-compaction-status { display: inline-flex; align-items: center; gap: 8px; font: var(--maka-text-body); vertical-align: top; }
 /* #1879: an Astryx `Badge variant="yellow"` now — the warning tone it used to
    draw by hand (hairline + 5% wash) is a variant, and the box comes with it.
    Product CSS keeps only what is layout: it is a block-level note under the
@@ -813,6 +815,26 @@
 
 /* Astryx `Banner` paints the failed-turn surface; this only sets the block
    rhythm between it and the timeline entry above it. */
+.maka-turn-failure-unavailable { display: block; }
+/* Keep Banner's immediate height change and built-in chevron rotation.
+   Animating height repeatedly lays out the transcript and triggers its
+   ResizeObserver-driven scroll following; that cost grows with history.
+   Only fade the newly mounted detail, without delaying layout or removal. */
+.maka-turn-failure-detail {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  color: var(--foreground);
+  animation: maka-turn-failure-enter var(--duration-fast) var(--ease-standard);
+}
+@keyframes maka-turn-failure-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .maka-turn-failure-detail { animation: none; }
+}
 .maka-turn-failed-banner { margin-block: var(--space-1) var(--space-0-5); }
 
 .maka-turn-lineage-row,

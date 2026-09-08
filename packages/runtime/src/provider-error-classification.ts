@@ -20,7 +20,7 @@
 import { RetryError } from 'ai';
 import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
-import { isAuthenticationErrorText, redactSecrets } from '@maka/core/redaction';
+import { isAuthenticationErrorText } from '@maka/core/redaction';
 import type { ModelFailure, ModelFailureKind } from './model-protocol.js';
 
 /**
@@ -383,7 +383,7 @@ function failureSummaryFromFacts(facts: ProviderErrorFacts): ProviderFailureSumm
     MODEL_FAILURE_MESSAGE_MAX_BYTES - Buffer.byteLength(suffix, 'utf8'),
   );
   const summary = `${truncateUtf8(
-    redactSecrets(message ?? 'Provider request failed'),
+    message ?? 'Provider request failed',
     messageBudget,
     '…',
   )}${suffix}`;
@@ -396,7 +396,7 @@ function failureSummaryFromFacts(facts: ProviderErrorFacts): ProviderFailureSumm
 /**
  * Projects provider errors into a small durable fingerprint. Unlike the
  * presentation summary, this intentionally excludes provider messages and
- * response bodies: even redacted free text can echo prompts or credentials.
+ * response bodies: free text can echo prompts or credentials.
  */
 export function providerFailureDiagnostic(error: unknown): ProviderFailureDiagnostic {
   const facts = extractProviderErrorFacts(error);
@@ -528,7 +528,7 @@ function boundedProviderField(value: unknown): string | undefined {
   if (typeof value !== 'string' && typeof value !== 'number') return undefined;
   const normalized = String(value).trim();
   if (!normalized) return undefined;
-  return truncateUtf8(redactSecrets(normalized), PROVIDER_FAILURE_FIELD_MAX_BYTES, '…');
+  return truncateUtf8(normalized, PROVIDER_FAILURE_FIELD_MAX_BYTES, '…');
 }
 
 function boundedProviderMessage(value: unknown, parseJson = true): string | undefined {
@@ -553,7 +553,7 @@ function boundedProviderMessage(value: unknown, parseJson = true): string | unde
     }
   }
   if (!normalized) return undefined;
-  return truncateUtf8(redactSecrets(normalized), MODEL_FAILURE_MESSAGE_MAX_BYTES, '…');
+  return truncateUtf8(normalized, MODEL_FAILURE_MESSAGE_MAX_BYTES, '…');
 }
 
 /**

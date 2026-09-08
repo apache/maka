@@ -47,7 +47,6 @@ import type {
   ToolUncertainOutcomeSignal,
   UserQuestionRequestEvent,
 } from '@maka/core/events';
-import type { ToolCallMessage, ToolResultMessage } from '@maka/core/session';
 import type {
   HostedFormSettlement,
   HostedInteractionBridge,
@@ -320,7 +319,6 @@ export interface MakaToolContext {
   ) => Promise<SandboxBoundarySettlement>;
 }
 
-export type AppendMessageFn = (m: ToolCallMessage | ToolResultMessage) => Promise<void>;
 export type ToolTelemetryRecorder = (record: ToolInvocationRecord) => void;
 
 /**
@@ -375,7 +373,6 @@ export interface ToolRuntimeInput {
   header: SessionHeader;
   connection: RuntimeExecutionConnection;
   modelId: string;
-  appendMessage: AppendMessageFn;
   readExecutionBoundary: () => Promise<ExecutionBoundary>;
   createSandboxBoundaryRequest?: (
     input: CreateSandboxBoundaryRequest,
@@ -1081,17 +1078,6 @@ export class ToolRuntime {
         this.input.sessionId,
       ) ?? DURABLE_TOOL_RESULT_PROJECTION_FAILURE;
     const durableOutcome = await durableAttempt?.commitOutcome(content, true, modelProjection);
-    const msg: ToolResultMessage = {
-      type: 'tool_result',
-      id: this.input.newId(),
-      turnId,
-      ts: this.input.now(),
-      toolUseId,
-      isError: true,
-      content,
-      ...activityIdentity,
-    };
-    await this.input.appendMessage(msg);
     queue.push({
       type: 'tool_result',
       id: durableOutcome?.id ?? this.input.newId(),
@@ -1285,29 +1271,6 @@ export class ToolRuntime {
       queue.push(event);
       callEventPublished = true;
     };
-    const callMsg: ToolCallMessage = {
-      type: 'tool_call',
-      id: toolUseId,
-      turnId,
-      ts: now,
-      toolName: tool.name,
-      ...activityIdentity,
-      ...(tool.activityKind ? { activityKind: tool.activityKind } : {}),
-      ...(tool.displayName ? { displayName: tool.displayName } : {}),
-      args: structuredClone(persistedArgs),
-      ...(ctx.providerOptions !== undefined
-        ? { providerOptions: structuredClone(ctx.providerOptions) }
-        : {}),
-      // Persist the same step id the tool_start event carries so the UI
-      // timeline and post-restart backfill can pair this call with its step.
-      ...(stepId !== undefined ? { stepId } : {}),
-    };
-    let callMessageAppended = false;
-    const appendCallMessage = async (): Promise<void> => {
-      if (callMessageAppended) return;
-      await this.input.appendMessage(callMsg);
-      callMessageAppended = true;
-    };
     const emitToolStartedTrace = (): void => {
       trace?.emit('tool', 'tool_started', 'Tool execution started', {
         toolUseId,
@@ -1324,7 +1287,6 @@ export class ToolRuntime {
       text: string,
       sandboxFailure?: Extract<ToolResultContent, { kind: 'text' }>['sandboxFailure'],
     ): Promise<void> => {
-      await appendCallMessage();
       publishCallEvent(buildCallEvent('preflight'));
       emitToolStartedTrace();
       await this.writeSyntheticToolResult(
@@ -1627,7 +1589,6 @@ export class ToolRuntime {
       await disposeManagedMutationAdmission(managedMutationAdmission);
       throw error;
     }
-    await appendCallMessage();
     publishCallEvent(buildCallEvent('dispatch'));
     emitToolStartedTrace();
     if (durableAttempt) {
@@ -1939,18 +1900,6 @@ export class ToolRuntime {
             },
           );
         }
-        const resultMsg: ToolResultMessage = {
-          type: 'tool_result',
-          id: this.input.newId(),
-          turnId,
-          ts: this.input.now(),
-          toolUseId,
-          isError: toolResultStatus !== 'success',
-          content,
-          durationMs,
-          ...activityIdentity,
-        };
-        await this.input.appendMessage(resultMsg);
         queue.push({
           type: 'tool_result',
           id: durableOutcome?.id ?? this.input.newId(),
@@ -2090,18 +2039,6 @@ export class ToolRuntime {
           modelProjection,
           durationMs,
         );
-        const resultMsg: ToolResultMessage = {
-          type: 'tool_result',
-          id: this.input.newId(),
-          turnId,
-          ts: this.input.now(),
-          toolUseId,
-          isError: true,
-          content: terminalFailure.content,
-          durationMs,
-          ...activityIdentity,
-        };
-        await this.input.appendMessage(resultMsg);
         queue.push({
           type: 'tool_result',
           id: durableOutcome?.id ?? this.input.newId(),

@@ -56,6 +56,62 @@ afterEach(async () => {
   });
 });
 
+/**
+ * Installs the globals the scroll hook reads onto the LinkeDOM window, either
+ * queueing rAF frames for explicit flushes or running them inline.
+ */
+const installScrollTestEnvironment = (
+  document: Document,
+  window: ReturnType<typeof parseHTML>['window'],
+  { queueFrames = true }: { queueFrames?: boolean } = {},
+): {
+  frames: Map<number, FrameRequestCallback>;
+  resizeCallbacks: ResizeObserverCallback[];
+} => {
+  let frameId = 0;
+  const frames = new Map<number, FrameRequestCallback>();
+  const resizeCallbacks: ResizeObserverCallback[] = [];
+  class TestResizeObserver {
+    constructor(callback: ResizeObserverCallback) {
+      resizeCallbacks.push(callback);
+    }
+    disconnect() {}
+    observe() {}
+    unobserve() {}
+  }
+  class TestMutationObserver {
+    disconnect() {}
+    observe() {}
+    unobserve() {}
+    takeRecords(): MutationRecord[] { return []; }
+  }
+  Object.assign(window, {
+    cancelAnimationFrame: (id: number) => frames.delete(id),
+    requestAnimationFrame: queueFrames
+      ? (callback: FrameRequestCallback) => {
+          const id = ++frameId;
+          frames.set(id, callback);
+          return id;
+        }
+      : (callback: FrameRequestCallback) => {
+          callback(0);
+          return 0;
+        },
+  });
+  Object.assign(globalThis, {
+    CSS: { escape: (value: string) => value },
+    document,
+    Element: window.Element,
+    HTMLElement: window.HTMLElement,
+    MutationObserver: TestMutationObserver,
+    Node: window.Node,
+    ResizeObserver: TestResizeObserver,
+    window,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  return { frames, resizeCallbacks };
+};
+
 test('pages only toward reader input, including wheels at a bounded edge', async () => {
   const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
   const scroller = document.querySelector<HTMLElement>('#scroller')!;
@@ -160,9 +216,6 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   let scrollHeight = 600;
   let scrollTop = 0;
   let dispatchCommandScroll = true;
-  let frameId = 0;
-  const frames = new Map<number, FrameRequestCallback>();
-  const resizeCallbacks: ResizeObserverCallback[] = [];
   Object.defineProperties(scroller, {
     clientHeight: { value: 600 },
     scrollHeight: { get: () => scrollHeight },
@@ -185,38 +238,7 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
     toJSON: () => undefined,
   });
 
-  class TestResizeObserver {
-    constructor(callback: ResizeObserverCallback) {
-      resizeCallbacks.push(callback);
-    }
-    disconnect() {}
-    observe() {}
-    unobserve() {}
-  }
-  class TestMutationObserver {
-    disconnect() {}
-    observe() {}
-    takeRecords(): MutationRecord[] { return []; }
-  }
-  Object.assign(window, {
-    cancelAnimationFrame: (id: number) => frames.delete(id),
-    requestAnimationFrame: (callback: FrameRequestCallback) => {
-      const id = ++frameId;
-      frames.set(id, callback);
-      return id;
-    },
-  });
-  Object.assign(globalThis, {
-    CSS: { escape: (value: string) => value },
-    document,
-    Element: window.Element,
-    HTMLElement: window.HTMLElement,
-    MutationObserver: TestMutationObserver,
-    Node: window.Node,
-    ResizeObserver: TestResizeObserver,
-    window,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  });
+  const { frames, resizeCallbacks } = installScrollTestEnvironment(document, window);
 
   const installTranscript = (
     height: number,
@@ -400,4 +422,117 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   await flushFrames();
   assert.equal(authority?.getSnapshot().pinned, true);
   assert.equal(anchors.has('session-b'), false);
+});
+
+/**
+ * A bookmark left on a Turn the last range evicted makes the restore effect
+ * load around it over the range paging just published, and the transcript
+ * stops advancing — the stall the E2E paging guard sees as a timeout.
+ */
+test('a wheel at the top edge reports its anchor before it loads earlier history', async () => {
+  const { document, window } = parseHTML(
+    '<main id="mount"></main><section id="scroller"></section>',
+  );
+  const mount = document.querySelector<HTMLElement>('#mount');
+  const scroller = document.querySelector<HTMLElement>('#scroller');
+  assert.ok(mount);
+  assert.ok(scroller);
+
+  let scrollHeight = 1_600;
+  let scrollTop = 0;
+  Object.defineProperties(scroller, {
+    clientHeight: { value: 600 },
+    scrollHeight: { get: () => scrollHeight },
+    scrollTop: {
+      get: () => scrollTop,
+      // No scroll event follows a write: that is the edge under test.
+      set: (value: number) => {
+        scrollTop = Math.max(0, Math.min(value, scrollHeight - 600));
+      },
+    },
+  });
+  scroller.getBoundingClientRect = () => ({
+    bottom: 600,
+    height: 600,
+    left: 0,
+    right: 800,
+    top: 0,
+    width: 800,
+    x: 0,
+    y: 0,
+    toJSON: () => undefined,
+  });
+
+  installScrollTestEnvironment(document, window, { queueFrames: false });
+
+  const installTurns = (ids: readonly string[]): void => {
+    scrollHeight = ids.length * 800;
+    scroller.replaceChildren();
+    ids.forEach((id, index) => {
+      const element = document.createElement('article');
+      element.dataset.turnId = id;
+      const start = index * 800;
+      element.getBoundingClientRect = () => ({
+        bottom: start + 800 - scrollTop,
+        height: 800,
+        left: 0,
+        right: 800,
+        width: 800,
+        x: 0,
+        top: start - scrollTop,
+        y: start - scrollTop,
+        toJSON: () => undefined,
+      });
+      element.scrollIntoView = () => {
+        scroller.scrollTop = start;
+      };
+      scroller.append(element);
+    });
+  };
+  let anchor: string | undefined;
+  const loads: Array<{ anchorTurnId?: string; anchorWhenAsked?: string }> = [];
+  function Harness() {
+    const scrollRef = useRef<HTMLElement | null>(scroller);
+    useChatScroll({
+      scrollRef,
+      sessionId: 'session-paging',
+      messages: [{ id: 'message-1' }] as StoredMessage[],
+      // A remembered position leaves the hook unpinned, as paging back does.
+      restoreTarget: { turnId: 'turn-0' },
+      onReadingAnchorChange: (turnId) => {
+        anchor = turnId;
+      },
+      behavior: 'auto',
+      hasOlderHistory: true,
+      onLoadEarlierHistory: (anchorTurnId) => {
+        loads.push({ anchorTurnId, anchorWhenAsked: anchor });
+      },
+    });
+    return null;
+  }
+
+  installTurns(['turn-0', 'turn-1']);
+  mountedRoot = createRoot(mount);
+  await act(() => mountedRoot?.render(
+    <TranscriptScrollAuthorityProvider>
+      <Harness />
+    </TranscriptScrollAuthorityProvider>,
+  ));
+  // Settle the authority on "unpinned, away from the tail", where the wheel's
+  // own release publishes nothing and so refreshes no anchor.
+  scroller.dispatchEvent(new window.Event('scroll'));
+  assert.equal(anchor, 'turn-0', 'the restored position is the reading anchor');
+
+  installTurns(['turn-earlier', 'turn-0']);
+  scroller.scrollTop = 0;
+
+  const wheel = new window.Event('wheel');
+  Object.assign(wheel, { deltaY: -120, composedPath: () => [scroller] });
+  scroller.dispatchEvent(wheel);
+
+  assert.deepEqual(
+    loads.at(-1),
+    { anchorTurnId: 'turn-earlier', anchorWhenAsked: 'turn-earlier' },
+    'the wheel bookmarks the Turn it anchors the load to',
+  );
 });

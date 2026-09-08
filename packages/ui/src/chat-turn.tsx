@@ -608,9 +608,17 @@ export const TurnView = memo(function TurnView(props: {
         <ChatSystemMessage
           key={note.id}
           className="maka-chat-system-message"
-          aria-label={copy.systemAriaLabel}
+          variant={note.compactionState === "running" || note.compactionState === "compacted" ? "divider" : "default"}
+          data-compaction-state={note.compactionState}
+          aria-label={note.compactionState === "running" ? note.text : copy.systemAriaLabel}
         >
-          {note.text}
+          {note.compactionState ? (
+            <span className="maka-compaction-status">
+              {note.compactionState === "running" && <Spinner size="sm" shade="subtle" aria-hidden="true" />}
+              <span>{note.text}</span>
+              {note.compactionState === "running" && <TurnElapsedTime startedAt={turn.startedAt} />}
+            </span>
+          ) : note.text}
         </ChatSystemMessage>
       ))}
       {conversationSegments.map((segment, segmentIndex) => {
@@ -695,12 +703,12 @@ export const TurnView = memo(function TurnView(props: {
                   container="section"
                   className="maka-turn-failed-banner"
                   title={props.failedReasonLabel}
-                  {...(props.safeResumeAction?.detail ?? props.failedExecutionStateLabel
-                    ? {
-                        description:
-                          props.safeResumeAction?.detail ?? props.failedExecutionStateLabel,
-                      }
-                    : {})}
+                  description={
+                    <>
+                      {props.safeResumeAction?.detail ?? props.failedExecutionStateLabel}
+                      {!turn.failureMessage && <span className="maka-turn-failure-unavailable">{copy.failureDetailsUnavailable}</span>}
+                    </>
+                  }
                   {...(props.safeResumeAction
                     ? {
                         endContent: (
@@ -718,7 +726,11 @@ export const TurnView = memo(function TurnView(props: {
                         ),
                       }
                     : {})}
-                />
+                >
+                  {turn.failureMessage && (
+                    <pre className="maka-turn-failure-detail">{turn.failureMessage}</pre>
+                  )}
+                </Banner>
               )}
               {ownsTurnChrome && props.liveStreaming && (
                 <>
@@ -992,8 +1004,30 @@ export function TurnRunningStatus(props: {
   activityLabel?: string;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
+
+  return (
+    <div
+      className="maka-turn-processing"
+      role="status"
+      aria-label={props.activityLabel ?? copy.awaitingModelOutput}
+    >
+      {props.showSpinner !== false && (
+        <Spinner size="md" shade="subtle" aria-hidden="true" />
+      )}
+      {/* Name the activity once; the clock must not announce each second. */}
+      <span className="maka-turn-indicator-text" aria-hidden="true">
+        <span className="maka-turn-status-label">
+          {props.activityLabel ?? copy.awaitingModelOutput}
+        </span>
+        <TurnElapsedTime startedAt={props.startedAt} separator />
+      </span>
+    </div>
+  );
+}
+
+function TurnElapsedTime(props: { startedAt?: number; separator?: boolean }) {
   const { startedAt } = props;
-  const rootRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLSpanElement>(null);
   // Undefined until an effect measures it, which is also what keeps a static
   // render deterministic: the clock is a client-only value, so server markup
   // and the first paint carry the phrase alone.
@@ -1013,30 +1047,12 @@ export function TurnRunningStatus(props: {
   }, [startedAt]);
 
   return (
-    <div
-      className="maka-turn-processing"
-      role="status"
-      aria-label={props.activityLabel ?? copy.awaitingModelOutput}
-      ref={rootRef}
-    >
-      {props.showSpinner !== false && (
-        <Spinner size="md" shade="subtle" aria-hidden="true" />
-      )}
-      {/* Every visible token here moves on the clock. Announcing either would
-          talk over the answer being streamed beside it, so the row's label is
-          its whole accessible name and the text is decoration. */}
-      <span className="maka-turn-indicator-text" aria-hidden="true">
-        <span className="maka-turn-status-label">
-          {props.activityLabel ?? copy.awaitingModelOutput}
-        </span>
-        {elapsedMs !== undefined && (
-          <>
-            <span className="maka-turn-status-separator">·</span>
-            <span className="maka-turn-elapsed">{formatTurnDuration(elapsedMs)}</span>
-          </>
-        )}
-      </span>
-    </div>
+    <span className="maka-turn-elapsed" aria-hidden="true" ref={rootRef}>
+      {elapsedMs !== undefined && <>
+        {props.separator && <span className="maka-turn-status-separator">·</span>}
+        {formatTurnDuration(elapsedMs)}
+      </>}
+    </span>
   );
 }
 

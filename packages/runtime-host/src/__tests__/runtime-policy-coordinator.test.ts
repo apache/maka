@@ -368,17 +368,22 @@ test('production policy mutation drains and poisons activation when cached backe
     if (!started.ok) return;
     assert.equal(started.result.kind, 'started');
     if (started.result.kind !== 'started') return;
+    const host = composition;
     let snapshot = started.result.turn;
-    for (let attempt = 0; attempt < 100 && !isTerminalTurnStatus(snapshot.status); attempt += 1) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 20));
-      const queried = await composition.handlers['turn.query'](
-        { sessionId: session.id, turnId: firstTurnId },
-        context,
-      );
-      assert.equal(queried.ok, true);
-      if (!queried.ok) return;
-      snapshot = queried.result;
-    }
+    await pollFor(
+      async () => {
+        if (isTerminalTurnStatus(snapshot.status)) return true;
+        const queried = await host.handlers['turn.query'](
+          { sessionId: session.id, turnId: firstTurnId },
+          context,
+        );
+        assert.equal(queried.ok, true);
+        if (!queried.ok) return false;
+        snapshot = queried.result;
+        return isTerminalTurnStatus(snapshot.status);
+      },
+      { timeoutMs: 5_000, pollMs: 20 },
+    );
     assert.equal(isTerminalTurnStatus(snapshot.status), true);
 
     disposalSpy = mock.method(FakeBackend.prototype, 'dispose', async () => {

@@ -354,7 +354,6 @@ test('the model reads its own call back in the names the tool accepts', async ()
     header: header(),
     connection: connection(),
     modelId: 'mock-model',
-    appendMessage: async () => {},
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,

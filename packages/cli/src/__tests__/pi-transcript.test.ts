@@ -969,7 +969,6 @@ describe('Maka Pi TUI transcript', () => {
         turnId: 'turn-1',
         ts: 2,
         status: 'running',
-        partialOutputRetained: true,
       },
     ]);
 
@@ -1055,7 +1054,6 @@ describe('Maka Pi TUI transcript', () => {
         turnId: 'turn-1',
         ts: 5,
         status: 'completed',
-        partialOutputRetained: true,
       },
     ]);
 
@@ -1419,7 +1417,6 @@ describe('Maka Pi TUI transcript', () => {
         turnId: 'turn-1',
         ts: 2,
         status: 'completed',
-        partialOutputRetained: false,
       },
     ] satisfies StoredMessage[]);
 
@@ -5129,7 +5126,6 @@ function inFlightBackgroundPollFixture(): {
         turnId: 'turn-1',
         ts: 1,
         status: 'running',
-        partialOutputRetained: true,
       },
       { type: 'tool_call', id: 'bash-bg', turnId: 'turn-1', ts: 2, toolName: 'Bash', args: {} },
       {

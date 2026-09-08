@@ -236,7 +236,6 @@ function backendWith(
   return createTestAiSdkBackend({
     sessionId: 'session-1',
     header: header(),
-    appendMessage: async () => {},
     connection: connection(),
     apiKey: 'sk-test',
     modelId: 'mock-model-id',

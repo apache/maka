@@ -63,12 +63,8 @@ const linkInRowEnd = { paddingInline: 'var(--spacing-3)' } as const;
 type AboutCopy = ReturnType<typeof getSettingsPreferencesCopy>['about'];
 
 /**
- * The updater's row, rendered only for a packaged install. Update state is not
- * this page's to own: the App Update feature holds the renderer's sole updater
- * subscription above AppShell and publishes About's projection, so the row
- * reads status from the consumer and issues the feature's guarded check
- * instead of touching the bridge. A component rather than the consumer's
- * render callback because the action guard is a hook.
+ * About's update row for a packaged install. A component rather than the
+ * consumer's render callback because the action guard is a hook.
  */
 function AboutUpdateStatusRow(props: {
   readonly update: AppUpdateAboutProjection;

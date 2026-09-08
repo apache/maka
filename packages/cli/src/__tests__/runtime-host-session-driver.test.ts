@@ -2136,7 +2136,6 @@ describe('Runtime Host Maka Session driver', () => {
         turnId: 'turn-running',
         ts: 80,
         status: 'running',
-        partialOutputRetained: true,
       },
     ];
     const subscriptions = [
@@ -3087,7 +3086,6 @@ function turnStateMessage(
     turnId,
     ts: 80,
     status,
-    partialOutputRetained: true,
   };
 }
 

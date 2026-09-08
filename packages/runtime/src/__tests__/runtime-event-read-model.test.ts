@@ -18,14 +18,15 @@
  */
 
 import assert from 'node:assert/strict';
+import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
 import { describe, test } from 'node:test';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
 import type { RuntimeEvent, RuntimeEventActions } from '@maka/core/runtime-event';
+import { runtimeEventHasModelVisibleContent } from '@maka/core/runtime-event';
 import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
-import { deriveTurnRecords } from '@maka/core/session';
+import { deriveTurnRecords, decodeCanonicalMessage } from '@maka/core/session';
 import {
-  compareRuntimeReadModelMessages,
   isHardRuntimeEventReadModelDiagnostic,
   isUnclaimedRuntimeEventDiagnostic,
   projectRuntimeEventsToStoredMessages,
@@ -283,7 +284,6 @@ function equivalentLegacyMessages(): StoredMessage[] {
       ts: ts + 8,
       status: 'completed',
       parentTurnId: 'parent-turn',
-      partialOutputRetained: true,
     },
   ];
 }
@@ -348,17 +348,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
         displayText: typed,
       },
     ]);
-    const compare = compareRuntimeReadModelMessages(out.messages, [
-      {
-        type: 'user',
-        id: 'user-skill',
-        turnId,
-        ts: ts + 1,
-        text: envelope,
-        displayText: typed,
-      },
-    ]);
-    assert.deepStrictEqual(compare.diagnostics, []);
   });
 
   test('full RuntimeEvent turn projects legacy-compatible rows', () => {
@@ -407,7 +396,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       status: 'completed',
       parentTurnId: 'parent-turn',
     });
-    assert.equal(deriveTurnRecords(out.messages)[0]?.partialOutputRetained, true);
     assert.deepStrictEqual(out.diagnostics, []);
   });
 
@@ -1387,7 +1375,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
 
     assert.deepStrictEqual(out.messages, legacy);
     assert.deepStrictEqual(out.diagnostics, []);
-    assert.strictEqual(compareRuntimeReadModelMessages(out.messages, legacy).compatible, true);
   });
 
   test('per-step thinking pairs each step assistant row by its own message id', () => {
@@ -1591,6 +1578,53 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       },
     ]);
     assert.deepStrictEqual(out.diagnostics, []);
+  });
+
+  test('failure diagnostics survive terminal projection and serialization round-trip', () => {
+    const message = 'Quota exceeded for api_key=sk-test-diagnostic-value (status=429)';
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'provider-failed',
+          status: 'failed',
+          content: {
+            kind: 'error',
+            message,
+            retry: { decision: 'declined', because: 'side_effects' },
+          },
+          actions: { endInvocation: true, stateDelta: { failureClass: 'rate_limit' } },
+        }),
+      ],
+      { invocations: [endedAs('failed', 'rate_limit')] },
+    );
+    const live = deriveTurnRecords(out.messages)[0];
+    const roundTripped = deriveTurnRecords(
+      JSON.parse(JSON.stringify(out.messages)).map(decodeCanonicalMessage),
+    )[0];
+    assert.equal(live.failureMessage, message);
+    assert.deepEqual(roundTripped, live);
+    assert.equal(live.errorClass, 'rate_limit');
+    assert.throws(() =>
+      decodeCanonicalMessage({ ...out.messages[0], failureMessage: '界'.repeat(2048) }),
+    );
+    assert.deepEqual(live.retry, { decision: 'declined', because: 'side_effects' });
+  });
+
+  test('bounds terminal diagnostics before publishing decodable turn states', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          status: 'failed',
+          content: { kind: 'error', message: '界'.repeat(2048) },
+          actions: { endInvocation: true, stateDelta: { failureClass: 'unknown' } },
+        }),
+      ],
+      { invocations: [endedAs('failed', 'unknown')] },
+    );
+    const turn = deriveTurnRecords(out.messages)[0];
+    assert.ok(turn.failureMessage?.startsWith('界'));
+    assert.ok(Buffer.byteLength(turn.failureMessage!) <= MODEL_FAILURE_MESSAGE_MAX_BYTES);
+    assert.doesNotThrow(() => out.messages.map(decodeCanonicalMessage));
   });
 
   test('a session written with the retired context_budget_exhausted reads back as context_overflow', () => {
@@ -2004,6 +2038,192 @@ const ACTION_COVERAGE_SAMPLES: ActionCoverageSamples = {
   runtimeProtocol: { action: { toolBoundary: 't1_after_preflight_v1' } },
 };
 
+describe('system note projection', () => {
+  test('projects a turn-scoped note back into its transcript row', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'evt-note',
+          content: {
+            kind: 'system_note',
+            note: 'context_compacted',
+            data: { removedMessages: 12 },
+          },
+          modelVisibility: 'hidden',
+          refs: { storedMessageId: 'legacy-note' },
+        }),
+      ],
+      { invocations: [invocation] },
+    );
+
+    assert.deepStrictEqual(out.diagnostics, []);
+    assert.deepStrictEqual(out.messages, [
+      {
+        type: 'system_note',
+        id: 'legacy-note',
+        turnId,
+        ts,
+        kind: 'context_compacted',
+        data: { removedMessages: 12 },
+      },
+    ]);
+  });
+
+  test('converts a legacy turn-scoped note and reads back the same row', () => {
+    const note: StoredMessage = {
+      type: 'system_note',
+      id: 'legacy-step-limit',
+      turnId,
+      ts,
+      kind: 'step_limit',
+      data: { steps: 40 },
+    };
+
+    const backfilled = backfillRuntimeEventsFromStoredMessages({
+      run: { sessionId, invocationId, runId, turnId },
+      outcome: { status: 'completed', ts },
+      messages: [note],
+      modelHistory: 'full',
+      now: () => ts,
+    });
+
+    assert.deepStrictEqual(backfilled.diagnostics, []);
+    const projected = projectRuntimeEventsToStoredMessages(backfilled.events, {
+      invocations: [invocation],
+    });
+    assert.deepStrictEqual(
+      projected.messages.filter((message) => message.type === 'system_note'),
+      [note],
+    );
+  });
+
+  test('leaves a session-level note out of the run ledger', () => {
+    const backfilled = backfillRuntimeEventsFromStoredMessages({
+      run: { sessionId, invocationId, runId, turnId },
+      messages: [
+        {
+          type: 'system_note',
+          id: 'legacy-mode-change',
+          turnId,
+          ts,
+          kind: 'mode_change',
+          data: { from: 'ask', to: 'bypass' },
+        },
+      ],
+      modelHistory: 'full',
+      now: () => ts,
+    });
+
+    assert.deepStrictEqual(
+      backfilled.events.filter((event) => event.content?.kind === 'system_note'),
+      [],
+    );
+    assert.partialDeepStrictEqual(backfilled.diagnostics, [{ code: 'skipped_high_risk_message' }]);
+  });
+});
+
+describe('legacy transcript conversion keeps every row', () => {
+  const convert = (messages: readonly StoredMessage[]) =>
+    backfillRuntimeEventsFromStoredMessages({
+      run: { sessionId, invocationId, runId, turnId },
+      outcome: { status: 'completed', ts },
+      messages,
+      modelHistory: 'full',
+      now: () => ts,
+    });
+
+  test('keeps a tool result whose call is not in the turn, out of model replay', () => {
+    const orphan: StoredMessage = {
+      type: 'tool_result',
+      id: 'legacy-orphan-result',
+      turnId,
+      ts,
+      toolUseId: 'tool-gone',
+      isError: false,
+      content: { kind: 'text', text: 'done' },
+    };
+
+    const converted = convert([orphan]);
+    const response = converted.events.find((event) => event.content?.kind === 'function_response');
+    assert.strictEqual(response?.modelVisibility, 'hidden');
+    assert.strictEqual(runtimeEventHasModelVisibleContent(response as RuntimeEvent), false);
+
+    const projected = projectRuntimeEventsToStoredMessages(converted.events, {
+      invocations: [invocation],
+    });
+    assert.partialDeepStrictEqual(
+      projected.messages.filter((message) => message.type === 'tool_result'),
+      [{ id: 'legacy-orphan-result', toolUseId: 'tool-gone' }],
+    );
+  });
+
+  test('keeps a provider-native call whose opaque output was not retained', () => {
+    const converted = convert([
+      {
+        type: 'tool_call',
+        id: 'tool-native',
+        turnId,
+        ts,
+        toolName: 'WebSearch',
+        args: { query: 'maka' },
+        providerExecuted: true,
+      },
+    ]);
+
+    const call = converted.events.find((event) => event.content?.kind === 'function_call');
+    assert.strictEqual(call?.modelVisibility, 'hidden');
+    assert.partialDeepStrictEqual(converted.diagnostics, [
+      { code: 'skipped_provider_native_replay_gap' },
+    ]);
+
+    const projected = projectRuntimeEventsToStoredMessages(converted.events, {
+      invocations: [invocation],
+    });
+    assert.partialDeepStrictEqual(
+      projected.messages.filter((message) => message.type === 'tool_call'),
+      [{ id: 'tool-native', toolName: 'WebSearch' }],
+    );
+  });
+
+  test('converts a permission decision on its own evidence', () => {
+    const decision: StoredMessage = {
+      type: 'permission_decision',
+      id: 'request-1',
+      turnId,
+      ts,
+      toolUseId: 'tool-1',
+      toolName: 'Bash',
+      decision: 'allow',
+      hint: 'rm -rf build',
+    };
+
+    const converted = convert([decision]);
+    assert.deepStrictEqual(converted.diagnostics, []);
+
+    const projected = projectRuntimeEventsToStoredMessages(converted.events, {
+      invocations: [invocation],
+    });
+    assert.deepStrictEqual(
+      projected.messages.filter((message) => message.type === 'permission_decision'),
+      [decision],
+    );
+  });
+
+  test('ends a turn whose transcript never said how it ended', () => {
+    const converted = backfillRuntimeEventsFromStoredMessages({
+      run: { sessionId, invocationId, runId, turnId },
+      messages: [{ type: 'user', id: 'legacy-user', turnId, ts, text: 'hello' }],
+      modelHistory: 'full',
+      now: () => ts,
+    });
+
+    const terminal = converted.events.filter((event) => event.actions?.endInvocation);
+    assert.partialDeepStrictEqual(terminal, [{ status: 'failed' }]);
+    assert.strictEqual(terminal[0]?.actions?.stateDelta?.failureClass, 'missing_terminal_event');
+    assert.partialDeepStrictEqual(converted.diagnostics, [{ code: 'synthesized_terminal_event' }]);
+  });
+});
+
 describe('RuntimeEventActions projection coverage', () => {
   for (const [field, sample] of Object.entries(ACTION_COVERAGE_SAMPLES)) {
     test(`actions.${field} projects without an unclaimed-event diagnostic`, () => {
@@ -2019,84 +2239,8 @@ describe('RuntimeEventActions projection coverage', () => {
   }
 });
 
-describe('compareRuntimeReadModelMessages', () => {
-  test('treats nested JSON with different property order as compatible', () => {
-    const projected = projectRuntimeEventsToStoredMessages(
-      [
-        ev({
-          id: 'evt-tool-call-json',
-          role: 'model',
-          author: 'agent',
-          content: {
-            kind: 'function_call',
-            id: 'tool-json',
-            name: 'JsonTool',
-            args: { beta: 2, alpha: { z: 3, a: 1 } },
-          },
-        }),
-        ev({
-          id: 'evt-tool-result-json',
-          role: 'tool',
-          author: 'tool',
-          content: {
-            kind: 'function_response',
-            id: 'tool-json',
-            name: 'JsonTool',
-            result: { kind: 'json', value: { outer: { y: 2, x: 1 }, list: [{ b: 2, a: 1 }] } },
-          },
-        }),
-      ],
-      { invocations: [invocation] },
-    );
-    const legacy: StoredMessage[] = [
-      {
-        type: 'tool_call',
-        id: 'tool-json',
-        turnId,
-        ts,
-        toolName: 'JsonTool',
-        args: { alpha: { a: 1, z: 3 }, beta: 2 },
-      },
-      {
-        type: 'tool_result',
-        id: 'different-result-id',
-        turnId,
-        ts,
-        toolUseId: 'tool-json',
-        isError: false,
-        content: { kind: 'json', value: { list: [{ a: 1, b: 2 }], outer: { x: 1, y: 2 } } },
-      },
-    ];
-
-    const result = compareRuntimeReadModelMessages(projected.messages, legacy);
-
-    assert.strictEqual(result.compatible, true);
-    assert.deepStrictEqual(result.diagnostics, []);
-  });
-
-  test('rejects a mismatched tool activity kind', () => {
-    const projected: StoredMessage[] = [
-      {
-        type: 'tool_call',
-        id: 'tool-kind',
-        turnId,
-        ts,
-        toolName: 'CustomTool',
-        activityKind: 'read',
-        args: {},
-      },
-    ];
-    const legacy: StoredMessage[] = [
-      {
-        ...(projected[0] as Extract<StoredMessage, { type: 'tool_call' }>),
-        activityKind: 'command',
-      },
-    ];
-
-    assert.strictEqual(compareRuntimeReadModelMessages(projected, legacy).compatible, false);
-  });
-
-  test('carries the cross-turn request anchor both ways and compares on it', () => {
+describe('token usage projection', () => {
+  test('carries the cross-turn request anchor both ways', () => {
     const lastRequestAnchor = { inputTokens: 120, outputTokens: 30 };
     const anchored = ev({
       id: 'evt-token-anchor',
@@ -2128,65 +2272,6 @@ describe('compareRuntimeReadModelMessages', () => {
       backfilled.events.find((event) => event.actions?.tokenUsage)?.actions?.tokenUsage
         ?.lastRequestAnchor,
       lastRequestAnchor,
-    );
-
-    assert.strictEqual(
-      compareRuntimeReadModelMessages(
-        [usage as StoredMessage],
-        [
-          {
-            ...(usage as Extract<StoredMessage, { type: 'token_usage' }>),
-            lastRequestAnchor: undefined,
-          },
-        ],
-      ).compatible,
-      false,
-    );
-  });
-
-  test('rejects mismatched replay-critical token usage fields', () => {
-    const usage: Extract<StoredMessage, { type: 'token_usage' }> = {
-      type: 'token_usage',
-      id: 'usage-1',
-      turnId,
-      ts,
-      input: 100,
-      output: 25,
-      runtimeSteps: 3,
-      contextRemaining: 9000,
-      providerRequestTraceId: 'provider-trace-1',
-    };
-
-    assert.strictEqual(
-      compareRuntimeReadModelMessages([usage], [{ ...usage, runtimeSteps: 4 }]).compatible,
-      false,
-    );
-    assert.strictEqual(
-      compareRuntimeReadModelMessages([usage], [{ ...usage, contextRemaining: 8000 }]).compatible,
-      false,
-    );
-    assert.strictEqual(
-      compareRuntimeReadModelMessages(
-        [usage],
-        [{ ...usage, providerRequestTraceId: 'provider-trace-2' }],
-      ).compatible,
-      false,
-    );
-  });
-
-  test('rejects missing tool result and assistant text cases', () => {
-    const projected = projectRuntimeEventsToStoredMessages(baseEvents(), {
-      invocations: [invocation],
-    });
-    const missing = projected.messages.filter(
-      (message) => message.type !== 'tool_result' && message.type !== 'assistant',
-    );
-    const result = compareRuntimeReadModelMessages(missing, equivalentLegacyMessages());
-
-    assert.strictEqual(result.compatible, false);
-    assert.deepStrictEqual(
-      result.diagnostics.map((diag) => diag.code),
-      ['missing_legacy_message', 'missing_legacy_message'],
     );
   });
 });
@@ -2244,6 +2329,23 @@ class ReadOnlyStore implements SessionStore {
   async readMessages(_sessionId: string): Promise<StoredMessage[]> {
     this.readMessagesCalls += 1;
     return [...this.messages];
+  }
+
+  async readMessagesAfter(
+    _sessionId: string,
+    request: { afterSequence?: number; maxMessages: number },
+  ): Promise<{
+    records: readonly { sequence: number; message: StoredMessage }[];
+    highWaterSequence: number | null;
+  }> {
+    this.readMessagesCalls += 1;
+    return {
+      records: this.messages
+        .map((message, sequence) => ({ sequence, message }))
+        .filter(({ sequence }) => sequence > (request.afterSequence ?? -1))
+        .slice(0, request.maxMessages),
+      highWaterSequence: this.messages.length > 0 ? this.messages.length - 1 : null,
+    };
   }
 
   async listTurns(_sessionId: string): Promise<TurnRecord[]> {

@@ -18,11 +18,10 @@
  */
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-
-const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+import { isSafeStorageId } from './storage-id.js';
 
 export function isRuntimeStorageSafeId(value: string): boolean {
-  return SAFE_ID_PATTERN.test(value);
+  return isSafeStorageId(value);
 }
 
 export function immutableSteeringMessageId(event: RuntimeEvent): string | undefined {
