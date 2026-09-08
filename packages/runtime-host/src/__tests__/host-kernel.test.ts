@@ -21,7 +21,7 @@ import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFile, fork, type ChildProcess } from 'node:child_process';
 import {
   chmod,
@@ -2204,11 +2204,22 @@ describe('non-serving Runtime Host kernel', () => {
             capability.rootId,
             join(paths.base, 'authority-lease-probe'),
             launchOwnerClientInstanceId,
+            // The owner-loss exit bound below covers the gated recovery
+            // window, so this run pins startup behind the gated-recovery
+            // entry instead of leaving both the window and the kill's
+            // ordering to however scheduling resolves them.
+            '../../test-only/owned-candidate-gated-recovery-main.js',
           ],
           { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
         ),
       );
       const launchedPid = paths.resources.trackPid(await waitForLaunch(launcher));
+      // The gated-recovery entry parks composition creation behind these
+      // markers under the same base directory; the stall marker proves the
+      // Candidate reached the gated window, and the release marker lets the
+      // test unblock it through a channel that survives the launcher.
+      const stallMarker = join(paths.base, 'authority-lease-probe.stalled');
+      const releaseMarker = join(paths.base, 'authority-lease-probe.release');
       const connected = await retryConnect(paths, CURRENT_PROTOCOL, {
         clientInstanceId: launchOwnerClientInstanceId,
       });
@@ -2224,14 +2235,67 @@ describe('non-serving Runtime Host kernel', () => {
       });
       assert.equal(ordinary.kind, 'draining');
 
+      // The owner-loss contract under test is recorded pre-bind: a
+      // launch-owner Client is admitted while the Host is still recovering,
+      // and the guard that closes the Host on owner loss binds only after
+      // startup returns. Kill timing alone cannot prove the loss was
+      // recorded pre-bind — a test-side pause longer than the candidate's
+      // startup would silently turn this into the post-bind scenario — so
+      // the gated-recovery entry holds startup behind a release file and
+      // marks the stall; waiting for that marker makes the kill land inside
+      // the gated window by construction rather than by luck.
+      const stallDeadline = Date.now() + 10_000;
+      while (!existsSync(stallMarker) && Date.now() < stallDeadline) {
+        await sleep(20);
+      }
+      assert.ok(existsSync(stallMarker), 'gated-recovery entry never reached its stall window');
       launcher.kill('SIGKILL');
       await waitForExit(launcher);
+      // The process is the only thing that reports the claim. A Client's
+      // `connection.closed` does not: it is that Client's own transport, and
+      // the Client aborts it after its liveness probe goes unanswered for two
+      // seconds. A Host that is merely busy therefore resolves it while still
+      // running, so it is used only as a post-exit consistency check below.
+      //
+      // Startup — composition creation and recovery included — runs after the
+      // release and is not bounded by the kernel's shutdown grace, so the exit
+      // budget must not start at the release. The entry's `onWon` marker is
+      // the explicit guard-bound boundary that starts it instead: the
+      // launch-owner guard has bound and the pre-bind recorded loss is being
+      // acted on, so everything the 20-second deadline covers (the
+      // `shutdownGraceMs` close plus margin — which sits below the launcher's
+      // 60 s idle grace, so it cannot be satisfied by a Candidate that merely
+      // went idle) happens after the marker.
+      //
+      // The race below keeps that boundary honest without breaking local
+      // Windows runs: there the Candidate can be terminated abruptly the
+      // moment its launcher dies — no JS exit event, so no bind and no marker
+      // — and `isProcessAlive` releasing the wait only records that platform
+      // limitation, while a Candidate still alive without a marker past the
+      // deadline is a failure. The assertion observes the real
+      // operating-system PID: the kernel resolving its `closed` promise does
+      // not by itself mean the OS process has exited, so only CI verdicts
+      // count as cross-platform evidence here.
+      writeFileSync(releaseMarker, String(Date.now()));
+      const boundMarker = join(paths.base, 'authority-lease-probe.bound');
+      const boundDeadline = Date.now() + 10_000;
+      while (
+        !existsSync(boundMarker) &&
+        isProcessAlive(launchedPid) &&
+        Date.now() < boundDeadline
+      ) {
+        await sleep(20);
+      }
+      assert.ok(
+        existsSync(boundMarker) || !isProcessAlive(launchedPid),
+        'gated-recovery entry never reached its guard bind',
+      );
+      await waitForProcessExit(launchedPid, 20_000);
       await withTimeout(
         connected.connection.closed,
         5_000,
-        'authority-supervised Candidate survived its launch owner',
+        'authority-supervised Candidate exited without closing its Client connection',
       );
-      await waitForProcessExit(launchedPid);
       paths.resources.forgetPid(launchedPid);
     });
   });

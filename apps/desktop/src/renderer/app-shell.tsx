@@ -71,7 +71,7 @@ import { useCommandPalette } from './command-palette';
 import { ChatMessageSurface } from './chat-message-surface';
 import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
 import * as Conversation from './features/conversation';
-import type { TranscriptHistoryGates, TranscriptHistoryPending } from './features/conversation';
+import type { TranscriptHistoryPending } from './features/conversation';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { LiveTurnReconciler } from './live-turn-reconciler';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
@@ -425,7 +425,7 @@ function AppShellContent({
   const [newTaskPermissionChoice, setNewTaskPermissionChoice, clearNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
   const [historyLoadPending, setHistoryLoadPending] = useState<TranscriptHistoryPending>();
-  const historyLoadGatesRef = useRef<TranscriptHistoryGates>(new WeakMap());
+  const transcriptReadingCommands = useRef<Conversation.TranscriptReadingPositionCommands>(null);
   const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<{
     sessionId: string;
     throughSequence: number | null;
@@ -1580,6 +1580,7 @@ function AppShellContent({
     updateTransientMessage,
     removeTransientMessage,
     transcriptRangeRef,
+    onFollowLatest: (sessionId) => transcriptReadingCommands.current?.prepareSend(sessionId) ?? Promise.resolve(true),
     setLiveTurnBySession: sessionUiController.setLiveTurnBySession,
     setInteractionBySession: sessionUiController.setInteractionBySession,
     onInteractionChanged: markInteractionChanged,
@@ -2139,43 +2140,6 @@ function AppShellContent({
     setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
     toastApi,
   });
-  const newestDurablePromptSequence = Conversation.transcriptReadingPosition.newestDurablePromptSequence(
-    transcriptRangeRef.current,
-    activeId,
-  );
-  useEffect(() => Conversation.transcriptReadingPosition.refreshLandmarks({
-    sessionId: ownerActiveId,
-    newestDurablePromptSequence,
-    current: transcriptTurnIndex,
-    list: (sessionId) => window.maka.sessions.listTurnLandmarks(sessionId),
-    isCurrent: (sessionId) => activeIdRef.current === sessionId,
-    setIndex: setTranscriptTurnIndex,
-  }), [ownerActiveId, activeIdRef, newestDurablePromptSequence, transcriptTurnIndex]);
-  useEffect(() => Conversation.transcriptReadingPosition.restoreRange({
-    sessionId: activeId,
-    searchTarget: searchScrollTarget?.handled ? null : searchScrollTarget,
-    readingAnchor: activeId
-      ? sessionUiController.transcriptReadingAnchorBySessionRef.current[activeId]
-      : undefined,
-    controller: transcriptRangeRef.current,
-    isCurrent: (sessionId, controller) =>
-      activeIdRef.current === sessionId && transcriptRangeRef.current === controller,
-    setMessages,
-    setReadingAnchor: sessionUiController.setTranscriptReadingAnchor,
-    onRestoreUnavailable: (sessionId, turnId) => {
-      sessionUiController.setTranscriptRestoreUnavailable(sessionId, turnId);
-    },
-    onError: (error, sessionId) => {
-      sessionUiController.setMessageLoadErrorBySession((current) => ({
-        ...current,
-        [sessionId]: localizedShellErrorMessage(
-          error,
-          desktopConversationCopy.actions.operationFailedFallback,
-          uiLocale,
-        ),
-      }));
-    },
-  }), [activeId, activeSession?.profileId, messages, searchScrollTarget]);
   useShellRunUpdates({
     activeId,
     setShellRunUpdatesBySession: sessionUiController.setShellRunUpdatesBySession,
@@ -2339,41 +2303,6 @@ function AppShellContent({
     transcriptRangeRef.current,
     activeId,
   );
-  function handleTranscriptReadingAnchorChange(turnId?: string) {
-    if (activeId && activeUnavailableTranscriptRestore)
-      sessionUiController.setTranscriptRestoreUnavailable(activeId, undefined);
-    Conversation.transcriptReadingPosition.captureAnchor({
-      sessionId: activeId,
-      currentSessionId: activeIdRef.current,
-      turnId,
-      controller: transcriptRangeRef.current,
-      setAnchor: sessionUiController.setTranscriptReadingAnchor,
-    });
-  }
-  function loadTranscriptHistory(target: 'earlier' | 'later' | 'latest', anchorTurnId?: string) {
-    const controller = transcriptRangeRef.current;
-    const sessionId = activeId;
-    if (!controller || !sessionId) return;
-    if (target !== 'earlier') handleTranscriptReadingAnchorChange();
-    return Conversation.transcriptReadingPosition.loadHistory({
-      gates: historyLoadGatesRef.current,
-      sessionId,
-      request: { target, anchorTurnId },
-      controller,
-      maxBytes: DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES,
-      isCurrent: () => activeIdRef.current === sessionId && transcriptRangeRef.current === controller,
-      setPending: setHistoryLoadPending,
-      onError: (error) => showSessionError(
-        sessionId,
-        desktopConversationCopy.actions.messageReadFailedTitle,
-        localizedShellErrorMessage(
-          error,
-          desktopConversationCopy.actions.operationFailedFallback,
-          uiLocale,
-        ),
-      ),
-    });
-  }
   const homeSurfaceActive =
     navSelection.section === 'sessions' &&
     messages.length === 0 &&
@@ -2481,6 +2410,30 @@ function AppShellContent({
         } as CSSProperties)
       }
     >
+      <Conversation.TranscriptReadingPositionController
+        commands={transcriptReadingCommands}
+        sessionId={activeId}
+        profileId={activeSession?.profileId}
+        currentSessionId={activeIdRef}
+        rangeController={transcriptRangeRef}
+        messages={messages}
+        searchTarget={searchScrollTarget?.handled ? null : searchScrollTarget}
+        landmarkSessionId={ownerActiveId ?? null}
+        clearSearchTarget={() => setSearchScrollTarget(null)}
+        sessionUi={sessionUiController}
+        turnIndex={transcriptTurnIndex}
+        setTurnIndex={setTranscriptTurnIndex}
+        listTurnLandmarks={(sessionId) => window.maka.sessions.listTurnLandmarks(sessionId)}
+        setHistoryPending={setHistoryLoadPending}
+        historyPageBytes={DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES}
+        onRestoreError={(error, sessionId) => sessionUiController.setMessageLoadErrorBySession((current) => ({
+          ...current,
+          [sessionId]: localizedShellErrorMessage(error, desktopConversationCopy.actions.operationFailedFallback, uiLocale),
+        }))}
+        onNavigationError={(error, sessionId) => showSessionError(sessionId,
+          desktopConversationCopy.actions.messageReadFailedTitle,
+          localizedShellErrorMessage(error, desktopConversationCopy.actions.operationFailedFallback, uiLocale))}
+      />
       <LiveTurnReconciler
         controller={sessionUiController}
         activeId={activeId}
@@ -2656,7 +2609,7 @@ function AppShellContent({
                   desktopConversationCopy.actions.scrollMainToBottom
                 }
                 onReturnToTail={activeTranscriptRange?.hasNewer
-                  ? () => loadTranscriptHistory('latest')
+                  ? () => transcriptReadingCommands.current?.loadHistory('latest')
                   : undefined}
                 hidden={navSelection.section !== 'sessions'}
                 composer={
@@ -2866,7 +2819,7 @@ function AppShellContent({
                 hasOlderHistory={activeTranscriptRange?.hasOlder}
                 hasNewerHistory={activeTranscriptRange?.hasNewer}
                 historyLoadPending={historyLoadPending}
-                onLoadHistory={loadTranscriptHistory}
+                onLoadHistory={(target, anchorTurnId) => transcriptReadingCommands.current?.loadHistory(target, anchorTurnId)}
                 liveContentSeedRevision={liveContent.liveContentSeedRevision(activeEventSeed, activeId)}
                 messages={messages}
                 transientMessages={transientMessages}
@@ -2916,7 +2869,7 @@ function AppShellContent({
                   activeUnavailableTranscriptRestore,
                 )}
                 onReadingAnchorChange={activeId
-                  ? handleTranscriptReadingAnchorChange
+                  ? (turnId) => transcriptReadingCommands.current?.captureAnchor(turnId)
                   : undefined}
                 transcriptTurnIndex={
                   transcriptTurnIndex && transcriptTurnIndex.sessionId === activeId

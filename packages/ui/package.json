@@ -12,6 +12,7 @@
     "./assistant-stream": "./dist/assistant-stream.js",
     "./icons": "./dist/icons.js",
     "./maka-uri": "./dist/maka-uri.js",
+    "./testing": "./dist/testing.js",
     "./styles.css": "./src/styles.css",
     "./composer-attachments": "./dist/composer-attachments.js",
     "./pending-items": "./dist/pending-items.js",

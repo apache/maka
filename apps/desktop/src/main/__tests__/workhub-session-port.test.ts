@@ -380,7 +380,7 @@ test('Coordination transcript adapter never replays history and completes only t
   const sessionId = desktopSessionKey({ hostId: 'local-host', sessionId: 'coordination' });
   const snapshots: unknown[] = [];
   let closes = 0;
-  const latestLoads: Array<{ sequence: number; maxBytes: number | undefined }> = [];
+  const latestLoads: Array<{ sequence: number | null; maxBytes: number | undefined; intent: string | undefined }> = [];
   let deliver: ((batch: DesktopTranscriptBatch) => void) | undefined;
   const adapter = createDesktopWorkHubCoordinationPort({
     sessionId,
@@ -409,8 +409,8 @@ test('Coordination transcript adapter never replays history and completes only t
           readThroughMessageId: null,
           loadBefore: async () => assert.fail('conversation open must not replay older history'),
           loadAfter: async () => assert.fail('conversation open must not replay newer history'),
-          loadAround: async (sequence, maxBytes) => {
-            latestLoads.push({ sequence, maxBytes });
+          loadAround: async (sequence, maxBytes, navigation) => {
+            latestLoads.push({ sequence, maxBytes, intent: navigation?.intent });
             const message: StoredMessage = {
               type: 'user',
               id: 'latest-message',
@@ -421,6 +421,7 @@ test('Coordination transcript adapter never replays history and completes only t
             const data = new TextEncoder().encode(JSON.stringify(message));
             handler({
               sessionId: 'coordination',
+              navigationVersion: navigation?.navigationVersion,
               deliverySequence: 3,
               generation: 'generation-2',
               hostEpoch: 'epoch-1',
@@ -439,7 +440,7 @@ test('Coordination transcript adapter never replays history and completes only t
               completedOverlayMessageIds: [],
               hasOlder: true,
               hasNewer: false,
-              reset: false,
+              reset: true,
               ready: true,
             });
           },
@@ -477,8 +478,8 @@ test('Coordination transcript adapter never replays history and completes only t
     reset: true,
     ready: true,
   });
-  await Promise.resolve();
-  assert.deepEqual(latestLoads, [{ sequence: 7, maxBytes: 512 * 1024 }]);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(latestLoads, [{ sequence: null, maxBytes: 512 * 1024, intent: 'followTail' }]);
   assert.deepEqual(snapshots, [[], [
     {
       messageId: 'latest-message',
@@ -543,14 +544,14 @@ test('Coordination transcript adapter retries latest-record completion in the sa
   });
 
   const handle = await adapter.open(() => {}, (error) => errors.push(error));
-  await Promise.resolve();
-  await Promise.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(latestLoads, 1);
   assert.equal(errors.length, 1);
 
   deliver?.({
     sessionId: 'coordination',
     deliverySequence: 2,
+    navigationVersion: 1,
     generation: 'generation-1',
     hostEpoch: 'epoch-1',
     durableThrough: 7,
@@ -562,12 +563,13 @@ test('Coordination transcript adapter retries latest-record completion in the sa
     reset: false,
     ready: true,
   });
-  await Promise.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(latestLoads, 2);
 
   deliver?.({
     sessionId: 'coordination',
     deliverySequence: 3,
+    navigationVersion: 2,
     generation: 'generation-1',
     hostEpoch: 'epoch-1',
     durableThrough: 7,
@@ -579,7 +581,7 @@ test('Coordination transcript adapter retries latest-record completion in the sa
     reset: true,
     ready: true,
   });
-  await Promise.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(latestLoads, 3);
   await handle.close();
 });
@@ -640,11 +642,13 @@ test('Coordination transcript adapter ignores a stale latest-record failure afte
   });
 
   const handle = await adapter.open(() => {}, (error) => errors.push(error));
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(latestLoads, 1);
   deliver?.({
     sessionId: 'coordination',
     deliverySequence: 2,
-    generation: 'generation-1',
+    navigationVersion: 1,
+    generation: 'generation-2',
     hostEpoch: 'epoch-1',
     durableThrough: 7,
     fragments: [],
@@ -655,11 +659,10 @@ test('Coordination transcript adapter ignores a stale latest-record failure afte
     reset: true,
     ready: true,
   });
-  await Promise.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(latestLoads, 2);
   rejectStaleLoad?.(new Error('stale latest-record failure'));
-  await Promise.resolve();
-  await Promise.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.deepEqual(errors, []);
   await handle.close();
 });

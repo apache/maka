@@ -29,6 +29,7 @@ import {
   type TranscriptScrollAuthority,
 } from '../transcript-scroll-authority.js';
 import { useChatScroll } from '../use-chat-scroll.js';
+import { createTranscriptViewportNavigation } from '../transcript-viewport-navigation.js';
 
 const originalGlobals = {
   CSS: globalThis.CSS,
@@ -288,7 +289,10 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
 
   const anchors = new Map<string, string>();
   const handledTargets: number[] = [];
+  const viewportNavigation = createTranscriptViewportNavigation();
   const unavailableRestores = new Map<string, string>();
+  const historyRequests: Array<{ direction: 'up' | 'down'; anchor?: string }> = [];
+  let historyPaging = false;
   let authority: TranscriptScrollAuthority | undefined;
   let messageRevision = 0;
   let target: { turnId: string; nonce: number } | undefined;
@@ -307,12 +311,17 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
       target,
       restoreTarget,
       onTargetHandled: (nonce) => handledTargets.push(nonce),
+      viewportNavigation,
       onReadingAnchorChange: (turnId) => {
         unavailableRestores.delete(sessionId);
         if (turnId) anchors.set(sessionId, turnId);
         else anchors.delete(sessionId);
       },
       behavior: 'auto',
+      hasOlderHistory: historyPaging,
+      hasNewerHistory: historyPaging,
+      onLoadEarlierHistory: (anchor) => { historyRequests.push({ direction: 'up', anchor }); },
+      onLoadLaterHistory: (anchor) => { historyRequests.push({ direction: 'down', anchor }); },
     });
     return null;
   }
@@ -422,6 +431,67 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   await flushFrames();
   assert.equal(authority?.getSnapshot().pinned, true);
   assert.equal(anchors.has('session-b'), false);
+
+  // A send/return-to-latest clears a pending bookmark. Its old frame must not
+  // scroll to the historical Turn if that Turn arrives in a later batch.
+  anchors.set('session-a', 'turn-a-2');
+  collapseTranscript();
+  await renderSession('session-a');
+  assert.equal(authority?.getSnapshot().pinned, false);
+  anchors.delete('session-a');
+  await renderSession('session-a');
+  assert.equal(authority?.getSnapshot().pinned, false, 'clearing a bookmark is not a viewport command');
+  await act(() => viewportNavigation.followLatest('session-a'));
+  installTranscript(3_000, [
+    { id: 'turn-a-2', start: 0, height: 800 },
+    { id: 'turn-a-latest', start: 800, height: 2_200 },
+  ]);
+  await renderSession('session-a');
+  deliverResize();
+  await flushFrames();
+  assert.equal(authority?.getSnapshot().pinned, true);
+  assert.equal(scroller.scrollTop, 2_400);
+  assert.equal(anchors.has('session-a'), false);
+
+  scroller.scrollTop = 1_000;
+  scroller.dispatchEvent(new window.Event('scroll'));
+  assert.equal(anchors.get('session-a'), 'turn-a-latest');
+  installTranscript(800, [{ id: 'geometry-resident', start: 0, height: 800 }]);
+  scroller.scrollTop = scroller.scrollTop;
+  await renderSession('session-a');
+  deliverResize();
+  assert.equal(authority?.getSnapshot().pinned, false);
+  assert.equal(authority?.getSnapshot().awayFromTail, false);
+  assert.equal(anchors.get('session-a'), 'turn-a-latest', 'range geometry does not report a new reading intent');
+
+  // Either adjacent-page gesture supersedes an activation's unfinished
+  // bookmark. A late fill must not move the reader back to that old target.
+  historyPaging = true;
+  for (const direction of ['up', 'down'] as const) {
+    const sessionId = `session-page-${direction}`;
+    const bookmark = `bookmark-${direction}`;
+    anchors.set(sessionId, bookmark);
+    collapseTranscript();
+    installTranscript(3_000, [{ id: 'resident', start: 0, height: 3_000 }]);
+    await renderSession(sessionId);
+    assert.equal(authority?.getSnapshot().pinned, false);
+    scroller.scrollTop = direction === 'up' ? 0 : 2_400;
+    const wheel = new window.Event('wheel', { bubbles: true });
+    Object.defineProperty(wheel, 'deltaY', { value: direction === 'up' ? -100 : 100 });
+    scroller.dispatchEvent(wheel);
+    assert.deepEqual(historyRequests.at(-1), { direction, anchor: 'resident' });
+    const readerTop: number = scroller.scrollTop;
+
+    installTranscript(3_000, [
+      { id: 'resident-before', start: 0, height: 800 },
+      { id: bookmark, start: 800, height: 600 },
+      { id: 'resident-after', start: 1_400, height: 1_600 },
+    ]);
+    await renderSession(sessionId);
+    await flushFrames();
+    assert.equal(scroller.scrollTop, readerTop, `${direction} paging consumes the pending restore`);
+    assert.equal(authority?.getSnapshot().pinned, false);
+  }
 });
 
 /**

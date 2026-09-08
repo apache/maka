@@ -827,12 +827,26 @@ function normalizeTranscriptRangeRequest(input: unknown): DesktopTranscriptRange
   if (!Number.isSafeInteger(maxBytes)) {
     throw new Error('Invalid Desktop transcript range byte limit');
   }
+  if (
+    (value.navigationVersion !== undefined &&
+      (!Number.isSafeInteger(value.navigationVersion) || (value.navigationVersion as number) < 0)) ||
+    (value.intent !== undefined && value.intent !== 'history' && value.intent !== 'followTail') ||
+    (value.preserveRange !== undefined && typeof value.preserveRange !== 'boolean') ||
+    (value.readingTurnId !== undefined &&
+      (typeof value.readingTurnId !== 'string' || value.readingTurnId.length === 0))
+  ) {
+    throw new Error('Invalid Desktop transcript navigation');
+  }
   return {
     consumerId: requiredId(value.consumerId, 'Transcript consumer'),
     sessionId: requiredId(value.sessionId, 'Session'),
     hostEpoch: requiredId(value.hostEpoch, 'Host epoch'),
     anchorSequence: anchorSequence as number | null,
     maxBytes: maxBytes as number,
+    navigationVersion: value.navigationVersion as number | undefined,
+    intent: value.intent as DesktopTranscriptRangeRequest['intent'],
+    preserveRange: value.preserveRange as boolean | undefined,
+    readingTurnId: value.readingTurnId as string | undefined,
   };
 }
 
