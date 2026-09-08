@@ -1693,12 +1693,12 @@ describe('Maka Pi TUI runner', () => {
     const saveCalls: OnboardingSaveInput[] = [];
     const editorEndCursor = '\x1b[7m \x1b[0m';
     const identityFieldLine = (expectedText: string) => {
-      return (
-        terminal.writes
-          .flatMap((write) => write.split('\n'))
-          .reverse()
-          .find((line) => plainTerminalOutput(line).trim() === expectedText) ?? ''
-      );
+      const line = terminal.writes
+        .flatMap((write) => write.split('\n'))
+        .reverse()
+        .find((line) => plainTerminalOutput(line).trim() === expectedText);
+      assert.ok(line, `expected a rendered field: ${expectedText}`);
+      return line;
     };
     const run = runMakaPiTui({
       title: 'Maka',

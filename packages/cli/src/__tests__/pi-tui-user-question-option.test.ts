@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { visibleWidth } from '@earendil-works/pi-tui';
+import { CURSOR_MARKER, TuiMainScreen, visibleWidth } from '@earendil-works/pi-tui';
 import type { TUI } from '@earendil-works/pi-tui';
 import {
   clampRowsWithEllipsis,
@@ -27,11 +27,51 @@ import {
   UserQuestionOverlay,
 } from '../pi-tui-pickers.js';
 import { ansi, stripAnsi } from '../tui-ansi.js';
+import { FakeTerminal, plainTerminalOutput } from './tui-terminal-mock.js';
 
 // SGR reverse degrades to identity when the terminal reports no color support
 // (piped CI), so the highlight assertion keys off this build's actual behavior.
 const REVERSE_ON = '\u001b[7m';
 const COLOR_ENABLED = ansi.reverse('').length > 0;
+
+test('Other keeps its draft and shows a cursor only while its input row is selected', () => {
+  const draft = 'custom e\u0301';
+  const answers: string[] = [];
+  const overlay = new UserQuestionOverlay(new TuiMainScreen(new FakeTerminal()), {
+    title: 'Pick one',
+    rightLabel: '1 / 1',
+    hint: '↑↓ move · type to answer',
+    placeholder: 'Other: type answer',
+    options: [{ label: 'Preset' }],
+    onSelectOption: () => undefined,
+    onSubmitText: (value) => answers.push(value),
+    onSkip: () => undefined,
+  });
+  const inputLine = () => {
+    const row = overlay.render(40).find((line) => plainTerminalOutput(line).includes(draft));
+    assert.ok(row, 'the typed answer must remain visible');
+    return row;
+  };
+
+  overlay.handleInput(draft); // Typing on a preset jumps to Other.
+  const focused = inputLine();
+  assert.ok(focused.includes(REVERSE_ON));
+  assert.ok(focused.includes(CURSOR_MARKER));
+
+  overlay.handleInput('\x1b[A'); // Other -> preset.
+  assert.ok(!inputLine().includes(REVERSE_ON), 'the inactive input must hide its cursor');
+  assert.ok(!inputLine().includes(CURSOR_MARKER), 'the inactive input must not anchor the IME');
+  overlay.handleInput('\x1b[B');
+  assert.equal(inputLine(), focused, 'refocus restores the cursor and IME position');
+
+  overlay.handleInput('\x1b[D'); // Put the cursor on e + combining accent, not a trailing space.
+  assert.ok(inputLine().includes(`${REVERSE_ON}e\u0301`));
+  overlay.handleInput('\x1b[A');
+  assert.ok(!inputLine().includes(REVERSE_ON), 'a cursor on a character must also disappear');
+  overlay.handleInput('\x1b[B');
+  overlay.handleInput('\r');
+  assert.deepEqual(answers, [draft]);
+});
 
 test('long options wrap within the row width instead of truncating (#4610)', () => {
   const option = {
