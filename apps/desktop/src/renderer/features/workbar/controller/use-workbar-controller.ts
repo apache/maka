@@ -136,6 +136,22 @@ function terminalResourceKey(sessionId: string, ref: string): string {
   return `${sessionId}\u0000${ref}`;
 }
 
+function pendingActiveSessionBelongsToKnownFamily(
+  activeSession: SessionSummary | undefined,
+  knownSessions: readonly SessionSummary[],
+): boolean {
+  if (!activeSession) return false;
+  const isPlaceholderSessionView =
+    activeSession.model === '' && activeSession.llmConnectionSlug === '';
+  if (isPlaceholderSessionView) return knownSessions.length > 0;
+  if (knownSessions.some((session) => session.id === activeSession.id)) {
+    return false;
+  }
+  const parentSessionId =
+    activeSession.subagent?.parentSessionId ?? activeSession.subagentParent?.parentSessionId;
+  return parentSessionId !== undefined && knownSessions.some((session) => session.id === parentSessionId);
+}
+
 function projectWorkbarPanelsForSession(
   panels: SessionWorkbarPanelsState,
   activeSessionId: string | undefined,
