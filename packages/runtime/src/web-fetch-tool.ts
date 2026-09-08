@@ -18,6 +18,7 @@
  */
 
 import { z } from 'zod';
+import type { ToolResultContent } from '@maka/core/events';
 import type { MakaTool } from './tool-runtime.js';
 
 const WEB_FETCH_TOOL_NAME = 'WebFetch';
@@ -41,7 +42,9 @@ export interface WebFetchExecutor {
 }
 
 /** Builds the model-facing tool while the host owns policy and transport. */
-export function buildWebFetchTool(executor: WebFetchExecutor): MakaTool {
+export function buildWebFetchTool(
+  executor: WebFetchExecutor,
+): MakaTool<{ url: string }, Extract<ToolResultContent, { kind: 'text' }>> {
   return {
     name: WEB_FETCH_TOOL_NAME,
     categoryHint: 'web_read',
@@ -49,6 +52,13 @@ export function buildWebFetchTool(executor: WebFetchExecutor): MakaTool {
     description:
       'Read the main content of a specific HTTP or HTTPS URL. Use it when a concrete URL is already known.',
     parameters: z.object({ url: httpUrlSchema }).strict(),
+    toModelOutput: ({ output }) => {
+      const result = output as Extract<ToolResultContent, { kind: 'text' }>;
+      return {
+        type: 'text',
+        value: result.text + (result.truncated ? WEB_FETCH_TRUNCATION_MARKER : ''),
+      };
+    },
     impl: async ({ url }, context) => {
       const canonicalUrl = new URL(httpUrlSchema.parse(url)).toString();
       const content = await executor.fetch({
@@ -71,8 +81,9 @@ export function routeWebFetchTools(
     : [...tools];
 }
 
-function truncateWebFetchOutput(content: string): string {
-  if (Buffer.byteLength(content, 'utf8') <= WEB_FETCH_MODEL_OUTPUT_MAX_BYTES) return content;
+function truncateWebFetchOutput(content: string): Extract<ToolResultContent, { kind: 'text' }> {
+  if (Buffer.byteLength(content, 'utf8') <= WEB_FETCH_MODEL_OUTPUT_MAX_BYTES)
+    return { kind: 'text', text: content };
   const markerBytes = Buffer.byteLength(WEB_FETCH_TRUNCATION_MARKER, 'utf8');
   const contentBytes = WEB_FETCH_MODEL_OUTPUT_MAX_BYTES - markerBytes;
   // The extra UTF-16 unit keeps a split surrogate outside the retained bytes.
@@ -80,5 +91,5 @@ function truncateWebFetchOutput(content: string): string {
     .subarray(0, contentBytes)
     .toString('utf8')
     .replace(/�+$/, '');
-  return kept + WEB_FETCH_TRUNCATION_MARKER;
+  return { kind: 'text', text: kept, truncated: true };
 }

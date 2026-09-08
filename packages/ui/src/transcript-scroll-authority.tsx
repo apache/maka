@@ -108,7 +108,7 @@ function reachesTranscript(event: Event, root: HTMLElement, direction: 'up' | 'd
   return false;
 }
 
-export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
+export function createTranscriptScrollAuthority(options: { explicitResume?: boolean } = {}): TranscriptScrollAuthority {
   let root: HTMLElement | null = null;
   let pinned = true;
   let awayFromTail = false;
@@ -314,7 +314,9 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
           if (gesture !== ended || ended.top !== top || pointer !== undefined || touchHeld) return;
           // Input that can scroll and observed reader movement already release
           // the pin. Settling an unmoved edge gesture must not release it too.
-          pinned = pinned || (ended.direction === 'down' && distanceToTail() <= PIN_THRESHOLD_PX);
+          pinned = options.explicitResume
+            ? pinned
+            : pinned || (ended.direction === 'down' && distanceToTail() <= PIN_THRESHOLD_PX);
           gesture = undefined;
           notifyIdle();
           publish();

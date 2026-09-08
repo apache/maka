@@ -30,6 +30,7 @@ export function ToolCodeBlock(props: {
   title?: string;
   maxHeight?: string | number;
   actionIdentity?: string;
+  hasCopyButton?: boolean;
 }) {
   const copy = getToolActivityCopy(useUiLocale()).copy;
   const actionIdentity = props.actionIdentity?.trim();
@@ -41,6 +42,7 @@ export function ToolCodeBlock(props: {
   const codeBlock = (
     <CodeBlock
       code={props.code}
+      hasCopyButton={props.hasCopyButton}
       language={props.language}
       title={props.title}
       // Absolute, like every other length the type-scale convergence

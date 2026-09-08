@@ -23,6 +23,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { createHash } from "node:crypto";
 import { registerRuntimeHostArtifactsIpc } from "../runtime-host-artifacts-ipc-main.js";
 
 type Handler = (event: unknown, ...args: any[]) => unknown;
@@ -31,6 +32,34 @@ type StreamArtifact = (
   artifactId: string,
   writeChunk: (chunk: Uint8Array) => Promise<void>,
 ) => Promise<number>;
+
+test('routes archive reads to the Host and rejects inconsistent reference evidence', async () => {
+  const handlers = new Map<string, Handler>();
+  const text = JSON.stringify('中文 retained output '.repeat(4_000));
+  const bytes = Buffer.from(text);
+  const identity = { artifactId: 'archive-1', originalBytes: bytes.length,
+    bodySha256: createHash('sha256').update(bytes).digest('hex') };
+  registerRuntimeHostArtifactsIpc({
+    uiLocale: () => 'zh-CN' as const,
+    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as Handler) },
+    client: {
+      hostEpoch: 'host-1',
+      async readToolResult(sessionId: string, ref: string) {
+        assert.equal(sessionId, 'session-1');
+        assert.equal(ref, `maka://archive/archive-1/${identity.bodySha256}/${bytes.length}`);
+        return { ok: true, text };
+      },
+    } as never,
+    mainWindowController: {} as never,
+    showItemInFolder() {},
+  });
+  const read = handlers.get('artifacts:readToolResult');
+  assert.ok(read);
+  assert.deepEqual(await read({}, 'session-1', identity), { ok: true, text });
+  assert.deepEqual(await read({}, 'session-1', { ...identity,
+    resourceRef: `maka://archive/archive-1/${'0'.repeat(64)}/${bytes.length}` }),
+    { ok: false, reason: 'not_allowed' });
+});
 
 // Exercise the public Save As result and destination bytes together. Faults
 // use real temporary files; only the failing filesystem operation is mocked.

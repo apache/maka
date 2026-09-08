@@ -520,6 +520,107 @@ export interface QuietPreview {
   body: string;
 }
 
+/** Explicit saved-output view: preserve JSON structure and ordinary user keys. */
+export function formatSavedToolJson(value: unknown): string {
+  return (
+    JSON.stringify(
+      value,
+      (_key, raw: unknown) => {
+        if (typeof raw === 'string') return redactSecrets(raw);
+        const record = asRecord(raw);
+        if (!record) return raw;
+        return Object.fromEntries(
+          Object.entries(record).map(([key, entry]) => [
+            maskSensitiveKeyPayload(key),
+            maskSensitiveValue(key, entry),
+          ]),
+        );
+      },
+      2,
+    ) ?? ''
+  );
+}
+
+const PREVIEW_DIAGNOSTIC_KEYS = [...REMAINDER_PRIORITY, 'warning', 'warnings', 'partial'] as const;
+
+/** Bound the value before quiet formatting; retain diagnostic fields before bulk lists. */
+export function formatBoundedQuietJsonValue(
+  value: unknown,
+  locale: UiLocale,
+): QuietPreview & { truncated: boolean } {
+  let remaining = 8_000;
+  let nodes = 100;
+  let truncated = false;
+  function visit(raw: unknown, depth: number): unknown {
+    if (--nodes < 0 || remaining <= 0) {
+      truncated = true;
+      return '…';
+    }
+    if (typeof raw === 'string') {
+      const safe = redactSecrets(raw);
+      const limit = Math.min(remaining, 2_000);
+      remaining -= Math.min(safe.length, limit);
+      if (safe.length <= limit) return safe;
+      truncated = true;
+      return `${safe.slice(0, limit).replace(/[\uD800-\uDBFF]$/, '')}…`;
+    }
+    if (!raw || typeof raw !== 'object') return raw;
+    if (depth > 3) {
+      truncated = true;
+      return '…';
+    }
+    if (Array.isArray(raw)) {
+      const result: unknown[] = [];
+      for (const item of raw) {
+        if (result.length >= 20 || nodes <= 0 || remaining <= 0) break;
+        result.push(visit(item, depth + 1));
+      }
+      truncated ||= result.length < raw.length;
+      return result;
+    }
+    const record = raw as Record<string, unknown>;
+    const result: Record<string, unknown> = Object.create(null);
+    const picked = new Set<string>();
+    const add = (key: string) => {
+      if (picked.has(key) || !Object.hasOwn(record, key)) return;
+      picked.add(key);
+      if (picked.size > 20 || remaining <= 0 || nodes <= 0) {
+        truncated = true;
+        return;
+      }
+      const safeKey = String(visit(safeKeyLabel(key), depth + 1));
+      result[safeKey] = visit(maskSensitiveValue(key, record[key]), depth + 1);
+    };
+    for (const key of [...PREVIEW_DIAGNOSTIC_KEYS, ...HEADLINE_KEYS, ...LIST_KEYS, ...BODY_KEYS])
+      add(key);
+    for (const key in record) {
+      add(key);
+      if (picked.size > 20 || remaining <= 0 || nodes <= 0) break;
+    }
+    truncated ||= picked.size < Object.keys(record).length;
+    return result;
+  }
+  const bounded = visit(value, 0);
+  const record = asRecord(bounded);
+  const diagnostics: Record<string, unknown> = {};
+  if (record) {
+    for (const key of PREVIEW_DIAGNOSTIC_KEYS) {
+      if (!Object.hasOwn(record, key)) continue;
+      diagnostics[key] = record[key];
+      delete record[key];
+    }
+  }
+  const preview = formatQuietJsonValue(bounded, locale);
+  const diagnosticText = formatAsKeyValueLines(diagnostics, 0, locale);
+  if (diagnosticText) {
+    preview.body =
+      record && Object.keys(record).length === 0
+        ? diagnosticText
+        : `${diagnosticText}\n${preview.body}`;
+  }
+  return { ...preview, truncated };
+}
+
 /**
  * Format any tool JSON/result payload for the quiet panel.
  * Always returns a body — never `undefined` for object values so callers

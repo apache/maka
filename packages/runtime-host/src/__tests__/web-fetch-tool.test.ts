@@ -68,7 +68,7 @@ test('Host WebFetch uses the resolved proxy snapshot and closes its transport', 
 
   const result = await tool.impl({ url: 'https://example.com/page' }, context());
 
-  assert.equal(result, 'fetched body');
+  assert.deepEqual(result, { kind: 'text', text: 'fetched body' });
   assert.deepEqual(proxy, {
     enabled: true,
     type: 'http',

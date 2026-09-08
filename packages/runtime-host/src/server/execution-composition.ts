@@ -1475,6 +1475,7 @@ export async function createExecutionRuntimeHostComposition(
       stores.sessionStore,
       Date.now,
       context.sessionAccessAuthority,
+      executionArtifacts.toolResultArchive.services.readArchivedToolResultResource,
     );
     rootCoordinator = new RootTurnCoordinator(
       manager,

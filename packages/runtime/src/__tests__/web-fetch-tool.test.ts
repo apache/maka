@@ -39,7 +39,7 @@ test('WebFetch forwards the canonical URL to its executor', async () => {
 
   const result = await tool.impl({ url: 'https://example.com/a/../page' }, context(abort.signal));
 
-  assert.equal(result, 'page body');
+  assert.deepEqual(result, { kind: 'text', text: 'page body' });
   assert.deepEqual(received, {
     url: 'https://example.com/page',
     sessionId: 'session-1',
@@ -66,11 +66,14 @@ test('WebFetch bounds model output with a head-truncation marker', async () => {
     context(new AbortController().signal),
   );
 
-  assert.ok(typeof result === 'string');
-  assert.match(result, /^begin:/);
-  assert.doesNotMatch(result, /:end$/);
-  assert.match(result, /WebFetch content truncated/);
-  assert.ok(Buffer.byteLength(result, 'utf8') <= WEB_FETCH_MODEL_OUTPUT_MAX_BYTES);
+  assert.equal(result.truncated, true);
+  assert.match(result.text, /^begin:/);
+  assert.doesNotMatch(result.text, /:end$|WebFetch content truncated/);
+  const model = tool.toModelOutput!({ toolCallId: 'fetch', input: {}, output: result });
+  assert.equal(model.type, 'text');
+  if (model.type !== 'text') throw new Error('Expected text projection');
+  assert.match(model.value, /WebFetch content truncated/);
+  assert.ok(Buffer.byteLength(model.value, 'utf8') <= WEB_FETCH_MODEL_OUTPUT_MAX_BYTES);
 });
 
 test('privacy mode removes WebFetch from a turn', () => {

@@ -86,6 +86,7 @@ import type {
   ArtifactDescriptor,
   ArtifactSaveResult,
   ArtifactTextReadResult,
+  ToolResultArchiveIdentity,
 } from '@maka/core/artifacts';
 import type { CapabilitySnapshotCollection, PermissionSnapshot } from '@maka/core/capabilities';
 import type { LocalMemoryState } from '@maka/core/local-memory';
@@ -1857,6 +1858,7 @@ export interface MakaBridge {
   };
   artifacts: {
     list(sessionId: string): Promise<ArtifactDescriptor[]>;
+    readToolResult(sessionId: string, identity: ToolResultArchiveIdentity): Promise<ArtifactTextReadResult>;
     readText(sessionId: string, artifactId: string): Promise<ArtifactTextReadResult>;
     readBinary(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
     delete(sessionId: string, artifactId: string): Promise<void>;

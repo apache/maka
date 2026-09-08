@@ -846,6 +846,7 @@ export type ToolResultContent =
   | {
       kind: 'text';
       text: string;
+      truncated?: boolean;
       sandboxDenial?: SandboxDenialSignal;
       sandboxFailure?: SandboxBoundaryFailureSignal;
       uncertainOutcome?: ToolUncertainOutcomeSignal;

@@ -127,6 +127,7 @@ export function createDesktopWorkbarServices(
       subscribeState: (handler) => bridge.browser.onState(handler),
     },
     artifacts: {
+      readToolResult: (sessionId, identity) => bridge.artifacts.readToolResult(sessionId, identity),
       list: (sessionId) => bridge.artifacts.list(sessionId),
       readText: (sessionId, artifactId) =>
         bridge.artifacts.readText(sessionId, artifactId),

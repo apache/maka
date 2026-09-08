@@ -272,6 +272,13 @@
   overflow: hidden;
 }
 
+/* Section's inner container must shrink with the panel so its viewer scrolls. */
+.maka-session-workbar-panel > .astryx-section {
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
 .maka-workbar-panel-loading {
   display: grid;
   place-items: center;

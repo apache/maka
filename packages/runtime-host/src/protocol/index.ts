@@ -101,7 +101,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 150 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 151 as const;
+// 151: artifact.query can stream archived Tool Result bodies and report archive
+// availability. Older peers do not recognize these strict request/result variants.
 // 150: Message admission accepts an empty-text Message that carries a quote or
 // an attachment (#4804). Peers older than this epoch reject that frame at
 // admission, so the pair must refuse each other at the handshake.

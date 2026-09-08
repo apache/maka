@@ -33,7 +33,7 @@ import { SessionCollaborationServicesProvider } from '../features/session-collab
 import { SessionNavigationServicesProvider } from '../features/session-navigation';
 import { SessionSettingsServicesProvider } from '../features/session-settings';
 import { TaskEntryServicesProvider } from '../features/task-entry';
-import { WorkbarServicesProvider } from '../features/workbar';
+import { WorkbarServicesProvider, ToolOutputPreviewProvider } from '../features/workbar';
 import { createDesktopAppUpdateServices } from '../platform/desktop/create-app-update-services';
 import { createDesktopGoalServices } from '../platform/desktop/create-goal-services';
 import { createDesktopConnectionSettingsServices } from '../platform/desktop/create-connection-settings-services';
@@ -89,11 +89,13 @@ export function DesktopFeatureServicesProvider(props: {
                     <GoalServicesProvider services={props.services.goal}>
                       <WorkbarServicesProvider services={props.services.workbar}>
                         <ConversationServicesProvider services={props.services.conversation}>
-                          <WorkHubServicesProvider services={props.services.workHub}>
-                            <SessionBundleServicesProvider services={props.services.sessionBundle}>
-                              {props.children}
-                            </SessionBundleServicesProvider>
-                          </WorkHubServicesProvider>
+                          <ToolOutputPreviewProvider>
+                            <WorkHubServicesProvider services={props.services.workHub}>
+                              <SessionBundleServicesProvider services={props.services.sessionBundle}>
+                                {props.children}
+                              </SessionBundleServicesProvider>
+                            </WorkHubServicesProvider>
+                          </ToolOutputPreviewProvider>
                         </ConversationServicesProvider>
                       </WorkbarServicesProvider>
                     </GoalServicesProvider>
