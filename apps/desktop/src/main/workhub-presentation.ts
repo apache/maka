@@ -380,8 +380,11 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
 
   function toggle(positionAtDefault = false): Promise<void> {
     return enqueue(async () => {
-      if (placement === 'floating') await dock();
-      else detach(positionAtDefault);
+      if (placement === 'floating' && floating?.isVisible()) {
+        cancelFloatingAnimation();
+        floating.hide();
+        changed();
+      } else detach(positionAtDefault);
     });
   }
 

@@ -18,6 +18,10 @@
  */
 
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import type { WorkHubAdmittedAction } from '../server/workhub-coordination-action-gate.js';
+import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import type { BackendSendInput } from '@maka/core/backend-types';
@@ -842,7 +846,8 @@ test('WorkHub creates new work through the production assignment composition', a
     try {
       const resolved = await composition.handlers['workhub.coordination.resolve']({}, context);
       assert.equal(resolved.ok, true);
-      const created = await composition.handlers['workhub.coordination.act'](
+      const created = await actWorkHub(
+        composition,
         {
           actionId: 'workhub-create-action',
           userText: 'Fix login stability',
@@ -867,11 +872,11 @@ test('WorkHub creates new work through the production assignment composition', a
           ?.latestDelegationActionId,
         'workhub-create-action',
       );
-      const stopped = await composition.handlers['workhub.coordination.act'](
+      const stopped = await actWorkHub(
+        composition,
         {
           actionId: 'workhub-create-stop-action',
           userText: 'Stop Login stability',
-          confirmation: { kind: 'user_stop' },
           proposal: {
             disposition: 'stop_work',
             expects: { targetSessionId },
@@ -978,7 +983,8 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
       assert.ok(candidate);
       if (!candidate) return;
 
-      const delegated = await composition.handlers['workhub.coordination.act'](
+      const delegated = await actWorkHub(
+        composition,
         {
           actionId: 'workhub-resume-stop-delegation',
           userText: FAKE_HOLD_OPEN_PROMPT,
@@ -1006,7 +1012,8 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
 
       pauseNext = true;
       boundary = deferred<void>();
-      const resumed = await composition.handlers['workhub.coordination.act'](
+      const resumed = await actWorkHub(
+        composition,
         {
           actionId: 'workhub-resume-stop-resume',
           userText: 'Resume Payments',
@@ -1058,10 +1065,11 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
           expects: { targetSessionId: target.id },
         },
       };
-      const replayed = await composition.handlers['workhub.coordination.act'](retry, context);
+      const replayed = await actWorkHub(composition, retry, context);
       assert.equal(replayed.ok, false, JSON.stringify(replayed));
       if (!replayed.ok) assert.equal(replayed.error.code, 'operation_conflict');
-      const fresh = await composition.handlers['workhub.coordination.act'](
+      const fresh = await actWorkHub(
+        composition,
         { ...retry, actionId: 'workhub-resume-again' },
         context,
       );
@@ -1105,11 +1113,11 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
         },
       });
 
-      const stopped = await composition.handlers['workhub.coordination.act'](
+      const stopped = await actWorkHub(
+        composition,
         {
           actionId: 'workhub-resume-stop-stop',
           userText: 'Stop Payments',
-          confirmation: { kind: 'user_stop' },
           proposal: {
             disposition: 'stop_work',
             expects: { targetSessionId: target.id },
@@ -1175,7 +1183,8 @@ test('WorkHub does not record resume while safe-boundary resume is disabled', as
       );
       assert.ok(candidate);
       if (!candidate) return;
-      const delegated = await composition.handlers['workhub.coordination.act'](
+      const delegated = await actWorkHub(
+        composition,
         {
           actionId: 'workhub-disabled-resume-delegation',
           userText: FAKE_HOLD_OPEN_PROMPT,
@@ -1201,7 +1210,8 @@ test('WorkHub does not record resume while safe-boundary resume is disabled', as
       );
 
       const actionId = 'workhub-disabled-resume';
-      const resumed = await composition.handlers['workhub.coordination.act'](
+      const resumed = await actWorkHub(
+        composition,
         {
           actionId,
           userText: 'Resume Payments',
@@ -1284,7 +1294,8 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
       assert.ok(destinationCandidate);
       if (!sourceCandidate || !destinationCandidate) return;
 
-      const delegated = await composition.handlers['workhub.coordination.act'](
+      const delegated = await actWorkHub(
+        composition,
         {
           actionId: 'workhub-steering-action',
           userText: 'Continue this manual work from WorkHub',
@@ -1318,11 +1329,11 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
         [assignment],
       );
 
-      const stopped = await composition.handlers['workhub.coordination.act'](
+      const stopped = await actWorkHub(
+        composition,
         {
           actionId: 'workhub-stop-shared-action',
           userText: `Stop ${sourceCandidate.sessionName}`,
-          confirmation: { kind: 'user_stop' },
           proposal: {
             disposition: 'stop_work',
             expects: { targetSessionId: source.id },
@@ -1370,12 +1381,12 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
       assert.ok(correctionDestination);
       if (!correctionDestination) return;
 
-      const correction = await composition.handlers['workhub.coordination.act'](
+      const correction = await actWorkHub(
+        composition,
         {
           actionId: 'workhub-correction-action',
           userText: `No, move this to ${correctionDestination.sessionName} instead`,
           candidateSetId: correctionCandidates.result.candidateSetId,
-          confirmation: { kind: 'user_correction' },
           proposal: {
             disposition: 'replace',
             replacesActionId: assignment.actionId,
@@ -2131,7 +2142,16 @@ async function createCapturedExecutionComposition(
         ...(residencies ? { acquireResidency: (label: string) => residencies.acquire(label) } : {}),
       },
       {},
-      { primaryBackendFactory },
+      {
+        primaryBackendFactory: (context) =>
+          context.sessionId === WORKHUB_COORDINATION_SESSION_ID
+            ? new (class extends FakeBackend {
+                override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+                  yield* super.send({ ...input, text: FAKE_HOLD_OPEN_PROMPT });
+                }
+              })(context)
+            : primaryBackendFactory(context),
+      },
     );
     await composition.recover();
     if (!manager) throw new Error('Production execution composition did not construct Runtime');
@@ -2318,4 +2338,35 @@ async function withCompositionRoot(
 
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 2_000): Promise<void> {
   await pollFor(predicate, { timeoutMs, pollMs: 10, message: 'Timed out waiting for condition' });
+}
+
+/** Runs each task action under a real, admitted coordination Turn. */
+async function actWorkHub(
+  composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>,
+  input: WorkHubAdmittedAction,
+  context: ConnectionContext,
+) {
+  const { userText, attachments, ...action } = input;
+  const turnId = randomUUID();
+  const started = await composition.handlers['workhub.coordination.answer'](
+    { turnId, text: userText, ...(attachments ? { attachments } : {}) },
+    context,
+  );
+  assert.ok(started.ok, JSON.stringify(started));
+  try {
+    return await composition.handlers['workhub.coordination.actFromTurn'](
+      { ...action, turnId },
+      context,
+    );
+  } finally {
+    const run = await composition.handlers['turn.query'](
+      { sessionId: WORKHUB_COORDINATION_SESSION_ID, turnId },
+      context,
+    );
+    assert.ok(run.ok, JSON.stringify(run));
+    await composition.handlers['turn.stop'](
+      { sessionId: WORKHUB_COORDINATION_SESSION_ID, turnId, runId: run.result.runId },
+      context,
+    );
+  }
 }

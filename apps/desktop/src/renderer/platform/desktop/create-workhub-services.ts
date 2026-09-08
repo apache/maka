@@ -18,7 +18,8 @@
  */
 
 import { resolveSystemUiLocale, resolveUiLocale } from '@maka/core/ui-locale';
-import { DEFAULT_UI_FONT_SIZE, normalizeUiFontSize } from '@maka/core/settings';
+import { DEFAULT_UI_FONT_SIZE } from '@maka/core/settings';
+import { applyDocumentThemeMode, applyDocumentThemePalette, applyDocumentUiFontSize } from './document-appearance.js';
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { WorkHubServices } from '../../features/workhub/index.js';
 import {
@@ -52,12 +53,9 @@ export function createDesktopWorkHubServices(
         void bridge.settings.getClient().then((settings) => {
           if (disposed || read !== revision) return;
           const dark = settings.appearance.theme === 'dark' || (settings.appearance.theme === 'auto' && media.matches);
-          const root = document.documentElement;
-          root.classList.toggle('dark', dark);
-          root.style.colorScheme = dark ? 'dark' : 'light';
-          const palette = settings.appearance.palette ?? 'default';
-          if (palette === 'default') root.removeAttribute('data-maka-theme'); else root.setAttribute('data-maka-theme', palette);
-          root.style.fontSize = `${16 * normalizeUiFontSize(settings.appearance.uiFontSize ?? DEFAULT_UI_FONT_SIZE) / DEFAULT_UI_FONT_SIZE}px`;
+          applyDocumentThemeMode(dark);
+          applyDocumentThemePalette(settings.appearance.palette ?? 'default');
+          applyDocumentUiFontSize(settings.appearance.uiFontSize ?? DEFAULT_UI_FONT_SIZE);
           handler(resolveUiLocale(settings.personalization.uiLocale ?? 'auto', resolveSystemUiLocale(navigator.languages)));
         }).catch(() => undefined);
       };

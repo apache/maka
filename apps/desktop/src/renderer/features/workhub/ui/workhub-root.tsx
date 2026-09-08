@@ -20,7 +20,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChatSurfaceLayout, MakaWordmark, useUiLocale, type ComposerHandle } from '@maka/ui';
 import { Button, IconButton } from '@astryxdesign/core';
-import { ChevronDown, PictureInPicture2, PanelLeftClose, Undo2, X } from '@maka/ui/icons';
+import { ChevronDown, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
 import { WorkHubComposer } from './workhub-composer.js';
 import { WorkHubConversation } from './workhub-conversation.js';
 import { WorkHubNavigationRail } from './workhub-navigation-rail.js';
@@ -147,7 +147,7 @@ export function WorkHubRoot() {
       {floating && conversationExpanded && <div className="workHubWindowControls">
         <IconButton className="workHubCloseButton" type="button" size="sm" variant="ghost" icon={<X size={12} />} label={t.hide} onClick={() => call(services.presentation.hide())} />
         <div className="workHubWindowActions">
-          <IconButton type="button" size="sm" variant="ghost" icon={<PanelLeftClose size={14} />} label={t.dock} onClick={() => call(services.presentation.dock())} />
+          <IconButton type="button" size="sm" variant="ghost" icon={<PictureInPicture2 size={14}><path d="m8 11-4-4m0 4V7h4" /></PictureInPicture2>} label={t.dock} onClick={() => call(services.presentation.dock())} />
           <IconButton type="button" size="sm" variant="ghost" icon={<ChevronDown size={14} style={{ rotate: conversationExpanded ? '0deg' : '180deg' }} />} label={conversationExpanded ? t.collapseConversation : t.expandConversation} aria-expanded={conversationExpanded} onClick={() => call(toggleConversation())} />
         </div>
       </div>}

@@ -870,8 +870,6 @@ export async function createDesktopRuntimeHostCandidate(
     if (target.access === 'owner') {
       registerRuntimeHostWorkHubIpc(client, ipc, {
         attachmentIngest: { approvals: deps.attachmentApprovals, stat: deps.stat, resizeImage: deps.resizeImage },
-        resolveCreateProject: () => deps.resolveSessionCreateProject({}, target),
-        emitSessionsChanged,
       });
       registerRuntimeHostExternalSessionsIpc(
         {

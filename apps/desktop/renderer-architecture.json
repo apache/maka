@@ -26,7 +26,6 @@
     "src/renderer/astryx-theme-mode.ts",
     "src/renderer/astryx-theme/maka.js",
     "src/renderer/astryx-theme/makaTheme.ts",
-    "src/renderer/astryx-theme/type-scale.ts",
     "src/renderer/attachment-preflight.ts",
     "src/renderer/bootstrap-selection-lease.ts",
     "src/renderer/browser-storage.ts",
@@ -1056,15 +1055,6 @@
         }
       },
       "src/renderer/agent-graph-refresh.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
-      "src/renderer/astryx-theme/type-scale.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {},
@@ -4080,13 +4070,7 @@
         },
         "environmentCapabilities": {
           "document.createElement": 1,
-          "document.documentElement": 9,
-          "document.documentElement.classList.contains": 1,
-          "document.documentElement.classList.toggle": 1,
-          "document.documentElement.removeAttribute": 1,
-          "document.documentElement.setAttribute": 1,
-          "document.documentElement.style.colorScheme": 1,
-          "document.documentElement.style.fontSize": 1,
+          "document.documentElement": 3,
           "document.querySelector": 1,
           "window.matchMedia": 1
         },
@@ -4095,8 +4079,8 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./astryx-theme/type-scale.js": 1,
           "./browser-storage": 1,
+          "./platform/desktop/document-appearance.js": 1,
           "./titlebar-dim-color.js": 1,
           "@maka/core/settings": 1
         }

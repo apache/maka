@@ -19,9 +19,19 @@
 
 import { expect, test, getWorkHubPage } from './fixtures';
 
-test('WorkHub moves the same renderer and draft between the main window and floating window', async ({ sessionLocalWindow: { page, app } }) => {
+test('WorkHub moves the same renderer and draft between the main window and floating window', async ({ sessionLocalWindow: { page, app } }, testInfo) => {
   await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
   const workhub = await getWorkHubPage(app);
+  const appearance = await page.evaluate(async () => (await window.maka.settings.getClient()).appearance);
+  await page.evaluate(() => window.maka.settings.updateClient({ appearance: { theme: 'dark', palette: 'nord', uiFontSize: 18 } }));
+  const readAppearance = () => ({
+    dark: document.documentElement.classList.contains('dark'),
+    palette: document.documentElement.dataset.makaTheme,
+    fontSize: document.documentElement.style.fontSize,
+  });
+  await expect.poll(() => workhub.evaluate(readAppearance)).toMatchObject({ dark: true, palette: 'nord' });
+  await expect.poll(() => page.evaluate(readAppearance)).toEqual(await workhub.evaluate(readAppearance));
+  await page.evaluate((appearance) => window.maka.settings.updateClient({ appearance }), appearance);
   const editor = workhub.locator('.maka-composer-editor [contenteditable="true"]');
   await editor.fill('Keep this unsent WorkHub draft');
   const marker = await editor.evaluate((element) => {
@@ -68,6 +78,14 @@ test('WorkHub moves the same renderer and draft between the main window and floa
   expect(app.context().pages().filter((candidate) => candidate.url().includes('surface=workhub'))).toHaveLength(1);
   await workhub.getByRole('button', { name: /^(Float WorkHub|浮出工作台)$/ }).click();
   await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'false');
+  await expect(workhub.getByRole('button', { name: /^(Return to Maka|收回 Maka)$/ })).toHaveCount(0);
+  await workhub.getByRole('button', { name: /展开对话|Expand conversation/ }).click();
+  await workhub.locator('.workHubWindowControls').screenshot({ path: testInfo.outputPath('workhub-return-from-pip.png') });
+  await workhub.getByRole('button', { name: /^(Return to Maka|收回 Maka)$/ }).click();
+  await expect.poll(() => workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ placement: 'docked' });
+  await expect(editor).toHaveAttribute('data-test-instance', marker);
+  await expect(editor).toHaveText('Keep this unsent WorkHub draft — typed during opening');
+  await workhub.getByRole('button', { name: /^(Float WorkHub|浮出工作台)$/ }).click();
   await expect(workhub.getByRole('button', { name: '发送', exact: true })).toBeEnabled();
   await workhub.getByRole('button', { name: '发送', exact: true }).click();
   await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'true');

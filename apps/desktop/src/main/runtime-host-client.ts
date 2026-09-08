@@ -991,22 +991,8 @@ export class DesktopRuntimeHostClient {
     return this.request("workhub.coordination.candidates", {});
   }
 
-  actWorkHubCoordination(
-    input: OperationInput<"workhub.coordination.act">,
-  ): Promise<OperationOutput<"workhub.coordination.act">> {
-    return this.request("workhub.coordination.act", input);
-  }
-
   actWorkHubCoordinationFromTurn(input: OperationInput<'workhub.coordination.actFromTurn'>) {
     return this.request('workhub.coordination.actFromTurn', input);
-  }
-
-
-
-  recordWorkHubCoordination(
-    input: OperationInput<"workhub.coordination.record">,
-  ): Promise<OperationOutput<"workhub.coordination.record">> {
-    return this.request("workhub.coordination.record", input);
   }
 
   listExternalSessionSources(): Promise<ExternalSessionSourceQueryResult> {

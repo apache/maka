@@ -43,16 +43,11 @@ import type { SessionAuthorityStore, SessionHeaderSnapshot } from '@maka/storage
 import type {
   OperationOutcome,
   WorkHubCoordinationActResult,
-  WorkHubCoordinationActInput,
   WorkHubCoordinationActFromTurnInput,
   WorkHubCoordinationAnswerInput,
   WorkHubCoordinationConfigureModelInput,
-  WorkHubCoordinationRecordInput,
 } from '../protocol/index.js';
-import {
-  WORKHUB_COORDINATION_SUMMARY_MAX_BYTES,
-  WORKHUB_COORDINATION_TEXT_MAX_BYTES,
-} from '../protocol/index.js';
+import { WORKHUB_COORDINATION_TEXT_MAX_BYTES } from '../protocol/index.js';
 import type {
   ConnectionContext,
   WorkHubCoordinationOperationHandlerMap,
@@ -76,7 +71,6 @@ const CREATE_FINGERPRINT = `sha256:${createHash('sha256')
   .digest('hex')}`;
 const COORDINATION_CWD_DIRECTORY = 'workhub-coordination';
 const COORDINATION_TOOL_PROFILE = 'workhub-coordination-v2' as const;
-const SYNTHETIC_COORDINATION_MODEL_ID = 'maka-workhub-coordination';
 const COORDINATION_PERMISSION_MODE = 'bypass' as const;
 const COORDINATION_COLLABORATION_MODE = 'agent' as const;
 const COORDINATION_ORCHESTRATION_MODE = 'default' as const;
@@ -86,8 +80,7 @@ const TURN_IDENTITY_CONFLICT_MESSAGE =
 // A one-byte control character can occupy six bytes as a JSON `\u0000` escape.
 const JSON_ESCAPE_MAX_BYTES_PER_INPUT_BYTE = 6;
 const COORDINATION_SUMMARY_READ_MAX_BYTES =
-  JSON_ESCAPE_MAX_BYTES_PER_INPUT_BYTE *
-    (WORKHUB_COORDINATION_TEXT_MAX_BYTES + WORKHUB_COORDINATION_SUMMARY_MAX_BYTES) +
+  JSON_ESCAPE_MAX_BYTES_PER_INPUT_BYTE * (WORKHUB_COORDINATION_TEXT_MAX_BYTES + 8 * 1024) +
   16 * 1024;
 
 type CoordinationStores = Pick<
@@ -115,10 +108,7 @@ type CoordinationStores = Pick<
 
 type CoordinationExecutions = Pick<
   RootTurnCoordinator,
-  | 'startWorkHubCoordinationMessage'
-  | 'hasRootTurnAdmission'
-  | 'isSessionExecutionIdle'
-  | 'readActiveWorkHubRequest'
+  'startWorkHubCoordinationMessage' | 'isSessionExecutionIdle' | 'readActiveWorkHubRequest'
 >;
 
 type WorkHubResumeResult =
@@ -165,9 +155,9 @@ export class HostWorkHubCoordinationCoordinator {
     'workhub.coordination.query': () => this.#query(),
     'workhub.coordination.configureModel': (input) => this.#configureModel(input),
     'workhub.coordination.answer': (input, context) => this.#answer(input, context),
-    'workhub.coordination.record': (input) => this.#record(input),
+
     'workhub.coordination.candidates': () => this.#candidates(),
-    'workhub.coordination.act': (input, context) => this.#act(input, context),
+
     'workhub.coordination.actFromTurn': (input, context) => this.#actFromTurn(input, context),
   };
 
@@ -219,22 +209,7 @@ export class HostWorkHubCoordinationCoordinator {
       readSupersession: (delegationId) => this.#stores.readWorkHubSupersession(delegationId),
       readStopRequest: (delegationId) => this.#stores.readWorkHubStopRequest(delegationId),
       readStopResolution: (delegationId) => this.#stores.readWorkHubStopResolution(delegationId),
-      answer: async (input, context) => {
-        const outcome = await this.#answer(input, context);
-        if (!outcome.ok) {
-          throw new WorkHubActionEffectFailure(outcome.error.code, outcome.error.message);
-        }
-      },
-      clarify: async (input) => {
-        const outcome = await this.#record({
-          turnId: input.turnId,
-          userText: input.userText,
-          assistantText: input.assistantText,
-        });
-        if (!outcome.ok) {
-          throw new WorkHubActionEffectFailure(outcome.error.code, outcome.error.message);
-        }
-      },
+
       assign: options.sessionActions.assign,
       prepareReplacement: (input) => this.#prepareReplacement(input),
       abortReplacement: (input) => this.#abortReplacement(input),
@@ -571,24 +546,20 @@ export class HostWorkHubCoordinationCoordinator {
       action.proposal.disposition === 'delegate_existing' ||
       action.proposal.disposition === 'create_new' ||
       action.proposal.disposition === 'replace';
-    return this.#act(
-      {
-        ...action,
-        userText: content.text,
-        ...(carriesAttachments && content.attachments ? { attachments: content.attachments } : {}),
-      },
-      context,
-      'active_model',
-    );
-  }
-
-  async #act(
-    input: WorkHubCoordinationActInput,
-    context: ConnectionContext,
-    authority: 'user_text' | 'active_model' = 'user_text',
-  ): Promise<OperationOutcome<'workhub.coordination.act'>> {
     try {
-      return { ok: true, result: await this.#actionGate.act(input, context, authority) };
+      return {
+        ok: true,
+        result: await this.#actionGate.act(
+          {
+            ...action,
+            userText: content.text,
+            ...(carriesAttachments && content.attachments
+              ? { attachments: content.attachments }
+              : {}),
+          },
+          context,
+        ),
+      };
     } catch (error) {
       if (error instanceof WorkHubActionEffectFailure) {
         return {
@@ -716,11 +687,7 @@ export class HostWorkHubCoordinationCoordinator {
     context: ConnectionContext,
   ): Promise<OperationOutcome<'workhub.coordination.answer'>> {
     if (!input.text.trim()) {
-      return turnFailure(
-        'workhub.coordination.answer',
-        'operation_conflict',
-        'WorkHub answer text is empty',
-      );
+      return turnFailure('operation_conflict', 'WorkHub answer text is empty');
     }
     const outcome = await this.#executions.startWorkHubCoordinationMessage(
       {
@@ -734,9 +701,8 @@ export class HostWorkHubCoordinationCoordinator {
           }),
         },
         archivedMessage: 'WorkHub Coordination Session is unavailable',
-        // A recorded summary owns its Turn identity durably but is admitted
-        // outside this ledger, so the probe runs under the admission lease: a
-        // concurrent `record` cannot slip a second triplet into this Turn.
+        // Historical v1 summaries still own their Turn identities. Reject a
+        // fresh answer that would reuse one, even though new summaries are no longer written.
         prepareFreshContent: async () => {
           let recorded: readonly StoredMessage[];
           try {
@@ -765,76 +731,7 @@ export class HostWorkHubCoordinationCoordinator {
     return outcome.ok ? { ok: true, result: { turnId: input.turnId } } : outcome;
   }
 
-  #record(
-    input: WorkHubCoordinationRecordInput,
-  ): Promise<OperationOutcome<'workhub.coordination.record'>> {
-    if (!input.userText.trim() || !input.assistantText.trim()) {
-      return Promise.resolve(
-        turnFailure(
-          'workhub.coordination.record',
-          'operation_conflict',
-          'WorkHub Coordination summary text is empty',
-        ),
-      );
-    }
-    return this.#admission.run(WORKHUB_COORDINATION_SESSION_ID, async (lease) => {
-      let header: SessionHeader;
-      try {
-        header = await this.#stores.readHeaderSnapshot(WORKHUB_COORDINATION_SESSION_ID);
-      } catch {
-        return turnFailure(
-          'workhub.coordination.record',
-          'persistence_failed',
-          'WorkHub Coordination Session state is unavailable',
-        );
-      }
-      if (!validCoordinationHeader(header)) {
-        return turnFailure(
-          'workhub.coordination.record',
-          'operation_conflict',
-          'WorkHub Coordination Session identity is unavailable',
-        );
-      }
-
-      const messages = coordinationSummaryMessages(input);
-      try {
-        const existing = await this.#readSummaryMessages(input.turnId);
-        if (existing.length > 0) {
-          return coordinationSummaryMatches(existing, input)
-            ? { ok: true, result: { turnId: input.turnId } }
-            : turnFailure(
-                'workhub.coordination.record',
-                'operation_conflict',
-                'WorkHub Coordination Turn identity belongs to different content',
-              );
-        }
-        // An answer owns its Turn identity in the root admission ledger. Both
-        // operations take the same Session admission, so this probe settles the
-        // race in one direction and the answer's own probe settles the other.
-        if (
-          await this.#executions.hasRootTurnAdmission(WORKHUB_COORDINATION_SESSION_ID, input.turnId)
-        ) {
-          return turnFailure(
-            'workhub.coordination.record',
-            'operation_conflict',
-            TURN_IDENTITY_CONFLICT_MESSAGE,
-          );
-        }
-        await this.#stores.appendMessages(WORKHUB_COORDINATION_SESSION_ID, messages);
-        await this.#continuity.refreshCanonical(WORKHUB_COORDINATION_SESSION_ID, lease);
-        return { ok: true, result: { turnId: input.turnId } };
-      } catch {
-        this.#requestDrain();
-        return turnFailure(
-          'workhub.coordination.record',
-          'commit_outcome_unknown',
-          'WorkHub Coordination summary outcome is unknown',
-        );
-      }
-    });
-  }
-
-  /** Reads the durable summary triplet a `record` would own for this Turn. */
+  /** Reads a historical v1 summary to preserve its durable Turn identity. */
   async #readSummaryMessages(turnId: string): Promise<readonly StoredMessage[]> {
     const throughSequence = await this.#stores.readTranscriptHighWaterSnapshot(
       WORKHUB_COORDINATION_SESSION_ID,
@@ -979,55 +876,6 @@ function coordinationSummaryMessageId(
     .slice(0, 48)}`;
 }
 
-function coordinationSummaryMessages(input: WorkHubCoordinationRecordInput): StoredMessage[] {
-  const ts = Date.now();
-  const messageId = (kind: (typeof COORDINATION_SUMMARY_MESSAGE_KINDS)[number]) =>
-    coordinationSummaryMessageId(input.turnId, kind);
-  return [
-    {
-      type: 'user',
-      id: messageId('user'),
-      turnId: input.turnId,
-      ts,
-      text: input.userText,
-    },
-    {
-      type: 'assistant',
-      id: messageId('assistant'),
-      turnId: input.turnId,
-      ts: ts + 1,
-      text: input.assistantText,
-      modelId: SYNTHETIC_COORDINATION_MODEL_ID,
-    },
-    {
-      type: 'turn_state',
-      id: messageId('state'),
-      turnId: input.turnId,
-      ts: ts + 2,
-      status: 'completed',
-    },
-  ];
-}
-
-function coordinationSummaryMatches(
-  existing: readonly StoredMessage[],
-  input: WorkHubCoordinationRecordInput,
-): boolean {
-  if (existing.length !== 3) return false;
-  const user = existing.find((message) => message.type === 'user');
-  const assistant = existing.find((message) => message.type === 'assistant');
-  const state = existing.find((message) => message.type === 'turn_state');
-  return (
-    user?.turnId === input.turnId &&
-    user.text === input.userText &&
-    assistant?.turnId === input.turnId &&
-    assistant.text === input.assistantText &&
-    assistant.modelId === SYNTHETIC_COORDINATION_MODEL_ID &&
-    state?.turnId === input.turnId &&
-    state.status === 'completed'
-  );
-}
-
 function success(): OperationOutcome<'workhub.coordination.resolve'> {
   return {
     ok: true,
@@ -1061,10 +909,12 @@ function operationUnavailable(message: string) {
   return { ok: false, error: { code: 'operation_unavailable', message } } as const;
 }
 
-function turnFailure<K extends 'workhub.coordination.answer' | 'workhub.coordination.record'>(
-  _operation: K,
-  code: Extract<OperationOutcome<K>, { readonly ok: false }>['error']['code'],
+function turnFailure(
+  code: Extract<
+    OperationOutcome<'workhub.coordination.answer'>,
+    { readonly ok: false }
+  >['error']['code'],
   message: string,
-): OperationOutcome<K> {
-  return { ok: false, error: { code, message } } as OperationOutcome<K>;
+): OperationOutcome<'workhub.coordination.answer'> {
+  return { ok: false, error: { code, message } };
 }

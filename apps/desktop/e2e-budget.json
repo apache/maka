@@ -75,7 +75,7 @@
     },
     "workhub-reconstruction.spec.ts": {
       "tests": 1,
-      "electron": "the same WebContentsView and unsent draft survive reparenting between native main and floating windows"
+      "electron": "the same WebContentsView and unsent draft survive reparenting between native main and floating windows, shared appearance changes and the explicit return-from-picture-in-picture button"
     },
     "zh-tw-locale.spec.ts": {
       "tests": 1,

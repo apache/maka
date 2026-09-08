@@ -2032,61 +2032,7 @@ const makaBridge = {
         (scope) => ipcRenderer.invoke('workhub:resolveCoordinationSession', scope),
       );
     },
-    async record(
-      coordinationSessionId: string,
-      input: { turnId: string; userText: string; assistantText: string },
-    ): Promise<{ turnId: string }> {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
-        coordinationSessionId,
-        runtimeHostSessionRef,
-      );
-      return ipcRenderer.invoke('workhub:record', scope, input) as Promise<{ turnId: string }>;
-    },
-    async candidates(
-      coordinationSessionId: string,
-    ): Promise<OperationOutput<'workhub.coordination.candidates'>> {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
-        coordinationSessionId,
-        runtimeHostSessionRef,
-      );
-      const result = await ipcRenderer.invoke(
-        'workhub:candidates',
-        scope,
-      ) as OperationOutput<'workhub.coordination.candidates'>;
-      return {
-        ...result,
-        candidates: result.candidates.map((candidate) => ({
-          ...candidate,
-          sessionId: recordRuntimeHostSessionScope(scope, candidate.sessionId),
-        })),
-      };
-    },
-    async act(
-      coordinationSessionId: string,
-      input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
-    ): Promise<OperationOutcome<'workhub.coordination.act'>> {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
-        coordinationSessionId,
-        runtimeHostSessionRef,
-      );
-      const result = await ipcRenderer.invoke(
-        'workhub:act',
-        scope,
-        input,
-      ) as OperationOutcome<'workhub.coordination.act'>;
-      if (!result.ok) return result;
-      if (
-        result.result.disposition === 'answer_here' ||
-        result.result.disposition === 'clarify'
-      ) return result;
-      return {
-        ok: true,
-        result: {
-          ...result.result,
-          targetSessionId: recordRuntimeHostSessionScope(scope, result.result.targetSessionId),
-        },
-      };
-    },
+
   },
   sessionLocal: {
     async listMessages(sessionId) {

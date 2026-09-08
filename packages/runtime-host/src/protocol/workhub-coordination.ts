@@ -74,7 +74,6 @@ export function decodeWorkHubCoordinationConfigureModelInput(
 }
 
 export const WORKHUB_COORDINATION_TEXT_MAX_BYTES = 48 * 1024;
-export const WORKHUB_COORDINATION_SUMMARY_MAX_BYTES = 8 * 1024;
 const COORDINATION_TITLE_MAX_BYTES = 512;
 const CANDIDATE_SET_ID_MAX_BYTES = 96;
 export const WORKHUB_COORDINATION_CANDIDATE_MAX_ITEMS = 32;
@@ -122,12 +121,6 @@ export interface WorkHubCoordinationAnswerInput {
   readonly attachments?: AttachmentRef[];
 }
 
-export interface WorkHubCoordinationRecordInput {
-  readonly turnId: string;
-  readonly userText: string;
-  readonly assistantText: string;
-}
-
 export interface WorkHubCoordinationTurnResult {
   readonly turnId: string;
 }
@@ -160,8 +153,6 @@ export interface WorkHubCoordinationCandidatesResult {
 }
 
 export type WorkHubCoordinationProposal =
-  | { readonly disposition: 'answer_here' }
-  | { readonly disposition: 'clarify'; readonly assistantText: string }
   | {
       readonly disposition: 'delegate_existing';
       readonly candidateRef: string;
@@ -205,42 +196,24 @@ export interface WorkHubCoordinationStopPreconditions {
   readonly targetSessionId: string;
 }
 
-export type WorkHubCoordinationDestructiveConfirmation =
-  /** Kept outside strategy output so a model proposal cannot authorize Stop. */
-  { readonly kind: 'user_correction' } | { readonly kind: 'user_stop' };
-
 export interface WorkHubCoordinationCreateContext {
   /** Trusted desktop context. Model/strategy output never contains a workspace or identity. */
   readonly workspace: WorkspaceTarget;
 }
 
-export interface WorkHubCoordinationActInput {
+/** A model action can name its active Turn, never supply user-originated authority. */
+export interface WorkHubCoordinationActFromTurnInput {
+  readonly turnId: string;
   readonly actionId: string;
-  /** Original user request, supplied by the trusted client rather than a model proposal. */
-  readonly userText: string;
-  readonly newWorkDefaults?: WorkHubCreateDefaults;
-  readonly attachments?: AttachmentRef[];
-  /** Model-prepared work content. This never authorizes creation, replacement, or stop. */
-  readonly delegationText?: string;
   readonly proposal: WorkHubCoordinationProposal;
   readonly candidateSetId?: string;
   readonly create?: WorkHubCoordinationCreateContext;
-  readonly confirmation?: WorkHubCoordinationDestructiveConfirmation;
-}
-
-/** A model action can name its active Turn, never supply user-originated authority. */
-export interface WorkHubCoordinationActFromTurnInput
-  extends Omit<WorkHubCoordinationActInput, 'userText' | 'attachments' | 'confirmation'> {
-  readonly turnId: string;
-  readonly proposal: Exclude<
-    WorkHubCoordinationProposal,
-    { readonly disposition: 'answer_here' | 'clarify' }
-  >;
+  readonly newWorkDefaults?: WorkHubCreateDefaults;
+  /** Work content prepared by the coordination model for a delegated task. */
+  readonly delegationText?: string;
 }
 
 export type WorkHubCoordinationActResult =
-  | { readonly disposition: 'answer_here'; readonly coordinationTurnId: string }
-  | { readonly disposition: 'clarify'; readonly coordinationTurnId: string }
   | {
       readonly disposition: 'delegate_existing';
       readonly targetSessionId: string;
@@ -327,17 +300,7 @@ export const WORKHUB_COORDINATION_OPERATION_SPECS = {
     decodeInput: decodeWorkHubCoordinationAnswerInput,
     decodeOutput: decodeWorkHubCoordinationTurnResult,
   }),
-  'workhub.coordination.record': defineOperation<
-    WorkHubCoordinationRecordInput,
-    WorkHubCoordinationTurnResult,
-    (typeof TURN_ERRORS)[number]
-  >({
-    mode: 'command',
-    availability: 'ready',
-    errors: TURN_ERRORS,
-    decodeInput: decodeWorkHubCoordinationRecordInput,
-    decodeOutput: decodeWorkHubCoordinationTurnResult,
-  }),
+
   'workhub.coordination.candidates': defineOperation<
     WorkHubCoordinationCandidatesInput,
     WorkHubCoordinationCandidatesResult,
@@ -349,17 +312,7 @@ export const WORKHUB_COORDINATION_OPERATION_SPECS = {
     decodeInput: decodeWorkHubCoordinationCandidatesInput,
     decodeOutput: decodeWorkHubCoordinationCandidatesResult,
   }),
-  'workhub.coordination.act': defineOperation<
-    WorkHubCoordinationActInput,
-    WorkHubCoordinationActResult,
-    (typeof TURN_ERRORS)[number]
-  >({
-    mode: 'command',
-    availability: 'ready',
-    errors: TURN_ERRORS,
-    decodeInput: decodeWorkHubCoordinationActInput,
-    decodeOutput: decodeWorkHubCoordinationActResult,
-  }),
+
   'workhub.coordination.actFromTurn': defineOperation<
     WorkHubCoordinationActFromTurnInput,
     WorkHubCoordinationActResult,
@@ -414,29 +367,6 @@ export function decodeWorkHubCoordinationAnswerInput(
   };
 }
 
-export function decodeWorkHubCoordinationRecordInput(
-  value: unknown,
-): WorkHubCoordinationRecordInput {
-  const input = requireExactRecord(value, 'WorkHub Coordination record input', [
-    'turnId',
-    'userText',
-    'assistantText',
-  ]);
-  return {
-    turnId: requireEntityId(input.turnId, 'WorkHub Coordination Turn id'),
-    userText: requireUtf8String(
-      input.userText,
-      'WorkHub Coordination user text',
-      WORKHUB_COORDINATION_TEXT_MAX_BYTES,
-    ),
-    assistantText: requireUtf8String(
-      input.assistantText,
-      'WorkHub Coordination assistant text',
-      WORKHUB_COORDINATION_SUMMARY_MAX_BYTES,
-    ),
-  };
-}
-
 export function decodeWorkHubCoordinationTurnResult(value: unknown): WorkHubCoordinationTurnResult {
   const result = requireExactRecord(value, 'WorkHub Coordination Turn result', ['turnId']);
   return {
@@ -470,60 +400,6 @@ export function decodeWorkHubCoordinationCandidatesResult(
   };
 }
 
-export function decodeWorkHubCoordinationActInput(value: unknown): WorkHubCoordinationActInput {
-  const input = requireShapedRecord(
-    value,
-    'WorkHub Coordination action input',
-    ['actionId', 'userText', 'proposal'],
-    [
-      'candidateSetId',
-      'create',
-      'confirmation',
-      'newWorkDefaults',
-      'attachments',
-      'delegationText',
-    ],
-  );
-  const fields = decodeWorkHubCoordinationActionFields(input);
-  const userText = requireUtf8String(
-    input.userText,
-    'WorkHub Coordination action text',
-    WORKHUB_COORDINATION_TEXT_MAX_BYTES,
-  );
-  if (
-    input.attachments !== undefined &&
-    !['answer_here', 'delegate_existing', 'create_new', 'replace'].includes(
-      fields.proposal.disposition,
-    )
-  ) {
-    throw invalidProtocolFrame('This WorkHub action does not accept attachments');
-  }
-  const confirmation =
-    input.confirmation === undefined
-      ? undefined
-      : decodeWorkHubCoordinationDestructiveConfirmation(input.confirmation);
-  const expectedConfirmation =
-    fields.proposal.disposition === 'replace'
-      ? 'user_correction'
-      : fields.proposal.disposition === 'stop_work'
-        ? 'user_stop'
-        : undefined;
-  if (confirmation?.kind !== expectedConfirmation) {
-    throw invalidProtocolFrame('Invalid WorkHub action confirmation');
-  }
-  return {
-    ...fields,
-    userText,
-    ...(input.attachments === undefined
-      ? {}
-      : {
-          attachments: decodeMessageContent({ text: userText, attachments: input.attachments })
-            .attachments!,
-        }),
-    ...(confirmation ? { confirmation } : {}),
-  };
-}
-
 export function decodeWorkHubCoordinationActFromTurnInput(
   value: unknown,
 ): WorkHubCoordinationActFromTurnInput {
@@ -534,9 +410,7 @@ export function decodeWorkHubCoordinationActFromTurnInput(
     ['candidateSetId', 'create', 'newWorkDefaults', 'delegationText'],
   );
   const fields = decodeWorkHubCoordinationActionFields(input);
-  if (fields.proposal.disposition === 'answer_here' || fields.proposal.disposition === 'clarify') {
-    throw invalidProtocolFrame('WorkHub model Turn actions must coordinate work');
-  }
+
   return {
     ...fields,
     proposal: fields.proposal,
@@ -546,7 +420,7 @@ export function decodeWorkHubCoordinationActFromTurnInput(
 
 function decodeWorkHubCoordinationActionFields(
   input: Record<string, unknown>,
-): Omit<WorkHubCoordinationActInput, 'userText' | 'attachments' | 'confirmation'> {
+): Omit<WorkHubCoordinationActFromTurnInput, 'turnId'> {
   const proposal = decodeWorkHubCoordinationProposal(input.proposal);
   if (
     input.newWorkDefaults !== undefined &&
@@ -621,16 +495,7 @@ function decodeWorkHubCoordinationActionFields(
 
 export function decodeWorkHubCoordinationActResult(value: unknown): WorkHubCoordinationActResult {
   const result = requireRecord(value, 'WorkHub Coordination action result');
-  if (result.disposition === 'answer_here' || result.disposition === 'clarify') {
-    const exact = requireExactRecord(result, 'WorkHub Coordination local action result', [
-      'disposition',
-      'coordinationTurnId',
-    ]);
-    return {
-      disposition: result.disposition,
-      coordinationTurnId: requireEntityId(exact.coordinationTurnId, 'WorkHub Coordination Turn id'),
-    };
-  }
+
   if (result.disposition === 'delegate_existing' || result.disposition === 'create_new') {
     const exact = requireShapedRecord(
       result,
@@ -761,24 +626,7 @@ function decodeWorkHubCoordinationCandidate(value: unknown): WorkHubCoordination
 
 function decodeWorkHubCoordinationProposal(value: unknown): WorkHubCoordinationProposal {
   const proposal = requireRecord(value, 'WorkHub Coordination proposal');
-  if (proposal.disposition === 'answer_here') {
-    requireExactRecord(proposal, 'WorkHub answer proposal', ['disposition']);
-    return { disposition: 'answer_here' };
-  }
-  if (proposal.disposition === 'clarify') {
-    const exact = requireExactRecord(proposal, 'WorkHub clarification proposal', [
-      'disposition',
-      'assistantText',
-    ]);
-    return {
-      disposition: 'clarify',
-      assistantText: requireUtf8String(
-        exact.assistantText,
-        'WorkHub clarification text',
-        WORKHUB_COORDINATION_SUMMARY_MAX_BYTES,
-      ),
-    };
-  }
+
   if (proposal.disposition === 'delegate_existing') {
     const exact = requireExactRecord(proposal, 'WorkHub delegation proposal', [
       'disposition',
@@ -876,16 +724,6 @@ function decodeWorkHubCoordinationCreateContext(value: unknown): WorkHubCoordina
   return {
     workspace: decodeWorkspaceTarget(context.workspace),
   };
-}
-
-function decodeWorkHubCoordinationDestructiveConfirmation(
-  value: unknown,
-): WorkHubCoordinationDestructiveConfirmation {
-  const confirmation = requireExactRecord(value, 'WorkHub destructive confirmation', ['kind']);
-  if (confirmation.kind !== 'user_correction' && confirmation.kind !== 'user_stop') {
-    throw invalidProtocolFrame('Invalid WorkHub destructive confirmation');
-  }
-  return { kind: confirmation.kind };
 }
 
 function candidateSetId(value: unknown): string {

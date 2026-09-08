@@ -102,7 +102,7 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
 export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 134 as const;
-// 134: WorkHub binds restricted Desktop capabilities, owns model configuration, and separates delegated content from user authorization.
+// 134: WorkHub owns a model Turn, binds restricted Desktop capabilities, and replaces direct proposal/summary operations with active-Turn task actions.
 // 133: WorkHub actions carry attachments and new-Work model/permission defaults.
 // Epoch-132 peers reject these additional fields on strict action shapes.
 // 132: new Tool Result archives use versioned ledger references, not Artifact payloads.

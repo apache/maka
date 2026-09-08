@@ -280,11 +280,19 @@ test('reparents one live conversation across docking, floating, hide and main-wi
   await h.command(h.main.webContents, 'host', { visible: false, rect: { x: 0, y: 0, width: 0, height: 0 } });
   assert.equal(view.visible, false);
   h.main.emit('close');
+  h.main.hide();
+  const mainFocusCount = h.main.focused;
   assert.ok(floating.children.has(view));
   assert.equal(view.webContents.destroyed, false);
   await h.controller.toggle();
-  assert.equal(h.controller.getSnapshot().placement, 'docked');
-  assert.ok(h.main.children.has(view));
+  assert.equal(h.controller.getSnapshot().placement, 'floating');
+  assert.ok(floating.children.has(view));
+  assert.equal(floating.visible, true);
+  await h.controller.toggle();
+  assert.equal(floating.visible, false);
+  assert.equal(h.main.visible, false, 'hiding the floating window must not show Desktop');
+  assert.equal(h.main.focused, mainFocusCount, 'the shortcut never focuses Desktop');
+  assert.ok(floating.children.has(view));
   await h.controller.toggle();
   assert.equal(floating.visible, true);
   h.movePointer({ x: 1600, y: -900, width: 1000, height: 800 });
@@ -293,6 +301,12 @@ test('reparents one live conversation across docking, floating, hide and main-wi
   assert.equal(floating.visible, true);
   assert.ok(floating.bounds.x >= 1600 && floating.bounds.x + floating.bounds.width <= 2600);
   assert.ok(floating.bounds.y >= -900 && floating.bounds.y + floating.bounds.height <= -100);
+  assert.equal(h.main.visible, false);
+  assert.equal(h.main.focused, mainFocusCount);
+  await h.command(view.webContents, 'dock');
+  assert.equal(h.controller.getSnapshot().placement, 'docked');
+  assert.equal(h.main.visible, true, 'only the explicit dock action returns to Desktop');
+  assert.ok(h.main.children.has(view));
   assert.equal(h.views.length, 1);
   assert.doesNotThrow(() => h.main.destroy());
   assert.doesNotThrow(() => h.controller.send('settings:changed'));
@@ -318,7 +332,6 @@ test('rejects unowned/subframe IPC and buffers navigation until main subscribes'
   assert.equal(JSON.stringify(navigation?.[1]), JSON.stringify({ kind: 'session', sessionKey: '["host-a","session-a"]' }));
   h.controller.dispose();
 });
-
 
 test('application broadcasts reach registered auxiliaries once and stop after release or destruction', async () => {
   const entry = fileURLToPath(new URL('../../../src/main/main-window.ts', import.meta.url));
@@ -352,7 +365,6 @@ test('application broadcasts reach registered auxiliaries once and stop after re
   controller.send('settings:changed');
   assert.deepEqual(messages, ['settings:changed']);
 });
-
 
 test('control preparation floats the live conversation and focuses the main window without resetting an existing float', async () => {
   const h = await harness();

@@ -25,6 +25,11 @@
 - Decision source: [Discussion #3286](https://github.com/apache/maka/discussions/3286#discussioncomment-18135855)
 - Delivery tracker: [Issue #3492](https://github.com/apache/maka/issues/3492)
 
+The one-Session ownership decision remains in force. The deterministic routing
+experiments described below are historical: the current coordination model uses
+active-Turn task actions and restricted Desktop capabilities. See the
+[current domain language](../workhub-domain-language.md) for the implemented flow.
+
 ## Context
 
 WorkHub is intended to be one persistent conversational place where a user can ask
