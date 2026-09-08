@@ -344,7 +344,16 @@ export function QuoteCompanionPanel(props: {
                   text,
                   streaming: companion.streaming,
                   compact: companion.compact,
-                  steer: companion.steer,
+                  steer: async (text) => {
+                  const accepted = await companion.steer(
+                    text,
+                    pendingAttachments.length > 0
+                      ? toComposerIngestItems(pendingAttachments)
+                      : undefined,
+                  );
+                  if (accepted) clearSubmittedAttachments(pendingAttachments);
+                  return accepted;
+                },
                   send: async () => {
                     try {
                       preflightAttachmentItems(pendingAttachments, locale);

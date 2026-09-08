@@ -117,11 +117,15 @@ export function createDesktopWorkbarServices(
       // Steering is a Message placed at the current Turn's boundary, so it
       // rides the one admission channel. Runtime Host names the outcome; this
       // adapter only renames it for the Side Conversation port.
-      steer: async (sessionId, text, admissionId) => {
+      steer: async (sessionId, text, admissionId, content) => {
         const messageId = admissionId ?? crypto.randomUUID();
         const result = await bridge.sessions.submitMessage(sessionId, 'current_turn', {
           messageId,
           text,
+          ...(content?.quotes ? { quotes: content.quotes } : {}),
+          ...(content?.attachmentItems
+            ? { attachmentItems: content.attachmentItems }
+            : {}),
         });
         if (!result.ok) {
           if (result.reason === 'outcome_unknown') {

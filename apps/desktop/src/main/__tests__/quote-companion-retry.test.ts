@@ -2119,3 +2119,73 @@ async function awaitCompanion(container: Element, id = 'side-conversation'): Pro
 async function awaitProcessing(container: Element): Promise<void> {
   await waitUntil(() => container.firstElementChild?.getAttribute('data-processing') === 'true');
 }
+
+test('a structured-only send (empty text with a staged quote) reaches the fork admission', async () => {
+  const sendCommands: Array<Parameters<WorkbarServices['sideChat']['send']>[1]> = [];
+  const rendered = await renderOwnershipProbe(
+    {
+      listTurns: async () => [settledTurn('done-turn')],
+      branchFromTurn: async () => ({ ok: true as const, session: session('side-conversation') }),
+      send: async (_sessionId, command) => {
+        sendCommands.push(command);
+        return { ok: true as const, turnId: 'quote-only-turn' };
+      },
+    },
+    {
+      pendingQuotes: [{ id: 'quote-1', value: { text: 'selected excerpt' } }],
+    },
+  );
+  const probe = rendered.container.firstElementChild;
+  assert.ok(probe);
+
+  // The Composer enables Send once a quote is staged; an empty draft must ride
+  // the same admission as a text send instead of dying on the `!trimmed` guard.
+  await act(async () => {
+    assert.equal(await rendered.send(''), true);
+    await Promise.resolve();
+  });
+  await awaitCompanion(rendered.container);
+  assert.equal(sendCommands.length, 1);
+  assert.equal(sendCommands[0].text, '');
+  assert.deepEqual(
+    sendCommands[0].quotes?.map((quote) => quote.text),
+    ['selected excerpt'],
+  );
+  assert.equal(probe.getAttribute('data-error'), '');
+});
+
+test('a structured-only steer (empty text with a staged quote) rides the steering contract', async () => {
+  const steerContents: Array<Parameters<WorkbarServices['sideChat']['steer']>[3]> = [];
+  const rendered = await renderOwnershipProbe(
+    {
+      send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+      steer: async (_sessionId, _text, _admissionId, content) => {
+        steerContents.push(content);
+        return { kind: 'queued', messageId: 'steer-1' };
+      },
+    },
+    {
+      pendingQuotes: [{ id: 'quote-1', value: { text: 'streaming excerpt' } }],
+    },
+  );
+
+  await act(async () => {
+    assert.equal(await rendered.send('initial prompt'), true);
+    await Promise.resolve();
+  });
+  await waitUntil(
+    () => rendered.container.firstElementChild?.getAttribute('data-streaming') === 'true',
+  );
+
+  // Streaming steers take the same structured-content contract: the quote alone
+  // is a valid steering Message, and the `!trimmed` guard must not drop it.
+  await act(async () => {
+    assert.equal(await rendered.steer(''), true);
+    await Promise.resolve();
+  });
+  assert.equal(steerContents.length, 1);
+  assert.deepEqual(
+    steerContents[0]?.quotes?.map((quote) => quote.text),
+    ['streaming excerpt'],
+  );
+});

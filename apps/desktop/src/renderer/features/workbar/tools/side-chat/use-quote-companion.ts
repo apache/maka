@@ -186,8 +186,9 @@ export interface UseQuoteCompanionResult {
   /** Returns whether the send was accepted; false leaves the draft + staged
    *  quotes in place so the user can retry. */
   send: (text: string, attachmentItems?: WorkbarIngestInput[]) => Promise<boolean>;
-  /** Insert text into the active companion turn at the next model step. */
-  steer: (text: string) => Promise<boolean>;
+  /** Insert text — or a structured-only quote/attachment — into the active
+   *  companion turn at the next model step. */
+  steer: (text: string, attachmentItems?: WorkbarIngestInput[]) => Promise<boolean>;
   setPermissionMode: (mode: PermissionMode) => Promise<boolean>;
   regenerate: (turnId: string) => Promise<boolean>;
   stop: () => Promise<void>;
@@ -853,9 +854,13 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     ): Promise<boolean> => {
       const trimmed = text.trim();
       if (isExactCompactCommand(trimmed)) return compact();
+      // A structured-only Message (empty text carrying a quote or an attachment)
+      // is a valid send since the admission widening (#4804), so the guard
+      // rejects only when nothing at all is staged.
+      const quoteSnapshot = snapshotCompanionQuotes(panelId, pendingQuotes);
       if (
         !mountedRef.current ||
-        !trimmed ||
+        (!trimmed && quoteSnapshot.quotes.length === 0 && !attachmentItems?.length) ||
         submitLockRef.current ||
         compactionRequestInFlightRef.current ||
         activeTurnIdRef.current ||
@@ -868,7 +873,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       setSubmitLocked(true);
       setError(null);
       const turnId = crypto.randomUUID();
-      const quoteSnapshot = snapshotCompanionQuotes(panelId, pendingQuotes);
       const label = (quoteSnapshot.quotes[0]?.text ?? trimmed).slice(0, 24);
       // Show the user's question IMMEDIATELY as an optimistic bubble, before the
       // fork exists. On a first send `ensureFork` makes a Host round trip, and the
@@ -1120,59 +1124,81 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     }
   }, [releaseAdmission, resolveAdmission, sideChat]);
 
-  const steer = useCallback(async (text: string): Promise<boolean> => {
-    const id = companionIdRef.current;
-    const trimmed = text.trim();
-    if (
-      !mountedRef.current ||
-      !id ||
-      !trimmed ||
-      !turnInFlight ||
-      pendingAdmissionRef.current
-    ) {
-      return false;
-    }
-    const admissionId = crypto.randomUUID();
-    const admission: PendingAdmission = {
-      messageId: admissionId,
-      events: [],
-    };
-    setPendingAdmission(admission);
-    try {
-      const outcome = await sideChat.steer(id, trimmed, admissionId);
-      if (!mountedRef.current) return false;
-      if ((await admission.stopPromise) === 'confirmed') return false;
-      if (admissionOutcomeForMessage(admission.events, admission.messageId)?.kind === 'retracted') {
+  const steer = useCallback(
+    async (
+      text: string,
+      attachmentItems?: WorkbarIngestInput[],
+    ): Promise<boolean> => {
+      const id = companionIdRef.current;
+      const trimmed = text.trim();
+      // Same structured-only contract as `send`: a quote or an attachment alone
+      // is a valid steering Message (#4804).
+      const quoteSnapshot = snapshotCompanionQuotes(panelId, pendingQuotes);
+      if (
+        !mountedRef.current ||
+        !id ||
+        (!trimmed && quoteSnapshot.quotes.length === 0 && !attachmentItems?.length) ||
+        !turnInFlight ||
+        pendingAdmissionRef.current
+      ) {
         return false;
       }
-      if (outcome.kind === 'started') {
-        bindAdmittedTurn(id, outcome.turnId, { preserveLiveTurn: true });
-      } else if (resolveAdmission(id, admission, outcome.messageId, true)?.kind === 'retracted') {
-        return false;
-      }
-      setError(null);
-      return true;
-    } catch {
-      if (mountedRef.current) {
-        if (pendingAdmissionRef.current === admission) {
-          releaseAdmission(admission, copyRef.current.errors.sendFailed);
-        } else if (
-          admissionOutcomeForMessage(admission.events, admission.messageId)?.kind !== 'retracted'
-        ) {
-          setError(copyRef.current.errors.sendFailed);
+      const admissionId = crypto.randomUUID();
+      const admission: PendingAdmission = {
+        messageId: admissionId,
+        events: [],
+        // Quotes stay staged until the Host admits the steering Message; a
+        // failed or retracted steer keeps them available for retry.
+        ...(quoteSnapshot.quotes.length > 0
+          ? { consumeOnAdmission: () => onQuotesConsumed(quoteSnapshot) }
+          : {}),
+      };
+      setPendingAdmission(admission);
+      try {
+        const outcome = await sideChat.steer(id, trimmed, admissionId, {
+          ...(quoteSnapshot.quotes.length > 0
+            ? { quotes: [...quoteSnapshot.quotes] }
+            : {}),
+          ...(attachmentItems?.length ? { attachmentItems } : {}),
+        });
+        if (!mountedRef.current) return false;
+        if ((await admission.stopPromise) === 'confirmed') return false;
+        if (admissionOutcomeForMessage(admission.events, admission.messageId)?.kind === 'retracted') {
+          return false;
         }
+        if (outcome.kind === 'started') {
+          bindAdmittedTurn(id, outcome.turnId, { preserveLiveTurn: true });
+        } else if (resolveAdmission(id, admission, outcome.messageId, true)?.kind === 'retracted') {
+          return false;
+        }
+        setError(null);
+        return true;
+      } catch {
+        if (mountedRef.current) {
+          if (pendingAdmissionRef.current === admission) {
+            releaseAdmission(admission, copyRef.current.errors.sendFailed);
+          } else if (
+            admissionOutcomeForMessage(admission.events, admission.messageId)?.kind !== 'retracted'
+          ) {
+            setError(copyRef.current.errors.sendFailed);
+          }
+        }
+        return false;
       }
-      return false;
-    }
-  }, [
-    bindAdmittedTurn,
-    mountedRef,
-    releaseAdmission,
-    resolveAdmission,
-    setPendingAdmission,
-    sideChat,
-    turnInFlight,
-  ]);
+    },
+    [
+      bindAdmittedTurn,
+      mountedRef,
+      onQuotesConsumed,
+      panelId,
+      pendingQuotes,
+      releaseAdmission,
+      resolveAdmission,
+      setPendingAdmission,
+      sideChat,
+      turnInFlight,
+    ],
+  );
 
   const setPermissionMode = useCallback(
     (mode: PermissionMode): Promise<boolean> => {
