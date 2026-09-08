@@ -36,7 +36,7 @@ export interface DesktopTranscriptRangeController {
   loadAfter(maxBytes?: number, anchorTurnId?: string): Promise<void>;
   loadAround(sequence: number): Promise<void>;
   setReadingAnchor(sequence: number | null, readingTurnId?: string): Promise<void>;
-  loadLatest(): Promise<void>;
+  loadLatest(maxBytes?: number): Promise<void>;
   reload(): Promise<void>;
   close(): Promise<void>;
 }
@@ -130,8 +130,8 @@ export function createDesktopTranscriptRangeController(
       }
       return navigate({ intent: 'history', kind: 'anchor', sequence, readingTurnId, preserveRange: true });
     },
-    loadLatest() {
-      return navigate({ intent: 'followTail', kind: 'latest', sequence: null });
+    loadLatest(maxBytes) {
+      return navigate({ intent: 'followTail', kind: 'latest', sequence: null, maxBytes });
     },
     async reload() {
       const previous = handle;
@@ -350,18 +350,20 @@ export class DesktopTranscriptRangeStore {
     this.#batchChanged = false;
   }
 
-  accept(batch: DesktopTranscriptBatchPayload): boolean {
+  accepts(batch: DesktopTranscriptBatchPayload): boolean {
     // A stale reset must be rejected before it can clear the current range.
     if ((batch.navigationVersion ?? 0) !== this.#navigationVersion) return false;
     if (this.#retiredGenerations.has(batch.generation)) return false;
+    return batch.reset || (
+      batch.sessionId === this.#sourceSessionId &&
+      batch.generation === this.#generation &&
+      batch.hostEpoch === this.#hostEpoch
+    );
+  }
+
+  accept(batch: DesktopTranscriptBatchPayload): boolean {
+    if (!this.accepts(batch)) return false;
     if (batch.reset) this.#reset(batch);
-    if (
-      batch.sessionId !== this.#sourceSessionId ||
-      batch.generation !== this.#generation ||
-      batch.hostEpoch !== this.#hostEpoch
-    ) {
-      return false;
-    }
     let changed =
       batch.reset ||
       batch.durableThrough !== this.#durableThrough ||
