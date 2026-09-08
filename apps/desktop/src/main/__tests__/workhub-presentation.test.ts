@@ -45,6 +45,11 @@ async function harness() {
     isDestroyed() { return this.destroyed; }
     send(channel: string, ...args: unknown[]) { this.sent.push([channel, ...args]); }
     getZoomFactor() { return 1; }
+    captures = 0;
+    async capturePage() {
+      this.captures++;
+      return { toDataURL: () => 'data:image/png;base64,workhub-frame' };
+    }
     setWindowOpenHandler() {}
     loadURL() { return Promise.resolve(); }
     focus() {}
@@ -81,6 +86,7 @@ async function harness() {
     visible = false;
     constructor() { views.push(this); }
     setVisible(value: boolean) { this.visible = value; }
+    getVisible() { return this.visible; }
     setBackgroundColor() {}
     setBounds() {}
   }
@@ -109,10 +115,52 @@ async function harness() {
   return { controller, main, windows, views, command, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
 }
 
+test('yields the docked native view to main-window overlays without replacing the conversation', async () => {
+  const h = await harness();
+  const host = { visible: true, rect: { x: 200, y: 40, width: 800, height: 760 } };
+  await h.command(h.main.webContents, 'host', host);
+  const view = h.views[0]!;
+  assert.equal(view.visible, true);
+  const backdrop = await h.command(h.main.webContents, 'host', { ...host, occluded: true });
+  assert.equal(backdrop, 'data:image/png;base64,workhub-frame');
+  assert.equal(view.visible, false);
+  await h.command(h.main.webContents, 'host', { ...host, occluded: true });
+  assert.equal(view.webContents.captures, 1);
+  await h.command(h.main.webContents, 'host', host);
+  assert.equal(view.visible, true);
+  assert.equal(h.views.length, 1);
+  await h.command(view.webContents, 'detach');
+  await h.command(h.main.webContents, 'host', { ...host, occluded: true });
+  assert.equal(view.visible, true);
+  assert.equal(view.webContents.captures, 1);
+  await assert.rejects(h.command(h.main.webContents, 'host', { ...host, occluded: 'yes' }), /Invalid WorkHub host/);
+  h.controller.dispose();
+});
+
+test('opens an empty floating conversation at its composer height', async () => {
+  const h = await harness();
+  await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 0, y: 40, width: 1000, height: 760 } });
+  const view = h.views[0]!;
+  await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 110 });
+  await h.command(view.webContents, 'detach');
+  assert.equal(h.windows[1]!.bounds.height, 110);
+  await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 110 });
+  assert.equal(h.windows[1]!.bounds.height, 720);
+  await h.command(view.webContents, 'dock');
+  await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 110 });
+  h.movePointer({ x: 1600, y: -900, width: 1000, height: 800 });
+  await h.controller.toggle(true);
+  const bounds = h.windows[1]!.bounds;
+  assert.equal(bounds.x + bounds.width / 2, 2100);
+  assert.equal(bounds.y + bounds.height, -100 - 96);
+  h.controller.dispose();
+});
+
 test('reparents one live conversation across docking, floating, hide and main-window close', async () => {
   const h = await harness();
   await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 100, y: 40, width: 900, height: 760 } });
   const view = h.views[0]!;
+  await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 96 });
   assert.ok(h.main.children.has(view));
   await h.command(view.webContents, 'detach');
   const floating = h.windows[1]!;

@@ -26,6 +26,7 @@ export interface WorkHubHostRect {
 
 export interface WorkHubHost {
   readonly visible: boolean;
+  readonly occluded?: boolean;
   readonly rect: WorkHubHostRect;
 }
 
@@ -42,7 +43,7 @@ export type WorkHubMainNavigation =
 export interface WorkHubPresentationBridge {
   ready(): Promise<void>;
   getSnapshot(): Promise<WorkHubPresentationSnapshot>;
-  setHost(host: WorkHubHost): Promise<void>;
+  setHost(host: WorkHubHost): Promise<string | void>;
   setConversationLayout(layout: { expanded: boolean; compactHeight: number }): Promise<void>;
   detach(): Promise<void>;
   dock(): Promise<void>;

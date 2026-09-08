@@ -53,15 +53,19 @@ export function WorkHubRoot() {
   const composerSurface = useRef<HTMLDivElement>(null);
   const revealMark = useRef<HTMLDivElement>(null);
   const surface = useRef<HTMLElement>(null);
-  const [conversationExpanded, setConversationExpanded] = useState(true);
-  const [expandedLayoutHeight, setExpandedLayoutHeight] = useState(0);
+  const [expandedOverride, setConversationExpanded] = useState<boolean>();
+  const hasConversation = transcript.messages.length > 0 || busy || Boolean(controller.liveTurn);
+  const conversationExpanded = expandedOverride ?? hasConversation;
+  const hasConversationRef = useRef(hasConversation);
+  hasConversationRef.current = hasConversation;
+  const [expandedLayoutHeight, setExpandedLayoutHeight] = useState(720);
   const [control, setControl] = useState<WorkHubControlSnapshot>();
   const [presentation, setPresentation] = useState<WorkHubPresentationSnapshot>();
   const floating = presentation?.placement === 'floating';
   const showConversation = !floating || conversationExpanded;
   const compactHeight = () => Math.ceil(composerSurface.current?.getBoundingClientRect().height ?? 96);
   useEffect(() => {
-    if (!floating || !composerSurface.current) return;
+    if (!composerSurface.current) return;
     const resize = () => {
       surface.current?.style.setProperty('--workhub-composer-height', `${compactHeight()}px`);
       void services.presentation.setConversationLayout({ expanded: conversationExpanded, compactHeight: compactHeight() }).catch(controller.report);
@@ -84,14 +88,15 @@ export function WorkHubRoot() {
   };
   useEffect(() => {
     let active = true;
-    const unsubscribe = services.presentation.subscribe((next) => {
-      if (active) setPresentation(next);
-    });
+    const acceptPresentation = (next: WorkHubPresentationSnapshot) => {
+      if (!active) return;
+      if (!hasConversationRef.current && (next.placement === 'docked' || !next.floatingVisible)) setConversationExpanded(undefined);
+      setPresentation(next);
+    };
+    const unsubscribe = services.presentation.subscribe(acceptPresentation);
     void services.presentation
       .getSnapshot()
-      .then((next) => {
-        if (active) setPresentation(next);
-      })
+      .then(acceptPresentation)
       .catch(controller.report);
     const acceptControl = (next: WorkHubControlSnapshot) => {
       if (active)

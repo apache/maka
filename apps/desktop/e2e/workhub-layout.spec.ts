@@ -24,6 +24,9 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await awaitSendReady(page);
   await page.locator(COMPOSER_INPUT).press('Enter');
   await expect(page.getByText('Fake backend received: WorkHub navigation regression')).toBeVisible();
+  await page.evaluate(async () => {
+    for (let index = 0; index < 8; index++) await window.maka.sessions.create({ name: `Drag task ${index}` });
+  });
   await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
   const workhub = await getWorkHubPage(app);
   const sessionId = await workhub.evaluate(() => window.maka.workHub.resolveCoordinationSession());
@@ -53,6 +56,48 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     })).toBe(true);
   }
   await mainWindow.evaluate((window, bounds) => window.setBounds(bounds), originalBounds);
+  const anchors = workhub.locator('.workhub-anchors');
+  const draftBeforeOverlays = 'Draft survives main-window overlays and dragging.';
+  await workhub.locator(COMPOSER_INPUT).fill(draftBeforeOverlays);
+  const railBounds = await anchors.boundingBox();
+  const dragStart = { x: railBounds!.x + railBounds!.width - 40, y: railBounds!.y + railBounds!.height / 2 };
+  await workhub.mouse.move(dragStart.x, dragStart.y);
+  await workhub.mouse.down();
+  await workhub.mouse.move(dragStart.x - 300, dragStart.y, { steps: 12 });
+  await workhub.mouse.up();
+  await expect.poll(() => anchors.evaluate((element) => element.scrollLeft)).toBeGreaterThan(250);
+  await expect(page.locator('.workHubDock')).toBeVisible();
+  await expect(workhub.locator(COMPOSER_INPUT)).toHaveText(draftBeforeOverlays);
+  await workhub.mouse.move(dragStart.x - 300, dragStart.y);
+  await workhub.mouse.down();
+  await workhub.mouse.move(dragStart.x, dragStart.y, { steps: 12 });
+  await workhub.mouse.up();
+  await expect.poll(() => anchors.evaluate((element) => element.scrollLeft)).toBeLessThan(5);
+  const expandSidebar = page.getByRole('button', { name: '展开侧边栏', exact: true });
+  if (await expandSidebar.isVisible()) await expandSidebar.click();
+  const nativeWorkHubVisible = () => mainWindow.evaluate((window) => window.contentView.children.some((child) => 'webContents' in child && (child as Electron.WebContentsView).webContents.getURL().includes('surface=workhub') && child.getVisible()));
+  const actions = page.getByRole('button', { name: /Drag task 0.*任务操作$/ });
+  await page.getByRole('button', { name: 'Drag task 0', exact: true }).hover();
+  await actions.click();
+  await expect(page.getByRole('menuitem', { name: '重命名', exact: true })).toBeVisible();
+  await expect.poll(nativeWorkHubVisible).toBe(false);
+  await expect(page.locator('.workHubDockBackdrop')).toBeVisible();
+  await page.getByRole('menuitem', { name: '重命名', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '重命名任务' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect.poll(nativeWorkHubVisible).toBe(true);
+  await page.getByRole('button', { name: '搜索任务', exact: true }).click();
+  await expect(page.locator('[data-maka-contract="search-modal"]')).toBeVisible();
+  await expect.poll(nativeWorkHubVisible).toBe(false);
+  await page.keyboard.press('Escape');
+  await expect.poll(nativeWorkHubVisible).toBe(true);
+  await expect(workhub.locator(COMPOSER_INPUT)).toHaveText(draftBeforeOverlays);
+  await expect(page.locator('.workHubDockBackdrop')).toHaveCount(0);
+  await anchors.locator('.workhub-navigation-item').first().click();
+  await expect(page.locator('.workHubDock')).toBeHidden();
+  await page.getByRole('button', { name: 'WorkHub', exact: true }).click();
+  await expect(page.locator('.workHubDock')).toBeVisible();
+  await expect(workhub.locator(COMPOSER_INPUT)).toHaveText(draftBeforeOverlays);
   const configured = await workhub.evaluate(async (id) => {
     const session = await window.maka.workHub.getSession(id);
     return window.maka.workHub.configureModel(id, {

@@ -30,6 +30,7 @@ export function WorkHubDock({ visible = true }: { visible?: boolean }) {
   const t = workHubLiveCopy[useUiLocale()];
   const element = useRef<HTMLElement>(null);
   const [snapshot, setSnapshot] = useState<WorkHubPresentationSnapshot>();
+  const [backdrop, setBackdrop] = useState<string>();
   const [error, setError] = useState<string>();
   const report = (reason: unknown) =>
     setError(reason instanceof Error ? reason.message : String(reason));
@@ -48,36 +49,51 @@ export function WorkHubDock({ visible = true }: { visible?: boolean }) {
   useLayoutEffect(() => {
     const node = element.current;
     if (!node) return;
+    let frame = 0;
+    let active = true;
+    let revision = 0;
+    let last = '';
+    let covered = false;
     const update = () => {
       const rect = node.getBoundingClientRect();
-      void presentation
-        .setHost({
-          visible: visible && rect.width > 0 && rect.height > 0,
-          rect: {
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-          },
-        })
-        .catch(report);
+      const docked = snapshot?.placement === 'docked';
+      const occluded = visible && docked && Array.from(document.querySelectorAll(':popover-open:not(:empty), dialog[open]')).some((overlay) => {
+        if (overlay.matches(':modal')) return true;
+        const bounds = overlay.getBoundingClientRect();
+        return bounds.width > 0 && bounds.height > 0 && bounds.left < rect.right && bounds.right > rect.left && bounds.top < rect.bottom && bounds.bottom > rect.top;
+      });
+      const host = {
+        visible: visible && rect.width > 0 && rect.height > 0,
+        occluded,
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      };
+      const key = JSON.stringify(host);
+      if (key !== last) {
+        last = key;
+        if (covered !== occluded) ++revision;
+        covered = occluded;
+        const current = revision;
+        if (!occluded) setBackdrop(undefined);
+        void presentation.setHost(host).then((image) => {
+          if (active && current === revision && image) setBackdrop(image);
+        }).catch(report);
+      }
+      // Menus animate and the sidebar can move without resizing this node.
+      // Only changed geometry/occlusion crosses IPC.
+      if (visible && docked) frame = requestAnimationFrame(update);
     };
-    const observer = new ResizeObserver(update);
-    observer.observe(node);
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
     update();
     return () => {
-      observer.disconnect();
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
+      active = false;
+      cancelAnimationFrame(frame);
       void presentation
         .setHost({ visible: false, rect: { x: 0, y: 0, width: 0, height: 0 } })
         .catch(() => undefined);
     };
-  }, [presentation, visible]);
+  }, [presentation, visible, snapshot?.placement]);
   return (
     <section ref={element} className="workHubDock" hidden={!visible} aria-label={t.title}>
+      {backdrop && snapshot?.placement === 'docked' && <img className="workHubDockBackdrop" src={backdrop} alt="" aria-hidden draggable={false} />}
       {snapshot?.placement === 'floating' && (
         <div className="workHubDockPlaceholder">
           <h2>{t.floating}</h2>

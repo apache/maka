@@ -46,6 +46,11 @@ test('WorkHub moves the same renderer and draft between the main window and floa
   await expect(editor).toHaveText('Keep this unsent WorkHub draft — typed during opening');
   await expect(editor).toHaveAttribute('data-test-instance', marker);
 
+  await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'false');
+  await expect(workhub.locator('.workHubHistory')).toBeHidden();
+  await expect.poll(() => workhub.evaluate(() => Math.abs(innerHeight - document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBeLessThanOrEqual(1);
+  await workhub.getByRole('button', { name: /展开对话|Expand conversation/ }).click();
+  await expect(workhub.locator('.workHubHistory')).toBeVisible();
   await workhub.getByRole('button', { name: /^(Hide|隐藏|隱藏)$/ }).click();
   await expect.poll(() => workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ placement: 'floating', floatingVisible: false });
   await page.getByRole('button', { name: /^(Bring WorkHub back|收回工作台)$/ }).click();
@@ -55,4 +60,10 @@ test('WorkHub moves the same renderer and draft between the main window and floa
   await expect(editor).toHaveAttribute('data-test-instance', marker);
   expect(await workhub.evaluate(() => window.maka.workHub.resolveCoordinationSession())).toBe(webContentsId);
   expect(app.context().pages().filter((candidate) => candidate.url().includes('surface=workhub'))).toHaveLength(1);
+  await workhub.getByRole('button', { name: /^(Float WorkHub|浮出工作台)$/ }).click();
+  await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'false');
+  await expect(workhub.getByRole('button', { name: '发送', exact: true })).toBeEnabled();
+  await workhub.getByRole('button', { name: '发送', exact: true }).click();
+  await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'true');
+  await expect(workhub.locator('article').filter({ hasText: 'Keep this unsent WorkHub draft' }).first()).toBeVisible();
 });

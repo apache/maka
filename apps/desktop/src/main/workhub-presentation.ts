@@ -49,7 +49,8 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   let rendererReady = false;
   let releaseView: (() => void) | undefined;
   let focusPending = false;
-  let conversationExpanded = true;
+  let conversationExpanded = false;
+  let compactHeight = 96;
   let expandedHeight = 720;
   let queue: Promise<unknown> = Promise.resolve();
   const mainReady = new WeakSet<Electron.WebContents>();
@@ -82,7 +83,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   function focusComposer(): void {
     focusPending = true;
     if (!view || view.webContents.isDestroyed() || !rendererReady || !parent || parent.isDestroyed() || !parent.isVisible()) return;
-    if (placement === 'docked' && !host.visible) return;
+    if (placement === 'docked' && (!host.visible || host.occluded)) return;
     view.webContents.focus();
     view.webContents.send('workhub-presentation:focus-composer');
     focusPending = false;
@@ -123,16 +124,17 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     if (!floating || floating.isDestroyed() || parent !== floating || !view) return;
     const { width, height } = floating.getContentBounds();
     view.setBounds({ x: 0, y: 0, width, height });
+    if (conversationExpanded) expandedHeight = height;
   }
 
   function ensureFloating(): BrowserWindow {
     if (floating && !floating.isDestroyed()) return floating;
     const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
     const width = Math.min(520, area.width);
-    const height = Math.min(720, area.height);
+    const height = Math.min(conversationExpanded ? expandedHeight : compactHeight, area.height);
     floating = new BrowserWindow({
       title: 'WorkHub', show: false, width, height,
-      x: area.x + area.width - width, y: area.y + Math.round((area.height - height) / 2),
+      x: area.x + Math.round((area.width - width) / 2), y: Math.max(area.y, area.y + area.height - height - 96),
       minWidth: Math.min(360, width), minHeight: Math.min(80, height),
       alwaysOnTop: true, autoHideMenuBar: true,
       frame: false, transparent: true, backgroundColor: '#00000000',
@@ -161,11 +163,11 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const width = Math.max(0, Math.min(size.width - x, Math.round(host.rect.width * zoom)));
     const height = Math.max(0, Math.min(size.height - y, Math.round(host.rect.height * zoom)));
     view.setBounds({ x, y, width, height });
-    view.setVisible(host.visible && width > 0 && height > 0);
+    view.setVisible(host.visible && !host.occluded && width > 0 && height > 0);
     if (host.visible && width > 0 && height > 0 && focusPending) focusComposer();
   }
 
-  function detach(): void {
+  function detach(positionAtDefault = false): void {
     ensureView();
     const target = ensureFloating();
     placement = 'floating';
@@ -177,8 +179,12 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const old = target.getBounds();
     const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
     const width = Math.min(old.width, area.width);
-    const height = Math.min(old.height, area.height);
-    target.setBounds({ width, height, x: Math.max(area.x, Math.min(old.x, area.x + area.width - width)), y: Math.max(area.y, Math.min(old.y, area.y + area.height - height)) });
+    const height = Math.min(conversationExpanded ? expandedHeight : compactHeight, area.height);
+    target.setBounds({
+      width, height,
+      x: positionAtDefault ? area.x + Math.round((area.width - width) / 2) : Math.max(area.x, Math.min(old.x, area.x + area.width - width)),
+      y: positionAtDefault ? Math.max(area.y, area.y + area.height - height - 96) : Math.max(area.y, Math.min(old.y, area.y + area.height - height)),
+    });
     if (target.isMinimized()) target.restore();
     target.show();
     target.focus();
@@ -263,20 +269,32 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             if (!isMain) throw new Error('Only the main window can place WorkHub');
             if (!payload || typeof payload !== 'object') throw new Error('Invalid WorkHub host');
             const value = payload as WorkHubHost;
-            if (typeof value.visible !== 'boolean' || !value.rect ||
+            if (typeof value.visible !== 'boolean' || (value.occluded !== undefined && typeof value.occluded !== 'boolean') || !value.rect ||
               ![value.rect.x, value.rect.y, value.rect.width, value.rect.height].every((n) => typeof n === 'number' && Number.isFinite(n)) ||
               value.rect.width < 0 || value.rect.height < 0) throw new Error('Invalid WorkHub host');
+            // Native child views sit above the main renderer's top layer. Keep
+            // a still frame behind its menus/dialogs while yielding native input.
+            let backdrop: string | undefined;
+            if (placement === 'docked' && value.visible && value.occluded && !host.occluded && view?.getVisible()) {
+              try { backdrop = (await view.webContents.capturePage()).toDataURL(); }
+              catch (error) { reportError(error); }
+            }
+            if (disposed) return;
             host = value;
             if (host.visible && placement === 'docked') { attachMainWindow(main!); ensureView(); }
             updateDockedBounds();
-            return;
+            return backdrop;
           }
           case 'detach': detach(); return;
           case 'conversation-layout': {
             if (isMain) throw new Error('Only the WorkHub view can size its conversation');
             const value = payload as { expanded?: unknown; compactHeight?: unknown } | null;
             if (!value || typeof value.expanded !== 'boolean' || typeof value.compactHeight !== 'number' || !Number.isFinite(value.compactHeight) || value.compactHeight <= 0) throw new Error('Invalid WorkHub conversation layout');
-            if (placement !== 'floating' || !floating || floating.isDestroyed()) return;
+            compactHeight = Math.max(80, Math.ceil(value.compactHeight));
+            if (placement !== 'floating' || !floating || floating.isDestroyed()) {
+              conversationExpanded = value.expanded;
+              return;
+            }
             const bounds = floating.getBounds();
             const area = screen.getDisplayMatching(bounds).workArea;
             if (conversationExpanded && !value.expanded) expandedHeight = bounds.height;
@@ -303,15 +321,15 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     ipcRegistered = true;
   }
 
-  function toggle(): Promise<void> {
+  function toggle(positionAtDefault = false): Promise<void> {
     return enqueue(async () => {
       if (placement === 'floating') await dock();
-      else detach();
+      else detach(positionAtDefault);
     });
   }
 
   function registerShortcut(): boolean {
-    if (!shortcutRegistered) shortcutRegistered = globalShortcut.register(SHORTCUT, () => { void toggle().catch(reportError); });
+    if (!shortcutRegistered) shortcutRegistered = globalShortcut.register(SHORTCUT, () => { void toggle(true).catch(reportError); });
     changed();
     return shortcutRegistered;
   }
