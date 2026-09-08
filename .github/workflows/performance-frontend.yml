@@ -36,13 +36,15 @@ jobs:
       - run: npm --workspace @maka/desktop run build:workspace-deps
       - run: npm --workspace @maka/desktop run build
       - run: npm --workspace @maka/desktop run build-storybook
-      - run: npx playwright install --with-deps chromium
+      - id: browsers
+        run: npx playwright install --with-deps chromium
       - name: Electron and Host measurements
         working-directory: apps/desktop
         env:
           MAKA_PERF_OUTPUT: ${{ github.workspace }}/perf-results
         run: xvfb-run -a npx playwright test --config ../../scripts/perf/playwright.config.ts
       - name: Storybook measurements
+        if: ${{ !cancelled() && steps.browsers.outcome == 'success' }}
         run: xvfb-run -a node scripts/perf/storybook.mjs
       - name: Upload raw measurements and diagnostics
         if: always()

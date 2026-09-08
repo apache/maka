@@ -93,13 +93,14 @@ test.afterAll(async () => {
       'frontend-electron',
       {
         browserVersion,
-        fixture: 'existing chat-prompt-rail (120 turns), fake hold-open backend',
+        fixture:
+          'existing chat-prompt-rail (120 turns), normal fake stream (9 characters/45ms), hold-open stop',
         repetitions,
         viewport: '1400x900',
         theme: 'light',
         motion: 'reduce',
         conditions:
-          'One fresh Electron + real Host per case; first action separately recorded, ten warm repetitions.',
+          'One fresh Electron + real Host per case; first action separately recorded, ten warm repetitions. Streaming uses a fixed 680-character prompt, 9-character deltas/45ms; input checks every 100ms plus driver overhead.',
         limits:
           'DOM-event and preload admission probes, not native input or INP. Latency ends at verified DOM state (includes driver polling), not screen presentation. Stream lag begins at renderer subscription delivery, not provider send. CPU task duration is not power. No wakeup counter on CDP.',
       },
@@ -135,7 +136,7 @@ test('long session switch, older history and idle retention', async () => {
       );
       expect(other).toBeTruthy();
       const switchTo = async (sessionId: string, hasTail: boolean) => {
-        const target = page.locator('[data-session-id="' + sessionId + '"]');
+        const target = page.locator('[data-session-id=' + JSON.stringify(sessionId) + ']');
         const button = target.locator('button, a, [role="button"]').first();
         await activate(button);
         await expect(target.locator('[aria-current="page"]')).toHaveCount(1);
@@ -205,141 +206,154 @@ test('streaming input, background output and stop', async () => {
     },
     async (page) => {
       const cdp = await setup(page);
-      await input(page, '__e2e_hold_open__');
-      await activate(page.getByRole('button', { name: '发送', exact: true }));
-      await expect(page.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting', {
-        timeout: 20_000,
-      });
       const expand = page.getByRole('button', { name: '展开侧边栏', exact: true });
       if (await expand.isVisible()) await activate(expand);
-      const id = await page
+      const ids = await page
         .locator('[data-session-id]')
-        .filter({ has: page.locator('[aria-current="page"]') })
-        .first()
-        .getAttribute('data-session-id');
-      expect(id).toBeTruthy();
-      await page.evaluate((sessionId) => {
-        const state = { deliveries: [] as { text: string; at: number }[], lags: [] as number[] };
-        (window as any).__perfStream = state;
-        (window as any).__perfUnsubscribe = window.maka.sessions.subscribeEvents(
-          sessionId!,
-          (event) => {
-            if (event.type === 'text_delta')
-              state.deliveries.push({ text: event.text, at: performance.now() });
-          },
-        );
-        new MutationObserver(() => {
-          const text = document.querySelector('.maka-bubble-streaming')?.textContent ?? '';
-          const pending = state.deliveries[0];
-          if (pending && text.includes(pending.text)) {
-            state.lags.push(performance.now() - pending.at);
-            state.deliveries.shift();
-          }
-        }).observe(document.body, { subtree: true, childList: true, characterData: true });
-      }, id);
+        .evaluateAll((els) => [...new Set(els.map((el) => el.getAttribute('data-session-id')!))]);
+      expect(ids.length).toBeGreaterThanOrEqual(3);
+      const id = ids[0];
+      await activate(
+        page
+          .locator('[data-session-id=' + JSON.stringify(id) + ']')
+          .locator('button, a, [role="button"]')
+          .first(),
+      );
+      await expect(
+        page.locator('[data-session-id=' + JSON.stringify(id) + '] [aria-current="page"]'),
+      ).toHaveCount(1);
+      const prompt = 'performance fixture ' + 'abcdefghij '.repeat(60);
+      const expected =
+        'Fake backend received: ' +
+        prompt +
+        '\n\nThis proves the session stream, SQLite storage, and renderer loop are connected.';
+      await page.evaluate(
+        ({ sessionId, background }) => {
+          const state = {
+            text: '',
+            deliveries: [] as { text: string; at: number }[],
+            lags: [] as number[],
+            background: Object.fromEntries(
+              background.map((id) => [id, { text: '', complete: false, deltas: 0 }]),
+            ),
+            unsubscribe: [] as (() => void)[],
+          };
+          (window as any).__perfStream = state;
+          state.unsubscribe.push(
+            window.maka.sessions.subscribeEvents(sessionId, (event) => {
+              if (event.type === 'text_delta') {
+                state.text += event.text;
+                state.deliveries.push({ text: state.text, at: performance.now() });
+              }
+            }),
+          );
+          for (const id of background)
+            state.unsubscribe.push(
+              window.maka.sessions.subscribeEvents(id, (event) => {
+                const target = state.background[id];
+                if (event.type === 'text_delta') {
+                  target.text += event.text;
+                  target.deltas++;
+                }
+                if (event.type === 'text_complete') {
+                  if (target.text !== event.text)
+                    throw new Error('Background delta completeness mismatch');
+                  target.complete = true;
+                }
+              }),
+            );
+          new MutationObserver(() => {
+            const text = (document.querySelector('[role="log"]')?.textContent ?? '').replace(
+              /\s/g,
+              '',
+            );
+            while (
+              state.deliveries[0] &&
+              text.includes(state.deliveries[0].text.replace(/\s/g, ''))
+            ) {
+              state.lags.push(performance.now() - state.deliveries.shift()!.at);
+            }
+          }).observe(document.body, { subtree: true, childList: true, characterData: true });
+        },
+        { sessionId: id, background: ids.slice(1, 3) },
+      );
+      await input(page, prompt);
+      await activate(page.getByRole('button', { name: '发送', exact: true }));
+      await expect(page.locator('.maka-bubble-streaming')).toContainText('Fake backend received');
       const times: number[] = [];
       for (let i = 0; i < repetitions; i++) {
-        const marker = 'perf-chunk-' + i + '-中文';
-        await page.evaluate(
-          async ({ sessionId, text }) => {
-            const result = await window.maka.sessions.submitMessage(sessionId!, 'current_turn', {
-              messageId: crypto.randomUUID(),
-              text,
-            });
-            if (!result.ok) throw new Error('Steering rejected');
-          },
-          { sessionId: id, text: marker },
-        );
-        const result = await measure('input-during-stream', () => input(page, 'draft-' + i));
-        times.push(result.ms);
-        await expect(page.locator('.maka-bubble-streaming')).toContainText(marker);
+        await expect(page.locator('.maka-bubble-streaming')).toHaveCount(1);
+        times.push((await measure('input-during-stream', () => input(page, 'draft-' + i))).ms);
         await page.waitForTimeout(100);
       }
+      await expect(page.locator('.maka-bubble-streaming')).toHaveCount(0, { timeout: 20_000 });
+      await expect(page.getByRole('log')).toContainText(expected);
+      const stream = await page.evaluate(() => {
+        const state = (window as any).__perfStream;
+        return { text: state.text, lags: state.lags as number[], pending: state.deliveries.length };
+      });
+      expect(stream.text).toBe(expected);
+      expect(stream.pending).toBe(0);
+      expect(stream.lags.length).toBeGreaterThan(10);
       row('input-during-stream', 'dom-ready-ms', times);
-      const lags = await page.evaluate(() => (window as any).__perfStream.lags as number[]);
-      expect(lags.length).toBe(repetitions);
-      row('streaming', 'delivery-to-dom-mutation-ms', lags);
-      // Existing hold-open sessions accept steering through the real Host. Start two
-      // background runs and verify their deliveries while the foreground draft stays selected.
-      const background = await page
-        .locator('[data-session-id]')
-        .evaluateAll(
-          (els, selected) =>
-            [...new Set(els.map((el) => el.getAttribute('data-session-id')!))]
-              .filter((value) => value !== selected)
-              .slice(0, 2),
-          id,
-        );
-      expect(background.length).toBe(2);
-      await page.evaluate(async (ids) => {
-        for (const sessionId of ids) {
-          const result = await window.maka.sessions.submitMessage(sessionId, 'next_turn', {
-            messageId: crypto.randomUUID(),
-            text: '__e2e_hold_open__',
-          });
-          if (!result.ok) throw new Error('Background start rejected');
-        }
-      }, background);
-      await blocking(page, 'stream-and-background');
+      row('streaming', 'delivery-to-dom-mutation-ms', stream.lags);
+      const background = ids.slice(1, 3);
+      await page.evaluate(
+        async ({ ids, prompt }) => {
+          for (const sessionId of ids) {
+            const result = await window.maka.sessions.submitMessage(sessionId, 'next_turn', {
+              messageId: crypto.randomUUID(),
+              text: prompt,
+            });
+            if (!result.ok) throw new Error('Background start rejected');
+          }
+        },
+        { ids: background, prompt },
+      );
+      await page.waitForFunction(() =>
+        Object.values((window as any).__perfStream.background).every(
+          (s: any) => s.deltas > 0 && !s.complete,
+        ),
+      );
       const backgroundTimes: number[] = [];
       for (let i = 0; i < repetitions; i++) {
-        const output = page.evaluate(
-          async ({ ids, marker }) => {
-            await Promise.all(
-              ids.map(
-                (sessionId) =>
-                  new Promise<void>((resolve, reject) => {
-                    const timer = setTimeout(() => {
-                      unsubscribe();
-                      reject(new Error('Missing background output'));
-                    }, 10000);
-                    const unsubscribe = window.maka.sessions.subscribeEvents(sessionId, (event) => {
-                      if (event.type === 'text_delta' && event.text.includes(marker)) {
-                        clearTimeout(timer);
-                        unsubscribe();
-                        resolve();
-                      }
-                    });
-                    window.maka.sessions
-                      .submitMessage(sessionId, 'current_turn', {
-                        messageId: crypto.randomUUID(),
-                        text: marker,
-                      })
-                      .then((result) => {
-                        if (!result.ok) {
-                          clearTimeout(timer);
-                          unsubscribe();
-                          reject(new Error('Steering rejected'));
-                        }
-                      }, reject);
-                  }),
-              ),
-            );
-          },
-          { ids: background, marker: 'background-' + i },
-        );
+        expect(
+          await page.evaluate(() =>
+            Object.values((window as any).__perfStream.background).every(
+              (s: any) => s.deltas > 0 && !s.complete,
+            ),
+          ),
+        ).toBe(true);
         backgroundTimes.push(
           (await measure('background-input', () => input(page, 'foreground-' + i))).ms,
         );
-        await output;
+        await page.waitForTimeout(100);
       }
+      await page.waitForFunction(
+        () => Object.values((window as any).__perfStream.background).every((s: any) => s.complete),
+        undefined,
+        { timeout: 20_000 },
+      );
+      const texts = await page.evaluate(() =>
+        Object.values((window as any).__perfStream.background).map((s: any) => s.text),
+      );
+      expect(texts).toEqual([expected, expected]);
       row('background-output', 'foreground-input-dom-ms', backgroundTimes);
       await expect(
-        page.locator('[data-session-id="' + id + '"] [aria-current="page"]'),
+        page.locator('[data-session-id=' + JSON.stringify(id) + '] [aria-current="page"]'),
       ).toHaveCount(1);
-      for (let i = 0; i < repetitions; i++)
-        await expect(page.locator('.maka-bubble-streaming')).toContainText(
-          'perf-chunk-' + i + '-中文',
-        );
+      await input(page, '__e2e_hold_open__');
+      await activate(page.getByRole('button', { name: '发送', exact: true }));
+      await expect(page.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
       const stop = await measure('stop', async () => {
         await activate(page.getByRole('button', { name: /^(停止|Stop)$/ }));
         await expect(page.locator('.maka-bubble-streaming')).toHaveCount(0);
       });
       row('stop', 'dom-settled-ms', [stop.ms]);
-      await page.evaluate(async (ids) => {
-        for (const sessionId of ids) await window.maka.sessions.stop(sessionId);
-        (window as any).__perfUnsubscribe();
-      }, background);
+      await page.evaluate(() => {
+        for (const unsubscribe of (window as any).__perfStream.unsubscribe) unsubscribe();
+      });
+      await blocking(page, 'stream-and-background');
       await cdp.detach();
     },
   );

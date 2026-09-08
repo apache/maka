@@ -75,6 +75,8 @@ try {
     );
     const coldSteps = await scrollSteps(page);
     coldAnchors.push(...coldSteps.map((s) => Math.abs(s.moved - s.intended)));
+  }
+  for (let trial = 0; trial < 10; trial++) {
     const started = performance.now();
     const tools = page.getByRole('button', { name: /合成检查 \d+/ });
     assert.equal(await tools.count(), 45, 'All 45 tool disclosures must exist');
@@ -146,9 +148,9 @@ try {
       motion: 'reduce',
       repetitions: 10,
       conditions:
-        'Fresh story navigation per repetition in one warm Chromium; synthetic ComposedShell, no Host. Relative programmatic scrolling, 100ms geometry settling.',
+        'Ten fresh story navigations for cold scrolling, then ten expand/scroll/close cycles in the final mounted story. Synthetic ComposedShell, no Host. Relative programmatic scrolling, 100ms geometry settling.',
       limits:
-        'DOM completion and anchor geometry are not screen-present timestamps or native wheel acceptance. Heap includes uncollected objects. Reload between trials prevents cumulative leak conclusions.',
+        'DOM completion and anchor geometry are not screen-present timestamps or native wheel acceptance. Heap includes uncollected objects and previous document garbage; short repeated cycles alone do not prove a leak.',
     },
     rows,
   );
