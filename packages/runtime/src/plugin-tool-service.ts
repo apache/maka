@@ -30,6 +30,7 @@ import { PluginScopeRegistry } from './plugin-scope-registry.js';
 import type { MakaTool } from './tool-runtime.js';
 import { bindToolActivationIdentity } from './tool-activation-identity.js';
 import { TOOL_SEARCH_NAME, TOOL_SEARCH_PROVIDER_NAME } from './tool-availability.js';
+import type { PluginAgentService } from './plugin-agent-service.js';
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -58,6 +59,7 @@ export interface ResolvedPluginTools {
 
 export interface PluginToolServiceOptions {
   readonly onChanged?: (rootId: MakaPluginRootId) => void;
+  readonly agents?: PluginAgentService;
 }
 
 /**
@@ -71,10 +73,12 @@ export interface PluginToolServiceOptions {
 export class PluginToolService extends Service {
   private readonly registry = new PluginScopeRegistry<RegisteredPluginTool>();
   private readonly onChanged?: (rootId: MakaPluginRootId) => void;
+  private readonly agents?: PluginAgentService;
 
   constructor(ctx: Context, options: PluginToolServiceOptions = {}) {
     super(ctx, 'tools');
     this.onChanged = options.onChanged;
+    this.agents = options.agents;
   }
 
   register(definition: MakaTool): () => Promise<void> {
@@ -155,7 +159,9 @@ export class PluginToolService extends Service {
           }
           entry.activeCalls += 1;
           try {
-            return await definition.impl(args, context);
+            return await (this.agents
+              ? this.agents.withInvocation(context, () => definition.impl(args, context))
+              : definition.impl(args, context));
           } finally {
             entry.activeCalls -= 1;
             if (entry.activeCalls === 0) {
