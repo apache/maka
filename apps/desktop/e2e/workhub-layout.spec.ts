@@ -17,9 +17,13 @@
  * under the License.
  */
 
-import { expect, test, getWorkHubPage } from './fixtures';
+import { awaitSendReady, COMPOSER_INPUT, expect, test, getWorkHubPage } from './fixtures';
 
 test('WorkHub uses its coordination model and shared attachment composer', async ({ sessionLocalWindow: { page, app } }) => {
+  await page.locator(COMPOSER_INPUT).fill('WorkHub navigation regression');
+  await awaitSendReady(page);
+  await page.locator(COMPOSER_INPUT).press('Enter');
+  await expect(page.getByText('Fake backend received: WorkHub navigation regression')).toBeVisible();
   await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
   const workhub = await getWorkHubPage(app);
   const sessionId = await workhub.evaluate(() => window.maka.workHub.resolveCoordinationSession());
@@ -30,6 +34,25 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect(workhub.locator('.workHubLiveHeader')).toHaveCount(0);
   const model = workhub.getByRole('button', { name: /切换当前任务模型|Switch.*model|Change.*model/i });
   await expect(model).toBeEnabled();
+  const mainWindow = await app.browserWindow(page);
+  const originalBounds = await mainWindow.evaluate((window) => window.getBounds());
+  for (const width of [1240, 1000, 1600]) {
+    const contentWidth = await mainWindow.evaluate((window, width) => {
+      window.setBounds({ width });
+      return window.getContentSize()[0];
+    }, width);
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBe(contentWidth);
+    const dockWidth = await page.locator('.workHubDock').evaluate((element) => Math.round(element.getBoundingClientRect().width));
+    await expect.poll(() => workhub.evaluate(() => innerWidth)).toBe(dockWidth);
+    const rail = workhub.locator('.workhub-anchor-rail');
+    await expect.poll(() => rail.evaluate((element) => element.getBoundingClientRect().width)).toBeGreaterThanOrEqual(180);
+    await expect.poll(() => rail.locator('.workhub-navigation-label').first().evaluate((element) => element.getBoundingClientRect().width)).toBeGreaterThanOrEqual(140);
+    await expect.poll(() => workhub.locator('.workhub-conversation-shell').evaluate((element) => {
+      const conversation = element.getBoundingClientRect();
+      return conversation.left >= 0 && conversation.right <= innerWidth + 1;
+    })).toBe(true);
+  }
+  await mainWindow.evaluate((window, bounds) => window.setBounds(bounds), originalBounds);
   const configured = await workhub.evaluate(async (id) => {
     const session = await window.maka.workHub.getSession(id);
     return window.maka.workHub.configureModel(id, {

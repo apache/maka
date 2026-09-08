@@ -192,9 +192,10 @@
 
 html:has(.workHubLive), body:has(.workHubLive), #root:has(.workHubLive) { background: transparent; }
 
-@media (max-width: 900px) {
+@media (max-width: 1240px) {
   .workhub-body { display: flex; flex-direction: column; gap: var(--space-3); }
-  .workhub-anchor-rail { position: static; width: 100%; max-height: 180px; padding: var(--space-3); }
+  .workhub-conversation-shell { width: min(var(--maka-reading-measure), 100%); margin-inline: auto; }
+  .workhub-anchor-rail { position: static; width: min(var(--maka-reading-measure), 100%); max-height: 180px; margin-inline: auto; padding: var(--space-3); }
   .workhub-anchors { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(180px, 1fr); overflow-x: auto; }
   .workhub-filters { flex-wrap: nowrap; overflow-x: auto; }
 }
