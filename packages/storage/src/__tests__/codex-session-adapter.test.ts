@@ -503,41 +503,19 @@ describe('CodexSessionAdapter', () => {
         },
       ]);
 
-      const probe = await open(rolloutPath, 'r');
-      type PositionalRead = (
-        buffer: Buffer,
-        offset: number,
-        length: number,
-        position: number,
-      ) => Promise<{ bytesRead: number; buffer: Buffer }>;
-      const fileHandlePrototype = Object.getPrototypeOf(probe) as { read: PositionalRead };
-      const originalRead = fileHandlePrototype.read;
-      await probe.close();
       let readCalls = 0;
-      const readMock = mock.method(
-        fileHandlePrototype,
-        'read',
-        async function (
-          this: typeof probe,
-          buffer: Buffer,
-          offset: number,
-          length: number,
-          position: number,
-        ) {
+      await withFileReadMock(
+        rolloutPath,
+        async (readOriginal, buffer) => {
           readCalls += 1;
-          return readCalls === 2
-            ? { bytesRead: 0, buffer }
-            : originalRead.call(this, buffer, offset, length, position);
+          return readCalls === 2 ? { bytesRead: 0, buffer } : readOriginal();
         },
+        () =>
+          assert.rejects(
+            new CodexSessionAdapter({ codexHome }).readSession(sessionId),
+            /changed while being read/,
+          ),
       );
-      try {
-        await assert.rejects(
-          new CodexSessionAdapter({ codexHome }).readSession(sessionId),
-          /changed while being read/,
-        );
-      } finally {
-        readMock.mock.restore();
-      }
     });
   });
 
@@ -562,45 +540,26 @@ describe('CodexSessionAdapter', () => {
         },
       ]);
 
-      const probe = await open(rolloutPath, 'r');
-      type PositionalRead = (
-        buffer: Buffer,
-        offset: number,
-        length: number,
-        position: number,
-      ) => Promise<{ bytesRead: number; buffer: Buffer }>;
-      const fileHandlePrototype = Object.getPrototypeOf(probe) as { read: PositionalRead };
-      const originalRead = fileHandlePrototype.read;
-      await probe.close();
       let appended = false;
-      const readMock = mock.method(
-        fileHandlePrototype,
-        'read',
-        async function (
-          this: typeof probe,
-          buffer: Buffer,
-          offset: number,
-          length: number,
-          position: number,
-        ) {
-          const result = await originalRead.call(this, buffer, offset, length, position);
+      await withFileReadMock(
+        rolloutPath,
+        async (readOriginal) => {
+          const result = await readOriginal();
           if (!appended) {
             appended = true;
             await appendFile(rolloutPath, 'not-json\n');
           }
           return result;
         },
+        async () => {
+          const session = await new CodexSessionAdapter({ codexHome }).readSession(sessionId);
+          assert.equal(session.messages[0]?.type, 'user');
+          assert.equal(
+            session.messages[0]?.type === 'user' ? session.messages[0].text : undefined,
+            'Keep this message',
+          );
+        },
       );
-      try {
-        const session = await new CodexSessionAdapter({ codexHome }).readSession(sessionId);
-        assert.equal(session.messages[0]?.type, 'user');
-        assert.equal(
-          session.messages[0]?.type === 'user' ? session.messages[0].text : undefined,
-          'Keep this message',
-        );
-      } finally {
-        readMock.mock.restore();
-      }
     });
   });
 
@@ -721,6 +680,45 @@ async function withCodexHome(run: (codexHome: string) => Promise<void>): Promise
     await run(codexHome);
   } finally {
     await rm(codexHome, { recursive: true, force: true });
+  }
+}
+
+type PositionalRead = (
+  buffer: Buffer,
+  offset: number,
+  length: number,
+  position: number,
+) => Promise<{ bytesRead: number; buffer: Buffer }>;
+
+async function withFileReadMock(
+  path: string,
+  read: (
+    readOriginal: () => ReturnType<PositionalRead>,
+    buffer: Buffer,
+  ) => ReturnType<PositionalRead>,
+  run: () => Promise<void>,
+): Promise<void> {
+  const probe = await open(path, 'r');
+  const fileHandlePrototype = Object.getPrototypeOf(probe) as { read: PositionalRead };
+  const originalRead = fileHandlePrototype.read;
+  await probe.close();
+  const readMock = mock.method(
+    fileHandlePrototype,
+    'read',
+    async function (
+      this: typeof probe,
+      buffer: Buffer,
+      offset: number,
+      length: number,
+      position: number,
+    ) {
+      return read(() => originalRead.call(this, buffer, offset, length, position), buffer);
+    },
+  );
+  try {
+    await run();
+  } finally {
+    readMock.mock.restore();
   }
 }
 

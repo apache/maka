@@ -30,11 +30,6 @@
 
 ### Fixed
 
-- Fixed Codex task imports for valid rollout JSONL files larger than 64 MiB by
-  parsing a fixed file snapshot incrementally under source, record, converted-byte,
-  and message-count limits. Concurrent truncation and malformed or oversized
-  sources now fail before persistence through the existing source-unreadable path
-  (#4642).
 - Fixed a renderer crash dialog reporting React error #185 ("Maximum update depth
   exceeded") coming from the composer's prompt-history inline completion (#4117): the
   offer engine the 0.1.11 composer fed could flip-flop its announcement state on
