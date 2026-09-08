@@ -22,12 +22,13 @@ import { CodeBlock } from '@astryxdesign/core/CodeBlock';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { Dialog } from '@astryxdesign/core/Dialog';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import type { MermaidConfig } from 'mermaid';
 import mermaidPackage from 'mermaid/package.json' with { type: 'json' };
-import { ICON_SIZE, Maximize2, Minimize2, Scan, ZoomIn, ZoomOut } from './icons.js';
+import { ICON_SIZE, Check, Copy, Maximize2, Minimize2, Scan, ZoomIn, ZoomOut } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
+import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 
 export const MAX_MERMAID_SOURCE_LENGTH = 20_000;
 export const MAX_MERMAID_EDGES = 500;
@@ -36,6 +37,10 @@ export const MERMAID_RENDER_CACHE_MAX_CHARS = 4 * 1024 * 1024;
 export const MIN_MERMAID_ZOOM = 0.5;
 export const MAX_MERMAID_ZOOM = 3;
 export const MERMAID_ZOOM_STEP = 0.25;
+/** 导出剪贴板 PNG 的像素比：2× 在清晰度与 clipboard.write 体积之间取平衡。 */
+export const MERMAID_EXPORT_PIXEL_RATIO = 2;
+/** useClipboardCopyFeedback 的 attempt key，区分于其他文本复制入口。 */
+const MERMAID_IMAGE_COPY_KEY = 'mermaid-image';
 const MIN_MERMAID_VIEWPORT_HEIGHT = 112;
 const MAX_MERMAID_VIEWPORT_HEIGHT = 480;
 const MAX_MERMAID_VIEWPORT_HEIGHT_RATIO = 0.55;
@@ -333,6 +338,45 @@ function clampMermaidZoom(value: number): number {
   return Math.min(MAX_MERMAID_ZOOM, Math.max(MIN_MERMAID_ZOOM, value));
 }
 
+/**
+ * 纯函数：给 SVG 根节点注入显式像素尺寸并编码为 data URL。
+ * 剥掉根节点的 width/height/style（mermaid 默认输出 width="100%" + max-width），
+ * 否则 Image 解码时百分比尺寸会退化为默认视口，导出画布比例失真。
+ */
+export function mermaidSvgToDataUrl(svg: string, width: number, height: number): string {
+  const rootTag = /<svg\b[^>]*>/i.exec(svg)?.[0] ?? '';
+  const sizedRootTag = rootTag
+    .replace(/\s(?:width|height|style)="[^"]*"/gi, '')
+    .replace(/^<svg\b/i, `<svg width="${width}" height="${height}"`);
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(sizedRootTag + svg.slice(rootTag.length))}`;
+}
+
+/**
+ * 把渲染好的 Mermaid SVG 字符串栅格化为 PNG Blob（仅浏览器环境）。
+ * 输入是 state 里的净化 SVG 字符串而非 DOM，不受 pan/zoom 交互态影响。
+ */
+async function mermaidSvgToPngBlob(
+  svg: string,
+  width: number,
+  height: number,
+  background: string,
+): Promise<Blob> {
+  const image = new Image();
+  image.src = mermaidSvgToDataUrl(svg, width, height);
+  await image.decode();
+  const canvas = document.createElement('canvas');
+  canvas.width = width * MERMAID_EXPORT_PIXEL_RATIO;
+  canvas.height = height * MERMAID_EXPORT_PIXEL_RATIO;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Canvas 2D context unavailable');
+  context.fillStyle = background;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+  if (!blob) throw new Error('Canvas toBlob returned no PNG blob');
+  return blob;
+}
+
 export function calculateMermaidFitScale(options: {
   availableWidth: number;
   availableHeight: number;
@@ -383,6 +427,7 @@ export function MermaidDiagram(props: {
   const [panning, setPanning] = useState(false);
   const [pannableAxis, setPannableAxis] = useState<'none' | 'horizontal' | 'vertical' | 'both'>('none');
   const [viewportLayout, setViewportLayout] = useState<MermaidViewportLayout | null>(null);
+  const copyFeedback = useClipboardCopyFeedback();
   const viewportRef = useRef<HTMLDivElement>(null);
   const panRef = useRef<{
     pointerId: number;
@@ -539,6 +584,23 @@ export function MermaidDiagram(props: {
   const className = `maka-markdown-code maka-markdown-code-${props.density}`;
   if (state.status === 'rendered') {
     const zoomPercent = Math.round(zoom * 100);
+    const diagramCopyPhase = copyFeedback.phaseFor(MERMAID_IMAGE_COPY_KEY);
+    async function copyDiagramToClipboard(event: ReactMouseEvent<HTMLButtonElement>) {
+      if (state.status !== 'rendered') return;
+      // 背景色取 figure 实际解析值（styles.css 里 .maka-mermaid-diagram 绑定 --background），
+      // 深色主题导出的 PNG 不会是透明底或误用浅色底。
+      const figure = event.currentTarget.closest('figure');
+      const background = figure ? getComputedStyle(figure).backgroundColor : '';
+      await copyFeedback.attempt(MERMAID_IMAGE_COPY_KEY, async () => {
+        const blob = await mermaidSvgToPngBlob(
+          state.svg,
+          state.naturalWidth,
+          state.naturalHeight,
+          background || '#ffffff',
+        );
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      });
+    }
     const canvasWidth = viewportLayout
       ? `${viewportLayout.fitWidth * zoom}px`
       : `min(${state.naturalWidth * zoom}px, ${zoomPercent}%)`;
@@ -589,6 +651,15 @@ export function MermaidDiagram(props: {
                   icon={<Scan size={ICON_SIZE.chrome} aria-hidden="true" />}
                 />
               </div>
+              <IconButton
+                variant="ghost"
+                label={diagramCopyPhase === 'failed' ? copy.mermaidCopyImageFailed : copy.mermaidCopyImage}
+                tooltip={diagramCopyPhase === 'failed' ? copy.mermaidCopyImageFailed : copy.mermaidCopyImage}
+                onClick={copyDiagramToClipboard}
+                icon={diagramCopyPhase === 'copied'
+                  ? <Check size={ICON_SIZE.chrome} aria-hidden="true" />
+                  : <Copy size={ICON_SIZE.chrome} aria-hidden="true" />}
+              />
               <IconButton
                 variant="ghost"
                 label={isExpanded ? copy.mermaidCollapseView : copy.mermaidExpandView}
