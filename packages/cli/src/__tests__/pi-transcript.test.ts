@@ -2890,12 +2890,17 @@ describe('Maka Pi TUI transcript', () => {
     assert.equal(poll?.toolUseId, 'read-bg');
     assert.equal(poll?.toolName, 'Read');
     assert.equal(toolStatus(poll), 'error');
-    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
+    // Assert the semantic row after stripping ANSI, as it appears with
+    // NO_COLOR; the failure label must not depend on the red disc.
+    const rendered = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n');
     assert.match(rendered, /● Read/);
-    // The error disc carries the failure state; free-text error content stays
-    // out of the compact row under #1086.
-    assert.match(rendered, /\(1 line · 32 bytes\)/);
+    // The compact row names the failure even without ANSI color; free-text
+    // error content stays out of the row and remains available when expanded.
+    assert.match(rendered, /\(error · 1 line · 32 bytes\)/);
     assert.doesNotMatch(rendered, /background task no longer exists/);
+    assert.ok(
+      visibleWidth(rendered.split('\n').find((line) => line.includes('● Read')) ?? '') <= 80,
+    );
   });
 
   test('surfaces a failed poll at the tail without rewriting scrollback', () => {

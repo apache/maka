@@ -336,7 +336,15 @@ function compactToolSummary(entry: MakaPiToolEntry): CompactToolSummary | undefi
   ) {
     return { text: linesText(readBodyLineCount(text)), protect: true };
   }
-  return textResultSummary(text);
+  const summary = textResultSummary(text);
+  const status = makaPiToolPresentationStatus(entry);
+  // A red disc is not enough to identify a failed text result, especially
+  // under NO_COLOR. Keep the compact row bounded and secret-safe by adding
+  // only the stable presentation status; the full text remains expanded-only.
+  if (status === 'error' || status === 'failed' || status === 'aborted') {
+    return { ...summary, text: `${status} · ${summary.text}` };
+  }
+  return summary;
 }
 
 function compactTerminalSummary(
