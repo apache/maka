@@ -23,6 +23,7 @@ import {
   providerSupportsModelDiscovery,
   type ProviderType,
 } from './llm-connections.js';
+import { isRetiredProvider } from './provider-retirement.js';
 
 /**
  * The credential operations this contract admits. One entry per operation the
@@ -65,7 +66,7 @@ export function deriveProviderAuthContract(input: {
   // nowhere: no Runtime adapter to send on, no sign-in to complete, no endpoint
   // to test. Deleting the connection is what clears the credential this machine
   // still holds.
-  if (!defaults || defaults.retired === true) {
+  if (!defaults || isRetiredProvider(input.providerType)) {
     return { requiresSecret, actionAvailability: actions({}) };
   }
 

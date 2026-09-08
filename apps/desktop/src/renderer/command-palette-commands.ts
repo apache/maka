@@ -47,7 +47,7 @@ import {
 } from '@maka/ui/icons';
 import type { ChatDefaultPermissionMode, SettingsSection, ThemePreference } from '@maka/core/settings';
 import type { LlmConnection } from '@maka/core/llm-connections';
-import { isRetiredProvider } from '@maka/core/provider-registry';
+import { isRetiredProvider } from '@maka/core/provider-retirement';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';

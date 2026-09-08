@@ -33,6 +33,7 @@ import {
   providerSupportsModelDiscovery,
   type HostResolvedConnectionCatalog,
 } from './llm-connections.js';
+import { isRetiredProvider } from './provider-retirement.js';
 import { lookupModelMetadata, resolveModelVisionSupport } from './model-metadata.js';
 import {
   relayModelProfile,
@@ -248,7 +249,7 @@ export function buildConnectionModelCatalogEntries(
     // renders, but they stop being selectable. Without this the pickers would
     // keep offering models that can no longer send — `runtimeAdapter:
     // 'unavailable'` blocks the send, not the choice.
-    providerRetired: defaults.retired === true,
+    providerRetired: isRetiredProvider(connection.providerType),
     ...(connection.relayModelProfiles ? { relayModelProfiles: connection.relayModelProfiles } : {}),
     // Enabling a model IS a user choice — the raw array is written only by the
     // user, in connection settings — so it projects an entry even when no

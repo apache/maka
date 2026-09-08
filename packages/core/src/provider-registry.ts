@@ -145,11 +145,9 @@ export interface ProviderDefaults {
   protocolAdapters?: Partial<
     Record<'openai-chat' | 'openai-responses' | 'anthropic-messages', ProviderRuntimeAdapter>
   >;
-  /**
-   * Maka used to offer this provider and no longer does. The entry stays
-   * registered so stored connections still decode; it just cannot be used.
-   */
-  retired?: true;
+  // Whether Maka still offers a provider is owned by `provider-retirement.ts`,
+  // not by a flag here: the Desktop first screen needs that answer without
+  // loading the generated models.dev tables this module is built from.
   /** User-declared per-model capabilities are authoritative for this provider. */
   relayModelProfiles?: boolean;
   /**
@@ -1652,7 +1650,6 @@ const providerRegistry = {
     ],
     status: 'phase3-experimental',
     runtimeAdapter: { kind: 'unavailable' },
-    retired: true,
     modelDiscovery: {
       kind: 'fallback',
       reason:
@@ -1729,14 +1726,7 @@ export function providerMenuLabel(providerType: string): string | undefined {
   return defaults && (defaults.menuLabel ?? defaults.label);
 }
 
-/**
- * A provider Maka used to offer and no longer does. Read this rather than
- * inferring retirement from an unavailable adapter: a provider that was never
- * wired looks identical from there and is not the same thing.
- */
-export function isRetiredProvider(providerType: string): boolean {
-  return providerDefaultsOf(providerType)?.retired === true;
-}
+export { isRetiredProvider, RETIRED_PROVIDER_TYPES } from './provider-retirement.js';
 
 export const CATALOG_PROVIDER_TYPES = providerTypesByOrder('catalogOrder');
 export const RECOMMENDED_PROVIDER_TYPES = providerTypesByOrder('recommendedOrder');
