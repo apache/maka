@@ -388,7 +388,7 @@ describe('interactive artifact store authority', () => {
 
       const initial = await openInteractiveArtifactStoreForWrite(owner.lease);
       initial.close();
-      const liveRelativePath = 'session-1/shared-Payload.txt';
+      const liveRelativePath = 'session-1/SHARED-Payload.txt';
       const orphanRelativePath = 'session-1/shared-payload.txt';
       const db = new DatabaseSync(join(root, 'runtime.sqlite'));
       db.exec(`
@@ -402,19 +402,19 @@ describe('interactive artifact store authority', () => {
         CREATE UNIQUE INDEX artifact_records_relative_path ON artifact_records(relative_path);
         UPDATE operational_schema_migrations SET version = 1 WHERE scope = 'artifact';
       `);
-      for (const [storageKey, status, relativePath, name] of [
-        ['live', 'live', liveRelativePath, 'Payload.txt'],
-        ['retired', 'deleted', orphanRelativePath, 'payload.txt'],
+      for (const [storageKey, artifactId, status, relativePath, name] of [
+        ['live', 'SHARED', 'live', liveRelativePath, 'Payload.txt'],
+        ['retired', 'shared', 'deleted', orphanRelativePath, 'payload.txt'],
       ] as const) {
         db.prepare('INSERT INTO artifact_records VALUES (?, ?, ?, ?, ?, ?, ?)').run(
           storageKey,
-          'shared',
+          artifactId,
           'session-1',
           1,
           status,
           relativePath,
           JSON.stringify({
-            id: 'shared',
+            id: artifactId,
             sessionId: 'session-1',
             turnId: 'turn-1',
             createdAt: 1,
@@ -440,7 +440,7 @@ describe('interactive artifact store authority', () => {
         failedPaths: 0,
       });
 
-      assert.deepEqual(await store.readTextInSession('session-1', 'shared'), {
+      assert.deepEqual(await store.readTextInSession('session-1', 'SHARED'), {
         ok: true,
         text: 'live bytes',
       });

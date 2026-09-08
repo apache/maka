@@ -567,7 +567,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     artifactIds: readonly string[],
     comparisonIdentity: string,
   ): Promise<boolean> {
-    for (const relativePath of this.metadataRepository.readRelativePathsByArtifactIds(
+    for (const relativePath of this.metadataRepository.readRelativePathsByCaseFoldedArtifactIds(
       artifactIds,
     )) {
       const entry = await resolveArtifactRemovalEntry(this.artifactRoot, relativePath);
