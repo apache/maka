@@ -22,21 +22,33 @@
  * Test-only Candidate entry for the owner-loss lifecycle tests. A
  * launch-owner Client is admitted while the Host is still recovering, and
  * the guard that closes the Host on owner loss binds only after startup
- * returns, so the remaining recovery time is part of any owner-loss exit
- * bound and has no kernel deadline. Delaying composition creation by a fixed
- * interval turns that window into a number the test controls (see
- * `OWNED_CANDIDATE_RECOVERY_DELAY_MS`) instead of however long an unassisted
- * recovery happens to take under load. The run still goes through the real
- * Runtime Host composition — only its start is deferred.
+ * returns — so whether the test's kill lands before or after the bind is a
+ * scheduling race a fixed sleep cannot decide. This entry instead gates
+ * composition creation behind a release file: writing the stall marker
+ * proves the Candidate is parked before the bind, the test kills the
+ * launcher at that point, and releasing the gate afterwards lets startup
+ * return promptly so the recorded loss closes the Host under the kernel's
+ * `shutdownGraceMs`. The run still goes through the real Runtime Host
+ * composition — only its start is held at the gate.
  */
+import { existsSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { runExecutionCandidateEntry } from '../candidate-entry.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
-import { OWNED_CANDIDATE_RECOVERY_DELAY_MS } from './owned-candidate-recovery-delay.js';
+
+const rootArgumentIndex = process.argv.indexOf('--root') + 1;
+const rootPath = process.argv[rootArgumentIndex];
+if (!rootPath) throw new Error('gated-recovery entry requires --root');
+const stallMarker = join(dirname(rootPath), 'authority-lease-probe.stalled');
+const releaseMarker = join(dirname(rootPath), 'authority-lease-probe.release');
 
 await runExecutionCandidateEntry(process.argv.slice(2), import.meta.url, {
   dependencies: {
     createComposition: async (context, compositionOptions) => {
-      await new Promise((resolve) => setTimeout(resolve, OWNED_CANDIDATE_RECOVERY_DELAY_MS));
+      writeFileSync(stallMarker, String(Date.now()));
+      while (!existsSync(releaseMarker)) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
       return createExecutionRuntimeHostComposition(context, compositionOptions);
     },
   },

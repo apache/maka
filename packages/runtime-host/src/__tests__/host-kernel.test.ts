@@ -21,7 +21,7 @@ import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFile, fork, type ChildProcess } from 'node:child_process';
 import {
   chmod,
@@ -88,7 +88,6 @@ import type { RuntimeHostCompositionSource } from '../server/host-composition.js
 import { createUnavailableDomainOperationHandlers } from '../server/operation-dispatcher.js';
 import { HostChangeFeed } from '../server/host-change-feed.js';
 import { FramedTransport, RuntimeHostTransportError } from '../transport/framed-transport.js';
-import { OWNED_CANDIDATE_RECOVERY_DELAY_MS } from '../test-only/owned-candidate-recovery-delay.js';
 import {
   prepareStorageRootControlDirectory,
   resolveRootControlNamespace,
@@ -2205,16 +2204,22 @@ describe('non-serving Runtime Host kernel', () => {
             capability.rootId,
             join(paths.base, 'authority-lease-probe'),
             launchOwnerClientInstanceId,
-            // The owner-loss exit bound below covers the recovery window, so
-            // this run pins startup behind the delayed-recovery entry instead
-            // of leaving the bound at the mercy of however long an unassisted
-            // recovery takes under load.
-            '../../test-only/owned-candidate-delayed-recovery-main.js',
+            // The owner-loss exit bound below covers the gated recovery
+            // window, so this run pins startup behind the gated-recovery
+            // entry instead of leaving both the window and the kill's
+            // ordering to however scheduling resolves them.
+            '../../test-only/owned-candidate-gated-recovery-main.js',
           ],
           { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
         ),
       );
       const launchedPid = paths.resources.trackPid(await waitForLaunch(launcher));
+      // The gated-recovery entry parks composition creation behind these
+      // markers under the same base directory; the stall marker proves the
+      // Candidate reached the gated window, and the release marker lets the
+      // test unblock it through a channel that survives the launcher.
+      const stallMarker = join(paths.base, 'authority-lease-probe.stalled');
+      const releaseMarker = join(paths.base, 'authority-lease-probe.release');
       const connected = await retryConnect(paths, CURRENT_PROTOCOL, {
         clientInstanceId: launchOwnerClientInstanceId,
       });
@@ -2230,6 +2235,23 @@ describe('non-serving Runtime Host kernel', () => {
       });
       assert.equal(ordinary.kind, 'draining');
 
+      // The owner-loss contract under test is recorded pre-bind: a
+      // launch-owner Client is admitted while the Host is still recovering,
+      // and the guard that closes the Host on owner loss binds only after
+      // startup returns. Kill timing alone cannot prove the loss was
+      // recorded pre-bind — a test-side pause longer than the candidate's
+      // startup would silently turn this into the post-bind scenario — so
+      // the gated-recovery entry holds startup behind a release file and
+      // marks the stall; waiting for that marker makes the kill land inside
+      // the gated window by construction rather than by luck.
+      const stallDeadline = Date.now() + 10_000;
+      while (!existsSync(stallMarker) && Date.now() < stallDeadline) {
+        await sleep(20);
+      }
+      assert.ok(
+        existsSync(stallMarker),
+        'gated-recovery entry never reached its stall window',
+      );
       launcher.kill('SIGKILL');
       await waitForExit(launcher);
       // The process is the only thing that reports the claim. A Client's
@@ -2239,23 +2261,18 @@ describe('non-serving Runtime Host kernel', () => {
       // running, and gating the exit assertion on it starts the exit budget at
       // a moment that has nothing to do with the Host's shutdown.
       //
-      // The bound is a sum of contracts the test controls rather than an
-      // interval this test could predict. A launch-owner Client is admitted
-      // while the Host is still recovering, and the guard that closes the
-      // Host on owner loss binds only after startup returns, so the
-      // remaining recovery time is part of the bound and has no kernel
-      // deadline. The delayed-recovery entry pins that window to
-      // OWNED_CANDIDATE_RECOVERY_DELAY_MS (5 s), and the shutdown that
-      // follows is bounded by `shutdownGraceMs` (10 s), after which the
-      // kernel force-terminates. The deadline is that delay plus the
-      // shutdown grace and margin — twenty seconds — which sits above every
-      // legitimate exit and below the launcher's 60 s idle grace, so it
-      // cannot be satisfied by a Candidate that merely went idle. The kill
-      // lands inside the pinned window, so this exercises owner loss before
-      // the guard binds; Windows locally terminates such grandchildren
-      // abruptly without a JS exit event, so only CI verdicts count as
-      // cross-platform evidence for this assertion.
-      await waitForProcessExit(launchedPid, OWNED_CANDIDATE_RECOVERY_DELAY_MS + 15_000);
+      // Releasing the gate lets startup return promptly, `bind()` fires the
+      // loss recorded above, and the kernel closes the Host under
+      // `shutdownGraceMs` (10 s), after which it force-terminates. The
+      // deadline is that grace plus margin — twenty seconds — which sits
+      // below the launcher's 60 s idle grace, so it cannot be satisfied by a
+      // Candidate that merely went idle. The assertion observes the real
+      // operating-system PID: the kernel resolving its `closed` promise does
+      // not by itself mean the OS process has exited. Local Windows runs
+      // terminate such grandchildren abruptly without a JS exit event, so
+      // only CI verdicts count as cross-platform evidence here.
+      writeFileSync(releaseMarker, String(Date.now()));
+      await waitForProcessExit(launchedPid, 20_000);
       await withTimeout(
         connected.connection.closed,
         5_000,
