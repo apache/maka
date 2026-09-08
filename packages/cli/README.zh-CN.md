@@ -58,7 +58,7 @@ release commit 中的 [DISCLAIMER-WIP](https://github.com/apache/maka/blob/main/
 
 npm 上有两条 dist-tag，且二者不可互换：
 
-- `nightly` 承载完整的 CLI——当前为 `0.2.0-dev.23.20260906`：
+- `nightly` 承载完整的 CLI。该发布线每日推进——请解析 tag 本身（或查询其当前版本），不要誊写任何文档里的版本号：
 
   ```sh
   npm install --global maka-agent@nightly
@@ -104,10 +104,12 @@ Maka 默认会在执行高权限工具操作前询问。`maka run --yolo` 会授
 ## 升级
 
 在 nightly 线内更新时固定精确版本（`--target` 只接受 `latest`、`next` 或精确的 Maka
-版本号——不存在 `nightly` 这个 channel 名）：
+版本号——不存在 `nightly` 这个 channel 名）。先解析当前 nightly 版本再传入精确值：
+updater 拒绝降级，nightly 前进之后誊写的旧版本号会被直接拒绝。
 
 ```sh
-maka update --target 0.2.0-dev.23.20260906
+version="$(npm view maka-agent@nightly version --registry=https://registry.npmjs.org)"
+maka update --target "$version"
 maka --version
 ```
 
@@ -130,10 +132,11 @@ npx --yes --package maka-agent@nightly maka runtime-host setup \
 
 重复设置会替换该 Client credential。设置成功后，service 不再依赖临时 `npx` cache。
 
-可以在不改变当前 Host 的情况下检查 managed service 对应的发布频道：
+检查 managed service 应跟随的 nightly 发布，且不改变当前运行中的 Host——传入上面解析出的
+精确版本，而不是指向早期 alpha 的 `latest`：
 
 ```sh
-maka runtime-host service check-update --target latest --json
+maka runtime-host service check-update --target "$version" --json
 ```
 
 结果会把频道固定为精确版本和 package integrity，并说明 package 是否提供足够的兼容性证据，

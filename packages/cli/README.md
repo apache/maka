@@ -61,7 +61,8 @@ release gate. Real Eval executor validation currently runs on Linux x64 with Nod
 
 Two dist-tags are live on npm, and they are not interchangeable:
 
-- `nightly` carries the complete CLI — currently `0.2.0-dev.23.20260906`:
+- `nightly` carries the complete CLI. The line moves daily — resolve the tag (or query its
+  current version) instead of copying a version number from any document:
 
   ```sh
   npm install --global maka-agent@nightly
@@ -112,10 +113,13 @@ modify.
 ## Upgrade
 
 Update within the nightly line by pinning the exact release (`--target` accepts `latest`,
-`next`, or an exact Maka version — there is no `nightly` channel name):
+`next`, or an exact Maka version — there is no `nightly` channel name). Resolve the current
+nightly version first and pass that exact value: the updater refuses downgrades, so a copied
+version number goes stale as soon as the nightly line moves on.
 
 ```sh
-maka update --target 0.2.0-dev.23.20260906
+version="$(npm view maka-agent@nightly version --registry=https://registry.npmjs.org)"
+maka update --target "$version"
 maka --version
 ```
 
@@ -140,10 +144,12 @@ npx --yes --package maka-agent@nightly maka runtime-host setup \
 Rerunning setup replaces that Client credential. The service no longer depends on the temporary
 `npx` cache after setup succeeds.
 
-Check a managed service against a release channel without changing the running Host:
+Check a managed service against the nightly release it should track, without changing the
+running Host — pass the exact version resolved above rather than `latest`, which holds the
+early alpha:
 
 ```sh
-maka runtime-host service check-update --target latest --json
+maka runtime-host service check-update --target "$version" --json
 ```
 
 The result pins the selected channel to an exact version and package integrity. It also reports
