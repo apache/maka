@@ -1478,12 +1478,10 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
       // titleless full-screen surface that is the Dock and not a cover. maka-cu
       // answers it directly.
       //
-      // Nothing reads it yet. This comment used to say the runtime already knew
-      // what to do with the answer, naming `frontmost` and `destinationCovered`
-      // as the two readings of it, and neither symbol exists anywhere in the
-      // tree. It is carried because the executor's answer is the authoritative
-      // one and re-deriving it later would repeat the cua-driver mistake, but
-      // "carried, unread" is what is true today.
+      // The overlay cursor reads these as point-in-rect cover. The host still
+      // does not re-derive occlusion — the executor's answer is the
+      // authoritative one, and reconstructing it from the window server was the
+      // cua-driver mistake.
       obscuringRects: snapshot.obscuringRects,
       // §4.3: the window digest already is a content fingerprint over every
       // element digest plus bounds and title, computed where the tree lives.
