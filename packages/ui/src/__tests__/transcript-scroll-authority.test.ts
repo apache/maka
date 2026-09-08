@@ -17,30 +17,25 @@
  * under the License.
  */
 
-/**
- * The state machine only. Whether the reader ends up looking at the right
- * pixels needs a real layout engine and currently has no test at all — a
- * harness that fakes layout can only report the ordering the harness itself
- * chose, so do not add that claim here.
- *
- * What is worth asserting here is the one property the whole design rests on:
- * a scroll event that this authority did not cause is the reader, exactly, with
- * no signal in between to be wrong about.
- */
+/** State/command tests. Real layout and native input are checked in Chromium. */
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createTranscriptScrollAuthority } from '../transcript-scroll-authority.js';
 
 interface FakeRoot {
+  ownerDocument: EventTarget;
   style: { overflowAnchor: string };
   scrollTop: number;
   scrollHeight: number;
   clientHeight: number;
   /** The boxes `scrollHeight` is made of, which is what the authority watches. */
   children: readonly unknown[];
-  addEventListener(type: string, listener: () => void): void;
-  removeEventListener(type: string, listener: () => void): void;
+  addEventListener(type: string, listener: (event: unknown) => void): void;
+  removeEventListener(type: string, listener: (event: unknown) => void): void;
+  input(deltaY: number): void;
+  grabScrollbar(): void;
+  end(): void;
   /** Dispatch the scroll event the browser would, one frame later. */
   emitScroll(): void;
   grow(by: number): void;
@@ -49,22 +44,32 @@ interface FakeRoot {
 }
 
 function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): FakeRoot {
-  const listeners = new Set<() => void>();
+  const listeners = new Map<string, Set<(event: unknown) => void>>();
+  const emit = (type: string, event?: unknown): void => {
+    for (const listener of listeners.get(type) ?? []) listener(event);
+  };
   const root: FakeRoot = {
+    ownerDocument: new EventTarget(),
     style: { overflowAnchor: '' },
     scrollTop: 0,
     scrollHeight: options?.scrollHeight ?? 3_000,
     clientHeight: options?.clientHeight ?? 600,
     children: [{}],
     addEventListener(type, listener) {
-      if (type === 'scroll') listeners.add(listener);
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type)!.add(listener);
     },
-    removeEventListener(_type, listener) {
-      listeners.delete(listener);
+    removeEventListener(type, listener) {
+      listeners.get(type)?.delete(listener);
     },
     emitScroll() {
-      for (const listener of [...listeners]) listener();
+      emit('scroll');
     },
+    input(deltaY) { emit('wheel', { deltaY, composedPath: () => [proxy] }); },
+    grabScrollbar() {
+      emit('pointerdown', { button: 0, pointerType: 'mouse', pointerId: 1, target: proxy });
+    },
+    end() { emit('scrollend'); },
     grow(by) {
       root.scrollHeight += by;
     },
@@ -74,7 +79,7 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
   };
   // The browser clamps a write past the end; without that the "we wrote it"
   // and "the reader is at the tail" cases would not agree on any number.
-  return new Proxy(root, {
+  const proxy = new Proxy(root, {
     set(target, property, value) {
       if (property === 'scrollTop') {
         target.scrollTop = Math.min(value as number, target.scrollHeight - target.clientHeight);
@@ -83,6 +88,7 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
       return Reflect.set(target, property, value);
     },
   });
+  return proxy;
 }
 
 /**
@@ -91,15 +97,16 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
  * is every box changing at once, which is the only distinction the authority
  * draws between them: none.
  *
- * Frames are not faked — nothing here schedules one. Whether a scroll event is
- * this authority's own is answered by where the scroller is, not by when the
- * event arrives.
+ * End-of-operation frame callbacks are advanced explicitly.
  */
-function withObservers<T>(run: (resize: () => void) => T): T {
+function withObservers<T>(run: (resize: () => void, frame: () => void) => T): T {
   const observers = new Set<() => void>();
-  const globals = globalThis as { ResizeObserver?: unknown; MutationObserver?: unknown };
+  const frames: FrameRequestCallback[] = [];
+  const globals = globalThis as { ResizeObserver?: unknown; MutationObserver?: unknown; requestAnimationFrame?: unknown };
   const originalResize = globals.ResizeObserver;
   const originalMutation = globals.MutationObserver;
+  const originalFrame = globals.requestAnimationFrame;
+  globals.requestAnimationFrame = (callback: FrameRequestCallback) => frames.push(callback);
   globals.ResizeObserver = class {
     constructor(private readonly callback: () => void) {}
     // Registered on `observe` rather than on construction: the authority
@@ -121,10 +128,11 @@ function withObservers<T>(run: (resize: () => void) => T): T {
   try {
     return run(() => {
       for (const observer of [...observers]) observer();
-    });
+    }, () => { for (const callback of frames.splice(0)) callback(0); });
   } finally {
     globals.ResizeObserver = originalResize;
     globals.MutationObserver = originalMutation;
+    globals.requestAnimationFrame = originalFrame;
   }
 }
 
@@ -139,19 +147,116 @@ test('content that grows under a pinned transcript keeps the tail on screen', ()
     resize();
     assert.equal(root.scrollTop, 2_900);
 
-    // Its own write echoes back as an ordinary scroll event, and finding the
-    // scroller still on the offset it wrote is how it knows.
+    // The write's scroll event carries no reader input.
     root.emitScroll();
     assert.equal(authority.getSnapshot().pinned, true);
   });
 });
 
-test('a scroll this authority did not write is the reader, and releases the tail', () => {
+test('identical shrink/grow geometry follows only when no reader input intervened', () => {
+  for (const readerInput of [false, true]) {
+    withObservers((resize) => {
+      const root = fakeRoot();
+      const authority = createTranscriptScrollAuthority();
+      authority.attach(root as unknown as HTMLElement);
+      let readerMoves = 0;
+      authority.subscribeToReaderScroll((_direction, phase) => {
+        if (phase === 'scroll') readerMoves += 1;
+      });
+      if (readerInput) root.input(-100);
+      root.grow(-190);
+      root.scrollTop = 2_210; // Browser clamps at the intermediate bottom.
+      root.grow(22);
+      root.emitScroll();
+      assert.equal(authority.getSnapshot().pinned, !readerInput);
+      assert.equal(readerMoves, readerInput ? 1 : 0);
+      resize();
+      assert.equal(root.scrollTop, readerInput ? 2_210 : 2_232);
+    });
+  }
+});
+
+test('scrollend cannot retire a continuing operation or a newer input', () => {
+  withObservers((resize, frame) => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    root.input(-100);
+    root.scrollTop = 1_000;
+    root.emitScroll();
+    root.end();
+    root.input(100);
+    frame();
+    frame();
+    root.scrollTop = 1_500;
+    root.emitScroll();
+    root.end(); // An old animation ends while the new one is still moving.
+    frame();
+    root.scrollTop = 2_400;
+    root.emitScroll();
+    frame();
+    root.end();
+    frame();
+    frame();
+    assert.equal(authority.getSnapshot().pinned, true);
+    root.grow(50);
+    resize();
+    assert.equal(root.scrollTop, 2_450);
+  });
+});
+
+test('scrollbar defaults can land after pointerup, while an unmoved click retires', () => {
+  withObservers((resize, frame) => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    root.grabScrollbar();
+    root.ownerDocument.dispatchEvent(new Event('pointerup'));
+    root.scrollTop = 1_700;
+    root.emitScroll();
+    frame();
+    root.end();
+    frame();
+    frame();
+    root.grow(100);
+    resize();
+    assert.equal(root.scrollTop, 1_700);
+
+    authority.pinToTail();
+    root.grabScrollbar();
+    root.ownerDocument.dispatchEvent(new Event('pointerup'));
+    frame();
+    root.grow(100);
+    resize();
+    assert.equal(root.scrollTop, 2_600);
+  });
+});
+
+test('explicit navigation cancels input provenance before positioning its target', () => {
+  withObservers(() => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    root.input(-100);
+    root.scrollTop = 1_700;
+    root.emitScroll();
+    authority.releasePin();
+    let reports = 0;
+    authority.subscribeToReaderScroll(() => { reports += 1; });
+    root.scrollTop = 200;
+    root.emitScroll();
+    assert.equal(reports, 0);
+    assert.equal(authority.getSnapshot().pinned, false);
+  });
+});
+
+test('user input releases the tail before content can overwrite the scroll', () => {
   withObservers((resize) => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
 
+    root.input(-100);
     root.scrollTop = 1_000;
     root.emitScroll();
     assert.equal(authority.getSnapshot().pinned, false);
@@ -171,6 +276,7 @@ test('returning to the tail re-pins, and following resumes', () => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
+    root.input(-100);
     root.scrollTop = 0;
     root.emitScroll();
     assert.equal(authority.getSnapshot().pinned, false);
@@ -213,49 +319,6 @@ test('a viewport that loses height takes the pinned reader back to the tail', ()
   });
 });
 
-test('a scroll event that arrives late is still this authority\'s own write', () => {
-  withObservers((resize) => {
-    const root = fakeRoot();
-    const authority = createTranscriptScrollAuthority();
-    authority.attach(root as unknown as HTMLElement);
-    assert.equal(root.scrollTop, 2_400);
-
-    // The write's event has not been dispatched yet, and the transcript keeps
-    // growing underneath it. By the time it lands the scroller is 302px from a
-    // tail that has moved — which is exactly what a reader who scrolled up
-    // looks like, and is why timing cannot be the discriminator.
-    root.grow(302);
-    root.emitScroll();
-    assert.equal(authority.getSnapshot().pinned, true);
-
-    resize();
-    assert.equal(root.scrollTop, 2_702);
-  });
-});
-
-test('growth that outruns the write does not read as the reader scrolling up', () => {
-  withObservers((resize) => {
-    const root = fakeRoot();
-    const authority = createTranscriptScrollAuthority();
-    authority.attach(root as unknown as HTMLElement);
-    assert.equal(root.scrollTop, 2_400);
-
-    // The transcript grew, and the scroll event for it arrives before this
-    // authority has been told to follow it. The offset is 302px from a tail
-    // that moved — identical, as a position, to a reader who scrolled up.
-    root.grow(302);
-    root.scrollTop = 2_402;
-    root.emitScroll();
-    assert.equal(authority.getSnapshot().pinned, true);
-
-    // The affordance still knows how far the tail now is, and the next growth
-    // signal takes the reader back to it.
-    assert.equal(authority.getSnapshot().awayFromTail, true);
-    resize();
-    assert.equal(root.scrollTop, 2_702);
-  });
-});
-
 test('a reader who scrolls up while the answer grows is still the reader', () => {
   withObservers((resize) => {
     const root = fakeRoot();
@@ -263,11 +326,9 @@ test('a reader who scrolls up while the answer grows is still the reader', () =>
     authority.attach(root as unknown as HTMLElement);
     assert.equal(root.scrollTop, 2_400);
 
-    // The same shape as the case above — a scroll event carrying a grown
-    // `scrollHeight` — and the opposite intent. Growth cannot move the offset
-    // backwards, so an offset that went up the transcript is the reader's, and
-    // during a streaming answer this is the only kind of event they produce.
+    // Input must suspend following before a concurrent resize can write.
     root.grow(37);
+    root.input(-500);
     root.scrollTop = 1_900;
     root.emitScroll();
     assert.equal(authority.getSnapshot().pinned, false);
@@ -287,12 +348,15 @@ test('reports both directions even when the reader returns to the last written o
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
     const directions: string[] = [];
-    authority.subscribeToReaderScroll((direction) => directions.push(direction));
+    authority.subscribeToReaderScroll((direction, phase) => { if (phase === 'scroll') directions.push(direction); });
     root.emitScroll();
+    root.input(-100);
     root.scrollTop = 900;
     root.emitScroll();
+    root.input(100);
     root.scrollTop = 2_400;
     root.emitScroll();
+    root.end();
     assert.deepEqual(directions, ['up', 'down']);
   });
 });
@@ -312,6 +376,7 @@ test('a slow reader is a reader, however small each step is', () => {
     // noise and the reader never moves at all; they only mean anything added
     // up. Nothing grows here, so there is nothing else they could be.
     for (let step = 0; step < 90; step += 1) {
+      root.input(-2);
       root.scrollTop -= 2;
       root.emitScroll();
     }
@@ -349,30 +414,6 @@ test('content leaving from above the reader is not the reader either', () => {
   });
 });
 
-test('a viewport that grew does not move the reader, it only clamps them', () => {
-  withObservers(() => {
-    const root = fakeRoot();
-    const authority = createTranscriptScrollAuthority();
-    authority.attach(root as unknown as HTMLElement);
-    authority.releasePin();
-    root.scrollTop = 2_350;
-    root.emitScroll();
-    let readerMoves = 0;
-    authority.subscribeToReaderScroll(() => {
-      readerMoves += 1;
-    });
-
-    // The composer loses a line, so the scrollport gets taller and the end of
-    // the transcript moves up past where the reader was sitting. The browser
-    // clamps them to it; they did not ask to go.
-    root.shrinkViewport(-200);
-    root.scrollTop = 2_200;
-    root.emitScroll();
-    assert.equal(readerMoves, 0);
-    assert.equal(authority.getSnapshot().pinned, false);
-  });
-});
-
 test('content landing above a released reader does not re-pin them', () => {
   withObservers((resize) => {
     const root = fakeRoot();
@@ -402,8 +443,8 @@ test('only the reader\'s own movement reaches a reader-scroll listener', () => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     let heard = 0;
-    const stop = authority.subscribeToReaderScroll(() => {
-      heard += 1;
+    const stop = authority.subscribeToReaderScroll((_direction, phase) => {
+      if (phase === 'scroll') heard += 1;
     });
     authority.attach(root as unknown as HTMLElement);
 
@@ -418,6 +459,7 @@ test('only the reader\'s own movement reaches a reader-scroll listener', () => {
     assert.equal(heard, 0);
 
     // The reader, at last.
+    root.input(-100);
     root.scrollTop = 900;
     root.emitScroll();
     assert.equal(heard, 1);
