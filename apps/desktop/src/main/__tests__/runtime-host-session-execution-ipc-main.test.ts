@@ -182,6 +182,56 @@ test('treats pending transcript teardown as IPC cancellation', async () => {
   }
 });
 
+for (const teardown of ['forgetSession', 'close'] as const) {
+  test(`${teardown} rejects pending observation IPC instead of silently cancelling`, async () => {
+    const observations = new RuntimeHostSessionObservationRegistry();
+    const sessionStarted = deferred();
+    const transcriptStarted = deferred();
+    const finishInitialization = deferred();
+    await observations.attach({
+      async observe() {
+        sessionStarted.resolve();
+        await finishInitialization.promise;
+      },
+      async unobserve() {},
+      async openTranscript() {
+        transcriptStarted.resolve();
+        await finishInitialization.promise;
+        return {
+          sessionId: 'session-1',
+          generation: 'generation-1',
+          hostEpoch: 'host-epoch-1',
+          readThroughMessageId: null,
+        };
+      },
+      async loadTranscriptBefore() {},
+      async loadTranscriptAround() {},
+      async loadTranscriptAfter() {},
+      async closeTranscript() {},
+    });
+    const ipc = observationIpcHarness(observations);
+    const observing = ipc.invoke('sessions:observe', 'session-1', 'observer-1');
+    const opening = ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1');
+    // Attach rejection handlers before teardown. The late source completion
+    // must not turn the lost observation into readiness or silent cancellation.
+    const results = Promise.allSettled([observing, opening]);
+    try {
+      await Promise.all([sessionStarted.promise, transcriptStarted.promise]);
+      if (teardown === 'forgetSession') await observations.forgetSession('session-1');
+      else await observations.close();
+      assert.deepEqual(observations.trackedSessionIds(), []);
+      finishInitialization.resolve();
+      for (const result of await results) {
+        assert.equal(result.status, 'rejected');
+        if (result.status === 'rejected') assert.ok(result.reason instanceof Error);
+      }
+    } finally {
+      finishInitialization.resolve();
+      await observations.close();
+    }
+  });
+}
+
 test('preserves genuine Session observation initialization failures', async () => {
   const observations = new RuntimeHostSessionObservationRegistry();
   const sessionFailure = new Error('seed failed');

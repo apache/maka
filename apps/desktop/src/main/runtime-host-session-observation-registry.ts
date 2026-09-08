@@ -266,10 +266,10 @@ export class RuntimeHostSessionObservationRegistry {
       ([, registration]) => registration.sessionId === sessionId,
     );
     for (const [observerId, registration] of observations) {
-      this.#cancelRegistration(observerId, registration);
+      this.#deleteRegistration(observerId, registration);
     }
     for (const [consumerId, registration] of transcripts) {
-      this.#cancelTranscript(consumerId, registration);
+      this.#deleteTranscript(consumerId, registration);
     }
     if (source) {
       await Promise.allSettled([
@@ -482,10 +482,10 @@ export class RuntimeHostSessionObservationRegistry {
     const registrations = [...this.#registrations];
     const transcripts = [...this.#transcripts];
     for (const [observerId, registration] of registrations) {
-      this.#cancelRegistration(observerId, registration);
+      this.#deleteRegistration(observerId, registration);
     }
     for (const [consumerId, registration] of transcripts) {
-      this.#cancelTranscript(consumerId, registration);
+      this.#deleteTranscript(consumerId, registration);
     }
     if (source) {
       await Promise.allSettled([
