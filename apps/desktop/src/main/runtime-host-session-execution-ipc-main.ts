@@ -25,7 +25,10 @@ import {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
 } from '@maka/runtime-host/client';
-import { MESSAGE_QUEUE_MAX_ENTRIES } from '@maka/runtime-host/protocol';
+import {
+  MESSAGE_QUEUE_MAX_ENTRIES,
+  type TurnMessageExecutionResolution,
+} from '@maka/runtime-host/protocol';
 import {
   type SessionChangedEvent,
   type SessionChangedReason,
@@ -116,7 +119,7 @@ type RuntimeHostSessionExecutionClient = Pick<
 
 /** No Skill was named, so the Host resolved none. */
 const EMPTY_SKILL_INVOCATION = { loaded: [], failed: [], receipts: [] } as const;
-const DESKTOP_MESSAGE_CANCELLATION_QUERY_MAX_ENTRIES = 4_096;
+const DESKTOP_MESSAGE_QUERY_MAX_ENTRIES = 4_096;
 
 async function submitMessageWithReconnect(
   client: Pick<RuntimeHostSessionExecutionClient, 'getSession' | 'submitMessage'>,
@@ -266,7 +269,7 @@ export function registerRuntimeHostSessionExecutionIpc(
       const normalizedSessionId = requiredId(sessionId, 'Session');
       if (
         !Array.isArray(messageIds)
-        || messageIds.length > DESKTOP_MESSAGE_CANCELLATION_QUERY_MAX_ENTRIES
+        || messageIds.length > DESKTOP_MESSAGE_QUERY_MAX_ENTRIES
       ) {
         throw new Error('Invalid Message identities');
       }
@@ -298,8 +301,27 @@ export function registerRuntimeHostSessionExecutionIpc(
   ipcMain.handle(
     'sessions:queryMessageExecutions',
     async (_event, sessionId: string, messageIds: unknown) => {
-      if (!Array.isArray(messageIds)) throw new Error('Invalid Message identities');
-      return deps.client.queryMessageExecutions({ sessionId, messageIds });
+      const normalizedSessionId = requiredId(sessionId, 'Session');
+      if (!Array.isArray(messageIds) || messageIds.length > DESKTOP_MESSAGE_QUERY_MAX_ENTRIES) {
+        throw new Error('Invalid Message identities');
+      }
+      const normalizedMessageIds = messageIds.map(requiredMessageId);
+      if (new Set(normalizedMessageIds).size !== normalizedMessageIds.length) {
+        throw new Error('Duplicate Message identities');
+      }
+      const resolutions: TurnMessageExecutionResolution[] = [];
+      for (
+        let from = 0;
+        from < normalizedMessageIds.length;
+        from += MESSAGE_QUEUE_MAX_ENTRIES
+      ) {
+        const result = await deps.client.queryMessageExecutions({
+          sessionId: normalizedSessionId,
+          messageIds: normalizedMessageIds.slice(from, from + MESSAGE_QUEUE_MAX_ENTRIES),
+        });
+        resolutions.push(...result.resolutions);
+      }
+      return { resolutions };
     },
   );
 

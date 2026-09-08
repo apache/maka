@@ -2065,6 +2065,122 @@ test('reconciles a queued Side Conversation follow-up that settles before its st
   assert.equal(container.firstElementChild?.getAttribute('data-streaming'), 'false');
 });
 
+test('does not re-arm a settled follow-up after it leaves the bounded transcript tail', async () => {
+  let followUpMessageId: string | undefined;
+  let durableMessages: StoredMessage[] = [];
+  const turnBSettlement = deferred<{
+    messages: StoredMessage[];
+    settled: boolean;
+  }>();
+  const pendingFollowUp = deferred<{ kind: 'started'; turnId: string }>();
+  const { container, emit, send, queue } = await renderOwnershipProbe({
+    send: async () => ({ ok: true as const, turnId: 'turn-a' }),
+    submitFollowUp: async (_sessionId, placement, _text, messageId) => {
+      assert.equal(placement, 'next_turn');
+      followUpMessageId = messageId;
+      return pendingFollowUp.promise;
+    },
+    readSettledMessages: async (_sessionId, options) => {
+      if (options?.requiredAssistantMessageId !== undefined) {
+        return turnBSettlement.promise;
+      }
+      return { messages: durableMessages, settled: true };
+    },
+  });
+
+  await act(async () => {
+    assert.equal(await send('initial prompt'), true);
+    await Promise.resolve();
+  });
+  let followUpResult!: Promise<boolean>;
+  await act(async () => {
+    followUpResult = queue('late follow-up');
+    await Promise.resolve();
+  });
+  await waitUntil(() => followUpMessageId !== undefined);
+  await act(async () => {
+    emit(completeEvent('complete-a', 'turn-a', 1));
+    await Promise.resolve();
+  });
+  await waitUntil(() => container.firstElementChild?.getAttribute('data-streaming') === 'false');
+
+  durableMessages = [
+    {
+      type: 'user',
+      id: followUpMessageId as string,
+      turnId: 'turn-b',
+      ts: 2,
+      text: 'late follow-up',
+    },
+    {
+      type: 'assistant',
+      id: 'assistant-b',
+      turnId: 'turn-b',
+      ts: 3,
+      text: 'answer B',
+      modelId: 'test-model',
+    },
+    {
+      type: 'turn_state',
+      id: 'complete-b-state',
+      turnId: 'turn-b',
+      ts: 4,
+      status: 'completed',
+    },
+  ];
+  await act(async () => {
+    emit(messageAdmittedEvent('admission-b', 'turn-b', 2, followUpMessageId as string));
+    emit(textDeltaEvent('text-b', 'turn-b', 3, 'answer B'));
+    emit(completeEvent('complete-b', 'turn-b', 4));
+    await Promise.resolve();
+  });
+  await act(async () => {
+    turnBSettlement.resolve({ messages: durableMessages, settled: true });
+    await Promise.resolve();
+  });
+  await waitUntil(
+    () => container.firstElementChild?.getAttribute('data-message-texts')
+      === 'late follow-up|answer B',
+  );
+  await waitUntil(() => container.firstElementChild?.getAttribute('data-streaming') === 'false');
+
+  // The next bounded snapshot contains only the later terminal Turn C. The
+  // panel has already observed and retained B's terminal state, so B's delayed
+  // started receipt must not make it live again merely because it left the tail.
+  durableMessages = [
+    {
+      type: 'turn_state',
+      id: 'complete-c-state',
+      turnId: 'turn-c',
+      ts: 5,
+      status: 'completed',
+    },
+  ];
+  await act(async () => {
+    emit(messageAdmittedEvent('admission-c', 'turn-c', 5, 'message-c'));
+    await Promise.resolve();
+  });
+  await waitUntil(() => container.firstElementChild?.getAttribute('data-live-turn-id') === 'turn-c');
+  await act(async () => {
+    emit(completeEvent('complete-c', 'turn-c', 6));
+    await Promise.resolve();
+  });
+  await waitUntil(() => container.firstElementChild?.getAttribute('data-live-turn-id') === '');
+
+  await act(async () => {
+    pendingFollowUp.resolve({ kind: 'started', turnId: 'turn-b' });
+    assert.equal(await followUpResult, true);
+    await Promise.resolve();
+  });
+
+  assert.equal(container.firstElementChild?.getAttribute('data-live-turn-id'), '');
+  assert.equal(container.firstElementChild?.getAttribute('data-streaming'), 'false');
+  assert.equal(
+    container.firstElementChild?.getAttribute('data-message-texts'),
+    'late follow-up|answer B',
+  );
+});
+
 test('does not let a late Side Conversation started receipt replace a newer active turn', async () => {
   const pendingFollowUp = deferred<{ kind: 'started'; turnId: string }>();
   const { container, emit, send, queue } = await renderOwnershipProbe({

@@ -723,14 +723,18 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       return retainOrArmTurn();
     }
 
-    if (!transcriptRecordsTerminalTurn(messages, turnId)) {
+    if (
+      !transcriptRecordsTerminalTurn(messages, turnId)
+      && !transcriptRecordsTerminalTurn(allMessagesRef.current, turnId)
+    ) {
       return retainOrArmTurn();
     }
 
     // A reconnect retry can replay the original `turn_started` receipt after
-    // the Turn's text and terminal event have already passed this renderer.
-    // The recorded Turn state is authoritative: retain its durable transcript
-    // without re-arming a Run that has no future terminal event to settle it.
+    // the Turn's text and terminal event have already passed this renderer or
+    // left the bounded transcript tail. Retained terminal state is authoritative:
+    // keep the durable transcript without re-arming a Run that has no future
+    // terminal event to settle it.
     if (activeTurnIdRef.current === turnId) {
       activeTurnIdRef.current = null;
       stopRequestRef.current = null;
