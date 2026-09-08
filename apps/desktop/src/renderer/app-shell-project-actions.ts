@@ -176,7 +176,7 @@ export function createAppShellProjectActions(deps: {
           });
           if (!confirmed) return added;
           const restored = await window.maka.projects.restore(added.projectId, host);
-          await applySelectedProject(restored, restored.preferredPath ?? '', true, host);
+          if (!(await selectProjectRecord(restored, true, host))) return added;
           return { ok: true as const, project: restored, path: restored.preferredPath ?? '' };
         }
         if (!added.ok) return added;
