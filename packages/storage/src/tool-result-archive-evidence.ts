@@ -34,6 +34,12 @@ import { decodeAgentRunEvent } from '@maka/core/agent-run';
 import { MODEL_PROJECTION_TARGET_SQL as TARGET } from './sqlite-core-execution-schema.js';
 const TRANSITIONS = 'core_agent_run_events INDEXED BY core_model_projection_target';
 const KIND = "event_type = 'model_projection_transition_recorded'";
+// SQLite may parse the containing JSON, but only these reconstruction fields
+// cross into JS or count toward the evidence budget. Raw tool bytes never do.
+const EVENT_EVIDENCE = `CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,
+  '$.id', '$.sessionId', '$.runId', '$.invocationId', '$.turnId', '$.ts', '$.partial',
+  '$.author', '$.role', '$.content.kind', '$.content.id', '$.content.name',
+  '$.content.modelProjection', '$.content.providerExecuted') END`;
 
 /** Reader-first foundation; no archive writer or fallback is activated by opening it. */
 export async function openToolResultArchiveEvidenceReader(
@@ -64,10 +70,11 @@ export async function openToolResultArchiveEvidenceReader(
             const { sessionId, runtimeEventId } = accepted;
             const eventSize = db
               .prepare(
-                'SELECT length(CAST(payload_json AS BLOB)) AS bytes FROM runtime_events WHERE event_id = ? AND session_id = ?',
+                `SELECT length(CAST(${EVENT_EVIDENCE} AS BLOB)) AS bytes FROM runtime_events WHERE event_id = ? AND session_id = ?`,
               )
               .get(runtimeEventId, sessionId);
             if (!eventSize) return { ok: false, reason: 'not_found' };
+            if (eventSize.bytes === null) return { ok: false, reason: 'corrupt' };
             // An unscoped unreadable transition prevents proving completeness.
             if (
               db
@@ -88,12 +95,46 @@ export async function openToolResultArchiveEvidenceReader(
               return { ok: false, reason: 'too_large' };
             const raw = db
               .prepare(
-                'SELECT payload_json FROM runtime_events WHERE event_id = ? AND session_id = ?',
+                `SELECT ${EVENT_EVIDENCE} AS evidence_json FROM runtime_events WHERE event_id = ? AND session_id = ?`,
               )
               .get(runtimeEventId, sessionId);
             let event: ReturnType<typeof decodeRuntimeEvent>;
             try {
-              event = decodeRuntimeEvent(JSON.parse(String(raw?.payload_json)));
+              const [
+                id,
+                sessionId,
+                runId,
+                invocationId,
+                turnId,
+                ts,
+                partial,
+                author,
+                role,
+                kind,
+                callId,
+                name,
+                modelProjection,
+                providerExecuted,
+              ] = JSON.parse(String(raw?.evidence_json));
+              event = decodeRuntimeEvent({
+                id,
+                sessionId,
+                runId,
+                invocationId,
+                turnId,
+                ts,
+                partial,
+                author,
+                role,
+                content: {
+                  kind,
+                  id: callId,
+                  name,
+                  result: null,
+                  ...(modelProjection === null ? {} : { modelProjection }),
+                  ...(providerExecuted === null ? {} : { providerExecuted }),
+                },
+              });
             } catch {
               return { ok: false, reason: 'corrupt' };
             }

@@ -576,6 +576,70 @@ export async function cloneConversationRuntimeLedger(
     string,
     { projection: DurableToolResultProjection; transitionId: string }
   >();
+  const clonedTransitions = new Map<AgentRunEvent, ModelProjectionTransition | null>();
+  const visiting = new Set<string>();
+  const finished = new Set<string>();
+  const transitionsByTarget = new Map<string, AgentRunEvent[]>();
+  for (const plan of flattenedPlans) {
+    for (const record of plan.operationalEvents) {
+      if (record.type !== MODEL_PROJECTION_TRANSITION_EVENT_TYPE) continue;
+      const transition = decodeModelProjectionTransition(record.data?.transition, record.sessionId);
+      const group = transitionsByTarget.get(transition.target.runtimeEventId) ?? [];
+      group.push(record);
+      transitionsByTarget.set(transition.target.runtimeEventId, group);
+    }
+  }
+  // ArchiveRead can itself be archived. Resolve its referenced target first,
+  // then rebuild this result's transitions against its final copied projection.
+  const finishTarget = (sourceId: string): void => {
+    if (finished.has(sourceId)) return;
+    if (visiting.has(sourceId)) throw new Error('Cyclic copied archive reference');
+    visiting.add(sourceId);
+    const target = clonedEventBySourceId.get(sourceId);
+    if (target?.content?.kind === 'function_response' && target.content.name === 'ArchiveRead') {
+      const resolveResult = (value: unknown): unknown =>
+        rewriteArchiveReadResult(value, references, (ref) => {
+          const identity = parseToolResultArchiveResourceRef(ref);
+          if (identity?.storage === 'ledger' && clonedEventBySourceId.has(identity.runtimeEventId))
+            finishTarget(identity.runtimeEventId);
+        });
+      target.content.result = resolveResult(target.content.result);
+      const projection = target.content.modelProjection;
+      if (projection?.kind === 'json')
+        target.content.modelProjection = {
+          ...projection,
+          value: resolveResult(projection.value) as typeof projection.value,
+        };
+    }
+    for (const record of transitionsByTarget.get(sourceId) ?? []) {
+      clonedTransitions.set(
+        record,
+        cloneModelProjectionTransition(
+          record,
+          references,
+          clonedEventBySourceId,
+          transitionIds,
+          transitionState,
+        ),
+      );
+    }
+    visiting.delete(sourceId);
+    finished.add(sourceId);
+  };
+  for (const sourceId of clonedEventBySourceId.keys()) finishTarget(sourceId);
+  for (const event of clonedEventBySourceId.values()) {
+    if (event.content?.kind === 'text')
+      event.content.text = rewriteLedgerArchiveText(event.content.text, references);
+    if (event.content?.kind === 'function_call' && event.content.name === 'ArchiveRead') {
+      const args = event.content.args;
+      if (args && typeof args === 'object' && 'ref' in args && typeof args.ref === 'string') {
+        event.content = {
+          ...event.content,
+          args: { ...args, ref: rewriteLedgerArchiveText(args.ref, references) },
+        };
+      }
+    }
+  }
   const preparedPlans = flattenedPlans.map((plan) => {
     const runId = runIds.get(plan.run.runId)!;
     const clonedOperationalEvents = plan.operationalEvents.flatMap((event) => {
@@ -590,10 +654,9 @@ export async function cloneConversationRuntimeLedger(
         sourceCompactableEvents.get(plan.run.runId) ?? [],
         clonedEventBySourceId,
         checkpointIds,
-        transitionIds,
-        transitionState,
         providerTraceIds,
         logicalCallIds,
+        clonedTransitions,
       );
       return clonedEvent ? [clonedEvent] : [];
     });
@@ -611,37 +674,30 @@ export async function cloneConversationRuntimeLedger(
       terminalEvent,
     };
   });
-  const copiedMessages = input.copiedMessages.map((message) =>
-    rewriteConversationCopyMessage(message, references),
+  const archiveReadCalls = new Set(
+    flattenedPlans.flatMap((plan) =>
+      plan.events.flatMap((event) =>
+        event.content?.kind === 'function_response' && event.content.name === 'ArchiveRead'
+          ? [`${event.turnId}:${event.content.id}`]
+          : [],
+      ),
+    ),
   );
-
-  const rewriteLedgerText = (text: string): string => {
-    for (const [source, target] of references.ledgerArchives ?? [])
-      text = text.split(source).join(target.resourceRef!);
-    return text;
-  };
-  for (const message of copiedMessages) {
-    if (message.type === 'user' || message.type === 'assistant')
-      message.text = rewriteLedgerText(message.text);
-  }
-  for (const event of clonedEventBySourceId.values()) {
-    if (event.content?.kind === 'text') event.content.text = rewriteLedgerText(event.content.text);
-    if (event.content?.kind === 'function_call' && event.content.name === 'ArchiveRead') {
-      const args = event.content.args;
-      if (args && typeof args === 'object' && 'ref' in args && typeof args.ref === 'string') {
-        event.content.args = { ...args, ref: rewriteLedgerText(args.ref) };
-      }
+  const copiedMessages = input.copiedMessages.map((message) => {
+    const copied = rewriteConversationCopyMessage(message, references);
+    if (copied.type === 'user' || copied.type === 'assistant')
+      return { ...copied, text: rewriteLedgerArchiveText(copied.text, references) };
+    if (
+      copied.type === 'tool_result' &&
+      archiveReadCalls.has(`${copied.turnId}:${copied.toolUseId}`)
+    ) {
+      return {
+        ...copied,
+        content: rewriteArchiveReadResult(copied.content, references) as ToolResultContent,
+      };
     }
-  }
-  if (references.ledgerArchives?.size) {
-    // Frozen summaries may embed source archive addresses. Keep the copied raw
-    // ledger and transitions; the target can compact again with its own refs.
-    for (const plan of preparedPlans) {
-      plan.clonedOperationalEvents = plan.clonedOperationalEvents.filter(
-        (event) => event.type !== 'history_compact_checkpoint_recorded',
-      );
-    }
-  }
+    return copied;
+  });
 
   const importedSourceEventIds = new Set<string>();
   const orderedBatches = input.plan.inlineRuntimeEvents.flatMap((event) => {
@@ -693,6 +749,39 @@ export async function cloneConversationRuntimeLedger(
       sourceRunId,
       targetRunId,
     })),
+  };
+}
+
+function rewriteLedgerArchiveText(
+  text: string,
+  references: ConversationCopyMessageReferenceMap,
+): string {
+  for (const [source, target] of references.ledgerArchives ?? [])
+    text = text.split(source).join(target.resourceRef!);
+  return text;
+}
+
+/** Only ArchiveRead's defined envelope is rewritten, never its opaque content/items. */
+function rewriteArchiveReadResult(
+  value: unknown,
+  references: ConversationCopyMessageReferenceMap,
+  before?: (ref: string) => void,
+): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  if (record.kind === 'json')
+    return { ...record, value: rewriteArchiveReadResult(record.value, references, before) };
+  if (record.kind !== 'tool_result_archive' || typeof record.ref !== 'string') return value;
+  before?.(record.ref);
+  const mapped = references.ledgerArchives?.get(record.ref);
+  if (!mapped) return value;
+  return {
+    ...record,
+    ref: mapped.resourceRef,
+    ...(record.storage === 'ledger' && typeof record.runtimeEventId === 'string'
+      ? { runtimeEventId: mapped.runtimeEventId }
+      : {}),
+    ...(typeof record.originalBytes === 'number' ? { originalBytes: mapped.originalBytes } : {}),
   };
 }
 
@@ -908,10 +997,9 @@ function cloneAgentRunEvent(
   sourceCompactableEvents: readonly RuntimeEvent[],
   clonedRuntimeEvents: ReadonlyMap<string, RuntimeEvent>,
   checkpointIds: Map<string, string>,
-  transitionIds: Map<string, string>,
-  transitionState: Map<string, { projection: DurableToolResultProjection; transitionId: string }>,
   providerTraceIds: ReadonlyMap<string, string>,
   logicalCallIds: ReadonlyMap<string, string>,
+  clonedTransitions: ReadonlyMap<AgentRunEvent, ModelProjectionTransition | null>,
 ): EmittedAgentRunEvent | null {
   if (event.type === 'event_corrupt') {
     throw new Error(`Cannot copy corrupt AgentRun event ${event.id}`);
@@ -973,7 +1061,7 @@ function cloneAgentRunEvent(
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: references.targetSessionId,
       coveredRuntimeEvents,
-      summary: sourceCheckpoint.summary,
+      summary: rewriteLedgerArchiveText(sourceCheckpoint.summary, references),
       highWaterName: sourceCheckpoint.highWaterName,
       highWaterSeq: sourceCheckpoint.highWaterSeq,
       now: sourceCheckpoint.createdAt,
@@ -993,13 +1081,7 @@ function cloneAgentRunEvent(
       checkpoint,
     };
   } else if (event.type === MODEL_PROJECTION_TRANSITION_EVENT_TYPE) {
-    const cloned = cloneModelProjectionTransition(
-      event,
-      references,
-      clonedRuntimeEvents,
-      transitionIds,
-      transitionState,
-    );
+    const cloned = clonedTransitions.get(event);
     // Every transition whose target is in the copied slice was gathered into
     // this run's ledger, wherever it was recorded. So a transition that finds no
     // cloned target has genuinely lost its target as well, and dropping it

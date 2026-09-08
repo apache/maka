@@ -24,6 +24,7 @@ import type { AgentRunEvent } from './agent-run.js';
 export type ToolResultArchiveEvidence =
   | {
       readonly ok: true;
+      /** Reconstruction view: required event identity/projection only; raw result is null. */
       readonly event: RuntimeEvent;
       readonly transitions: readonly AgentRunEvent[];
       readonly storedBytes?: number;

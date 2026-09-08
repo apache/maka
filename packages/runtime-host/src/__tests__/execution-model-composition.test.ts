@@ -149,7 +149,8 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:aa3ab56a7b67dde133fffe885f4def81735c93015202e31ecb339a84863f6d03';
+  // ArchiveRead now describes both ledger and legacy resource references.
+  'sha256:22809de022f9c46186cae986eda23438efe9dbe6856b57abb0613ea48b51ad9c';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
