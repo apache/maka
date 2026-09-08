@@ -66,7 +66,7 @@ export interface PluginFilesystemRuntime {
 
 /** Full-fidelity filesystem entry point bound to Maka's canonical workspace authority. */
 export class PluginFilesystemService extends Service {
-  #runtime?: PluginFilesystemRuntime;
+  private filesystemRuntime?: PluginFilesystemRuntime;
 
   constructor(
     ctx: Context,
@@ -77,19 +77,19 @@ export class PluginFilesystemService extends Service {
 
   bindRuntime(runtime: PluginFilesystemRuntime): Disposable<Promise<void>> {
     if (this.ctx.maka) throw new Error('Only the Host may bind the Filesystem Runtime');
-    if (this.#runtime) throw new Error('Plugin Filesystem Runtime is already bound');
-    this.#runtime = runtime;
+    if (this.filesystemRuntime) throw new Error('Plugin Filesystem Runtime is already bound');
+    this.filesystemRuntime = runtime;
     return this.ctx.effect(
       () => () => {
-        if (this.#runtime === runtime) this.#runtime = undefined;
+        if (this.filesystemRuntime === runtime) this.filesystemRuntime = undefined;
       },
       'fs.bindRuntime()',
     );
   }
 
   execute(operation: PluginFilesystemOperation): Promise<unknown> {
-    if (!this.#runtime) throw new Error('Plugin Filesystem Runtime is unavailable');
-    return this.#runtime.execute(operation, this.agents.requireInvocation());
+    if (!this.filesystemRuntime) throw new Error('Plugin Filesystem Runtime is unavailable');
+    return this.filesystemRuntime.execute(operation, this.agents.requireInvocation());
   }
 
   read(path: string, options: { readonly offset?: number; readonly limit?: number } = {}) {

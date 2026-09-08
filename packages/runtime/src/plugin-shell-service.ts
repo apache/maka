@@ -42,7 +42,7 @@ export interface PluginShellRuntime {
 
 /** Streaming, cancellable foreground/background/PTY shell surface. */
 export class PluginShellService extends Service {
-  #runtime?: PluginShellRuntime;
+  private shellRuntime?: PluginShellRuntime;
 
   constructor(
     ctx: Context,
@@ -53,11 +53,11 @@ export class PluginShellService extends Service {
 
   bindRuntime(runtime: PluginShellRuntime): Disposable<Promise<void>> {
     if (this.ctx.maka) throw new Error('Only the Host may bind the Shell Runtime');
-    if (this.#runtime) throw new Error('Plugin Shell Runtime is already bound');
-    this.#runtime = runtime;
+    if (this.shellRuntime) throw new Error('Plugin Shell Runtime is already bound');
+    this.shellRuntime = runtime;
     return this.ctx.effect(
       () => () => {
-        if (this.#runtime === runtime) this.#runtime = undefined;
+        if (this.shellRuntime === runtime) this.shellRuntime = undefined;
       },
       'shell.bindRuntime()',
     );
@@ -89,7 +89,7 @@ export class PluginShellService extends Service {
   }
 
   private runtime(): PluginShellRuntime {
-    if (!this.#runtime) throw new Error('Plugin Shell Runtime is unavailable');
-    return this.#runtime;
+    if (!this.shellRuntime) throw new Error('Plugin Shell Runtime is unavailable');
+    return this.shellRuntime;
   }
 }

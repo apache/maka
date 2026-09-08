@@ -45,7 +45,7 @@ export interface PluginAttachmentRuntime {
 
 /** Session-owned rich result publication and retrieval. */
 export class PluginAttachmentService extends Service {
-  #runtime?: PluginAttachmentRuntime;
+  private attachmentRuntime?: PluginAttachmentRuntime;
 
   constructor(
     ctx: Context,
@@ -56,11 +56,11 @@ export class PluginAttachmentService extends Service {
 
   bindRuntime(runtime: PluginAttachmentRuntime): Disposable<Promise<void>> {
     if (this.ctx.maka) throw new Error('Only the Host may bind the Attachment Runtime');
-    if (this.#runtime) throw new Error('Plugin Attachment Runtime is already bound');
-    this.#runtime = runtime;
+    if (this.attachmentRuntime) throw new Error('Plugin Attachment Runtime is already bound');
+    this.attachmentRuntime = runtime;
     return this.ctx.effect(
       () => () => {
-        if (this.#runtime === runtime) this.#runtime = undefined;
+        if (this.attachmentRuntime === runtime) this.attachmentRuntime = undefined;
       },
       'attachments.bindRuntime()',
     );
@@ -79,7 +79,7 @@ export class PluginAttachmentService extends Service {
   }
 
   private runtime(): PluginAttachmentRuntime {
-    if (!this.#runtime) throw new Error('Plugin Attachment Runtime is unavailable');
-    return this.#runtime;
+    if (!this.attachmentRuntime) throw new Error('Plugin Attachment Runtime is unavailable');
+    return this.attachmentRuntime;
   }
 }

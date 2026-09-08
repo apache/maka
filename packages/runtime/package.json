@@ -85,6 +85,7 @@
     "./plugin-approval-service": "./dist/plugin-approval-service.js",
     "./plugin-fs-service": "./dist/plugin-fs-service.js",
     "./plugin-kernel": "./dist/plugin-kernel.js",
+    "./plugin-llm-service": "./dist/plugin-llm-service.js",
     "./plugin-runtime": "./dist/plugin-runtime.js",
     "./plugin-scope-registry": "./dist/plugin-scope-registry.js",
     "./plugin-system-prompt-service": "./dist/plugin-system-prompt-service.js",

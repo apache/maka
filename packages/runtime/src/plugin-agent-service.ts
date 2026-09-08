@@ -126,8 +126,8 @@ export interface PluginAgent {
 
 /** Agent registry and invocation carrier exposed to trusted Host plugins. */
 export class PluginAgentService extends Service {
-  readonly #invocations = new AsyncLocalStorage<PluginAgentInvocation>();
-  #runtime: PluginAgentRuntime | undefined;
+  private readonly invocations = new AsyncLocalStorage<PluginAgentInvocation>();
+  private agentRuntime: PluginAgentRuntime | undefined;
 
   constructor(ctx: Context) {
     super(ctx, 'agents');
@@ -138,18 +138,18 @@ export class PluginAgentService extends Service {
 
   bindRuntime(runtime: PluginAgentRuntime): Disposable<Promise<void>> {
     if (this.ctx.maka) throw new Error('Only the Host may bind the Agent Runtime');
-    if (this.#runtime) throw new Error('Plugin Agent Runtime is already bound');
-    this.#runtime = runtime;
+    if (this.agentRuntime) throw new Error('Plugin Agent Runtime is already bound');
+    this.agentRuntime = runtime;
     return this.ctx.effect(
       () => () => {
-        if (this.#runtime === runtime) this.#runtime = undefined;
+        if (this.agentRuntime === runtime) this.agentRuntime = undefined;
       },
       'agents.bindRuntime()',
     );
   }
 
   currentInvocation(): PluginAgentInvocation | undefined {
-    return this.#invocations.getStore();
+    return this.invocations.getStore();
   }
 
   requireInvocation(): PluginAgentInvocation {
@@ -172,7 +172,7 @@ export class PluginAgentService extends Service {
       abortSignal: toolContext.abortSignal,
       toolContext,
     });
-    return this.#invocations.run(invocation, operation);
+    return this.invocations.run(invocation, operation);
   }
 
   current(): PluginAgent | undefined {
@@ -216,8 +216,8 @@ export class PluginAgentService extends Service {
   }
 
   private runtime(): PluginAgentRuntime {
-    if (!this.#runtime) throw new Error('Plugin Agent Runtime is unavailable');
-    return this.#runtime;
+    if (!this.agentRuntime) throw new Error('Plugin Agent Runtime is unavailable');
+    return this.agentRuntime;
   }
 
   private handle(descriptor: PluginAgentDescriptor): PluginAgent {

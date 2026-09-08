@@ -87,6 +87,7 @@ import { PluginAgentService } from '@maka/runtime/plugin-agent-service';
 import { PluginAttachmentService } from '@maka/runtime/plugin-attachment-service';
 import { PluginApprovalService } from '@maka/runtime/plugin-approval-service';
 import { PluginFilesystemService } from '@maka/runtime/plugin-fs-service';
+import { PluginLlmService } from '@maka/runtime/plugin-llm-service';
 import { PluginShellService } from '@maka/runtime/plugin-shell-service';
 import { PluginUserQuestionService } from '@maka/runtime/plugin-user-question-service';
 import { PluginWebService } from '@maka/runtime/plugin-web-service';
@@ -135,6 +136,7 @@ import {
   createHostGoalEvaluator,
   createHostDailyReviewModel,
   createHostMemoryExtractionModel,
+  createHostPluginModel,
   createHostSessionEffectModel,
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
@@ -311,6 +313,7 @@ export async function createExecutionRuntimeHostComposition(
     new PluginApprovalService(pluginRoot, pluginAgents);
     new PluginUserQuestionService(pluginRoot, pluginAgents);
     const pluginFilesystem = new PluginFilesystemService(pluginRoot, pluginAgents);
+    const pluginLlm = new PluginLlmService(pluginRoot, pluginAgents);
     const pluginShell = new PluginShellService(pluginRoot, pluginAgents);
     const pluginWeb = new PluginWebService(pluginRoot, pluginAgents);
     const pluginTools = new PluginToolService(pluginRoot, { agents: pluginAgents });
@@ -1398,6 +1401,23 @@ export async function createExecutionRuntimeHostComposition(
       context.owner.capability.rootId,
     );
     const coordinator = rootCoordinator;
+    const pluginModel = createHostPluginModel({
+      runtimePolicy: runtimePolicyStores,
+      oauthCredentials,
+      usage: openedUsageStores,
+      requestDrain: context.requestDrain,
+      readSessionHeader: (sessionId) => stores.sessionStore.readHeaderSnapshot(sessionId),
+    });
+    pluginLlm.bindRuntime({
+      generate: (input, invocation) =>
+        pluginModel.generate({
+          sessionId: invocation.sessionId,
+          prompt: input.prompt,
+          ...(input.system ? { system: input.system } : {}),
+          ...(input.maxOutputTokens ? { maxOutputTokens: input.maxOutputTokens } : {}),
+          abortSignal: input.signal ?? invocation.abortSignal,
+        }),
+    });
     const contextOperations = new HostContextCoordinator({
       runtime: manager,
       executions: coordinator,

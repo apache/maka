@@ -48,7 +48,7 @@ export interface PluginWebRuntime {
 
 /** Provider-policy-aware web search and fetch surface. */
 export class PluginWebService extends Service {
-  #runtime?: PluginWebRuntime;
+  private webRuntime?: PluginWebRuntime;
 
   constructor(
     ctx: Context,
@@ -59,11 +59,11 @@ export class PluginWebService extends Service {
 
   bindRuntime(runtime: PluginWebRuntime): Disposable<Promise<void>> {
     if (this.ctx.maka) throw new Error('Only the Host may bind the Web Runtime');
-    if (this.#runtime) throw new Error('Plugin Web Runtime is already bound');
-    this.#runtime = runtime;
+    if (this.webRuntime) throw new Error('Plugin Web Runtime is already bound');
+    this.webRuntime = runtime;
     return this.ctx.effect(
       () => () => {
-        if (this.#runtime === runtime) this.#runtime = undefined;
+        if (this.webRuntime === runtime) this.webRuntime = undefined;
       },
       'web.bindRuntime()',
     );
@@ -94,7 +94,7 @@ export class PluginWebService extends Service {
   }
 
   private runtime(): PluginWebRuntime {
-    if (!this.#runtime) throw new Error('Plugin Web Runtime is unavailable');
-    return this.#runtime;
+    if (!this.webRuntime) throw new Error('Plugin Web Runtime is unavailable');
+    return this.webRuntime;
   }
 }
