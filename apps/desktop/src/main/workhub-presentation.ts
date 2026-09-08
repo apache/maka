@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { BrowserWindow, WebContentsView, globalShortcut, ipcMain, screen } from 'electron';
+import { BrowserWindow, WebContentsView, globalShortcut, ipcMain, screen, systemPreferences } from 'electron';
 import type { WorkHubHost, WorkHubMainNavigation, WorkHubPresentationSnapshot } from '../shared/workhub-presentation.js';
 import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
@@ -52,6 +52,8 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   let conversationExpanded = false;
   let compactHeight = 96;
   let expandedHeight = 720;
+  let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+  let resizeTarget: Electron.Rectangle | undefined;
   let queue: Promise<unknown> = Promise.resolve();
   const mainReady = new WeakSet<Electron.WebContents>();
   const pendingNavigation = new WeakMap<Electron.WebContents, WorkHubMainNavigation>();
@@ -120,11 +122,45 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     return view;
   }
 
+  function cancelFloatingAnimation(): void {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = undefined;
+    resizeTarget = undefined;
+  }
+
+  function resizeFloating(bounds: Electron.Rectangle, animate: boolean): void {
+    const window = floating!;
+    const initial = window.getBounds();
+    cancelFloatingAnimation();
+    if (!animate || !window.isVisible() || systemPreferences.getAnimationSettings().prefersReducedMotion) {
+      window.setBounds(bounds);
+      fitFloating();
+      return;
+    }
+    resizeTarget = bounds;
+    const started = Date.now();
+    const tick = () => {
+      if (disposed || window.isDestroyed() || floating !== window || placement !== 'floating') {
+        cancelFloatingAnimation();
+        return;
+      }
+      const progress = Math.min(1, (Date.now() - started) / 240);
+      const eased = 1 - (1 - progress) ** 3;
+      const height = Math.round(initial.height + (bounds.height - initial.height) * eased);
+      const bottom = Math.round(initial.y + initial.height + (bounds.y + bounds.height - initial.y - initial.height) * eased);
+      window.setBounds({ ...bounds, height, y: bottom - height });
+      fitFloating();
+      if (progress < 1) resizeTimer = setTimeout(tick, 16);
+      else cancelFloatingAnimation();
+    };
+    tick();
+  }
+
   function fitFloating(): void {
     if (!floating || floating.isDestroyed() || parent !== floating || !view) return;
     const { width, height } = floating.getContentBounds();
     view.setBounds({ x: 0, y: 0, width, height });
-    if (conversationExpanded) expandedHeight = height;
+    if (conversationExpanded && !resizeTarget) expandedHeight = height;
   }
 
   function ensureFloating(): BrowserWindow {
@@ -146,6 +182,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     floating.on('close', (event) => {
       if (disposed) return;
       event.preventDefault();
+      cancelFloatingAnimation();
       floating?.hide();
       changed();
     });
@@ -168,11 +205,11 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   }
 
   function detach(positionAtDefault = false): void {
+    cancelFloatingAnimation();
     ensureView();
     const target = ensureFloating();
     placement = 'floating';
     attach(target);
-    fitFloating();
     view!.setVisible(true);
     // Summoning follows the pointer's display, including an existing window
     // that was last used on another monitor.
@@ -185,6 +222,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       x: positionAtDefault ? area.x + Math.round((area.width - width) / 2) : Math.max(area.x, Math.min(old.x, area.x + area.width - width)),
       y: positionAtDefault ? Math.max(area.y, area.y + area.height - height - 96) : Math.max(area.y, Math.min(old.y, area.y + area.height - height)),
     });
+    fitFloating();
     if (target.isMinimized()) target.restore();
     target.show();
     target.focus();
@@ -206,6 +244,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   }
 
   async function dock(): Promise<void> {
+    cancelFloatingAnimation();
     await navigateMain({ kind: 'workhub' });
     floating?.hide();
     placement = 'docked';
@@ -219,6 +258,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const contents = main.webContents;
     const onClose = () => {
       if (disposed || parent !== main || !view) return;
+      cancelFloatingAnimation();
       // BrowserWindow disposal must never own the conversation's lifetime.
       attach(ensureFloating());
       floating!.hide();
@@ -296,19 +336,18 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
               conversationExpanded = value.expanded;
               return;
             }
-            const bounds = floating.getBounds();
+            const bounds = resizeTarget ?? floating.getBounds();
             const area = screen.getDisplayMatching(bounds).workArea;
-            if (conversationExpanded && !value.expanded) expandedHeight = bounds.height;
-            const height = Math.min(area.height, Math.max(80, value.expanded ? (conversationExpanded ? bounds.height : expandedHeight) : Math.ceil(value.compactHeight)));
+            const height = Math.min(area.height, value.expanded ? expandedHeight : compactHeight);
+            const animate = conversationExpanded !== value.expanded || !!resizeTarget;
             conversationExpanded = value.expanded;
             if (bounds.height !== height) {
-              floating.setBounds({ ...bounds, height, y: Math.max(area.y, Math.min(bounds.y + bounds.height - height, area.y + area.height - height)) });
-              fitFloating();
+              resizeFloating({ ...bounds, height, y: Math.max(area.y, Math.min(bounds.y + bounds.height - height, area.y + area.height - height)) }, animate);
             }
             return;
           }
           case 'dock': await dock(); return;
-          case 'hide': floating?.hide(); changed(); return;
+          case 'hide': cancelFloatingAnimation(); floating?.hide(); changed(); return;
           case 'session':
             if (typeof payload !== 'string' || payload.length > 4096) throw new Error('Invalid session key');
             parseDesktopSessionKey(payload);
@@ -343,6 +382,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   function dispose(): void {
     if (disposed) return;
     disposed = true;
+    cancelFloatingAnimation();
     if (shortcutRegistered) globalShortcut.unregister(SHORTCUT);
     if (ipcRegistered) ipcMain.removeHandler(COMMAND);
     for (const cleanup of mainListeners.values()) cleanup();

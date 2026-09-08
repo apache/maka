@@ -32,15 +32,21 @@ import type { WorkHubPresentationSnapshot } from '../../../../shared/workhub-pre
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
 import { workHubLinkedWork } from '../model/linked-work.js';
 
-function revealWordmark(element: HTMLDivElement | null) {
+function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement | null) {
+  for (const target of [element, content]) for (const animation of target?.getAnimations() ?? []) animation.cancel();
   if (!element || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  for (const animation of element.getAnimations()) animation.cancel();
   element.animate([
     { opacity: 0, transform: 'translateY(6px) scale(0.98)', offset: 0 },
     { opacity: 0.9, transform: 'translateY(0) scale(1)', offset: 0.3 },
     { opacity: 0.9, transform: 'translateY(0) scale(1)', offset: 0.5 },
+    { opacity: 0, transform: 'translateY(-3px) scale(1)', offset: 0.85 },
     { opacity: 0, transform: 'translateY(-3px) scale(1)', offset: 1 },
   ], { duration: 1200, easing: 'ease-out' });
+  content?.animate([
+    { opacity: 0, pointerEvents: 'none', offset: 0 },
+    { opacity: 0, pointerEvents: 'none', offset: 0.65 },
+    { opacity: 1, pointerEvents: 'auto', offset: 1 },
+  ], { duration: 1200, easing: 'ease-in-out' });
 }
 
 export function WorkHubRoot() {
@@ -52,6 +58,7 @@ export function WorkHubRoot() {
   const composer = useRef<ComposerHandle>(null);
   const composerSurface = useRef<HTMLDivElement>(null);
   const revealMark = useRef<HTMLDivElement>(null);
+  const history = useRef<HTMLDivElement>(null);
   const surface = useRef<HTMLElement>(null);
   const [expandedOverride, setConversationExpanded] = useState<boolean>();
   const hasConversation = transcript.messages.length > 0 || busy || Boolean(controller.liveTurn);
@@ -80,9 +87,9 @@ export function WorkHubRoot() {
       setExpandedLayoutHeight(surface.current?.querySelector('.maka-chat-layout')?.getBoundingClientRect().height ?? 0);
       setConversationExpanded(false);
     } else {
+      revealWordmark(revealMark.current, history.current);
       await services.presentation.setConversationLayout({ expanded: true, compactHeight: compactHeight() });
       setConversationExpanded(true);
-      requestAnimationFrame(() => revealWordmark(revealMark.current));
     }
     composer.current?.focus();
   };
@@ -109,14 +116,14 @@ export function WorkHubRoot() {
     const focus = services.presentation.onFocusComposer(() => {
       composer.current?.focus();
       if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-      for (const element of [composerSurface.current, revealMark.current]) {
+      for (const element of [composerSurface.current]) {
         for (const animation of element?.getAnimations() ?? []) animation.cancel();
       }
       composerSurface.current?.animate([
         { opacity: 0.45, transform: 'translateY(8px)' },
         { opacity: 1, transform: 'translateY(0)' },
       ], { duration: 360, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' });
-      revealWordmark(revealMark.current);
+      revealWordmark(revealMark.current, history.current);
     });
     return () => {
       active = false;
@@ -191,7 +198,7 @@ export function WorkHubRoot() {
           </div>
         }
       >
-        <div className="workHubHistory" aria-hidden={!showConversation} inert={!showConversation}>
+        <div ref={history} className="workHubHistory" aria-hidden={!showConversation} inert={!showConversation}>
         {transcript.hasOlder && (
           <Button
             label={t.older}

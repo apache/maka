@@ -29,7 +29,21 @@ import type { createWorkHubPresentation } from '../workhub-presentation.js';
 
 const source = fileURLToPath(new URL('../../../src/main/workhub-presentation.ts', import.meta.url));
 
-async function harness() {
+async function harness(animate = false) {
+  let now = 0;
+  let timerId = 0;
+  const timers = new Map<number, { at: number; callback: () => void }>();
+  const advance = (milliseconds: number) => {
+    const end = now + milliseconds;
+    for (;;) {
+      const next = [...timers].sort((a, b) => a[1].at - b[1].at)[0];
+      if (!next || next[1].at > end) break;
+      now = next[1].at;
+      timers.delete(next[0]);
+      next[1].callback();
+    }
+    now = end;
+  };
   const windows: FakeWindow[] = [];
   const views: FakeView[] = [];
   let handler: ((event: unknown, command: string, payload?: unknown) => Promise<unknown>) | undefined;
@@ -66,7 +80,11 @@ async function harness() {
     visible = false;
     destroyed = false;
     bounds = { x: 0, y: 0, width: 1000, height: 800 };
-    constructor() { super(); windows.push(this); }
+    constructor(options?: { x?: number; y?: number; width?: number; height?: number }) {
+      super();
+      if (options) this.bounds = { x: options.x ?? 0, y: options.y ?? 0, width: options.width ?? 1000, height: options.height ?? 800 };
+      windows.push(this);
+    }
     isDestroyed() { return this.destroyed; }
     isVisible() { return this.visible; }
     isFocused() { return this.visible; }
@@ -96,8 +114,12 @@ async function harness() {
   const nodeRequire = createRequire(import.meta.url);
   runInNewContext(output.outputFiles[0]!.text, {
     module, exports: module.exports, console, process, URL,
+    Date: class extends Date { static now() { return now; } },
+    setTimeout: (callback: () => void, delay: number) => { timers.set(++timerId, { at: now + delay, callback }); return timerId; },
+    clearTimeout: (id: number) => timers.delete(id),
     require: (name: string) => name === 'electron' ? {
       BrowserWindow: FakeWindow, WebContentsView: FakeView,
+      systemPreferences: { getAnimationSettings: () => ({ prefersReducedMotion: !animate }) },
       globalShortcut: { register: () => true, unregister: () => { unregistered = true; } },
       ipcMain: { handle: (_channel: string, callback: typeof handler) => { handler = callback; }, removeHandler: () => { handler = undefined; } },
       screen: { getCursorScreenPoint: () => ({ x: pointerDisplay.x, y: pointerDisplay.y }), getDisplayNearestPoint: () => ({ workArea: pointerDisplay }), getDisplayMatching: () => ({ workArea: { x: 0, y: 0, width: 1200, height: 900 } }) },
@@ -113,7 +135,7 @@ async function harness() {
   controller.attachMainWindow(main as unknown as Electron.BrowserWindow);
   controller.registerIpc();
   const command = (sender: Contents, name: string, payload?: unknown) => handler!({ sender, senderFrame: sender.mainFrame }, name, payload);
-  return { controller, main, windows, views, command, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
+  return { controller, main, windows, views, command, advance, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
 }
 
 test('yields the docked native view to main-window overlays without replacing the conversation', async () => {
@@ -154,6 +176,40 @@ test('opens an empty floating conversation at its composer height', async () => 
   const bounds = h.windows[1]!.bounds;
   assert.equal(bounds.x + bounds.width / 2, 2100);
   assert.equal(bounds.y + bounds.height, -100 - 96);
+  h.controller.dispose();
+});
+
+test('animates from the current height, keeps the bottom anchored and survives reversal', async () => {
+  const h = await harness(true);
+  await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 0, y: 40, width: 1000, height: 760 } });
+  const view = h.views[0]!;
+  await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 110 });
+  await h.command(view.webContents, 'detach');
+  const floating = h.windows[1]!;
+  const bottom = floating.bounds.y + floating.bounds.height;
+  await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 110 });
+  h.advance(80);
+  assert.ok(floating.bounds.height > 110 && floating.bounds.height < 720);
+  assert.equal(floating.bounds.y + floating.bounds.height, bottom);
+  // A composer measurement during expansion must not restart or shrink it.
+  await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 114 });
+  h.advance(160);
+  assert.equal(floating.bounds.height, 720);
+  await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 110 });
+  h.advance(80);
+  const intermediate = floating.bounds.height;
+  assert.ok(intermediate > 110 && intermediate < 720);
+  await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 110 });
+  assert.equal(floating.bounds.height, intermediate);
+  h.advance(240);
+  assert.equal(floating.bounds.height, 720);
+  assert.equal(floating.bounds.y + floating.bounds.height, bottom);
+  await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 110 });
+  h.advance(80);
+  await h.command(view.webContents, 'hide');
+  const hiddenBounds = floating.bounds;
+  h.advance(500);
+  assert.equal(floating.bounds, hiddenBounds);
   h.controller.dispose();
 });
 
