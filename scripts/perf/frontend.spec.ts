@@ -25,6 +25,7 @@ import { outputDir, report, summarize } from './report.mjs';
 
 const rows: Array<Record<string, unknown>> = [];
 let browserVersion: unknown;
+let longTaskControl: number[];
 const repetitions = 10;
 async function activate(locator: Locator) {
   await expect(locator).toBeVisible();
@@ -70,6 +71,20 @@ async function setup(page: Page) {
       ).observe({ type: 'long-animation-frame' });
     }
   });
+  longTaskControl = await page.evaluate(async () => {
+    await new Promise<void>((resolve) =>
+      setTimeout(() => {
+        const start = performance.now();
+        while (performance.now() - start < 100) {
+          /* harness-only negative control */
+        }
+        setTimeout(resolve, 100);
+      }, 0),
+    );
+    (window as any).__perfLongFrames.length = 0;
+    return (window as any).__perfLongTasks.splice(0) as number[];
+  });
+  expect(longTaskControl.some((duration) => duration >= 90)).toBe(true);
   return cdp;
 }
 function row(scenario: string, metric: string, values: number[]) {
@@ -97,6 +112,7 @@ test.afterEach(async ({}, info) => {
       info.title.startsWith('long') ? 'frontend-electron-navigation' : 'frontend-electron-stream',
       {
         status: info.status,
+        longTaskControl,
         browserVersion,
         fixture:
           'existing chat-prompt-rail (120 turns), normal fake stream (9 characters/45ms), mid-stream stop',

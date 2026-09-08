@@ -19,10 +19,8 @@
 
 import assert from 'node:assert/strict';
 import { chromium } from '@playwright/test';
-import { mkdir, writeFile } from 'node:fs/promises';
-import path from 'node:path';
 import { startStaticServer } from '../storybook-visual-smoke.mjs';
-import { outputDir, report, summarize } from './report.mjs';
+import { report, summarize } from './report.mjs';
 
 const server = await startStaticServer('apps/desktop/storybook-static');
 const browser = await chromium.launch({ headless: false });
@@ -115,31 +113,6 @@ try {
     'heap-bytes-no-gc': heaps,
   }))
     rows.push({ scenario: 'storybook-45-tools', metric, ...summarize(values) });
-  // Harness-only negative control proves the long-task observer is active.
-  const control = await page.evaluate(async () => {
-    const durations = [];
-    const observer = new PerformanceObserver((list) =>
-      durations.push(...list.getEntries().map((e) => e.duration)),
-    );
-    observer.observe({ type: 'longtask' });
-    await new Promise((resolve) =>
-      setTimeout(() => {
-        const start = performance.now();
-        while (performance.now() - start < 100) {
-          /* calibration */
-        }
-        setTimeout(resolve, 100);
-      }, 0),
-    );
-    observer.disconnect();
-    return durations;
-  });
-  assert(
-    control.some((n) => n >= 90),
-    'Long-task negative control was not detected',
-  );
-  await mkdir(outputDir, { recursive: true });
-  await writeFile(path.join(outputDir, 'frontend-control.json'), JSON.stringify(control));
   await report(
     'frontend-storybook',
     {
