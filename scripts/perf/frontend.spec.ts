@@ -107,9 +107,13 @@ test.beforeEach(() => {
   rows.length = 0;
 });
 test.afterEach(async ({}, info) => {
+  const reportName = info.annotations.find(
+    (annotation) => annotation.type === 'perf-report',
+  )?.description;
+  if (!reportName) throw new Error('Missing explicit performance report name');
   if (rows.length)
     await report(
-      info.title.startsWith('long') ? 'frontend-electron-navigation' : 'frontend-electron-stream',
+      reportName,
       {
         status: info.status,
         longTaskControl,
@@ -128,7 +132,9 @@ test.afterEach(async ({}, info) => {
       rows,
     );
 });
-test('long session switch, older history and idle retention', async () => {
+test('long session switch, older history and idle retention', {
+  annotation: { type: 'perf-report', description: 'frontend-electron-navigation' },
+}, async () => {
   test.setTimeout(180_000);
   await withE2eWindow(
     {
@@ -234,7 +240,9 @@ test('long session switch, older history and idle retention', async () => {
     },
   );
 });
-test('streaming input, background output and stop', async () => {
+test('streaming input, background output and stop', {
+  annotation: { type: 'perf-report', description: 'frontend-electron-stream' },
+}, async () => {
   test.setTimeout(180_000);
   await withE2eWindow(
     {

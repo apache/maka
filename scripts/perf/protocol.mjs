@@ -34,7 +34,7 @@ import { report, summarize } from './report.mjs';
 
 const rows = [];
 const stringify = JSON.stringify;
-function workload(resources, countEncoding = false, duplicate = false) {
+function workload(resources, countEncoding = false, duplicate = false, validate = true) {
   let calls = 0,
     encodedBytes = 0,
     wireBytes = 0;
@@ -74,21 +74,23 @@ function workload(resources, countEncoding = false, duplicate = false) {
   }
   const actual = [];
   for (const { page, bytes } of seen) {
-    assert(Buffer.byteLength(stringify(page), 'utf8') <= RUNTIME_RESOURCE_RESULT_MAX_BYTES);
-    assert.deepEqual(
-      decodeRuntimeResourceQueryResult(decodeHostFrame(JSON.parse(bytes)).result),
-      page,
-    );
-    actual.push(...page.resources);
+    const decoded = decodeRuntimeResourceQueryResult(decodeHostFrame(JSON.parse(bytes)).result);
+    if (validate) {
+      assert(Buffer.byteLength(stringify(page), 'utf8') <= RUNTIME_RESOURCE_RESULT_MAX_BYTES);
+      assert.deepEqual(decoded, page);
+      actual.push(...page.resources);
+    }
   }
-  assert.deepEqual(
-    actual.map((r) => r.result.ref),
-    [...resources]
-      .sort((a, b) => a.result.ref.localeCompare(b.result.ref))
-      .map((r) => r.result.ref),
-  );
-  assert(actual.every((r) => r.result.cmd.includes('中文🙂')));
-  assert.deepEqual(actual, canonical);
+  if (validate) {
+    assert.deepEqual(
+      actual.map((r) => r.result.ref),
+      [...resources]
+        .sort((a, b) => a.result.ref.localeCompare(b.result.ref))
+        .map((r) => r.result.ref),
+    );
+    assert(actual.every((r) => r.result.cmd.includes('中文🙂')));
+    assert.deepEqual(actual, canonical);
+  }
   return { calls, encodedBytes, wireBytes, pages: seen.length };
 }
 for (const payload of [32, 8192]) {
@@ -116,11 +118,11 @@ for (const payload of [32, 8192]) {
     const samples = [];
     for (let i = 0; i < 11; i++) {
       const start = performance.now();
-      workload(resources);
+      workload(resources, false, false, false);
       if (i) samples.push(performance.now() - start);
     }
     const scenario = 'runtime-resource/' + size + 'x' + payload;
-    rows.push({ scenario, metric: 'warm-ms (includes validation)', ...summarize(samples) });
+    rows.push({ scenario, metric: 'warm-projection-codec-ms', ...summarize(samples) });
     for (const metric of ['calls', 'encodedBytes', 'wireBytes', 'pages'])
       rows.push({ scenario, metric, ...summarize([counts[metric]]) });
     rows.push({
@@ -137,7 +139,7 @@ await report(
     repetitions: 10,
     warmup: 1,
     conditions:
-      'Synthetic in-process production projection + wire encoding; no disk/network. Fresh objects per scale, warm process.',
+      'Synthetic in-process production projection + wire encoding/decoding; no disk/network. Fresh objects per scale, warm process. Correctness assertions run before timing; the cursor progress guard remains timed.',
     limits:
       'JSON.stringify instrumentation counts UTF-8 output work separately from timing; not allocations, SQLite I/O or whole Host latency. Includes canonicalization, revision and decoder work. Negative control duplicates production page call only in harness.',
   },
