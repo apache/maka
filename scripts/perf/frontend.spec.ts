@@ -99,7 +99,7 @@ test.afterEach(async ({}, info) => {
         status: info.status,
         browserVersion,
         fixture:
-          'existing chat-prompt-rail (120 turns), normal fake stream (9 characters/45ms), hold-open stop',
+          'existing chat-prompt-rail (120 turns), normal fake stream (9 characters/45ms), mid-stream stop',
         repetitions,
         viewport: '1400x900',
         theme: 'light',
@@ -367,13 +367,7 @@ test('streaming input, background output and stop', async () => {
             ),
           ),
         ).toBe(true);
-        backgroundTimes.push(
-          (
-            await measure('background-input', () =>
-              input(page, i === repetitions - 1 ? '__e2e_hold_open__' : 'foreground-' + i),
-            )
-          ).ms,
-        );
+        backgroundTimes.push((await measure('background-input', () => input(page, prompt + i))).ms);
         await page.waitForTimeout(100);
       }
       await page.waitForFunction(
@@ -389,14 +383,22 @@ test('streaming input, background output and stop', async () => {
       await expect(
         page.locator('[data-session-id=' + JSON.stringify(id) + '] [aria-current="page"]'),
       ).toHaveCount(1);
-      await expect(page.locator(COMPOSER_INPUT)).toHaveText('__e2e_hold_open__');
+      await expect(page.locator(COMPOSER_INPUT)).toHaveText(prompt + (repetitions - 1));
       await activate(page.getByRole('button', { name: '发送', exact: true }));
-      await expect(page.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
+      await expect(page.locator('.maka-bubble-streaming')).toContainText('Fake backend received');
       const stop = await measure('stop', async () => {
         await activate(page.getByRole('button', { name: /^(停止|Stop)$/ }));
         await expect(page.locator('.maka-bubble-streaming')).toHaveCount(0);
       });
       row('stop', 'dom-settled-ms', [stop.ms]);
+      const stoppedText = await page.evaluate(() => (window as any).__perfStream.text as string);
+      const stoppedResponse = stoppedText.slice(expected.length);
+      const wouldComplete = expected.replace(prompt, prompt + (repetitions - 1));
+      expect(stoppedResponse.length).toBeGreaterThan(0);
+      expect(stoppedResponse.length).toBeLessThan(wouldComplete.length);
+      expect(wouldComplete.startsWith(stoppedResponse)).toBe(true);
+      await page.waitForTimeout(200);
+      expect(await page.evaluate(() => (window as any).__perfStream.text)).toBe(stoppedText);
       await page.evaluate(() => {
         for (const unsubscribe of (window as any).__perfStream.unsubscribe) unsubscribe();
       });
