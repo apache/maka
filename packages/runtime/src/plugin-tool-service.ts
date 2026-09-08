@@ -26,6 +26,7 @@ import {
   type MakaContributionIdentity,
   type MakaPluginRootId,
 } from './plugin-runtime.js';
+import { PluginScopeRegistry } from './plugin-scope-registry.js';
 import type { MakaTool } from './tool-runtime.js';
 import { bindToolActivationIdentity } from './tool-activation-identity.js';
 import { TOOL_SEARCH_NAME, TOOL_SEARCH_PROVIDER_NAME } from './tool-availability.js';
@@ -68,7 +69,7 @@ export interface PluginToolServiceOptions {
  * remain Host-owned and cannot be shadowed.
  */
 export class PluginToolService extends Service {
-  private readonly layers = new Map<MakaPluginRootId, Map<string, RegisteredPluginTool>>();
+  private readonly registry = new PluginScopeRegistry<RegisteredPluginTool>();
   private readonly onChanged?: (rootId: MakaPluginRootId) => void;
 
   constructor(ctx: Context, options: PluginToolServiceOptions = {}) {
@@ -102,14 +103,7 @@ export class PluginToolService extends Service {
   /** Resolve only Plugin-owned additions after validating them against the Host binding. */
   resolveContributions(sessionId: string, coreTools: readonly MakaTool[]): ResolvedPluginTools {
     if (!sessionId || /[\r\n\0]/u.test(sessionId)) throw new Error('Invalid Tool Session scope');
-    const visible = new Map<string, RegisteredPluginTool>();
-    for (const entry of this.layers.get('profile')?.values() ?? []) {
-      visible.set(entry.definition.name, entry);
-    }
-    const sessionRoot = `session:${sessionId}` as const;
-    for (const entry of this.layers.get(sessionRoot)?.values() ?? []) {
-      visible.set(entry.definition.name, entry);
-    }
+    const visible = this.registry.visible(sessionId);
 
     const coreNames = new Set(coreTools.map(({ name }) => name));
     for (const name of visible.keys()) {
@@ -127,35 +121,24 @@ export class PluginToolService extends Service {
   }
 
   inspect(rootId?: MakaPluginRootId): readonly PluginToolInspection[] {
-    const layers = rootId
-      ? [[rootId, this.layers.get(rootId)] as const]
-      : [...this.layers.entries()];
     return Object.freeze(
-      layers
-        .flatMap(([, layer]) => [...(layer?.values() ?? [])])
-        .sort(compareRegistration)
-        .map((entry) =>
-          Object.freeze({
-            entryId: entry.entryId,
-            scopeId: entry.scopeId,
-            extensionId: entry.extensionId,
-            generation: entry.generation,
-            toolName: entry.definition.name,
-            activeCalls: entry.activeCalls,
-            retired: entry.retired,
-          }),
-        ),
+      [...this.registry.entries(rootId)].sort(compareRegistration).map((entry) =>
+        Object.freeze({
+          entryId: entry.entryId,
+          scopeId: entry.scopeId,
+          extensionId: entry.extensionId,
+          generation: entry.generation,
+          toolName: entry.definition.name,
+          activeCalls: entry.activeCalls,
+          retired: entry.retired,
+        }),
+      ),
     );
   }
 
   private publish(identity: MakaContributionIdentity, definition: MakaTool): () => Promise<void> {
     const rootId = identity.scopeId as MakaPluginRootId;
-    let layer = this.layers.get(rootId);
-    if (!layer) {
-      layer = new Map();
-      this.layers.set(rootId, layer);
-    }
-    const existing = layer.get(definition.name);
+    const existing = this.registry.get(rootId, definition.name);
     if (existing && existing.entryId !== identity.entryId) {
       throw new MakaPluginRuntimeError(
         'activation_failed',
@@ -200,29 +183,14 @@ export class PluginToolService extends Service {
       retired: false,
       drainWaiters: new Set(),
     };
-    layer.set(definition.name, entry);
-    try {
-      this.notifyChanged(rootId);
-    } catch (error) {
-      if (existing) layer.set(definition.name, existing);
-      else layer.delete(definition.name);
-      if (layer.size === 0) this.layers.delete(rootId);
-      throw error;
-    }
-
-    return async () => {
-      entry.retired = true;
-      const currentLayer = this.layers.get(rootId);
-      if (currentLayer?.get(definition.name)?.token === entry.token) {
-        if (existing && !existing.retired) currentLayer.set(definition.name, existing);
-        else currentLayer.delete(definition.name);
-        if (currentLayer.size === 0) this.layers.delete(rootId);
-        this.notifyChanged(rootId);
-      }
-      if (entry.activeCalls > 0) {
-        await new Promise<void>((resolve) => entry.drainWaiters.add(resolve));
-      }
-    };
+    return this.registry.publish(rootId, definition.name, entry, {
+      onChanged: (changedRootId) => this.notifyChanged(changedRootId),
+      onRetired: async (retired) => {
+        if (retired.activeCalls > 0) {
+          await new Promise<void>((resolve) => retired.drainWaiters.add(resolve));
+        }
+      },
+    });
   }
 
   private notifyChanged(rootId: MakaPluginRootId): void {

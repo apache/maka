@@ -26,6 +26,7 @@ import {
   type MakaContributionIdentity,
   type MakaPluginRootId,
 } from './plugin-runtime.js';
+import { PluginScopeRegistry } from './plugin-scope-registry.js';
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -87,11 +88,6 @@ interface RegisteredVariable extends MakaContributionIdentity {
   retired: boolean;
 }
 
-interface PromptLayer {
-  readonly sections: Map<string, RegisteredSection>;
-  readonly variables: Map<string, RegisteredVariable>;
-}
-
 interface ResolvedSection extends MakaContributionIdentity {
   readonly name: string;
   readonly order: number;
@@ -108,7 +104,8 @@ interface ResolvedSection extends MakaContributionIdentity {
  * so changes committed by one tool call appear at the next logical model step.
  */
 export class PluginSystemPromptService extends Service {
-  private readonly layers = new Map<MakaPluginRootId, PromptLayer>();
+  private readonly sections = new PluginScopeRegistry<RegisteredSection>();
+  private readonly variables = new PluginScopeRegistry<RegisteredVariable>();
 
   constructor(ctx: Context) {
     super(ctx, 'systemPrompt');
@@ -141,8 +138,8 @@ export class PluginSystemPromptService extends Service {
     baseText: string | undefined,
   ): Promise<PluginSystemPromptAssembly> {
     validateAssemblyContext(context);
-    const visibleSections = this.visible(context.sessionId, (layer) => layer.sections);
-    const visibleVariables = this.visible(context.sessionId, (layer) => layer.variables);
+    const visibleSections = this.sections.visible(context.sessionId);
+    const visibleVariables = this.variables.visible(context.sessionId);
     const sectionSnapshot = [...visibleSections.values()];
     const variableSnapshot = [...visibleVariables.values()];
 
@@ -226,54 +223,36 @@ export class PluginSystemPromptService extends Service {
   }
 
   inspect(rootId?: MakaPluginRootId): readonly PluginSystemPromptInspection[] {
-    const layers = rootId ? [[rootId, this.layers.get(rootId)] as const] : [...this.layers];
     return Object.freeze(
-      layers
-        .flatMap(([, layer]) => [
-          ...[...(layer?.sections.values() ?? [])].map((entry) => ({
-            entryId: entry.entryId,
-            scopeId: entry.scopeId,
-            extensionId: entry.extensionId,
-            generation: entry.generation,
-            kind: 'section' as const,
-            name: entry.definition.name,
-            order: entry.definition.order,
-            complete: entry.definition.complete === true,
-          })),
-          ...[...(layer?.variables.values() ?? [])].map((entry) => ({
-            entryId: entry.entryId,
-            scopeId: entry.scopeId,
-            extensionId: entry.extensionId,
-            generation: entry.generation,
-            kind: 'variable' as const,
-            name: entry.name,
-          })),
-        ])
-        .sort(compareInspection),
+      [
+        ...this.sections.entries(rootId).map((entry) => ({
+          entryId: entry.entryId,
+          scopeId: entry.scopeId,
+          extensionId: entry.extensionId,
+          generation: entry.generation,
+          kind: 'section' as const,
+          name: entry.definition.name,
+          order: entry.definition.order,
+          complete: entry.definition.complete === true,
+        })),
+        ...this.variables.entries(rootId).map((entry) => ({
+          entryId: entry.entryId,
+          scopeId: entry.scopeId,
+          extensionId: entry.extensionId,
+          generation: entry.generation,
+          kind: 'variable' as const,
+          name: entry.name,
+        })),
+      ].sort(compareInspection),
     );
-  }
-
-  private visible<T>(
-    sessionId: string,
-    select: (layer: PromptLayer) => Map<string, T>,
-  ): Map<string, T> {
-    const visible = new Map<string, T>();
-    for (const [name, entry] of select(this.layers.get('profile') ?? emptyLayer())) {
-      visible.set(name, entry);
-    }
-    const session = this.layers.get(`session:${sessionId}`);
-    if (session) {
-      for (const [name, entry] of select(session)) visible.set(name, entry);
-    }
-    return visible;
   }
 
   private publishSection(
     identity: MakaContributionIdentity,
     definition: PluginSystemPromptSection,
   ): Disposable<Promise<void>> {
-    const layer = this.layer(identity.scopeId as MakaPluginRootId);
-    const existing = layer.sections.get(definition.name);
+    const rootId = identity.scopeId as MakaPluginRootId;
+    const existing = this.sections.get(rootId, definition.name);
     assertOwner(existing, identity, 'section', definition.name);
     const entry: RegisteredSection = {
       ...identity,
@@ -281,14 +260,7 @@ export class PluginSystemPromptService extends Service {
       token: Symbol(definition.name),
       retired: false,
     };
-    layer.sections.set(definition.name, entry);
-    return this.retire(
-      identity.scopeId as MakaPluginRootId,
-      layer.sections,
-      definition.name,
-      entry,
-      existing,
-    );
+    return this.sections.publish(rootId, definition.name, entry);
   }
 
   private publishVariable(
@@ -296,8 +268,8 @@ export class PluginSystemPromptService extends Service {
     name: string,
     provider: PluginSystemPromptVariableProvider,
   ): Disposable<Promise<void>> {
-    const layer = this.layer(identity.scopeId as MakaPluginRootId);
-    const existing = layer.variables.get(name);
+    const rootId = identity.scopeId as MakaPluginRootId;
+    const existing = this.variables.get(rootId, name);
     assertOwner(existing, identity, 'variable', name);
     const entry: RegisteredVariable = {
       ...identity,
@@ -306,54 +278,8 @@ export class PluginSystemPromptService extends Service {
       token: Symbol(name),
       retired: false,
     };
-    layer.variables.set(name, entry);
-    return this.retire(
-      identity.scopeId as MakaPluginRootId,
-      layer.variables,
-      name,
-      entry,
-      existing,
-    );
+    return this.variables.publish(rootId, name, entry);
   }
-
-  private retire<T extends { readonly token: symbol; retired: boolean }>(
-    rootId: MakaPluginRootId,
-    registry: Map<string, T>,
-    name: string,
-    entry: T,
-    previous: T | undefined,
-  ): Disposable<Promise<void>> {
-    let retired = false;
-    return async () => {
-      if (retired) return;
-      retired = true;
-      entry.retired = true;
-      if (registry.get(name)?.token !== entry.token) return;
-      if (previous && !previous.retired) registry.set(name, previous);
-      else registry.delete(name);
-      this.prune(rootId);
-    };
-  }
-
-  private layer(rootId: MakaPluginRootId): PromptLayer {
-    let layer = this.layers.get(rootId);
-    if (!layer) {
-      layer = emptyLayer();
-      this.layers.set(rootId, layer);
-    }
-    return layer;
-  }
-
-  private prune(rootId: MakaPluginRootId): void {
-    const layer = this.layers.get(rootId);
-    if (layer && layer.sections.size === 0 && layer.variables.size === 0) {
-      this.layers.delete(rootId);
-    }
-  }
-}
-
-function emptyLayer(): PromptLayer {
-  return { sections: new Map(), variables: new Map() };
 }
 
 function assertHostPromptScope(scopeId: string): void {
