@@ -24,11 +24,13 @@ import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { useUiLocale } from '@maka/ui';
 import { ICON_SIZE, Terminal as TerminalIcon } from '@maka/ui/icons';
 import { FitAddon } from '@xterm/addon-fit';
+import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal } from '@xterm/xterm';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy';
 import { SessionTerminalHydration, SessionTerminalRenderQueue } from './session-terminal-hydration';
 import { suppressTerminalQueryReplies } from './session-terminal-query';
 import { scheduleTerminalFrame } from './session-terminal-frame';
+import { terminalWebUrl } from './terminal-interaction-policy';
 import { useWorkbarServices } from '../../services-context.js';
 import { getTerminalFontSize, subscribeTerminalFontSize } from '../../../../theme';
 
@@ -97,6 +99,15 @@ export function SessionTerminalPanel(props: {
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
+    // Renderer-side URL filter; main's external-link guard stays the final
+    // boundary behind window.open.
+    const webLinks = new WebLinksAddon((event, value) => {
+      const url = terminalWebUrl(value);
+      if (!url) return;
+      event.preventDefault();
+      window.open(url, '_blank', 'noopener,noreferrer');
+    });
+    terminal.loadAddon(webLinks);
     terminal.open(host);
     terminalRef.current = terminal;
     fitRef.current = fit;

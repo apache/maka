@@ -71,6 +71,10 @@ remounted when the active session changes.
 - Terminal ownership is registered as soon as `start` returns, before the tab
   state commits. Host projection excludes resources owned by another Session,
   so a Session switch cannot briefly reattach an old Terminal.
+- The task terminal loads FitAddon and WebLinksAddon on the same Terminal
+  instance the panel owns. Web links are filtered to explicit HTTP(S) URLs in
+  the renderer (`terminalWebUrl`); main's external-link guard stays the final
+  boundary behind `window.open`.
 - Side Chat survives panel collapse and is cleaned only when its tab closes or
   when navigation leaves its source session.
 - Disposed Side Chat operations are fenced at every fork/send boundary; a late
