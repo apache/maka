@@ -18,6 +18,8 @@
 name: Performance frontend
 on:
   workflow_dispatch:
+  push:
+    branches: [ci/4677-performance-workflows]
 permissions:
   contents: read
 jobs:
