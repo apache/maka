@@ -22,6 +22,10 @@ import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { LocaleProvider } from '@maka/ui';
 import { deferred } from '@maka/core/test-only/async-primitives';
+import { RuntimeHostRequestInterruptedError } from '@maka/runtime-host/client';
+import { registerRuntimeHostSessionExecutionIpc, type RuntimeHostSessionExecutionIpcDeps } from '../runtime-host-session-execution-ipc-main.js';
+import { registerRuntimeHostWorkHubIpc } from '../runtime-host-workhub-ipc-main.js';
+import type { IpcHandler } from '../ipc-reconnect-policy.js';
 import type { AttachmentRef } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import { WorkHubServicesProvider, type WorkHubServices, type WorkHubTranscriptSnapshot } from '../../renderer/features/workhub/index.js';
@@ -36,9 +40,31 @@ async function mountController() {
   let publish!: (snapshot: WorkHubTranscriptSnapshot) => void;
   let observe!: Parameters<WorkHubServices['observe']>[1];
   let loadLatestCount = 0;
-  const admission = deferred<{ turnId: string }>();
+  let admission = deferred<{ turnId: string }>();
   const latestRead = deferred<void>();
   const requests: Array<Parameters<WorkHubServices['answer']>[1]> = [];
+  let rootTurn: { turnId: string; runId: string; status: 'running' | 'cancelled' } | undefined;
+  const interrupts: Array<{ sessionId: string; turnId: string; runId: string }> = [];
+  const handlers = new Map<string, IpcHandler>();
+  const ipc = { handle: (channel: string, handler: IpcHandler) => { handlers.set(channel, handler); } };
+  registerRuntimeHostSessionExecutionIpc({
+    observer: { snapshot: async () => ({ rootTurn }) },
+    beforeStop: async () => {},
+    emitSessionsChanged: () => {},
+    client: { interruptTurn: async (input: typeof interrupts[number]) => {
+      interrupts.push({ sessionId: input.sessionId, turnId: input.turnId, runId: input.runId });
+      rootTurn!.status = 'cancelled';
+      return { retracted: [] };
+    } },
+  } as unknown as RuntimeHostSessionExecutionIpcDeps, ipc);
+  registerRuntimeHostWorkHubIpc({
+    answerWorkHubCoordination: async (input: Parameters<WorkHubServices['answer']>[1]) => {
+      requests.push(input);
+      return admission.promise;
+    },
+  } as Parameters<typeof registerRuntimeHostWorkHubIpc>[0], ipc, {});
+  const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!({} as Parameters<IpcHandler>[0], ...args);
+
   const sessionId = JSON.stringify(['host-1', 'workhub-coordination']);
   const services = {
     resolve: async () => sessionId,
@@ -54,10 +80,8 @@ async function mountController() {
       handler({ messages: [], ready: true, hasOlder: false, hasNewer: false });
       return { loadOlder: async () => {}, loadLatest: () => { loadLatestCount += 1; return latestRead.promise; }, close: async () => {} };
     },
-    answer: async (_id: string, input: Parameters<WorkHubServices['answer']>[1]) => {
-      requests.push(input);
-      return admission.promise;
-    },
+    answer: (_id: string, input: Parameters<WorkHubServices['answer']>[1]) => invoke('workhub:answer', input),
+    stop: (target: string, turnId: string) => invoke('sessions:stop', target, { source: 'stop_button', expectedTurnId: turnId }),
   } as unknown as WorkHubServices;
   function Probe() { controller = useWorkHubController(); return null; }
   await act(async () => {
@@ -67,7 +91,9 @@ async function mountController() {
   });
   assert.equal(controller.sessionId, sessionId);
   return {
-    get controller() { return controller; }, sessionId, requests, admission, latestRead,
+    get controller() { return controller; }, sessionId, requests, get admission() { return admission; }, latestRead, interrupts,
+    resetAdmission() { admission = deferred<{ turnId: string }>(); },
+    admit(turnId: string) { rootTurn = { turnId, runId: `run:${turnId}`, status: 'running' }; },
     get loadLatestCount() { return loadLatestCount; },
     emit(event: Parameters<typeof observe>[0]) { observe(event); },
     publish(messages: StoredMessage[]) { publish({ messages, ready: true, hasOlder: false, hasNewer: false }); },
@@ -138,4 +164,80 @@ test('a lost admission response cannot erase confirmed WorkHub activity', async 
   assert.equal(h.controller.liveTurn?.unconfirmed, undefined);
   assert.equal(h.controller.busy, true);
   h.latestRead.resolve();
+});
+
+
+test('WorkHub carries Stop through deferred or uncertain admission for the original Turn', async () => {
+  for (const order of ['stop-before-response', 'stop-after-response', 'response-before-observation', 'lost-response', 'observation-during-stop', 'rejected', 'terminal'] as const) {
+    const h = await mountController();
+    let sent!: Promise<boolean>;
+    await act(async () => { sent = h.controller.send('stop this attempt', []); });
+    const turnId = h.requests[0]!.turnId;
+    if (order === 'stop-after-response') {
+      h.admit(turnId);
+      await act(async () => { h.admission.resolve({ turnId }); await sent; });
+    } else if (order === 'lost-response') {
+      await act(async () => {
+        h.admission.reject(new RuntimeHostRequestInterruptedError('workhub.coordination.answer', 'control', 'dispatched', 'connection_lost'));
+        assert.equal(await sent, true);
+      });
+      assert.equal(h.controller.busy, true, 'an unknown outcome still exposes Stop');
+    }
+    await act(async () => {
+      const stopped = h.controller.stop();
+      if (order === 'observation-during-stop') {
+        h.admit(turnId);
+        h.emit({ type: 'text_delta', id: 'first-output', turnId, messageId: 'answer', ts: 1, text: 'Working' });
+      }
+      await stopped;
+    });
+    if (order === 'rejected') {
+      await act(async () => { h.admission.reject(new Error('admission rejected')); assert.equal(await sent, false); });
+      assert.equal(h.controller.stopPending, false);
+      assert.equal(h.controller.busy, false);
+      assert.deepEqual(h.interrupts, []);
+      // Retrying a rejected send keeps identity but must not inherit its Stop.
+      h.resetAdmission();
+      let retried!: Promise<boolean>;
+      await act(async () => { retried = h.controller.send('stop this attempt', []); });
+      assert.equal(h.requests[1]!.turnId, turnId);
+      h.admit(turnId);
+      await act(async () => {
+        h.emit({ type: 'text_delta', id: 'retry-output', turnId, messageId: 'retry-answer', ts: 2, text: 'Retrying' });
+        h.admission.resolve({ turnId });
+        assert.equal(await retried, true);
+      });
+      assert.deepEqual(h.interrupts, [], 'a successful retry cannot inherit a rejected attempt’s Stop');
+    } else if (order === 'terminal') {
+      await act(async () => h.emit({ type: 'complete', id: 'done', turnId, ts: 1, stopReason: 'end_turn' }));
+      await act(async () => { h.admission.resolve({ turnId }); await sent; });
+      assert.equal(h.controller.stopPending, false);
+      assert.equal(h.controller.busy, false);
+      assert.deepEqual(h.interrupts, []);
+    } else {
+      if (order === 'response-before-observation') {
+        await act(async () => { h.admission.resolve({ turnId }); await sent; });
+        assert.deepEqual(h.interrupts, [], 'the response can precede the observer root');
+      }
+      if (order === 'stop-before-response' || order === 'lost-response' || order === 'response-before-observation') {
+        assert.deepEqual(h.interrupts, []);
+        h.admit('different-turn');
+        await act(async () => h.emit({ type: 'text_delta', id: 'other', turnId: 'different-turn', messageId: 'other-answer', ts: 1, text: 'Other work' }));
+        assert.deepEqual(h.interrupts, []);
+        h.admit(turnId);
+        if (order !== 'stop-before-response')
+          await act(async () => h.emit({ type: 'text_delta', id: 'first-output', turnId, messageId: 'answer', ts: 2, text: 'Working' }));
+      }
+      if (order === 'stop-before-response' || order === 'observation-during-stop') {
+        await act(async () => { h.admission.resolve({ turnId }); await sent; });
+      }
+      assert.deepEqual(h.interrupts, [{ sessionId: h.sessionId, turnId, runId: `run:${turnId}` }], order);
+      assert.equal(h.controller.stopPending, false);
+      h.admit('later-turn');
+      await act(async () => h.emit({ type: 'text_delta', id: 'later', turnId: 'later-turn', messageId: 'later-answer', ts: 3, text: 'Later work' }));
+      assert.equal(h.interrupts.length, 1, 'the intent cannot transfer to a later Turn');
+    }
+    h.latestRead.resolve();
+    cleanupFakeDom();
+  }
 });

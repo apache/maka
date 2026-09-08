@@ -2020,7 +2020,7 @@ const makaBridge = {
     },
     async answer(coordinationSessionId: string, input: OperationInput<'workhub.coordination.answer'>) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
-      return ipcRenderer.invoke('workhub:answer', scope, input) as Promise<OperationOutput<'workhub.coordination.answer'>>;
+      return ipcRenderer.invoke('workhub:answer', scope, input) as Promise<OperationOutput<'workhub.coordination.answer'> | undefined>;
     },
     async configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);

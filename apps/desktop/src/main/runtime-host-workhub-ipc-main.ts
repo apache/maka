@@ -18,6 +18,7 @@
  */
 
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import { RuntimeHostOperationError, RuntimeHostRequestInterruptedError } from '@maka/runtime-host/client';
 import { prepareIngestItems, resolveAttachmentRefs } from './attachment-ingest.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
@@ -46,7 +47,17 @@ export function registerRuntimeHostWorkHubIpc(
   ipcMain.handle('workhub:resolveCoordinationSession', () =>
     client.resolveWorkHubCoordinationSession(),
   );
-  ipcMain.handle('workhub:answer', (_event, input) => client.answerWorkHubCoordination(input));
+  ipcMain.handle('workhub:answer', async (_event, input) => {
+    try {
+      return await client.answerWorkHubCoordination(input);
+    } catch (error) {
+      // As with Session submission, a lost dispatched response is not a rejection.
+      // Preserve that distinction before Electron strips the error's fields.
+      if ((error instanceof RuntimeHostRequestInterruptedError && error.dispatch === 'dispatched') ||
+        (error instanceof RuntimeHostOperationError && error.code === 'outcome_unknown')) return undefined;
+      throw error;
+    }
+  });
   ipcMain.handle('workhub:configureModel', (_event, input) => client.configureWorkHubModel(input));
   ipcMain.handle('workhub:prepareAttachments', async (event, items: unknown) => {
     if (!options.attachmentIngest) throw new Error('WorkHub attachments are unavailable');

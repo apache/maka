@@ -914,6 +914,7 @@ const workHubControl = createWorkHubControl({
   ...workHubRuntime,
 });
 const workHubPresentation = createWorkHubPresentation({
+  isEnabled: async () => (await settingsStore.get()).workHub.enabled,
   mainWindow: () => mainWindowController.browserWindow(),
   ensureMainWindow: async () => {
     await quitCoordinator.focusOrCreateWindow();
@@ -963,6 +964,7 @@ const botRegistry = new BotRegistry({
 });
 const clientSettingsEffects = createClientSettingsEffects({
   settingsStore,
+  applyWorkHub: () => workHubPresentation.refreshSettings(),
   applyKeepSystemAwake: async (enabled) => {
     keepSystemAwake.apply(enabled);
   },
@@ -1417,7 +1419,6 @@ updateDesktopStartupProgress('renderer');
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
 sessionLocal.wake();
-workHubPresentation.registerShortcut();
 windowsAppTray.start();
 await guestSessionMountService.start().catch((error: unknown) => {
   console.error('[runtime-host] shared Sessions could not be restored:', error);

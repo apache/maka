@@ -258,6 +258,15 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await expect(stop).toBeVisible();
   await expect(prompt).toBeInViewport();
   const coordinationId = await workhub.evaluate(() => window.maka.workHub.resolveCoordinationSession());
+  await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: false } }));
+  await expect(page.locator('.workHubDock')).toBeHidden();
+  await expect.poll(() => workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ floatingVisible: false });
+  await page.evaluate(async () => {
+    await window.maka.settings.updateClient({ workHub: { enabled: true } });
+    await window.maka.workHubPresentation.detach();
+  });
+  await expect(stop).toBeVisible();
+  await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
   await workhub.getByRole('button', { name: /^(Return to Maka|收回 Maka)$/ }).click();
   const dockBounds = await page.locator('.workHubDock').boundingBox();
   await app.evaluate(({ webContents }) => {

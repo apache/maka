@@ -20,6 +20,12 @@
 import { expect, test, getWorkHubPage } from './fixtures';
 
 test('WorkHub moves the same renderer and draft between the main window and floating window', async ({ sessionLocalWindow: { page, app } }, testInfo) => {
+  await page.evaluate(async () => {
+    await window.maka.settings.updateClient({ workHub: { enabled: false } });
+    await window.maka.workHubPresentation.detach();
+    await window.maka.workHubPresentation.dock();
+  });
+  expect(app.context().pages().filter((candidate) => candidate.url().includes('surface=workhub'))).toHaveLength(0);
   await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
   const workhub = await getWorkHubPage(app);
   const appearance = await page.evaluate(async () => (await window.maka.settings.getClient()).appearance);
@@ -55,6 +61,17 @@ test('WorkHub moves the same renderer and draft between the main window and floa
   await expect.poll(() => workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ placement: 'floating', floatingVisible: true });
   await expect(editor).toHaveText('Keep this unsent WorkHub draft — typed during opening');
   await expect(editor).toHaveAttribute('data-test-instance', marker);
+  await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: false } }));
+  await expect(page.locator('.workHubDock')).toBeHidden();
+  await expect.poll(() => workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ floatingVisible: false, shortcutRegistered: false });
+  await page.evaluate(() => window.maka.workHubPresentation.detach());
+  expect((await workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).floatingVisible).toBe(false);
+  await page.evaluate(async () => {
+    await window.maka.settings.updateClient({ workHub: { enabled: true } });
+    await window.maka.workHubPresentation.detach();
+  });
+  await expect(editor).toHaveAttribute('data-test-instance', marker);
+  await expect(editor).toHaveText('Keep this unsent WorkHub draft — typed during opening');
 
   await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'false');
   const capabilities = await app.evaluate(({ BrowserWindow }) => {

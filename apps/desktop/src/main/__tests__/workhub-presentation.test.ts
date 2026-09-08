@@ -24,12 +24,16 @@ import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import test from 'node:test';
 import { build } from 'esbuild';
+import { deferred } from '@maka/core/test-only/async-primitives';
 import type { createMainWindowController } from '../main-window.js';
 import type { createWorkHubPresentation } from '../workhub-presentation.js';
 
 const source = fileURLToPath(new URL('../../../src/main/workhub-presentation.ts', import.meta.url));
 
 async function harness(animate = false) {
+  let enabled = true;
+  let opening: Promise<void> | undefined;
+  const openingStarted = deferred<void>();
   let now = 0;
   let timerId = 0;
   const timers = new Map<number, { at: number; callback: () => void }>();
@@ -130,7 +134,8 @@ async function harness(animate = false) {
   const main = new FakeWindow();
   const controller = module.exports.createWorkHubPresentation({
     mainWindow: () => main as unknown as Electron.BrowserWindow,
-    ensureMainWindow: async () => main as unknown as Electron.BrowserWindow,
+    isEnabled: async () => enabled,
+    ensureMainWindow: async () => { openingStarted.resolve(); await opening; return main as unknown as Electron.BrowserWindow; },
     mainModuleDirectory: '/app/dist/main', preloadPath: '/app/dist/preload/preload.cjs',
     onError: (error) => errors.push(error),
     onViewCreated: () => { registeredViews++; return () => { releasedViews++; }; },
@@ -138,7 +143,7 @@ async function harness(animate = false) {
   controller.attachMainWindow(main as unknown as Electron.BrowserWindow);
   controller.registerIpc();
   const command = (sender: Contents, name: string, payload?: unknown) => handler!({ sender, senderFrame: sender.mainFrame }, name, payload);
-  return { controller, main, windows, views, errors, command, advance, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
+  return { controller, main, windows, views, errors, command, advance, setEnabled: (value: boolean) => { enabled = value; }, deferOpening: (value: Promise<void>) => { opening = value; return openingStarted.promise; }, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
 }
 
 test('yields the docked native view to main-window overlays without replacing the conversation', async () => {
@@ -342,7 +347,7 @@ test('reparents one live conversation across docking, floating, hide and main-wi
   assert.equal(h.views.length, 1);
   assert.doesNotThrow(() => h.main.destroy());
   assert.doesNotThrow(() => h.controller.send('settings:changed'));
-  h.controller.registerShortcut();
+  await h.controller.refreshSettings();
   h.controller.dispose();
   assert.equal(view.webContents.destroyed, true);
   assert.equal(floating.destroyed, true);
@@ -418,5 +423,59 @@ test('control preparation floats the live conversation and focuses the main wind
   await h.command(view.webContents, 'hide');
   await h.controller.prepareControl();
   assert.equal(floating.visible, true);
+  h.controller.dispose();
+});
+
+
+test('all WorkHub entries obey the client enable setting and disabling retains the renderer', async () => {
+  const h = await harness();
+  const host = { visible: true, rect: { x: 200, y: 40, width: 800, height: 760 } };
+  h.setEnabled(false);
+  await h.controller.show();
+  await h.controller.toggle();
+  await h.command(h.main.webContents, 'host', host);
+  await h.command(h.main.webContents, 'dock');
+  await h.command(h.main.webContents, 'detach');
+  assert.equal(h.views.length, 0, 'disabled entries must not create a conversation');
+  await h.controller.refreshSettings();
+  assert.equal(h.controller.getSnapshot().shortcutRegistered, false);
+
+  h.setEnabled(true);
+  await h.controller.refreshSettings();
+  assert.equal(h.controller.getSnapshot().shortcutRegistered, true);
+  await h.controller.show();
+  const view = h.views[0]!;
+  const floating = h.windows[1]!;
+  assert.equal(floating.visible, true);
+  const opened = deferred<void>();
+  const opening = h.deferOpening(opened.promise);
+  const docking = h.command(view.webContents, 'dock');
+  await opening;
+  h.setEnabled(false);
+  await h.controller.refreshSettings();
+  opened.resolve();
+  await docking;
+  await h.command(view.webContents, 'ready');
+  await h.command(h.main.webContents, 'host', host);
+  assert.equal(h.controller.getSnapshot().shortcutRegistered, false);
+  assert.equal(floating.visible, false);
+  assert.equal(view.visible, false);
+  assert.equal(view.webContents.destroyed, false);
+  assert.equal(h.main.webContents.sent.some(([channel]) => channel === 'workhub-presentation:open-main'), false);
+
+  h.setEnabled(true);
+  await h.controller.refreshSettings();
+  await h.command(view.webContents, 'dock');
+  await h.command(h.main.webContents, 'host', host);
+  assert.equal(view.visible, true);
+  h.setEnabled(false);
+  await h.controller.refreshSettings();
+  h.main.emit('resize');
+  assert.equal(view.visible, false, 'layout cannot revive a disabled dock');
+  h.setEnabled(true);
+  await h.controller.show();
+  assert.equal(h.views.length, 1, 'reenabling preserves the renderer and its draft');
+  assert.equal(floating.visible, true);
+  assert.deepEqual(h.registrations(), [1, 0]);
   h.controller.dispose();
 });

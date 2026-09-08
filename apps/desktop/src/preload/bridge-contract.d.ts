@@ -1012,7 +1012,7 @@ export interface MakaBridge {
   workHub: {
     getSession(coordinationSessionId: string): Promise<DesktopSessionSummary>;
     prepareAttachments(coordinationSessionId: string, items: RendererIngestInput[]): Promise<AttachmentRef[]>;
-    answer(coordinationSessionId: string, input: OperationInput<'workhub.coordination.answer'>): Promise<OperationOutput<'workhub.coordination.answer'>>;
+    answer(coordinationSessionId: string, input: OperationInput<'workhub.coordination.answer'>): Promise<OperationOutput<'workhub.coordination.answer'> | undefined>;
     configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>): Promise<OperationOutput<'workhub.coordination.configureModel'>>;
     /** Resolve the active Runtime Host's stable coordination conversation. */
     resolveCoordinationSession(): Promise<string>;

@@ -55,7 +55,8 @@ export interface WorkHubServices {
   readonly attachments: ComposerAttachmentService;
   readAttachmentBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   prepareAttachments(sessionId: string, items: Array<{ approvalId: string; name: string; mimeType?: string } | { file: File }>): Promise<AttachmentRef[]>;
-  answer(sessionId: string, input: { turnId: string; text: string; attachments?: AttachmentRef[] }): Promise<{ turnId: string }>;
+  /** Undefined means the dispatched admission outcome is still unknown. */
+  answer(sessionId: string, input: { turnId: string; text: string; attachments?: AttachmentRef[] }): Promise<{ turnId: string } | undefined>;
   configureModel(
     sessionId: string,
     input: OperationInput<'workhub.coordination.configureModel'>,

@@ -29,6 +29,7 @@ const SHORTCUT = 'CommandOrControl+Shift+K';
 export interface WorkHubPresentationDeps {
   mainWindow(): BrowserWindow | undefined;
   ensureMainWindow(): Promise<BrowserWindow>;
+  isEnabled(): Promise<boolean>;
   mainModuleDirectory: string;
   viteDevServerUrl?: string;
   preloadPath: string;
@@ -214,7 +215,8 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     if (host.visible && width > 0 && height > 0 && focusPending) focusComposer();
   }
 
-  function detach(positionAtDefault = false): void {
+  async function detach(positionAtDefault = false): Promise<void> {
+    if (!await deps.isEnabled() || disposed) return;
     cancelFloatingAnimation();
     ensureView();
     const target = ensureFloating();
@@ -244,16 +246,20 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   async function prepareControl(): Promise<void> {
     const main = await deps.ensureMainWindow();
     if (disposed) throw new Error('WorkHub presentation is disposed');
+    if (!await deps.isEnabled()) throw new Error('WorkHub is disabled');
     attachMainWindow(main);
-    if (placement !== 'floating' || !floating?.isVisible()) detach();
+    if (placement !== 'floating' || !floating?.isVisible()) await detach();
+    if (!await deps.isEnabled() || disposed) return;
     if (main.isMinimized()) main.restore();
     main.show();
     main.focus();
   }
 
-  async function navigateMain(navigation: WorkHubMainNavigation): Promise<BrowserWindow> {
+  async function navigateMain(navigation: WorkHubMainNavigation): Promise<BrowserWindow | undefined> {
+    if (navigation.kind === 'workhub' && !await deps.isEnabled()) return;
     const main = await deps.ensureMainWindow();
     if (disposed) throw new Error('WorkHub presentation is disposed');
+    if (navigation.kind === 'workhub' && !await deps.isEnabled()) return;
     attachMainWindow(main);
     if (main.isMinimized()) main.restore();
     main.show();
@@ -265,7 +271,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
 
   async function dock(): Promise<void> {
     cancelFloatingAnimation();
-    await navigateMain({ kind: 'workhub' });
+    if (!await navigateMain({ kind: 'workhub' }) || !await deps.isEnabled() || disposed) return;
     ensureView();
     floating?.hide();
     placement = 'docked';
@@ -321,7 +327,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             else {
               mainReady.add(event.sender);
               const navigation = pendingNavigation.get(event.sender);
-              if (navigation) {
+              if (navigation && (navigation.kind !== 'workhub' || await deps.isEnabled())) {
                 pendingNavigation.delete(event.sender);
                 event.sender.send('workhub-presentation:open-main', navigation);
               }
@@ -347,7 +353,9 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
               }
             }
             if (disposed) return;
-            host = value;
+            // Geometry updates need no settings read until they would reopen a hidden dock.
+            host = value.visible && !host.visible && !await deps.isEnabled() ? { ...value, visible: false } : value;
+            if (disposed) return;
             if (host.visible && placement === 'docked') {
               attachMainWindow(main!);
               // Layout notifications must not turn a crash into a reload loop.
@@ -356,7 +364,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             updateDockedBounds();
             return backdrop;
           }
-          case 'detach': detach(); return;
+          case 'detach': await detach(); return;
           case 'conversation-layout': {
             if (isMain) throw new Error('Only the WorkHub view can size its conversation');
             const value = payload as { expanded?: unknown; compactHeight?: unknown } | null;
@@ -396,14 +404,25 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
         cancelFloatingAnimation();
         floating.hide();
         changed();
-      } else detach(positionAtDefault);
+      } else await detach(positionAtDefault);
     });
   }
 
-  function registerShortcut(): boolean {
-    if (!shortcutRegistered) shortcutRegistered = globalShortcut.register(SHORTCUT, () => { void toggle(true).catch(reportError); });
+  async function refreshSettings(): Promise<void> {
+    const enabled = await deps.isEnabled();
+    if (disposed) return;
+    if (enabled) {
+      if (!shortcutRegistered) shortcutRegistered = globalShortcut.register(SHORTCUT, () => { void toggle(true).catch(reportError); });
+    } else {
+      if (shortcutRegistered) globalShortcut.unregister(SHORTCUT);
+      shortcutRegistered = false;
+      cancelFloatingAnimation();
+      focusPending = false;
+      host = { ...host, visible: false };
+      view?.setVisible(false);
+      floating?.hide();
+    }
     changed();
-    return shortcutRegistered;
   }
 
   function releaseViewRegistration(): void {
@@ -437,5 +456,5 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     floating = undefined;
   }
 
-  return { registerIpc, registerShortcut, attachMainWindow, getSnapshot, ownsWebContents, send, prepareControl: () => enqueue(prepareControl), show: () => enqueue(detach), toggle, dispose };
+  return { registerIpc, refreshSettings, attachMainWindow, getSnapshot, ownsWebContents, send, prepareControl: () => enqueue(prepareControl), show: () => enqueue(detach), toggle, dispose };
 }

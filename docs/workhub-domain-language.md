@@ -86,6 +86,10 @@ of pre-cutover beta WorkHub history is not part of this cutover contract.
 
 ## Desktop presentation
 
+The client-owned enable setting gates sidebar, dock, shortcut and tray entries.
+Disabling hides the presentation and unregisters its shortcut while retaining the
+shared renderer, drafts and Host-owned work, including during a pending window open.
+
 The shortcut shows or hides the floating WorkHub window. Hiding does not open or
 focus Maka Desktop. The return button above an expanded conversation explicitly
 docks WorkHub into Desktop. Drafts, attachments, conversation and running state
@@ -94,6 +98,11 @@ A crashed renderer is disposed and recreated when WorkHub is reopened or docked.
 An empty dock exposes Retry so recovery does not depend on a layout change.
 The new view reconnects to the same Host-owned Session; unsent in-memory drafts
 are not crash-persistent.
+
+The composer retains a Stop requested before admission for that exact Session/Turn.
+A lost dispatched response leaves admission unresolved; a later observation delivers
+the intent through the existing Stop owner. Rejection or terminal evidence retires
+it, so neither a retry nor a later Turn inherits the intent.
 
 Both renderers use the shared document theme, palette and font application
 functions. Native main-window chrome remains owned by the main renderer. Restricted

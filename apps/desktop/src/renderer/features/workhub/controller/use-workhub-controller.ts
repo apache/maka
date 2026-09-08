@@ -41,6 +41,14 @@ const emptyTranscript: WorkHubTranscriptSnapshot = {
   hasNewer: false,
   ready: false,
 };
+interface SendAttempt {
+  sessionId: string;
+  turnId: string;
+  text: string;
+  attachmentKey: string;
+  admission: 'pending' | 'admitted' | 'terminal' | 'rejected';
+  stop?: 'requested' | 'sending' | 'resend';
+}
 export function useWorkHubController() {
   const services = useWorkHubServices();
   const locale = useUiLocale();
@@ -65,11 +73,44 @@ export function useWorkHubController() {
   const currentSessionId = useRef(sessionId);
   currentSessionId.current = sessionId;
   const sendingRef = useRef(false);
-  const pendingSend = useRef<{ sessionId: string; turnId: string; text: string; attachmentKey: string } | undefined>(
-    undefined,
-  );
+  const pendingSend = useRef<SendAttempt | undefined>(undefined);
   const report = (reason: unknown) =>
     setError(reason instanceof Error ? reason.message : String(reason));
+
+  async function deliverStop(attempt: SendAttempt): Promise<void> {
+    if (!attempt.stop || pendingSend.current !== attempt || currentSessionId.current !== attempt.sessionId) return;
+    if (attempt.stop !== 'requested') { attempt.stop = 'resend'; return; }
+    attempt.stop = 'sending';
+    let failed = false;
+    try {
+      const result = await services.stop(attempt.sessionId, attempt.turnId);
+      if (result) attempt.stop = undefined;
+    } catch (reason) {
+      failed = true;
+      if (currentSessionId.current === attempt.sessionId) report(reason);
+    } finally {
+      // An observation may arrive while the stop owner is still reading its
+      // old snapshot. Retry only for that new evidence, never on a timer.
+      const again = (attempt.stop as SendAttempt['stop']) === 'resend';
+      if (attempt.stop) attempt.stop = 'requested';
+      if (pendingSend.current === attempt && currentSessionId.current === attempt.sessionId)
+        setStopPending(Boolean(attempt.stop) && !failed);
+      if (again) void deliverStop(attempt);
+    }
+  }
+
+  function reconcileAdmission(target: string, turnId: string, terminal = false) {
+    const attempt = pendingSend.current;
+    if (!attempt || attempt.sessionId !== target || attempt.turnId !== turnId || attempt.admission === 'rejected') return;
+    if (terminal) {
+      attempt.admission = 'terminal';
+      attempt.stop = undefined;
+      setStopPending(false);
+    } else if (attempt.admission !== 'terminal') {
+      attempt.admission = 'admitted';
+      void deliverStop(attempt);
+    }
+  }
 
   useEffect(
     () =>
@@ -80,6 +121,7 @@ export function useWorkHubController() {
         onResolving: () => {
           currentSessionId.current = undefined;
           setSessionId(undefined);
+          setStopPending(false);
           setError(undefined);
         },
         onResolved: setSessionId,
@@ -98,7 +140,10 @@ export function useWorkHubController() {
       const read = ++revision;
       void Promise.all([services.listSessions(), sessionId ? services.getSession(sessionId) : undefined])
         .then(([next, coordination]) => {
-          if (!disposed && read === revision) setSessions(coordination ? [...next, coordination] : next);
+          if (!disposed && read === revision) {
+            setSessions(coordination ? [...next, coordination] : next);
+            for (const turnId of coordination?.runningTurnIds ?? []) reconcileAdmission(sessionId!, turnId);
+          }
         })
         .catch((reason: unknown) => {
           if (!disposed) report(reason);
@@ -139,11 +184,12 @@ export function useWorkHubController() {
     const unsubscribe = services.observe(
       sessionId,
       (event) => {
-        if (!disposed)
-          setLiveTurn((previous) => {
-            const next = applyLiveTurnEvent(previous, event, localeRef.current);
-            return next ? reconcileTerminalLiveTurn(next, transcriptRef.current.messages) : next;
-          });
+        if (disposed) return;
+        reconcileAdmission(sessionId, event.turnId, event.type === 'abort' || event.type === 'error' || event.type === 'complete');
+        setLiveTurn((previous) => {
+          const next = applyLiveTurnEvent(previous, event, localeRef.current);
+          return next ? reconcileTerminalLiveTurn(next, transcriptRef.current.messages) : next;
+        });
       },
       (reason) => {
         if (!disposed) report(reason);
@@ -153,6 +199,12 @@ export function useWorkHubController() {
       if (disposed) return;
       transcriptRef.current = snapshot;
       setTranscript(snapshot);
+      const attempt = pendingSend.current;
+      if (attempt?.sessionId === sessionId) {
+        const messages = snapshot.messages.filter((message) => message.turnId === attempt.turnId);
+        if (messages.length) reconcileAdmission(sessionId, attempt.turnId,
+          messages.some((message) => message.type === 'turn_state' && message.status !== 'running'));
+      }
       setTransientMessages((previous) => previous.filter((pending) =>
         !snapshot.messages.some((message) => message.type === 'user' && message.turnId === pending.hostTurnId),
       ));
@@ -192,10 +244,10 @@ export function useWorkHubController() {
     try {
       const previous = pendingSend.current;
       const attachmentKey = JSON.stringify(attachments);
-      const attempt =
-        previous?.sessionId === target && previous.text === text && previous.attachmentKey === attachmentKey
-          ? previous
-          : { sessionId: target, turnId: crypto.randomUUID(), text, attachmentKey };
+      const attempt: SendAttempt =
+        previous?.sessionId === target && previous.admission === 'rejected' && previous.text === text && previous.attachmentKey === attachmentKey
+          ? { ...previous, admission: 'pending', stop: undefined }
+          : { sessionId: target, turnId: crypto.randomUUID(), text, attachmentKey, admission: 'pending' };
       pendingSend.current = attempt;
       setLiveTurn(armLiveTurn(attempt.turnId));
       setTransientMessages((previous) => [...previous.filter((message) => message.hostTurnId !== attempt.turnId), {
@@ -212,15 +264,21 @@ export function useWorkHubController() {
         text,
         ...(attachments.length ? { attachments } : {}),
       });
-      pendingSend.current = undefined;
-      if (currentSessionId.current === target)
+      if (result) reconcileAdmission(target, result.turnId);
+      if (result && pendingSend.current?.admission !== 'terminal' && currentSessionId.current === target)
         setLiveTurn((previous) =>
           previous?.turnId === result.turnId ? previous : reconcileTerminalLiveTurn(armLiveTurn(result.turnId), transcriptRef.current.messages),
         );
       return true;
     } catch (reason) {
       if (currentSessionId.current === target) {
-        const failedTurnId = pendingSend.current?.turnId;
+        const attempt = pendingSend.current;
+        const failedTurnId = attempt?.turnId;
+        if (attempt?.admission === 'pending') {
+          attempt.admission = 'rejected';
+          attempt.stop = undefined;
+          setStopPending(false);
+        }
         setTransientMessages((previous) => previous.filter((message) => message.hostTurnId !== failedTurnId));
         setLiveTurn((previous) => previous?.turnId === failedTurnId && previous?.unconfirmed ? undefined : previous);
         report(reason);
@@ -234,6 +292,12 @@ export function useWorkHubController() {
   async function stop() {
     if (!sessionId || !runningTurnId || stopPending) return;
     setStopPending(true);
+    const attempt = pendingSend.current;
+    if (attempt?.sessionId === sessionId && attempt.turnId === runningTurnId && attempt.admission !== 'terminal' && attempt.admission !== 'rejected') {
+      attempt.stop = 'requested';
+      await deliverStop(attempt);
+      return;
+    }
     try {
       await services.stop(sessionId, runningTurnId);
     } catch (reason) {

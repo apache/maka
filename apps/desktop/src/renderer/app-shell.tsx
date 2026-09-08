@@ -448,6 +448,7 @@ function AppShellContent({
         const becameEnabled = enabled && !workHubEnabledRef.current;
         workHubEnabledRef.current = enabled;
         setWorkHubEnabled(enabled);
+        if (!enabled) setWorkHubActive(false);
         if (becameEnabled) {
           setWorkHubActive(true);
           setNavSelection({ section: 'sessions' });
@@ -978,6 +979,7 @@ function AppShellContent({
     [shellCopy],
   );
   const openWorkHub = useCallback(() => {
+    if (!workHubEnabledRef.current) return;
     setSettingsOpen(false);
     setNavSelection({ section: 'sessions' });
     setWorkHubActive(true);
