@@ -558,6 +558,7 @@ export function applyArchivedToolResultReadModelStatuses(
           toolCallId: placeholder.toolCallId,
           toolName: placeholder.toolName,
           artifactId: placeholder.artifactId,
+          ...(placeholder.rewriteVersion === 2 ? { resourceRef: placeholder.resourceRef } : {}),
           bodySha256: placeholder.bodySha256,
           originalEstimatedTokens: placeholder.originalEstimatedTokens,
           originalBytes: placeholder.originalBytes,
@@ -970,6 +971,9 @@ function projectFunctionResponse(
         toolName: archivedPlaceholder.toolName,
         artifactId: archivedPlaceholder.artifactId,
         bodySha256: archivedPlaceholder.bodySha256,
+        ...(archivedPlaceholder.rewriteVersion === 2
+          ? { resourceRef: archivedPlaceholder.resourceRef }
+          : {}),
         originalEstimatedTokens: archivedPlaceholder.originalEstimatedTokens,
         originalBytes: archivedPlaceholder.originalBytes,
         rewriteVersion: archivedPlaceholder.rewriteVersion,

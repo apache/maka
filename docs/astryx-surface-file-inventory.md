@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.5.2` (194 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 256 files — blocker 0, reimplementation 0, polish 1, aligned 255.
+**Totals:** 259 files — blocker 0, reimplementation 0, polish 1, aligned 258.
 
 ## Exclusions (explicit)
 
@@ -97,8 +97,11 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx` | shell-chrome-or-panel | Card, ResizeHandle, Spinner | aligned — uses Astryx (Card, ResizeHandle, Spinner) | aligned |
 | `apps/desktop/src/renderer/features/workbar/ui/workbar-surface.tsx` | shell-chrome-or-panel | Badge, Card, DropdownMenu, DropdownMenuItem, Heading, Icon, Kbd, List, ListItem, Section, Spinner, Tab, TabList | aligned — uses Astryx (Badge, Card, DropdownMenu, DropdownMenuItem, Heading, Icon, Kbd, List) | aligned |
 | `apps/desktop/src/renderer/features/workbar/ui/workbar-toggle.tsx` | shell-chrome-or-panel | Icon, IconButton, Tooltip | aligned — uses Astryx (Icon, IconButton, Tooltip) | aligned |
+| `apps/desktop/src/renderer/features/workhub/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/workhub/ui/workhub-composer.tsx` | shell-chrome-or-panel | Selector | aligned — uses Astryx (Selector) | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-navigation-rail.tsx` | other | Button, List, ListItem, StatusDot | aligned — uses Astryx (Button, List, ListItem, StatusDot) | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-prompt-rail.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/workhub/ui/workhub-work-identity.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/keyboard-help.tsx` | dialog-overlay | Dialog, DialogHeader, Heading, Kbd, Layout, LayoutContent | aligned — uses Astryx (Dialog, DialogHeader, Heading, Kbd, Layout, LayoutContent) | aligned |
 | `apps/desktop/src/renderer/live-turn-reconciler.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/maka-tokens.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |

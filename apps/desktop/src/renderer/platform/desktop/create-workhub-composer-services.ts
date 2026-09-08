@@ -17,4 +17,12 @@
  * under the License.
  */
 
-export { NEW_TASK_PENDING_KEY, selectPending, appendPending, removePending, removePendingItems, clearPending, type PendingByKey } from './features/conversation/index.js';
+import type { MakaBridge } from '../../../preload/bridge-contract.js';
+export function createDesktopWorkHubComposerServices(bridge: MakaBridge = window.maka) {
+  return {
+    attachments: bridge.attachments,
+    prepareAttachments: bridge.workHub.prepareAttachments,
+    setModelConfiguration: bridge.sessions.setModelConfiguration,
+    setPermissionMode: bridge.sessions.setPermissionMode,
+  };
+}

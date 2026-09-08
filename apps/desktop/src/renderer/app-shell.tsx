@@ -35,7 +35,6 @@ import type {
 } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
-import type { SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
 import type { UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
 import { collapseSessionRevisions } from '@maka/core/session-revisions';
 import { isLinkedSubagentSession } from '@maka/core/session';
@@ -66,7 +65,6 @@ import {
   reconcileInteractions,
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
-import { GitBranch, MessageCircleQuestion, Minimize2, Network } from '@maka/ui/icons';
 import { Button } from '@astryxdesign/core/Button';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
@@ -195,7 +193,7 @@ import {
 import * as liveContent from './live-content-seed';
 import { loadComposerDefaults, saveComposerDefaults } from './composer-defaults';
 import { useTurnActionRegistry } from './use-turn-action-registry';
-import { useComposerAttachments } from './use-composer-attachments';
+import { useComposerAttachments, desktopSlashCommandPresentation } from './features/conversation/index.js';
 import { useAppShellComposerQuotes } from './use-app-shell-composer-quotes';
 import {
   type ComposerMentionsSurfaceInput,
@@ -552,7 +550,7 @@ function AppShellContent({
   const sessionHostConnections = useShellConnections({
     toastApi,
     uiLocale,
-    target: { kind: 'session', sessionId: ownerActiveId },
+    target: { kind: 'session', sessionId: workHubActive ? workHubCoordinationSessionId : ownerActiveId },
   });
   const startupConnectionSnapshot = onboarding.snapshot;
   const newTaskUsesDefaultHost = taskEntry.selectors.usesDefaultHost;
@@ -568,7 +566,7 @@ function AppShellContent({
           }
         : defaultHostConnections.snapshot;
   }
-  const activeConnectionSnapshot = activeId
+  const activeConnectionSnapshot = workHubActive || activeId
     ? sessionHostConnections.snapshot
     : newTaskConnectionSnapshot;
   const connections = activeConnectionSnapshot.connections;
@@ -1222,31 +1220,7 @@ function AppShellContent({
           streaming: turnActive || activeStreamingLive,
         }),
       );
-      const presentation: Record<
-        SlashCommandIdForSurface<'desktop'>,
-        Omit<ComposerSlashCommandOption, 'id'>
-      > = {
-        compact: {
-          ...shellCopy.slashCommands.compact,
-          keywords: ['compact', 'context', '压缩', '上下文'],
-          Icon: Minimize2,
-        },
-        side: {
-          ...shellCopy.slashCommands.side,
-          keywords: ['side', 'btw', '侧聊', '追问'],
-          Icon: MessageCircleQuestion,
-        },
-        swarm: {
-          ...shellCopy.slashCommands.swarm,
-          keywords: ['swarm', 'multi-agent', '多智能体'],
-          Icon: Network,
-        },
-        graph: {
-          ...shellCopy.slashCommands.graph,
-          keywords: ['graph', 'agent graph', '智能体图'],
-          Icon: GitBranch,
-        },
-      };
+      const presentation = desktopSlashCommandPresentation(shellCopy.slashCommands);
       return availableCommands.map(({ id }) => ({ id, ...presentation[id] }));
     },
     [activeId, activeStreamingLive, shellCopy.slashCommands, turnActive],
@@ -2655,6 +2629,13 @@ function AppShellContent({
                     locale={uiLocale}
                     {...(activeId ? { initialFocusSessionId: activeId } : {})}
                     onOpenSession={openSessionInChat}
+                    composerServices={{
+                      sessions,
+                      modelChoices: chatModelChoices,
+                      defaults: { model: newChatModel, permissionMode: newTaskPermissionMode },
+                      confirmBypass: () => confirmBypassPermission(toastApi, uiLocale),
+                      onOpenModelSettings: () => openSettingsSection('models'),
+                    }}
                   />
                 ) : (
                   <WorkHubCoordinationStatus
@@ -2770,6 +2751,7 @@ function AppShellContent({
                       : undefined
                   }
                   slashCommands={desktopSlashCommands}
+                  allowAttachmentOnlySend
                   pendingAttachments={pendingAttachments}
                   onRemoveAttachment={removeAttachment}
                   pendingQuotes={pendingQuotes}

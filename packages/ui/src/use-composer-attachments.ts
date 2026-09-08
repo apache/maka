@@ -29,13 +29,10 @@ import {
   type AttachmentRef,
   type DirectoryReference,
 } from '@maka/core/events';
-import { useUiLocale } from '@maka/ui';
 import {
   pendingAttachmentSourceKey,
   type PendingAttachment,
 } from './composer-attachments.js';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
-import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
   appendPending,
   removePending,
@@ -174,7 +171,16 @@ function releasePreviewUrl(url: string | undefined): void {
   if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
 }
 
+export interface ComposerAttachmentCopy {
+  attachmentFailedTitle: string;
+  tryAgain: string;
+  imageAttachmentNotDirectTitle: string;
+  imageAttachmentNotDirectDescription: string;
+}
+
 export function useComposerAttachments(options: {
+  copy: ComposerAttachmentCopy;
+  formatError(error: unknown, fallback: string): string;
   draftKey: string;
   directoryHostId?: string;
   toastApi: ToastApi;
@@ -187,8 +193,7 @@ export function useComposerAttachments(options: {
       }
     | undefined;
 }) {
-  const uiLocale = useUiLocale();
-  const copy = getDesktopConversationCopy(uiLocale).actions;
+  const copy = options.copy;
   const [pendingState, setPendingState] = useState<ComposerPendingState>({
     attachments: {},
     directories: {},
@@ -332,7 +337,7 @@ export function useComposerAttachments(options: {
     } catch (error) {
       options.toastApi.error(
         copy.attachmentFailedTitle,
-        localizedShellErrorMessage(error, copy.tryAgain, uiLocale),
+        options.formatError(error, copy.tryAgain),
       );
     }
   }
@@ -365,7 +370,7 @@ export function useComposerAttachments(options: {
     } catch (error) {
       owner.toastApi.error(
         copy.attachmentFailedTitle,
-        localizedShellErrorMessage(error, copy.tryAgain, uiLocale),
+        options.formatError(error, copy.tryAgain),
       );
     }
   }

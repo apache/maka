@@ -17,6 +17,10 @@
  * under the License.
  */
 
+import { ToastProvider } from '@maka/ui';
+import { useState } from 'react';
+import type { SessionSummary } from '@maka/core/session';
+import { WorkHubComposerServicesProvider } from '../src/renderer/features/workhub/index.js';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, within, waitFor } from 'storybook/test';
 import type {
@@ -274,4 +278,190 @@ export const ConversationPromptAnchors: Story = {
 
 export const ConversationPromptAnchorsNarrow: Story = {
   ...ConversationPromptAnchors,
+};
+
+// Repeated messages for one work must highlight together, independently of
+// intervening work. This is the same durable assignment seam as production.
+export const WorkIdentityAcrossTurns: Story = {
+  render: () => {
+    const first = submittedTurn();
+    const other: WorkHubCoordinationTurn = {
+      ...first, messageId: 'other-message', turnId: 'other-turn',
+      text: '检查另一个工作的界面布局。',
+      assignment: { ...first.assignment!, targetSessionId: 'other-work', targetSessionName: '界面布局' },
+    };
+    const followup = { ...first, messageId: 'followup-message', turnId: 'followup-turn', text: '继续支付回调，检查失败重试。' };
+    return <Surface turns={[first, other, followup]} />;
+  },
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(canvasElement.querySelectorAll('.workhub-bound-turn')).toHaveLength(3));
+    const turns = Array.from(canvasElement.querySelectorAll<HTMLElement>('.workhub-bound-turn'));
+    const rail = turns[0]!.querySelector<HTMLElement>('.workhub-work-rail')!;
+    await userEvent.hover(rail);
+    await waitFor(() => expect(turns.map(turn => turn.dataset.workHighlighted)).toEqual(['true', 'false', 'true']));
+    await userEvent.unhover(rail);
+    await waitFor(() => expect(turns.map(turn => turn.dataset.workHighlighted)).toEqual(['false', 'false', 'false']));
+    const ticks = Array.from(canvasElement.querySelectorAll<HTMLElement>('.maka-prompt-rail-tick'));
+    expect(ticks).toHaveLength(3);
+    const navigation = canvasElement.querySelector<HTMLElement>('.workhub-navigation-item')!;
+    await userEvent.hover(navigation);
+    await waitFor(() => {
+      expect(turns.map(turn => turn.dataset.workHighlighted)).toEqual(['true', 'false', 'true']);
+      expect(ticks.map(tick => tick.dataset.highlighted)).toEqual(['true', undefined, 'true']);
+      expect(getComputedStyle(ticks[0]!).color).toBe(getComputedStyle(ticks[2]!).color);
+      expect(getComputedStyle(navigation.querySelector('.workhub-navigation-label')!).color)
+        .toBe(getComputedStyle(ticks[0]!).color);
+      expect(getComputedStyle(ticks[0]!).color).not.toBe(getComputedStyle(ticks[1]!).color);
+    });
+    await userEvent.unhover(navigation);
+    await userEvent.hover(ticks[1]!);
+    await waitFor(() => {
+      expect(turns.map(turn => turn.dataset.workHighlighted)).toEqual(['false', 'true', 'false']);
+      expect(navigation.dataset.workHighlighted).toBe('false');
+    });
+    await userEvent.unhover(ticks[1]!);
+    ticks[0]!.focus();
+    await waitFor(() => expect(navigation.dataset.workHighlighted).toBe('true'));
+    ticks[0]!.blur();
+    await userEvent.hover(rail);
+    await waitFor(() => {
+      expect(navigation.dataset.workHighlighted).toBe('true');
+      expect(ticks.map(tick => tick.dataset.highlighted)).toEqual(['true', undefined, 'true']);
+    });
+    await userEvent.unhover(rail);
+  },
+};
+
+const composerWrites = { model: fn(), permission: fn(), send: fn(), upload: fn() };
+const composerModels = ['model-a', 'model-b'].map((model, index) => ({
+  connectionId: 'connection-test', connectionSlug: 'test', providerType: 'openai' as const,
+  providerLabel: 'OpenAI', model, label: model, isDefault: index === 0, thinkingLevels: [],
+}));
+function ConfiguredComposerSurface({ failFirst = false }: { failFirst?: boolean }) {
+  const [failures] = useState(() => ({ remaining: failFirst ? 1 : 0 }));
+  const [session, setSession] = useState<SessionSummary>({
+    id: TARGET_SESSION_ID, name: SESSION_NAME, isFlagged: false, isArchived: false, labels: [],
+    hasUnread: false, status: 'active', backend: 'ai-sdk', llmConnectionId: 'connection-test',
+    llmConnectionSlug: 'test', connectionLocked: false, model: 'model-a', permissionMode: 'ask',
+  });
+  const [fixture] = useState<WorkHubController>(() => ({
+    ...controller([submittedTurn()]),
+    submit: async (input) => {
+      composerWrites.send(input);
+      if (failures.remaining-- > 0) throw new Error('Temporary Host failure');
+      return { kind: 'discussion', requestId: input.requestId, text: input.text, strategyId: 'wh-r2.4-session-context-continuity' };
+    },
+  }));
+  return <ToastProvider><WorkHubComposerServicesProvider services={{
+    attachments: {
+      pickFiles: async () => ({ ok: true, files: [{ approvalId: 'file-1', name: 'requirements.txt', size: 12, mimeType: 'text/plain' }] }),
+      previewApproval: async () => ({ ok: false, reason: 'not-image' }),
+    },
+    prepareAttachments: async (sessionId, items) => {
+      composerWrites.upload(sessionId, items);
+      return [{ name: 'requirements.txt', kind: 'other', mimeType: 'text/plain', bytes: 12, ref: { kind: 'session_file', sessionId: 'maka_workhub_coordination', relativePath: 'artifact-1' } }];
+    },
+    setModelConfiguration: async (sessionId, model) => {
+      composerWrites.model(sessionId, model);
+      setSession((current) => ({ ...current, ...model, thinkingLevel: undefined }));
+    },
+    setPermissionMode: async (sessionId, permissionMode) => {
+      composerWrites.permission(sessionId, permissionMode);
+      setSession((current) => ({ ...current, permissionMode }));
+    },
+  }}>
+    <div className="maka-detail-with-artifacts" style={{ height: '100dvh' }}><div className="mainColumn">
+      <WorkHubSurface controller={fixture} leaseScope="composer-story" locale={LOCALE} onOpenSession={() => {}} composerServices={{
+        sessions: [session], modelChoices: composerModels,
+        defaults: { model: { llmConnectionId: 'connection-test', llmConnectionSlug: 'test', model: 'model-a' }, permissionMode: 'ask' },
+        confirmBypass: async () => true, onOpenModelSettings: () => {},
+      }} />
+    </div></div>
+  </WorkHubComposerServicesProvider></ToastProvider>;
+}
+
+// Production Composer, with only native file picking and Host writes replaced.
+export const StandardComposer: Story = {
+  render: () => <ConfiguredComposerSurface />,
+  play: async ({ canvasElement }) => {
+    Object.values(composerWrites).forEach((spy) => spy.mockClear());
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByRole('combobox', { name: '当前 Work' })).toBeEnabled());
+    await expect(canvas.getByText('模型与权限用于新 Work')).toBeVisible();
+    await expect(canvas.getByRole('button', { name: '添加上下文' })).toBeEnabled();
+    await userEvent.click(canvas.getByRole('combobox', { name: '当前 Work' }));
+    await userEvent.click(within(canvasElement.ownerDocument.body).getByRole('option', { name: SESSION_NAME }));
+    await expect(canvas.getByText('模型与权限用于此 Work')).toBeVisible();
+    const page = within(canvasElement.ownerDocument.body);
+    await userEvent.click(canvas.getByRole('button', { name: /切换当前任务模型/ }));
+    await userEvent.click(page.getByRole('menuitemradio', { name: 'model-b' }));
+    await waitFor(() => expect(composerWrites.model).toHaveBeenCalledWith(TARGET_SESSION_ID, expect.objectContaining({ model: 'model-b' })));
+    await userEvent.click(canvas.getByRole('button', { name: /权限模式/ }));
+    await userEvent.click(page.getByRole('menuitemradio', { name: '完全权限' }));
+    await waitFor(() => expect(composerWrites.permission).toHaveBeenCalledWith(TARGET_SESSION_ID, 'bypass'));
+    await userEvent.click(canvas.getByRole('combobox', { name: '当前 Work' }));
+    await userEvent.click(page.getByRole('option', { name: '自动识别工作' }));
+    await userEvent.click(canvas.getByRole('button', { name: /选择新任务模型/ }));
+    await userEvent.click(page.getByRole('menuitemradio', { name: 'model-b' }));
+    await userEvent.click(canvas.getByRole('button', { name: '添加上下文' }));
+    await userEvent.click(page.getByRole('menuitem', { name: /添加文件/ }));
+    await waitFor(() => expect(canvas.getByText('requirements.txt')).toBeVisible());
+    const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
+    await userEvent.click(editor);
+    await userEvent.type(editor, 'Review requirements');
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(composerWrites.send).toHaveBeenCalledWith(expect.objectContaining({
+      newWorkDefaults: expect.objectContaining({ model: expect.objectContaining({ model: 'model-b' }), permissionMode: 'ask' }),
+      attachments: [expect.objectContaining({ name: 'requirements.txt' })],
+    })));
+    expect(composerWrites.send.mock.lastCall?.[0].explicitTarget).toBeUndefined();
+    expect(composerWrites.model).toHaveBeenCalledTimes(1);
+    expect(composerWrites.permission).toHaveBeenCalledTimes(1);
+    const composer = canvasElement.querySelector('.maka-composer-astryx') as HTMLElement;
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-composer-attachment-token')).toHaveLength(0));
+    await userEvent.click(canvas.getByRole('button', { name: '添加上下文' }));
+    await userEvent.click(page.getByRole('menuitem', { name: /添加文件/ }));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-composer-attachment-token')).toHaveLength(1));
+    await userEvent.click(editor);
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(composerWrites.send).toHaveBeenCalledTimes(2));
+    expect(composerWrites.send.mock.lastCall?.[0].text).toBe('请查看附件。');
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-composer-attachment-token')).toHaveLength(0));
+    const scopeBox = canvasElement.querySelector('.workhub-composer-scope')!.getBoundingClientRect();
+    const plateBox = composer.firstElementChild!.getBoundingClientRect();
+    expect(Math.abs(scopeBox.left - plateBox.left)).toBeLessThanOrEqual(1);
+    expect(Math.abs(scopeBox.right - plateBox.right)).toBeLessThanOrEqual(1);
+    const conversationBox = canvasElement.querySelector('.workhub-conversation-shell')!.getBoundingClientRect();
+    expect(Math.abs(conversationBox.left - plateBox.left)).toBeLessThanOrEqual(1);
+    expect(Math.abs(conversationBox.right - plateBox.right)).toBeLessThanOrEqual(1);
+    canvasElement.dataset.workhubComposerVerified = 'true';
+
+  },
+};
+
+export const StandardComposerNarrow: Story = { ...StandardComposer, parameters: { viewport: { defaultViewport: 'tablet' } } };
+
+export const ComposerRetainsFailedAttachment: Story = {
+  render: () => <ConfiguredComposerSurface failFirst />,
+  play: async ({ canvasElement }) => {
+    Object.values(composerWrites).forEach((spy) => spy.mockClear());
+    const canvas = within(canvasElement);
+    const page = within(canvasElement.ownerDocument.body);
+    await waitFor(() => expect(canvas.getByRole('combobox', { name: '当前 Work' })).toBeEnabled());
+    await userEvent.click(canvas.getByRole('button', { name: '添加上下文' }));
+    await userEvent.click(page.getByRole('menuitem', { name: /添加文件/ }));
+    const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
+    await userEvent.click(editor);
+    await userEvent.type(editor, 'Review requirements');
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(canvasElement.querySelector('.workhub-turn[data-state="failed"]')).not.toBeNull());
+    const composer = canvasElement.querySelector('.maka-composer-astryx') as HTMLElement;
+    expect(within(composer).getByText('requirements.txt')).toBeVisible();
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(composerWrites.send).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-composer-attachment-token')).toHaveLength(0));
+    expect(composerWrites.upload).toHaveBeenCalledTimes(1);
+    expect(composerWrites.send.mock.calls[0]?.[0].requestId).toBe(composerWrites.send.mock.calls[1]?.[0].requestId);
+    canvasElement.dataset.workhubComposerVerified = 'true';
+  },
 };

@@ -8977,7 +8977,8 @@ describe('AiSdkBackend usage telemetry', () => {
         },
         readToolResultArchive: async () => ({ ok: false, reason: 'not_found' }),
         readArchivedToolResultResource: async (event) => {
-          const serializedResult = store.get(event.artifactId);
+          const serializedResult =
+            event.storage === 'ledger' ? undefined : store.get(event.artifactId);
           return serializedResult === undefined
             ? { ok: false, reason: 'not_found' }
             : { ok: true, serializedResult };

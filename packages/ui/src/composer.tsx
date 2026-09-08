@@ -314,6 +314,8 @@ export const Composer = forwardRef<
     pendingDirectories?: readonly import('@maka/core/events').DirectoryReference[];
     onRemoveDirectory?(index: number): void;
     onAttachFilePaths?(files: File[]): void | Promise<void>;
+    /** Hosts that can submit context without a text prompt opt in. */
+    allowAttachmentOnlySend?: boolean;
     pendingAttachments?: readonly {
       displayName: string;
       kind: AttachmentRef['kind'];
@@ -1255,10 +1257,13 @@ export const Composer = forwardRef<
   );
 
   // Sendable content is a non-empty draft *or* staged structured context:
-  // a pure quote/attachment send is a real message (#4804) and must pass the
-  // same gates (send handler, disabled state, send/stop toggle) as text.
+  // a pure quote send is a real message (#4804). Attachment-only sends stay
+  // on the Host opt-in (`allowAttachmentOnlySend`), so the upstream flag
+  // governs that half while staged quotes pass the same gates (send handler,
+  // disabled state, send/stop toggle) as text.
   const hasStagedContext =
-    (props.pendingQuotes?.length ?? 0) > 0 || (props.pendingAttachments?.length ?? 0) > 0;
+    (props.pendingQuotes?.length ?? 0) > 0 ||
+    (props.allowAttachmentOnlySend === true && (props.pendingAttachments?.length ?? 0) > 0);
 
   async function sendCurrent(followUpMode?: FollowUpMode) {
     if (

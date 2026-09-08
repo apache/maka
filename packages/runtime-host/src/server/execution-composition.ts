@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { copyWorkHubAttachmentsToTarget } from './workhub-message-attachments.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
 import type { ContextOffloadLimits } from '@maka/core/context-offload';
@@ -208,6 +209,7 @@ import {
 } from './web-search-tool.js';
 import { createHostWebFetchService, createHostWebFetchToolFromService } from './web-fetch-tool.js';
 import { createHostExecutionArtifactServices } from './execution-artifacts.js';
+import { openToolResultArchiveEvidenceReader } from '@maka/storage/tool-result-archive-evidence';
 import {
   createRuntimeHostWorkspaceExecutionComposition,
   RuntimeHostWorkspaceExecutionError,
@@ -290,6 +292,7 @@ export async function createExecutionRuntimeHostComposition(
   let pluginPlatform: HostPluginPlatform | undefined;
   let manager: SessionManager | undefined;
   let modelMetadataRefresh: ReturnType<typeof startHostModelMetadataRefresh> | undefined;
+  let archiveEvidence: Awaited<ReturnType<typeof openToolResultArchiveEvidenceReader>> | undefined;
   try {
     const pluginRoot = new Context();
     const pluginTools = new PluginToolService(pluginRoot);
@@ -426,7 +429,9 @@ export async function createExecutionRuntimeHostComposition(
       onProjectionChanged: (update) =>
         requireContinuity(continuity).enqueueRuntimeResourceChanged(update),
     });
+    archiveEvidence = await openToolResultArchiveEvidenceReader(context.owner.lease);
     const executionArtifacts = createHostExecutionArtifactServices({
+      archiveEvidence,
       artifacts: openedArtifactStore,
       requestDrain: context.requestDrain,
       sessionAdmission,
@@ -1556,7 +1561,17 @@ export async function createExecutionRuntimeHostComposition(
                   sessionId: input.targetSessionId,
                   workspace: input.create.workspace,
                   name: input.create.title,
-                  modelTarget: { kind: 'default' },
+                  modelTarget: input.create.defaults?.model
+                    ? {
+                        kind: 'explicit',
+                        connectionId: input.create.defaults.model.llmConnectionId,
+                        connectionSlug: input.create.defaults.model.llmConnectionSlug,
+                        model: input.create.defaults.model.model,
+                      }
+                    : { kind: 'default' },
+                  ...(input.create.defaults?.permissionMode
+                    ? { permissionMode: input.create.defaults.permissionMode }
+                    : {}),
                   collaborationMode: 'agent',
                   orchestrationMode: 'default',
                 })
@@ -1566,7 +1581,19 @@ export async function createExecutionRuntimeHostComposition(
             .digest('hex')
             .slice(0, 48);
           const messageId = `whm_${suffix}`;
-          const content = normalizeMessageContent({ text: input.userText });
+          const targetAttachments =
+            !durable && input.attachments?.length
+              ? await copyWorkHubAttachmentsToTarget(
+                  openedArtifactStore,
+                  artifacts,
+                  input.targetSessionId,
+                  input.attachments,
+                )
+              : input.attachments;
+          const content = normalizeMessageContent({
+            text: input.userText,
+            ...(targetAttachments ? { attachments: targetAttachments } : {}),
+          });
           const persisted =
             durable ??
             (await sessionAdmission.runMany(
@@ -1624,6 +1651,7 @@ export async function createExecutionRuntimeHostComposition(
                     delegationId,
                     disposition: input.disposition,
                     userText: input.userText,
+                    ...(input.attachments ? { attachments: input.attachments } : {}),
                     ...(steered ? { steered: true as const } : {}),
                     ...(input.create ? { create: input.create } : {}),
                     ...(input.replacesActionId && input.replacesDelegationId
@@ -1900,6 +1928,7 @@ export async function createExecutionRuntimeHostComposition(
           () => oauth?.beginDrain(),
         ],
         close: [
+          () => archiveEvidence?.close(),
           () => modelMetadataRefresh?.close(),
           () => connectionEffects.close(),
           () =>
@@ -2156,6 +2185,7 @@ export async function createExecutionRuntimeHostComposition(
     };
   } catch (error) {
     const errors: unknown[] = [error];
+    archiveEvidence?.close();
     try {
       await modelMetadataRefresh?.close();
     } catch (closeError) {

@@ -52,3 +52,8 @@ export type { ConversationServices } from './ports.js';
 export { ConversationServicesProvider } from './services.js';
 export { SessionLocalMessages } from './controller/session-local-messages.js';
 export { restoreTranscriptTailAfterSend } from './controller/transcript-reading-position.js';
+
+export { useComposerAttachments, type ComposerAttachmentService } from './controller/use-composer-attachments.js';
+export { toComposerIngestItems, retainedAttachmentRefs, type PendingAttachment } from '@maka/ui/composer-attachments';
+export { NEW_TASK_PENDING_KEY, selectPending, appendPending, removePending, removePendingItems, clearPending, type PendingByKey } from '@maka/ui/pending-items';
+export { desktopSlashCommandPresentation } from './model/slash-command-presentation.js';

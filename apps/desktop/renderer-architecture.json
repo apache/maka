@@ -223,7 +223,6 @@
     "src/renderer/use-app-shell-session-list.ts",
     "src/renderer/use-app-shell-session-ui-reads.ts",
     "src/renderer/use-app-shell-session-workspace.ts",
-    "src/renderer/use-composer-attachments.ts",
     "src/renderer/use-deep-research-run.ts",
     "src/renderer/use-delayed-flag.ts",
     "src/renderer/use-external-store-selector.ts",
@@ -281,7 +280,6 @@
     "src/renderer/features/workbar/tools/side-chat/quote-companion-panel.tsx -> src/renderer/composer-mentions",
     "src/renderer/features/workbar/tools/side-chat/quote-companion-panel.tsx -> src/renderer/scroll-motion-policy",
     "src/renderer/features/workbar/tools/side-chat/quote-companion-panel.tsx -> src/renderer/turn-footer-actions",
-    "src/renderer/features/workbar/tools/side-chat/quote-companion-panel.tsx -> src/renderer/use-composer-attachments",
     "src/renderer/features/workbar/tools/side-chat/use-quote-companion.ts -> src/renderer/settled-message-merge",
     "src/renderer/features/workbar/tools/terminal/session-terminal-panel.tsx -> src/renderer/theme",
     "src/renderer/features/workbar/ui/workbar-surface.tsx -> src/renderer/work-board-panel"
@@ -718,7 +716,7 @@
         "nonTriviaTokens": 1395
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 79,
+        "importDeclarations": 77,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -830,6 +828,7 @@
           "./error-boundary": 1,
           "./features/app-update/index.js": 1,
           "./features/conversation": 1,
+          "./features/conversation/index.js": 1,
           "./features/goals": 1,
           "./features/module-hub": 1,
           "./features/session-collaboration": 1,
@@ -860,7 +859,6 @@
           "./use-app-shell-composer-quotes": 1,
           "./use-app-shell-session-ui-reads": 1,
           "./use-app-shell-session-workspace": 1,
-          "./use-composer-attachments": 1,
           "./use-new-task-choice": 1,
           "./use-onboarding-snapshot": 1,
           "./use-project-context": 1,
@@ -891,11 +889,10 @@
           "@maka/core/slash-command-catalog": 1,
           "@maka/core/ui-locale": 1,
           "@maka/ui": 1,
-          "@maka/ui/icons": 1,
           "react": 1
         },
-        "importSpecifiers": 121,
-        "nonTriviaTokens": 14630
+        "importSpecifiers": 116,
+        "nonTriviaTokens": 14544
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -1237,7 +1234,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "./features/conversation/index.js": 1
+        }
       },
       "src/renderer/composer-defaults.ts": {
         "bridgePaths": {},
@@ -2036,7 +2035,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "./features/conversation/index.js": 1
+        }
       },
       "src/renderer/pending-session-view.ts": {
         "bridgePaths": {},
@@ -4165,29 +4166,6 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "react": 1
-        }
-      },
-      "src/renderer/use-composer-attachments.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {
-          "useEffect": 2,
-          "useRef": 2,
-          "useState": 2,
-          "useUiLocale": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./composer-attachments.js": 1,
-          "./locales/conversation-copy.js": 1,
-          "./locales/shell-copy.js": 1,
-          "./pending-items.js": 1,
-          "@maka/core/attachments": 1,
-          "@maka/core/events": 1,
-          "@maka/ui": 1,
           "react": 1
         }
       },

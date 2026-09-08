@@ -1279,6 +1279,23 @@ describe('WorkHub Coordination Action Gate', () => {
     );
     const input = {
       actionId: 'create',
+      attachments: [
+        {
+          name: 'requirements.txt',
+          kind: 'other' as const,
+          mimeType: 'text/plain',
+          bytes: 12,
+          ref: {
+            kind: 'session_file' as const,
+            sessionId: 'maka_workhub_coordination',
+            relativePath: 'artifact-1',
+          },
+        },
+      ],
+      newWorkDefaults: {
+        model: { llmConnectionId: 'conn', llmConnectionSlug: 'test', model: 'chosen-model' },
+        permissionMode: 'ask' as const,
+      },
       userText: 'Create an accessibility audit',
       proposal: { disposition: 'create_new' as const, title: 'Accessibility audit' },
       create: { workspace: { kind: 'host_path' as const, path: '/workspace' } },
@@ -1291,13 +1308,22 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.deepEqual(restartedReplay, first);
     assert.equal(effects.assignments.length, 2);
     assert.deepEqual(effects.assignments[0], effects.assignments[1]);
+    assert.deepEqual(effects.assignments[0]?.attachments, input.attachments);
     assert.match(effects.assignments[0]!.targetSessionId, /^whs_[a-f0-9]{48}$/u);
     assert.deepEqual(effects.assignments[0]!.create, {
       title: 'Accessibility audit',
       workspace: input.create.workspace,
+      defaults: input.newWorkDefaults,
     });
     await assert.rejects(
       gate.act({ ...input, proposal: { disposition: 'create_new', title: 'Different' } }, CONTEXT),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        { ...input, newWorkDefaults: { ...input.newWorkDefaults, permissionMode: 'bypass' } },
+        CONTEXT,
+      ),
       (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
     );
     assert.equal(effects.assignments.length, 2);
@@ -3032,6 +3058,7 @@ function assignmentRecord(
     delegationId: `delegation-${input.actionId}`,
     disposition: input.disposition,
     userText: input.userText,
+    ...(input.attachments ? { attachments: input.attachments } : {}),
     ...(input.create ? { create: input.create } : {}),
     ...(input.replacesActionId ? { replacesActionId: input.replacesActionId } : {}),
     ...(input.replacesDelegationId ? { replacesDelegationId: input.replacesDelegationId } : {}),

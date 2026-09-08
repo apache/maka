@@ -1007,6 +1007,7 @@ export interface MakaBridge {
     ): () => void;
   };
   workHub: {
+    prepareAttachments(coordinationSessionId: string, items: RendererIngestInput[]): Promise<AttachmentRef[]>;
     /** Resolve the active Runtime Host's stable coordination conversation. */
     resolveCoordinationSession(): Promise<string>;
     /** Persist one deterministic clarification or routing summary. */

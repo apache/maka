@@ -18,6 +18,10 @@
  */
 
 import assert from 'node:assert/strict';
+import {
+  createLedgerToolResultArchiveReader,
+  createLedgerArchiveResourceReader,
+} from '../ledger-tool-result-archive-reader.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,6 +36,7 @@ import { decodeModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import {
   buildModelProjectionTransition,
+  durableToolResultProjectionDigest,
   MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
   type ModelProjectionTransition,
 } from '@maka/core/model-projection-transition';
@@ -62,10 +67,16 @@ import {
   matchHistoryCompactCheckpointPrefix,
   validateHistoryCompactCheckpointShape,
 } from '../history-compact-checkpoint.js';
-import { isHistoryCompactContentEvent } from '../history-compaction.js';
+import {
+  isHistoryCompactContentEvent,
+  applyRuntimeEventHistoryCompact,
+} from '../history-compaction.js';
 import { RuntimeReadModel, type RuntimeReadModelSessionView } from '../runtime-read-model.js';
 import { buildToolOperationId } from '../runtime-commit-sink.js';
-import { buildToolResultArchiveResourceRef } from '../tool-result-archive-resource.js';
+import {
+  buildToolResultArchiveResourceRef,
+  readToolResultArchiveResource,
+} from '../tool-result-archive-resource.js';
 import { sha256 } from '../context-budget-helpers.js';
 import {
   baseToolResultProjection,
@@ -79,6 +90,8 @@ import {
 } from '../tool-result-archive-transition.js';
 import {
   buildArchivedToolResultPlaceholder,
+  buildLedgerArchivedToolResultPlaceholder,
+  type ArchivedToolResultPlaceholder,
   isArchivedToolResultPlaceholder,
 } from '../tool-result-archive.js';
 import { testInvocationOpening, testInvocationRecord } from './invocation-fixture.js';
@@ -2791,6 +2804,389 @@ function sourceProjectionTransition(input: {
     replacement: archivedToolResultProjection(placeholder),
     ...(input.previousTransitionId ? { previousTransitionId: input.previousTransitionId } : {}),
     now: input.createdAt,
+  });
+}
+
+for (const inspectFirst of [false, true]) {
+  test(`conversation copy retains archive reference closure and checkpoints (inspect: ${inspectFirst})`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-ledger-copy-'));
+    try {
+      const runStore = createSqliteAgentRunStore(root);
+      const runtimeEventStore = createWorkspaceRuntimeStore(root);
+      await seedRun(runtimeEventStore, {
+        runId: 'run-source',
+        invocationId: 'invocation-source',
+        turnId: 'turn-1',
+        cwd: root,
+      });
+      const imageRef = {
+        kind: 'session_context' as const,
+        sessionId: 'session-source',
+        refId: 'image-source',
+      };
+      const projection: DurableToolResultProjection = {
+        version: 1,
+        kind: 'content',
+        parts: [
+          { kind: 'text', text: 'caption' },
+          { kind: 'artifact', mediaType: 'image/png', ref: imageRef },
+        ],
+      };
+      const result = runtimeEvent({
+        id: 'event-result-ledger',
+        ts: 2,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'tool-1',
+          name: 'Read',
+          result: { kind: 'image', mimeType: 'image/png', ref: imageRef },
+          modelProjection: projection,
+        },
+      });
+      for (const event of [
+        runtimeEvent({
+          id: 'event-user',
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'copy image' },
+        }),
+        runtimeEvent({
+          id: 'event-call',
+          ts: 1.5,
+          role: 'model',
+          author: 'agent',
+          content: {
+            kind: 'function_call',
+            id: 'tool-1',
+            name: 'Read',
+            args: { path: 'image.png' },
+          },
+        }),
+        result,
+      ])
+        await runtimeEventStore.appendRuntimeEvent('session-source', 'run-source', event);
+      const serialized = serializedToolResultProjection(projection);
+      const placeholder = buildLedgerArchivedToolResultPlaceholder({
+        storage: 'ledger',
+        runtimeEventId: result.id,
+        toolCallId: 'tool-1',
+        toolName: 'Read',
+        sourceProjectionDigest: durableToolResultProjectionDigest(projection),
+        bodySha256: sha256(serialized),
+        originalBytes: Buffer.byteLength(serialized),
+        originalEstimatedTokens: 100,
+        reason: 'stale_tool_result_pruned_before_compact',
+      });
+      const transition = buildModelProjectionTransition({
+        sessionId: 'session-source',
+        target: {
+          runtimeEventId: result.id,
+          part: 'tool_result',
+          toolCallId: 'tool-1',
+          toolName: 'Read',
+        },
+        sourceProjection: projection,
+        replacement: archivedToolResultProjection(placeholder),
+        now: 4,
+      });
+      await runStore.appendEvent('session-source', 'run-source', {
+        type: MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
+        id: transition.transitionId,
+        runId: 'run-source',
+        sessionId: 'session-source',
+        turnId: 'turn-1',
+        ts: 4,
+        data: { runtimeEventId: result.id, part: 'tool_result', transition },
+      });
+      const sourceRecords = await runStore.readEvents('session-source', 'run-source');
+      if (inspectFirst) {
+        const resource = createLedgerArchiveResourceReader({
+          read: async () => ({ ok: true, event: result, transitions: sourceRecords }),
+        });
+        const inspected = await readToolResultArchiveResource(
+          {
+            readArchivedToolResultResource: (input) => {
+              assert.equal(input.storage, 'ledger');
+              return input.storage === 'ledger'
+                ? resource(input)
+                : { ok: false, reason: 'not_found' };
+            },
+          },
+          'session-source',
+          { ref: placeholder.resourceRef!, operation: 'inspect' },
+        );
+        await runtimeEventStore.appendRuntimeEvent(
+          'session-source',
+          'run-source',
+          runtimeEvent({
+            id: 'archive-call',
+            ts: 5,
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'archive-tool',
+              name: 'ArchiveRead',
+              args: { ref: placeholder.resourceRef, operation: 'inspect' },
+            },
+          }),
+        );
+        await runtimeEventStore.appendRuntimeEvent(
+          'session-source',
+          'run-source',
+          runtimeEvent({
+            id: 'archive-result',
+            ts: 6,
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'archive-tool',
+              name: 'ArchiveRead',
+              result: { kind: 'json', value: inspected },
+              modelProjection: { version: 1, kind: 'json', value: inspected as never },
+            },
+          }),
+        );
+        const inspectedProjection: DurableToolResultProjection = {
+          version: 1,
+          kind: 'json',
+          value: inspected as never,
+        };
+        const inspectedBody = serializedToolResultProjection(inspectedProjection);
+        const dependentPlaceholder = buildLedgerArchivedToolResultPlaceholder({
+          storage: 'ledger',
+          runtimeEventId: 'archive-result',
+          toolCallId: 'archive-tool',
+          toolName: 'ArchiveRead',
+          sourceProjectionDigest: durableToolResultProjectionDigest(inspectedProjection),
+          bodySha256: sha256(inspectedBody),
+          originalBytes: Buffer.byteLength(inspectedBody),
+          originalEstimatedTokens: 100,
+          reason: 'stale_tool_result_pruned_before_compact',
+        });
+        const dependent = buildModelProjectionTransition({
+          sessionId: 'session-source',
+          target: {
+            runtimeEventId: 'archive-result',
+            part: 'tool_result',
+            toolCallId: 'archive-tool',
+            toolName: 'ArchiveRead',
+          },
+          sourceProjection: inspectedProjection,
+          replacement: archivedToolResultProjection(dependentPlaceholder),
+          now: 7,
+        });
+        await runStore.appendEvent('session-source', 'run-source', {
+          type: MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
+          id: dependent.transitionId,
+          sessionId: 'session-source',
+          runId: 'run-source',
+          turnId: 'turn-1',
+          ts: 7,
+          data: { runtimeEventId: 'archive-result', part: 'tool_result', transition: dependent },
+        });
+      }
+      await runtimeEventStore.appendRuntimeEvent(
+        'session-source',
+        'run-source',
+        runtimeEvent({ id: 'event-terminal', ts: 7, status: 'completed' }),
+      );
+      const compactable = (
+        await runtimeEventStore.readRuntimeEvents('session-source', 'run-source')
+      ).filter(isHistoryCompactContentEvent);
+      const checkpoint = buildHistoryCompactCheckpoint({
+        sessionId: 'session-source',
+        coveredRuntimeEvents: inspectFirst ? compactable : compactable.slice(0, 1),
+        summary: sectionedSummary(
+          inspectFirst ? `Use ${placeholder.resourceRef}` : 'Unrelated user request summary.',
+        ),
+        highWaterName: 'copy-test',
+        highWaterSeq: 1,
+        now: 8,
+      });
+      await runStore.appendEvent('session-source', 'run-source', {
+        type: 'history_compact_checkpoint_recorded',
+        id: 'archive-checkpoint',
+        sessionId: 'session-source',
+        runId: 'run-source',
+        turnId: 'turn-1',
+        ts: 8,
+        data: { checkpoint },
+      });
+      const successor = buildHistoryCompactCheckpoint({
+        sessionId: 'session-source',
+        coveredRuntimeEvents: compactable,
+        summary: sectionedSummary(`Continue with ${placeholder.resourceRef}`),
+        highWaterName: 'copy-test',
+        highWaterSeq: 2,
+        now: 9,
+        previousCheckpointId: checkpoint.checkpointId,
+      });
+      await runStore.appendEvent('session-source', 'run-source', {
+        type: 'history_compact_checkpoint_recorded',
+        id: 'archive-checkpoint-next',
+        sessionId: 'session-source',
+        runId: 'run-source',
+        turnId: 'turn-1',
+        ts: 9,
+        data: { checkpoint: successor },
+      });
+      const source = await new RuntimeReadModel({ runtimeEventStore }).getSessionView(
+        'session-source',
+      );
+      await cloneConversationRuntimeLedger({
+        plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+        copiedMessages: source.messages,
+        referenceMap: {
+          mode: 'exact',
+          linkedChildren: { mode: 'reject' },
+          sourceSessionId: 'session-source',
+          targetSessionId: 'session-target',
+          artifactIds: new Map(),
+          relativePaths: new Map(),
+          contextRefs: new Map([['image-source', 'image-target']]),
+        },
+        runStore,
+        runtimeEventStore,
+        newId: () => crypto.randomUUID(),
+      });
+      const [targetRun] = await runtimeEventStore.listSessionInvocations('session-target');
+      const targetEvents = await runtimeEventStore.readRuntimeEvents(
+        'session-target',
+        targetRun!.runId,
+      );
+      const target = targetEvents.find((event) => event.content?.kind === 'function_response')!;
+      const records = await runStore.readEvents('session-target', targetRun!.runId);
+      const transitions = await loadModelProjectionTransitionsFromRunLedger(
+        runStore,
+        'session-target',
+        [targetRun!.runId],
+      );
+      const copied = transitions.transitions[0]!;
+      assert.ok(copied.replacement.kind === 'json');
+      assert.ok(isArchivedToolResultPlaceholder(copied.replacement.value));
+      const copiedPlaceholder = copied.replacement.value as ArchivedToolResultPlaceholder;
+      assert.equal(copiedPlaceholder.rewriteVersion, 2);
+      assert.notEqual(copiedPlaceholder.bodySha256, placeholder.bodySha256);
+      assert.notEqual(copiedPlaceholder.resourceRef, placeholder.resourceRef);
+      const read = createLedgerToolResultArchiveReader({
+        read: async () => ({
+          ok: true,
+          event: target,
+          transitions: records.filter(
+            (row) =>
+              row.type === MODEL_PROJECTION_TRANSITION_EVENT_TYPE &&
+              row.data?.runtimeEventId === target.id,
+          ),
+        }),
+      });
+      const body = await read({ ...copiedPlaceholder, sessionId: 'session-target' });
+      assert.ok(body.ok);
+      assert.match(body.serializedResult, /image-target/);
+      assert.doesNotMatch(body.serializedResult, /image-source/);
+      if (inspectFirst) {
+        const response = targetEvents.find(
+          (event) =>
+            event.content?.kind === 'function_response' && event.content.name === 'ArchiveRead',
+        );
+        assert.ok(response?.content?.kind === 'function_response');
+        const output = (
+          response.content.result as { value: { ref: string; runtimeEventId: string } }
+        ).value;
+        assert.equal(output.ref, copiedPlaceholder.resourceRef);
+        assert.equal(output.runtimeEventId, target.id);
+        assert.equal(
+          response.content.modelProjection?.kind === 'json'
+            ? (response.content.modelProjection.value as { ref: string }).ref
+            : undefined,
+          output.ref,
+        );
+        const resource = createLedgerArchiveResourceReader({
+          read: async () => ({
+            ok: true,
+            event: target,
+            transitions: records.filter(
+              (row) =>
+                row.type === MODEL_PROJECTION_TRANSITION_EVENT_TYPE &&
+                row.data?.runtimeEventId === target.id,
+            ),
+          }),
+        });
+        const reread = await readToolResultArchiveResource(
+          {
+            readArchivedToolResultResource: (input) =>
+              input.storage === 'ledger' ? resource(input) : { ok: false, reason: 'not_found' },
+          },
+          'session-target',
+          { ref: output.ref, operation: 'read' },
+        );
+        assert.equal((reread as { ok: boolean }).ok, true);
+        const dependent = transitions.transitions.find(
+          (transition) => transition.target.runtimeEventId === response.id,
+        )!;
+        assert.ok(dependent?.replacement.kind === 'json');
+        assert.ok(isArchivedToolResultPlaceholder(dependent.replacement.value));
+        const dependentReader = createLedgerToolResultArchiveReader({
+          read: async () => ({
+            ok: true,
+            event: response,
+            transitions: records.filter(
+              (record) =>
+                record.type === MODEL_PROJECTION_TRANSITION_EVENT_TYPE &&
+                record.data?.runtimeEventId === response.id,
+            ),
+          }),
+        });
+        const dependentBody = await dependentReader({
+          ...(dependent.replacement.value as ArchivedToolResultPlaceholder),
+          sessionId: 'session-target',
+        });
+        assert.ok(dependentBody.ok);
+        assert.equal(JSON.parse(dependentBody.serializedResult).ref, copiedPlaceholder.resourceRef);
+      }
+      const checkpointEvent = records.find(
+        (record) => record.type === 'history_compact_checkpoint_recorded',
+      );
+      const copiedCheckpoint = checkpointEvent?.data?.checkpoint;
+      assert.ok(validateHistoryCompactCheckpointShape(copiedCheckpoint, 'session-target'));
+      assert.equal(copiedCheckpoint.version, 2);
+      assert.equal(
+        matchHistoryCompactCheckpointPrefix(
+          copiedCheckpoint,
+          targetEvents.filter(isHistoryCompactContentEvent),
+        ).reason,
+        undefined,
+      );
+      const replay = applyRuntimeEventHistoryCompact(targetEvents, {
+        enabled: true,
+        checkpoint: copiedCheckpoint,
+      });
+      assert.notDeepEqual(replay.events, targetEvents);
+      if (copiedCheckpoint.version === 2)
+        assert.equal(
+          copiedCheckpoint.summary,
+          inspectFirst
+            ? sectionedSummary(`Use ${copiedPlaceholder.resourceRef}`)
+            : checkpoint.summary,
+        );
+      const copiedSuccessor = records.filter(
+        (record) => record.type === 'history_compact_checkpoint_recorded',
+      )[1]?.data?.checkpoint;
+      assert.ok(validateHistoryCompactCheckpointShape(copiedSuccessor, 'session-target'));
+      assert.equal(copiedSuccessor.previousCheckpointId, copiedCheckpoint.checkpointId);
+      assert.equal(
+        matchHistoryCompactCheckpointPrefix(
+          copiedSuccessor,
+          targetEvents.filter(isHistoryCompactContentEvent),
+        ).reason,
+        undefined,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 }
 

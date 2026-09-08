@@ -23,3 +23,9 @@ export * from './model/routing-strategy.js';
 export { WorkHubNavigationRail } from './ui/workhub-navigation-rail.js';
 
 export { WorkHubPromptRail } from './ui/workhub-prompt-rail.js';
+
+export { WorkHubHighlightContext, WorkHubHighlightProvider, workHubIdentityHue } from './ui/workhub-work-identity.js';
+
+export { WorkHubComposer, type WorkHubComposerServices, type WorkHubComposerSelection } from './ui/workhub-composer.js';
+
+export { WorkHubComposerServicesProvider } from './services-context.js';
