@@ -70,18 +70,19 @@ const COPY: Record<UiLocale, SessionHoverCardCopy> = {
     projectUnavailable: 'Directory unavailable',
   },
   ko: {
-    sessionDetailsLabel: (name) => `${name} 작업 세부정보`,
-    projectDetailsLabel: (name) => `${name} 프로젝트 세부정보`,
-    groupDetailsLabel: (name) => `${name} 그룹 세부정보`,
-    noMessages: '아직 메시지 없음',
-    updated: '업데이트',
-    taskCount: (count) => `작업 ${count}개`,
-    runningTaskCount: (count) => `실행 중 ${count}개`,
-    locationCount: (count) => `위치 ${count}개`,
-    projectAvailable: '디렉터리 사용 가능',
-    projectUnavailable: '디렉터리 사용 불가',
+    sessionDetailsLabel: (name) => `${name} task details`,
+    projectDetailsLabel: (name) => `${name} project details`,
+    groupDetailsLabel: (name) => `${name} group details`,
+    noMessages: 'No messages yet',
+    updated: 'Updated',
+    taskCount: (count) => `${count} ${count === 1 ? 'task' : 'tasks'}`,
+    runningTaskCount: (count) => `${count} running`,
+    locationCount: (count) => `${count} ${count === 1 ? 'location' : 'locations'}`,
+    projectAvailable: 'Directory available',
+    projectUnavailable: 'Directory unavailable',
   },
 };
+
 
 export function getSessionHoverCardCopy(locale: UiLocale): SessionHoverCardCopy {
   return COPY[locale];

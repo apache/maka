@@ -416,13 +416,6 @@ const SHARED_UI_COPY = {
       dailyReviewDisconnectedBody: 'The desktop data bridge is not connected.',
     },
     primitives: { loading: 'Loading', close: 'Close', resizeHandle: 'Resize handle' },
-    sessionTodo: {
-      ariaLabel: 'To-do list',
-      retry: 'Reload the to-do list',
-      loading: 'Loading the to-do list…',
-      activeAriaLabel: 'In-progress to-dos',
-      empty: 'This task has no to-dos yet',
-    },
     toast: { notifications: 'Notifications', closeNotification: 'Close notification', confirm: 'Confirm', cancel: 'Cancel' },
     stream: { assistantChunkTruncated: '\n[…single delta truncated]\n', assistantTailTruncated: '\n\n[…remaining output truncated]', thinkingHeadTruncated: '[…earlier reasoning truncated]\n', thinkingChunkTruncated: '\n[…single delta truncated]\n', toolChunkTruncated: '\n[…truncated]\n' },
     artifact: { unknownSize: 'Unknown size' },

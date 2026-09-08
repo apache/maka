@@ -226,8 +226,6 @@ const SETTINGS_SHARED_COPY_BY_LOCALE = {
       dataLocationHelp: 'Tasks, settings, usage statistics, and credentials are stored as files in this location on your machine.',
       reviewSchedule: 'Review schedule',
       reviewScheduleHelp: 'When the daily review runs, and which model writes it.',
-      buildInfo: 'Build info',
-      reference: 'Reference',
     },
   }
 } satisfies UiCatalog<SettingsSharedCopy>;

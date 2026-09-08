@@ -85,18 +85,18 @@ const STARTUP_RECOVERY_COPY = {
   },
   ko: {
     storageRoot: {
-      title: 'Maka 작업 공간을 복구해야 합니다',
-      message: 'Maka가 이 작업 공간을 확인할 수 없습니다.',
+      title: 'Maka workspace needs repair',
+      message: 'Maka cannot verify this workspace.',
       detail: (workspaceRoot) =>
-        `시스템의 디스크 식별자가 변경되었을 수 있습니다. 원본 Maka 작업 공간인 경우에만 복구하세요. 복사된 작업 공간이면 복구하지 마세요.\n\n${workspaceRoot}`,
-      buttons: ['작업 공간 복구', '종료'],
+        `The disk identity may have changed. Repair only if this is the original Maka workspace on this computer, not a copied workspace.\n\n${workspaceRoot}`,
+      buttons: ['Repair Workspace', 'Exit'],
     },
     runtimeHost: {
-      title: '기본 Runtime Host에 연결할 수 없습니다',
-      message: (profileName) => `${profileName}에 연결할 수 없습니다`,
+      title: 'Default Runtime Host is unavailable',
+      message: (profileName) => `Could not connect to ${profileName}`,
       detail: (message) =>
-        `${message}\n\n다시 시도하거나 Local을 기본 Host로 사용하거나, 현재 선택을 유지한 뒤 나중에 설정에서 처리할 수 있습니다.`,
-      buttons: ['다시 시도', 'Local 사용', '오프라인 유지'],
+        `${message}\n\nRetry, use Local as the default Host, or keep the current selection and resolve it later in Settings.`,
+      buttons: ['Retry', 'Use Local', 'Keep Offline'],
     },
   },
 } satisfies UiCatalog<StartupRecoveryCopy>;

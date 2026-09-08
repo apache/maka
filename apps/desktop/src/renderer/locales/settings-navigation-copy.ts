@@ -128,7 +128,7 @@ const SETTINGS_NAVIGATION_COPY_BY_LOCALE = {
       data: { label: 'Data', description: 'Local workspace paths, backup, and restore.' },
       permissions: { label: 'Permissions & Capabilities', description: 'System grants and runtime checks for Maka capabilities.' },
       health: { label: 'Health', description: 'Runtime connections, model probes, and local health status.' },
-      about: { label: 'About', description: 'Version, runtime environment, and privacy commitments.' },
+      about: { label: 'About', description: 'Version, updates, and support.' },
     },
   }
 } satisfies UiCatalog<SettingsNavigationCopy>;

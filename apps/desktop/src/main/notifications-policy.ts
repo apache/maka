@@ -91,8 +91,8 @@ const RUN_NOTIFICATION_COPY = {
     completed: { title: 'Response ready', body: 'Maka finished this response. Click to view it.' },
   },
   ko: {
-    errored: { title: '대화 오류', body: '이 응답이 완료되지 않았습니다. 클릭하여 자세히 보세요.' },
-    completed: { title: '응답 준비됨', body: 'Maka가 이 응답을 완료했습니다. 클릭하여 확인하세요.' },
+    errored: { title: 'Conversation error', body: 'This response did not finish. Click to view details.' },
+    completed: { title: 'Response ready', body: 'Maka finished this response. Click to view it.' },
   },
 } satisfies UiCatalog<Record<RunNotificationKind, RunNotificationCopy>>;
 

@@ -55,6 +55,13 @@ const BOT_TRANSPORT_ERRORS = {
     provider_error: 'The platform is temporarily unavailable. Try again later',
     network_error: 'Network error. Check the network and proxy settings',
   },
+  ko: {
+    timeout: 'Request timed out. Try again later',
+    rate_limited: 'Too many requests. Try again later',
+    auth_failed: 'Authentication failed. Check the credentials',
+    provider_error: 'The platform is temporarily unavailable. Try again later',
+    network_error: 'Network error. Check the network and proxy settings',
+  },
 } satisfies UiCatalog<Record<GeneralizedErrorClass, string>>;
 
 const zhCopy = {

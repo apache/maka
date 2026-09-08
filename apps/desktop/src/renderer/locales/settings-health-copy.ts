@@ -175,12 +175,12 @@ const SETTINGS_HEALTH_COPY = {
     footnote: 'This page does not run tests, repairs, or permission changes. It only summarizes recorded health signals. Open the relevant settings page or retry the related feature to address an issue.',
     layers: layersEn,
     statuses: { ok: { label: 'Healthy', tone: 'neutral' }, info: { label: 'Info', tone: 'neutral' }, warning: { label: 'Warning', tone: 'attention' }, error: { label: 'Error', tone: 'error' }, unknown: { label: 'Unknown', tone: 'neutral' } },
-    scopes: { app: 'App', llm_connection: 'LLM connection', bot: 'Bot', capability: 'Capability', storage: 'Storage' },
-    sources: { connection_test: 'Connection test', capability_snapshot: 'Capability snapshot', permission_snapshot: 'Permission snapshot', runtime_probe: 'Runtime probe', settings: 'Settings', storage: 'Local storage' },
+    scopes: { llm_connection: 'LLM connection', bot: 'Bot', capability: 'Capability' },
+    sources: { connection_test: 'Connection test', capability_snapshot: 'Capability snapshot', permission_snapshot: 'Permission snapshot', runtime_probe: 'Runtime probe', settings: 'Settings' },
     source: 'Source: ', blocksSend: 'Blocks sending', blocksCapability: 'Blocks capability',
-    signalLabel: englishSignalLabel,
-    signalMessage: englishSignalMessage,
-    signalDetail: englishSignalDetail,
+    signalLabel: (signal) => (signal.id.endsWith(':runtime') ? `${signal.label} runtime` : signal.label),
+    signalMessage: (signal) => signalMessagesEn[signal.message],
+    signalDetail: (signal) => signalDetailEn(signal),
   }
 } satisfies UiCatalog<HealthCenterCopy>;
 
@@ -264,6 +264,13 @@ const connectionTestErrorMessages = {
     unknown: '連線測試失敗',
   },
   en: {
+    auth: 'Authentication failed',
+    timeout: 'Request timed out',
+    provider_unavailable: 'Model service returned an error',
+    network: 'Network error',
+    unknown: 'Connection test failed',
+  },
+  ko: {
     auth: 'Authentication failed',
     timeout: 'Request timed out',
     provider_unavailable: 'Model service returned an error',

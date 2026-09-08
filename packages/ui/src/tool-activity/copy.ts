@@ -518,6 +518,7 @@ const TOOL_ACTIVITY_COPY = {
     requiresBypass: {
       title: 'Bypass mode required',
       description: 'This action controls a local app directly and cannot run inside the sandbox.',
+      errorMessage: 'Bypass mode required. This action controls a local app directly and cannot run inside the sandbox.',
       action: 'Switch and retry',
       pending: 'Switching…',
     },
@@ -577,6 +578,9 @@ const TOOL_ACTIVITY_COPY = {
       genericAction: 'Enable tool capabilities',
       genericTitle: 'Tool capabilities enabled',
       genericDescription: 'This tool group is ready to use.',
+      fallbackLabel: 'Tools',
+      namedAction: (label) => `Enable ${label}`,
+      namedTitle: (label) => `${label} enabled`,
       count: (n) => `${n} ${n === 1 ? 'capability' : 'capabilities'} available`,
       technicalDetails: 'Technical details',
       groupId: 'Group',

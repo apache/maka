@@ -170,6 +170,8 @@ const COPY = {
           .join(" · "),
       disabled: "Enable the proxy server before testing it.",
       configurationMissing: "Enter a proxy host and port before testing it.",
+      credentialMissing:
+        "Proxy authentication is enabled. Enter a proxy password before testing.",
       timeout:
         "The proxy test timed out. Check whether the proxy service is reachable.",
       httpError: (status) =>
@@ -190,6 +192,16 @@ const COPY = {
         "Enter an App ID and App Secret before testing the connection.",
       connectionFailed:
         "Check the credentials and network settings, then try again.",
+      errors: {
+        slack_tokens_missing: 'Enter a Slack Bot Token and App-Level Token before testing the connection.',
+        wecom_credentials_missing: 'Enter a WeCom Bot ID and Secret before testing the connection.',
+        dingtalk_credentials_missing: 'Enter a DingTalk Client ID (AppKey) and Client Secret before testing the connection.',
+        dingtalk_no_access_token: 'DingTalk returned no access_token. Check the credentials and network, then try again.',
+        qq_credentials_missing: 'Enter a QQ App ID and AppSecret before testing the connection.',
+        qq_no_access_token: 'QQ returned no access_token. Check the credentials and network, then try again.',
+        wechat_bridge_url_invalid: 'The local WeChat bridge only accepts the local wechat-bridge, not a remote URL.',
+        wechat_ilink_credentials_incomplete: 'Complete WeChat QR sign-in first to save the iLink bot token and base URL.',
+      },
     },
   }
 } satisfies UiCatalog<SettingsTestResultCopy>;
