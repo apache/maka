@@ -292,7 +292,7 @@ export function ProjectsSettingsPage(props: {
                     <>
                       {capabilities.setLocalDefault && isDefault ? (
                         <Badge
-                          className="settingsProjectDefaultBadge"
+                          className="settingsDefaultActionBadge"
                           variant="neutral"
                           label={copy.defaultBadge}
                         />

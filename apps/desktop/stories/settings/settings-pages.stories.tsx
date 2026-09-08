@@ -957,6 +957,23 @@ const makaBridge = {
 
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
 
+let typographyStoryDefaultSlug: string | null = 'zai-live';
+
+const withConnectionDefaultTypographyBridge = withScopedMakaBridge({
+  ...makaBridge,
+  connections: {
+    ...connectionsBridge,
+    getSnapshot: async () => ({
+      connections,
+      defaultConnection: typographyStoryDefaultSlug,
+      chatModelChoices: buildChatModelChoices(connections),
+    }),
+    setDefault: async (connection: Parameters<ConnectionsBridge['setDefault']>[0]) => {
+      typographyStoryDefaultSlug = connection?.slug ?? null;
+    },
+  },
+} satisfies Record<string, unknown>);
+
 /**
  * What the production App Update provider reads inside `SettingsStory`. Each
  * call goes to `window.maka.app` at call time rather than capturing the shared
@@ -1896,6 +1913,31 @@ async function openDailyReviewModelSelector(canvasElement: HTMLElement): Promise
 export const Models: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="models" />,
+};
+// Real path: 设置 → 模型 → 连接详情, comparing the action before selection
+// with the settled state after a connection is the default. Both occupy the
+// same header slot, so changing state must not shrink the label typography.
+export const ModelsDefaultBadgeTypography: Story = {
+  decorators: [withConnectionDefaultTypographyBridge],
+  render: () => {
+    typographyStoryDefaultSlug = 'zai-live';
+    return <SettingsStory section="models" />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+
+    await userEvent.click(await canvas.findByText('OpenAI Review'));
+    const setDefaultButton = await canvas.findByRole('button', { name: '设为默认' });
+    const actionFontSize = getComputedStyle(setDefaultButton).fontSize;
+
+    await userEvent.click(setDefaultButton);
+    const detailHeader = await canvas.findByRole('toolbar', { name: 'OpenAI Review' });
+    const defaultLabel = within(detailHeader).getByText('默认');
+    const defaultBadge = defaultLabel.closest<HTMLElement>('.astryx-badge');
+    if (!defaultBadge) throw new Error('Connection default-state badge did not render');
+
+    await expect(getComputedStyle(defaultBadge).fontSize).toBe(actionFontSize);
+  },
 };
 // Real path: sidebar footer 设置 → 子 Agent, with multiple approved model routes.
 export const Subagents: Story = {

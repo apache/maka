@@ -147,10 +147,10 @@
   max-width: var(--settings-row-end-cap);
 }
 
-/* The default-project badge replaces the neighboring "set as default"
-   action in the same slot. Keep its label on the action type tier so the
-   settled state does not visually shrink after the user clicks the button. */
-.settingsProjectDefaultBadge {
+/* A default badge can replace a neighboring "set as default" action in the
+   same slot. Keep its label on the action type tier so the settled state does
+   not visually shrink after the user clicks the button. */
+.settingsDefaultActionBadge {
   font: var(--maka-text-label);
 }
 
