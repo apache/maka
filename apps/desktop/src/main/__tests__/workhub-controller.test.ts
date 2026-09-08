@@ -3273,3 +3273,22 @@ test('deterministic routing preserves executable instructions after the model te
   assert.equal(result.kind, 'submitted');
   if (result.kind === 'submitted') assert.equal(result.target.sessionId, 'ledger');
 });
+
+
+test('composer defaults apply only to creation while attachments follow explicit and automatic routing', async () => {
+  const actions: WorkHubCoordinationActInput[] = [];
+  const newWorkDefaults = { model: { llmConnectionId: 'chosen', llmConnectionSlug: 'chosen', model: 'chosen-model' }, permissionMode: 'bypass' as const };
+  const attachments: NonNullable<WorkHubCoordinationActInput['attachments']> = [{ name: 'requirements.txt', kind: 'other', mimeType: 'text/plain', bytes: 12, ref: { kind: 'session_file', sessionId: 'maka_workhub_coordination', relativePath: 'file-1' } }];
+  const existing = createWorkHubController({ sessions: port([session('payments')]), onAct: (input) => actions.push(input) });
+  await existing.submit({ requestId: 'explicit-composer', text: 'Continue payments', explicitTarget: { sessionId: 'payments' }, newWorkDefaults, attachments });
+  assert.equal(actions[0]?.proposal.disposition, 'delegate_existing');
+  assert.equal(actions[0]?.newWorkDefaults, undefined);
+  assert.deepEqual(actions[0]?.attachments, attachments);
+  const freshPort = port([]);
+  freshPort.create = async () => session('created-work');
+  const fresh = createWorkHubController({ sessions: freshPort, onAct: (input) => actions.push(input) });
+  await fresh.submit({ requestId: 'new-composer', text: 'Create a new Session for an accessibility audit', newWorkDefaults, attachments });
+  assert.equal(actions[1]?.proposal.disposition, 'create_new');
+  assert.deepEqual(actions[1]?.newWorkDefaults, newWorkDefaults);
+  assert.deepEqual(actions[1]?.attachments, attachments);
+});

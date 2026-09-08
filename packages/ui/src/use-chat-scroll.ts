@@ -182,6 +182,9 @@ export function useChatScroll(input: {
       activation.current = { sessionId: input.sessionId };
       commandTarget.current = null;
       authority.releasePin();
+      // A wheel at either edge moves nothing, so no scroll event refreshes the
+      // anchor and the restore effect would load around an evicted Turn.
+      reportReadingAnchor.current?.();
       const anchorTurnId = direction === 'up'
         ? firstVisibleTurnId(root)
         : lastVisibleTurnId(root);

@@ -201,6 +201,7 @@ export function projectWorkHubCoordinationTurns(
         messageId: message.id,
         turnId: message.coordinationTurnId,
         text: boundedWorkHubTimelineText(message.userText),
+        ...(message.attachments ? { attachments: message.attachments } : {}),
         state: 'completed',
         assignment: {
           actionId: message.actionId,
@@ -224,6 +225,7 @@ export function projectWorkHubCoordinationTurns(
         messageId: message.id,
         turnId: message.turnId,
         text,
+        ...(message.attachments ? { attachments: message.attachments } : {}),
         state: stateByTurnId.get(message.turnId) ?? 'running',
         updatedAt: message.ts,
       });

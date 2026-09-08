@@ -955,6 +955,7 @@ function collectArchivedToolResultPlaceholders(
   const add = (value: unknown): boolean => {
     if (!isRecord(value) || value.kind !== 'maka.archived_tool_result') return true;
     if (!isArchivedToolResultPlaceholder(value)) return false;
+    if (value.rewriteVersion === 2) return true;
     addDescriptor(value);
     return true;
   };
@@ -990,6 +991,7 @@ function collectArchivedToolResultPlaceholders(
       continue;
     }
     if (message.content.kind === 'archived_tool_result') {
+      if (message.content.rewriteVersion === 2 && message.content.resourceRef) continue;
       if (!message.content.artifactId && !message.content.bodySha256) continue;
       if (!message.content.artifactId || !message.content.bodySha256) return null;
       addDescriptor({

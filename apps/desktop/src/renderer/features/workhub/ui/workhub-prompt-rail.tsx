@@ -17,12 +17,25 @@
  * under the License.
  */
 
+import { useContext } from 'react';
+import { WorkHubHighlightContext, workHubIdentityHue } from './workhub-work-identity.js';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { PromptAnchorRail, type PromptAnchorRailTurn } from '@maka/ui';
 
 /** Uses the enclosing chat layout's scroller, never the Session navigation. */
-export function WorkHubPromptRail({ turns }: { turns: readonly PromptAnchorRailTurn[] }) {
+export function WorkHubPromptRail({ turns }: { turns: readonly (PromptAnchorRailTurn & { sessionId?: string })[] }) {
+  const highlight = useContext(WorkHubHighlightContext);
   const layout = useChatLayoutContext();
   if (!layout) throw new Error('WorkHubPromptRail requires ChatSurfaceLayout');
-  return <PromptAnchorRail turns={turns} scrollRef={layout.scrollContainerRef} />;
+  return <PromptAnchorRail
+    turns={turns.map((turn) => ({
+      ...turn,
+      accentColor: turn.sessionId
+        ? `oklch(var(--workhub-${highlight.sessionId === turn.sessionId ? 'highlight' : 'tone'}) ${workHubIdentityHue(turn.sessionId)})`
+        : undefined,
+      highlighted: Boolean(turn.sessionId && highlight.sessionId === turn.sessionId),
+    }))}
+    onHighlightTurn={(turn) => highlight.highlight(turns.find((candidate) => candidate.turnId === turn?.turnId)?.sessionId)}
+    scrollRef={layout.scrollContainerRef}
+  />;
 }

@@ -30,7 +30,17 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { AgentRunEvent } from '@maka/core/agent-run';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import { buildModelProjectionTransition } from '@maka/core/model-projection-transition';
-import { createLedgerToolResultArchiveReader } from '../ledger-tool-result-archive-reader.js';
+import {
+  createLedgerToolResultArchiveReader,
+  createLedgerArchivePreparer,
+  createLedgerArchiveResourceReader,
+} from '../ledger-tool-result-archive-reader.js';
+import { archiveToolResultAsTransition } from '../tool-result-archive-transition.js';
+import {
+  readToolResultArchiveResource,
+  parseToolResultArchiveResourceRef,
+} from '../tool-result-archive-resource.js';
+import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 import { serializedToolResultProjection } from '../tool-result-archive-transition.js';
 import { serializeToolResultProjectionV1 } from '../tool-result-archive-encoding.js';
 import {
@@ -292,6 +302,108 @@ test('unknown transition versions and incomplete evidence do not expose a source
     ok: false,
     reason: 'too_large',
   });
+});
+
+test('new archive commits only a v2 ledger reference and is readable through the resource decoder', async () => {
+  const f = fixture();
+  f.records.length = 0;
+  const evidence = {
+    read: async () => ({
+      ok: true as const,
+      event: f.event,
+      transitions: f.records,
+      storedBytes: 1024,
+    }),
+  };
+  const prepare = createLedgerArchivePreparer(evidence);
+  const outcome = await archiveToolResultAsTransition(
+    {
+      sessionId: 'session',
+      archiveToolResult: prepare,
+      recordTransition: async (transition) => {
+        f.records.push(envelope(transition));
+      },
+      loadTransitions: async () => ({
+        transitions: f.records.map((row) => row.data!.transition as ModelProjectionTransition),
+      }),
+      now: () => 2,
+    },
+    {
+      runtimeEventId: 'response',
+      turnId: 'turn',
+      toolCallId: 'call',
+      toolName: 'Read',
+      sourceProjection: f.source,
+      serializedResult: f.body,
+      originalBytes: Buffer.byteLength(f.body),
+      originalEstimatedTokens: 100,
+      reason: 'stale_tool_result_pruned_before_compact',
+    },
+  );
+  assert.ok(outcome);
+  assert.equal(outcome.placeholder.rewriteVersion, 2);
+  assert.equal(outcome.placeholder.artifactId, undefined);
+  assert.match(outcome.placeholder.resourceRef!, /^maka:\/\/archive-ledger\/v1\//);
+  const reader = createLedgerToolResultArchiveReader(evidence);
+  assert.deepEqual(await reader({ ...outcome.placeholder, sessionId: 'session' }), {
+    ok: true,
+    serializedResult: f.body,
+  });
+  const resource = createLedgerArchiveResourceReader(evidence);
+  const read = await readToolResultArchiveResource(
+    {
+      readArchivedToolResultResource: (input) =>
+        input.storage === 'ledger' ? resource(input) : { ok: false, reason: 'not_found' },
+    },
+    'session',
+    { ref: outcome.placeholder.resourceRef!, operation: 'read' },
+  );
+  assert.match(JSON.stringify(read), /bounded model output/);
+  assert.ok(parseToolResultArchiveResourceRef(outcome.placeholder.resourceRef!));
+  assert.equal(
+    parseToolResultArchiveResourceRef(outcome.placeholder.resourceRef! + '#extra'),
+    null,
+  );
+});
+
+test('preflight and transition failure leave the source projection unchanged', async () => {
+  const f = fixture();
+  f.records.length = 0;
+  let writes = 0;
+  const request = {
+    runtimeEventId: 'response',
+    turnId: 'turn',
+    toolCallId: 'call',
+    toolName: 'Read',
+    sourceProjection: f.source,
+    serializedResult: f.body,
+    originalBytes: Buffer.byteLength(f.body),
+    originalEstimatedTokens: 100,
+    reason: 'stale_tool_result_pruned_before_compact' as const,
+  };
+  const services = {
+    sessionId: 'session',
+    archiveToolResult: createLedgerArchivePreparer({
+      read: async () => ({ ok: true, event: f.event, transitions: f.records, storedBytes: 1024 }),
+    }),
+    recordTransition: async () => {
+      writes += 1;
+      throw new Error('commit failed');
+    },
+    now: () => 2,
+  };
+  assert.equal(
+    await archiveToolResultAsTransition(services, { ...request, serializedResult: '"wrong"' }),
+    undefined,
+  );
+  assert.equal(writes, 0);
+  assert.equal(await archiveToolResultAsTransition(services, request), undefined);
+  assert.equal(writes, 1);
+  assert.equal(f.records.length, 0);
+  assert.deepEqual(
+    f.event.content?.kind === 'function_response' ? f.event.content.modelProjection : null,
+    f.source,
+  );
 });
 
 test('availability maps to read_failed while corrupt evidence remains corrupt', async () => {

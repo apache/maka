@@ -14,8 +14,8 @@
       "electron": "the saved window is read back from the Host's connection snapshot, not from renderer state"
     },
     "new-task-reload.spec.ts": {
-      "tests": 1,
-      "electron": "renderer reload is the whole contract: an explicit new task must not reopen history"
+      "tests": 2,
+      "electron": "renderer reload must preserve an explicit new task and rebuild archived-only Host history as an empty, usable new-task surface"
     },
     "partial-history-notice.spec.ts": {
       "tests": 1,

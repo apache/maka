@@ -94,6 +94,7 @@ test('projects WorkHub coordination resolution through its dedicated IPC domain'
   assert.deepEqual(
     await handlers.get('workhub:act')?.({}, {
       actionId: 'create-action',
+      newWorkDefaults: { permissionMode: 'bypass' },
       userText: 'Start accessibility review',
       proposal: { disposition: 'create_new', title: 'Accessibility review' },
       create: {
@@ -112,6 +113,7 @@ test('projects WorkHub coordination resolution through its dedicated IPC domain'
   );
   assert.deepEqual(actions, [{
     actionId: 'create-action',
+    newWorkDefaults: { permissionMode: 'bypass' },
     userText: 'Start accessibility review',
     proposal: { disposition: 'create_new', title: 'Accessibility review' },
     create: {

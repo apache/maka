@@ -197,7 +197,7 @@ export class HostWorkHubCoordinationCoordinator {
       readStopRequest: (delegationId) => this.#stores.readWorkHubStopRequest(delegationId),
       readStopResolution: (delegationId) => this.#stores.readWorkHubStopResolution(delegationId),
       answer: async (input, context) => {
-        const outcome = await this.#answer({ turnId: input.turnId, text: input.text }, context);
+        const outcome = await this.#answer(input, context);
         if (!outcome.ok) {
           throw new WorkHubActionEffectFailure(outcome.error.code, outcome.error.message);
         }
@@ -248,6 +248,7 @@ export class HostWorkHubCoordinationCoordinator {
         targetSessionName: input.targetSessionName,
         disposition: input.disposition,
         userText: input.userText,
+        ...(input.attachments ? { attachments: input.attachments } : {}),
         replacesActionId: input.replacesActionId,
         replacesDelegationId: input.replacesDelegationId,
         replacedTargetSessionId: input.replacedTargetSessionId,
@@ -642,7 +643,10 @@ export class HostWorkHubCoordinationCoordinator {
         turnId: input.turnId,
         execution: {
           kind: 'workhub_coordination',
-          inputDigest: digest({ text: input.text }),
+          inputDigest: digest({
+            text: input.text,
+            ...(input.attachments ? { attachments: input.attachments } : {}),
+          }),
         },
         archivedMessage: 'WorkHub Coordination Session is unavailable',
         // A recorded summary owns its Turn identity durably but is admitted
@@ -662,7 +666,13 @@ export class HostWorkHubCoordinationCoordinator {
           }
           return recorded.length > 0
             ? { kind: 'rejected', outcome: turnIdentityConflict() }
-            : { kind: 'ready', content: normalizeMessageContent({ text: input.text }) };
+            : {
+                kind: 'ready',
+                content: normalizeMessageContent({
+                  text: input.text,
+                  ...(input.attachments ? { attachments: input.attachments } : {}),
+                }),
+              };
         },
       },
       context,

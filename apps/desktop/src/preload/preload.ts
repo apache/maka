@@ -2001,6 +2001,10 @@ const makaBridge = {
     },
   },
   workHub: {
+    async prepareAttachments(coordinationSessionId: string, items: Parameters<MakaBridge['workHub']['prepareAttachments']>[1]) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
+      return ipcRenderer.invoke('workhub:prepareAttachments', scope, await encodeIngestItems(items));
+    },
     resolveCoordinationSession(): Promise<string> {
       return resolveDesktopWorkHubCoordinationSession(
         activeRuntimeHostRef,

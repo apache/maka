@@ -17,6 +17,9 @@
  * under the License.
  */
 
+import type { AttachmentRef } from '@maka/core/events';
+import { decodeMessageContent } from './turn.js';
+import { isWorkHubCreateDefaults, type WorkHubCreateDefaults } from '@maka/core/session';
 import {
   requireCount,
   requireEntityId,
@@ -80,6 +83,7 @@ export interface WorkHubCoordinationResolveResult {
 export interface WorkHubCoordinationAnswerInput {
   readonly turnId: string;
   readonly text: string;
+  readonly attachments?: AttachmentRef[];
 }
 
 export interface WorkHubCoordinationRecordInput {
@@ -177,6 +181,8 @@ export interface WorkHubCoordinationCreateContext {
 export interface WorkHubCoordinationActInput {
   readonly actionId: string;
   readonly userText: string;
+  readonly newWorkDefaults?: WorkHubCreateDefaults;
+  readonly attachments?: AttachmentRef[];
   readonly proposal: WorkHubCoordinationProposal;
   readonly candidateSetId?: string;
   readonly create?: WorkHubCoordinationCreateContext;
@@ -295,8 +301,19 @@ export function decodeWorkHubCoordinationResolveResult(
 export function decodeWorkHubCoordinationAnswerInput(
   value: unknown,
 ): WorkHubCoordinationAnswerInput {
-  const input = requireExactRecord(value, 'WorkHub Coordination answer input', ['turnId', 'text']);
+  const input = requireShapedRecord(
+    value,
+    'WorkHub Coordination answer input',
+    ['turnId', 'text'],
+    ['attachments'],
+  );
   return {
+    ...(input.attachments !== undefined
+      ? {
+          attachments: decodeMessageContent({ text: input.text, attachments: input.attachments })
+            .attachments!,
+        }
+      : {}),
     turnId: requireEntityId(input.turnId, 'WorkHub Coordination Turn id'),
     text: requireUtf8String(
       input.text,
@@ -367,9 +384,25 @@ export function decodeWorkHubCoordinationActInput(value: unknown): WorkHubCoordi
     value,
     'WorkHub Coordination action input',
     ['actionId', 'userText', 'proposal'],
-    ['candidateSetId', 'create', 'confirmation'],
+    ['candidateSetId', 'create', 'confirmation', 'newWorkDefaults', 'attachments'],
   );
   const proposal = decodeWorkHubCoordinationProposal(input.proposal);
+  if (
+    input.newWorkDefaults !== undefined &&
+    (!isWorkHubCreateDefaults(input.newWorkDefaults) ||
+      !(
+        proposal.disposition === 'create_new' ||
+        (proposal.disposition === 'replace' && proposal.target.disposition === 'create_new')
+      ))
+  ) {
+    throw invalidProtocolFrame('Invalid WorkHub creation defaults');
+  }
+  if (
+    input.attachments !== undefined &&
+    !['answer_here', 'delegate_existing', 'create_new', 'replace'].includes(proposal.disposition)
+  ) {
+    throw invalidProtocolFrame('This WorkHub action does not accept attachments');
+  }
   const base = {
     actionId: requireEntityId(input.actionId, 'WorkHub Coordination action id'),
     userText: requireUtf8String(
@@ -378,6 +411,17 @@ export function decodeWorkHubCoordinationActInput(value: unknown): WorkHubCoordi
       WORKHUB_COORDINATION_TEXT_MAX_BYTES,
     ),
     proposal,
+    ...(input.attachments !== undefined
+      ? {
+          attachments: decodeMessageContent({
+            text: input.userText,
+            attachments: input.attachments,
+          }).attachments!,
+        }
+      : {}),
+    ...(input.newWorkDefaults !== undefined
+      ? { newWorkDefaults: input.newWorkDefaults as WorkHubCreateDefaults }
+      : {}),
   };
   if (proposal.disposition === 'delegate_existing') {
     if (

@@ -84,3 +84,67 @@ const COPY = {
 export function getWorkHubRailCopy(locale: UiLocale): WorkHubRailCopy {
   return COPY[locale];
 }
+
+interface WorkHubComposerCopy {
+  readonly settingsUpdateFailed: string;
+  readonly sendTo: string;
+  readonly currentWork: string;
+  readonly routeAutomatically: string;
+  readonly workUnavailable: string;
+  readonly selectedWorkSettings: string;
+  readonly newWorkSettings: string;
+  readonly attachmentLimitExceeded: string;
+  readonly attachmentPrompt: string;
+  readonly sendFailed: string;
+  readonly tryAgain: string;
+  readonly settingsLocked: string;
+}
+
+const COMPOSER_COPY = {
+  'zh-CN': {
+    settingsUpdateFailed: '配置更新失败，请重试',
+    sendTo: '发送到',
+    currentWork: '当前 Work',
+    routeAutomatically: '自动识别工作',
+    workUnavailable: '工作不可用',
+    selectedWorkSettings: '模型与权限用于此 Work',
+    newWorkSettings: '模型与权限用于新 Work',
+    attachmentLimitExceeded: '附件数量或大小超过限制',
+    attachmentPrompt: '请查看附件。',
+    sendFailed: '发送失败',
+    tryAgain: '请重试',
+    settingsLocked: '当前无法修改配置',
+  },
+  'zh-TW': {
+    settingsUpdateFailed: '設定更新失敗，請重試',
+    sendTo: '傳送至',
+    currentWork: '目前 Work',
+    routeAutomatically: '自動識別工作',
+    workUnavailable: '工作無法使用',
+    selectedWorkSettings: '模型與權限用於此 Work',
+    newWorkSettings: '模型與權限用於新 Work',
+    attachmentLimitExceeded: '附件數量或大小超過限制',
+    attachmentPrompt: '請查看附件。',
+    sendFailed: '傳送失敗',
+    tryAgain: '請重試',
+    settingsLocked: '目前無法修改設定',
+  },
+  'en': {
+    settingsUpdateFailed: 'Could not update settings. Try again.',
+    sendTo: 'Send to',
+    currentWork: 'Current Work',
+    routeAutomatically: 'Route automatically',
+    workUnavailable: 'Work unavailable',
+    selectedWorkSettings: 'Settings apply to this Work',
+    newWorkSettings: 'Settings apply to new Work',
+    attachmentLimitExceeded: 'Attachment count or size exceeds the limit',
+    attachmentPrompt: 'Please review the attachments.',
+    sendFailed: 'Could not send',
+    tryAgain: 'Try again',
+    settingsLocked: 'Settings are currently locked',
+  },
+} satisfies UiCatalog<WorkHubComposerCopy>;
+
+export function getWorkHubComposerCopy(locale: UiLocale): WorkHubComposerCopy {
+  return COMPOSER_COPY[locale];
+}

@@ -44,6 +44,10 @@ import type { EffectiveOrchestration } from '@maka/core/orchestration';
 import type { AttachmentByteReader } from '@maka/core/attachments';
 import { pricingModelKey } from '@maka/core/usage-stats/pricing';
 import type { PricingConfig, ToolInvocationRecord } from '@maka/core/usage-stats/types';
+import type {
+  RequestCompositionSnapshotInput,
+  RunCompositionSourceRevision,
+} from '@maka/core/run-composition';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 
@@ -126,6 +130,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   // ── Process-singleton deps ─────────────────────────────────────────────
   /** Canonical-named tools available this session. */
   tools: MakaTool[];
+  /** Trusted scoped catalog sampled before each logical model step. */
+  resolveTools?: () => readonly MakaTool[];
   /** Diagnostic-only Plan Mode/execution identity snapshot. */
   planTraceContext?: {
     mode: 'agent' | 'plan';
@@ -155,7 +161,13 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   /** Optional system prompt (skills + workspace AGENTS.md merged upstream). */
   systemPrompt?:
     | string
-    | ((context: SystemPromptContext) => string | undefined | Promise<string | undefined>);
+    | ((
+        context: SystemPromptContext,
+      ) =>
+        | string
+        | undefined
+        | ResolvedSystemPrompt
+        | Promise<string | undefined | ResolvedSystemPrompt>);
   /** Provider-native options passed through to ai-sdk. */
   providerOptions?: Record<string, unknown>;
   /** Test seam for the adapter-owned incremental Responses transport. */
@@ -199,6 +211,11 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
     turnId: string;
     runId: string;
   }) => void | Promise<void>;
+  /** Durably binds the effective logical-step surface before provider dispatch. */
+  recordRequestComposition?: (
+    runId: string,
+    snapshot: RequestCompositionSnapshotInput,
+  ) => Promise<string>;
   /**
    * Optional artifact recorder. Runtime derives only deterministic candidates
    * from structured tool results / explicit redirects; desktop main owns
@@ -221,6 +238,11 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   maxProviderImageRequestBytes?: number;
   /** Host-owned bounded long-term-memory extraction. Source tools are Runtime-reserved. */
   memoryExtraction?: MemoryExtractionSourceCapabilities;
+}
+
+export interface ResolvedSystemPrompt {
+  text?: string;
+  sourceRevisions: readonly RunCompositionSourceRevision[];
 }
 
 export interface SystemPromptContext {
@@ -272,7 +294,8 @@ export class AiSdkBackend implements AgentBackend {
   private readonly messageProjection: AiSdkMessageProjection;
   private readonly providerTelemetry: ProviderRequestTelemetry;
   private readonly resolvedProviderOptions: Record<string, unknown>;
-  private readonly toolAvailabilityRuntime: ToolAvailabilityRuntime;
+  private readonly memoryTools: readonly MakaTool[];
+  private readonly applyPatchProfile: ReturnType<typeof resolveModelRuntime>['applyPatchProfile'];
 
   /** Bounds outstanding Code Mode cells on this backend. */
   private readonly codeCellAdmission = new AdmissionLimiter(MAX_ACTIVE_CODE_MODE_CELLS);
@@ -354,6 +377,7 @@ export class AiSdkBackend implements AgentBackend {
       beforeRunProviderDispatch: input.beforeRunProviderDispatch,
     });
     const applyPatchProfile = runtime.applyPatchProfile;
+    this.applyPatchProfile = applyPatchProfile;
     this.messageProjection = new AiSdkMessageProjection({
       modelAdapter: this.modelAdapter,
       applyPatchProfile,
@@ -391,7 +415,7 @@ export class AiSdkBackend implements AgentBackend {
     ) {
       throw new Error('Long-term Memory trigger tool names are reserved by Runtime');
     }
-    const memoryTools = input.memoryExtraction
+    this.memoryTools = input.memoryExtraction
       ? buildMemoryExtractionTriggerTools({
           capabilities: input.memoryExtraction,
           snapshot: (trigger, context) => this.memorySourceSnapshot(trigger, context),
@@ -407,14 +431,32 @@ export class AiSdkBackend implements AgentBackend {
             : {}),
         })
       : [];
-    const modelTools = routeApplyPatchTools(input.tools, applyPatchProfile);
-    this.toolAvailabilityRuntime = new ToolAvailabilityRuntime(
-      // The archive decoder is a runtime protocol tool, not a host binding:
-      // this session's placeholders name it, so this session advertises it.
-      bindToolResultArchiveDecoder([...modelTools, ...memoryTools], input.toolResultArchive),
-      input.toolAvailability,
-      buildInvalidMakaTool(),
-    );
+  }
+
+  private snapshotToolAvailability(): {
+    hostTools: readonly MakaTool[];
+    runtime: ToolAvailabilityRuntime;
+  } {
+    const hostTools = Object.freeze([...(this.input.resolveTools?.() ?? this.input.tools)]);
+    if (
+      hostTools.some(
+        (tool) => tool.name === MEMORY_REMEMBER_TOOL_NAME || tool.name === MEMORY_EXTRACT_TOOL_NAME,
+      )
+    ) {
+      throw new Error('Long-term Memory trigger tool names are reserved by Runtime');
+    }
+    const modelTools = routeApplyPatchTools(hostTools, this.applyPatchProfile);
+    return {
+      hostTools,
+      runtime: new ToolAvailabilityRuntime(
+        bindToolResultArchiveDecoder(
+          [...modelTools, ...this.memoryTools],
+          this.input.toolResultArchive,
+        ),
+        this.input.toolAvailability,
+        buildInvalidMakaTool(),
+      ),
+    };
   }
 
   private memorySourceSnapshot(
@@ -503,7 +545,7 @@ export class AiSdkBackend implements AgentBackend {
         messageProjection: this.messageProjection,
         providerTelemetry: this.providerTelemetry,
         compaction: this.compaction,
-        toolAvailabilityRuntime: this.toolAvailabilityRuntime,
+        snapshotToolAvailability: () => this.snapshotToolAvailability(),
         codeCellAdmission: this.codeCellAdmission,
         resolvedProviderOptions: this.resolvedProviderOptions,
         session: this.turnSessionState,
