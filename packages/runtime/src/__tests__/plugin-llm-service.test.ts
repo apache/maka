@@ -31,7 +31,9 @@ test('llm generation uses Host authority unless a matching adapter overrides it'
   llm.bindRuntime({
     generate: async (_input, invocation) => ({ text: invocation.sessionId, modelId: 'host' }),
   });
-  const plugin = root.extend({ rootId: 'profile', packageId: 'fixture', generation: 1 });
+  const plugin = root.extend({
+    maka: { rootId: 'profile', packageId: 'fixture', entryId: 'fixture', generation: 1 },
+  });
   plugin.llm.register({
     id: 'fixture.model',
     supports: (model) => model === 'fixture/model',

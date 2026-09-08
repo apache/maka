@@ -110,11 +110,20 @@ export class PluginLlmService extends Service {
     input: PluginLlmGenerateInput & { readonly model?: string },
   ): Promise<PluginLlmGenerateResult> {
     const invocation = this.agents.requireInvocation();
+    const visibleAdapters = new Map<string, PluginLlmAdapter>();
+    for (const entry of this.adapters) {
+      if (entry.owner.maka?.rootId === 'profile')
+        visibleAdapters.set(entry.adapter.id, entry.adapter);
+    }
+    for (const entry of this.adapters) {
+      if (entry.owner.maka?.rootId === `session:${invocation.sessionId}`) {
+        visibleAdapters.set(entry.adapter.id, entry.adapter);
+      }
+    }
     const adapter = input.model
-      ? [...this.adapters]
-          .filter((entry) => entry.adapter.supports(input.model!))
-          .sort((left, right) => (right.adapter.priority ?? 0) - (left.adapter.priority ?? 0))[0]
-          ?.adapter
+      ? [...visibleAdapters.values()]
+          .filter((candidate) => candidate.supports(input.model!))
+          .sort((left, right) => (right.priority ?? 0) - (left.priority ?? 0))[0]
       : undefined;
     if (adapter) return adapter.generate(input, invocation);
     if (!this.llmRuntime) throw new Error('Plugin LLM Runtime is unavailable');

@@ -79,13 +79,16 @@ test('resource services preserve the current Session and cancellation context', 
     abortSignal: new AbortController().signal,
     emitOutput: () => undefined,
   };
+  const plugin = root.extend({
+    maka: { rootId: 'profile', packageId: 'fixture', entryId: 'fixture', generation: 1 },
+  });
 
   await agents.withInvocation(context, async () => {
-    await fs.read('README.md');
-    await shell.run({ command: 'pwd' });
-    await web.search('  maka  ');
-    assert.equal(await web.fetch('https://example.com'), 'body');
-    await attachments.create({ name: 'a.txt', mimeType: 'text/plain', content: 'a' });
+    await plugin.fs.read('README.md');
+    await plugin.shell.run({ command: 'pwd' });
+    await plugin.web.search('  maka  ');
+    assert.equal(await plugin.web.fetch('https://example.com'), 'body');
+    await plugin.attachments.create({ name: 'a.txt', mimeType: 'text/plain', content: 'a' });
   });
 
   assert.deepEqual(calls, [

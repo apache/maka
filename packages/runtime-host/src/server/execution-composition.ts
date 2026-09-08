@@ -1530,12 +1530,18 @@ export async function createExecutionRuntimeHostComposition(
         const wait = coordinator.whenIdle(id);
         if (!wait) return;
         if (!signal) return wait;
-        await Promise.race([
-          wait,
-          new Promise<never>((_resolve, reject) =>
-            signal.addEventListener('abort', () => reject(signal.reason), { once: true }),
-          ),
-        ]);
+        if (signal.aborted) throw signal.reason;
+        let rejectAbort: ((reason: unknown) => void) | undefined;
+        const aborted = new Promise<never>((_resolve, reject) => {
+          rejectAbort = reject;
+        });
+        const onAbort = () => rejectAbort?.(signal.reason);
+        signal.addEventListener('abort', onAbort, { once: true });
+        try {
+          await Promise.race([wait, aborted]);
+        } finally {
+          signal.removeEventListener('abort', onAbort);
+        }
       },
       snapshot: async (id, initiator) => {
         const session = (await visibleAgentSessions(initiator)).find((item) => item.id === id);
