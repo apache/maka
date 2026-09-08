@@ -122,7 +122,8 @@ test('local acceptance survives restart with attachment bytes and an immutable d
   const db = await database(t);
   const record = db.store.enqueue('authority-1', intent());
   assert.equal(record.state, 'saved');
-  assert.equal((await stat(db.path)).mode & 0o777, 0o600);
+  // Windows reports synthetic mode bits; chmod permissions are a POSIX assertion.
+  if (process.platform !== 'win32') assert.equal((await stat(db.path)).mode & 0o777, 0o600);
   db.store.update({
     ...record,
     state: 'sending',
@@ -393,6 +394,11 @@ test('an unknown Host outcome blocks later local sends until the original messag
   service.reconcile(target, 'session-1', 'message-1');
   await waitFor(() => calls.length === 3);
   assert.equal(store.get('authority', 'message-2')?.state, 'saved');
+  const checking = service.listMessages(target, 'session-1')[0]!;
+  assert.equal(checking.state, 'unknown');
+  assert.equal(checking.checking, true);
+  assert.equal(checking.canCancel, false);
+  assert.throws(() => service.readFailedMessage(target, 'session-1', 'message-1'), /definitively failed/);
   originalAck.resolve(accepted);
   await waitFor(() => store.get('authority', 'message-2')?.state === 'accepted');
   assert.deepEqual(calls, ['message-1', 'other-session', 'message-1', 'message-2']);
@@ -717,4 +723,52 @@ test('local submit preserves picked-file approvals until durable admission succe
   assert.equal(resizeCalls, 0);
   assert.equal(store.get('authority', 'too-large'), undefined);
   for (const item of largePicked) assert.ok(approvals.peekApproval(7, item.approvalId));
+});
+
+
+test('editing a preparation failure preserves bytes across restart and a new send', async (t) => {
+  const db = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+  };
+  const source = db.store.enqueue(target.partition, intent());
+  db.store.update({ ...source, state: 'failed' });
+  const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+  const draft = service.readFailedMessage(target, 'session-1', source.messageId);
+  assert.equal(Buffer.from(draft.stagedAttachments[0]!.content).toString(), 'original bytes');
+  assert.equal(draft.attachments.length, 0);
+  assert.equal(db.store.get(target.partition, source.messageId)?.state, 'failed');
+  service.close();
+  db.reopen();
+  assert.equal(db.store.get(target.partition, source.messageId)?.state, 'failed');
+  const resend = db.store.enqueue(target.partition, {
+    command: { sessionId: 'session-1', messageId: 'edited-message', placement: 'current_turn', content: { text: 'edited', attachments: [...draft.attachments] } },
+    staged: draft.stagedAttachments.map((item) => ({ name: item.name, mimeType: item.mimeType, base64: Buffer.from(item.content).toString('base64') })),
+  });
+  assert.equal(resend.state, 'saved');
+  assert.equal(Buffer.from(db.store.stagedAttachments(target.partition, resend.messageId)[0]!.content).toString(), 'original bytes');
+  db.store.cancel(target.partition, source.messageId);
+  assert.equal(db.store.get(target.partition, resend.messageId)?.state, 'saved');
+  assert.equal(db.store.stagedAttachments(target.partition, resend.messageId).length, 1);
+});
+
+test('editing a submitted failure retains references and rejects unsettled or differently owned messages', async (t) => {
+  const { store } = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+  };
+  const source = store.enqueue(target.partition, intent());
+  const attachment = await client('epoch').ingestAttachment({ sessionId: 'session-1', uploadId: 'upload', name: 'note.txt', mimeType: 'text/plain', content: Buffer.from('original bytes') });
+  store.update({ ...source, state: 'failed', intent: { ...source.intent, attachmentsPrepared: true, originHostEpoch: 'epoch', command: { ...source.intent.command, content: { text: 'hello', attachments: [attachment] } } } });
+  const service = new DesktopSessionLocalService(store, { targets: () => [target], changed() {}, onError: assert.fail });
+  t.after(() => service.close());
+  const draft = service.readFailedMessage(target, 'session-1', source.messageId);
+  assert.deepEqual(draft.attachments, [attachment]);
+  assert.deepEqual(draft.stagedAttachments, []);
+  assert.throws(() => service.readFailedMessage(target, 'other-session', source.messageId), /definitively failed/);
+  assert.throws(() => service.readFailedMessage({ ...target, partition: 'other-authority' }, 'session-1', source.messageId), /definitively failed/);
+  for (const state of ['saved', 'sending', 'unknown', 'accepted'] as const) {
+    store.update({ ...store.get(target.partition, source.messageId)!, state });
+    assert.throws(() => service.readFailedMessage(target, 'session-1', source.messageId), /definitively failed/);
+  }
 });

@@ -50,3 +50,5 @@ export { useComposerAttachments, type ComposerAttachmentService } from './contro
 export { toComposerIngestItems, retainedAttachmentRefs, type PendingAttachment } from '@maka/ui/composer-attachments';
 export { NEW_TASK_PENDING_KEY, selectPending, appendPending, removePending, removePendingItems, clearPending, type PendingByKey } from '@maka/ui/pending-items';
 export { desktopSlashCommandPresentation } from './model/slash-command-presentation.js';
+
+export { composerFollowUp } from './controller/composer-follow-up.js';

@@ -2073,6 +2073,11 @@ const makaBridge = {
     },
   },
   sessionLocal: {
+    async readFailedMessage(sessionId, messageId) {
+      const session = await runtimeHostSessionRef(sessionId);
+      const draft = await ipcRenderer.invoke('session-local:edit', session.scope, session.sessionId, messageId) as import('../shared/session-local-contract.js').DesktopLocalMessageDraft;
+      return { ...draft, attachments: projectDesktopAttachmentRefs(session.scope, draft.attachments) };
+    },
     async listMessages(sessionId) {
       const session = await runtimeHostSessionRef(sessionId);
       const records = await ipcRenderer.invoke('session-local:messages', session.scope, session.sessionId) as import('../shared/session-local-contract.js').DesktopLocalMessage[];

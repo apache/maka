@@ -26,3 +26,6 @@ export {
   type TranscriptHistoryGates,
   type TranscriptHistoryPending,
 } from './controller/transcript-reading-position.js';
+export { localMessagePresentation } from './controller/local-message-presentation.js';
+
+export { composerFollowUp } from './controller/composer-follow-up.js';

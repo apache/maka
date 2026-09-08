@@ -34,6 +34,7 @@ import type {
 import type {
   DesktopLocalMessage,
   DesktopCachedTranscript,
+  DesktopLocalMessageDraft,
 } from '../shared/session-local-contract.js';
 import type { DesktopSessionSummaryInput } from '../shared/desktop-session-projection.js';
 import {
@@ -88,6 +89,7 @@ export function desktopSessionLocalPartition(input: {
 }
 
 export class DesktopSessionLocalService {
+  readonly #checking = new Set<string>();
   readonly #running = new Set<string>();
   readonly #probed = new Map<string, DesktopSessionLocalTarget['client']>();
   readonly #retries = new Map<string, ReturnType<typeof setTimeout>>();
@@ -176,6 +178,7 @@ export class DesktopSessionLocalService {
           .catch(this.deps.onError)
           .finally(() => {
             this.#running.delete(target.partition);
+            this.#checking.delete(`${target.partition}:${record.messageId}`);
             this.wake();
           });
       }
@@ -198,8 +201,40 @@ export class DesktopSessionLocalService {
       quotes: record.intent.command.content.quotes,
       inlineReferences: record.intent.command.content.inlineReferences ?? [],
       ...(record.result?.disposition === 'turn_started' ? { turnId: record.result.turnId } : {}),
+      ...(record.result && record.result.disposition !== 'blocked'
+        ? { admission: record.result.disposition } : {}),
+      checking: this.#checking.has(`${target.partition}:${record.messageId}`),
+      retryScheduled: this.#retries.has(`${target.partition}:${record.messageId}`),
+      waitingForConnection: !target.client || !target.submit,
       ...(record.error ? { error: record.error } : {}),
     }));
+  }
+
+  readFailedMessage(
+    target: DesktopSessionLocalTarget, sessionId: string, messageId: string,
+  ): DesktopLocalMessageDraft {
+    const record = this.store.get(target.partition, messageId);
+    if (!record || record.sessionId !== sessionId || record.state !== 'failed') {
+      throw new Error('Only a definitively failed message can be edited');
+    }
+    const { command } = record.intent;
+    // Recovery uses the original input, never a lossy display summary. Explicit
+    // skill selections must remain editable input on the normal send path.
+    const skillTokens = (command.skillIds ?? []).filter(
+      (id) => !command.content.text.split(/\s+/).includes(`/skill:${id}`),
+    ).map((id) => `/skill:${id}`);
+    const prefix = skillTokens.length ? `${skillTokens.join(' ')} ` : '';
+    return {
+      messageId,
+      text: prefix + command.content.text,
+      attachments: command.content.attachments ?? [],
+      stagedAttachments: this.store.stagedAttachments(target.partition, messageId),
+      directoryReferences: command.content.directoryReferences ?? [],
+      quotes: command.content.quotes ?? [],
+      inlineReferences: (command.content.inlineReferences ?? []).map((reference) => ({
+        ...reference, start: reference.start + prefix.length,
+      })),
+    };
   }
 
   reconcile(target: DesktopSessionLocalTarget, sessionId: string, messageId: string): void {
@@ -349,6 +384,7 @@ export class DesktopSessionLocalService {
     for (const timer of this.#retries.values()) clearTimeout(timer);
     this.#retries.clear();
     this.#probed.clear();
+    this.#checking.clear();
   }
 
   #current(target: DesktopSessionLocalTarget): boolean {
@@ -367,6 +403,7 @@ export class DesktopSessionLocalService {
     const client = target.client!;
     let record = original;
     const key = `${target.partition}:${record.messageId}`;
+    if (original.state === 'unknown') this.#checking.add(key);
     this.#probed.set(key, client);
     const stillOwned = () =>
       this.#current(target) && this.store.get(record.partition, record.messageId) !== undefined;
@@ -408,7 +445,7 @@ export class DesktopSessionLocalService {
       if (!stillOwned()) return;
       record = {
         ...record,
-        state: 'sending',
+        state: original.state === 'unknown' ? 'unknown' : 'sending',
         intent: {
           ...record.intent,
           originHostEpoch: record.intent.originHostEpoch ?? client.hostEpoch,
@@ -468,6 +505,7 @@ export class DesktopSessionLocalService {
         this.#retries.set(key, timer);
       } else if (!uncertain && !retryable) this.#probed.delete(key);
     }
+    this.#checking.delete(key);
     this.deps.changed(target.scope, record.sessionId);
   }
 }
@@ -487,6 +525,9 @@ export function registerDesktopSessionLocalIpc(deps: {
   ipcMain.handle('session-local:catalog', () => service.catalog());
   ipcMain.handle('session-local:messages', (_event, scope: unknown, sessionId: string) =>
     service.listMessages(service.target(scope), requiredId(sessionId)),
+  );
+  ipcMain.handle('session-local:edit', (_event, scope: unknown, sessionId: string, messageId: string) =>
+    service.readFailedMessage(service.target(scope), requiredId(sessionId), requiredId(messageId)),
   );
   ipcMain.handle('session-local:transcript', (_event, scope: unknown, sessionId: string) =>
     service.readTranscript(service.target(scope), requiredId(sessionId)),

@@ -177,12 +177,23 @@
 
 .maka-message-delivery {
   display: flex;
-  align-items: center;
-  justify-content: flex-end;
+  flex-direction: column;
+  align-items: flex-end;
   gap: var(--spacing-2);
   color: var(--muted-foreground);
   font-size: 0.75rem;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: end;
 }
+
+.maka-message-delivery-status { font-weight: var(--font-weight-medium); }
+.maka-message-delivery-detail { margin: 0; }
+.maka-message-delivery-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--spacing-2); }
+.maka-message-delivery[data-tone="danger"] .maka-message-delivery-status { color: var(--destructive); }
+.maka-message-delivery[data-tone="warning"] .maka-message-delivery-status { color: var(--foreground); }
+.maka-message-delivery-diagnostic { max-width: 100%; }
+.maka-message-delivery-diagnostic summary { cursor: pointer; }
 
 /* The meta row holds two different kinds of thing, so it gets two different
    rules. The time is content — a fact about the message — and stays put; gating

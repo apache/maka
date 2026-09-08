@@ -33,10 +33,14 @@ export function projectQueuedTransientMessages(
 ): void {
   if (queued.length === 0) return;
   const queuedIds = new Set(queued.map((message) => message.id));
+  const previous = new Map(transient);
   const retained = [...transient.entries()].filter(([id]) => !queuedIds.has(id));
   transient.clear();
   for (const [id, message] of retained) transient.set(id, message);
-  for (const message of queued) transient.set(message.id, message);
+  for (const message of queued) {
+    const current = previous.get(message.id);
+    transient.set(message.id, current ? mergeTransientMessageProjection(current, message) : message);
+  }
 }
 
 /**
@@ -52,6 +56,8 @@ export function mergeTransientMessageProjection(
     ...(!Object.hasOwn(update, 'deliveryStatus') && current.deliveryStatus !== undefined ? { deliveryStatus: current.deliveryStatus } : {}),
     ...(!Object.hasOwn(update, 'deliveryDetail') && current.deliveryDetail !== undefined ? { deliveryDetail: current.deliveryDetail } : {}),
     ...(!Object.hasOwn(update, 'deliveryActions') && current.deliveryActions !== undefined ? { deliveryActions: current.deliveryActions } : {}),
+    ...(!Object.hasOwn(update, 'deliveryTone') && current.deliveryTone !== undefined ? { deliveryTone: current.deliveryTone } : {}),
+    ...(!Object.hasOwn(update, 'deliveryDiagnostic') && current.deliveryDiagnostic !== undefined ? { deliveryDiagnostic: current.deliveryDiagnostic, deliveryDiagnosticLabel: current.deliveryDiagnosticLabel } : {}),
   };
   return current.hostTurnId !== undefined && update.hostTurnId === undefined
     ? { ...update, hostTurnId: current.hostTurnId }

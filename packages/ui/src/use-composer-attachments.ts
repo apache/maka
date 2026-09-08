@@ -398,6 +398,32 @@ export function useComposerAttachments(options: {
     for (const item of staged) lifecycleRef.current.stagedKeys.add(item.stagingKey);
   }
 
+  /** Restore already prepared local bytes and Host references without consuming either source. */
+  function restoreMessageContext(ownerKey: string, hostId: string | undefined, input: {
+    attachments: readonly AttachmentRef[];
+    stagedAttachments: readonly { name: string; mimeType: string; content: Uint8Array }[];
+    directoryReferences: readonly DirectoryReference[];
+  }): void {
+    const staged = [
+      ...input.attachments.map(retainedToPending),
+      ...input.stagedAttachments.map((item): PendingAttachment => {
+        const file = new File([new Uint8Array(item.content).buffer], item.name, { type: item.mimeType });
+        return {
+          stagingKey: crypto.randomUUID(), displayName: item.name, mimeType: item.mimeType,
+          kind: attachmentKindFromMimeType(item.mimeType), size: file.size, source: { type: 'file', file },
+        };
+      }),
+    ];
+    setPendingState((current) => ({
+      attachments: appendPending(current.attachments, ownerKey, staged),
+      directories: input.directoryReferences.length
+        ? { ...current.directories, [`${ownerKey}:${hostId ?? 'unresolved'}`]: [...input.directoryReferences] }
+        : current.directories,
+    }));
+    for (const item of staged) lifecycleRef.current.stagedKeys.add(item.stagingKey);
+    void loadPreviewsSequentially(staged);
+  }
+
   function removeAttachment(index: number): void {
     const ownerKey = options.draftKey;
     updateAttachments((map) => removePending(map, ownerKey, index));
@@ -463,6 +489,7 @@ export function useComposerAttachments(options: {
     pickAttachments,
     attachFilePaths,
     restoreAttachments,
+    restoreMessageContext,
     removeAttachment,
     clearSubmittedContext,
     clearSubmittedAttachments,

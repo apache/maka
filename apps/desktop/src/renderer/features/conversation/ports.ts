@@ -21,5 +21,5 @@ import type { DesktopSessionLocalBridge } from '../../../shared/session-local-co
 
 export type ConversationServices = Pick<
   DesktopSessionLocalBridge,
-  'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges'
+  'listMessages' | 'readFailedMessage' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges'
 >;

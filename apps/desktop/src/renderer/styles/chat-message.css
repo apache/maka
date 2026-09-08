@@ -42,6 +42,15 @@
   width: 100%;
 }
 
+/* Local rows use the same reading column as canonical Turns, including
+   before admission when no Turn exists to provide the width constraint. */
+.maka-transient-message {
+  width: 100%;
+  max-width: var(--maka-reading-measure);
+  margin-inline: auto;
+  box-sizing: border-box;
+}
+
 /* Inserting earlier turns above the reader must not move what they are
    reading. The browser's scroll anchoring does exactly that, so state the
    dependency on the scroller that runs it rather than inheriting the `auto`

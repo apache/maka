@@ -149,3 +149,26 @@ test('keeps a Host-bound current Turn when a later IPC result has no Turn identi
     hostTurnId: 'host-turn',
   });
 });
+
+
+test('queue and late IPC projections preserve local delivery controls until canonical handoff', () => {
+  const local = {
+    ...transient, deliveryStatus: 'Checking delivery', deliveryTone: 'warning' as const,
+    deliveryDiagnostic: 'lost acknowledgement', deliveryDiagnosticLabel: 'Delivery details',
+    deliveryActions: [{ label: 'Check delivery', disabled: true, onClick() {} }],
+  };
+  const pending = new Map([[local.id, local]]);
+  projectQueuedTransientMessages(pending, [{ ...transient, text: 'Host content' }]);
+  const queued = pending.get(local.id)!;
+  assert.equal(queued.text, 'Host content');
+  assert.equal(queued.deliveryStatus, local.deliveryStatus);
+  assert.equal(queued.deliveryTone, 'warning');
+  assert.equal(queued.deliveryActions, local.deliveryActions);
+  const accepted = mergeTransientMessageProjection(queued, {
+    ...transient, deliveryTone: 'neutral', deliveryDiagnostic: undefined,
+    deliveryActions: [], deliveryStatus: 'Delivered',
+  });
+  assert.equal(accepted.deliveryDiagnostic, undefined);
+  assert.deepEqual(accepted.deliveryActions, []);
+  assert.deepEqual(reconcileTransientMessages(pending, [canonicalSend()]), []);
+});

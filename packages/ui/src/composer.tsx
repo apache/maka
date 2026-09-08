@@ -85,6 +85,7 @@ import {
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import type {
   AttachmentRef,
+  InlineReference,
   FollowUpMode,
   MessageQueueEntryProjection,
   QuoteRef,
@@ -202,7 +203,7 @@ function attachmentExtensionLabel(name: string): string | null {
  */
 export interface ComposerHandle {
   /** Replace the input text, leaving focus on the input with the caret at the end. */
-  setText(text: string): void;
+  setText(text: string, references?: readonly InlineReference[]): void;
   /** Append a prompt/context fragment after the existing draft instead of replacing it. */
   appendText(text: string): void;
   /** Read the current input text (inline tokens serialized to their values). */
@@ -574,6 +575,7 @@ export const Composer = forwardRef<
   /** A caret-to-end owed to an editor that was not focused when it came due. */
   const caretPendingRef = useRef(false);
   const redrawPendingRef = useRef(false);
+  const restoredReferencesRef = useRef<readonly InlineReference[]>([]);
   const textPortRef = useRef<ComposerTextPort>(null);
   if (!textPortRef.current) {
     textPortRef.current = {
@@ -743,25 +745,30 @@ export const Composer = forwardRef<
    */
   function redrawSkillTokens(): boolean {
     if (compositionActiveRef.current) return false;
-    const skills = props.mentionSkills;
-    if (!skills?.length) return false;
+    const skills = props.mentionSkills ?? [];
     const draft = textRef.current;
-    if (!draft.includes('/skill:')) return false;
+    const restored = restoredReferencesRef.current;
+    if (!draft.includes('/skill:') && restored.length === 0) return false;
     const editable = editableNode();
     const node = editable?.firstChild;
     if (!editable || editable.childNodes.length !== 1) return false;
     if (!(node instanceof Text) || node.data !== draft) return false;
     const byId = new Map(skills.map((skill) => [skill.id.toLowerCase(), skill]));
-    const matches = [...draft.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))];
+    const references: InlineReference[] = [
+      ...restored.filter((reference) => reference.kind !== 'skill'),
+      ...[...draft.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))].flatMap((match) => {
+        const skill = byId.get(match[1].toLowerCase());
+        return skill ? [{ kind: 'skill' as const, value: match[0], label: skill.name, start: match.index }] : [];
+      }),
+    ].filter((reference) => draft.slice(reference.start, reference.start + reference.value.length) === reference.value)
+      .sort((a, b) => a.start - b.start);
     const selection = document.getSelection();
     if (!selection) return false;
     let redrew = false;
-    for (let i = matches.length - 1; i >= 0; i--) {
-      const match = matches[i];
-      const skill = byId.get(match[1].toLowerCase());
-      if (!skill) continue;
-      const start = match.index;
-      let end = start + match[0].length;
+    for (let i = references.length - 1; i >= 0; i--) {
+      const reference = references[i];
+      const start = reference.start;
+      let end = start + reference.value.length;
       const next = draft[end];
       if (next === ' ' || next === '\u00A0') end += 1;
       const range = document.createRange();
@@ -770,10 +777,11 @@ export const Composer = forwardRef<
       selection.removeAllRanges();
       selection.addRange(range);
       inputHandleRef.current?.insertToken(
-        inlineReferenceToken({ kind: 'skill', value: match[0], label: skill.name }),
+        inlineReferenceToken(reference),
       );
       redrew = true;
     }
+    restoredReferencesRef.current = [];
     return redrew;
   }
   /**
@@ -1204,12 +1212,13 @@ export const Composer = forwardRef<
   useImperativeHandle(
     ref,
     () => ({
-      setText(nextText: string) {
+      setText(nextText: string, references?: readonly InlineReference[]) {
         resetPromptHistoryNavigation();
         // Focus first: the controlled update that follows restores the caret to
         // the end of the new content only when the editor already has focus.
         focusInput();
         textPort.setValue(nextText);
+        restoredReferencesRef.current = references ?? [];
         saveCurrentDraft(nextText);
       },
       appendText(nextText: string) {
