@@ -22,6 +22,7 @@ import { afterEach, test } from 'node:test';
 import { act, createElement, createRef, type ComponentProps } from 'react';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import type { StoredMessage } from '@maka/core/session';
+import type { DesktopTranscriptHandle, DesktopTranscriptNavigation } from '../../preload/transcript-contract.js';
 import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/desktop-transcript-range-store.js';
 import {
@@ -38,6 +39,66 @@ import {
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
 afterEach(cleanupFakeDom);
+
+test('sending before transcript open completes supersedes the queued bookmark without delaying admission', { timeout: 5_000 }, async () => {
+  const sessionId = JSON.stringify(['host-1', 'session-1']);
+  const store = new DesktopTranscriptRangeStore(sessionId);
+  const opening = deferred<DesktopTranscriptHandle>();
+  const controller = createDesktopTranscriptRangeController(store, () => opening.promise);
+  const lifecycle = createTranscriptRestoreLifecycle();
+  const requests: Array<{ sequence: number | null; navigation?: DesktopTranscriptNavigation }> = [];
+  const handle: DesktopTranscriptHandle = {
+    sessionId, generation: 'generation-1', hostEpoch: 'host-1', readThroughMessageId: null,
+    loadBefore: async () => {}, loadAfter: async () => {}, close: async () => {},
+    async loadAround(sequence, _maxBytes, navigation) {
+      requests.push({ sequence, navigation });
+      const turnId = sequence === null ? 'b' : 'a';
+      for (const batch of encodeDesktopTranscriptSnapshot({
+        sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1',
+        navigationVersion: navigation!.navigationVersion, durableThrough: 20,
+        durable: [{ sequence: sequence ?? 20, message: {
+          type: 'assistant', id: `answer-${turnId}`, turnId, text: turnId, ts: 1, modelId: 'fixture',
+        } }], overlay: [], hasOlder: true, hasNewer: sequence !== null,
+      })) store.accept(batch);
+    },
+  };
+  const restore = () => restoreSessionTranscriptRange({
+    lifecycle, sessionId, controller, readingAnchor: { turnId: 'a', sequence: 10 },
+    isCurrent: () => true,
+    setReadingAnchor: () => assert.fail('the cancelled bookmark must not be restored'),
+    onError: (error) => assert.fail(String(error)),
+  });
+  try {
+    restore();
+    assert.throws(() => store.range(), /not initialized/);
+    let pins = 0;
+    assert.equal(await prepareTranscriptForSend({
+      sessionId, currentSessionId: { current: sessionId }, controller: { current: controller },
+      cancel: (target) => lifecycle.cancel(target), followLatest: () => { pins += 1; },
+    }), true, 'local admission must finish while transcript open is still pending');
+    assert.equal(pins, 1);
+    assert.equal(requests.length, 0);
+    opening.resolve(handle);
+    await new Promise((resolve) => setImmediate(resolve));
+    restore();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(requests.map(({ sequence, navigation }) =>
+      [sequence, navigation?.intent, navigation?.navigationVersion]), [[null, 'followTail', 2]]);
+    assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['answer-b']);
+    const latest = store.snapshot();
+    for (const batch of encodeDesktopTranscriptSnapshot({
+      sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1',
+      navigationVersion: 1, durableThrough: 20,
+      durable: [{ sequence: 10, message: {
+        type: 'assistant', id: 'answer-a', turnId: 'a', text: 'a', ts: 1, modelId: 'fixture',
+      } }], overlay: [], hasOlder: false, hasNewer: true,
+    })) assert.equal(store.accept(batch), false);
+    assert.strictEqual(store.snapshot(), latest, 'a late history response must not replace the latest range');
+  } finally {
+    opening.resolve(handle);
+    await controller.close();
+  }
+});
 
 test('a resident search supersedes send catch-up before its older latest response can evict the target', async () => {
   const sessionId = JSON.stringify(['host-1', 'session-1']);
@@ -230,7 +291,7 @@ test('a new Session can load history while the previous Session request is still
   const loadingFirst = fixture.commands.current!.loadHistory('earlier');
 
   const secondController = { ...fixture.controller,
-    store: { ...fixture.controller.store, range: () => ({ sessionId: 'session-2' }) },
+    store: { ...fixture.controller.store, sessionId: 'session-2', range: () => ({ sessionId: 'session-2' }) },
     loadBefore: () => second.promise,
   };
   fixture.props.currentSessionId.current = 'session-2';
@@ -280,7 +341,7 @@ test('an old Session controller cannot clear pending history after returning to 
   fixture.props.sessionId = 'session-2';
   fixture.props.rangeController.current = {
     ...fixture.controller,
-    store: { ...fixture.controller.store, range: () => ({ sessionId: 'session-2' }) },
+    store: { ...fixture.controller.store, sessionId: 'session-2', range: () => ({ sessionId: 'session-2' }) },
   };
   await fixture.render();
   fixture.props.currentSessionId.current = 'session-1';
@@ -311,6 +372,7 @@ function controllerFixture() {
     loadLatest: async () => {},
     setReadingAnchor: async () => {},
     store: {
+      sessionId: 'session-1',
       range: () => ({ sessionId: 'session-1' }),
       sequenceForTurn: () => null,
       newestDurableUserSequence: () => null,

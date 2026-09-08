@@ -412,6 +412,7 @@ describe('app shell session UI state controller', () => {
       readingAnchor: { turnId: 'turn' },
       controller: {
         store: {
+          sessionId: 'session',
           range: () => ({ sessionId: 'session' }),
           sequenceForTurn: () => 17,
           newestDurableUserSequence: () => 17,
@@ -441,6 +442,7 @@ describe('app shell session UI state controller', () => {
       readingAnchor: { turnId: 'turn' },
       controller: {
         store: {
+          sessionId: 'stale',
           range: () => ({ sessionId: 'stale' }),
           sequenceForTurn: () => {
             sequenceReads += 1;
@@ -472,6 +474,7 @@ describe('app shell session UI state controller', () => {
       readingAnchor: { turnId: 'missing' },
       controller: {
         store: {
+          sessionId: 'session',
           range: () => ({ sessionId: 'session' }),
           sequenceForTurn: () => null,
           newestDurableUserSequence: () => null,
@@ -507,6 +510,7 @@ describe('app shell session UI state controller', () => {
       readingAnchor: { turnId: 'removed', sequence: 23 },
       controller: {
         store: {
+          sessionId: 'session',
           range: () => ({ sessionId: 'session' }),
           sequenceForTurn: () => null,
           newestDurableUserSequence: () => 29,

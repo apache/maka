@@ -505,6 +505,7 @@ describe('composer first-send cleanup', () => {
     const activeIdRef = { current: 'existing-session' as string | undefined };
     const transcript = {
       store: {
+        sessionId: 'existing-session',
         range: () => ({ sessionId: 'existing-session', hasNewer: false }),
         snapshot: () => ({ messages: [] }),
       },
@@ -543,11 +544,19 @@ describe('composer first-send cleanup', () => {
     }
   });
 
-  it('does not load or project the previous Session controller while sending into the selected Session', async () => {
+  for (const initialized of [false, true]) {
+  it(`does not navigate the previous Session controller (${initialized ? 'initialized' : 'opening'}) while sending`, async () => {
     const submissions: string[] = [];
+    let latestReads = 0;
     const transcript = {
-      store: { range: () => ({ sessionId: 'previous-session' }) },
-      loadLatest: async () => { assert.fail('the previous Session must not be navigated'); },
+      store: {
+        sessionId: 'previous-session',
+        range: () => {
+          if (!initialized) throw new Error('Desktop transcript range is not initialized');
+          return { sessionId: 'previous-session' };
+        },
+      },
+      loadLatest: async () => { latestReads += 1; },
     } as unknown as DesktopTranscriptRangeController;
     const restoreWindow = installWindow({
       sessions: {
@@ -573,10 +582,12 @@ describe('composer first-send cleanup', () => {
       }).send('hello');
       assert.equal(result, true);
       assert.deepEqual(submissions, ['selected-session']);
+      assert.equal(latestReads, 0, 'the previous Session must not be navigated');
     } finally {
       restoreWindow();
     }
   });
+  }
 });
 /**
  * #1433 round 5: the failure feedback for a send is addressed to the surface

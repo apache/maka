@@ -98,6 +98,7 @@ test('a completed resident bookmark does not reload after streaming settlement e
       await fixture.replica.loadAround(sequence, PAGE_BYTES);
     },
     store: {
+      sessionId: 'session-1',
       range: () => ({ sessionId: 'session-1' }),
       sequenceForTurn: (turnId: string) => fixture.replica.snapshot().durable
         .find(({ message }) => message.turnId === turnId)?.sequence ?? null,
@@ -152,6 +153,7 @@ test('reopening a bookmark at the current Turn retains content persisted later i
         setReadingAnchor: (sequence) => fixture.replica.readAt(sequence),
         loadAround: (sequence) => fixture.replica.loadAround(sequence, PAGE_BYTES),
         store: {
+          sessionId: 'session-1',
           range: () => ({ sessionId: 'session-1' }),
           sequenceForTurn: (turnId) => fixture.replica.snapshot().durable
             .find(({ message }) => message.turnId === turnId)?.sequence ?? null,
@@ -237,6 +239,7 @@ test('repeated message notifications share one pending restore and cancellation 
       setReadingAnchor: async () => {},
       loadAround: async () => { reads += 1; await loading; },
       store: {
+        sessionId: 'session-1',
         range: () => ({ sessionId: 'session-1' }),
         sequenceForTurn: () => null,
         newestDurableUserSequence: () => 2,
@@ -277,6 +280,7 @@ test('switching away and back creates a fresh restore while clearing search does
       setReadingAnchor: async () => {},
       loadAround: async (sequence: number) => { reads.push(sequence); },
       store: {
+        sessionId: 'session-1',
         range: () => ({ sessionId: 'session-1' }),
         sequenceForTurn: () => null,
         newestDurableUserSequence: () => 2,
@@ -320,6 +324,7 @@ test('effect teardown followed by setup lets only the replacement restore settle
       setReadingAnchor: async () => {},
       loadAround: () => new Promise<void>((resolve) => { loads.push(resolve); }),
       store: {
+        sessionId: 'session-1',
         range: () => ({ sessionId: 'session-1' }),
         sequenceForTurn: () => null,
         newestDurableUserSequence: () => 2,

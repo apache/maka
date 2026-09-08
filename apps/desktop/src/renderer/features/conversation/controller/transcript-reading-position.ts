@@ -20,6 +20,7 @@
 import type { TranscriptReadingAnchor } from '../model/session-ui-state.js';
 
 interface TranscriptRangeStore<Message> {
+  readonly sessionId: string;
   range(): { readonly sessionId: string; readonly hasNewer?: boolean };
   sequenceForTurn(turnId: string): number | null;
   newestDurableUserSequence(): number | null;
@@ -122,7 +123,7 @@ export async function prepareTranscriptForSend<Message>(options: {
   options.cancel(sessionId, true);
   const controller = options.controller.current;
   options.followLatest(sessionId);
-  if (!controller || !currentTranscriptRange(controller, sessionId)) return true;
+  if (!controller || controller.store.sessionId !== sessionId) return true;
   // Invalidate pending history immediately, but keep local Message admission
   // independent of an unopened, slow or offline transcript. The explicit pin
   // happens once; a late page must not reclaim the viewport from the reader.

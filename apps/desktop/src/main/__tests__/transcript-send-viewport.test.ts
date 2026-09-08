@@ -250,6 +250,7 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
     loadAround: async () => {}, loadBefore: async () => {}, loadAfter: async () => {},
     loadLatest: async () => { reads += 1; }, setReadingAnchor: async (_sequence: number | null, _turnId?: string) => {},
     store: {
+      sessionId: 'session-a',
       range: () => ({ sessionId: 'session-a' }),
       sequenceForTurn: (turnId: string) => {
         const sequence = messages.findIndex((message) => message.turnId === turnId);
@@ -330,7 +331,7 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
     async switchSession(sessionId: string) {
       props.sessionId = sessionId;
       props.currentSessionId.current = sessionId;
-      props.rangeController.current = { ...controller, store: { ...controller.store, range: () => ({ sessionId }) } };
+      props.rangeController.current = { ...controller, store: { ...controller.store, sessionId, range: () => ({ sessionId }) } };
       await render();
     },
     async flushFrames() {

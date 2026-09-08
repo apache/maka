@@ -312,7 +312,7 @@ export interface DesktopTranscriptRangeSnapshot extends DesktopTranscriptRangeSt
 }
 
 export class DesktopTranscriptRangeStore {
-  readonly #sessionKey: string;
+  readonly sessionId: string;
   readonly #hostId: string;
   readonly #expectedSessionId: string;
   readonly #durable = new Map<number, StoredRecord>();
@@ -338,7 +338,7 @@ export class DesktopTranscriptRangeStore {
 
   constructor(sessionKey: string) {
     const { hostId, sessionId } = parseDesktopSessionKey(sessionKey);
-    this.#sessionKey = sessionKey;
+    this.sessionId = sessionKey;
     this.#hostId = hostId;
     this.#expectedSessionId = sessionId;
   }
@@ -420,7 +420,7 @@ export class DesktopTranscriptRangeStore {
       throw new Error('Desktop transcript range is not initialized');
     }
     return {
-      sessionId: this.#sessionKey,
+      sessionId: this.sessionId,
       generation: this.#generation,
       hostEpoch: this.#hostEpoch,
       durableThrough: this.#durableThrough,
