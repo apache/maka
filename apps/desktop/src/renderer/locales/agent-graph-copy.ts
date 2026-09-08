@@ -37,6 +37,9 @@ export interface AgentGraphPanelCopy {
   openSession: string;
   operators: string;
   selectedResults: string;
+  liveOutput: string;
+  completedOutput: string;
+  throughput(tokensPerSecond: number): string;
   epoch: string;
   currentEpoch: string;
   historicalEpoch: string;
@@ -64,6 +67,9 @@ const AGENT_GRAPH_PANEL_COPY = {
     openSession: '打开子任务',
     operators: 'Operators',
     selectedResults: '已选择结果',
+    liveOutput: '实时输出',
+    completedOutput: '结果预览',
+    throughput: (tokensPerSecond) => `${tokensPerSecond.toFixed(1)} token/s`,
     epoch: 'Graph 运行轮次',
     currentEpoch: '当前',
     historicalEpoch: '历史记录（只读）',
@@ -110,6 +116,9 @@ const AGENT_GRAPH_PANEL_COPY = {
     openSession: '開啟子任務',
     operators: 'Operators',
     selectedResults: '已選取結果',
+    liveOutput: '即時輸出',
+    completedOutput: '結果預覽',
+    throughput: (tokensPerSecond) => `${tokensPerSecond.toFixed(1)} token/s`,
     epoch: 'Graph 執行輪次',
     currentEpoch: '目前',
     historicalEpoch: '歷史記錄（唯讀）',
@@ -156,6 +165,9 @@ const AGENT_GRAPH_PANEL_COPY = {
     openSession: 'Open child task',
     operators: 'Operators',
     selectedResults: 'Selected results',
+    liveOutput: 'Live output',
+    completedOutput: 'Result preview',
+    throughput: (tokensPerSecond) => `${tokensPerSecond.toFixed(1)} token/s`,
     epoch: 'Graph run',
     currentEpoch: 'Current',
     historicalEpoch: 'History (read-only)',
