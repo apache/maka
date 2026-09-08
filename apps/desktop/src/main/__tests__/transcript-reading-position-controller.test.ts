@@ -29,16 +29,21 @@ import {
   TranscriptReadingPositionController,
   type TranscriptReadingPositionCommands,
   type TranscriptHistoryPending,
-  transcriptReadingPosition,
 } from '../../renderer/features/conversation/index.js';
+import {
+  createTranscriptRestoreLifecycle,
+  prepareTranscriptForSend,
+  restoreSessionTranscriptRange,
+} from '../../renderer/features/conversation/testing.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
 afterEach(cleanupFakeDom);
 
-test('a resident search admits history before an older latest response can evict its target', async () => {
+test('a resident search supersedes send catch-up before its older latest response can evict the target', async () => {
   const sessionId = JSON.stringify(['host-1', 'session-1']);
   const store = new DesktopTranscriptRangeStore(sessionId);
   const latestStarted = deferred<void>();
+  const latestFinished = deferred<void>();
   const releaseLatest = deferred<void>();
   const readingAdmitted = deferred<void>();
   const admissions: Array<{ sequence: number | null; version: number; preserveRange?: boolean }> = [];
@@ -62,6 +67,7 @@ test('a resident search admits history before an older latest response can evict
         latestStarted.resolve();
         await releaseLatest.promise;
         publish('b', 20, version);
+        latestFinished.resolve();
       } else {
         publish('a', 10, version);
         readingAdmitted.resolve();
@@ -70,19 +76,24 @@ test('a resident search admits history before an older latest response can evict
     close: async () => {},
   }));
   try {
-    const latest = controller.loadLatest();
+    const lifecycle = createTranscriptRestoreLifecycle();
+    const sessionUi = createAppShellSessionUiStateController();
+    assert.equal(await prepareTranscriptForSend({
+      sessionId, currentSessionId: { current: sessionId }, controller: { current: controller },
+      cancel: (sessionId) => lifecycle.cancel(sessionId),
+      followLatest: sessionUi.transcriptViewportNavigation.followLatest,
+    }), true, 'local admission must not wait for the latest range');
     await latestStarted.promise;
-    const lifecycle = transcriptReadingPosition.createRestoreLifecycle();
-    const restore = () => transcriptReadingPosition.restoreRange({
+    const restore = () => restoreSessionTranscriptRange({
       lifecycle, sessionId, controller,
       searchTarget: { sessionId, turnId: 'a', sequence: 10, nonce: 1 },
-      isCurrent: () => true, setMessages: () => {}, setReadingAnchor: () => {},
+      isCurrent: () => true, setReadingAnchor: () => {},
       onError: (error) => assert.fail(String(error)),
     });
     restore();
     await readingAdmitted.promise;
     releaseLatest.resolve();
-    await latest;
+    await latestFinished.promise;
     await new Promise((resolve) => setImmediate(resolve));
     restore();
     assert.deepEqual(admissions, [
@@ -91,6 +102,7 @@ test('a resident search admits history before an older latest response can evict
     ]);
     assert.equal(store.sequenceForTurn('a'), 10);
     assert.equal(store.sequenceForTurn('b'), null);
+    assert.deepEqual(store.snapshot().messages.map((message) => message.turnId), ['a']);
   } finally {
     releaseLatest.resolve();
     await controller.close();
@@ -122,12 +134,12 @@ test(`a ${source} bookmark admits its Turn once and retains it across range relo
       publish(navigation!.navigationVersion);
     },
   }));
-  const lifecycle = transcriptReadingPosition.createRestoreLifecycle();
+  const lifecycle = createTranscriptRestoreLifecycle();
   let unavailable = 0;
   let cleared = 0;
-  const restore = () => transcriptReadingPosition.restoreRange({
+  const restore = () => restoreSessionTranscriptRange({
     lifecycle, sessionId, controller, readingAnchor: { turnId: 'b' },
-    isCurrent: () => true, setMessages: () => {},
+    isCurrent: () => true,
     isLiveTurn: (candidateSessionId, turnId) => source === 'live projection' &&
       candidateSessionId === sessionId && turnId === 'b',
     setReadingAnchor: (_sessionId, anchor) => { if (!anchor) cleared += 1; },
@@ -293,7 +305,6 @@ function controllerFixture() {
   const { root } = installReactRenderer();
   const commands = createRef<TranscriptReadingPositionCommands>();
   const controller = {
-    ready: async () => {},
     loadAround: async () => {},
     loadBefore: async () => {},
     loadAfter: async () => {},
@@ -319,7 +330,6 @@ function controllerFixture() {
     turnIndex: undefined,
     setTurnIndex: () => {},
     listTurnLandmarks: async () => ({ throughSequence: null, landmarks: [] }),
-    setMessages: () => {},
     setHistoryPending: (next) => { pending = typeof next === 'function' ? next(pending) : next; },
     historyPageBytes: 512 * 1024,
     onRestoreError: (error) => assert.fail(String(error)),

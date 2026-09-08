@@ -45,8 +45,6 @@ export const FAKE_WAIT_FOR_STEERING_PROMPT = '__e2e_wait_for_steering__';
 export const FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT =
   '__e2e_wait_for_steering_large_response__';
 export const FAKE_HOLD_OPEN_PROMPT = '__e2e_hold_open__';
-export const FAKE_HOLD_OPEN_COMPLETE_PROMPT = '__e2e_hold_open_complete__';
-export const FAKE_COMPLETE_HELD_TURN_STEERING = '__e2e_complete_held_turn__';
 export const FAKE_HOLD_OPEN_REWRITE_PROMPT = '__e2e_hold_open_rewrite__';
 export const FAKE_MERMAID_PROMPT = '__e2e_mermaid__';
 export const FAKE_MERMAID_HOSTILE_PROMPT = '__e2e_mermaid_hostile__';
@@ -201,12 +199,7 @@ export class FakeBackend implements AgentBackend {
     };
 
     try {
-      if (
-        input.text === FAKE_HOLD_OPEN_PROMPT ||
-        input.text === FAKE_HOLD_OPEN_REWRITE_PROMPT ||
-        input.text === FAKE_HOLD_OPEN_COMPLETE_PROMPT
-      ) {
-        const canComplete = input.text === FAKE_HOLD_OPEN_COMPLETE_PROMPT;
+      if (input.text === FAKE_HOLD_OPEN_PROMPT || input.text === FAKE_HOLD_OPEN_REWRITE_PROMPT) {
         const rewriteTarget = input.text === FAKE_HOLD_OPEN_REWRITE_PROMPT;
         const waitingPrefix = rewriteTarget
           ? 'prefix sk-123456789012345'
@@ -241,26 +234,17 @@ export class FakeBackend implements AgentBackend {
               text: delta,
             };
           }
-          if (canComplete && steered.includes(FAKE_COMPLETE_HELD_TURN_STEERING)) break;
           await sleep(5);
         }
-        if (canComplete && !this.stopped) {
-          // The completion latch exercises the normal durable assistant path
-          // below after a test has observed a stable live answer and remount.
-          text = waitingText;
-          chunks.length = 0;
-          steered.length = 0;
-        } else {
-          yield { type: 'abort', id: randomUUID(), turnId, ts: Date.now(), reason: 'user_stop' };
-          yield {
-            type: 'complete',
-            id: randomUUID(),
-            turnId,
-            ts: Date.now(),
-            stopReason: 'user_stop',
-          };
-          return;
-        }
+        yield { type: 'abort', id: randomUUID(), turnId, ts: Date.now(), reason: 'user_stop' };
+        yield {
+          type: 'complete',
+          id: randomUUID(),
+          turnId,
+          ts: Date.now(),
+          stopReason: 'user_stop',
+        };
+        return;
       }
 
       if (isSteeringScenario) {

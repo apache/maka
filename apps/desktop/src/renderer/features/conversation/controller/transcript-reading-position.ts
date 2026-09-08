@@ -28,9 +28,8 @@ interface TranscriptRangeStore<Message> {
 
 interface TranscriptRangeController<Message> {
   readonly store: TranscriptRangeStore<Message>;
-  ready(): Promise<void>;
   loadAround(sequence: number): Promise<void>;
-  setReadingAnchor?(sequence: number | null, readingTurnId?: string): Promise<void>;
+  setReadingAnchor(sequence: number | null, readingTurnId?: string): Promise<void>;
 }
 
 interface SearchTarget {
@@ -116,13 +115,10 @@ export async function prepareTranscriptForSend<Message>(options: {
   currentSessionId: { current: string | undefined };
   controller: { current: (TranscriptRangeController<Message> & { loadLatest(): Promise<void> }) | undefined };
   cancel(sessionId: string, clearAnchor: boolean): void;
-  setMessages(messages: Message[]): void;
   followLatest(sessionId: string): void;
-  isCurrent?(): boolean;
 }): Promise<boolean> {
   const { sessionId } = options;
-  const current = () => options.currentSessionId.current === sessionId && options.isCurrent?.() !== false;
-  if (!current()) return false;
+  if (options.currentSessionId.current !== sessionId) return false;
   options.cancel(sessionId, true);
   const controller = options.controller.current;
   options.followLatest(sessionId);
@@ -133,9 +129,6 @@ export async function prepareTranscriptForSend<Message>(options: {
   void (async () => {
     try {
       await controller.loadLatest();
-      if (!current() || options.controller.current !== controller
-        || !currentTranscriptRange(controller, sessionId)) return;
-      options.setMessages([...controller.store.snapshot().messages]);
     } catch {
       // Catch-up failure must not prevent the Message from being saved locally.
     }
@@ -311,7 +304,6 @@ export function restoreSessionTranscriptRange<Message>(options: {
   readonly controller?: TranscriptRangeController<Message>;
   readonly isCurrent: (sessionId: string, controller: TranscriptRangeController<Message>) => boolean;
   readonly isLiveTurn?: (sessionId: string, turnId: string) => boolean;
-  readonly setMessages: (messages: Message[]) => void;
   readonly setReadingAnchor: (
     sessionId: string,
     anchor: TranscriptReadingAnchor | undefined,
@@ -321,7 +313,7 @@ export function restoreSessionTranscriptRange<Message>(options: {
 }): void {
   const { controller, sessionId } = options;
   const command = options.lifecycle.request(options);
-  if (!command || !controller || !sessionId) return;
+  if (!command || !controller || !sessionId || !options.isCurrent(sessionId, controller)) return;
   if (command.controller === controller && command.attempt) return;
   if (!command.fromSearch && command.target.sequence === undefined) {
     const { turnId } = command.target;
@@ -345,45 +337,33 @@ export function restoreSessionTranscriptRange<Message>(options: {
   command.attempt = attempt;
   const current = (): boolean => options.lifecycle.isCurrent(command)
     && command.attempt === attempt && options.isCurrent(sessionId, controller);
-  let admitted: Promise<void> | undefined;
-  let loadedAtAdmission = false;
-  if (current()) {
+  if (!current()) {
+    command.attempt = undefined;
+    return;
+  }
+  let admitted: Promise<void>;
+  try {
     const residentSequence = currentTranscriptRange(controller, sessionId)
       ? controller.store.sequenceForTurn(target.turnId)
       : null;
     const sequence = residentSequence ?? target.sequence;
-    if (sequence !== undefined || controller.setReadingAnchor) {
-      // The range controller admits intent before awaiting its open handle.
-      // A resident search/bookmark must invalidate older pages just as a
-      // missing target does, without needlessly replacing its current range.
-      try {
-        loadedAtAdmission = residentSequence === null || !controller.setReadingAnchor;
-        admitted = controller.setReadingAnchor && (residentSequence !== null || sequence === undefined)
-          ? controller.setReadingAnchor(sequence ?? null, target.turnId)
-          : controller.loadAround(sequence!);
-      } catch (error) {
-        admitted = Promise.reject(error);
-      }
-    }
+    // Admit intent before awaiting the open handle. Resident and live-only
+    // targets retain their range while invalidating older navigation requests.
+    admitted = residentSequence !== null || sequence === undefined
+      ? controller.setReadingAnchor(sequence ?? null, target.turnId)
+      : controller.loadAround(sequence);
+  } catch (error) {
+    admitted = Promise.reject(error);
   }
-  void (admitted ?? controller.ready())
-    .then(async () => {
-      if (!current() || controller.store.range().sessionId !== sessionId) {
-        return { loaded: false, unavailable: false };
-      }
+  void admitted
+    .then(() => {
+      if (!current() || controller.store.range().sessionId !== sessionId) return false;
       const residentSequence = controller.store.sequenceForTurn(target.turnId);
       if (residentSequence !== null) {
         if (restoringReadingAnchor && target.sequence === undefined) {
           options.setReadingAnchor(sessionId, { turnId: target.turnId, sequence: residentSequence });
         }
-        if (!admitted) {
-          if (controller.setReadingAnchor) await controller.setReadingAnchor(residentSequence, target.turnId);
-          else {
-            await controller.loadAround(residentSequence);
-            loadedAtAdmission = true;
-          }
-        }
-        return { loaded: loadedAtAdmission, unavailable: false };
+        return false;
       }
       if (options.isLiveTurn?.(sessionId, target.turnId) || controller.store.snapshot().messages.some((message) =>
         message !== null && typeof message === 'object' &&
@@ -391,26 +371,13 @@ export function restoreSessionTranscriptRange<Message>(options: {
       )) {
         // Active Turns are overlay-only in the RuntimeEvent projection. Their
         // bookmark is already visible even though no durable sequence exists.
-        return { loaded: loadedAtAdmission, unavailable: false };
+        return false;
       }
-      if (admitted) return { loaded: loadedAtAdmission, unavailable: restoringReadingAnchor };
-      if (target.sequence === undefined) {
-        return { loaded: false, unavailable: restoringReadingAnchor };
-      }
-      await controller.loadAround(target.sequence);
-      if (!current() || controller.store.range().sessionId !== sessionId) {
-        return { loaded: false, unavailable: false };
-      }
-      return {
-        loaded: true,
-        unavailable: restoringReadingAnchor
-          && controller.store.sequenceForTurn(target.turnId) === null,
-      };
+      return restoringReadingAnchor;
     })
-    .then(({ loaded, unavailable }) => {
+    .then((unavailable) => {
       if (!current()) return;
       command.completed = true;
-      if (loaded) options.setMessages([...controller.store.snapshot().messages]);
       if (unavailable) {
         options.setReadingAnchor(sessionId, undefined);
         options.onRestoreUnavailable?.(sessionId, target.turnId);

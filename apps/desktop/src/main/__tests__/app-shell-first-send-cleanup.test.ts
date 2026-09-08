@@ -39,7 +39,7 @@ import { describe, it } from 'node:test';
 import type { LiveTurnProjection } from '@maka/ui';
 import type { DesktopTranscriptRangeController } from '../../renderer/desktop-transcript-range-store.js';
 import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
-import { transcriptReadingPosition } from '../../renderer/features/conversation/index.js';
+import { prepareTranscriptForSend } from '../../renderer/features/conversation/testing.js';
 
 import {
   createActionsDeps,
@@ -528,9 +528,9 @@ describe('composer first-send cleanup', () => {
         ...createActionsDeps(),
         activeIdRef,
         transcriptRangeRef,
-        onFollowLatest: (sessionId) => transcriptReadingPosition.prepareForSend({
+        onFollowLatest: (sessionId) => prepareTranscriptForSend({
           sessionId, currentSessionId: activeIdRef, controller: transcriptRangeRef,
-          cancel: () => { order.push('cancel-restore'); }, setMessages: () => {}, followLatest: () => {},
+          cancel: () => { order.push('cancel-restore'); }, followLatest: () => {},
         }),
       }).send('hello');
       await new Promise((resolve) => setImmediate(resolve));
@@ -564,9 +564,9 @@ describe('composer first-send cleanup', () => {
         ...createActionsDeps(),
         activeIdRef,
         transcriptRangeRef,
-        onFollowLatest: (sessionId) => transcriptReadingPosition.prepareForSend({
+        onFollowLatest: (sessionId) => prepareTranscriptForSend({
           sessionId, currentSessionId: activeIdRef, controller: transcriptRangeRef,
-          cancel: () => {}, setMessages: () => { assert.fail('the previous range must not project'); },
+          cancel: () => {},
           followLatest: (sessionId) => { assert.equal(sessionId, 'selected-session'); },
         }),
         setMessages: () => { assert.fail('the previous range must not replace selected messages'); },

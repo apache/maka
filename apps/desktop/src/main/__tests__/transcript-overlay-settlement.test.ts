@@ -42,10 +42,10 @@ import { openTranscriptNavigationLedger } from './transcript-navigation-test-fix
 const HOST_EPOCH = 'host-1';
 const SUBSCRIPTION_ID = 'overlay-settlement-subscription';
 const PAGE_BYTES = 128 * 1024;
-const BOOTSTRAP_THROUGH = 4;
-const B_STEERING_THROUGH = 5;
-const B_COMPLETED_THROUGH = 7;
-const C_COMPLETED_THROUGH = 11;
+const BOOTSTRAP_THROUGH = 'running-b';
+const B_STEERING_THROUGH = 'steering-b';
+const B_COMPLETED_THROUGH = 'completed-b';
+const C_COMPLETED_THROUGH = 'completed-c';
 
 for (const coalesced of [false, true]) {
   test(`settles a bootstrap overlay outside history through ${coalesced ? 'a coalesced B+C watermark' : 'separate B and C watermarks'}`, async () => {
@@ -79,6 +79,33 @@ for (const coalesced of [false, true]) {
     }
   });
 }
+
+test('a completed live answer remains unique after a fresh transcript subscription', async () => {
+  const fixture = await openFixture();
+  let reopened: Awaited<ReturnType<typeof openSettledReplica>> | undefined;
+  const assertAnswer = (messages: readonly StoredMessage[]) => {
+    const answers = messages.flatMap((message) => message.type === 'assistant' && message.turnId === 'b'
+      ? [{ id: message.id, text: message.text }] : []);
+    assert.deepEqual(answers, [
+      { id: 'answer-b', text: 'B partial and completed answer' },
+    ]);
+  };
+  try {
+    await fixture.advance(B_COMPLETED_THROUGH);
+    assert.deepEqual(fixture.replica.snapshot().overlay, []);
+    assertAnswer(fixture.renderer.snapshot().messages);
+    assertAnswer((await fixture.ledger.durableRecords()).map(({ message }) => message));
+
+    reopened = await openSettledReplica(fixture.ledger);
+    const renderer = new DesktopTranscriptRangeStore(JSON.stringify(['local', fixture.ledger.sessionId]));
+    for (const batch of encodeDesktopTranscriptSnapshot(reopened.replica.snapshot())) renderer.accept(batch);
+    assert.deepEqual(reopened.replica.snapshot().overlay, []);
+    assertAnswer(renderer.snapshot().messages);
+  } finally {
+    await reopened?.close();
+    await fixture.close();
+  }
+});
 
 test('retains an unfinished overlay through runtime checkpoints and skips scans after settlement', async () => {
   const fixture = await openFixture();
@@ -352,9 +379,9 @@ async function openFixture(beforePage?: (request: SessionTranscriptPageInput) =>
     },
   });
   for (const batch of encodeDesktopTranscriptSnapshot(replica.snapshot())) renderer.accept(batch);
-  const watermarks = new Map<number, number>();
+  const watermarks = new Map<string, number>();
   let frameSequence = 0;
-  const announce = async (checkpoint: number) => {
+  const announce = async (checkpoint: string) => {
     const throughSequence = await ledger.appendThrough(checkpoint);
     assert.ok(throughSequence !== null);
     watermarks.set(checkpoint, throughSequence);
@@ -375,14 +402,14 @@ async function openFixture(beforePage?: (request: SessionTranscriptPageInput) =>
   return {
     replica, renderer, changes, requests, announce, history, bootstrapThrough, ledger,
     acceptNavigation: (navigation: DesktopTranscriptNavigation) => { navigationVersion = navigation.navigationVersion; },
-    watermark: (checkpoint: number) => {
+    watermark: (checkpoint: string) => {
       const value = watermarks.get(checkpoint);
       assert.notEqual(value, undefined);
       return value!;
     },
-    async advance(throughSequence: number) {
-      await announce(throughSequence);
-      await replica.advance(watermarks.get(throughSequence)!);
+    async advance(messageId: string) {
+      await announce(messageId);
+      await replica.advance(watermarks.get(messageId)!);
     },
     async close() {
       replica.close();

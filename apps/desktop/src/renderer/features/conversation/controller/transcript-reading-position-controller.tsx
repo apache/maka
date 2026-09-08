@@ -39,7 +39,6 @@ type RangeController = NonNullable<Parameters<typeof restoreSessionTranscriptRan
   loadBefore(maxBytes?: number, anchorTurnId?: string): Promise<void>;
   loadAfter(maxBytes?: number, anchorTurnId?: string): Promise<void>;
   loadLatest(): Promise<void>;
-  setReadingAnchor(sequence: number | null, readingTurnId?: string): Promise<void>;
 };
 
 interface TurnIndex {
@@ -49,7 +48,6 @@ interface TurnIndex {
 }
 
 export interface TranscriptReadingPositionCommands {
-  cancel(sessionId: string, clearAnchor?: boolean): void;
   prepareSend(sessionId: string): Promise<boolean>;
   captureAnchor(turnId?: string): void;
   loadHistory(target: TranscriptHistoryRequest['target'], anchorTurnId?: string): Promise<void>;
@@ -70,14 +68,12 @@ export function TranscriptReadingPositionController(props: {
   turnIndex: TurnIndex | undefined;
   setTurnIndex: Dispatch<SetStateAction<TurnIndex | undefined>>;
   listTurnLandmarks: Parameters<typeof refreshTranscriptTurnLandmarks<TurnIndex['turns'][number]>>[0]['list'];
-  setMessages(messages: StoredMessage[]): void;
   setHistoryPending: Dispatch<SetStateAction<TranscriptHistoryPending | undefined>>;
   historyPageBytes: number;
   onRestoreError(error: unknown, sessionId: string): void;
   onNavigationError(error: unknown, sessionId: string): void;
 }) {
   const [lifecycle] = useState(createTranscriptRestoreLifecycle);
-  const navigationRevision = useRef(0);
   const historyGates = useRef<TranscriptHistoryGates>(new WeakMap());
   const isCurrent = (sessionId: string, controller: object) =>
     props.currentSessionId.current === sessionId && props.rangeController.current === controller;
@@ -96,19 +92,12 @@ export function TranscriptReadingPositionController(props: {
     }
   };
   useImperativeHandle(props.commands, () => ({
-    cancel(sessionId, clearAnchor) {
-      navigationRevision.current += 1;
-      cancelHistory(sessionId);
-      cancel(sessionId, clearAnchor);
-    },
     prepareSend(sessionId) {
-      const revision = ++navigationRevision.current;
       cancelHistory(sessionId);
       return prepareTranscriptForSend({
         sessionId, currentSessionId: props.currentSessionId,
-        controller: props.rangeController, cancel, setMessages: props.setMessages,
+        controller: props.rangeController, cancel,
         followLatest: props.sessionUi.transcriptViewportNavigation.followLatest,
-        isCurrent: () => navigationRevision.current === revision,
       });
     },
     captureAnchor(turnId) {
@@ -128,7 +117,6 @@ export function TranscriptReadingPositionController(props: {
       // pin. Its empty-anchor acknowledgement is not another reader intent.
       if (previous?.turnId === turnId && previous?.sequence === (sequence ?? undefined)) return;
       let navigation: Promise<void> | undefined;
-      navigationRevision.current += 1;
       cancelHistory(sessionId);
       if (turnId) navigation = controller?.setReadingAnchor(sequence ?? null, turnId);
       else if (!turnId && previous && !range.hasNewer) {
@@ -143,7 +131,6 @@ export function TranscriptReadingPositionController(props: {
       const controller = props.rangeController.current;
       const { sessionId } = props;
       if (!controller || !sessionId || !isCurrent(sessionId, controller)) return;
-      navigationRevision.current += 1;
       cancel(sessionId, target === 'latest');
       // A direct latest command must enter the range controller now, so it
       // invalidates older pages rather than waiting behind a paging gate.
@@ -176,12 +163,10 @@ export function TranscriptReadingPositionController(props: {
     setIndex: props.setTurnIndex,
   }), [props.sessionId, landmarkSessionId, newestPrompt, props.turnIndex]);
   useEffect(() => () => {
-    navigationRevision.current += 1;
     lifecycle.deactivate();
   }, [props.sessionId, props.profileId, lifecycle]);
   useEffect(() => {
     if (props.searchTarget) {
-      navigationRevision.current += 1;
       cancelHistory(props.searchTarget.sessionId);
     }
   }, [props.searchTarget?.nonce]);
@@ -196,7 +181,6 @@ export function TranscriptReadingPositionController(props: {
     controller: props.rangeController.current,
     isCurrent,
     isLiveTurn: (sessionId, turnId) => props.sessionUi.liveTurnBySessionRef.current[sessionId]?.turnId === turnId,
-    setMessages: props.setMessages,
     setReadingAnchor: props.sessionUi.setTranscriptReadingAnchor,
     onRestoreUnavailable: props.sessionUi.setTranscriptRestoreUnavailable,
     onError: props.onRestoreError,

@@ -18,31 +18,16 @@
  */
 
 import {
-  captureTranscriptReadingAnchor,
-  createTranscriptRestoreLifecycle,
   currentTranscriptRange,
-  loadTranscriptHistory,
-  newestDurablePromptSequence,
-  prepareTranscriptForSend,
-  refreshTranscriptTurnLandmarks,
-  restoreSessionTranscriptRange,
   transcriptRestoreTarget,
 } from './controller/transcript-reading-position.js';
 
 export const transcriptReadingPosition = {
-  captureAnchor: captureTranscriptReadingAnchor,
-  createRestoreLifecycle: createTranscriptRestoreLifecycle,
   currentRange: currentTranscriptRange,
-  loadHistory: loadTranscriptHistory,
-  newestDurablePromptSequence,
-  prepareForSend: prepareTranscriptForSend,
-  refreshLandmarks: refreshTranscriptTurnLandmarks,
-  restoreRange: restoreSessionTranscriptRange,
   restoreTarget: transcriptRestoreTarget,
 };
 
 export type {
-  TranscriptHistoryGates,
   TranscriptHistoryPending,
 } from './controller/transcript-reading-position.js';
 export {

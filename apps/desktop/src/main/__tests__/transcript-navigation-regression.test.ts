@@ -25,8 +25,10 @@ import {
   type SessionTranscriptPage,
 } from '@maka/runtime-host/protocol';
 import { DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES } from '../../preload/transcript-contract.js';
-import { transcriptReadingPosition } from '../../renderer/features/conversation/index.js';
-const { createRestoreLifecycle: createTranscriptRestoreLifecycle, restoreRange: restoreSessionTranscriptRange } = transcriptReadingPosition;
+import {
+  createTranscriptRestoreLifecycle,
+  restoreSessionTranscriptRange,
+} from '../../renderer/features/conversation/testing.js';
 import { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
 import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
 
@@ -89,7 +91,6 @@ test('a completed resident bookmark does not reload after streaming settlement e
   const lifecycle = createTranscriptRestoreLifecycle();
   let loaded = 0;
   const controller = {
-    ready: async () => {},
     // This test isolates restore command lifetime from reader navigation.
     setReadingAnchor: async () => {},
     loadAround: async (sequence: number) => {
@@ -110,7 +111,6 @@ test('a completed resident bookmark does not reload after streaming settlement e
     readingAnchor: { turnId: 'turn-a', sequence: 0 },
     controller,
     isCurrent: () => true,
-    setMessages: () => {},
     setReadingAnchor: () => {},
     onError: (error) => assert.fail(String(error)),
   });
@@ -149,7 +149,6 @@ test('reopening a bookmark at the current Turn retains content persisted later i
       sessionId: 'session-1',
       readingAnchor: { turnId: 'turn-b', sequence: 2 },
       controller: {
-        ready: async () => {},
         setReadingAnchor: (sequence) => fixture.replica.readAt(sequence),
         loadAround: (sequence) => fixture.replica.loadAround(sequence, PAGE_BYTES),
         store: {
@@ -161,7 +160,6 @@ test('reopening a bookmark at the current Turn retains content persisted later i
         },
       },
       isCurrent: () => true,
-      setMessages: () => {},
       setReadingAnchor: () => {},
       onError: (error) => assert.fail(String(error)),
     });
@@ -224,18 +222,19 @@ test('streaming persistence retains a newly loaded oversized neighbor until the 
   }
 });
 
-test('repeated message notifications share one pending restore and cancellation prevents a late UI commit', async () => {
+test('repeated message notifications share one pending restore and cancellation preserves the newer bookmark', async () => {
   const lifecycle = createTranscriptRestoreLifecycle();
   let finishLoad!: () => void;
   const loading = new Promise<void>((resolve) => { finishLoad = resolve; });
   let reads = 0;
-  const committed: string[][] = [];
+  let anchor: { turnId: string; sequence?: number } | undefined = { turnId: 'turn-a', sequence: 0 };
+  let unavailable: string | undefined;
   const options = {
     lifecycle,
     sessionId: 'session-1',
     readingAnchor: { turnId: 'turn-a', sequence: 0 },
     controller: {
-      ready: async () => {},
+      setReadingAnchor: async () => {},
       loadAround: async () => { reads += 1; await loading; },
       store: {
         range: () => ({ sessionId: 'session-1' }),
@@ -245,8 +244,8 @@ test('repeated message notifications share one pending restore and cancellation 
       },
     },
     isCurrent: () => true,
-    setMessages: (messages: string[]) => { committed.push(messages); },
-    setReadingAnchor: () => {},
+    setReadingAnchor: (_sessionId: string, next: typeof anchor) => { anchor = next; },
+    onRestoreUnavailable: (_sessionId: string, turnId: string) => { unavailable = turnId; },
     onError: (error: unknown) => assert.fail(String(error)),
   };
   restoreSessionTranscriptRange(options);
@@ -255,13 +254,15 @@ test('repeated message notifications share one pending restore and cancellation 
   assert.equal(reads, 1);
 
   lifecycle.cancel('session-1');
+  anchor = { turnId: 'turn-b', sequence: 2 };
   finishLoad();
   await settleRestore();
   restoreSessionTranscriptRange(options);
   await settleRestore();
 
   assert.equal(reads, 1, 'cancellation must not recapture the bookmark in the same activation');
-  assert.deepEqual(committed, [], 'a cancelled restore cannot replace the newer visible range');
+  assert.deepEqual(anchor, { turnId: 'turn-b', sequence: 2 });
+  assert.equal(unavailable, undefined, 'a cancelled restore cannot declare the newer bookmark unavailable');
 });
 
 test('switching away and back creates a fresh restore while clearing search does not replay a bookmark', async () => {
@@ -273,7 +274,7 @@ test('switching away and back creates a fresh restore while clearing search does
     profileId: 'profile-1',
     readingAnchor: { turnId: 'turn-a', sequence: 0 },
     controller: {
-      ready: async () => {},
+      setReadingAnchor: async () => {},
       loadAround: async (sequence: number) => { reads.push(sequence); },
       store: {
         range: () => ({ sessionId: 'session-1' }),
@@ -283,7 +284,6 @@ test('switching away and back creates a fresh restore while clearing search does
       },
     },
     isCurrent: () => true,
-    setMessages: () => {},
     setReadingAnchor: () => {},
     onError: (error: unknown) => assert.fail(String(error)),
   };
@@ -307,16 +307,17 @@ test('switching away and back creates a fresh restore while clearing search does
   assert.deepEqual(reads, [0, 2, 0, 0], 'changing Hosts also creates a fresh activation');
 });
 
-test('effect teardown followed by setup replaces the first Session restore without a late commit', async () => {
+test('effect teardown followed by setup lets only the replacement restore settle its bookmark', async () => {
   const lifecycle = createTranscriptRestoreLifecycle();
   const loads: Array<() => void> = [];
-  const committed: string[][] = [];
+  let anchor: { turnId: string; sequence?: number } | undefined = { turnId: 'turn-a', sequence: 0 };
+  let unavailable: string | undefined;
   const options = {
     lifecycle,
     sessionId: 'session-1',
     readingAnchor: { turnId: 'turn-a', sequence: 0 },
     controller: {
-      ready: async () => {},
+      setReadingAnchor: async () => {},
       loadAround: () => new Promise<void>((resolve) => { loads.push(resolve); }),
       store: {
         range: () => ({ sessionId: 'session-1' }),
@@ -326,8 +327,8 @@ test('effect teardown followed by setup replaces the first Session restore witho
       },
     },
     isCurrent: () => true,
-    setMessages: (messages: string[]) => { committed.push(messages); },
-    setReadingAnchor: () => {},
+    setReadingAnchor: (_sessionId: string, next: typeof anchor) => { anchor = next; },
+    onRestoreUnavailable: (_sessionId: string, turnId: string) => { unavailable = turnId; },
     onError: (error: unknown) => assert.fail(String(error)),
   };
   restoreSessionTranscriptRange(options);
@@ -338,10 +339,12 @@ test('effect teardown followed by setup replaces the first Session restore witho
 
   loads[0]!();
   await settleRestore();
-  assert.deepEqual(committed, [], 'the deactivated command cannot commit after replacement');
+  assert.deepEqual(anchor, { turnId: 'turn-a', sequence: 0 });
+  assert.equal(unavailable, undefined, 'the deactivated command cannot settle after replacement');
   loads[1]!();
   await settleRestore();
-  assert.deepEqual(committed, [['replacement range']], 'only the replacement restore commits');
+  assert.equal(anchor, undefined);
+  assert.equal(unavailable, 'turn-a', 'only the replacement restore settles its unavailable target');
 });
 
 async function settleRestore(): Promise<void> {

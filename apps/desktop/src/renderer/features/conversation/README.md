@@ -24,13 +24,15 @@ that connect transcript identity to the Desktop bounded-range controller. Its
 public API includes task-readiness presentation and a headless
 `TranscriptReadingPositionController` component. That component owns bookmark
 restoration, landmark refresh, and history navigation, while exposing explicit
-cancel, capture, and load commands to AppShell.
+capture, send preparation, and history commands to AppShell.
 
 Successful send preparation publishes a one-shot viewport command through the
 Session UI controller. The message surface forwards that port to ChatView,
 where the scroll authority follows the tail. History catches up in the background
 so local Message admission does not wait for it. Message growth and bookmark
-updates do not replay the command; newer navigation discards stale catch-up results.
+updates do not replay the command; the range controller rejects stale catch-up results.
+Accepted store updates reach the message surface through the existing transcript
+projection; navigation completion only settles bookmark state.
 
 Running Turns have no durable sequence in the RuntimeEvent transcript. Reading
 intent therefore carries the Turn ID until persistence supplies its sequence;

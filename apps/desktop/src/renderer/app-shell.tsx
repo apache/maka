@@ -2450,7 +2450,6 @@ function AppShellContent({
         turnIndex={transcriptTurnIndex}
         setTurnIndex={setTranscriptTurnIndex}
         listTurnLandmarks={(sessionId) => window.maka.sessions.listTurnLandmarks(sessionId)}
-        setMessages={setMessages}
         setHistoryPending={setHistoryLoadPending}
         historyPageBytes={DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES}
         onRestoreError={(error, sessionId) => sessionUiController.setMessageLoadErrorBySession((current) => ({

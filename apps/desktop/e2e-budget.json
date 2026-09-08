@@ -65,10 +65,6 @@
       "tests": 4,
       "electron": "observation seeding, reconnect and settle are Host subscriptions surviving a renderer remount"
     },
-    "transcript-navigation-ownership.spec.ts": {
-      "tests": 1,
-      "electron": "reading ownership must survive Host streaming settlement and Session switches through main, preload and renderer"
-    },
     "transcript-scroll-cost.spec.ts": {
       "tests": 3,
       "electron": "the perf budget is measured from CDP wheel input and the browser's own render skipping"

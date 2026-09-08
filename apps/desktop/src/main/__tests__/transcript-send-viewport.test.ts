@@ -91,13 +91,11 @@ test('a send is accepted before latest history loads and its old completion cann
   await fixture.readAt(1000);
   await act(async () => { assert.equal(await fixture.commands.current!.prepareSend('session-a'), true); });
   assert.equal(fixture.pinned(), true, 'local admission must not wait for the latest range');
-  const projections = fixture.projections();
 
   await fixture.switchSession('session-b');
   await fixture.readAt(900);
   await act(async () => { latest.resolve(); });
 
-  assert.equal(fixture.projections(), projections, 'the old range must not replace the new Session');
   assert.equal(fixture.pinned(), false);
   assert.equal(fixture.scroller.scrollTop, 900);
   await fixture.append('session-b-growth', 600);
@@ -112,12 +110,10 @@ for (const direction of ['earlier', 'later'] as const) {
     await fixture.render();
     await fixture.readAt(1000);
     await act(async () => { assert.equal(await fixture.commands.current!.prepareSend('session-a'), true); });
-    const projections = fixture.projections();
     await fixture.activateHistoryGap(direction);
     const readerTop = fixture.scroller.scrollTop;
     await act(async () => { latest.resolve(); });
 
-    assert.equal(fixture.projections(), projections, 'history intent must discard the stale latest projection');
     assert.equal(fixture.pinned(), false);
     assert.equal(fixture.scroller.scrollTop, readerTop);
   });
@@ -167,12 +163,11 @@ test('geometry changes from the latest range do not cancel the background load o
   const readingCalls: Array<number | null> = [];
   fixture.controller.setReadingAnchor = async (sequence: number | null) => { readingCalls.push(sequence); };
   await act(async () => { assert.equal(await fixture.commands.current!.prepareSend('session-a'), true); });
-  const projections = fixture.projections();
 
   await fixture.replaceRangeFromHost();
   await act(async () => { latest.resolve(); });
 
-  assert.equal(fixture.projections(), projections + 1, 'Host range replacement must not cancel its own latest load');
+  assert.deepEqual(fixture.visibleTurns(), ['latest-b']);
   assert.deepEqual(readingCalls, [], 'content geometry must not install a new history reading intent');
   assert.equal(fixture.pinned(), true);
   await fixture.append('new-question', 200);
@@ -186,12 +181,10 @@ test('the reader can leave an accepted send while its latest range is still load
   await fixture.render();
   await fixture.readAt(1900);
   await act(async () => { assert.equal(await fixture.commands.current!.prepareSend('session-a'), true); });
-  const projections = fixture.projections();
 
   await fixture.readAt(1000);
   await act(async () => { latest.resolve(); });
 
-  assert.equal(fixture.projections(), projections, 'reader navigation must discard the stale latest projection');
   assert.equal(fixture.pinned(), false);
   assert.equal(fixture.scroller.scrollTop, 1000);
 });
@@ -253,9 +246,8 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
   addTurn('history', 0, 1800);
   addTurn('latest', 1800, 1200);
   let reads = 0;
-  let projections = 0;
   const controller = {
-    ready: async () => {}, loadAround: async () => {}, loadBefore: async () => {}, loadAfter: async () => {},
+    loadAround: async () => {}, loadBefore: async () => {}, loadAfter: async () => {},
     loadLatest: async () => { reads += 1; }, setReadingAnchor: async (_sequence: number | null, _turnId?: string) => {},
     store: {
       range: () => ({ sessionId: 'session-a' }),
@@ -275,7 +267,7 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
     searchTarget: undefined, clearSearchTarget: () => {},
     turnIndex: undefined, setTurnIndex: () => {},
     listTurnLandmarks: async () => ({ throughSequence: null, landmarks: [] }),
-    setMessages: (next) => { projections += 1; props.messages = next; }, setHistoryPending: () => {}, historyPageBytes: 512 * 1024,
+    setHistoryPending: () => {}, historyPageBytes: 512 * 1024,
     onRestoreError: (error) => assert.fail(String(error)), onNavigationError: (error) => assert.fail(String(error)),
   };
   let authority: TranscriptScrollAuthority | undefined;
@@ -302,7 +294,8 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
   const render = () => act(() => root.render(createElement(TranscriptScrollAuthorityProvider, null, createElement(Harness))));
   return {
     scroller, controller, sessionUi, commands, render,
-    pinned: () => authority!.getSnapshot().pinned, latestReads: () => reads, projections: () => projections,
+    pinned: () => authority!.getSnapshot().pinned, latestReads: () => reads,
+    visibleTurns: () => props.messages.map((message) => message.turnId),
     async clickReturnToLatest() {
       const button = mount.querySelector('button');
       assert.ok(button);
