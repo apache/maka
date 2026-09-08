@@ -96,7 +96,7 @@ function throwIfAborted(abortSignal?: AbortSignal): void {
   throw new DOMException('Session activity acquisition was aborted', 'AbortError');
 }
 
-async function waitForIdleOrAbort(
+export async function waitForIdleOrAbort(
   whenIdle: Promise<void>,
   abortSignal?: AbortSignal,
 ): Promise<void> {

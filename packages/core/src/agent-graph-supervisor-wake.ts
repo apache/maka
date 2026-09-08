@@ -109,6 +109,9 @@ export interface AgentGraphSupervisorWakeStore {
     wakeId: string,
   ): Promise<AgentGraphSupervisorWakeAttemptRecord[]>;
   listUnsettledAgentGraphSupervisorWakes(): Promise<AgentGraphSupervisorWakeRecord[]>;
-  listRetryableAgentGraphSupervisorWakes(): Promise<AgentGraphSupervisorWakeRecord[]>;
+  /** Pending or failed wakes eligible for a new attempt, optionally scoped to one Session. */
+  listRetryableAgentGraphSupervisorWakes(
+    rootSessionId?: string,
+  ): Promise<AgentGraphSupervisorWakeRecord[]>;
   recoverAgentGraphSupervisorWakes(): Promise<number>;
 }

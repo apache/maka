@@ -26,6 +26,9 @@ import {
   type SessionToolProfile,
 } from '@maka/core/session';
 
+export const PLAN_BACKGROUND_EXECUTION_UNAVAILABLE_REASON =
+  'Background and delegated roots cannot execute while the Session is in Plan mode.';
+
 const WORKTREE_CHILD_UNAVAILABLE_REASON =
   'Worktree child Sessions must be continued through their parent agent.';
 const CHILD_CONTINUATION_UNAVAILABLE_REASON =
@@ -116,7 +119,7 @@ export function runtimeHostExecutionUnavailableReason(
     execution.kind !== 'regenerate' &&
     execution.kind !== 'context_compact' &&
     execution.kind !== 'safe_boundary_continuation'
-      ? 'Background and delegated roots cannot execute while the Session is in Plan mode.'
+      ? PLAN_BACKGROUND_EXECUTION_UNAVAILABLE_REASON
       : undefined) ??
     (header.subagentWorkspace && !isManagedWorktreeChildExecution(execution)
       ? WORKTREE_CHILD_UNAVAILABLE_REASON

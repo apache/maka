@@ -1085,6 +1085,109 @@ test('configuration update admits Plan mode through Runtime authority', async ()
   assert.equal(fixture.drainRequests(), 0);
 });
 
+test('configuration wakes execution only after a committed Plan to Agent transition is refreshed', async () => {
+  const observed: string[] = [];
+  const fixture = createFixture({
+    header: { collaborationMode: 'plan' },
+    continuity: {
+      refreshCanonical: async () => {
+        assert.equal(fixture.header().collaborationMode, 'agent');
+        observed.push('refreshed');
+      },
+    },
+    onExecutionResumed: (sessionId) => observed.push(sessionId),
+  });
+  const input = {
+    sessionId: fixture.sessionId,
+    expectedRevision: fixture.revision(),
+    patch: { collaborationMode: 'agent' as const },
+  };
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    input,
+    context,
+  );
+  assert.equal(outcome.ok && outcome.result.kind, 'committed');
+  assert.deepEqual(observed, ['refreshed', fixture.sessionId]);
+
+  observed.length = 0;
+  const conflict = await fixture.coordinator.handlers['session.configuration.update'](
+    input,
+    context,
+  );
+  assert.equal(conflict.ok && conflict.result.kind, 'revision_conflict');
+  const noop = await fixture.coordinator.handlers['session.configuration.update'](
+    { ...input, expectedRevision: fixture.revision() },
+    context,
+  );
+  assert.equal(noop.ok && noop.result.kind, 'committed');
+  assert.deepEqual(observed, []);
+});
+
+test('explicit account selection resumes a legacy Session only after the binding commits', async () => {
+  const resumed: string[] = [];
+  const fixture = createFixture({
+    legacyConnectionIdentity: true,
+    onExecutionResumed: (sessionId) => {
+      assert.equal(fixture.header().llmConnectionId, 'connection-1');
+      resumed.push(sessionId);
+    },
+  });
+  const input = configurationInput(fixture.sessionId, fixture.revision());
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    input,
+    context,
+  );
+  assert.equal(outcome.ok && outcome.result.kind, 'committed');
+  assert.deepEqual(resumed, [fixture.sessionId]);
+  await fixture.coordinator.handlers['session.configuration.update'](
+    { ...input, expectedRevision: fixture.revision() },
+    context,
+  );
+  assert.deepEqual(resumed, [fixture.sessionId]);
+});
+
+test('configuration does not wake on model changes, archival, or rejected transitions', async () => {
+  for (const scenario of ['model', 'archived', 'rejected', 'refresh_failed'] as const) {
+    const resumed: string[] = [];
+    const fixture = createFixture({
+      header: {
+        collaborationMode: 'plan',
+        isArchived: scenario === 'archived',
+        model: 'old-model',
+      },
+      ...(scenario === 'rejected'
+        ? {
+            manager: {
+              transitionSessionConfiguration: async () => {
+                throw new SessionConfigurationTransitionError('operation_conflict', 'Busy Session');
+              },
+            },
+          }
+        : {}),
+      ...(scenario === 'refresh_failed'
+        ? {
+            continuity: {
+              refreshCanonical: async () => {
+                throw new Error('Read unavailable');
+              },
+            },
+          }
+        : {}),
+      onExecutionResumed: (sessionId) => resumed.push(sessionId),
+    });
+    const input = configurationInput(fixture.sessionId, fixture.revision());
+    const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+      {
+        ...input,
+        patch: { ...input.patch, collaborationMode: scenario === 'model' ? 'plan' : 'agent' },
+      },
+      context,
+    );
+    assert.equal(outcome.ok, scenario === 'model', scenario);
+    assert.deepEqual(resumed, [], scenario);
+  }
+});
+
 test('configuration update never rebinds a bound Session through a reused slug', async () => {
   let observedRef: unknown;
   const fixture = createFixture({
@@ -1705,6 +1808,7 @@ function createFixture(
     readonly runtimePolicy?: RuntimePolicy;
     readonly projectCatalog?: ProjectCatalog;
     readonly onProjectChanged?: () => void;
+    readonly onExecutionResumed?: (sessionId: string) => void;
     readonly legacyConnectionIdentity?: boolean;
     readonly header?: Partial<SessionHeader>;
   } = {},
@@ -1793,6 +1897,7 @@ function createFixture(
       new HostProjectMembershipGate(),
       options.onProjectChanged ?? (() => undefined),
     ),
+    onExecutionResumed: options.onExecutionResumed,
     requestDrain: () => {
       drains += 1;
     },

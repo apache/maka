@@ -182,6 +182,7 @@ export interface HostSessionCatalogCoordinatorOptions {
   readonly continuity: SessionContinuity;
   readonly workspaceResolver: HostWorkspaceResolver;
   readonly requestDrain: () => void;
+  readonly onExecutionResumed?: (sessionId: string) => void;
   readonly sessionAccessAuthority?: Pick<
     RuntimeHostAccessAuthority,
     'activeSessionGrantForPrincipal'
@@ -293,6 +294,7 @@ export class HostSessionCatalogCoordinator {
   readonly #continuity: SessionContinuity;
   readonly #workspaceResolver: HostWorkspaceResolver;
   readonly #requestDrain: () => void;
+  readonly #onExecutionResumed: HostSessionCatalogCoordinatorOptions['onExecutionResumed'];
   readonly #sessionAccessAuthority:
     | Pick<RuntimeHostAccessAuthority, 'activeSessionGrantForPrincipal'>
     | undefined;
@@ -306,6 +308,7 @@ export class HostSessionCatalogCoordinator {
     this.#continuity = options.continuity;
     this.#workspaceResolver = options.workspaceResolver;
     this.#requestDrain = options.requestDrain;
+    this.#onExecutionResumed = options.onExecutionResumed;
     this.#sessionAccessAuthority = options.sessionAccessAuthority;
   }
 
@@ -735,7 +738,17 @@ export class HostSessionCatalogCoordinator {
           clearConnectionBlock: input.patch.modelTarget !== undefined,
           configuration,
         });
-        return configurationSuccess(await this.#committedUpdate(input.sessionId, lease));
+        const result = await this.#committedUpdate(input.sessionId, lease);
+        if (
+          (current.header.collaborationMode === 'plan' &&
+            configuration.collaborationMode === 'agent') ||
+          (current.header.llmConnectionId === undefined &&
+            current.header.backend !== 'fake' &&
+            configuration.llmConnectionId !== undefined)
+        ) {
+          this.#onExecutionResumed?.(input.sessionId);
+        }
+        return configurationSuccess(result);
       } catch (error) {
         if (
           !commitAttempted &&
