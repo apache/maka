@@ -88,11 +88,15 @@ async function blocking(page: Page, scenario: string) {
     if (samples.frames.length) row(scenario, 'long-animation-frame-ms', samples.frames);
   }
 }
-test.afterAll(async () => {
+test.beforeEach(() => {
+  rows.length = 0;
+});
+test.afterEach(async ({}, info) => {
   if (rows.length)
     await report(
-      'frontend-electron',
+      info.title.startsWith('long') ? 'frontend-electron-navigation' : 'frontend-electron-stream',
       {
+        status: info.status,
         browserVersion,
         fixture:
           'existing chat-prompt-rail (120 turns), normal fake stream (9 characters/45ms), hold-open stop',
@@ -101,7 +105,7 @@ test.afterAll(async () => {
         theme: 'light',
         motion: 'reduce',
         conditions:
-          'One fresh Electron + real Host per case; first action separately recorded, ten warm repetitions. Streaming uses a fixed 680-character prompt, 9-character deltas/45ms; input checks every 100ms plus driver overhead.',
+          'One fresh Electron + real Host per case; first action separately recorded, ten warm repetitions. Streaming uses a fixed 679-character prompt, 9-character deltas/45ms; input checks every 100ms plus driver overhead.',
         limits:
           'DOM-event and preload admission probes, not native input or INP. Latency ends at verified DOM state (includes driver polling), not screen presentation. Stream lag begins at renderer subscription delivery, not provider send. CPU task duration is not power. No wakeup counter on CDP.',
       },
@@ -145,6 +149,7 @@ test('long session switch, older history and idle retention', async () => {
         await expect(page.locator(tail)).toHaveCount(hasTail ? 1 : 0);
       };
       const samples: number[] = [],
+        liveNodes: number[] = [],
         nodes: number[] = [],
         heaps: number[] = [];
       for (let i = 0; i <= repetitions; i++) {
@@ -158,10 +163,16 @@ test('long session switch, older history and idle retention', async () => {
         const heap = await cdp.send('Runtime.getHeapUsage');
         nodes.push(counters.nodes);
         heaps.push(heap.usedSize);
+        liveNodes.push(await page.locator('*').count());
       }
       row('session-roundtrip', 'warm-dom-ready-ms', samples);
-      row('session-roundtrip', 'dom-nodes', nodes);
+      row('120-turn-session', 'live-dom-elements', liveNodes);
+      row('session-roundtrip', 'retained-dom-nodes-including-detached', nodes);
       row('session-roundtrip', 'heap-bytes-no-forced-gc', heaps);
+      await switchTo(other!, false);
+      row('small-session', 'live-dom-elements', [await page.locator('*').count()]);
+      row('small-session', 'mounted-turns', [await page.locator('.maka-transcript-turn').count()]);
+      await switchTo(id!, true);
       const paging: number[] = [];
       for (let i = 0; i < repetitions; i++) {
         const result = await measure('older-history', async () => {
@@ -253,7 +264,7 @@ test('streaming input, background output and stop', async () => {
       await expect(
         page.locator('[data-session-id=' + JSON.stringify(id) + '] [aria-current="page"]'),
       ).toHaveCount(1);
-      const prompt = 'performance fixture ' + 'abcdefghij '.repeat(60);
+      const prompt = ('performance fixture ' + 'abcdefghij '.repeat(60)).trimEnd();
       const expected =
         'Fake backend received: ' +
         prompt +
@@ -318,7 +329,8 @@ test('streaming input, background output and stop', async () => {
         await page.waitForTimeout(100);
       }
       await expect(page.locator('.maka-bubble-streaming')).toHaveCount(0, { timeout: 20_000 });
-      await expect(page.getByRole('log')).toContainText(expected);
+      await expect(page.getByRole('log')).toContainText(expected, { useInnerText: true });
+      await expect(page.locator(COMPOSER_INPUT)).toHaveText('draft-9');
       const stream = await page.evaluate(() => {
         const state = (window as any).__perfStream;
         return { text: state.text, lags: state.lags as number[], pending: state.deliveries.length };
@@ -356,7 +368,11 @@ test('streaming input, background output and stop', async () => {
           ),
         ).toBe(true);
         backgroundTimes.push(
-          (await measure('background-input', () => input(page, 'foreground-' + i))).ms,
+          (
+            await measure('background-input', () =>
+              input(page, i === repetitions - 1 ? '__e2e_hold_open__' : 'foreground-' + i),
+            )
+          ).ms,
         );
         await page.waitForTimeout(100);
       }
@@ -373,7 +389,7 @@ test('streaming input, background output and stop', async () => {
       await expect(
         page.locator('[data-session-id=' + JSON.stringify(id) + '] [aria-current="page"]'),
       ).toHaveCount(1);
-      await input(page, '__e2e_hold_open__');
+      await expect(page.locator(COMPOSER_INPUT)).toHaveText('__e2e_hold_open__');
       await activate(page.getByRole('button', { name: '发送', exact: true }));
       await expect(page.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
       const stop = await measure('stop', async () => {

@@ -78,10 +78,11 @@ try {
   }
   for (let trial = 0; trial < 10; trial++) {
     const started = performance.now();
-    const tools = page.getByRole('button', { name: /合成检查 \d+/ });
+    const tools = page.locator('[data-slot="chat-tool-call-row"]');
     assert.equal(await tools.count(), 45, 'All 45 tool disclosures must exist');
     for (let i = 0; i < 45; i++) {
       const button = tools.nth(i);
+      await button.scrollIntoViewIfNeeded();
       await button.evaluate((el) =>
         el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })),
       );
@@ -93,6 +94,7 @@ try {
     const steps = await scrollSteps(page);
     anchors.push(...steps.map((s) => Math.abs(s.moved - s.intended)));
     for (let i = 0; i < 45; i++) {
+      await tools.nth(i).scrollIntoViewIfNeeded();
       await tools
         .nth(i)
         .evaluate((el) =>
@@ -106,7 +108,7 @@ try {
     heaps.push((await cdp.send('Runtime.getHeapUsage')).usedSize);
   }
   for (const [metric, values] of Object.entries({
-    'expand-45-dom-ms': samples,
+    'reveal-and-expand-45-dom-ms': samples,
     'cold-collapsed-unexpected-anchor-px': coldAnchors,
     'expanded-unexpected-anchor-px': anchors,
     'dom-nodes-after-close': nodes,
