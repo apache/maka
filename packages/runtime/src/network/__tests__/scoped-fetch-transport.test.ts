@@ -33,6 +33,59 @@ import { runConnectionTestEffect, testConnection } from '../../test-connection.j
 import { createConnectionEffectFetchTransport } from '../scoped-fetch-transport.js';
 
 describe('connection effect network transport', () => {
+  for (const abortRequest of [false, true]) {
+    test(`close releases a pending TLS handshake (request aborted: ${abortRequest})`, async () => {
+      const sockets = new Set<net.Socket>();
+      let handshakeStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        handshakeStarted = resolve;
+      });
+      const server = net.createServer((socket) => {
+        sockets.add(socket);
+        socket.once('close', () => sockets.delete(socket));
+        // Read the ClientHello but never answer it. No external networking or
+        // certificate configuration is needed to hold the connector in flight.
+        socket.once('data', handshakeStarted);
+        socket.resume();
+      });
+      const port = await listen(server);
+      const transport = createConnectionEffectFetchTransport(null);
+      const abort = new AbortController();
+      const request = transport
+        .fetch(`https://127.0.0.1:${port}/models`, {
+          signal: abort.signal,
+        })
+        .catch(() => undefined);
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await started;
+        const socket = [...sockets][0]!;
+        const closed = waitForSocketClose(socket);
+        if (abortRequest) abort.abort();
+        await transport.close();
+        // Observe peer closure before the connector's own 10 s timeout could
+        // hide an unowned socket. This is a failure bound, not a fixed sleep.
+        await Promise.race([
+          closed,
+          new Promise<never>((_resolve, reject) => {
+            deadline = setTimeout(
+              () => reject(new Error('TLS socket survived transport.close()')),
+              1_000,
+            );
+          }),
+        ]);
+        await request;
+      } finally {
+        clearTimeout(deadline);
+        abort.abort();
+        await transport.close();
+        for (const socket of sockets) socket.destroy();
+        await closeServer(server);
+        await request;
+      }
+    });
+  }
+
   test('concurrent discovery uses immutable per-effect proxy snapshots', async () => {
     const firstProxy = await startConnectProxy(() =>
       jsonResponse(200, modelPayload('first-model')),
