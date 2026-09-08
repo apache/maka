@@ -30,6 +30,7 @@ import {
 
 const GLOBAL_KEYS = [
   'CSS',
+  'CSSStyleSheet',
   'DOMParser',
   'Element',
   'HTMLElement',
@@ -37,6 +38,7 @@ const GLOBAL_KEYS = [
   'MutationObserver',
   'Node',
   'ResizeObserver',
+  'SVGElement',
   'XMLSerializer',
   'cancelAnimationFrame',
   'document',
@@ -66,8 +68,24 @@ function installDom() {
       return String(node);
     }
   }
+  Object.defineProperties(window.SVGElement.prototype, {
+    getBBox: {
+      configurable: true,
+      value() {
+        return { x: 0, y: 0, width: Math.max(1, (this.textContent ?? '').length * 8), height: 16 };
+      },
+    },
+    getComputedTextLength: {
+      configurable: true,
+      value() {
+        return Math.max(1, (this.textContent ?? '').length * 8);
+      },
+    },
+  });
+  const CSSStyleSheet = document.createElement('style').sheet!.constructor;
   const globals = {
     CSS: { escape: String, supports: () => false },
+    CSSStyleSheet,
     DOMParser: window.DOMParser,
     Element: window.Element,
     HTMLElement: window.HTMLElement,
@@ -75,6 +93,7 @@ function installDom() {
     MutationObserver: window.MutationObserver,
     Node: window.Node,
     ResizeObserver: InertResizeObserver,
+    SVGElement: window.SVGElement,
     XMLSerializer: TestXmlSerializer,
     cancelAnimationFrame: () => {},
     document,
@@ -100,6 +119,7 @@ function installDom() {
   }
   Object.assign(window, {
     CSS: globals.CSS,
+    CSSStyleSheet,
     cancelAnimationFrame: globals.cancelAnimationFrame,
     getComputedStyle: globals.getComputedStyle,
     innerHeight: 800,
@@ -131,6 +151,128 @@ function diagram(code: string) {
     </LocaleProvider>
   );
 }
+
+test('preserves custom Mermaid attribute selectors after SVG ids are namespaced', async () => {
+  const dom = installDom();
+  const mermaid = (await import('mermaid')).default;
+  const originalRender = mermaid.render;
+  let renderCalls = 0;
+  mermaid.render = (...args) => {
+    renderCalls += 1;
+    return originalRender(...args);
+  };
+  const code = [
+    '%%{init: {"themeCSS": "[id=\\"actor1\\"] { opacity: 0.25; }"}}%%',
+    'sequenceDiagram',
+    'Alice->>Bob: Hello',
+  ].join('\n');
+  const actorId = () => {
+    const svg = dom.document.querySelector('.maka-mermaid-svg > svg');
+    assert.ok(svg, 'real Mermaid output should render');
+    const actor = svg.querySelector('line[data-et="life-line"][name="Bob"]');
+    assert.ok(actor?.id, 'the sequence actor should retain an id');
+    assert.notEqual(actor.id, 'actor1', 'the instance should namespace Mermaid ids');
+    assert.ok(
+      Array.from(svg.querySelectorAll('style')).some((style) =>
+        (style.textContent ?? '').includes(`[id="${actor.id}"]`)),
+      'custom themeCSS should follow the namespaced actor id',
+    );
+    return actor.id;
+  };
+  let root = createRoot(dom.document.querySelector('#root')!);
+
+  try {
+    await act(async () => root.render(diagram(code)));
+    await settleEffects();
+    const firstActorId = actorId();
+
+    await act(async () => root.unmount());
+    const remount = dom.document.createElement('div');
+    dom.document.body.appendChild(remount);
+    root = createRoot(remount);
+    await act(async () => root.render(diagram(code)));
+    await settleEffects();
+    assert.notEqual(actorId(), firstActorId, 'a cached remount should instantiate fresh ids');
+    assert.equal(renderCalls, 1, 'the custom-theme template should come from the render cache');
+  } finally {
+    await act(async () => root.unmount());
+    mermaid.render = originalRender;
+    dom.restore();
+  }
+});
+
+test('renders repeated real Mermaid diagrams across remounts and themes', async () => {
+  const dom = installDom();
+  const mermaid = (await import('mermaid')).default;
+  const originalRender = mermaid.render;
+  let renderCalls = 0;
+  mermaid.render = (...args) => {
+    renderCalls += 1;
+    return originalRender(...args);
+  };
+  const suffix = Date.now();
+  const flowchartCode = `flowchart LR\nflow_${suffix}_a --> flow_${suffix}_b`;
+  const sequenceCode = `sequenceDiagram\nAlice->>Bob: Hello ${suffix}`;
+  const view = () => (
+    <LocaleProvider locale="en">
+      <MermaidDiagram code={flowchartCode} density="default" />
+      <MermaidDiagram code={flowchartCode} density="compact" />
+      <MermaidDiagram code={sequenceCode} density="default" />
+      <MermaidDiagram code={sequenceCode} density="compact" />
+    </LocaleProvider>
+  );
+  const renderedSvgs = () =>
+    Array.from(dom.document.querySelectorAll<SVGSVGElement>('.maka-mermaid-svg > svg'));
+  const styleText = (svg: SVGSVGElement) =>
+    Array.from(svg.querySelectorAll('style'), (style) => style.textContent ?? '').join('\n');
+  const flowchartFill = (svg: SVGSVGElement) => {
+    const fill = /\.node rect[^{}]*\{[^{}]*\bfill:([^;]+);/.exec(styleText(svg))?.[1];
+    assert.ok(fill, 'real Mermaid flowchart theme styles should render');
+    return fill;
+  };
+  const assertUniqueIds = (first: SVGSVGElement, second: SVGSVGElement) => {
+    const firstIds = new Set(Array.from(first.querySelectorAll('[id]'), (node) => node.id));
+    assert.equal(
+      Array.from(second.querySelectorAll('[id]')).some((node) => firstIds.has(node.id)),
+      false,
+      'repeated diagrams should not share DOM ids',
+    );
+  };
+  let root = createRoot(dom.document.querySelector('#root')!);
+
+  try {
+    await act(async () => root.render(view()));
+    await settleEffects();
+    const lightSvgs = renderedSvgs();
+    assert.equal(lightSvgs.length, 4);
+    assert.equal(renderCalls, 2, 'identical mounts should coalesce real Mermaid renders');
+    assertUniqueIds(lightSvgs[0]!, lightSvgs[1]!);
+    assertUniqueIds(lightSvgs[2]!, lightSvgs[3]!);
+    const lightFill = flowchartFill(lightSvgs[0]!);
+
+    await act(async () => root.unmount());
+    const remount = dom.document.createElement('div');
+    dom.document.body.appendChild(remount);
+    root = createRoot(remount);
+    await act(async () => root.render(view()));
+    await settleEffects();
+    assert.equal(renderCalls, 2, 'a real Mermaid remount should use both cached templates');
+
+    dom.document.documentElement.classList.add('dark');
+    await settleEffects();
+    const darkSvgs = renderedSvgs();
+    assert.equal(darkSvgs.length, 4);
+    assert.equal(renderCalls, 4, 'dark mode should render one new template per diagram type');
+    assert.notEqual(flowchartFill(darkSvgs[0]!), lightFill, 'dark should use Mermaid dark styles');
+    assertUniqueIds(darkSvgs[0]!, darkSvgs[1]!);
+    assertUniqueIds(darkSvgs[2]!, darkSvgs[3]!);
+  } finally {
+    await act(async () => root.unmount());
+    mermaid.render = originalRender;
+    dom.document.documentElement.classList.remove('dark');
+    dom.restore();
+  }
+});
 
 test('reuses a rendered Mermaid result across remounts and isolates themes', async () => {
   const dom = installDom();

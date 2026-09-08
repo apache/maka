@@ -127,6 +127,15 @@ function replaceMermaidStyleIdReferences(
 ): string {
   let rewritten = replaceMermaidLocalUrlReferences(value, replacements);
   for (const [id, replacement] of replacements) {
+    const attributeSelector = new RegExp(
+      `(\\[\\s*id\\s*=\\s*)(['"]?)${escapeRegExp(id)}\\2(\\s*(?:[iIsS]\\s*)?\\])`,
+      'g',
+    );
+    rewritten = rewritten.replace(
+      attributeSelector,
+      (_match, prefix: string, quote: string, suffix: string) =>
+        `${prefix}${quote}${replacement}${quote}${suffix}`,
+    );
     const selector = new RegExp(
       `(^|[\\s,>+~}(.])#${escapeRegExp(id)}(?=$|[\\s,.:>+~{\\[])`,
       'gm',
