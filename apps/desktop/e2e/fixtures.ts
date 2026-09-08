@@ -76,23 +76,9 @@ export async function ensureSidebarExpanded(page: Page): Promise<void> {
 }
 
 /**
- * Wait until the composer is in a state where Enter is a real submission: the
- * connections projection has produced at least one connection, the draft is
- * non-empty, no known blocker is showing and no earlier send is still in
- * flight. 发送 is disabled for all of that, so it is the one signal covering
- * it; intermediate signals (a cleared draft, an updated model label) resolve
- * earlier and mean nothing here.
- *
- * It does NOT cover the submission-readiness probe: an unresolved snapshot is
- * not a hard block, so the button is enabled while the probe is in flight, and
- * `send()` awaits the probe again on its own — a first send inside a barrier
- * that gives up at 30s. The post-send assertions wait 20s, which covers every
- * admission measured here but not that whole barrier. Widening them past it
- * buys nothing: the 60s test budget is the real cap, a send admitted at 25s
- * leaves the multi-send specs unable to finish anyway, and the only change
- * would be trading a named assertion failure for a bare test timeout. A probe
- * that comes back blocked still drops the send with no feedback, which is a
- * product gap, not something a test-side fence can close.
+ * Wait until Enter can submit this non-empty draft to its selected target.
+ * The control reflects local admission readiness, not Host connectivity.
+ * Merely mounting the editor does not mean target selection has finished.
  */
 export async function awaitSendReady(page: Page): Promise<void> {
   await expect(page.getByRole('button', { name: '发送' })).toBeEnabled({
@@ -436,7 +422,7 @@ async function withE2eWindow(
     railRenderSessions?: boolean;
     newTaskProject?: boolean;
   },
-  use: (page: Page, context: { userDataDir: string; app: ElectronApplication }) => Promise<void>,
+  use: (page: Page, context: { userDataDir: string; app: ElectronApplication; restart(): Promise<Page> }) => Promise<void>,
 ): Promise<void> {
   const userDataDir = await mkdtemp(path.join(tmpdir(), 'maka-e2e-'));
   // Lives inside the throwaway userData dir so the existing teardown removes
@@ -505,7 +491,17 @@ async function withE2eWindow(
       const rendererDetail = rendererLogs.length > 0 ? `\nRenderer console:\n${rendererLogs.join('\n')}` : '';
       throw new Error(`${detail}${mainDetail}${rendererDetail}`, { cause: error });
     }
-    await use(page, { userDataDir, app });
+    await use(page, { userDataDir, app, restart: async () => {
+      await closeElectronApplication(app!, 5_000);
+      app = await electron.launch({
+        args: ['.', ...(visibleWindow ? inactiveWindowPlatformArgs() : [])],
+        cwd: DESKTOP_ROOT,
+        env: buildFixtureEnv(userDataDir, homeDir, { scenario: e2eFixtureScenario, locale, platform, showWindow: visibleWindow }),
+      });
+      const restored = await app.firstWindow();
+      await restored.waitForSelector(readinessSelector, { timeout: 20_000 });
+      return restored;
+    } });
   } finally {
     try {
       if (app) await closeElectronApplication(app, 5_000);
@@ -516,13 +512,16 @@ async function withE2eWindow(
 }
 
 type E2eTestFixtures = {
+  sessionLocalWindow: { page: Page; app: ElectronApplication; restart(): Promise<Page> };
   window: Page;
   gitReviewWindow: { page: Page; projectRoot: string };
   invocableSkillsWindow: Page;
   projectSidebarWindow: Page;
+  renameFocusWindow: { page: Page; app: ElectronApplication };
   parentRemovalWindow: Page;
   railRenderWindow: Page;
   promptRailWindow: Page;
+  partialHistoryWindow: Page;
   requestHeaderRowWindow: Page;
   newTaskTargetWindow: Page;
   directoryReferenceWindow: { page: Page; folder: string };
@@ -530,6 +529,12 @@ type E2eTestFixtures = {
 };
 
 export const test = base.extend<E2eTestFixtures>({
+  sessionLocalWindow: async ({}, use) => {
+    await withE2eWindow(
+      { seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh-CN', showWindow: true },
+      async (page, { app, restart }) => use({ page, app, restart }),
+    );
+  },
   directoryReferenceWindow: async ({}, use) => {
     await withE2eWindow(
       { seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh-CN', showWindow: true },
@@ -599,6 +604,17 @@ export const test = base.extend<E2eTestFixtures>({
       locale: 'zh-CN',
     }, use);
   },
+  // Visible because the contract under test is native keyboard delivery into
+  // the focused renderer element, not Playwright's synthetic page keyboard.
+  renameFocusWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '[data-maka-contract="search-modal"][open]',
+      e2eFixtureScenario: 'sidebar-search-modal-open',
+      locale: 'zh-CN',
+      showWindow: true,
+    }, async (page, { app }) => use({ page, app }));
+  },
   parentRemovalWindow: async ({}, use) => {
     await withE2eWindow(
       {
@@ -640,6 +656,17 @@ export const test = base.extend<E2eTestFixtures>({
       showWindow: true,
     }, use);
   },
+  // A transcript larger than the bounded Desktop range. Clicking an unloaded
+  // prompt exercises the real load-around path and its partial-history UI.
+  partialHistoryWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '[data-turn-id]',
+      e2eFixtureScenario: 'chat-partial-history',
+      locale: 'zh-CN',
+      showWindow: true,
+    }, use);
+  },
   // Settings → 模型, where `no-models` is the seeded openai-compatible relay —
   // the connection type whose detail page owns the custom request headers
   // editor. Shown, because what this window is for is a rendered box
@@ -657,13 +684,24 @@ export const test = base.extend<E2eTestFixtures>({
   // beside it. Shown because the accessibility journey follows real native
   // focus order through the transcript into the composer controls.
   accessibilityNarrativeWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      readinessSelector: '[data-turn-id]',
-      e2eFixtureScenario: 'turn-narrative',
-      locale: 'zh-CN',
-      showWindow: true,
-    }, use);
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '[data-turn-id]',
+        e2eFixtureScenario: 'turn-narrative',
+        locale: 'zh-CN',
+        showWindow: true,
+      },
+      async (page) => {
+        // `[data-turn-id]` can render before the deferred fixture application
+        // finishes opening its seeded Review face. Handing the page to a test
+        // at that point lets a test-opened face lose to the later fixture
+        // action. The visible seeded panel is the convergence point for both
+        // the transcript and the fixture-owned workbar state.
+        await expect(page.getByRole('region', { name: 'Git 变更' })).toBeVisible();
+        await use(page);
+      },
+    );
   },
 });
 

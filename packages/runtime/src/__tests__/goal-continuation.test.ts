@@ -185,6 +185,39 @@ function setup(opts?: {
   };
 }
 
+test('handoff hold finishes Goal accounting without admitting a successor; release resumes it', async () => {
+  const { manager, coordinator, admitted } = setup();
+  manager.create(SESSION, 'finish the work');
+  const hold = coordinator.holdForHandoff();
+  assert.ok(hold);
+  assert.equal(coordinator.holdForHandoff(), undefined);
+  await settleExternal(coordinator, SESSION, { kind: 'completed', turnId: 'external' });
+  await hold.settled();
+  assert.equal(admitted.length, 0);
+  assert.equal(manager.get(SESSION)?.status, 'active');
+  hold.release();
+  hold.release();
+  await waitFor(() => admitted.length === 1);
+  await coordinator.close();
+});
+
+test('handoff hold removes waiting timers and cancellation restores the same Goal', async () => {
+  const { manager, coordinator, scheduler, admitted } = setup({ evaluations: [{ waiting: true }] });
+  manager.create(SESSION, 'wait for the work');
+  await settleExternal(coordinator, SESSION, { kind: 'completed', turnId: 'external' });
+  await waitFor(() => scheduler.pendingDelays().length === 1);
+  const before = manager.get(SESSION);
+  const hold = coordinator.holdForHandoff();
+  assert.ok(hold);
+  await hold.settled();
+  assert.deepEqual(scheduler.pendingDelays(), []);
+  assert.equal(admitted.length, 0);
+  assert.deepEqual(manager.get(SESSION), before);
+  hold.release();
+  await waitFor(() => scheduler.pendingDelays().length === 1);
+  await coordinator.close();
+});
+
 async function waitFor(condition: () => boolean, message = 'condition was not met'): Promise<void> {
   await pollFor(condition, { timeoutMs: 1_000, message });
 }

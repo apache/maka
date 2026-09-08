@@ -123,7 +123,6 @@ test('projects the durable Coordination transcript into the WorkHub conversation
       turnId: 'turn-1',
       ts: 12,
       status: 'completed',
-      partialOutputRetained: true,
     },
     {
       type: 'workhub_coordination',
@@ -693,7 +692,6 @@ test('projects durable Session messages into an ordered WorkHub conversation', (
         turnId: 'turn-1',
         ts: 14,
         status: 'completed',
-        partialOutputRetained: true,
       },
     ],
   });
@@ -738,7 +736,6 @@ test('desktop adapter rebuilds recent turns from the Session transcript and clos
       turnId: 'turn-1',
       ts: 12,
       status: 'completed',
-      partialOutputRetained: true,
     },
   ];
   let closes = 0;

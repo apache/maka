@@ -46,6 +46,13 @@ import {
   type RuntimeHostManagedDeploymentConfig,
 } from '../operator/managed-deployment.js';
 import { resolveRuntimeHostNpmDeploymentLayout } from '../operator/update-package-evidence.js';
+import { connectOrSpawnRuntimeHostWithDependencies } from '../client/connect-or-spawn.js';
+import { runtimeHostStartupError } from '../client/startup-error.js';
+import { RuntimeHostPermanentReconnectError } from '../client/reconnect-lifecycle.js';
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+} from '../protocol/index.js';
 
 const DEPLOYMENT_ID = '00000000-0000-4000-8000-000000000001';
 const OTHER_DEPLOYMENT_ID = '00000000-0000-4000-8000-000000000002';
@@ -412,6 +419,55 @@ test('launch acquisition atomically joins deployment authorization and State Roo
     { label: 'projects', path: '/srv/projects' },
   ]);
   await managedOwnership.owner.close();
+});
+
+test('managed reconnection classifies an unresponsive endpoint without authorizing a launch', async (t) => {
+  const input = await fixture(t);
+  await claimRuntimeHostManagedDeployment(input.capability, input.config, input.authority);
+  let launches = 0;
+  for (const scenario of [
+    { reason: 'handshake_failed', expected: 'host_unresponsive' },
+    { reason: 'not_registered', expected: 'managed_root_requires_operator' },
+    { reason: 'handshake_failed', expected: 'deployment_claim_mismatch', wrongClaim: true },
+  ] as const) {
+    const result = await connectOrSpawnRuntimeHostWithDependencies(
+      {
+        rootPath: input.capability.canonicalPath,
+        protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+        compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+        candidateEntrypoint: 'must-not-launch.js',
+        ...('wrongClaim' in scenario
+          ? {
+              managedLaunchClaim: {
+                ...runtimeHostManagedLaunchClaim(input.config),
+                deploymentId: OTHER_DEPLOYMENT_ID,
+              },
+            }
+          : {}),
+      },
+      {
+        managedDeploymentAuthority: input.authority,
+        connectHost: async () => ({
+          kind: 'unavailable',
+          reason: scenario.reason,
+          endpointConnected: scenario.reason === 'handshake_failed',
+        }),
+        launchCandidate: () => {
+          launches += 1;
+          throw new Error('Only the managed operator may launch this Host');
+        },
+        random: () => 0.5,
+      },
+    );
+    assert.equal(result.kind, 'failed');
+    if (result.kind !== 'failed') throw new Error('Expected an election failure');
+    assert.equal(result.reason, scenario.expected);
+    assert.equal(
+      runtimeHostStartupError(result.reason) instanceof RuntimeHostPermanentReconnectError,
+      scenario.expected !== 'host_unresponsive',
+    );
+  }
+  assert.equal(launches, 0);
 });
 
 test('concurrent install and unmanaged launch cannot both cross the authority boundary', async (t) => {

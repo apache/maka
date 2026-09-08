@@ -127,6 +127,7 @@ test('Session Guest invitation, grants, and revocation form one durable authorit
       'session.shared.query',
       'subscription.open',
       'subscription.close',
+      'subscription.pty_interest.set',
       'session.transcript.page',
       'session.transcript.overlay.release',
       'access.credential.finalize',

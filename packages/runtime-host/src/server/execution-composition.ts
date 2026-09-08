@@ -25,6 +25,7 @@ import { NO_REAL_CONNECTION_CODE } from '@maka/core/connection-error-copy';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { emptyPlanSessionState } from '@maka/core/plan';
+import { readLogicalRuntimeExecutionForRun } from '@maka/core/runtime-logical-execution';
 import type { PermissionMode } from '@maka/core/permission';
 import {
   runtimeInvocationOutcome,
@@ -77,6 +78,9 @@ import {
   validateShellPreference,
 } from '@maka/runtime/shell-detect';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
+import { Context } from '@maka/runtime/plugin-kernel';
+import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
+import { PluginToolService } from '@maka/runtime/plugin-tool-service';
 import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
 import { isHostedExecutionTerminal } from './hosted-execution-authority.js';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -127,7 +131,10 @@ import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
 import { HostHostedExecutionCoordinator } from './hosted-execution-coordinator.js';
 import { HostHostedExecutionRunner } from './hosted-execution-runner.js';
-import { executeHostedExecutionToSettlement } from './hosted-execution-wait.js';
+import {
+  executeHostedExecutionToSettlement,
+  waitForHostedExecutionIdleOrAbort,
+} from './hosted-execution-wait.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import {
   beginRuntimeHostDomainModuleDrain,
@@ -169,10 +176,14 @@ import { SessionAdmissionGate } from './session-admission-gate.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
 import { HostWorkspaceResolver } from './workspace-resolver.js';
 import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
+import { HostStorageMaintenance } from './storage-maintenance.js';
 import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
 import { HostSessionEffectCoordinator } from './session-effect-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
-import { createSessionTranscriptReader } from './session-transcript-reader.js';
+import {
+  createSessionTranscriptReader,
+  type SessionTranscriptReader,
+} from './session-transcript-reader.js';
 import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
 import { HostSessionTodoCoordinator } from './session-todo-coordinator.js';
@@ -181,7 +192,10 @@ import type { TurnOperationHandlerMap } from './operation-dispatcher.js';
 import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
 import { HostWebSearchCoordinator } from './web-search-coordinator.js';
 import { HostWorkHubCoordinationCoordinator } from './workhub-coordination-coordinator.js';
-import { WorkHubActionEffectFailure } from './workhub-coordination-action-gate.js';
+import {
+  WorkHubActionEffectFailure,
+  workHubResumedTurnId,
+} from './workhub-coordination-action-gate.js';
 
 type ExecutionConnectionRef = Parameters<
   RuntimePolicyStoresWriter['operations']['resolveExecutionConnection']
@@ -269,13 +283,20 @@ export async function createExecutionRuntimeHostComposition(
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   let memoryExtraction: HostMemoryExtractionCoordinator | undefined;
   let unsubscribeTranscriptChanges: (() => void) | undefined;
+  let transcriptReader: SessionTranscriptReader | undefined;
   let unsubscribeUsageChanges: (() => void) | undefined;
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
   let goalExecutions: HostGoalExecutionCoordinator | undefined;
   let pluginPlatform: HostPluginPlatform | undefined;
+  let manager: SessionManager | undefined;
   let modelMetadataRefresh: ReturnType<typeof startHostModelMetadataRefresh> | undefined;
   try {
-    pluginPlatform = new HostPluginPlatform(context.owner.controlDirectory);
+    const pluginRoot = new Context();
+    const pluginTools = new PluginToolService(pluginRoot);
+    pluginPlatform = new HostPluginPlatform(context.owner.controlDirectory, {
+      composition: new MakaCompositionLoader({ root: pluginRoot }),
+      tools: pluginTools,
+    });
     const pluginPlatformCoordinator = new HostPluginPlatformCoordinator(pluginPlatform);
     const openedProjectCatalog = storage.projectCatalog;
     const runtimePolicyStores = storage.runtimePolicy;
@@ -306,12 +327,6 @@ export async function createExecutionRuntimeHostComposition(
               throw new Error('Context-offload Store is unavailable during Session retirement', {
                 cause: storage.contextOffloadUnavailable?.cause,
               });
-            },
-            collectGarbage: async (): Promise<never> => {
-              throw new Error(
-                'Context-offload Store is unavailable during context garbage collection',
-                { cause: storage.contextOffloadUnavailable?.cause },
-              );
             },
           }
         : undefined;
@@ -348,7 +363,6 @@ export async function createExecutionRuntimeHostComposition(
     const memoryExtractionLane = new MemoryExtractionSessionLane();
     let runtimeResources: HostRuntimeResourceCoordinator | undefined;
     let continuity: SessionContinuityCoordinator | undefined;
-    let manager: SessionManager | undefined;
     let graphCoordinator: AgentGraphCoordinator | undefined;
     let graphSupervisorWake: AgentGraphSupervisorWakeCoordinator | undefined;
     const graphWakeActivities = new SessionActivityRegistry();
@@ -565,6 +579,8 @@ export async function createExecutionRuntimeHostComposition(
     let deepResearch: HostDeepResearchCoordinator | undefined;
     let dailyReview: HostDailyReviewCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
+      readLatestRootTurnLineage: (identity) =>
+        requireRootCoordinator(rootCoordinator).readLatestRootTurnLineage(identity),
       readSessionHeader: (sessionId) =>
         requireRootCoordinator(rootCoordinator).readSessionHeader(sessionId),
       readRootState: (sessionId) =>
@@ -583,6 +599,8 @@ export async function createExecutionRuntimeHostComposition(
       hostEpoch: context.hostEpoch,
       root: rootPort,
       durableProof: {
+        readLogicalExecution: (identity) =>
+          readLogicalRuntimeExecutionForRun(stores.runtimeEventStore, identity),
         readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
           stores.agentRunStore.readRootTurnSourceMessageReceipt(sessionId, messageId),
         readImmutableSteeringMessageProof: (sessionId, messageId) =>
@@ -608,12 +626,18 @@ export async function createExecutionRuntimeHostComposition(
     const canonicalPermissionOutcomes = new HostCanonicalPermissionOutcomeReader({
       store: stores.interactionStore,
     });
+    transcriptReader = createSessionTranscriptReader({
+      stores,
+      canonicalPermissionOutcomes,
+      ensureTranscriptLedger: (sessionId) =>
+        requireSessionManager(manager).ensureTranscriptLedgerForRead(sessionId),
+    });
     continuity = new SessionContinuityCoordinator(
       context.hostEpoch,
       (sessionId) => canonicalProjectionReader.read(sessionId),
       sessionAdmission,
       context.requestDrain,
-      createSessionTranscriptReader({ stores, canonicalPermissionOutcomes }),
+      transcriptReader,
       (sessionId) => hostChanges.publishSessionCatalog(sessionId),
       context.sessionAccessAuthority,
     );
@@ -750,6 +774,8 @@ export async function createExecutionRuntimeHostComposition(
         hostTools,
         resolveRootTools: (sessionId) =>
           requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
+        resolvePluginTools: (sessionId, coreTools) =>
+          pluginTools.resolveContributions(sessionId, coreTools),
         parentAgentTools: childAgentTools.parentTools,
         childTools: childAgentTools.childTools,
         worktreePatchWriteBackAvailable: true,
@@ -957,6 +983,10 @@ export async function createExecutionRuntimeHostComposition(
       if (!preview.ok) throw new Error(preview.message);
       return preview.value;
     };
+    const recapReadModel = new RuntimeReadModel({
+      runtimeEventStore: stores.runtimeEventStore,
+      canonicalPermissionOutcomes,
+    });
     const sessionEffectCoordinator = new HostSessionEffectCoordinator({
       model: createHostSessionEffectModel({
         runtimePolicy: runtimePolicyStores,
@@ -964,11 +994,14 @@ export async function createExecutionRuntimeHostComposition(
         usage: openedUsageStores,
         requestDrain: context.requestDrain,
       }),
-      readModel: new RuntimeReadModel({
-        runtimeEventStore: stores.runtimeEventStore,
-        projectionCache: stores.sessionStore,
-        canonicalPermissionOutcomes,
-      }),
+      readModel: {
+        getSessionView: async (sessionId) => {
+          // A Session whose transcript predates the ledger projects an empty
+          // view, and a recap of nothing reads as a successful recap.
+          await requireSessionManager(manager).ensureTranscriptLedgerForRead(sessionId);
+          return recapReadModel.getSessionView(sessionId);
+        },
+      },
       artifacts: openedArtifactStore,
       sessions: stores.sessionStore,
       readSessionHeader: (sessionId) => stores.sessionStore.readHeaderSnapshot(sessionId),
@@ -1112,7 +1145,7 @@ export async function createExecutionRuntimeHostComposition(
       });
     };
     const registerBackendInvalidation = (): void => {
-      observeBackendInvalidation(manager.refreshIdleBackends());
+      observeBackendInvalidation(requireSessionManager(manager).refreshIdleBackends());
     };
     const registerConfigurationMutation = (): void => {
       hostChanges.publishConfiguration();
@@ -1133,7 +1166,7 @@ export async function createExecutionRuntimeHostComposition(
       acquireResidency: () => context.acquireResidency('oauth'),
       invalidateBackends: () => {
         hostChanges.publishConfiguration();
-        return manager.refreshIdleBackends();
+        return requireSessionManager(manager).refreshIdleBackends();
       },
       onFatal: (error) => {
         if (poisonFailure) return;
@@ -1310,6 +1343,7 @@ export async function createExecutionRuntimeHostComposition(
     goal = new HostGoalCoordinator({
       store: openedGoalStore,
       stores,
+      readSessionMessages: (sessionId) => requireSessionManager(manager).getMessages(sessionId),
       executions: coordinator,
       sessionAdmission,
       evaluator: createHostGoalEvaluator({
@@ -1342,6 +1376,7 @@ export async function createExecutionRuntimeHostComposition(
     });
     const sessionCatalog = new HostSessionCatalogCoordinator({
       stores: stores.sessionStore,
+      turnIndex: requireTranscriptReader(transcriptReader),
       runtimePolicy: runtimePolicyStores,
       manager,
       admission: sessionAdmission,
@@ -1380,11 +1415,104 @@ export async function createExecutionRuntimeHostComposition(
             turnId: disposition.turnId,
             runId: disposition.runId,
           };
-          if (isActiveWorkHubRoot(coordinator, identity)) return 'not_retired';
+          const latest = await coordinator.readLatestRootTurnLineage(identity);
+          if (isActiveWorkHubRoot(coordinator, latest)) return 'not_retired';
           // The same restart window as `stopOwnedWorkHubRoot`: an unregistered
           // root is not evidence that its work ended.
-          const snapshot = await coordinator.read(identity);
+          const snapshot = await coordinator.read(latest);
           return isHostedExecutionTerminal(snapshot) ? 'retired' : 'recovering';
+        },
+        // Resolve and resume only the execution lineage owned by this
+        // delegation. A Session-wide latest-failure query could otherwise
+        // continue unrelated work started directly in the same Session.
+        resumeDelegation: async (assignment, context, actionId) => {
+          const disposition = await messages.readMessageExecutionDisposition(
+            assignment.targetSessionId,
+            assignment.targetMessageId,
+          );
+          if (disposition.kind === 'recovering') {
+            throw new WorkHubActionEffectFailure(
+              'host_not_ready',
+              'WorkHub is still recovering the delegated execution',
+            );
+          }
+          if (disposition.kind !== 'owned_root') {
+            throw new WorkHubActionEffectFailure(
+              'operation_conflict',
+              'WorkHub delegated execution is not resumable',
+            );
+          }
+          const source = await coordinator.readLatestRootTurnLineage({
+            sessionId: assignment.targetSessionId,
+            turnId: disposition.turnId,
+            runId: disposition.runId,
+          });
+          if (isActiveWorkHubRoot(coordinator, source)) {
+            return { outcome: 'already_running' as const };
+          }
+          const snapshot = await coordinator.read(source);
+          if (!isHostedExecutionTerminal(snapshot)) {
+            throw new WorkHubActionEffectFailure(
+              'host_not_ready',
+              'WorkHub is still recovering the delegated execution',
+            );
+          }
+          if (snapshot.status !== 'failed' && snapshot.status !== 'cancelled') {
+            throw new WorkHubActionEffectFailure(
+              'operation_conflict',
+              'WorkHub delegated execution is not resumable',
+            );
+          }
+          const plan = await coordinator.handlers['turn.resume.query'](
+            { sessionId: assignment.targetSessionId, sourceRunId: source.runId },
+            context,
+          );
+          if (!plan.ok) throw new WorkHubActionEffectFailure(plan.error.code, plan.error.message);
+          if (plan.result.disposition === 'parked') {
+            throw new WorkHubActionEffectFailure(
+              plan.result.reason === 'resume_feature_disabled'
+                ? 'operation_unavailable'
+                : 'operation_conflict',
+              plan.result.reason === 'resume_feature_disabled'
+                ? 'Safe-boundary resume is disabled for this Runtime Host'
+                : 'WorkHub delegated execution is not resumable',
+            );
+          }
+          // Root planning authenticates handoff membership. Its source may be
+          // a physical successor of this same logical Turn, never another Turn.
+          if (plan.result.sourceTurnId !== source.turnId) {
+            throw new WorkHubActionEffectFailure(
+              'operation_conflict',
+              'WorkHub resume source lineage changed during planning',
+            );
+          }
+          const targetTurnId = workHubResumedTurnId(actionId);
+          const started = await coordinator.handlers['turn.resume.start'](
+            {
+              sessionId: assignment.targetSessionId,
+              turnId: targetTurnId,
+              sourceRunId: plan.result.sourceRunId,
+              sourceRuntimeEventHighWater: plan.result.sourceRuntimeEventHighWater,
+            },
+            context,
+          );
+          if (!started.ok) {
+            throw new WorkHubActionEffectFailure(started.error.code, started.error.message);
+          }
+          if (started.result.kind === 'parked') {
+            throw new WorkHubActionEffectFailure(
+              started.result.plan.reason === 'resume_feature_disabled'
+                ? 'operation_unavailable'
+                : 'operation_conflict',
+              started.result.plan.reason === 'resume_feature_disabled'
+                ? 'Safe-boundary resume is disabled for this Runtime Host'
+                : 'WorkHub delegated execution is not resumable',
+            );
+          }
+          return {
+            outcome: 'resume_started' as const,
+            targetTurnId: started.result.turn.turnId,
+          };
         },
         retireDelegation: async (assignment, retirement) => {
           const disposition = await messages.cancelMessageIfPending(
@@ -1405,11 +1533,11 @@ export async function createExecutionRuntimeHostComposition(
             return { outcome: 'not_owned' as const, targetTurnId: disposition.turnId };
           }
           if (disposition.kind === 'owned_root') {
-            const identity = {
+            const identity = await coordinator.readLatestRootTurnLineage({
               sessionId: assignment.targetSessionId,
               turnId: disposition.turnId,
               runId: disposition.runId,
-            };
+            });
             return retirement.cause === 'direct_stop'
               ? stopOwnedWorkHubRoot(coordinator, identity, retirement.cancellationClaimId)
               : stopReplacedWorkHubRoot(coordinator, identity);
@@ -1685,7 +1813,18 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
     );
     let recoverySessions: Awaited<ReturnType<typeof stores.sessionStore.listForRecovery>> = [];
+    const storageMaintenance = new HostStorageMaintenance({
+      artifacts: openedArtifactStore,
+      contextOffload: openedContextOffloadStore,
+      onError: (name, error) =>
+        console.error(`[runtime-host] ${name} will retry: ${generalizedErrorMessage(error)}`),
+    });
     domainModules = [
+      createRuntimeHostDomainModule({
+        id: 'storage-maintenance',
+        drain: [() => storageMaintenance.beginDrain()],
+        close: [() => storageMaintenance.close()],
+      }),
       createRuntimeHostDomainModule({
         id: 'plugin-platform',
         handlers: [pluginPlatformCoordinator.handlers],
@@ -1753,18 +1892,7 @@ export async function createExecutionRuntimeHostComposition(
           configuration.handlers,
         ],
         recovery: {
-          state: async () => {
-            await skills.recover();
-            try {
-              await openedArtifactStore.reclaimUpgradeResidue();
-            } catch (error) {
-              // Leftover bytes are not worth refusing to start over; the next
-              // start tries again.
-              console.error(
-                `[runtime-host] upgrade residue could not be reclaimed: ${generalizedErrorMessage(error)}`,
-              );
-            }
-          },
+          state: () => skills.recover(),
         },
         drain: [
           () => connectionEffects.beginDrain(),
@@ -1774,7 +1902,10 @@ export async function createExecutionRuntimeHostComposition(
         close: [
           () => modelMetadataRefresh?.close(),
           () => connectionEffects.close(),
-          () => (backendInvalidationPoisoned ? undefined : manager.refreshIdleBackends()),
+          () =>
+            backendInvalidationPoisoned
+              ? undefined
+              : requireSessionManager(manager).refreshIdleBackends(),
           () => skills.close(),
           () => oauth?.close(),
           () => {
@@ -1842,8 +1973,8 @@ export async function createExecutionRuntimeHostComposition(
           executions: async () => {
             await coordinator.prepareRecovery();
             await interactions.recoverPendingAfterHostRestart();
-            await manager.recoverInterruptedSessionsStrict(stores);
-            await manager.recoverChildWorkspacePatches(
+            await requireSessionManager(manager).recoverInterruptedSessionsStrict(stores);
+            await requireSessionManager(manager).recoverChildWorkspacePatches(
               recoverySessions.flatMap((session) =>
                 session.subagentWorkspace ? [session.id] : [],
               ),
@@ -1963,11 +2094,64 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       clientCapabilities,
       hostChanges,
+      prepareHandoff: async (hostEpoch, signal) => {
+        if (draining || signal.aborted) return undefined;
+        const goalHold = goal?.holdForHandoff();
+        const scheduleHold = scheduledTasks?.holdForHandoff();
+        let root: Awaited<ReturnType<RootTurnCoordinator['prepareHandoff']>>;
+        let detached = false;
+        const cancel = () => {
+          if (detached) return;
+          root?.cancel();
+          goalHold?.release();
+          scheduleHold?.release();
+          signal.removeEventListener('abort', cancel);
+        };
+        signal.addEventListener('abort', cancel, { once: true });
+        try {
+          if (!goalHold || !scheduleHold) {
+            cancel();
+            return undefined;
+          }
+          await waitForHostedExecutionIdleOrAbort(
+            Promise.all([goalHold.settled(), scheduleHold.settled()]).then(() => undefined),
+            signal,
+          );
+          root = await requireRootCoordinator(coordinator).prepareHandoff(hostEpoch, signal);
+          if (!root) {
+            cancel();
+            return undefined;
+          }
+          const prepared = root;
+          return {
+            seal: () => prepared.seal(),
+            residencies: async () => {
+              await waitForHostedExecutionIdleOrAbort(scheduleHold.settled(), signal);
+              const goals = await goalHold.residencies(prepared.executions);
+              const roots = await prepared.residencies();
+              if (!goals || !roots || signal.aborted || draining) return undefined;
+              return [...roots, ...goals, ...scheduleHold.residencies()];
+            },
+            detach: async () => {
+              detached = true;
+              signal.removeEventListener('abort', cancel);
+              await prepared.detach();
+              // Domain holds stay closed until the lifecycle owner drains us.
+            },
+            cancel,
+          };
+        } catch (error) {
+          cancel();
+          if (signal.aborted) return undefined;
+          throw error;
+        }
+      },
       releaseConnection: (connectionId: string) => {
         for (const module of domainModules) module.releaseConnection?.(connectionId);
       },
       beginDrain,
       recover,
+      startMaintenance: () => storageMaintenance.start(),
       close,
     };
   } catch (error) {
@@ -2219,6 +2403,13 @@ function requireDailyReview(
 function requireSessionManager(manager: SessionManager | undefined): SessionManager {
   if (!manager) throw new Error('Runtime Host SessionManager is not composed');
   return manager;
+}
+
+function requireTranscriptReader(
+  reader: SessionTranscriptReader | undefined,
+): SessionTranscriptReader {
+  if (!reader) throw new Error('Runtime Host transcript reader is not composed');
+  return reader;
 }
 
 function requireGraphCoordinator(

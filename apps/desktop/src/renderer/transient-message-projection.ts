@@ -47,6 +47,12 @@ export function mergeTransientMessageProjection(
   current: TransientUserMessage,
   update: TransientUserMessage,
 ): TransientUserMessage {
+  update = {
+    ...update,
+    ...(!Object.hasOwn(update, 'deliveryStatus') && current.deliveryStatus !== undefined ? { deliveryStatus: current.deliveryStatus } : {}),
+    ...(!Object.hasOwn(update, 'deliveryDetail') && current.deliveryDetail !== undefined ? { deliveryDetail: current.deliveryDetail } : {}),
+    ...(!Object.hasOwn(update, 'deliveryActions') && current.deliveryActions !== undefined ? { deliveryActions: current.deliveryActions } : {}),
+  };
   return current.hostTurnId !== undefined && update.hostTurnId === undefined
     ? { ...update, hostTurnId: current.hostTurnId }
     : update;

@@ -175,6 +175,17 @@ export type ArtifactUserDeleteResult =
   | { readonly kind: 'protected' }
   | { readonly kind: 'not_found' };
 
+export interface ArtifactUpgradeCleanupInput {
+  readonly after?: string;
+  readonly maxPaths: number;
+}
+
+export interface ArtifactUpgradeCleanupResult {
+  readonly nextAfter: string | null;
+  readonly processedPaths: number;
+  readonly failedPaths: number;
+}
+
 export interface ArtifactAuthorityStore extends DurableArtifactAttachmentReader {
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
   close(): void;
@@ -182,7 +193,7 @@ export interface ArtifactAuthorityStore extends DurableArtifactAttachmentReader 
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;
   purgeSessionArtifacts(sessionId: string): Promise<void>;
-  reclaimUpgradeResidue(): Promise<void>;
+  reclaimUpgradeResidue(input: ArtifactUpgradeCleanupInput): Promise<ArtifactUpgradeCleanupResult>;
   deleteOwnedArtifactInSession(
     sessionId: string,
     artifactId: string,
@@ -481,22 +492,27 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
    * once its file is gone, and a file that will not go keeps only its own note
    * rather than holding up the ones behind it.
    */
-  async reclaimUpgradeResidue(): Promise<void> {
-    await this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked();
-      const recorded = this.metadataRepository.readUpgradeOrphanPaths();
-      if (recorded.length === 0) return;
-      const claimed = new Set(this.records.map((record) => record.relativePath));
-      const claimedEntries = await this.resolveRemovalEntriesUnlocked(this.records);
-      const claimedIdentities = new Set(
-        claimedEntries.flatMap((entry) => (entry ? [entry.comparisonIdentity] : [])),
-      );
+  async reclaimUpgradeResidue(
+    input: ArtifactUpgradeCleanupInput,
+  ): Promise<ArtifactUpgradeCleanupResult> {
+    if (!Number.isSafeInteger(input.maxPaths) || input.maxPaths < 1 || input.maxPaths > 1024) {
+      throw new TypeError('Artifact cleanup path limit must be between 1 and 1024');
+    }
+    const after = input.after ?? '';
+    const maxPaths = input.maxPaths;
+    return this.enqueueMutation(async () => {
+      const recorded = this.metadataRepository.readUpgradeOrphanPaths(after, maxPaths + 1);
+      const selected = recorded.slice(0, maxPaths);
       const directories = new Set<string>();
       const discharged: string[] = [];
+      let failedPaths = 0;
       let realArtifactRoot: string | undefined;
       try {
-        for (const relativePath of recorded) {
-          if (claimed.has(relativePath) || !isSafeRelativeArtifactPath(relativePath)) {
+        for (const relativePath of selected) {
+          if (
+            this.metadataRepository.hasRelativePath(relativePath) ||
+            !isSafeRelativeArtifactPath(relativePath)
+          ) {
             discharged.push(relativePath);
             continue;
           }
@@ -506,8 +522,21 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
             continue;
           }
           realArtifactRoot ??= await ensureRealDirectory(this.artifactRoot);
-          if (!isInsideOrSamePath(realArtifactRoot, dirname(entry.unlinkPath))) continue;
-          if (claimedIdentities.has(entry.comparisonIdentity)) {
+          if (!isInsideOrSamePath(realArtifactRoot, dirname(entry.unlinkPath))) {
+            failedPaths += 1;
+            continue;
+          }
+          const artifactIds = new Set([
+            ...artifactIdsFromUpgradeOrphanPath(relativePath),
+            ...artifactIdsFromUpgradeOrphanPath(entry.unlinkPath),
+          ]);
+          if (
+            artifactIds.size > 0 &&
+            (await this.hasClaimedRemovalIdentityUnlocked(
+              [...artifactIds],
+              entry.comparisonIdentity,
+            ))
+          ) {
             discharged.push(relativePath);
             continue;
           }
@@ -515,7 +544,10 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
             await unlink(entry.unlinkPath);
             directories.add(dirname(entry.unlinkPath));
           } catch (error) {
-            if (!isNotFound(error)) continue;
+            if (!isNotFound(error)) {
+              failedPaths += 1;
+              continue;
+            }
           }
           discharged.push(relativePath);
         }
@@ -523,7 +555,25 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         for (const directory of directories) await syncDirectory(directory);
       }
       if (discharged.length > 0) this.metadataRepository.forgetUpgradeOrphanPaths(discharged);
+      return {
+        nextAfter: recorded.length > selected.length ? selected.at(-1)! : null,
+        processedPaths: selected.length,
+        failedPaths,
+      };
     });
+  }
+
+  private async hasClaimedRemovalIdentityUnlocked(
+    artifactIds: readonly string[],
+    comparisonIdentity: string,
+  ): Promise<boolean> {
+    for (const relativePath of this.metadataRepository.readRelativePathsByArtifactIds(
+      artifactIds,
+    )) {
+      const entry = await resolveArtifactRemovalEntry(this.artifactRoot, relativePath);
+      if (entry?.comparisonIdentity === comparisonIdentity) return true;
+    }
+    return false;
   }
 
   private async replayExistingArtifactUnlocked(
@@ -1198,6 +1248,20 @@ function symlinkEntryIdentity(entryStat: BigIntStats): string {
     entryStat.ctimeNs,
     entryStat.mtimeNs,
   ].join(':');
+}
+
+function artifactIdsFromUpgradeOrphanPath(relativePath: string): readonly string[] {
+  const name = basename(relativePath);
+  const artifactIds: string[] = [];
+  for (
+    let separator = name.indexOf('-');
+    separator > 0;
+    separator = name.indexOf('-', separator + 1)
+  ) {
+    const artifactId = name.slice(0, separator);
+    if (isCanonicalArtifactEntityId(artifactId)) artifactIds.push(artifactId);
+  }
+  return artifactIds;
 }
 
 function isInsideOrSamePath(root: string, target: string): boolean {

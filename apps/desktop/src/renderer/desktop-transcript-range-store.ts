@@ -122,12 +122,15 @@ export function createDesktopTranscriptReconnectRecovery(options: {
   let closed = false;
   let observationReady = false;
   let readinessGeneration = 0;
+  let attemptedReadinessGeneration = -1;
   let needsRecovery = false;
   let recoveryTask: Promise<void> | undefined;
 
   const recover = () => {
-    if (closed || !observationReady || !needsRecovery || recoveryTask) return;
+    if (closed || !observationReady || !needsRecovery || recoveryTask ||
+      attemptedReadinessGeneration === readinessGeneration) return;
     const admittedReadinessGeneration = readinessGeneration;
+    attemptedReadinessGeneration = admittedReadinessGeneration;
     needsRecovery = false;
     const task = Promise.resolve().then(async () => {
       try {
@@ -189,11 +192,27 @@ export function createRecoveringDesktopTranscriptRangeController(
   },
 ): RecoveringDesktopTranscriptRangeController {
   const controller = createDesktopTranscriptRangeController(store, open);
+  const cached = () => {
+    try {
+      const range = store.range();
+      return range.ready && range.generation.startsWith('cached:');
+    } catch {
+      return false;
+    }
+  };
+  const requireLive = () => {
+    if (cached()) throw new Error('The cached transcript is waiting for Host reconnection');
+  };
   const recovery = createDesktopTranscriptReconnectRecovery({
-    reload: controller.reload,
-    ...options,
+    async reload() {
+      await controller.reload();
+      requireLive();
+    },
+    onError(error) {
+      if (!cached()) options.onError(error);
+    },
   });
-  void controller.ready().catch(recovery.transcriptFailed);
+  void controller.ready().then(requireLive).catch(recovery.transcriptFailed);
   return {
     ...controller,
     observationChanged: recovery.observationChanged,

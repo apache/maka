@@ -83,7 +83,6 @@ describe('latest interrupted resume candidate', () => {
         ts: 2,
         status: 'failed',
         errorClass: 'timeout',
-        partialOutputRetained: false,
       },
       { type: 'tool_call', id: 'call-1', turnId: 'turn-1', ts: 3, toolName: 'Read', args: {} },
       {

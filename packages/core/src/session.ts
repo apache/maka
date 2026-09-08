@@ -18,6 +18,12 @@
  */
 
 import {
+  MODEL_FAILURE_MESSAGE_MAX_BYTES,
+  isModelRetryDecision,
+  type ModelRetryDecision,
+} from './model-failure.js';
+
+import {
   decodeMessageContent,
   TOOL_ACTIVITY_KINDS,
   type MessageContent,
@@ -39,6 +45,7 @@ import {
   isFiniteNumber,
   isOptionalString,
   isRecord,
+  pickShape,
 } from './record-schema.js';
 import { isPermissionDecisionFields } from './interaction-record-schema.js';
 import { isTokenUsageFields, type TokenUsageFields } from './usage-record-schema.js';
@@ -283,7 +290,7 @@ export interface SessionHeader {
   /** Immutable Connection entity identity. Optional only on legacy Session records. */
   llmConnectionId?: string;
   llmConnectionSlug: string;
-  /** True after first UserMessage is flushed. Storage self-heals (§5.2). */
+  /** True once the Session's first UserMessage is durable. One-way. */
   connectionLocked: boolean;
   /** Sticky session default model id, captured when the session is created. */
   model: string;
@@ -471,17 +478,8 @@ const SUBAGENT_SESSION_RUNTIME_SHAPE = defineObjectShape<SubagentSessionRuntime>
     'categoryPolicy',
   ],
   ['presetId'],
+  ['permissionCeiling'],
 );
-
-/**
- * Keys older child sessions wrote that this type no longer has.
- *
- * `hasExactShape` rejects unknown keys, so without this a record written before
- * the key was dropped would fail validation and make the whole child Session
- * unreadable. Nothing reads the values, and they stay in the stored JSON as
- * written — this only stops their presence from being treated as corruption.
- */
-const RETIRED_SUBAGENT_RUNTIME_KEYS: readonly string[] = ['permissionCeiling'];
 const SUBAGENT_SESSION_SPAWN_IDENTITY_SHAPE = defineObjectShape<SubagentSessionSpawn>()(
   ['schemaVersion', 'requestFingerprint', 'initialTurnId', 'initialRunId'],
   [],
@@ -529,20 +527,11 @@ export function isSubagentSessionParent(value: unknown): value is SubagentSessio
   return swarmValid && graphValid && !(value.swarm && value.graph);
 }
 
-function withoutRetiredSubagentRuntimeKeys(
-  value: Record<string, unknown>,
-): Record<string, unknown> {
-  if (!RETIRED_SUBAGENT_RUNTIME_KEYS.some((key) => Object.hasOwn(value, key))) return value;
-  return Object.fromEntries(
-    Object.entries(value).filter(([key]) => !RETIRED_SUBAGENT_RUNTIME_KEYS.includes(key)),
-  );
-}
-
 /** Strict decoder guard for the persisted child execution snapshot. */
 export function isSubagentSessionRuntime(value: unknown): value is SubagentSessionRuntime {
   if (
     !isRecord(value) ||
-    !hasExactShape(withoutRetiredSubagentRuntimeKeys(value), SUBAGENT_SESSION_RUNTIME_SHAPE) ||
+    !hasExactShape(value, SUBAGENT_SESSION_RUNTIME_SHAPE) ||
     value.schemaVersion !== SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION ||
     !Number.isSafeInteger(value.definitionVersion) ||
     (value.definitionVersion as number) < 1 ||
@@ -789,20 +778,12 @@ export function userFacingText(message: Pick<UserMessage, 'text' | 'displayText'
   return message.displayText ?? message.text;
 }
 
-const USER_VISIBLE_SESSION_SYSTEM_NOTES = new Set([
-  'context_compacted',
-  'context_compaction_failed_open',
-  'context_provider_dropping',
-  'context_window_suggestion',
-  'context_window_overrun',
-  'context_reported_window_exceeded',
-  'context_overflow_after_compaction',
-  'step_limit',
-]);
-
-/** Closed policy for system notes that are part of the user-visible transcript. */
+/**
+ * Closed policy for system notes that are part of the user-visible transcript:
+ * exactly the notes the runtime writes.
+ */
 export function isUserVisibleSessionSystemNote(kind: string): boolean {
-  return USER_VISIBLE_SESSION_SYSTEM_NOTES.has(kind);
+  return isRuntimeSystemNoteKind(kind);
 }
 
 export interface AssistantMessage {
@@ -935,7 +916,8 @@ export interface TurnStateMessage {
   /** Diagnostic source for user/renderer-triggered aborts, e.g. renderer.stop_button. */
   abortSource?: string;
   errorClass?: string;
-  partialOutputRetained: boolean;
+  failureMessage?: string;
+  retry?: ModelRetryDecision;
 }
 
 export const WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION = 1 as const;
@@ -1144,31 +1126,60 @@ export interface TurnRecord {
   abortedAt?: number;
   abortSource?: string;
   errorClass?: string;
-  partialOutputRetained: boolean;
+  failureMessage?: string;
+  retry?: ModelRetryDecision;
+}
+
+/**
+ * The notes the runtime writes: things that happened inside one invocation and
+ * are part of what that invocation did. Their record is its RuntimeEvent ledger.
+ */
+export const RUNTIME_SYSTEM_NOTE_KINDS = [
+  'context_compacted',
+  'context_compaction_failed_open',
+  'context_provider_dropping',
+  'context_window_suggestion',
+  'context_window_overrun',
+  'context_reported_window_exceeded',
+  'context_overflow_after_compaction',
+  'step_limit',
+] as const;
+
+/**
+ * Notes only legacy transcripts carry, still decoded so those rows stay
+ * readable. Nothing writes them: the Session header and the invocation's
+ * opening and terminal facts already own what each of them said.
+ */
+export const RETIRED_SYSTEM_NOTE_KINDS = [
+  'session_start',
+  'session_resume',
+  'mode_change',
+  'model_change',
+  'error',
+  'abort',
+] as const;
+
+export type RuntimeSystemNoteKind = (typeof RUNTIME_SYSTEM_NOTE_KINDS)[number];
+export type SystemNoteKind = RuntimeSystemNoteKind | (typeof RETIRED_SYSTEM_NOTE_KINDS)[number];
+
+export function isRuntimeSystemNoteKind(kind: string): kind is RuntimeSystemNoteKind {
+  return (RUNTIME_SYSTEM_NOTE_KINDS as readonly string[]).includes(kind);
 }
 
 export interface SystemNoteMessage {
   type: 'system_note';
   id: string;
-  /** Session-level notes omit turnId. */
+  /** Retired session-level notes omit turnId. */
   turnId?: string;
   ts: number;
-  kind:
-    | 'session_start'
-    | 'session_resume'
-    | 'mode_change'
-    | 'model_change'
-    | 'context_compacted'
-    | 'context_compaction_failed_open'
-    | 'context_provider_dropping'
-    | 'context_window_suggestion'
-    | 'context_window_overrun'
-    | 'context_reported_window_exceeded'
-    | 'context_overflow_after_compaction'
-    | 'step_limit'
-    | 'error'
-    | 'abort';
-  /** Shape depends on `kind`. */
+  kind: SystemNoteKind;
+  /**
+   * Shape depends on `kind`. `context_compaction_failed_open` carries
+   * `{ failOpenReason?: string }` — the reason the fold was refused (e.g.
+   * `coverage_miss`, `source_hash_mismatch`); when a turn is stopped before
+   * settlement, this note is the only durable record of the reason, because
+   * the `token_usage` diagnostic is never written (#4850).
+   */
   data?: unknown;
 }
 
@@ -1246,7 +1257,7 @@ const TOKEN_USAGE_MESSAGE_SHAPE = defineObjectShape<TokenUsageMessage>()(
   ],
 );
 const TURN_STATE_MESSAGE_SHAPE = defineObjectShape<TurnStateMessage>()(
-  ['type', 'id', 'turnId', 'ts', 'status', 'partialOutputRetained'],
+  ['type', 'id', 'turnId', 'ts', 'status'],
   [
     'parentTurnId',
     'retriedFromTurnId',
@@ -1256,7 +1267,10 @@ const TURN_STATE_MESSAGE_SHAPE = defineObjectShape<TurnStateMessage>()(
     'abortedAt',
     'abortSource',
     'errorClass',
+    'failureMessage',
+    'retry',
   ],
+  ['partialOutputRetained'],
 );
 const WORKHUB_DELEGATION_ASSIGNED_MESSAGE_SHAPE =
   defineObjectShape<WorkHubDelegationAssignedMessage>()(
@@ -1402,21 +1416,9 @@ const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
   ['text'],
   ['signature', 'providerOptions', 'parts'],
 );
-const SYSTEM_NOTE_KINDS = new Set([
-  'session_start',
-  'session_resume',
-  'mode_change',
-  'model_change',
-  'context_compacted',
-  'context_compaction_failed_open',
-  'context_provider_dropping',
-  'context_window_suggestion',
-  'context_window_overrun',
-  'context_reported_window_exceeded',
-  'context_overflow_after_compaction',
-  'step_limit',
-  'error',
-  'abort',
+const SYSTEM_NOTE_KINDS = new Set<string>([
+  ...RUNTIME_SYSTEM_NOTE_KINDS,
+  ...RETIRED_SYSTEM_NOTE_KINDS,
 ]);
 
 export function decodeCanonicalMessage(value: unknown): StoredMessage {
@@ -1539,7 +1541,6 @@ function decodeMessage(
         hasExactShape(message, TURN_STATE_MESSAGE_SHAPE) &&
         hasMessageEnvelope(message, true) &&
         isTurnStatus(message.status) &&
-        typeof message.partialOutputRetained === 'boolean' &&
         isOptionalString(message.parentTurnId) &&
         isOptionalString(message.retriedFromTurnId) &&
         isOptionalString(message.regeneratedFromTurnId) &&
@@ -1547,9 +1548,14 @@ function decodeMessage(
         isOptionalString(message.parentSessionId) &&
         (message.abortedAt === undefined || isFiniteNumber(message.abortedAt)) &&
         isOptionalString(message.abortSource) &&
-        isOptionalString(message.errorClass)
+        isOptionalString(message.errorClass) &&
+        (message.failureMessage === undefined ||
+          (typeof message.failureMessage === 'string' &&
+            new TextEncoder().encode(message.failureMessage).byteLength <=
+              MODEL_FAILURE_MESSAGE_MAX_BYTES)) &&
+        (message.retry === undefined || isModelRetryDecision(message.retry))
       )
-        return message as unknown as TurnStateMessage;
+        return pickShape(message as unknown as TurnStateMessage, TURN_STATE_MESSAGE_SHAPE);
       break;
     case 'workhub_coordination':
       if (isWorkHubCoordinationMessage(message)) {
@@ -1819,11 +1825,6 @@ export function deriveTurnRecords(messages: readonly StoredMessage[]): TurnRecor
     const latestState = bucket
       .filter((message): message is TurnStateMessage => message.type === 'turn_state')
       .at(-1);
-    const partialOutputRetained = bucket.some(
-      (message) =>
-        (message.type === 'assistant' && message.text.trim().length > 0) ||
-        message.type === 'tool_result',
-    );
     if (latestState) {
       return {
         turnId,
@@ -1841,14 +1842,14 @@ export function deriveTurnRecords(messages: readonly StoredMessage[]): TurnRecor
         ...(latestState.abortedAt !== undefined ? { abortedAt: latestState.abortedAt } : {}),
         ...(latestState.abortSource ? { abortSource: latestState.abortSource } : {}),
         ...(latestState.errorClass ? { errorClass: latestState.errorClass } : {}),
-        partialOutputRetained: latestState.partialOutputRetained || partialOutputRetained,
+        ...(latestState.failureMessage ? { failureMessage: latestState.failureMessage } : {}),
+        ...(latestState.retry ? { retry: latestState.retry } : {}),
       };
     }
     return {
       turnId,
       status: inferLegacyTurnStatus(bucket),
       statusSource: 'inferred',
-      partialOutputRetained,
     };
   });
 }

@@ -65,6 +65,10 @@ export interface RuntimeEventReadStore {
   ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]>;
+  /** Session-wide events with the ordinal that fixes their transcript order. */
+  readSessionRuntimeEventEntries(
+    sessionId: string,
+  ): Promise<ReadonlyArray<{ ordinal: number; event: RuntimeEvent }>>;
 }
 
 export async function openRuntimeEventPersistence(input: {
@@ -112,6 +116,8 @@ export async function openRuntimeEventReadPersistence(input: {
       readImmutableRuntimeEvents: (sessionId: string, runId: string) =>
         store.readImmutableRuntimeEvents(sessionId, runId),
       readSessionRuntimeEvents: (sessionId: string) => store.readSessionRuntimeEvents(sessionId),
+      readSessionRuntimeEventEntries: (sessionId: string) =>
+        store.readSessionRuntimeEventEntries(sessionId),
     }),
     close: () => store.close(),
   };

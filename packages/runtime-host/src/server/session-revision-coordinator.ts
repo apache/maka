@@ -111,7 +111,7 @@ export interface HostSessionRevisionCoordinatorOptions {
   readonly sessionTodo: InteractiveSessionTodoWriter;
   readonly contextOffload?: Pick<
     InteractiveContextOffloadWriter,
-    'copyReferences' | 'retireSession' | 'collectGarbage'
+    'copyReferences' | 'retireSession'
   >;
   readonly manager: SessionManager;
   readonly admission: SessionAdmissionGate;
@@ -608,13 +608,8 @@ export class HostSessionRevisionCoordinator {
         copyCurrent:
           kind === 'branch' && slice.beforeTs === undefined && input.sourceTurnId !== undefined,
       });
-      if (copiedMessages.length > 0) {
-        await this.#stores.sessionStore.appendMessages(input.targetSessionId, [...copiedMessages]);
-      }
-      await this.#stores.sessionStore.appendMessage(
-        input.targetSessionId,
-        conversationCopyStartNote(kind, input, createInput),
-      );
+      // `cloneConversationRuntimeLedger` already wrote the copy's own spine, and
+      // the copy reads back off that: nothing here writes a second transcript.
       await this.#stores.sessionStore.updateHeader(input.targetSessionId, {
         conversationCopy: {
           ...createInput.conversationCopy!,
@@ -890,25 +885,15 @@ export class HostSessionRevisionCoordinator {
     );
   }
 
+  /**
+   * A revision copy that admitted a turn of its own. The admission ledger is
+   * the whole answer: a copy clones the source's history but never its
+   * admissions, so every row it holds was admitted on this session.
+   */
   async #hasAdmittedRevisionTurn(sessionId: string): Promise<boolean> {
-    if (
+    return (
       (await this.#stores.agentRunStore.listRootTurnAdmissionsForRecovery(sessionId)).length > 0
-    ) {
-      return true;
-    }
-    const messages = await this.#stores.sessionStore.readMessagesForRecovery(sessionId);
-    let boundary = -1;
-    for (let index = 0; index < messages.length; index += 1) {
-      const message = messages[index]!;
-      if (
-        message.type === 'system_note' &&
-        message.kind === 'session_start' &&
-        isRevisionStartData(message.data)
-      ) {
-        boundary = index;
-      }
-    }
-    return boundary >= 0 && messages.slice(boundary + 1).some((message) => message.type === 'user');
+    );
   }
 
   async #hasCommittedConversationCopyDependent(sessionId: string): Promise<boolean> {
@@ -948,42 +933,6 @@ function conversationCopyFingerprint(
   return `sha256:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`;
 }
 
-function conversationCopyStartNote(
-  kind: ConversationCopySemanticKind,
-  input: SessionConversationCopyInput,
-  createInput: ConversationCopyCreateInput,
-): StoredMessage {
-  const base = {
-    type: 'system_note' as const,
-    id: randomUUID(),
-    ts: Date.now(),
-    kind: 'session_start' as const,
-  };
-  if (kind !== 'revision') {
-    // Empty copies record provenance without a branch turn.
-    return {
-      ...base,
-      data: {
-        parentSessionId: input.sourceSessionId,
-        ...(input.sourceTurnId === undefined ? {} : { branchOfTurnId: input.sourceTurnId }),
-      },
-    };
-  }
-  if (input.sourceTurnId === undefined) {
-    throw new Error('Session revision copy requires a turn boundary');
-  }
-  return {
-    ...base,
-    data: {
-      revisionRootSessionId: createInput.revisionRootSessionId,
-      revisionParentSessionId: input.sourceSessionId,
-      revisionOfTurnId: input.sourceTurnId,
-      revisionIndex: createInput.revisionIndex,
-      revisionState: 'preparing',
-    },
-  };
-}
-
 function conversationCopySemanticKind(
   kind: ConversationCopyKind,
   input: SessionConversationCopyInput,
@@ -993,15 +942,6 @@ function conversationCopySemanticKind(
 
 function persistedConversationCopyKind(kind: ConversationCopySemanticKind): ConversationCopyKind {
   return kind === 'revision' ? 'revision' : 'branch';
-}
-
-function isRevisionStartData(value: unknown): boolean {
-  return (
-    !!value &&
-    typeof value === 'object' &&
-    !Array.isArray(value) &&
-    'revisionRootSessionId' in value
-  );
 }
 
 function collectArchivedToolResultPlaceholders(

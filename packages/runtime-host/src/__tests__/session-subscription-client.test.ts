@@ -102,7 +102,7 @@ test('registers a subscription before receiving a coalesced first frame', async 
   );
 });
 
-test('delivers Runtime Resource PTY frames without closing the connection', async () => {
+test('unobserved PTY bytes do not consume the Session iterator or sequence', async () => {
   await withProtocolPeer(
     async (transport, hostEpoch, rootId) => {
       const request = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
@@ -111,7 +111,6 @@ test('delivers Runtime Resource PTY frames without closing the connection', asyn
         kind: 'subscription.runtime_resource_pty_data' as const,
         hostEpoch,
         subscriptionId: opened.subscriptionId,
-        sequence: 1,
         sessionId: 'session-1',
         ref: 'maka://runtime/background-tasks/shell-1',
         ptySequence: 7,
@@ -127,6 +126,7 @@ test('delivers Runtime Resource PTY frames without closing the connection', asyn
             result: opened,
           }),
           encodeLocalIpcTestFrame(frame),
+          encodeLocalIpcTestFrame(deltaFrame(hostEpoch, opened.subscriptionId, 1)),
         ]),
       );
       await answerClose(transport, opened.subscriptionId);
@@ -138,20 +138,47 @@ test('delivers Runtime Resource PTY frames without closing the connection', asyn
       });
       assert.deepEqual(await subscription[Symbol.asyncIterator]().next(), {
         done: false,
-        value: {
-          kind: 'subscription.runtime_resource_pty_data',
-          hostEpoch: connection.hostEpoch,
-          subscriptionId: subscription.subscriptionId,
-          sequence: 1,
-          sessionId: 'session-1',
-          ref: 'maka://runtime/background-tasks/shell-1',
-          ptySequence: 7,
-          data: 'ready',
-        },
+        value: deltaFrame(connection.hostEpoch, subscription.subscriptionId, 1),
       });
       await subscription.close();
     },
   );
+});
+
+test('PTY callbacks bypass a stalled Session iterator and isolate consumer failures', async () => {
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-1'),
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected read');
+    },
+  );
+  let delivered = 0;
+  subscription.subscribePtyData(() => {
+    throw new Error('broken display');
+  });
+  const unsubscribe = subscription.subscribePtyData(() => {
+    delivered += 1;
+  });
+  for (let ptySequence = 1; ptySequence <= 1000; ptySequence += 1) {
+    subscription.accept({
+      kind: 'subscription.runtime_resource_pty_data',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sessionId: 'session-1',
+      ref: 'maka://runtime/background-tasks/shell-1',
+      ptySequence,
+      data: 'bytes',
+    });
+  }
+  unsubscribe();
+  assert.equal(delivered, 1000);
+  subscription.accept(deltaFrame('host-1', 'subscription-1', 1));
+  assert.deepEqual(await subscription.next(), {
+    done: false,
+    value: deltaFrame('host-1', 'subscription-1', 1),
+  });
+  await subscription.close();
 });
 
 test('isolates a sequence gap and continues requests on the same connection', async () => {
@@ -394,7 +421,6 @@ test('reassembles a large message from bounded backward pages', async () => {
       const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
       const opened = openResult(hostEpoch, 'subscription-fragmented', {
         throughSequence: 0,
-        durableCoverage: 'complete',
         overlayMessageCount: 0,
         durable: transcriptPage({
           rawBytes: encoded.byteLength - splitAt,
@@ -475,7 +501,6 @@ test('decodes one bounded page without walking the remaining transcript', async 
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-bounded-page', {
       throughSequence: 4,
-      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: {
         ...transcriptPage({
@@ -588,7 +613,6 @@ test('assembles the complete edge Turn while paging newer transcript', async () 
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-newer-turn', {
       throughSequence: 1,
-      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: initial,
       overlay: { ...transcriptPage({ source: 'overlay' }), throughSequence: 1 },
@@ -877,51 +901,7 @@ test('keeps the connection usable when close wins the overlay release race', asy
   );
 });
 
-test('rejects a durable sequence gap', async () => {
-  const message = Buffer.from(
-    JSON.stringify({
-      type: 'user',
-      id: 'user-1',
-      turnId: 'turn-1',
-      ts: 1,
-      text: 'hello',
-    }),
-    'utf8',
-  );
-  const fragment = {
-    kind: 'durable' as const,
-    sequence: 0,
-    byteOffset: 0,
-    totalBytes: message.byteLength,
-    payloadDigest: null,
-    data: message.toString('base64'),
-  };
-  const gap = new ClientSessionSubscription(
-    openResult('host-1', 'subscription-gap', {
-      throughSequence: 1,
-      durableCoverage: 'complete',
-      overlayMessageCount: 0,
-      durable: {
-        ...transcriptPage({
-          rawBytes: message.byteLength,
-          fragments: [{ ...fragment, sequence: 1 }],
-        }),
-        throughSequence: 1,
-      },
-      overlay: { ...transcriptPage({ source: 'overlay' }), throughSequence: 1 },
-    }),
-    async () => undefined,
-    async () => {
-      throw new Error('unexpected page request');
-    },
-  );
-  await assert.rejects(
-    () => gap.loadTranscript(decodeStoredMessage),
-    hasSubscriptionReason('correlation_changed'),
-  );
-});
-
-test('loads a projected durable transcript with intentionally sparse sequences', async () => {
+test('loads a durable transcript whose sequences are sparse', async () => {
   const messages = [0, 2].map((sequence) =>
     Buffer.from(
       JSON.stringify({
@@ -937,7 +917,6 @@ test('loads a projected durable transcript with intentionally sparse sequences',
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-projected', {
       throughSequence: 2,
-      durableCoverage: 'projected',
       overlayMessageCount: 0,
       durable: {
         ...transcriptPage({
@@ -983,7 +962,6 @@ test('rejects a durable message that does not match its payload digest', async (
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-digest-mismatch', {
       throughSequence: 0,
-      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: transcriptPage({
         rawBytes: message.byteLength,
@@ -1048,7 +1026,6 @@ test('rejects a transcript cursor that does not advance', async () => {
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-stuck-cursor', {
       throughSequence: 0,
-      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: repeated,
       overlay: transcriptPage({ source: 'overlay' }),
@@ -1078,7 +1055,6 @@ test('rejects an overlay that terminates before its declared high-water', async 
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-truncated-overlay', {
       throughSequence: null,
-      durableCoverage: 'complete',
       overlayMessageCount: 2,
       durable: { ...transcriptPage(), throughSequence: null },
       overlay: {
@@ -1170,7 +1146,6 @@ test('acknowledges a complete overlay before waiting for durable continuation pa
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-overlay-release-before-durable', {
       throughSequence: 0,
-      durableCoverage: 'complete',
       overlayMessageCount: 1,
       durable: transcriptPage({
         rawBytes: durableMessage.byteLength - split,
@@ -1244,7 +1219,6 @@ test('close stops transcript pagination after the in-flight page', async () => {
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-closing', {
       throughSequence: 0,
-      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: transcriptPage({
         rawBytes: Math.floor(message.byteLength / 2),
@@ -1363,9 +1337,13 @@ test('tolerates a short Host stall without abandoning the connection', {
 
 test('closes an unresponsive request path even while Host notifications continue', {
   timeout: 12_000,
-}, async () => {
+}, async (t) => {
   let received = 0;
   let probes = 0;
+  const probeReceived = deferred<void>();
+  const notificationsReceived = deferred<void>();
+  const finalNotificationReceived = deferred<void>();
+  let sendFinalNotification!: () => Promise<void>;
   await withProtocolPeer(
     async (transport, hostEpoch, rootId) => {
       await transport.read(1_000);
@@ -1381,6 +1359,12 @@ test('closes an unresponsive request path even while Host notifications continue
         state: 'ready',
       });
       let revision = 0;
+      sendFinalNotification = () =>
+        writeProtocolFrame(transport, {
+          kind: 'session.catalog.changed',
+          revision: ++revision,
+          sessionId: 'final-notification',
+        });
       const notifications = setInterval(() => {
         void writeProtocolFrame(transport, {
           kind: 'session.catalog.changed',
@@ -1392,15 +1376,30 @@ test('closes an unresponsive request path even while Host notifications continue
         const probe = decodeClientFrame(await transport.read(1_000));
         assert.ok(!('kind' in probe));
         assert.equal(probe.operation, 'host.status');
+        probeReceived.resolve();
         await transport.closed;
       } finally {
         clearInterval(notifications);
       }
     },
     async (connection) => {
-      connection.subscribeSessionCatalogChanges(() => {
-        received += 1;
+      let closed = false;
+      void connection.closed.then(() => {
+        closed = true;
       });
+      connection.subscribeSessionCatalogChanges((event) => {
+        received += 1;
+        if (received > 10) notificationsReceived.resolve();
+        if (event.sessionId === 'final-notification') finalNotificationReceived.resolve();
+      });
+      t.mock.timers.tick(20);
+      await probeReceived.promise;
+      await notificationsReceived.promise;
+      t.mock.timers.tick(7_999);
+      await sendFinalNotification().catch(() => undefined);
+      await Promise.race([finalNotificationReceived.promise, connection.closed]);
+      assert.equal(closed, false, 'inbound events must not end the pending probe early');
+      t.mock.timers.tick(1);
       await connection.closed;
       assert.ok(received > 10, 'inbound events must remain active during the failed probe');
       assert.equal(probes, 0, 'one-way events cannot acknowledge a probe');
@@ -1411,6 +1410,7 @@ test('closes an unresponsive request path even while Host notifications continue
         probes += 1;
       },
     },
+    () => t.mock.timers.enable({ apis: ['setTimeout'] }),
   );
 });
 
@@ -1422,6 +1422,7 @@ async function withProtocolPeer(
     readonly onLivenessProbe?: () => void;
     readonly onHostStatus?: (status: HostStatusResult) => void;
   } = {},
+  beforeConnect?: () => void,
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-subscription-'));
   const capability = await resolveStorageRoot({
@@ -1459,6 +1460,7 @@ async function withProtocolPeer(
       pid: process.pid,
       createdAt: new Date().toISOString(),
     });
+    beforeConnect?.();
     const connected = await connectRuntimeHost({
       rootPath: join(base, 'root'),
       protocol: PROTOCOL,
@@ -1583,7 +1585,6 @@ function openResult(
 function transcriptBootstrap(message: Buffer): SessionTranscriptBootstrap {
   return {
     throughSequence: 0,
-    durableCoverage: 'complete',
     overlayMessageCount: 0,
     durable: transcriptPage({
       rawBytes: message.byteLength,
@@ -1605,7 +1606,6 @@ function transcriptBootstrap(message: Buffer): SessionTranscriptBootstrap {
 function overlayBootstrap(message: Buffer): SessionTranscriptBootstrap {
   return {
     throughSequence: null,
-    durableCoverage: 'complete',
     overlayMessageCount: 1,
     durable: { ...transcriptPage(), throughSequence: null },
     overlay: {

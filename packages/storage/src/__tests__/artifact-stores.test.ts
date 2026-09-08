@@ -45,6 +45,65 @@ import {
 after(removeTrackedControlDirectories);
 
 describe('interactive artifact store authority', () => {
+  for (const unrelated of [0, 1_000, 12_000]) {
+    test(`upgrade cleanup addresses one page without decoding ${unrelated} unrelated records`, async (t) => {
+      await withInteractiveOwner(async (owner, root, track) => {
+        const store = track(await openInteractiveArtifactStoreForWrite(owner.lease));
+        const db = new DatabaseSync(join(root, 'runtime.sqlite'));
+        try {
+          db.prepare(`WITH RECURSIVE numbers(n) AS (
+            SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < ?
+          ) INSERT INTO artifact_records
+            SELECT 'other-' || n, 'other', 0, 'other/' || n, '{}' FROM numbers WHERE n <= ?`).run(
+            unrelated,
+            unrelated,
+          );
+          db.exec(`WITH RECURSIVE numbers(n) AS (
+            SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 12000
+          ) INSERT INTO artifact_upgrade_orphan_paths
+            SELECT printf('removed/%05d', n) FROM numbers`);
+          const queries: string[] = [];
+          const prepare = DatabaseSync.prototype.prepare;
+          const spy = t.mock.method(
+            DatabaseSync.prototype,
+            'prepare',
+            function (this: DatabaseSync, sql: string) {
+              queries.push(sql);
+              assert.doesNotMatch(sql, /SELECT record_json\s+FROM artifact_records/);
+              return prepare.call(this, sql);
+            },
+          );
+          const result = await store.reclaimUpgradeResidue({ maxPaths: 3 });
+          spy.mock.restore();
+          assert.deepEqual(result, {
+            nextAfter: 'removed/00003',
+            processedPaths: 3,
+            failedPaths: 0,
+          });
+          assert.equal(
+            queries.filter((sql) => sql.includes('SELECT 1 FROM artifact_records')).length,
+            3,
+          );
+          assert.equal(
+            db.prepare('SELECT count(*) AS n FROM artifact_upgrade_orphan_paths').get()?.n,
+            11997,
+          );
+          const plan = db
+            .prepare(`EXPLAIN QUERY PLAN SELECT relative_path FROM artifact_upgrade_orphan_paths
+            WHERE relative_path > ? ORDER BY relative_path LIMIT ?`)
+            .all('', 4);
+          assert.match(JSON.stringify(plan), /SEARCH.*INDEX/);
+          const claimedPlan = db
+            .prepare('EXPLAIN QUERY PLAN SELECT 1 FROM artifact_records WHERE relative_path = ?')
+            .all('other/1');
+          assert.match(JSON.stringify(claimedPlan), /artifact_records_relative_path/);
+        } finally {
+          db.close();
+        }
+      });
+    });
+  }
+
   test('reads retained v1 payloads after upgrade without reviving retired rows', async () => {
     await withInteractiveOwner(async (owner, root, track) => {
       const initial = await openInteractiveArtifactStoreForWrite(owner.lease);
@@ -210,8 +269,15 @@ describe('interactive artifact store authority', () => {
         content: 'uploaded again',
         source: 'user_upload',
       });
-      await store.reclaimUpgradeResidue();
-      await store.reclaimUpgradeResidue();
+      let after: string | undefined;
+      do {
+        const batch = await store.reclaimUpgradeResidue({ after, maxPaths: 2 });
+        assert.ok(batch.processedPaths <= 2);
+        after = batch.nextAfter ?? undefined;
+      } while (after);
+      const retry = await store.reclaimUpgradeResidue({ maxPaths: 2 });
+      assert.equal(retry.failedPaths, 1);
+      assert.equal(retry.nextAfter, null);
 
       const path = (id: string) =>
         join(root, 'artifacts', `session-1/${id}-${rows.find((row) => row.id === id)!.name}`);
@@ -295,7 +361,11 @@ describe('interactive artifact store authority', () => {
         await writeFile(outsidePath, 'external', 'utf8');
         if (!(await createSymlinkOrSkip(t, outsideRoot, sessionRoot))) return;
 
-        await store.reclaimUpgradeResidue();
+        assert.deepEqual(await store.reclaimUpgradeResidue({ maxPaths: 64 }), {
+          nextAfter: null,
+          processedPaths: 1,
+          failedPaths: 1,
+        });
 
         assert.equal(await readFile(outsidePath, 'utf8'), 'external');
         assert.equal(
@@ -364,7 +434,11 @@ describe('interactive artifact store authority', () => {
       const store = track(await openInteractiveArtifactStoreForWrite(owner.lease));
       assert.deepEqual(readUpgradeOrphanPaths(root), [orphanRelativePath]);
 
-      await store.reclaimUpgradeResidue();
+      assert.deepEqual(await store.reclaimUpgradeResidue({ maxPaths: 64 }), {
+        nextAfter: null,
+        processedPaths: 1,
+        failedPaths: 0,
+      });
 
       assert.deepEqual(await store.readTextInSession('session-1', 'shared'), {
         ok: true,

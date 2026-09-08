@@ -36,7 +36,6 @@ import { ChatSurfaceLayout } from '../chat-surface-layout.js';
 import { ChatView } from '../chat-view.js';
 import { LocaleProvider } from '../locale-context.js';
 import {
-  TranscriptScrollAuthorityProvider,
   useTranscriptScrollAuthority,
   type TranscriptScrollAuthority,
 } from '../transcript-scroll-authority.js';
@@ -189,9 +188,6 @@ function harness(options: { readonly onClick: () => Promise<void> | void }): Ret
     authority = useTranscriptScrollAuthority();
     return createElement(Fragment, null);
   };
-  const probe = createElement(TranscriptScrollAuthorityProvider, {
-    children: createElement(AuthorityProbe),
-  });
   const view = (): ReactElement => {
     const chat = createElement(ChatView, {
       messages: turnMessages(),
@@ -199,26 +195,24 @@ function harness(options: { readonly onClick: () => Promise<void> | void }): Ret
       onNew: () => {},
       scrollBehavior: 'auto' as const,
       hasOlderHistory: true,
+      hasNewerHistory: true,
       onLoadEarlierHistory: () => undefined,
+      onLoadLaterHistory: () => undefined,
       onReadingAnchorChange: (turnId?: string) => {
         anchors.push(turnId);
-      },
-      returnToLatest: {
-        title: '查看较早的消息',
-        label: '回到最新',
-        isPending: false,
-        onClick: options.onClick,
       },
     } as never);
     const layout = createElement(ChatSurfaceLayout, {
       scrollOwner: 'host',
+      scrollToBottomLabel: '回到最新',
+      onReturnToTail: options.onClick,
       composer: null,
-      children: chat,
+      children: createElement(Fragment, null, chat, createElement(AuthorityProbe)),
     });
     const astryx = createElement(AstryxLocaleProvider, { children: layout });
     return createElement(LocaleProvider, {
       locale: 'zh-CN',
-      children: createElement(Fragment, null, astryx, probe),
+      children: astryx,
     });
   };
   const mount = document.querySelector<HTMLElement>('#mount');
@@ -230,8 +224,7 @@ function harness(options: { readonly onClick: () => Promise<void> | void }): Ret
   });
   const scrollRoot = mount.querySelector<HTMLElement>('[data-chat-scroll-container]');
   assert.ok(scrollRoot, 'the layout mounts a scroll container');
-  const scrollButton = [...mount.querySelectorAll('button')]
-    .find((button) => button.textContent?.includes('回到最新'));
+  const scrollButton = mount.querySelector<HTMLElement>('button[aria-label="回到最新"]');
   assert.ok(scrollButton, 'the return-to-latest affordance is rendered');
   // The authority attached itself to the scroller on mount and wrote the tail
   // into a zero-sized box, so its classification state says scrollTop=0 over a

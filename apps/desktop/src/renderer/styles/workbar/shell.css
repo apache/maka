@@ -142,9 +142,11 @@
 }
 
 .maka-session-workbar-panel[data-overlay][data-placement="right"] {
-  /* One stretched track, like the frame: the face fills the height and the
-     column can be aligned as a whole. */
+  /* One minmax track keeps the active face inside the overlay's available
+     height. An implicit auto track grows to the face's full content height,
+     leaving its own overflow scroller with nothing to scroll. */
   display: grid;
+  grid-template-rows: minmax(0, 1fr);
   padding-top: var(--maka-plate-titlebar-clearance);
 }
 

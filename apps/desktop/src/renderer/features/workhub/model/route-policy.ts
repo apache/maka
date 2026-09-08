@@ -24,7 +24,7 @@ import {
   type WorkHubRequestIntent,
   type WorkHubResolverSession,
   type WorkHubSessionResolver,
-} from './application/contracts/workhub-request-intent.js';
+} from '../../../application/contracts/workhub-request-intent.js';
 
 interface WorkHubRouteTarget {
   sessionId: string;
@@ -43,7 +43,8 @@ export type WorkHubRouteEvidence =
   | 'exact_session_name'
   | 'route_correction'
   | 'core_entity'
-  | 'recent_focus';
+  | 'recent_focus'
+  | 'model_candidate';
 
 export type WorkHubRouteDecision =
   | {
@@ -79,14 +80,24 @@ export type WorkHubStopClarificationReason =
   /** The stop names more than one existing Session. */
   | 'stop_target_ambiguous'
   /** The Host refused the stop; its conflict is the whole answer. */
-  | 'stop_target_unavailable';
+  | 'stop_target_unavailable'
+  /** The resume names more than one existing Session. */
+  | 'resume_target_ambiguous'
+  /** The resume names no safe target of its own. */
+  | 'resume_target_required'
+  /** The Host refused the resume; its conflict is the whole answer. */
+  | 'resume_target_unavailable'
+  /** This Host does not expose safe-boundary resume. */
+  | 'resume_operation_unavailable'
+  /** The Host is still recovering; retry may succeed. */
+  | 'resume_host_recovering';
 
 /**
  * A stop clarification never offers route options. Choosing one re-sends the
  * original text as work, and stop-shaped text is exactly what must not be
  * delivered to a Session that way, so the reason carries the whole answer.
  */
-export type WorkHubStopRouteDecision =
+export type WorkHubNamedActionRouteDecision =
   | { kind: 'not_requested' }
   | { kind: 'clarification'; reason: WorkHubStopClarificationReason }
   | { kind: 'target'; target: WorkHubRouteTarget };
@@ -95,14 +106,28 @@ export interface WorkHubRoutePolicy {
   resolveStop(input: {
     text: string;
     sessions: WorkHubRoutableSession[];
-  }): WorkHubStopRouteDecision;
+  }): WorkHubNamedActionRouteDecision;
+  resolveResume(input: {
+    text: string;
+    sessions: WorkHubRoutableSession[];
+  }): WorkHubNamedActionRouteDecision;
   resolve(input: {
     text: string;
     sessions: WorkHubRoutableSession[];
     originPromptBySessionId: ReadonlyMap<string, string | undefined>;
     explicitTarget?: WorkHubRouteTarget;
+    interpretation?: {
+      readonly classification: 'work' | 'discussion' | 'uncertain';
+      readonly resolution: 'none' | 'ranked' | 'ambiguous';
+      readonly recalledSessionIds: readonly string[];
+    };
   }): WorkHubRouteDecision;
   initializeFocus(targets: readonly WorkHubRouteTarget[]): void;
+  focusSnapshot(): {
+    readonly current?: WorkHubRouteTarget;
+    readonly previous?: WorkHubRouteTarget;
+  };
+  snapshot(): WorkHubRoutePolicy;
   newVisit(): WorkHubRoutePolicy;
   rememberTarget(target: WorkHubRouteTarget): void;
 }
@@ -123,6 +148,14 @@ export function workHubNewSessionName(
   return firstClause?.slice(0, 48) || '新工作';
 }
 
+export function boundedWorkHubText(value: string, maxChars: number): string {
+  const text = value.trim();
+  const chars = Array.from(text);
+  return chars.length <= maxChars
+    ? text
+    : `${chars.slice(0, maxChars - 1).join('')}…`;
+}
+
 const MIN_EXACT_SESSION_NAME_LENGTH = 2;
 // One four-character Han phrase is usually a meaningful entity rather than
 // grammar; Latin needs either two whole-word matches or one distinctive word.
@@ -131,6 +164,38 @@ const MIN_STRONG_LATIN_MATCH_COUNT = 2;
 const MIN_STRONG_SINGLE_LATIN_LENGTH = 8;
 const MAX_UNCERTAINTY_OPTIONS = 5;
 const MAX_RELATED_CLARIFICATION_OPTIONS = 4;
+
+function resolveNamedDelegationAction(
+  sessionResolver: WorkHubSessionResolver,
+  reference: string,
+  sessions: WorkHubRoutableSession[],
+  ambiguousReason: WorkHubStopClarificationReason,
+): WorkHubNamedActionRouteDecision {
+  const sessionByRef = new Map(sessions.map((session) => [session.target.sessionId, session]));
+  const resolution = sessionResolver.resolve({
+    reference: { text: reference },
+    sessions: sessions.map(resolverSession),
+  });
+  if (resolution.kind === 'none') return { kind: 'not_requested' };
+  // The tail rule. The Resolver reports what the reference said after the name;
+  // one of these commands may add punctuation and nothing else, so
+  // `Stop Payments and Login` names no target here even though `Payments`
+  // matched.
+  const admissible = resolution.candidates.filter(
+    ({ evidence }) =>
+      evidence.kind === 'elided_name_punctuation' ||
+      /^[.!?。！？]*$/u.test(evidence.remainder),
+  );
+  if (admissible.length === 0) return { kind: 'not_requested' };
+  // One candidate only. A ranked resolver may return several; neither action
+  // picks a winner from a ranking it cannot justify.
+  if (resolution.kind === 'ambiguous' || admissible.length > 1) {
+    return { kind: 'clarification', reason: ambiguousReason };
+  }
+  const resolved = sessionByRef.get(admissible[0]!.ref);
+  if (!resolved) return { kind: 'not_requested' };
+  return { kind: 'target', target: resolved.target };
+}
 
 /**
  * Deep routing module for R2.4.
@@ -146,9 +211,13 @@ export function createWorkHubRoutePolicy(
 
 function createWorkHubRoutePolicyVisit(
   sessionResolver: WorkHubSessionResolver,
+  initial?: {
+    readonly current?: WorkHubRouteTarget;
+    readonly previous?: WorkHubRouteTarget;
+  },
 ): WorkHubRoutePolicy {
-  let currentFocus: WorkHubRouteTarget | undefined;
-  let previousFocus: WorkHubRouteTarget | undefined;
+  let currentFocus = initial?.current;
+  let previousFocus = initial?.previous;
 
   return {
     // The stop Action Policy. Action Intent says only that the user issued a
@@ -163,43 +232,32 @@ function createWorkHubRoutePolicyVisit(
     // reference still fails closed, and a resolved Session that is not uniquely
     // stoppable says why.
     resolveStop({ text, sessions }) {
-      const intent = readWorkHubRequestIntent(text);
-      if (!intent.stop.cue) return { kind: 'not_requested' };
-      const reference = intent.stop.imperative ? intent.stop.target : undefined;
-      if (!reference) {
+      const action = readWorkHubRequestIntent(text).stop;
+      if (!action.cue) return { kind: 'not_requested' };
+      if (!action.imperative || !action.target) {
         return { kind: 'clarification', reason: 'stop_target_required' };
       }
-      const sessionByRef = new Map(
-        sessions.map((session) => [session.target.sessionId, session]),
+      return resolveNamedDelegationAction(
+        sessionResolver,
+        action.target,
+        sessions,
+        'stop_target_ambiguous',
       );
-      const resolution = sessionResolver.resolve({
-        reference: { text: reference },
-        sessions: sessions.map(resolverSession),
-      });
-      if (resolution.kind === 'none') return { kind: 'not_requested' };
-      // Stop's own tail rule. The Resolver reports what the reference said
-      // after the name; a destructive command may add punctuation and nothing
-      // else, so `Stop Payments and Login` names no stoppable target here even
-      // though `Payments` matched.
-      const admissible = resolution.candidates.filter(
-        ({ evidence }) =>
-          evidence.kind === 'elided_name_punctuation' ||
-          /^[.!?。！？]*$/u.test(evidence.remainder),
-      );
-      if (admissible.length === 0) return { kind: 'not_requested' };
-      // Stop admits one candidate only. A ranked resolver may return several;
-      // this action never picks a winner from a ranking it cannot justify.
-      if (resolution.kind === 'ambiguous' || admissible.length > 1) {
-        return { kind: 'clarification', reason: 'stop_target_ambiguous' };
-      }
-      const resolved = sessionByRef.get(admissible[0]!.ref);
-      if (!resolved) return { kind: 'not_requested' };
-      // The reference resolved, which is everything this policy can prove.
-      // Which delegation to end, and whether there is one at all, is the
-      // Host's answer and is made under the lease that performs the stop.
-      return { kind: 'target', target: resolved.target };
     },
-    resolve({ text, sessions, originPromptBySessionId, explicitTarget }) {
+    resolveResume({ text, sessions }) {
+      const action = readWorkHubRequestIntent(text).resume;
+      if (!action.cue) return { kind: 'not_requested' };
+      if (!action.imperative || !action.target) {
+        return { kind: 'clarification', reason: 'resume_target_required' };
+      }
+      return resolveNamedDelegationAction(
+        sessionResolver,
+        action.target,
+        sessions,
+        'resume_target_ambiguous',
+      );
+    },
+    resolve({ text, sessions, originPromptBySessionId, explicitTarget, interpretation }) {
       const intent = readWorkHubRequestIntent(text);
       if (intent.execution === 'ambiguous') {
         return { kind: 'clarification', options: [], reason: 'ambiguous_command' };
@@ -265,6 +323,11 @@ function createWorkHubRoutePolicyVisit(
 
       if (looksLikeExplicitNewSession(intent)) {
         return { kind: 'new_session', title: workHubNewSessionName(text, intent) };
+      }
+
+      // A failed or uncertain interpretation never authorizes a guessed target.
+      if (interpretation?.classification === 'uncertain') {
+        return { kind: 'clarification', options: sessions.slice(0, MAX_UNCERTAINTY_OPTIONS) };
       }
 
       const exact = rankExactSessions(text, sessions);
@@ -344,7 +407,22 @@ function createWorkHubRoutePolicyVisit(
             .map(({ session }) => session),
         };
       }
-      return looksExecutable(intent)
+      // Resolver output is ranked recall, not a final target. Policy requires
+      // trusted imperative text, one candidate, and no unresolved baseline evidence.
+      if (interpretation && interpretation.resolution !== 'none') {
+        const recalled = interpretation.recalledSessionIds.flatMap((id) => {
+          const session = sessions.find((candidate) => candidate.target.sessionId === id);
+          return session ? [session] : [];
+        });
+        if (interpretation.classification === 'work' && looksExecutable(intent) &&
+          interpretation.resolution === 'ranked' && recalled.length === 1) {
+          return { kind: 'target', target: recalled[0]!.target, evidence: 'model_candidate' };
+        }
+        if (recalled.length > 0 || interpretation.resolution === 'ambiguous') {
+          return { kind: 'clarification', options: recalled.slice(0, MAX_UNCERTAINTY_OPTIONS) };
+        }
+      }
+      return looksExecutable(intent) && interpretation?.classification !== 'discussion'
         ? { kind: 'new_session', title: workHubNewSessionName(text, intent) }
         : { kind: 'discussion' };
     },
@@ -367,6 +445,18 @@ function createWorkHubRoutePolicyVisit(
       if (!previousFocus || !available.has(previousFocus.sessionId)) {
         previousFocus = ordered.find((target) => target.sessionId !== currentFocus?.sessionId);
       }
+    },
+    focusSnapshot() {
+      return {
+        ...(currentFocus ? { current: currentFocus } : {}),
+        ...(previousFocus ? { previous: previousFocus } : {}),
+      };
+    },
+    snapshot() {
+      return createWorkHubRoutePolicyVisit(sessionResolver, {
+        ...(currentFocus ? { current: currentFocus } : {}),
+        ...(previousFocus ? { previous: previousFocus } : {}),
+      });
     },
     newVisit() {
       return createWorkHubRoutePolicyVisit(sessionResolver);

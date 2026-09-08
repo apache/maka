@@ -22,8 +22,10 @@
  * Run each workspace's `test:dist` script.
  *
  * `--concurrency N`: cap the batch to avoid overloading small runners.
- *   `--concurrency=1` runs every workspace in package.json workspaces order.
  * `--workspaces a,b`: run only the selected workspace paths.
+ *
+ * Workspaces are queued heaviest first so a long suite cannot be picked up once
+ * the other slots have drained.
  *
  * Each workspace owns how its dist tests run via package.json `test:dist`.
  * This script owns scheduling, bounded process residency, failure reporting, and
@@ -31,7 +33,7 @@
  */
 
 import { spawn as defaultSpawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -48,6 +50,54 @@ const PROCESS_TERMINATION_POLL_MS = 20;
 export function loadWorkspaceDirs(repoRoot, readFile = readFileSync) {
   const rootPkg = JSON.parse(readFile(join(repoRoot, 'package.json'), 'utf8'));
   return Array.isArray(rootPkg.workspaces) ? rootPkg.workspaces : [];
+}
+
+const TEST_SOURCE_PATTERN = /\.test\.[cm]?[jt]sx?$/u;
+// Build output would double-count the same suites and dependencies are not ours
+// to weigh, so neither tree is walked.
+const UNWEIGHED_DIRECTORIES = new Set(['node_modules', 'dist', '.git']);
+
+/**
+ * Bytes of test source under a workspace, the cheapest stand-in available here
+ * for how long its suite runs. A tree that cannot be read weighs nothing, which
+ * leaves the workspace in its declared position rather than failing the run.
+ */
+export function testSourceWeight(repoRoot, dir) {
+  let bytes = 0;
+  const pending = [join(repoRoot, dir)];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    let entries;
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (!UNWEIGHED_DIRECTORIES.has(entry.name)) pending.push(join(current, entry.name));
+      } else if (entry.isFile() && TEST_SOURCE_PATTERN.test(entry.name)) {
+        try {
+          bytes += statSync(join(current, entry.name)).size;
+        } catch {
+          // A file that vanished between the listing and the stat weighs nothing.
+        }
+      }
+    }
+  }
+  return bytes;
+}
+
+/**
+ * Heaviest workspace first, so no slot picks up a long suite once the others
+ * have drained. Ties keep their declared order.
+ */
+export function orderByDescendingWeight(dirs, weigh) {
+  // Nothing to reorder, and weighing would walk the tree for an answer no
+  // schedule can use.
+  if (dirs.length < 2) return [...dirs];
+  const weights = new Map(dirs.map((dir) => [dir, weigh(dir)]));
+  return [...dirs].sort((left, right) => weights.get(right) - weights.get(left));
 }
 
 export function nameForDir(dir) {
@@ -198,7 +248,10 @@ export async function runWorkspaceTests(options = {}) {
     throw new Error('workspaceTimeoutMs must be greater than zero');
   }
   const spawn = options.spawn ?? defaultSpawn;
-  const workspaceDirs = options.workspaceDirs ?? loadWorkspaceDirs(repoRoot);
+  const workspaceDirs = orderByDescendingWeight(
+    options.workspaceDirs ?? loadWorkspaceDirs(repoRoot),
+    (dir) => testSourceWeight(repoRoot, dir),
+  );
   const runOptions = {
     repoRoot,
     spawn,

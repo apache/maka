@@ -34,6 +34,7 @@ import {
 import {
   transcriptReadingPosition,
   type TranscriptHistoryGates,
+  type TranscriptHistoryPending,
 } from '../../renderer/features/conversation/index.js';
 
 function boundaryRequest(requestId: string): SandboxBoundaryRequestEvent {
@@ -102,19 +103,26 @@ function deferredHistoryController() {
 }
 
 function crossSessionGateScenario() {
+  type HistoryRequest = Parameters<typeof transcriptReadingPosition.loadHistory>[0]['request'];
   const gates: TranscriptHistoryGates = new WeakMap();
+  const sessionIds = { a: 'session', b: 'session:a' } as const;
   const sides = {
     a: deferredHistoryController(),
     b: deferredHistoryController(),
   };
   let active: 'a' | 'b' = 'a';
   let range: object = sides.a.controller;
-  const pending = { a: [] as boolean[], b: [] as boolean[] };
+  let currentPending: TranscriptHistoryPending | undefined;
+  const pending = {
+    a: [] as Array<Pick<HistoryRequest, 'target'> | undefined>,
+    b: [] as Array<Pick<HistoryRequest, 'target'> | undefined>,
+  };
   const errors = { a: [] as unknown[], b: [] as unknown[] };
   return {
     sides,
     pending,
     errors,
+    currentPending: () => currentPending,
     switchTo(id: 'a' | 'b') {
       active = id;
       range = sides[id].controller;
@@ -126,11 +134,17 @@ function crossSessionGateScenario() {
       const side = sides[id];
       return transcriptReadingPosition.loadHistory({
         gates,
+        sessionId: sessionIds[id],
         request,
         controller: side.controller,
         maxBytes: 4096,
         isCurrent: () => active === id && range === side.controller,
-        setPending: (value) => pending[id].push(value),
+        setPending: (update) => {
+          currentPending = update(currentPending);
+          pending[id].push(currentPending?.sessionId === sessionIds[id]
+            ? { target: currentPending.target }
+            : undefined);
+        },
         onError: (error) => errors[id].push(error),
       });
     },
@@ -524,18 +538,19 @@ describe('app shell session UI state controller', () => {
     const stale = scenario.load('a', { target: 'earlier' });
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.deepEqual(scenario.sides.a.calls, ['before']);
-    assert.deepEqual(scenario.pending.a, [true]);
+    assert.deepEqual(scenario.pending.a, [{ target: 'earlier' }]);
 
     scenario.switchTo('b');
     const navigation = scenario.load('b', { target: 'latest' });
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.deepEqual(scenario.sides.b.calls, ['latest']);
-    assert.deepEqual(scenario.pending.b, [true]);
+    assert.deepEqual(scenario.pending.b, [{ target: 'latest' }]);
 
-    scenario.sides.b.settleLatest();
     scenario.sides.a.settleBefore();
-    await navigation;
     await stale;
+    assert.deepEqual(scenario.currentPending(), { sessionId: 'session:a', target: 'latest' });
+    scenario.sides.b.settleLatest();
+    await navigation;
   });
 
   it('leaves the switched-to Session untouched when a stale Session load settles late', async () => {
@@ -546,13 +561,13 @@ describe('app shell session UI state controller', () => {
     const navigation = scenario.load('b', { target: 'latest' });
     scenario.sides.b.settleLatest();
     await navigation;
-    assert.deepEqual(scenario.pending.b, [true, false]);
+    assert.deepEqual(scenario.pending.b, [{ target: 'latest' }, undefined]);
     assert.deepEqual(scenario.sides.b.calls, ['latest']);
 
     scenario.sides.a.settleBefore();
     await stale;
     await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.deepEqual(scenario.pending.b, [true, false]);
+    assert.deepEqual(scenario.pending.b, [{ target: 'latest' }, undefined]);
     assert.deepEqual(scenario.sides.b.calls, ['latest']);
     assert.deepEqual(scenario.errors.b, []);
   });
@@ -565,7 +580,7 @@ describe('app shell session UI state controller', () => {
     scenario.sides.a.failBefore(new Error('earlier read failed'));
     await stale;
     assert.deepEqual(scenario.errors.a, []);
-    assert.deepEqual(scenario.pending.a, [true, false]);
+    assert.deepEqual(scenario.pending.a, [{ target: 'earlier' }, undefined]);
     assert.deepEqual(scenario.pending.b, []);
   });
 
@@ -582,7 +597,12 @@ describe('app shell session UI state controller', () => {
     assert.deepEqual(scenario.sides.a.calls, ['before', 'latest']);
     scenario.sides.a.settleLatest();
     await Promise.allSettled([queuedEarlier, queuedLatest]);
-    assert.deepEqual(scenario.pending.a, [true, false, true, false]);
+    assert.deepEqual(scenario.pending.a, [
+      { target: 'earlier' },
+      undefined,
+      { target: 'latest' },
+      undefined,
+    ]);
   });
 
   it('replays a queued forward load with its reading anchor after a backward load settles', async () => {
@@ -596,7 +616,12 @@ describe('app shell session UI state controller', () => {
     assert.deepEqual(scenario.sides.a.calls, ['before', 'after:4096:turn-anchor']);
     scenario.sides.a.settleAfter();
     await queued;
-    assert.deepEqual(scenario.pending.a, [true, false, true, false]);
+    assert.deepEqual(scenario.pending.a, [
+      { target: 'earlier' },
+      undefined,
+      { target: 'later' },
+      undefined,
+    ]);
   });
 
   it('keeps the queued latest load when adjacent requests arrive after it', async () => {
@@ -613,7 +638,12 @@ describe('app shell session UI state controller', () => {
     assert.deepEqual(scenario.sides.a.calls, ['before', 'latest']);
     scenario.sides.a.settleLatest();
     await Promise.allSettled([queuedLatest, queuedEarlier, queuedLater]);
-    assert.deepEqual(scenario.pending.a, [true, false, true, false]);
+    assert.deepEqual(scenario.pending.a, [
+      { target: 'earlier' },
+      undefined,
+      { target: 'latest' },
+      undefined,
+    ]);
   });
 
   it('does not replay a settled load after its Session range was replaced', async () => {
@@ -627,7 +657,7 @@ describe('app shell session UI state controller', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.deepEqual(scenario.sides.a.calls, ['before']);
     assert.deepEqual(scenario.sides.b.calls, []);
-    assert.deepEqual(scenario.pending.a, [true, false]);
+    assert.deepEqual(scenario.pending.a, [{ target: 'earlier' }, undefined]);
     scenario.sides.a.settleLatest();
     await queued;
   });
@@ -642,7 +672,12 @@ describe('app shell session UI state controller', () => {
     assert.deepEqual(scenario.sides.a.calls, ['before', 'latest']);
     scenario.sides.a.settleLatest();
     await queued;
-    assert.deepEqual(scenario.pending.a, [true, false, true, false]);
+    assert.deepEqual(scenario.pending.a, [
+      { target: 'earlier' },
+      undefined,
+      { target: 'latest' },
+      undefined,
+    ]);
     assert.deepEqual(scenario.pending.b, []);
     assert.deepEqual(scenario.sides.b.calls, []);
   });

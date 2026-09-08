@@ -281,7 +281,7 @@ describe('SqliteSessionMetadataStore', () => {
       const store = createSqliteSessionMetadataStore(path);
       try {
         await assert.rejects(
-          () => store.readMessagesForRecovery('session-1'),
+          () => store.readMessages('session-1'),
           (error: unknown) =>
             error instanceof StoredSessionMessageIncompatibleError &&
             error.code === 'stored_session_message_incompatible' &&
@@ -365,7 +365,7 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('materializes an accepted steering draft when it is handed off', async () => {
+  test('retires an accepted steering draft when it is handed off', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
       await store.create(fullHeader({ id: 'session-1', connectionLocked: false }));
@@ -424,27 +424,12 @@ describe('SqliteSessionMetadataStore', () => {
         messageIds: ['message-1'],
         turnId: 'turn-1',
       });
-      assert.deepEqual(
-        (await store.readMessages('session-1')).map((message) => ({
-          id: message.id,
-          type: message.type,
-          turnId: message.turnId,
-          text: message.type === 'user' ? message.text : undefined,
-          steeringEventId: message.type === 'user' ? message.steeringEventId : undefined,
-        })),
-        [
-          {
-            id: 'message-1',
-            type: 'user',
-            turnId: 'turn-1',
-            text: 'submitted',
-            steeringEventId: 'message-1',
-          },
-        ],
-      );
-      assert.equal((await store.read('session-1')).header.lastMessageAt, 10);
-      assert.equal((await store.readCatalogRecord('session-1')).lastMessagePreview, 'submitted');
-      assert.equal((await store.read('session-1')).header.connectionLocked, true);
+      // Handoff retires the admission and nothing else: the message itself is a
+      // RuntimeEvent, and its catalog facts come from the run that wrote it.
+      assert.deepEqual(await store.readMessages('session-1'), []);
+      assert.equal((await store.read('session-1')).header.lastMessageAt, 3);
+      assert.equal((await store.readCatalogRecord('session-1')).lastMessagePreview, undefined);
+      assert.equal((await store.read('session-1')).header.connectionLocked, false);
       assert.deepEqual(await store.listMessageAdmissions('session-1'), []);
     } finally {
       store.close();
@@ -560,229 +545,6 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('materializes a proven Root message when its admission is absent', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:');
-    try {
-      await store.create(fullHeader({ id: 'session-legacy-root' }));
-
-      await markMessagesHandedOffWithProvenRoots(store, {
-        sessionId: 'session-legacy-root',
-        messageIds: ['message-legacy-root'],
-        turnId: 'turn-legacy-root',
-        provenRootMessages: [
-          {
-            messageId: 'message-legacy-root',
-            content: { text: 'retained by the legacy Root', displayText: 'legacy display' },
-            admittedAt: 17,
-          },
-        ],
-      });
-
-      assert.deepEqual(await store.readMessages('session-legacy-root'), [
-        {
-          type: 'user',
-          id: 'message-legacy-root',
-          turnId: 'turn-legacy-root',
-          ts: 17,
-          text: 'retained by the legacy Root',
-          displayText: 'legacy display',
-          steeringEventId: 'message-legacy-root',
-        },
-      ]);
-      assert.deepEqual(await store.listMessageAdmissions('session-legacy-root'), []);
-    } finally {
-      store.close();
-    }
-  });
-
-  test('inserts proven Root messages before existing output from their Turn', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-legacy-root-order-'));
-    const path = join(root, 'state.sqlite');
-    const store = createSqliteSessionMetadataStore(path);
-    try {
-      await store.create(fullHeader({ id: 'session-legacy-order' }));
-      const legacyOutput = 'existing chunked output '.repeat(4_096);
-      await store.appendMessages(
-        'session-legacy-order',
-        [
-          {
-            type: 'assistant',
-            id: 'message-prior-output',
-            turnId: 'turn-prior',
-            ts: 10,
-            text: 'prior output',
-            modelId: 'fake-model',
-          },
-          {
-            type: 'assistant',
-            id: 'message-legacy-output',
-            turnId: 'turn-legacy-order',
-            ts: 18,
-            text: legacyOutput,
-            modelId: 'fake-model',
-          },
-          {
-            type: 'user',
-            id: 'message-newer-user',
-            turnId: 'turn-newer',
-            ts: 30,
-            text: 'newest preview',
-          },
-        ],
-        { lastMessageAt: 30, lastMessagePreview: 'newest preview' },
-      );
-
-      await markMessagesHandedOffWithProvenRoots(store, {
-        sessionId: 'session-legacy-order',
-        messageIds: ['message-legacy-followup', 'message-legacy-steering'],
-        turnId: 'turn-legacy-order',
-        provenRootMessages: [
-          {
-            messageId: 'message-legacy-followup',
-            content: { text: 'legacy follow-up' },
-            admittedAt: 17,
-          },
-          {
-            messageId: 'message-legacy-steering',
-            content: { text: 'legacy steering' },
-            admittedAt: 17,
-          },
-        ],
-      });
-
-      assert.deepEqual(
-        (await store.readMessages('session-legacy-order')).map((message) => message.id),
-        [
-          'message-prior-output',
-          'message-legacy-followup',
-          'message-legacy-steering',
-          'message-legacy-output',
-          'message-newer-user',
-        ],
-      );
-      assert.equal((await store.read('session-legacy-order')).header.lastMessageAt, 30);
-      const shiftedOutput = (await store.readMessages('session-legacy-order')).find(
-        (message) => message.id === 'message-legacy-output',
-      );
-      assert.equal(shiftedOutput?.type, 'assistant');
-      assert.equal(
-        shiftedOutput?.type === 'assistant' ? shiftedOutput.text : undefined,
-        legacyOutput,
-      );
-      assert.equal(
-        (await store.readCatalogRecord('session-legacy-order')).lastMessagePreview,
-        'newest preview',
-      );
-      const audit = new DatabaseSync(path, { readOnly: true });
-      try {
-        assert.deepEqual(audit.prepare('PRAGMA foreign_key_check').all(), []);
-      } finally {
-        audit.close();
-      }
-    } finally {
-      store.close();
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('places a proven Root message before an equally-timed newer transcript row', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:');
-    try {
-      await store.create(fullHeader({ id: 'session-legacy-time-tie' }));
-      await store.appendMessages(
-        'session-legacy-time-tie',
-        [
-          {
-            type: 'user',
-            id: 'message-newer-time-tie',
-            turnId: 'turn-newer-time-tie',
-            ts: 17,
-            text: 'newer same-millisecond preview',
-          },
-        ],
-        { lastMessageAt: 17, lastMessagePreview: 'newer same-millisecond preview' },
-      );
-
-      await markMessagesHandedOffWithProvenRoots(store, {
-        sessionId: 'session-legacy-time-tie',
-        messageIds: ['message-legacy-time-tie'],
-        turnId: 'turn-legacy-time-tie',
-        provenRootMessages: [
-          {
-            messageId: 'message-legacy-time-tie',
-            content: { text: 'legacy same-millisecond source' },
-            admittedAt: 17,
-          },
-        ],
-      });
-
-      assert.deepEqual(
-        (await store.readMessages('session-legacy-time-tie')).map((message) => message.id),
-        ['message-legacy-time-tie', 'message-newer-time-tie'],
-      );
-      assert.equal(
-        (await store.readCatalogRecord('session-legacy-time-tie')).lastMessagePreview,
-        'newer same-millisecond preview',
-      );
-    } finally {
-      store.close();
-    }
-  });
-
-  test('keeps ordinary admission handoff append semantics when Root proof is also supplied', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:');
-    try {
-      await store.create(fullHeader({ id: 'session-ordinary-handoff-order' }));
-      await store.appendMessages(
-        'session-ordinary-handoff-order',
-        [
-          {
-            type: 'assistant',
-            id: 'message-existing-ordinary-output',
-            turnId: 'turn-ordinary-handoff-order',
-            ts: 20,
-            text: 'existing output',
-            modelId: 'fake-model',
-          },
-        ],
-        { lastMessageAt: 20, lastMessagePreview: 'existing output' },
-      );
-      await store.commitMessageAdmission({
-        sessionId: 'session-ordinary-handoff-order',
-        turnId: 'turn-ordinary-handoff-order',
-        runId: 'run-ordinary-handoff-order',
-        messageId: 'message-ordinary-admission',
-        content: { text: 'ordinary admission' },
-        submittedContentDigest: messageContentDigest({ text: 'ordinary admission' }),
-        submittedPlacement: 'current_turn',
-        placement: 'current_turn',
-        disposition: 'steering',
-        skillInvocation: { loaded: [], failed: [], receipts: [] },
-        admittedAt: 10,
-      });
-
-      await markMessagesHandedOffWithProvenRoots(store, {
-        sessionId: 'session-ordinary-handoff-order',
-        messageIds: ['message-ordinary-admission'],
-        turnId: 'turn-ordinary-handoff-order',
-        provenRootMessages: [
-          {
-            messageId: 'message-ordinary-admission',
-            content: { text: 'ordinary admission' },
-            admittedAt: 10,
-          },
-        ],
-      });
-
-      assert.deepEqual(
-        (await store.readMessages('session-ordinary-handoff-order')).map((message) => message.id),
-        ['message-existing-ordinary-output', 'message-ordinary-admission'],
-      );
-    } finally {
-      store.close();
-    }
-  });
-
   test('rejects an admission handed off to a different Turn', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
@@ -819,181 +581,23 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('rejects fully materialized proven Root sources in a conflicting order', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:');
-    try {
-      await store.create(fullHeader({ id: 'session-existing-source-order' }));
-      await store.appendMessages(
-        'session-existing-source-order',
-        [
-          {
-            type: 'user',
-            id: 'message-existing-source-b',
-            turnId: 'turn-existing-source-order',
-            ts: 25,
-            text: 'source b',
-          },
-          {
-            type: 'user',
-            id: 'message-existing-source-a',
-            turnId: 'turn-existing-source-order',
-            ts: 25,
-            text: 'source a',
-          },
-        ],
-        { lastMessageAt: 25, lastMessagePreview: 'source a' },
-      );
-
-      await assert.rejects(
-        markMessagesHandedOffWithProvenRoots(store, {
-          sessionId: 'session-existing-source-order',
-          messageIds: ['message-existing-source-a', 'message-existing-source-b'],
-          turnId: 'turn-existing-source-order',
-          provenRootMessages: [
-            {
-              messageId: 'message-existing-source-a',
-              content: { text: 'source a' },
-              admittedAt: 25,
-            },
-            {
-              messageId: 'message-existing-source-b',
-              content: { text: 'source b' },
-              admittedAt: 25,
-            },
-          ],
-        }),
-        /source order conflict/,
-      );
-    } finally {
-      store.close();
-    }
-  });
-
-  test('rejects a partial proven Root group that already crosses newer history', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:');
-    try {
-      await store.create(fullHeader({ id: 'session-partial-source-order' }));
-      await store.appendMessages(
-        'session-partial-source-order',
-        [
-          {
-            type: 'user',
-            id: 'message-partial-source-a',
-            turnId: 'turn-partial-source-order',
-            ts: 15,
-            text: 'source a',
-          },
-          {
-            type: 'user',
-            id: 'message-partial-newer-tail',
-            turnId: 'turn-partial-newer',
-            ts: 30,
-            text: 'newer tail',
-          },
-          {
-            type: 'user',
-            id: 'message-partial-source-c',
-            turnId: 'turn-partial-source-order',
-            ts: 15,
-            text: 'source c',
-          },
-        ],
-        { lastMessageAt: 30, lastMessagePreview: 'newer tail' },
-      );
-
-      await assert.rejects(
-        markMessagesHandedOffWithProvenRoots(store, {
-          sessionId: 'session-partial-source-order',
-          messageIds: [
-            'message-partial-source-a',
-            'message-partial-source-b',
-            'message-partial-source-c',
-          ],
-          turnId: 'turn-partial-source-order',
-          provenRootMessages: [
-            {
-              messageId: 'message-partial-source-a',
-              content: { text: 'source a' },
-              admittedAt: 15,
-            },
-            {
-              messageId: 'message-partial-source-b',
-              content: { text: 'source b' },
-              admittedAt: 15,
-            },
-            {
-              messageId: 'message-partial-source-c',
-              content: { text: 'source c' },
-              admittedAt: 15,
-            },
-          ],
-        }),
-        /source order conflict/,
-      );
-      assert.deepEqual(
-        (await store.readMessages('session-partial-source-order')).map((message) => message.id),
-        ['message-partial-source-a', 'message-partial-newer-tail', 'message-partial-source-c'],
-      );
-    } finally {
-      store.close();
-    }
-  });
-
-  test('rejects an unsafe proven Root tail insertion range', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-legacy-root-overflow-'));
-    const path = join(root, 'state.sqlite');
-    const store = createSqliteSessionMetadataStore(path);
-    try {
-      await store.create(fullHeader({ id: 'session-legacy-overflow' }));
-      await store.appendMessages(
-        'session-legacy-overflow',
-        [
-          {
-            type: 'assistant',
-            id: 'message-overflow-anchor',
-            turnId: 'turn-overflow-anchor',
-            ts: 1,
-            text: 'anchor',
-            modelId: 'fake-model',
-          },
-        ],
-        { lastMessageAt: 1, lastMessagePreview: 'anchor' },
-      );
-      const database = new DatabaseSync(path);
-      try {
-        database
-          .prepare('UPDATE session_messages SET sequence = ? WHERE session_id = ? AND sequence = 0')
-          .run(Number.MAX_SAFE_INTEGER - 1, 'session-legacy-overflow');
-      } finally {
-        database.close();
-      }
-
-      await assert.rejects(
-        markMessagesHandedOffWithProvenRoots(store, {
-          sessionId: 'session-legacy-overflow',
-          messageIds: ['message-overflow-a', 'message-overflow-b'],
-          turnId: 'turn-legacy-overflow',
-          provenRootMessages: [
-            { messageId: 'message-overflow-a', content: { text: 'a' }, admittedAt: 2 },
-            { messageId: 'message-overflow-b', content: { text: 'b' }, admittedAt: 2 },
-          ],
-        }),
-        /sequence overflow/,
-      );
-      assert.deepEqual(
-        (await store.readMessages('session-legacy-overflow')).map((message) => message.id),
-        ['message-overflow-anchor'],
-      );
-    } finally {
-      store.close();
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test('repeats a proven Root message handoff without duplicating its transcript', async () => {
+  test('repeats a proven Root message handoff after its admission is gone', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
       await store.create(fullHeader({ id: 'session-legacy-repeat' }));
+      await store.commitMessageAdmission({
+        sessionId: 'session-legacy-repeat',
+        turnId: 'turn-legacy-repeat',
+        runId: 'run-legacy-repeat',
+        messageId: 'message-legacy-repeat',
+        content: { text: 'a single durable message' },
+        submittedContentDigest: messageContentDigest({ text: 'a single durable message' }),
+        submittedPlacement: 'current_turn',
+        placement: 'current_turn',
+        disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: 18,
+      });
       const input = {
         sessionId: 'session-legacy-repeat',
         messageIds: ['message-legacy-repeat'],
@@ -1001,7 +605,7 @@ describe('SqliteSessionMetadataStore', () => {
         provenRootMessages: [
           {
             messageId: 'message-legacy-repeat',
-            content: { text: 'a single durable transcript message' },
+            content: { text: 'a single durable message' },
             admittedAt: 18,
           },
         ],
@@ -1010,14 +614,8 @@ describe('SqliteSessionMetadataStore', () => {
       await markMessagesHandedOffWithProvenRoots(store, input);
       await markMessagesHandedOffWithProvenRoots(store, input);
 
-      assert.deepEqual(
-        (await store.readMessages('session-legacy-repeat')).map((message) => ({
-          id: message.id,
-          turnId: message.turnId,
-          ts: message.ts,
-        })),
-        [{ id: 'message-legacy-repeat', turnId: 'turn-legacy-repeat', ts: 18 }],
-      );
+      assert.deepEqual(await store.listMessageAdmissions('session-legacy-repeat'), []);
+      assert.deepEqual(await store.readMessages('session-legacy-repeat'), []);
     } finally {
       store.close();
     }
@@ -1075,102 +673,6 @@ describe('SqliteSessionMetadataStore', () => {
         }),
         /already cancelled/,
       );
-    } finally {
-      store.close();
-    }
-  });
-
-  test('rejects proven Root repeats with an existing transcript content or Turn conflict', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:');
-    try {
-      await store.create(fullHeader({ id: 'session-legacy-conflict' }));
-      await markMessagesHandedOffWithProvenRoots(store, {
-        sessionId: 'session-legacy-conflict',
-        messageIds: ['message-legacy-conflict'],
-        turnId: 'turn-legacy-conflict',
-        provenRootMessages: [
-          {
-            messageId: 'message-legacy-conflict',
-            content: { text: 'canonical text' },
-            admittedAt: 20,
-          },
-        ],
-      });
-
-      await assert.rejects(
-        markMessagesHandedOffWithProvenRoots(store, {
-          sessionId: 'session-legacy-conflict',
-          messageIds: ['message-legacy-conflict'],
-          turnId: 'turn-legacy-conflict',
-          provenRootMessages: [
-            {
-              messageId: 'message-legacy-conflict',
-              content: { text: 'different text' },
-              admittedAt: 20,
-            },
-          ],
-        }),
-        /transcript identity conflict/,
-      );
-      await assert.rejects(
-        markMessagesHandedOffWithProvenRoots(store, {
-          sessionId: 'session-legacy-conflict',
-          messageIds: ['message-legacy-conflict'],
-          turnId: 'turn-legacy-conflict-different',
-          provenRootMessages: [
-            {
-              messageId: 'message-legacy-conflict',
-              content: { text: 'canonical text' },
-              admittedAt: 20,
-            },
-          ],
-        }),
-        /transcript Turn conflict/,
-      );
-    } finally {
-      store.close();
-    }
-  });
-
-  test('keeps an admission as the content and timestamp authority during handoff', async () => {
-    const store = createSqliteSessionMetadataStore(':memory:');
-    try {
-      await store.create(fullHeader({ id: 'session-admission-authority' }));
-      await store.commitMessageAdmission({
-        sessionId: 'session-admission-authority',
-        turnId: 'turn-admission-authority',
-        runId: 'run-admission-authority',
-        messageId: 'message-admission-authority',
-        content: { text: 'admission authority', displayText: 'submitted display' },
-        submittedContentDigest: messageContentDigest({ text: 'admission authority' }),
-        submittedPlacement: 'current_turn',
-        placement: 'current_turn',
-        disposition: 'steering',
-        skillInvocation: { loaded: [], failed: [], receipts: [] },
-        admittedAt: 21,
-      });
-
-      await markMessagesHandedOffWithProvenRoots(store, {
-        sessionId: 'session-admission-authority',
-        messageIds: ['message-admission-authority'],
-        turnId: 'turn-admission-authority',
-        provenRootMessages: [
-          {
-            messageId: 'message-admission-authority',
-            content: { text: 'admission authority', displayText: 'submitted display' },
-            admittedAt: 99,
-          },
-        ],
-      });
-
-      assert.deepEqual(
-        (await store.readMessages('session-admission-authority')).map((message) => ({
-          text: message.type === 'user' ? message.text : undefined,
-          ts: message.ts,
-        })),
-        [{ text: 'admission authority', ts: 21 }],
-      );
-      assert.deepEqual(await store.listMessageAdmissions('session-admission-authority'), []);
     } finally {
       store.close();
     }
@@ -1288,7 +790,7 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('removes the accepted payload after transcript handoff', async () => {
+  test('removes the accepted payload without writing a transcript row', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-message-handoff-'));
     const path = join(root, 'state.sqlite');
     const store = createSqliteSessionMetadataStore(path);
@@ -1332,7 +834,7 @@ describe('SqliteSessionMetadataStore', () => {
             'SELECT COUNT(*) AS count FROM session_messages WHERE session_id = ? AND message_id = ?',
           )
           .get('session-1', 'message-1')?.count,
-        1,
+        0,
       );
     } finally {
       persisted.close();
@@ -1425,14 +927,7 @@ describe('SqliteSessionMetadataStore', () => {
       });
 
       assert.equal(await store.readMessageAdmission('session-1', 'message-1'), undefined);
-      assert.deepEqual(
-        (await store.readMessages('session-1')).map((message) => ({
-          id: message.id,
-          turnId: message.turnId,
-          text: message.type === 'user' ? message.text : undefined,
-        })),
-        [{ id: 'message-1', turnId: 'turn-2', text: content.text }],
-      );
+      assert.deepEqual(await store.readMessages('session-1'), []);
     } finally {
       store.close();
       await rm(root, { recursive: true, force: true });
@@ -1605,7 +1100,7 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
-  test('materializes an accepted follow-up under its successor root', async () => {
+  test('retires an accepted follow-up under its successor root', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
       await store.create(fullHeader({ id: 'session-followup-admission' }));
@@ -1626,23 +1121,22 @@ describe('SqliteSessionMetadataStore', () => {
       });
       assert.equal(admission.disposition, 'followup');
       assert.deepEqual(await store.readMessages('session-followup-admission'), []);
-      await store.markMessagesHandedOff({
+      const handoff = {
         sessionId: 'session-followup-admission',
         messageIds: ['message-followup'],
         turnId: 'turn-successor',
-      });
-      await store.markMessagesHandedOff({
-        sessionId: 'session-followup-admission',
-        messageIds: ['message-followup'],
-        turnId: 'turn-successor',
-      });
-      assert.deepEqual(
-        (await store.readMessages('session-followup-admission')).map((message) => ({
-          id: message.id,
-          turnId: message.turnId,
-        })),
-        [{ id: 'message-followup', turnId: 'turn-successor' }],
-      );
+        provenRootMessages: [
+          {
+            messageId: 'message-followup',
+            content: { text: 'queued before the successor root' },
+            admittedAt: 11,
+          },
+        ],
+      };
+      await markMessagesHandedOffWithProvenRoots(store, handoff);
+      await markMessagesHandedOffWithProvenRoots(store, handoff);
+      assert.deepEqual(await store.listMessageAdmissions('session-followup-admission'), []);
+      assert.deepEqual(await store.readMessages('session-followup-admission'), []);
     } finally {
       store.close();
     }
@@ -3058,6 +2552,119 @@ describe('SqliteSessionMetadataStore', () => {
       assert.equal(recovered.boundary.revision, 1);
     } finally {
       store.close();
+    }
+  });
+
+  test('projects only explicit denials from exact trusted continuation identities', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      await store.create(fullHeader());
+      for (const reason of [
+        'client_denied',
+        'turn_stopped',
+        'turn_terminal',
+        'host_restarted',
+      ] as const) {
+        await store.createSandboxBoundaryRequest({
+          sessionId: 'session-1',
+          requestId: reason,
+          turnId: 'turn-1',
+          runId: reason,
+          expansion: { network: { enabled: true } },
+          justification: 'Fetch a dependency.',
+        });
+        const settlement = await store.settleSandboxBoundaryRequest({
+          sessionId: 'session-1',
+          requestId: reason,
+          decision: 'deny',
+          ...(reason === 'client_denied' ? {} : { closureReason: reason }),
+        });
+        assert.equal(settlement.request.outcomeReason, reason);
+        assert.equal(
+          await store.hasExplicitSandboxBoundaryDenial([
+            { sessionId: 'session-1', runId: reason, turnId: 'turn-1' },
+          ]),
+          reason === 'client_denied',
+        );
+      }
+      for (const identity of [
+        {
+          sessionId: 'other-session',
+          runId: 'client_denied',
+          turnId: 'turn-1',
+        },
+        { sessionId: 'session-1', runId: 'other-run', turnId: 'turn-1' },
+        {
+          sessionId: 'session-1',
+          runId: 'client_denied',
+          turnId: 'other-turn',
+        },
+      ])
+        assert.equal(await store.hasExplicitSandboxBoundaryDenial([identity]), false);
+      assert.equal(await store.hasExplicitSandboxBoundaryDenial([]), false);
+      assert.equal(
+        await store.hasExplicitSandboxBoundaryDenial([
+          { sessionId: 'session-1', runId: 'turn_stopped', turnId: 'turn-1' },
+          { sessionId: 'session-1', runId: 'client_denied', turnId: 'turn-1' },
+        ]),
+        true,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('ambiguous legacy denial blocks only its trusted chain, even after an explicit denial', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maka-legacy-denial-'));
+    const path = join(directory, 'runtime.sqlite');
+    const store = createSqliteSessionMetadataStore(path);
+    try {
+      await store.create(fullHeader());
+      for (const runId of ['explicit', 'legacy', 'unknown']) {
+        await store.createSandboxBoundaryRequest({
+          sessionId: 'session-1',
+          requestId: runId,
+          turnId: 'turn-1',
+          runId,
+          expansion: { network: { enabled: true } },
+          justification: 'Use the network.',
+        });
+        await store.settleSandboxBoundaryRequest({
+          sessionId: 'session-1',
+          requestId: runId,
+          decision: 'deny',
+        });
+      }
+      const legacy = new DatabaseSync(path);
+      try {
+        legacy
+          .prepare("UPDATE sandbox_boundary_log SET outcome_reason = NULL WHERE run_id = 'legacy'")
+          .run();
+        legacy
+          .prepare(
+            "UPDATE sandbox_boundary_log SET outcome_reason = 'unknown_reason' WHERE run_id = 'unknown'",
+          )
+          .run();
+      } finally {
+        legacy.close();
+      }
+      const identity = (runId: string) => ({ sessionId: 'session-1', runId, turnId: 'turn-1' });
+      assert.equal(await store.hasExplicitSandboxBoundaryDenial([identity('unrelated')]), false);
+      assert.equal(await store.hasExplicitSandboxBoundaryDenial([identity('explicit')]), true);
+      for (const runId of ['legacy', 'unknown']) {
+        for (const chain of [
+          [identity('explicit'), identity(runId)],
+          [identity(runId), identity('explicit')],
+        ]) {
+          await assert.rejects(
+            store.hasExplicitSandboxBoundaryDenial(chain),
+            /cannot be attributed safely/,
+          );
+        }
+      }
+    } finally {
+      store.close();
+      await rm(directory, { recursive: true, force: true });
     }
   });
 

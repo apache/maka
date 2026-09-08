@@ -78,11 +78,6 @@ test('derives turn records from bounded contribution pages', async () => {
             firstSequence: 0,
             latestState: null,
             userPromptPreview: 'hello',
-            hasAssistantMessage: true,
-            hasAssistantOutput: true,
-            hasToolResult: false,
-            hasFailedToolResult: false,
-            hasAbortNote: false,
           }],
           nextPosition: 2,
         };
@@ -101,15 +96,9 @@ test('derives turn records from bounded contribution pages', async () => {
               turnId: 'turn-1',
               ts: 3,
               status: 'completed',
-              partialOutputRetained: false,
             },
           },
           userPromptPreview: null,
-          hasAssistantMessage: false,
-          hasAssistantOutput: false,
-          hasToolResult: true,
-          hasFailedToolResult: false,
-          hasAbortNote: false,
         }],
         nextPosition: null,
       };
@@ -124,7 +113,6 @@ test('derives turn records from bounded contribution pages', async () => {
     userPromptPreview: 'hello',
     status: 'completed',
     statusSource: 'recorded',
-    partialOutputRetained: true,
   }]);
   assert.deepEqual(positions, [0, 2]);
   await client.close();
@@ -158,12 +146,12 @@ function subscription(
   lifecycle: string[],
 ): RuntimeHostSessionSubscription {
   return {
+    subscribePtyData: () => () => undefined,
     hostEpoch: 'host-1',
     subscriptionId: `subscription-${sessionId}`,
     activeAssistantStreams: [],
     transcriptBootstrap: {
       throughSequence: null,
-      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: emptyTranscriptPage(sessionId, 'durable'),
       overlay: emptyTranscriptPage(sessionId, 'overlay'),

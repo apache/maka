@@ -63,6 +63,21 @@ export function newestDurablePromptSequence<Message>(
   }
 }
 
+export function transcriptRestoreTarget(
+  anchor: TranscriptReadingAnchor | undefined,
+  unavailableTurnId: string | undefined,
+): { readonly turnId: string; readonly unavailable: boolean } | undefined {
+  if (anchor) {
+    return {
+      turnId: anchor.turnId,
+      unavailable: unavailableTurnId === anchor.turnId,
+    };
+  }
+  return unavailableTurnId
+    ? { turnId: unavailableTurnId, unavailable: true }
+    : undefined;
+}
+
 export function refreshTranscriptTurnLandmarks<T>(options: {
   readonly sessionId?: string;
   readonly newestDurablePromptSequence: number | null;
@@ -104,9 +119,23 @@ export interface TranscriptHistoryRequest {
   readonly anchorTurnId?: string;
 }
 
+export interface TranscriptHistoryPending {
+  readonly sessionId: string;
+  readonly target: TranscriptHistoryRequest['target'];
+}
+
 export interface TranscriptHistoryGate {
   pending: boolean;
   queued?: TranscriptHistoryRequest;
+}
+
+function updateTranscriptHistoryPending(
+  current: TranscriptHistoryPending | undefined,
+  sessionId: string,
+  request: TranscriptHistoryRequest | undefined,
+): TranscriptHistoryPending | undefined {
+  if (request) return { sessionId, target: request.target };
+  return current?.sessionId === sessionId ? undefined : current;
 }
 
 /** One gate per controller: the shell rebuilds the controller per Session, so
@@ -115,6 +144,7 @@ export type TranscriptHistoryGates = WeakMap<object, TranscriptHistoryGate>;
 
 export async function loadTranscriptHistory(options: {
   readonly gates: TranscriptHistoryGates;
+  readonly sessionId: string;
   readonly request: TranscriptHistoryRequest;
   readonly controller: {
     loadBefore(maxBytes: number, anchorTurnId?: string): Promise<void>;
@@ -123,7 +153,11 @@ export async function loadTranscriptHistory(options: {
   };
   readonly maxBytes: number;
   readonly isCurrent: () => boolean;
-  readonly setPending: (pending: boolean) => void;
+  readonly setPending: (
+    update: (
+      current: TranscriptHistoryPending | undefined,
+    ) => TranscriptHistoryPending | undefined,
+  ) => void;
   readonly onError: (error: unknown) => void;
 }): Promise<void> {
   const { gates, controller, request } = options;
@@ -136,7 +170,8 @@ export async function loadTranscriptHistory(options: {
     return;
   }
   gate.pending = true;
-  options.setPending(true);
+  options.setPending((current) =>
+    updateTranscriptHistoryPending(current, options.sessionId, request));
   try {
     if (request.target === 'latest') await controller.loadLatest();
     else await controller[request.target === 'earlier' ? 'loadBefore' : 'loadAfter'](
@@ -146,7 +181,8 @@ export async function loadTranscriptHistory(options: {
     if (options.isCurrent()) options.onError(error);
   } finally {
     gate.pending = false;
-    options.setPending(false);
+    options.setPending((current) =>
+      updateTranscriptHistoryPending(current, options.sessionId, undefined));
     const queued = gate.queued;
     gate.queued = undefined;
     if (queued && options.isCurrent()) void loadTranscriptHistory({ ...options, request: queued });
@@ -252,5 +288,28 @@ export function captureTranscriptReadingAnchor<Message>(options: {
     options.setAnchor(sessionId, sequence === undefined ? { turnId } : { turnId, sequence });
   } catch {
     // A stale range says nothing new about the reader's current intent.
+  }
+}
+
+/** Sending restores the tail in the background; local admission never waits for it. */
+export async function restoreTranscriptTailAfterSend<Message>(options: {
+  readonly sessionId: string;
+  readonly controller: {
+    readonly store: {
+      range(): { readonly sessionId: string; readonly hasNewer: boolean };
+      snapshot(): { readonly messages: readonly Message[] };
+    };
+    loadLatest(): Promise<void>;
+  } | undefined;
+  readonly isCurrent: () => boolean;
+  readonly setMessages: (messages: Message[]) => void;
+}): Promise<void> {
+  try {
+    const { controller } = options;
+    if (!controller || !currentTranscriptRange(controller, options.sessionId)?.hasNewer) return;
+    await controller.loadLatest();
+    if (options.isCurrent()) options.setMessages([...controller.store.snapshot().messages]);
+  } catch {
+    // Unopened/offline history must not prevent saving the user's message.
   }
 }

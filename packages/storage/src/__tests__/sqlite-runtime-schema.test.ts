@@ -155,7 +155,10 @@ describe('SQLite runtime schema migration', () => {
 
       migrateSqliteRuntimeDatabase(db);
 
-      assert.equal(SQLITE_RUNTIME_SCHEMA_VERSION, 16);
+      assert.equal(
+        (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+        SQLITE_RUNTIME_SCHEMA_VERSION,
+      );
       assert.equal(
         (
           db
@@ -193,6 +196,33 @@ describe('SQLite runtime schema migration', () => {
           SET provider_projection_version = 3
           WHERE claim_id = 'claim-v2'
         `),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it('builds the terminal index over a ledger holding an undecodable payload', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      migrateSqliteRuntimeDatabase(db);
+      db.prepare(
+        'INSERT INTO runtime_events(event_id, session_id, invocation_id, run_id, turn_id, event_seq, event_kind, payload_json, committed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      ).run('event', 'session', 'invocation', 'run', 'turn', 1, 'text', '{', 1);
+      // A partial index is rebuilt by evaluating its predicate over every row,
+      // so one such row would otherwise fail this migration — and the failure
+      // rolls the version back, leaving the next open to fail the same way.
+      db.exec(
+        `DROP INDEX runtime_events_terminal; PRAGMA user_version = ${SQLITE_RUNTIME_SCHEMA_VERSION - 1}`,
+      );
+      migrateSqliteRuntimeDatabase(db);
+
+      assert.equal(
+        (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+        SQLITE_RUNTIME_SCHEMA_VERSION,
+      );
+      assert.ok(
+        db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'runtime_events_terminal'").get(),
       );
     } finally {
       db.close();

@@ -1234,6 +1234,70 @@ const withProjectsCachedRevalidationBridge = withScopedMakaBridge({
   },
 } satisfies Record<string, unknown>);
 
+const projectDefaultTypographySettings = storyRuntimeSettings(
+  mergeSettings(createDefaultSettings(), {
+    projects: { defaultProjectId: 'project-maka' },
+  }),
+);
+
+function seedProjectDefaultTypographySnapshotCache(cache: SettingsSnapshotCache): void {
+  seedGeneralSnapshotCache(cache);
+  cache.commitClientRead(projectDefaultTypographySettings);
+}
+
+const projectDefaultTypographyProjects: ProjectRecord[] = [
+  {
+    id: 'project-hbase',
+    name: 'hbase',
+    locations: [{ path: '/Users/storybook/Development/Code/Github/hbase', isWorktree: false }],
+    available: true,
+    preferredPath: '/Users/storybook/Development/Code/Github/hbase',
+  },
+  {
+    id: 'project-maka',
+    name: 'maka',
+    locations: [{ path: '/Users/storybook/Development/Code/Github/maka', isWorktree: false }],
+    available: true,
+    preferredPath: '/Users/storybook/Development/Code/Github/maka',
+  },
+  {
+    id: 'project-jdhadoop',
+    name: 'JDHadoop',
+    locations: [{ path: '/Users/storybook/Development/Code/Repository/JDHadoop', isWorktree: false }],
+    available: true,
+    preferredPath: '/Users/storybook/Development/Code/Repository/JDHadoop',
+  },
+];
+
+const withProjectDefaultTypographyBridge = withScopedMakaBridge({
+  ...makaBridge,
+  localRuntimeHostRemoteAccess: {
+    getSnapshot: async () => ({ state: 'off' as const }),
+    enable: async () => ({ kind: 'active_tasks' as const }),
+    createConnectionCode: async () => 'storybook-connection-code',
+    revokeSharedAccess: async () => ({ state: 'off' as const }),
+    disable: async () => ({ state: 'off' as const }),
+  },
+  settings: {
+    ...makaBridge.settings,
+    getClient: async () => projectDefaultTypographySettings,
+    get: async () => projectDefaultTypographySettings,
+  },
+  projects: {
+    getSnapshot: async () => ({
+      projects: projectDefaultTypographyProjects,
+      capabilities: {
+        chooseClientDirectory: false,
+        chooseHostDirectory: false,
+        selectNoProject: false,
+        setLocalDefault: true,
+        viewClientPath: true,
+      },
+    }),
+    subscribeChanges: () => () => undefined,
+  },
+} satisfies Record<string, unknown>);
+
 const withGeneralHostSettingsErrorBridge = withScopedMakaBridge({
   ...makaBridge,
   settings: {
@@ -2198,6 +2262,31 @@ export const ProjectsCachedHostRevalidation: Story = {
     await expect(getComputedStyle(mutedProjectContent).opacity).toBe('0.5');
     await expect(cachedProjectsSnapshotRead).not.toHaveBeenCalled();
     await expect(canvas.queryByRole('alert')).not.toBeInTheDocument();
+  },
+};
+// Real path: 设置 → 工作区, after one project has been made the default.
+// The settled default state occupies the same action slot as 设为默认, so its
+// text must keep the action label's type tier instead of shrinking to generic
+// supporting metadata.
+export const ProjectsDefaultBadgeTypography: Story = {
+  decorators: [withProjectDefaultTypographyBridge],
+  render: () => (
+    <SettingsStory
+      section="projects"
+      seedSnapshotCache={seedProjectDefaultTypographySnapshotCache}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const defaultLabel = await canvas.findByText('默认');
+    const defaultBadge = defaultLabel.closest<HTMLElement>('.astryx-badge');
+    const setDefaultButton = (await canvas.findAllByRole('button', { name: '设为默认' }))[0];
+    if (!defaultBadge || !setDefaultButton) {
+      throw new Error('Project default-state controls did not render');
+    }
+    await expect(getComputedStyle(defaultBadge).fontSize).toBe(
+      getComputedStyle(setDefaultButton).fontSize,
+    );
   },
 };
 // Real path: 设置 → 通用, after selecting Git Bash for the current Runtime Host.
