@@ -28,6 +28,7 @@ let browserVersion: unknown;
 const repetitions = 10;
 async function activate(locator: Locator) {
   await expect(locator).toBeVisible();
+  await expect(locator).toBeEnabled();
   await locator.evaluate((el) => {
     el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
   });
@@ -114,6 +115,7 @@ test('long session switch, older history and idle retention', async () => {
       seed: false,
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'chat-prompt-rail',
+      tracePath: path.join(outputDir, 'navigation.trace.zip'),
       locale: 'zh-CN',
       showWindow: true,
     },
@@ -167,6 +169,7 @@ test('long session switch, older history and idle retention', async () => {
             page.locator('.maka-prompt-rail-tick[data-prompt-turn-id="turn-prompt-rail-1"]'),
           );
           await expect(page.locator('[data-turn-id="turn-prompt-rail-1"]')).toHaveCount(1);
+          await expect(page.locator('[data-transcript-gap="newer"]')).toBeVisible();
           await activate(
             page.getByRole('button', {
               name: /^(滚动主对话到底部|Scroll main conversation to bottom)$/,
@@ -178,18 +181,28 @@ test('long session switch, older history and idle retention', async () => {
       }
       row('older-history', 'roundtrip-dom-ready-ms', paging);
       await cdp.send('Profiler.start');
-      const before = await cdp.send('Performance.getMetrics');
-      await page.waitForTimeout(3000);
-      const after = await cdp.send('Performance.getMetrics');
+      const idleCpu: number[] = [],
+        idleHeap: number[] = [];
+      let before = await cdp.send('Performance.getMetrics');
+      const task = (value: typeof before) =>
+        value.metrics.find((m) => m.name === 'TaskDuration')!.value;
+      const timestamp = (value: typeof before) =>
+        value.metrics.find((m) => m.name === 'Timestamp')!.value;
+      for (let sample = 0; sample < repetitions; sample++) {
+        await page.waitForTimeout(1000);
+        const after = await cdp.send('Performance.getMetrics');
+        idleCpu.push(
+          ((task(after) - task(before)) * 1000) / (timestamp(after) - timestamp(before)),
+        );
+        idleHeap.push((await cdp.send('Runtime.getHeapUsage')).usedSize);
+        before = after;
+      }
       const { profile } = await cdp.send('Profiler.stop');
       await mkdir(outputDir, { recursive: true });
       await writeFile(path.join(outputDir, 'idle.cpuprofile'), JSON.stringify(profile));
-      const task = (value: typeof before) =>
-        value.metrics.find((m) => m.name === 'TaskDuration')!.value;
-      row('idle-after-repeated-navigation', 'renderer-task-ms-per-3s', [
-        (task(after) - task(before)) * 1000,
-      ]);
-      await blocking(page, 'navigation');
+      row('idle-after-repeated-navigation', 'renderer-task-ms-per-second', idleCpu);
+      row('idle-after-repeated-navigation', 'heap-bytes-no-gc', idleHeap);
+      await blocking(page, 'navigation-case-total');
       await cdp.detach();
     },
   );
@@ -199,19 +212,37 @@ test('streaming input, background output and stop', async () => {
   await withE2eWindow(
     {
       seed: true,
+      tracePath: path.join(outputDir, 'stream.trace.zip'),
       readinessSelector: COMPOSER_INPUT,
       locale: 'zh-CN',
       showWindow: true,
-      railRenderSessions: true,
     },
     async (page) => {
-      const cdp = await setup(page);
       const expand = page.getByRole('button', { name: '展开侧边栏', exact: true });
       if (await expand.isVisible()) await activate(expand);
-      const ids = await page
-        .locator('[data-session-id]')
-        .evaluateAll((els) => [...new Set(els.map((el) => el.getAttribute('data-session-id')!))]);
-      expect(ids.length).toBeGreaterThanOrEqual(3);
+      const ids: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        if (i)
+          await activate(
+            page
+              .getByRole('navigation', { name: '任务列表' })
+              .getByRole('button', { name: '新任务', exact: true }),
+          );
+        await input(page, 'performance warmup ' + i);
+        await activate(page.getByRole('button', { name: '发送', exact: true }));
+        await expect(page.getByRole('log')).toContainText('renderer loop are connected.', {
+          timeout: 20000,
+        });
+        await expect(page.locator('.maka-bubble-streaming')).toHaveCount(0);
+        ids.push(
+          (await page
+            .locator('[data-session-id]')
+            .filter({ has: page.locator('[aria-current="page"]') })
+            .getAttribute('data-session-id'))!,
+        );
+      }
+      expect(new Set(ids).size).toBe(3);
+      const cdp = await setup(page);
       const id = ids[0];
       await activate(
         page
@@ -353,7 +384,7 @@ test('streaming input, background output and stop', async () => {
       await page.evaluate(() => {
         for (const unsubscribe of (window as any).__perfStream.unsubscribe) unsubscribe();
       });
-      await blocking(page, 'stream-and-background');
+      await blocking(page, 'stream-and-background-case-total');
       await cdp.detach();
     },
   );

@@ -407,6 +407,7 @@ export async function withE2eWindow(
     parentRemovalSessions,
     railRenderSessions,
     newTaskProject,
+    tracePath,
   }: {
     seed: boolean;
     readinessSelector: string;
@@ -421,6 +422,7 @@ export async function withE2eWindow(
     parentRemovalSessions?: boolean;
     railRenderSessions?: boolean;
     newTaskProject?: boolean;
+    tracePath?: string;
   },
   use: (page: Page, context: { userDataDir: string; app: ElectronApplication; restart(): Promise<Page> }) => Promise<void>,
 ): Promise<void> {
@@ -430,6 +432,7 @@ export async function withE2eWindow(
   const homeDir = path.join(userDataDir, 'home');
   await mkdir(homeDir, { recursive: true });
   let app: ElectronApplication | undefined;
+  let traceStarted = false;
   const mainLogs: string[] = [];
   const rendererLogs: string[] = [];
   try {
@@ -479,6 +482,11 @@ export async function withE2eWindow(
       rendererLogs.push(`[pageerror] ${error.stack ?? error.message}`);
       if (rendererLogs.length > 30) rendererLogs.shift();
     });
+    if (tracePath) {
+      await mkdir(path.dirname(tracePath), { recursive: true });
+      await app.context().tracing.start({ snapshots: true });
+      traceStarted = true;
+    }
     // Centralize the cold-start wait so test bodies are flake-free under retries:0.
     try {
       await page.waitForSelector(readinessSelector, { timeout: 20_000 });
@@ -504,7 +512,13 @@ export async function withE2eWindow(
     } });
   } finally {
     try {
-      if (app) await closeElectronApplication(app, 5_000);
+      try {
+        if (app && tracePath && traceStarted) {
+          await app.context().tracing.stop({ path: tracePath });
+        }
+      } finally {
+        if (app) await closeElectronApplication(app, 5_000);
+      }
     } finally {
       await rm(userDataDir, { recursive: true, force: true });
     }

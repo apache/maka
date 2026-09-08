@@ -67,7 +67,7 @@ try {
   for (let trial = 0; trial < 10; trial++) {
     await page.goto(
       server.baseUrl +
-        '/iframe.html?id=product-shell-official-appshell--performance45-tools&viewMode=story',
+        '/iframe.html?id=product-shell-official-appshell--performance-45-tools&viewMode=story',
     );
     await page.locator('[data-turn-id="turn-oversized"]').waitFor();
     await page.waitForFunction(
