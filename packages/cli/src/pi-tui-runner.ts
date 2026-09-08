@@ -2864,7 +2864,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         closeOverlay();
         void goToSession(item.value);
       };
-      const scopeLabel = sessionListScope === 'current' ? 'Current' : 'All';
+      const scopeLabel =
+        sessionListScope === 'current'
+          ? pickerCopy.sessionScopeCurrent
+          : pickerCopy.sessionScopeAll;
       if (sessionSearch) {
         sessionSearch.updateChoices(choices, scopeLabel);
         sessionSearch.invalidate();

@@ -600,6 +600,9 @@ export const TUI_COPY_RESOURCES = {
         'Search models / providers / connections · ↑↓ select · Enter confirm · Esc cancel',
       searchLabel: 'Search',
       noMatchingModels: 'No matching models',
+      resumeSessionTitle: 'Resume Session',
+      sessionScopeCurrent: 'Current',
+      sessionScopeAll: 'All',
       sessionSearchHint:
         'Search name / id / path / model / connection · Tab scope · ↑↓ select · Enter open · Esc close',
       noMatchingSessions: 'No matching sessions',
@@ -702,6 +705,9 @@ export const TUI_COPY_RESOURCES = {
       modelSearchHint: '搜索模型 / 服务商 / 连接 · ↑↓ 选择 · Enter 确认 · Esc 取消',
       searchLabel: '搜索',
       noMatchingModels: '没有匹配的模型',
+      resumeSessionTitle: '恢复会话',
+      sessionScopeCurrent: '当前目录',
+      sessionScopeAll: '全部',
       sessionSearchHint:
         '搜索名称 / ID / 路径 / 模型 / 连接 · Tab 切换范围 · ↑↓ 选择 · Enter 打开 · Esc 关闭',
       noMatchingSessions: '没有匹配的会话',
@@ -794,6 +800,9 @@ export const TUI_COPY_RESOURCES = {
       modelSearchHint: '搜尋模型 / 服務商 / 連線 · ↑↓ 選擇 · Enter 確認 · Esc 取消',
       searchLabel: '搜尋',
       noMatchingModels: '沒有符合的模型',
+      resumeSessionTitle: '恢復會話',
+      sessionScopeCurrent: '目前目錄',
+      sessionScopeAll: '全部',
       sessionSearchHint:
         '搜尋名稱 / ID / 路徑 / 模型 / 連線 · Tab 切換範圍 · ↑↓ 選取 · Enter 開啟 · Esc 關閉',
       noMatchingSessions: '沒有符合的會話',

@@ -71,6 +71,9 @@ interface TuiPickerCopy {
   readonly modelSearchHint: string;
   readonly searchLabel: string;
   readonly noMatchingModels: string;
+  readonly resumeSessionTitle: string;
+  readonly sessionScopeCurrent: string;
+  readonly sessionScopeAll: string;
   readonly sessionSearchHint: string;
   readonly noMatchingSessions: string;
   readonly selectPickerHint: string;
@@ -820,6 +823,7 @@ export interface SessionSearchOverlayInput {
 }
 
 export class SessionSearchOverlay implements Component {
+  private renderWidth = 0;
   private readonly searchEditor: Editor;
   private readonly copy: TuiPickerCopy;
   private choices: readonly SessionSearchChoice[];
@@ -854,7 +858,7 @@ export class SessionSearchOverlay implements Component {
       selectListTheme(),
       {
         minPrimaryColumnWidth: 20,
-        maxPrimaryColumnWidth: 48,
+        maxPrimaryColumnWidth: Math.max(20, this.renderWidth - 30),
       },
     );
     const selectedIndex = this.filtered.findIndex(({ item }) => item.value === this.selectedValue);
@@ -902,9 +906,13 @@ export class SessionSearchOverlay implements Component {
 
   render(width: number): string[] {
     const safeWidth = Math.max(1, width);
+    if (safeWidth !== this.renderWidth) {
+      this.renderWidth = safeWidth;
+      this.list = this.buildList();
+    }
     this.searchEditor.focused = true;
     return [
-      padLine(`Resume Session ${ansi.accent(this.scopeLabel)}`, safeWidth),
+      padLine(`${this.copy.resumeSessionTitle} ${ansi.accent(this.scopeLabel)}`, safeWidth),
       padLine(ansi.dim(this.copy.sessionSearchHint), safeWidth),
       padLine('', safeWidth),
       ...this.renderFieldRow(safeWidth),
