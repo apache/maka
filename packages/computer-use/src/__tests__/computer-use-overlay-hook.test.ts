@@ -195,6 +195,31 @@ test('non-presented actions keep the session cursor without moving it', () => {
   assert.deepEqual(ensured, ['s1', 's1', 's1', 's1']);
 });
 
+test('set_value moves the cursor to the bound element point', () => {
+  const { controller, moves, ensured } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'set_value' },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetWindowId: 4321,
+    },
+  );
+  assert.deepEqual(ensured, []);
+  assert.equal((moves[0] as { kind: string }).kind, 'click');
+  assert.equal((moves[0] as { screenX: number }).screenX, 201);
+});
+
+test('press_key without a presentation point still only ensures', () => {
+  const { controller, moves, ensured } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin({ type: 'press_key' }, { sessionId: 's1', toolCallId: 'a1' });
+  assert.deepEqual(moves, []);
+  assert.deepEqual(ensured, ['s1']);
+});
+
 // ── The seam, not the fixture ───────────────────────────────────────────────
 //
 // Every test above hands `presentationScreenPoint` to the hook by name. Nothing
@@ -330,6 +355,18 @@ test('a semantic action reaches the sink with the point it is aimed at', async (
     pulse: true,
     targetWindowId: 4321,
   });
+});
+
+test('set_value reaches the sink with the point it is aimed at', async () => {
+  const events = await driveRealTool({}, { action: 'set_value', element_id: '5', value: 'hi' });
+  assert.deepEqual(
+    events.map((event) => event.call),
+    ['move', 'complete'],
+    'writing into a field must move the cursor and land it, not ensure-then-cancel',
+  );
+  assert.equal((events[0]?.input as { kind?: string }).kind, 'click');
+  assert.equal((events[0]?.input as { screenX?: number }).screenX, 220);
+  assert.equal((events[0]?.input as { screenY?: number }).screenY, 110);
 });
 
 test('an element whose observed frame is outside its window is not aimed at', async () => {
