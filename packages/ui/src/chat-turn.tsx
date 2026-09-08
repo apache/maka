@@ -1174,6 +1174,7 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
     <ChatMessageBubble
       variant="ghost"
       data-maka-transcript-boundary="default"
+      data-live-streaming={props.phase === 'streaming' ? 'true' : undefined}
       // Astryx's own seam for a bubble that spans the message column: it sets
       // the width and drops the default max(80%, 280px) cap in one prop.
       width="100%"

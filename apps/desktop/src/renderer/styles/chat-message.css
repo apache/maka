@@ -61,14 +61,6 @@
   contain-intrinsic-block-size: auto 280px;
 }
 
-/* Tail following needs the live Turn's layout on admission, before reading
-   scrollHeight. Skipping its layout first exposes estimates which can then
-   shrink and pull the prompt backwards. Keep its individual timeline blocks
-   skippable: an active Turn can itself contain many screens of older work. */
-.maka-transcript-turn:has(> [data-live-streaming='true']) {
-  content-visibility: visible;
-}
-
 .maka-chat-message-loading {
   display: grid;
   place-items: center;
@@ -154,6 +146,13 @@
      paint. 96px is the single-line answer baseline; tall multi-line blocks
      override it below. */
   contain-intrinsic-block-size: auto 96px;
+}
+
+/* A long prompt can put even the first answer beyond the relevance margin.
+   The streaming frontier must contribute its real height before following;
+   completed blocks in the same active Turn still retain lazy layout. */
+.maka-chat-message-list [data-maka-transcript-boundary][data-live-streaming='true'] {
+  content-visibility: visible;
 }
 
 /* Container blocks — a Processing sequence, a linked-agent list — hold many

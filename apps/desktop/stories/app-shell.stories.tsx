@@ -2211,17 +2211,15 @@ export const StreamingTailFollow: Story = {
   },
 };
 
-async function verifySubmittedPrompt(canvasElement: HTMLElement, multiline = false): Promise<void> {
+async function verifySubmittedPrompt(canvasElement: HTMLElement, lines = 1): Promise<void> {
   await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
   await painted(40);
   const input = canvasElement.querySelector<HTMLElement>('.maka-composer-editor [contenteditable="true"]');
   if (!input) throw new Error('The composer input is missing');
-  await userEvent.type(input, '请简短说明当前提交过程发生了什么。');
-  if (multiline) {
-    for (let line = 1; line < 8; line += 1) {
-      await userEvent.keyboard('{Shift>}{Enter}{/Shift}');
-      await userEvent.type(input, '这是多行提示词，提交后输入框收起仍应平稳跟随新回答。');
-    }
+  await userEvent.type(input, '请简短说明当前提交过程发生了什么。', { delay: null });
+  for (let line = 1; line < lines; line += 1) {
+    await userEvent.keyboard('{Shift>}{Enter}{/Shift}', { delay: null });
+    await userEvent.type(input, '这是多行提示词，提交后输入框收起仍应平稳跟随新回答。', { delay: null });
   }
   await painted(40);
   // Observe admission itself: the correct final bottom can hide a reverse
@@ -2249,7 +2247,12 @@ export const SubmittedPromptDoesNotReverse: Story = {
 
 export const MultilineSubmittedPromptDoesNotReverse: Story = {
   render: () => <StreamingTailHarness />,
-  play: async ({ canvasElement }) => verifySubmittedPrompt(canvasElement, true),
+  play: async ({ canvasElement }) => verifySubmittedPrompt(canvasElement, 8),
+};
+
+export const TallSubmittedPromptDoesNotReverse: Story = {
+  render: () => <StreamingTailHarness />,
+  play: async ({ canvasElement }) => verifySubmittedPrompt(canvasElement, 80),
 };
 
 /** Lets a play function drive props React owns. One story renders per page. */
