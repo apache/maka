@@ -197,7 +197,7 @@ test("takeover cancels waiting and interrupts the exact owning turn", async (t) 
   );
 });
 
-test("observations exclude browser, terminal and secret descendants and reject replaced or stale handles", async () => {
+test("observations exclude browser, terminal, password and marked descendants and reject replaced or stale handles", async () => {
   const surface = new WorkHubSurface();
   const metadata = {
     ref: "fresh",

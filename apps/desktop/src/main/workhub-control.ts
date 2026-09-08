@@ -160,7 +160,7 @@ export function createWorkHubControl(deps: WorkHubControlDeps) {
     const control: MakaTool = {
       name: "control",
       description:
-        "Operate this Maka window with verified native input and a visible cursor. Inspect completed steps and fresh observations; dispatched input alone is not success. Terminal, embedded browser, external links and secret fields are excluded. Three consecutive failed action batches stop input for this turn.",
+        "Operate this Maka window with verified native input and a visible cursor. Inspect completed steps and fresh observations; dispatched input alone is not success. Terminal, embedded browser, external links, password controls and explicitly excluded elements are outside this surface. Visible arbitrary content may reach the model; it is not scanned or rewritten for secrets. Three consecutive failed action batches stop input for this turn.",
       parameters: controlParameters,
       impl: async (input, ctx) => {
         if (busy)

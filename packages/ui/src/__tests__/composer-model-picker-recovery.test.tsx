@@ -186,6 +186,10 @@ test('the recovery handle opens the existing exact account-and-model picker', as
     };
     let wheel = await browseNext();
     assert.equal(selected, undefined, 'browsing must not reconfigure the model');
+    const options = wheel.querySelectorAll('[role="option"]');
+    assert.equal(wheel.getAttribute('aria-activedescendant'), options[1]!.id);
+    assert.equal(options[0]!.getAttribute('aria-selected'), 'true');
+    assert.equal(options[1]!.getAttribute('aria-selected'), 'false');
     await act(() => wheel.dispatchEvent(Object.assign(new window.Event('keydown', { bubbles: true, cancelable: true }), { key: 'Escape' })));
     assert.equal(Boolean(document.querySelector('.maka-model-wheel-viewport')), false);
     assert.equal(selected, undefined, 'cancelling leaves the model untouched');

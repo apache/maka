@@ -114,8 +114,10 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     view.webContents.on('will-navigate', (event) => event.preventDefault());
     view.webContents.on('will-frame-navigate', (event) => event.preventDefault());
     view.webContents.on('will-attach-webview', (event) => event.preventDefault());
-    view.webContents.on('render-process-gone', (_event, details) => {
-      rendererReady = false;
+    const contents = view.webContents;
+    contents.once('render-process-gone', (_event, details) => {
+      if (!ownsWebContents(contents)) return;
+      disposeView();
       reportError(new Error(`WorkHub renderer exited: ${details.reason}`));
     });
     void loadMainRenderer(view.webContents, entry, 'workhub').catch(reportError);
@@ -259,6 +261,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   async function dock(): Promise<void> {
     cancelFloatingAnimation();
     await navigateMain({ kind: 'workhub' });
+    ensureView();
     floating?.hide();
     placement = 'docked';
     updateDockedBounds();
@@ -300,12 +303,12 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   function registerIpc(): void {
     if (ipcRegistered) return;
     ipcMain.handle(COMMAND, (event, command: unknown, payload: unknown) => {
-      const main = deps.mainWindow();
-      const isMain = !!main && !main.isDestroyed() && main.webContents === event.sender;
-      if ((!isMain && !ownsWebContents(event.sender)) || event.senderFrame !== event.sender.mainFrame) {
-        throw new Error('WorkHub presentation IPC requires an owned main frame');
-      }
       return enqueue(async () => {
+        const main = deps.mainWindow();
+        const isMain = !!main && !main.isDestroyed() && main.webContents === event.sender;
+        if ((!isMain && !ownsWebContents(event.sender)) || event.senderFrame !== event.sender.mainFrame) {
+          throw new Error('WorkHub presentation IPC requires an owned main frame');
+        }
         switch (command) {
           case 'snapshot': return getSnapshot();
           case 'ready':
@@ -400,20 +403,29 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     release?.();
   }
 
+  function disposeView(): void {
+    cancelFloatingAnimation();
+    const previous = view;
+    view = undefined;
+    rendererReady = false;
+    // Release this renderer's subscriptions and broadcasts before another view
+    // can register. A delayed destroyed event must not release its replacement.
+    previous?.webContents.removeListener('destroyed', releaseViewRegistration);
+    releaseViewRegistration();
+    if (previous && parent && !parent.isDestroyed()) parent.contentView.removeChildView(previous);
+    parent = undefined;
+    if (previous && !previous.webContents.isDestroyed()) previous.webContents.close({ waitForBeforeUnload: false });
+  }
+
   function dispose(): void {
     if (disposed) return;
     disposed = true;
-    cancelFloatingAnimation();
     if (shortcutRegistered) globalShortcut.unregister(SHORTCUT);
     if (ipcRegistered) ipcMain.removeHandler(COMMAND);
     for (const cleanup of mainListeners.values()) cleanup();
-    releaseViewRegistration();
-    if (view && parent && !parent.isDestroyed()) parent.contentView.removeChildView(view);
-    if (view && !view.webContents.isDestroyed()) view.webContents.close({ waitForBeforeUnload: false });
+    disposeView();
     if (floating && !floating.isDestroyed()) floating.destroy();
-    view = undefined;
     floating = undefined;
-    parent = undefined;
   }
 
   return { registerIpc, registerShortcut, attachMainWindow, getSnapshot, ownsWebContents, send, prepareControl: () => enqueue(prepareControl), show: () => enqueue(detach), toggle, dispose };

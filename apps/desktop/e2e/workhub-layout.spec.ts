@@ -20,7 +20,7 @@
 import { FAKE_HOLD_OPEN_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import { awaitSendReady, COMPOSER_INPUT, expect, test, getWorkHubPage } from './fixtures';
 
-test('WorkHub uses its coordination model and shared attachment composer', async ({ sessionLocalWindow: { page, app } }) => {
+test('WorkHub uses its coordination model and shared attachment composer', async ({ sessionLocalWindow: { page, app } }, testInfo) => {
   await page.evaluate(async () => {
     const { connections } = await window.maka.connections.getSnapshot();
     const connection = connections.find((entry) => entry.slug === 'e2e')!;
@@ -158,13 +158,15 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect.poll(() => workhub.evaluate(() => innerHeight)).toBeGreaterThan(compactHeight);
   await expect.poll(floatingBottom).toBe(anchoredBottom);
   const modelBeforeBrowsing = await workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId);
+  const selectedBeforeBrowsing = await wheel.getByRole('option', { selected: true }).getAttribute('id');
   await wheel.hover();
   await workhub.mouse.wheel(0, 30);
   await expect.poll(() => wheel.evaluate((element) => {
-    const selected = element.querySelector('[aria-selected="true"]')!.getBoundingClientRect();
+    const selected = document.getElementById(element.getAttribute('aria-activedescendant')!)!.getBoundingClientRect();
     const viewport = element.getBoundingClientRect();
     return Math.abs((selected.top + selected.bottom - viewport.top - viewport.bottom) / 2);
   })).toBeLessThanOrEqual(1);
+  await expect(wheel.getByRole('option', { selected: true })).toHaveAttribute('id', selectedBeforeBrowsing!);
   expect(await workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId)).toBe(modelBeforeBrowsing);
   await wheel.press('Escape');
   await model.click();
@@ -186,6 +188,28 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await wheel.press('ArrowDown');
   await wheel.press('Escape');
   await expect(wheel).toHaveCount(0);
+  await expect(model).toBeFocused();
+  await model.click();
+  const options = wheel.getByRole('option');
+  await wheel.press(await options.first().getAttribute('aria-selected') === 'true' ? 'End' : 'Home');
+  await expect(wheel.locator('[data-active="true"]')).toHaveAttribute('aria-selected', 'false');
+  const previewLabel = await wheel.locator('[data-active="true"] .maka-model-wheel-label').innerText();
+  const appearance = await page.evaluate(async () => (await window.maka.settings.getClient()).appearance);
+  for (const theme of ['light', 'dark'] as const) {
+    await page.evaluate((theme) => window.maka.settings.updateClient({ appearance: { theme } }), theme);
+    await expect.poll(() => workhub.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(theme === 'dark');
+    await expect(wheel).toBeFocused();
+    await expect(wheel).toHaveCSS('outline-style', 'solid');
+    await workhub.locator('.workHubComposerSurface').screenshot({ path: testInfo.outputPath(`model-wheel-${theme}.png`), animations: 'disabled' });
+  }
+  await page.evaluate((appearance) => window.maka.settings.updateClient({ appearance }), appearance);
+  await wheel.press('Enter');
+  await expect(wheel).toHaveCount(0);
+  await expect(model).toBeFocused();
+  await expect.poll(() => workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId)).not.toBe(modelBeforeBrowsing);
+  await model.click();
+  await expect(wheel.getByRole('option', { selected: true })).toContainText(previewLabel);
+  await wheel.press('Escape');
   await expect.poll(() => workhub.evaluate(() => innerHeight)).toBe(compactHeight);
   await expect(editor).toHaveText('Keep this draft while folding the conversation.');
   const longDraft = Array.from({ length: 30 }, (_, index) => `第 ${index + 1} 行：长输入应当只在编辑区内滚动。`).join('\n');
@@ -218,26 +242,38 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await page.locator(COMPOSER_INPUT).press('Enter');
   await expect(page.getByText('Fake backend received: Initialize WorkHub model')).toBeVisible();
   await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
-  const workhub = await getWorkHubPage(app);
+  let workhub = await getWorkHubPage(app);
   await workhub.getByRole('button', { name: /浮出工作台|Float WorkHub/ }).click();
   await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'false');
   await workhub.locator(COMPOSER_INPUT).fill(FAKE_HOLD_OPEN_PROMPT);
   await workhub.getByRole('button', { name: /发送|Send/, exact: true }).click();
-  const prompt = workhub.locator('.maka-user-message').filter({ hasText: FAKE_HOLD_OPEN_PROMPT });
+  let prompt = workhub.locator('.maka-user-message').filter({ hasText: FAKE_HOLD_OPEN_PROMPT });
   await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'true');
   await expect(prompt).toHaveCount(1);
   await expect(prompt).toBeInViewport();
   await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
-  const stop = workhub.locator('.maka-composer').getByRole('button', { name: /^(停止|Stop)$/ });
+  let stop = workhub.locator('.maka-composer').getByRole('button', { name: /^(停止|Stop)$/ });
   await expect(stop).toBeVisible();
   await expect(prompt).toBeInViewport();
+  const coordinationId = await workhub.evaluate(() => window.maka.workHub.resolveCoordinationSession());
+  await app.evaluate(({ webContents }) => {
+    webContents.getAllWebContents().find((contents) => contents.getURL().includes('surface=workhub'))!.forcefullyCrashRenderer();
+  });
+  await expect.poll(() => workhub.isClosed()).toBe(true);
+  await page.getByRole('button', { name: /^(Bring WorkHub back|收回工作台)$/ }).click();
+  workhub = await getWorkHubPage(app);
+  expect(await workhub.evaluate(() => window.maka.workHub.resolveCoordinationSession())).toBe(coordinationId);
+  prompt = workhub.locator('.maka-user-message').filter({ hasText: FAKE_HOLD_OPEN_PROMPT });
+  stop = workhub.locator('.maka-composer').getByRole('button', { name: /^(停止|Stop)$/ });
+  await expect(prompt).toHaveCount(1);
+  await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
+  await expect(stop).toBeVisible();
   await stop.click();
   await expect(stop).toHaveCount(0);
   await expect(workhub.locator('[data-transient-message-id]')).toHaveCount(0);
   await expect(prompt).toHaveCount(1);
   await expect(prompt).toBeInViewport();
-  await workhub.reload();
-  await expect(prompt).toHaveCount(1);
+  await workhub.getByRole('button', { name: /浮出工作台|Float WorkHub/ }).click();
   await workhub.getByRole('button', { name: /收起对话|Collapse conversation/ }).click();
   await expect(workhub.locator('.workHubHistory')).toBeHidden();
   await workhub.locator(COMPOSER_INPUT).fill(FAKE_HOLD_OPEN_PROMPT);
@@ -249,4 +285,13 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await expect(stop).toHaveCount(0);
   await expect(workhub.locator('[data-transient-message-id]')).toHaveCount(0);
   await expect(prompt).toHaveCount(2);
+  await app.evaluate(({ webContents }) => {
+    webContents.getAllWebContents().find((contents) => contents.getURL().includes('surface=workhub'))!.forcefullyCrashRenderer();
+  });
+  await expect.poll(() => workhub.isClosed()).toBe(true);
+  await page.evaluate(() => window.maka.workHubPresentation.detach());
+  workhub = await getWorkHubPage(app);
+  await workhub.locator(COMPOSER_INPUT).fill('Reply after renderer recovery');
+  await workhub.getByRole('button', { name: /发送|Send/, exact: true }).click();
+  await expect(workhub.getByText('Fake backend received: Reply after renderer recovery')).toBeVisible();
 });

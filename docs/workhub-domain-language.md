@@ -81,10 +81,8 @@ Resume is admitted by the target's existing Turn authority and reports
 `resume_started` or `already_running`. It does not create another coordination
 resume ledger.
 
-Historical v1 summaries remain readable and retain their Turn identities. An idle
-v1 Coordination Session can upgrade to the current tool profile; executing or
-recovering v1 Turns finish under their original ceiling. Removing the old write
-operations does not remove historical data or these recovery protections.
+New WorkHub conversations persist across application and Host restarts. Migration
+of pre-cutover beta WorkHub history is not part of this cutover contract.
 
 ## Desktop presentation
 
@@ -92,11 +90,17 @@ The shortcut shows or hides the floating WorkHub window. Hiding does not open or
 focus Maka Desktop. The return button above an expanded conversation explicitly
 docks WorkHub into Desktop. Drafts, attachments, conversation and running state
 survive visibility changes and reparenting because the renderer is not recreated.
+A crashed renderer is disposed and recreated when WorkHub is reopened or docked.
+The new view reconnects to the same Host-owned Session; unsent in-memory drafts
+are not crash-persistent.
 
 Both renderers use the shared document theme, palette and font application
 functions. Native main-window chrome remains owned by the main renderer. Restricted
 Desktop control observes current UI targets and revalidates them before acting;
 its capability boundary is separate from task execution authority.
+Password controls and explicitly excluded elements remain outside observation.
+Other visible content, including arbitrary editor values, may reach the model;
+WorkHub does not scan or rewrite that content for secrets.
 
 ## Implementation map
 

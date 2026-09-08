@@ -23,8 +23,6 @@ import type { WebContents } from "electron";
 export const ASSISTANT_EXCLUDED =
   '[data-maka-assistant-exclude],.desktopAssistant,.desktopAssistantCursor,.desktopAssistantLauncher,.maka-browser-panel,.maka-session-terminal-panel,.xterm,iframe,webview,input[type="password"],input[type="file"]';
 const marker = "data-maka-assistant-ref";
-const sensitiveField =
-  /password|secret|api.?key|access.?token|private.?key|密码|密碼|密钥|金鑰|令牌/i;
 
 interface Control {
   ref: string;
@@ -45,7 +43,6 @@ export class WorkHubSurface {
     const prefix = randomUUID().slice(0, 8);
     const controls: Control[] = await wc.executeJavaScript(`(() => {
       const excluded = ${JSON.stringify(ASSISTANT_EXCLUDED)};
-      const privateField = ${sensitiveField.toString()};
       for (const e of document.querySelectorAll('[${marker}]')) e.removeAttribute('${marker}');
       const result = [];
       const candidates = document.querySelectorAll('button,a,input,textarea,select,[role],[contenteditable="true"],h1,h2,h3,h4,p,label');
@@ -54,7 +51,6 @@ export class WorkHubSurface {
         const r = e.getBoundingClientRect(), style = getComputedStyle(e);
         if (r.width <= 1 || r.height <= 1 || r.bottom <= 0 || r.right <= 0 || r.top >= innerHeight || r.left >= innerWidth || style.visibility === 'hidden' || style.opacity === '0') continue;
         const label = e.getAttribute('aria-label') || e.labels?.[0]?.textContent || e.getAttribute('placeholder') || e.getAttribute('title') || '';
-        if (e.matches('input,textarea,[contenteditable]') && privateField.test(label + ' ' + (e.getAttribute('name') || '') + ' ' + (e.getAttribute('autocomplete') || ''))) continue;
         const ref = ${JSON.stringify(prefix)} + '-' + result.length;
         e.setAttribute('${marker}', ref);
         const href = e.getAttribute('href');
@@ -88,8 +84,7 @@ export class WorkHubSurface {
         ["password", "file"].includes(attrs.type ?? "");
       const control = this.controls.get(attrs[marker] ?? "");
       const safe = !blocked && (inherited || !!control);
-      // Unmarked editors may contain a revealed credential. Exclude them even
-      // when their surrounding visible label/region is observed.
+      // A visible ancestor does not admit otherwise unobserved editor values.
       const unmarkedEditor =
         ["INPUT", "TEXTAREA"].includes(node.nodeName) && !control;
       if (safe && !unmarkedEditor) allowed.add(node.backendNodeId);

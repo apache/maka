@@ -217,6 +217,34 @@ test('opens an empty floating conversation at its composer height', async () => 
   h.controller.dispose();
 });
 
+test('reopening or docking a crashed conversation creates a ready-gated renderer', async () => {
+  const h = await harness();
+  const host = { visible: true, rect: { x: 0, y: 40, width: 1000, height: 760 } };
+  await h.command(h.main.webContents, 'host', host);
+  for (const recover of [
+    () => h.controller.show(),
+    () => h.command(h.main.webContents, 'dock'),
+  ]) {
+    const previous = h.views.at(-1)!;
+    await h.command(previous.webContents, 'ready');
+    const staleReady = h.command(previous.webContents, 'ready');
+    previous.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    await assert.rejects(staleReady, /owned main frame/);
+    await recover();
+    const recovered = h.views.at(-1)!;
+    assert.notEqual(recovered, previous);
+    assert.equal(previous.webContents.isDestroyed(), true);
+    assert.equal(h.windows.some((window) => window.children.has(previous)), false);
+    assert.equal(h.controller.ownsWebContents(previous.webContents as unknown as Electron.WebContents), false);
+    assert.equal(recovered.webContents.sent.some(([channel]) => channel === 'workhub-presentation:focus-composer'), false);
+    await h.command(recovered.webContents, 'ready');
+    assert.equal(recovered.webContents.sent.some(([channel]) => channel === 'workhub-presentation:focus-composer'), true);
+  }
+  assert.deepEqual(h.registrations(), [3, 2]);
+  h.controller.dispose();
+  assert.deepEqual(h.registrations(), [3, 3]);
+});
+
 test('animates from the current height, keeps the bottom anchored and survives reversal', async () => {
   const h = await harness(true);
   await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 0, y: 40, width: 1000, height: 760 } });
@@ -321,7 +349,7 @@ test('reparents one live conversation across docking, floating, hide and main-wi
 
 test('rejects unowned/subframe IPC and buffers navigation until main subscribes', async () => {
   const h = await harness();
-  assert.throws(() => h.handler()!({ sender: h.main.webContents, senderFrame: {} }, 'snapshot'), /owned main frame/);
+  await assert.rejects(h.handler()!({ sender: h.main.webContents, senderFrame: {} }, 'snapshot'), /owned main frame/);
   await h.controller.toggle();
   const view = h.views[0]!;
   await assert.rejects(h.command(view.webContents, 'host', {}), /Only the main window/);

@@ -146,7 +146,7 @@ function ModelWheel(props: {
         event.preventDefault(); event.stopPropagation();
         event.currentTarget.scrollTop = Math.max(0, Math.min(choices.length - 1, next)) * rowHeight;
       }}>
-      {choices.map(({ choice, heading, value }, index) => <div key={value} id={`${id}-${index}`} className="maka-model-wheel-option" role="option" aria-selected={index === preview} aria-disabled={props.disabled} style={{ height: rowHeight }} title={`${choice.label} · ${heading}`}
+      {choices.map(({ choice, heading, value }, index) => <div key={value} id={`${id}-${index}`} className="maka-model-wheel-option" role="option" aria-selected={value === props.currentValue} data-active={index === preview} aria-disabled={props.disabled} style={{ height: rowHeight }} title={`${choice.label} · ${heading}`}
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => { if (!props.disabled) props.onPick(choice); }}>
         <span className="maka-model-wheel-label">{choice.label}</span>
