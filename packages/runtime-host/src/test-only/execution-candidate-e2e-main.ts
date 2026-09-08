@@ -24,8 +24,8 @@
  * no `--desktop-e2e` branch: the entry file IS the switch, which is what keeps
  * FakeBackend and this bootstrap out of the release artifacts.
  *
- * The E2E run still goes through the real Runtime Host composition — only the
- * `primaryBackendFactory` seam is substituted.
+ * The E2E run still goes through the real Runtime Host composition, with
+ * deterministic primary-backend and auxiliary-title dependencies.
  */
 import { runExecutionCandidateEntry } from '../candidate-entry.js';
 import {
