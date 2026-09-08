@@ -30,7 +30,6 @@ import {
   type SetStateAction,
 } from 'react';
 import type {
-  FollowUpMode,
   InlineReference,
   QuoteRef,
 } from '@maka/core/events';
@@ -384,6 +383,7 @@ function AppShellContent({
     pickAttachments,
     attachFilePaths,
     restoreAttachments,
+    restoreMessageContext,
     removeAttachment,
     clearSubmittedContext,
     imageNoticeLifecycle,
@@ -1439,31 +1439,19 @@ function AppShellContent({
       imageNoticeLifecycle.transfer(NEW_TASK_PENDING_KEY, createdSessionId);
   }
 
-  async function enqueueFollowUp(
-    sessionId: string,
-    text: string,
-    mode: FollowUpMode,
-    metadata?: ComposerSendMetadata,
-  ): Promise<boolean> {
-    try {
-      const sent = await enqueueMessage(sessionId, text,
-        mode === 'steer' ? 'current_turn' : 'next_turn', submittableAttachments, {
-          ...directoryOptions, quotes: pendingQuotes,
-          workspaceFileReferences: metadata?.workspaceFileReferences,
-        });
-      if (!sent) return false;
-      clearSubmittedContext(submittableAttachments);
-      clearQuotes();
-      return true;
-    } catch (error) {
+  const enqueueFollowUp = Conversation.composerFollowUp({
+    pending: submittableAttachments, quotes: pendingQuotes, directoryOptions,
+    enqueueMessage, clearSubmittedContext, clearQuotes,
+    onError: (sessionId, error) => {
       if (activeIdRef.current === sessionId) {
         const copy = getDesktopConversationCopy(uiLocale).actions;
-        showSessionError(sessionId, copy.operationFailedTitle,
-          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale));
+        showSessionError(
+          sessionId, copy.operationFailedTitle,
+          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+        );
       }
-      return false;
-    }
-  }
+    },
+  });
 
   async function sendWithAttachments(
     text: string,
@@ -2120,7 +2108,24 @@ function AppShellContent({
       canOpenDialog={activeBoundarySurface.localInteractionAvailable}
       reportError={showSessionError}
     >
-    <Conversation.SessionLocalMessages sessionId={activeId} publish={addTransientMessage} retire={removeTransientMessage} reportError={toastApi.error} />
+    <Conversation.SessionLocalMessages
+      sessionId={activeId}
+      queue={activeMessageQueue?.entries}
+      session={activeSession}
+      publish={addTransientMessage} update={updateTransientMessage}
+      retire={removeTransientMessage}
+      canRestoreDraft={() => Boolean(
+        activeId && navSelection.section === 'sessions' && canStageComposerContext &&
+        composerRef.current && !composerRef.current.getText() &&
+        !hasPendingContext && pendingQuotes.length === 0 && !revisionDraft
+      )}
+      restoreDraft={(draft) => {
+        if (!activeId || !composerRef.current) return;
+        restoreMessageContext(activeId, directoryHostId, draft);
+        restoreQuotes(activeId, draft.quotes);
+        composerRef.current.setText(draft.text, draft.inlineReferences);
+      }}
+    />
     <CatalogRowWatch
       catalog={sessionCatalogController}
       sessionIds={[revisionDraft?.sourceSessionId, revisionDraft?.draftSessionId]}

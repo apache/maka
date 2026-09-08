@@ -23,3 +23,5 @@ export {
   restoreSessionTranscriptRange,
 } from './controller/transcript-reading-position.js';
 export { shellSessionRowEqual } from './controller/use-app-shell-session-ui-state.js';
+export { localMessagePresentation } from './controller/local-message-presentation.js';
+export { composerFollowUp } from './controller/composer-follow-up.js';

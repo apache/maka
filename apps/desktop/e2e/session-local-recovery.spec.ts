@@ -56,7 +56,7 @@ test('a locally saved message survives renderer and application restart, then ex
   await awaitSendReady(page);
   await page.locator(COMPOSER_INPUT).press('Enter');
   await expect(page.locator(COMPOSER_INPUT)).toHaveText('');
-  await expect(page.getByText('已本地保存 · 等待发送')).toBeVisible();
+  await expect(page.getByText('等待发送', { exact: true })).toBeVisible();
   const before = await page.evaluate((id) => window.maka.sessionLocal.listMessages(id), sessionId!);
   const message = before.find((item) => item.text === pending)!;
   expect(message.state).toBe('saved');
@@ -65,7 +65,7 @@ test('a locally saved message survives renderer and application restart, then ex
   await page.reload();
   await ensureSidebarExpanded(page);
   await page.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
-  await expect(page.getByText('已本地保存 · 等待发送')).toBeVisible();
+  await expect(page.getByText('等待发送', { exact: true })).toBeVisible();
   expect(
     (await page.evaluate((id) => window.maka.sessionLocal.listMessages(id), sessionId!)).find(
       (item) => item.text === pending,
@@ -146,7 +146,7 @@ test('a new task is readable locally before the Host session exists', async ({
   await awaitSendReady(page);
   await page.locator(COMPOSER_INPUT).press('Enter');
   await expect(page.locator(COMPOSER_INPUT)).toHaveText('');
-  await expect(page.getByText('已本地保存 · 等待发送')).toBeVisible();
+  await expect(page.getByText('等待发送', { exact: true })).toBeVisible();
   await ensureSidebarExpanded(page);
   const sessionId = await page
     .locator('[data-session-id]:has([aria-current="page"])')
@@ -157,7 +157,7 @@ test('a new task is readable locally before the Host session exists', async ({
   await page.reload();
   await ensureSidebarExpanded(page);
   await page.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
-  await expect(page.getByText('已本地保存 · 等待发送')).toBeVisible();
+  await expect(page.getByText('等待发送', { exact: true })).toBeVisible();
   await expect(page.getByText('读取任务失败', { exact: true })).toHaveCount(0);
   page = await sessionLocalWindow.restart();
   await ensureSidebarExpanded(page);
@@ -168,4 +168,106 @@ test('a new task is readable locally before the Host session exists', async ({
   await expect(
     page.getByLabel('Maka 的回答').getByText(`Fake backend received: ${prompt}`),
   ).toHaveCount(1);
+});
+
+
+test('a failed message restores its durable attachment without replacing a newer draft', async ({
+  sessionLocalWindow,
+}, testInfo) => {
+  const { page, app } = sessionLocalWindow;
+  await page.locator(COMPOSER_INPUT).fill('history before failed delivery');
+  await awaitSendReady(page);
+  await page.locator(COMPOSER_INPUT).press('Enter');
+  await expect(page.getByText('Fake backend received: history before failed delivery')).toBeVisible();
+  // Dismiss unrelated first-session observation errors before capturing recovery.
+  for (const notice of await page.getByRole('button', { name: '关闭通知', exact: true }).all()) {
+    await notice.click();
+  }
+  await ensureSidebarExpanded(page);
+  const sessionId = (await page.locator('[data-session-id]:has([aria-current="page"])').getAttribute('data-session-id'))!;
+
+  // Fail before attachment ingestion. Recovery must use SQLite's bytes through
+  // the real Main/preload bridge, not an optimistic renderer attachment cache.
+  await app.evaluate((_electron, modulePath) => {
+    const require = process.getBuiltinModule('module').createRequire(`${process.cwd()}/`);
+    const { DesktopSessionLocalStore } = require(modulePath);
+    const enqueue = DesktopSessionLocalStore.prototype.enqueue;
+    DesktopSessionLocalStore.prototype.enqueue = function (partition, input) {
+      const record = enqueue.call(this, partition, input);
+      if (input.command.messageId === 'e2e-failed-message') {
+        this.update({ ...record, state: 'failed', error: 'E2E definite preparation failure' });
+      }
+      return record;
+    };
+  }, resolve('dist/main/session-local-store.js'));
+  await page.evaluate(async (id) => {
+    await window.maka.sessions.submitMessage(id, 'current_turn', {
+      messageId: 'e2e-failed-message', text: 'recover this original message',
+      attachmentItems: [{ file: new File(['durable recovery bytes'], 'recovery.txt', { type: 'text/plain' }) }],
+    });
+  }, sessionId);
+  await expect(page.getByText('消息未发送', { exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('failed-message.png') });
+
+  const canonical = await page.locator('.maka-turn').first().boundingBox();
+  const local = await page.locator('.maka-transient-message').filter({ hasText: 'recover this original message' }).boundingBox();
+  expect(canonical).toBeTruthy();
+  expect(local).toBeTruthy();
+  expect(Math.abs(local!.x - canonical!.x)).toBeLessThan(1);
+  expect(Math.abs(local!.width - canonical!.width)).toBeLessThan(1);
+
+  // Hold the authoritative read while the user starts another draft. It must
+  // be checked again after IPC.
+  await app.evaluate((_electron, modulePath) => {
+    const require = process.getBuiltinModule('module').createRequire(`${process.cwd()}/`);
+    const { DesktopSessionLocalService } = require(modulePath);
+    const read = DesktopSessionLocalService.prototype.readFailedMessage;
+    DesktopSessionLocalService.prototype.readFailedMessage = async function (...args) {
+      const draft = read.apply(this, args);
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      return draft;
+    };
+  }, resolve('dist/main/session-local-service.js'));
+  await page.getByRole('button', { name: '编辑后重发', exact: true }).click();
+  await page.locator(COMPOSER_INPUT).fill('new draft must survive');
+  await expect(page.getByText('请先完成或清空输入框中的草稿、附件和引用，再编辑这条消息。')).toBeVisible();
+  await expect(page.locator(COMPOSER_INPUT)).toHaveText('new draft must survive');
+  await page.locator(COMPOSER_INPUT).fill('');
+  await page.getByRole('button', { name: '编辑后重发', exact: true }).click();
+  await expect(page.locator(COMPOSER_INPUT)).toHaveText('recover this original message');
+  await expect(page.getByText('recovery.txt', { exact: true })).toBeVisible();
+  const draft = await page.evaluate((id) => window.maka.sessionLocal.readFailedMessage(id, 'e2e-failed-message'), sessionId);
+  expect(Array.from(draft.stagedAttachments[0]!.content)).toEqual(Array.from(Buffer.from('durable recovery bytes')));
+  await page.screenshot({ path: testInfo.outputPath('restored-draft.png') });
+
+  await page.locator(COMPOSER_INPUT).fill('edited recovery message');
+  await awaitSendReady(page);
+  await page.locator(COMPOSER_INPUT).press('Enter');
+  await expect(page.getByLabel('Maka 的回答').getByText('Fake backend received: edited recovery message')).toBeVisible();
+  await expect(page.getByLabel('Maka 的回答').getByText('Fake backend received: edited recovery message')).toHaveCount(1);
+  await expect(page.locator('.maka-turn').filter({ hasText: 'edited recovery message' }).getByText('recovery.txt', { exact: true })).toBeVisible();
+  await expect(page.getByText('消息未发送', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '删除失败消息', exact: true }).click();
+  await expect(page.getByText('消息未发送', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Maka 的回答').getByText('Fake backend received: edited recovery message')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('resent-message.png') });
+
+  // A Stop retracts pending follow-ups. A later local presentation refresh
+  // must not republish their historical admission receipts as waiting rows.
+  await page.locator(COMPOSER_INPUT).fill('__e2e_hold_open__');
+  await awaitSendReady(page);
+  await page.locator(COMPOSER_INPUT).press('Enter');
+  await expect(page.getByText('Fake backend waiting for the test to stop the Turn.', { exact: true })).toBeVisible();
+  await page.locator(COMPOSER_INPUT).fill('queued recovery follow-up');
+  await page.locator(COMPOSER_INPUT).press('Enter');
+  await expect(page.getByText('已排队，等待下一轮回复', { exact: true })).toBeVisible();
+  await page.locator(COMPOSER_INPUT).press('Escape');
+  await expect(page.getByText('已中断', { exact: true })).toBeVisible();
+  await page.locator(COMPOSER_INPUT).fill('continue after recovery stop');
+  await awaitSendReady(page);
+  await page.locator(COMPOSER_INPUT).press('Enter');
+  await expect(page.getByText('Fake backend received: continue after recovery stop', { exact: true })).toBeVisible();
+  await expect(page.getByText('正在处理这条消息', { exact: true })).toHaveCount(0);
+  await expect(page.locator('.maka-transient-message').filter({ hasText: 'queued recovery follow-up' })).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath('stopped-queue-retired.png') });
 });

@@ -541,6 +541,7 @@ export function ChatView(props: {
     if (
       message.transientPlacement !== 'current_turn'
       || turn === undefined
+      || message.deliveryTone === 'danger'
       || turn.user !== undefined
       || turn.timeline.some((item) => item.kind === 'user' && item.messageId === message.id)
     ) continue;

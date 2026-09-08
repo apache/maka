@@ -284,7 +284,7 @@ export function TransientUserMessage(props: {
   const copy = getConversationCopy(useUiLocale()).messages;
   const message = props.message;
   return (
-    <div data-transient-message-id={message.id}>
+    <div data-transient-message-id={message.id} className="maka-transient-message">
       <LocalizedChatMessage
         accessibleLabel={copy.userAriaLabel}
         sender="user"
@@ -299,8 +299,24 @@ export function TransientUserMessage(props: {
           directoryReferences={message.directoryReferences}
           inlineReferences={message.inlineReferences}
           status={props.status}
-          delivery={message}
         />
+        {message.deliveryStatus && (
+          <div className="maka-message-delivery" data-tone={message.deliveryTone ?? 'neutral'}>
+            <div role="status" aria-atomic="true">
+              <span className="maka-message-delivery-status">{message.deliveryStatus}</span>
+              {message.deliveryDetail && <p className="maka-message-delivery-detail">{message.deliveryDetail}</p>}
+            </div>
+            {!!message.deliveryActions?.length && <div className="maka-message-delivery-actions">
+              {message.deliveryActions.map((action) => (
+                <UiButton key={action.label} label={action.label} isDisabled={action.disabled} variant="ghost" size="sm" onClick={action.onClick} />
+              ))}
+            </div>}
+            {message.deliveryDiagnostic && <details className="maka-message-delivery-diagnostic">
+              <summary>{message.deliveryDiagnosticLabel}</summary>
+              <p>{message.deliveryDiagnostic}</p>
+            </details>}
+          </div>
+        )}
       </LocalizedChatMessage>
     </div>
   );
