@@ -176,6 +176,8 @@ export interface BuildBuiltinToolsOptions {
    * `setupError` and fails closed at the Bash boundary.
    */
   shell?: TurnShellPlan;
+  /** Host-only environment overlay for a pre-bound Plugin Shell invocation. */
+  shellEnvironment?: Readonly<Record<string, string>>;
   permissionProfile?: PermissionProfile;
   sandboxManager?: SandboxManager;
   /** Sandboxed worker used for all local filesystem tools. */
@@ -299,8 +301,8 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
           shell,
           ...(options.sandboxManager
             ? {
-                transformCommand: ({ command, pty, requiredBoundary, ctx }) =>
-                  sandboxCommand(
+                transformCommand: ({ command, pty, requiredBoundary, ctx }) => {
+                  const transformed = sandboxCommand(
                     options.sandboxManager!,
                     options.permissionProfile,
                     sandboxPlatform,
@@ -309,9 +311,26 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
                     ctx,
                     requiredBoundary,
                     'background_command',
-                  ),
+                  );
+                  if (!options.shellEnvironment) return transformed;
+                  return {
+                    ...(transformed ?? { cwd: ctx.cwd }),
+                    env: {
+                      ...process.env,
+                      ...transformed?.env,
+                      ...options.shellEnvironment,
+                    },
+                  };
+                },
               }
-            : {}),
+            : options.shellEnvironment
+              ? {
+                  transformCommand: ({ ctx }) => ({
+                    cwd: ctx.cwd,
+                    env: { ...process.env, ...options.shellEnvironment },
+                  }),
+                }
+              : {}),
         }),
       ]
     : [

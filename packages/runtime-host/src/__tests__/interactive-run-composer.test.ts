@@ -154,6 +154,40 @@ test('the composer caches the Host base but reassembles scoped Plugin prompts ea
   );
 });
 
+test('scoped Plugin Skill contributions join the canonical model inventory', async () => {
+  const composer = createFixtureComposer({
+    skills: {
+      readCanonicalModelInventory: async ({ projectRoot }: { projectRoot: string }) => ({
+        revision: 'base-revision',
+        projectRoot,
+        inventory: [],
+        diagnostics: [],
+        discoveryDiagnostics: [],
+      }),
+    } as unknown as HostSkillCatalogCoordinator,
+    pluginSkills: {
+      snapshot: (sessionId: string) => ({
+        revision: 4,
+        skills: [
+          {
+            name: 'plugin-probe',
+            description: `Scoped skill for ${sessionId}`,
+            instructions: 'PLUGIN_SKILL_INSTRUCTIONS',
+          },
+        ],
+      }),
+    } as never,
+  });
+
+  const prompt = await composer.resolveSystemPrompt({
+    sessionId: 'session-skill',
+    turnId: 'turn-skill',
+    cwd: '/workspace',
+  });
+  assert.match(prompt.text ?? '', /plugin-probe/u);
+  assert.match(prompt.text ?? '', /Scoped skill for session-skill/u);
+});
+
 function tool(name: string): MakaTool {
   return {
     name,

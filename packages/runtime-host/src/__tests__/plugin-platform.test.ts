@@ -35,6 +35,18 @@ import { PluginSystemPromptService } from '@maka/runtime/plugin-system-prompt-se
 import { PluginToolService } from '@maka/runtime/plugin-tool-service';
 import { PluginUserQuestionService } from '@maka/runtime/plugin-user-question-service';
 import { PluginWebService } from '@maka/runtime/plugin-web-service';
+import { PluginCommandService } from '@maka/runtime/plugin-command-service';
+import {
+  PluginAuthorizationService,
+  PluginCredentialService,
+  PluginSettingsService,
+  PluginStorageService,
+} from '@maka/runtime/plugin-data-services';
+import { PluginGoalService } from '@maka/runtime/plugin-goal-service';
+import { PluginLspService } from '@maka/runtime/plugin-lsp-service';
+import { PluginSessionQueryService } from '@maka/runtime/plugin-session-query-service';
+import { PluginShellEnvService } from '@maka/runtime/plugin-shell-env-service';
+import { PluginSkillService } from '@maka/runtime/plugin-skill-service';
 import type { MakaToolContext } from '@maka/runtime/tool-runtime';
 import {
   decodePluginCompositionApplyInput,
@@ -52,6 +64,7 @@ import { HostPluginPlatformCoordinator } from '../server/plugin-platform-coordin
 import { TrustedPluginPackageLoader } from '../server/plugin-package-loader.js';
 import { PluginPackageStore } from '../server/plugin-package-store.js';
 import { HostPluginPlatform, type HostPluginPlatformOptions } from '../server/plugin-platform.js';
+import { HostPluginDataRuntime } from '../server/plugin-data-runtime.js';
 
 interface TestPlatformInternals {
   readonly composition: MakaCompositionLoader;
@@ -77,6 +90,7 @@ function createPlatform(
     store,
     ...(options.tools ? { tools: options.tools } : {}),
     ...(options.systemPrompt ? { systemPrompt: options.systemPrompt } : {}),
+    ...(options.commands ? { commands: options.commands } : {}),
   });
   testPlatformInternals.set(platform, { composition, packages, store });
   return platform;
@@ -199,8 +213,22 @@ test('a real package reaches every scoped ctx service through one Agent Tool inv
     new PluginUserQuestionService(pluginRoot, agents);
     const filesystem = new PluginFilesystemService(pluginRoot, agents);
     const llm = new PluginLlmService(pluginRoot, agents);
-    const shell = new PluginShellService(pluginRoot, agents);
+    const shellEnv = new PluginShellEnvService(pluginRoot);
+    const shell = new PluginShellService(pluginRoot, agents, shellEnv);
     const web = new PluginWebService(pluginRoot, agents);
+    const sessionQuery = new PluginSessionQueryService(pluginRoot, agents);
+    const goals = new PluginGoalService(pluginRoot, agents);
+    new PluginSkillService(pluginRoot);
+    const commands = new PluginCommandService(pluginRoot);
+    new PluginLspService(pluginRoot);
+    const settings = new PluginSettingsService(pluginRoot);
+    const storage = new PluginStorageService(pluginRoot);
+    const credentials = new PluginCredentialService(pluginRoot);
+    new PluginAuthorizationService(pluginRoot, credentials);
+    const data = new HostPluginDataRuntime(join(root, 'control'));
+    settings.bindRuntime(data);
+    storage.bindRuntime(data);
+    credentials.bindRuntime(data);
     const tools = new PluginToolService(pluginRoot, { agents });
     const systemPrompt = new PluginSystemPromptService(pluginRoot);
     const composition = new MakaCompositionLoader({ root: pluginRoot });
@@ -282,8 +310,8 @@ test('a real package reaches every scoped ctx service through one Agent Tool inv
       },
     });
     shell.bindRuntime({
-      run: async (_options, invocation) => {
-        calls.push(`shell.run:${invocation.turnId}`);
+      run: async (options, invocation) => {
+        calls.push(`shell.run:${invocation.turnId}:${options.environment?.MAKA_PLUGIN_PROBE}`);
         return { ref: 'pty-e2e' };
       },
       read: async (ref, invocation) => {
@@ -340,15 +368,50 @@ test('a real package reaches every scoped ctx service through one Agent Tool inv
         return { text: 'nested answer', modelId: 'host-e2e' };
       },
     });
+    sessionQuery.bindRuntime({
+      list: async (caller) => {
+        calls.push(`sessionQuery.list:${caller.invocation?.sessionId}`);
+        return [{ id: 'session-e2e', title: 'E2E' }];
+      },
+      read: async (sessionId, caller) => {
+        calls.push(`sessionQuery.read:${sessionId}:${caller.invocation?.sessionId}`);
+        return {
+          session: { id: sessionId, title: 'E2E' },
+          messages: [{ role: 'user', content: 'needle' }],
+        };
+      },
+      search: async (request, caller) => {
+        calls.push(`sessionQuery.search:${request.query}:${caller.invocation?.sessionId}`);
+        return { items: [{ id: 'session-e2e', title: 'E2E' }] };
+      },
+    });
+    goals.bindRuntime({
+      execute: async (operation, invocation) => {
+        calls.push(`goals.${operation.kind}:${invocation.sessionId}`);
+        return { kind: operation.kind };
+      },
+    });
 
     const source = await writeContextServicesFixturePackage(root);
     const platform = createPlatform(join(root, 'control'), {
       composition,
       tools,
       systemPrompt,
+      commands,
     });
     await platform.recover();
     assert.equal((await platform.installPackage(source)).convergence, 'converged');
+    assert.deepEqual(platform.inspectCommands('profile'), [
+      {
+        entryId: 'context-services-entry',
+        scopeId: 'profile',
+        extensionId: 'context-services-package',
+        generation: 1,
+        name: 'probe-command',
+        description: 'Command probe',
+        aliases: ['pc'],
+      },
+    ]);
 
     const prompt = await systemPrompt.assemble(
       { sessionId: 'session-e2e', turnId: 'turn-e2e', cwd: root },
@@ -406,6 +469,14 @@ test('a real package reaches every scoped ctx service through one Agent Tool inv
       attachmentBytes: [65, 66, 67],
       attachmentCount: 1,
       llmText: 'nested answer',
+      sessionCount: 1,
+      skillCount: 1,
+      command: { command: 'a:b' },
+      initialSetting: 'default',
+      savedSetting: 'strict',
+      stored: 2,
+      credential: 'e2e',
+      lsp: { operation: 'hover', languageId: 'typescript' },
     });
 
     assert.deepEqual(calls, [
@@ -431,7 +502,7 @@ test('a real package reaches every scoped ctx service through one Agent Tool inv
       'fs.glob:session-e2e',
       'fs.grep:session-e2e',
       'fs.apply_patch:session-e2e',
-      'shell.run:turn-e2e',
+      'shell.run:turn-e2e:enabled',
       'shell.read:pty-e2e:session-e2e',
       'shell.write:pty-e2e:ping:session-e2e',
       'shell.stop:pty-e2e:session-e2e',
@@ -444,6 +515,14 @@ test('a real package reaches every scoped ctx service through one Agent Tool inv
       'userQuestions.requestForm:Choose',
       'approval.request:write output',
       'llm.generate:nested prompt:session-e2e',
+      'sessionQuery.list:session-e2e',
+      'sessionQuery.read:session-e2e:session-e2e',
+      'sessionQuery.search:needle:session-e2e',
+      'goals.get:session-e2e',
+      'goals.create:session-e2e',
+      'goals.pause:session-e2e',
+      'goals.resume:session-e2e',
+      'goals.clear:session-e2e',
     ]);
     await platform.close();
   } finally {
@@ -559,6 +638,56 @@ test('Plugin Platform query exposes bounded Tool contribution inspection', async
         nextCursor: null,
       },
     });
+    await platform.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Plugin Platform query projects scoped Command contributions for clients', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-command-inspection-'));
+  try {
+    const platform = createPlatform(join(root, 'control'), {
+      commands: {
+        inspect: () => [
+          {
+            entryId: 'command-entry',
+            scopeId: 'profile',
+            extensionId: 'command-package',
+            generation: 2,
+            name: 'review',
+            description: 'Review the current change',
+            aliases: ['rv'],
+          },
+        ],
+      },
+    });
+    const coordinator = new HostPluginPlatformCoordinator(platform);
+    await platform.recover();
+    assert.deepEqual(
+      await coordinator.handlers['plugin.platform.query'](
+        { view: 'commands', rootId: 'profile' },
+        null as never,
+      ),
+      {
+        ok: true,
+        result: {
+          view: 'commands',
+          items: [
+            {
+              entryId: 'command-entry',
+              scopeId: 'profile',
+              extensionId: 'command-package',
+              generation: 2,
+              name: 'review',
+              description: 'Review the current change',
+              aliases: ['rv'],
+            },
+          ],
+          nextCursor: null,
+        },
+      },
+    );
     await platform.close();
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -2117,6 +2246,44 @@ async function writeContextServicesFixturePackage(root: string): Promise<string>
     `export default Object.freeze({
       packageId: 'context-services-package',
       host: Object.freeze({ apply(ctx) {
+        ctx.skills.register({
+          name: 'plugin-probe',
+          description: 'Plugin skill probe',
+          instructions: '# Probe\\nUse the probe.',
+          declaredTools: ['ctx_e2e'],
+        });
+        ctx.commands.register({
+          name: 'probe-command',
+          description: 'Command probe',
+          aliases: ['pc'],
+          execute: ({ args }) => ({ command: args.join(':') }),
+        });
+        ctx.settings.define({
+          key: 'mode',
+          title: 'Mode',
+          defaultValue: 'default',
+          validate: value => typeof value === 'string',
+        });
+        ctx.credentials.declare({ name: 'api-token', label: 'API token' });
+        ctx.authorization.register({
+          slot: 'api-token',
+          label: 'Authorize probe',
+          methods: [{ id: 'paste', label: 'Paste' }],
+          run: async ({ commit }) => {
+            await commit('secret-e2e', { provider: 'fixture' });
+            return 'authorized';
+          },
+        });
+        ctx.lsp.registerProvider({
+          id: 'fixture-lsp',
+          extensionToLanguage: { '.ts': 'typescript' },
+          query: async request => ({ operation: request.operation, languageId: request.languageId }),
+        });
+        ctx.shellEnv.register({
+          name: 'fixture-env',
+          variables: { MAKA_PLUGIN_PROBE: { description: 'Fixture marker' } },
+          resolve: () => ({ MAKA_PLUGIN_PROBE: 'enabled' }),
+        });
         ctx.systemPrompt.context(Object.freeze({
           name: 'plugin:e2e-context',
           order: 7,
@@ -2193,12 +2360,53 @@ async function writeContextServicesFixturePackage(root: string): Promise<string>
               justification: 'write output',
             });
             const generated = await ctx.llm.generate({ prompt: 'nested prompt' });
+
+            const sessionCount = (await ctx.sessionQuery.list()).length;
+            await ctx.sessionQuery.read(current.sessionId);
+            await ctx.sessionQuery.search({ query: 'needle', limit: 5 });
+            await ctx.goals.get();
+            await ctx.goals.create({ objective: 'finish probe' });
+            await ctx.goals.pause();
+            await ctx.goals.resume();
+            await ctx.goals.clear();
+
+            const skillCount = ctx.skills.resolve(current.sessionId).length;
+            const command = await ctx.commands.execute('pc', {
+              sessionId: current.sessionId,
+              args: ['a', 'b'],
+            });
+            const initialSetting = await ctx.settings.get('mode');
+            const savedSetting = await ctx.settings.set('mode', 'strict', {
+              expectedRevision: initialSetting.revision,
+            });
+            await ctx.storage.set('state/count', 1);
+            await ctx.storage.transaction([
+              { key: 'state/count', value: 2, expectedRevision: 1 },
+              { key: 'state/name', value: 'probe' },
+            ]);
+            const stored = await ctx.storage.get('state/count');
+            await ctx.authorization.begin('api-token', 'paste');
+            const credential = await ctx.credentials.use('api-token', secret => secret.slice(-3));
+            const lsp = await ctx.lsp.query({
+              sessionId: current.sessionId,
+              filePath: 'src/index.ts',
+              position: { line: 0, character: 0 },
+              operation: 'hover',
+            });
             return {
               currentAgent: current.id,
               childAgent: child.id,
               attachmentBytes,
               attachmentCount,
               llmText: generated.text,
+              sessionCount,
+              skillCount,
+              command,
+              initialSetting: initialSetting.value,
+              savedSetting: savedSetting.value,
+              stored: stored.value,
+              credential,
+              lsp,
             };
           },
         }));

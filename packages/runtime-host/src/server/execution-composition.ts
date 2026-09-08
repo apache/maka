@@ -94,6 +94,18 @@ import { PluginWebService } from '@maka/runtime/plugin-web-service';
 import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
 import { PluginToolService } from '@maka/runtime/plugin-tool-service';
 import { PluginSystemPromptService } from '@maka/runtime/plugin-system-prompt-service';
+import { PluginCommandService } from '@maka/runtime/plugin-command-service';
+import {
+  PluginAuthorizationService,
+  PluginCredentialService,
+  PluginSettingsService,
+  PluginStorageService,
+} from '@maka/runtime/plugin-data-services';
+import { PluginGoalService } from '@maka/runtime/plugin-goal-service';
+import { PluginLspService } from '@maka/runtime/plugin-lsp-service';
+import { PluginSessionQueryService } from '@maka/runtime/plugin-session-query-service';
+import { PluginShellEnvService } from '@maka/runtime/plugin-shell-env-service';
+import { PluginSkillService } from '@maka/runtime/plugin-skill-service';
 import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
 import { isHostedExecutionTerminal } from './hosted-execution-authority.js';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -108,6 +120,7 @@ import { openStorageWriterComposition } from '@maka/storage/storage-writer-compo
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
+import { HostPluginDataRuntime } from './plugin-data-runtime.js';
 import {
   bindHostChildAgentBackend,
   createHostChildAgentToolComposition,
@@ -314,14 +327,29 @@ export async function createExecutionRuntimeHostComposition(
     new PluginUserQuestionService(pluginRoot, pluginAgents);
     const pluginFilesystem = new PluginFilesystemService(pluginRoot, pluginAgents);
     const pluginLlm = new PluginLlmService(pluginRoot, pluginAgents);
-    const pluginShell = new PluginShellService(pluginRoot, pluginAgents);
+    const pluginShellEnv = new PluginShellEnvService(pluginRoot);
+    const pluginShell = new PluginShellService(pluginRoot, pluginAgents, pluginShellEnv);
     const pluginWeb = new PluginWebService(pluginRoot, pluginAgents);
+    const pluginSessionQuery = new PluginSessionQueryService(pluginRoot, pluginAgents);
+    const pluginGoals = new PluginGoalService(pluginRoot, pluginAgents);
+    const pluginSkills = new PluginSkillService(pluginRoot);
+    const pluginCommands = new PluginCommandService(pluginRoot);
+    new PluginLspService(pluginRoot);
+    const pluginSettings = new PluginSettingsService(pluginRoot);
+    const pluginStorage = new PluginStorageService(pluginRoot);
+    const pluginCredentials = new PluginCredentialService(pluginRoot);
+    new PluginAuthorizationService(pluginRoot, pluginCredentials);
+    const pluginData = new HostPluginDataRuntime(context.owner.controlDirectory);
+    pluginSettings.bindRuntime(pluginData);
+    pluginStorage.bindRuntime(pluginData);
+    pluginCredentials.bindRuntime(pluginData);
     const pluginTools = new PluginToolService(pluginRoot, { agents: pluginAgents });
     const pluginSystemPrompt = new PluginSystemPromptService(pluginRoot);
     pluginPlatform = new HostPluginPlatform(context.owner.controlDirectory, {
       composition: new MakaCompositionLoader({ root: pluginRoot }),
       tools: pluginTools,
       systemPrompt: pluginSystemPrompt,
+      commands: pluginCommands,
     });
     const pluginPlatformCoordinator = new HostPluginPlatformCoordinator(pluginPlatform);
     const openedProjectCatalog = storage.projectCatalog;
@@ -496,12 +524,14 @@ export async function createExecutionRuntimeHostComposition(
       name: string,
       args: unknown,
       invocation: import('@maka/runtime/plugin-agent-service').PluginAgentInvocation,
+      shellEnvironment?: Readonly<Record<string, string>>,
     ) => {
       if (!invocation.toolContext) throw new Error(`${name} requires an active Tool invocation`);
       const policy = await runtimePolicyStores.runtimePolicy.getSnapshot();
       const tool = buildBuiltinTools({
         ...builtinTools,
         shell: resolveTurnShellPlan(policy.policy.shell),
+        ...(shellEnvironment ? { shellEnvironment } : {}),
       }).find((candidate) => candidate.name === name);
       if (!tool) throw new Error(`Builtin capability is unavailable: ${name}`);
       return tool.impl(args, invocation.toolContext);
@@ -551,6 +581,7 @@ export async function createExecutionRuntimeHostComposition(
             pty: options.pty,
           },
           invocation,
+          options.environment,
         ),
       read: (ref, invocation) =>
         runtimeResources.readRuntimeResource(invocation.sessionId, ref, invocation.abortSignal),
@@ -898,6 +929,7 @@ export async function createExecutionRuntimeHostComposition(
       oauthCredentials,
       createRunComposer: createInteractiveRunComposerFactory({
         skills,
+        pluginSkills,
         memory: requireMemory(memory),
         sessionTodo,
         clientCapabilities: requireClientCapabilities(clientCapabilities),
@@ -1419,7 +1451,9 @@ export async function createExecutionRuntimeHostComposition(
         }),
     });
     const visibleAgentSessions = async (
-      initiator: import('@maka/runtime/plugin-agent-service').PluginAgentInvocation | undefined,
+      initiator:
+        | Pick<import('@maka/runtime/plugin-agent-service').PluginAgentInvocation, 'sessionId'>
+        | undefined,
     ) => {
       const sessions = await manager!.listSessions();
       if (!initiator) return sessions;
@@ -1440,6 +1474,71 @@ export async function createExecutionRuntimeHostComposition(
       }
       return sessions.filter((session) => visible.has(session.id));
     };
+    const pluginSessionSummary = (
+      session: Awaited<ReturnType<typeof visibleAgentSessions>>[number],
+    ) =>
+      Object.freeze({
+        id: session.id,
+        ...(session.name ? { title: session.name } : {}),
+        ...(session.cwd ? { cwd: session.cwd } : {}),
+        ...(session.status ? { status: session.status } : {}),
+        ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
+        ...(session.statusUpdatedAt || session.lastMessageAt
+          ? { updatedAt: session.statusUpdatedAt ?? session.lastMessageAt }
+          : {}),
+      });
+    const sessionQueryInitiator = (
+      caller: import('@maka/runtime/plugin-session-query-service').PluginSessionQueryCaller,
+    ): { readonly sessionId: string } | undefined =>
+      caller.invocation ??
+      (caller.scopeSessionId ? Object.freeze({ sessionId: caller.scopeSessionId }) : undefined);
+    pluginSessionQuery.bindRuntime({
+      list: async (caller) =>
+        Object.freeze(
+          (await visibleAgentSessions(sessionQueryInitiator(caller))).map(pluginSessionSummary),
+        ),
+      read: async (sessionId, caller) => {
+        const session = (await visibleAgentSessions(sessionQueryInitiator(caller))).find(
+          ({ id }) => id === sessionId,
+        );
+        if (!session) return undefined;
+        return Object.freeze({
+          session: pluginSessionSummary(session),
+          messages: Object.freeze([
+            ...(await requireSessionManager(manager).getMessages(sessionId)),
+          ]),
+        });
+      },
+      search: async (request, caller) => {
+        const query = request.query.toLocaleLowerCase();
+        const sessions = await visibleAgentSessions(sessionQueryInitiator(caller));
+        const matches: typeof sessions = [];
+        for (const session of sessions) {
+          const headerText = `${session.name}\n${session.cwd ?? ''}`.toLocaleLowerCase();
+          if (headerText.includes(query)) {
+            matches.push(session);
+            continue;
+          }
+          const messages = await requireSessionManager(manager).getMessages(session.id);
+          if (
+            messages.some((message) => JSON.stringify(message).toLocaleLowerCase().includes(query))
+          ) {
+            matches.push(session);
+          }
+        }
+        const offset = request.cursor ? Number.parseInt(request.cursor, 10) : 0;
+        if (!Number.isSafeInteger(offset) || offset < 0)
+          throw new TypeError('Invalid Session query cursor');
+        const limit = request.limit ?? 20;
+        const page = matches.slice(offset, offset + limit);
+        return Object.freeze({
+          items: Object.freeze(page.map(pluginSessionSummary)),
+          ...(offset + page.length < matches.length
+            ? { cursor: String(offset + page.length) }
+            : {}),
+        });
+      },
+    });
     const describeAgent = (session: Awaited<ReturnType<typeof visibleAgentSessions>>[number]) => ({
       id: session.id,
       sessionId: session.id,
@@ -1685,6 +1784,34 @@ export async function createExecutionRuntimeHostComposition(
       acquireResidency: (kind) => context.acquireResidency('goal', kind),
       onProjectionChanged: (sessionId) => continuityCoordinator.enqueueCanonicalRefresh(sessionId),
       requestDrain: context.requestDrain,
+    });
+    pluginGoals.bindRuntime({
+      execute: async (operation, invocation) => {
+        const coordinator = requireGoal(goal);
+        if (operation.kind === 'get') return coordinator.readProjection(invocation.sessionId);
+        if (!invocation.toolContext)
+          throw new Error('Goal mutation requires an active Tool invocation');
+        const toolName =
+          operation.kind === 'create'
+            ? 'GoalSet'
+            : operation.kind === 'clear'
+              ? 'GoalClear'
+              : operation.kind === 'pause'
+                ? 'GoalPause'
+                : 'GoalResume';
+        const tool = coordinator.tools.find(({ name }) => name === toolName);
+        if (!tool) throw new Error(`Goal capability is unavailable: ${toolName}`);
+        const args =
+          operation.kind === 'create'
+            ? {
+                condition: operation.objective,
+                ...(operation.maxIterations ? { max_iterations: operation.maxIterations } : {}),
+                ...(operation.blockCap ? { block_cap: operation.blockCap } : {}),
+                ...(operation.tokenBudget ? { token_budget: operation.tokenBudget } : {}),
+              }
+            : {};
+        return await tool.impl(args, invocation.toolContext);
+      },
     });
     async function applyRuntimePolicyMutationEffects(): Promise<void> {
       try {

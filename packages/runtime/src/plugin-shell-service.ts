@@ -19,6 +19,7 @@
 
 import { Service, type Context, type Disposable } from './plugin-kernel.js';
 import type { PluginAgentInvocation, PluginAgentService } from './plugin-agent-service.js';
+import type { PluginShellEnvService } from './plugin-shell-env-service.js';
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -31,6 +32,8 @@ export interface PluginShellRunOptions {
   readonly timeoutMs?: number;
   readonly background?: boolean;
   readonly pty?: boolean;
+  /** Host-populated scoped overlay; callers cannot provide arbitrary ambient variables. */
+  readonly environment?: Readonly<Record<string, string>>;
 }
 
 export interface PluginShellRuntime {
@@ -47,6 +50,7 @@ export class PluginShellService extends Service {
   constructor(
     ctx: Context,
     private readonly agents: PluginAgentService,
+    private readonly shellEnv?: PluginShellEnvService,
   ) {
     super(ctx, 'shell');
   }
@@ -63,8 +67,14 @@ export class PluginShellService extends Service {
     );
   }
 
-  run(options: PluginShellRunOptions): Promise<unknown> {
-    return this.runtime().run(options, this.agents.requireInvocation());
+  async run(options: PluginShellRunOptions): Promise<unknown> {
+    if (options.environment !== undefined) throw new TypeError('Shell environment is Host-managed');
+    const invocation = this.agents.requireInvocation();
+    const environment = await this.shellEnv?.collect(invocation);
+    return this.runtime().run(
+      environment && Object.keys(environment).length > 0 ? { ...options, environment } : options,
+      invocation,
+    );
   }
 
   read(ref: string): Promise<unknown> {
