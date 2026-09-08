@@ -28,11 +28,11 @@
  * UI icons.
  */
 
-import { createLucideIcon, type IconNode } from 'lucide-react';
+import { createLucideIcon, type LucideIconNode } from 'lucide-react';
 
 export type { LucideIcon, LucideProps } from 'lucide-react';
 
-const ARCHIVE_TRAY_NODES: IconNode = [
+const ARCHIVE_TRAY_NODES: LucideIconNode[] = [
   ['path', { d: 'M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7', key: 'tray' }],
   ['path', { d: 'M2 12h20', key: 'tray-edge' }],
 ];
