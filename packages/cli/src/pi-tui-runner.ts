@@ -566,6 +566,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let transcriptOverlay: OverlayHandle | undefined;
   let transcriptViewer: TranscriptViewerOverlay | undefined;
   let transcriptViewerSessionId: string | undefined;
+  const resetTranscriptViewer = (): void => {
+    transcriptOverlay?.hide();
+    transcriptOverlay = undefined;
+    transcriptViewer = undefined;
+    transcriptViewerSessionId = undefined;
+  };
   let lastTurnEscapeAt = 0;
   let lastIdleEscapeAt = 0;
   let lastIdleCtrlCAt = 0;
@@ -1742,9 +1748,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     messages,
     activeTurn,
   }: MakaSessionSwitchResult): Promise<void> => {
-    transcriptOverlay?.hide();
-    transcriptOverlay = undefined;
-    transcriptViewer = undefined;
+    resetTranscriptViewer();
     adoptSessionMetadata(summary, false);
     replaceTranscript(messages);
     syncInteractionOverlays();
@@ -2940,6 +2944,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       requestRender();
       return false;
     }
+    resetTranscriptViewer();
     // A fresh session is not bound by the previous one's boundary. Falling back
     // to the *current* label would keep the previous Session's mode, including
     // Auto while a changed Host default creates with full access; the launch

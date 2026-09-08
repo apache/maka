@@ -3002,6 +3002,18 @@ describe('Maka Pi TUI runner', () => {
       /Maka · Auto · deepseek-v4-flash · deepseek · \/repo/,
     );
 
+    // Reopening the same session preserves the reader position.
+    terminal.input('\x0f');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /filler line 1/);
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /filler line 40/);
+    terminal.input('q');
+    await waitFor(
+      () => !plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+
     exitMaka(terminal);
     await Promise.race([
       run,
@@ -3009,6 +3021,99 @@ describe('Maka Pi TUI runner', () => {
         throw new Error('TUI did not close during test cleanup');
       }),
     ]);
+  });
+
+  test('resets the cached reader after successful /new with non-persisted session ids', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new NonPersistedLongTranscriptDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'deepseek-v4-flash',
+      connectionSlug: 'deepseek',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/help');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Keybindings'));
+    driver.dropSessionId();
+    terminal.input('/transcript');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    terminal.input('\x1b[H');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('/help'));
+    terminal.input('q');
+    await waitFor(
+      () => !plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+
+    terminal.input('/new');
+    terminal.input('\r');
+    await waitFor(() => driver.startNewSessionCalls === 1);
+    await delay(0);
+    terminal.input('/help');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Keybindings'));
+    terminal.input('/transcript');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    const screen = plainTerminalOutput(terminal.screenOutput());
+    assert.match(screen, /Ctrl\+D/);
+
+    terminal.input('q');
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('does not reset the cached reader when /new fails', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new FailingNewSessionLongTranscriptDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'deepseek-v4-flash',
+      connectionSlug: 'deepseek',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/help');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Keybindings'));
+    terminal.input('/transcript');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    terminal.input('\x1b[H');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('/help'));
+    terminal.input('q');
+    await waitFor(
+      () => !plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+
+    terminal.input('/new');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Could not start a new session'),
+    );
+    terminal.input('\x0f');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /\/help/);
+
+    terminal.input('q');
+    exitMaka(terminal);
+    await run;
   });
 
   test('opens the read-only /mcp status on an idle local TUI', async () => {
@@ -10784,6 +10889,24 @@ class LongTranscriptDriver extends SlashCommandDriver {
       ts: 2,
       stopReason: 'end_turn',
     };
+  }
+}
+
+class NonPersistedLongTranscriptDriver extends LongTranscriptDriver {
+  private persisted = true;
+
+  override getSessionId(): string | null {
+    return this.persisted ? super.getSessionId() : null;
+  }
+
+  dropSessionId(): void {
+    this.persisted = false;
+  }
+}
+
+class FailingNewSessionLongTranscriptDriver extends NonPersistedLongTranscriptDriver {
+  override async startNewSession(): Promise<void> {
+    throw new Error('new session failed');
   }
 }
 
