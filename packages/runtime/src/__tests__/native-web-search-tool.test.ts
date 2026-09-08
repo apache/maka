@@ -120,6 +120,13 @@ test('turn-start routing falls back explicitly when native search is unavailable
   );
 });
 
+test('native Gemini WebSearch is a provider-executed Google Search descriptor', () => {
+  const tool = buildNativeWebSearchTool({ adapter: 'google-grounding' });
+  assert.equal(tool.name, NATIVE_WEB_SEARCH_TOOL_NAME);
+  assert.deepEqual(tool.providerTool, { kind: 'google-search' });
+  assert.throws(() => tool.impl({}, {} as never), /must not execute through ToolRuntime/);
+});
+
 test('turn-start routing compiles Claude models to the CC-compatible Anthropic tool', () => {
   const clientSearch = {
     name: NATIVE_WEB_SEARCH_TOOL_NAME,
@@ -143,6 +150,67 @@ test('turn-start routing compiles Claude models to the CC-compatible Anthropic t
     kind: 'anthropic-web-search-20250305',
     maxUses: 8,
   });
+});
+
+test('turn-start routing compiles Gemini models to Google Search grounding', () => {
+  const clientSearch = {
+    name: NATIVE_WEB_SEARCH_TOOL_NAME,
+    description: 'Tavily',
+    parameters: {},
+    impl: async () => undefined,
+  } satisfies MakaTool;
+  const googleConnection = {
+    slug: 'google',
+    providerType: 'google' as const,
+    defaultModel: 'gemini-2.5-flash',
+  };
+
+  const routed = routeWebSearchTools({
+    tools: [clientSearch],
+    settings: { enabled: true, defaultProvider: 'model' },
+    connection: googleConnection,
+    model: 'gemini-2.5-flash',
+    tavilyReady: false,
+  });
+  assert.deepEqual(routed[0]?.providerTool, { kind: 'google-search' });
+
+  const tavily = routeWebSearchTools({
+    tools: [clientSearch],
+    settings: { enabled: true, defaultProvider: 'tavily' },
+    connection: googleConnection,
+    model: 'gemini-2.5-flash',
+    tavilyReady: true,
+  });
+  assert.equal(tavily[0], clientSearch);
+
+  const incognito = routeWebSearchTools({
+    tools: [clientSearch],
+    settings: { enabled: true, defaultProvider: 'model' },
+    privacy: { incognitoActive: true },
+    connection: googleConnection,
+    model: 'gemini-2.5-flash',
+    tavilyReady: false,
+  });
+  assert.deepEqual(incognito, []);
+
+  const unmatchedFamily = routeWebSearchTools({
+    tools: [clientSearch],
+    settings: { enabled: true, defaultProvider: 'model' },
+    connection: googleConnection,
+    model: 'gemini-1.5-flash',
+    tavilyReady: false,
+  });
+  assert.deepEqual(unmatchedFamily, []);
+
+  const root = routeWebSearchTools({
+    tools: [],
+    settings: { enabled: true, defaultProvider: 'model' },
+    connection: googleConnection,
+    model: 'gemini-2.5-flash',
+    tavilyReady: false,
+    allowAddNative: true,
+  });
+  assert.deepEqual(root[0]?.providerTool, { kind: 'google-search' });
 });
 
 test('root surfaces do not advertise unsupported DeepSeek native search', () => {

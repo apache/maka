@@ -20,8 +20,9 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { RetryError } from 'ai';
+import { google } from '@ai-sdk/google';
 
-import { ModelAdapter, normalizeAiSdkUsage } from '../model-adapter.js';
+import { lowerModelTools, ModelAdapter, normalizeAiSdkUsage } from '../model-adapter.js';
 import type { ModelStreamEvent } from '../model-protocol.js';
 
 describe('ModelAdapter stream and error normalization', () => {
@@ -1087,6 +1088,27 @@ describe('ModelAdapter stream and error normalization', () => {
         },
       },
     );
+  });
+});
+
+describe('compileProviderTool', () => {
+  test('lowers Gemini Google Search grounding to the official provider tool', () => {
+    const compiled = lowerModelTools({
+      WebSearch: { kind: 'provider', providerTool: { kind: 'google-search' } },
+    }).WebSearch as {
+      type?: string;
+      id?: string;
+      isProviderExecuted?: boolean;
+      args?: unknown;
+    };
+    const official = google.tools.googleSearch({});
+
+    assert.equal(compiled.type, 'provider');
+    assert.equal(compiled.id, 'google.google_search');
+    assert.equal(compiled.isProviderExecuted, true);
+    assert.deepEqual(compiled.args, official.args);
+    assert.equal(compiled.type, official.type);
+    assert.equal(compiled.id, official.id);
   });
 });
 

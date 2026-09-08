@@ -20,6 +20,7 @@
 import type { ErrorEvent, CompleteEvent } from '@maka/core/events';
 import { openai } from '@ai-sdk/openai';
 import { anthropic } from '@ai-sdk/anthropic';
+import { google } from '@ai-sdk/google';
 import {
   providerAuthRequiresSecret,
   type RuntimeExecutionConnection,
@@ -1233,6 +1234,8 @@ function compileProviderTool(
       return anthropic.tools.webSearch_20250305({
         ...(tool.maxUses !== undefined ? { maxUses: tool.maxUses } : {}),
       });
+    case 'google-search':
+      return google.tools.googleSearch({});
   }
 }
 

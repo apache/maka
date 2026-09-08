@@ -59,8 +59,9 @@ describe('hosted web search capability', () => {
     );
     assert.deepEqual(resolveHostedWebSearchCapability('google', undefined, 'gemini-2.5-flash'), {
       adapter: 'google-grounding',
-      implemented: false,
+      implemented: true,
     });
+    assert.equal(resolveHostedWebSearchCapability('google', undefined, 'gemini-1.5-flash'), null);
     assert.deepEqual(resolveHostedWebSearchCapability('zai', undefined, 'glm-5'), {
       adapter: 'zai-web-search',
       implemented: false,

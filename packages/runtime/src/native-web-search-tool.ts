@@ -27,12 +27,17 @@ import type { MakaTool } from './tool-runtime.js';
 
 export const NATIVE_WEB_SEARCH_TOOL_NAME = 'WebSearch';
 
+type NativeWebSearchAdapter = Extract<
+  HostedWebSearchAdapter,
+  'openai-responses' | 'anthropic-messages' | 'google-grounding'
+>;
+
 /**
  * Provider-executed search descriptor. AI SDK compiles this into the selected
  * provider's native tool; the local implementation is an invariant guard only.
  */
 export function buildNativeWebSearchTool(input?: {
-  readonly adapter?: Extract<HostedWebSearchAdapter, 'openai-responses' | 'anthropic-messages'>;
+  readonly adapter?: NativeWebSearchAdapter;
   readonly searchContextSize?: 'low' | 'medium' | 'high';
   readonly maxUses?: number;
 }): MakaTool {
@@ -45,21 +50,34 @@ export function buildNativeWebSearchTool(input?: {
     description:
       'Search and read the live web through the current model provider. Use it for current external information and source-backed answers.',
     parameters: z.object({}).strict(),
-    providerTool: {
-      ...(adapter === 'anthropic-messages'
-        ? {
-            kind: 'anthropic-web-search-20250305' as const,
-            maxUses: input?.maxUses ?? 8,
-          }
-        : {
-            kind: 'openai-web-search' as const,
-            searchContextSize: input?.searchContextSize ?? 'medium',
-          }),
-    },
+    providerTool: nativeWebSearchProviderTool(adapter, input),
     impl: () => {
       throw new Error('Provider-native WebSearch must not execute through ToolRuntime');
     },
   };
+}
+
+function nativeWebSearchProviderTool(
+  adapter: NativeWebSearchAdapter,
+  input?: {
+    readonly searchContextSize?: 'low' | 'medium' | 'high';
+    readonly maxUses?: number;
+  },
+): NonNullable<MakaTool['providerTool']> {
+  switch (adapter) {
+    case 'anthropic-messages':
+      return {
+        kind: 'anthropic-web-search-20250305',
+        maxUses: input?.maxUses ?? 8,
+      };
+    case 'google-grounding':
+      return { kind: 'google-search' };
+    case 'openai-responses':
+      return {
+        kind: 'openai-web-search',
+        searchContextSize: input?.searchContextSize ?? 'medium',
+      };
+  }
 }
 
 /** Freezes one unambiguous WebSearch tool meaning for the selected model turn. */
@@ -94,15 +112,11 @@ export function routeWebSearchTools(input: {
     if (
       (firstSearchIndex >= 0 || input.allowAddNative === true) &&
       capability?.implemented === true &&
-      capability.adapter === 'openai-responses'
+      (capability.adapter === 'openai-responses' ||
+        capability.adapter === 'anthropic-messages' ||
+        capability.adapter === 'google-grounding')
     ) {
-      selected = buildNativeWebSearchTool({ adapter: 'openai-responses' });
-    } else if (
-      (firstSearchIndex >= 0 || input.allowAddNative === true) &&
-      capability?.implemented === true &&
-      capability.adapter === 'anthropic-messages'
-    ) {
-      selected = buildNativeWebSearchTool({ adapter: 'anthropic-messages' });
+      selected = buildNativeWebSearchTool({ adapter: capability.adapter });
     }
   }
   if (!selected) return withoutWebSearch;

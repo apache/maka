@@ -98,7 +98,7 @@ function providerHostedWebSearchAdapter(
     case 'anthropic-compatible':
       return { adapter: 'anthropic-messages', implemented: true };
     case 'google':
-      return { adapter: 'google-grounding', implemented: false };
+      return { adapter: 'google-grounding', implemented: true };
     case 'zai':
     case 'zai-coding-plan':
       return { adapter: 'zai-web-search', implemented: false };
