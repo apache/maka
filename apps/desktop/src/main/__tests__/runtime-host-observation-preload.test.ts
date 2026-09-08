@@ -37,10 +37,13 @@ test('observation readiness includes its active seed even when the invoke reply 
       if (channel === 'runtime-host:activeIdentity') return owner;
       if (channel === 'runtime-host:identities') return [owner];
       if (channel === 'sessions:unobserve') return;
-      if (channel === 'sessions:observe') return [{
-        type: 'text_delta', id: 'seed-1', turnId: 'turn-1', messageId: 'message-1',
-        ts: 1, startOffset: 0, text: 'All output accumulated while away',
-      }];
+      if (channel === 'sessions:observe') return {
+        kind: 'ready',
+        value: [{
+          type: 'text_delta', id: 'seed-1', turnId: 'turn-1', messageId: 'message-1',
+          ts: 1, startOffset: 0, text: 'All output accumulated while away',
+        }],
+      };
       throw new Error('Unexpected channel: ' + channel);
     },
   };
