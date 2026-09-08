@@ -40,6 +40,20 @@ test("renders the typed experimental_disabled reason per locale", () => {
   assert.equal(subscriptionResultMessage(result, "fallback", "en"), "This sign-in is not enabled on this install. Import a compatible credential instead, or ask an operator to enable it.");
 });
 
+test("renders the typed login_in_progress and presentation_failed reasons per locale", () => {
+  const conflict = { reason: "login_in_progress", message: "Another OAuth login is already in progress" };
+  assert.equal(subscriptionResultMessage(conflict, "fallback", "zh-CN"), "上一轮登录仍在进行，等它结束后再点登录。");
+  assert.equal(subscriptionResultMessage(conflict, "fallback", "en"), "A previous login is still running. Start again after it settles.");
+  const presentation = { reason: "presentation_failed", message: "Desktop has no matching OAuth presentation request" };
+  assert.equal(subscriptionResultMessage(presentation, "fallback", "zh-CN"), "无法打开系统浏览器完成登录，请检查是否拦截了弹窗后重试。");
+  assert.equal(subscriptionResultMessage(presentation, "fallback", "en"), "Could not open the system browser for login. Check popup blockers and try again.");
+});
+
+test("presentation prose no longer hijacks the presenter after the regex removal", () => {
+  const legacy = { message: "Runtime Host did not present OAuth authorization" };
+  assert.notEqual(subscriptionResultMessage(legacy, "fallback", "en"), "Could not open the system browser for login. Check popup blockers and try again.");
+});
+
 test("falls back to catalog copy for an unknown code instead of the raw message", () => {
   const result = { code: "not_a_known_code", message: "内部错误" };
   assert.equal(subscriptionResultMessage(result, "fallback", "en"), "fallback");
