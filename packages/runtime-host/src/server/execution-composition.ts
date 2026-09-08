@@ -1418,6 +1418,156 @@ export async function createExecutionRuntimeHostComposition(
           abortSignal: input.signal ?? invocation.abortSignal,
         }),
     });
+    const visibleAgentSessions = async (
+      initiator: import('@maka/runtime/plugin-agent-service').PluginAgentInvocation | undefined,
+    ) => {
+      const sessions = await manager!.listSessions();
+      if (!initiator) return sessions;
+      const visible = new Set([initiator.sessionId]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const session of sessions) {
+          if (
+            !session.parentSessionId ||
+            !visible.has(session.parentSessionId) ||
+            visible.has(session.id)
+          )
+            continue;
+          visible.add(session.id);
+          changed = true;
+        }
+      }
+      return sessions.filter((session) => visible.has(session.id));
+    };
+    const describeAgent = (session: Awaited<ReturnType<typeof visibleAgentSessions>>[number]) => ({
+      id: session.id,
+      sessionId: session.id,
+      root: !session.parentSessionId,
+      status: session.runningTurnIds?.length ? 'running' : session.status,
+      ...(session.parentSessionId ? { ownerId: session.parentSessionId } : {}),
+    });
+    const submitAgentMessage = async (
+      id: string,
+      message: unknown,
+      placement: 'current_turn' | 'next_turn',
+      initiator: import('@maka/runtime/plugin-agent-service').PluginAgentInvocation | undefined,
+    ) => {
+      if (!(await visibleAgentSessions(initiator)).some((session) => session.id === id)) {
+        throw new Error('Agent is outside the current ownership tree');
+      }
+      const content = normalizeMessageContent(
+        typeof message === 'string' ? { text: message } : (message as { text: string }),
+      );
+      const result = await messages.handlers['turn.message.submit'](
+        {
+          originHostEpoch: context.hostEpoch,
+          sessionId: id,
+          messageId: randomUUID(),
+          content,
+          placement,
+        },
+        {
+          hostEpoch: context.hostEpoch,
+          connectionId: 'plugin-agent',
+          principal: 'runtime_host',
+          acquireResidency: () => context.acquireResidency('plugin-agent'),
+        },
+      );
+      if (!result.ok) throw new Error(result.error.message);
+      return result.result;
+    };
+    pluginAgents.bindRuntime({
+      create: async (options, initiator) => {
+        const spawn = initiator?.toolContext?.spawnChildSession;
+        if (!spawn) throw new Error('Agent creation requires an active Tool invocation');
+        if (!options.prompt?.trim()) throw new Error('Agent creation requires a prompt');
+        return new Promise((resolve, reject) => {
+          void spawn({
+            agentProfile: options.agentProfile ?? 'implementation',
+            prompt: options.prompt!,
+            ...(options.signal ? { abortSignal: options.signal } : {}),
+            onReady: (ready) =>
+              resolve({
+                id: ready.childSessionId,
+                sessionId: ready.childSessionId,
+                root: false,
+                status: 'running',
+                ownerId: initiator.sessionId,
+              }),
+          }).catch(reject);
+        });
+      },
+      resume: async (options, initiator) => {
+        if (options.prompt)
+          await submitAgentMessage(options.sessionId, options.prompt, 'next_turn', initiator);
+        const session = (await visibleAgentSessions(initiator)).find(
+          (item) => item.id === options.sessionId,
+        );
+        if (!session) throw new Error('Agent was not found');
+        return describeAgent(session);
+      },
+      get: async (id, initiator) => {
+        const session = (await visibleAgentSessions(initiator)).find((item) => item.id === id);
+        return session ? describeAgent(session) : undefined;
+      },
+      list: async (initiator) => (await visibleAgentSessions(initiator)).map(describeAgent),
+      roots: async (initiator) =>
+        (await visibleAgentSessions(initiator))
+          .filter((session) => !session.parentSessionId)
+          .map(describeAgent),
+      followup: (id, message, initiator) => submitAgentMessage(id, message, 'next_turn', initiator),
+      steer: (id, message, initiator) => submitAgentMessage(id, message, 'current_turn', initiator),
+      inject: (id, message, initiator) =>
+        submitAgentMessage(id, message, 'current_turn', initiator),
+      cancel: async (id, initiator) => {
+        if (!(await visibleAgentSessions(initiator)).some((session) => session.id === id)) {
+          throw new Error('Agent is outside the current ownership tree');
+        }
+        await coordinator.stopSession(id, { source: 'stop_button' });
+      },
+      whenIdle: async (id, signal) => {
+        const wait = coordinator.whenIdle(id);
+        if (!wait) return;
+        if (!signal) return wait;
+        await Promise.race([
+          wait,
+          new Promise<never>((_resolve, reject) =>
+            signal.addEventListener('abort', () => reject(signal.reason), { once: true }),
+          ),
+        ]);
+      },
+      snapshot: async (id, initiator) => {
+        const session = (await visibleAgentSessions(initiator)).find((item) => item.id === id);
+        if (!session) throw new Error('Agent was not found');
+        return { agent: describeAgent(session), root: coordinator.readRootState(id) };
+      },
+      inbox: async (id, initiator) => {
+        if (!(await visibleAgentSessions(initiator)).some((session) => session.id === id))
+          throw new Error('Agent was not found');
+        return coordinator.readRootState(id);
+      },
+      result: async (id, initiator) => {
+        if (!(await visibleAgentSessions(initiator)).some((session) => session.id === id))
+          throw new Error('Agent was not found');
+        return (await manager!.getMessages(id)).at(-1);
+      },
+      artifacts: async (id, initiator) => {
+        if (!(await visibleAgentSessions(initiator)).some((session) => session.id === id))
+          throw new Error('Agent was not found');
+        return (await openedArtifactStore.listPage(id, { offset: 0, limit: 100 })).records;
+      },
+      transcript: async (id, initiator) => {
+        if (!(await visibleAgentSessions(initiator)).some((session) => session.id === id))
+          throw new Error('Agent was not found');
+        return manager!.getMessages(id);
+      },
+      dispose: async (id, initiator) => {
+        if (!(await visibleAgentSessions(initiator)).some((session) => session.id === id))
+          throw new Error('Agent was not found');
+        await coordinator.stopSession(id, { source: 'stop_button' });
+      },
+    });
     const contextOperations = new HostContextCoordinator({
       runtime: manager,
       executions: coordinator,

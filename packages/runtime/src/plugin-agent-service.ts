@@ -20,6 +20,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { PermissionMode } from '@maka/core/permission';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
+import type { AgentProfile } from './agent-catalog.js';
 import { Service, type Context, type Disposable } from './plugin-kernel.js';
 import type { MakaToolContext } from './tool-runtime.js';
 
@@ -54,6 +55,7 @@ export interface PluginAgentCreateOptions {
   readonly sessionId?: string;
   readonly cwd?: string;
   readonly prompt?: string;
+  readonly agentProfile?: AgentProfile;
   readonly model?: string;
   readonly permissionMode?: PermissionMode;
   readonly signal?: AbortSignal;
