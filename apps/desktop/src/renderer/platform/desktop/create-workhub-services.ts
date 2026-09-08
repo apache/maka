@@ -19,6 +19,7 @@
 
 import { resolveSystemUiLocale, resolveUiLocale } from '@maka/core/ui-locale';
 import { DEFAULT_UI_FONT_SIZE } from '@maka/core/settings';
+import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import { applyDocumentThemeMode, applyDocumentThemePalette, applyDocumentUiFontSize } from './document-appearance.js';
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import {
@@ -220,7 +221,11 @@ export function createDesktopWorkHubServices(
       (await bridge.connections.getSnapshot(sessionId)).chatModelChoices,
     attachments: bridge.attachments,
     readAttachmentBytes: bridge.attachments.readBytes,
-    prepareAttachments: (sessionId, items) => bridge.workHub.prepareAttachments(sessionId, items),
+    prepareAttachments: async (sessionId, items) => {
+      const result = await bridge.workHub.prepareAttachments(sessionId, items);
+      if (!result.ok) throw new AttachmentIngestBlockedError(result.code);
+      return result.attachments;
+    },
     listActiveInteractions: (sessionId) => bridge.sessions.listActiveInteractions(sessionId),
     subscribeActiveInteractions: (handler) => bridge.sessions.subscribeActiveInteractions(handler),
     respondToUserForm: (sessionId, response) => bridge.sessions.respondToUserForm(sessionId, response),

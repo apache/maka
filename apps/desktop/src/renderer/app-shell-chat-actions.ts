@@ -234,18 +234,11 @@ export function createAppShellChatActions(deps: {
     removeTransientMessage(sessionId, turnId);
   }
 
-  /**
-   * What a submitted Message became, as far as this client can tell.
-   *
-   * `unreconciled` is the only outcome that leaves the transient row in place:
-   * the answer was lost, so Runtime Host may well have acted on the Message and
-   * canonical transcript is what settles it. A `refused` Message opened no Turn
-   * and will never be replaced by a canonical one, so its row is already gone.
-   */
+  /** Only an unreconciled submission keeps its row because Host admission may have succeeded. */
   type SubmittedMessage =
     | { kind: 'projected'; skillInvocation: SkillInvocationResult; turnId?: string }
     | { kind: 'unreconciled' }
-    | { kind: 'refused'; skillInvocation: SkillInvocationResult };
+    | { kind: 'refused' };
 
   /**
    * The one place a submitted Message's outcome becomes UI. Every submission —
@@ -282,17 +275,13 @@ export function createAppShellChatActions(deps: {
         return { kind: 'unreconciled' };
       }
       removeOptimisticUserMessage(sessionId, messageId);
-      if (surfaceVisible) {
-        skillFeedback.showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
-      }
-      return { kind: 'refused', skillInvocation: result.skillInvocation };
+      if (surfaceVisible) skillFeedback.showSubmissionFeedback(uiLocale, toastApi, result, sessionId);
+      return { kind: 'refused' };
     }
     if (result.disposition === 'locally_saved') {
       return { kind: 'projected', skillInvocation: result.skillInvocation };
     }
-    if (surfaceVisible) {
-      skillFeedback.showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
-    }
+    if (surfaceVisible) skillFeedback.showSubmissionFeedback(uiLocale, toastApi, result, sessionId);
     // The row is updated whether or not the surface is on screen: attachments,
     // inline references and the Host Turn grouping are what the user finds when
     // they come back to it.
