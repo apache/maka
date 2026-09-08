@@ -60,6 +60,8 @@ export type HostHandoffReplacementResult =
   | { readonly kind: 'completed' | 'active_work' | 'changed' }
   | { readonly kind: 'recovery_required'; readonly diagnostic: string };
 
+export type HostHandoffRecoveryBlocker = 'managed' | 'owner' | 'installation' | 'identity';
+
 export interface HostHandoffBlocker {
   /** Includes all authority evidence that invalidates consent when it changes. */
   readonly identity: string;
@@ -68,6 +70,7 @@ export interface HostHandoffBlocker {
   readonly activity?: HostActivitySnapshot;
   readonly mayExitNaturally: boolean;
   readonly replacement?: HostHandoffReplacement;
+  readonly recoveryBlocker?: HostHandoffRecoveryBlocker;
   readonly operatorStep?: string;
   readonly diagnostic?: string;
 }
@@ -93,6 +96,7 @@ export interface HostHandoffView {
   readonly phase?: HostHandoffPhase;
   readonly actions: readonly HostHandoffAction[];
   readonly defaultAction: 'cancel';
+  readonly recoveryBlocker?: HostHandoffRecoveryBlocker;
   readonly operatorStep?: string;
   readonly diagnostic?: string;
 }
@@ -337,6 +341,7 @@ function projectBlocker(
     ...(replacement ? { operation: replacement.kind } : {}),
     actions: replacement?.canInterrupt ? ['cancel', 'retry', 'interrupt'] : ['cancel', 'retry'],
     defaultAction: 'cancel',
+    ...(blocker.recoveryBlocker ? { recoveryBlocker: blocker.recoveryBlocker } : {}),
     ...(blocker.operatorStep ? { operatorStep: blocker.operatorStep } : {}),
     ...((recovery ?? blocker.diagnostic)
       ? { diagnostic: redactSecrets((recovery ?? blocker.diagnostic)!).slice(0, 8_192) }
@@ -356,6 +361,7 @@ function blockerSignature(blocker: HostHandoffBlocker): string {
     blocker.replacement?.canReplaceIdle,
     blocker.replacement?.canInterrupt,
     blocker.operatorStep,
+    blocker.recoveryBlocker,
     blocker.diagnostic,
   ]);
 }
