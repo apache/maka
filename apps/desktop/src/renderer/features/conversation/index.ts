@@ -50,3 +50,15 @@ export { useComposerAttachments, type ComposerAttachmentService } from './contro
 export { toComposerIngestItems, retainedAttachmentRefs, type PendingAttachment } from '@maka/ui/composer-attachments';
 export { NEW_TASK_PENDING_KEY, selectPending, appendPending, removePending, removePendingItems, clearPending, type PendingByKey } from '@maka/ui/pending-items';
 export { desktopSlashCommandPresentation } from './model/slash-command-presentation.js';
+export { useComposerQuotes } from './controller/use-composer-quotes.js';
+export {
+  useSessionReferenceComposer,
+  type SessionReferenceErrorCopy,
+  type SessionReferenceSession,
+} from './controller/use-session-reference-composer.js';
+export {
+  ComposerMentionsProvider,
+  useComposerMentionsContext,
+  type ComposerMentions,
+  type ComposerMentionsSurface,
+} from './ui/composer-mentions-provider.js';

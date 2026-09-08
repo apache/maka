@@ -18,8 +18,6 @@
  */
 
 import type { ReactNode } from 'react';
-import { ConversationServicesProvider } from '../features/conversation';
-import { createDesktopConversationServices } from '../platform/desktop/create-conversation-services';
 import { AppUpdateServicesProvider } from '../features/app-update/index.js';
 import { ConnectionSettingsServicesProvider } from '../features/connection-settings';
 import { ConversationServicesProvider } from '../features/conversation';
@@ -48,7 +46,6 @@ import { createDesktopWorkbarServices } from '../platform/desktop/create-workbar
 export function createDesktopFeatureServices() {
   return {
     appUpdate: createDesktopAppUpdateServices(),
-    conversation: createDesktopConversationServices(),
     connectionSettings: createDesktopConnectionSettingsServices(),
     conversation: createDesktopConversationServices(),
     goal: createDesktopGoalServices(),

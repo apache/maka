@@ -23,7 +23,7 @@ import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { QuoteRef } from '@maka/core/events';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import type { ConversationSession } from '../ports.js';
-import { useConversationServices } from '../services-context.js';
+import { useConversationServices } from '../services.js';
 import {
   useSessionReferenceComposer,
   type SessionReferenceSession,
@@ -43,6 +43,7 @@ export interface ComposerMentionsSurface {
   };
   readonly onAddQuote?: (quote: QuoteRef) => void;
 }
+
 
 export interface ComposerMentions {
   readonly mentionSkills: ReadonlyArray<{
@@ -104,12 +105,12 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
   const locale = useUiLocale();
   const mentionCopy = getConversationCopy(locale).mentions;
   const [catalog, setCatalog] = useState<{
-    key: string;
+    contextKey: string;
     loading: boolean;
     settled?: 'empty' | 'populated';
     skills: InvocableSkillEntry[];
   }>({
-    key: '',
+    contextKey: '',
     loading: true,
     skills: EMPTY_SKILLS,
   });
@@ -124,8 +125,10 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     surface.newTaskTarget?.profileId ?? '',
     surface.newTaskTarget?.hostId ?? '',
     surface.newTaskTarget?.projectId ?? '',
-    surface.skillCatalogRevision,
   ].join('\u0000');
+  const liveCatalog = catalog.contextKey === contextKey
+    ? catalog
+    : { contextKey, loading: true, settled: undefined, skills: EMPTY_SKILLS };
   const activeHostId = surface.sessionId
     ? sessions.find((session) => session.id === surface.sessionId)?.runtimeHostId
     : surface.newTaskTarget?.hostId;
@@ -170,23 +173,25 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
         : surface.newTaskTarget
           ? services.newTasks.listInvocableSkills(surface.newTaskTarget, context)
           : Promise.resolve<readonly InvocableSkillEntry[]>([]);
-      setCatalog((previous) => ({
-        key: contextKey,
-        loading: true,
-        settled: previous.key === contextKey ? previous.settled : undefined,
-        skills: previous.key === contextKey ? previous.skills : EMPTY_SKILLS,
-      }));
+      setCatalog((previous) =>
+        previous.contextKey === contextKey
+          ? { ...previous, loading: true }
+          : { contextKey, loading: true, settled: undefined, skills: EMPTY_SKILLS },
+      );
       void request.then((next) => {
         if (cancelled || version !== requestVersion) return;
         setCatalog((previous) => ({
-          key: contextKey,
+          contextKey,
           loading: false,
           settled: next.length === 0 ? 'empty' : 'populated',
-          skills: skillListsEqual(previous.skills, next) ? previous.skills : [...next],
+          skills:
+            previous.contextKey === contextKey && skillListsEqual(previous.skills, next)
+              ? previous.skills
+              : [...next],
         }));
       }).catch(() => {
         if (!cancelled && version === requestVersion) {
-          setCatalog({ key: contextKey, loading: false, settled: 'empty', skills: EMPTY_SKILLS });
+          setCatalog({ contextKey, loading: false, settled: 'empty', skills: EMPTY_SKILLS });
         }
       });
     };
@@ -221,6 +226,7 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     surface.newSessionCollaborationMode,
     surface.newSessionPermissionMode,
     surface.sessionId,
+    surface.skillCatalogRevision,
     surface.newTaskTarget?.profileId,
     surface.newTaskTarget?.hostId,
     surface.newTaskTarget?.projectId,
@@ -274,9 +280,9 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
   });
   const referenceEnabled = surface.sessionId !== undefined || surface.newTaskTarget !== undefined;
   return useMemo(() => ({
-    mentionSkills: catalog.key === contextKey ? catalog.skills : EMPTY_SKILLS,
-    mentionSkillsUnavailable: catalog.key === contextKey && catalog.settled === 'empty',
-    mentionSkillsLoading: catalog.loading,
+    mentionSkills: liveCatalog.skills,
+    mentionSkillsUnavailable: liveCatalog.settled === 'empty',
+    mentionSkillsLoading: liveCatalog.loading,
     searchMentionFiles,
     sessionReferences: surface.onAddQuote && referenceEnabled ? reference.references : [],
     onPickSessionReference:
@@ -284,11 +290,9 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     sessionReferenceError: reference.error,
     waitForSessionReference: reference.waitForPending,
   }), [
-    catalog.key,
-    catalog.loading,
-    catalog.settled,
-    catalog.skills,
-    contextKey,
+    liveCatalog.loading,
+    liveCatalog.settled,
+    liveCatalog.skills,
     reference.error,
     reference.pick,
     reference.references,

@@ -43,6 +43,16 @@ const originalGlobals = {
 
 let root: Root | undefined;
 
+const sessionLocalServices: Pick<
+  ConversationServices,
+  'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges'
+> = {
+  listMessages: async () => [],
+  cancelMessage: async () => undefined,
+  reconcileMessage: async () => undefined,
+  subscribeChanges: () => () => undefined,
+};
+
 afterEach(async () => {
   if (root) await act(() => root?.unmount());
   root = undefined;
@@ -90,6 +100,7 @@ test('Session reference picker keeps same-Host sessions and send waits for the s
     releaseSnapshot = resolve;
   });
   const services: ConversationServices = {
+    ...sessionLocalServices,
     sessions: {
       list: async () => sessions,
       subscribeChanges: (_handler: (event: SessionChangedEvent) => void) => () => undefined,
@@ -192,6 +203,7 @@ test('an immediate send observes the selected Session snapshot in its QuoteRef p
     permissionMode: 'ask' as const,
   };
   const services: ConversationServices = {
+    ...sessionLocalServices,
     sessions: {
       list: async () => [source],
       subscribeChanges: () => () => undefined,
@@ -295,6 +307,7 @@ test('ignores a snapshot that resolves after the Composer owner changes', async 
   });
   let release!: (snapshot: SessionSnapshot) => void;
   const services: ConversationServices = {
+    ...sessionLocalServices,
     sessions: {
       list: async () => [session('current'), session('next'), session('source')],
       subscribeChanges: () => () => undefined,

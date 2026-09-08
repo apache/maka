@@ -25,6 +25,12 @@ import { createDesktopConversationServices } from '../../renderer/platform/deskt
 test('Desktop conversation adapter keeps snapshot reads and catalog access on the bridge', async () => {
   const calls: string[] = [];
   const bridge = {
+    sessionLocal: {
+      listMessages: async () => [],
+      cancelMessage: async () => undefined,
+      reconcileMessage: async () => undefined,
+      subscribeChanges: () => () => undefined,
+    },
     sessions: {
       list: async () => [],
       subscribeChanges: () => () => undefined,

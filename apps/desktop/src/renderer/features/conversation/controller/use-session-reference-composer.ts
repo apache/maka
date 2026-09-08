@@ -21,7 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { QuoteRef } from '@maka/core/events';
 import type { ConversationSession } from '../ports.js';
 import { sessionSnapshotToQuote } from '@maka/core/session-reference';
-import { useConversationServices } from '../services-context.js';
+import { useConversationServices } from '../services.js';
 
 export interface SessionReferenceSession {
   readonly id: string;

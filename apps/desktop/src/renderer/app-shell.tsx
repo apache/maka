@@ -193,7 +193,10 @@ import {
 import * as liveContent from './live-content-seed';
 import { loadComposerDefaults, saveComposerDefaults } from './composer-defaults';
 import { useTurnActionRegistry } from './use-turn-action-registry';
-import { useComposerAttachments, desktopSlashCommandPresentation } from './features/conversation/index.js';
+import {
+  desktopSlashCommandPresentation,
+  useComposerAttachments,
+} from './features/conversation/index.js';
 import { useAppShellComposerQuotes } from './use-app-shell-composer-quotes';
 import {
   type ComposerMentionsSurfaceInput,
@@ -2586,7 +2589,7 @@ function AppShellContent({
                     composerServices={{
                       sessions,
                       modelChoices: chatModelChoices,
-                      defaults: { model: newChatModel, permissionMode: newTaskPermissionMode },
+                      defaults: { model: newChatModel, permissionMode: newSessionPermissionMode },
                       confirmBypass: () => confirmBypassPermission(toastApi, uiLocale),
                       onOpenModelSettings: () => openSettingsSection('models'),
                     }}
