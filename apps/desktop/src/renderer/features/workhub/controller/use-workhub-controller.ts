@@ -197,6 +197,7 @@ export function useWorkHubController() {
           ? previous
           : { sessionId: target, turnId: crypto.randomUUID(), text, attachmentKey };
       pendingSend.current = attempt;
+      setLiveTurn(armLiveTurn(attempt.turnId));
       setTransientMessages((previous) => [...previous.filter((message) => message.hostTurnId !== attempt.turnId), {
         id: attempt.turnId, hostTurnId: attempt.turnId, text, ts: Date.now(),
         attachments: [...attachments], transientPlacement: 'current_turn',
@@ -221,6 +222,7 @@ export function useWorkHubController() {
       if (currentSessionId.current === target) {
         const failedTurnId = pendingSend.current?.turnId;
         setTransientMessages((previous) => previous.filter((message) => message.hostTurnId !== failedTurnId));
+        setLiveTurn((previous) => previous?.turnId === failedTurnId && previous?.unconfirmed ? undefined : previous);
         report(reason);
       }
       return false;

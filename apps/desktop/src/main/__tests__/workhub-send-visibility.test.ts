@@ -34,6 +34,7 @@ async function mountController() {
   const { root } = installReactRenderer();
   let controller!: ReturnType<typeof useWorkHubController>;
   let publish!: (snapshot: WorkHubTranscriptSnapshot) => void;
+  let observe!: Parameters<WorkHubServices['observe']>[1];
   let loadLatestCount = 0;
   const admission = deferred<{ turnId: string }>();
   const latestRead = deferred<void>();
@@ -47,7 +48,7 @@ async function mountController() {
     subscribeHosts: () => () => {},
     subscribeAvailability: () => () => {},
     subscribeSessions: () => () => {},
-    observe: () => () => {},
+    observe: (_id: string, handler: typeof observe) => { observe = handler; return () => {}; },
     openTranscript: async (_id: string, handler: typeof publish) => {
       publish = handler;
       handler({ messages: [], ready: true, hasOlder: false, hasNewer: false });
@@ -68,12 +69,18 @@ async function mountController() {
   return {
     get controller() { return controller; }, sessionId, requests, admission, latestRead,
     get loadLatestCount() { return loadLatestCount; },
+    emit(event: Parameters<typeof observe>[0]) { observe(event); },
     publish(messages: StoredMessage[]) { publish({ messages, ready: true, hasOlder: false, hasNewer: false }); },
   };
 }
 
 test('WorkHub shows the submitted prompt before admission and keeps it until its durable user record arrives', async () => {
   const h = await mountController();
+  await act(() => {
+    h.emit({ type: 'text_delta', id: 'previous-output', turnId: 'previous-turn', messageId: 'previous-answer', ts: 1, text: 'Earlier answer' });
+    h.emit({ type: 'abort', id: 'previous-abort', turnId: 'previous-turn', ts: 2, reason: 'user_stop' });
+  });
+  assert.ok(h.controller.liveTurn?.terminal);
   const text = '给我改成浅色主题';
   const attachments: AttachmentRef[] = [{ kind: 'doc', name: 'brief.txt', mimeType: 'text/plain', bytes: 4, ref: { kind: 'workspace_file', relativePath: 'brief.txt' } }];
   const followed: string[] = [];
@@ -86,6 +93,9 @@ test('WorkHub shows the submitted prompt before admission and keeps it until its
   assert.equal(h.loadLatestCount, 1);
   assert.deepEqual(followed, [h.sessionId]);
   const turnId = h.requests[0]!.turnId;
+  assert.equal(h.controller.liveTurn?.turnId, turnId, 'waiting feedback starts before admission');
+  assert.equal(h.controller.liveTurn?.phase, 'waiting');
+  assert.equal(h.controller.busy, true);
   await act(async () => { h.admission.resolve({ turnId }); assert.equal(await sent, true); });
   assert.equal(h.controller.transientMessages.length, 1, 'an acknowledgement is not a durable message');
   await act(async () => {
@@ -109,8 +119,23 @@ test('WorkHub removes a failed submission from the conversation and preserves it
   await act(async () => { h.admission.reject(new Error('admission rejected')); assert.equal(await sent, false); });
   assert.equal(h.controller.transientMessages.length, 0);
   assert.equal(h.controller.error, 'admission rejected');
+  assert.equal(h.controller.liveTurn, undefined, 'rejected admission retires the waiting feedback');
+  assert.equal(h.controller.busy, false);
   await act(async () => { assert.equal(await h.controller.send('retry this prompt', []), false); });
   assert.equal(h.requests[1]!.turnId, turnId);
   assert.equal(h.controller.transientMessages.length, 0);
+  h.latestRead.resolve();
+});
+
+test('a lost admission response cannot erase confirmed WorkHub activity', async () => {
+  const h = await mountController();
+  let sent!: Promise<boolean>;
+  await act(async () => { sent = h.controller.send('keep the real activity', []); });
+  const turnId = h.requests[0]!.turnId;
+  await act(() => h.emit({ type: 'text_delta', id: 'first-output', turnId, messageId: 'answer', ts: 1, text: 'Working' }));
+  await act(async () => { h.admission.reject(new Error('response lost')); assert.equal(await sent, false); });
+  assert.equal(h.controller.liveTurn?.turnId, turnId);
+  assert.equal(h.controller.liveTurn?.unconfirmed, undefined);
+  assert.equal(h.controller.busy, true);
   h.latestRead.resolve();
 });
