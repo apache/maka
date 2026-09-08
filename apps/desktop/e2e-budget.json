@@ -70,8 +70,8 @@
       "electron": "the perf budget is measured from CDP wheel input and the browser's own render skipping"
     },
     "workhub-layout.spec.ts": {
-      "tests": 1,
-      "electron": "Coordination startup failure comes from the Host, and recovery needs a default model written back to it"
+      "tests": 2,
+      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
     },
     "workhub-reconstruction.spec.ts": {
       "tests": 1,
