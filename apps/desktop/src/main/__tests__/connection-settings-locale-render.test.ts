@@ -28,7 +28,7 @@ import { act, createElement, type ComponentType, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { ProviderType } from '@maka/core/llm-connections';
+import type { ProjectedLlmConnection, ProviderType } from '@maka/core/llm-connections';
 import type { PeerMeshQueryResult } from '@maka/runtime-host/protocol';
 import type { RuntimeHostPeerConnectionPath } from '@maka/runtime-host/client';
 import type { DesktopRuntimeHostProfileSnapshot } from '../../preload/bridge-contract.js';
@@ -37,6 +37,18 @@ import type { RuntimeHostManagementServices } from '../../renderer/features/runt
 
 // Keep renderer implementations and their asset imports out of the main compilation graph.
 interface RenderModules {
+  ConnectionDetail: ComponentType<{
+    bridge: ConnectionsBridge;
+    connection: ProjectedLlmConnection;
+    isDefault: boolean;
+    onChanged(): Promise<void>;
+    onDeleted(): Promise<void>;
+  }>;
+  RuntimeHostSettingsTarget: ComponentType<{
+    host?: { profileId: string; hostId: string };
+    generation?: string;
+    children: ReactNode;
+  }>;
   AddProviderForm: ComponentType<{
     bridge: ConnectionsBridge;
     providerType: ProviderType;
@@ -85,6 +97,8 @@ before(async () => {
   await build({
     stdin: {
       contents: [
+        "export { ConnectionDetail } from './settings/provider-connection-detail';",
+        "export { RuntimeHostSettingsTarget } from './settings/runtime-host-settings-target';",
         "export { AddProviderForm } from './settings/provider-add-form';",
         "export { RuntimeHostProfilesSection } from './settings/runtime-host-profiles-section';",
         "export { RuntimeHostManagementServicesProvider, RuntimeHostPeerMeshDialog } from './features/runtime-host-management/index';",
@@ -286,8 +300,122 @@ test('zh-TW: expanded Peer Mesh members render localized route states', async ()
   }
 });
 
+test('credential probing does not flash a page-level loading warning', async () => {
+  const harness = installRenderer();
+  const credential = deferred<boolean>();
+  const bridge = connectionDetailBridge({ hasSecret: () => credential.promise });
+  const detail = createElement(components.ConnectionDetail, {
+    bridge,
+    connection: relayConnection(),
+    isDefault: true,
+    onChanged: async () => {},
+    onDeleted: async () => {},
+  });
+
+  await harness.render('zh-CN', createElement(components.RuntimeHostSettingsTarget, {
+    host: { profileId: 'local', hostId: 'host-local' },
+    children: detail,
+  }));
+
+  assert.equal(
+    harness.document.body.textContent.includes(
+      '正在读取模型凭据状态，读取完成前暂不测试连接或刷新模型。',
+    ),
+    false,
+    'an ordinary in-flight credential read must not insert a transient warning banner',
+  );
+
+  await act(async () => {
+    credential.resolve(true);
+    await credential.promise;
+  });
+});
+
+test('credential read failures still render the persistent warning', async () => {
+  const harness = installRenderer();
+  const credential = deferred<boolean>();
+  const bridge = connectionDetailBridge({ hasSecret: () => credential.promise });
+  const detail = createElement(components.ConnectionDetail, {
+    bridge,
+    connection: relayConnection(),
+    isDefault: true,
+    onChanged: async () => {},
+    onDeleted: async () => {},
+  });
+
+  await harness.render('zh-CN', createElement(components.RuntimeHostSettingsTarget, {
+    host: { profileId: 'local', hostId: 'host-local' },
+    children: detail,
+  }));
+  await act(async () => {
+    credential.reject(new Error('credential store unavailable'));
+    try {
+      await credential.promise;
+    } catch {
+      // The component owns this rejection and turns it into an error state.
+    }
+  });
+
+  assert.ok(harness.document.body.textContent.includes(
+    '模型凭据状态暂时没刷新成功，已避免把未知状态显示成未登录或未配置。',
+  ));
+});
+
 function unexpectedCall(): never {
   assert.fail('unexpected service call');
+}
+
+function deferred<T>() {
+  let resolvePromise!: (value: T) => void;
+  let rejectPromise!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return { promise, resolve: resolvePromise, reject: rejectPromise };
+}
+
+function relayConnection(): ProjectedLlmConnection {
+  const modelId = 'gpt-5.6-sol-joybuilder';
+  return {
+    connectionId: 'relay-connection',
+    slug: 'openai-responses-compatible-2',
+    name: '自定义中转站（OpenAI Responses）',
+    providerType: 'openai-responses-compatible',
+    baseUrl: 'https://relay.example/v1',
+    defaultModel: modelId,
+    enabledModelIds: [modelId],
+    enabled: true,
+    models: [{ id: modelId }],
+    modelSource: 'fetched',
+    createdAt: 1,
+    updatedAt: 1,
+    catalogEntries: [{
+      id: modelId,
+      canUseAsChatDefault: true,
+      isDefault: true,
+      supportsVision: false,
+      thinkingLevels: [],
+      describedByMetadata: false,
+    }],
+  };
+}
+
+function connectionDetailBridge(overrides: Partial<ConnectionsBridge>): ConnectionsBridge {
+  return {
+    oauth: {} as ConnectionsBridge['oauth'],
+    getSnapshot: unexpectedCall,
+    setDefault: unexpectedCall,
+    create: unexpectedCall,
+    update: unexpectedCall,
+    delete: unexpectedCall,
+    test: unexpectedCall,
+    fetchModels: unexpectedCall,
+    hasSecret: unexpectedCall,
+    getRequestHeaders: async () => ({ names: [] }),
+    setRequestHeaders: unexpectedCall,
+    ...overrides,
+  };
 }
 
 function managementServices(): RuntimeHostManagementServices {

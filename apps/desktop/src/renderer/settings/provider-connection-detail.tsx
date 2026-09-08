@@ -180,7 +180,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     retired,
     oauthLoginService,
     supportsRemoteDiscovery,
-    credentialProbePending,
+    credentialProbeFailed,
     hasUsableCredential,
     apiKeyStatusHint,
     hasApiKeyChange,
@@ -480,13 +480,11 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                   : copy.oauthWaitingDetail} />
         )
       )}
-      {credentialProbePending && (
+      {credentialProbeFailed && (
         <Banner
           status="warning"
           role="alert"
-          title={hasSecret === 'loading'
-            ? copy.credentialLoadingDetail
-            : copy.credentialUnknownDetail}
+          title={copy.credentialUnknownDetail}
         />
       )}
       {/* The settled values (name, key, endpoint) are rows in the
