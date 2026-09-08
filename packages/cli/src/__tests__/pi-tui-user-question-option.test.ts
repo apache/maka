@@ -29,6 +29,11 @@ import {
 import { ansi, stripAnsi } from '../tui-ansi.js';
 import { FakeTerminal, plainTerminalOutput } from './tui-terminal-mock.js';
 
+const ARROW_UP = '\x1b[A';
+const ARROW_DOWN = '\x1b[B';
+const ARROW_LEFT = '\x1b[D';
+const ENTER = '\r';
+
 // SGR reverse degrades to identity when the terminal reports no color support
 // (piped CI), so the highlight assertion keys off this build's actual behavior.
 const REVERSE_ON = '\u001b[7m';
@@ -58,18 +63,18 @@ test('Other keeps its draft and shows a cursor only while its input row is selec
   assert.ok(focused.includes(REVERSE_ON));
   assert.ok(focused.includes(CURSOR_MARKER));
 
-  overlay.handleInput('\x1b[A'); // Other -> preset.
+  overlay.handleInput(ARROW_UP); // Other -> preset.
   assert.ok(!inputLine().includes(REVERSE_ON), 'the inactive input must hide its cursor');
   assert.ok(!inputLine().includes(CURSOR_MARKER), 'the inactive input must not anchor the IME');
-  overlay.handleInput('\x1b[B');
+  overlay.handleInput(ARROW_DOWN);
   assert.equal(inputLine(), focused, 'refocus restores the cursor and IME position');
 
-  overlay.handleInput('\x1b[D'); // Put the cursor on e + combining accent, not a trailing space.
+  overlay.handleInput(ARROW_LEFT); // Put the cursor on e + combining accent, not a trailing space.
   assert.ok(inputLine().includes(`${REVERSE_ON}e\u0301`));
-  overlay.handleInput('\x1b[A');
+  overlay.handleInput(ARROW_UP);
   assert.ok(!inputLine().includes(REVERSE_ON), 'a cursor on a character must also disappear');
-  overlay.handleInput('\x1b[B');
-  overlay.handleInput('\r');
+  overlay.handleInput(ARROW_DOWN);
+  overlay.handleInput(ENTER);
   assert.deepEqual(answers, [draft]);
 });
 
