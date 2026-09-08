@@ -41,6 +41,7 @@ import {
 import type { SessionAuthorityStore, SessionHeaderSnapshot } from '@maka/storage/session-store';
 import type {
   OperationOutcome,
+  WorkHubCoordinationActResult,
   WorkHubCoordinationActInput,
   WorkHubCoordinationAnswerInput,
   WorkHubCoordinationRecordInput,
@@ -110,6 +111,24 @@ type CoordinationExecutions = Pick<
   'startWorkHubCoordinationMessage' | 'hasRootTurnAdmission'
 >;
 
+type WorkHubResumeResult =
+  | {
+      readonly outcome: 'resume_started';
+      readonly targetTurnId: string;
+    }
+  | { readonly outcome: 'already_running' };
+
+type CoordinationSessionActions = Pick<
+  WorkHubActionGateEffects,
+  'assign' | 'readDelegationRetirement' | 'retireDelegation'
+> & {
+  resumeDelegation(
+    assignment: WorkHubDelegationAssignedMessage,
+    context: ConnectionContext,
+    actionId: string,
+  ): Promise<WorkHubResumeResult>;
+};
+
 export type CoordinationCreateTarget = Omit<CreateSessionInput, 'cwd' | 'name' | 'projectId'>;
 
 export interface HostWorkHubCoordinationCoordinatorOptions {
@@ -118,10 +137,7 @@ export interface HostWorkHubCoordinationCoordinatorOptions {
   readonly admission: SessionAdmissionGate;
   readonly continuity: Pick<SessionContinuityCoordinator, 'refreshCanonical'>;
   readonly executions: CoordinationExecutions;
-  readonly sessionActions: Pick<
-    WorkHubActionGateEffects,
-    'assign' | 'readDelegationRetirement' | 'retireDelegation'
-  >;
+  readonly sessionActions: CoordinationSessionActions;
   readonly resolveCreateTarget: () => Promise<CoordinationCreateTarget>;
   readonly requestDrain: () => void;
 }
@@ -203,6 +219,11 @@ export class HostWorkHubCoordinationCoordinator {
       resolveStop: (input) => this.#resolveStop(input),
       readDelegationRetirement: options.sessionActions.readDelegationRetirement,
       retireDelegation: options.sessionActions.retireDelegation,
+      resume: async (input, context) => ({
+        disposition: 'resume_work',
+        targetSessionId: input.source.targetSessionId,
+        ...(await options.sessionActions.resumeDelegation(input.source, context, input.actionId)),
+      }),
     });
   }
 
@@ -506,7 +527,7 @@ export class HostWorkHubCoordinationCoordinator {
         return {
           ok: false,
           error: {
-            code: error.code === 'unauthorized' ? 'operation_unavailable' : error.code,
+            code: error.code,
             message: error.message,
           },
         };
@@ -863,7 +884,6 @@ function coordinationSummaryMessages(input: WorkHubCoordinationRecordInput): Sto
       turnId: input.turnId,
       ts: ts + 2,
       status: 'completed',
-      partialOutputRetained: false,
     },
   ];
 }

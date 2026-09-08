@@ -21,9 +21,11 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import {
   beginRuntimeHostManagedDeploymentTransition,
+  RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV,
   claimRuntimeHostManagedDeployment,
   readRuntimeHostManagedDeploymentAuthorityRecord,
   resolveRuntimeHostManagedDeploymentConfigPath,
@@ -56,6 +58,68 @@ import {
 
 const INTEGRITY = `sha512-${Buffer.alloc(64, 7).toString('base64')}`;
 const UPDATED_INTEGRITY = `sha512-${Buffer.alloc(64, 8).toString('base64')}`;
+
+test('operator cancellation covers non-RPC retirement and cannot leak into recovery', async (t) => {
+  const originalEnv = process.env[RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV];
+  t.after(() => {
+    if (originalEnv === undefined)
+      delete process.env[RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV];
+    else process.env[RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV] = originalEnv;
+  });
+  for (const busy of [false, true]) {
+    const stateRoot = await mkdtemp(join(tmpdir(), 'maka-retirement-cancel-'));
+    t.after(() => rm(stateRoot, { recursive: true, force: true }));
+    const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+    let owner = busy ? await tryAcquireStateRootOwner(capability) : null;
+    t.after(async () => {
+      await owner?.close();
+    });
+    const input = new PassThrough();
+    const stdinMock = t.mock.getter(
+      process,
+      'stdin',
+      () => input as unknown as typeof process.stdin,
+    );
+    process.env[RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV] = '1';
+    let cancelled = false;
+    let retired = false;
+    const request = {
+      rootPath: capability.canonicalPath,
+      rootId: capability.rootId,
+      expectedOwner: { hostEpoch: 'host-a', pid: 42 },
+      allowInterruptActiveTasks: true,
+      connectExisting: (async () => ({
+        kind: 'incompatible',
+        registration: { hostEpoch: 'host-a', pid: 42 },
+      })) as unknown as typeof connectExistingRuntimeHost,
+      supervisor: {
+        status: async () => {
+          assert.equal(process.env[RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV], undefined);
+          if (!cancelled) {
+            cancelled = true;
+            input.end();
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          }
+          return { active: true, pid: 42 };
+        },
+        retire: async () => {
+          retired = true;
+          await owner?.close();
+          owner = null;
+        },
+      },
+    };
+    await assert.rejects(retireRuntimeHostLifecycleOwner(request), /retirement was cancelled/u);
+    assert.equal(retired, false);
+    // The original channel is now consumed. Recovery is allowed to complete
+    // even though its parent's pipe remains at EOF.
+    const recovery = await retireRuntimeHostLifecycleOwner(request);
+    assert.equal(recovery.kind, 'retired');
+    if (recovery.kind === 'retired') await recovery.owner.close();
+    assert.equal(retired, true);
+    stdinMock.mock.restore();
+  }
+});
 
 test('control projection repair leaves the running Host supervisor untouched', async () => {
   const current = config('/workspace', 'a'.repeat(64), 1, 'launch_agent');

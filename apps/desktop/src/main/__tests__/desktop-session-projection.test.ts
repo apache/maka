@@ -142,7 +142,6 @@ test('projects typed linked Session ids without rewriting opaque tool data', () 
       turnId: 'turn-1',
       status: 'completed',
       parentSessionId: 'child-session',
-      partialOutputRetained: false,
     }).parentSessionId,
     linkedSessionId,
   );

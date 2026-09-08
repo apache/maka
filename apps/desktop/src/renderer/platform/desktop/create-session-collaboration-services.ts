@@ -37,6 +37,10 @@ export function createDesktopSessionCollaborationServices(
     subscribeMountChanges: (handler) =>
       bridge.sessionCollaboration.subscribeMountChanges(handler),
     removeMount: (mountId) => bridge.sessionCollaboration.removeMount(mountId),
+    retryMount: (mountId) => bridge.sessionCollaboration.retryMount(mountId),
+    renameMount: (mountId, name) => bridge.sessionCollaboration.renameMount(mountId, name),
+    renamePrincipal: (sessionId, principalId, displayName) =>
+      bridge.sessionCollaboration.renamePrincipal(sessionId, principalId, displayName),
     requestTurn: (sessionId, input) =>
       bridge.sessionCollaboration.requestTurn(sessionId, input),
     getTurnRequests: (sessionId) =>

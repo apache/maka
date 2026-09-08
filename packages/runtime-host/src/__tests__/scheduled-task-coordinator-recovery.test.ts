@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { deferred, waitFor } from '@maka/core/test-only/async-primitives';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -387,6 +388,95 @@ test('ScheduledTask with an exact Connection identity reaches Session and AgentR
     assert.equal(createSessionCalls, 1);
     assert.equal(admitCalls, 1);
   } finally {
+    await coordinator.close();
+    store.close();
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('scheduler handoff waits for an admitted native effect and cancellation restores its timer', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-scheduler-handoff-'));
+  const owner = await tryAcquireInteractiveRootOwner(
+    await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' }),
+  );
+  assert.ok(owner);
+  const store = await openInteractiveScheduledTaskStoreForWrite(owner.lease);
+  const entered = deferred<void>();
+  const effect = deferred<Record<string, unknown>>();
+  let clock = 1_000;
+  let timer: (() => void) | undefined;
+  let effects = 0;
+  const residency = { release: () => {} };
+  const coordinator = new HostScheduledTaskCoordinator({
+    store,
+    sessions: null as never,
+    runtime: null as never,
+    root: null as never,
+    runtimePolicy: {
+      runtimePolicy: {
+        getSnapshot: async () => ({ policy: { privacy: { incognitoActive: false } } }),
+      },
+    } as never,
+    nativeEffects: {
+      hasWorkspaceService: () => true,
+      callWorkspaceService: async () => {
+        effects += 1;
+        entered.resolve();
+        return effect.promise;
+      },
+    },
+    createSession: async () => {},
+    changes: { publish: () => {} },
+    acquireResidency: () => residency,
+    requestDrain: () => assert.fail('scheduler must not drain'),
+    now: () => clock,
+    setTimeout: (callback) => {
+      timer = callback;
+      return callback;
+    },
+    clearTimeout: () => {
+      timer = undefined;
+    },
+  });
+  try {
+    const task = await store.create(
+      {
+        title: 'Recurring notification',
+        intentBody: 'Notify once per interval',
+        schedule: { kind: 'interval', everySeconds: 60 },
+        effect: { kind: 'notify', channel: 'local' },
+        createdBy: { kind: 'user' },
+      },
+      clock,
+    );
+    await coordinator.prepareRecovery();
+    coordinator.start();
+    await waitFor(() => timer !== undefined);
+    clock = task.nextFireAt!;
+    const fire = timer!;
+    timer = undefined;
+    fire();
+    await entered.promise;
+    const hold = coordinator.holdForHandoff();
+    assert.ok(hold);
+    let settled = false;
+    const ready = hold.settled().then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    assert.equal(settled, false);
+    effect.resolve({});
+    await ready;
+    assert.equal(timer, undefined);
+    assert.equal(effects, 1);
+    assert.deepEqual(hold.residencies(), [residency]);
+    assert.equal((await store.listPendingFires()).length, 0);
+    hold.release();
+    await waitFor(() => timer !== undefined);
+    assert.equal(effects, 1);
+  } finally {
+    effect.resolve({});
     await coordinator.close();
     store.close();
     await owner.close();

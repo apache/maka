@@ -175,6 +175,17 @@ export type ArtifactUserDeleteResult =
   | { readonly kind: 'protected' }
   | { readonly kind: 'not_found' };
 
+export interface ArtifactUpgradeCleanupInput {
+  readonly after?: string;
+  readonly maxPaths: number;
+}
+
+export interface ArtifactUpgradeCleanupResult {
+  readonly nextAfter: string | null;
+  readonly processedPaths: number;
+  readonly failedPaths: number;
+}
+
 export interface ArtifactAuthorityStore extends DurableArtifactAttachmentReader {
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
   close(): void;
@@ -182,7 +193,7 @@ export interface ArtifactAuthorityStore extends DurableArtifactAttachmentReader 
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;
   purgeSessionArtifacts(sessionId: string): Promise<void>;
-  reclaimUpgradeResidue(): Promise<void>;
+  reclaimUpgradeResidue(input: ArtifactUpgradeCleanupInput): Promise<ArtifactUpgradeCleanupResult>;
   deleteOwnedArtifactInSession(
     sessionId: string,
     artifactId: string,
@@ -481,17 +492,26 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
    * once its file is gone, and a file that will not go keeps only its own note
    * rather than holding up the ones behind it.
    */
-  async reclaimUpgradeResidue(): Promise<void> {
-    await this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked();
-      const recorded = this.metadataRepository.readUpgradeOrphanPaths();
-      if (recorded.length === 0) return;
-      const claimed = new Set(this.records.map((record) => record.relativePath));
+  async reclaimUpgradeResidue(
+    input: ArtifactUpgradeCleanupInput,
+  ): Promise<ArtifactUpgradeCleanupResult> {
+    if (!Number.isSafeInteger(input.maxPaths) || input.maxPaths < 1 || input.maxPaths > 1024) {
+      throw new TypeError('Artifact cleanup path limit must be between 1 and 1024');
+    }
+    const after = input.after ?? '';
+    const maxPaths = input.maxPaths;
+    return this.enqueueMutation(async () => {
+      const recorded = this.metadataRepository.readUpgradeOrphanPaths(after, maxPaths + 1);
+      const selected = recorded.slice(0, maxPaths);
       const directories = new Set<string>();
       const discharged: string[] = [];
+      let failedPaths = 0;
       try {
-        for (const relativePath of recorded) {
-          if (claimed.has(relativePath) || !isSafeRelativeArtifactPath(relativePath)) {
+        for (const relativePath of selected) {
+          if (
+            this.metadataRepository.hasRelativePath(relativePath) ||
+            !isSafeRelativeArtifactPath(relativePath)
+          ) {
             discharged.push(relativePath);
             continue;
           }
@@ -500,7 +520,10 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
             await unlink(target);
             directories.add(dirname(target));
           } catch (error) {
-            if (!isNotFound(error)) continue;
+            if (!isNotFound(error)) {
+              failedPaths += 1;
+              continue;
+            }
           }
           discharged.push(relativePath);
         }
@@ -508,6 +531,11 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         for (const directory of directories) await syncDirectory(directory);
       }
       if (discharged.length > 0) this.metadataRepository.forgetUpgradeOrphanPaths(discharged);
+      return {
+        nextAfter: recorded.length > selected.length ? selected.at(-1)! : null,
+        processedPaths: selected.length,
+        failedPaths,
+      };
     });
   }
 

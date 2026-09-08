@@ -18,8 +18,12 @@
       "electron": "the saved window is read back from the Host's connection snapshot, not from renderer state"
     },
     "new-task-reload.spec.ts": {
+      "tests": 2,
+      "electron": "renderer reload must preserve an explicit new task and rebuild archived-only Host history as an empty, usable new-task surface"
+    },
+    "partial-history-notice.spec.ts": {
       "tests": 1,
-      "electron": "renderer reload is the whole contract: an explicit new task must not reopen history"
+      "electron": "bounded paging crosses renderer, preload and Host transcript storage; the return-to-tail assertion also uses a real pointer hit-test"
     },
     "proxy-password-editing.spec.ts": {
       "tests": 1,
@@ -29,9 +33,17 @@
       "tests": 1,
       "electron": "a pointer capture released outside the window -- there is no window edge to leave in a browser tab"
     },
+    "rename-focus.spec.ts": {
+      "tests": 1,
+      "electron": "native Electron keyboard events must reach the rename field immediately after menu dismissal or a row double-click"
+    },
     "session-draft-focus.spec.ts": {
       "tests": 1,
       "electron": "needs a second real Session (Host round trip) to switch to; the focus and draft-restore halves alone would not earn a window"
+    },
+    "session-local-recovery.spec.ts": {
+      "tests": 3,
+      "electron": "SQLite admission crosses preload and main, survives both renderer reload and complete Electron restart, and cached history must render when the live IPC endpoint is unavailable"
     },
     "session-workbar.spec.ts": {
       "tests": 6,

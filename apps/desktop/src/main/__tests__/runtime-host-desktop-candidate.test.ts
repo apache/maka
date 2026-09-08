@@ -19,7 +19,12 @@
 
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import type { IpcMain } from 'electron';
 import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
@@ -30,7 +35,7 @@ import type {
   ConnectOrSpawnRuntimeHostInput,
   RuntimeHostConnection,
 } from '@maka/runtime-host/client';
-import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import { RuntimeHostOperationError, runHostHandoff } from '@maka/runtime-host/client';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type ClientCapabilityCallFrame,
@@ -55,6 +60,7 @@ import { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-o
 import { RuntimeHostReconnectingIpcMain } from '../runtime-host-reconnecting-ipc-main.js';
 import { desktopSessionResourceKey } from '../../shared/runtime-host-identity.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { canRepairManagedRuntimeHostStartup } from '../runtime-host-startup-recovery.js';
 
 const TEST_HOST_ID = 'a'.repeat(64);
 const TEST_TARGET_EPOCH = 'test-target-epoch';
@@ -82,6 +88,143 @@ test('uses the manager-owned launch barrier for local candidate startup', async 
 
   assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
   assert.equal(connectedRoot, 'C:\\workspace');
+});
+
+test('updates a protocol-compatible managed Host before exposing a candidate over its old storage', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-desktop-managed-schema-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  acquireOperationalStateDatabase(root).close();
+  const databasePath = join(root, 'runtime.sqlite');
+  const legacy = new DatabaseSync(databasePath);
+  legacy.exec(`
+    DROP TABLE usage_model_call_attempts;
+    CREATE TABLE usage_model_call_attempts (
+      attempt_id TEXT PRIMARY KEY,
+      completed_at INTEGER NOT NULL,
+      record_json TEXT NOT NULL,
+      session_id TEXT
+    );
+    INSERT INTO usage_model_call_attempts VALUES ('retained', 1, '{}', 'deleted-session');
+    UPDATE operational_schema_migrations SET version = 6 WHERE scope = 'usage';
+  `);
+  legacy.close();
+  const ipc = ipcHarness();
+  const old = connectionHarness('old');
+  const updated = connectionHarness('updated');
+  let starts = 0;
+  let repairs = 0;
+  const candidate = await runHostHandoff({
+    observe: async () => {
+      try {
+        const host = starts++ === 0 ? old : updated;
+        const result = await startDesktopRuntimeHostCandidate({
+          ...deps(ipc),
+          workspaceRoot: root,
+          rootPath: root,
+          candidateEntrypoint: 'unused.js',
+          candidateLaunchBarrier: {
+            connect: async () => ({
+              kind: 'connected',
+              connection: host.connection,
+              registration: { lifecycleMode: 'supervised', pid: 123 },
+            }),
+          },
+        } as unknown as DesktopRuntimeHostCandidateStartInput);
+        assert.equal(result.kind, 'ready');
+        if (result.kind !== 'ready')
+          throw new Error('Expected a ready candidate');
+        return { kind: 'ready', value: result.candidate };
+      } catch (error) {
+        assert.ok(
+          error instanceof Error && canRepairManagedRuntimeHostStartup(error),
+        );
+        return {
+          kind: 'blocked',
+          blocker: {
+            identity: 'managed-schema-before',
+            target: { name: 'Local', location: 'local' },
+            reason: 'repair',
+            mayExitNaturally: false,
+            activity: {
+              connections: 0,
+              activeOperations: 0,
+              processUptimeSeconds: 1,
+              residencies: [],
+            },
+            replacement: {
+              kind: 'repair',
+              canReplaceIdle: true,
+              canInterrupt: true,
+              execute: async (authority) => {
+                repairs += 1;
+                assert.equal(authority, 'refuse_active_work');
+                assert.equal(
+                  old.closeCalls,
+                  1,
+                  'release the old connection before managed update',
+                );
+                assert.equal(
+                  old.capabilityRegistrations,
+                  0,
+                  'do not expose capabilities before storage admission',
+                );
+                assert.equal(ipc.size, 0);
+                const preserved = new DatabaseSync(databasePath, {
+                  readOnly: true,
+                });
+                try {
+                  assert.equal(
+                    preserved
+                      .prepare(
+                        "SELECT version FROM operational_schema_migrations WHERE scope = 'usage'",
+                      )
+                      .get()?.version,
+                    6,
+                  );
+                  assert.equal(
+                    preserved
+                      .prepare(
+                        "SELECT record_json FROM usage_model_call_attempts WHERE attempt_id = 'retained'",
+                      )
+                      .get()?.record_json,
+                    '{}',
+                  );
+                } finally {
+                  preserved.close();
+                }
+                // Simulate the updated owning Host, not Desktop, performing migration.
+                acquireOperationalStateDatabase(root).close();
+                return { kind: 'completed' };
+              },
+            },
+          },
+        };
+      }
+    },
+    openSurface: () => ({
+      update: (view) => assert.equal(view.state, 'progress', 'idle repair needs no consent'),
+      close: () => {},
+    }),
+  });
+  t.after(() => candidate.close());
+  assert.equal(starts, 2);
+  assert.equal(repairs, 1);
+  assert.equal(updated.capabilityRegistrations, 1);
+  const current = acquireOperationalStateDatabase(root, {
+    schemaMigration: 'require_current',
+  });
+  try {
+    assert.equal(
+      current.database
+        .prepare(
+          "SELECT session_id FROM usage_model_call_attempts WHERE attempt_id = 'retained'",
+        )
+        .get()?.session_id,
+      'deleted-session',
+    );
+  } finally {
+    current.close();
+  }
 });
 
 test('formats bounded local Host exit evidence without leaking stderr secrets', () => {
@@ -830,7 +973,6 @@ test('resyncs Goal, exact interaction, and sidecar state after candidate replace
     kind: 'subscription.runtime_resource_pty_data',
     hostEpoch: 'host-second-observer',
     subscriptionId: 'subscription-second-observer',
-    sequence: 1,
     sessionId: 'session-1',
     ref,
     ptySequence: 5,
@@ -1186,6 +1328,7 @@ function connectionHarness(
   let startTurnCalls = 0;
   let runtimeResourceControllerAcquires = 0;
   let activeSubscriptionFrames: AsyncFrameQueue | undefined;
+  const ptyListeners = new Set<(frame: Extract<SubscriptionFrame, { kind: 'subscription.runtime_resource_pty_data' }>) => void>();
   const connection = {
     hostEpoch: `host-${label}`,
     connectionId: `connection-${label}`,
@@ -1193,6 +1336,7 @@ function connectionHarness(
     selectedProtocol: 0,
     closed,
     request: async <K extends OperationKey>(operation: K, input: OperationInput<K>) => {
+      if (operation === 'subscription.pty_interest.set') return { subscriptionId: (input as { subscriptionId: string }).subscriptionId };
       if (
         operation === 'session.catalog.query' &&
         (input as { kind?: unknown }).kind === 'list_start'
@@ -1306,7 +1450,7 @@ function connectionHarness(
       if (options.subscriptionError) throw options.subscriptionError;
       const subscriptionFrames = new AsyncFrameQueue();
       activeSubscriptionFrames = subscriptionFrames;
-      const closeSubscription = () => subscriptionFrames.end();
+      const closeSubscription = () => { subscriptionFrames.end(); ptyListeners.clear(); };
       closeSubscriptions.add(closeSubscription);
       const emptyPage = {
         kind: 'page' as const,
@@ -1321,6 +1465,10 @@ function connectionHarness(
       return {
         hostEpoch: `host-${label}`,
         subscriptionId: `subscription-${label}`,
+        subscribePtyData(listener: (frame: Extract<SubscriptionFrame, { kind: 'subscription.runtime_resource_pty_data' }>) => void) {
+          ptyListeners.add(listener);
+          return () => ptyListeners.delete(listener);
+        },
         snapshot: options.subscriptionSnapshot ?? {
           projectionRevision: 1,
           session: { sessionId },
@@ -1374,6 +1522,10 @@ function connectionHarness(
     disconnect: () => resolveClosed?.(),
     pushSubscriptionFrame: (frame: SubscriptionFrame) => {
       assert.ok(activeSubscriptionFrames);
+      if (frame.kind === 'subscription.runtime_resource_pty_data') {
+        for (const listener of ptyListeners) listener(frame);
+        return;
+      }
       activeSubscriptionFrames.push(frame);
     },
     publishSessionCatalogChange: (sessionId: string) => {

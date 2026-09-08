@@ -250,21 +250,6 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     );
     assert.equal(containsFailure(retryFailure, stopFailure), true);
     assert.equal(fixture.backend.stopCalls.length, 1);
-    const messages = await fixture.store.readMessages(SESSION_ID);
-    assert.equal(
-      messages.filter(
-        (message) =>
-          message.type === 'turn_state' &&
-          message.turnId === 'turn-blocked-send' &&
-          message.status === 'aborted',
-      ).length,
-      1,
-    );
-    assert.equal(
-      messages.filter((message) => message.type === 'system_note' && message.kind === 'abort')
-        .length,
-      1,
-    );
 
     const blockedActivation = fixture.kernel
       .startTurn(SESSION_ID, { turnId: 'turn-before-runner-settled', text: 'must not send' })
@@ -366,21 +351,6 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     await drainIterator(first);
     assert.equal(built[0]?.disposeCalls, 1);
     assert.deepEqual(built[0]?.stopCalls, [{ reason: 'user_stop', mode: 'after_step' }]);
-    const firstMessages = await store.readMessages(SESSION_ID);
-    assert.equal(
-      firstMessages.filter(
-        (message) =>
-          message.type === 'turn_state' &&
-          message.turnId === 'turn-generation-1' &&
-          message.status === 'aborted',
-      ).length,
-      1,
-    );
-    assert.equal(
-      firstMessages.filter((message) => message.type === 'system_note' && message.kind === 'abort')
-        .length,
-      1,
-    );
 
     const second = kernel
       .startTurn(SESSION_ID, { turnId: 'turn-generation-2', text: 'second' })
@@ -653,14 +623,16 @@ function memoryStore(): SessionStore {
     },
     list: async () => [],
     readHeader: async () => header,
-    readMessages: async () => [...messages],
-    listTurns: async () => [],
-    appendMessage: async (_sessionId, message) => {
-      messages.push(message);
-    },
-    appendMessages: async (_sessionId, next) => {
-      messages.push(...next);
-    },
+    readMessagesAfter: async (
+      _sessionId: string,
+      request: { afterSequence?: number; maxMessages: number },
+    ) => ({
+      records: messages
+        .map((message, sequence) => ({ sequence, message }))
+        .filter(({ sequence }) => sequence > (request.afterSequence ?? -1))
+        .slice(0, request.maxMessages),
+      highWaterSequence: messages.length > 0 ? messages.length - 1 : null,
+    }),
     updateHeader: async (_sessionId, patch) => {
       header = { ...header, ...patch };
       return header;

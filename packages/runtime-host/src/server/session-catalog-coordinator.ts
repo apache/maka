@@ -19,7 +19,7 @@
 
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { createHash } from 'node:crypto';
-import { authorizeConnectionModel } from '@maka/core/llm-connections';
+import { authorizeConnectionModel, connectionEnabledModelIds } from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import {
@@ -28,6 +28,7 @@ import {
   type ExecutionBoundarySummary,
 } from '@maka/core/sandbox-boundary';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
 import {
   isSessionStartModeLabel as isExecutionSemanticLabel,
@@ -38,18 +39,19 @@ import {
   isWorkHubCoordinationSessionTarget,
   type SessionHeader,
   type SessionHeaderPatch,
+  type StoredMessage,
 } from '@maka/core/session';
 import {
   isSessionNotFoundError,
   SessionMetadataConflictError,
   SessionMetadataVersionConflictError,
-  SessionReadMarkerMessageNotFoundError,
   type SessionCatalogPageCursor,
   type SessionCatalogRecord,
   type SessionHeaderSnapshot,
   type ExecutionStoresWriter,
 } from '@maka/storage/execution-stores';
 import type { CreateStableSessionRequest } from '@maka/storage/session-store';
+import { isVisibleSessionMessage } from '@maka/storage/session-message-projection';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import {
   SessionConfigurationRevisionConflictError,
@@ -93,21 +95,29 @@ import type { SessionCatalogOperationHandlerMap } from './operation-dispatcher.j
 import type { RuntimeHostAccessAuthority } from './access-authority.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
+import type { SessionTranscriptReader } from './session-transcript-reader.js';
 import { type HostWorkspaceResolver, WorkspaceResolutionError } from './workspace-resolver.js';
 
 type SessionCatalogStores = Pick<
   ExecutionStoresWriter<'interactive'>['sessionStore'],
   | 'createStableSession'
   | 'listCatalogPage'
-  | 'markSessionReadThroughMessage'
   | 'probeStableSessionCreate'
   | 'readCatalogRecord'
   | 'readExecutionBoundary'
   | 'readHeaderRecordSnapshot'
-  | 'readTurnContributionsSnapshot'
-  | 'readTurnLandmarksSnapshot'
   | 'updateHeaderVersioned'
 >;
+
+/** The Turn index a Session catalog page is built from, read off the ledger. */
+type SessionTurnIndexReader = Pick<
+  SessionTranscriptReader,
+  'readDurableRecords' | 'readDurableTurnContributions' | 'readDurableTurnLandmarks'
+>;
+
+/** One page of the backwards scan a read marker walks to find the newest visible message. */
+const SESSION_READ_MARKER_TAIL_MAX_MESSAGES = 64;
+const SESSION_READ_MARKER_TAIL_MAX_BYTES = 256 * 1024;
 
 type SessionRuntimePolicyStores = {
   readonly connectionCatalog: Pick<RuntimePolicyStoresWriter['connectionCatalog'], 'getSnapshot'>;
@@ -149,8 +159,23 @@ export class SessionOperationFailure extends Error {
   }
 }
 
+/**
+ * The import path found no ready connection+model to attach the task to. A
+ * distinct type (not just a message) so `#importSession` can map it to the
+ * stable `model_unavailable` wire code without inspecting the message — the
+ * generic `operation_unavailable` code it carries is also used for an
+ * unavailable source, which is a different failure.
+ */
+export class NoUsableImportModelError extends SessionOperationFailure {
+  constructor(message: string) {
+    super('operation_unavailable', message);
+    this.name = 'NoUsableImportModelError';
+  }
+}
+
 export interface HostSessionCatalogCoordinatorOptions {
   readonly stores: SessionCatalogStores;
+  readonly turnIndex: SessionTurnIndexReader;
   readonly runtimePolicy: SessionRuntimePolicyStores;
   readonly manager: SessionConfigurationAuthority;
   readonly admission: SessionAdmissionGate;
@@ -169,6 +194,82 @@ interface ResolvedSessionModel {
   readonly model: string;
 }
 
+/** A connection+model the import path may attempt, in preference order. */
+interface ImportModelCandidate {
+  readonly connectionId: string;
+  readonly connectionSlug: string;
+  readonly modelId: string;
+  /**
+   * This candidate is the workspace's configured default. Its failure is never
+   * skipped — a set-but-unusable default fails the import exactly as an explicit
+   * default target does today, rather than silently substituting a connection
+   * the user never chose. Fallback only applies when no default is set.
+   */
+  readonly isDefault: boolean;
+}
+
+/**
+ * Connection+model candidates for an imported task, most-preferred first: the
+ * configured default (kept at its exact precedence), then one ready model per
+ * enabled connection in catalog order. Model-level readiness that is a pure
+ * catalog fact — enabled, not quarantined, chat-capable — is applied here so an
+ * unusable connection costs one `#resolveModel` attempt, not one per enabled
+ * model (a connection may enable hundreds). Connection-level readiness
+ * (credential, retired provider, identity) stays in `#resolveModel`, which
+ * remains the sole arbiter of those.
+ */
+function importModelCandidates(snapshot: ConnectionCatalogSnapshot): ImportModelCandidate[] {
+  const byId = new Map(
+    snapshot.connections.map((connection) => [connection.connectionId, connection]),
+  );
+  const candidates: ImportModelCandidate[] = [];
+  const seen = new Set<string>();
+  const push = (connection: ConnectionCatalogEntry, modelId: string, isDefault: boolean): void => {
+    const key = `${connection.connectionId} ${modelId}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({
+      connectionId: connection.connectionId,
+      connectionSlug: connection.slug,
+      modelId,
+      isDefault,
+    });
+  };
+  // The connection's first enabled model that is a valid chat target, by pure
+  // catalog facts alone (no credential or provider-liveness read). Emitting only
+  // this one — rather than every enabled model — bounds the enumeration to one
+  // candidate per connection, so a connection-level failure (missing credential,
+  // retired provider) costs a single `#resolveModel` round trip.
+  const firstReadyModel = (connection: ConnectionCatalogEntry): string | undefined => {
+    for (const modelId of connectionEnabledModelIds(connection)) {
+      // Mirror `#resolveModel`'s pure-catalog gates, the wire byte cap included:
+      // a model id can be within the catalog's code-unit limit yet exceed the
+      // byte cap (e.g. emoji), and taking it as the connection's sole candidate
+      // would let `#resolveModel` reject it and mask the connection's shorter,
+      // usable models. Skip it here so the next enabled model is considered.
+      if (Buffer.byteLength(modelId, 'utf8') > SESSION_CATALOG_MODEL_MAX_BYTES) continue;
+      const model = authorizeConnectionModel(connection, modelId);
+      if (model && !isModelExplicitlyUnsupportedForChat(model)) return modelId;
+    }
+    return undefined;
+  };
+  // Default first, so a configured-and-ready default keeps today's behavior.
+  // `retainedDefaultTarget` + `isValidTarget` guarantee a persisted default is
+  // enabled and present in `enabledModelIds`, so its exact model is taken at its
+  // precedence rather than re-picked from the connection.
+  const preferred = snapshot.defaultTarget;
+  if (preferred) {
+    const connection = byId.get(preferred.connectionId);
+    if (connection?.enabled) push(connection, preferred.modelId, true);
+  }
+  for (const connection of snapshot.connections) {
+    if (!connection.enabled) continue;
+    const modelId = firstReadyModel(connection);
+    if (modelId !== undefined) push(connection, modelId, false);
+  }
+  return candidates;
+}
+
 /** Host-owned Session catalog, creation, and configuration authority. */
 export class HostSessionCatalogCoordinator {
   readonly handlers: SessionCatalogOperationHandlerMap = {
@@ -185,6 +286,7 @@ export class HostSessionCatalogCoordinator {
   };
 
   readonly #stores: SessionCatalogStores;
+  readonly #turnIndex: SessionTurnIndexReader;
   readonly #runtimePolicy: SessionRuntimePolicyStores;
   readonly #manager: SessionConfigurationAuthority;
   readonly #admission: SessionAdmissionGate;
@@ -197,6 +299,7 @@ export class HostSessionCatalogCoordinator {
 
   constructor(options: HostSessionCatalogCoordinatorOptions) {
     this.#stores = options.stores;
+    this.#turnIndex = options.turnIndex;
     this.#runtimePolicy = options.runtimePolicy;
     this.#manager = options.manager;
     this.#admission = options.admission;
@@ -206,11 +309,33 @@ export class HostSessionCatalogCoordinator {
     this.#sessionAccessAuthority = options.sessionAccessAuthority;
   }
 
+  /**
+   * Target for a task imported from another agent's conversation. Import is an
+   * explicit, one-off user action on a specific conversation, so it prefers the
+   * configured default but falls back to any ready connection+model — see
+   * `#resolveImportModel`.
+   */
   async resolveExternalSessionImportTarget(): Promise<Omit<CreateSessionInput, 'cwd' | 'name'>> {
-    const [model, policy] = await Promise.all([
-      this.#resolveModel({ kind: 'default' }, undefined),
-      this.#readRuntimePolicy(),
-    ]);
+    return this.#composeCreateTarget(this.#resolveImportModel());
+  }
+
+  /**
+   * Target for the autonomous WorkHub coordination create path (its
+   * `resolveCreateTarget`). Unlike import there is no user in the loop to pick a
+   * model, so this fails closed when no default is configured rather than binding
+   * a connection the user never chose. Import's fallback deliberately does not
+   * reach here; keeping the two resolvers apart is what confines the guess to an
+   * explicit user
+   * action.
+   */
+  async resolveDefaultCreateTarget(): Promise<Omit<CreateSessionInput, 'cwd' | 'name'>> {
+    return this.#composeCreateTarget(this.#resolveModel({ kind: 'default' }, undefined));
+  }
+
+  async #composeCreateTarget(
+    modelResolution: Promise<ResolvedSessionModel>,
+  ): Promise<Omit<CreateSessionInput, 'cwd' | 'name'>> {
+    const [model, policy] = await Promise.all([modelResolution, this.#readRuntimePolicy()]);
     return {
       llmConnectionId: model.connectionId,
       llmConnectionSlug: model.connectionSlug,
@@ -374,7 +499,7 @@ export class HostSessionCatalogCoordinator {
       let maxContributions = input.maxContributions;
       let throughSequence = input.throughSequence;
       while (true) {
-        const page = await this.#stores.readTurnContributionsSnapshot(
+        const page = await this.#turnIndex.readDurableTurnContributions(
           input.sessionId,
           throughSequence,
           input.position,
@@ -414,7 +539,7 @@ export class HostSessionCatalogCoordinator {
     input: SessionTurnLandmarksQueryInput,
   ): Promise<OperationOutcome<'session.turn_landmarks.query'>> {
     try {
-      const snapshot = await this.#stores.readTurnLandmarksSnapshot(
+      const snapshot = await this.#turnIndex.readDurableTurnLandmarks(
         input.sessionId,
         input.maxLandmarks,
       );
@@ -706,10 +831,7 @@ export class HostSessionCatalogCoordinator {
             'WorkHub Coordination Session read state requires WorkHub authority',
           );
         }
-        await this.#stores.markSessionReadThroughMessage(
-          input.sessionId,
-          input.readThroughMessageId,
-        );
+        await this.#clearUnreadAtTranscriptTail(current, input.readThroughMessageId);
         await this.#continuity.refreshCanonical(input.sessionId, lease);
         return {
           ok: true,
@@ -719,9 +841,6 @@ export class HostSessionCatalogCoordinator {
         };
       } catch (error) {
         if (isNotFound(error)) return readMarkerFailure('not_found', 'Session does not exist');
-        if (error instanceof SessionReadMarkerMessageNotFoundError) {
-          return readMarkerFailure('invalid_request', error.message);
-        }
         if (error instanceof SessionMetadataVersionConflictError) {
           return readMarkerFailure(
             'operation_conflict',
@@ -735,6 +854,52 @@ export class HostSessionCatalogCoordinator {
         );
       }
     });
+  }
+
+  /**
+   * A Session is read once the client has caught up with the ledger's newest
+   * visible message. `hasUnread` is the only thing the marker decides and every
+   * Turn raises it again, so a client still behind the tail changes nothing.
+   */
+  async #clearUnreadAtTranscriptTail(
+    record: SessionHeaderSnapshot,
+    readThroughMessageId: string,
+  ): Promise<void> {
+    const latest = await this.#newestVisibleMessage(record.header.id);
+    if (latest?.id !== readThroughMessageId) return;
+    if (record.header.lastReadMessageId === readThroughMessageId && !record.header.hasUnread) {
+      return;
+    }
+    await this.#stores.updateHeaderVersioned(
+      record.header.id,
+      { lastReadMessageId: readThroughMessageId, hasUnread: false },
+      record.revision,
+    );
+  }
+
+  /**
+   * The ledger's newest message a client can actually see. A Turn that ends on
+   * tool traffic can put more hidden records at the tail than one page holds,
+   * so the scan pages past them instead of reading the Session as never caught
+   * up and leaving it unread for good.
+   */
+  async #newestVisibleMessage(sessionId: string): Promise<StoredMessage | undefined> {
+    let throughSequence: number | null | undefined;
+    let position: number | undefined;
+    while (true) {
+      const page = await this.#turnIndex.readDurableRecords(sessionId, {
+        direction: 'older',
+        maxMessages: SESSION_READ_MARKER_TAIL_MAX_MESSAGES,
+        maxStoredBytes: SESSION_READ_MARKER_TAIL_MAX_BYTES,
+        ...(throughSequence === undefined ? {} : { throughSequence }),
+        ...(position === undefined ? {} : { position }),
+      });
+      const visible = page.records.find(({ message }) => isVisibleSessionMessage(message));
+      if (visible) return visible.message;
+      if (page.nextPosition === null) return undefined;
+      throughSequence = page.throughSequence;
+      position = page.nextPosition;
+    }
   }
 
   async #committedUpdate(
@@ -802,6 +967,58 @@ export class HostSessionCatalogCoordinator {
       if (isNotFound(error)) return undefined;
       throw error;
     }
+  }
+
+  /**
+   * Model for an imported task. Prefers the configured default but falls back to
+   * any ready connection+model, because a default is only auto-set during
+   * onboarding bootstrap (`setDefaultIfMissing`) and a self-configured profile
+   * legitimately has `defaultTarget: null` while holding perfectly usable
+   * connections. Without the fallback, every import fails before the source is
+   * even read. Unlike interactive session creation, import has no model picker,
+   * so this is the only place that can choose one.
+   */
+  async #resolveImportModel(): Promise<ResolvedSessionModel> {
+    let snapshot: ConnectionCatalogSnapshot;
+    try {
+      snapshot = await this.#runtimePolicy.connectionCatalog.getSnapshot();
+    } catch {
+      throw new SessionOperationFailure('persistence_failed', 'Connection catalog is unavailable');
+    }
+    for (const candidate of importModelCandidates(snapshot)) {
+      try {
+        return await this.#resolveModel(
+          {
+            kind: 'explicit',
+            connectionId: candidate.connectionId,
+            connectionSlug: candidate.connectionSlug,
+            model: candidate.modelId,
+          },
+          undefined,
+        );
+      } catch (error) {
+        if (!(error instanceof SessionOperationFailure)) throw error;
+        // The configured default is never substituted away from: if it is set
+        // but unusable (e.g. its credential was revoked), surface its failure
+        // exactly as an explicit default target does today, rather than silently
+        // attaching the task to a connection the user did not choose. The
+        // fallback below runs only when no default is set — the null-default
+        // state this fix is for, where there is nothing to substitute for.
+        if (candidate.isDefault) throw error;
+        // Otherwise, only a genuinely unusable candidate is skippable:
+        // `invalid_request` (disabled / retired / not-enabled / non-chat) and
+        // `operation_unavailable` (no credential). Any other code — notably
+        // `operation_conflict`, thrown when the connection was deleted or
+        // renamed after the snapshot — is a real fault the caller must see, not
+        // a reason to silently fall through to a lower-priority connection.
+        if (error.code !== 'invalid_request' && error.code !== 'operation_unavailable') {
+          throw error;
+        }
+      }
+    }
+    throw new NoUsableImportModelError(
+      'No usable Session model connection is available for import',
+    );
   }
 
   async #resolveModel(

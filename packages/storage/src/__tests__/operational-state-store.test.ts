@@ -126,6 +126,7 @@ test('a non-owner rejects an older schema without migrating it behind the Runtim
         }),
       (error: unknown) =>
         error instanceof OperationalStateMigrationBlockedError &&
+        error.reason === 'requires_host_migration' &&
         /requires migration by its Runtime Host/u.test(error.message),
     );
 
@@ -1294,6 +1295,13 @@ test('rejects a newer scope before migrating an older scope', async () => {
     assert.throws(
       () => acquireOperationalStateDatabase(root),
       /Operational schema usage is newer than supported/,
+    );
+    assert.throws(
+      () => acquireOperationalStateDatabase(root, { schemaMigration: 'require_current' }),
+      (error: unknown) =>
+        error instanceof OperationalStateMigrationBlockedError &&
+        error.reason === 'blocked' &&
+        /Operational schema usage is newer than supported/u.test(error.message),
     );
 
     const preserved = new DatabaseSync(databasePath, { readOnly: true });

@@ -134,6 +134,94 @@ test('an uncertain commit still asks the shell to re-read the catalog', async ()
   assert.deepEqual(events, [{ reason: 'created', sessionId: undefined }]);
 });
 
+test('maps a no-usable-model failure to a distinct, non-recovering reason', async () => {
+  const events: unknown[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        importExternalSession: async () => {
+          throw new RuntimeHostOperationError(
+            'external-session.import',
+            'model_unavailable',
+            'No usable Session model connection is available for import',
+          );
+        },
+      }),
+      emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke('external-sessions:import', {
+      adapterId: 'codex',
+      sourceSessionId: 'source-1',
+    }),
+    { ok: false, reason: 'no_model' },
+  );
+  // A model-resolution failure never touched the catalog, so nothing to re-read.
+  assert.deepEqual(events, []);
+});
+
+test('maps a pre-commit conversion failure to source_unreadable', async () => {
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        importExternalSession: async () => {
+          throw new RuntimeHostOperationError(
+            'external-session.import',
+            'source_unreadable',
+            'External Session could not be read or converted',
+          );
+        },
+      }),
+      emitSessionsChanged() {},
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke('external-sessions:import', {
+      adapterId: 'codex',
+      sourceSessionId: 'source-1',
+    }),
+    { ok: false, reason: 'source_unreadable' },
+  );
+});
+
+test('rethrows import failures that have no distinct renderer reason', async () => {
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        importExternalSession: async () => {
+          // An unsupported adapter is a bad request, not a model or source
+          // problem — it must NOT be relabeled as `source_unreadable`; it falls
+          // through to the generic banner.
+          throw new RuntimeHostOperationError(
+            'external-session.import',
+            'invalid_request',
+            'External Session source is unsupported',
+          );
+        },
+      }),
+      emitSessionsChanged() {},
+    },
+    ipc,
+  );
+
+  await assert.rejects(
+    () =>
+      ipc.invoke('external-sessions:import', {
+        adapterId: 'codex',
+        sourceSessionId: 'source-1',
+      }),
+    /External Session source is unsupported/,
+  );
+});
+
 test('rejects malformed renderer requests before they reach the Host client', async () => {
   let calls = 0;
   const ipc = ipcHarness();

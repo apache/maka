@@ -42,6 +42,7 @@ import {
   readWorkHubRequestIntent,
   workHubCorrectionTargetsSession,
   workHubCreationAuthorizesTitle,
+  workHubNamedDelegationActionTargetsSession,
 } from '@maka/core/workhub-creation-intent';
 import type {
   WorkHubCoordinationActInput,
@@ -145,6 +146,10 @@ export interface WorkHubActionGateEffects {
     assignment: WorkHubDelegationAssignedMessage,
     retirement: WorkHubDelegationRetirementClaim,
   ): Promise<WorkHubRetirementResult>;
+  resume(
+    input: WorkHubDelegationResumeInput,
+    context: ConnectionContext,
+  ): Promise<Extract<WorkHubCoordinationActResult, { disposition: 'resume_work' }>>;
 }
 
 /**
@@ -157,6 +162,11 @@ export interface WorkHubActionGateEffects {
 export interface WorkHubDelegationRetirementClaim {
   readonly cancellationClaimId: string;
   readonly cause: 'direct_stop' | 'replacement';
+}
+
+export interface WorkHubDelegationResumeInput {
+  readonly actionId: string;
+  readonly source: WorkHubDelegationAssignedMessage;
 }
 
 export interface WorkHubRetirementResult {
@@ -302,9 +312,9 @@ export class WorkHubCoordinationActionGate {
     const action = { requestFingerprint, result };
     this.#actions.set(input.actionId, action);
     // Successful actions remain a Host-lifetime fast path. Rejections release
-    // the slot so a pre-assignment admission can retry; the durable action
-    // claim, not this map, is what owns the identity across that retry and
-    // across restarts.
+    // the slot so admission can retry. Durable identity belongs to the
+    // owning operation: action claims for coordination writes, Host Turn
+    // admission for resume.
     void result.catch(() => {
       if (this.#actions.get(input.actionId) === action) {
         this.#actions.delete(input.actionId);
@@ -426,6 +436,43 @@ export class WorkHubCoordinationActionGate {
       });
       return this.#stop(requested, source);
     }
+    if (proposal.disposition === 'resume_work') {
+      if (!requestIntent.resume.imperative) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub resume requires an explicit named command in trusted user text',
+        );
+      }
+      const candidates = await this.candidates();
+      const target = candidates.candidates.find(
+        (candidate) => candidate.sessionId === proposal.expects.targetSessionId,
+      );
+      if (!target)
+        throw new WorkHubActionGateFailure(
+          'candidate_unavailable',
+          'WorkHub resume target is unavailable',
+        );
+      this.#assertTarget(target);
+      const source = await this.#soleWorkingDelegation(target.sessionId, 'resume');
+      if (source.actionId !== proposal.resumesActionId) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub resume target delegation changed',
+        );
+      }
+      const currentTargetName = target.sessionName;
+      if (
+        !currentTargetName ||
+        !workHubNamedDelegationActionTargetsSession(requestIntent.resume, currentTargetName)
+      ) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub resume target is not affirmed in trusted user text',
+        );
+      }
+      return this.#effects.resume({ actionId: input.actionId, source }, context);
+    }
+
     if (proposal.disposition === 'create_new') {
       if (!input.create || !workHubCreationAuthorizesTitle(requestIntent, proposal.title)) {
         throw new WorkHubActionGateFailure(
@@ -568,11 +615,31 @@ export class WorkHubCoordinationActionGate {
         return claimed;
       }
     }
+    const resolved = await this.#soleWorkingDelegation(targetSessionId, 'stop');
+    // A claim with no request behind it resolves from the active links like a
+    // first attempt, but only while those links still name the delegation it
+    // bound itself to. If that one left and another took its place, the
+    // fingerprint derived here would no longer match the claim, and since
+    // claims are never deleted the refusal would be permanent and unexplained.
+    // Say why instead: the identity is spent, and the retry needs a new one.
+    if (claim?.operation === 'stop' && resolved.delegationId !== claim.subject) {
+      throw new WorkHubActionGateFailure(
+        'action_conflict',
+        'WorkHub stop identity is already bound to a different delegation',
+      );
+    }
+    return resolved;
+  }
+
+  async #soleWorkingDelegation(
+    targetSessionId: string,
+    operation: 'resume' | 'stop',
+  ): Promise<WorkHubDelegationAssignedMessage> {
     const onTarget = await this.#effects.listActiveAssignments(targetSessionId);
     if (onTarget.length === 0) {
       throw new WorkHubActionGateFailure(
         'action_conflict',
-        'WorkHub has no active durable delegation to stop on that Session',
+        `WorkHub has no active durable delegation to ${operation} on that Session`,
       );
     }
     // One link is the answer whatever state its work is in. Whether that work
@@ -595,22 +662,10 @@ export class WorkHubCoordinationActionGate {
       if (holdingWork.length !== 1) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
-          'WorkHub stop target does not identify one active durable delegation',
+          `WorkHub ${operation} target does not identify one active durable delegation`,
         );
       }
       resolved = holdingWork[0]!;
-    }
-    // A claim with no request behind it resolves from the active links like a
-    // first attempt, but only while those links still name the delegation it
-    // bound itself to. If that one left and another took its place, the
-    // fingerprint derived here would no longer match the claim, and since
-    // claims are never deleted the refusal would be permanent and unexplained.
-    // Say why instead: the identity is spent, and the retry needs a new one.
-    if (claim?.operation === 'stop' && resolved.delegationId !== claim.subject) {
-      throw new WorkHubActionGateFailure(
-        'action_conflict',
-        'WorkHub stop identity is already bound to a different delegation',
-      );
     }
     return resolved;
   }
@@ -1049,6 +1104,12 @@ function delegationAssignment(
 
 function workHubCreatedSessionId(actionId: string): string {
   return `whs_${hash(`create\0${actionId}`).slice(0, 48)}`;
+}
+
+// One request cannot resume a later interruption after a lost response and restart.
+// Host admission rejects reuse of this Turn id for a different source boundary.
+export function workHubResumedTurnId(actionId: string): string {
+  return `wht_${hash(`resume\0${actionId}`).slice(0, 48)}`;
 }
 
 function workspaceProjection(session: WorkHubActionGateSession): WorkspaceProjection {

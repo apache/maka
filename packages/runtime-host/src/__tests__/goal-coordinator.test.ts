@@ -63,6 +63,7 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
     const coordinator = new HostGoalCoordinator({
       store: goalStore,
       stores,
+      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
       executions: {
         reconcile: async () => assert.fail('No Goal execution recovery is expected'),
         subscribe: () => () => undefined,
@@ -201,6 +202,7 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
     const recovered = new HostGoalCoordinator({
       store: goalStore,
       stores,
+      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
       executions: {
         reconcile: async () => assert.fail('Recovered Goal has no current execution'),
         subscribe: () => () => undefined,
@@ -275,6 +277,7 @@ test('session retirement forgets a terminal Goal without recreating deleted auth
     const coordinator = new HostGoalCoordinator({
       store: goalStore,
       stores,
+      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
       executions: {
         reconcile: async () => assert.fail('A terminal Goal has no execution to recover'),
         subscribe: () => () => undefined,
@@ -399,6 +402,7 @@ test('restart settles the durable current Goal execution through Hosted Executio
     const coordinator = new HostGoalCoordinator({
       store: goalStore,
       stores,
+      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
       executions: {
         reconcile: (requested) => executionProjection.read(requested),
         subscribe: () => () => undefined,
@@ -485,6 +489,7 @@ test('restart replaces a stale current execution with the current durable Goal i
     const coordinator = new HostGoalCoordinator({
       store: goalStore,
       stores,
+      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
       executions: {
         reconcile: async () => assert.fail('A stale execution must not be reconciled'),
         subscribe: () => () => undefined,
@@ -573,6 +578,7 @@ test('goal.arm creates one Goal per Session and refuses a second while it is unf
     const coordinator = new HostGoalCoordinator({
       store: goalStore,
       stores,
+      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
       executions: {
         reconcile: async () => assert.fail('Arming alone has no execution to recover'),
         subscribe: () => () => undefined,
@@ -687,6 +693,7 @@ test('a Goal armed but never carried by a Turn does not start itself after a res
     const armingHost = new HostGoalCoordinator({
       store: goalStore,
       stores,
+      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
       executions: {
         reconcile: async () => assert.fail('Arming alone has no execution to recover'),
         subscribe: () => () => undefined,
@@ -726,6 +733,7 @@ test('a Goal armed but never carried by a Turn does not start itself after a res
     const restarted = new HostGoalCoordinator({
       store: goalStore,
       stores,
+      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
       executions: {
         reconcile: async () => assert.fail('An armed Goal has no execution to recover'),
         subscribe: () => () => undefined,
@@ -789,6 +797,7 @@ test('resuming an armed Goal drives it, and a restart puts that drive back', asy
     const host = new HostGoalCoordinator({
       store: goalStore,
       stores,
+      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
       executions: {
         reconcile: async () => assert.fail('Arming alone has no execution to recover'),
         subscribe: () => () => undefined,
@@ -875,6 +884,7 @@ test('resuming an armed Goal drives it, and a restart puts that drive back', asy
     const restarted = new HostGoalCoordinator({
       store: goalStore,
       stores,
+      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
       executions: {
         reconcile: async () => assert.fail('A busy admission left no execution to recover'),
         subscribe: () => () => undefined,
@@ -932,6 +942,7 @@ test('an arm admitted before the drain creates no Goal after it', async () => {
     const host = new HostGoalCoordinator({
       store: goalStore,
       stores,
+      readSessionMessages: (sessionId) => stores.sessionStore.readMessagesSnapshot(sessionId),
       executions: {
         reconcile: async () => assert.fail('A refused arm has no execution'),
         subscribe: () => () => undefined,

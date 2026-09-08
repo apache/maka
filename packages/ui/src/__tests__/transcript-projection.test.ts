@@ -91,13 +91,31 @@ describe('incremental transcript projection', () => {
 
     assert.equal(
       english[0]?.notes[0]?.text,
-      'Context compacted to keep this session within the model window.',
+      'Earlier context compacted.',
     );
     assert.equal(
       chinese[0]?.notes[0]?.text,
-      '已压缩较早的对话内容，以适应模型上下文窗口。',
+      '已压缩较早的上下文。',
     );
     assert.notStrictEqual(chinese, english);
+  });
+
+  test('a locale change updates the live context-compaction row text', () => {
+    const projection = createTranscriptProjection();
+    // Empty messages keep the settled turns reference stable (NO_TURNS) across
+    // the locale switch, so only the overlay locale guard can re-localize the
+    // live "compacting" row.
+    const liveTurn: LiveTurnProjection = {
+      turnId: 'turn-compact',
+      phase: 'waiting',
+      steps: [],
+      rootExecutionKind: 'context_compact',
+      startedAt: 1,
+    };
+    const english = projection.project({ sessionId: SESSION, messages: [], liveTurn, locale: 'en' });
+    const chinese = projection.project({ sessionId: SESSION, messages: [], liveTurn, locale: 'zh-CN' });
+    assert.equal(english[0]?.notes[0]?.text, 'Compacting context…');
+    assert.equal(chinese[0]?.notes[0]?.text, '正在压缩上下文…');
   });
 
   test('a shell-run update whose semantics are unchanged affects nothing', () => {
@@ -418,7 +436,7 @@ describe('turn identity moves across structural change classes', () => {
   const base: StoredMessage[] = [
     { type: 'user', id: 'u1', turnId: 'turn-1', ts: 1, text: 'ask' },
     { type: 'assistant', id: 'a1', turnId: 'turn-1', ts: 4, text: 'answer', modelId: 'model-1' },
-    { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'completed', partialOutputRetained: false },
+    { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'completed' },
   ];
 
   const cases: Array<{
@@ -435,21 +453,13 @@ describe('turn identity moves across structural change classes', () => {
       field: 'status',
       refresh: [
         ...base.slice(0, 2),
-        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed', partialOutputRetained: false },
+        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed' },
       ],
     },
     {
-      field: 'partialOutputRetained',
-      // Recorded OR derived from the turn's own content, so isolating the
-      // recorded term needs a turn that produced nothing.
-      from: [
-        base[0]!,
-        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'aborted', partialOutputRetained: false },
-      ],
-      refresh: [
-        base[0]!,
-        { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'aborted', partialOutputRetained: true },
-      ],
+      field: 'failureMessage',
+      from: [...base.slice(0, 2), { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed', errorClass: 'rate_limit' }],
+      refresh: [...base.slice(0, 2), { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed', errorClass: 'rate_limit', failureMessage: 'Quota exceeded (status=429, requestId=req-4502)' }],
     },
     {
       field: 'assistant',

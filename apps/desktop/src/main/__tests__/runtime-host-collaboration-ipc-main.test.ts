@@ -62,6 +62,9 @@ test('requires plaintext confirmation and reports the issued invitation routes',
       queryCalls.push(sessionId);
       return { canRequestTurns: false, requests: [] };
     },
+    async renameCollaborationPrincipal() {
+      return { renamed: true };
+    },
     async revokeCollaborationPrincipal() {
       return { revoked: false };
     },

@@ -198,6 +198,13 @@ type ImportBatchOutcome = {
   duplicated: number;
   failed: readonly string[];
   unknown: readonly string[];
+  /**
+   * At least one row failed with `no_model`. Surfaced on the summary (not the
+   * transient importError banner, which the post-run catalog refresh clears) so
+   * the batch can name the one globally-actionable fix — configure a model —
+   * once for the whole run.
+   */
+  noModel: boolean;
 };
 
 const EMPTY_IMPORT_BATCH_OUTCOME: ImportBatchOutcome = {
@@ -205,6 +212,7 @@ const EMPTY_IMPORT_BATCH_OUTCOME: ImportBatchOutcome = {
   duplicated: 0,
   failed: [],
   unknown: [],
+  noModel: false,
 };
 
 function recordImportBatchResult(
@@ -694,7 +702,19 @@ export function ImportTasksSettingsPage(props: {
         // the user has left steering the shell somewhere they did not ask for.
         if (!mountedRef.current) return;
         if (!outcome.ok) {
-          await recoverUnknownImport(attempt);
+          // Only an unknown commit outcome is a maybe-landed task to reconcile;
+          // the other reasons are clean failures with an actionable banner.
+          // Exhaustive by design — a new reason is a compile error until handled.
+          if (outcome.reason === 'commit_outcome_unknown') {
+            await recoverUnknownImport(attempt);
+          } else if (outcome.reason === 'no_model') {
+            setImportError(copy.importFailedNoModel);
+          } else if (outcome.reason === 'source_unreadable') {
+            setImportError(copy.importFailedSourceUnreadable);
+          } else {
+            const _exhaustive: never = outcome.reason;
+            return _exhaustive;
+          }
           return;
         }
         props.onImported(outcome.session);
@@ -773,21 +793,23 @@ export function ImportTasksSettingsPage(props: {
         try {
           const result = await requestImport(attempt.adapterId, attempt.sourceSessionId);
           if (!mountedRef.current) return;
-          outcome = recordImportBatchResult(
-            outcome,
-            session.id,
+          if (result.ok) {
+            outcome = recordImportBatchResult(
+              outcome,
+              session.id,
+              wasImported ? 'duplicated' : 'imported',
+            );
+          } else if (result.reason === 'commit_outcome_unknown') {
             // Not `failed`: the call did not answer, and only a catalog read
             // settles whether the conversion landed. Calling it a failure is
-            // what invites the retry that makes a second copy.
-            result.ok ? (wasImported ? 'duplicated' : 'imported') : 'unknown',
-          );
-          if (!result.ok) {
-            // Recorded, not recovered. A single import recovers inline, but
-            // recovery re-reads the whole catalog window per attempt, and doing
-            // that between conversions would interleave N full reads with the
-            // batch and race the writes it is making. The unconfirmed banner
-            // names every one of these and its 重试 resolves them a press at a
-            // time, removing each as it settles.
+            // what invites the retry that makes a second copy. Recorded, not
+            // recovered — a single import recovers inline, but recovery re-reads
+            // the whole catalog window per attempt, and doing that between
+            // conversions would interleave N full reads with the batch and race
+            // the writes it is making. The unconfirmed banner names every one of
+            // these and its 重试 resolves them a press at a time, removing each
+            // as it settles.
+            outcome = recordImportBatchResult(outcome, session.id, 'unknown');
             setUncertainImports((current) =>
               current.some(
                 (entry) =>
@@ -797,6 +819,22 @@ export function ImportTasksSettingsPage(props: {
                 ? current
                 : [...current, attempt],
             );
+          } else {
+            // A definite, code-classified failure (no usable model, or an
+            // unreadable/oversized source) — not a maybe-landed task. Count it as
+            // failed and never offer recovery: retrying `no_model` just fails
+            // again, and retrying `source_unreadable` cannot make an unreadable
+            // conversation readable. Exhaustive by design — a new reason is a
+            // compile error until handled.
+            outcome = recordImportBatchResult(outcome, session.id, 'failed');
+            if (result.reason === 'no_model') {
+              // A missing model blocks every row identically; the summary raises
+              // its actionable banner once for the whole run.
+              outcome = { ...outcome, noModel: true };
+            } else if (result.reason !== 'source_unreadable') {
+              const _exhaustive: never = result.reason;
+              return _exhaustive;
+            }
           }
         } catch {
           if (!mountedRef.current) return;
@@ -814,6 +852,9 @@ export function ImportTasksSettingsPage(props: {
       }
     } finally {
       if (mountedRef.current) {
+        // The summary carries `noModel`, not the transient importError banner,
+        // because `loadCatalog` below clears importError on its post-run refresh
+        // and would wipe it before the user sees it.
         setImportRun({ kind: 'idle', summary: outcome });
         // Cleared because it was answered. Leaving the rows marked after a run
         // invites a second press that would import each of them again.
@@ -996,6 +1037,9 @@ export function ImportTasksSettingsPage(props: {
                     importRun.summary.failed.length > 0
                       ? copy.batchFailed(importRun.summary.failed.length)
                       : null,
+                    // The one globally-actionable failure: name the fix that
+                    // unblocks every row at once.
+                    importRun.summary.noModel ? copy.importFailedNoModel : null,
                   ]
                     .filter(Boolean)
                     .join(' ') || undefined

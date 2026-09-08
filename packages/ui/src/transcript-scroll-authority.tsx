@@ -325,7 +325,11 @@ export function useTranscriptScrollAuthority(): TranscriptScrollAuthority {
  * The label stays unset on purpose: `ChatSurfaceLayout` overrides Astryx's
  * `scrollToBottom` string through the locale provider that wraps this.
  */
-export function TranscriptScrollButton() {
+export function TranscriptScrollButton({
+  onActivate,
+}: {
+  onActivate?: () => Promise<void> | void;
+}) {
   const authority = useTranscriptScrollAuthority();
   const snapshot = useSyncExternalStore(
     authority.subscribe,
@@ -334,8 +338,12 @@ export function TranscriptScrollButton() {
   );
   return (
     <ChatLayoutScrollButton
-      isVisible={snapshot.awayFromTail}
-      onClick={() => authority.pinToTail()}
+      isVisible={snapshot.awayFromTail || onActivate !== undefined}
+      onClick={() => {
+        authority.pinToTail();
+        const activation = onActivate?.();
+        if (activation) void activation.catch(() => undefined);
+      }}
     />
   );
 }

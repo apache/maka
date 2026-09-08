@@ -43,6 +43,7 @@ import {
   isSha512PackageIntegrity,
   resolveRuntimeHostNpmDeploymentLayout,
 } from './update-package-evidence.js';
+import { isNodeError } from '../node-error.js';
 
 export const RUNTIME_HOST_MANAGED_DEPLOYMENT_CONFIG_FILE = 'runtime-host-deployment.json';
 
@@ -1258,8 +1259,4 @@ function deploymentIo(message: string, cause: unknown): RuntimeHostManagedDeploy
     : new RuntimeHostManagedDeploymentError('deployment_io_failed', message, {
         cause,
       });
-}
-
-function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
-  return error instanceof Error && 'code' in error && error.code === code;
 }

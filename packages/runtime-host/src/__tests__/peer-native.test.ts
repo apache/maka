@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { waitFor } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -323,6 +324,37 @@ module.exports = {
     assert.equal(connectivityWakeups, 1);
     unsubscribeConnectivity();
 
+    const connectedPeers: string[] = [];
+    const detachRecovery = client.attachRouteResolver({
+      prepareRoutes: async () => {},
+      resolveRoutes: () => ({
+        state: 'exhausted',
+        routeHints: [],
+        coordinationRelays: [],
+        transitRelayPeerIds: [],
+      }),
+      subscribeRoutes: () => () => {},
+      peerConnected: (peerId) => {
+        connectedPeers.push(peerId);
+        if (peerId === 'restored') throw new Error('recovery observer failed');
+      },
+    });
+    assert.deepEqual(connectedPeers, ['restored'], 'attachment observes an already connected peer');
+    native.default.establishPeer('ready');
+    await waitForImmediate();
+    assert.deepEqual(connectedPeers, ['restored', 'ready']);
+    native.default.establishPeer('ready');
+    await waitForImmediate();
+    assert.deepEqual(
+      connectedPeers,
+      ['restored', 'ready'],
+      'snapshot refreshes are not new connections',
+    );
+    detachRecovery();
+    native.default.establishPeer('detached');
+    await waitForImmediate();
+    assert.deepEqual(connectedPeers, ['restored', 'ready']);
+
     native.default.failEndpoint();
     await waitForImmediate();
     await assert.rejects(
@@ -484,9 +516,11 @@ async function waitForRequestCount(
   stats: { readonly requests: readonly unknown[] },
   expected: number,
 ): Promise<void> {
-  for (let attempt = 0; attempt < 10 && stats.requests.length < expected; attempt += 1) {
-    await waitForImmediate();
-  }
+  await waitFor(() => stats.requests.length >= expected, {
+    timeoutMs: 5_000,
+    pollMs: 10,
+    message: `peer-native request count did not reach ${expected}`,
+  });
   assert.equal(stats.requests.length, expected);
 }
 

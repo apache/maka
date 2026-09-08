@@ -248,6 +248,7 @@ interface ConnectResolvedRuntimeHostInput
 }
 
 export interface RuntimeHostConnection {
+  readonly cooperativeHandoff?: true;
   readonly rootId: string;
   readonly hostEpoch: string;
   readonly connectionId: string;
@@ -348,6 +349,7 @@ interface QueuedDomainFrame {
 type RequestTimeoutScope = 'request' | 'connection';
 
 class RuntimeHostConnectionImpl implements RuntimeHostConnection {
+  readonly cooperativeHandoff?: true;
   readonly rootId: string;
   readonly hostEpoch: string;
   readonly connectionId: string;
@@ -389,6 +391,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       selectedProtocol: number;
       compositionId: string;
       compositionRevision: string;
+      cooperativeHandoff?: true;
     },
     // livenessIntervalMs is validated by connectResolvedRuntimeHost alongside
     // the other connect timeouts, before any transport work happens.
@@ -409,6 +412,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.hostEpoch = accepted.hostEpoch;
     this.connectionId = accepted.connectionId;
     this.selectedProtocol = accepted.selectedProtocol;
+    this.cooperativeHandoff = accepted.cooperativeHandoff;
     this.compositionId = accepted.compositionId;
     this.compositionRevision = accepted.compositionRevision;
     this.#getPeerPath = options?.getPeerPath ?? (() => options?.peerPath);
@@ -1468,6 +1472,7 @@ async function exchangeRuntimeHostHandshake(
   const helloProtocol = input.helloProtocol ?? input.protocol;
   const hello: LegacySurfaceClientHello = {
     kind: 'hello',
+    activitySnapshotVersion: 2,
     clientInstanceId: input.clientInstanceId,
     surface: 'desktop',
     protocolMin: helloProtocol.min,

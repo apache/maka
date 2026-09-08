@@ -42,6 +42,11 @@ import type {
 import type { HealthSignal, HealthSnapshot } from '@maka/core/health';
 import type { DesktopExternalSessionCatalogItem } from '../../src/preload/external-session-catalog';
 import type { AppUpdateStatus } from '../../src/preload/bridge-contract';
+import {
+  AppUpdateProvider,
+  AppUpdateServicesProvider,
+  type AppUpdateServices,
+} from '../../src/renderer/features/app-update/index.js';
 import type { SessionSummary } from '@maka/core/session';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
 import type {
@@ -951,6 +956,24 @@ const makaBridge = {
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
 
 /**
+ * What the production App Update provider reads inside `SettingsStory`. Each
+ * call goes to `window.maka.app` at call time rather than capturing the shared
+ * fixture: a story's decorator installs its scoped bridge in a layout effect,
+ * after this module evaluated, and the channel stories below override
+ * `updateStatus` there. Capturing `makaBridge.app` here would show every About
+ * story the shared idle status.
+ */
+const settingsAppUpdateServices: AppUpdateServices = {
+  appUpdate: {
+    updateStatus: () => window.maka.app.updateStatus(),
+    checkForUpdates: () => window.maka.app.checkForUpdates(),
+    retryUpdateDownload: () => window.maka.app.retryUpdateDownload(),
+    installUpdate: (input) => window.maka.app.installUpdate(input),
+    subscribeUpdateStatus: (handler) => window.maka.app.subscribeUpdateStatus(handler),
+  },
+};
+
+/**
  * A PACKAGED install, which the shared fixture cannot be: it is a dev checkout,
  * and `buildMode` short-circuits the About lead before `updateChannel` is ever
  * read. Only these two facts move — everything else stays the shared bridge, so
@@ -1207,6 +1230,70 @@ const withProjectsCachedRevalidationBridge = withScopedMakaBridge({
   },
   projects: {
     getSnapshot: cachedProjectsSnapshotRead,
+    subscribeChanges: () => () => undefined,
+  },
+} satisfies Record<string, unknown>);
+
+const projectDefaultTypographySettings = storyRuntimeSettings(
+  mergeSettings(createDefaultSettings(), {
+    projects: { defaultProjectId: 'project-maka' },
+  }),
+);
+
+function seedProjectDefaultTypographySnapshotCache(cache: SettingsSnapshotCache): void {
+  seedGeneralSnapshotCache(cache);
+  cache.commitClientRead(projectDefaultTypographySettings);
+}
+
+const projectDefaultTypographyProjects: ProjectRecord[] = [
+  {
+    id: 'project-hbase',
+    name: 'hbase',
+    locations: [{ path: '/Users/storybook/Development/Code/Github/hbase', isWorktree: false }],
+    available: true,
+    preferredPath: '/Users/storybook/Development/Code/Github/hbase',
+  },
+  {
+    id: 'project-maka',
+    name: 'maka',
+    locations: [{ path: '/Users/storybook/Development/Code/Github/maka', isWorktree: false }],
+    available: true,
+    preferredPath: '/Users/storybook/Development/Code/Github/maka',
+  },
+  {
+    id: 'project-jdhadoop',
+    name: 'JDHadoop',
+    locations: [{ path: '/Users/storybook/Development/Code/Repository/JDHadoop', isWorktree: false }],
+    available: true,
+    preferredPath: '/Users/storybook/Development/Code/Repository/JDHadoop',
+  },
+];
+
+const withProjectDefaultTypographyBridge = withScopedMakaBridge({
+  ...makaBridge,
+  localRuntimeHostRemoteAccess: {
+    getSnapshot: async () => ({ state: 'off' as const }),
+    enable: async () => ({ kind: 'active_tasks' as const }),
+    createConnectionCode: async () => 'storybook-connection-code',
+    revokeSharedAccess: async () => ({ state: 'off' as const }),
+    disable: async () => ({ state: 'off' as const }),
+  },
+  settings: {
+    ...makaBridge.settings,
+    getClient: async () => projectDefaultTypographySettings,
+    get: async () => projectDefaultTypographySettings,
+  },
+  projects: {
+    getSnapshot: async () => ({
+      projects: projectDefaultTypographyProjects,
+      capabilities: {
+        chooseClientDirectory: false,
+        chooseHostDirectory: false,
+        selectNoProject: false,
+        setLocalDefault: true,
+        viewClientPath: true,
+      },
+    }),
     subscribeChanges: () => () => undefined,
   },
 } satisfies Record<string, unknown>);
@@ -1689,7 +1776,11 @@ function fieldChrome(element: HTMLElement) {
 function SettingsStory(props: SettingsStoryProps) {
   return (
     <ToastProvider>
-      <SettingsStoryFrame {...props} />
+      <AppUpdateServicesProvider services={settingsAppUpdateServices}>
+        <AppUpdateProvider>
+          <SettingsStoryFrame {...props} />
+        </AppUpdateProvider>
+      </AppUpdateServicesProvider>
     </ToastProvider>
   );
 }
@@ -2171,6 +2262,31 @@ export const ProjectsCachedHostRevalidation: Story = {
     await expect(getComputedStyle(mutedProjectContent).opacity).toBe('0.5');
     await expect(cachedProjectsSnapshotRead).not.toHaveBeenCalled();
     await expect(canvas.queryByRole('alert')).not.toBeInTheDocument();
+  },
+};
+// Real path: 设置 → 工作区, after one project has been made the default.
+// The settled default state occupies the same action slot as 设为默认, so its
+// text must keep the action label's type tier instead of shrinking to generic
+// supporting metadata.
+export const ProjectsDefaultBadgeTypography: Story = {
+  decorators: [withProjectDefaultTypographyBridge],
+  render: () => (
+    <SettingsStory
+      section="projects"
+      seedSnapshotCache={seedProjectDefaultTypographySnapshotCache}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const defaultLabel = await canvas.findByText('默认');
+    const defaultBadge = defaultLabel.closest<HTMLElement>('.astryx-badge');
+    const setDefaultButton = (await canvas.findAllByRole('button', { name: '设为默认' }))[0];
+    if (!defaultBadge || !setDefaultButton) {
+      throw new Error('Project default-state controls did not render');
+    }
+    await expect(getComputedStyle(defaultBadge).fontSize).toBe(
+      getComputedStyle(setDefaultButton).fontSize,
+    );
   },
 };
 // Real path: 设置 → 通用, after selecting Git Bash for the current Runtime Host.
@@ -2924,6 +3040,31 @@ export const AboutUpdateFailed: Story = {
     }),
   ],
   render: () => <SettingsStory section="about" />,
+};
+
+// Interaction: 检查更新 on a packaged release that has not checked yet. The
+// button issues the App Update feature's guarded command — the page itself
+// never touches the bridge — and the row's label moves from 尚未检查更新 to
+// 已是最新版本 once the check returns `not-available`. A dev checkout has no
+// row to click, which is why this is not the `About` story's play.
+export const AboutCheckForUpdates: Story = {
+  decorators: [
+    withPackagedChannelBridge({
+      updateChannel: 'release',
+      appVersion: '0.2.0',
+      updateStatus: { state: 'idle', currentVersion: '0.2.0' },
+    }),
+  ],
+  render: () => <SettingsStory section="about" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const check = await canvas.findByRole('button', { name: '检查更新' });
+    expect(check).toBeEnabled();
+    await userEvent.click(check);
+    await waitFor(() => {
+      expect(canvas.getByText('已是最新版本')).toBeInTheDocument();
+    });
+  },
 };
 
 // Real path: 设置 → 已归档任务, after archiving tasks from the rail's row menu.

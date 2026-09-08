@@ -43,9 +43,8 @@ import type {
   AssistantMessage,
   AssistantStepContentKind,
   AssistantThinkingPart,
+  RuntimeSystemNoteKind,
   SessionHeader,
-  SystemNoteMessage,
-  TokenUsageMessage,
 } from '@maka/core/session';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -103,7 +102,6 @@ import {
   type RepairableAiSdkToolCall,
 } from './model-adapter.js';
 import { persistedOpenAiResponsesStepMessages } from './openai-responses-continuation.js';
-import { nonCanonicalContentOrder } from './runtime-event-read-model.js';
 import {
   composeRequestProjection,
   type DispatchRequestShape,
@@ -166,6 +164,7 @@ import {
 import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
+  historyCompactSourceDigest,
   isProviderHistoryCompactCheckpoint,
   matchHistoryCompactCheckpointPrefix,
   projectHistoryCompactCheckpointReplay,
@@ -604,6 +603,7 @@ function providerRetryDelayMs(failedAttempt: number, retryAfterMs?: number): num
 
 function providerRetryReason(kind: ModelFailureKind): ProviderRetryReason {
   switch (kind) {
+    case 'stream_truncated':
     case 'network':
     case 'provider_unavailable':
     case 'rate_limit':
@@ -640,6 +640,7 @@ export class AiSdkTurn {
   aborted = false;
   loopStopRequested = false;
   loopStopReason: CompleteEvent['stopReason'] | undefined;
+  private handoffPaused = false;
   watchdog: StreamWatchdog | null = null;
   runTrace: RunTrace | null = null;
   readonly imageBudget: ProviderImageBudget = { used: 0, decisions: new Map() };
@@ -852,13 +853,31 @@ export class AiSdkTurn {
     };
   }
 
+  /**
+   * A note about what happened inside this invocation, written to the
+   * invocation's own ledger. Fail-open: the note explains a turn, it is not
+   * what the turn did, so losing it must never end a send that is otherwise
+   * fine. Returns whether the note landed.
+   */
+  private async recordSystemNote(
+    kind: RuntimeSystemNoteKind,
+    turnId: string,
+    data?: unknown,
+  ): Promise<boolean> {
+    if (!this.deps.backend.recordSystemNote) return false;
+    return await this.deps.backend
+      .recordSystemNote(kind, turnId, data)
+      .then(() => true)
+      .catch(() => false);
+  }
+
   // --------------------------------------------------------------------------
   // manual history compaction
   // --------------------------------------------------------------------------
 
   private async *runWithinScope(input: BackendSendInput): AsyncIterable<SessionEvent> {
     const turnId = input.turnId;
-    const maxSteps = input.maxSteps ?? this.deps.maxSteps;
+    const maxSteps = input.maxSteps === null ? undefined : (input.maxSteps ?? this.deps.maxSteps);
     const toolRuntime = this.toolRuntime;
     const turnAbortController = this.abortController;
 
@@ -905,36 +924,6 @@ export class AiSdkTurn {
         return;
       }
       const stepId = currentStepMessageId;
-      const thinkingText = stepThinkingParts.map((part) => part.text).join('');
-      const contentOrder = nonCanonicalContentOrder(stepContentOrder);
-      const msg: AssistantMessage = {
-        type: 'assistant',
-        id: stepId,
-        turnId,
-        ts: this.deps.now(),
-        text: stepText,
-        ...(stepTextProviderOptions !== undefined
-          ? { providerOptions: stepTextProviderOptions }
-          : {}),
-        ...(contentOrder ? { contentOrder } : {}),
-        modelId: this.deps.backend.modelId,
-        ...(hasThinking
-          ? {
-              thinking: {
-                text: thinkingText,
-                ...(stepThinkingParts.length === 1 && stepThinkingParts[0]!.signature !== undefined
-                  ? { signature: stepThinkingParts[0]!.signature }
-                  : {}),
-                ...(stepThinkingParts.length === 1 &&
-                stepThinkingParts[0]!.providerOptions !== undefined
-                  ? { providerOptions: stepThinkingParts[0]!.providerOptions }
-                  : {}),
-                ...(stepThinkingParts.length > 1 ? { parts: stepThinkingParts } : {}),
-              },
-            }
-          : {}),
-      };
-      await this.deps.backend.appendMessage(msg);
       if (hasThinking) {
         for (const part of stepThinkingParts) {
           queue.push({
@@ -1004,6 +993,39 @@ export class AiSdkTurn {
     let contextReportedWindowNoteWritten = false;
     let contextOverflowAfterCompactionNoteWritten = false;
     let contextWindowSuggestionNoteWritten = false;
+    // A compaction decision is known the moment its stage reports it — the
+    // pre-turn replay resolves its fold before the first request goes out —
+    // while the settlement path is skipped entirely by a stop or a stream
+    // error. Write both notes when the decision is known, once per send,
+    // whichever stage reports first (#4850).
+    const appendCompactionDecisionNotes = async (
+      contextBudget: ContextBudgetDiagnostic | undefined,
+    ): Promise<void> => {
+      if (
+        !contextCompactionFailedOpenNoteWritten &&
+        shouldAppendContextCompactionFailedOpenNote(contextBudget)
+      ) {
+        // The most recent stage that refused the fold: a send can carry both a
+        // priorReplay and an activeStep refusal after a diagnostic merge, and
+        // array order would pin the stale one.
+        const failOpenReason = contextBudget?.compactionDecisions
+          ?.filter(
+            (decision) =>
+              decision.boundaryKind === 'historyCompact' && decision.decision === 'failedOpen',
+          )
+          .at(-1)?.failOpenReason;
+        // Mark written only after the append lands: a failed write must leave
+        // the flag down so the settlement fallback can still record the note.
+        contextCompactionFailedOpenNoteWritten = await this.recordSystemNote(
+          'context_compaction_failed_open',
+          turnId,
+          failOpenReason !== undefined ? { failOpenReason } : undefined,
+        );
+      }
+      if (!contextCompactedNoteWritten && shouldAppendContextCompactedNote(contextBudget)) {
+        contextCompactedNoteWritten = await this.recordSystemNote('context_compacted', turnId);
+      }
+    };
     // Request index (0-based) at which the active prune last rewrote the
     // request. A step Maka pruned is not append-only, so usage may legitimately
     // shrink.
@@ -1189,6 +1211,10 @@ export class AiSdkTurn {
       yield* this.drain(queue);
       return;
     }
+    // The pre-turn replay's fold decision is final here: surface it now so a
+    // stop or stream error later in the send cannot keep it from the
+    // transcript (#4850).
+    await appendCompactionDecisionNotes(priorReplay.contextBudget);
     if (midTurnState) {
       // Roll-forward seed: the latest durable checkpoint (loaded or written at
       // turn start) so a mid-turn summary only re-reads the newly folded span.
@@ -1246,6 +1272,9 @@ export class AiSdkTurn {
       };
       let lastCompletedStepHadToolResult = false;
       let terminalProviderErrorReason: string | undefined;
+      let terminalRetry:
+        | { error: unknown; retry: import('@maka/core/model-failure').ModelRetryDecision }
+        | undefined;
       try {
         const startWatchdog = (): void => {
           watchdogState.current?.stop();
@@ -1303,6 +1332,7 @@ export class AiSdkTurn {
               ]
             : turnEvents;
           let replayEvents = rawProjectionEvents;
+          let effectiveProjectionCheckpoint = projectionCheckpoint;
           if (projectionCheckpoint) {
             const checkpointMatch = matchHistoryCompactCheckpointPrefix(
               projectionCheckpoint,
@@ -1311,11 +1341,27 @@ export class AiSdkTurn {
             if (checkpointMatch.reason) {
               throw new Error(`durable checkpoint projection mismatch: ${checkpointMatch.reason}`);
             }
-            replayEvents = projectHistoryCompactCheckpointReplay(
-              projectionCheckpoint,
+            // Content-currency guard: the raw identity still matches, but a
+            // transition committed after this fold (e.g. an active-turn prune
+            // in this very send) changed the effective view the block was
+            // built from. Replay without the stale block — the provider
+            // decides fit and overflow recovery re-folds (#4845 review).
+            const pinnedEffectiveDigest = projectionCheckpoint.coverage.effectiveSourceDigest;
+            const coveredEffective = await this.deps.compaction.foldEffectiveModelHistory(
               checkpointMatch.coveredRuntimeEvents,
-              checkpointMatch.successorRuntimeEvents,
             );
+            if (
+              pinnedEffectiveDigest === undefined ||
+              historyCompactSourceDigest(coveredEffective) !== pinnedEffectiveDigest
+            ) {
+              effectiveProjectionCheckpoint = undefined;
+            } else {
+              replayEvents = projectHistoryCompactCheckpointReplay(
+                projectionCheckpoint,
+                checkpointMatch.coveredRuntimeEvents,
+                checkpointMatch.successorRuntimeEvents,
+              );
+            }
             // The checkpoint was capacity-validated before it was persisted.
             // Do not re-run that gate against a later, larger successor tail:
             // the active-step shaper must see that growth so it can roll the
@@ -1344,7 +1390,7 @@ export class AiSdkTurn {
             await this.deps.messageProjection.materializeRuntimeReplayPlan(
               replayPlan,
               this.imageBudget,
-              projectionCheckpoint,
+              effectiveProjectionCheckpoint,
               compatibleProviderReasoningReplayEventIds(
                 replayEvents,
                 input.runtimeContextInvocations,
@@ -1353,7 +1399,7 @@ export class AiSdkTurn {
                 this.runId,
               ),
             );
-          return projectionCheckpoint
+          return effectiveProjectionCheckpoint
             ? currentTurnMessages
             : [...priorReplay.messages, ...currentTurnMessages];
         };
@@ -1669,15 +1715,10 @@ export class AiSdkTurn {
                       : stepUsage.inputTokens <= priorInput)
                   ) {
                     this.deps.session.contextProviderDroppingReported = true;
-                    const note: SystemNoteMessage = {
-                      type: 'system_note',
-                      id: this.deps.newId(),
-                      turnId,
-                      ts: this.deps.now(),
-                      kind: 'context_provider_dropping',
-                      data: { inputTokens: stepUsage.inputTokens, priorInputTokens: priorInput },
-                    };
-                    await this.deps.backend.appendMessage(note).catch(() => {});
+                    await this.recordSystemNote('context_provider_dropping', turnId, {
+                      inputTokens: stepUsage.inputTokens,
+                      priorInputTokens: priorInput,
+                    });
                   }
                   // Fail closed: reset on every step boundary so a missing final
                   // step's usage does not leave a stale value from an earlier step.
@@ -1698,18 +1739,10 @@ export class AiSdkTurn {
                     stepUsage.inputTokens + stepUsage.outputTokens > midTurnState.capacity
                   ) {
                     contextWindowOverrunNoteWritten = true;
-                    const note: SystemNoteMessage = {
-                      type: 'system_note',
-                      id: this.deps.newId(),
-                      turnId,
-                      ts: this.deps.now(),
-                      kind: 'context_window_overrun',
-                      data: {
-                        usedTokens: stepUsage.inputTokens + stepUsage.outputTokens,
-                        declaredContextWindow: midTurnState.capacity,
-                      },
-                    };
-                    await this.deps.backend.appendMessage(note).catch(() => {});
+                    await this.recordSystemNote('context_window_overrun', turnId, {
+                      usedTokens: stepUsage.inputTokens + stepUsage.outputTokens,
+                      declaredContextWindow: midTurnState.capacity,
+                    });
                   }
                   // Nothing declared, and the provider accepted a request past
                   // the window this model reports. Every other signal in this
@@ -1751,15 +1784,10 @@ export class AiSdkTurn {
                       (previousTotal === undefined || previousTotal <= reported);
                     if (reported !== undefined && crossedNow) {
                       contextReportedWindowNoteWritten = true;
-                      const note: SystemNoteMessage = {
-                        type: 'system_note',
-                        id: this.deps.newId(),
-                        turnId,
-                        ts: this.deps.now(),
-                        kind: 'context_reported_window_exceeded',
-                        data: { usedTokens: used, reportedContextWindow: reported },
-                      };
-                      await this.deps.backend.appendMessage(note).catch(() => {});
+                      await this.recordSystemNote('context_reported_window_exceeded', turnId, {
+                        usedTokens: used,
+                        reportedContextWindow: reported,
+                      });
                     }
                   }
                   lastStepInputTokens = stepUsage?.inputTokens;
@@ -2078,20 +2106,12 @@ export class AiSdkTurn {
                 (midTurnState.capacity === undefined || acceptedTotal < midTurnState.capacity)
               ) {
                 contextWindowSuggestionNoteWritten = true;
-                const note: SystemNoteMessage = {
-                  type: 'system_note',
-                  id: this.deps.newId(),
-                  turnId,
-                  ts: this.deps.now(),
-                  kind: 'context_window_suggestion',
-                  data: {
-                    suggestedContextWindow: acceptedTotal,
-                    ...(midTurnState.capacity !== undefined
-                      ? { declaredContextWindow: midTurnState.capacity }
-                      : {}),
-                  },
-                };
-                await this.deps.backend.appendMessage(note).catch(() => {});
+                await this.recordSystemNote('context_window_suggestion', turnId, {
+                  suggestedContextWindow: acceptedTotal,
+                  ...(midTurnState.capacity !== undefined
+                    ? { declaredContextWindow: midTurnState.capacity }
+                    : {}),
+                });
               }
               // A folded projection was selected in this send and the provider
               // still rejects the request. That is worth saying, because the
@@ -2107,14 +2127,7 @@ export class AiSdkTurn {
                 midTurnState?.compactionAppliedThisSend === true
               ) {
                 contextOverflowAfterCompactionNoteWritten = true;
-                const note: SystemNoteMessage = {
-                  type: 'system_note',
-                  id: this.deps.newId(),
-                  turnId,
-                  ts: this.deps.now(),
-                  kind: 'context_overflow_after_compaction',
-                };
-                await this.deps.backend.appendMessage(note).catch(() => {});
+                await this.recordSystemNote('context_overflow_after_compaction', turnId);
               }
               const idleWatchdogRecovery =
                 settledWatchdogTimeout?.phase === 'idle' &&
@@ -2136,16 +2149,35 @@ export class AiSdkTurn {
                 sealedThinkingRetryCount < MAX_SEALED_THINKING_RETRIES_PER_STEP &&
                 attemptCanRecoverWithSealedThinking() &&
                 !attemptHasNoObservableOutput();
+              // The stopping gate also supplies the durable reason. An absent
+              // decision means this attempt is allowed to retry.
+              let retry: import('@maka/core/model-failure').ModelRetryDecision | undefined;
               if (
-                (failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery) &&
-                failure.kind !== 'context_overflow' &&
-                providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
-                stepBudgetRemains &&
-                (attemptHasNoObservableOutput() ||
+                !(
+                  attemptHasNoObservableOutput() ||
                   idleWatchdogRecovery ||
                   incompleteStreamRecovery ||
-                  sealedThinkingRecovery)
+                  sealedThinkingRecovery
+                )
               ) {
+                retry = {
+                  decision: 'declined',
+                  because: attemptSawToolActivity ? 'side_effects' : 'observable_output',
+                };
+              } else if (!stepBudgetRemains) {
+                retry = { decision: 'declined', because: 'budget' };
+              } else if (providerAttempt >= MAX_PROVIDER_ATTEMPTS_PER_STEP) {
+                retry = { decision: 'exhausted', attempts: providerAttempt };
+              } else if (failure.kind === 'context_overflow') {
+                retry = { decision: 'declined', because: 'policy' };
+              } else if (!(failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery)) {
+                retry =
+                  incompleteStreamTerminal &&
+                  incompleteStreamRetryCount >= MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP
+                    ? { decision: 'exhausted', attempts: providerAttempt }
+                    : { decision: 'declined', because: 'policy' };
+              }
+              if (!retry) {
                 if (idleWatchdogRecovery) idleWatchdogRetryCount += 1;
                 if (sealedThinkingRecovery) sealedThinkingRetryCount += 1;
                 if (incompleteStreamRecovery) incompleteStreamRetryCount += 1;
@@ -2197,6 +2229,7 @@ export class AiSdkTurn {
               // handler after settling any authoritative usage — never a
               // fabricated success.
               terminalProviderError = settledWatchdogTimeout?.error ?? failure;
+              terminalRetry = { error: terminalProviderError, retry };
               terminalProviderErrorReason =
                 lastCompletedStepHadToolResult && failure.kind === 'timeout'
                   ? 'model_after_tool_timeout'
@@ -2351,6 +2384,16 @@ export class AiSdkTurn {
           }
           const mayTakeAnotherStep = !stepLimitReached && !this.loopStopRequested && !this.aborted;
           if (returnedToolCalls.length > 0 && mayTakeAnotherStep) {
+            if (
+              (await input.handoffBoundary?.(
+                turnAbortController.signal,
+                maxSteps === undefined ? null : maxSteps - runtimeSteps,
+              )) === 'pause'
+            ) {
+              this.handoffPaused = true;
+              break agentLoop;
+            }
+            if (this.aborted || this.loopStopRequested) break agentLoop;
             currentStepMessageId = this.deps.newId();
             continue agentLoop;
           }
@@ -2381,6 +2424,17 @@ export class AiSdkTurn {
               !this.loopStopRequested &&
               !this.aborted
             ) {
+              await queue.waitUntilConsumedThroughCurrent();
+              if (
+                (await input.handoffBoundary?.(
+                  turnAbortController.signal,
+                  maxSteps === undefined ? null : maxSteps - runtimeSteps,
+                )) === 'pause'
+              ) {
+                this.handoffPaused = true;
+                break agentLoop;
+              }
+              if (this.aborted || this.loopStopRequested) break agentLoop;
               currentStepMessageId = this.deps.newId();
               continue agentLoop;
             }
@@ -2481,42 +2535,10 @@ export class AiSdkTurn {
                   }
                 : {}),
             };
-            const tu: TokenUsageMessage = {
-              type: 'token_usage',
-              id: this.deps.newId(),
-              turnId,
-              ts: this.deps.now(),
-              ...usageFields,
-            };
-            await this.deps.backend.appendMessage(tu).catch(() => {});
-            if (
-              !contextCompactionFailedOpenNoteWritten &&
-              shouldAppendContextCompactionFailedOpenNote(contextBudgetForUsage)
-            ) {
-              contextCompactionFailedOpenNoteWritten = true;
-              const note: SystemNoteMessage = {
-                type: 'system_note',
-                id: this.deps.newId(),
-                turnId,
-                ts: this.deps.now(),
-                kind: 'context_compaction_failed_open',
-              };
-              await this.deps.backend.appendMessage(note).catch(() => {});
-            }
-            if (
-              !contextCompactedNoteWritten &&
-              shouldAppendContextCompactedNote(contextBudgetForUsage)
-            ) {
-              contextCompactedNoteWritten = true;
-              const note: SystemNoteMessage = {
-                type: 'system_note',
-                id: this.deps.newId(),
-                turnId,
-                ts: this.deps.now(),
-                kind: 'context_compacted',
-              };
-              await this.deps.backend.appendMessage(note).catch(() => {});
-            }
+            // Settlement fallback: a mid-turn or request-hook fold is only
+            // known here. Notes already written at decision time are skipped
+            // by the flags inside.
+            await appendCompactionDecisionNotes(contextBudgetForUsage);
             queue.push({
               type: 'token_usage',
               id: this.deps.newId(),
@@ -2533,6 +2555,9 @@ export class AiSdkTurn {
         // win even when it arrives during post-stream usage persistence.
         if (this.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
         if (terminalProviderError) throw terminalProviderError;
+        // Usage above still belongs to this physical attempt. Its Runtime owner
+        // seals the drained stream; no complete/abort event ends the logical Turn.
+        if (this.handoffPaused) return;
         const stopReason =
           this.loopStopReason ??
           (maxSteps !== undefined && finishReason === 'tool-calls'
@@ -2567,8 +2592,8 @@ export class AiSdkTurn {
         // Flush the in-flight step's partial text/thinking before the terminal
         // abort/error events. Earlier steps already flushed at their
         // `finish-step`; this keeps their and this step's streamed-out output on
-        // BOTH exits — user stop and provider error / watchdog timeout — so
-        // partialOutputRetained reflects what the user actually saw.
+        // BOTH exits — user stop and provider error / watchdog timeout — so the
+        // transcript keeps what the user actually saw.
         await flushStep().catch(() => {});
         if (this.aborted) {
           queue.push({
@@ -2587,7 +2612,12 @@ export class AiSdkTurn {
           } satisfies CompleteEvent);
         } else {
           const terminalError = currentWatchdogTimeout()?.error ?? err;
-          queue.push(this.makeErrorEvent(turnId, terminalError, terminalProviderErrorReason));
+          queue.push({
+            ...this.makeErrorEvent(turnId, terminalError, terminalProviderErrorReason),
+            ...(terminalRetry && terminalRetry.error === terminalError
+              ? { retry: terminalRetry.retry }
+              : {}),
+          });
           trace.modelStreamFailed(
             streamErrorClass,
             terminalError,
@@ -2817,9 +2847,11 @@ export class AiSdkTurn {
         diagnostics: [],
       };
     }
-    const rawPriorRuntimeContext = input.runtimeContext.filter(
-      (event) => event.turnId !== input.turnId,
-    );
+    // A handoff changes the physical Run, not the logical Turn. Its admitted
+    // replay is all predecessor history, including events with this turnId.
+    const rawPriorRuntimeContext = input.continuation
+      ? input.runtimeContext
+      : input.runtimeContext.filter((event) => event.turnId !== input.turnId);
     // Everything below reads EFFECTIVE model history: raw events folded through
     // the durable projection-transition reducer (#4283). Replay, budgeting and
     // compaction share one input, so no RuntimeEvent replay path can resurrect
@@ -2836,8 +2868,18 @@ export class AiSdkTurn {
       this.deps.backend.modelId,
     );
     let contextBudget = preparedContextBudget.policy;
-    const budgeted = applyRuntimeEventContextBudget(priorRuntimeContext, contextBudget);
-    let runtimeContext = budgeted?.events ?? priorRuntimeContext;
+    // Match the durable checkpoint against the RAW ledger prefix: every
+    // creation path (standalone compactHistory and the mid-turn state) pins
+    // its coverage digest on raw events, so matching the folded view here
+    // lets any durable projection transition inside the covered prefix orphan
+    // the checkpoint and silently fail open into a full-history replay
+    // (#4842). The projected [block, tail] is then folded through the
+    // transition reducer before it becomes messages, so a committed
+    // transition still cannot resurrect content for the model (#4283).
+    const budgeted = applyRuntimeEventContextBudget(rawPriorRuntimeContext, contextBudget);
+    let runtimeContext = await this.deps.compaction.foldEffectiveModelHistory(
+      budgeted?.events ?? rawPriorRuntimeContext,
+    );
     let contextBudgetDiagnostic = budgeted?.diagnostic;
     let projectedHistoryCompactCheckpoint = budgeted?.historyCompactCheckpoint;
     if (preparedContextBudget.diagnosticPatch) {
