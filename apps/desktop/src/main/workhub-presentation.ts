@@ -136,7 +136,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       title: 'WorkHub', show: false, width, height,
       x: area.x + Math.round((area.width - width) / 2), y: Math.max(area.y, area.y + area.height - height - 96),
       minWidth: Math.min(360, width), minHeight: Math.min(80, height),
-      alwaysOnTop: true, autoHideMenuBar: true,
+      alwaysOnTop: true, autoHideMenuBar: true, maximizable: false, fullscreenable: false,
       frame: false, transparent: true, backgroundColor: '#00000000',
       hasShadow: true, roundedCorners: true,
       webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
@@ -188,6 +188,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     if (target.isMinimized()) target.restore();
     target.show();
     target.focus();
+    target.setMaximizable(false);
     focusComposer();
     changed();
   }
@@ -299,10 +300,9 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             const area = screen.getDisplayMatching(bounds).workArea;
             if (conversationExpanded && !value.expanded) expandedHeight = bounds.height;
             const height = Math.min(area.height, Math.max(80, value.expanded ? (conversationExpanded ? bounds.height : expandedHeight) : Math.ceil(value.compactHeight)));
-            const animate = conversationExpanded !== value.expanded;
             conversationExpanded = value.expanded;
             if (bounds.height !== height) {
-              floating.setBounds({ ...bounds, height, y: Math.max(area.y, Math.min(bounds.y + bounds.height - height, area.y + area.height - height)) }, animate);
+              floating.setBounds({ ...bounds, height, y: Math.max(area.y, Math.min(bounds.y + bounds.height - height, area.y + area.height - height)) });
               fitFloating();
             }
             return;

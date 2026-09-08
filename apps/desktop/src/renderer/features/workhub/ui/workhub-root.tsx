@@ -144,9 +144,6 @@ export function WorkHubRoot() {
           <IconButton type="button" size="sm" variant="ghost" icon={<ChevronDown size={14} style={{ rotate: conversationExpanded ? '0deg' : '180deg' }} />} label={conversationExpanded ? t.collapseConversation : t.expandConversation} aria-expanded={conversationExpanded} onClick={() => call(toggleConversation())} />
         </div>
       </div>}
-      {floating && !conversationExpanded && <>
-        <IconButton className="workHubExpandButton" type="button" size="sm" variant="ghost" icon={<ChevronDown size={14} style={{ rotate: '180deg' }} />} label={t.expandConversation} aria-expanded={false} onClick={() => call(toggleConversation())} />
-      </>}
       <div className="workHubRevealMark" ref={revealMark} aria-hidden="true"><MakaWordmark width={192} /></div>
       <ChatSurfaceLayout
         scrollButton={showConversation ? undefined : null}
@@ -188,6 +185,9 @@ export function WorkHubRoot() {
                 </div>
               }
             />
+            {floating && !conversationExpanded && (
+              <IconButton className="workHubExpandButton" type="button" size="sm" variant="ghost" icon={<ChevronDown size={14} style={{ rotate: '180deg' }} />} label={t.expandConversation} aria-expanded={false} onClick={() => call(toggleConversation())} />
+            )}
           </div>
         }
       >

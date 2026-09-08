@@ -75,6 +75,7 @@ async function harness() {
     getBounds() { return this.bounds; }
     setBounds(bounds: typeof this.bounds) { this.bounds = bounds; }
     setVisibleOnAllWorkspaces() {}
+    setMaximizable() {}
     show() { this.visible = true; }
     hide() { this.visible = false; }
     focus() {}
