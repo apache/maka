@@ -398,6 +398,8 @@ export function QuoteCompanionPanel(props: {
               disabled={!companion.modelReady}
               onPickAttachments={pickAttachments}
               onAttachFilePaths={attachFilePaths}
+              // The side chat submits staged context without a prompt (#4804).
+              allowAttachmentOnlySend
               pendingAttachments={pendingAttachments}
               onRemoveAttachment={removeAttachment}
               mentionSkills={mentions?.mentionSkills}

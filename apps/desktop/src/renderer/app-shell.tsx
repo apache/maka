@@ -2704,7 +2704,6 @@ function AppShellContent({
                       : undefined
                   }
                   slashCommands={desktopSlashCommands}
-                  allowAttachmentOnlySend
                   pendingAttachments={pendingAttachments}
                   onRemoveAttachment={removeAttachment}
                   pendingQuotes={pendingQuotes}

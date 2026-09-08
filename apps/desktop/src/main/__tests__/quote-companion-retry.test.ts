@@ -32,7 +32,6 @@ import type {
   TurnRecord,
 } from '@maka/core/session';
 import type { ContextCompactResult } from '@maka/runtime-host/protocol';
-import type { WorkbarIngestInput } from '../../renderer/features/workbar/ports.js';
 import {
   createFakeWorkbarServices,
   dispatchQuoteCompanionInput,
@@ -41,6 +40,7 @@ import {
   WorkbarServicesProvider,
   type CompanionQuoteSnapshot,
   type StagedCompanionQuote,
+  type WorkbarIngestInput,
   type WorkbarServices,
 } from '../../renderer/features/workbar/testing.js';
 
