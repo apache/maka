@@ -21,6 +21,7 @@ import { Buffer } from 'node:buffer';
 import { open } from 'node:fs/promises';
 import { basename } from 'node:path';
 import {
+  attachmentIngestBlocked,
   attachmentKindFromMimeType,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_COUNT,
@@ -67,7 +68,7 @@ export async function resolveAttachmentRefs<T = AttachmentRef>(input: {
       ? await readFileCapped(file.path, Math.min(maxBytes, maxTotalBytes - readBytes))
       : file.content;
     readBytes += bytes.byteLength;
-    if (readBytes > maxTotalBytes) throw new Error('附件总量超出大小限制。');
+    if (readBytes > maxTotalBytes) throw attachmentIngestBlocked('total_size_exceeded');
     let mimeType = resolveAttachmentMimeType(bytes, file.mimeType, name);
     const kind = attachmentKindFromMimeType(mimeType, name);
 
@@ -76,7 +77,7 @@ export async function resolveAttachmentRefs<T = AttachmentRef>(input: {
       mimeType = sniffAttachmentMimeType(bytes) ?? mimeType;
     }
     snapshotBytes += bytes.byteLength;
-    if (snapshotBytes > maxTotalBytes) throw new Error('附件总量超出大小限制。');
+    if (snapshotBytes > maxTotalBytes) throw attachmentIngestBlocked('total_size_exceeded');
     const artifactKind: ArtifactKind =
       kind === 'image' ? 'image' : kind === 'pdf' ? 'pdf' : 'file';
     refs.push(
@@ -164,7 +165,7 @@ export async function readFileCapped(path: string, maxBytes: number): Promise<Ui
   try {
     const buf = Buffer.alloc(maxBytes + 1);
     const { bytesRead } = await fh.read(buf, 0, maxBytes + 1, 0);
-    if (bytesRead > maxBytes) throw new Error('单个附件超出大小限制。');
+    if (bytesRead > maxBytes) throw attachmentIngestBlocked('item_too_large');
     return buf.subarray(0, bytesRead);
   } finally {
     await fh.close();
@@ -205,24 +206,24 @@ export async function prepareIngestItems(input: {
   const maxAttachments = input.maxAttachments ?? MAX_ATTACHMENT_COUNT;
   const maxBytes = input.maxBytes ?? MAX_ATTACHMENT_BYTES;
   let remainingBytes = input.maxTotalBytes ?? Infinity;
-  if (!Array.isArray(input.items)) throw new Error('附件信息无效，请重新选择文件后再发送。');
-  if (input.items.length > maxAttachments) throw new Error('一次最多添加 8 个附件。');
+  if (!Array.isArray(input.items)) throw attachmentIngestBlocked('items_invalid');
+  if (input.items.length > maxAttachments) throw attachmentIngestBlocked('count_limit');
   // Phase 1: validate every item with no side effects. Approval tokens are
   // peeked (not consumed) so a later invalid item does not burn earlier ones.
   const planned: AttachmentIngestFile[] = [];
   const approvalIds: string[] = [];
   const seenApprovalIds = new Set<string>();
   for (const item of input.items) {
-    if (!item || typeof item !== 'object') throw new Error('附件信息无效，请重新选择文件后再发送。');
+    if (!item || typeof item !== 'object') throw attachmentIngestBlocked('items_invalid');
     const record = item as Record<string, unknown>;
     if (typeof record.approvalId === 'string' && typeof record.name === 'string') {
-      if (seenApprovalIds.has(record.approvalId)) throw new Error('附件来源重复，请勿重复添加同一文件。');
+      if (seenApprovalIds.has(record.approvalId)) throw attachmentIngestBlocked('duplicate_source');
       seenApprovalIds.add(record.approvalId);
       const approved = input.approvals.peekApproval(input.senderId, record.approvalId);
-      if (!approved) throw new Error('附件来源已过期或无效，请重新选择文件后再发送。');
+      if (!approved) throw attachmentIngestBlocked('source_expired');
       const statResult = await input.stat(approved.path);
-      if (statResult.size > maxBytes) throw new Error('单个附件超出大小限制。');
-      if (statResult.size > remainingBytes) throw new Error('附件总量超出大小限制。');
+      if (statResult.size > maxBytes) throw attachmentIngestBlocked('item_too_large');
+      if (statResult.size > remainingBytes) throw attachmentIngestBlocked('total_size_exceeded');
       remainingBytes -= statResult.size;
       const mimeType = pickMimeType(record.mimeType, approved.mimeType);
       planned.push({ path: approved.path, ...(mimeType ? { mimeType } : {}), size: statResult.size });
@@ -234,17 +235,17 @@ export async function prepareIngestItems(input: {
       // string must not be decoded into main memory. base64 encodes 3 bytes
       // per 4 chars, so ceil(maxBytes*4/3)+padding is a safe upper bound.
       const maxBase64Len = Math.ceil((maxBytes * 4) / 3) + 4;
-      if (record.base64.length > maxBase64Len) throw new Error('单个附件超出大小限制。');
+      if (record.base64.length > maxBase64Len) throw attachmentIngestBlocked('item_too_large');
       if (Buffer.byteLength(record.base64, 'base64') > remainingBytes)
-        throw new Error('附件总量超出大小限制。');
+        throw attachmentIngestBlocked('total_size_exceeded');
       const content = Buffer.from(record.base64, 'base64');
-      if (content.byteLength > maxBytes) throw new Error('单个附件超出大小限制。');
+      if (content.byteLength > maxBytes) throw attachmentIngestBlocked('item_too_large');
       remainingBytes -= content.byteLength;
       const mimeType = typeof record.mimeType === 'string' && record.mimeType.length > 0 ? record.mimeType : undefined;
       planned.push({ name: record.name, ...(mimeType ? { mimeType } : {}), size: content.byteLength, content });
       continue;
     }
-    throw new Error('附件信息无效，请重新选择文件后再发送。');
+    throw attachmentIngestBlocked('items_invalid');
   }
   return {
     files: planned,
@@ -253,7 +254,7 @@ export async function prepareIngestItems(input: {
       // teardown or expiry during preparation must not burn another token.
       for (const id of approvalIds) {
         if (!input.approvals.peekApproval(input.senderId, id))
-          throw new Error('附件来源已过期或无效，请重新选择文件后再发送。');
+          throw attachmentIngestBlocked('source_expired');
       }
       const result = admit();
       for (const id of approvalIds) input.approvals.consumeApproval(input.senderId, id);

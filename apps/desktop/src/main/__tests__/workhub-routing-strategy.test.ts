@@ -64,7 +64,7 @@ async function run(strategy: WorkHubRoutingStrategy, raw = fixture()) {
   sessions.routingEvidence = async () => [...raw.originPromptBySessionId].map(([sessionId, originPrompt]) => ({ target: { sessionId }, originPrompt }));
   sessions.create = async ({ name }) => session('created', { sessionName: name });
   const controller = createWorkHubController({ sessions, routingStrategy: strategy });
-  return controller.submit({ requestId: 'combination', text: raw.text });
+  return controller.submit({ newSessionFallbackTitle: 'New work', requestId: 'combination', text: raw.text });
 }
 const model = {
   async decide(input: WorkHubModelRoutingRequest) {
@@ -217,10 +217,10 @@ test('Policy retains ambiguity, exact naming and focus with model recall in the 
   const strategy = createWorkHubR3ARoutingStrategy({ model });
   assert.equal((await run(strategy, fixture('创建一个新任务，不过我还不确定是否要做'))).kind, 'clarification');
   const controller = createWorkHubController({ sessions: port(sessions.map((value) => session(value.target.sessionId, value))), routingStrategy: strategy });
-  const exact = await controller.submit({ requestId: 'exact', text: '登录刷新令牌：补充测试' });
+  const exact = await controller.submit({ newSessionFallbackTitle: 'New work', requestId: 'exact', text: '登录刷新令牌：补充测试' });
   assert.equal(exact.kind, 'submitted');
   if (exact.kind === 'submitted') assert.equal(exact.target.sessionId, 'login');
-  const focused = await controller.submit({ requestId: 'focused', text: '继续它' });
+  const focused = await controller.submit({ newSessionFallbackTitle: 'New work', requestId: 'focused', text: '继续它' });
   assert.equal(focused.kind, 'submitted');
   if (focused.kind === 'submitted') assert.equal(focused.target.sessionId, 'login');
 });

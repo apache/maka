@@ -31,6 +31,7 @@ import {
   TextArea,
   useToast,
 } from '@maka/ui';
+import { reportUnexpectedError } from '../../../application/contracts/operation-diagnostics.js';
 import { SessionCollaborationAliasAction } from './session-collaboration-alias-action.js';
 import { useSessionCollaborationServices } from '../services-context.js';
 import type {
@@ -47,6 +48,8 @@ export interface SessionCollaborationJoinCopy {
   readonly joinInsecure: string;
   readonly close: string;
   readonly connectionFailed: string;
+  readonly cancelFailed: string;
+  readonly mountLimit: (max: number) => string;
   readonly invalidCode: string;
   readonly directPathUnavailable: string;
   readonly code: string;
@@ -164,7 +167,7 @@ export function SessionCollaborationJoinDialog(props: {
           finishClose();
           return;
         }
-        const message = importError(props.copy, result.reason, result.message);
+        const message = sessionCollaborationImportErrorMessage(props.copy, result);
         setJoinState({ kind: 'failed', message });
         toast.error(props.copy.joinTitle, message);
         return;
@@ -180,7 +183,8 @@ export function SessionCollaborationJoinDialog(props: {
         finishClose();
         return;
       }
-      const message = errorMessage(error);
+      reportUnexpectedError('session-collaboration:import', error);
+      const message = props.copy.connectionFailed;
       setJoinState({ kind: 'failed', message });
       toast.error(props.copy.joinTitle, message);
     } finally {
@@ -217,7 +221,8 @@ export function SessionCollaborationJoinDialog(props: {
       finishClose();
     } catch (error) {
       if (!open.current || activeOperationId.current !== operationId) return;
-      const message = errorMessage(error);
+      reportUnexpectedError('session-collaboration:cancel-import', error);
+      const message = props.copy.cancelFailed;
       setJoinState({ kind: 'failed', message });
       toast.error(props.copy.joinTitle, message);
     }
@@ -229,7 +234,8 @@ export function SessionCollaborationJoinDialog(props: {
       await services.removeMount(mountId);
       setMounts((current) => current.filter((mount) => mount.mountId !== mountId));
     } catch (error) {
-      toast.error(props.copy.disconnectFailed, errorMessage(error));
+      reportUnexpectedError('session-collaboration:disconnect', error);
+      toast.error(props.copy.disconnectFailed);
     } finally {
       setRemovingMountId(undefined);
     }
@@ -349,8 +355,10 @@ export function SessionCollaborationJoinDialog(props: {
                           {mount.readiness !== 'ready' && !mountAccessLost(mount) ? (
                             <Button variant="secondary" size="sm" label={props.copy.retryConnection}
                               isDisabled={working || removingMountId !== undefined}
-                              onClick={() => void services.retryMount(mount.mountId).catch((error) =>
-                                toast.error(props.copy.connectionFailed, errorMessage(error)))} />
+                              onClick={() => void services.retryMount(mount.mountId).catch((error) => {
+                                reportUnexpectedError('session-collaboration:retry-mount', error);
+                                toast.error(props.copy.connectionFailed);
+                              })} />
                           ) : null}
                           <SessionCollaborationAliasAction name={mount.name}
                             disabled={working || removingMountId !== undefined}
@@ -448,16 +456,16 @@ function abbreviatePeerId(peerId: string): string {
   return peerId.length <= 20 ? peerId : `${peerId.slice(0, 10)}…${peerId.slice(-6)}`;
 }
 
-function importError(
+export function sessionCollaborationImportErrorMessage(
   copy: SessionCollaborationJoinCopy,
-  reason: Extract<SessionCollaborationImportResult, { kind: 'error' }>['reason'],
-  message?: string,
+  result: Extract<SessionCollaborationImportResult, { kind: 'error' }>,
 ): string {
-  if (reason === 'invalid_code') return copy.invalidCode;
-  if (reason === 'insecure_confirmation_required') return copy.insecureBody;
-  if (reason === 'peer_path_unavailable') return copy.directPathUnavailable;
-  if (reason === 'incompatible_host') return copy.incompatibleHost;
-  return message ?? copy.connectionFailed;
+  if (result.reason === 'invalid_code') return copy.invalidCode;
+  if (result.reason === 'insecure_confirmation_required') return copy.insecureBody;
+  if (result.reason === 'peer_path_unavailable') return copy.directPathUnavailable;
+  if (result.reason === 'incompatible_host') return copy.incompatibleHost;
+  if (result.reason === 'mount_limit_reached') return copy.mountLimit(result.params.max);
+  return copy.connectionFailed;
 }
 
 function importPhaseLabel(
@@ -473,8 +481,4 @@ function importPhaseLabel(
     case 'finalizing_access': return copy.finalizingAccess;
     case 'loading_session': return copy.loadingSession;
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

@@ -17,21 +17,22 @@
  * under the License.
  */
 
-import type { WorkBoardMutationOptions, WorkBoardStoreErrorCode } from '@maka/storage/work-board-store';
-export type { WorkBoardMutationOptions };
+import type { PlanControlErrorCode } from '@maka/runtime-host/protocol';
 
-export type WorkBoardErrorCode = WorkBoardStoreErrorCode | 'unknown';
-
-export type WorkBoardIpcResult<T> =
+/** Envelope the plan-mode control channels return across the Desktop IPC
+ * boundary: the main process returns structured outcomes instead of throwing
+ * typed errors, whose custom fields Electron strips. Desktop-only transport
+ * shape — no Host wire codec uses it — so it lives beside the WorkBoardIpcResult
+ * seam instead of under the Host protocol compatibility gate. As a type-only
+ * `.d.ts` (the session-collaboration.d.ts precedent) it stays outside the
+ * renderer architecture debt closure. Unknown codes keep version-skew safety,
+ * so the failure branch admits undeclared strings. */
+export type PlanControlIpcResult<T> =
   | { readonly ok: true; readonly value: T }
   | {
       readonly ok: false;
       readonly error: {
-        readonly code: WorkBoardErrorCode;
+        readonly code: PlanControlErrorCode | (string & {});
+        readonly message: string;
       };
     };
-
-export interface WorkBoardChangedEvent {
-  readonly type: 'work_board_changed';
-  readonly ts: number;
-}

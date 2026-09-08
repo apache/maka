@@ -188,6 +188,7 @@ export type AppIconImportResult =
 
 export type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
 export type { WorkBoardChangedEvent, WorkBoardIpcResult } from '../shared/work-board-ipc.js';
+import type { PlanControlIpcResult } from '../shared/plan-mode-ipc.js';
 import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
 import type { DesktopExternalSessionCatalogItem } from './external-session-catalog.js';
 import type { DesktopDiagnosticInput } from './diagnostics-contract.js';
@@ -1219,22 +1220,19 @@ export interface MakaBridge {
     setOrchestrationMode(sessionId: string, mode: OrchestrationMode): Promise<DesktopSessionSummary>;
     getPlanState(sessionId: string): Promise<PlanSessionState>;
     subscribePlanChanges(sessionId: string, handler: () => void): () => void;
-    requestPlanRevision(sessionId: string, proposalId: string): Promise<PlanSessionState>;
-    abandonPlanProposal(
-      sessionId: string,
-      proposalId: string,
-    ): Promise<PlanSessionState>;
+    requestPlanRevision(sessionId: string, proposalId: string): Promise<PlanControlIpcResult<PlanSessionState>>;
+    abandonPlanProposal(sessionId: string, proposalId: string): Promise<PlanSessionState>;
     approvePlan(sessionId: string, input: {
       proposalId: string;
       expectedRevision: number;
       expectedStoreVersion: number;
       turnId: string;
-    }): Promise<{ turnId: string; executionId: string }>;
-    resumePlan(sessionId: string, executionId: string, turnId: string): Promise<{
+    }): Promise<PlanControlIpcResult<{ turnId: string; executionId: string }>>;
+    resumePlan(sessionId: string, executionId: string, turnId: string): Promise<PlanControlIpcResult<{
       turnId: string;
       executionId: string;
-    }>;
-    abandonPlanExecution(sessionId: string, executionId: string): Promise<PlanSessionState>;
+    }>>;
+    abandonPlanExecution(sessionId: string, executionId: string): Promise<PlanControlIpcResult<PlanSessionState>>;
     setModelConfiguration(sessionId: string, input: {
       llmConnectionId: string;
       llmConnectionSlug: string;

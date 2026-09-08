@@ -222,7 +222,7 @@ export async function runRoutingComparison(input: {
       try {
         for (const entry of input.cases) {
           const start = proposals.length;
-          const result = await controller.submit({ requestId: `${repetition}:${routingStrategy.strategyId}:${entry.caseId}`, text: entry.text });
+          const result = await controller.submit({ newSessionFallbackTitle: 'New work', requestId: `${repetition}:${routingStrategy.strategyId}:${entry.caseId}`, text: entry.text });
           observations.push({ repetition, caseId: entry.caseId, result, proposals: proposals.slice(start) });
         }
       } finally { await conversation.close(); }

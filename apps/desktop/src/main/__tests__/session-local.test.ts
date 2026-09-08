@@ -617,7 +617,7 @@ test('local submit preserves picked-file approvals until durable admission succe
         'current_turn',
         { ...draft, messageId: 'too-large', attachmentItems: largePicked },
       ),
-    /附件总量超出大小限制/,
+    /attachment_ingest:total_size_exceeded/,
   );
   assert.equal(resizeCalls, 0);
   assert.equal(store.get('authority', 'too-large'), undefined);
