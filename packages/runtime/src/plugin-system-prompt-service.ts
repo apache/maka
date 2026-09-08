@@ -45,6 +45,7 @@ export interface PluginSystemPromptContext {
   readonly sessionId: string;
   readonly turnId: string;
   readonly cwd: string;
+  readonly signal?: AbortSignal;
 }
 
 export type PluginSystemPromptText =
@@ -59,17 +60,30 @@ export interface PluginSystemPromptSection {
   readonly complete?: boolean;
 }
 
+/** Dynamic model context materialized as an ephemeral user-role request snapshot. */
+export interface PluginSystemPromptContextContribution {
+  readonly name: string;
+  readonly order: number;
+  readonly text: PluginSystemPromptText;
+}
+
+export interface ResolvedPluginSystemPromptContext {
+  readonly name: string;
+  readonly text: string;
+}
+
 export type PluginSystemPromptVariableProvider = (
   context: PluginSystemPromptContext,
 ) => Awaitable<string | undefined>;
 
 export interface PluginSystemPromptAssembly {
   readonly text: string | undefined;
+  readonly contexts: readonly ResolvedPluginSystemPromptContext[];
   readonly sourceRevision?: { readonly id: string; readonly revision: string };
 }
 
 export interface PluginSystemPromptInspection extends MakaContributionIdentity {
-  readonly kind: 'section' | 'variable';
+  readonly kind: 'section' | 'context' | 'variable';
   readonly name: string;
   readonly order?: number;
   readonly complete?: boolean;
@@ -88,11 +102,23 @@ interface RegisteredVariable extends MakaContributionIdentity {
   retired: boolean;
 }
 
+interface RegisteredContext extends MakaContributionIdentity {
+  readonly definition: PluginSystemPromptContextContribution;
+  readonly token: symbol;
+  retired: boolean;
+}
+
 interface ResolvedSection extends MakaContributionIdentity {
   readonly name: string;
   readonly order: number;
   readonly text: string;
   readonly complete: boolean;
+}
+
+interface ResolvedContext extends MakaContributionIdentity {
+  readonly name: string;
+  readonly order: number;
+  readonly text: string;
 }
 
 /**
@@ -105,6 +131,7 @@ interface ResolvedSection extends MakaContributionIdentity {
  */
 export class PluginSystemPromptService extends Service {
   private readonly sections = new PluginScopeRegistry<RegisteredSection>();
+  private readonly contexts = new PluginScopeRegistry<RegisteredContext>();
   private readonly variables = new PluginScopeRegistry<RegisteredVariable>();
 
   constructor(ctx: Context) {
@@ -119,6 +146,17 @@ export class PluginSystemPromptService extends Service {
       this.ctx,
       `systemPrompt.section(${JSON.stringify(definition.name)})`,
       () => this.publishSection(identity, definition),
+    );
+  }
+
+  context(definition: PluginSystemPromptContextContribution): Disposable<Promise<void>> {
+    const identity = pluginIdentity(this.ctx);
+    assertHostPromptScope(identity.scopeId);
+    validateContext(definition);
+    return registerPluginContribution(
+      this.ctx,
+      `systemPrompt.context(${JSON.stringify(definition.name)})`,
+      () => this.publishContext(identity, definition),
     );
   }
 
@@ -139,12 +177,18 @@ export class PluginSystemPromptService extends Service {
   ): Promise<PluginSystemPromptAssembly> {
     validateAssemblyContext(context);
     const visibleSections = this.sections.visible(context.sessionId);
+    const visibleContexts = this.contexts.visible(context.sessionId);
     const visibleVariables = this.variables.visible(context.sessionId);
     const sectionSnapshot = [...visibleSections.values()];
+    const contextSnapshot = [...visibleContexts.values()];
     const variableSnapshot = [...visibleVariables.values()];
 
-    if (sectionSnapshot.length === 0 && variableSnapshot.length === 0) {
-      return Object.freeze({ text: baseText });
+    if (
+      sectionSnapshot.length === 0 &&
+      contextSnapshot.length === 0 &&
+      variableSnapshot.length === 0
+    ) {
+      return Object.freeze({ text: baseText, contexts: Object.freeze([]) });
     }
 
     const variables: Record<string, string | undefined> = {};
@@ -176,6 +220,26 @@ export class PluginSystemPromptService extends Service {
         order: section.definition.order,
         text: value ?? '',
         complete: section.definition.complete === true,
+      });
+    }
+    const resolvedContexts: ResolvedContext[] = [];
+    for (const entry of contextSnapshot) {
+      const value =
+        typeof entry.definition.text === 'string'
+          ? entry.definition.text
+          : await entry.definition.text(context);
+      if (value !== undefined && typeof value !== 'string') {
+        throw new MakaPluginRuntimeError(
+          'activation_failed',
+          `System Prompt context ${JSON.stringify(entry.definition.name)} returned a non-string value`,
+        );
+      }
+      if (!value) continue;
+      resolvedContexts.push({
+        ...entry,
+        name: entry.definition.name,
+        order: entry.definition.order,
+        text: interpolate(entry.definition.name, value, variables),
       });
     }
     const complete = resolved.filter((section) => section.complete);
@@ -212,9 +276,13 @@ export class PluginSystemPromptService extends Service {
       .map((section) => interpolate(section.name, section.text, variables))
       .filter(Boolean)
       .join('\n\n');
-    const revision = promptRevision(resolved, variableSnapshot, variables);
+    const contexts = Object.freeze(
+      resolvedContexts.sort(compareContexts).map(({ name, text }) => Object.freeze({ name, text })),
+    );
+    const revision = promptRevision(resolved, resolvedContexts, variableSnapshot, variables);
     return Object.freeze({
       text: rendered || undefined,
+      contexts,
       sourceRevision: Object.freeze({
         id: PLUGIN_SYSTEM_PROMPT_SOURCE_ID,
         revision,
@@ -234,6 +302,15 @@ export class PluginSystemPromptService extends Service {
           name: entry.definition.name,
           order: entry.definition.order,
           complete: entry.definition.complete === true,
+        })),
+        ...this.contexts.entries(rootId).map((entry) => ({
+          entryId: entry.entryId,
+          scopeId: entry.scopeId,
+          extensionId: entry.extensionId,
+          generation: entry.generation,
+          kind: 'context' as const,
+          name: entry.definition.name,
+          order: entry.definition.order,
         })),
         ...this.variables.entries(rootId).map((entry) => ({
           entryId: entry.entryId,
@@ -280,6 +357,22 @@ export class PluginSystemPromptService extends Service {
     };
     return this.variables.publish(rootId, name, entry);
   }
+
+  private publishContext(
+    identity: MakaContributionIdentity,
+    definition: PluginSystemPromptContextContribution,
+  ): Disposable<Promise<void>> {
+    const rootId = identity.scopeId as MakaPluginRootId;
+    const existing = this.contexts.get(rootId, definition.name);
+    assertOwner(existing, identity, 'context', definition.name);
+    const entry: RegisteredContext = {
+      ...identity,
+      definition: Object.freeze({ ...definition }),
+      token: Symbol(definition.name),
+      retired: false,
+    };
+    return this.contexts.publish(rootId, definition.name, entry);
+  }
 }
 
 function assertHostPromptScope(scopeId: string): void {
@@ -307,6 +400,19 @@ function validateSection(section: PluginSystemPromptSection): void {
   }
   if (typeof section.text !== 'string' && typeof section.text !== 'function') {
     throw new MakaPluginRuntimeError('activation_failed', 'System Prompt section text is invalid');
+  }
+}
+
+function validateContext(context: PluginSystemPromptContextContribution): void {
+  validateName(context.name, 'System Prompt context');
+  if (!Number.isFinite(context.order)) {
+    throw new MakaPluginRuntimeError(
+      'activation_failed',
+      'System Prompt context order must be finite',
+    );
+  }
+  if (typeof context.text !== 'string' && typeof context.text !== 'function') {
+    throw new MakaPluginRuntimeError('activation_failed', 'System Prompt context text is invalid');
   }
 }
 
@@ -389,6 +495,7 @@ function interpolate(
 
 function promptRevision(
   sections: readonly ResolvedSection[],
+  contexts: readonly ResolvedContext[],
   variables: readonly RegisteredVariable[],
   values: Readonly<Record<string, string | undefined>>,
 ): string {
@@ -403,6 +510,15 @@ function promptRevision(
       complete: section.complete,
       text: section.text,
     })),
+    contexts: [...contexts].sort(compareContexts).map((context) => ({
+      scopeId: context.scopeId,
+      entryId: context.entryId,
+      extensionId: context.extensionId,
+      generation: context.generation,
+      name: context.name,
+      order: context.order,
+      text: context.text,
+    })),
     variables: [...variables].sort(compareRegistration).map((variable) => ({
       scopeId: variable.scopeId,
       entryId: variable.entryId,
@@ -416,6 +532,10 @@ function promptRevision(
 }
 
 function compareSections(left: ResolvedSection, right: ResolvedSection): number {
+  return left.order - right.order || compareCodeUnits(left.name, right.name);
+}
+
+function compareContexts(left: ResolvedContext, right: ResolvedContext): number {
   return left.order - right.order || compareCodeUnits(left.name, right.name);
 }
 

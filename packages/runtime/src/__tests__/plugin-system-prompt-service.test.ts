@@ -90,6 +90,42 @@ test('sections and variables resolve for every assembly from a stable membership
   await loader.close();
 });
 
+test('dynamic contexts are scoped, ordered, interpolated, and resolved for every assembly', async () => {
+  const { loader, prompts } = setup();
+  let selected = 'first';
+  await loader.install({
+    packageId: 'context-package',
+    host: (ctx) => {
+      ctx.systemPrompt.variable('selected', () => selected);
+      ctx.systemPrompt.context({ name: 'plugin:late', order: 20, text: 'late' });
+      ctx.systemPrompt.context({
+        name: 'plugin:selection',
+        order: 10,
+        text: () => 'selected={{selected}}',
+      });
+    },
+  });
+  await loader.create('session:alpha', { id: 'context-entry', packageId: 'context-package' });
+
+  const first = await prompts.assemble(assemblyContext, 'base');
+  selected = 'second';
+  const second = await prompts.assemble(assemblyContext, 'base');
+  assert.deepEqual(first.contexts, [
+    { name: 'plugin:selection', text: 'selected=first' },
+    { name: 'plugin:late', text: 'late' },
+  ]);
+  assert.deepEqual(second.contexts, [
+    { name: 'plugin:selection', text: 'selected=second' },
+    { name: 'plugin:late', text: 'late' },
+  ]);
+  assert.deepEqual(
+    (await prompts.assemble({ ...assemblyContext, sessionId: 'beta' }, 'base')).contexts,
+    [],
+  );
+  assert.notEqual(first.sourceRevision?.revision, second.sourceRevision?.revision);
+  await loader.close();
+});
+
 test('complete sections replace the Host base and multiple complete sections fail closed', async () => {
   const { loader, prompts } = setup();
   await loader.install({

@@ -795,6 +795,7 @@ export async function createExecutionRuntimeHostComposition(
           );
           return {
             text: assembly.text,
+            contexts: assembly.contexts,
             sourceRevisions: assembly.sourceRevision ? [assembly.sourceRevision] : [],
           };
         },
