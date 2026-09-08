@@ -3117,9 +3117,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       new TodoOverlay({
         locale,
         getState: () =>
-          input.driver.queryTodo
-            ? currentTodo.getState()
-            : { status: 'error', generation: 0, items: [] },
+          input.driver.queryTodo ? currentTodo.getState() : { status: 'error', items: [] },
         viewportRows: () => terminal.rows,
         onClose: closeTodoOverlay,
         onChange: () => tui.requestRender(),

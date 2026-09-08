@@ -24,6 +24,7 @@ import {
   matchesKey,
   truncateToWidth,
   visibleWidth,
+  wrapTextWithAnsi,
   type Component,
 } from '@earendil-works/pi-tui';
 import {
@@ -35,142 +36,85 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import { ansi } from './tui-ansi.js';
 import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 
-export interface SessionTodoReader {
-  read(sessionId: string): Promise<SessionTodoSnapshot>;
-}
-
-export type TodoQueryStatus = 'idle' | 'loading' | 'ready' | 'empty' | 'error';
-
 export interface TodoQuerySnapshot {
-  status: TodoQueryStatus;
+  status: 'idle' | 'loading' | 'ready' | 'empty' | 'error';
   sessionId?: string;
-  generation: number;
   items: readonly SessionTodoItem[];
-  refreshing?: boolean;
 }
 
-export type TodoQueryListener = (snapshot: TodoQuerySnapshot) => void;
-
-/**
- * Current Todo projection for one session. A load is accepted only when both
- * its generation and session identity still match, so a late response from a
- * previous session cannot overwrite the visible current state.
- */
-export class TodoQueryState {
-  private snapshot: TodoQuerySnapshot = { status: 'idle', generation: 0, items: [] };
-  private readonly listeners = new Set<TodoQueryListener>();
-
-  getSnapshot(): TodoQuerySnapshot {
-    return this.snapshot;
-  }
-
-  subscribe(listener: TodoQueryListener): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-
-  async load(sessionId: string, reader: SessionTodoReader): Promise<boolean> {
-    const generation = this.snapshot.generation + 1;
-    const previous = this.snapshot;
-    const hasCurrentData =
-      previous.sessionId === sessionId &&
-      (previous.status === 'ready' || previous.status === 'empty');
-    this.publish({
-      status: hasCurrentData ? previous.status : 'loading',
-      sessionId,
-      generation,
-      items: hasCurrentData ? previous.items : [],
-      refreshing: hasCurrentData,
-    });
-    try {
-      const result = await reader.read(sessionId);
-      if (!this.isCurrent(sessionId, generation)) return false;
-      const items = projectSessionTodoItemsForDisplay(result.items);
-      this.publish({
-        status: items.length === 0 ? 'empty' : 'ready',
-        sessionId,
-        generation,
-        items,
-        refreshing: false,
-      });
-      return true;
-    } catch {
-      if (!this.isCurrent(sessionId, generation)) return false;
-      this.publish({ status: 'error', sessionId, generation, items: [] });
-      return true;
-    }
-  }
-
-  reset(): void {
-    this.publish({ status: 'idle', generation: this.snapshot.generation + 1, items: [] });
-  }
-
-  private isCurrent(sessionId: string, generation: number): boolean {
-    return this.snapshot.sessionId === sessionId && this.snapshot.generation === generation;
-  }
-
-  private publish(snapshot: TodoQuerySnapshot): void {
-    this.snapshot = snapshot;
-    for (const listener of this.listeners) listener(snapshot);
-  }
-}
-
-/** Runner-facing owner for the one current-session Todo query. */
+/** Owns only the current session; late queries cannot cross session changes or disposal. */
 export class CurrentTodoStore {
-  private readonly query = new TodoQueryState();
-  private readonly unsubscribe: () => void;
-  private sessionId: string | undefined;
+  private snapshot: TodoQuerySnapshot = { status: 'idle', items: [] };
+  private generation = 0;
   private disposed = false;
-  private refreshRecord: { sessionId: string; promise: Promise<boolean> } | undefined;
+  private pending: Promise<boolean> | undefined;
   private refreshAgain = false;
 
   constructor(
-    private readonly reader: SessionTodoReader,
-    onChange?: TodoQueryListener,
-  ) {
-    this.unsubscribe = onChange ? this.query.subscribe(onChange) : () => undefined;
-  }
+    private readonly reader: { read(sessionId: string): Promise<SessionTodoSnapshot> },
+    private readonly onChange: () => void = () => undefined,
+  ) {}
 
   getState(): TodoQuerySnapshot {
-    return this.query.getSnapshot();
+    return this.snapshot;
   }
 
   setSession(sessionId: string | undefined): void {
-    if (this.disposed || this.sessionId === sessionId) return;
-    this.sessionId = sessionId;
+    if (this.disposed || this.snapshot.sessionId === sessionId) return;
+    this.generation++;
+    this.pending = undefined;
     this.refreshAgain = false;
-    this.refreshRecord = undefined;
-    this.query.reset();
+    this.publish({ status: 'idle', ...(sessionId ? { sessionId } : {}), items: [] });
     if (sessionId) void this.refresh();
   }
 
   refresh(): Promise<boolean> {
-    if (this.disposed || !this.sessionId) return Promise.resolve(false);
-    const current = this.refreshRecord;
-    if (current?.sessionId === this.sessionId) {
+    const { sessionId } = this.snapshot;
+    if (this.disposed || !sessionId) return Promise.resolve(false);
+    if (this.pending) {
       this.refreshAgain = true;
-      return current.promise;
+      return this.pending;
     }
-    const sessionId = this.sessionId;
-    const promise = this.query.load(sessionId, this.reader).finally(() => {
-      if (this.refreshRecord?.promise !== promise) return;
-      this.refreshRecord = undefined;
+    const pending = this.load(sessionId, this.generation).finally(() => {
+      if (this.pending !== pending) return;
+      this.pending = undefined;
       if (this.refreshAgain) {
         this.refreshAgain = false;
-        if (!this.disposed && this.sessionId === sessionId) void this.refresh();
+        void this.refresh();
       }
     });
-    this.refreshRecord = { sessionId, promise };
-    return promise;
+    this.pending = pending;
+    return pending;
   }
 
   dispose(): void {
-    if (this.disposed) return;
     this.disposed = true;
-    this.sessionId = undefined;
-    this.refreshRecord = undefined;
-    this.unsubscribe();
-    this.query.reset();
+    this.generation++;
+    this.pending = undefined;
+    this.refreshAgain = false;
+    this.snapshot = { status: 'idle', items: [] };
+  }
+
+  private async load(sessionId: string, generation: number): Promise<boolean> {
+    // Keep current data visible during background refreshes, without a second cache.
+    if (this.snapshot.status !== 'ready' && this.snapshot.status !== 'empty') {
+      this.publish({ status: 'loading', sessionId, items: [] });
+    }
+    try {
+      const result = await this.reader.read(sessionId);
+      if (generation !== this.generation) return false;
+      const items = projectSessionTodoItemsForDisplay(result.items);
+      this.publish({ status: items.length ? 'ready' : 'empty', sessionId, items });
+    } catch {
+      if (generation !== this.generation) return false;
+      this.publish({ status: 'error', sessionId, items: [] });
+    }
+    return true;
+  }
+
+  private publish(snapshot: TodoQuerySnapshot): void {
+    this.snapshot = snapshot;
+    this.onChange();
   }
 }
 
@@ -299,33 +243,10 @@ export class TodoOverlay implements Component {
 }
 
 function wrapTodoItem(prefix: string, content: string, width: number): string[] {
-  const safeWidth = Math.max(1, width);
-  const firstWidth = Math.max(1, safeWidth - visibleWidth(prefix));
-  const lines: string[] = [];
-  let remaining = content;
-  let first = true;
-  while (remaining.length > 0 || lines.length === 0) {
-    const available = first ? firstWidth : safeWidth - 2;
-    let take = '';
-    for (const character of graphemes(remaining)) {
-      if (visibleWidth(`${take}${character}`) > Math.max(1, available)) break;
-      take += character;
-    }
-    if (!take) take = graphemes(remaining)[0] ?? '';
-    remaining = remaining.slice(take.length);
-    lines.push(padLine(`${first ? prefix : '  '}${take}`, safeWidth));
-    first = false;
-  }
-  return lines;
-}
-
-function graphemes(value: string): string[] {
-  if (typeof Intl.Segmenter === 'function') {
-    return [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(value)].map(
-      (part) => part.segment,
-    );
-  }
-  return Array.from(value);
+  const lines = wrapTextWithAnsi(content, Math.max(1, width - 2));
+  return (lines.length ? lines : ['']).map((line, index) =>
+    padLine(`${index === 0 ? prefix : '  '}${line}`, width),
+  );
 }
 
 function fitLine(text: string, width: number): string {
