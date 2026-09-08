@@ -507,3 +507,62 @@ test('WorkHub Coordination action results preserve the admitted disposition', ()
     );
   }
 });
+
+test('WorkHub decodes attachment context and user-selected creation defaults without strategy authority', () => {
+  const attachments = [
+    {
+      name: 'requirements.txt',
+      kind: 'other',
+      mimeType: 'text/plain',
+      bytes: 12,
+      ref: {
+        kind: 'session_file',
+        sessionId: 'maka_workhub_coordination',
+        relativePath: 'artifact-1',
+      },
+    },
+  ];
+  const input = {
+    actionId: 'composer-action',
+    userText: 'Create an audit',
+    proposal: { disposition: 'create_new', title: 'Audit' },
+    create: { workspace: { kind: 'host_path', path: '/workspace' } },
+    newWorkDefaults: {
+      model: {
+        llmConnectionId: 'connection-1',
+        llmConnectionSlug: 'primary',
+        model: 'chosen-model',
+      },
+      permissionMode: 'ask',
+    },
+    attachments,
+  };
+  assert.deepEqual(decodeWorkHubCoordinationActInput(input), input);
+  assert.deepEqual(
+    decodeWorkHubCoordinationAnswerInput({ turnId: 'answer-1', text: 'Review file', attachments })
+      .attachments,
+    attachments,
+  );
+  assert.throws(() =>
+    decodeWorkHubCoordinationActInput({
+      ...input,
+      newWorkDefaults: { permissionMode: 'invented' },
+    }),
+  );
+  assert.throws(() =>
+    decodeWorkHubCoordinationActInput({
+      ...input,
+      newWorkDefaults: { ...input.newWorkDefaults, workspace: '/forged' },
+    }),
+  );
+  assert.throws(() =>
+    decodeWorkHubCoordinationActInput({
+      ...input,
+      proposal: { disposition: 'answer_here' },
+      create: undefined,
+    }),
+  );
+  assert.throws(() =>
+    decodeWorkHubCoordinationActInput({ ...input, attachments: Array(9).fill(attachments[0]) }),
+  );
+});

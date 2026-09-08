@@ -27,6 +27,7 @@ import {
   decodeMessageContent,
   TOOL_ACTIVITY_KINDS,
   type MessageContent,
+  type AttachmentRef,
   type ToolActivityKind,
   type ToolResultContent,
 } from './events.js';
@@ -930,9 +931,39 @@ export type WorkHubDelegationWorkspace =
   | { readonly kind: 'project'; readonly projectId: string }
   | { readonly kind: 'host_path'; readonly path: string };
 
+/** User-selected creation defaults; never applied to an existing Work. */
+export interface WorkHubCreateDefaults {
+  readonly model?: {
+    readonly llmConnectionId: string;
+    readonly llmConnectionSlug: string;
+    readonly model: string;
+  };
+  readonly permissionMode?: PermissionMode;
+}
+
+export function isWorkHubCreateDefaults(value: unknown): value is WorkHubCreateDefaults {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some((key) => key !== 'model' && key !== 'permissionMode')
+  )
+    return false;
+  if (value.permissionMode !== undefined && !isPermissionMode(value.permissionMode)) return false;
+  if (value.model === undefined) return true;
+  const model = value.model;
+  return (
+    isRecord(model) &&
+    Object.keys(model).length === 3 &&
+    ['llmConnectionId', 'llmConnectionSlug', 'model'].every(
+      (key) =>
+        typeof model[key] === 'string' && model[key].trim().length > 0 && model[key].length <= 512,
+    )
+  );
+}
+
 export interface WorkHubDelegationCreateSpec {
   readonly title: string;
   readonly workspace: WorkHubDelegationWorkspace;
+  readonly defaults?: WorkHubCreateDefaults;
 }
 
 interface WorkHubCoordinationMessageEnvelope {
@@ -951,6 +982,7 @@ interface WorkHubCoordinationMessageEnvelope {
   disposition: WorkHubDelegationDisposition;
   /** Exact target payload; retained so retry does not depend on renderer memory. */
   userText: string;
+  attachments?: AttachmentRef[];
   /** Present exactly for create_new. */
   create?: WorkHubDelegationCreateSpec;
 }
@@ -1292,7 +1324,7 @@ const WORKHUB_DELEGATION_ASSIGNED_MESSAGE_SHAPE =
       'targetMessageId',
       'targetSessionName',
     ],
-    ['create', 'steered', 'replacesActionId', 'replacesDelegationId'],
+    ['attachments', 'create', 'steered', 'replacesActionId', 'replacesDelegationId'],
   );
 const WORKHUB_DELEGATION_REPLACEMENT_REQUESTED_MESSAGE_SHAPE =
   defineObjectShape<WorkHubDelegationReplacementRequestedMessage>()(
@@ -1315,7 +1347,7 @@ const WORKHUB_DELEGATION_REPLACEMENT_REQUESTED_MESSAGE_SHAPE =
       'replacedTargetMessageId',
       'targetSessionName',
     ],
-    ['create'],
+    ['attachments', 'create'],
   );
 const WORKHUB_DELEGATION_SUPERSEDED_MESSAGE_SHAPE =
   defineObjectShape<WorkHubDelegationSupersededMessage>()(
@@ -1396,7 +1428,7 @@ const WORKHUB_DELEGATION_STOP_RESOLVED_MESSAGE_SHAPE =
   );
 const WORKHUB_DELEGATION_CREATE_SHAPE = defineObjectShape<WorkHubDelegationCreateSpec>()(
   ['title', 'workspace'],
-  [],
+  ['defaults'],
 );
 const WORKHUB_DELEGATION_PROJECT_WORKSPACE_SHAPE = defineObjectShape<
   Extract<WorkHubDelegationWorkspace, { kind: 'project' }>
@@ -1660,6 +1692,7 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
     typeof message.targetSessionId === 'string' &&
     typeof message.userText === 'string' &&
     message.userText.trim().length > 0 &&
+    isWorkHubMessageAttachments(message.attachments) &&
     ((message.disposition === 'delegate_existing' && message.create === undefined) ||
       (message.disposition === 'create_new' && isWorkHubDelegationCreateSpec(message.create))) &&
     (message.disposition === 'delegate_existing' || message.disposition === 'create_new');
@@ -1712,10 +1745,21 @@ function isWorkHubActionIdentity(message: Record<string, unknown>): boolean {
   );
 }
 
+function isWorkHubMessageAttachments(value: unknown): boolean {
+  if (value === undefined) return true;
+  try {
+    decodeMessageContent({ text: '', attachments: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function isWorkHubDelegationCreateSpec(value: unknown): value is WorkHubDelegationCreateSpec {
   if (
     !isRecord(value) ||
     !hasExactShape(value, WORKHUB_DELEGATION_CREATE_SHAPE) ||
+    (value.defaults !== undefined && !isWorkHubCreateDefaults(value.defaults)) ||
     typeof value.title !== 'string' ||
     value.title.trim().length === 0 ||
     !isRecord(value.workspace)

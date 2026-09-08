@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useContext, useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   ChatMessage,
   ChatMessageBubble,
@@ -26,7 +26,7 @@ import {
 } from '@astryxdesign/core';
 import { Button } from '@astryxdesign/core/Button';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { ChatSurfaceLayout, Composer } from '@maka/ui';
+import { ChatSurfaceLayout } from '@maka/ui';
 import {
   type WorkHubController,
   type WorkHubCoordinationTurn,
@@ -36,12 +36,13 @@ import {
   type WorkHubSubmission,
   type WorkHubSubmitInput,
 } from './workhub-controller.js';
+import type { AttachmentRef } from '@maka/core/events';
 import { WorkHubCoordinationFailure } from './workhub-coordination-port.js';
 import {
   WorkHubSendLease,
   type WorkHubSendAttempt,
 } from './workhub-send-lease.js';
-import { WorkHubNavigationRail, WorkHubPromptRail } from './features/workhub/index.js';
+import { WorkHubHighlightContext, WorkHubHighlightProvider, workHubIdentityHue, WorkHubNavigationRail, WorkHubPromptRail, WorkHubComposer, type WorkHubComposerServices, type WorkHubComposerSelection } from './features/workhub/index.js';
 import { getWorkHubRailCopy } from './locales/workhub-copy.js';
 
 export interface WorkHubConversationTurn {
@@ -50,6 +51,7 @@ export interface WorkHubConversationTurn {
   state: 'routing' | 'settled' | 'failed';
   outcome?: WorkHubSubmission;
   failure?: WorkHubSurfaceFailure;
+  submissionContext?: WorkHubComposerSelection & { attachments?: AttachmentRef[] };
 }
 
 export type WorkHubSurfaceFailure =
@@ -220,13 +222,16 @@ export async function submitLeasedWorkHubSurfaceInput(input: {
  * The persistent Coordination Session transcript is the primary conversation.
  * Ordinary Sessions remain a read-only status/routing projection.
  */
-export function WorkHubSurface(props: {
+interface WorkHubSurfaceProps {
   controller: WorkHubController;
   leaseScope: string;
   locale: UiLocale;
   initialFocusSessionId?: string;
+  composerServices?: WorkHubComposerServices;
   onOpenSession(sessionId: string): void;
-}) {
+}
+
+export function WorkHubSurface(props: WorkHubSurfaceProps) {
   const copy = workHubCopy(props.locale);
   const railCopy = getWorkHubRailCopy(props.locale);
   const [projection, setProjection] = useState<WorkHubProjection>({ sessions: [], turns: [] });
@@ -355,26 +360,31 @@ export function WorkHubSurface(props: {
     });
   }, [copy, projection, props.controller, refresh, routeGate]);
 
-  const send = useCallback(async (value: string) => {
+  const send = useCallback(async (value: string, selection: WorkHubComposerSelection, onAccepted?: () => void) => {
     const text = value.trim();
     if (!text || !initialLoadSettled || !conversationReady || routeGate.pending) return false;
-    return submitLeasedWorkHubSurfaceInput({
+    const submissionContext = selection;
+    const accepted = await submitLeasedWorkHubSurfaceInput({
       lease: sendLease,
       text,
       submit: async (attempt) => {
         const { requestId } = attempt;
         setTurns((current) => current.some((turn) => turn.requestId === requestId)
           ? current.map((turn) => turn.requestId === requestId
-            ? { requestId, text: attempt.text, state: 'routing' }
+            ? { requestId, text: attempt.text, state: 'routing', submissionContext }
             : turn)
-          : [...current, { requestId, text: attempt.text, state: 'routing' }]);
-        return route({
+          : [...current, { requestId, text: attempt.text, state: 'routing', submissionContext }]);
+        const result = await route({
           requestId,
           text: attempt.text,
+          ...submissionContext,
           ...(attempt.retrying ? { retryAction: true as const } : {}),
         });
+        if (workHubSubmissionClearsDraft(result)) onAccepted?.();
+        return result;
       },
     });
+    return accepted;
   }, [conversationReady, initialLoadSettled, route, routeGate, sendLease]);
   const visible = visibleWorkHubConversation(coordination.turns, turns);
   const visibleCoordinationTurns = visible.coordination;
@@ -383,16 +393,24 @@ export function WorkHubSurface(props: {
   const surfaceReady = initialLoadSettled && conversationReady;
 
   return (
+    <WorkHubHighlightProvider>
     <ChatSurfaceLayout
       className="workhub-surface"
       composer={(
-        <Composer
+        <WorkHubComposer
+          services={props.composerServices ? {
+            ...props.composerServices,
+            sessions: props.composerServices.sessions.filter((session) => projection.sessions.some((work) => work.target.sessionId === session.id)),
+          } : undefined}
+          locale={props.locale}
+          attachmentScope={props.leaseScope}
           draftKey="workhub"
           draftPersistence={sendLease}
           onSend={send}
           onStop={() => {}}
           sendBlocked={pending || !surfaceReady}
           modelLabel="WorkHub"
+          showStaticModelUnavailableStatus={false}
         />
       )}
     >
@@ -423,10 +441,13 @@ export function WorkHubSurface(props: {
                 turnId: `workhub-message-${turn.messageId}`,
                 label: turn.text,
                 reply: turn.result,
+                sessionId: turn.assignment?.targetSessionId ?? turn.stop?.targetSessionId,
               })),
               ...visibleLocalTurns.map((turn) => ({
                 turnId: `workhub-request-${turn.requestId}`,
                 label: turn.text,
+                sessionId: turn.outcome?.kind === 'submitted' || turn.outcome?.kind === 'stop' || turn.outcome?.kind === 'resume'
+                  ? turn.outcome.target.sessionId : undefined,
               })),
             ]} />
             <ChatMessageList
@@ -473,6 +494,7 @@ export function WorkHubSurface(props: {
                         submit: (attempt) => route({
                           requestId: attempt.requestId,
                           text: attempt.text,
+                          ...turn.submissionContext,
                           explicitTarget: target,
                           ...(attempt.retrying ? { retryAction: true as const } : {}),
                           ...(turn.outcome?.kind === 'clarification' && turn.outcome.correction
@@ -493,6 +515,7 @@ export function WorkHubSurface(props: {
         </div>
       </section>
     </ChatSurfaceLayout>
+    </WorkHubHighlightProvider>
   );
 }
 
@@ -518,12 +541,14 @@ export function WorkHubCoordinationStatus(props: {
     <ChatSurfaceLayout
       className="workhub-surface"
       composer={(
-        <Composer
+        <WorkHubComposer
+          locale={props.locale}
           draftKey="workhub"
           onSend={async () => false}
           onStop={() => {}}
           sendBlocked
           modelLabel="WorkHub"
+          showStaticModelUnavailableStatus={false}
         />
       )}
     >
@@ -609,11 +634,18 @@ export function WorkHubCoordinationTurnView(props: {
     <WorkHubMessageFrame
       anchorId={`workhub-message-${props.turn.messageId}`}
       text={props.turn.text}
+      attachments={props.turn.attachments}
       state={props.turn.stop?.outcome ?? (assignment?.linkState === 'active'
         ? assignment.feedbackState
         : assignment?.linkState ?? props.turn.state)}
       linkState={assignment?.linkState}
       projected
+      work={assignment || props.turn.stop ? {
+        sessionId: assignment?.targetSessionId ?? props.turn.stop!.targetSessionId,
+        name: session?.sessionName ?? stoppedSession?.sessionName ?? assignment?.targetSessionName ?? props.turn.stop!.targetSessionName,
+        projectName: session?.projectName ?? stoppedSession?.projectName,
+      } : undefined}
+      onOpenSession={props.onOpenSession}
     >
       {props.turn.stop ? (
         <SubmittedWorkView
@@ -728,7 +760,18 @@ function WorkHubTurnView(props: {
     : undefined;
 
   return (
-    <WorkHubMessageFrame anchorId={`workhub-request-${turn.requestId}`} text={turn.text} state={turn.state}>
+    <WorkHubMessageFrame
+      anchorId={`workhub-request-${turn.requestId}`}
+      text={turn.text}
+      attachments={turn.submissionContext?.attachments}
+      state={turn.state}
+      work={submitted ? {
+        sessionId: submitted.target.sessionId,
+        name: target?.sessionName ?? copy.sessionFallback,
+        projectName: target?.projectName,
+      } : undefined}
+      onOpenSession={props.onOpenSession}
+    >
           {turn.state === 'routing' ? (
             <p className="workhub-status" role="status">{copy.routing}</p>
           ) : turn.state === 'failed' ? (
@@ -811,22 +854,57 @@ function WorkHubTurnView(props: {
 function WorkHubMessageFrame(props: {
   anchorId: string;
   text: string;
+  attachments?: AttachmentRef[];
   state: string;
   linkState?: WorkHubDelegationLinkState;
   projected?: boolean;
+  work?: { sessionId: string; name: string; projectName?: string };
+  onOpenSession?(sessionId: string): void;
   children: ReactNode;
 }) {
+  const highlight = useContext(WorkHubHighlightContext);
+  const work = props.work;
+  const rail = work ? (
+    <span
+      className="workhub-work-rail"
+      aria-hidden="true"
+      onMouseEnter={() => highlight.highlight(work.sessionId)}
+      onMouseLeave={() => highlight.highlight(undefined)}
+    />
+  ) : null;
   return (
     <section
-      className={`workhub-turn${props.projected ? ' workhub-projected-turn' : ''}`}
+      className={`workhub-turn${props.projected ? ' workhub-projected-turn' : ''}${props.work ? ' workhub-bound-turn' : ''}`}
+      style={props.work ? { '--workhub-work-hue': workHubIdentityHue(props.work.sessionId) } as CSSProperties : undefined}
+      aria-label={props.text}
       data-turn-id={props.anchorId}
       data-transcript-turn-id={props.anchorId}
+      data-work-session-id={props.work?.sessionId}
+      data-work-highlighted={Boolean(work && highlight.sessionId === work.sessionId)}
       data-state={props.state}
       data-link-state={props.linkState}
     >
+      {props.work ? (
+        <div className="workhub-message-identity">
+          <Button
+            variant="ghost"
+            label={[props.work.projectName, props.work.name].filter(Boolean).join(' / ')}
+            onMouseEnter={() => highlight.highlight(work!.sessionId)}
+            onMouseLeave={() => highlight.highlight(undefined)}
+            onFocus={() => highlight.highlight(work!.sessionId)}
+            onBlur={() => highlight.highlight(undefined)}
+            onClick={() => props.onOpenSession?.(props.work!.sessionId)}
+          >
+            {props.work.projectName ? <span>{props.work.projectName}<span aria-hidden="true"> / </span></span> : null}
+            <strong>{props.work.name}</strong>
+          </Button>
+        </div>
+      ) : null}
       <ChatMessage sender="user" className="workhub-message">
         <ChatMessageBubble className="maka-chat-message-bubble maka-chat-message-bubble-user workhub-user-bubble">
+          {rail}
           <p>{props.text}</p>
+          {props.attachments?.length ? <ul className="workhub-message-attachments">{props.attachments.map((attachment, index) => <li key={index}>{attachment.name}</li>)}</ul> : null}
         </ChatMessageBubble>
       </ChatMessage>
       <ChatMessage sender="assistant" className="workhub-message">
@@ -835,6 +913,7 @@ function WorkHubMessageFrame(props: {
           width="100%"
           className="maka-chat-message-bubble maka-chat-message-bubble-assistant workhub-assistant-bubble"
         >
+          {rail}
           {props.children}
         </ChatMessageBubble>
       </ChatMessage>

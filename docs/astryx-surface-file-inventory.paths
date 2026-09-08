@@ -68,8 +68,11 @@ apps/desktop/src/renderer/features/workbar/ui/side-chat-close-confirmation.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-surface.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-toggle.tsx
+apps/desktop/src/renderer/features/workhub/services-context.tsx
+apps/desktop/src/renderer/features/workhub/ui/workhub-composer.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-navigation-rail.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-prompt-rail.tsx
+apps/desktop/src/renderer/features/workhub/ui/workhub-work-identity.tsx
 apps/desktop/src/renderer/keyboard-help.tsx
 apps/desktop/src/renderer/live-turn-reconciler.tsx
 apps/desktop/src/renderer/maka-tokens.css

@@ -57,6 +57,7 @@ import {
 } from '@maka/core/orchestration';
 import type { ContextBudgetDiagnostic, LlmCallRecord } from '@maka/core/usage-stats/types';
 import { stripUndefinedDeep } from '@maka/core/tool-args-identity';
+import type { RequestProjectionStage } from './request-projection.js';
 import type { PlanToolResult } from './plan-tools.js';
 import {
   YIELD_AGENT_GRAPH_TOOL_NAME,
@@ -144,7 +145,13 @@ import {
   type RuntimeEventModelReplayPlan,
   type RuntimeEventReplayFallbackGate,
 } from './model-history.js';
-import { toolSchemaCharsForDiagnostics } from './request-shape.js';
+import {
+  toolSchemaCharsForDiagnostics,
+  requestCompositionToolSchemas,
+  stableHash,
+  toolCatalogHash,
+} from './request-shape.js';
+import { toolAvailabilityHash } from './tool-availability.js';
 import { ProviderRequestTelemetry } from './provider-request-telemetry.js';
 import { AiSdkMessageProjection } from './ai-sdk-message-projection.js';
 import { ToolAvailabilityRuntime, type ToolAvailabilityPlan } from './tool-availability.js';
@@ -171,7 +178,7 @@ import {
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
-import type { AiSdkBackendInput } from './ai-sdk-backend.js';
+import type { AiSdkBackendInput, ResolvedSystemPrompt } from './ai-sdk-backend.js';
 import {
   INVALID_TOOL_NAME,
   isProviderSandboxBoundaryAttempt,
@@ -189,7 +196,10 @@ export interface AiSdkTurnDependencies {
   messageProjection: AiSdkMessageProjection;
   providerTelemetry: ProviderRequestTelemetry;
   compaction: AiSdkCompaction;
-  toolAvailabilityRuntime: ToolAvailabilityRuntime;
+  snapshotToolAvailability: () => {
+    hostTools: readonly MakaTool[];
+    runtime: ToolAvailabilityRuntime;
+  };
   codeCellAdmission: AdmissionLimiter;
   resolvedProviderOptions: Record<string, unknown>;
   session: AiSdkSessionState;
@@ -636,7 +646,7 @@ function isIncompleteProviderFinishReason(reason: ModelFinishReason | undefined)
 
 export class AiSdkTurn {
   readonly abortController = new AbortController();
-  readonly activeTools = new Map<string, MakaTool>();
+  readonly activeTools = new Map<string, string>();
   aborted = false;
   loopStopRequested = false;
   loopStopReason: CompleteEvent['stopReason'] | undefined;
@@ -1085,8 +1095,8 @@ export class AiSdkTurn {
     }
 
     // --- Build the provider-visible schema set. Tool execution stays in Runtime. ---
-    // One immutable runtime owns the bound search catalog and cached index.
-    // Mutable activation belongs to this turn.
+    // Each logical step freezes its own scoped catalog and search projection.
+    // Mutable activation belongs to this turn and follows contribution identity.
     const requiredOrchestrationTools =
       this.orchestration.mode === 'swarm'
         ? new Set([
@@ -1112,15 +1122,26 @@ export class AiSdkTurn {
       throw new Error(`Invalid tool mode: ${String(requestedToolMode)}`);
     }
     const toolMode = requestedToolMode;
-    if (toolMode === 'code_mode' && this.deps.backend.tools.some((tool) => tool.name === 'exec')) {
-      throw new Error('Tool name "exec" is reserved for Code Mode.');
-    }
-    const plan = projectToolModePlan(
-      this.deps.toolAvailabilityRuntime.prepare(this.activeTools, requiredOrchestrationTools),
-      toolMode,
-      codeModeExecTool,
-    );
-    const providerTools = plan.providerTools;
+    const snapshotStepTools = () => {
+      const snapshot = this.deps.snapshotToolAvailability();
+      if (toolMode === 'code_mode' && snapshot.hostTools.some((tool) => tool.name === 'exec')) {
+        throw new Error('Tool name "exec" is reserved for Code Mode.');
+      }
+      const plan = projectToolModePlan(
+        snapshot.runtime.prepare(this.activeTools, requiredOrchestrationTools),
+        toolMode,
+        codeModeExecTool,
+      );
+      const modelTools: ModelToolSet = {};
+      for (const tool of plan.providerTools) {
+        modelTools[tool.name] = tool.providerTool
+          ? { kind: 'provider', providerTool: tool.providerTool }
+          : { kind: 'function', description: tool.description, inputSchema: tool.parameters };
+      }
+      toolRuntime.setGating(plan.gating);
+      return { plan, providerTools: plan.providerTools, modelTools };
+    };
+    let { plan, providerTools, modelTools } = snapshotStepTools();
     let activeToolResultPruneDiagnosticPatch: ActiveToolResultPruneDiagnosticPatch = {};
     let midTurnCompactDiagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined;
     // Tool names the repair path matches a mis-cased call against — follows the
@@ -1133,45 +1154,8 @@ export class AiSdkTurn {
         : [...names];
     };
     const currentRepairToolNames = () => boundaryAwareToolNames(plan.currentRepairToolNames());
-    if (plan.gating) {
-      toolRuntime.setGating(plan.gating);
-    }
-
-    const modelTools: ModelToolSet = {};
-    for (const t of providerTools) {
-      modelTools[t.name] = t.providerTool
-        ? { kind: 'provider', providerTool: t.providerTool }
-        : {
-            kind: 'function',
-            description: t.description,
-            inputSchema: t.parameters,
-          };
-    }
-
-    // Resolve the stable Provider envelope before automatic Compaction freezes
-    // its source. The same value is reused by the primary request; Memory does
-    // not resolve or mutate Agent configuration after the checkpoint commits.
+    let resolvedSystemPrompt: ResolvedSystemPrompt = { sourceRevisions: [] };
     let systemPrompt: string | undefined;
-    try {
-      systemPrompt = joinPromptFragments([
-        await this.resolveSystemPrompt(),
-        this.orchestration?.mode === 'swarm' ? renderSwarmModePrompt() : undefined,
-        this.orchestration?.mode === 'graph' ? renderGraphModePrompt() : undefined,
-      ]);
-    } catch (err) {
-      trace.modelStreamFailed(this.deps.modelAdapter.classifyError(err), err);
-      queue.push(this.makeErrorEvent(turnId, err));
-      queue.push({
-        type: 'complete',
-        id: this.deps.newId(),
-        turnId,
-        ts: this.deps.now(),
-        stopReason: 'error',
-      } satisfies CompleteEvent);
-      queue.close();
-      yield* this.drain(queue);
-      return;
-    }
 
     // --- Build messages from RuntimeEvent history and its compatibility projection. ---
     const priorReplayResult = await this.buildPriorMessages(input);
@@ -1425,11 +1409,12 @@ export class AiSdkTurn {
             patch,
           );
         };
+        const capacityProviderTools = [...providerTools];
         const midTurnCapacityHook = this.deps.compaction.buildMidTurnCapacityCompactProjection(
           turnId,
           midTurnState,
           queue,
-          providerTools,
+          capacityProviderTools,
           onMidTurnDiagnosticPatch,
           this,
           this.automaticMemoryCompactionSupported()
@@ -1454,8 +1439,10 @@ export class AiSdkTurn {
             );
           },
         );
+        const projectCurrentToolAvailability: RequestProjectionStage = (options) =>
+          plan.projectActiveTools?.(options);
         const shapedProjection = composeRequestProjection(
-          plan.projectActiveTools,
+          projectCurrentToolAvailability,
           midTurnCapacityHook,
           activeToolResultPruneHook,
         );
@@ -1475,6 +1462,14 @@ export class AiSdkTurn {
         let finishReason: ModelFinishReason = 'stop';
         let terminalProviderError: unknown;
         agentLoop: for (;;) {
+          ({ plan, providerTools, modelTools } = snapshotStepTools());
+          resolvedSystemPrompt = await this.resolveSystemPrompt();
+          systemPrompt = joinPromptFragments([
+            resolvedSystemPrompt.text,
+            this.orchestration.mode === 'swarm' ? renderSwarmModePrompt() : undefined,
+            this.orchestration.mode === 'graph' ? renderGraphModePrompt() : undefined,
+          ]);
+          capacityProviderTools.splice(0, capacityProviderTools.length, ...providerTools);
           await this.drainSteeringInto(input, queue);
           if (this.deps.backend.loadTurnRuntimeEvents) {
             requestMessages = await loadDurableTurnProjection();
@@ -1530,7 +1525,21 @@ export class AiSdkTurn {
             : undefined;
           const projectedMessages = shaped?.messages ?? requestMessages;
           const activeToolsForRequest = resolveDispatch(shaped?.activeTools).activeTools;
-          providerRequestTracker?.setStep(runtimeSteps);
+          const requestCompositionId =
+            this.runId && this.deps.backend.recordRequestComposition
+              ? await this.deps.backend.recordRequestComposition(this.runId, {
+                  compositionId: this.deps.newId(),
+                  step: runtimeSteps,
+                  sourceRevisions: resolvedSystemPrompt.sourceRevisions,
+                  systemPromptHash: stableHash(requestSystemPrompt ?? ''),
+                  toolCatalogHash: toolCatalogHash(providerTools),
+                  toolAvailabilityHash: toolAvailabilityHash(this.deps.backend.toolAvailability),
+                  providerOptionsHash: stableHash(this.deps.resolvedProviderOptions),
+                  toolNames: activeToolsForRequest,
+                  toolSchemas: requestCompositionToolSchemas(providerTools, activeToolsForRequest),
+                })
+              : undefined;
+          providerRequestTracker?.setStep(runtimeSteps, requestCompositionId);
           let attemptMessages = projectedMessages;
           let providerAttempt = 1;
           let idleWatchdogRetryCount = 0;
@@ -3001,18 +3010,26 @@ export class AiSdkTurn {
     };
   }
 
-  private async resolveSystemPrompt(): Promise<string | undefined> {
+  private async resolveSystemPrompt(): Promise<ResolvedSystemPrompt> {
     const turnId = this.turnId;
     if (typeof this.deps.backend.systemPrompt === 'function') {
-      return await this.deps.backend.systemPrompt({
+      const resolved = await this.deps.backend.systemPrompt({
         sessionId: this.deps.backend.sessionId,
         turnId,
         cwd: this.deps.backend.header.cwd,
         emitSkillCatalogTrace: (message, data) =>
           this.runTrace?.emit('skill', 'skill_catalog_built', message, data),
       });
+      return typeof resolved === 'string' || resolved === undefined
+        ? { ...(resolved === undefined ? {} : { text: resolved }), sourceRevisions: [] }
+        : resolved;
     }
-    return this.deps.backend.systemPrompt;
+    return {
+      ...(this.deps.backend.systemPrompt === undefined
+        ? {}
+        : { text: this.deps.backend.systemPrompt }),
+      sourceRevisions: [],
+    };
   }
 
   private async *drain(queue: AsyncEventQueue<SessionEvent>): AsyncIterable<SessionEvent> {
