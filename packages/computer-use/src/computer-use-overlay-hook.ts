@@ -76,6 +76,8 @@ function kindOf(action: CuPresentationAction): CursorActionKind | undefined {
     case 'click_element':
     case 'select_text':
     case 'secondary_action':
+    case 'set_value':
+    case 'press_key':
       return 'click';
     case 'scroll_element':
       return 'scroll';
