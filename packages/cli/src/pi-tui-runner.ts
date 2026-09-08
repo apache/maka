@@ -18,7 +18,6 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { basename } from 'node:path';
 import {
   Key,
   ProcessTerminal,
@@ -167,6 +166,7 @@ import {
   MakaAutocompleteProvider,
   DirectoryPickerOverlay,
   ModelSearchOverlay,
+  SessionSearchOverlay,
   OnboardingWizard,
   PickerOverlay,
   UserQuestionOverlay,
@@ -178,6 +178,7 @@ import {
   skillPickerItems,
   thinkingLevelPickerItems,
   type MakaSlashCommand,
+  type SessionSearchChoice,
 } from './pi-tui-pickers.js';
 import { formatMakaResumeCommand } from './cli-invocation.js';
 import {
@@ -2798,21 +2799,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         foreignByValue.set(`foreign:${summary.source}:${summary.id}`, summary);
       }
     }
+    let overlay: OverlayHandle | undefined;
+    let sessionSearch: SessionSearchOverlay | undefined;
     const renderScope = (): void => {
       const visibleSessions =
         sessionListScope === 'current'
           ? projectedSessions.filter(({ session }) => session.cwd === cwd)
           : projectedSessions;
-      const items: SelectItem[] = visibleSessions.map(({ session, depth }) => {
+      const choices: SessionSearchChoice[] = visibleSessions.map(({ session, depth }) => {
         const state = availability.get(session.id);
         const statusBadge = sessionStatusBadge(session, locale);
         const statusDetail = statusBadge ? ` · ${statusBadge}` : '';
-        const location =
-          sessionListScope === 'all' && session.cwd ? ` ${basename(session.cwd)}` : '';
+        const location = sessionListScope === 'all' && session.cwd ? ` ${session.cwd}` : '';
         const childDetail = session.subagentRuntime
           ? ` subagent:${session.subagentRuntime.profile}`
           : '';
-        return {
+        const item = {
           value: session.id,
           label: `${depth > 0 ? `${'  '.repeat(depth - 1)}↳ ` : ''}${session.name || session.id}`,
           description:
@@ -2820,26 +2822,37 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
               ? `${shortSessionId(session.id)}${statusDetail} ${state.reason}`
               : `${shortSessionId(session.id)}${statusDetail}${location}${childDetail} ${session.llmConnectionSlug} ${session.model}`,
         };
+        return {
+          item,
+          searchText: [
+            session.name,
+            session.id,
+            session.cwd,
+            session.model,
+            session.llmConnectionSlug,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLocaleLowerCase(),
+        };
       });
       // Foreign sessions are cwd-scoped; show them in both scope views (they
       // belong to this project) so a Tab toggle never makes them vanish.
       for (const [value, summary] of foreignByValue) {
-        items.push({
-          value,
-          label: summary.title,
-          description: `↩ resume from ${foreignSourceLabel(summary.source)}`,
+        choices.push({
+          item: {
+            value,
+            label: summary.title,
+            description: `↩ resume from ${foreignSourceLabel(summary.source)}`,
+          },
+          searchText: `${summary.title} ${summary.id} ${summary.source}`.toLocaleLowerCase(),
         });
       }
-      const list = new SelectList(items, 10, selectListTheme(), {
-        minPrimaryColumnWidth: 20,
-        maxPrimaryColumnWidth: Math.max(20, terminal.columns - 30),
-      });
-      let overlay: OverlayHandle | undefined;
       const closeOverlay = () => {
         sessionPickerOverlayOpen = false;
         overlay?.hide();
       };
-      list.onSelect = (item) => {
+      const onSelect = (item: SelectItem) => {
         const foreign = foreignByValue.get(item.value);
         if (foreign) {
           closeOverlay();
@@ -2850,22 +2863,25 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         closeOverlay();
         void goToSession(item.value);
       };
-      list.onCancel = () => closeOverlay();
+      const scopeLabel = sessionListScope === 'current' ? 'Current' : 'All';
+      if (sessionSearch) {
+        sessionSearch.updateChoices(choices, scopeLabel);
+        sessionSearch.invalidate();
+        return;
+      }
+      sessionSearch = new SessionSearchOverlay(tui, {
+        locale,
+        choices,
+        scopeLabel,
+        onSelect,
+        onCancel: closeOverlay,
+        onToggleScope: () => {
+          sessionListScope = sessionListScope === 'current' ? 'all' : 'current';
+          renderScope();
+        },
+      });
       sessionPickerOverlayOpen = true;
-      overlay = showBottomPicker(
-        new PickerOverlay(list, {
-          title: 'Resume Session',
-          rightLabel: sessionListScope === 'current' ? 'Current' : 'All',
-          hint: 'Tab scope · ↑↓ move · Enter select · Esc close',
-          onInput: (data) => {
-            if (!matchesKey(data, Key.tab) || isKeyRelease(data) || isKeyRepeat(data)) return false;
-            sessionListScope = sessionListScope === 'current' ? 'all' : 'current';
-            overlay?.hide();
-            renderScope();
-            return true;
-          },
-        }),
-      );
+      overlay = showBottomPicker(sessionSearch);
     };
     renderScope();
   };
