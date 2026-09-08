@@ -127,6 +127,33 @@ test('an explicit tool profile remains an exact ceiling over scoped Tool additio
   assert.equal(composer.resolveTools?.().filter(({ name }) => name === 'Read').length, 1);
 });
 
+test('the composer caches the Host base but reassembles scoped Plugin prompts each step', async () => {
+  let pluginText = 'FIRST_PLUGIN_PROMPT';
+  let assemblies = 0;
+  const composer = createFixtureComposer({
+    resolveAdditionalSystemPrompt: async (_context, baseText) => {
+      assemblies += 1;
+      return {
+        text: `${baseText}\n\n${pluginText}`,
+        sourceRevisions: [{ id: 'plugin.system-prompt', revision: `revision-${assemblies}` }],
+      };
+    },
+  });
+  const context = { sessionId: 'session', turnId: 'turn', cwd: '/workspace' };
+
+  const first = await composer.resolveSystemPrompt(context);
+  pluginText = 'SECOND_PLUGIN_PROMPT';
+  const second = await composer.resolveSystemPrompt(context);
+
+  assert.match(first.text ?? '', /FIRST_PLUGIN_PROMPT/u);
+  assert.match(second.text ?? '', /SECOND_PLUGIN_PROMPT/u);
+  assert.equal(assemblies, 2);
+  assert.deepEqual(
+    second.sourceRevisions.find(({ id }) => id === 'plugin.system-prompt'),
+    { id: 'plugin.system-prompt', revision: 'revision-2' },
+  );
+});
+
 function tool(name: string): MakaTool {
   return {
     name,
@@ -184,7 +211,13 @@ function createFixtureComposer(
     skills: {
       readCanonicalModelInventory: async () => ({ inventory: [] }),
     } as unknown as HostSkillCatalogCoordinator,
-    memory: {} as HostMemoryCoordinator,
+    memory: {
+      readPromptProjection: async () => ({
+        bundleRevision: null,
+        memoryRevision: null,
+        body: undefined,
+      }),
+    } as unknown as HostMemoryCoordinator,
     sessionTodo: {} as SessionTodoToolStore,
     builtinTools: {},
     ...overrides,

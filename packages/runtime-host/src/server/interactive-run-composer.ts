@@ -110,6 +110,11 @@ export interface InteractiveRunComposerInput {
   readonly builtinTools?: BuildBuiltinToolsOptions;
   readonly hostTools?: readonly MakaTool[];
   readonly resolveAdditionalTools?: (hostTools: readonly MakaTool[]) => readonly MakaTool[];
+  /** Reassembles the scoped Plugin prompt surface before each logical model step. */
+  readonly resolveAdditionalSystemPrompt?: (
+    context: HostModelPromptContext,
+    baseText: string | undefined,
+  ) => Promise<ResolvedRunPrompt>;
   readonly scheduledTaskTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
   readonly parentAgentTools?: readonly MakaTool[];
@@ -193,8 +198,8 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
       };
   const childInstruction = input.childInstruction?.trim();
   const runProfile = hostedExecutionRunProfile(input.toolProfile);
-  const resolvedSystemPrompts = new Map<string, Promise<ResolvedRunPrompt>>();
-  const resolveSystemPrompt = (context: HostModelPromptContext): Promise<ResolvedRunPrompt> => {
+  const resolvedBaseSystemPrompts = new Map<string, Promise<ResolvedRunPrompt>>();
+  const resolveBaseSystemPrompt = (context: HostModelPromptContext): Promise<ResolvedRunPrompt> => {
     if (runProfile) {
       return Promise.resolve(
         Object.freeze({
@@ -204,7 +209,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
       );
     }
     const key = `${context.sessionId}\u0000${context.turnId}`;
-    const cached = resolvedSystemPrompts.get(key);
+    const cached = resolvedBaseSystemPrompts.get(key);
     if (cached) return cached;
     const pending = Promise.all([
       readPromptState(input, context.sessionId, Boolean(childInstruction)),
@@ -257,15 +262,26 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
         });
       })
       .catch((error: unknown) => {
-        if (resolvedSystemPrompts.get(key) === pending) resolvedSystemPrompts.delete(key);
+        if (resolvedBaseSystemPrompts.get(key) === pending) resolvedBaseSystemPrompts.delete(key);
         throw error;
       });
-    resolvedSystemPrompts.set(key, pending);
-    if (resolvedSystemPrompts.size > 100) {
-      const oldest = resolvedSystemPrompts.keys().next().value;
-      if (typeof oldest === 'string' && oldest !== key) resolvedSystemPrompts.delete(oldest);
+    resolvedBaseSystemPrompts.set(key, pending);
+    if (resolvedBaseSystemPrompts.size > 100) {
+      const oldest = resolvedBaseSystemPrompts.keys().next().value;
+      if (typeof oldest === 'string' && oldest !== key) resolvedBaseSystemPrompts.delete(oldest);
     }
     return pending;
+  };
+  const resolveSystemPrompt = async (
+    context: HostModelPromptContext,
+  ): Promise<ResolvedRunPrompt> => {
+    const base = await resolveBaseSystemPrompt(context);
+    if (!input.resolveAdditionalSystemPrompt || runProfile) return base;
+    const plugin = await input.resolveAdditionalSystemPrompt(context, base.text);
+    return Object.freeze({
+      text: plugin.text,
+      sourceRevisions: mergeSourceRevisions(base.sourceRevisions, plugin.sourceRevisions),
+    });
   };
 
   return Object.freeze({
@@ -292,6 +308,11 @@ export interface InteractiveRunComposerFactoryInput
   ) => {
     readonly tools: readonly MakaTool[];
   };
+  readonly resolvePluginSystemPrompt?: (
+    sessionId: string,
+    context: HostModelPromptContext,
+    baseText: string | undefined,
+  ) => Promise<ResolvedRunPrompt>;
   readonly childTools?: readonly MakaTool[];
   readonly worktreePatchWriteBackAvailable?: boolean;
   readonly planStore?: PlanStore;
@@ -428,6 +449,12 @@ export function createInteractiveRunComposerFactory(
                   tavilyReady,
                 }).hostTools;
               },
+            }
+          : {}),
+        ...(input.resolvePluginSystemPrompt && !backendContext.tools
+          ? {
+              resolveAdditionalSystemPrompt: (context, baseText) =>
+                input.resolvePluginSystemPrompt!(backendContext.sessionId, context, baseText),
             }
           : {}),
         ...(input.scheduledTaskTool ? { scheduledTaskTool: input.scheduledTaskTool } : {}),
@@ -619,6 +646,15 @@ function interactiveSourceRevisions(input: {
     { id: 'runtime-policy', revision: String(input.runtimePolicyRevision) },
     { id: 'skill-catalog', revision: input.skillCatalogRevision },
   ]);
+}
+
+function mergeSourceRevisions(
+  base: readonly RunCompositionSourceRevision[],
+  additions: readonly RunCompositionSourceRevision[],
+): readonly RunCompositionSourceRevision[] {
+  const merged = new Map(base.map((revision) => [revision.id, revision]));
+  for (const revision of additions) merged.set(revision.id, revision);
+  return Object.freeze([...merged.values()].sort((left, right) => left.id.localeCompare(right.id)));
 }
 
 async function readPromptState(

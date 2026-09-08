@@ -34,6 +34,7 @@ import {
 } from '@maka/runtime/plugin-runtime';
 import type { ExtensionPackageManifest } from './extension-package-manifest.js';
 import type { PluginToolInspection } from '@maka/runtime/plugin-tool-service';
+import type { PluginSystemPromptInspection } from '@maka/runtime/plugin-system-prompt-service';
 import { validateExtensionConfiguration } from './extension-package-manifest.js';
 import { recoverExtensionBundleImports } from './extension-bundle.js';
 import { loadPluginCompositionPatch } from './plugin-composition-patch.js';
@@ -76,6 +77,9 @@ export interface HostPluginPlatformOptions {
   readonly packageLoader?: TrustedPluginPackageLoader;
   readonly store?: HostPluginCompositionStore;
   readonly tools?: { inspect(rootId?: MakaPluginRootId): readonly PluginToolInspection[] };
+  readonly systemPrompt?: {
+    inspect(rootId?: MakaPluginRootId): readonly PluginSystemPromptInspection[];
+  };
 }
 
 export interface HostPluginPlatformFailure {
@@ -112,6 +116,7 @@ export class HostPluginPlatform {
   readonly #packageLoader: TrustedPluginPackageLoader;
   readonly #store: HostPluginCompositionStore;
   readonly #tools?: HostPluginPlatformOptions['tools'];
+  readonly #systemPrompt?: HostPluginPlatformOptions['systemPrompt'];
 
   #authority: PersistedPluginComposition = emptyCompositionAuthority();
   #desired: MakaCompositionState = emptyCompositionState();
@@ -137,6 +142,7 @@ export class HostPluginPlatform {
       options.packageLoader ?? new TrustedPluginPackageLoader(controlDirectory, this.#packages);
     this.#store = options.store ?? new HostPluginCompositionStore(controlDirectory);
     this.#tools = options.tools;
+    this.#systemPrompt = options.systemPrompt;
   }
 
   async recover(): Promise<void> {
@@ -477,6 +483,11 @@ export class HostPluginPlatform {
   inspectTools(rootId?: MakaPluginRootId): readonly PluginToolInspection[] {
     this.#assertReadable();
     return this.#tools?.inspect(rootId) ?? Object.freeze([]);
+  }
+
+  inspectSystemPrompt(rootId?: MakaPluginRootId): readonly PluginSystemPromptInspection[] {
+    this.#assertReadable();
+    return this.#systemPrompt?.inspect(rootId) ?? Object.freeze([]);
   }
 
   async status(): Promise<{

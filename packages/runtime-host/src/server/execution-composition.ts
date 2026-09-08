@@ -82,6 +82,7 @@ import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { Context } from '@maka/runtime/plugin-kernel';
 import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
 import { PluginToolService } from '@maka/runtime/plugin-tool-service';
+import { PluginSystemPromptService } from '@maka/runtime/plugin-system-prompt-service';
 import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
 import { isHostedExecutionTerminal } from './hosted-execution-authority.js';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -296,9 +297,11 @@ export async function createExecutionRuntimeHostComposition(
   try {
     const pluginRoot = new Context();
     const pluginTools = new PluginToolService(pluginRoot);
+    const pluginSystemPrompt = new PluginSystemPromptService(pluginRoot);
     pluginPlatform = new HostPluginPlatform(context.owner.controlDirectory, {
       composition: new MakaCompositionLoader({ root: pluginRoot }),
       tools: pluginTools,
+      systemPrompt: pluginSystemPrompt,
     });
     const pluginPlatformCoordinator = new HostPluginPlatformCoordinator(pluginPlatform);
     const openedProjectCatalog = storage.projectCatalog;
@@ -781,6 +784,20 @@ export async function createExecutionRuntimeHostComposition(
           requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
         resolvePluginTools: (sessionId, coreTools) =>
           pluginTools.resolveContributions(sessionId, coreTools),
+        resolvePluginSystemPrompt: async (sessionId, promptContext, baseText) => {
+          const assembly = await pluginSystemPrompt.assemble(
+            {
+              sessionId,
+              turnId: promptContext.turnId,
+              cwd: promptContext.cwd,
+            },
+            baseText,
+          );
+          return {
+            text: assembly.text,
+            sourceRevisions: assembly.sourceRevision ? [assembly.sourceRevision] : [],
+          };
+        },
         parentAgentTools: childAgentTools.parentTools,
         childTools: childAgentTools.childTools,
         worktreePatchWriteBackAvailable: true,

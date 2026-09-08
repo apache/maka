@@ -25,6 +25,7 @@ import { test } from 'node:test';
 import { waitFor } from '@maka/core/test-only/async-primitives';
 import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
 import { Context } from '@maka/runtime/plugin-kernel';
+import { PluginSystemPromptService } from '@maka/runtime/plugin-system-prompt-service';
 import { PluginToolService } from '@maka/runtime/plugin-tool-service';
 import {
   decodePluginCompositionApplyInput,
@@ -66,6 +67,7 @@ function createPlatform(
     packageLoader,
     store,
     ...(options.tools ? { tools: options.tools } : {}),
+    ...(options.systemPrompt ? { systemPrompt: options.systemPrompt } : {}),
   });
   testPlatformInternals.set(platform, { composition, packages, store });
   return platform;
@@ -476,6 +478,51 @@ test('Package replacement releases a single-provider Service before activating i
     assert.deepEqual(internals(platform).composition.root.get('replacementService'), {
       source: 'second',
     });
+    await platform.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Package lifecycle publishes and retires scoped System Prompt contributions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-system-prompt-'));
+  try {
+    const pluginRoot = new Context();
+    const systemPrompt = new PluginSystemPromptService(pluginRoot);
+    const composition = new MakaCompositionLoader({ root: pluginRoot });
+    const platform = createPlatform(join(root, 'control'), { composition, systemPrompt });
+    await platform.recover();
+    await platform.installPackage(
+      await writeFixturePackage(root, 'prompt-package', 'prompt', {
+        systemPrompt: { name: 'plugin:fixture', order: 10, text: 'fixture prompt' },
+        composition: [
+          { type: 'insert', entry: { id: 'prompt-entry', packageId: 'prompt-package' } },
+        ],
+      }),
+    );
+
+    assert.equal(
+      (
+        await systemPrompt.assemble(
+          { sessionId: 'alpha', turnId: 'turn-1', cwd: '/workspace' },
+          'base',
+        )
+      ).text,
+      'base\n\nfixture prompt',
+    );
+    assert.equal(platform.inspectSystemPrompt('profile')[0]?.name, 'plugin:fixture');
+
+    await platform.uninstallPackage('prompt-package');
+    assert.equal(
+      (
+        await systemPrompt.assemble(
+          { sessionId: 'alpha', turnId: 'turn-2', cwd: '/workspace' },
+          'base',
+        )
+      ).text,
+      'base',
+    );
+    assert.deepEqual(platform.inspectSystemPrompt('profile'), []);
     await platform.close();
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1595,6 +1642,11 @@ async function writeFixturePackage(
     readonly manifest?: Readonly<Record<string, unknown>>;
     readonly composition?: readonly unknown[];
     readonly tool?: { readonly name: string; readonly result: unknown };
+    readonly systemPrompt?: {
+      readonly name: string;
+      readonly order: number;
+      readonly text: string;
+    };
   } = {},
 ): Promise<string> {
   const source = join(
@@ -1631,6 +1683,7 @@ async function writeFixturePackage(
         ${options.throwOnApply ? "throw new Error('fixture activation failed');" : ''}
         ${options.provideService ? `ctx.provide(${JSON.stringify(options.provideService)}, { source: ${JSON.stringify(contributionId)} });` : ''}
         ${options.tool ? `ctx.tools.register(Object.freeze({ name: ${JSON.stringify(options.tool.name)}, description: 'fixture tool', parameters: {}, impl: async () => (${JSON.stringify(options.tool.result)}) }));` : ''}
+        ${options.systemPrompt ? `ctx.systemPrompt.section(${JSON.stringify(options.systemPrompt)});` : ''}
         ctx.effect(() => () => undefined, 'fixture');
       } }),
     });\n`,
