@@ -146,11 +146,11 @@ export function createWorkHubControl(deps: WorkHubControlDeps) {
     const active = owner;
     if (!active) {
       undoController?.abort(new Error("User took control"));
-      if (undoController) update({ phase: "paused", cursor: undefined });
+      if (undoController) update({ phase: "paused", cursor: undefined, error: undefined });
       return;
     }
     active.controller.abort(new Error("User took control"));
-    update({ phase: "paused", cursor: undefined });
+    update({ phase: "paused", cursor: undefined, error: undefined });
     // This callback must compare the exact turn before sending sessions.stop.
     await deps.interrupt(active.scope, active.turnId);
   };
@@ -228,7 +228,7 @@ export function createWorkHubControl(deps: WorkHubControlDeps) {
               !signal.aborted && deps.isCurrent(scope) && active.failures < 3;
             const inputDispatched = ui.dispatchedInputs > inputBeforeAction;
             update({
-              error: message,
+              error: signal.aborted ? undefined : message,
               phase: signal.aborted ? "paused" : "error",
               ...(!recoverable ? { cursor: undefined } : {}),
             });
@@ -365,9 +365,9 @@ export function createWorkHubControl(deps: WorkHubControlDeps) {
       } catch (error) {
         update({
           phase: controller.signal.aborted ? "paused" : "error",
-          error: error instanceof Error ? error.message : String(error),
+          error: controller.signal.aborted ? undefined : error instanceof Error ? error.message : String(error),
         });
-        throw error;
+        if (!controller.signal.aborted) throw error;
       } finally {
         busy = false;
         undoController = undefined;

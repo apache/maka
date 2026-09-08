@@ -96,7 +96,8 @@ async function harness(animate = false) {
     setMaximizable() {}
     show() { this.visible = true; }
     hide() { this.visible = false; }
-    focus() {}
+    focused = 0;
+    focus() { this.focused++; }
     restore() {}
     destroy() { this.destroyed = true; this.contents.close(); this.emit('closed'); }
   }
@@ -313,4 +314,28 @@ test('application broadcasts reach registered auxiliaries once and stop after re
   assert.equal(controller.ownsRenderer(renderer), false);
   controller.send('settings:changed');
   assert.deepEqual(messages, ['settings:changed']);
+});
+
+
+test('control preparation floats the live conversation and focuses the main window without resetting an existing float', async () => {
+  const h = await harness();
+  await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 0, y: 0, width: 1000, height: 800 } });
+  const view = h.views[0]!;
+  await h.controller.prepareControl();
+  const floating = h.windows[1]!;
+  assert.equal(h.controller.getSnapshot().placement, 'floating');
+  assert.ok(floating.visible && floating.children.has(view));
+  assert.equal(h.main.children.has(view), false);
+  assert.equal(h.main.focused, 1);
+  floating.setBounds({ x: 120, y: 130, width: 520, height: 650 });
+  const floatingFocus = floating.focused;
+  await h.controller.prepareControl();
+  assert.deepEqual(floating.bounds, { x: 120, y: 130, width: 520, height: 650 });
+  assert.equal(floating.focused, floatingFocus, 'a later control call must not refocus the composer');
+  assert.equal(h.main.focused, 2);
+  assert.equal(h.views.length, 1);
+  await h.command(view.webContents, 'hide');
+  await h.controller.prepareControl();
+  assert.equal(floating.visible, true);
+  h.controller.dispose();
 });

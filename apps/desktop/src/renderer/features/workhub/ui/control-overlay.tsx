@@ -58,7 +58,6 @@ export function WorkHubControlOverlay() {
           key?: string;
           wheel?: boolean;
           until: number;
-          moved: boolean;
         }
       | undefined;
     const stop = () => {
@@ -77,7 +76,6 @@ export function WorkHubControlOverlay() {
         expected = {
           ...event.detail,
           until: performance.now() + 300,
-          moved: false,
         };
     };
     const key = (event: KeyboardEvent) => {
@@ -101,37 +99,24 @@ export function WorkHubControlOverlay() {
       }
       if (
         event instanceof PointerEvent &&
-        event.type === "pointermove" &&
-        event.movementX === 0 &&
-        event.movementY === 0
-      )
-        return;
-      if (
-        event instanceof PointerEvent &&
         expected &&
         performance.now() <= expected.until &&
         Math.abs(event.clientX - (expected.x ?? NaN)) <= 1 &&
         Math.abs(event.clientY - (expected.y ?? NaN)) <= 1
       ) {
-        if (event.type === "pointermove" && !expected.moved) {
-          expected.moved = true;
-          return;
-        }
-        if (event.type === "pointerdown") {
-          expected = undefined;
-          return;
-        }
+        expected = undefined;
+        return;
       }
       stop();
     };
     window.addEventListener("maka-assistant:input", onInput);
     window.addEventListener("keydown", key, true);
-    for (const type of ["pointerdown", "pointermove", "wheel"])
+    for (const type of ["pointerdown", "wheel"])
       window.addEventListener(type, takeover, true);
     return () => {
       window.removeEventListener("maka-assistant:input", onInput);
       window.removeEventListener("keydown", key, true);
-      for (const type of ["pointerdown", "pointermove", "wheel"])
+      for (const type of ["pointerdown", "wheel"])
         window.removeEventListener(type, takeover, true);
       document.documentElement.classList.remove("desktopAssistantInput");
     };

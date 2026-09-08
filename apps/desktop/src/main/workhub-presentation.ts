@@ -231,6 +231,16 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     changed();
   }
 
+  async function prepareControl(): Promise<void> {
+    const main = await deps.ensureMainWindow();
+    if (disposed) throw new Error('WorkHub presentation is disposed');
+    attachMainWindow(main);
+    if (placement !== 'floating' || !floating?.isVisible()) detach();
+    if (main.isMinimized()) main.restore();
+    main.show();
+    main.focus();
+  }
+
   async function navigateMain(navigation: WorkHubMainNavigation): Promise<BrowserWindow> {
     const main = await deps.ensureMainWindow();
     if (disposed) throw new Error('WorkHub presentation is disposed');
@@ -395,5 +405,5 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     parent = undefined;
   }
 
-  return { registerIpc, registerShortcut, attachMainWindow, getSnapshot, ownsWebContents, send, show: () => enqueue(detach), toggle, dispose };
+  return { registerIpc, registerShortcut, attachMainWindow, getSnapshot, ownsWebContents, send, prepareControl: () => enqueue(prepareControl), show: () => enqueue(detach), toggle, dispose };
 }

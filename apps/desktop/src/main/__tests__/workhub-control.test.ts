@@ -164,6 +164,7 @@ test("partial batches never replay input and the failure budget belongs to the r
   assert.equal(partial.completed.length, 1);
   assert.equal(attempts, 2);
   assert.equal(partial.inputDispatched, false);
+  assert.equal((await h.command("snapshot")).error, "Control changed");
   failAfterInput = true;
   assert.equal((await act()).inputDispatched, true);
   assert.equal((await act()).recoverable, false);
@@ -440,4 +441,55 @@ test("task coordination does not open or focus the controlled main window", asyn
     callId: "call",
     input: { operation: "candidates" },
   });
+});
+
+
+test("takeover stops an action without exposing its internal abort reason as a conversation error", async (t) => {
+  const h = harness();
+  t.after(() => h.control.close());
+  t.mock.method(WorkHubUi.prototype, "begin", async () => {});
+  let entered!: () => void;
+  const executing = new Promise<void>((resolve) => { entered = resolve; });
+  t.mock.method(WorkHubUi.prototype, "execute", async (_action: Parameters<WorkHubUi['execute']>[0], signal: AbortSignal) => {
+    entered();
+    return new Promise<never>((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+  });
+  const action = h.tool.impl({ request: { operation: "act", actions: [{ kind: "navigate", section: "general" }] } }, h.ctx());
+  await executing;
+  await h.command('stop');
+  const result = await action as { interrupted: boolean; error: string };
+  assert.equal(result.interrupted, true);
+  assert.equal(result.error, 'User took control', 'the model still receives the interruption reason');
+  const snapshot = await h.command('snapshot');
+  assert.equal(snapshot.phase, 'paused');
+  assert.equal(snapshot.error, undefined);
+  assert.equal(snapshot.cursor, undefined);
+  assert.deepEqual(h.interrupted, ['turn']);
+});
+
+test("cancelling undo is a normal completion for the renderer", async (t) => {
+  const h = harness();
+  t.after(() => h.control.close());
+  t.mock.method(WorkHubUi.prototype, "begin", async () => {});
+  t.mock.method(WorkHubUi.prototype, "observe", async () => ({ section: null, language: 'en', theme: 'light', accessibility: '', controls: [] }));
+  let entered!: () => void;
+  const executing = new Promise<void>((resolve) => { entered = resolve; });
+  let calls = 0;
+  t.mock.method(WorkHubUi.prototype, "execute", async (_action: Parameters<WorkHubUi['execute']>[0], signal: AbortSignal) => {
+    if (++calls === 1) return { previous: 'dark', verified: true };
+    entered();
+    return new Promise<never>((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+  });
+  await h.tool.impl({ request: { operation: 'act', actions: [{ kind: 'set', target: 'theme', value: createDefaultSettings().appearance.theme }] } }, h.ctx());
+  h.control.complete(desktopSessionResourceKey({ ...scope, sessionId: WORKHUB_COORDINATION_SESSION_ID }));
+  const undoing = h.command('undo');
+  await executing;
+  await h.command('stop');
+  await undoing;
+  assert.equal((await h.command('snapshot')).error, undefined);
+  assert.equal((await h.command('snapshot')).phase, 'paused');
 });

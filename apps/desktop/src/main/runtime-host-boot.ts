@@ -900,7 +900,7 @@ const workHubRuntime = createWorkHubRuntime({
 });
 const workHubControl = createWorkHubControl({
   ipcMain,
-  prepareWindow: () => quitCoordinator.focusOrCreateWindow(),
+  prepareWindow: () => workHubPresentation.prepareControl(),
   window: () => {
     const window = mainWindowController.browserWindow();
     if (!window) throw new Error('Maka window is unavailable');
