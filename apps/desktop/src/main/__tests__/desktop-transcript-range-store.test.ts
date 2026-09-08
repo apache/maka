@@ -209,6 +209,93 @@ test('drops stale transcript batches after a generation reset', () => {
   assert.deepEqual(store.snapshot().messages, [nextMessage]);
 });
 
+test('cached reload snapshots allow the same live transcript generation to resume', async () => {
+  const store = transcriptStore();
+  const identity = {
+    sessionId: 'session-1',
+    generation: 'live-generation',
+    hostEpoch: 'host-1',
+  };
+  let opens = 0;
+  const deliveries: Array<{ generation: string; accepted: boolean }> = [];
+  const publish = (generation: string, text: string, navigationVersion = 0) => {
+    for (const batch of encodeDesktopTranscriptSnapshot({
+      ...identity, generation, navigationVersion, durableThrough: 1,
+      durable: [{ sequence: 1, message: assistantMessage(text) }],
+      overlay: [], hasOlder: false, hasNewer: false,
+    })) deliveries.push({ generation, accepted: store.accept(batch) });
+  };
+  const controller = createDesktopTranscriptRangeController(store, async () => {
+    opens += 1;
+    if (opens > 1) {
+      publish(`cached:reload-${opens}`, 'cached');
+      assert.deepEqual(store.snapshot().messages, [assistantMessage('cached')]);
+    }
+    // The event subscription keeps the main-process replica alive between opens.
+    publish(identity.generation, `live-${opens}`);
+    return {
+      ...identity, readThroughMessageId: null,
+      async loadBefore() {},
+      async loadAfter() {},
+      async loadAround(_sequence, _maxBytes, navigation) {
+        publish(identity.generation, `live-${opens}`, navigation?.navigationVersion);
+      },
+      async close() {},
+    };
+  });
+
+  try {
+    await controller.ready();
+    for (let reload = 1; reload <= 2; reload += 1) {
+      await controller.reload();
+      assert.equal(store.range().generation, identity.generation);
+      assert.deepEqual(store.snapshot().messages, [assistantMessage(`live-${reload + 1}`)]);
+    }
+    assert.equal(opens, 3);
+    assert.ok(deliveries.every(({ accepted }) => accepted));
+
+    const updated = assistantMessage('live update', 'assistant-2');
+    for (const batch of encodeDesktopTranscriptChange(identity, {
+      durableThrough: 2,
+      durableUpserts: [{ sequence: 2, message: updated }],
+      evictedDurableSequences: [], completedOverlayMessageIds: [],
+      hasOlder: false, hasNewer: false,
+    })) assert.equal(store.accept(batch), true);
+    assert.deepEqual(store.snapshot().messages, [assistantMessage('live-3'), updated]);
+  } finally {
+    await controller.close();
+  }
+});
+
+test('a replacement live generation retires the previous replica through cached snapshots', () => {
+  for (const cachedGenerations of [[], ['cached:first', 'cached:second']]) {
+    const store = transcriptStore();
+    const snapshot = (generation: string) => [...encodeDesktopTranscriptSnapshot({
+      sessionId: 'session-1', generation, hostEpoch: 'host-1', durableThrough: 1,
+      durable: [{ sequence: 1, message: assistantMessage(generation) }],
+      overlay: [], hasOlder: false, hasNewer: false,
+    })];
+    const generations = ['previous-live', ...cachedGenerations, 'replacement-live'];
+    for (const generation of generations) {
+      for (const batch of snapshot(generation)) assert.equal(store.accept(batch), true);
+    }
+    const replacement = store.snapshot();
+    for (const generation of generations.slice(0, -1)) {
+      for (const batch of snapshot(generation)) assert.equal(store.accept(batch), false);
+      for (const batch of encodeDesktopTranscriptChange({
+        sessionId: 'session-1', generation, hostEpoch: 'host-1',
+      }, {
+        durableThrough: 2,
+        durableUpserts: [{ sequence: 2, message: assistantMessage('stale', 'stale') }],
+        evictedDurableSequences: [], completedOverlayMessageIds: [],
+        hasOlder: false, hasNewer: false,
+      })) assert.equal(store.accept(batch), false);
+    }
+    assert.strictEqual(store.snapshot(), replacement);
+    assert.deepEqual(store.snapshot().messages, [assistantMessage('replacement-live')]);
+  }
+});
+
 test('keeps unchanged message references stable across immutable range snapshots', () => {
   const identity = {
     sessionId: 'session-1',
@@ -611,18 +698,25 @@ for (const { stride, textBytes } of [1, 3].flatMap((stride) =>
       loadTranscriptPage: async (input) => makePage(input.direction, input.anchorSequence),
     });
     const store = transcriptStore();
+    let navigationVersion = 0;
     const replica = await DesktopTranscriptReplica.prepare(handle, {
       generation: 'generation-1',
       onChange: (current, change) => {
-        for (const batch of encodeDesktopTranscriptChange(current.snapshot(), change)) store.accept(batch);
+        for (const batch of encodeDesktopTranscriptChange({ ...current.snapshot(), navigationVersion }, change)) store.accept(batch);
       },
     });
     for (const batch of encodeDesktopTranscriptSnapshot(replica.snapshot())) store.accept(batch);
     const controller = createDesktopTranscriptRangeController(store, async () => ({
       sessionId: replica.sessionId, generation: replica.generation, hostEpoch: replica.hostEpoch,
       readThroughMessageId: null,
-      loadBefore: (anchor, maxBytes) => replica.loadBefore(anchor, maxBytes!),
-      loadAfter: (anchor, maxBytes) => replica.loadAfter(anchor, maxBytes!),
+      loadBefore: (anchor, maxBytes, navigation) => {
+        navigationVersion = navigation?.navigationVersion ?? navigationVersion;
+        return replica.loadBefore(anchor, maxBytes!);
+      },
+      loadAfter: (anchor, maxBytes, navigation) => {
+        navigationVersion = navigation?.navigationVersion ?? navigationVersion;
+        return replica.loadAfter(anchor, maxBytes!);
+      },
       loadAround: async () => { throw new Error('ordinary scrolling must not replace the range'); },
       close: async () => replica.close(),
     }));
@@ -659,14 +753,9 @@ for (const { stride, textBytes } of [1, 3].flatMap((stride) =>
   });
 }
 
-test('delivers a mid-session tail append even while a history window is resident', async () => {
-  // Reproduces the "active session does not show the newest message until you
-  // switch away and back" bug. Once the resident window has been trimmed off
-  // the tail (hasNewer === true, e.g. after loading older history), a Host
-  // `transcript_advanced` for a freshly persisted message must still reach an
-  // already-open consumer. Before the fix, `advance()` short-circuited on
-  // hasNewer and published an empty change, so the append was silently dropped
-  // and only a fresh subscription (session switch) re-read it.
+test('delivers a mid-session tail append after following the tail from a history window', async () => {
+  // A follow-tail intent must recover the tail even if the resident cache
+  // still contains history when the Host advances.
   const messages = [0, 1, 2, 3, 4].map((sequence) => ({
     identity: sequence,
     message: {
@@ -724,6 +813,7 @@ test('delivers a mid-session tail append even while a history window is resident
 
   await replica.loadBefore(3, 128 * 1024);
   assert.equal(replica.snapshot().hasNewer, true);
+  replica.setNavigation('followTail');
   changes.splice(0);
 
   // The Host persists a new assistant message (sequence 5) and advances.
@@ -954,6 +1044,7 @@ test('does not resurrect a discarded replica when a tail re-anchor is in flight'
 
   await replica.loadBefore(3, 128 * 1024);
   assert.equal(replica.snapshot().hasNewer, true);
+  replica.setNavigation('followTail');
   changes.splice(0);
 
   // Start the tail re-anchor; wait until catch-up is parked inside its page

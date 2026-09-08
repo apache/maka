@@ -32,10 +32,13 @@ import {
   type AppShellSessionUiState,
 } from '../../renderer/app-shell-session-ui-state.js';
 import {
-  transcriptReadingPosition,
+  createTranscriptRestoreLifecycle,
+  loadTranscriptHistory,
+  refreshTranscriptTurnLandmarks,
+  restoreSessionTranscriptRange,
   type TranscriptHistoryGates,
   type TranscriptHistoryPending,
-} from '../../renderer/features/conversation/index.js';
+} from '../../renderer/features/conversation/testing.js';
 
 function boundaryRequest(requestId: string): SandboxBoundaryRequestEvent {
   return {
@@ -103,7 +106,7 @@ function deferredHistoryController() {
 }
 
 function crossSessionGateScenario() {
-  type HistoryRequest = Parameters<typeof transcriptReadingPosition.loadHistory>[0]['request'];
+  type HistoryRequest = Parameters<typeof loadTranscriptHistory>[0]['request'];
   const gates: TranscriptHistoryGates = new WeakMap();
   const sessionIds = { a: 'session', b: 'session:a' } as const;
   const sides = {
@@ -132,7 +135,7 @@ function crossSessionGateScenario() {
       request: { target: 'earlier' | 'later' | 'latest'; anchorTurnId?: string },
     ) {
       const side = sides[id];
-      return transcriptReadingPosition.loadHistory({
+      return loadTranscriptHistory({
         gates,
         sessionId: sessionIds[id],
         request,
@@ -377,7 +380,7 @@ describe('app shell session UI state controller', () => {
     let index: { sessionId: string; throughSequence: number | null; turns: readonly string[] } | undefined = {
       sessionId: 'owner-session', throughSequence: 0, turns: ['previous-owner-turn'],
     };
-    const dispose = transcriptReadingPosition.refreshLandmarks({
+    const dispose = refreshTranscriptTurnLandmarks({
       sessionId: 'owner-session',
       newestDurablePromptSequence: 1,
       list: () => new Promise<{ throughSequence: number; landmarks: string[] }>((resolve) => {
@@ -388,7 +391,7 @@ describe('app shell session UI state controller', () => {
     });
     // The shell cleans up the Owner effect and passes no ownerActiveId for Guests.
     dispose?.();
-    transcriptReadingPosition.refreshLandmarks<string>({
+    refreshTranscriptTurnLandmarks<string>({
       sessionId: undefined,
       newestDurablePromptSequence: 1,
       list: async () => assert.fail('Guests cannot query Owner turn landmarks'),
@@ -400,23 +403,25 @@ describe('app shell session UI state controller', () => {
     assert.equal(index, undefined);
   });
 
-  it('enriches a Turn-only reading anchor when its range sequence arrives later', () => {
+  it('enriches a Turn-only reading anchor when its range sequence arrives later', async () => {
     let anchor: { turnId: string; sequence?: number } | undefined;
-    transcriptReadingPosition.restoreRange({
+    const admitted: Array<number | null> = [];
+    restoreSessionTranscriptRange({
+      lifecycle: createTranscriptRestoreLifecycle(),
       sessionId: 'session',
       readingAnchor: { turnId: 'turn' },
       controller: {
         store: {
+          sessionId: 'session',
           range: () => ({ sessionId: 'session' }),
           sequenceForTurn: () => 17,
           newestDurableUserSequence: () => 17,
           snapshot: () => ({ messages: [] }),
         },
-        ready: async () => undefined,
+        setReadingAnchor: async (sequence) => { admitted.push(sequence); },
         loadAround: async () => assert.fail('the resident Turn must not load another range'),
       },
       isCurrent: () => true,
-      setMessages: () => assert.fail('the resident range must not replace messages'),
       setReadingAnchor: (_sessionId, next) => {
         anchor = next;
       },
@@ -424,16 +429,20 @@ describe('app shell session UI state controller', () => {
     });
 
     assert.deepEqual(anchor, { turnId: 'turn', sequence: 17 });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(admitted, [17]);
   });
 
   it('does not enrich a reading anchor from another Session range', () => {
     let sequenceReads = 0;
     let anchor: { turnId: string; sequence?: number } | undefined;
-    transcriptReadingPosition.restoreRange({
+    restoreSessionTranscriptRange({
+      lifecycle: createTranscriptRestoreLifecycle(),
       sessionId: 'active',
       readingAnchor: { turnId: 'turn' },
       controller: {
         store: {
+          sessionId: 'stale',
           range: () => ({ sessionId: 'stale' }),
           sequenceForTurn: () => {
             sequenceReads += 1;
@@ -442,11 +451,10 @@ describe('app shell session UI state controller', () => {
           newestDurableUserSequence: () => 17,
           snapshot: () => ({ messages: [] }),
         },
-        ready: async () => undefined,
+        setReadingAnchor: async () => {},
         loadAround: async () => assert.fail('a stale range must not load'),
       },
       isCurrent: () => true,
-      setMessages: () => assert.fail('a stale range must not replace messages'),
       setReadingAnchor: (_sessionId, next) => {
         anchor = next;
       },
@@ -458,25 +466,26 @@ describe('app shell session UI state controller', () => {
   });
 
   it('abandons a Turn-only restore that remains absent after the range is ready', async () => {
-    const anchorWrites: Array<{ turnId: string; sequence?: number } | undefined> = [];
+    let anchor: { turnId: string; sequence?: number } | undefined = { turnId: 'missing' };
     let unavailable: { sessionId: string; turnId: string } | undefined;
     const options = {
+      lifecycle: createTranscriptRestoreLifecycle(),
       sessionId: 'session',
       readingAnchor: { turnId: 'missing' },
       controller: {
         store: {
+          sessionId: 'session',
           range: () => ({ sessionId: 'session' }),
           sequenceForTurn: () => null,
           newestDurableUserSequence: () => null,
           snapshot: () => ({ messages: [] }),
         },
-        ready: async () => undefined,
+        setReadingAnchor: async () => {},
         loadAround: async () => assert.fail('a Turn-only anchor has no load target'),
       },
       isCurrent: () => true,
-      setMessages: () => assert.fail('an unavailable target must not replace messages'),
       setReadingAnchor: (_sessionId: string, next: { turnId: string; sequence?: number } | undefined) => {
-        anchorWrites.push(next);
+        anchor = next;
       },
       onRestoreUnavailable: (sessionId: string, turnId: string) => {
         unavailable = { sessionId, turnId };
@@ -484,39 +493,37 @@ describe('app shell session UI state controller', () => {
       onError: (error: unknown) => assert.fail(String(error)),
     };
 
-    transcriptReadingPosition.restoreRange(options);
+    restoreSessionTranscriptRange(options);
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    assert.deepEqual(anchorWrites, [undefined]);
+    assert.equal(anchor, undefined);
     assert.deepEqual(unavailable, { sessionId: 'session', turnId: 'missing' });
   });
 
   it('abandons a known-sequence restore when loadAround cannot make the Turn resident', async () => {
     let loadedSequence: number | undefined;
     let unavailable: { sessionId: string; turnId: string } | undefined;
-    let messages: Array<{ id: string }> | undefined;
-    const anchorWrites: Array<{ turnId: string; sequence?: number } | undefined> = [];
+    let anchor: { turnId: string; sequence?: number } | undefined = { turnId: 'removed', sequence: 23 };
     const options = {
+      lifecycle: createTranscriptRestoreLifecycle(),
       sessionId: 'session',
       readingAnchor: { turnId: 'removed', sequence: 23 },
       controller: {
         store: {
+          sessionId: 'session',
           range: () => ({ sessionId: 'session' }),
           sequenceForTurn: () => null,
           newestDurableUserSequence: () => 29,
           snapshot: () => ({ messages: [{ id: 'latest' }] }),
         },
-        ready: async () => undefined,
+        setReadingAnchor: async () => assert.fail('a missing durable Turn must load its range'),
         loadAround: async (sequence: number) => {
           loadedSequence = sequence;
         },
       },
       isCurrent: () => true,
-      setMessages: (next: Array<{ id: string }>) => {
-        messages = next;
-      },
       setReadingAnchor: (_sessionId: string, next: { turnId: string; sequence?: number } | undefined) => {
-        anchorWrites.push(next);
+        anchor = next;
       },
       onRestoreUnavailable: (sessionId: string, turnId: string) => {
         unavailable = { sessionId, turnId };
@@ -524,12 +531,11 @@ describe('app shell session UI state controller', () => {
       onError: (error: unknown) => assert.fail(String(error)),
     };
 
-    transcriptReadingPosition.restoreRange(options);
+    restoreSessionTranscriptRange(options);
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     assert.equal(loadedSequence, 23);
-    assert.deepEqual(messages, [{ id: 'latest' }]);
-    assert.deepEqual(anchorWrites, [undefined]);
+    assert.equal(anchor, undefined);
     assert.deepEqual(unavailable, { sessionId: 'session', turnId: 'removed' });
   });
 
@@ -580,7 +586,7 @@ describe('app shell session UI state controller', () => {
     scenario.sides.a.failBefore(new Error('earlier read failed'));
     await stale;
     assert.deepEqual(scenario.errors.a, []);
-    assert.deepEqual(scenario.pending.a, [{ target: 'earlier' }, undefined]);
+    assert.deepEqual(scenario.pending.a, [{ target: 'earlier' }]);
     assert.deepEqual(scenario.pending.b, []);
   });
 
@@ -657,7 +663,7 @@ describe('app shell session UI state controller', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.deepEqual(scenario.sides.a.calls, ['before']);
     assert.deepEqual(scenario.sides.b.calls, []);
-    assert.deepEqual(scenario.pending.a, [{ target: 'earlier' }, undefined]);
+    assert.deepEqual(scenario.pending.a, [{ target: 'earlier' }]);
     scenario.sides.a.settleLatest();
     await queued;
   });

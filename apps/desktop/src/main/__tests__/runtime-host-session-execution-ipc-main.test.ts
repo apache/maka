@@ -67,6 +67,8 @@ test('forward transcript paging is an observation operation scoped to the render
   const request = {
     consumerId: 'guest-consumer', sessionId: 'shared-session', hostEpoch: 'host-1',
     anchorSequence: 42, maxBytes: 512 * 1024,
+    navigationVersion: 7, intent: 'history' as const, preserveRange: false,
+    readingTurnId: 'reading-turn',
   };
   await ipc.invoke('sessions:transcript:load-after', request);
   assert.deepEqual(calls, [{ request, targetId: 9 }]);
