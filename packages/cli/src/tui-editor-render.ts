@@ -22,9 +22,18 @@ import type { Editor } from '@earendil-works/pi-tui';
 export function renderEditorWithFocus(editor: Editor, width: number): string[] {
   const lines = editor.render(width);
   if (editor.focused) return lines;
-  // pi-tui 0.84.4 gates only the IME marker on `focused`, not its synthetic cursor.
-  // Our editor themes use SGR 7/text/SGR 0 only for that cursor. Remove its wrapper,
-  // keeping the character (or paste marker) and other styles, including borders
-  // and skill highlights. Recheck this contract when upgrading pi-tui.
+  // pi-tui 0.84.4 paints its cursor even when the editor is unfocused.
+  // Remove the reverse-video wrapper, keeping the captured text ($1):
+  //
+  // Input:  \x1b[7mhello\x1b[0m
+  //         └─────┘└───┘└─────┘
+  //         reverse text reset
+  //          remove keep remove
+  //                  $1
+  // Output: hello
+  //
+  // ([^\x1b]*) captures text without ESC, so the match cannot cross another
+  // ANSI sequence. Other text using this same wrapper would also lose its
+  // reverse styling. Recheck when changing themes or upgrading pi-tui.
   return lines.map((line) => line.replace(/\x1b\[7m([^\x1b]*)\x1b\[0m/gu, '$1'));
 }
