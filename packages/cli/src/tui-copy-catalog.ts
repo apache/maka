@@ -1073,7 +1073,7 @@ export const TUI_COPY_RESOURCES = {
         resume: '從安全邊界恢復最近一次中斷的執行',
         rewind: '回退到較早的對話輪次',
         session: '切換或恢復會話',
-        setup: '設定模型服務商（API Key）',
+        setup: '設定模型服務商',
         side: '開啟臨時 Side Conversation',
         skill: '呼叫 Skill（也可直接輸入 /skill:<name>）',
         swarm: '檢視、啟用、停用 Swarm 模式，或執行一次 Swarm 任務',
@@ -1221,8 +1221,7 @@ export const TUI_COPY_RESOURCES = {
     },
     'zh-TW': {
       withRecovery: '{notice}{recovery}',
-      emptyChoiceRecovery:
-        '如果 /model 沒有可選項，請先新增或啟用連線（API Key 連線可執行 /setup）。',
+      emptyChoiceRecovery: '如果 /model 沒有可選項，請先新增或啟用連線（可執行 /setup 新增）。',
       confirmAccount: '此任務來自舊版本，需要確認一次帳號。執行 /model 選擇現有帳號和模型。',
       accountDeleted: '原帳號已刪除；執行 /model 選擇新帳號和模型後繼續。',
       identityMismatch: '任務儲存的帳號身分與目前連線不一致；執行 /model 重新選擇帳號和模型。',
