@@ -82,7 +82,9 @@ export function projectRuntimeHostSession<
  * backend (#3211) to mean "not loaded". The unknown-ness is the same; the
  * borrowed name is gone.
  */
-export function pendingSessionView(input: PendingSessionViewInput): SessionSummary {
+export function pendingSessionView(
+  input: PendingSessionViewInput,
+): SessionSummary & { readonly localState: 'pending' } {
   return {
     id: input.sessionId,
     name: input.name,
@@ -96,5 +98,6 @@ export function pendingSessionView(input: PendingSessionViewInput): SessionSumma
     connectionLocked: false,
     model: '',
     permissionMode: input.permissionMode,
+    localState: 'pending',
   };
 }
