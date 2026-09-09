@@ -69,7 +69,7 @@ export class RuntimeHostOutboundQueueError extends Error {
 
 export class BoundedSerialOutboundWriter {
   readonly #transport: RuntimeHostMessageTransport;
-  readonly #onFailure: () => void;
+  readonly #onFailure: (error: Error) => void;
   readonly #queue: QueuedFrame[] = [];
   #queuedBytes = 0;
   #writing = false;
@@ -78,7 +78,7 @@ export class BoundedSerialOutboundWriter {
   #controlBurst = 0;
   #dataLane = 0;
 
-  constructor(transport: RuntimeHostMessageTransport, onFailure: () => void) {
+  constructor(transport: RuntimeHostMessageTransport, onFailure: (error: Error) => void) {
     this.#transport = transport;
     this.#onFailure = onFailure;
   }
@@ -157,7 +157,7 @@ export class BoundedSerialOutboundWriter {
   #fail(error: Error): void {
     if (this.#closed) return;
     this.close(error);
-    this.#onFailure();
+    this.#onFailure(error);
   }
 
   #nextFrame(): QueuedFrame | undefined {

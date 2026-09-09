@@ -364,8 +364,10 @@ test('outbound scheduling prioritizes controls, makes fair data progress, and fe
 test('serial outbound writer fails once when its real transport is closed', async () => {
   const pair = await openTransportPair();
   let failureCalls = 0;
-  const writer = new BoundedSerialOutboundWriter(pair.clientTransport, () => {
+  let reportedFailure: Error | undefined;
+  const writer = new BoundedSerialOutboundWriter(pair.clientTransport, (error) => {
     failureCalls += 1;
+    reportedFailure = error;
   });
   try {
     pair.clientTransport.abort();
@@ -373,6 +375,8 @@ test('serial outbound writer fails once when its real transport is closed', asyn
     const receipt = writer.enqueue(statusResponse('closed-transport'));
     await assert.rejects(receipt.flushed);
     assert.equal(failureCalls, 1);
+    assert.ok(reportedFailure);
+    assert.match(reportedFailure.message, /closed|write/i);
     assert.throws(() => writer.enqueue(statusResponse('after-failure')), /writer is closed/);
     assert.equal(failureCalls, 1);
   } finally {
@@ -623,6 +627,7 @@ test('clean read EOF drains an already dispatched response before closing', asyn
     assert.equal(response.ok, true);
     await withTimeout(fixture.run, 1_000, 'connection did not close after draining its response');
     assert.equal(fixture.teardownCalls(), 1);
+    assert.deepEqual(fixture.diagnostics, []);
   } finally {
     await fixture.close();
   }
@@ -644,6 +649,56 @@ test('a fatal transport close during clean EOF drain tears down exactly once', a
     assert.equal(fixture.teardownCalls(), 1);
   } finally {
     await fixture.close();
+  }
+});
+
+test('records an unexpected accepted-connection failure before teardown', async () => {
+  const pair = await openTransportPair();
+  const teardownObserved = deferred();
+  const logs: string[] = [];
+  const session = new RuntimeHostConnectionSession({
+    transport: pair.serverTransport,
+    connection: acceptedConnection('failed-admission'),
+    resolveHandlers: () => ({
+      'host.status': async () => ({
+        ok: true,
+        result: {
+          hostEpoch: 'host-epoch',
+          compositionId: 'maka.interactive',
+          compositionRevision: '1',
+          state: 'ready',
+          connections: 1,
+          activeOperations: 0,
+          activeResidencies: 0,
+        },
+      }),
+      ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+      ...createUnavailableHostCoreOperationHandlers(),
+      ...createUnavailableDomainOperationHandlers(),
+    }),
+    resolveContinuity: () => undefined,
+    beginOperation: async () => {
+      throw new Error('api_key=sk-connection-secret123');
+    },
+    onDiagnostic: (diagnostic) => logs.push(diagnostic),
+    onTeardown: () => teardownObserved.resolve(),
+  });
+  const run = session.run();
+  try {
+    await writeProtocolFrame(pair.clientTransport, {
+      requestId: 'failed-admission-request',
+      operation: 'turn.query',
+      input: { sessionId: 'session', turnId: 'turn' },
+    });
+    await withTimeout(teardownObserved.promise, 1_000, 'connection did not tear down');
+    await withTimeout(run, 1_000, 'connection did not settle');
+    assert.equal(logs.length, 1);
+    assert.match(logs[0] ?? '', /connection session failed/);
+    assert.match(logs[0] ?? '', /\[redacted\]/i);
+    assert.doesNotMatch(logs[0] ?? '', /sk-connection-secret123/);
+  } finally {
+    pair.clientTransport.abort();
+    await Promise.allSettled([run, pair.close()]);
   }
 });
 
@@ -1419,6 +1474,7 @@ interface TransportPair {
 
 interface HalfClosedDispatchedSession {
   pair: TransportPair;
+  diagnostics: string[];
   releaseHandler: Deferred;
   teardownObserved: Deferred;
   run: Promise<void>;
@@ -1459,6 +1515,7 @@ async function openHalfClosedDispatchedSession(
   const handlerEntered = deferred();
   const releaseHandler = deferred();
   const teardownObserved = deferred();
+  const diagnostics: string[] = [];
   let teardownCalls = 0;
   const session = new RuntimeHostConnectionSession({
     transport: pair.serverTransport,
@@ -1493,6 +1550,7 @@ async function openHalfClosedDispatchedSession(
       seal() {},
       finish() {},
     }),
+    onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
     onTeardown: () => {
       teardownCalls += 1;
       teardownObserved.resolve();
@@ -1511,6 +1569,7 @@ async function openHalfClosedDispatchedSession(
     await withTimeout(readEnded, 1_000, 'Host did not observe Client read EOF');
     return {
       pair,
+      diagnostics,
       releaseHandler,
       teardownObserved,
       run,
