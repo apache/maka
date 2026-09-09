@@ -18,12 +18,8 @@
  */
 
 /**
- * The one thing that answers "where should the transcript be looking".
- *
- * Three writers used to move `scrollTop` — Astryx's lock/spring, Maka's
- * compensation and `scrollIntoView`, and the browser's own anchoring — and none
- * of them held the answer, so they avoided each other through flags and effect
- * ordering. This file is the answer, and it is one boolean:
+ * Owns automatic transcript following. Astryx auto-follow is disabled by the
+ * host; explicit navigation releases this authority before moving the viewport.
  *
  *   pinned  → content that grows writes `scrollTop = scrollHeight`
  *   !pinned → nothing here writes `scrollTop`, ever
@@ -34,6 +30,7 @@
  *
  * Input establishes reading intent; scroll and resize only report geometry.
  * Layout can shrink, clamp the offset, then grow before scroll is delivered.
+ * Geometry alone therefore cannot establish that the reader chose to move.
  */
 
 import {

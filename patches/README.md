@@ -20,8 +20,11 @@
 # patches
 
 Applied on root `postinstall` via `scripts/apply-dependency-patches.mjs`
-(`patch-package --error-on-fail`). After bumping a patched dependency, re-run
-`npx patch-package <name>` so the filename tracks the installed version.
+(`patch-package --error-on-fail`). To update a patch, edit the installed package
+in `node_modules`, then run `node node_modules/patch-package/index.js <name>`.
+After a dependency upgrade, apply the still-needed edits to the new version
+before regenerating. The command records the installed files, not the old
+patch text.
 
 Keep this directory small. Prefer product code that uses the dependency's
 published API; only patch for bugs that block shipping and cannot be worked
@@ -64,11 +67,16 @@ DOM in a layout effect. A passive effect can leave the old multiline draft
 visible for a frame after the sent message is rendered; clearing it later
 shrinks the dock and moves the already-positioned transcript. The existing
 echo and selection guards stay unchanged.
+The short, multiline, tall and completion submission stories in
+`apps/desktop/stories/app-shell.stories.tsx` protect this layout contract.
 
-Five published component seams drop host-owned state or semantics:
+The other component changes preserve host-owned state and semantics:
 
 - `ChatLayout` needs a conversation identity that resets scroll/unread state
   without remounting its composer slot and discarding the live draft.
+- `ChatLayout.autoScroll` forwards the existing hook's `enabled` option so
+  Maka's transcript authority can own scrolling without competing with the
+  dependency's auto-follow listeners and writes.
 - `ChatLayout` owns auto-follow and publishes no way to say "this scroll is
   deliberate navigation, release it". Its scroll-direction unlock cannot infer
   that: it discards any scroll event carrying a changed `scrollHeight` as a
