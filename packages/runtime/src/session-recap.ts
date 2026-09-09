@@ -18,6 +18,7 @@
  */
 
 import { runtimeEventHasModelVisibleContent, type RuntimeEvent } from '@maka/core/runtime-event';
+import { hasMeaningfulMessageContent } from '@maka/core/events';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
@@ -125,9 +126,9 @@ function projectSessionRecapMessages(events: readonly RuntimeEvent[]): ModelMess
       // text is empty (#4804), and a non-empty text must not erase the
       // staged refs: both cases render through the shared inline-ref
       // formatter so the recap carries the actual content, not a count.
-      const hasStructuredContent =
-        (content.quotes?.length ?? 0) > 0 || (content.attachments?.length ?? 0) > 0;
-      if (text.length > 0 || hasStructuredContent) {
+      // The shared predicate decides on the trimmed text, matching this
+      // projection's existing trim behavior.
+      if (hasMeaningfulMessageContent({ ...content, text })) {
         messages.push({
           role: event.role === 'user' ? 'user' : 'assistant',
           content: formatTextWithInlineRefs({ ...content, text }),

@@ -42,6 +42,7 @@ import {
   type RuntimeHandoffPause,
 } from './runtime-handoff.js';
 import {
+  hasMeaningfulMessageContent,
   isMessageContent,
   normalizeMessageContent,
   type MessageContent,
@@ -1572,11 +1573,7 @@ export function runtimeEventHasModelVisibleContent(event: RuntimeEvent): boolean
   if (!content) return false;
   switch (content.kind) {
     case 'text':
-      return (
-        content.text.length > 0 ||
-        (content.quotes?.length ?? 0) > 0 ||
-        (content.attachments?.length ?? 0) > 0
-      );
+      return hasMeaningfulMessageContent(content);
     case 'thinking':
     case 'function_call':
     case 'function_response':
