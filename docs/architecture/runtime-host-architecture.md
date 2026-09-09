@@ -132,6 +132,37 @@ Close runs in reverse Module construction order. A drain/close failure does not 
 
 Implementation: [Module contract](../../packages/runtime-host/src/server/host-composition.ts), [interactive assembly](../../packages/runtime-host/src/server/execution-composition.ts).
 
+## Local persistence boundary
+
+Local Runtime integration follows the separation discussed in [#2370](https://github.com/apache/maka/issues/2370) and [#4666](https://github.com/apache/maka/discussions/4666), without replacing the existing live-state authority.
+
+The Host already opens `storage-writer-composition.ts` with its root lease and injects the owned writers. `execution-stores.ts` preserves lease validation, branded facades, and close/drain behavior. `session-store-contract.ts` now defines Session operations, DTOs and domain errors independently of the SQLite adapter; `runtime-event-store-contract.ts` does the same for the Tool transaction DTOs and Session event positions. Existing exports remain compatible. This is not a second facade or a claim that a remote live-state adapter exists.
+
+| Capability | Contract and consumers | Commit boundary retained |
+|---|---|---|
+| Session metadata/catalog | `ExecutionSessionWriter`; Session Catalog and External Session coordinators | Stable create identity, version-checked metadata/lifecycle updates |
+| Canonical history | Session snapshot queries, `RuntimeTranscriptQueries`; Session Continuity and Runtime | Durable event append positions; bounded read projections are not new facts |
+| Message and Root Turn admission | `MessageAdmissionStore`, `ExecutionAgentRunWriter`; Message and Root Turn coordinators | Exact input/identity admission, source-message receipts, idempotent replay |
+| Tool execution | `ExecutionRuntimeEventWriter`; Runtime Tool commit sink | T1 prepared/dispatch facts and journal together; T2 outcome and journal together |
+| Continuation | `RuntimeContinuationAuthorityStore`; Runtime recovery and Root Turn coordinator | Immutable source-bound claim and dedicated continuation-start commit |
+| WorkHub delegation | `assignWorkHubMessage`; WorkHub coordinator through Host composition | Optional target creation/claim, target pending admission, coordination linkage and optional supersession in one transaction |
+
+Consumers retain their existing narrow `Pick<...>` dependencies where appropriate. No SQL handle or generic transaction callback is exposed to a coordinator. Goal, Memory, Artifact and other domains keep their existing contracts and lifecycle.
+
+### WorkHub as a compatibility test
+
+The process-crash test submits `workhub.coordination.act` through a real Host connection. A fixture-only barrier pauses after the actual SQLite assignment transaction commits and before its result returns to the Host. The parent kills that process without draining it, verifies a still-pending target message and no target Root admission, and starts a fresh Host with a fresh lease. Production recovery must expose the same delegation, execute the same target message, and converge on the same identities when the Client retries.
+
+Both `create_new` and `delegate_existing` are tested with and without an attachment. The Host copies selected artifacts before assignment; the transaction preserves the coordination-owned source references and target-owned admission references with matching attachment metadata. A source attachment change cannot reuse the original action identity. A separate transaction-abort test checks all-or-none rollback after target admission insertion.
+
+This proves recovery in the specified **before-first-target-dispatch** window, not exactly-once arbitrary external effects. Stop, replacement and continuation retain their existing semantics and regression coverage.
+
+### What this boundary does not change
+
+SQLite and existing local files remain authoritative for live commits and ordinary in-place restart. No schema migration, new checkpoint I/O, or per-message packing is introduced here. The Repository Head from #2370 identifies a published checkpoint; it is not the metadata revision or event ordinal and must not overwrite newer live commits.
+
+Host checkpoint publication and restricted exact-checkpoint restore are follow-up changes. In particular, independently restored Session checkpoints do not establish a consistent cross-Session WorkHub assignment. The initial local boundary work neither activates such a restore nor redesigns WorkHub, Memory retrieval, or cross-Host ownership.
+
 ## 5. Root admission and execution results
 
 ### 5.1 Two levels of serialization

@@ -47,7 +47,8 @@ import {
   createConversationOperationalStateStore,
   type ConversationOperationalStateStore,
 } from './conversation-operational-state.js';
-import { createSessionStore, type SessionAuthorityStore } from './session-store.js';
+import { createSessionStore } from './session-store.js';
+import type { SessionAuthorityStore } from './session-store-contract.js';
 import {
   assertStorageRootLease,
   runWithStorageRootLease,
@@ -72,8 +73,8 @@ import type {
   SessionRuntimeEventEntry,
   ToolCommitResult,
   ToolOperationRecord,
-  ImmutableRuntimePrefixProofReadBudget,
-} from './sqlite-runtime-store.js';
+} from './runtime-event-store-contract.js';
+import type { ImmutableRuntimePrefixProofReadBudget } from './sqlite-runtime-store.js';
 
 const executionStoresWriterBrand: unique symbol = Symbol('ExecutionStoresWriter');
 const executionStoresReaderBrand: unique symbol = Symbol('ExecutionStoresReader');
@@ -86,11 +87,11 @@ export {
   normalizeRootTurnAdmissionPayload,
   rootTurnAdmissionRecordFits,
 } from './agent-run-store.js';
-export { isSessionNotFoundError } from './session-store.js';
+export { isSessionNotFoundError } from './session-store-contract.js';
 export {
   SessionMetadataConflictError,
   SessionMetadataVersionConflictError,
-} from './sqlite-session-metadata-store.js';
+} from './session-store-contract.js';
 
 export type {
   AdmitRootTurnInput,
@@ -119,6 +120,7 @@ export type {
 export { submittedTurnIntentsEqual } from './submitted-turn-intent.js';
 export type { SubmittedTurnIntent } from './submitted-turn-intent.js';
 export type {
+  CreateStableSessionRequest,
   ProbeSessionRemovalResult,
   ExternalSessionImportLookupResult,
   SessionCatalogPageCursor,
@@ -136,7 +138,7 @@ export type {
   SessionTurnContributionPage,
   SessionTurnLandmark,
   SessionTurnLandmarkSnapshot,
-} from './session-store.js';
+} from './session-store-contract.js';
 
 export type ExecutionSessionWriter = SessionAuthorityStore;
 export type {
