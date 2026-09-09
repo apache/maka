@@ -62,7 +62,7 @@ import type {
   OnboardingRejectionReason,
 } from './pi-tui-contracts.js';
 import { ansi, editorTheme, selectListTheme, stripAnsi } from './tui-ansi.js';
-import { hideUnfocusedCursor } from './tui-editor-render.js';
+import { stripUnfocusedCursorStyle } from './tui-editor-render.js';
 import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 
 interface TuiPickerCopy {
@@ -1056,7 +1056,7 @@ function renderFieldRow(editor: Editor, prefix: string, width: number): string[]
   // These field editors have no autocomplete rows. Keep Editor's wrapping and
   // scrolling, but omit its top/bottom borders.
   const lines = editor.render(contentWidth).slice(1, -1);
-  const editorLines = hideUnfocusedCursor(lines, editor.focused);
+  const editorLines = stripUnfocusedCursorStyle(lines, editor.focused);
   if (editorLines.length === 0) return [padLine(prefix, width)];
   return editorLines.map((line, index) =>
     padLine(`${index === 0 ? prefix : ' '.repeat(prefixWidth)}${line}`, width),

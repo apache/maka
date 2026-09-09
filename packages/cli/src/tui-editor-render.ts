@@ -17,7 +17,7 @@
  * under the License.
  */
 
-export function hideUnfocusedCursor(lines: string[], focused: boolean): string[] {
+export function stripUnfocusedCursorStyle(lines: string[], focused: boolean): string[] {
   if (focused) return lines;
   // pi-tui 0.84.4 paints its cursor even when the editor is unfocused.
   // Remove the reverse-video wrapper, keeping the captured text ($1):
