@@ -2501,7 +2501,6 @@ function AppShellContent({
                 // following the tail and the moves the reader asks for are one
                 // authority there, and the composer never remounts for any of
                 // them — its contenteditable DOM carries the live draft.
-                scrollOwner="host"
                 data-maka-onboarding={showOnboardingHero ? 'true' : undefined}
                 scrollToBottomLabel={
                   desktopConversationCopy.actions.scrollMainToBottom

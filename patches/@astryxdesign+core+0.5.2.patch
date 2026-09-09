@@ -1,3 +1,25 @@
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
+index 5046603..ec36a00 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
+@@ -22,7 +22,7 @@
+  * - /apps/storybook/stories/ChatComposer.stories.tsx
+  * - /packages/cli/assets/templates/blocks/components/ChatComposerInput/ (block examples)
+  */
+-import { useRef, useState, useCallback, useEffect, useImperativeHandle } from 'react';
++import { useRef, useState, useCallback, useEffect, useLayoutEffect, useImperativeHandle } from 'react';
+ import { createPortal } from 'react-dom';
+ import * as stylex from '@stylexjs/stylex';
+ import "../theme/tokens.stylex.js";
+@@ -207,7 +207,7 @@ export function ChatComposerInput(props) {
+       inputControlRef.current = null;
+     };
+   }, [inputControlRef]);
+-  useEffect(() => {
++  useLayoutEffect(() => {
+     if (controlledValue === undefined || !editableRef.current) {
+       return;
+     }
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
 index ff34874..0f5ae14 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
@@ -19,18 +41,9 @@ index ff34874..0f5ae14 100644
  export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
  export declare namespace ChatLayout {
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
-index ff9b9fa..de27ced 100644
+index ff9b9fa..d20288e 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
-@@ -28,7 +28,7 @@
-  * - /apps/storybook/stories/ChatLayout.stories.tsx
-  * - /packages/cli/assets/templates/blocks/components/ChatLayout/ (block examples)
-  */
--import { useMemo, useRef } from 'react';
-+import { useEffect, useMemo, useRef } from 'react';
- import * as stylex from '@stylexjs/stylex';
- import "../theme/tokens.stylex.js";
- import { spacingVars } from "../theme/tokens.stylex.js";
 @@ -85,7 +85,8 @@ const styles = {
      kfzvcC: "x47corl",
      k6WDB: "xvn2z4z",
@@ -69,7 +82,7 @@ index ff9b9fa..de27ced 100644
    ref,
    ...rest
  }) {
-@@ -205,12 +204,21 @@ export function ChatLayout({
+@@ -205,7 +204,11 @@ export function ChatLayout({
  
    // --- Default scroll behavior ---
    const scroll = useChatStreamScroll({
@@ -82,16 +95,6 @@ index ff9b9fa..de27ced 100644
    });
    const newMsgs = useChatNewMessages({
      isLocked: scroll.isLocked,
-     onResize: scroll.scrollIfLocked
-   });
-+  useEffect(() => {
-+    if (scroll.isLocked) {
-+      newMsgs.dismiss();
-+    }
-+  }, [scroll.isLocked, newMsgs.dismiss]);
-   const defaultScrollButton = /*#__PURE__*/_jsx(ChatLayoutScrollButton, {
-     isVisible: scroll.isScrolledUp || newMsgs.hasNewMessages,
-     label: newMsgs.hasNewMessages ? t('@astryx.chatLayout.newMessages') : undefined,
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
 index 889970f..459e6e8 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
@@ -104,19 +107,6 @@ index 889970f..459e6e8 100644
      "aria-expanded": hasDetail ? isDetailOpen : undefined,
      "aria-controls": hasDetail && isDetailOpen ? detailId : undefined,
      onClick: toggleDetail,
-diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js b/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
-index 8c509bc..5f46785 100644
---- a/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
-+++ b/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
-@@ -49,6 +49,8 @@ export function useChatNewMessages({
-   const elementRef = useRef(null);
-   const cleanupRef = useRef(null);
-   const attach = useCallback(el => {
-+    lastMessageRef.current = null;
-+    setHasNewMessages(false);
-     observeResize(el, () => {
-       onResizeRef.current?.();
-       const messages = el.getElementsByClassName('astryx-chat-message');
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
 index e1d2ebd..1f8337e 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
@@ -260,7 +250,7 @@ index 446e25b..00eb8b3 100644
      onPointerMove: handlePointerMove,
      startContent: icon ? renderIconSlot(icon, {
 diff --git a/node_modules/@astryxdesign/core/dist/List/List.js b/node_modules/@astryxdesign/core/dist/List/List.js
-index 8753b5f..1fa8325 100644
+index 8753b5f..43a5abe 100644
 --- a/node_modules/@astryxdesign/core/dist/List/List.js
 +++ b/node_modules/@astryxdesign/core/dist/List/List.js
 @@ -89,6 +89,7 @@ export function List({
@@ -281,14 +271,8 @@ index 8753b5f..1fa8325 100644
      // Only when this component renders the header — writing `undefined`
      // unconditionally would erase a label a consumer pointed at their own
      // heading.
-@@ -151,4 +153,4 @@ export function List({
-     })
-   });
- }
--List.displayName = 'List';
-+List.displayName = 'List';
 diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
-index 2ea4f3e..be99f2d 100644
+index 2ea4f3e..15dbdd6 100644
 --- a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
 @@ -90,6 +90,10 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
@@ -302,7 +286,7 @@ index 2ea4f3e..be99f2d 100644
      onLinkClick?: (href: string, event: React.MouseEvent<HTMLAnchorElement>) => void | false;
      /**
       * Citation sources keyed by ID. When provided, `[id]` and `【id】` markers
-@@ -155,8 +159,8 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
+@@ -155,7 +159,7 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
   * </Markdown>
   * ```
   */
@@ -311,10 +295,8 @@ index 2ea4f3e..be99f2d 100644
  export declare namespace Markdown {
      var displayName: string;
  }
--//# sourceMappingURL=Markdown.d.ts.map
-+//# sourceMappingURL=Markdown.d.ts.map
 diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
-index 36ed303..745ba77 100644
+index 36ed303..0184370 100644
 --- a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
 +++ b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
 @@ -8,7 +8,7 @@
@@ -432,10 +414,10 @@ index 36ed303..745ba77 100644
 -  prevInlineNodesRef.current = [];
    return rendered;
  }
--Markdown.displayName = 'Markdown';
-+Markdown.displayName = 'Markdown';
+ Markdown.displayName = 'Markdown';
+\ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
-index 158ada1..b891fb9 100644
+index 158ada1..fe7be94 100644
 --- a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
 @@ -68,6 +68,12 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
@@ -451,7 +433,7 @@ index 158ada1..b891fb9 100644
      /**
       * Row-level secondary controls (icon buttons, menus) rendered as siblings
       * of the primary element at the trailing edge of the row — after the
-@@ -137,8 +143,8 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
+@@ -137,7 +143,7 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
   * </SideNavItem>
   * ```
   */
@@ -460,10 +442,8 @@ index 158ada1..b891fb9 100644
  export declare namespace SideNavItem {
      var displayName: string;
  }
--//# sourceMappingURL=SideNavItem.d.ts.map
-+//# sourceMappingURL=SideNavItem.d.ts.map
 diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
-index 3d2cf00..e527e9d 100644
+index 3d2cf00..c5c0d55 100644
 --- a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
 +++ b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
 @@ -232,6 +232,7 @@ export function SideNavItem({
@@ -483,12 +463,6 @@ index 3d2cf00..e527e9d 100644
        id: `${id}-children`,
        role: "group",
        "aria-labelledby": `${id}-label`,
-@@ -575,4 +576,4 @@ export function SideNavItem({
-   });
-   return item;
- }
--SideNavItem.displayName = 'SideNavItem';
-+SideNavItem.displayName = 'SideNavItem';
 diff --git a/node_modules/@astryxdesign/core/dist/astryx.css b/node_modules/@astryxdesign/core/dist/astryx.css
 index 0159f32..654948b 100644
 --- a/node_modules/@astryxdesign/core/dist/astryx.css
@@ -669,6 +643,28 @@ index 693d728..7d5724e 100644
 -  return targetText.slice(0, snapToGraphemeBoundary(targetText, displayedLen));
 +  return targetText.slice(0, snapToGraphemeBoundary(targetText, renderedPresentation.displayedLen));
  }
+\ No newline at end of file
+diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
+index 5a6a56b..df6a47f 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
++++ b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
+@@ -28,6 +28,7 @@ import {
+   useState,
+   useCallback,
+   useEffect,
++  useLayoutEffect,
+   useImperativeHandle,
+   type ReactNode,
+   type KeyboardEvent,
+@@ -402,7 +403,7 @@ export function ChatComposerInput(props: ChatComposerInputProps) {
+     };
+   }, [inputControlRef]);
+ 
+-  useEffect(() => {
++  useLayoutEffect(() => {
+     if (controlledValue === undefined || !editableRef.current) {
+       return;
+     }
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
 index d45a912..efec9fd 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx

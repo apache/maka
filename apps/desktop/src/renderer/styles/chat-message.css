@@ -148,6 +148,13 @@
   contain-intrinsic-block-size: auto 96px;
 }
 
+/* A long prompt can put even the first answer beyond the relevance margin.
+   The streaming frontier must contribute its real height before following;
+   completed blocks in the same active Turn still retain lazy layout. */
+.maka-chat-message-list [data-maka-transcript-boundary][data-live-streaming='true'] {
+  content-visibility: visible;
+}
+
 /* Container blocks — a Processing sequence, a linked-agent list — hold many
    entries, so their first-paint estimate stays multi-line. It remains an
    estimate rather than a clamp: the block grows to its measured size after

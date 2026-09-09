@@ -96,7 +96,6 @@ function DetailPane(props: {
         <div className="maka-detail-with-artifacts">
           <div className="mainColumn" data-home-surface="true">
             <ChatSurfaceLayout
-              scrollOwner="host"
               composer={null}
               data-maka-onboarding={props.children === undefined ? undefined : 'true'}
             >

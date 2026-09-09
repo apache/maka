@@ -194,6 +194,7 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
     CSS: globalThis.CSS, document: globalThis.document, window: globalThis.window,
     Element: globalThis.Element, HTMLElement: globalThis.HTMLElement, Node: globalThis.Node,
     MutationObserver: globalThis.MutationObserver, ResizeObserver: globalThis.ResizeObserver,
+    requestAnimationFrame: globalThis.requestAnimationFrame,
     IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT,
   };
   const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
@@ -232,6 +233,7 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
     CSS: { escape: (value: string) => value }, document, window,
     Element: window.Element, HTMLElement: window.HTMLElement, Node: window.Node,
     MutationObserver: TestMutationObserver, ResizeObserver: TestResizeObserver,
+    requestAnimationFrame: window.requestAnimationFrame,
     IS_REACT_ACT_ENVIRONMENT: true,
   });
   const messages: StoredMessage[] = [];
@@ -307,7 +309,14 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
       await act(async () => { authority!.releasePin(); await commands.current!.loadHistory(direction); });
     },
     async readAt(offset: number) {
-      await act(() => { scroller.scrollTop = offset; scroller.dispatchEvent(new window.Event('scroll')); });
+      await act(() => {
+        const input = new window.Event('wheel');
+        Object.assign(input, { deltaY: offset - scroller.scrollTop });
+        scroller.dispatchEvent(input);
+        scroller.scrollTop = offset;
+        scroller.dispatchEvent(new window.Event('scroll'));
+        scroller.dispatchEvent(new window.Event('scrollend'));
+      });
       await render();
     },
     async append(id: string, size: number) {
