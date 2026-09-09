@@ -25,8 +25,10 @@ import { APP_ICONS } from '@maka/core/settings';
 import {
   appIconAssetSegments,
   appIconLoadOrder,
+  encodeWindowsIco,
   pickReadableAppIconPath,
   resolveAppIconPath,
+  WINDOWS_TASKBAR_ICON_SIZES,
 } from '../app-icon.js';
 import { isAppIcon, toAppIconChoice, type AppIconChoice } from '@maka/core/settings';
 import { desktopAssetRoot } from '../desktop-assets.js';
@@ -130,5 +132,37 @@ test('a persisted custom id whose file disappeared falls back to the brand mark'
   assert.equal(
     pickReadableAppIconPath(gone, toPath, () => true),
     join('/user-data', 'app-icons', `${'d'.repeat(32)}.png`),
+  );
+});
+
+test('the Windows ICO carries every taskbar size as a PNG frame', () => {
+  const frames = WINDOWS_TASKBAR_ICON_SIZES.map((size) => ({
+    size,
+    png: Buffer.from(`png-${size}`),
+  }));
+  const encoded = encodeWindowsIco(frames);
+  assert.equal(encoded.readUInt16LE(0), 0);
+  assert.equal(encoded.readUInt16LE(2), 1);
+  assert.equal(encoded.readUInt16LE(4), frames.length);
+
+  let cursor = 6;
+  for (const frame of frames) {
+    const storedSize = frame.size >= 256 ? 0 : frame.size;
+    assert.equal(encoded.readUInt8(cursor), storedSize);
+    assert.equal(encoded.readUInt8(cursor + 1), storedSize);
+    assert.equal(encoded.readUInt16LE(cursor + 4), 1);
+    assert.equal(encoded.readUInt16LE(cursor + 6), 32);
+    assert.equal(encoded.readUInt32LE(cursor + 8), frame.png.byteLength);
+    const offset = encoded.readUInt32LE(cursor + 12);
+    assert.equal(
+      encoded.subarray(offset, offset + frame.png.byteLength).toString(),
+      frame.png.toString(),
+    );
+    cursor += 16;
+  }
+  assert.deepEqual(
+    [...WINDOWS_TASKBAR_ICON_SIZES],
+    [16, 24, 32, 48, 64, 256],
+    'Windows needs a 16px and 32px frame; dropping either leaves the taskbar on the packaged sky icon',
   );
 });

@@ -20,7 +20,7 @@
 import { app, BrowserWindow, clipboard, nativeTheme } from 'electron';
 import { resolveSystemUiLocale, type UiLocale } from '@maka/core/ui-locale';
 import type { HostHandoffView, OpenHostHandoffSurface } from '@maka/runtime-host/client';
-import { readableAppIconPath } from './app-icon-surface.js';
+import { readableAppIconImage } from './app-icon-surface.js';
 import { installApplicationMenu } from './application-menu.js';
 import { installDesktopStartupBranding } from './desktop-shell-presentation.js';
 import { isIsolatedE2e } from './startup-context.js';
@@ -55,7 +55,7 @@ export function showDesktopStartupProgress(
     progress = createStartupProgressWindow({
       locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
       dark: nativeTheme.shouldUseDarkColors,
-      icon: readableAppIconPath('default'),
+      icon: readableAppIconImage('default'),
       createWindow: (options) => new BrowserWindow(options),
       copyDiagnostics: (phase, handoff) => handoff
         ? clipboard.writeText(JSON.stringify(handoff, null, 2)) : copyDiagnostics(phase),
@@ -91,7 +91,7 @@ export function createDesktopHostHandoffSurface(resolveLocale: () => Promise<UiL
       } else {
         ownWindow = true;
         window = createStartupProgressWindow({
-          locale, dark: nativeTheme.shouldUseDarkColors, icon: readableAppIconPath('default'),
+          locale, dark: nativeTheme.shouldUseDarkColors, icon: readableAppIconImage('default'),
           createWindow: (options) => new BrowserWindow(options),
           copyDiagnostics: () => clipboard.writeText(JSON.stringify(latest, null, 2)),
           onError: (error) => console.error('[runtime-host] handoff presentation failed:', error),

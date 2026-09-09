@@ -21,7 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { MAKA_WORDMARK_PATH } from '@maka/core/maka-wordmark';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { formatHostHandoff, type HostHandoffView, type HostHandoffAction } from '@maka/runtime-host/client';
-import type { BrowserWindow, BrowserWindowConstructorOptions } from 'electron';
+import type { BrowserWindow, BrowserWindowConstructorOptions, NativeImage } from 'electron';
 
 export type StartupPhase =
   | 'prepare' | 'storage' | 'connect' | 'package'
@@ -82,7 +82,7 @@ export interface StartupProgressWindow {
 export function createStartupProgressWindow(input: {
   locale: UiLocale;
   dark: boolean;
-  icon: string;
+  icon: string | NativeImage;
   createWindow(options: BrowserWindowConstructorOptions): BrowserWindow;
   copyDiagnostics(phase: StartupPhase, handoff?: HostHandoffView): void | Promise<void>;
   onError(error: unknown): void;

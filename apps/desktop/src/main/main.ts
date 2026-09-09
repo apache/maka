@@ -65,6 +65,12 @@ installMainProcessLogCapture(mainProcessLogBuffer, () => recoveryJournal?.markDi
 // socket/pipe namespace, and single-instance lock) without touching any
 // path logic. See https://github.com/maka-agent/maka-agent/issues/2252.
 app.setName(app.isPackaged ? 'Maka' : 'Maka Dev');
+if (process.platform === 'win32') {
+  // Without a stable AppUserModelID, Windows groups the running window with
+  // the .exe shortcut and ignores `setIcon`. The picker then shows the classic
+  // mascot while the taskbar keeps the packaged `sky` tile.
+  app.setAppUserModelId(app.isPackaged ? 'com.maka.desktop' : 'com.maka.desktop.dev');
+}
 
 // Electron otherwise quits implicitly when the last BrowserWindow closes.
 // Startup and fatal-recovery surfaces can be the only window, so keep process

@@ -32,7 +32,13 @@ import {
   listCustomAppIconIds,
   resolveCustomAppIconPath,
 } from './custom-app-icon-store.js';
-import { appIconLoadOrder, pickReadableAppIconPath, resolveAppIconPath } from './app-icon.js';
+import {
+  appIconLoadOrder,
+  encodeWindowsIco,
+  pickReadableAppIconPath,
+  resolveAppIconPath,
+  WINDOWS_TASKBAR_ICON_SIZES,
+} from './app-icon.js';
 import { desktopAssetRoot } from './desktop-assets.js';
 
 /**
@@ -69,6 +75,16 @@ export function readableAppIconPath(value: unknown): string {
 }
 
 /**
+ * Same artwork as `readableAppIconPath`, already in the form `setIcon` and
+ * the window constructor can hand Windows. A path to the 1024px PNG master
+ * is enough on macOS and Linux; Windows needs the rebuilt ICO.
+ */
+export function readableAppIconImage(value: unknown): Electron.NativeImage {
+  const image = nativeImage.createFromPath(readableAppIconPath(value));
+  return image.isEmpty() ? image : nativeAppIcon(image);
+}
+
+/**
  * Where this process reads icon artwork from. Exported so the window `icon`
  * option resolves the same root the dock does — one of them guessing wrong
  * would ship a build whose windows and dock disagree.
@@ -97,6 +113,8 @@ let shippedPreviews: readonly AppIconPreview[] | undefined;
  * per-window icons are ignored. Windows and Linux draw it per window instead,
  * which is why every open window is updated: the `icon` option in
  * `createWindow` only covers windows opened *after* the choice was persisted.
+ * Windows additionally needs the rebuilt ICO from `nativeAppIcon`; the PNG
+ * master is a valid NativeImage but does not replace the packaged .exe tile.
  */
 export function applyAppIcon(value: unknown, onIconError: (error: unknown) => void): void {
   const icon = toAppIconChoice(value);
@@ -106,11 +124,12 @@ export function applyAppIcon(value: unknown, onIconError: (error: unknown) => vo
       onIconError(new Error(`no readable artwork for app icon "${icon}"`));
       return;
     }
+    const surface = nativeAppIcon(image);
     if (app.dock) {
-      app.dock.setIcon(image);
+      app.dock.setIcon(surface);
       return;
     }
-    for (const window of BrowserWindow.getAllWindows()) window.setIcon(image);
+    for (const window of BrowserWindow.getAllWindows()) window.setIcon(surface);
   } catch (error) {
     onIconError(error);
   }
@@ -171,4 +190,22 @@ function loadAppIcon(icon: AppIconChoice): Electron.NativeImage | undefined {
     if (!image.isEmpty()) return image;
   }
   return undefined;
+}
+
+/**
+ * Windows `setIcon` consumes an HICON. The 1024px PNG master is a valid
+ * NativeImage, but Chromium does not always promote it into the small/large
+ * sizes the taskbar asks for, so the running window keeps the packaged
+ * `sky` tile. Rebuild as a multi-size ICO on win32 only; macOS and Linux
+ * already accept the PNG master.
+ */
+function nativeAppIcon(image: Electron.NativeImage): Electron.NativeImage {
+  if (process.platform !== 'win32') return image;
+  const frames = WINDOWS_TASKBAR_ICON_SIZES.flatMap((size) => {
+    const png = image.resize({ width: size, height: size, quality: 'better' }).toPNG();
+    return png.byteLength > 0 ? [{ size, png }] : [];
+  });
+  if (frames.length === 0) return image;
+  const ico = nativeImage.createFromBuffer(encodeWindowsIco(frames));
+  return ico.isEmpty() ? image : ico;
 }
