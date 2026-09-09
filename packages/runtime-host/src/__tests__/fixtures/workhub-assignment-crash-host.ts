@@ -26,8 +26,14 @@ import { createExecutionRuntimeHostComposition } from '../../server/execution-co
 import { runRuntimeHostProcessLifecycle } from '../../server/process-lifecycle.js';
 
 const [rootPath, expectedRootId, mode] = process.argv.slice(2);
-if (!rootPath || !expectedRootId || !['crash', 'recover'].includes(mode ?? '')) {
-  throw new Error('usage: workhub-assignment-crash-host <root> <root-id> <crash|recover>');
+if (
+  !rootPath ||
+  !expectedRootId ||
+  !['crash', 'recover', 'fail-assignment-once'].includes(mode ?? '')
+) {
+  throw new Error(
+    'usage: workhub-assignment-crash-host <root> <root-id> <crash|recover|fail-assignment-once>',
+  );
 }
 
 // Test-only barrier AFTER the real SQLite transaction, BEFORE its result reaches
@@ -45,6 +51,21 @@ if (mode === 'crash') {
     });
     await new Promise<never>(() => undefined);
     return result;
+  };
+}
+
+// Copying has already succeeded when this method is entered. A transient
+// assignment failure must not strand that durable copy or poison a retry.
+if (mode === 'fail-assignment-once') {
+  const assign = SqliteSessionMetadataStore.prototype.assignWorkHubMessage;
+  let failed = false;
+  SqliteSessionMetadataStore.prototype.assignWorkHubMessage = async function (request) {
+    if (!failed) {
+      failed = true;
+      process.send?.({ type: 'assignment_failed' });
+      throw new Error('Injected failure after attachment copy, before assignment');
+    }
+    return assign.call(this, request);
   };
 }
 

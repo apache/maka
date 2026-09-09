@@ -155,6 +155,8 @@ The process-crash test submits `workhub.coordination.act` through a real Host co
 
 Both `create_new` and `delegate_existing` are tested with and without an attachment. The Host copies selected artifacts before assignment; the transaction preserves the coordination-owned source references and target-owned admission references with matching attachment metadata. A source attachment change cannot reuse the original action identity. A separate transaction-abort test checks all-or-none rollback after target admission insertion.
 
+WorkHub explicitly opts into verified reuse of existing attachment copies. Under the Artifact writer lock, the store checks the deterministic source/target identity, complete metadata, and exact payload sizes/digests using bounded reads. A conflicting or missing payload is rejected without replacing the existing copy; other conversation-copy consumers still reject existing targets by default. Host regressions cover a new delegation reusing the same attachment and retrying after copy succeeds but assignment fails. This is recoverable staging, not a cross-media transaction between files and Session assignment.
+
 This proves recovery in the specified **before-first-target-dispatch** window, not exactly-once arbitrary external effects. Stop, replacement and continuation retain their existing semantics and regression coverage.
 
 ### What this boundary does not change

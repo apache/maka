@@ -155,6 +155,8 @@ Host 已经用 root lease 打开 `storage-writer-composition.ts`，并注入由�
 
 `create_new` 和 `delegate_existing` 都覆盖带附件与不带附件的情况。Host 在委派之前复制选中的 Artifact；事务保留协调 Session 的源引用及目标 Session 的 admission 引用，并校验附件元数据对应。改变源附件不能复用原 action 身份。另有事务中断测试在目标 admission 插入之后验证整体回滚。
 
+WorkHub 显式开启附件副本的验证式复用。存储层在 Artifact 写锁内校验由源/目标派生的身份、完整元数据，并通过有界分块读取核对文件大小和摘要。内容冲突或文件缺失会被拒绝，不覆盖已有副本；其他对话复制调用方仍默认拒绝重复目标。Host 回归覆盖新委派复用同一附件，以及复制成功、委派提交失败后的重试。这是可恢复的预先复制，不是文件与 Session 委派之间的跨介质事务。
+
 这只证明指定的**目标首次 dispatch 之前**的恢复窗口，不承诺任意外部副作用 exactly once。Stop、replacement、continuation 保持原语义，并继续回归验证。
 
 ### 这条边界不改变什么
