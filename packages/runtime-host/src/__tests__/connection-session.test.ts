@@ -25,6 +25,7 @@ import { connect, createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   resolveRootControlNamespace,
   resolveStorageRoot,
@@ -240,10 +241,12 @@ test('transcript pages are serialized per connection before their responses are 
   }
 });
 
-test('the Client backpressures a healthy request burst at the Host connection limit', async () => {
+test('the Client leaves Host acknowledgement headroom while backpressuring a request burst', async () => {
   const requestCount = 96;
   const firstWaveEntered = deferred();
+  const acknowledgementHeadroomCrossed = deferred();
   const releaseFirstWave = deferred();
+  const clientRequestLimit = RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS - 1;
   let entered = 0;
   let active = 0;
   let maxActive = 0;
@@ -253,7 +256,8 @@ test('the Client backpressures a healthy request burst at the Host connection li
       entered += 1;
       active += 1;
       maxActive = Math.max(maxActive, active);
-      if (entered === RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS) firstWaveEntered.resolve();
+      if (entered === clientRequestLimit) firstWaveEntered.resolve();
+      if (entered > clientRequestLimit) acknowledgementHeadroomCrossed.resolve();
       await releaseFirstWave.promise;
       active -= 1;
       return {
@@ -268,7 +272,14 @@ test('the Client backpressures a healthy request burst at the Host connection li
       );
       try {
         await withTimeout(firstWaveEntered.promise, 1_000, 'first request wave was not admitted');
-        assert.equal(maxActive, RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS);
+        assert.equal(
+          await Promise.race([
+            acknowledgementHeadroomCrossed.promise.then(() => true),
+            delay(50, false),
+          ]),
+          false,
+        );
+        assert.equal(maxActive, clientRequestLimit);
         releaseFirstWave.resolve();
         const results = await Promise.all(requests);
         assert.equal(results.length, requestCount);
