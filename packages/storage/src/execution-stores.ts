@@ -385,6 +385,8 @@ async function createExecutionStoresForWrite(
   };
   let interactionStore: InteractiveInteractionStoreWriterFacade | undefined;
   let goalStore: InteractiveGoalAuthorityWriter | undefined;
+  const releaseChildBindings: Array<() => void> = [];
+  const retainUntilGroupClose = (release: () => void) => releaseChildBindings.push(release);
   try {
     await assertStorageRootLease(lease, kind, 'write');
     await sessionStore.ready();
@@ -402,6 +404,7 @@ async function createExecutionStoresForWrite(
           },
         }),
       provider === localExecutionPersistenceProvider ? createSqliteInteractionStore : provider,
+      retainUntilGroupClose,
     );
     goalStore = await openInteractiveGoalAuthorityForWrite(
       lease,
@@ -413,6 +416,7 @@ async function createExecutionStoresForWrite(
         close: () => {},
       }),
       provider === localExecutionPersistenceProvider ? createSqliteGoalAuthority : provider,
+      retainUntilGroupClose,
     );
   } catch (error) {
     closed = true;
@@ -436,6 +440,7 @@ async function createExecutionStoresForWrite(
       failedExecutionLeases.add(lease);
       throw new AggregateError(failures, 'Unable to compose execution persistence');
     }
+    for (const release of releaseChildBindings) release();
     throw error;
   }
   const close = () =>
@@ -469,6 +474,7 @@ async function createExecutionStoresForWrite(
       }
       // Failed close retains the closed owner, so another backend cannot open over it.
       if (errors.length) throw new AggregateError(errors, 'Unable to close execution persistence');
+      for (const release of releaseChildBindings) release();
       if (executionStoresWritersByLease.get(lease) === stores) {
         executionStoresWritersByLease.delete(lease);
         executionStoreProvidersByLease.delete(lease);

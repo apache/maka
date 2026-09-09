@@ -85,8 +85,10 @@ export interface InteractiveInteractionStoreWriterFacade extends InteractionStor
 
 const readers = new WeakSet<object>();
 const writers = new WeakSet<object>();
+const successfullyClosedWriters = new WeakSet<object>();
 const sqliteWritersByLease = new WeakMap<object, InteractiveInteractionStoreWriterFacade>();
 const backendByLease = new WeakMap<object, object>();
+const retainedByExecution = new WeakSet<object>();
 const sqliteWriterOpeningsByLease = new WeakMap<
   object,
   Promise<InteractiveInteractionStoreWriterFacade>
@@ -135,9 +137,32 @@ export async function openSqliteInteractiveInteractionStoreForWrite(
     root: string,
   ) => InteractionStoreWriter & { ready?(): Promise<void>; close(): void },
   backendIdentity: object = storeFactory ?? createSqliteInteractionStore,
+  retainUntilGroupClose?: (release: () => void) => void,
 ): Promise<InteractiveInteractionStoreWriterFacade> {
   await assertStorageRootLease(lease, 'interactive', 'write');
+  // Child close revokes access; the group retains the authority until every
+  // backend handle has closed successfully, including on a failed close.
+  if (retainUntilGroupClose && !retainedByExecution.has(lease)) {
+    retainedByExecution.add(lease);
+    retainUntilGroupClose(() => {
+      retainedByExecution.delete(lease);
+      const cached = sqliteWritersByLease.get(lease);
+      if (!cached || successfullyClosedWriters.has(cached)) {
+        sqliteWritersByLease.delete(lease);
+        backendByLease.delete(lease);
+      }
+    });
+  }
   const existing = sqliteWritersByLease.get(lease);
+  if (
+    (existing && !writers.has(existing)) ||
+    (!existing && retainedByExecution.has(lease) && !retainUntilGroupClose)
+  ) {
+    throw new StorageRootAuthorityError(
+      'invalid_lease',
+      'Interaction authority is owned by its execution group',
+    );
+  }
   if (storeFactory && backendByLease.has(lease) && backendByLease.get(lease) !== backendIdentity) {
     throw new StorageRootAuthorityError(
       'invalid_lease',
@@ -200,7 +225,8 @@ export async function openSqliteInteractiveInteractionStoreForWrite(
       closed = true;
       writers.delete(facade);
       store.close();
-      if (sqliteWritersByLease.get(lease) === facade) {
+      successfullyClosedWriters.add(facade);
+      if (sqliteWritersByLease.get(lease) === facade && !retainedByExecution.has(lease)) {
         sqliteWritersByLease.delete(lease);
         backendByLease.delete(lease);
       }

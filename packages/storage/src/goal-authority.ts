@@ -32,8 +32,10 @@ import { assertSafeStorageId } from './storage-id.js';
 
 const writerBrand: unique symbol = Symbol('InteractiveGoalAuthorityWriter');
 const writers = new WeakSet<object>();
+const successfullyClosedWriters = new WeakSet<object>();
 const writerByLease = new WeakMap<object, InteractiveGoalAuthorityWriter>();
 const backendByLease = new WeakMap<object, object>();
+const retainedByExecution = new WeakSet<object>();
 const writerOpeningByLease = new WeakMap<object, Promise<InteractiveGoalAuthorityWriter>>();
 
 export interface GoalAuthoritySnapshot {
@@ -93,9 +95,33 @@ export async function openInteractiveGoalAuthorityForWrite(
   lease: StorageRootLease<'interactive', 'write'>,
   repositoryFactory?: (root: string) => GoalAuthorityRepository,
   backendIdentity: object = repositoryFactory ?? createSqliteGoalAuthority,
+  retainUntilGroupClose?: (release: () => void) => void,
 ): Promise<InteractiveGoalAuthorityWriter> {
   await assertStorageRootLease(lease, 'interactive', 'write');
+  // A child may revoke its facade, but only the successfully closed execution
+  // group may release its backend binding. Otherwise a legacy accessor could
+  // silently create a Local writer alongside a still-live non-Local group.
+  if (retainUntilGroupClose && !retainedByExecution.has(lease)) {
+    retainedByExecution.add(lease);
+    retainUntilGroupClose(() => {
+      retainedByExecution.delete(lease);
+      const cached = writerByLease.get(lease);
+      if (!cached || successfullyClosedWriters.has(cached)) {
+        writerByLease.delete(lease);
+        backendByLease.delete(lease);
+      }
+    });
+  }
   const existing = writerByLease.get(lease);
+  if (
+    (existing && !writers.has(existing)) ||
+    (!existing && retainedByExecution.has(lease) && !retainUntilGroupClose)
+  ) {
+    throw new StorageRootAuthorityError(
+      'invalid_lease',
+      'Goal authority is owned by its execution group',
+    );
+  }
   if (
     repositoryFactory &&
     backendByLease.has(lease) &&
@@ -176,7 +202,8 @@ function createWriterFacade(
         writers.delete(writer);
         await Promise.allSettled([...activeOperations]);
         await repository.close();
-        if (writerByLease.get(lease) === writer) {
+        successfullyClosedWriters.add(writer);
+        if (writerByLease.get(lease) === writer && !retainedByExecution.has(lease)) {
           writerByLease.delete(lease);
           backendByLease.delete(lease);
         }

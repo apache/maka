@@ -55,6 +55,8 @@ Transcript subscriptions are instance-local invalidations after successful appen
 
 Standalone Goal and Interaction accessors resolve the authority already registered for their lease. A custom provider cannot silently reuse an independently opened Local authority. The default Local composition preserves compatibility with the existing same-lease accessors.
 
+Closing a grouped Goal or Interaction facade revokes that child but does not release its backend binding. Standalone accessors reject reopening the revoked child until the group closes successfully; pending or failed group shutdown cannot fall back to Local. Standalone Local children not owned by a group retain their close/reopen behavior.
+
 Host reads use the read methods on the selected, authenticated group. The pre-existing standalone Local read-only utilities are not a generic remote-reader composition API.
 
 ## Independent reference implementation
@@ -65,11 +67,13 @@ Pure canonical validators and event projection rules are shared; storage algorit
 
 Test hooks distinguish failure before publication from a lost acknowledgement after publication. They are not production configuration.
 
+Conversation-copy import validates complete canonical run ledgers and atomically rebuilds Tool projections; an exact retry must neither duplicate events nor lose T1/T2 identity. Session configuration changes preserve accumulated sandbox authority, restore it after temporary Explore/Bypass modes, and only advance the boundary revision when its authority changes.
+
 The reference implements the declared execution ports. It does not claim optional authorities absent from that contract: for example, a managed-workspace mutation without its workspace authority binding is rejected, not sent to a Local T1 implementation. Artifact payloads, runtime policy, long-term memory and other independently composed domains remain outside this provider.
 
 ## Evidence
 
-- `packages/storage/src/__tests__/execution-provider-conformance.test.ts` runs the same assertions against Local and Memory: stable identities, detached reads, CAS, message handoff, WorkHub atomicity, Tool T1/T2, lost acknowledgements, Graph provisioning, Goal retirement, authenticated access and lifecycle.
+- `packages/storage/src/__tests__/execution-provider-conformance.test.ts` runs the same assertions against Local and Memory: stable identities, detached reads, CAS, message handoff, WorkHub atomicity, Tool T1/T2, conversation-copy validation and projection rebuilds, lost acknowledgements, sandbox authority preservation, Graph provisioning, Goal retirement, authenticated access and child/group lifecycle.
 - Backend-specific fault setup is confined to the test harness. Local uses transaction-aborting triggers; Memory aborts its unpublished draft. The assertions and production-facing operations are shared.
 - `packages/runtime-host/src/__tests__/workhub-assignment-crash-recovery.test.ts` starts a real Host process with the Memory provider selected through the supported composition entry. A fake model backend drives normal message submission, durable history, existing-target delegation and new-target delegation. Exact retries do not dispatch twice. Inspecting Local afterward confirms those execution records were never written there.
 - The existing Local process-loss cases still terminate the Host after WorkHub assignment commits but before target dispatch. A fresh process recovers the assignment and pending message. These are the durability tests; a Memory close/reopen is not evidence of process-loss durability.
