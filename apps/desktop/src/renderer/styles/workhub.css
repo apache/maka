@@ -168,8 +168,11 @@
   .workHubWindowActions { display: flex; gap: 4px; }
   .workHubWindowControls button { -webkit-app-region: no-drag; color: var(--muted-foreground); }
   .workHubWindowControls .workHubCloseButton { width: 18px; height: 18px; min-width: 18px; min-height: 18px; padding: 0; border-radius: 50%; background: color-mix(in oklch, var(--foreground) 13%, transparent); }
+  /* Transparent Windows windows need content clipping, including the global grain overlay. */
+  .workHubLive[data-placement='floating'], body:has(.workHubLive[data-placement='floating'])::after {
+    border-radius: 20px;
+  }
   .workHubLive[data-placement='floating'] {
-    /* The native window owns its outline and corner clipping. */
     overflow: hidden;
     padding-top: 32px;
     background: linear-gradient(145deg, color-mix(in oklch, var(--background) 87%, transparent), color-mix(in oklch, var(--background) 81%, transparent));
