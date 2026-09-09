@@ -17,137 +17,94 @@
  * under the License.
  */
 
-import {
-  COMPOSER_INPUT,
-  ensureSidebarExpanded,
-  expect,
-  test,
-  waitForWorkHubReady,
-} from './fixtures';
+import { expect, test, getWorkHubPage } from './fixtures';
 
-test('WorkHub rebuilds delegated execution feedback after navigating away and back', async ({
-  window: page,
-}) => {
-  const initialPrompt = '检查支付回调重复投递时的幂等性';
-  const composer = page.locator(COMPOSER_INPUT);
-  await composer.fill(initialPrompt);
-  await composer.press('Enter');
-  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
-    timeout: 20_000,
+test('WorkHub moves the same renderer and draft between the main window and floating window', async ({ sessionLocalWindow: { page, app } }, testInfo) => {
+  await page.evaluate(async () => {
+    await window.maka.settings.updateClient({ workHub: { enabled: false } });
+    await window.maka.workHubPresentation.detach();
+    await window.maka.workHubPresentation.dock();
   });
-
-  // This test owns navigation identity, not asynchronous title generation.
-  const sessionName = initialPrompt;
-  await page.evaluate(async (name) => {
-    const session = (await window.maka.sessions.list())[0];
-    if (!session) throw new Error('Source Session was not found');
-    await window.maka.sessions.rename(session.id, name);
-  }, sessionName);
+  expect(app.context().pages().filter((candidate) => candidate.url().includes('surface=workhub'))).toHaveLength(0);
+  await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
+  const workhub = await getWorkHubPage(app);
+  const appearance = await page.evaluate(async () => (await window.maka.settings.getClient()).appearance);
+  await page.evaluate(() => window.maka.settings.updateClient({ appearance: { theme: 'dark', palette: 'nord', uiFontSize: 18 } }));
+  const readAppearance = () => ({
+    dark: document.documentElement.classList.contains('dark'),
+    palette: document.documentElement.dataset.makaTheme,
+    fontSize: document.documentElement.style.fontSize,
+  });
+  await expect.poll(() => workhub.evaluate(readAppearance)).toMatchObject({ dark: true, palette: 'nord' });
+  await expect.poll(() => page.evaluate(readAppearance)).toEqual(await workhub.evaluate(readAppearance));
+  await page.evaluate((appearance) => window.maka.settings.updateClient({ appearance }), appearance);
+  const editor = workhub.locator('.maka-composer-editor [contenteditable="true"]');
+  await editor.fill('Keep this unsent WorkHub draft');
+  const marker = await editor.evaluate((element) => {
+    const value = crypto.randomUUID();
+    element.setAttribute('data-test-instance', value);
+    return value;
+  });
+  const webContentsId = await workhub.evaluate(() => window.maka.workHub.resolveCoordinationSession());
+  await workhub.emulateMedia({ reducedMotion: 'no-preference' });
+  await editor.evaluate((element) => {
+    element.addEventListener('input', () => {
+      if (document.querySelector('.workHubRevealMark')?.getAnimations().some((animation) => animation.playState === 'running')) {
+        element.setAttribute('data-input-during-reveal', 'true');
+      }
+    });
+  });
+  await workhub.getByRole('button', { name: /^(Float WorkHub|浮出工作台)$/ }).click();
+  await workhub.keyboard.type(' — typed during opening');
+  await expect(editor).toHaveAttribute('data-input-during-reveal', 'true');
+  await expect(page.locator('.workHubDockPlaceholder')).toBeVisible();
+  await expect.poll(() => workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ placement: 'floating', floatingVisible: true });
+  await expect(editor).toHaveText('Keep this unsent WorkHub draft — typed during opening');
+  await expect(editor).toHaveAttribute('data-test-instance', marker);
+  await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: false } }));
+  await expect(page.locator('.workHubDock')).toBeHidden();
+  await expect.poll(() => workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ floatingVisible: false, shortcutRegistered: false });
+  await page.evaluate(() => window.maka.workHubPresentation.detach());
+  expect((await workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).floatingVisible).toBe(false);
   await page.evaluate(async () => {
     await window.maka.settings.updateClient({ workHub: { enabled: true } });
+    await window.maka.workHubPresentation.detach();
   });
-  await expect(page.getByRole('region', { name: 'WorkHub' })).toBeVisible();
-  // The conversation is the Coordination Session transcript. An ordinary
-  // Session is a routing target and a status row, never a turn in WorkHub.
-  await waitForWorkHubReady(page, 1);
-  await expect(page.locator('.workhub-turn')).toHaveCount(0);
-  await expect(page.locator('.workhub-empty h2')).toHaveText('从这里继续所有工作');
+  await expect(editor).toHaveAttribute('data-test-instance', marker);
+  await expect(editor).toHaveText('Keep this unsent WorkHub draft — typed during opening');
 
-  const routedPrompt = '继续这个工作，补充重复投递测试点。';
-  const workHubComposer = page.locator(
-    '.workhub-surface .maka-composer-editor [contenteditable="true"]',
-  );
-  await workHubComposer.fill(routedPrompt);
-  await workHubComposer.press('Enter');
-  const routedTurn = page.locator('.workhub-turn', { hasText: routedPrompt });
-  await expect(routedTurn.locator('.workhub-submitted')).toBeVisible();
-  await expect(routedTurn.locator('.workhub-message-identity')).toContainText(sessionName!);
-  const workIdentity = await routedTurn.getAttribute('data-work-session-id');
-  expect(workIdentity).toBeTruthy();
-  const identityColor = await routedTurn.evaluate((element) =>
-    getComputedStyle(element).getPropertyValue('--workhub-work-color'),
-  );
-  expect(identityColor).toContain('oklch');
-
-  await routedTurn.locator('.workhub-submitted > button').click();
-  await expect(page.getByRole('region', { name: 'WorkHub' })).toBeHidden();
-
-  await ensureSidebarExpanded(page);
-  await page.getByRole('button', { name: 'WorkHub', exact: true }).click();
-  await waitForWorkHubReady(page, 1);
-  await expect(page.getByRole('region', { name: 'WorkHub' })).toBeVisible();
-  await expect(
-    page.locator('.workhub-projected-turn .workhub-user-bubble > p', {
-      hasText: routedPrompt,
-    }),
-  ).toBeVisible();
-  await expect(
-    page.locator('.workhub-projected-turn', { hasText: routedPrompt })
-      .locator('.workhub-submitted-state'),
-  ).toHaveText('关联有效 · 已完成');
-  await expect(routedTurn).toHaveAttribute('data-work-session-id', workIdentity!);
-  expect(await routedTurn.evaluate((element) =>
-    getComputedStyle(element).getPropertyValue('--workhub-work-color'),
-  )).toBe(identityColor);
-
-});
-
-test('WorkHub replaces the exact linked delegation across Sessions', async ({
-  window: page,
-}) => {
-  const sourceSessionName = '检查支付回调重复投递时的幂等性';
-  const composer = page.locator(COMPOSER_INPUT);
-  await composer.fill(sourceSessionName);
-  await composer.press('Enter');
-  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
-    timeout: 20_000,
+  await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'false');
+  const capabilities = await app.evaluate(({ BrowserWindow }) => {
+    const floating = BrowserWindow.getAllWindows().find((window) => window.getTitle() === 'WorkHub')!;
+    return { maximizable: floating.isMaximizable(), fullscreenable: floating.isFullScreenable() };
   });
-  await page.evaluate(async (name) => {
-    const sourceSession = (await window.maka.sessions.list())[0];
-    if (!sourceSession) throw new Error('Source Session was not found');
-    await window.maka.sessions.rename(sourceSession.id, name);
-  }, sourceSessionName);
-  await page.evaluate(async () => {
-    await window.maka.settings.updateClient({ workHub: { enabled: true } });
-  });
-  await expect(page.getByRole('region', { name: 'WorkHub' })).toBeVisible();
-  await page.evaluate(async () => {
-    await window.maka.sessions.create({ name: '登录稳定性' });
-  });
-  await waitForWorkHubReady(page, 2);
-
-  const workHubComposer = page.locator(
-    '.workhub-surface .maka-composer-editor [contenteditable="true"]',
-  );
-  await workHubComposer.fill('继续这个工作，补充重复投递测试点。');
-  await workHubComposer.press('Enter');
-  const continuedTurn = page.locator('.workhub-turn', {
-    hasText: '继续这个工作，补充重复投递测试点。',
-  });
-  await expect(
-    continuedTurn.locator('.workhub-submitted-session strong'),
-  ).toHaveText(sourceSessionName);
-  await waitForWorkHubReady(page, 2);
-
-  await workHubComposer.fill('不是这个，换成登录稳定性，补充刷新令牌失败判定。');
-  await expect(
-    page.locator('.workhub-surface').getByRole('button', { name: '发送' }),
-  ).toBeEnabled();
-  await workHubComposer.press('Enter');
-
-  const correctionTurn = page.locator('.workhub-turn', {
-    hasText: '不是这个，换成登录稳定性，补充刷新令牌失败判定。',
-  });
-  await expect(
-    correctionTurn.locator('.workhub-submitted-session strong'),
-  ).toHaveText('登录稳定性');
-  await expect(correctionTurn.locator('.workhub-error')).toHaveCount(0);
-  await expect(
-    continuedTurn.locator('.workhub-submitted-state'),
-  ).toHaveText('已被更正');
-  await expect(
-    correctionTurn.locator('.workhub-submitted-state'),
-  ).toContainText(
-    /^关联有效 · (?:已接收|进行中|等待你|已完成|失败|已中止|正在恢复)$/u,
-  );
+  expect(capabilities.fullscreenable).toBe(false);
+  if (process.platform !== 'linux') expect(capabilities.maximizable).toBe(false);
+  await expect(workhub.locator('.workHubHistory')).toBeHidden();
+  await expect.poll(() => workhub.evaluate(() => Math.abs(innerHeight - document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBeLessThanOrEqual(1);
+  await workhub.getByRole('button', { name: /展开对话|Expand conversation/ }).click();
+  await expect(workhub.locator('.workHubHistory')).toBeVisible();
+  await workhub.getByRole('button', { name: /^(Hide|隐藏|隱藏)$/ }).click();
+  await expect.poll(() => workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ placement: 'floating', floatingVisible: false });
+  await page.getByRole('button', { name: /^(Bring WorkHub back|收回工作台)$/ }).click();
+  await expect(page.locator('.workHubDockPlaceholder')).toBeHidden();
+  await expect.poll(() => workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ placement: 'docked' });
+  await expect(editor).toHaveText('Keep this unsent WorkHub draft — typed during opening');
+  await expect(editor).toHaveAttribute('data-test-instance', marker);
+  expect(await workhub.evaluate(() => window.maka.workHub.resolveCoordinationSession())).toBe(webContentsId);
+  expect(app.context().pages().filter((candidate) => candidate.url().includes('surface=workhub'))).toHaveLength(1);
+  await workhub.getByRole('button', { name: /^(Float WorkHub|浮出工作台)$/ }).click();
+  await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'false');
+  await expect(workhub.getByRole('button', { name: /^(Return to Maka|收回 Maka)$/ })).toHaveCount(0);
+  await workhub.getByRole('button', { name: /展开对话|Expand conversation/ }).click();
+  await workhub.locator('.workHubWindowControls').screenshot({ path: testInfo.outputPath('workhub-return-from-pip.png') });
+  await workhub.getByRole('button', { name: /^(Return to Maka|收回 Maka)$/ }).click();
+  await expect.poll(() => workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ placement: 'docked' });
+  await expect(editor).toHaveAttribute('data-test-instance', marker);
+  await expect(editor).toHaveText('Keep this unsent WorkHub draft — typed during opening');
+  await workhub.getByRole('button', { name: /^(Float WorkHub|浮出工作台)$/ }).click();
+  await expect(workhub.getByRole('button', { name: '发送', exact: true })).toBeEnabled();
+  await workhub.getByRole('button', { name: '发送', exact: true }).click();
+  await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'true');
+  await expect(workhub.locator('article').filter({ hasText: 'Keep this unsent WorkHub draft' }).first()).toBeVisible();
 });

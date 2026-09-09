@@ -24,9 +24,10 @@ import type { ActiveInteractionRequestEvent } from '@maka/core/events';
 import { redactSecrets } from '@maka/core/redaction';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import { isSideConversationSession } from '@maka/core/side-conversation';
-import type {
-  SessionChangedEvent,
-  SessionChangedReason,
+import {
+  isWorkHubCoordinationSessionId,
+  type SessionChangedEvent,
+  type SessionChangedReason,
 } from '@maka/core/session';
 import type { BotRegistry } from '@maka/runtime/bots';
 import {
@@ -140,7 +141,7 @@ export interface DesktopRuntimeHostCandidateDeps {
     sessionId?: string,
     extra?: Pick<SessionChangedEvent, "modelId" | "turnId">,
   ) => void;
-  readonly completeComputerUseTurn: (
+  readonly completeDesktopInteractionTurn: (
     sessionId: string,
   ) => void | Promise<void>;
   readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
@@ -569,7 +570,7 @@ export async function createDesktopRuntimeHostCandidate(
           ),
         ),
         Promise.resolve().then(() =>
-          deps.nativeCapabilities.releaseComputerUseSession(
+          deps.nativeCapabilities.releaseDesktopInteractionSession(
             desktopSessionResourceKey({ ...scope, sessionId }),
           ),
         ),
@@ -677,10 +678,10 @@ export async function createDesktopRuntimeHostCandidate(
         ? {
             onWatchedTurnFinished: (sessionId: string, outcome: 'completed' | 'abandoned') =>
               outcome === 'completed'
-                ? deps.completeComputerUseTurn(
+                ? deps.completeDesktopInteractionTurn(
                     desktopSessionResourceKey({ ...scope, sessionId }),
                   )
-                : deps.nativeCapabilities.releaseComputerUseSession(
+                : deps.nativeCapabilities.releaseDesktopInteractionSession(
                     desktopSessionResourceKey({ ...scope, sessionId }),
                   ),
           }
@@ -714,7 +715,9 @@ export async function createDesktopRuntimeHostCandidate(
         observations: sessionObservations,
         resolveSideConversation: async (sessionId) => {
           if (target.access === 'session_guest') return false;
-          const session = await client.getSession(sessionId);
+          const session = isWorkHubCoordinationSessionId(sessionId)
+            ? await client.getWorkHubSession()
+            : await client.getSession(sessionId);
           if (!session) throw new Error(`Runtime Host Session not found: ${sessionId}`);
           return isSideConversationSession(session.labels);
         },
@@ -773,7 +776,7 @@ export async function createDesktopRuntimeHostCandidate(
         sessionObserver.listActiveInteractions(sessionId) ?? [],
       );
     }
-    const watchComputerUseTurn = (sessionId: string, turnId: string): void => {
+    const watchDesktopInteractionTurn = (sessionId: string, turnId: string): void => {
       void sessionObserver
         .watchTurn(sessionId, turnId)
         .catch(reportError);
@@ -791,7 +794,7 @@ export async function createDesktopRuntimeHostCandidate(
           nativeSessionId: (sessionId) =>
             desktopSessionResourceKey({ ...scope, sessionId }),
           onSessionUsed: (sessionId) => nativeSessionIds.add(sessionId),
-          onComputerUseTurnUsed: watchComputerUseTurn,
+          onDesktopInteractionTurnUsed: watchDesktopInteractionTurn,
           isTargetValid: deps.isTargetValid,
           onClosed: () => providers.delete(provider),
           onDiagnostic: logLocalRuntimeHostProcessDiagnostic,
@@ -887,8 +890,6 @@ export async function createDesktopRuntimeHostCandidate(
     if (target.access === 'owner') {
       registerRuntimeHostWorkHubIpc(client, ipc, {
         attachmentIngest: { approvals: deps.attachmentApprovals, stat: deps.stat, resizeImage: deps.resizeImage },
-        resolveCreateProject: () => deps.resolveSessionCreateProject({}, target),
-        emitSessionsChanged,
       });
       registerRuntimeHostExternalSessionsIpc(
         {
@@ -910,7 +911,7 @@ export async function createDesktopRuntimeHostCandidate(
             stat: deps.stat,
             resizeImage: deps.resizeImage,
             beforeStop: (sessionId) =>
-              deps.nativeCapabilities.releaseComputerUseSession(
+              deps.nativeCapabilities.releaseDesktopInteractionSession(
                 desktopSessionResourceKey({ ...scope, sessionId }),
               ),
             sessionCopyCleanup,

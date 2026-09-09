@@ -25,7 +25,11 @@ import test from 'node:test';
 import { seedInvocation, testInvocationOpening } from '@maka/runtime/test-only/invocation-fixture';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { WORKHUB_COORDINATION_SESSION_ID, type StoredMessage } from '@maka/core/session';
+import {
+  WORKHUB_COORDINATION_SESSION_ID,
+  WORKHUB_COORDINATION_SESSION_ROLE,
+  type StoredMessage,
+} from '@maka/core/session';
 import { projectRuntimeEventsToStoredMessages } from '@maka/runtime/runtime-event-read-model';
 import { foldTurnContribution } from '@maka/storage/session-message-projection';
 import type { SessionTurnContribution } from '@maka/storage/execution-stores';
@@ -36,241 +40,258 @@ import {
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { createSessionTranscriptReader } from '../server/session-transcript-reader.js';
 
-test('keeps durable history separate from the canonical active overlay', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-session-transcript-'));
-  const capability = await resolveStorageRoot({
-    path: join(base, 'root'),
-    kind: 'interactive',
+for (const coordination of [false, true])
+  test(`keeps ${coordination ? 'WorkHub' : 'ordinary'} durable history separate from the canonical active overlay`, async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-session-transcript-'));
+    const capability = await resolveStorageRoot({
+      path: join(base, 'root'),
+      kind: 'interactive',
+    });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    if (!owner) assert.fail('expected the interactive root owner');
+    try {
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const input = {
+        cwd: capability.canonicalPath,
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask' as const,
+      };
+      const created = coordination
+        ? await stores.sessionStore.createStableSession({
+            sessionId: WORKHUB_COORDINATION_SESSION_ID,
+            requestFingerprint: `sha256:${'1'.repeat(64)}`,
+            input: {
+              ...input,
+              role: WORKHUB_COORDINATION_SESSION_ROLE,
+              toolProfile: 'workhub-coordination-v2',
+            },
+          })
+        : undefined;
+      assert.notEqual(created?.kind, 'conflict');
+      const session =
+        created && created.kind !== 'conflict'
+          ? created.record.header
+          : await stores.sessionStore.create(input);
+      // An ended Turn is what the durable half is made of; the running one below
+      // belongs to the overlay and must not appear in a durable page.
+      await seedInvocation(stores.runtimeEventStore, {
+        sessionId: session.id,
+        runId: 'run-0',
+        turnId: 'turn-0',
+        openedAt: 0,
+      });
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        'run-0',
+        runtimeEvent(session.id, {
+          id: 'user-event-0',
+          invocationId: 'run-0',
+          runId: 'run-0',
+          turnId: 'turn-0',
+          ts: 0.1,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'settled' },
+          refs: { storedMessageId: 'user-0' },
+        }),
+      );
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        'run-0',
+        runtimeEvent(session.id, {
+          id: 'terminal-0',
+          invocationId: 'run-0',
+          runId: 'run-0',
+          turnId: 'turn-0',
+          ts: 0.2,
+          role: 'system',
+          author: 'system',
+          status: 'completed',
+        }),
+      );
+      await seedInvocation(stores.runtimeEventStore, {
+        sessionId: session.id,
+        runId: 'run-1',
+        turnId: 'turn-1',
+        openedAt: 1,
+      });
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        'run-1',
+        runtimeEvent(session.id, {
+          id: 'user-event-1',
+          ts: 2,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'hello' },
+          refs: { storedMessageId: 'user-1' },
+        }),
+      );
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        'run-1',
+        runtimeEvent(session.id, {
+          id: 'thinking-partial-1',
+          ts: 3,
+          partial: true,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'thinking', text: 'deep ' },
+          refs: { providerEventId: 'assistant-1' },
+        }),
+      );
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        'run-1',
+        runtimeEvent(session.id, {
+          id: 'thinking-partial-2',
+          ts: 4,
+          partial: true,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'thinking', text: 'thought' },
+          refs: { providerEventId: 'assistant-1' },
+        }),
+      );
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        'run-1',
+        runtimeEvent(session.id, {
+          id: 'text-partial-1',
+          ts: 5,
+          partial: true,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text: 'still ' },
+          refs: { providerEventId: 'assistant-1' },
+        }),
+      );
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        'run-1',
+        runtimeEvent(session.id, {
+          id: 'text-partial-2',
+          ts: 6,
+          partial: true,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text: 'streaming' },
+          refs: { providerEventId: 'assistant-1' },
+        }),
+      );
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        'run-1',
+        runtimeEvent(session.id, {
+          id: 'thinking-only-1',
+          ts: 7,
+          partial: true,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'thinking', text: 'still ' },
+          refs: { providerEventId: 'assistant-2' },
+        }),
+      );
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        'run-1',
+        runtimeEvent(session.id, {
+          id: 'superseded-text-partial',
+          ts: 9,
+          partial: true,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text: 'not final' },
+          refs: { providerEventId: 'assistant-3' },
+        }),
+      );
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        'run-1',
+        runtimeEvent(session.id, {
+          id: 'complete-text',
+          ts: 10,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text: 'final text' },
+          refs: { providerEventId: 'assistant-3' },
+        }),
+      );
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        session.id,
+        'run-1',
+        runtimeEvent(session.id, {
+          id: 'thinking-only-2',
+          ts: 8,
+          partial: true,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'thinking', text: 'reasoning' },
+          refs: { providerEventId: 'assistant-2' },
+        }),
+      );
+
+      const read = createSessionTranscriptReader({
+        stores,
+        canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+      });
+      const messages = await read.readActiveOverlay(session.id, {
+        sessionId: session.id,
+        turnId: 'turn-1',
+        runId: 'run-1',
+        status: 'running',
+      });
+
+      assert.deepEqual(
+        messages.map((message) => ({ type: message.type, id: message.id })),
+        [
+          { type: 'user', id: 'user-1' },
+          { type: 'assistant', id: 'assistant-1' },
+          { type: 'assistant', id: 'assistant-2' },
+          { type: 'assistant', id: 'assistant-3' },
+        ],
+      );
+      const firstAssistant = messages.at(-3);
+      assert.equal(firstAssistant?.type, 'assistant');
+      if (firstAssistant?.type === 'assistant') {
+        assert.equal(firstAssistant.text, 'still streaming');
+        assert.equal(firstAssistant.thinking?.text, 'deep thought');
+      }
+      const thinkingOnly = messages.at(-2);
+      assert.equal(thinkingOnly?.type, 'assistant');
+      if (thinkingOnly?.type === 'assistant') {
+        assert.equal(thinkingOnly.text, '');
+        assert.equal(thinkingOnly.thinking?.text, 'still reasoning');
+      }
+      const completed = messages.at(-1);
+      assert.equal(completed?.type, 'assistant');
+      if (completed?.type === 'assistant') assert.equal(completed.text, 'final text');
+
+      const durable = await read.readDurablePage(session.id, {
+        direction: 'older',
+        maxBytes: 1024,
+        maxMessages: 10,
+      });
+      assert.equal(durable.throughSequence, await read.readDurableHighWater(session.id));
+      assert.ok(durable.throughSequence !== null);
+      assert.deepEqual(
+        durable.fragments.map((fragment) => {
+          const message = JSON.parse(fragment.data.toString('utf8')) as StoredMessage;
+          return { type: message.type, id: message.id };
+        }),
+        [
+          { type: 'turn_state', id: 'terminal-0' },
+          { type: 'user', id: 'user-0' },
+        ],
+      );
+    } finally {
+      await owner.close();
+      await rm(base, { recursive: true, force: true });
+    }
   });
-  const owner = await tryAcquireInteractiveRootOwner(capability);
-  assert.ok(owner);
-  if (!owner) assert.fail('expected the interactive root owner');
-  try {
-    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-    const session = await stores.sessionStore.create({
-      cwd: capability.canonicalPath,
-      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-      llmConnectionSlug: 'fake',
-      model: 'fake-model',
-      permissionMode: 'ask',
-    });
-    // An ended Turn is what the durable half is made of; the running one below
-    // belongs to the overlay and must not appear in a durable page.
-    await seedInvocation(stores.runtimeEventStore, {
-      sessionId: session.id,
-      runId: 'run-0',
-      turnId: 'turn-0',
-      openedAt: 0,
-    });
-    await stores.runtimeEventStore.appendRuntimeEvent(
-      session.id,
-      'run-0',
-      runtimeEvent(session.id, {
-        id: 'user-event-0',
-        invocationId: 'run-0',
-        runId: 'run-0',
-        turnId: 'turn-0',
-        ts: 0.1,
-        role: 'user',
-        author: 'user',
-        content: { kind: 'text', text: 'settled' },
-        refs: { storedMessageId: 'user-0' },
-      }),
-    );
-    await stores.runtimeEventStore.appendRuntimeEvent(
-      session.id,
-      'run-0',
-      runtimeEvent(session.id, {
-        id: 'terminal-0',
-        invocationId: 'run-0',
-        runId: 'run-0',
-        turnId: 'turn-0',
-        ts: 0.2,
-        role: 'system',
-        author: 'system',
-        status: 'completed',
-      }),
-    );
-    await seedInvocation(stores.runtimeEventStore, {
-      sessionId: session.id,
-      runId: 'run-1',
-      turnId: 'turn-1',
-      openedAt: 1,
-    });
-    await stores.runtimeEventStore.appendRuntimeEvent(
-      session.id,
-      'run-1',
-      runtimeEvent(session.id, {
-        id: 'user-event-1',
-        ts: 2,
-        role: 'user',
-        author: 'user',
-        content: { kind: 'text', text: 'hello' },
-        refs: { storedMessageId: 'user-1' },
-      }),
-    );
-    await stores.runtimeEventStore.appendRuntimeEvent(
-      session.id,
-      'run-1',
-      runtimeEvent(session.id, {
-        id: 'thinking-partial-1',
-        ts: 3,
-        partial: true,
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'thinking', text: 'deep ' },
-        refs: { providerEventId: 'assistant-1' },
-      }),
-    );
-    await stores.runtimeEventStore.appendRuntimeEvent(
-      session.id,
-      'run-1',
-      runtimeEvent(session.id, {
-        id: 'thinking-partial-2',
-        ts: 4,
-        partial: true,
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'thinking', text: 'thought' },
-        refs: { providerEventId: 'assistant-1' },
-      }),
-    );
-    await stores.runtimeEventStore.appendRuntimeEvent(
-      session.id,
-      'run-1',
-      runtimeEvent(session.id, {
-        id: 'text-partial-1',
-        ts: 5,
-        partial: true,
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'text', text: 'still ' },
-        refs: { providerEventId: 'assistant-1' },
-      }),
-    );
-    await stores.runtimeEventStore.appendRuntimeEvent(
-      session.id,
-      'run-1',
-      runtimeEvent(session.id, {
-        id: 'text-partial-2',
-        ts: 6,
-        partial: true,
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'text', text: 'streaming' },
-        refs: { providerEventId: 'assistant-1' },
-      }),
-    );
-    await stores.runtimeEventStore.appendRuntimeEvent(
-      session.id,
-      'run-1',
-      runtimeEvent(session.id, {
-        id: 'thinking-only-1',
-        ts: 7,
-        partial: true,
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'thinking', text: 'still ' },
-        refs: { providerEventId: 'assistant-2' },
-      }),
-    );
-    await stores.runtimeEventStore.appendRuntimeEvent(
-      session.id,
-      'run-1',
-      runtimeEvent(session.id, {
-        id: 'superseded-text-partial',
-        ts: 9,
-        partial: true,
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'text', text: 'not final' },
-        refs: { providerEventId: 'assistant-3' },
-      }),
-    );
-    await stores.runtimeEventStore.appendRuntimeEvent(
-      session.id,
-      'run-1',
-      runtimeEvent(session.id, {
-        id: 'complete-text',
-        ts: 10,
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'text', text: 'final text' },
-        refs: { providerEventId: 'assistant-3' },
-      }),
-    );
-    await stores.runtimeEventStore.appendRuntimeEvent(
-      session.id,
-      'run-1',
-      runtimeEvent(session.id, {
-        id: 'thinking-only-2',
-        ts: 8,
-        partial: true,
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'thinking', text: 'reasoning' },
-        refs: { providerEventId: 'assistant-2' },
-      }),
-    );
-
-    const read = createSessionTranscriptReader({
-      stores,
-      canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
-    });
-    const messages = await read.readActiveOverlay(session.id, {
-      sessionId: session.id,
-      turnId: 'turn-1',
-      runId: 'run-1',
-      status: 'running',
-    });
-
-    assert.deepEqual(
-      messages.map((message) => ({ type: message.type, id: message.id })),
-      [
-        { type: 'user', id: 'user-1' },
-        { type: 'assistant', id: 'assistant-1' },
-        { type: 'assistant', id: 'assistant-2' },
-        { type: 'assistant', id: 'assistant-3' },
-      ],
-    );
-    const firstAssistant = messages.at(-3);
-    assert.equal(firstAssistant?.type, 'assistant');
-    if (firstAssistant?.type === 'assistant') {
-      assert.equal(firstAssistant.text, 'still streaming');
-      assert.equal(firstAssistant.thinking?.text, 'deep thought');
-    }
-    const thinkingOnly = messages.at(-2);
-    assert.equal(thinkingOnly?.type, 'assistant');
-    if (thinkingOnly?.type === 'assistant') {
-      assert.equal(thinkingOnly.text, '');
-      assert.equal(thinkingOnly.thinking?.text, 'still reasoning');
-    }
-    const completed = messages.at(-1);
-    assert.equal(completed?.type, 'assistant');
-    if (completed?.type === 'assistant') assert.equal(completed.text, 'final text');
-
-    const durable = await read.readDurablePage(session.id, {
-      direction: 'older',
-      maxBytes: 1024,
-      maxMessages: 10,
-    });
-    assert.equal(durable.throughSequence, await read.readDurableHighWater(session.id));
-    assert.ok(durable.throughSequence !== null);
-    assert.deepEqual(
-      durable.fragments.map((fragment) => {
-        const message = JSON.parse(fragment.data.toString('utf8')) as StoredMessage;
-        return { type: message.type, id: message.id };
-      }),
-      [
-        { type: 'turn_state', id: 'terminal-0' },
-        { type: 'user', id: 'user-0' },
-      ],
-    );
-  } finally {
-    await owner.close();
-    await rm(base, { recursive: true, force: true });
-  }
-});
 
 test('pages the ledger without materializing Turns it takes no rows from', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-transcript-seek-'));
@@ -660,386 +681,6 @@ test('stops an oversized active projection before retaining the full RuntimeEven
     /exceeds its event limit/,
   );
   assert.equal(visited, 8_193);
-});
-
-test('reads the WorkHub Coordination transcript from its own rows', async () => {
-  const rows: Array<{ sequence: number; message: StoredMessage }> = [
-    {
-      sequence: 0,
-      message: {
-        type: 'user',
-        id: 'wha_1-user',
-        turnId: 'wha_1',
-        ts: 1,
-        text: 'continue this work',
-      },
-    },
-    {
-      sequence: 1,
-      message: {
-        type: 'workhub_coordination',
-        id: 'wha_1',
-        turnId: 'wha_1',
-        ts: 2,
-        schemaVersion: 1,
-        kind: 'delegation_assigned',
-        actionId: 'wha_1',
-        actionFingerprint: `sha256:${'0'.repeat(64)}`,
-        coordinationTurnId: 'wha_1',
-        targetSessionId: 'session-target',
-        targetTurnId: 'turn-target',
-        targetMessageId: 'whm_1',
-        targetSessionName: 'Target',
-        delegationId: 'whd_1',
-        disposition: 'delegate_existing',
-        userText: 'continue this work',
-      },
-    },
-  ];
-  const indexed: Array<{ sequence: number; source: 'legacy' | 'runtime'; sourceSequence: number }> =
-    [];
-  let ledgerReads = 0;
-  const stores = {
-    agentRunStore: {},
-    runtimeEventStore: {
-      readTranscriptHighWater: async () => {
-        ledgerReads += 1;
-        return null;
-      },
-      readTranscriptInvocations: async () => [],
-    },
-    sessionStore: {
-      readCoordinationTranscriptIndexState: async () => ({
-        highWater: indexed.at(-1)?.sequence ?? null,
-        legacy: indexed.at(-1)?.sourceSequence ?? null,
-        runtime: null,
-      }),
-      appendCoordinationTranscriptIndex: async (
-        refs: Array<{ source: 'legacy' | 'runtime'; sourceSequence: number }>,
-      ) => {
-        for (const ref of refs) indexed.push({ ...ref, sequence: indexed.length });
-      },
-      readCoordinationTranscriptIndex: async (request: {
-        direction: string;
-        throughSequence: number;
-        position: number;
-        limit: number;
-      }) => {
-        const selected = indexed.filter(
-          (ref) =>
-            ref.sequence <= request.throughSequence &&
-            (request.direction === 'older'
-              ? ref.sequence <= request.position
-              : ref.sequence >= request.position),
-        );
-        return (request.direction === 'older' ? selected.reverse() : selected).slice(
-          0,
-          request.limit,
-        );
-      },
-      readTranscriptHighWaterSnapshot: async () => rows.at(-1)!.sequence,
-      readMessagesAfter: async (
-        _sessionId: string,
-        request: { afterSequence?: number; beforeSequence?: number; maxMessages: number },
-      ) => ({
-        records:
-          request.beforeSequence === undefined
-            ? rows.filter(({ sequence }) => sequence > (request.afterSequence ?? -1))
-            : rows.filter(({ sequence }) => sequence < request.beforeSequence!).reverse(),
-        highWaterSequence: rows.at(-1)!.sequence,
-      }),
-    },
-  } as unknown as ExecutionStoresWriter<'interactive'>;
-  const read = createSessionTranscriptReader({
-    stores,
-    canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
-    ensureTranscriptLedger: async () => assert.fail('the Coordination Session has no conversion'),
-  });
-
-  const page = await read.readDurableRecords(WORKHUB_COORDINATION_SESSION_ID, {
-    direction: 'newer',
-    maxMessages: 8,
-    maxStoredBytes: 64 * 1024,
-  });
-
-  assert.deepEqual(
-    page.records.map(({ message }) => message.id),
-    ['wha_1-user', 'wha_1'],
-  );
-  assert.ok(ledgerReads > 0);
-  assert.deepEqual(
-    (await read.readDurableTurnLandmarks(WORKHUB_COORDINATION_SESSION_ID, 4)).landmarks.map(
-      ({ turnId }) => turnId,
-    ),
-    ['wha_1'],
-  );
-});
-
-for (const historySize of [257, 10000]) {
-  test(`Coordination small-page foreground work is bounded (${historySize} rows)`, async () => {
-    const base = await mkdtemp(join(tmpdir(), 'maka-coordination-growth-'));
-    const root = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
-    const owner = await tryAcquireInteractiveRootOwner(root);
-    assert.ok(owner);
-    try {
-      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-      const sessionId = WORKHUB_COORDINATION_SESSION_ID;
-      await stores.sessionStore.createStableSession({
-        sessionId,
-        requestFingerprint: `sha256:${'0'.repeat(64)}`,
-        input: {
-          role: 'workhub_coordination',
-          cwd: root.canonicalPath,
-          llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-          llmConnectionSlug: 'fake',
-          model: 'fake-model',
-          permissionMode: 'ask',
-        },
-      });
-      for (let i = 0; i < historySize; i++)
-        await stores.sessionStore.appendMessage(sessionId, {
-          type: 'user',
-          id: `u-${i}`,
-          turnId: `t-${i}`,
-          ts: i,
-          text: `message ${i}`,
-        });
-      let reads = 0,
-        decoded = 0,
-        writes = 0;
-      const makeReader = () =>
-        createSessionTranscriptReader({
-          stores: {
-            ...stores,
-            sessionStore: {
-              ...stores.sessionStore,
-              async readMessagesAfter(...args) {
-                reads++;
-                const page = await stores.sessionStore.readMessagesAfter(...args);
-                decoded += page.records.length;
-                return page;
-              },
-              async appendCoordinationTranscriptIndex(...args) {
-                writes++;
-                return stores.sessionStore.appendCoordinationTranscriptIndex(...args);
-              },
-            },
-          },
-          canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
-        });
-      let batches = 0;
-      let previousThrough = -1;
-      for (;;) {
-        reads = decoded = writes = 0;
-        let complete = false;
-        try {
-          const page = await makeReader().readDurablePage(sessionId, {
-            direction: 'older',
-            maxBytes: 128,
-            maxMessages: 1,
-          });
-          assert.ok(
-            page.fragments.length > 0,
-            'catch-up must not report an empty complete history',
-          );
-          assert.equal(
-            JSON.parse(Buffer.concat(page.fragments.map((f) => f.data)).toString()).id,
-            `u-${historySize - 1}`,
-          );
-          complete = true;
-        } catch (error) {
-          assert.equal((error as Error).name, 'CoordinationTranscriptIndexPending');
-          const through = (error as { indexedThrough: number }).indexedThrough;
-          assert.ok(through > previousThrough, 'recreated reader resumes committed progress');
-          previousThrough = through;
-        }
-        assert.ok(reads <= 3, `foreground source reads: ${reads}`);
-        assert.ok(decoded <= 192, `foreground decoded rows: ${decoded}`);
-        assert.ok(writes <= 1, `foreground index writes: ${writes}`);
-        assert.ok(++batches <= Math.ceil(historySize / 64));
-        if (complete) break;
-      }
-    } finally {
-      await owner.close();
-      await rm(base, { recursive: true, force: true });
-    }
-  });
-}
-
-test('Coordination page positions survive regressing clocks, late appends and reader recreation', async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-coordination-index-'));
-  const root = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
-  const owner = await tryAcquireInteractiveRootOwner(root);
-  assert.ok(owner);
-  try {
-    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-    const sessionId = WORKHUB_COORDINATION_SESSION_ID;
-    await stores.sessionStore.createStableSession({
-      sessionId,
-      requestFingerprint: `sha256:${'0'.repeat(64)}`,
-      input: {
-        role: 'workhub_coordination',
-        cwd: root.canonicalPath,
-        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-        llmConnectionSlug: 'fake',
-        model: 'fake-model',
-        permissionMode: 'ask',
-      },
-    });
-    for (const [id, ts] of [
-      ['legacy-1', 100],
-      ['legacy-2', 1],
-    ] as const) {
-      await stores.sessionStore.appendMessage(sessionId, {
-        type: 'user',
-        id,
-        turnId: id,
-        ts,
-        text: id,
-      });
-    }
-    await seedInvocation(stores.runtimeEventStore, {
-      sessionId,
-      runId: 'index-run',
-      turnId: 'index-turn',
-      openedAt: 20,
-    });
-    for (const [id, ts] of [
-      ['runtime-1', 50],
-      ['runtime-2', 2],
-    ] as const) {
-      await stores.runtimeEventStore.appendRuntimeEvent(
-        sessionId,
-        'index-run',
-        runtimeEvent(sessionId, {
-          id,
-          invocationId: 'index-run',
-          runId: 'index-run',
-          turnId: 'index-turn',
-          ts,
-          role: 'user',
-          author: 'user',
-          content: { kind: 'text', text: id },
-          refs: { storedMessageId: id },
-        }),
-      );
-    }
-    await stores.runtimeEventStore.appendRuntimeEvent(
-      sessionId,
-      'index-run',
-      runtimeEvent(sessionId, {
-        id: 'runtime-terminal',
-        invocationId: 'index-run',
-        runId: 'index-run',
-        turnId: 'index-turn',
-        ts: 3,
-        status: 'completed',
-        actions: { endInvocation: true },
-      }),
-    );
-    const makeReader = () =>
-      createSessionTranscriptReader({
-        stores,
-        canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
-      });
-    const reader = makeReader();
-    const before = await reader.readDurableRecords(sessionId, {
-      direction: 'newer',
-      maxMessages: 64,
-      maxStoredBytes: 65536,
-    });
-    assert.equal(before.records.length, 5);
-    // A new record can predate every displayed timestamp, in either store.
-    await stores.sessionStore.appendMessage(sessionId, {
-      type: 'user',
-      id: 'late-legacy',
-      turnId: 'late',
-      ts: 0,
-      text: 'late',
-    });
-    await seedInvocation(stores.runtimeEventStore, {
-      sessionId,
-      runId: 'late-run',
-      turnId: 'late-turn',
-      openedAt: 0,
-    });
-    await stores.runtimeEventStore.appendRuntimeEvent(
-      sessionId,
-      'late-run',
-      runtimeEvent(sessionId, {
-        id: 'late-runtime',
-        invocationId: 'late-run',
-        runId: 'late-run',
-        turnId: 'late-turn',
-        ts: 0,
-        role: 'user',
-        author: 'user',
-        content: { kind: 'text', text: 'late runtime' },
-        refs: { storedMessageId: 'late-runtime' },
-      }),
-    );
-    await stores.runtimeEventStore.appendRuntimeEvent(
-      sessionId,
-      'late-run',
-      runtimeEvent(sessionId, {
-        id: 'late-terminal',
-        invocationId: 'late-run',
-        runId: 'late-run',
-        turnId: 'late-turn',
-        ts: 0,
-        status: 'completed',
-        actions: { endInvocation: true },
-      }),
-    );
-    const recreated = makeReader();
-    const after = await recreated.readDurableRecords(sessionId, {
-      direction: 'newer',
-      maxMessages: 64,
-      maxStoredBytes: 65536,
-    });
-    assert.deepEqual(after.records.slice(0, before.records.length), before.records);
-    assert.ok(after.records.some(({ message }) => message.id === 'late-legacy'));
-    assert.ok(after.records.some(({ message }) => message.id === 'late-runtime'));
-    assert.deepEqual(
-      await recreated.readDurableRecords(sessionId, {
-        direction: 'newer',
-        throughSequence: before.throughSequence,
-        maxMessages: 64,
-        maxStoredBytes: 65536,
-      }),
-      before,
-    );
-    for (const direction of ['newer', 'older'] as const) {
-      const records: (typeof after.records)[number][] = [];
-      let position: number | undefined;
-      do {
-        const page = await recreated.readDurableRecords(sessionId, {
-          direction,
-          throughSequence: after.throughSequence,
-          position,
-          maxMessages: 1,
-          maxStoredBytes: 65536,
-        });
-        records.push(...page.records);
-        position = page.nextPosition ?? undefined;
-        assert.ok(records.length <= after.records.length);
-      } while (position !== undefined);
-      assert.deepEqual(direction === 'older' ? records.reverse() : records, after.records);
-    }
-    // Anchor +/- 1 is part of the public pager contract.
-    const anchor = after.records[2]!.sequence;
-    const preceding = await recreated.readDurableRecords(sessionId, {
-      direction: 'older',
-      position: anchor - 1,
-      throughSequence: after.throughSequence,
-      maxMessages: 64,
-      maxStoredBytes: 65536,
-    });
-    assert.deepEqual(preceding.records, after.records.slice(0, 2).reverse());
-  } finally {
-    await owner.close();
-    await rm(base, { recursive: true, force: true });
-  }
 });
 
 test('pages a nested Turn the same way a single sweep reads it', async () => {

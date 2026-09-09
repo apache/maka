@@ -39,7 +39,11 @@ import {
   type MessageContent,
   type SessionEvent,
 } from '@maka/core/events';
-import { isWorkHubCoordinationSessionId, type SessionHeader } from '@maka/core/session';
+import {
+  WORKHUB_COORDINATION_SESSION_ID,
+  isWorkHubCoordinationSessionId,
+  type SessionHeader,
+} from '@maka/core/session';
 import { resolveEffectiveOrchestration } from '@maka/core/orchestration';
 import {
   decodeSkillInvocationResult,
@@ -530,6 +534,13 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       if (isSessionNotFoundError(error)) return null;
       throw error;
     }
+  }
+
+  /** Called under Session admission before changing an execution's authority ceiling. */
+  isSessionExecutionIdle(sessionId: string): boolean {
+    return (
+      !this.#recoveryPlansBySession.has(sessionId) && this.readRootState(sessionId).kind === 'idle'
+    );
   }
 
   readRootState(sessionId: string): HostMessageRootState {
@@ -1789,6 +1800,27 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     };
   }
 
+  /** Accepts a model action against the exact live WorkHub root and its durable user input. */
+  readActiveWorkHubRequest(turnId: string): Promise<MessageContent | undefined> {
+    const sessionId = WORKHUB_COORDINATION_SESSION_ID;
+    return this.sessionAdmission.run(sessionId, async () => {
+      const active = this.#executions.get(sessionId);
+      if (!active || active.turnId !== turnId) return undefined;
+      const [admission, header] = await Promise.all([
+        this.stores.agentRunStore.readRootTurnAdmission(sessionId, turnId),
+        this.stores.sessionStore.readHeaderSnapshot(sessionId),
+      ]);
+      if (
+        this.#executions.get(sessionId) !== active ||
+        admission?.runId !== active.runId ||
+        admission.execution.kind !== 'workhub_coordination' ||
+        header.toolProfile !== 'workhub-coordination-v2'
+      )
+        return undefined;
+      return requireHostedExecutionMessageContent(admission);
+    });
+  }
+
   private startRootMessage(
     request: RootMessageStartRequest,
     context: ConnectionContext,
@@ -1913,7 +1945,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         );
         if (attachmentError) return completedStart(operationConflict(attachmentError));
         const binding =
-          request.execution.kind === 'workhub_coordination'
+          request.execution.kind === 'workhub_coordination' &&
+          header.toolProfile === 'workhub-coordination-v1'
             ? undefined
             : prepared.commitCapabilityBinding
               ? await prepared.commitCapabilityBinding()

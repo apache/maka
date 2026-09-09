@@ -498,6 +498,10 @@ export class RuntimeHostSessionObservationRegistry {
   async #remove(observerId: string): Promise<void> {
     const registration = this.#registrations.get(observerId);
     if (!registration) return;
+    // Explicit unsubscribe and renderer destruction retire the consumer, even
+    // if its first seed is still pending. Complete that abandoned IPC without
+    // reporting cancellation as a read failure. Source failures still reject.
+    registration.ready.resolve([]);
     this.#deleteRegistration(observerId, registration);
     await this.#source?.unobserve(observerId);
   }
