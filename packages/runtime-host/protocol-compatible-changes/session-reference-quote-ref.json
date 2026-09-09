@@ -1,0 +1,5 @@
+{
+  "epoch": 134,
+  "files": ["packages/runtime-host/src/protocol/index.ts"],
+  "reason": "The epoch declaration is advanced for the QuoteRef strict-shape extension owned by the same change"
+}
