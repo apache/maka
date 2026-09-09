@@ -1133,6 +1133,8 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
     ...(e2eFixture?.scenario === "chat-partial-history"
       ? { transcriptHistoryBytes: PARTIAL_HISTORY_TRANSCRIPT_BYTES }
       : {}),
+    retireRetractedMessages: (scope, hostEpoch, sessionId, messageIds) =>
+      sessionLocal.retireRetractedMessages(scope, hostEpoch, sessionId, messageIds),
     completeDesktopInteractionTurn,
     createSessionCopyCleanup: ({ removeSession, resumeSessionCopy }) =>
       createSessionCopyCleanupAuthority({

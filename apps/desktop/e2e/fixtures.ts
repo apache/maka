@@ -426,7 +426,7 @@ export async function withE2eWindow(
     /** Attaches captured main/renderer console output when the test fails. */
     testInfo?: TestInfo;
   },
-  use: (page: Page, context: { userDataDir: string; app: ElectronApplication; restart(): Promise<Page> }) => Promise<void>,
+  use: (page: Page, context: { userDataDir: string; app: ElectronApplication; restart(beforeReady?: (app: ElectronApplication) => Promise<void>): Promise<Page> }) => Promise<void>,
 ): Promise<void> {
   const userDataDir = await mkdtemp(path.join(tmpdir(), 'maka-e2e-'));
   // Lives inside the throwaway userData dir so the existing teardown removes
@@ -509,7 +509,7 @@ export async function withE2eWindow(
       throw new Error(`${detail}${mainDetail}${rendererDetail}`, { cause: error });
     }
     try {
-      await use(page, { userDataDir, app, restart: async () => {
+      await use(page, { userDataDir, app, restart: async (beforeReady) => {
       await closeElectronApplication(app!, 5_000);
       app = await electron.launch({
         args: ['.', ...(visibleWindow ? inactiveWindowPlatformArgs() : [])],
@@ -522,6 +522,7 @@ export async function withE2eWindow(
         if (rendererLogs.length > 30) rendererLogs.shift();
       });
       app.context().on('page', watchCrash);
+      await beforeReady?.(app);
       await restored.waitForSelector(readinessSelector, { timeout: readinessTimeoutMs });
       return restored;
     } });
@@ -556,7 +557,7 @@ export async function withE2eWindow(
 }
 
 type E2eTestFixtures = {
-  sessionLocalWindow: { page: Page; app: ElectronApplication; restart(): Promise<Page> };
+  sessionLocalWindow: { page: Page; app: ElectronApplication; restart(beforeReady?: (app: ElectronApplication) => Promise<void>): Promise<Page> };
   window: Page;
   gitReviewWindow: { page: Page; projectRoot: string };
   invocableSkillsWindow: Page;

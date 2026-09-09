@@ -18,6 +18,7 @@
  */
 
 import { resolve } from 'node:path';
+import type { ElectronApplication } from '@playwright/test';
 import { COMPOSER_INPUT, awaitSendReady, ensureSidebarExpanded, expect, test } from './fixtures';
 
 test('a locally saved message survives renderer and application restart, then executes once', async ({
@@ -270,4 +271,118 @@ test('a failed message restores its durable attachment without replacing a newer
   await expect(page.getByText('正在处理这条消息', { exact: true })).toHaveCount(0);
   await expect(page.locator('.maka-transient-message').filter({ hasText: 'queued recovery follow-up' })).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath('stopped-queue-retired.png') });
+
+  // Disable Host reads before navigation: only the local durable state can
+  // suppress the cancelled message now, not a successful cancellation query.
+  await makeHostUnavailable(app);
+  await ensureSidebarExpanded(page);
+  await page.getByRole('button', { name: '新任务', exact: true }).click();
+  await page.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
+  await expect.poll(() => page.evaluate(async (id) =>
+    (await window.maka.sessionLocal.listMessages(id)).some((message) => message.text === 'queued recovery follow-up'), sessionId,
+  )).toBe(false);
+  await expect(page.getByText('queued recovery follow-up', { exact: true })).toHaveCount(0);
+  const restarted = await sessionLocalWindow.restart(makeHostUnavailable);
+  // Force a fresh renderer after installing the offline fault at startup.
+  await restarted.reload();
+  await ensureSidebarExpanded(restarted);
+  await restarted.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
+  await expect.poll(() => restarted.evaluate(async (id) =>
+    (await window.maka.sessionLocal.listMessages(id)).some((message) => message.text === 'queued recovery follow-up'), sessionId,
+  )).toBe(false);
+  await expect(restarted.getByText('queued recovery follow-up', { exact: true })).toHaveCount(0);
+  await expect(restarted.getByText('continue after recovery stop', { exact: true })).toBeVisible();
+  const proofUnavailable = await restarted.evaluate(async (id) => {
+    try { await window.maka.sessions.queryCancelledMessages(id, ['unavailable-probe']); return false; }
+    catch { return true; }
+  }, sessionId);
+  expect(proofUnavailable).toBe(true);
+  await restarted.screenshot({ path: testInfo.outputPath('stopped-queue-offline-restart.png') });
 });
+
+test('one-shot orchestration survives the actual composer send, edit and resend path', async ({ sessionLocalWindow }) => {
+  const { page, app } = sessionLocalWindow;
+  await page.locator(COMPOSER_INPUT).fill('history before orchestration recovery');
+  await awaitSendReady(page);
+  await page.locator(COMPOSER_INPUT).press('Enter');
+  await expect(page.getByText('Fake backend received: history before orchestration recovery')).toBeVisible();
+  await expect(page.getByText('正在处理这条消息', { exact: true })).toHaveCount(0);
+  await ensureSidebarExpanded(page);
+  const sessionId = (await page.locator('[data-session-id]:has([aria-current="page"])').getAttribute('data-session-id'))!;
+  await app.evaluate((_electron, modulePath) => {
+    const require = process.getBuiltinModule('module').createRequire(`${process.cwd()}/`);
+    const { DesktopSessionLocalStore } = require(modulePath);
+    const enqueue = DesktopSessionLocalStore.prototype.enqueue;
+    DesktopSessionLocalStore.prototype.enqueue = function (partition, input) {
+      const record = enqueue.call(this, partition, input);
+      if (input.command.content.text.includes('orchestration recovery task')) {
+        this.update({ ...record, state: 'failed', error: 'E2E definite preparation failure' });
+      }
+      return record;
+    };
+  }, resolve('dist/main/session-local-store.js'));
+  for (const mode of ['swarm', 'graph']) {
+    const original = `/${mode} orchestration recovery task`;
+    await page.locator(COMPOSER_INPUT).fill(original);
+    await awaitSendReady(page);
+    await page.locator(COMPOSER_INPUT).press('Enter');
+    await expect(page.getByText('消息未发送', { exact: true })).toHaveCount(1);
+    await page.getByRole('button', { name: '编辑后重发', exact: true }).click();
+    await expect(page.locator(COMPOSER_INPUT)).toHaveText(original);
+    await page.locator(COMPOSER_INPUT).fill(`${original} edited`);
+    await awaitSendReady(page);
+    await page.locator(COMPOSER_INPUT).press('Enter');
+    await expect(page.getByText('消息未发送', { exact: true })).toHaveCount(2);
+    // Both sends are deliberately failed before model execution. Inspect the
+    // durable intent to verify what the real slash-command path submitted.
+    const commands = await app.evaluate(() => {
+      const require = process.getBuiltinModule('module').createRequire(`${process.cwd()}/`);
+      const { DatabaseSync } = require('node:sqlite');
+      const { app } = require('electron');
+      const db = new DatabaseSync(require('node:path').join(app.getPath('userData'), 'session-experience.sqlite'), { readOnly: true });
+      try { return db.prepare('SELECT payload FROM outbox').all().map((row) => JSON.parse(row.payload).intent.command); }
+      finally { db.close(); }
+    });
+    expect(commands).toHaveLength(2);
+    expect(commands.map((command) => command.turnOrchestration)).toEqual([
+      { mode, source: 'slash_command' }, { mode, source: 'slash_command' },
+    ]);
+    expect(new Set(commands.map((command) => command.messageId)).size).toBe(2);
+    expect(commands.map((command) => command.content.text).sort()).toEqual([
+      'orchestration recovery task', 'orchestration recovery task edited',
+    ]);
+    for (const message of await page.evaluate((id) => window.maka.sessionLocal.listMessages(id), sessionId)) {
+      await page.evaluate(({ id, messageId }) => window.maka.sessionLocal.cancelMessage(id, messageId), { id: sessionId, messageId: message.messageId });
+    }
+    // Normal UI deletion retires the renderer projection as well.
+    await page.reload();
+    await ensureSidebarExpanded(page);
+    await page.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
+  }
+});
+
+async function makeHostUnavailable(app: ElectronApplication): Promise<void> {
+  await app.evaluate(() => {
+    const require = process.getBuiltinModule('module').createRequire(`${process.cwd()}/`);
+    const { resolve } = require('node:path');
+    const { DesktopRuntimeHostClient } = require(resolve('dist/main/runtime-host-client.js'));
+    for (const method of ['queryMessages', 'openSession', 'listSessions', 'getSession']) {
+      DesktopRuntimeHostClient.prototype[method] = async () => { throw new Error('E2E Host offline'); };
+    }
+    const { RuntimeHostSessionObserver } = require(resolve('dist/main/runtime-host-session-observer.js'));
+    for (const method of ['observe', 'openTranscript', 'snapshot']) {
+      RuntimeHostSessionObserver.prototype[method] = async () => { throw new Error('E2E Host offline'); };
+    }
+    const { DesktopSessionLocalService } = require(resolve('dist/main/session-local-service.js'));
+    const catalog = DesktopSessionLocalService.prototype.catalog;
+    const disconnected = new WeakSet();
+    DesktopSessionLocalService.prototype.catalog = function () {
+      if (!disconnected.has(this)) {
+        disconnected.add(this);
+        const targets = this.deps.targets;
+        this.deps.targets = () => targets().map((target) => ({ ...target, client: undefined, submit: undefined }));
+      }
+      return catalog.call(this);
+    };
+  });
+}

@@ -92,6 +92,7 @@ export type RuntimeHostSessionObserverTarget = RuntimeHostRendererTarget<Session
 export type RuntimeHostTranscriptTarget = RuntimeHostRendererTarget<DesktopTranscriptBatch>;
 
 export interface RuntimeHostSessionObserverDeps {
+  onMessageRetraction?: (sessionId: string, messageIds: readonly string[]) => void;
   cacheTranscript?: (snapshot: DesktopTranscriptReplicaSnapshot) => void;
   client: SessionObserverClient;
   emitSessionsChanged: (
@@ -225,6 +226,7 @@ export class RuntimeHostSessionObserver {
   readonly #emitRuntimeResourcePtyData: (event: ShellRunPtyDataEvent) => void;
   readonly #emitRuntimeResourcePtyReset: (sessionId: string) => void;
   readonly #cacheTranscript: (snapshot: DesktopTranscriptReplicaSnapshot) => void;
+  readonly #onMessageRetraction: (sessionId: string, messageIds: readonly string[]) => void;
   readonly #emitAgentGraphChanged: (
     event: AgentGraphClientChangedEvent,
   ) => void;
@@ -254,6 +256,7 @@ export class RuntimeHostSessionObserver {
       deps.emitRuntimeResourcePtyData ?? (() => undefined);
     this.#emitRuntimeResourcePtyReset = deps.emitRuntimeResourcePtyReset ?? (() => undefined);
     this.#cacheTranscript = deps.cacheTranscript ?? (() => undefined);
+    this.#onMessageRetraction = deps.onMessageRetraction ?? (() => undefined);
     this.#emitAgentGraphChanged =
       deps.emitAgentGraphChanged ?? (() => undefined);
     this.#onWatchedTurnFinished =
@@ -920,6 +923,9 @@ export class RuntimeHostSessionObserver {
   }
 
   #broadcast(sessionId: string, event: SessionEvent | SessionObservationMessage): void {
+    if (event.type === 'message_admission' && event.outcome === 'retracted') {
+      this.#onMessageRetraction(sessionId, [event.messageId]);
+    }
     const state = this.#states.get(sessionId);
     if (!state) return;
     for (const group of state.targets.values()) {
