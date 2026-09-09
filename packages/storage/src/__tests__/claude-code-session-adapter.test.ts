@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -342,6 +342,46 @@ describe('ClaudeCodeSessionAdapter', () => {
 
       await rm(join(home, 'projects', CWD.replace(/\//gu, '-'), `${id}.jsonl`));
       assert.deepEqual(await adapter.listSessions(), []);
+    });
+  });
+
+  test('one session id under two projects resolves to the newest copy', async () => {
+    // A workspace move or a resumed session can leave the same id under more
+    // than one project directory. Listing and reading must pick the same file
+    // — the newest — or a user selects one summary and imports the other's
+    // transcript. The walk is concurrent, so the choice must not depend on
+    // completion order.
+    await withClaudeHome(async (home) => {
+      const id = 'aaaaaaaa-0000-4000-8000-000000000034';
+      await seed(
+        home,
+        id,
+        [
+          userRecord('work in the old place'),
+          assistantRecord({ text: 'ok', stopReason: 'end_turn' }),
+        ],
+        '/Users/someone/old-project',
+      );
+      await seed(
+        home,
+        id,
+        [
+          userRecord('work in the new place'),
+          assistantRecord({ text: 'ok', stopReason: 'end_turn' }),
+        ],
+        '/Users/someone/new-project',
+      );
+      // Both seeds land in the same millisecond, so the winner is made
+      // explicit instead of depending on write order.
+      const past = new Date(Date.now() - 10_000);
+      await utimes(join(home, 'projects', '-Users-someone-old-project', `${id}.jsonl`), past, past);
+
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+      const listed = await adapter.listSessions();
+      assert.equal(listed.length, 1);
+      assert.equal(listed[0]?.cwd, '/Users/someone/new-project');
+      const session = await adapter.readSession(id);
+      assert.equal(session.metadata.cwd, '/Users/someone/new-project');
     });
   });
 

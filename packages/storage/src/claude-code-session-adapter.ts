@@ -112,11 +112,19 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
   }
 
   async listSessions(query?: ExternalSessionQuery): Promise<readonly ExternalSessionSummary[]> {
+    const files = await this.#transcriptFiles();
+    const live = new Set(files.map((file) => file.path));
+    // Derived concurrently, not one transcript at a time: each summary is a
+    // stat-read-parse round trip through the thread pool, so a sequential loop
+    // serializes waiting rather than work. `#summaryOf` never throws and only
+    // touches the cache at distinct keys (one file per session id), so the
+    // calls are independent. Results keep `files` order and the sort below is
+    // stable, so the list is the same one the sequential loop produced.
+    const derived = await Promise.all(
+      files.map((file) => this.#summaryOf(file.path, file.sessionId)),
+    );
     const summaries: ExternalSessionSummary[] = [];
-    const live = new Set<string>();
-    for (const file of await this.#transcriptFiles()) {
-      live.add(file.path);
-      const summary = await this.#summaryOf(file.path, file.sessionId);
+    for (const summary of derived) {
       if (!summary) continue;
       // The shared matcher, not a local cwd comparison: filtering happens here
       // rather than after paging, and every source has to answer a query the
@@ -153,7 +161,7 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
     const cached = this.#summaries.get(path);
     if (cached && cached.mtimeMs === mtimeMs && cached.size === size) return cached.summary;
 
-    const parsed = await this.#parse(path, sessionId);
+    const parsed = await this.#parse(path, sessionId, size);
     // Sub-agent transcripts are whole files, never records interleaved into a
     // parent — so exclusion is per file. Importing one would present a
     // fragment of a conversation as a conversation.
@@ -203,54 +211,82 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
     } catch {
       return [];
     }
+    // Listing one project and stating one file are each a round trip through
+    // the thread pool, so the walk is concurrent rather than one await at a
+    // time — the cost of a full scan is latency-bound, not work-bound. A
+    // project that fails to list or a file that vanishes mid-scan is dropped
+    // per item, exactly as the sequential loop dropped it.
+    const listings = await Promise.all(
+      projects.map(async (project) => {
+        try {
+          return (await readdir(join(root, project), { withFileTypes: true })).filter(
+            (entry) => entry.isFile() && entry.name.endsWith('.jsonl'),
+          );
+        } catch {
+          return [];
+        }
+      }),
+    );
+    const resolvedRoot = resolve(root);
+    const candidates: { path: string; sessionId: string }[] = [];
+    for (const [index, project] of projects.entries()) {
+      for (const entry of listings[index]) {
+        const sessionId = entry.name.slice(0, -'.jsonl'.length);
+        if (!SESSION_ID_PATTERN.test(sessionId)) continue;
+        const path = join(root, project, entry.name);
+        // The id reaches a path join, so the resolved file must still be under
+        // the projects root — a crafted id must not read outside it.
+        if (!resolve(path).startsWith(resolvedRoot)) continue;
+        candidates.push({ path, sessionId });
+      }
+    }
+    const mtimes = await Promise.all(
+      candidates.map(async (candidate) => {
+        try {
+          return (await stat(candidate.path)).mtimeMs;
+        } catch {
+          return undefined;
+        }
+      }),
+    );
     // Keyed by session id: the same id can legitimately exist under more than
     // one project directory after a workspace move or a resumed session. Two
     // files with one id are two candidates for the same source session, and
     // list and read must pick the same one or a user selects one summary and
     // imports the other.
     const bySessionId = new Map<string, { path: string; sessionId: string; mtimeMs: number }>();
-    for (const project of projects) {
-      let entries: string[];
-      try {
-        entries = (await readdir(join(root, project), { withFileTypes: true }))
-          .filter((entry) => entry.isFile() && entry.name.endsWith('.jsonl'))
-          .map((entry) => entry.name);
-      } catch {
-        continue;
-      }
-      for (const name of entries) {
-        const sessionId = name.slice(0, -'.jsonl'.length);
-        if (!SESSION_ID_PATTERN.test(sessionId)) continue;
-        const path = join(root, project, name);
-        // The id reaches a path join, so the resolved file must still be under
-        // the projects root — a crafted id must not read outside it.
-        if (!resolve(path).startsWith(resolve(root))) continue;
-        let mtimeMs: number;
-        try {
-          mtimeMs = (await stat(path)).mtimeMs;
-        } catch {
-          continue;
-        }
-        const existing = bySessionId.get(sessionId);
-        // Newest wins, and the path breaks a tie so the choice does not depend
-        // on directory iteration order. A resumed session's continuation is
-        // the copy a user means when they pick that id.
-        if (
-          !existing ||
-          mtimeMs > existing.mtimeMs ||
-          (mtimeMs === existing.mtimeMs && path < existing.path)
-        ) {
-          bySessionId.set(sessionId, { path, sessionId, mtimeMs });
-        }
+    for (const [index, { path, sessionId }] of candidates.entries()) {
+      const mtimeMs = mtimes[index];
+      if (mtimeMs === undefined) continue;
+      const existing = bySessionId.get(sessionId);
+      // Newest wins, and the path breaks a tie so the choice does not depend
+      // on directory iteration order. A resumed session's continuation is
+      // the copy a user means when they pick that id.
+      if (
+        !existing ||
+        mtimeMs > existing.mtimeMs ||
+        (mtimeMs === existing.mtimeMs && path < existing.path)
+      ) {
+        bySessionId.set(sessionId, { path, sessionId, mtimeMs });
       }
     }
     return [...bySessionId.values()].map(({ path, sessionId }) => ({ path, sessionId }));
   }
 
-  async #parse(path: string, sessionId: string): Promise<ParsedTranscript | undefined> {
+  /**
+   * `knownSize` lets a caller that just stat'ed the file (the listing cache
+   * check in `#summaryOf`) skip the redundant stat — one metadata round trip
+   * per transcript on the listing hot path. A size read there can only race a
+   * concurrent writer in the same way a second stat already did.
+   */
+  async #parse(
+    path: string,
+    sessionId: string,
+    knownSize?: number,
+  ): Promise<ParsedTranscript | undefined> {
     try {
-      const info = await stat(path);
-      if (info.size > this.#maxBytes) return undefined;
+      const size = knownSize ?? (await stat(path)).size;
+      if (size > this.#maxBytes) return undefined;
     } catch {
       return undefined;
     }
