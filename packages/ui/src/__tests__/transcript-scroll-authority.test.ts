@@ -33,7 +33,7 @@ interface FakeRoot {
   children: readonly unknown[];
   addEventListener(type: string, listener: (event: unknown) => void): void;
   removeEventListener(type: string, listener: (event: unknown) => void): void;
-  input(deltaY: number): void;
+  input(deltaY: number, modifiers?: { ctrlKey?: boolean; metaKey?: boolean }): void;
   grabScrollbar(): void;
   end(): void;
   /** Dispatch the scroll event the browser would, one frame later. */
@@ -65,7 +65,7 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
     emitScroll() {
       emit('scroll');
     },
-    input(deltaY) { emit('wheel', { deltaY, composedPath: () => [proxy] }); },
+    input(deltaY, modifiers) { emit('wheel', { deltaY, ...modifiers, composedPath: () => [proxy] }); },
     grabScrollbar() {
       emit('pointerdown', { button: 0, pointerType: 'mouse', pointerId: 1, target: proxy });
     },
@@ -135,6 +135,25 @@ function withObservers<T>(run: (resize: () => void, frame: () => void) => T): T 
     globals.requestAnimationFrame = originalFrame;
   }
 }
+
+test('Ctrl and Meta wheel zoom preserve following without requesting history', () => {
+  withObservers((resize) => {
+    for (const modifiers of [{ ctrlKey: true }, { metaKey: true }]) {
+      const root = fakeRoot();
+      const authority = createTranscriptScrollAuthority();
+      const detach = authority.attach(root as unknown as HTMLElement);
+      let readerReports = 0;
+      authority.subscribeToReaderScroll(() => { readerReports += 1; });
+      root.input(-100, modifiers);
+      root.grow(200);
+      resize();
+      assert.equal(authority.getSnapshot().pinned, true);
+      assert.equal(root.scrollTop, root.scrollHeight - root.clientHeight);
+      assert.equal(readerReports, 0);
+      detach();
+    }
+  });
+});
 
 test('content that grows under a pinned transcript keeps the tail on screen', () => {
   withObservers((resize) => {

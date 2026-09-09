@@ -141,7 +141,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         reportReader(direction, 'input');
       };
       const onWheel = (event: WheelEvent): void => {
-        if (event.ctrlKey || event.deltaY === 0) return;
+        if (event.ctrlKey || event.metaKey || event.deltaY === 0) return;
         begin(event, event.deltaY < 0 ? 'up' : 'down');
       };
       const onKeyDown = (event: KeyboardEvent): void => {
