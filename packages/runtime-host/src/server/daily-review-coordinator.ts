@@ -52,6 +52,7 @@ import {
 import type { DailyReviewOperationHandlerMap } from './operation-dispatcher.js';
 import type { HostDailyReviewModel } from './execution-model-authority.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
+import type { HostResidencyKind } from './host-residency-registry.js';
 import {
   CanonicalUsageProjectionIncompleteError,
   readCanonicalUsageBuckets,
@@ -66,7 +67,7 @@ export interface HostDailyReviewCoordinatorInput {
   readonly usage: InteractiveUsageStoresWriter;
   readonly sessions: Pick<ExecutionSessionWriter, 'list'>;
   readonly model: HostDailyReviewModel;
-  readonly acquireResidency: () => RuntimeHostResidency;
+  readonly acquireResidency: (kind?: HostResidencyKind) => RuntimeHostResidency;
   readonly requestDrain: () => void;
   readonly now?: () => number;
   readonly setInterval?: (callback: () => void, delayMs: number) => unknown;
@@ -84,7 +85,7 @@ export class HostDailyReviewCoordinator {
   readonly #usage: InteractiveUsageStoresWriter;
   readonly #sessions: HostDailyReviewCoordinatorInput['sessions'];
   readonly #model: HostDailyReviewModel;
-  readonly #acquireResidency: () => RuntimeHostResidency;
+  readonly #acquireResidency: HostDailyReviewCoordinatorInput['acquireResidency'];
   readonly #requestDrain: () => void;
   readonly #now: () => number;
   readonly #setInterval: (callback: () => void, delayMs: number) => unknown;
@@ -480,7 +481,7 @@ export class HostDailyReviewCoordinator {
       return;
     }
     if (this.#handoffHeld) return;
-    this.#residency ??= this.#acquireResidency();
+    this.#residency ??= this.#acquireResidency('idle');
     this.#timer ??= this.#setInterval(() => {
       void this.#tickScheduler().catch((error: unknown) => this.#handleSchedulerError(error));
     }, SCHEDULER_INTERVAL_MS);

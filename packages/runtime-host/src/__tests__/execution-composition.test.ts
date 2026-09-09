@@ -61,9 +61,13 @@ import {
 } from '@maka/storage/root-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { openInteractiveDailyReviewAuthorityForWrite } from '@maka/storage/daily-review-authority';
+import { openInteractiveScheduledTaskStoreForWrite } from '@maka/storage/scheduled-task-store';
 import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
-import { HostResidencyRegistry } from '../server/host-residency-registry.js';
+import {
+  HostResidencyRegistry,
+  type HostResidencyKind,
+} from '../server/host-residency-registry.js';
 import {
   createExecutionRuntimeHostComposition,
   runtimeHostFilesystemWorkerRuntime,
@@ -88,7 +92,7 @@ const HANDOFF_TEST_COMPOSITION = createRunCompositionSnapshot({
   contextWindow: null,
 });
 
-test('an idle enabled Daily Review scheduler participates in production handoff and recovers in the successor', {
+test('idle schedules and armed or paused Goals allow production handoff and recover in the successor', {
   timeout: 20_000,
 }, async () => {
   await withCompositionRoot(async ({ root, owner }) => {
@@ -99,10 +103,67 @@ test('an idle enabled Daily Review scheduler participates in production handoff 
       executeTime: '00:00',
       modelKey: '',
     });
+    const schedules = await openInteractiveScheduledTaskStoreForWrite(owner.lease);
+    await schedules.create(
+      {
+        title: 'Future reminder',
+        intentBody: 'Remind me tomorrow',
+        schedule: { kind: 'once', runAt: Date.now() + 86_400_000 },
+        effect: { kind: 'notify', channel: 'local' },
+        createdBy: { kind: 'user' },
+      },
+      Date.now(),
+    );
+    schedules.close();
     const residencies = new HostResidencyRegistry();
-    const { composition } = await createCapturedExecutionComposition(owner, { residencies });
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      residencies,
+    });
+    const expected = [
+      { label: 'daily-review', count: 1 },
+      { label: 'goal', count: 2 },
+      { label: 'scheduled-task', count: 1 },
+    ];
     try {
-      assert.deepEqual(residencies.snapshot(), [{ label: 'daily-review', count: 1 }]);
+      const context = {
+        hostEpoch: 'old-host',
+        connectionId: 'test',
+        principal: 'local_os_user' as const,
+        acquireResidency: () => ({ release() {} }),
+      };
+      for (const pause of [false, true]) {
+        const session = await manager.createSession({
+          cwd: root,
+          llmConnectionId: FAKE_CONNECTION_ID,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          permissionMode: 'ask',
+        });
+        const armed = await composition.handlers['goal.arm'](
+          {
+            sessionId: session.id,
+            condition: 'Finish later',
+            maxIterations: null,
+            tokenBudget: null,
+          },
+          context,
+        );
+        assert.ok(armed.ok);
+        if (pause) {
+          const paused = await composition.handlers['goal.control'](
+            {
+              sessionId: session.id,
+              goalId: armed.result.goal.goalId,
+              expectedRevision: armed.result.goal.revision,
+              action: 'pause',
+            },
+            context,
+          );
+          assert.ok(paused.ok);
+        }
+      }
+      await waitFor(async () => residencies.drainCount === 0);
+      assert.deepEqual(residencies.snapshot(), expected);
       const cancelled = await composition.prepareHandoff!('old-host', new AbortController().signal);
       assert.ok(cancelled);
       assert.equal(await cancelled.seal(), true);
@@ -129,7 +190,8 @@ test('an idle enabled Daily Review scheduler participates in production handoff 
     try {
       const successor = await createCapturedExecutionComposition(successorOwner, { residencies });
       try {
-        assert.deepEqual(residencies.snapshot(), [{ label: 'daily-review', count: 1 }]);
+        await waitFor(async () => residencies.drainCount === 0);
+        assert.deepEqual(residencies.snapshot(), expected);
       } finally {
         await successor.composition.close();
       }
@@ -2180,7 +2242,12 @@ async function createCapturedExecutionComposition(
     const composition = await createExecutionRuntimeHostComposition(
       {
         ...compositionContext(owner),
-        ...(residencies ? { acquireResidency: (label: string) => residencies.acquire(label) } : {}),
+        ...(residencies
+          ? {
+              acquireResidency: (label: string, kind?: HostResidencyKind) =>
+                residencies.acquire(label, kind),
+            }
+          : {}),
       },
       {},
       { primaryBackendFactory },

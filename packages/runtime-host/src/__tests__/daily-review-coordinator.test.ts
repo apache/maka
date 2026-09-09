@@ -58,7 +58,8 @@ test('Daily Review handoff fences an admitted timer tick and cancellation resume
       });
       await coordinator.recover();
       assert.equal(timers.size, 1);
-      assert.equal(residencies.drainCount, 1);
+      assert.equal(residencies.activeCount, 1);
+      assert.equal(residencies.drainCount, 0);
       const tick = [...timers][0]!;
       now = new Date(2026, 8, 9, 13).getTime();
       tick(); // The config read has started, but has not returned yet.
@@ -92,7 +93,7 @@ test('Daily Review handoff fences an admitted timer tick and cancellation resume
     undefined,
     {
       now: () => now,
-      acquireResidency: () => residencies.acquire('daily-review'),
+      acquireResidency: (kind) => residencies.acquire('daily-review', kind),
       setInterval: (callback) => {
         timers.add(callback);
         return callback;
@@ -155,7 +156,7 @@ test('Daily Review handoff waits for an active analysis to publish without inter
       },
     },
     {
-      acquireResidency: () => residencies.acquire('daily-review'),
+      acquireResidency: (kind) => residencies.acquire('daily-review', kind),
     },
   );
 });
