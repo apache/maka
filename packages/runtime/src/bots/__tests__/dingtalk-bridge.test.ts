@@ -37,27 +37,55 @@ describe('decideDingTalkClose (PR-BOT-DINGTALK-OPERATIONAL-0)', () => {
   });
 });
 
+// Realistic identifier shapes. Both conversation kinds begin with `cid`,
+// which is the whole point: any implementation that infers the route from
+// DingTalk's own id format instead of the stamped prefix fails these.
+const SINGLE_CONVERSATION_ID = 'cidEXAMPLEsingle0Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8=';
+const GROUP_CONVERSATION_ID = 'cidEXAMPLEgroup9Zy8Xw7Vu6Ts5Rq4Po3Nm2Lk1J=';
+const SENDER_ID = '$:LWCP_v1:$0Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv';
+const SENDER_STAFF_ID = '01234567890123456789';
+
 describe('pickDingTalkSendRoute', () => {
-  it('routes group and direct targets while rejecting empty ids', () => {
-    assert.deepEqual(pickDingTalkSendRoute(' cidp-abc ', 'app-key-1', 'hello'), {
-      path: '/v1.0/robot/groupMessages/send',
-      body: {
-        robotCode: 'app-key-1',
-        openConversationId: 'cidp-abc',
-        msgKey: 'sampleText',
-        msgParam: '{"content":"hello"}',
-      },
-    });
-    assert.deepEqual(pickDingTalkSendRoute(' user-99 ', 'app-key-1', 'hi'), {
+  it('routes a stamped single chat to the 1:1 endpoint by staff id', () => {
+    assert.deepEqual(pickDingTalkSendRoute(` oto:${SENDER_STAFF_ID} `, 'app-key-1', 'hi'), {
       path: '/v1.0/robot/oToMessages/batchSend',
       body: {
         robotCode: 'app-key-1',
-        userIds: ['user-99'],
+        userIds: [SENDER_STAFF_ID],
         msgKey: 'sampleText',
         msgParam: '{"content":"hi"}',
       },
     });
+  });
+
+  it('routes a stamped group chat to the group endpoint', () => {
+    assert.deepEqual(
+      pickDingTalkSendRoute(` group:${GROUP_CONVERSATION_ID} `, 'app-key-1', 'hello'),
+      {
+        path: '/v1.0/robot/groupMessages/send',
+        body: {
+          robotCode: 'app-key-1',
+          openConversationId: GROUP_CONVERSATION_ID,
+          msgKey: 'sampleText',
+          msgParam: '{"content":"hello"}',
+        },
+      },
+    );
+  });
+
+  it('keeps unprefixed ids on the group endpoint for pre-existing delivery targets', () => {
+    // Scheduled-task delivery targets persisted before the prefix existed,
+    // and ids typed by hand into the scheduled task form.
+    const route = pickDingTalkSendRoute(GROUP_CONVERSATION_ID, 'app-key-1', 'hello');
+    assert.equal(route?.path, '/v1.0/robot/groupMessages/send');
+    assert.equal(route?.body.openConversationId, GROUP_CONVERSATION_ID);
+  });
+
+  it('rejects empty and prefix-only ids', () => {
     assert.equal(pickDingTalkSendRoute('   ', 'app-key-1', 'hi'), null);
+    assert.equal(pickDingTalkSendRoute('oto:', 'app-key-1', 'hi'), null);
+    assert.equal(pickDingTalkSendRoute('oto:   ', 'app-key-1', 'hi'), null);
+    assert.equal(pickDingTalkSendRoute('group:', 'app-key-1', 'hi'), null);
   });
 });
 
@@ -93,12 +121,13 @@ describe('classifyDingTalkSendResponse', () => {
 });
 
 describe('dingTalkPayloadToEvent', () => {
-  it('maps direct and group messages with stable identity fallbacks', () => {
+  it('addresses a single chat by staff id, not by conversation id', () => {
     const event = dingTalkPayloadToEvent(
       {
-        senderId: 'user-1',
+        senderId: SENDER_ID,
+        senderStaffId: SENDER_STAFF_ID,
         senderNick: 'Alice',
-        conversationId: 'cidp-single',
+        conversationId: SINGLE_CONVERSATION_ID,
         conversationType: '1',
         text: { content: 'hello' },
         robotCode: 'app-key-1',
@@ -107,23 +136,81 @@ describe('dingTalkPayloadToEvent', () => {
     );
     assert.ok(event);
     assert.equal(event!.platform, 'dingtalk');
-    assert.equal(event!.userId, 'user-1');
+    assert.equal(event!.userId, SENDER_ID);
     assert.equal(event!.userName, 'Alice');
-    assert.equal(event!.chatId, 'cidp-single');
+    assert.equal(event!.chatId, `oto:${SENDER_STAFF_ID}`);
     assert.equal(event!.isGroup, false);
     assert.equal(event!.text, 'hello');
-    assert.equal(event!.sourceMessageId, 'cidp-single:1700000000000');
+    assert.equal(event!.sourceMessageId, `${SINGLE_CONVERSATION_ID}:1700000000000`);
+  });
+
+  it('addresses a group chat by conversation id', () => {
     const groupEvent = dingTalkPayloadToEvent(
       {
-        senderId: 'user-2',
-        conversationId: 'cidp-group',
+        senderId: SENDER_ID,
+        senderStaffId: SENDER_STAFF_ID,
+        conversationId: GROUP_CONVERSATION_ID,
         conversationType: '2',
         text: { content: 'hi' },
       },
       1,
     );
+    assert.ok(groupEvent);
     assert.equal(groupEvent!.isGroup, true);
-    assert.equal(groupEvent!.userName, 'user-2');
+    assert.equal(groupEvent!.chatId, `group:${GROUP_CONVERSATION_ID}`);
+    assert.equal(groupEvent!.userName, SENDER_ID);
+  });
+
+  it('round-trips a single chat from receive to the 1:1 send body', () => {
+    // The regression this guards: a 1:1 conversationId also starts with
+    // `cid`, so routing on the raw id sends direct replies to the group
+    // endpoint and DingTalk answers 400 resource.not.found.
+    const event = dingTalkPayloadToEvent(
+      {
+        senderId: SENDER_ID,
+        senderStaffId: SENDER_STAFF_ID,
+        conversationId: SINGLE_CONVERSATION_ID,
+        conversationType: '1',
+        text: { content: 'ping' },
+      },
+      1,
+    );
+    const route = pickDingTalkSendRoute(event!.chatId, 'app-key-1', 'pong');
+    assert.equal(route?.path, '/v1.0/robot/oToMessages/batchSend');
+    assert.deepEqual(route?.body.userIds, [SENDER_STAFF_ID]);
+  });
+
+  it('round-trips a group chat from receive to the group send body', () => {
+    const event = dingTalkPayloadToEvent(
+      {
+        senderId: SENDER_ID,
+        senderStaffId: SENDER_STAFF_ID,
+        conversationId: GROUP_CONVERSATION_ID,
+        conversationType: '2',
+        text: { content: 'ping' },
+      },
+      1,
+    );
+    const route = pickDingTalkSendRoute(event!.chatId, 'app-key-1', 'pong');
+    assert.equal(route?.path, '/v1.0/robot/groupMessages/send');
+    assert.equal(route?.body.openConversationId, GROUP_CONVERSATION_ID);
+  });
+
+  it('still delivers a single chat that carries no staff id', () => {
+    // Nothing to address a 1:1 reply to, but receiving must not depend on
+    // being able to reply.
+    const event = dingTalkPayloadToEvent(
+      {
+        senderId: SENDER_ID,
+        conversationId: SINGLE_CONVERSATION_ID,
+        conversationType: '1',
+        text: { content: 'hello' },
+      },
+      1,
+    );
+    assert.ok(event);
+    assert.equal(event!.isGroup, false);
+    assert.equal(event!.chatId, SINGLE_CONVERSATION_ID);
   });
 
   it('drops payloads missing text or routing identity', () => {
