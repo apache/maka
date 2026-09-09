@@ -1250,6 +1250,8 @@ test('repeated offline Guest failures preserve Local readiness without rebroadca
   const local = candidateHarness();
   const remote = candidateHarness({ hostId: 'a'.repeat(64), ownership: 'external' });
   const warn = t.mock.method(console, 'warn', () => {});
+  const info = t.mock.method(console, 'info', () => {});
+  const logCount = () => warn.mock.callCount() + info.mock.callCount();
   const guestErrors: string[] = [];
   let attempts = 0;
   let recovered = false;
@@ -1276,14 +1278,15 @@ test('repeated offline Guest failures preserve Local readiness without rebroadca
   t.after(() => manager.close());
   await manager.mountGuest(peerTarget('offline-guest', 'session_guest'), () => {});
   const initialPublications = guestErrors.length;
-  const initialWarnings = warn.mock.callCount();
+  const initialWarnings = logCount();
+  assert.equal(initialWarnings, 1);
   for (let retry = 0; retry < 3; retry++) {
     manager.wakePeerRecovery('offline-guest');
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   assert.ok(attempts >= 4, 'retries remain live');
   assert.equal(guestErrors.length, initialPublications, 'identical errors are not Host transitions');
-  assert.equal(warn.mock.callCount(), initialWarnings, 'an offline error is logged once');
+  assert.equal(logCount(), initialWarnings, 'an offline error is logged once');
   assert.equal(manager.defaultProfileId(), 'local');
   assert.equal(manager.current('local')?.candidate, local.candidate);
 
@@ -1291,11 +1294,38 @@ test('repeated offline Guest failures preserve Local readiness without rebroadca
   manager.wakePeerRecovery('offline-guest');
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(guestErrors.at(-1), 'relay unavailable', 'a different failure updates diagnostics');
+  for (let retry = 0; retry < 20; retry++) {
+    changedFailure = !changedFailure;
+    manager.wakePeerRecovery('offline-guest');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.equal(logCount(), initialWarnings, 'changing dial errors do not append logs during one outage');
+  const diagnostic = manager.entries().find((state) => state.target.profile.id === 'offline-guest');
+  assert.equal(diagnostic?.reconnect?.failures, attempts, 'diagnostics retain every failed attempt');
+  assert.ok(diagnostic?.reconnect);
+  assert.ok(diagnostic.reconnect.lastFailureAt >= diagnostic.reconnect.firstFailureAt);
   recovered = true;
   manager.wakePeerRecovery('offline-guest');
   await manager.waitUntilReady('offline-guest');
   assert.equal(manager.current('offline-guest')?.candidate, remote.candidate);
   assert.equal(manager.current('local')?.candidate, local.candidate);
+  assert.equal(logCount(), initialWarnings + 1, 'recovery logs one summary');
+  assert.equal(info.mock.calls.at(-1)?.arguments[1]?.failedAttempts, attempts - 1);
+  assert.equal(
+    manager.entries().find((state) => state.target.profile.id === 'offline-guest')?.reconnect,
+    undefined,
+    'a recovered target no longer has pending failures',
+  );
+  recovered = false;
+  remote.disconnect();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  manager.wakePeerRecovery('offline-guest');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(logCount(), initialWarnings + 2, 'a later outage is reported again');
+  assert.equal(
+    manager.entries().find((state) => state.target.profile.id === 'offline-guest')?.reconnect?.failures,
+    1,
+  );
 });
 
 test('marks a retrying Direct target unavailable on permanent failure', async () => {

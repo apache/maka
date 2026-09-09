@@ -370,6 +370,7 @@ const desktopDiagnostics: DesktopDiagnosticsDeps = {
     }),
   mainLogs: () => mainProcessLogBuffer.snapshot(),
   runtimeHostProcessLogs: () => runtimeHostProcessLogBuffer.snapshot(),
+  runtimeHostConnections: () => runtimeHostManager?.entries() ?? [],
   resolveActiveRuntimeHost: () => {
     const scope = activeRuntimeHostRef();
     return scope ? resolveRuntimeHostDiagnostics(scope) : undefined;

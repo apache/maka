@@ -33,6 +33,7 @@ import {
   RuntimeHostPermanentReconnectError,
   RuntimeHostRemoteCompatibilityError,
   RuntimeHostPeerError,
+  RuntimeHostPeerReachabilityUnavailableError,
   RuntimeHostRequestInterruptedError,
   runtimeHostStartupError,
   LOCAL_RUNTIME_HOST_PROFILE,
@@ -120,7 +121,7 @@ export interface RuntimeHostDesktopTargetSnapshot {
   readonly candidate?: DesktopRuntimeHostCandidate;
 }
 
-export type RuntimeHostDesktopTargetState =
+export type RuntimeHostDesktopTargetState = (
   | {
       readonly epoch: string;
       readonly target: ResolvedRuntimeHostProfile;
@@ -140,7 +141,14 @@ export type RuntimeHostDesktopTargetState =
       readonly readiness: 'unavailable';
       readonly hostId?: string;
       readonly error: Error;
-    };
+    }
+) & {
+  readonly reconnect?: {
+    readonly failures: number;
+    readonly firstFailureAt: number;
+    readonly lastFailureAt: number;
+  };
+};
 
 export type DesktopLocalHostRetirement =
   | { readonly kind: 'active_tasks' }
@@ -989,16 +997,37 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
           : false,
         ...(initialSignal ? { initialSignal } : {}),
         onReconnectError: (error) => {
-          const previous = target.state.readiness !== 'ready' ? target.state.error : undefined;
+          if (!target.valid || target.state.readiness === 'ready') return;
+          const previous = target.state.error;
+          const last = target.state.reconnect;
+          const now = Date.now();
+          // Keep one live diagnostic per outage, even when successive dials
+          // fail differently. Routine retries must not evict unrelated logs.
+          target.state = {
+            ...target.state,
+            error,
+            reconnect: {
+              failures: (last?.failures ?? 0) + 1,
+              firstFailureAt: last?.firstFailureAt ?? now,
+              lastFailureAt: now,
+            },
+          };
+          if (!last) {
+            if (error instanceof RuntimeHostPeerReachabilityUnavailableError ||
+              error instanceof RuntimeHostPeerError) {
+              console.info('[runtime-host] reconnecting:', {
+                profileId: target.target.profile.id,
+                code: error.code,
+                message: error.message,
+              });
+            } else {
+              console.warn('[runtime-host] reconnecting:', target.target.profile.id, error);
+            }
+          }
           if (previous?.name === error.name && previous.message === error.message &&
             ('code' in previous ? previous.code : undefined) ===
               ('code' in error ? error.code : undefined)) return;
-          // A repeated failure is not a Host transition. Publishing it again
-          // invalidates unrelated Hosts' catalogs and floods offline diagnostics.
-          console.warn('[runtime-host] reconnect attempt failed:', error);
-          if (target.valid && target.state.readiness !== 'ready') {
-            this.#publishState(target, { ...target.state, error });
-          }
+          this.#publishState(target, target.state);
         },
         onFatalError: (error) => {
           if (starting) {
@@ -1437,8 +1466,19 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
   ): void {
     // A retry starting is not evidence of recovery. Keep its last failure until
     // a connection succeeds (or a newer failure replaces it).
-    if (state.readiness === 'reconnecting' && !state.error && target.state.readiness !== 'ready') {
-      state = { ...state, ...(target.state.error ? { error: target.state.error } : {}) };
+    if (state.readiness !== 'ready' && target.state.readiness !== 'ready') {
+      state = {
+        ...state,
+        ...(!state.error && target.state.error ? { error: target.state.error } : {}),
+        ...(target.state.reconnect ? { reconnect: target.state.reconnect } : {}),
+      };
+    }
+    if (state.readiness === 'ready' && target.state.reconnect) {
+      console.info('[runtime-host] connection restored:', {
+        profileId: target.target.profile.id,
+        failedAttempts: target.state.reconnect.failures,
+        durationMs: Math.max(0, Date.now() - target.state.reconnect.firstFailureAt),
+      });
     }
     target.state = state;
     try {
