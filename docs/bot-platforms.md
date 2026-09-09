@@ -222,8 +222,11 @@ longer schedule would silently no-op.
    not restrict who can talk to the bot. See the security section.
 3. **Scheduled tasks cannot target Feishu or WeCom** (`BOT_DELIVERY_PROVIDERS`).
 4. **No platform can send files.** Text out only.
-5. **WeChat requires a local companion bridge** on localhost; it cannot run
-   against a remote bridge host.
+5. **WeChat requires a local companion bridge that Maka does not ship.** The
+   runtime defines an HTTP contract and expects a third-party process on
+   localhost to implement it; remote bridge hosts are rejected outright. Group
+   messages reaching that bridge are dropped unless the frame marks the bot as
+   mentioned.
 6. **WeCom credentials cannot be pre-verified.** The credential test validates
    shape and non-emptiness only and returns `verified: false`, because the SDK
    proves the credentials only through a WebSocket auth handshake (see
@@ -270,14 +273,16 @@ traffic.
 
 ## Setup
 
-> **Status: Telegram, Slack, Discord, Feishu/Lark, WeCom and QQ are verified
-> end-to-end.** DingTalk is verified for setup and receive only — replying to a
-> 1:1 conversation is broken, and the section records the defect. WeChat is
-> still a placeholder and must be walked against a real setup before it lands.
+> **Verification status.** Telegram, Slack, Discord, Feishu/Lark, WeCom and QQ
+> were each walked end-to-end against a real account — connect, receive, send.
+> DingTalk is verified for setup and receive only; replying to a 1:1
+> conversation is broken and that section records the defect. WeChat is
+> verified against its local-bridge *contract* using a mock, not against WeChat
+> itself; its section states exactly what that does and does not cover.
 >
-> For WeChat, check
-> [the onboarding architecture doc](architecture/bot-onboarding-runtime.zh-CN.md)
-> first: QR-code onboarding may make most manual steps unnecessary.
+> For DingTalk and WeChat, also check
+> [the onboarding architecture doc](architecture/bot-onboarding-runtime.zh-CN.md):
+> QR-code onboarding may make most manual steps unnecessary.
 
 Each platform section should cover: where to register, which console fields map
 to which Maka setting (see the credentials table above), the minimum scopes or
@@ -692,7 +697,77 @@ value as a reply target, which is why this channel has no reply threading.
 
 ### WeChat 微信
 
-_TODO — iLink bot plus the local companion bridge on 127.0.0.1._
+WeChat has no ordinary bot API, so this channel supports two quite different
+routes and picks between them from the value of `webhookUrl`:
+
+| | **iLink** | **Local bridge** |
+| --- | --- | --- |
+| Selected when | `token` set **and** `webhookUrl` host is `ilinkai.weixin.qq.com` | anything else (a localhost `http://` URL) |
+| Receive | `POST /ilink/bot/getupdates`, long-poll with a cursor | `GET /messages/stream?since=<epoch_seconds>`, SSE |
+| Send | `POST /ilink/bot/sendmessage` | `POST /send` with `{wxid, text}` |
+| Auth | bot token | `Authorization: Bearer <token>` |
+| Onboarding | QR sign-in, see [the onboarding doc](architecture/bot-onboarding-runtime.zh-CN.md) | QR served by the bridge itself |
+
+**Maka does not ship the local bridge.** It defines the HTTP contract and
+nothing else — there is no bundled process, no submodule and no install step.
+Running personal WeChat this way means supplying a third-party process that
+implements the shape below. The `wxid` field in the send body is the tell: that
+is the identifier unofficial WeChat protocol libraries use.
+
+The client requirement is **WeChat 8.0.70 or newer on iOS or Android**, and the
+in-app hint notes that the bridge's *send* capability needs a `wxp_act_`
+activation code, so a bridge can legitimately be receive-only.
+
+**The contract a local bridge must satisfy:**
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | Probed before anything else. Returns `wxid`, `alias`, `nickname` (or the same keys nested under `self`) for identity, plus `send_status`; the values `unavailable` and `blocked` mark sending as unsupported. |
+| `GET /messages/stream?since=<epoch_seconds>` | SSE. One JSON object per `data:` event. The cursor advances to the newest delivered message. |
+| `POST /send` | Body `{wxid, text}`. Reply `{status:"ok", messageId}` on success. `{status:"failed", diagnostic}` surfaces `diagnostic` as the channel's status reason. |
+| `GET /api/weixin/qrcode` or `/qrcode` | QR payload for sign-in. |
+
+Every call carries `Authorization: Bearer <token>` when the channel has a token.
+The returned message ID is read from `messageId`, then `id`, then `svrId`,
+falling back to the literal `wechat-submitted`.
+
+**Inbound frames are matched loosely but filtered strictly.** Field aliases are
+accepted — `chatId | roomId | toWxid | talker` for the conversation,
+`senderId | fromWxid | sender | wxid` for the sender, `messageId | msgId | id |
+svrId` for the ID, `body | text | content | message` for the text — but a frame
+is dropped when:
+
+- `fromSelf` or `isSelf` is true;
+- no message ID resolves from any of the four aliases;
+- there is neither text nor a recognised attachment; or
+- it is a **group message without a mention**. A conversation counts as a group
+  when `isGroup`/`is_group` is set or the chat ID ends in `@chatroom`, and the
+  mention must be signalled by `isMentioned`, `isAt` or `atMe`.
+
+That last rule is the one most likely to look like a broken bridge: group
+traffic is silently discarded unless the frame explicitly marks the bot as
+mentioned.
+
+**The local bridge URL must be localhost.** `normalizeWechatBridgeUrl` accepts
+only plain `http:` on `127.0.0.1`, `localhost` or `[::1]`, rejects URLs longer
+than 256 characters, and strips any query or fragment. A remote bridge is
+refused by design.
+
+> **Verified against the contract, not against WeChat.** Maka's `WechatBridge`
+> was exercised end-to-end against a mock local bridge implementing the table
+> above: the `/health` probe and identity, the SSE receive loop and its cursor,
+> all six mapping rules including each drop case, bearer auth on every call,
+> and both the success and `{status:"failed"}` send paths — with the channel
+> moving `credentials_valid → operational` and the bridge diagnostic surfacing
+> as the status reason. No real WeChat account was involved, so message
+> delivery through WeChat itself remains unverified, as does the iLink route,
+> whose token is only obtainable through the in-app QR flow.
+
+> **The Official Account fields are collected but unused.** The settings UI
+> exposes an Official Account App ID and App Secret, described there as being
+> for Official Account messaging. `wechat-bridge.ts` never reads `appId` or
+> `appSecret` — every code path uses `token` and `webhookUrl` only. Filling
+> them in changes nothing about this channel's behaviour.
 
 ### QQ
 
