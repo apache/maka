@@ -160,6 +160,9 @@ export interface McpOAuthProviderOptions {
  * token request. */
 const BACKGROUND_REDIRECT_URL = 'http://127.0.0.1/maka-mcp-oauth-noninteractive';
 
+/** Product homepage sent in OAuth dynamic client registration. */
+const MCP_OAUTH_CLIENT_URI = 'https://maka.apache.org/en/';
+
 export class McpOAuthProvider implements OAuthClientProvider {
   /** Present only when an interactive state was supplied — the SDK treats
    * a defined method as "client uses state". */
@@ -177,8 +180,8 @@ export class McpOAuthProvider implements OAuthClientProvider {
   get clientMetadata(): OAuthClientMetadata {
     return {
       client_name: this.options.clientName,
-      client_uri: 'https://github.com/maka-agent/maka-agent',
-      software_id: 'maka-desktop',
+      client_uri: MCP_OAUTH_CLIENT_URI,
+      software_id: this.options.clientName,
       software_version: this.options.clientVersion,
       redirect_uris: this.options.interactive ? [this.options.interactive.redirectUrl] : [],
       grant_types: ['authorization_code', 'refresh_token'],

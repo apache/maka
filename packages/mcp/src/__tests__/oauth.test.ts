@@ -80,6 +80,12 @@ describe('McpClientManager OAuth E2E', () => {
     assert.ok(authorizationUrl.searchParams.get('code_challenge'));
     // Dynamic registration ran before the redirect.
     assert.ok(fixture.registrations.length >= 1);
+    const registration = fixture.registrations[0];
+    assert.ok(registration && typeof registration === 'object');
+    const body = registration as Record<string, unknown>;
+    assert.equal(body.client_uri, 'https://maka.apache.org/en/');
+    assert.equal(body.software_id, 'maka');
+    assert.equal(body.client_name, 'maka');
     // Consent disclosure material: the resolved issuer, the scope the round
     // requests, and the round's state travel back to the caller so a UI can
     // show what is being granted before a browser opens.
@@ -1062,6 +1068,28 @@ describe('McpClientManager OAuth E2E', () => {
       state: 'round-two',
     });
     assert.equal(status.state, 'connected');
+  });
+
+  test('OAuth client metadata identifies the Apache project and the running client', () => {
+    for (const clientName of ['maka', 'maka-tui', 'maka-desktop'] as const) {
+      const provider = new McpOAuthProvider({
+        serverId: 'remote',
+        serverUrl: 'https://mcp.example/mcp',
+        storage: createMemoryMcpOAuthStorage(),
+        clientName,
+        clientVersion: '0.2.0',
+      });
+      assert.equal(provider.clientMetadata.client_uri, 'https://maka.apache.org/en/');
+      assert.equal(provider.clientMetadata.software_id, clientName);
+      assert.equal(provider.clientMetadata.client_name, clientName);
+      assert.equal(provider.clientMetadata.software_version, '0.2.0');
+      assert.deepEqual(provider.clientMetadata.redirect_uris, []);
+      assert.deepEqual(provider.clientMetadata.grant_types, [
+        'authorization_code',
+        'refresh_token',
+      ]);
+      assert.doesNotMatch(JSON.stringify(provider.clientMetadata), /maka-agent\/maka-agent/u);
+    }
   });
 
   test('a discovery that moves to another authorization server drops the registered client', async () => {
