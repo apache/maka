@@ -60,6 +60,7 @@ import {
   type InteractiveRootOwner,
 } from '@maka/storage/root-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
+import { openInteractiveDailyReviewAuthorityForWrite } from '@maka/storage/daily-review-authority';
 import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { HostResidencyRegistry } from '../server/host-residency-registry.js';
@@ -85,6 +86,57 @@ const HANDOFF_TEST_COMPOSITION = createRunCompositionSnapshot({
   baseProviderOptionsHash: `sha256:${'0'.repeat(64)}`,
   toolNames: [],
   contextWindow: null,
+});
+
+test('an idle enabled Daily Review scheduler participates in production handoff and recovers in the successor', {
+  timeout: 20_000,
+}, async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const store = await openInteractiveDailyReviewAuthorityForWrite(owner.lease);
+    const snapshot = await store.readConfig();
+    await store.updateConfig(snapshot.revision, {
+      enabled: true,
+      executeTime: '00:00',
+      modelKey: '',
+    });
+    const residencies = new HostResidencyRegistry();
+    const { composition } = await createCapturedExecutionComposition(owner, { residencies });
+    try {
+      assert.deepEqual(residencies.snapshot(), [{ label: 'daily-review', count: 1 }]);
+      const cancelled = await composition.prepareHandoff!('old-host', new AbortController().signal);
+      assert.ok(cancelled);
+      assert.equal(await cancelled.seal(), true);
+      const cancelledProof = await cancelled.residencies();
+      assert.ok(cancelledProof);
+      assert.equal(residencies.hasDrainResidenciesExcept(cancelledProof), false);
+      cancelled.cancel();
+      const prepared = await composition.prepareHandoff!('old-host', new AbortController().signal);
+      assert.ok(prepared);
+      assert.equal(await prepared.seal(), true);
+      const proof = await prepared.residencies();
+      assert.ok(proof);
+      assert.equal(residencies.hasDrainResidenciesExcept(proof), false);
+      await prepared.detach();
+    } finally {
+      await composition.close();
+    }
+    assert.equal(residencies.activeCount, 0);
+    await owner.close();
+    const successorOwner = await tryAcquireInteractiveRootOwner(
+      await resolveStorageRoot({ path: root, kind: 'interactive' }),
+    );
+    assert.ok(successorOwner);
+    try {
+      const successor = await createCapturedExecutionComposition(successorOwner, { residencies });
+      try {
+        assert.deepEqual(residencies.snapshot(), [{ label: 'daily-review', count: 1 }]);
+      } finally {
+        await successor.composition.close();
+      }
+    } finally {
+      await successorOwner.close();
+    }
+  });
 });
 
 test('production composition resumes a sealed logical Root after all stores and runtime owners reopen', {
