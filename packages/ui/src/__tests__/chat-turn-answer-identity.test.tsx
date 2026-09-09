@@ -353,6 +353,73 @@ test('does not edit and resend a message with folder references', async () => {
   assert.equal(editCalls, 0, 'folder references must not be silently dropped by revision');
 });
 
+/**
+ * A structured-only user message (#4804) — empty inline text carrying a
+ * quote — must render the quote without an empty text bubble, while keeping
+ * the metadata row (timestamp, copy) and its edit entry, which used to be
+ * dropped together with the bubble.
+ */
+test('renders a quote-only user message without an empty bubble but with metadata', async () => {
+  const { container, root } = domRoot();
+  const turn = {
+    ...turnWith([]),
+    status: 'completed' as const,
+    user: {
+      id: 'quote-only',
+      role: 'user' as const,
+      text: '',
+      ts: 1,
+      quotes: [{ text: 'selected excerpt' }],
+    },
+  };
+
+  await act(() => {
+    root.render(
+      <LocaleProvider locale="en">
+        <TurnView turn={turn} onEditUserMessage={() => undefined} />
+      </LocaleProvider>,
+    );
+  });
+
+  assert.equal(
+    container.querySelector('.maka-chat-message-bubble-user'),
+    null,
+    'an empty text must not render an empty user bubble',
+  );
+  const quotes = container.querySelector('.maka-user-quotes');
+  assert.ok(quotes, 'the staged quote still renders');
+  assert.match(quotes?.textContent ?? '', /selected excerpt/);
+  assert.ok(
+    container.querySelector('.maka-message-meta'),
+    'a structured-only message keeps its metadata row',
+  );
+  assert.ok(
+    container.querySelector('[data-action="edit"]'),
+    'the edit entry survives the omitted bubble',
+  );
+});
+
+test('a user message with text still renders its bubble', async () => {
+  const { container, root } = domRoot();
+  const turn = {
+    ...turnWith([]),
+    status: 'completed' as const,
+    user: {
+      id: 'with-text',
+      role: 'user' as const,
+      text: 'explain this',
+      ts: 1,
+      quotes: [{ text: 'selected excerpt' }],
+    },
+  };
+
+  await renderTurn(root, turn);
+
+  const bubble = container.querySelector('.maka-chat-message-bubble-user');
+  assert.ok(bubble, 'a text message keeps its bubble');
+  assert.match(bubble?.textContent ?? '', /explain this/);
+});
+
 test('keeps Astryx auto formatting live for user-message timestamps', async (context) => {
   const now = Date.UTC(2026, 7, 27, 12);
   context.mock.timers.enable({ apis: ['Date', 'setInterval'], now });
