@@ -454,7 +454,65 @@ test('loads a canonical transcript while live frames continue on the same connec
   );
 });
 
-test('reassembles a large message from bounded backward pages', async () => {
+test('resumes bounded index preparation before publishing the canonical transcript', async () => {
+  const message = {
+    type: 'assistant' as const,
+    id: 'message-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'snapshot text',
+    modelId: 'test-model',
+  };
+  await withProtocolPeer(
+    async (transport, hostEpoch, rootId) => {
+      let openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
+      for (let batch = 0; batch < 3; batch++) {
+        await writeProtocolFrame(transport, {
+          requestId: openRequest.requestId,
+          operation: 'subscription.open',
+          ok: false,
+          error: { code: 'transcript_preparing', message: `indexed through ${batch * 64}` },
+        });
+        const next = decodeClientFrame(await transport.read(1_000));
+        assert.ok(!('kind' in next) && next.operation === 'subscription.open');
+        assert.deepEqual(next.input, openRequest.input);
+        openRequest = next;
+      }
+      const opened = openResult(
+        hostEpoch,
+        'subscription-transcript',
+        transcriptBootstrap(Buffer.from(JSON.stringify(message), 'utf8')),
+      );
+      await writeRawLocalIpc(
+        transport,
+        Buffer.concat([
+          encodeLocalIpcTestFrame({
+            requestId: openRequest.requestId,
+            operation: 'subscription.open',
+            ok: true,
+            result: opened,
+          }),
+          encodeLocalIpcTestFrame(deltaFrame(hostEpoch, opened.subscriptionId, 1)),
+        ]),
+      );
+      await answerClose(transport, opened.subscriptionId);
+    },
+    async (connection) => {
+      const subscription = await connection.openSessionSubscription({
+        sessionId: 'session-1',
+        transcript: { kind: 'tail', maxBytes: 16 * 1024 },
+      });
+      assert.deepEqual(await subscription.loadTranscript(decodeStoredMessage), [message]);
+      assert.deepEqual(await subscription[Symbol.asyncIterator]().next(), {
+        done: false,
+        value: deltaFrame(connection.hostEpoch, subscription.subscriptionId, 1),
+      });
+      await subscription.close();
+    },
+  );
+});
+
+test('reassembles bounded backward pages with a timeout independent of index preparation', async () => {
   const message = {
     type: 'user' as const,
     id: 'user-1',
@@ -466,7 +524,17 @@ test('reassembles a large message from bounded backward pages', async () => {
   const splitAt = Math.floor(encoded.byteLength / 2);
   await withProtocolPeer(
     async (transport, hostEpoch, rootId) => {
-      const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
+      let openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
+      await new Promise<void>((resolve) => setTimeout(resolve, 700));
+      await writeProtocolFrame(transport, {
+        requestId: openRequest.requestId,
+        operation: 'subscription.open',
+        ok: false,
+        error: { code: 'transcript_preparing', message: 'Preparing history' },
+      });
+      const next = decodeClientFrame(await transport.read(1_000));
+      assert.ok(!('kind' in next) && next.operation === 'subscription.open');
+      openRequest = next;
       const opened = openResult(hostEpoch, 'subscription-fragmented', {
         throughSequence: 0,
         overlayMessageCount: 0,
@@ -504,6 +572,7 @@ test('reassembles a large message from bounded backward pages', async () => {
         anchorSequence: null,
         maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
       });
+      await new Promise<void>((resolve) => setTimeout(resolve, 500));
       await writeProtocolFrame(transport, {
         requestId: continuationRequest.requestId,
         operation: 'session.transcript.page',
@@ -525,10 +594,13 @@ test('reassembles a large message from bounded backward pages', async () => {
       await answerClose(transport, opened.subscriptionId);
     },
     async (connection) => {
-      const subscription = await connection.openSessionSubscription({
-        sessionId: 'session-1',
-        transcript: { kind: 'tail', maxBytes: 16 * 1024 },
-      });
+      const subscription = await connection.openSessionSubscription(
+        {
+          sessionId: 'session-1',
+          transcript: { kind: 'tail', maxBytes: 16 * 1024 },
+        },
+        1_000,
+      );
       assert.deepEqual(await subscription.loadTranscript(decodeStoredMessage), [message]);
       await subscription.close();
     },

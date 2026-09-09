@@ -36,10 +36,13 @@ test('WorkHub rebuilds delegated execution feedback after navigating away and ba
     timeout: 20_000,
   });
 
-  const sessionName = await page.evaluate(async () =>
-    (await window.maka.sessions.list())[0]?.name,
-  );
-  expect(sessionName).toBeTruthy();
+  // This test owns navigation identity, not asynchronous title generation.
+  const sessionName = initialPrompt;
+  await page.evaluate(async (name) => {
+    const session = (await window.maka.sessions.list())[0];
+    if (!session) throw new Error('Source Session was not found');
+    await window.maka.sessions.rename(session.id, name);
+  }, sessionName);
   await page.evaluate(async () => {
     await window.maka.settings.updateClient({ workHub: { enabled: true } });
   });

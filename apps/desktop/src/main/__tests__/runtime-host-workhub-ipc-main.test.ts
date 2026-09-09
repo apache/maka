@@ -25,7 +25,6 @@ import { registerRuntimeHostWorkHubIpc } from '../runtime-host-workhub-ipc-main.
 test('projects WorkHub coordination resolution through its dedicated IPC domain', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   let resolveCalls = 0;
-  const records: unknown[] = [];
   const actions: unknown[] = [];
   const changes: unknown[] = [];
   const createdSessionId = 'runtime-created-session';
@@ -34,14 +33,6 @@ test('projects WorkHub coordination resolution through its dedicated IPC domain'
       resolveWorkHubCoordinationSession: async () => {
         resolveCalls += 1;
         return { sessionId: 'maka_workhub_coordination' };
-      },
-      recordWorkHubCoordination: async (input: {
-        turnId: string;
-        userText: string;
-        assistantText: string;
-      }) => {
-        records.push(input);
-        return { turnId: input.turnId };
       },
       listWorkHubCoordinationCandidates: async () => ({
         candidateSetId: `sha256:${'a'.repeat(64)}`,
@@ -74,19 +65,7 @@ test('projects WorkHub coordination resolution through its dedicated IPC domain'
   assert.ok(handler);
   assert.deepEqual(await handler({}), { sessionId: 'maka_workhub_coordination' });
   assert.equal(resolveCalls, 1);
-  assert.deepEqual(
-    await handlers.get('workhub:record')?.({}, {
-      turnId: 'record',
-      userText: 'Request',
-      assistantText: 'Summary',
-    }),
-    { turnId: 'record' },
-  );
-  assert.deepEqual(records, [{
-    turnId: 'record',
-    userText: 'Request',
-    assistantText: 'Summary',
-  }]);
+  assert.equal(handlers.has('workhub:record'), false);
   assert.deepEqual(await handlers.get('workhub:candidates')?.({}), {
     candidateSetId: `sha256:${'a'.repeat(64)}`,
     candidates: [],
@@ -123,14 +102,15 @@ test('projects WorkHub coordination resolution through its dedicated IPC domain'
   assert.deepEqual(changes, [{ reason: 'created', sessionId: createdSessionId }]);
 });
 
-test('serializes typed WorkHub action failures across Electron IPC', async () => {
+for (const code of ['operation_conflict', 'candidate_set_stale'] as const) {
+test(`serializes typed WorkHub action failures across Electron IPC (${code})`, async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   registerRuntimeHostWorkHubIpc(
     {
       actWorkHubCoordination: async () => {
         throw new RuntimeHostOperationError(
           'workhub.coordination.act',
-          'operation_conflict',
+          code,
           'WorkHub action is permanently abandoned',
         );
       },
@@ -156,9 +136,10 @@ test('serializes typed WorkHub action failures across Electron IPC', async () =>
     {
       ok: false,
       error: {
-        code: 'operation_conflict',
+        code,
         message: 'WorkHub action is permanently abandoned',
       },
     },
   );
 });
+}

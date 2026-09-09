@@ -2016,16 +2016,6 @@ const makaBridge = {
         (scope) => ipcRenderer.invoke('workhub:resolveCoordinationSession', scope),
       );
     },
-    async record(
-      coordinationSessionId: string,
-      input: { turnId: string; userText: string; assistantText: string },
-    ): Promise<{ turnId: string }> {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
-        coordinationSessionId,
-        runtimeHostSessionRef,
-      );
-      return ipcRenderer.invoke('workhub:record', scope, input) as Promise<{ turnId: string }>;
-    },
     async candidates(
       coordinationSessionId: string,
     ): Promise<OperationOutput<'workhub.coordination.candidates'>> {

@@ -36,6 +36,7 @@ import {
 } from '@maka/runtime/interaction-authority';
 import type {
   ExecutionStoresWriter,
+  CoordinationTranscriptReference,
   SessionTranscriptMessageLookupRequest,
   SessionTranscriptPageRequest,
   SessionTranscriptRecordScanPage,
@@ -78,6 +79,16 @@ const TRANSCRIPT_LOOKUP_MAX_TURNS = 2;
 const COORDINATION_TRANSCRIPT_SCAN_LIMIT = 64;
 const COORDINATION_TRANSCRIPT_SCAN_MAX_BYTES = DURABLE_TRANSCRIPT_TURN_MAX_BYTES;
 
+/** A bounded index batch committed; no complete snapshot is available yet. */
+export class CoordinationTranscriptIndexPending extends Error {
+  readonly name = 'CoordinationTranscriptIndexPending';
+  constructor(readonly indexedThrough: number | null) {
+    super(
+      `Coordination history is preparing (indexed through ${indexedThrough ?? 'none'}); retry to continue`,
+    );
+  }
+}
+
 export function createSessionTranscriptReader(input: {
   stores: ExecutionStoresWriter<'interactive'>;
   canonicalPermissionOutcomes: CanonicalPermissionOutcomeReader;
@@ -89,11 +100,11 @@ export function createSessionTranscriptReader(input: {
   ensureTranscriptLedger?: (sessionId: string) => Promise<void>;
 }): SessionTranscriptReader {
   const ledger = createDurableLedgerTranscriptReader(input);
-  const coordination = createCoordinationTranscriptReader(input.stores);
+  const coordination = createCoordinationTranscriptReader(input.stores, ledger.source);
   const isCoordination = (sessionId: string): boolean =>
     sessionId === WORKHUB_COORDINATION_SESSION_ID;
-  // Only a ledger-backed Session has a conversion; the Coordination Session's
-  // rows are the transcript, not something a run left behind.
+  // Coordination retains atomic link facts and released history in the legacy
+  // source, while admitted Run output comes from the same ledger reader.
   const prepared = async (sessionId: string): Promise<typeof ledger> => {
     if (isCoordination(sessionId)) return coordination;
     await input.ensureTranscriptLedger?.(sessionId);
@@ -245,6 +256,17 @@ function createDurableLedgerTranscriptReader(input: {
     if (projected.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)) {
       throw new Error('Durable RuntimeEvent transcript projection is incomplete');
     }
+    const admission =
+      turn.invocation.sessionId === WORKHUB_COORDINATION_SESSION_ID
+        ? await input.stores.agentRunStore.readRootTurnAdmission(
+            turn.invocation.sessionId,
+            turn.invocation.turnId,
+          )
+        : undefined;
+    const actionId =
+      admission?.execution.kind === 'workhub_coordination'
+        ? admission.execution.actionId
+        : undefined;
     const ordinals = new Map(turn.events.map((entry) => [entry.event.id, entry.ordinal]));
     const emitted = new Map<number, number>();
     return projected.messages.map((message, index) => {
@@ -257,7 +279,13 @@ function createDurableLedgerTranscriptReader(input: {
         throw new Error('RuntimeEvent exceeds its transcript sequence stride');
       }
       emitted.set(ordinal, offset + 1);
-      return { sequence: ordinal * EVENT_SEQUENCE_STRIDE + offset, message };
+      return {
+        sequence: ordinal * EVENT_SEQUENCE_STRIDE + offset,
+        message:
+          message.type === 'user' && actionId
+            ? { ...message, coordinationActionId: actionId }
+            : message,
+      };
     });
   };
 
@@ -337,10 +365,12 @@ function createDurableLedgerTranscriptReader(input: {
     }
   };
 
+  const source: TranscriptRecordSource = { readHighWater: highWater, scan };
   return {
+    source,
     readHighWater: highWater,
 
-    ...pagedTranscriptReads({ readHighWater: highWater, scan }),
+    ...pagedTranscriptReads(source),
 
     /** One row per Turn, folded from the Turn's own projected messages. */
     async readTurnContributions(
@@ -552,28 +582,16 @@ function pagedTranscriptReads(source: TranscriptRecordSource) {
   };
 }
 
-/**
- * The WorkHub Coordination Session's transcript, read from the rows the WorkHub
- * writes.
- *
- * Every other Session's transcript is what its runs did, so the ledger holds
- * all of it. The Coordination Session's is not: a delegation, a stop and a
- * routing summary are appended under a Turn id that no root Turn admission ever
- * minted, so there is no invocation for the ledger to hang them on and no
- * conversion that could lift them. `workhub.coordination.answer` is the one
- * path that would admit a real Turn and nothing in the renderer calls it.
- *
- * Delete this source once the WorkHub admits a Coordination Turn for every
- * action, which its own ADR already requires (#3492,
- * `docs/architecture/workhub-coordination-session-adr.md`): the Session then
- * reads like any other and this reader has nothing left to do.
- */
-function createCoordinationTranscriptReader(stores: ExecutionStoresWriter<'interactive'>) {
+/** Legacy atomic facts and Runtime output share one bounded cursor projection. */
+function createCoordinationTranscriptReader(
+  stores: ExecutionStoresWriter<'interactive'>,
+  ledger: TranscriptRecordSource,
+) {
   const store = stores.sessionStore;
-  const highWater = (sessionId: string): Promise<number | null> =>
+  const legacyHighWater = (sessionId: string): Promise<number | null> =>
     store.readTranscriptHighWaterSnapshot(sessionId);
 
-  const scan = async function* (
+  const legacyScan = async function* (
     sessionId: string,
     request: {
       direction: 'older' | 'newer';
@@ -582,7 +600,9 @@ function createCoordinationTranscriptReader(stores: ExecutionStoresWriter<'inter
     },
   ): AsyncGenerator<{ sequence: number; message: StoredMessage }> {
     const throughSequence =
-      request.throughSequence === undefined ? await highWater(sessionId) : request.throughSequence;
+      request.throughSequence === undefined
+        ? await legacyHighWater(sessionId)
+        : request.throughSequence;
     if (throughSequence === null) return;
     const older = request.direction === 'older';
     const position = request.position ?? (older ? throughSequence : 0);
@@ -602,8 +622,15 @@ function createCoordinationTranscriptReader(stores: ExecutionStoresWriter<'inter
     }
   };
 
-  const source: TranscriptRecordSource = { readHighWater: highWater, scan };
+  const source = mergeTranscriptSources(
+    { readHighWater: legacyHighWater, scan: legacyScan },
+    ledger,
+    store,
+  );
+  const highWater = source.readHighWater;
+  const scan = source.scan;
   return {
+    source,
     readHighWater: highWater,
 
     ...pagedTranscriptReads(source),
@@ -645,19 +672,134 @@ function createCoordinationTranscriptReader(stores: ExecutionStoresWriter<'inter
       const throughSequence = await highWater(sessionId);
       if (throughSequence === null) return { throughSequence: null, landmarks: [] };
       const landmarks: SessionTurnLandmark[] = [];
+      const seen = new Set<string>();
       for await (const { sequence, message } of scan(sessionId, {
         direction: 'newer',
         throughSequence,
       })) {
-        if (message.type !== 'user' || message.turnId === undefined) continue;
-        const label = (message.displayText ?? message.text ?? '').trim();
-        if (!label) continue;
-        landmarks.push({ turnId: message.turnId, sequence, label });
+        const receipt =
+          message.type === 'workhub_coordination' && message.kind === 'action_receipt'
+            ? message.receipt
+            : undefined;
+        const turnId = message.turnId;
+        const identity = receipt?.actionId ?? turnId;
+        const label = (
+          receipt?.userText ??
+          (message.type === 'user' ? (message.displayText ?? message.text) : '')
+        ).trim();
+        if (!turnId || !identity || !label || seen.has(identity)) continue;
+        seen.add(identity);
+        landmarks.push({ turnId, sequence, label });
         if (landmarks.length === maxLandmarks) break;
       }
       return { throughSequence, landmarks };
     },
   };
+}
+
+/**
+ * The stores have independent append orders, and event timestamps can regress.
+ * Retain only source references in a rebuildable index, allocating stable page
+ * positions once. Bodies and execution facts remain in their original store.
+ * Refresh drains bounded batches; pages seek the index and project one source
+ * Turn/batch at a time, including after a Host restart.
+ */
+function mergeTranscriptSources(
+  legacy: TranscriptRecordSource,
+  ledger: TranscriptRecordSource,
+  store: ExecutionStoresWriter<'interactive'>['sessionStore'],
+): TranscriptRecordSource {
+  const sources = { legacy, runtime: ledger };
+  let refreshing: Promise<number | null> | undefined;
+  const refresh = async (sessionId: string): Promise<number | null> => {
+    const state = await store.readCoordinationTranscriptIndexState();
+    const lanes = ['legacy', 'runtime'] as const;
+    const limits = await Promise.all(lanes.map((lane) => sources[lane].readHighWater(sessionId)));
+    const walks = lanes.map((lane, index) =>
+      sources[lane].scan(sessionId, {
+        direction: 'newer',
+        throughSequence: limits[index]!,
+        position: (state[lane] ?? -1) + 1,
+      }),
+    );
+    try {
+      const heads = await Promise.all(walks.map((walk) => walk.next()));
+      let batch: CoordinationTranscriptReference[] = [];
+      while (
+        heads.some((head) => !head.done) &&
+        batch.length < COORDINATION_TRANSCRIPT_SCAN_LIMIT
+      ) {
+        // Time is only a presentation hint for newly observed facts, never a
+        // cursor or a reason to move an already indexed record.
+        const lane = heads[0]!.done
+          ? 1
+          : heads[1]!.done
+            ? 0
+            : heads[0]!.value.message.ts <= heads[1]!.value.message.ts
+              ? 0
+              : 1;
+        batch.push({ source: lanes[lane]!, sourceSequence: heads[lane]!.value!.sequence });
+        heads[lane] = await walks[lane]!.next();
+      }
+      if (batch.length) await store.appendCoordinationTranscriptIndex(batch);
+      const highWater = (await store.readCoordinationTranscriptIndexState()).highWater;
+      if (heads.some((head) => !head.done)) throw new CoordinationTranscriptIndexPending(highWater);
+      return highWater;
+    } finally {
+      await Promise.all(walks.map((walk) => walk.return(undefined)));
+    }
+  };
+  const readHighWater = (sessionId: string): Promise<number | null> => {
+    refreshing ??= refresh(sessionId).finally(() => {
+      refreshing = undefined;
+    });
+    return refreshing;
+  };
+  const scan: TranscriptRecordSource['scan'] = async function* (sessionId, request) {
+    const watermark =
+      request.throughSequence === undefined
+        ? await readHighWater(sessionId)
+        : request.throughSequence;
+    if (watermark === null) return;
+    const state = await store.readCoordinationTranscriptIndexState();
+    const older = request.direction === 'older';
+    let position = request.position ?? (older ? watermark : 0);
+    let batches = 0;
+    for (;;) {
+      if (request.maxTurns !== undefined && batches++ >= request.maxTurns) return;
+      const refs = await store.readCoordinationTranscriptIndex({
+        direction: request.direction,
+        throughSequence: watermark,
+        position,
+        limit: COORDINATION_TRANSCRIPT_SCAN_LIMIT,
+      });
+      if (!refs.length) return;
+      const walks: Partial<
+        Record<
+          CoordinationTranscriptReference['source'],
+          ReturnType<TranscriptRecordSource['scan']>
+        >
+      > = {};
+      try {
+        for (const ref of refs) {
+          const walk = (walks[ref.source] ??= sources[ref.source].scan(sessionId, {
+            direction: request.direction,
+            throughSequence: state[ref.source],
+            position: ref.sourceSequence,
+          }));
+          const record = await walk.next();
+          if (record.done || record.value.sequence !== ref.sourceSequence) {
+            throw new Error('Coordination transcript source reference is missing');
+          }
+          yield { sequence: ref.sequence, message: record.value.message };
+        }
+      } finally {
+        await Promise.all(Object.values(walks).map((walk) => walk.return(undefined)));
+      }
+      position = refs.at(-1)!.sequence + (older ? -1 : 1);
+    }
+  };
+  return { readHighWater, scan };
 }
 
 function ordinalOf(sequence: number): number {

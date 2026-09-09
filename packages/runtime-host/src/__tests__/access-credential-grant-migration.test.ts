@@ -135,6 +135,22 @@ test('a released operation is dropped from the record and reported as accounted 
   assert.deepEqual(unresolvedPersistedGrants(file), []);
 });
 
+test('retired Coordination record grant is released through read and rewrite', async () => {
+  const path = await writeAccessFile({
+    schemaVersion: 3,
+    credentials: [storedCredential(['host.status', 'workhub.coordination.record'])],
+    sessionGrants: [],
+    turnAccessRequests: [],
+  });
+  const file = await readAccessCredentialFile(path);
+  assert.deepEqual(file.credentials[0]?.grants, ['host.status']);
+  assert.deepEqual(unresolvedPersistedGrants(file), []);
+  await writeAccessCredentialFile(path, file);
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).credentials[0].operationGrants, [
+    'host.status',
+  ]);
+});
+
 test('a Session Guest holds the current guest policy, not what its record says', async () => {
   const path = await writeAccessFile({
     schemaVersion: 3,
