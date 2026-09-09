@@ -39,7 +39,7 @@ import {
   type WorkHubDelegationStopRequestedMessage,
   type WorkHubDelegationStopResolvedMessage,
 } from '@maka/core/session';
-import type { SessionAuthorityStore, SessionHeaderSnapshot } from '@maka/storage/session-store';
+import type { ExecutionSessionWriter, SessionHeaderSnapshot } from '@maka/storage/execution-stores';
 import type {
   OperationOutcome,
   WorkHubCoordinationActResult,
@@ -84,7 +84,7 @@ const COORDINATION_SUMMARY_READ_MAX_BYTES =
   16 * 1024;
 
 type CoordinationStores = Pick<
-  SessionAuthorityStore,
+  ExecutionSessionWriter,
   | 'appendMessages'
   | 'createStableSession'
   | 'listHeaders'

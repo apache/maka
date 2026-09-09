@@ -52,7 +52,7 @@ import {
   type SessionHeaderSnapshot,
   type ExecutionStoresWriter,
 } from '@maka/storage/execution-stores';
-import type { CreateStableSessionRequest } from '@maka/storage/session-store';
+import type { CreateStableSessionRequest } from '@maka/storage/execution-stores';
 import { isVisibleSessionMessage } from '@maka/storage/session-message-projection';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import {

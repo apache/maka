@@ -17,6 +17,19 @@
  * under the License.
  */
 
+import {
+  SessionMetadataConflictError,
+  SessionMetadataVersionConflictError,
+  type VersionedSessionIdentity,
+  type SessionConfigurationMetadataUpdate,
+} from './session-store-contract.js';
+export {
+  SessionMetadataConflictError,
+  SessionMetadataVersionConflictError,
+  type VersionedSessionIdentity,
+  type SessionConfigurationMetadataUpdate,
+} from './session-store-contract.js';
+
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
@@ -121,6 +134,7 @@ import {
   messageContentDigest,
   messageContentsEqual,
   normalizeMessageContent,
+  type MessageContent,
 } from '@maka/core/events';
 import {
   type AgentGraphIntentAdmissionSnapshot,
@@ -138,8 +152,6 @@ import {
 import { type SessionListFilter } from '@maka/core/runtime-inputs';
 import {
   assertSafeSessionId,
-  decodePersistedSessionHeader,
-  normalizeSessionHeader,
   SessionNotFoundError,
   type ExternalSessionImportLookupResult,
   type CoordinationTranscriptReference,
@@ -149,7 +161,8 @@ import {
   type SessionMessageScanRecord,
   type SessionMessageScanRequest,
   type SessionTranscriptMessageLookupRequest,
-} from './session-store.js';
+} from './session-store-contract.js';
+import { decodePersistedSessionHeader, normalizeSessionHeader } from './session-store.js';
 import {
   isDiscardableConversationCopy,
   isValidConversationCopyTransition,
@@ -336,11 +349,6 @@ export interface SessionAuthoritySnapshot {
   boundary: ExecutionBoundary;
 }
 
-export interface VersionedSessionIdentity {
-  readonly sessionId: string;
-  readonly expectedVersion: number;
-}
-
 export type SessionRemovalProbe =
   | { readonly kind: 'present'; readonly record: SessionMetadataRecord }
   | { readonly kind: 'removed' }
@@ -386,35 +394,9 @@ export type StableSessionMetadataCreateResult =
       readonly reason: 'identity_mismatch' | 'removed';
     };
 
-export interface SessionConfigurationMetadataUpdate {
-  readonly expectedVersion: number;
-  readonly configuration: {
-    readonly backend: SessionHeader['backend'];
-    readonly llmConnectionId: string;
-    readonly llmConnectionSlug: string;
-    readonly connectionLocked: boolean;
-    readonly model: string;
-    readonly thinkingLevel: SessionHeader['thinkingLevel'];
-    readonly permissionMode: SessionHeader['permissionMode'];
-    readonly collaborationMode: NonNullable<SessionHeader['collaborationMode']>;
-    readonly orchestrationMode: NonNullable<SessionHeader['orchestrationMode']>;
-    readonly labels: readonly string[];
-  };
-  readonly lifecycle:
-    | { readonly kind: 'preserve' }
-    | {
-        readonly kind: 'clear_connection_block';
-        readonly statusUpdatedAt: number;
-      };
-}
-
 export interface IdempotentAgentGraphOperatorMetadataResult
   extends AgentGraphOperatorProvisionResult {
   record: SessionMetadataRecord;
-}
-
-export class SessionMetadataConflictError extends Error {
-  readonly name: string = 'SessionMetadataConflictError';
 }
 
 export class StoredSessionMessageIncompatibleError extends Error {
@@ -427,20 +409,6 @@ export class StoredSessionMessageIncompatibleError extends Error {
     options?: ErrorOptions,
   ) {
     super(`Stored Session message ${sequence} for ${sessionId} is incompatible`, options);
-  }
-}
-
-export class SessionMetadataVersionConflictError extends SessionMetadataConflictError {
-  readonly name = 'SessionMetadataVersionConflictError';
-
-  constructor(
-    readonly sessionId: string,
-    readonly expectedVersion: number,
-    readonly actualVersion: number,
-  ) {
-    super(
-      `Session metadata version conflict for ${sessionId}: expected ${expectedVersion}, found ${actualVersion}`,
-    );
   }
 }
 
@@ -6568,7 +6536,7 @@ function sameWorkHubAssignmentRequest(
       disposition: existing.disposition,
       userText: existing.userText,
       delegationText: existing.delegationText,
-      attachments: existing.attachments,
+      attachments: existing.attachments ?? [],
       create: existing.create,
       replacesActionId: existing.replacesActionId,
       replacesDelegationId: existing.replacesDelegationId,
@@ -6581,7 +6549,7 @@ function sameWorkHubAssignmentRequest(
       disposition: requested.disposition,
       userText: requested.userText,
       delegationText: requested.delegationText,
-      attachments: requested.attachments,
+      attachments: requested.attachments ?? [],
       create: requested.create,
       replacesActionId: requested.replacesActionId,
       replacesDelegationId: requested.replacesDelegationId,

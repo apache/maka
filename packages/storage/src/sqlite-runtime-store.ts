@@ -17,6 +17,21 @@
  * under the License.
  */
 
+import type {
+  CommitToolPreparedInput,
+  CommitToolOutcomeInput,
+  ToolCommitResult,
+  SessionRuntimeEventEntry,
+  ToolOperationRecord,
+} from './runtime-event-store-contract.js';
+export type {
+  CommitToolPreparedInput,
+  CommitToolOutcomeInput,
+  ToolCommitResult,
+  SessionRuntimeEventEntry,
+  ToolOperationRecord,
+} from './runtime-event-store-contract.js';
+
 import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -204,59 +219,13 @@ export interface SqliteRuntimeStoreOptions {
   databaseLease?: OperationalStateDatabaseLease;
 }
 
-export interface CommitToolPreparedInput {
-  operationId: string;
-  journalEventId: string;
-  runtimeEvent: RuntimeEvent;
-  dispatchRuntimeEvent: RuntimeEvent;
-  providerToolCallId: string;
-  toolName: string;
-  canonicalArgsHash: string;
-  recoveryMode: ToolRecoveryMode;
-  committedAt: number;
-}
-
-export interface CommitToolOutcomeInput {
-  operationId: string;
-  journalEventId: string;
-  runtimeEvent: RuntimeEvent;
-  committedAt: number;
-}
-
-export interface ToolCommitResult {
-  created: boolean;
-  runtimeEventSeq: number;
-}
-
 export interface RuntimeEventBatchImportResult {
   created: boolean[];
-}
-
-/** Storage-owned, immutable append position for an Event within one Session. */
-export interface SessionRuntimeEventEntry {
-  readonly ordinal: number;
-  readonly event: RuntimeEvent;
 }
 
 export interface ToolProjectionRebuildResult {
   operations: number;
   journalEvents: number;
-}
-
-export interface ToolOperationRecord {
-  operationId: string;
-  invocationId: string;
-  runId: string;
-  turnId: string;
-  providerToolCallId: string;
-  toolName: string;
-  canonicalArgsHash: string;
-  recoveryMode: ToolRecoveryMode;
-  currentState: 'prepared' | 'outcome_committed' | 'recovery_completed' | 'recovery_parked';
-  callEventId: string;
-  dispatchEventId?: string;
-  resultEventId?: string;
-  version: number;
 }
 
 export interface ToolJournalEventRecord {
