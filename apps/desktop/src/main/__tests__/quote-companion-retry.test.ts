@@ -2477,7 +2477,9 @@ test('recovers every queued Side Conversation successor across one observation g
   let secondFollowUpId: string | undefined;
   let markSeeded: (() => void) | undefined;
   let durableMessages: StoredMessage[] = [];
+  const pendingFirstFollowUp = deferred<{ kind: 'started'; turnId: string }>();
   const executionQueries: string[][] = [];
+  const targetedTurnReads: string[] = [];
   const { container, emit, send, queue } = await renderOwnershipProbe({
     subscribeEvents: (_sessionId, _handler, onSeeded) => {
       markSeeded = onSeeded;
@@ -2490,11 +2492,68 @@ test('recovers every queued Side Conversation successor across one observation g
     },
     submitFollowUp: async (_sessionId, placement, text, messageId) => {
       assert.equal(placement, 'next_turn');
-      if (text === 'follow-up one') firstFollowUpId = messageId;
-      else secondFollowUpId = messageId;
+      if (text === 'follow-up one') {
+        firstFollowUpId = messageId;
+        return pendingFirstFollowUp.promise;
+      }
+      secondFollowUpId = messageId;
       return { kind: 'queued' as const };
     },
-    readSettledMessages: async () => ({ messages: durableMessages, settled: true }),
+    readSettledMessages: async (_sessionId, options) => {
+      if (options?.requiredTurnId === 'turn-b') {
+        targetedTurnReads.push(options.requiredTurnId);
+        return {
+          messages: [
+            {
+              type: 'user',
+              id: firstFollowUpId as string,
+              turnId: 'turn-b',
+              ts: 3,
+              text: 'follow-up one',
+            },
+            {
+              type: 'assistant',
+              id: 'assistant-b',
+              turnId: 'turn-b',
+              ts: 4,
+              text: 'answer B',
+              modelId: 'test-model',
+            },
+            {
+              type: 'turn_state',
+              id: 'complete-b',
+              turnId: 'turn-b',
+              ts: 5,
+              status: 'completed',
+            },
+            {
+              type: 'user',
+              id: secondFollowUpId as string,
+              turnId: 'turn-c',
+              ts: 6,
+              text: 'follow-up two',
+            },
+            {
+              type: 'assistant',
+              id: 'assistant-c',
+              turnId: 'turn-c',
+              ts: 7,
+              text: 'answer C',
+              modelId: 'test-model',
+            },
+            {
+              type: 'turn_state',
+              id: 'complete-c',
+              turnId: 'turn-c',
+              ts: 8,
+              status: 'completed',
+            },
+          ],
+          settled: true,
+        };
+      }
+      return { messages: durableMessages, settled: true };
+    },
     queryMessageExecutions: async (_sessionId, messageIds) => {
       executionQueries.push([...messageIds]);
       return {
@@ -2512,8 +2571,13 @@ test('recovers every queued Side Conversation successor across one observation g
     assert.equal(await send('initial prompt'), true);
     await Promise.resolve();
   });
+  let firstFollowUpResult!: Promise<boolean>;
   await act(async () => {
-    assert.equal(await queue('follow-up one'), true);
+    firstFollowUpResult = queue('follow-up one');
+    await Promise.resolve();
+  });
+  await waitUntil(() => firstFollowUpId !== undefined);
+  await act(async () => {
     assert.equal(await queue('follow-up two'), true);
     await Promise.resolve();
   });
@@ -2546,28 +2610,20 @@ test('recovers every queued Side Conversation successor across one observation g
       ts: 2,
       status: 'completed',
     },
-    {
-      type: 'user',
-      id: durableFirstFollowUpId,
-      turnId: 'turn-b',
-      ts: 3,
-      text: 'follow-up one',
-    },
-    {
-      type: 'assistant',
-      id: 'assistant-b',
-      turnId: 'turn-b',
-      ts: 4,
-      text: 'answer B',
-      modelId: 'test-model',
-    },
-    {
-      type: 'turn_state',
-      id: 'complete-b',
-      turnId: 'turn-b',
-      ts: 5,
-      status: 'completed',
-    },
+  ];
+
+  await act(async () => {
+    emit(completeEvent('event-complete-a', 'turn-a', 2));
+    await Promise.resolve();
+  });
+  await waitUntil(
+    () => container.firstElementChild?.getAttribute('data-message-texts')
+      === 'initial prompt|answer A',
+  );
+
+  // Both queued successors finish while observation is unavailable, but the
+  // bounded recovery tail contains only the later terminal Turn C.
+  durableMessages = [
     {
       type: 'user',
       id: durableSecondFollowUpId,
@@ -2600,16 +2656,25 @@ test('recovers every queued Side Conversation successor across one observation g
     await Promise.resolve();
   });
 
-  await waitUntil(
-    () => container.firstElementChild?.getAttribute('data-message-texts')
-      === 'initial prompt|answer A|follow-up one|answer B|follow-up two|answer C',
-  );
+  await waitUntil(() => targetedTurnReads.length > 0);
   assert.ok(
     executionQueries.some((messageIds) =>
       messageIds.includes(durableFirstFollowUpId)),
   );
+  assert.deepEqual(targetedTurnReads, ['turn-b']);
+  assert.equal(
+    container.firstElementChild?.getAttribute('data-message-texts'),
+    'initial prompt|answer A|follow-up one|answer B|follow-up two|answer C',
+  );
   assert.equal(container.firstElementChild?.getAttribute('data-transient-count'), '0');
   assert.equal(container.firstElementChild?.getAttribute('data-streaming'), 'false');
+
+  await act(async () => {
+    pendingFirstFollowUp.resolve({ kind: 'started', turnId: 'turn-b' });
+    assert.equal(await firstFollowUpResult, true);
+    await Promise.resolve();
+  });
+  assert.equal(container.firstElementChild?.getAttribute('data-live-turn-id'), '');
 });
 
 test('fails a send when observation seed rejects and resubscribes for retry', async () => {

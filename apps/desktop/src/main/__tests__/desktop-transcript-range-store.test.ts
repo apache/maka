@@ -37,7 +37,10 @@ import {
   DesktopTranscriptRangeStore,
 } from '../../renderer/desktop-transcript-range-store.js';
 import { mergeSettledMessages } from '../../renderer/settled-message-merge.js';
-import { readSettledMessages } from '../../renderer/session-message-settlement.js';
+import {
+  readSettledMessages,
+  readSettledMessagesFrom,
+} from '../../renderer/session-message-settlement.js';
 import { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
 import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
 
@@ -52,6 +55,18 @@ test('merges a settled tail without dropping earlier messages', () => {
     settled,
     latest,
   ]);
+});
+
+test('merges an anchored historical range before its overlapping tail', () => {
+  const answerA = { ...assistantMessage('answer A', 'assistant-a'), turnId: 'turn-a', ts: 9 };
+  const answerB = { ...assistantMessage('answer B', 'assistant-b'), turnId: 'turn-b', ts: 20 };
+  const partialC = { ...assistantMessage('partial C', 'assistant-c'), turnId: 'turn-c', ts: 10 };
+  const answerC = { ...partialC, text: 'answer C' };
+
+  assert.deepEqual(
+    mergeSettledMessages([answerA, partialC], [answerB, answerC]),
+    [answerA, answerB, answerC],
+  );
 });
 
 test('cancels settlement while transcript open is pending', async () => {
@@ -88,6 +103,131 @@ test('cancels settlement while transcript open is pending', async () => {
     if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
     else Reflect.deleteProperty(globalThis, 'window');
   }
+});
+
+test('reads one Host-owned Turn outside the bounded transcript tail', async () => {
+  const sessionKey = JSON.stringify(['host-1', 'session-1']);
+  const turnB: StoredMessage[] = [
+    userMessage('follow-up one', 'user-b'),
+    { ...assistantMessage('answer B', 'assistant-b'), turnId: 'turn-b', ts: 4 },
+    {
+      type: 'turn_state',
+      id: 'complete-b',
+      turnId: 'turn-b',
+      ts: 5,
+      status: 'completed',
+    },
+  ];
+  const turnC: StoredMessage[] = [
+    userMessage('follow-up two', 'user-c'),
+    { ...assistantMessage('answer C', 'assistant-c'), turnId: 'turn-c', ts: 7 },
+    {
+      type: 'turn_state',
+      id: 'complete-c',
+      turnId: 'turn-c',
+      ts: 8,
+      status: 'completed',
+    },
+  ];
+  const navigations: Array<{ sequence: number | null; turnId?: string }> = [];
+  let deliverySequence = 0;
+
+  const result = await readSettledMessagesFrom(
+    {
+      open: async (_sessionId, handler) => {
+        for (const batch of encodeDesktopTranscriptSnapshot({
+          sessionId: 'session-1',
+          generation: 'generation-1',
+          hostEpoch: 'host-1',
+          navigationVersion: 0,
+          durableThrough: 8,
+          durable: turnC.map((message, index) => ({ sequence: index + 6, message })),
+          overlay: [],
+          hasOlder: true,
+          hasNewer: false,
+        })) handler({ ...batch, deliverySequence: ++deliverySequence });
+        return {
+          sessionId: sessionKey,
+          generation: 'generation-1',
+          hostEpoch: 'host-1',
+          readThroughMessageId: 'complete-c',
+          async loadBefore() {},
+          async loadAfter() {},
+          async loadAround(sequence, _maxBytes, navigation) {
+            navigations.push({ sequence, turnId: navigation?.readingTurnId });
+            for (const batch of encodeDesktopTranscriptSnapshot({
+              sessionId: 'session-1',
+              generation: 'generation-1',
+              hostEpoch: 'host-1',
+              navigationVersion: navigation?.navigationVersion,
+              durableThrough: 8,
+              durable: turnB.map((message, index) => ({ sequence: index + 3, message })),
+              overlay: [],
+              hasOlder: true,
+              hasNewer: true,
+            })) handler({ ...batch, deliverySequence: ++deliverySequence });
+          },
+          async close() {},
+        };
+      },
+    },
+    sessionKey,
+    { requiredTurnId: 'turn-b' },
+  );
+
+  assert.deepEqual(navigations, [{ sequence: null, turnId: 'turn-b' }]);
+  assert.deepEqual(result, { messages: [...turnB, ...turnC], settled: true });
+});
+
+test('does not settle when a targeted Host-owned Turn cannot be recovered', async () => {
+  const sessionKey = JSON.stringify(['host-1', 'session-1']);
+  const tail: StoredMessage[] = [
+    { ...assistantMessage('answer C', 'assistant-c'), turnId: 'turn-c', ts: 7 },
+    {
+      type: 'turn_state',
+      id: 'complete-c',
+      turnId: 'turn-c',
+      ts: 8,
+      status: 'completed',
+    },
+  ];
+  let targetedRead = false;
+  let deliverySequence = 0;
+
+  const result = await readSettledMessagesFrom(
+    {
+      open: async (_sessionId, handler) => {
+        for (const batch of encodeDesktopTranscriptSnapshot({
+          sessionId: 'session-1',
+          generation: 'generation-1',
+          hostEpoch: 'host-1',
+          navigationVersion: 0,
+          durableThrough: 8,
+          durable: tail.map((message, index) => ({ sequence: index + 7, message })),
+          overlay: [],
+          hasOlder: true,
+          hasNewer: false,
+        })) handler({ ...batch, deliverySequence: ++deliverySequence });
+        return {
+          sessionId: sessionKey,
+          generation: 'generation-1',
+          hostEpoch: 'host-1',
+          readThroughMessageId: 'complete-c',
+          async loadBefore() {},
+          async loadAfter() {},
+          async loadAround() {
+            targetedRead = true;
+          },
+          async close() {},
+        };
+      },
+    },
+    sessionKey,
+    { requiredTurnId: 'missing-turn' },
+  );
+
+  assert.equal(targetedRead, true);
+  assert.deepEqual(result, { messages: tail, settled: false });
 });
 
 test('moves a fragmented overlay record to durable storage without duplicating it', () => {

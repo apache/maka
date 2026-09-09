@@ -79,6 +79,30 @@ function createBridgeRecorder(): {
 }
 
 describe('createDesktopWorkbarServices', () => {
+  it('waits for Host admission before accepting a Side Conversation follow-up', async () => {
+    const { bridge, calls } = createBridgeRecorder();
+    const services = createDesktopWorkbarServices(bridge, {
+      readSettledMessages: async () => ({ messages: [], settled: true }),
+    });
+
+    await services.sideChat.submitFollowUp(
+      'fork',
+      'next_turn',
+      'later',
+      'message-next',
+    );
+
+    assert.deepEqual(
+      calls.find((call) => call.name === 'sessions.submitMessage')?.args,
+      [
+        'fork',
+        'next_turn',
+        { messageId: 'message-next', text: 'later' },
+        { waitForHostAdmission: true },
+      ],
+    );
+  });
+
   it('preserves the Side Conversation Stop identity kind', async () => {
     const { bridge, calls } = createBridgeRecorder();
     const services = createDesktopWorkbarServices(bridge, {
@@ -175,6 +199,7 @@ describe('createDesktopWorkbarServices', () => {
     await services.sideChat.listTurns('s');
     await services.sideChat.readSettledMessages('s', {
       requiredAssistantMessageId: 'message',
+      requiredTurnId: 'turn',
     });
     await services.sideChat.branchFromTurn('s', {
       sourceTurnId: 'turn',
@@ -293,18 +318,20 @@ describe('createDesktopWorkbarServices', () => {
     assert.equal(settledReads[0]?.[0], bridge.transcripts);
     assert.deepEqual(settledReads[0]?.slice(1), [
       's',
-      { requiredAssistantMessageId: 'message' },
+      { requiredAssistantMessageId: 'message', requiredTurnId: 'turn' },
     ]);
     const followUpCalls = calls.filter((call) => call.name === 'sessions.submitMessage');
     assert.deepEqual(followUpCalls[0]?.args, [
       'fork',
       'next_turn',
       { messageId: 'message-next', text: 'later' },
+      { waitForHostAdmission: true },
     ]);
     assert.deepEqual(followUpCalls[1]?.args, [
       'fork',
       'current_turn',
       { messageId: 'message-current', text: 'more' },
+      { waitForHostAdmission: true },
     ]);
     assert.deepEqual(nextFollowUp, { kind: 'queued' });
     assert.deepEqual(currentFollowUp, { kind: 'queued' });

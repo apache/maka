@@ -25,6 +25,7 @@ const COMMITTED_ASSISTANT_SETTLE_TIMEOUT_MS = 480;
 
 export interface RefreshMessagesOptions {
   requiredAssistantMessageId?: string;
+  requiredTurnId?: string;
   signal?: AbortSignal;
 }
 
@@ -94,14 +95,38 @@ async function readSettledMessagesUsing(
   try {
     handle = await Promise.race([opening, cancellation]);
     globalThis.clearTimeout(openTimeout);
+    const requiredTurnId = options.requiredTurnId;
+    let retainedDurable: ReturnType<DesktopTranscriptRangeStore['durableEntries']> | undefined;
+    if (
+      requiredTurnId !== undefined &&
+      !transcriptRecordsTerminalTurn(store.snapshot().messages, requiredTurnId)
+    ) {
+      retainedDurable = store.durableEntries();
+      const navigation = {
+        navigationVersion: 1,
+        intent: 'history' as const,
+        preserveRange: true,
+        readingTurnId: requiredTurnId,
+      };
+      store.expectNavigation(navigation.navigationVersion);
+      const targetedRead = handle.loadAround(null, undefined, navigation);
+      void targetedRead.catch(() => undefined);
+    }
     while (true) {
       const snapshot = store.snapshot();
       const requiredMessageId = options.requiredAssistantMessageId;
       const settled =
         snapshot.ready &&
-        (requiredMessageId === undefined || store.hasDurableMessage(requiredMessageId));
+        (requiredMessageId === undefined || store.hasDurableMessage(requiredMessageId)) &&
+        (requiredTurnId === undefined ||
+          transcriptRecordsTerminalTurn(snapshot.messages, requiredTurnId));
       if (settled || Date.now() >= deadline) {
-        return { messages: [...snapshot.messages], settled };
+        return {
+          messages: retainedDurable
+            ? mergeTranscriptRanges(retainedDurable, store.durableEntries(), snapshot.messages)
+            : [...snapshot.messages],
+          settled,
+        };
       }
       await Promise.race([
         nextChange,
@@ -116,4 +141,30 @@ async function readSettledMessagesUsing(
     options.signal?.removeEventListener('abort', abort);
     await handle?.close().catch(() => undefined);
   }
+}
+
+function mergeTranscriptRanges(
+  retained: ReturnType<DesktopTranscriptRangeStore['durableEntries']>,
+  current: ReturnType<DesktopTranscriptRangeStore['durableEntries']>,
+  currentMessages: readonly StoredMessage[],
+): StoredMessage[] {
+  const durableBySequence = new Map(retained.map(({ sequence, message }) => [sequence, message]));
+  for (const { sequence, message } of current) durableBySequence.set(sequence, message);
+  const durable = [...durableBySequence]
+    .sort(([left], [right]) => left - right)
+    .map(([, message]) => message);
+  const durableIds = new Set(durable.map((message) => message.id));
+  return durable.concat(currentMessages.filter((message) => !durableIds.has(message.id)));
+}
+
+function transcriptRecordsTerminalTurn(
+  messages: readonly StoredMessage[],
+  turnId: string,
+): boolean {
+  return messages.some(
+    (message) =>
+      message.type === 'turn_state' &&
+      message.turnId === turnId &&
+      message.status !== 'running',
+  );
 }

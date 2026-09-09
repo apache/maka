@@ -486,6 +486,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       const { resolutions } = await sideChat.queryMessageExecutions(forkId, messageIds);
       if (!mountedRef.current || companionIdRef.current !== forkId) return;
       const cancelled = new Set<string>();
+      const unprovenOwnedTurnIds = new Set<string>();
       let ownershipChanged = false;
       for (const resolution of resolutions) {
         if (resolution.state === 'cancelled') {
@@ -494,6 +495,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           const previousSize = ownTurnIdsRef.current.size;
           ownTurnIdsRef.current.add(resolution.turnId);
           ownershipChanged ||= ownTurnIdsRef.current.size !== previousSize;
+          if (!transcriptRecordsTerminalTurn(allMessagesRef.current, resolution.turnId)) {
+            unprovenOwnedTurnIds.add(resolution.turnId);
+          }
         }
       }
       if (ownershipChanged) {
@@ -502,6 +506,18 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         setOwnTurnTick((tick) => tick + 1);
       }
       for (const messageId of cancelled) pendingUserMessagesRef.current.delete(messageId);
+      if (unprovenOwnedTurnIds.size > 0) {
+        const recovered = await Promise.allSettled(
+          [...unprovenOwnedTurnIds].map((turnId) =>
+            sideChat.readSettledMessages(forkId, { requiredTurnId: turnId })),
+        );
+        if (!mountedRef.current || companionIdRef.current !== forkId) return;
+        for (const result of recovered) {
+          if (result.status === 'fulfilled' && result.value.settled) {
+            mergeDurableMessages(result.value.messages);
+          }
+        }
+      }
       const renderable = allMessagesRef.current.filter(
         (message) => message.turnId !== undefined && ownTurnIdsRef.current.has(message.turnId),
       );
@@ -516,7 +532,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     } catch {
       // A failed proof query leaves presentation intact until canonical proof arrives.
     }
-  }, [mountedRef, sideChat, syncPendingUserMessages]);
+  }, [mergeDurableMessages, mountedRef, sideChat, syncPendingUserMessages]);
 
   const applyOwnedEvent = useCallback(
     (forkId: string, event: SessionEvent) => {
@@ -708,7 +724,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     };
     let messages: StoredMessage[];
     try {
-      ({ messages } = await sideChat.readSettledMessages(forkId));
+      ({ messages } = await sideChat.readSettledMessages(forkId, {
+        requiredTurnId: turnId,
+      }));
       if (!mountedRef.current || companionIdRef.current !== forkId) {
         if (activeTurnIdRef.current === turnId) activeTurnIdRef.current = null;
         return false;

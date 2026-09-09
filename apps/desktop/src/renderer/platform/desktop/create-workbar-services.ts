@@ -53,10 +53,15 @@ export function createDesktopWorkbarServices(
     text,
     admissionId,
   ) => {
-    const result = await bridge.sessions.submitMessage(sessionId, placement, {
-      messageId: admissionId,
-      text,
-    });
+    const result = await bridge.sessions.submitMessage(
+      sessionId,
+      placement,
+      {
+        messageId: admissionId,
+        text,
+      },
+      { waitForHostAdmission: true },
+    );
     if (!result.ok) {
       if (result.reason === 'outcome_unknown') {
         return { kind: 'outcome_unknown' };

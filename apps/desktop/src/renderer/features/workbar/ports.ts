@@ -208,7 +208,7 @@ export interface SideChatSessionPort {
   listTurns(sessionId: string): Promise<TurnRecord[]>;
   readSettledMessages(
     sessionId: string,
-    options?: { requiredAssistantMessageId?: string },
+    options?: { requiredAssistantMessageId?: string; requiredTurnId?: string },
   ): Promise<{ messages: StoredMessage[]; settled: boolean }>;
   branchFromTurn(
     sessionId: string,
