@@ -174,6 +174,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
   return (
     <div
       className="maka-browser-panel"
+      data-maka-assistant-exclude="browser"
       role="region"
       aria-label={state.title ? copy.panelAriaWithTitle(state.title) : copy.panelAria}
     >

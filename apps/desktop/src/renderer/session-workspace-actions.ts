@@ -37,7 +37,7 @@ import type { StoredMessage } from '@maka/core/session';
 import type { TransientUserMessageProjection } from '@maka/ui';
 import { MESSAGE_QUEUE_MAX_ENTRIES } from '@maka/runtime-host/protocol';
 import { clearNewTaskReloadIntent, markNewTaskReloadIntent } from './new-task-reload-intent.js';
-import type { DesktopTranscriptRangeController } from './desktop-transcript-range-store.js';
+import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
 import {
   mergeTransientMessageProjection,
   projectQueuedTransientMessages as applyQueuedTransientProjection,

@@ -355,7 +355,31 @@ export interface SessionStore {
   close?(): Promise<void>;
 }
 
+/** Rebuildable ordering only; the message body remains in its original store. */
+export interface CoordinationTranscriptReference {
+  readonly source: 'legacy' | 'runtime';
+  readonly sourceSequence: number;
+}
+export interface CoordinationTranscriptIndexRecord extends CoordinationTranscriptReference {
+  readonly sequence: number;
+}
+export interface CoordinationTranscriptIndexState {
+  readonly highWater: number | null;
+  readonly legacy: number | null;
+  readonly runtime: number | null;
+}
+
 export interface SessionAuthorityStore extends SessionStore, MessageAdmissionStore {
+  readCoordinationTranscriptIndexState(): Promise<CoordinationTranscriptIndexState>;
+  appendCoordinationTranscriptIndex(
+    records: readonly CoordinationTranscriptReference[],
+  ): Promise<void>;
+  readCoordinationTranscriptIndex(request: {
+    direction: 'older' | 'newer';
+    throughSequence: number;
+    position: number;
+    limit: number;
+  }): Promise<readonly CoordinationTranscriptIndexRecord[]>;
   /** Read a bounded set of durable messages at an inclusive transcript watermark. */
   readTranscriptMessagesSnapshot(
     sessionId: string,
@@ -460,7 +484,10 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     expectedRevision?: `sha256:${string}`,
   ): Promise<SessionCatalogPageResult>;
   readHeaderRecordSnapshot(sessionId: string): Promise<SessionHeaderSnapshot>;
-  readCatalogRecord(sessionId: string): Promise<SessionCatalogRecord>;
+  readCatalogRecord(
+    sessionId: string,
+    roleScope?: 'ordinary' | 'recoverable',
+  ): Promise<SessionCatalogRecord>;
   updateHeaderVersioned(
     sessionId: string,
     patch: SessionHeaderPatch,
@@ -958,9 +985,12 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return projectHeaderSnapshot(await this.metadata.read(sessionId));
   }
 
-  async readCatalogRecord(sessionId: string): Promise<SessionCatalogRecord> {
+  async readCatalogRecord(
+    sessionId: string,
+    roleScope: 'ordinary' | 'recoverable' = 'ordinary',
+  ): Promise<SessionCatalogRecord> {
     await this.ensureCatalogProjectionReadable();
-    const record = await this.metadata.readCatalogRecord(sessionId);
+    const record = await this.metadata.readCatalogRecord(sessionId, roleScope);
     return {
       ...projectHeaderSnapshot(record),
       activityAt: record.activityAt,
@@ -984,6 +1014,28 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async readTranscriptHighWaterSnapshot(sessionId: string): Promise<number | null> {
     await this.ensureReady();
     return this.metadata.readTranscriptHighWater(sessionId);
+  }
+
+  async readCoordinationTranscriptIndexState(): Promise<CoordinationTranscriptIndexState> {
+    await this.ensureReady();
+    return this.metadata.readCoordinationTranscriptIndexState();
+  }
+
+  async appendCoordinationTranscriptIndex(
+    records: readonly CoordinationTranscriptReference[],
+  ): Promise<void> {
+    await this.ensureReady();
+    return this.metadata.appendCoordinationTranscriptIndex(records);
+  }
+
+  async readCoordinationTranscriptIndex(request: {
+    direction: 'older' | 'newer';
+    throughSequence: number;
+    position: number;
+    limit: number;
+  }): Promise<readonly CoordinationTranscriptIndexRecord[]> {
+    await this.ensureReady();
+    return this.metadata.readCoordinationTranscriptIndex(request);
   }
 
   async listTurnsSnapshot(sessionId: string): Promise<TurnRecord[]> {

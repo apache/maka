@@ -56,7 +56,7 @@ test('MCP tools stay bound to the connection generation that advertised them', a
       resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: [] as never,
-      releaseComputerUseSession() {},
+      releaseDesktopInteractionSession() {},
       additionalGroups: () => [
         {
           offerId: 'desktop_mcp_fixture',

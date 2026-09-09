@@ -1883,6 +1883,14 @@ type ActionCoverageSamples = {
 };
 
 const ACTION_COVERAGE_SAMPLES: ActionCoverageSamples = {
+  coordination: {
+    action: {
+      actionId: 'clarify',
+      userText: 'Which task?',
+      result: { disposition: 'clarify', coordinationTurnId: 'turn-1' },
+      clarification: 'Please name a task.',
+    },
+  },
   handoffPause: {
     action: {
       protocol: 'runtime_handoff_pause_v1',
@@ -2405,3 +2413,32 @@ function makeHeader(id: string): SessionHeader {
     schemaVersion: 1,
   };
 }
+
+test('Coordination receipts materialize as host facts, never assistant output', () => {
+  const receipt = {
+    actionId: 'clarify',
+    userText: 'Which task?',
+    clarification: 'Please name a task.',
+    result: { disposition: 'clarify' as const, coordinationTurnId: turnId },
+  };
+  const out = projectRuntimeEventsToStoredMessages(
+    [
+      ev({
+        id: 'coordination',
+        author: 'host',
+        modelVisibility: 'hidden',
+        actions: { coordination: receipt },
+      }),
+    ],
+    { invocations: [invocation] },
+  );
+  assert.ok(
+    out.messages.some(
+      (message) => message.type === 'workhub_coordination' && message.kind === 'action_receipt',
+    ),
+  );
+  assert.equal(
+    out.messages.some((message) => message.type === 'assistant'),
+    false,
+  );
+});

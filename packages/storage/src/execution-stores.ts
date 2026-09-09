@@ -125,6 +125,7 @@ export type {
   SessionHeaderSnapshot,
   SessionTranscriptMessageLookupRequest,
   SessionTranscriptPageRequest,
+  CoordinationTranscriptReference,
   SessionTranscriptRecordScanPage,
   SessionTranscriptRecordScanRequest,
   SessionTranscriptStoragePage,
@@ -438,11 +439,18 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       readHeaderSnapshot: (sessionId) => run(() => sessionStore.readHeaderSnapshot(sessionId)),
       readHeaderRecordSnapshot: (sessionId) =>
         run(() => sessionStore.readHeaderRecordSnapshot(sessionId)),
-      readCatalogRecord: (sessionId) => run(() => sessionStore.readCatalogRecord(sessionId)),
+      readCatalogRecord: (sessionId, roleScope) =>
+        run(() => sessionStore.readCatalogRecord(sessionId, roleScope)),
       probeSessionRemoval: (sessionId) => run(() => sessionStore.probeSessionRemoval(sessionId)),
       readMessagesSnapshot: (sessionId) => run(() => sessionStore.readMessagesSnapshot(sessionId)),
       readTranscriptMessagesSnapshot: (sessionId, request) =>
         run(() => sessionStore.readTranscriptMessagesSnapshot(sessionId, request)),
+      readCoordinationTranscriptIndexState: () =>
+        run(() => sessionStore.readCoordinationTranscriptIndexState()),
+      appendCoordinationTranscriptIndex: (records) =>
+        run(() => sessionStore.appendCoordinationTranscriptIndex(records)),
+      readCoordinationTranscriptIndex: (request) =>
+        run(() => sessionStore.readCoordinationTranscriptIndex(request)),
       readTranscriptHighWaterSnapshot: (sessionId) =>
         run(() => sessionStore.readTranscriptHighWaterSnapshot(sessionId)),
       listTurnsSnapshot: (sessionId) => run(() => sessionStore.listTurnsSnapshot(sessionId)),

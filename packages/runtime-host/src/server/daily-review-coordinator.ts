@@ -52,6 +52,7 @@ import {
 import type { DailyReviewOperationHandlerMap } from './operation-dispatcher.js';
 import type { HostDailyReviewModel } from './execution-model-authority.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
+import type { HostResidencyKind } from './host-residency-registry.js';
 import {
   CanonicalUsageProjectionIncompleteError,
   readCanonicalUsageBuckets,
@@ -66,7 +67,7 @@ export interface HostDailyReviewCoordinatorInput {
   readonly usage: InteractiveUsageStoresWriter;
   readonly sessions: Pick<ExecutionSessionWriter, 'list'>;
   readonly model: HostDailyReviewModel;
-  readonly acquireResidency: () => RuntimeHostResidency;
+  readonly acquireResidency: (kind?: HostResidencyKind) => RuntimeHostResidency;
   readonly requestDrain: () => void;
   readonly now?: () => number;
   readonly setInterval?: (callback: () => void, delayMs: number) => unknown;
@@ -84,7 +85,7 @@ export class HostDailyReviewCoordinator {
   readonly #usage: InteractiveUsageStoresWriter;
   readonly #sessions: HostDailyReviewCoordinatorInput['sessions'];
   readonly #model: HostDailyReviewModel;
-  readonly #acquireResidency: () => RuntimeHostResidency;
+  readonly #acquireResidency: HostDailyReviewCoordinatorInput['acquireResidency'];
   readonly #requestDrain: () => void;
   readonly #now: () => number;
   readonly #setInterval: (callback: () => void, delayMs: number) => unknown;
@@ -103,6 +104,8 @@ export class HostDailyReviewCoordinator {
   #prepared = false;
   #started = false;
   #schedulerEnabled = false;
+  #handoffHeld = false;
+  #schedulerTask: Promise<void> | undefined;
   #draining = false;
   #timer: unknown;
   #residency: RuntimeHostResidency | undefined;
@@ -156,10 +159,51 @@ export class HostDailyReviewCoordinator {
     }
   }
 
+  holdForHandoff():
+    | {
+        settled(): Promise<void>;
+        residencies(): readonly RuntimeHostResidency[] | undefined;
+        release(): void;
+      }
+    | undefined {
+    if (this.#draining || this.#handoffHeld) return undefined;
+    this.#handoffHeld = true;
+    this.#stopTimer();
+    let released = false;
+    return {
+      settled: async () => {
+        // Include scheduler reads as well as generation: a tick may still be
+        // checking configuration or an archive when the hold is acquired.
+        while (this.#schedulerTask || this.#inFlight.size > 0) {
+          await Promise.allSettled([
+            this.#schedulerTask,
+            ...[...this.#inFlight.values()].map((entry) => entry.promise),
+          ]);
+        }
+      },
+      residencies: () => {
+        if (released || this.#draining || this.#schedulerTask || this.#inFlight.size > 0)
+          return undefined;
+        return this.#residency ? [this.#residency] : [];
+      },
+      release: () => {
+        if (released) return;
+        released = true;
+        this.#handoffHeld = false;
+        if (this.#draining) return;
+        this.#reconcileScheduler(this.#schedulerEnabled);
+        void this.#tickScheduler().catch((error: unknown) => this.#handleSchedulerError(error));
+      },
+    };
+  }
+
   close(): Promise<void> {
     this.#closeTask ??= (async () => {
       this.beginDrain();
-      await Promise.allSettled([...this.#inFlight.values()].map((entry) => entry.promise));
+      await Promise.allSettled([
+        this.#schedulerTask,
+        ...[...this.#inFlight.values()].map((entry) => entry.promise),
+      ]);
     })();
     return this.#closeTask;
   }
@@ -315,6 +359,10 @@ export class HostDailyReviewCoordinator {
       await inFlight.promise.catch(() => undefined);
       return this.#run(input);
     }
+    // Keep actual generation distinct from the idle scheduler hold. Besides
+    // protecting a run when scheduling is disabled, its release tells handoff
+    // observers that work finished after a bounded safe-pause attempt timed out.
+    const residency = this.#acquireResidency();
     const pending = this.#generateArchive(archiveId, day, now, modelKeyOverride, input);
     const entry = {
       modelKeyOverride,
@@ -327,6 +375,7 @@ export class HostDailyReviewCoordinator {
       return await pending;
     } finally {
       if (this.#inFlight.get(archiveId) === entry) this.#inFlight.delete(archiveId);
+      residency.release();
     }
   }
 
@@ -426,28 +475,42 @@ export class HostDailyReviewCoordinator {
   }
 
   #reconcileScheduler(enabled: boolean): void {
+    this.#schedulerEnabled = enabled;
     if (!enabled || this.#draining) {
       this.#stopScheduler();
       return;
     }
-    this.#residency ??= this.#acquireResidency();
+    if (this.#handoffHeld) return;
+    this.#residency ??= this.#acquireResidency('idle');
     this.#timer ??= this.#setInterval(() => {
       void this.#tickScheduler().catch((error: unknown) => this.#handleSchedulerError(error));
     }, SCHEDULER_INTERVAL_MS);
   }
 
   #stopScheduler(): void {
-    if (this.#timer !== undefined) {
-      this.#clearInterval(this.#timer);
-      this.#timer = undefined;
-    }
+    this.#stopTimer();
     this.#residency?.release();
     this.#residency = undefined;
   }
 
-  async #tickScheduler(): Promise<void> {
-    if (!this.#prepared || this.#draining) return;
+  #stopTimer(): void {
+    if (this.#timer !== undefined) {
+      this.#clearInterval(this.#timer);
+      this.#timer = undefined;
+    }
+  }
+
+  #tickScheduler(): Promise<void> {
+    if (!this.#prepared || this.#draining || this.#handoffHeld) return Promise.resolve();
+    this.#schedulerTask ??= this.#runScheduler().finally(() => {
+      this.#schedulerTask = undefined;
+    });
+    return this.#schedulerTask;
+  }
+
+  async #runScheduler(): Promise<void> {
     const { config } = await this.#store.readConfig();
+    if (this.#draining || this.#handoffHeld) return;
     this.#reconcileScheduler(config.enabled);
     const now = this.#now();
     if (!config.enabled || !scheduledTimeHasPassed(now, config.executeTime)) return;
@@ -456,6 +519,7 @@ export class HostDailyReviewCoordinator {
     const day = localDayBoundsAt(now, -1);
     const archiveId = dailyReviewArchiveId(day, 1);
     if (await this.#store.getArchive(archiveId)) return;
+    if (this.#draining || this.#handoffHeld) return;
     await this.#run({
       range: 1,
       offsetDays: -1,
