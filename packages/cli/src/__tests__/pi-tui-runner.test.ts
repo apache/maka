@@ -66,7 +66,7 @@ import { skillInvocationBlockedMessage } from '../session-driver.js';
 import { SafeBoundaryResumeParkedError } from '../runtime-host-session-driver.js';
 import { listApiKeyOnboardableProviders } from '../onboarding-catalog.js';
 import { projectRuntimeHostModelChoices } from '../runtime-host-onboarding.js';
-import { modelChoiceConnectionLabels } from '../pi-tui-pickers.js';
+import { modelChoiceConnectionLabels, OnboardingWizard } from '../pi-tui-pickers.js';
 import type {
   MakaOnboardingSurface,
   MakaPiTuiTurnActivitySurface,
@@ -98,6 +98,7 @@ import {
   waitForTuiPaint,
 } from './tui-terminal-mock.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { renderFixture } from './tui-render-fixture.js';
 
 // Deadline for `Promise.race([run, …])` close watchdogs. A passing race
 // resolves the moment `run` settles, so this only bounds how long a FAILING
@@ -1686,19 +1687,22 @@ describe('Maka Pi TUI runner', () => {
     assert.equal(terminal.stopCalls, 1);
   });
 
-  test('wizard identity step sends a caller-chosen slug and name on the create target', async () => {
+  test('wizard identity step sends a caller-chosen slug and name on the create target', async (t) => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
     const verifyCalls: OnboardingVerifyInput[] = [];
     const saveCalls: OnboardingSaveInput[] = [];
-    const editorEndCursor = '\x1b[7m \x1b[0m';
-    const identityFieldLine = (expectedText: string) => {
-      const line = terminal.writes
-        .flatMap((write) => write.split('\n'))
-        .reverse()
-        .find((line) => plainTerminalOutput(line).trim() === expectedText);
-      assert.ok(line, `expected a rendered field: ${expectedText}`);
-      return line;
+    const ENTER = '\r';
+    const CLEAR_LINE = '\x15'; // Ctrl+U.
+    // Record real renders before TUI consumes the IME marker.
+    const render = t.mock.method(OnboardingWizard.prototype, 'render');
+    const assertIdentity = async (fixture: string) => {
+      await waitFor(() => render.mock.callCount() > 0, 'wizard redraw');
+      const call = render.mock.calls.at(-1);
+      assert.ok(call?.result, 'the wizard must render its fields');
+      // Name, the separating blank row, and Slug in this identity layout.
+      assert.deepEqual(call.result.slice(3, 6), renderFixture(fixture, call.arguments[0]));
+      render.mock.resetCalls();
     };
     const run = runMakaPiTui({
       title: 'Maka',
@@ -1732,29 +1736,55 @@ describe('Maka Pi TUI runner', () => {
 
     await waitForTuiPaint(terminal);
     terminal.input('/setup');
-    terminal.input('\r');
+    terminal.input(ENTER);
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
-    terminal.input('\r'); // pick the only row -> identity step, name focused
+    terminal.input(ENTER); // pick the only row -> identity step, name focused
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('2/4'));
-    assert.equal(identityFieldLine('Name OpenAI').includes(editorEndCursor), true);
-    assert.equal(identityFieldLine('Slug openai').includes(editorEndCursor), false);
-    // Replace the prefilled provider label with a display name.
-    for (let i = 0; i < 'OpenAI'.length; i++) terminal.input('\x7f');
+    await assertIdentity(`
+Name OpenAI<cursor>
+
+Slug openai
+`);
+
+    terminal.input(CLEAR_LINE);
+    await assertIdentity(`
+Name <cursor>
+
+Slug openai
+`);
+
     terminal.input('Work OpenAI');
-    terminal.input('\r'); // name -> slug field
-    await waitFor(
-      () => identityFieldLine('Slug openai').includes(editorEndCursor),
-      'the identity cursor to move from Name to Slug',
-    );
-    assert.equal(identityFieldLine('Name Work OpenAI').includes(editorEndCursor), false);
-    assert.equal(identityFieldLine('Slug openai').includes(editorEndCursor), true);
-    // Replace the derived suggestion with a chosen slug.
-    for (let i = 0; i < 'openai'.length; i++) terminal.input('\x7f');
+    await assertIdentity(`
+Name Work OpenAI<cursor>
+
+Slug openai
+`);
+
+    terminal.input(ENTER);
+    await assertIdentity(`
+Name Work OpenAI
+
+Slug openai<cursor>
+`);
+
+    terminal.input(CLEAR_LINE);
+    await assertIdentity(`
+Name Work OpenAI
+
+Slug <cursor>
+`);
+
     terminal.input('openai-work');
-    terminal.input('\r'); // slug -> key phase
+    await assertIdentity(`
+Name Work OpenAI
+
+Slug openai-work<cursor>
+`);
+
+    terminal.input(ENTER); // slug -> key phase
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
     terminal.input('sk-live');
-    terminal.input('\r');
+    terminal.input(ENTER);
     await waitFor(() => verifyCalls.length === 1);
     assert.deepEqual(verifyCalls[0]?.target, {
       kind: 'create',
@@ -1764,7 +1794,7 @@ describe('Maka Pi TUI runner', () => {
     });
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
     terminal.input(' '); // toggle the model on
-    terminal.input('\r'); // save
+    terminal.input(ENTER); // save
     await waitFor(() => saveCalls.length === 1);
     assert.deepEqual(saveCalls[0]?.target, verifyCalls[0]?.target);
 

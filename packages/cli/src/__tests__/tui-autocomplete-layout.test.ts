@@ -19,47 +19,72 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { Editor, Text, TuiMainScreen } from '@earendil-works/pi-tui';
+import { Editor, Spacer, Text, TuiMainScreen } from '@earendil-works/pi-tui';
 import {
   fitAutocompleteLines,
   MakaAutocompleteAboveEditorComponent,
 } from '../tui-autocomplete-layout.js';
 import { fitPendingQueueLines } from '../pi-tui-layout.js';
 import { editorTheme } from '../tui-ansi.js';
-import { FakeTerminal } from './tui-terminal-mock.js';
+import { FakeTerminal, plainTerminalOutput } from './tui-terminal-mock.js';
+import { renderFixture } from './tui-render-fixture.js';
 
-const REVERSE_ON = '\x1b[7m';
-const CYAN_FOREGROUND = '\x1b[36m';
-const RESET_FOREGROUND = '\x1b[39m';
-
-test('an overlay hides the composer cursor, preserves its draft and colors, and restores focus', (t) => {
-  const terminal = new FakeTerminal();
+test('an overlay hides the composer cursor and preserves its draft and border colors', (t) => {
+  const WIDTH = 40;
+  const CYAN_FOREGROUND = '\x1b[36m';
+  const RESET_FOREGROUND = '\x1b[39m';
+  // Emit color even under NO_COLOR so accidental style loss remains detectable.
+  const borderColor = (text: string) => `${CYAN_FOREGROUND}${text}${RESET_FOREGROUND}`;
+  const terminal = new FakeTerminal(WIDTH, 4);
   const tui = new TuiMainScreen(terminal);
   t.after(() => tui.stop());
-  const editor = new Editor(tui, {
-    ...editorTheme(),
-    // Emit color even under NO_COLOR so the test can detect accidental style loss.
-    borderColor: (text) => `${CYAN_FOREGROUND}${text}${RESET_FOREGROUND}`,
-  });
+  const editor = new Editor(tui, { ...editorTheme(), borderColor });
   editor.setText('draft');
   const composer = new MakaAutocompleteAboveEditorComponent(editor);
+  tui.addChild(new Spacer(1)); // Reserve the first row for the overlay.
   tui.addChild(composer);
   tui.setFocus(composer);
-  const renderScreen = () => {
-    terminal.writes.length = 0;
+  const render = t.mock.method(composer, 'render');
+  const assertScreen = (fixture: string) => {
     tui.renderNow(true);
-    return terminal.output();
+    const expected = renderFixture(fixture, WIDTH);
+    // Check the composed screen, including the overlay's placement.
+    assert.deepEqual(
+      terminal
+        .screenOutput()
+        .split('\n')
+        .map((line) => line.padEnd(WIDTH)),
+      expected.map(plainTerminalOutput),
+    );
+    // Check cursor + IME before TUI consumes the marker, retaining border colors.
+    assert.deepEqual(
+      render.mock.calls.at(-1)?.result,
+      expected.slice(1).map((line) => line.replaceAll('─', borderColor('─'))),
+    );
   };
 
-  assert.ok(renderScreen().includes(REVERSE_ON));
+  assertScreen(`
+
+────────────────────────────────────────
+draft<cursor>
+────────────────────────────────────────
+`);
+
   const overlay = tui.showOverlay(new Text('Picker', 0, 0), { anchor: 'top-left' });
-  const screen = renderScreen();
-  assert.ok(screen.includes('Picker'));
-  assert.ok(screen.includes('draft'));
-  assert.ok(screen.includes(CYAN_FOREGROUND), 'unfocused editor borders must keep their color');
-  assert.ok(!screen.includes(REVERSE_ON), 'the inactive composer must not show a block cursor');
+  assertScreen(`
+Picker
+────────────────────────────────────────
+draft
+────────────────────────────────────────
+`);
+
   overlay.hide();
-  assert.ok(renderScreen().includes(REVERSE_ON));
+  assertScreen(`
+
+────────────────────────────────────────
+draft<cursor>
+────────────────────────────────────────
+`);
 });
 
 describe('fitAutocompleteLines', () => {

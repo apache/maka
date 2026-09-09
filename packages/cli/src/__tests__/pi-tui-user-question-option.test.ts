@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CURSOR_MARKER, TuiMainScreen, visibleWidth } from '@earendil-works/pi-tui';
+import { TuiMainScreen, visibleWidth } from '@earendil-works/pi-tui';
 import type { TUI } from '@earendil-works/pi-tui';
 import {
   clampRowsWithEllipsis,
@@ -27,20 +27,22 @@ import {
   UserQuestionOverlay,
 } from '../pi-tui-pickers.js';
 import { ansi, stripAnsi } from '../tui-ansi.js';
-import { FakeTerminal, plainTerminalOutput } from './tui-terminal-mock.js';
-
-const ARROW_UP = '\x1b[A';
-const ARROW_DOWN = '\x1b[B';
-const ARROW_LEFT = '\x1b[D';
-const ENTER = '\r';
+import { FakeTerminal } from './tui-terminal-mock.js';
+import { renderFixture } from './tui-render-fixture.js';
 
 // SGR reverse degrades to identity when the terminal reports no color support
 // (piped CI), so the highlight assertion keys off this build's actual behavior.
 const REVERSE_ON = '\u001b[7m';
 const COLOR_ENABLED = ansi.reverse('').length > 0;
 
-test('Other keeps its draft and shows a cursor only while its input row is selected', () => {
-  const draft = 'custom e\u0301';
+test('Other keeps its wrapped draft and restores its cursor after refocus', () => {
+  const WIDTH = 40;
+  const ARROW_UP = '\x1b[A';
+  const ARROW_DOWN = '\x1b[B';
+  const ARROW_LEFT = '\x1b[D';
+  const ENTER = '\r';
+  const draft =
+    'Please use the custom provider and keep the current model settings for this workspace';
   const answers: string[] = [];
   const overlay = new UserQuestionOverlay(new TuiMainScreen(new FakeTerminal()), {
     title: 'Pick one',
@@ -52,35 +54,63 @@ test('Other keeps its draft and shows a cursor only while its input row is selec
     onSubmitText: (value) => answers.push(value),
     onSkip: () => undefined,
   });
-  const inputLine = () => {
-    const row = overlay.render(40).find((line) => plainTerminalOutput(line).includes(draft));
-    assert.ok(row, 'the typed answer must remain visible');
-    return row;
-  };
+  // Keep all choices and input rows; omit the title, hint, blank row and divider.
+  const assertQuestionBody = (fixture: string) =>
+    assert.deepEqual(overlay.render(WIDTH).slice(3, -1), renderFixture(fixture, WIDTH));
 
-  overlay.handleInput(draft); // Typing on a preset jumps to Other.
-  const focused = inputLine();
-  assert.ok(focused.includes(REVERSE_ON));
-  assert.ok(focused.includes(CURSOR_MARKER));
+  overlay.handleInput(draft);
+  assertQuestionBody(`
+  Preset
+→ Please use the custom provider and
+  keep the current model settings for
+  this workspace<cursor>
+`);
 
-  overlay.handleInput(ARROW_UP); // Other -> preset.
-  assert.ok(!inputLine().includes(REVERSE_ON), 'the inactive input must hide its cursor');
-  assert.ok(!inputLine().includes(CURSOR_MARKER), 'the inactive input must not anchor the IME');
-  overlay.handleInput(ARROW_DOWN);
-  assert.equal(inputLine(), focused, 'refocus restores the cursor and IME position');
-
-  overlay.handleInput(ARROW_LEFT); // Put the cursor on e + combining accent, not a trailing space.
-  const focusedOnCharacter = inputLine();
-  assert.ok(focusedOnCharacter.includes(`${REVERSE_ON}e\u0301`));
   overlay.handleInput(ARROW_UP);
-  assert.ok(!inputLine().includes(REVERSE_ON), 'a cursor on a character must also disappear');
+  assertQuestionBody(`
+<selected>→ Preset</selected>
+  Please use the custom provider and
+  keep the current model settings for
+  this workspace
+`);
+
   overlay.handleInput(ARROW_DOWN);
-  assert.equal(
-    inputLine(),
-    focusedOnCharacter,
-    'refocus restores the cursor on the combining character',
-  );
+  assertQuestionBody(`
+  Preset
+→ Please use the custom provider and
+  keep the current model settings for
+  this workspace<cursor>
+`);
+
+  overlay.handleInput(ARROW_LEFT);
+  assertQuestionBody(`
+  Preset
+→ Please use the custom provider and
+  keep the current model settings for
+  this workspac<cursor>e
+`);
+
+  overlay.handleInput(ARROW_UP);
+  assertQuestionBody(`
+<selected>→ Preset</selected>
+  Please use the custom provider and
+  keep the current model settings for
+  this workspace
+`);
+
+  overlay.handleInput(ARROW_DOWN);
+  assertQuestionBody(`
+  Preset
+→ Please use the custom provider and
+  keep the current model settings for
+  this workspac<cursor>e
+`);
+
   overlay.handleInput(ENTER);
+  assertQuestionBody(`
+  Preset
+→ <cursor>
+`);
   assert.deepEqual(answers, [draft]);
 });
 
