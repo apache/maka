@@ -2085,16 +2085,19 @@ export const PartialHistoryNotice: Story = {
 /** Stops the harness below, so the tail can be read against a settled transcript. */
 let stopTailStream: (() => void) | undefined;
 let startTailStream: (() => void) | undefined;
+let settleTailTurn: (() => void) | undefined;
 
 /** Streams one line per frame into a live Turn. */
-function StreamingTailHarness() {
+function StreamingTailHarness({ pendingUser = false }: { pendingUser?: boolean } = {}) {
   const [question, setQuestion] = useState<string>();
+  const [settled, setSettled] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [viewportNavigation] = useState(createTranscriptViewportNavigation);
   const [lines, setLines] = useState(1);
   useEffect(() => {
     startTailStream = () => setStreaming(true);
-    return () => { startTailStream = undefined; };
+    settleTailTurn = () => setSettled(true);
+    return () => { startTailStream = undefined; settleTailTurn = undefined; };
   }, []);
   useEffect(() => {
     if (!streaming) return;
@@ -2120,7 +2123,7 @@ function StreamingTailHarness() {
   }, [streaming]);
   return (
     <ComposedShell
-      session={{ status: question ? 'running' : 'active', streaming: Boolean(question) }}
+      session={{ status: question && !settled ? 'running' : 'active', streaming: Boolean(question) && !settled }}
       composer={{
         onSend: (text) => {
           // Production publishes this once before admitting the sent Message.
@@ -2131,23 +2134,29 @@ function StreamingTailHarness() {
         },
       }}
       chat={{
-        runningStatus: Boolean(question),
+        runningStatus: Boolean(question) && !settled,
+        transientMessages: pendingUser && question && !settled ? [{
+          id: 'msg-tail-1', text: question, ts: NOW - 30_000,
+          transientPlacement: 'current_turn', hostTurnId: 'turn-tail',
+          deliveryStatus: '已接收',
+        }] : [],
         viewportNavigation,
         messages: [
           user('history-question', 'history-turn', 6, '已有问题。'),
           assistant('history-answer', 'history-turn', 5, TAIL_LINES.slice(0, 40).join('\n\n')),
           ...(question ? [
-            user('msg-tail-1', 'turn-tail', 3, question),
+            ...(!pendingUser || settled ? [user('msg-tail-1', 'turn-tail', 3, question)] : []),
+            ...(settled ? [assistant('msg-assistant-tail', 'turn-tail', 2, TAIL_LINES.slice(0, lines).join('\n\n'))] : []),
             {
               type: 'turn_state' as const,
               id: 'state-tail',
               turnId: 'turn-tail',
               ts: NOW - 30_000,
-              status: 'running' as const,
+              status: settled ? 'completed' as const : 'running' as const,
             },
           ] : []),
         ],
-        liveTurn: question ? {
+        liveTurn: question && !settled ? {
           turnId: 'turn-tail',
           phase: 'streamed',
           steps: [{
@@ -2253,6 +2262,25 @@ export const MultilineSubmittedPromptDoesNotReverse: Story = {
 export const TallSubmittedPromptDoesNotReverse: Story = {
   render: () => <StreamingTailHarness />,
   play: async ({ canvasElement }) => verifySubmittedPrompt(canvasElement, 80),
+};
+
+export const SubmittedPromptSettlesWithoutReversing: Story = {
+  render: () => <StreamingTailHarness pendingUser />,
+  play: async ({ canvasElement }) => {
+    await verifySubmittedPrompt(canvasElement);
+    const turn = canvasElement.querySelector('[data-transcript-turn-id="turn-tail"]')!;
+    const before = turn.getBoundingClientRect().top;
+    const offsets: number[] = [];
+    settleTailTurn?.();
+    for (let frame = 0; frame < 40; frame += 1) {
+      await painted(1);
+      offsets.push(turn.getBoundingClientRect().top - before);
+    }
+    expect(Math.max(...offsets), JSON.stringify(offsets)).toBeLessThanOrEqual(4);
+    expect(canvasElement.querySelector('.maka-message-delivery')).toBeNull();
+    expect(canvasElement.querySelector('.maka-turn-processing')).toBeNull();
+    expect(tailMetrics().distance).toBeLessThanOrEqual(4);
+  },
 };
 
 /** Lets a play function drive props React owns. One story renders per page. */
@@ -2408,7 +2436,9 @@ export const ReaderScrolledUpIsNotPulledBack: Story = {
       await painted(1);
       iconTops.push(contextGauge.querySelector('svg')!.getBoundingClientRect().top);
     }
-    expect(Math.max(...iconTops) - Math.min(...iconTops)).toBeLessThanOrEqual(0.25);
+    // Chromium rounds the native scroll limit to a CSS pixel; a fractional
+    // content height can move the sticky dock by up to half a pixel.
+    expect(Math.max(...iconTops) - Math.min(...iconTops)).toBeLessThanOrEqual(0.5);
   },
 };
 
