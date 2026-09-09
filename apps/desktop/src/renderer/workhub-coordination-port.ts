@@ -50,18 +50,12 @@ const WORKHUB_COORDINATION_LATEST_RECORD_MAX_BYTES = 512 * 1024;
 export function createDesktopWorkHubCoordinationPort(deps: {
   sessionId: string;
   transcripts: WorkHubDesktopTranscriptBridge;
-  record(input: {
-    turnId: string;
-    userText: string;
-    assistantText: string;
-  }): Promise<{ turnId: string }>;
   candidates(): Promise<WorkHubCoordinationCandidatesResult>;
   act(
     input: Omit<WorkHubCoordinationActInput, 'create'>,
   ): Promise<OperationOutcome<'workhub.coordination.act'>>;
 }): WorkHubCoordinationPort {
   return {
-    record: deps.record,
     candidates: deps.candidates,
     async act(input) {
       const outcome = await deps.act(input);
@@ -164,8 +158,19 @@ export function projectWorkHubCoordinationTurns(
   const stateByTurnId = new Map(
     deriveTurnRecords(messages).map((turn) => [turn.turnId, projectState(turn.status)]),
   );
+  const factualTurnIds = new Set(messages.flatMap((message) => {
+    if (message.type !== 'workhub_coordination') return [];
+    if (message.kind === 'action_receipt' &&
+      (message.receipt.result.disposition === 'clarify' || message.receipt.result.disposition === 'resume_work')) {
+      return [message.receipt.actionId, message.turnId];
+    }
+    return message.kind === 'delegation_assigned' || message.kind === 'delegation_stop_requested'
+      ? [message.coordinationTurnId, message.actionId]
+      : [];
+  }));
   const turns: WorkHubCoordinationTurn[] = [];
   const latestUserIndexByTurnId = new Map<string, number>();
+  const receiptIndexByActionId = new Map<string, number>();
   const terminalLinkState = new Map<string, 'superseded' | 'aborted' | 'stopped'>();
   const stopResolutionByDelegationId = new Map(
     messages.flatMap((message) =>
@@ -180,11 +185,32 @@ export function projectWorkHubCoordinationTurns(
   }
 
   for (const message of messages) {
+    if (message.type === 'workhub_coordination' && message.kind === 'action_receipt') {
+      const { receipt } = message;
+      if (receipt.result.disposition === 'clarify' || receipt.result.disposition === 'resume_work') {
+        const earlier = receiptIndexByActionId.get(receipt.actionId) ?? latestUserIndexByTurnId.get(message.turnId);
+        const row = {
+          messageId: message.id,
+          turnId: receipt.actionId,
+          text: boundedWorkHubTimelineText(receipt.userText),
+          ...(receipt.result.disposition === 'resume_work' ? { resume: receipt.result } : {}),
+          ...(receipt.clarification
+            ? { result: boundedWorkHubTimelineText(receipt.clarification) }
+            : {}),
+          state: stateByTurnId.get(message.turnId) ?? 'running',
+          updatedAt: message.ts,
+        };
+        const index = earlier ?? turns.length;
+        turns[index] = row;
+        receiptIndexByActionId.set(receipt.actionId, index);
+      }
+      continue;
+    }
     if (message.type === 'workhub_coordination' && message.kind === 'delegation_stop_requested') {
       const resolution = stopResolutionByDelegationId.get(message.stopsDelegationId);
       turns.push({
         messageId: message.id,
-        turnId: message.coordinationTurnId,
+        turnId: message.actionId,
         text: boundedWorkHubTimelineText(message.userText),
         state: resolution ? 'completed' : 'running',
         stop: {
@@ -199,7 +225,7 @@ export function projectWorkHubCoordinationTurns(
     if (message.type === 'workhub_coordination' && message.kind === 'delegation_assigned') {
       turns.push({
         messageId: message.id,
-        turnId: message.coordinationTurnId,
+        turnId: message.actionId,
         text: boundedWorkHubTimelineText(message.userText),
         ...(message.attachments ? { attachments: message.attachments } : {}),
         state: 'completed',
@@ -219,6 +245,7 @@ export function projectWorkHubCoordinationTurns(
       continue;
     }
     if (message.type === 'user') {
+      if (factualTurnIds.has(message.coordinationActionId ?? message.turnId)) continue;
       const text = boundedWorkHubTimelineText(userFacingText(message));
       if (!text) continue;
       turns.push({
@@ -226,6 +253,7 @@ export function projectWorkHubCoordinationTurns(
         turnId: message.turnId,
         text,
         ...(message.attachments ? { attachments: message.attachments } : {}),
+        ...(message.coordinationActionId ? { coordinationActionId: message.coordinationActionId } : {}),
         state: stateByTurnId.get(message.turnId) ?? 'running',
         updatedAt: message.ts,
       });

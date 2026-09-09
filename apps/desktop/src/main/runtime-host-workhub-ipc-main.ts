@@ -35,7 +35,6 @@ type RuntimeHostWorkHubClient = Pick<
   | 'ingestAttachment'
   | 'actWorkHubCoordination'
   | 'listWorkHubCoordinationCandidates'
-  | 'recordWorkHubCoordination'
   | 'resolveWorkHubCoordinationSession'
 >;
 
@@ -55,9 +54,6 @@ export function registerRuntimeHostWorkHubIpc(
 ): void {
   ipcMain.handle('workhub:resolveCoordinationSession', () =>
     client.resolveWorkHubCoordinationSession(),
-  );
-  ipcMain.handle('workhub:record', (_event, input) =>
-    client.recordWorkHubCoordination(input),
   );
   ipcMain.handle('workhub:candidates', () => client.listWorkHubCoordinationCandidates());
   ipcMain.handle('workhub:prepareAttachments', async (event, items: unknown) => {
@@ -139,6 +135,7 @@ function workHubActError(
     case 'not_found':
     case 'session_archived':
     case 'session_busy':
+    case 'candidate_set_stale':
     case 'operation_conflict':
     case 'persistence_failed':
     case 'commit_outcome_unknown':

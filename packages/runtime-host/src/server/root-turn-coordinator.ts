@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { WorkHubActionReceipt } from '@maka/core/workhub-action-result';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { BackendStopMode } from '@maka/core/backend-types';
@@ -222,6 +223,7 @@ export type RootMessageStartRequest =
     })
   | (RootMessageStartRequestBase & {
       readonly execution: Extract<RootMessageExecution, { kind: 'workhub_coordination' }>;
+      readonly operation?: (turnId: string) => Promise<WorkHubActionReceipt>;
       readonly turnOrchestration?: undefined;
       prepareFreshContent(lease: SessionAdmissionLease): Promise<RootMessageContentPreparation>;
     });
@@ -938,7 +940,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         ),
       );
     }
-    return this.runCommand(async () => {
+    // Admission is active work even while queued behind a Session gate. Its
+    // residency overlaps the execution residency until admission settles.
+    const residency = this.acquireRecoveryResidency();
+    const admission = this.runCommand(async () => {
       const activeAtEntry = this.#executions.has(input.sessionId);
       let reservation =
         preparedReservation ?? (activeAtEntry ? undefined : this.reserveRootTurn(input.sessionId));
@@ -1105,6 +1110,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       if (error instanceof HostedRootAdmissionGateError) throw error.cause;
       throw error;
     });
+    return admission.finally(() => residency.release());
   }
 
   lookup(sessionId: string, turnId: string): Promise<HostedExecutionIdentity | undefined> {
@@ -1678,16 +1684,109 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         operationUnavailable('WorkHub Coordination execution requires its reserved Session'),
       );
     }
+    if ((request.execution.operation === 'action') !== (request.operation !== undefined)) {
+      return Promise.resolve(
+        operationUnavailable('Coordination execution mode does not match its runner'),
+      );
+    }
     return this.startRootMessage(request, context);
   }
 
-  /**
-   * Whether a durable root Turn already owns this identity. WorkHub also writes
-   * Coordination Turns outside this coordinator, and must not append a second
-   * triplet into a Turn this admission ledger already owns.
-   */
-  async hasRootTurnAdmission(sessionId: string, turnId: string): Promise<boolean> {
-    return (await this.stores.agentRunStore.readRootTurnAdmission(sessionId, turnId)) !== undefined;
+  async runWorkHubCoordinationOperation(
+    request: Extract<RootMessageStartRequest, { execution: { kind: 'workhub_coordination' } }>,
+    context: ConnectionContext,
+  ): Promise<
+    { ok: true; result: WorkHubActionReceipt } | Extract<RootMessageStartOutcome, { ok: false }>
+  > {
+    if (request.execution.operation !== 'action' || !request.operation) {
+      return operationUnavailable('Coordination action requires a Host operation');
+    }
+    let turnId = request.turnId;
+    let recoveredReceipt: WorkHubActionReceipt | undefined;
+    // A retry preserves the action identity, but never reopens a terminal Run.
+    // The existing admission chain and terminal facts identify prior attempts.
+    for (;;) {
+      const admission = await this.stores.agentRunStore.readRootTurnAdmission(
+        request.sessionId,
+        turnId,
+      );
+      if (!admission) break;
+      if (!rootExecutionMatches(admission.execution, request.execution))
+        return operationConflict('Coordination action identity belongs to different content');
+      const run = await this.readRunIfPresent(request.sessionId, admission.runId);
+      if (!run) break;
+      const snapshot = await this.readCanonicalSnapshot(
+        request.sessionId,
+        turnId,
+        admission.runId,
+        run,
+      );
+      if (!isTerminalSnapshot(snapshot) || snapshot.status === 'completed') break;
+      // A crash after the receipt does not erase a completed Host effect.
+      const events = await this.stores.runtimeEventStore.readImmutableRuntimeEvents(
+        request.sessionId,
+        admission.runId,
+      );
+      recoveredReceipt ??= events.find((event) => event.actions?.coordination)?.actions
+        ?.coordination;
+      turnId = `whretry_${createHash('sha256').update(admission.runId).digest('hex').slice(0, 48)}`;
+    }
+    const receiptToReplay = recoveredReceipt;
+    const started = await this.startWorkHubCoordinationMessage(
+      {
+        ...request,
+        turnId,
+        ...(receiptToReplay ? { operation: async () => receiptToReplay } : {}),
+      },
+      context,
+    );
+    if (!started.ok) return started;
+    const active = this.#executions.get(request.sessionId);
+    if (active?.turnId === turnId) await active.done;
+    const snapshot = await this.readCanonicalSnapshot(
+      request.sessionId,
+      turnId,
+      started.result.runId,
+    );
+    if (snapshot.status !== 'completed')
+      return operationUnavailable('Coordination operation did not complete');
+    const events = await this.stores.runtimeEventStore.readImmutableRuntimeEvents(
+      request.sessionId,
+      started.result.runId,
+    );
+    const receipt = events.find((event) => event.actions?.coordination)?.actions?.coordination;
+    return receipt
+      ? { ok: true, result: receipt }
+      : operationUnavailable('Coordination receipt is unavailable');
+  }
+
+  private coordinationOperation(
+    request: RootMessageStartRequest,
+    admission: RootTurnAdmission,
+  ): HostedExecutionAdmission | undefined {
+    if (
+      request.execution.kind !== 'workhub_coordination' ||
+      !('operation' in request) ||
+      !request.operation
+    )
+      return undefined;
+    const execute = request.operation;
+    const content = requireHostedExecutionMessageContent(admission);
+    return {
+      sessionId: admission.sessionId,
+      turnId: admission.turnId,
+      runId: admission.runId,
+      userMessageId: admission.userMessageId,
+      execution: admission.execution,
+      content,
+      start: ({ runId, userMessageId, onRunStarted }) =>
+        this.manager.runCoordinationOperation(
+          admission.sessionId,
+          { turnId: admission.turnId, ...content },
+          { runId, userMessageId, onRunStarted },
+          () => execute(admission.turnId),
+        ),
+    };
   }
 
   private startRootMessage(
@@ -1713,7 +1812,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
               operationConflict('Turn identity belongs to a different execution kind'),
             );
           }
-          if (!isDeepStrictEqual(existing.execution, request.execution)) {
+          if (!rootExecutionMatches(existing.execution, request.execution)) {
             return completedStart(
               operationConflict('Turn identity belongs to a different execution payload'),
             );
@@ -1759,7 +1858,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             context.acquireResidency,
             lease,
             undefined,
-            undefined,
+            this.coordinationOperation(request, existing),
             reservation,
           );
         }
@@ -1872,7 +1971,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           context.acquireResidency,
           lease,
           undefined,
-          undefined,
+          this.coordinationOperation(request, admitted.admission),
           reservation,
         );
       });
@@ -3127,6 +3226,22 @@ function throwHostedStopError(
   }
 }
 
+/** Compatibility may omit only the action identity absent from an older admission. */
+function rootExecutionMatches(
+  stored: RootExecutionDescriptor,
+  incoming: RootExecutionDescriptor,
+): boolean {
+  if (
+    stored.kind === 'workhub_coordination' &&
+    incoming.kind === 'workhub_coordination' &&
+    stored.actionId === undefined
+  ) {
+    const { actionId: _actionId, ...legacyIncoming } = incoming;
+    return isDeepStrictEqual(stored, legacyIncoming);
+  }
+  return isDeepStrictEqual(stored, incoming);
+}
+
 function rootMessageAdmissionMatches(
   admission: RootTurnAdmission,
   request: RootMessageStartRequest,
@@ -3134,7 +3249,7 @@ function rootMessageAdmissionMatches(
   authorization: ConnectionContext['turnAdmissionAuthorization'],
 ): boolean {
   return (
-    isDeepStrictEqual(admission.execution, request.execution) &&
+    rootExecutionMatches(admission.execution, request.execution) &&
     (request.execution.kind === 'external_message' && request.execution.inputDigest
       ? true
       : messageContentsEqual(requireHostedExecutionMessageContent(admission), content)) &&

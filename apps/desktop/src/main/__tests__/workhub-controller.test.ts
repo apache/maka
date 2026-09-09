@@ -112,7 +112,7 @@ test('conversation acknowledges a durable assignment before projecting target ex
         handler([assignment]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({ candidateSetId: `sha256:${'a'.repeat(64)}`, candidates: [] }),
       act: async () => ({ disposition: 'answer_here', coordinationTurnId: 'unused' }),
     },
@@ -159,7 +159,7 @@ test('conversation feedback never lets an older refresh overwrite newer target s
         handler([assignment]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({ candidateSetId: `sha256:${'b'.repeat(64)}`, candidates: [] }),
       act: async () => ({ disposition: 'answer_here', coordinationTurnId: 'unused' }),
     },
@@ -201,7 +201,7 @@ test('direct stop bypasses routing candidates and preserves a not_owned delegati
         handler([coordinationAssignmentTurn()]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => {
         candidateReads += 1;
         return { candidateSetId: `sha256:${'d'.repeat(64)}`, candidates: [] };
@@ -257,7 +257,7 @@ test('an anaphoric stop asks for a fresh named imperative without offering a rou
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => assert.fail('stop clarification must not read route candidates'),
       act: async () => assert.fail('anaphoric stop must not reach the Action Gate'),
     },
@@ -284,7 +284,7 @@ test('a named resume submits and reports what the Host did', async () => {
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'e'.repeat(64)}`,
         candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
@@ -329,7 +329,7 @@ test('an anaphoric resume asks for a named work item', async () => {
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => assert.fail('resume clarification must not read route candidates'),
       act: async () => assert.fail('anaphoric resume must not reach the Action Gate'),
     },
@@ -356,7 +356,7 @@ test('a resume the Host will not admit becomes its clarification', async () => {
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'e'.repeat(64)}`,
         candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
@@ -394,7 +394,7 @@ test('a resume identity conflict is not mislabeled as a missing target', async (
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'e'.repeat(64)}`,
         candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
@@ -421,7 +421,7 @@ test('a Runtime Host without safe-boundary resume explains why it cannot resume'
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'e'.repeat(64)}`,
         candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
@@ -455,7 +455,7 @@ test('a recovering Runtime Host tells the user to retry resume', async () => {
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'e'.repeat(64)}`,
         candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
@@ -486,7 +486,7 @@ test('a named stop reports the Gate refusal instead of judging the target itself
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => assert.fail('stop clarification must not read route candidates'),
       act: async () => {
         submitted += 1;
@@ -520,7 +520,7 @@ test('a stop that fails for any other reason is a fault, not a clarification', a
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => assert.fail('stop clarification must not read route candidates'),
       act: async () => {
         throw new WorkHubCoordinationFailure('persistence_failed', 'WorkHub stop state is unavailable');
@@ -550,7 +550,7 @@ test('stop-shaped ordinary work routes normally instead of looping on clarificat
           handler([]);
           return { close: async () => undefined };
         },
-        record: async (input) => ({ turnId: input.turnId }),
+
         candidates: async () => ({
           candidateSetId: `sha256:${'e'.repeat(64)}`,
           candidates: [{
@@ -1669,7 +1669,7 @@ test('submit keeps unmatched non-executable conversation in WorkHub', async () =
     sessions,
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'a'.repeat(64)}`,
         candidates: [],
@@ -1716,7 +1716,7 @@ test('production submission delegates only through the Runtime-owned candidate r
     sessions,
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'b'.repeat(64)}`,
         candidates: [{
@@ -1771,7 +1771,7 @@ test('production retry reaches durable Action Gate replay while target is waitin
     sessions,
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'c'.repeat(64)}`,
         candidates: [{
@@ -1817,7 +1817,7 @@ test('production sends an explicit correction as a linked replacement', async ()
     sessions,
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'d'.repeat(64)}`,
         candidates: [
@@ -1943,7 +1943,7 @@ test('production natural-language corrections retain the prior delegation link',
     sessions,
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId,
         candidates: candidates.map((candidate) => {
@@ -2043,7 +2043,7 @@ test('production correction-shaped creation stays create_new without an existing
     sessions: port([]),
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'c'.repeat(64)}`,
         candidates: [],
@@ -2074,9 +2074,6 @@ test('production clarification is persisted through the typed Action Gate dispos
     sessions: port([]),
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async () => {
-        throw new Error('legacy summary recording must not persist clarification');
-      },
       candidates: async () => ({
         candidateSetId: `sha256:${'c'.repeat(64)}`,
         candidates: [],
@@ -2091,11 +2088,10 @@ test('production clarification is persisted through the typed Action Gate dispos
     },
   });
 
-  assert.deepEqual(await controller.recordConversationTurn({
+  assert.deepEqual(await controller.requestClarification({
     turnId: 'clarification-action',
     userText: '继续稳定性问题',
     assistantText: '请选择目标 Session',
-    disposition: 'clarify',
   }), { turnId: 'clarification-turn' });
   assert.deepEqual(actions, [{
     actionId: 'clarification-action',
@@ -2117,7 +2113,7 @@ test('production creation leaves Session identity and workspace authority to mai
     sessions,
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'c'.repeat(64)}`,
         candidates: [],
@@ -3281,7 +3277,7 @@ for (const createStrategy of [createWorkHubR24RoutingStrategy, () => createWorkH
       routingStrategy,
       coordination: {
         open: async () => ({ close: async () => undefined }),
-        record: async (input) => ({ turnId: input.turnId }),
+
         candidates: async () => ({ candidateSetId: `sha256:${'e'.repeat(64)}`, candidates: [{ candidateRef: 'payments-ref', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }] }),
         act: async (input) => {
           assert.equal(input.proposal.disposition, 'resume_work');
@@ -3362,3 +3358,45 @@ test('composer defaults apply only to creation while attachments follow explicit
   assert.deepEqual(actions[1]?.newWorkDefaults, newWorkDefaults);
   assert.deepEqual(actions[1]?.attachments, attachments);
 });
+
+for (const mode of ['refresh', 'missing', 'renamed', 'churn', 'conflict'] as const) {
+  test(`replacement candidate refresh preserves the chosen Session (${mode})`, async () => {
+    const actions: WorkHubCoordinationActInput[] = [];
+    let reads = 0;
+    const controller = createGatedWorkHubController({
+      sessions: port([session('source'), session('target')]),
+      coordination: {
+        open: async () => ({ close: async () => undefined }),
+        candidates: async () => {
+          const version = reads++;
+          return {
+            candidateSetId: `sha256:${String(version).repeat(64)}`,
+            candidates: ['other', 'target', 'source'].filter((id) => !(mode === 'missing' && version > 0 && id === 'target')).map((id) => ({
+              candidateRef: `${id}-${version}`, sessionId: id,
+              sessionName: mode === 'renamed' && version > 0 && id === 'target' ? 'different work' : id,
+              workspace: { target: { kind: 'host_path' as const, path: `/workspace/${id}` }, hostCwd: `/workspace/${id}` },
+              state: 'active' as const, updatedAt: version,
+            })),
+          };
+        },
+        act: async (input) => {
+          actions.push(input);
+          if (actions.length === 1 || mode === 'churn') throw new WorkHubCoordinationFailure(
+            mode === 'conflict' ? 'operation_conflict' : 'candidate_set_stale', 'Snapshot changed');
+          return { disposition: 'replace', replacementDisposition: 'delegate_existing', targetSessionId: 'target', targetTurnId: 'replacement-turn' };
+        },
+      },
+    });
+    const submit = () => controller.submit({ newSessionFallbackTitle: 'New task', requestId: 'same-action', text: 'No, use target instead', explicitTarget: { sessionId: 'target' }, correction: { from: { sessionId: 'source' }, sourceActionId: 'source-action' } });
+    if (mode === 'refresh') {
+      assert.equal((await submit()).kind, 'submitted');
+      assert.equal(actions.length, 2);
+      assert.deepEqual(actions.map((action) => action.actionId), ['same-action', 'same-action']);
+      assert.deepEqual(actions.map((action) => action.proposal), [0, 1].map((version) => ({ disposition: 'replace', replacesActionId: 'source-action', target: { disposition: 'delegate_existing', candidateRef: `target-${version}` } })));
+      assert.notEqual(actions[0]!.candidateSetId, actions[1]!.candidateSetId);
+    } else {
+      await assert.rejects(submit, WorkHubCoordinationFailure);
+      assert.equal(actions.length, mode === 'churn' ? 3 : 1);
+    }
+  });
+}

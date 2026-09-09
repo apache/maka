@@ -22,6 +22,7 @@ import {
   encodeProtocolMessage,
   type SessionAssistantStreamIdentity,
   type SessionRuntimeResourcePtyDataFrame,
+  type SessionDomainChangedFrame,
   type SessionContinuitySnapshot,
   SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
   SESSION_TRANSCRIPT_RANGE_MAX_BYTES,
@@ -63,6 +64,7 @@ function errorMessage(error: unknown): string {
 
 export interface RuntimeHostSessionSubscription extends AsyncIterable<SubscriptionFrame> {
   subscribePtyData(listener: (frame: SessionRuntimeResourcePtyDataFrame) => void): () => void;
+  subscribeSessionDomainChanges(listener: (frame: SessionDomainChangedFrame) => void): () => void;
   readonly hostEpoch: string;
   readonly subscriptionId: string;
   readonly snapshot: SessionContinuitySnapshot;
@@ -115,6 +117,7 @@ export class ClientSessionSubscription
   readonly #expectedSessionId: string;
   readonly #queue: QueuedFrame[] = [];
   readonly #ptyListeners = new Set<(frame: SessionRuntimeResourcePtyDataFrame) => void>();
+  readonly #sessionDomainListeners = new Set<(frame: SessionDomainChangedFrame) => void>();
   #queuedBytes = 0;
   #expectedSequence: number;
   #latestProjectionRevision: number;
@@ -162,6 +165,12 @@ export class ClientSessionSubscription
     if (this.#done || this.#terminalError || this.#closing) return () => undefined;
     this.#ptyListeners.add(listener);
     return () => this.#ptyListeners.delete(listener);
+  }
+
+  subscribeSessionDomainChanges(listener: (frame: SessionDomainChangedFrame) => void): () => void {
+    if (this.#done || this.#terminalError || this.#closing) return () => undefined;
+    this.#sessionDomainListeners.add(listener);
+    return () => this.#sessionDomainListeners.delete(listener);
   }
 
   next(): Promise<IteratorResult<SubscriptionFrame>> {
@@ -587,12 +596,23 @@ export class ClientSessionSubscription
       this.#latestTranscriptThroughSequence = frame.throughSequence;
     }
 
+    if (frame.kind === 'subscription.session_domain_changed') {
+      for (const listener of this.#sessionDomainListeners) {
+        try {
+          listener(frame);
+        } catch {
+          /* An invalidation consumer cannot terminate Session state. */
+        }
+      }
+    }
+
     this.#offer(frame);
     if (frame.kind === 'subscription.closed') this.#doneAfterQueue = true;
   }
 
   finish(): void {
     this.#ptyListeners.clear();
+    this.#sessionDomainListeners.clear();
     if (this.#done || this.#terminalError) return;
     this.#doneAfterQueue = true;
     if (this.#queue.length === 0) {
@@ -604,6 +624,7 @@ export class ClientSessionSubscription
 
   fail(error: Error): void {
     this.#ptyListeners.clear();
+    this.#sessionDomainListeners.clear();
     if (this.#done || this.#terminalError) return;
     this.#terminalError = error;
     this.#queue.length = 0;

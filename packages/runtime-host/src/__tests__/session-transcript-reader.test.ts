@@ -696,21 +696,47 @@ test('reads the WorkHub Coordination transcript from its own rows', async () => 
       },
     },
   ];
+  const indexed: Array<{ sequence: number; source: 'legacy' | 'runtime'; sourceSequence: number }> =
+    [];
   let ledgerReads = 0;
   const stores = {
     agentRunStore: {},
-    // Any ledger read is the defect: this Session's Turns are never admitted,
-    // so nothing ever converts these rows and a ledger read returns nothing.
-    runtimeEventStore: new Proxy(
-      {},
-      {
-        get: () => () => {
-          ledgerReads += 1;
-          return Promise.resolve([]);
-        },
+    runtimeEventStore: {
+      readTranscriptHighWater: async () => {
+        ledgerReads += 1;
+        return null;
       },
-    ),
+      readTranscriptInvocations: async () => [],
+    },
     sessionStore: {
+      readCoordinationTranscriptIndexState: async () => ({
+        highWater: indexed.at(-1)?.sequence ?? null,
+        legacy: indexed.at(-1)?.sourceSequence ?? null,
+        runtime: null,
+      }),
+      appendCoordinationTranscriptIndex: async (
+        refs: Array<{ source: 'legacy' | 'runtime'; sourceSequence: number }>,
+      ) => {
+        for (const ref of refs) indexed.push({ ...ref, sequence: indexed.length });
+      },
+      readCoordinationTranscriptIndex: async (request: {
+        direction: string;
+        throughSequence: number;
+        position: number;
+        limit: number;
+      }) => {
+        const selected = indexed.filter(
+          (ref) =>
+            ref.sequence <= request.throughSequence &&
+            (request.direction === 'older'
+              ? ref.sequence <= request.position
+              : ref.sequence >= request.position),
+        );
+        return (request.direction === 'older' ? selected.reverse() : selected).slice(
+          0,
+          request.limit,
+        );
+      },
       readTranscriptHighWaterSnapshot: async () => rows.at(-1)!.sequence,
       readMessagesAfter: async (
         _sessionId: string,
@@ -740,13 +766,280 @@ test('reads the WorkHub Coordination transcript from its own rows', async () => 
     page.records.map(({ message }) => message.id),
     ['wha_1-user', 'wha_1'],
   );
-  assert.equal(ledgerReads, 0);
+  assert.ok(ledgerReads > 0);
   assert.deepEqual(
     (await read.readDurableTurnLandmarks(WORKHUB_COORDINATION_SESSION_ID, 4)).landmarks.map(
       ({ turnId }) => turnId,
     ),
     ['wha_1'],
   );
+});
+
+for (const historySize of [257, 10000]) {
+  test(`Coordination small-page foreground work is bounded (${historySize} rows)`, async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-coordination-growth-'));
+    const root = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
+    const owner = await tryAcquireInteractiveRootOwner(root);
+    assert.ok(owner);
+    try {
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const sessionId = WORKHUB_COORDINATION_SESSION_ID;
+      await stores.sessionStore.createStableSession({
+        sessionId,
+        requestFingerprint: `sha256:${'0'.repeat(64)}`,
+        input: {
+          role: 'workhub_coordination',
+          cwd: root.canonicalPath,
+          llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          permissionMode: 'ask',
+        },
+      });
+      for (let i = 0; i < historySize; i++)
+        await stores.sessionStore.appendMessage(sessionId, {
+          type: 'user',
+          id: `u-${i}`,
+          turnId: `t-${i}`,
+          ts: i,
+          text: `message ${i}`,
+        });
+      let reads = 0,
+        decoded = 0,
+        writes = 0;
+      const makeReader = () =>
+        createSessionTranscriptReader({
+          stores: {
+            ...stores,
+            sessionStore: {
+              ...stores.sessionStore,
+              async readMessagesAfter(...args) {
+                reads++;
+                const page = await stores.sessionStore.readMessagesAfter(...args);
+                decoded += page.records.length;
+                return page;
+              },
+              async appendCoordinationTranscriptIndex(...args) {
+                writes++;
+                return stores.sessionStore.appendCoordinationTranscriptIndex(...args);
+              },
+            },
+          },
+          canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+        });
+      let batches = 0;
+      let previousThrough = -1;
+      for (;;) {
+        reads = decoded = writes = 0;
+        let complete = false;
+        try {
+          const page = await makeReader().readDurablePage(sessionId, {
+            direction: 'older',
+            maxBytes: 128,
+            maxMessages: 1,
+          });
+          assert.ok(
+            page.fragments.length > 0,
+            'catch-up must not report an empty complete history',
+          );
+          assert.equal(
+            JSON.parse(Buffer.concat(page.fragments.map((f) => f.data)).toString()).id,
+            `u-${historySize - 1}`,
+          );
+          complete = true;
+        } catch (error) {
+          assert.equal((error as Error).name, 'CoordinationTranscriptIndexPending');
+          const through = (error as { indexedThrough: number }).indexedThrough;
+          assert.ok(through > previousThrough, 'recreated reader resumes committed progress');
+          previousThrough = through;
+        }
+        assert.ok(reads <= 3, `foreground source reads: ${reads}`);
+        assert.ok(decoded <= 192, `foreground decoded rows: ${decoded}`);
+        assert.ok(writes <= 1, `foreground index writes: ${writes}`);
+        assert.ok(++batches <= Math.ceil(historySize / 64));
+        if (complete) break;
+      }
+    } finally {
+      await owner.close();
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+}
+
+test('Coordination page positions survive regressing clocks, late appends and reader recreation', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-coordination-index-'));
+  const root = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(root);
+  assert.ok(owner);
+  try {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const sessionId = WORKHUB_COORDINATION_SESSION_ID;
+    await stores.sessionStore.createStableSession({
+      sessionId,
+      requestFingerprint: `sha256:${'0'.repeat(64)}`,
+      input: {
+        role: 'workhub_coordination',
+        cwd: root.canonicalPath,
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      },
+    });
+    for (const [id, ts] of [
+      ['legacy-1', 100],
+      ['legacy-2', 1],
+    ] as const) {
+      await stores.sessionStore.appendMessage(sessionId, {
+        type: 'user',
+        id,
+        turnId: id,
+        ts,
+        text: id,
+      });
+    }
+    await seedInvocation(stores.runtimeEventStore, {
+      sessionId,
+      runId: 'index-run',
+      turnId: 'index-turn',
+      openedAt: 20,
+    });
+    for (const [id, ts] of [
+      ['runtime-1', 50],
+      ['runtime-2', 2],
+    ] as const) {
+      await stores.runtimeEventStore.appendRuntimeEvent(
+        sessionId,
+        'index-run',
+        runtimeEvent(sessionId, {
+          id,
+          invocationId: 'index-run',
+          runId: 'index-run',
+          turnId: 'index-turn',
+          ts,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: id },
+          refs: { storedMessageId: id },
+        }),
+      );
+    }
+    await stores.runtimeEventStore.appendRuntimeEvent(
+      sessionId,
+      'index-run',
+      runtimeEvent(sessionId, {
+        id: 'runtime-terminal',
+        invocationId: 'index-run',
+        runId: 'index-run',
+        turnId: 'index-turn',
+        ts: 3,
+        status: 'completed',
+        actions: { endInvocation: true },
+      }),
+    );
+    const makeReader = () =>
+      createSessionTranscriptReader({
+        stores,
+        canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+      });
+    const reader = makeReader();
+    const before = await reader.readDurableRecords(sessionId, {
+      direction: 'newer',
+      maxMessages: 64,
+      maxStoredBytes: 65536,
+    });
+    assert.equal(before.records.length, 5);
+    // A new record can predate every displayed timestamp, in either store.
+    await stores.sessionStore.appendMessage(sessionId, {
+      type: 'user',
+      id: 'late-legacy',
+      turnId: 'late',
+      ts: 0,
+      text: 'late',
+    });
+    await seedInvocation(stores.runtimeEventStore, {
+      sessionId,
+      runId: 'late-run',
+      turnId: 'late-turn',
+      openedAt: 0,
+    });
+    await stores.runtimeEventStore.appendRuntimeEvent(
+      sessionId,
+      'late-run',
+      runtimeEvent(sessionId, {
+        id: 'late-runtime',
+        invocationId: 'late-run',
+        runId: 'late-run',
+        turnId: 'late-turn',
+        ts: 0,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'late runtime' },
+        refs: { storedMessageId: 'late-runtime' },
+      }),
+    );
+    await stores.runtimeEventStore.appendRuntimeEvent(
+      sessionId,
+      'late-run',
+      runtimeEvent(sessionId, {
+        id: 'late-terminal',
+        invocationId: 'late-run',
+        runId: 'late-run',
+        turnId: 'late-turn',
+        ts: 0,
+        status: 'completed',
+        actions: { endInvocation: true },
+      }),
+    );
+    const recreated = makeReader();
+    const after = await recreated.readDurableRecords(sessionId, {
+      direction: 'newer',
+      maxMessages: 64,
+      maxStoredBytes: 65536,
+    });
+    assert.deepEqual(after.records.slice(0, before.records.length), before.records);
+    assert.ok(after.records.some(({ message }) => message.id === 'late-legacy'));
+    assert.ok(after.records.some(({ message }) => message.id === 'late-runtime'));
+    assert.deepEqual(
+      await recreated.readDurableRecords(sessionId, {
+        direction: 'newer',
+        throughSequence: before.throughSequence,
+        maxMessages: 64,
+        maxStoredBytes: 65536,
+      }),
+      before,
+    );
+    for (const direction of ['newer', 'older'] as const) {
+      const records: (typeof after.records)[number][] = [];
+      let position: number | undefined;
+      do {
+        const page = await recreated.readDurableRecords(sessionId, {
+          direction,
+          throughSequence: after.throughSequence,
+          position,
+          maxMessages: 1,
+          maxStoredBytes: 65536,
+        });
+        records.push(...page.records);
+        position = page.nextPosition ?? undefined;
+        assert.ok(records.length <= after.records.length);
+      } while (position !== undefined);
+      assert.deepEqual(direction === 'older' ? records.reverse() : records, after.records);
+    }
+    // Anchor +/- 1 is part of the public pager contract.
+    const anchor = after.records[2]!.sequence;
+    const preceding = await recreated.readDurableRecords(sessionId, {
+      direction: 'older',
+      position: anchor - 1,
+      throughSequence: after.throughSequence,
+      maxMessages: 64,
+      maxStoredBytes: 65536,
+    });
+    assert.deepEqual(preceding.records, after.records.slice(0, 2).reverse());
+  } finally {
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  }
 });
 
 test('pages a nested Turn the same way a single sweep reads it', async () => {

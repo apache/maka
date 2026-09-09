@@ -83,7 +83,7 @@ export function createWorkHubController({
     ...(routingStrategy ? { routingStrategy } : {}),
     coordination: {
       open: async (handler) => { handler(transcript); return { close: async () => undefined }; },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => {
         const candidates = (await sessions.list())
           .filter((entry) => entry.kind === 'ordinary' && !entry.archived)

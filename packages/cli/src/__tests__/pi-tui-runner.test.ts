@@ -3608,6 +3608,128 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('shows unavailable rather than empty when a driver lacks Todo queries', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new (class extends SlashCommandDriver {
+      override getSessionId(): null {
+        return null;
+      }
+    })();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+    terminal.input('/todo');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Todo unavailable'));
+    assert.equal(plainTerminalOutput(terminal.screenOutput()).includes('No Todo items'), false);
+    terminal.input('\x1b');
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
+  test('refreshes Todo on domain invalidation and clears the old session after /new', async () => {
+    const terminal = new FakeTerminal();
+    let changed: ((sessionId: string) => void) | undefined;
+    let content = 'First current item';
+    let unsubscribed = false;
+    const driver = Object.assign(new SlashCommandDriver(), {
+      async queryTodo(sessionId: string) {
+        return {
+          sessionId,
+          items: sessionId === 'session-new' ? [] : [{ content, status: 'in_progress' as const }],
+        };
+      },
+      subscribeTodoChanges(listener: (sessionId: string) => void) {
+        changed = listener;
+        return () => {
+          unsubscribed = true;
+        };
+      },
+    });
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes(content));
+    content = 'Updated current item';
+    changed?.(driver.getSessionId()!);
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes(content));
+    terminal.input('/new');
+    terminal.input('\r');
+    await waitFor(() => driver.startNewSessionCalls === 1);
+    await waitForTuiPaint(terminal);
+    assert.equal(plainTerminalOutput(terminal.screenOutput()).includes(content), false);
+    terminal.input('/todo');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('No Todo items'));
+    terminal.input('\x1b');
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+    assert.equal(unsubscribed, true);
+  });
+
+  test('opens current Todo during a turn without steering and returns Escape to the composer', async () => {
+    const terminal = new FakeTerminal();
+    const driver = Object.assign(new SteeringTurnDriver(), {
+      async queryTodo(sessionId: string) {
+        return {
+          sessionId,
+          items: [
+            { content: 'Verify current Todo', status: 'in_progress' as const },
+            { content: 'Already marked', status: 'completed' as const },
+          ],
+        };
+      },
+    });
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+    terminal.input('start the work');
+    terminal.input('\r');
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Verify current Todo'),
+    );
+    terminal.input('/todo');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Already marked'));
+    assert.deepEqual(driver.steered, []);
+    terminal.input('\x1b');
+    await waitForTuiPaint(terminal);
+    assert.equal(terminal.progressStates.at(-1), true);
+    terminal.input('draft after closing');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('draft after closing'),
+    );
+    terminal.input('\x03');
+    terminal.input('\x1b');
+    terminal.input('\x1b');
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    terminal.input('\x03');
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
   test('opens /transcript during a running turn instead of steering it', async () => {
     const terminal = new FakeTerminal();
     const driver = new SteeringTurnDriver();

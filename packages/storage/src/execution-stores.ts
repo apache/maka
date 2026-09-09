@@ -125,6 +125,7 @@ export type {
   SessionHeaderSnapshot,
   SessionTranscriptMessageLookupRequest,
   SessionTranscriptPageRequest,
+  CoordinationTranscriptReference,
   SessionTranscriptRecordScanPage,
   SessionTranscriptRecordScanRequest,
   SessionTranscriptStoragePage,
@@ -443,6 +444,12 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       readMessagesSnapshot: (sessionId) => run(() => sessionStore.readMessagesSnapshot(sessionId)),
       readTranscriptMessagesSnapshot: (sessionId, request) =>
         run(() => sessionStore.readTranscriptMessagesSnapshot(sessionId, request)),
+      readCoordinationTranscriptIndexState: () =>
+        run(() => sessionStore.readCoordinationTranscriptIndexState()),
+      appendCoordinationTranscriptIndex: (records) =>
+        run(() => sessionStore.appendCoordinationTranscriptIndex(records)),
+      readCoordinationTranscriptIndex: (request) =>
+        run(() => sessionStore.readCoordinationTranscriptIndex(request)),
       readTranscriptHighWaterSnapshot: (sessionId) =>
         run(() => sessionStore.readTranscriptHighWaterSnapshot(sessionId)),
       listTurnsSnapshot: (sessionId) => run(() => sessionStore.listTurnsSnapshot(sessionId)),

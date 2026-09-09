@@ -18,6 +18,41 @@
  */
 
 export const TUI_COPY_RESOURCES = {
+  todo: {
+    en: {
+      title: 'Current Todo',
+      markedComplete: 'marked complete',
+      open: '/todo to view',
+      usage: 'Usage: /todo',
+      progress: 'Todo',
+      unavailable: 'Todo unavailable',
+      empty: 'No Todo items',
+      loading: 'Loading Todo…',
+      hint: '↑↓/PgUp/PgDn scroll · Home/End · Esc close',
+    },
+    'zh-CN': {
+      title: '当前待办',
+      markedComplete: '标记完成',
+      open: '/todo 查看',
+      usage: '用法：/todo',
+      progress: '待办',
+      unavailable: '待办不可用',
+      empty: '暂无待办',
+      loading: '正在加载待办…',
+      hint: '↑↓/PgUp/PgDn 滚动 · Home/End · Esc 关闭',
+    },
+    'zh-TW': {
+      title: '目前待辦',
+      markedComplete: '標記完成',
+      open: '/todo 查看',
+      usage: '用法：/todo',
+      progress: '待辦',
+      unavailable: '待辦不可用',
+      empty: '沒有待辦',
+      loading: '正在載入待辦…',
+      hint: '↑↓/PgUp/PgDn 捲動 · Home/End · Esc 關閉',
+    },
+  },
   'transcript-reader': {
     en: {
       title: 'DETAILED TRANSCRIPT',
@@ -947,6 +982,7 @@ export const TUI_COPY_RESOURCES = {
         skill: 'Invoke a skill (or type /skill:<name> inline)',
         swarm: 'Show, enable, disable, or run one Swarm turn',
         thinking: 'Set thinking level',
+        todo: 'Show the current session Todo list',
         transcript: 'Browse the full transcript inside Maka',
       },
       help: {
@@ -1000,6 +1036,7 @@ export const TUI_COPY_RESOURCES = {
         skill: '调用 Skill（也可直接输入 /skill:<name>）',
         swarm: '查看、启用、停用 Swarm 模式，或执行一次 Swarm 任务',
         thinking: '设置思考级别',
+        todo: '查看当前会话待办清单',
         transcript: '在 Maka 内浏览完整对话记录',
       },
       help: {
@@ -1053,6 +1090,7 @@ export const TUI_COPY_RESOURCES = {
         skill: '呼叫 Skill（也可直接輸入 /skill:<name>）',
         swarm: '檢視、啟用、停用 Swarm 模式，或執行一次 Swarm 任務',
         thinking: '設定思考級別',
+        todo: '檢視目前會話待辦清單',
         transcript: '在 Maka 內瀏覽完整對話記錄',
       },
       help: {

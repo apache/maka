@@ -18,6 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
+import type { StoredMessage } from '@maka/core/session';
+import { projectWorkHubCoordinationTurns } from '../../renderer/workhub-coordination-port.js';
 import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -449,7 +451,7 @@ test('surface keeps clarification and successful routing in WorkHub', async () =
       handler([]);
       return { close: async () => undefined };
     },
-    recordConversationTurn: async ({ turnId }) => ({ turnId }),
+    requestClarification: async ({ turnId }) => ({ turnId }),
     resetVisitContext: () => {},
     subscribe: () => () => {},
     submit: async (input) => {
@@ -511,7 +513,7 @@ test('ambiguous creation is durably clarified before a fresh imperative creates 
     },
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'a'.repeat(64)}`,
         candidates: [],
@@ -593,7 +595,7 @@ test('surface leaves discussion in WorkHub instead of creating a task view', asy
       handler([]);
       return { close: async () => undefined };
     },
-    recordConversationTurn: async ({ turnId }) => ({ turnId }),
+    requestClarification: async ({ turnId }) => ({ turnId }),
     resetVisitContext: () => {},
     subscribe: () => () => {},
     submit: async (input) => ({
@@ -684,7 +686,7 @@ test('real Session projection creates new guide topics and preserves origin ambi
     sessions: port,
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'a'.repeat(64)}`,
         candidates: sessions.map((entry) => ({
@@ -879,7 +881,7 @@ test('successful delegated submission needs no renderer summary write', async ()
   assert.equal(records, 0);
 });
 
-test('resume records ordinary conversation text without persisting execution fields', async () => {
+test('resume relies on the admitted Host receipt without a second conversation write', async () => {
   const records: unknown[] = [];
   const controller = fakeController({
     submit: async (input) => ({
@@ -895,11 +897,7 @@ test('resume records ordinary conversation text without persisting execution fie
     summary: () => 'Resume requested. See the target Session for current progress.',
     onSummaryError: () => assert.fail('conversation write must succeed'),
   });
-  assert.deepEqual(records, [{
-    turnId: 'resume-1', userText: 'Resume Payments',
-    assistantText: 'Resume requested. See the target Session for current progress.', disposition: 'summary',
-  }]);
-});
+  assert.deepEqual(records, []);});
 
 test('lease retires only after an acknowledged submission', async () => {
   const { storage } = memoryStorage();
@@ -969,14 +967,53 @@ function memoryStorage() {
 
 function fakeController(input: {
   submit: WorkHubController['submit'];
-  record: WorkHubController['recordConversationTurn'];
+  record: WorkHubController['requestClarification'];
 }): WorkHubController {
   return {
     read: async () => ({ sessions: [], turns: [] }),
     submit: input.submit,
     openConversation: async () => ({ close: async () => undefined }),
-    recordConversationTurn: input.record,
+    requestClarification: input.record,
     subscribe: () => () => undefined,
     resetVisitContext: () => undefined,
   };
+}
+
+for (const kind of ['clarify', 'resume'] as const) {
+  for (const state of ['failed', 'routing'] as const) {
+    test(`committed ${kind} result outranks local ${state} transport uncertainty`, () => {
+      const messages: StoredMessage[] = [
+        { type: 'user', id: 'input', turnId: 'physical-turn', coordinationActionId: 'action', ts: 1, text: 'Request' },
+        { type: 'workhub_coordination', kind: 'action_receipt', schemaVersion: 1,
+          id: 'receipt', turnId: 'physical-turn', ts: 2,
+          receipt: { actionId: 'action', userText: 'Request',
+            ...(kind === 'clarify' ? { clarification: 'Which task?' } : {}),
+            result: kind === 'clarify' ? { disposition: 'clarify', coordinationTurnId: 'physical-turn' } : {
+              disposition: 'resume_work', outcome: 'resume_started', targetSessionId: 'target', targetTurnId: 'target-turn',
+            },
+          },
+        },
+      ];
+      const durable = projectWorkHubCoordinationTurns(messages);
+      const visible = visibleWorkHubConversation(durable, [{ requestId: 'action', text: 'Request', state }]);
+      assert.deepEqual(visible, { coordination: durable, local: [] });
+      assert.equal(visible.coordination.length, 1);
+      const markup = renderToStaticMarkup(createElement(LocaleProvider, { locale: 'en',
+        children: createElement(AstryxLocaleProvider, {
+          children: createElement(WorkHubCoordinationTurnView, {
+            turn: visible.coordination[0]!, projection: { sessions: [], turns: [] }, locale: 'en', onOpenSession: () => undefined,
+          }),
+        }),
+      }));
+      if (kind === 'clarify') assert.match(markup, /Which task\?/u);
+      else {
+        assert.equal(visible.coordination[0]!.resume?.targetSessionId, 'target');
+        assert.match(markup, /<button/u);
+        assert.match(markup, /Carried on the interrupted work/u);
+      }
+      // Without a durable result, keep the local failure/pending state.
+      const pending = visibleWorkHubConversation(projectWorkHubCoordinationTurns(messages.slice(0, 1)), [{ requestId: 'action', text: 'Request', state }]);
+      assert.equal(pending.local.length, 1);
+    });
+  }
 }

@@ -1283,8 +1283,6 @@ function AppShellContent({
       coordination: createDesktopWorkHubCoordinationPort({
         sessionId: workHubCoordinationSessionId ?? 'workhub-coordination-unresolved',
         transcripts: window.maka.transcripts,
-        record: (input) =>
-          window.maka.workHub.record(workHubCoordinationSessionId!, input),
         candidates: () =>
           window.maka.workHub.candidates(workHubCoordinationSessionId!),
         act: (input) =>

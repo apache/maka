@@ -113,7 +113,7 @@ export function workHubSurfaceFailure(error: unknown): WorkHubSurfaceFailure {
   }
   if (error instanceof WorkHubCoordinationFailure) {
     if (error.code === 'operation_conflict') return 'action_changed';
-    if (error.code === 'not_found' || error.code === 'session_archived') {
+    if (error.code === 'candidate_set_stale' || error.code === 'not_found' || error.code === 'session_archived') {
       return 'candidates_changed';
     }
     if (error.code === 'session_busy') return 'target_waiting';
@@ -131,10 +131,14 @@ export function visibleWorkHubConversation(
   local: readonly WorkHubConversationTurn[];
 } {
   const localByRequestId = new Map(local.map((turn) => [turn.requestId, turn]));
+  const committedTurnIds = new Set(coordination.filter((turn) =>
+    turn.result !== undefined || turn.assignment || turn.resume || turn.stop,
+  ).map((turn) => turn.turnId));
   const visibleCoordination = coordination.filter(
     (turn) => {
       const localTurn = localByRequestId.get(turn.turnId);
       return !localTurn ||
+        (committedTurnIds.has(turn.turnId) && (localTurn.state === 'failed' || localTurn.state === 'routing')) ||
         localTurn.outcome?.kind === 'discussion' ||
         localTurn.outcome?.kind === 'submitted' ||
         localTurn.outcome?.kind === 'stop' || localTurn.outcome?.kind === 'resume';
@@ -144,7 +148,8 @@ export function visibleWorkHubConversation(
   const visibleLocal = local.filter(
     (turn) =>
       !coordinationTurnIds.has(turn.requestId) ||
-      (turn.outcome?.kind !== 'discussion' &&
+      ((!committedTurnIds.has(turn.requestId) || (turn.state !== 'failed' && turn.state !== 'routing')) &&
+        turn.outcome?.kind !== 'discussion' &&
         turn.outcome?.kind !== 'submitted' &&
         turn.outcome?.kind !== 'stop' && turn.outcome?.kind !== 'resume'),
   );
@@ -173,21 +178,21 @@ export async function submitAndRecordWorkHubSurfaceInput(input: {
   // accepted and must not consume the immutable Coordination summary owned by
   // this action identity. A later same-identity retry may still be admitted.
   // Delegations project directly from the Host's atomic delegation_assigned
-  // record. Only local clarification still needs the generic summary path.
+  // record. Local clarification is submitted as its own admitted Host action.
   if (
     result.kind === 'discussion' ||
     result.kind === 'waiting' ||
     result.kind === 'submitted' ||
-    result.kind === 'stop'
+    result.kind === 'stop' ||
+    result.kind === 'resume'
   ) {
     return result;
   }
   try {
-    await input.controller.recordConversationTurn({
+    await input.controller.requestClarification({
       turnId: input.request.requestId,
       userText: input.recordedUserText,
       assistantText: input.summary(result),
-      disposition: result.kind === 'clarification' ? 'clarify' : 'summary',
     });
   } catch (error) {
     input.onSummaryError();
@@ -662,6 +667,18 @@ export function WorkHubCoordinationTurnView(props: {
           copy={copy}
           onOpenSession={props.onOpenSession}
         />
+      ) : props.turn.resume ? (
+        <SubmittedWorkView
+          session={props.projection.sessions.find(
+            (candidate) => candidate.target.sessionId === props.turn.resume!.targetSessionId,
+          )}
+          targetSessionId={props.turn.resume.targetSessionId}
+          heading={copy.resumeOutcomes[props.turn.resume.outcome]}
+          state={copy.resumeRequested}
+          result={undefined}
+          copy={copy}
+          onOpenSession={props.onOpenSession}
+        />
       ) : assignment ? (
         <SubmittedWorkView
           session={session}
@@ -681,7 +698,8 @@ export function WorkHubCoordinationTurnView(props: {
         <p className="workhub-status" role="status">{copy.answering}</p>
       ) : (
         <p className="workhub-error" role="alert">
-          {copy.turnStates[props.turn.state]}
+          {props.turn.coordinationActionId
+            ? copy.actionConfirmationIncomplete : copy.turnStates[props.turn.state]}
         </p>
       )}
     </WorkHubMessageFrame>

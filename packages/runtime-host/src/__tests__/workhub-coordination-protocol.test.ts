@@ -25,7 +25,6 @@ import {
   decodeWorkHubCoordinationActResult,
   decodeWorkHubCoordinationAnswerInput,
   decodeWorkHubCoordinationCandidatesResult,
-  decodeWorkHubCoordinationRecordInput,
   decodeWorkHubCoordinationResolveInput,
   decodeWorkHubCoordinationResolveResult,
   HOST_OPERATION_SPECS,
@@ -54,18 +53,6 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
   assert.deepEqual(
     decodeWorkHubCoordinationAnswerInput({ turnId: 'answer-turn', text: 'What changed?' }),
     { turnId: 'answer-turn', text: 'What changed?' },
-  );
-  assert.deepEqual(
-    decodeWorkHubCoordinationRecordInput({
-      turnId: 'summary-turn',
-      userText: 'Continue payment work',
-      assistantText: 'Submitted to Payment',
-    }),
-    {
-      turnId: 'summary-turn',
-      userText: 'Continue payment work',
-      assistantText: 'Submitted to Payment',
-    },
   );
   assert.deepEqual(
     decodeWorkHubCoordinationActInput({
@@ -171,20 +158,9 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
     (error) => error instanceof RuntimeHostProtocolError,
   );
   assert.equal(HOST_OPERATION_SPECS['workhub.coordination.answer'].mode, 'command');
-  assert.equal(HOST_OPERATION_SPECS['workhub.coordination.record'].mode, 'command');
   assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.answer'), true);
-  assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.record'), true);
   assert.throws(
     () => decodeWorkHubCoordinationAnswerInput({ turnId: 'turn', text: 'answer', extra: true }),
-    (error) => error instanceof RuntimeHostProtocolError,
-  );
-  assert.throws(
-    () =>
-      decodeWorkHubCoordinationRecordInput({
-        turnId: 'turn',
-        userText: 'user',
-        assistantText: 'x'.repeat(8 * 1024 + 1),
-      }),
     (error) => error instanceof RuntimeHostProtocolError,
   );
 });

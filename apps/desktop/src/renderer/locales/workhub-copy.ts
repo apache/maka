@@ -213,6 +213,7 @@ export interface WorkHubCopy {
     readonly aborted: string;
     readonly stopped: string;
   };
+  readonly actionConfirmationIncomplete: string;
   readonly turnStates: Record<'running' | 'completed' | 'aborted' | 'failed', string>;
 }
 
@@ -286,6 +287,7 @@ const WORKHUB_COPY = {
       aborted: '更正已中止',
       stopped: '已停止关联',
     },
+    actionConfirmationIncomplete: '操作确认未完成；请查看目标任务状态后重试。',
     turnStates: { running: '进行中', completed: '已完成', aborted: '已中止', failed: '失败' },
   },
   'zh-TW': {
@@ -357,6 +359,7 @@ const WORKHUB_COPY = {
       aborted: '更正已中止',
       stopped: '已停止關聯',
     },
+    actionConfirmationIncomplete: '操作確認未完成；請查看目標任務狀態後重試。',
     turnStates: { running: '進行中', completed: '已完成', aborted: '已中止', failed: '失敗' },
   },
   en: {
@@ -433,6 +436,7 @@ const WORKHUB_COPY = {
       aborted: 'Aborted replacement',
       stopped: 'Stopped link',
     },
+    actionConfirmationIncomplete: 'Action confirmation is incomplete. Check the target task before retrying.',
     turnStates: { running: 'Running', completed: 'Completed', aborted: 'Aborted', failed: 'Failed' },
   },
 } satisfies UiCatalog<WorkHubCopy>;
