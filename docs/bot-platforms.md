@@ -264,10 +264,11 @@ traffic.
 
 ## Setup
 
-> **Status: Telegram, Feishu/Lark, WeCom and QQ are verified end-to-end. The
-> rest are placeholders.** Each remaining section must be walked against a real
-> developer account before it lands — the acceptance criteria require tested
-> instructions, and untested setup steps are worse than none.
+> **Status: Telegram, Discord, Feishu/Lark, WeCom and QQ are verified
+> end-to-end. The rest are placeholders.** Each remaining section must be
+> walked against a real developer account before it lands — the acceptance
+> criteria require tested instructions, and untested setup steps are worse than
+> none.
 >
 > For DingTalk and WeChat, check
 > [the onboarding architecture doc](architecture/bot-onboarding-runtime.zh-CN.md)
@@ -337,7 +338,58 @@ are 64-bit and lose precision as JavaScript numbers.
 
 ### Discord
 
-_TODO — developer portal application, bot token, gateway intents._
+Discord and QQ share `GatewayBridgeBase` verbatim — same opcodes, same
+heartbeat and resume lifecycle. Only the auth scheme and event names differ.
+A browser at `discord.com/app` is enough to drive the human side; no desktop
+client is required.
+
+**1. Create a server** to host the bot, if you do not already have one.
+
+**2. Create the application and bot.** In the Discord Developer Portal, create
+a New Application, open its **Bot** page, and use **Reset Token** to reveal the
+bot token. That value is Maka's `token`, and it is shown only once.
+
+**3. Enable the MESSAGE CONTENT INTENT.** Still on the Bot page, under
+**Privileged Gateway Intents**, turn on **MESSAGE CONTENT INTENT** and save.
+The bridge requests a fixed intent mask of `37376` — `GUILD_MESSAGES |
+DIRECT_MESSAGES | MESSAGE_CONTENT` — which is not configurable.
+
+This intent is privileged. It is self-serve while the bot is in fewer than 100
+servers; past that it needs Discord's approval.
+
+Skipping it fails in one of two ways, and the second is much harder to
+diagnose than the first:
+
+- the gateway closes with **4014** (disallowed intent), which the bridge treats
+  as fatal and does not retry; or
+- messages arrive normally but every `content` field is an **empty string**, so
+  the bot appears connected and awake while replying to nothing.
+
+**4. Invite the bot.** Under **OAuth2 → URL Generator**, select the `bot` scope
+and at least the **Send Messages** and **Read Message History** permissions,
+then open the generated URL and authorise it into your server.
+
+**5. Verify.** Startup fetches `/gateway/bot` over REST, opens the gateway
+socket, sends IDENTIFY, and promotes the channel to `operational` on the
+`READY` dispatch, which carries the bot's identity and its guild list. Close
+code **4004** means the token was rejected; like 4014 it is fatal and stops the
+bridge rather than retrying.
+
+**Discord sees ordinary channel traffic.** Unlike QQ groups and Telegram
+groups, no @-mention is needed — with the content intent granted the bot
+receives every message in every channel it can read. Chat IDs are the raw
+Discord channel ID with no prefix.
+
+Messages are chunked at 2000 characters, Discord's own per-message limit.
+
+> **The channel proxy does not cover the gateway socket.** REST calls go
+> through `proxiedFetch` and honour `proxyUrl`, but `WsBridgeBase.createWebSocket()`
+> constructs the WebSocket with no dispatcher, so the gateway connection
+> ignores that setting. This was *not* reproduced during verification — the
+> unproxied socket connected normally — which is the expected outcome whenever
+> a system-wide or TUN-mode proxy is transparently carrying raw sockets. It
+> would matter on a host where Discord is reachable only through Maka's own
+> proxy setting. The same applies to the QQ and DingTalk gateways.
 
 ### Slack
 
