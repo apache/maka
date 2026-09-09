@@ -92,6 +92,18 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await page.getByRole('menuitem', { name: '重命名', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '重命名任务' })).toBeVisible();
   await page.keyboard.press('Escape');
+  await expect(page.getByRole('textbox', { name: '重命名任务' })).toBeHidden();
+  // Dialog focus restoration can open the action tooltip over the dock.
+  // Exercise that keyboard focus explicitly and dismiss the remaining overlay.
+  await actions.press('Tab');
+  await page.keyboard.press('Shift+Tab');
+  const actionTooltip = page.getByRole('tooltip', { name: 'Drag task 0 任务操作', exact: true });
+  await expect(actionTooltip).toBeVisible();
+  await expect.poll(nativeWorkHubVisible).toBe(false);
+  const workHubNavigation = page.getByRole('button', { name: 'WorkHub', exact: true });
+  await workHubNavigation.hover();
+  await workHubNavigation.focus();
+  await expect(actionTooltip).toBeHidden();
   await expect.poll(nativeWorkHubVisible).toBe(true);
   await page.getByRole('button', { name: '搜索任务', exact: true }).click();
   await expect(page.locator('[data-maka-contract="search-modal"]')).toBeVisible();
