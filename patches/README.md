@@ -59,6 +59,12 @@ Delete when that guard passes against an unpatched package.
 
 ## `@astryxdesign/core@0.5.2`
 
+`ChatComposerInput` synchronizes external controlled values into its editable
+DOM in a layout effect. A passive effect can leave the old multiline draft
+visible for a frame after the sent message is rendered; clearing it later
+shrinks the dock and moves the already-positioned transcript. The existing
+echo and selection guards stay unchanged.
+
 Five published component seams drop host-owned state or semantics:
 
 - `ChatLayout` needs a conversation identity that resets scroll/unread state

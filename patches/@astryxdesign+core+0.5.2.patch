@@ -1,3 +1,23 @@
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
+@@ -25,1 +25,1 @@
+-import { useRef, useState, useCallback, useEffect, useImperativeHandle } from 'react';
++import { useRef, useState, useCallback, useEffect, useLayoutEffect, useImperativeHandle } from 'react';
+@@ -210,2 +210,2 @@
+-  useEffect(() => {
++  useLayoutEffect(() => {
+     if (controlledValue === undefined || !editableRef.current) {
+diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
+--- a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
++++ b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
+@@ -30,1 +30,2 @@
+   useEffect,
++  useLayoutEffect,
+@@ -405,2 +406,2 @@
+-  useEffect(() => {
++  useLayoutEffect(() => {
+     if (controlledValue === undefined || !editableRef.current) {
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
 index ff34874..0f5ae14 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
