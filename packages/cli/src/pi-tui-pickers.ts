@@ -672,13 +672,13 @@ export class UserQuestionOverlay implements Component {
   }
 
   private renderInputRow(width: number): string[] {
-    const prefix = this.onInputRow ? '→ ' : '  ';
+    const marker = this.onInputRow ? '→' : ' ';
     // Focus controls the IME marker and our cursor-visibility adapter (#1064).
     this.editor.focused = this.onInputRow;
     if (!this.onInputRow && this.editor.getText().length === 0) {
-      return [padLine(`${prefix}${ansi.dim(this.input.placeholder)}`, width)];
+      return [padLine(`${marker} ${ansi.dim(this.input.placeholder)}`, width)];
     }
-    return renderFieldRow(this.editor, prefix, width);
+    return renderFieldRow(this.editor, marker, width);
   }
 }
 
@@ -912,7 +912,7 @@ export class ModelSearchOverlay implements Component {
   }
 
   private renderFieldRow(editor: Editor, label: string, width: number): string[] {
-    return renderFieldRow(editor, `${label} `, width);
+    return renderFieldRow(editor, label, width);
   }
 }
 
@@ -1050,7 +1050,8 @@ function padLine(text: string, width: number): string {
   return `${trimmed}${' '.repeat(Math.max(0, safeWidth - visibleWidth(trimmed)))}`;
 }
 
-function renderFieldRow(editor: Editor, prefix: string, width: number): string[] {
+function renderFieldRow(editor: Editor, label: string, width: number): string[] {
+  const prefix = `${label} `;
   const prefixWidth = visibleWidth(prefix);
   const contentWidth = Math.max(1, width - prefixWidth);
   // These field editors have no autocomplete rows. Keep Editor's wrapping and
@@ -1861,6 +1862,6 @@ export class OnboardingWizard implements Component {
   }
 
   private renderFieldRow(editor: Editor, label: string, width: number): string[] {
-    return renderFieldRow(editor, `${label} `, width);
+    return renderFieldRow(editor, label, width);
   }
 }
