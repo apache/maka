@@ -61,6 +61,23 @@ test('WorkHub moves the same renderer and draft between the main window and floa
   await expect.poll(() => workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ placement: 'floating', floatingVisible: true });
   await expect(editor).toHaveText('Keep this unsent WorkHub draft — typed during opening');
   await expect(editor).toHaveAttribute('data-test-instance', marker);
+  // A reused native window is already painted when focus arrives. Replaying
+  // the intro here would visibly fade that frame out after it appeared.
+  await workhub.evaluate(() => {
+    const samples: string[] = [];
+    (window as Window & { workHubFocusSamples?: string[] }).workHubFocusSamples = samples;
+    window.maka.workHubPresentation.onFocusComposer(() => {
+      requestAnimationFrame(() => samples.push(getComputedStyle(document.querySelector('.workHubComposerSurface')!).opacity));
+    });
+  });
+  for (let index = 0; index < 3; index++) {
+    await workhub.evaluate(() => window.maka.workHubPresentation.hide());
+    await expect(page.locator('.workHubDockPlaceholder')).toBeHidden();
+    await expect(workhub.locator('.workHubHistory')).toHaveCSS('pointer-events', 'auto');
+    await expect(editor).toHaveAttribute('data-test-instance', marker);
+    await page.evaluate(() => window.maka.workHubPresentation.detach());
+    await expect.poll(() => workhub.evaluate(() => (window as Window & { workHubFocusSamples?: string[] }).workHubFocusSamples)).toEqual(Array.from({ length: index + 1 }, () => '1'));
+  }
   await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: false } }));
   await expect(page.locator('.workHubDock')).toBeHidden();
   await expect.poll(() => workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ floatingVisible: false, shortcutRegistered: false });
@@ -85,8 +102,7 @@ test('WorkHub moves the same renderer and draft between the main window and floa
   await workhub.getByRole('button', { name: /展开对话|Expand conversation/ }).click();
   await expect(workhub.locator('.workHubHistory')).toBeVisible();
   await workhub.getByRole('button', { name: /^(Hide|隐藏|隱藏)$/ }).click();
-  await expect.poll(() => workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ placement: 'floating', floatingVisible: false });
-  await page.getByRole('button', { name: /^(Bring WorkHub back|收回工作台)$/ }).click();
+  await expect.poll(() => workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ placement: 'docked', floatingVisible: false });
   await expect(page.locator('.workHubDockPlaceholder')).toBeHidden();
   await expect.poll(() => workhub.evaluate(() => window.maka.workHubPresentation.getSnapshot())).toMatchObject({ placement: 'docked' });
   await expect(editor).toHaveText('Keep this unsent WorkHub draft — typed during opening');
@@ -107,4 +123,36 @@ test('WorkHub moves the same renderer and draft between the main window and floa
   await workhub.getByRole('button', { name: '发送', exact: true }).click();
   await expect(workhub.locator('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'true');
   await expect(workhub.locator('article').filter({ hasText: 'Keep this unsent WorkHub draft' }).first()).toBeVisible();
+  // WorkHub owns foreground focus while native input targets Desktop behind it.
+  // Playwright otherwise forces document.hasFocus() true for every page.
+  const main = await app.browserWindow(page);
+  const cdp = await app.context().newCDPSession(page);
+  await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false });
+  await main.evaluate(window => window.showInactive());
+  await page.evaluate(() => window.maka.workHubPresentation.detach());
+  await expect.poll(() => main.evaluate(window => window.isFocused())).toBe(false);
+  expect(await page.evaluate(() => document.hasFocus())).toBe(false);
+  const result = await app.evaluate(async ({ BrowserWindow }, mainId) => {
+    const require = process.getBuiltinModule('module').createRequire(process.cwd() + '/package.json');
+    const { WorkHubUi } = require('./dist/main/workhub-ui.js');
+    const main = BrowserWindow.fromId(mainId)!;
+    let focused = 0;
+    const onFocus = () => focused++;
+    main.on('focus', onFocus);
+    const ui = new WorkHubUi(() => main.webContents, () => main.webContents.executeJavaScript('window.maka.settings.getClient()'), () => {}, async () => '');
+    try {
+      const signal = new AbortController().signal;
+      await ui.begin(signal);
+      await ui.execute({ kind: 'open', area: 'newTask' }, signal);
+      const observation = await ui.observe();
+      const editor = observation.controls.find((item: any) => item.editable && item.name.match(/消息输入框|Message/));
+      if (!editor) throw new Error('Background navigation did not expose the composer');
+      await ui.execute({ kind: 'type', ref: editor.ref, text: '后台输入验证' }, signal);
+      await main.webContents.executeJavaScript("window.__backgroundKey = undefined; document.addEventListener('keydown', event => { window.__backgroundKey = { key: event.key, trusted: event.isTrusted }; }, { once: true })");
+      await ui.execute({ kind: 'key', ref: editor.ref, key: 'ArrowLeft' }, signal);
+      return { focused, mainFocused: main.isFocused(), key: await main.webContents.executeJavaScript('window.__backgroundKey'), value: await main.webContents.executeJavaScript('document.querySelector("[contenteditable=true]")?.textContent') };
+    } finally { main.removeListener('focus', onFocus); }
+  }, await main.evaluate(window => window.id));
+  expect(result).toEqual({ focused: 0, mainFocused: false, key: { key: 'ArrowLeft', trusted: true }, value: '后台输入验证' });
+  await expect(workhub.locator('[contenteditable=true]')).toBeEmpty();
 });

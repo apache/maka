@@ -30,9 +30,10 @@ import type { createWorkHubPresentation } from '../workhub-presentation.js';
 
 const source = fileURLToPath(new URL('../../../src/main/workhub-presentation.ts', import.meta.url));
 
-async function harness(animate = false) {
+async function harness(animate = false, displayFrequency = 60) {
   let enabled = true;
   let mainRequests = 0;
+  let mainAvailable = true;
   let opening: Promise<void> | undefined;
   const openingStarted = deferred<void>();
   let now = 0;
@@ -54,6 +55,7 @@ async function harness(animate = false) {
   const errors: unknown[] = [];
   let handler: ((event: unknown, command: string, payload?: unknown) => Promise<unknown>) | undefined;
   let unregistered = false;
+  let shortcut: (() => void) | undefined;
   let registeredViews = 0;
   let releasedViews = 0;
   let pointerDisplay = { x: 0, y: 0, width: 1200, height: 900 };
@@ -65,6 +67,8 @@ async function harness(animate = false) {
     isDestroyed() { return this.destroyed; }
     send(channel: string, ...args: unknown[]) { this.sent.push([channel, ...args]); }
     getZoomFactor() { return 1; }
+    backgroundThrottling = true;
+    setBackgroundThrottling(allowed: boolean) { this.backgroundThrottling = allowed; }
     captures = 0;
     async capturePage() {
       this.captures++;
@@ -97,11 +101,14 @@ async function harness(animate = false) {
     isMinimized() { return false; }
     getContentBounds() { return this.bounds; }
     getBounds() { return this.bounds; }
-    setBounds(bounds: typeof this.bounds) { this.bounds = bounds; }
+    setBounds(bounds: typeof this.bounds) { this.bounds = bounds; this.emit('resize'); }
     setVisibleOnAllWorkspaces() {}
     setMaximizable() {}
-    show() { this.visible = true; }
+    show() { this.visible = true; this.emit('show'); }
+    showInactive() { this.visible = true; }
     hide() { this.visible = false; }
+    resizable = true;
+    setResizable(value: boolean) { this.resizable = value; }
     focused = 0;
     focus() { this.focused++; }
     restore() {}
@@ -114,29 +121,30 @@ async function harness(animate = false) {
     setVisible(value: boolean) { this.visible = value; }
     getVisible() { return this.visible; }
     setBackgroundColor() {}
-    setBounds() {}
+    boundsUpdates: Electron.Rectangle[] = [];
+    setBounds(bounds: Electron.Rectangle) { this.boundsUpdates.push(bounds); }
   }
   const output = await build({ entryPoints: [source], bundle: true, write: false, format: 'cjs', platform: 'node', external: ['electron'] });
   const module = { exports: {} as { createWorkHubPresentation: typeof createWorkHubPresentation } };
   const nodeRequire = createRequire(import.meta.url);
   runInNewContext(output.outputFiles[0]!.text, {
     module, exports: module.exports, console, process, URL, Error,
-    Date: class extends Date { static now() { return now; } },
+    performance: { now: () => now },
     setTimeout: (callback: () => void, delay: number) => { timers.set(++timerId, { at: now + delay, callback }); return timerId; },
     clearTimeout: (id: number) => timers.delete(id),
     require: (name: string) => name === 'electron' ? {
       BrowserWindow: FakeWindow, WebContentsView: FakeView,
       systemPreferences: { getAnimationSettings: () => ({ prefersReducedMotion: !animate }) },
-      globalShortcut: { register: () => true, unregister: () => { unregistered = true; } },
+      globalShortcut: { register: (_accelerator: string, callback: () => void) => { shortcut = callback; return true; }, unregister: () => { unregistered = true; } },
       ipcMain: { handle: (_channel: string, callback: typeof handler) => { handler = callback; }, removeHandler: () => { handler = undefined; } },
-      screen: { getCursorScreenPoint: () => ({ x: pointerDisplay.x, y: pointerDisplay.y }), getDisplayNearestPoint: () => ({ workArea: pointerDisplay }), getDisplayMatching: () => ({ workArea: { x: 0, y: 0, width: 1200, height: 900 } }) },
+      screen: { getCursorScreenPoint: () => ({ x: pointerDisplay.x, y: pointerDisplay.y }), getDisplayNearestPoint: () => ({ workArea: pointerDisplay }), getDisplayMatching: () => ({ displayFrequency, workArea: { x: 0, y: 0, width: 1200, height: 900 } }) },
     } : nodeRequire(name),
   });
   const main = new FakeWindow();
   const controller = module.exports.createWorkHubPresentation({
-    mainWindow: () => main as unknown as Electron.BrowserWindow,
-    isEnabled: async () => enabled,
-    ensureMainWindow: async () => { mainRequests++; openingStarted.resolve(); await opening; return main as unknown as Electron.BrowserWindow; },
+    mainWindow: () => mainAvailable ? main as unknown as Electron.BrowserWindow : undefined,
+    isEnabled: () => enabled,
+    ensureMainWindow: async () => { mainRequests++; openingStarted.resolve(); await opening; mainAvailable = true; return main as unknown as Electron.BrowserWindow; },
     mainModuleDirectory: '/app/dist/main', preloadPath: '/app/dist/preload/preload.cjs',
     onError: (error) => errors.push(error),
     onViewCreated: () => { registeredViews++; return () => { releasedViews++; }; },
@@ -144,7 +152,7 @@ async function harness(animate = false) {
   controller.attachMainWindow(main as unknown as Electron.BrowserWindow);
   controller.registerIpc();
   const command = (sender: Contents, name: string, payload?: unknown) => handler!({ sender, senderFrame: sender.mainFrame }, name, payload);
-  return { get mainRequests() { return mainRequests; }, controller, main, windows, views, errors, command, advance, setEnabled: (value: boolean) => { enabled = value; }, deferOpening: (value: Promise<void>) => { opening = value; return openingStarted.promise; }, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
+  return { setMainAvailable: (value: boolean) => { mainAvailable = value; }, shortcut: () => shortcut!(), get mainRequests() { return mainRequests; }, controller, main, windows, views, errors, command, advance, setEnabled: (value: boolean) => { enabled = value; }, deferOpening: (value: Promise<void>) => { opening = value; return openingStarted.promise; }, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
 }
 
 test('yields the docked native view to main-window overlays without replacing the conversation', async () => {
@@ -272,7 +280,9 @@ test('animates from the current height, keeps the bottom anchored and survives r
   h.advance(160);
   assert.equal(floating.bounds.height, 720);
   await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 110 });
-  h.advance(80);
+  h.advance(18);
+  assert.ok(floating.bounds.height > 700, 'collapse starts gently while the visible conversation fades');
+  h.advance(62);
   const intermediate = floating.bounds.height;
   assert.ok(intermediate > 110 && intermediate < 720);
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 110 });
@@ -291,6 +301,7 @@ test('animates from the current height, keeps the bottom anchored and survives r
 
 test('reparents one live conversation across docking, floating, hide and main-window close', async () => {
   const h = await harness();
+  h.main.show();
   await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 100, y: 40, width: 900, height: 760 } });
   const view = h.views[0]!;
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 96 });
@@ -312,6 +323,8 @@ test('reparents one live conversation across docking, floating, hide and main-wi
   await assert.rejects(h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: Number.NaN }), /Invalid WorkHub conversation layout/);
   await h.command(view.webContents, 'hide');
   assert.equal(floating.visible, false);
+  assert.equal(h.controller.getSnapshot().placement, 'docked');
+  assert.ok(h.main.children.has(view));
   assert.equal(view.webContents.destroyed, false);
   await h.command(view.webContents, 'dock');
   assert.ok(h.main.children.has(view) && !floating.children.has(view));
@@ -330,7 +343,8 @@ test('reparents one live conversation across docking, floating, hide and main-wi
   assert.equal(floating.visible, false);
   assert.equal(h.main.visible, false, 'hiding the floating window must not show Desktop');
   assert.equal(h.main.focused, mainFocusCount, 'the shortcut never focuses Desktop');
-  assert.ok(floating.children.has(view));
+  assert.equal(h.controller.getSnapshot().placement, 'docked');
+  assert.ok(floating.children.has(view), 'a hidden Desktop defers native reparenting');
   await h.controller.toggle();
   assert.equal(floating.visible, true);
   h.movePointer({ x: 1600, y: -900, width: 1000, height: 800 });
@@ -404,29 +418,44 @@ test('application broadcasts reach registered auxiliaries once and stop after re
   assert.deepEqual(messages, ['settings:changed']);
 });
 
-test('control preparation floats the live conversation and focuses the main window without resetting an existing float', async () => {
+test('control shows a passive card only after it is painted and preserves manual conversation geometry', async () => {
   const h = await harness();
   await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 0, y: 0, width: 1000, height: 800 } });
   const view = h.views[0]!;
-  await h.controller.prepareControl();
+  await h.controller.prepareControl('turn-one');
   const floating = h.windows[1]!;
-  assert.equal(h.controller.getSnapshot().placement, 'floating');
-  assert.ok(floating.visible && floating.children.has(view));
-  assert.equal(h.main.children.has(view), false);
-  assert.equal(h.main.focused, 1);
-  floating.setBounds({ x: 120, y: 130, width: 520, height: 650 });
-  const floatingFocus = floating.focused;
-  await h.controller.prepareControl();
-  assert.deepEqual(floating.bounds, { x: 120, y: 130, width: 520, height: 650 });
-  assert.equal(floating.focused, floatingFocus, 'a later control call must not refocus the composer');
-  assert.equal(h.main.focused, 2);
-  assert.equal(h.views.length, 1);
-  await h.command(view.webContents, 'hide');
-  await h.controller.prepareControl();
+  const request = h.controller.getSnapshot().progressRequest!;
+  assert.equal(typeof request, 'number');
+  assert.equal(floating.visible, false, 'the old chat cannot flash before the progress card is painted');
+  assert.equal(view.webContents.backgroundThrottling, false, 'hidden card preparation must be able to produce animation frames');
+  assert.equal(floating.bounds.width, 360);
+  assert.equal(floating.bounds.height, 112);
+  assert.equal(floating.resizable, false);
+  assert.equal(floating.bounds.x + floating.bounds.width / 2, 600);
+  assert.equal(floating.bounds.y + floating.bounds.height, 804);
+  await h.command(view.webContents, 'progress-ready', request);
   assert.equal(floating.visible, true);
+  assert.equal(view.webContents.backgroundThrottling, true, 'restore normal throttling after showing the card');
+  assert.equal(floating.focused, 0);
+  assert.equal(h.main.focused, 0, 'control does not activate the main window');
+  assert.equal(h.mainRequests, 0, 'the focus-or-create fallback must not run for an existing window');
+  assert.equal(h.main.visible, false, 'control does not reveal a hidden main window');
+  assert.equal(view.webContents.sent.some(([channel]) => channel.endsWith('focus-composer')), false);
+  await h.command(view.webContents, 'ready');
+  await h.command(view.webContents, 'show-conversation');
+  assert.equal(h.controller.getSnapshot().progressRequest, undefined);
+  assert.equal(floating.bounds.width, 520);
+  assert.equal(floating.bounds.height, 720);
+  assert.equal(floating.resizable, true);
+  assert.ok(view.webContents.sent.some(([channel, expand]) => channel.endsWith('focus-composer') && expand === true));
+  floating.setBounds({ x: 120, y: 130, width: 520, height: 650 });
+  const focused = floating.focused;
+  await h.controller.prepareControl('turn-one');
+  assert.deepEqual(floating.bounds, { x: 120, y: 130, width: 520, height: 650 });
+  assert.equal(floating.focused, focused, 'control leaves a manually opened chat alone');
+  assert.equal(h.views.length, 1);
   h.controller.dispose();
 });
-
 
 test('control preparation refuses disabled presentation before opening and rechecks a pending open', async () => {
   const h = await harness();
@@ -438,6 +467,7 @@ test('control preparation refuses disabled presentation before opening and reche
   h.setEnabled(true);
   const opened = deferred<void>();
   const opening = h.deferOpening(opened.promise);
+  h.setMainAvailable(false);
   const control = h.controller.prepareControl();
   await opening;
   h.setEnabled(false);
@@ -502,5 +532,226 @@ test('all WorkHub entries obey the client enable setting and disabling retains t
   assert.equal(h.views.length, 1, 'reenabling preserves the renderer and its draft');
   assert.equal(floating.visible, true);
   assert.deepEqual(h.registrations(), [1, 0]);
+  h.controller.dispose();
+});
+
+
+test('prewarms once and the shortcut shows and hides synchronously', async () => {
+  const h = await harness();
+  await h.controller.refreshSettings();
+  const floating = h.windows[1]!;
+  const view = h.views[0]!;
+  assert.equal(floating.visible, false);
+  assert.equal(view.visible, false);
+  assert.ok(floating.children.has(view));
+  await h.controller.refreshSettings();
+  assert.equal(h.windows.length, 2);
+  assert.equal(h.views.length, 1);
+  h.shortcut();
+  assert.equal(floating.visible, true, 'show happens in the shortcut callback, without an async queue');
+  h.shortcut();
+  assert.equal(floating.visible, false);
+  assert.equal(h.mainRequests, 0);
+  assert.equal(h.main.focused, 0);
+  h.controller.dispose();
+});
+
+test('a pending backdrop capture and older hide cannot delay or undo the shortcut', async () => {
+  const h = await harness();
+  await h.controller.refreshSettings();
+  const host = { visible: true, rect: { x: 200, y: 40, width: 800, height: 760 } };
+  await h.command(h.main.webContents, 'host', host);
+  h.main.show();
+  const view = h.views[0]!;
+  await h.command(view.webContents, 'ready');
+  const started = deferred<void>();
+  const capture = deferred<{ toDataURL(): string }>();
+  view.webContents.capturePage = () => { started.resolve(); return capture.promise; };
+  const occlude = h.command(h.main.webContents, 'host', { ...host, occluded: true });
+  await started.promise;
+  const olderHide = h.command(view.webContents, 'hide');
+  h.shortcut();
+  const floating = h.windows[1]!;
+  assert.equal(floating.visible, true);
+  assert.ok(floating.children.has(view));
+  capture.resolve({ toDataURL: () => 'data:image/png;base64,frame' });
+  await Promise.all([occlude, olderHide]);
+  assert.equal(floating.visible, true, 'an older queued intent cannot hide the newer summon');
+  assert.equal(view.visible, true);
+  h.controller.dispose();
+});
+
+test('the shortcut supersedes a pending dock without waiting for the main window', async () => {
+  const h = await harness();
+  await h.controller.refreshSettings();
+  h.shortcut();
+  const view = h.views[0]!;
+  const opened = deferred<void>();
+  const opening = h.deferOpening(opened.promise);
+  const docking = h.command(view.webContents, 'dock');
+  await opening;
+  h.shortcut();
+  h.shortcut();
+  const floating = h.windows[1]!;
+  assert.equal(floating.visible, true);
+  opened.resolve();
+  await docking;
+  assert.equal(h.controller.getSnapshot().placement, 'floating');
+  assert.ok(floating.children.has(view));
+  assert.equal(floating.visible, true);
+  assert.equal(h.main.focused, 0);
+  h.controller.dispose();
+});
+
+
+test('native resize callbacks do not submit duplicate view bounds and follow display cadence', async () => {
+  const h = await harness(true, 120);
+  await h.controller.show();
+  const view = h.views[0]!;
+  await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 96 });
+  const before = view.boundsUpdates.length;
+  h.advance(9);
+  assert.ok(view.boundsUpdates.length > before, 'a 120Hz display gets its next animation frame before 16ms');
+  h.advance(231);
+  assert.equal(h.windows[1]!.bounds.height, 720);
+  for (let index = 1; index < view.boundsUpdates.length; index++) {
+    assert.notDeepEqual(view.boundsUpdates[index], view.boundsUpdates[index - 1]);
+  }
+  h.controller.dispose();
+});
+
+
+test('hiding returns the live view to Desktop and preserves floating geometry for the next summon', async () => {
+  const h = await harness();
+  h.main.show();
+  await h.controller.refreshSettings();
+  const host = { visible: true, rect: { x: 200, y: 40, width: 800, height: 760 } };
+  await h.command(h.main.webContents, 'host', host);
+  h.shortcut();
+  const floating = h.windows[1]!;
+  const view = h.views[0]!;
+  await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 144 });
+  h.shortcut();
+  assert.equal(floating.visible, false);
+  assert.equal(h.controller.getSnapshot().placement, 'docked');
+  assert.ok(h.main.children.has(view));
+  assert.equal(view.visible, true);
+  await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 96 });
+  h.shortcut();
+  assert.equal(floating.visible, true);
+  assert.equal(floating.bounds.height, 144, 'Desktop geometry does not shrink the floating composer');
+  assert.ok(floating.children.has(view));
+  assert.equal(h.mainRequests, 0);
+  assert.equal(h.main.focused, 0);
+  assert.equal(h.views.length, 1);
+  assert.equal(h.windows.length, 2);
+  h.controller.dispose();
+});
+
+test('hiding with Desktop closed keeps the conversation alive without reopening Desktop', async () => {
+  const h = await harness();
+  await h.controller.show();
+  const view = h.views[0]!;
+  h.main.destroy();
+  await h.controller.toggle();
+  assert.equal(h.controller.getSnapshot().placement, 'docked');
+  assert.equal(h.windows[1]!.visible, false);
+  assert.ok(h.windows[1]!.children.has(view));
+  assert.equal(view.webContents.destroyed, false);
+  await h.controller.toggle();
+  assert.equal(h.windows[1]!.visible, true);
+  assert.equal(h.mainRequests, 0);
+  assert.equal(h.views.length, 1);
+  h.controller.dispose();
+});
+
+
+test('a hidden Desktop defers native docking until it shows', async () => {
+  const h = await harness();
+  await h.controller.refreshSettings();
+  const host = { visible: true, rect: { x: 200, y: 40, width: 800, height: 760 } };
+  await h.command(h.main.webContents, 'host', host);
+  h.shortcut();
+  const view = h.views[0]!;
+  const floating = h.windows[1]!;
+  await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 144 });
+  const before = view.boundsUpdates.length;
+  h.shortcut();
+  await h.command(h.main.webContents, 'host', host);
+  assert.equal(h.controller.getSnapshot().placement, 'docked');
+  assert.equal(floating.visible, false);
+  assert.ok(floating.children.has(view));
+  assert.equal(view.boundsUpdates.length, before, 'hiding does not resize an invisible conversation');
+  await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 96 });
+  h.shortcut();
+  assert.equal(floating.bounds.height, 144);
+  h.shortcut();
+  h.main.show();
+  assert.ok(h.main.children.has(view), 'Desktop receives the conversation in its show callback');
+  assert.equal(view.visible, true);
+  assert.equal(h.main.focused, 0);
+  assert.equal(h.mainRequests, 0);
+  assert.equal(h.views.length, 1);
+  h.controller.dispose();
+});
+
+
+test('control keeps a visible Desktop conversation docked and floats it when the host is hidden or occluded', async () => {
+  for (const hidden of [{ visible: false }, { occluded: true }]) {
+    const h = await harness();
+    h.main.show();
+    const host = { visible: true, rect: { x: 200, y: 40, width: 800, height: 760 } };
+    await h.command(h.main.webContents, 'host', host);
+    const view = h.views[0]!;
+    await h.controller.prepareControl('turn');
+    assert.equal(h.controller.getSnapshot().placement, 'docked');
+    assert.equal(h.windows.length, 1, 'control does not create an unnecessary floating window');
+    assert.ok(h.main.children.has(view));
+    assert.equal(view.visible, true);
+    await h.command(h.main.webContents, 'host', { ...host, ...hidden });
+    await h.controller.prepareControl('turn');
+    assert.equal(h.controller.getSnapshot().placement, 'floating');
+    assert.equal(typeof h.controller.getSnapshot().progressRequest, 'number');
+    await h.command(view.webContents, 'progress-ready', h.controller.getSnapshot().progressRequest);
+    assert.ok(h.windows[1]!.visible && h.windows[1]!.children.has(view));
+    assert.equal(h.views.length, 1);
+    h.controller.dispose();
+  }
+});
+
+
+test('closing progress suppresses the current turn and old paint acknowledgements cannot reopen it', async () => {
+  const h = await harness();
+  await h.controller.prepareControl('turn-one');
+  const view = h.views[0]!;
+  const first = h.controller.getSnapshot().progressRequest!;
+  assert.equal(view.webContents.backgroundThrottling, false);
+  await h.command(view.webContents, 'hide');
+  assert.equal(view.webContents.backgroundThrottling, true, 'cancelling preparation restores normal background behavior');
+  await h.command(view.webContents, 'progress-ready', first);
+  await h.controller.prepareControl('turn-one');
+  assert.equal(h.controller.getSnapshot().progressRequest, undefined);
+  assert.equal(h.windows[1]!.visible, false);
+  await h.controller.prepareControl('turn-two');
+  assert.notEqual(h.controller.getSnapshot().progressRequest, undefined);
+  h.controller.finishControl();
+  await h.command(view.webContents, 'hide');
+  await h.command(h.main.webContents, 'host', { visible: false, rect: { x: 0, y: 0, width: 0, height: 0 } });
+  assert.equal(h.windows[1]!.visible, false);
+  h.controller.dispose();
+});
+
+test('the shortcut opens the normal composer from progress without waiting for its paint', async () => {
+  const h = await harness();
+  await h.controller.prepareControl('turn');
+  const request = h.controller.getSnapshot().progressRequest!;
+  await h.controller.toggle(true);
+  const floating = h.windows[1]!;
+  assert.equal(h.controller.getSnapshot().progressRequest, undefined);
+  assert.equal(floating.visible, true);
+  assert.equal(floating.bounds.width, 520);
+  assert.equal(h.views[0]!.webContents.backgroundThrottling, true);
+  await h.command(h.views[0]!.webContents, 'progress-ready', request);
+  assert.equal(floating.bounds.width, 520);
   h.controller.dispose();
 });

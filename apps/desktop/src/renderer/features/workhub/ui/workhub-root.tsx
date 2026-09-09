@@ -17,10 +17,11 @@
  * under the License.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChatSurfaceLayout, MakaWordmark, useUiLocale, type ComposerHandle } from '@maka/ui';
 import { Button, IconButton } from '@astryxdesign/core';
 import { ChevronDown, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
+import { WorkHubProgressCard } from './workhub-progress-card.js';
 import { WorkHubComposer } from './workhub-composer.js';
 import { WorkHubConversation } from './workhub-conversation.js';
 import { WorkHubNavigationRail } from './workhub-navigation-rail.js';
@@ -32,8 +33,13 @@ import type { WorkHubPresentationSnapshot } from '../../../../shared/workhub-pre
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
 import { workHubLinkedWork } from '../model/linked-work.js';
 
-function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement | null) {
+function cancelReveal(element: HTMLDivElement | null, content: HTMLDivElement | null) {
   for (const target of [element, content]) for (const animation of target?.getAnimations() ?? []) animation.cancel();
+  content?.style.removeProperty('pointer-events');
+}
+
+function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement | null) {
+  cancelReveal(element, content);
   if (!element || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   element.animate([
     { opacity: 0, transform: 'translateY(6px) scale(0.98)', offset: 0 },
@@ -42,11 +48,20 @@ function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement 
     { opacity: 0, transform: 'translateY(-3px) scale(1)', offset: 0.85 },
     { opacity: 0, transform: 'translateY(-3px) scale(1)', offset: 1 },
   ], { duration: 1200, easing: 'ease-out' });
-  content?.animate([
-    { opacity: 0, pointerEvents: 'none', offset: 0 },
-    { opacity: 0, pointerEvents: 'none', offset: 0.65 },
-    { opacity: 1, pointerEvents: 'auto', offset: 1 },
-  ], { duration: 1200, easing: 'ease-in-out' });
+  if (content) {
+    // Non-compositable properties in the same effect force opacity onto the
+    // renderer thread. Keep the interaction gate outside the visual keyframes.
+    content.style.pointerEvents = 'none';
+    const reveal = content.animate([
+      { opacity: 0, offset: 0 },
+      { opacity: 0, offset: 0.65 },
+      { opacity: 1, offset: 1 },
+    ], { duration: 1200, easing: 'ease-in-out' });
+    reveal.id = 'workhub-reveal';
+    reveal.onfinish = () => {
+      if (!content.getAnimations().some((animation) => animation.id === 'workhub-reveal' && animation.playState === 'running')) content.style.removeProperty('pointer-events');
+    };
+  }
 }
 
 export function WorkHubRoot() {
@@ -59,6 +74,8 @@ export function WorkHubRoot() {
   const composerSurface = useRef<HTMLDivElement>(null);
   const revealMark = useRef<HTMLDivElement>(null);
   const history = useRef<HTMLDivElement>(null);
+  const hasPresented = useRef(false);
+  const pendingComposerFocus = useRef(false);
   const surface = useRef<HTMLElement>(null);
   const [expandedOverride, setConversationExpanded] = useState<boolean>();
   const hasConversation = transcript.messages.length > 0 || busy || Boolean(controller.liveTurn);
@@ -68,11 +85,18 @@ export function WorkHubRoot() {
   const [expandedLayoutHeight, setExpandedLayoutHeight] = useState(720);
   const [control, setControl] = useState<WorkHubControlSnapshot>();
   const [presentation, setPresentation] = useState<WorkHubPresentationSnapshot>();
-  const floating = presentation?.placement === 'floating';
+  const progress = presentation?.progressRequest !== undefined;
+  const floating = !progress && presentation?.placement === 'floating';
   const showConversation = !floating || conversationExpanded;
+  useLayoutEffect(() => {
+    if (!progress && pendingComposerFocus.current) {
+      pendingComposerFocus.current = false;
+      composer.current?.focus();
+    }
+  }, [progress]);
   const compactHeight = () => Math.ceil(composerSurface.current?.getBoundingClientRect().height ?? 96);
   useEffect(() => {
-    if (!composerSurface.current) return;
+    if (!composerSurface.current || progress) return;
     const resize = () => {
       surface.current?.style.setProperty('--workhub-composer-height', `${compactHeight()}px`);
       void services.presentation.setConversationLayout({ expanded: conversationExpanded, compactHeight: compactHeight() }).catch(controller.report);
@@ -81,9 +105,10 @@ export function WorkHubRoot() {
     observer.observe(composerSurface.current);
     resize();
     return () => observer.disconnect();
-  }, [services, floating, conversationExpanded]);
+  }, [services, floating, conversationExpanded, progress]);
   const toggleConversation = async () => {
     if (conversationExpanded) {
+      cancelReveal(revealMark.current, history.current);
       setExpandedLayoutHeight(surface.current?.querySelector('.maka-chat-layout')?.getBoundingClientRect().height ?? 0);
       setConversationExpanded(false);
     } else {
@@ -97,6 +122,10 @@ export function WorkHubRoot() {
     let active = true;
     const acceptPresentation = (next: WorkHubPresentationSnapshot) => {
       if (!active) return;
+      if (next.progressRequest !== undefined || next.placement !== 'floating' || !next.floatingVisible) {
+        cancelReveal(revealMark.current, history.current);
+        for (const animation of composerSurface.current?.getAnimations() ?? []) animation.cancel();
+      }
       if (!hasConversationRef.current && (next.placement === 'docked' || !next.floatingVisible)) setConversationExpanded(undefined);
       setPresentation(next);
     };
@@ -113,8 +142,13 @@ export function WorkHubRoot() {
     };
     const unsubscribeControl = services.control.subscribe(acceptControl);
     void services.control.getSnapshot().then(acceptControl).catch(controller.report);
-    const focus = services.presentation.onFocusComposer(() => {
-      composer.current?.focus();
+    const focus = services.presentation.onFocusComposer((expand) => {
+      if (expand) setConversationExpanded(true);
+      if (surface.current?.inert) pendingComposerFocus.current = true;
+      else composer.current?.focus();
+      // A warm summon must not fade the last painted frame back out.
+      if (hasPresented.current) return;
+      hasPresented.current = true;
       if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
       for (const element of [composerSurface.current]) {
         for (const animation of element?.getAnimations() ?? []) animation.cancel();
@@ -143,7 +177,9 @@ export function WorkHubRoot() {
     void task.catch(controller.report);
   };
   return (
-    <WorkHubHighlightProvider><section ref={surface} className="workHubLive workhub-surface" data-placement={presentation?.placement ?? 'docked'} data-conversation-expanded={showConversation} aria-label={t.title}>
+    <WorkHubHighlightProvider>
+    {progress && <WorkHubProgressCard request={presentation.progressRequest!} control={control} liveTurn={controller.liveTurn} messages={transcript.messages} busy={busy} />}
+    <section ref={surface} inert={progress} aria-hidden={progress} data-progress-parked={progress} className="workHubLive workhub-surface" data-placement={presentation?.placement ?? 'docked'} data-conversation-expanded={showConversation} aria-label={t.title}>
       {floating && conversationExpanded && <div className="workHubWindowControls">
         <IconButton className="workHubCloseButton" type="button" size="sm" variant="ghost" icon={<X size={12} />} label={t.hide} onClick={() => call(services.presentation.hide())} />
         <div className="workHubWindowActions">
@@ -161,7 +197,7 @@ export function WorkHubRoot() {
           <div className="workHubComposerSurface" ref={composerSurface}>
             {(controller.error || control?.error) && (
               <div className="workHubLiveError" role="alert">
-                {controller.error ?? control?.error}
+                {controller.error ?? t.controlFailed}
                 {controller.canRetry && (
                   <Button label={t.retry} variant="ghost" onClick={controller.retry} />
                 )}

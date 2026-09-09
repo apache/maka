@@ -20,6 +20,7 @@
 import { setTimeout as wait } from "node:timers/promises";
 import { z } from "zod";
 import type { IpcMain, WebContents } from "electron";
+import { redactSecrets } from '@maka/core/redaction';
 import type { AppSettings } from "@maka/core/settings";
 import { WORKHUB_COORDINATION_SESSION_ID } from "@maka/core/session";
 import type { MakaTool } from "@maka/runtime/tool-runtime";
@@ -40,13 +41,17 @@ import type { WorkHubControlSnapshot } from '../shared/workhub-control.js';
 
 // Tool protocols require an object root; keep each operation's exact shape
 // inside it so models cannot combine arguments from incompatible operations.
-const controlParameters = z.object({ request: workHubControlSchema }).strict();
+const controlParameters = z.object({
+  status: z.string().trim().min(1).max(80).regex(/^[^\r\n]+$/).describe('A short user-facing description of the current action, in the user\'s language. Match the language of the user\'s current request: Chinese for Chinese requests, English for English requests. Do not default to the language of these tool instructions. For example: Opening project settings. Describe the action, not reasoning or a claim of completion.'),
+  request: workHubControlSchema,
+}).strict();
 const tasksParameters = z.object({ request: workHubTasksSchema }).strict();
 
 interface WorkHubControlDeps {
   ipcMain: Pick<IpcMain, "handle" | "removeHandler">;
   window(): WebContents;
-  prepareWindow(): Promise<void>;
+  prepareWindow(turnId?: string): Promise<void>;
+  finishControl?(): void;
   authorizedRenderer(contents: WebContents): boolean;
   send(channel: string, payload: unknown): void;
   readSettings(): Promise<AppSettings>;
@@ -167,14 +172,15 @@ export function createWorkHubControl(deps: WorkHubControlDeps) {
           throw new Error("Another WorkHub control call is still running");
         busy = true;
         try {
+          const { request: args, status } = controlParameters.parse(input);
           const active = await claim(scope, ctx);
           const signal = AbortSignal.any([
             active.controller.signal,
             ctx.abortSignal,
           ]);
           signal.throwIfAborted();
-          const args = controlParameters.parse(input).request;
-          await deps.prepareWindow();
+          update({ status: redactSecrets(status), ...(active.failures < 3 ? { error: undefined, phase: "acting" as const } : {}) });
+          await deps.prepareWindow(active.turnId);
           signal.throwIfAborted();
           requireCurrent(scope);
           await deps.assertTurn(scope, active.turnId);
@@ -228,8 +234,8 @@ export function createWorkHubControl(deps: WorkHubControlDeps) {
               !signal.aborted && deps.isCurrent(scope) && active.failures < 3;
             const inputDispatched = ui.dispatchedInputs > inputBeforeAction;
             update({
-              error: signal.aborted ? undefined : message,
-              phase: signal.aborted ? "paused" : "error",
+              error: signal.aborted || recoverable ? undefined : message,
+              phase: signal.aborted ? "paused" : recoverable ? "acting" : "error",
               ...(!recoverable ? { cursor: undefined } : {}),
             });
             return {
@@ -306,9 +312,11 @@ export function createWorkHubControl(deps: WorkHubControlDeps) {
     if (owner?.resourceKey !== resourceKey) return;
     owner.controller.abort(new Error("WorkHub turn finished"));
     owner = undefined;
+    deps.finishControl?.();
     update({
       cursor: undefined,
       phase: snapshot.phase === "acting" ? "idle" : snapshot.phase,
+      status: undefined,
     });
   };
   deps.ipcMain.handle(
@@ -383,8 +391,9 @@ export function createWorkHubControl(deps: WorkHubControlDeps) {
       undoController?.abort(new Error("WorkHub control closed"));
       owner?.controller.abort(new Error("WorkHub control closed"));
       owner = undefined;
+      deps.finishControl?.();
       undo = undefined;
-      update({ cursor: undefined, phase: "idle", canUndo: false });
+      update({ cursor: undefined, phase: "idle", canUndo: false, status: undefined });
       deps.ipcMain.removeHandler("workhub-control:command");
     },
   };

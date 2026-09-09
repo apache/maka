@@ -183,3 +183,22 @@ test('an explicit dark preference ignores what the OS reports', async () => {
   await effects.refresh(false);
   assert.deepEqual(applied, ['ink']);
 });
+
+
+test('applies WorkHub enable state from the supplied snapshot without another storage read', async () => {
+  const applied: boolean[] = [];
+  const effects = createClientSettingsEffects({
+    settingsStore: { get: async () => { throw new Error('unexpected storage read'); } },
+    applyWorkHub: async (enabled) => { applied.push(enabled); },
+    applyKeepSystemAwake: async () => undefined,
+    applyBotSettings: async () => undefined,
+    applyAppIcon: async () => undefined,
+    systemPrefersDark: () => false,
+    observeLocale: () => undefined,
+    emitExternalChanged: () => undefined,
+  });
+  const settings = createDefaultSettings();
+  await effects.apply({ ...settings, workHub: { enabled: true } }, true);
+  await effects.apply({ ...settings, workHub: { enabled: false } }, true);
+  assert.deepEqual(applied, [true, false]);
+});
