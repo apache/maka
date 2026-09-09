@@ -72,6 +72,23 @@ test('WorkHub rebuilds delegated execution feedback after navigating away and ba
   await routedTurn.locator('.workhub-submitted > button').click();
   await expect(page.getByRole('region', { name: 'WorkHub' })).toBeHidden();
 
+  const returnButton = page.locator('.workhub-return');
+  await expect(returnButton).toBeVisible();
+  await expect(returnButton).toHaveCSS('align-items', 'center');
+  const returnGeometry = await returnButton.evaluate((element) => {
+    const button = element.getBoundingClientRect();
+    const composer = element.parentElement?.getBoundingClientRect();
+    return {
+      width: button.width,
+      composerWidth: composer?.width ?? 0,
+      centerOffset: composer
+        ? Math.abs(button.left + button.width / 2 - composer.left - composer.width / 2)
+        : Infinity,
+    };
+  });
+  expect(returnGeometry.width).toBeLessThan(returnGeometry.composerWidth / 2);
+  expect(returnGeometry.centerOffset).toBeLessThan(1);
+
   await ensureSidebarExpanded(page);
   await page.getByRole('button', { name: 'WorkHub', exact: true }).click();
   await waitForWorkHubReady(page, 1);

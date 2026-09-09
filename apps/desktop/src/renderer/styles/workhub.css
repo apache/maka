@@ -284,21 +284,9 @@
 }
 
 .workhub-return {
-  display: block;
-  width: min(var(--maka-reading-measure), calc(100% - var(--space-8)));
+  display: flex;
+  width: fit-content;
   margin: 0 auto 8px;
-  padding: 7px 12px;
-  border: 1px solid var(--color-border-subtle, var(--border));
-  border-radius: var(--radius-control, 6px);
-  background: var(--color-background-secondary, var(--muted));
-  color: var(--color-text-secondary, var(--muted-foreground));
-  font: inherit;
-  text-align: left;
-}
-
-.workhub-return:hover {
-  color: var(--color-text-primary, var(--foreground));
-  border-color: var(--color-border-strong, var(--border-strong));
 }
 
 @media (max-width: 720px) {
