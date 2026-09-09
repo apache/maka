@@ -104,13 +104,87 @@ function boundary(s: MemoryState, id: string): ExecutionBoundary {
   requireHeader(s, id);
   return rows<ExecutionBoundary>(s, 'boundaries').get(id)!;
 }
+type ManagedProfile = Extract<ExecutionBoundary, { kind: 'managed' }>['profile'];
+function genesisProfile(mode: 'ask' | 'explore'): ManagedProfile {
+  const initial = createGenesisExecutionBoundary(mode);
+  if (initial.kind !== 'managed') throw new Error('Expected managed genesis boundary');
+  return initial.profile;
+}
+function isReadOnlyProfile(profile: ManagedProfile): boolean {
+  const { name: _name, ...policy } = profile;
+  const { name: _canonicalName, ...canonical } = genesisProfile('explore');
+  return equal(policy, canonical);
+}
+function saveBoundary(s: MemoryState, id: string, value: ExecutionBoundary): void {
+  rows<ExecutionBoundary>(s, 'boundaries').set(id, value);
+  // Only the latest non-Explore managed boundary is needed to restore Auto.
+  // Keep this history through Bypass/Explore instead of granting a new genesis.
+  if (value.kind === 'managed' && !isReadOnlyProfile(value.profile))
+    rows<ManagedProfile>(s, 'autoBoundaryProfiles').set(id, copy(value.profile));
+}
+function setBoundaryKind(
+  s: MemoryState,
+  id: string,
+  kind: 'managed' | 'bypass',
+  projection?: { permissionMode: SessionHeader['permissionMode']; labels?: readonly string[] },
+  headerPatch: Partial<SessionHeader> = {},
+  expectedVersion?: number,
+): { boundary: ExecutionBoundary; record: Header } {
+  const record = requireHeader(s, id);
+  if (expectedVersion !== undefined && record.revision !== expectedVersion)
+    throw new SessionMetadataVersionConflictError(id, expectedVersion, record.revision);
+  const current = boundary(s, id);
+  if (current.kind === 'external')
+    conflict('An externally isolated session cannot enter Auto or Bypass');
+  const permissionMode =
+    projection?.permissionMode ??
+    (kind === 'bypass'
+      ? 'bypass'
+      : record.header.permissionMode === 'bypass'
+        ? 'ask'
+        : record.header.permissionMode);
+  if ((permissionMode === 'bypass') !== (kind === 'bypass'))
+    throw new Error('Execution boundary kind and projected permission mode disagree');
+  const profile =
+    kind === 'managed'
+      ? permissionMode === 'explore'
+        ? genesisProfile('explore')
+        : current.kind === 'managed' && !isReadOnlyProfile(current.profile)
+          ? current.profile
+          : (rows<ManagedProfile>(s, 'autoBoundaryProfiles').get(id) ?? genesisProfile('ask'))
+      : undefined;
+  let next = current;
+  if (current.kind !== kind || (current.kind === 'managed' && !equal(current.profile, profile))) {
+    next =
+      kind === 'bypass'
+        ? { kind, revision: current.revision + 1 }
+        : { kind, profile: profile!, revision: current.revision + 1 };
+    saveBoundary(s, id, next);
+  }
+  return {
+    boundary: next,
+    record: update(
+      s,
+      id,
+      {
+        ...headerPatch,
+        permissionMode,
+        labels: projection?.labels ? [...projection.labels] : record.header.labels,
+      },
+      expectedVersion,
+      true,
+    ),
+  };
+}
 function insert(s: MemoryState, header: SessionHeader, initial?: ExecutionBoundary): Header {
   if (headers(s).has(header.id) || rows(s, 'tombstones').has(header.id))
     conflict('Session identity already used');
   const record = { header: normalizeSessionHeader(header), revision: 1, committedAt: Date.now() };
   headers(s).set(header.id, record);
   messages(s).set(header.id, []);
-  rows(s, 'boundaries').set(
+  rows(s, 'autoBoundaryProfiles').delete(header.id);
+  saveBoundary(
+    s,
     header.id,
     initial
       ? decodeExecutionBoundary(initial)
@@ -294,6 +368,8 @@ function remove(s: MemoryState, id: string, group: Set<string>): void {
   rows(s, 'tombstones').set(id, true);
   rows(s, 'cleanup').set(id, true);
   rows(s, 'goals').delete(id);
+  rows(s, 'boundaries').delete(id);
+  rows(s, 'autoBoundaryProfiles').delete(id);
   for (const [k, a] of admissions(s)) if (a.sessionId === id) admissions(s).delete(k);
 }
 function spawn(s: MemoryState, header: SessionHeader, initial?: ExecutionBoundary) {
@@ -509,22 +585,33 @@ export function createMemorySessionStore(
         const record = requireHeader(s, id);
         if (record.revision !== input.expectedVersion)
           throw new SessionMetadataVersionConflictError(id, input.expectedVersion, record.revision);
-        const b = boundary(s, id);
-        rows(s, 'boundaries').set(id, {
-          ...createGenesisExecutionBoundary(input.configuration.permissionMode),
-          revision: b.revision + 1,
-        });
-        return update(s, id, {
-          ...input.configuration,
-          labels: [...input.configuration.labels],
-          ...(input.lifecycle.kind === 'clear_connection_block'
-            ? {
-                status: 'active',
-                blockedReason: undefined,
-                statusUpdatedAt: input.lifecycle.statusUpdatedAt,
-              }
-            : {}),
-        });
+        if (input.lifecycle.kind === 'clear_connection_block') {
+          if (record.header.blockedReason !== 'NO_REAL_CONNECTION')
+            conflict('Session no longer has a connection block to clear');
+          if (
+            !Number.isSafeInteger(input.lifecycle.statusUpdatedAt) ||
+            input.lifecycle.statusUpdatedAt < 0
+          )
+            throw new Error('Session connection unblock timestamp is invalid');
+        }
+        return setBoundaryKind(
+          s,
+          id,
+          input.configuration.permissionMode === 'bypass' ? 'bypass' : 'managed',
+          input.configuration,
+          {
+            ...input.configuration,
+            labels: [...input.configuration.labels],
+            ...(input.lifecycle.kind === 'clear_connection_block'
+              ? {
+                  status: 'active',
+                  blockedReason: undefined,
+                  statusUpdatedAt: input.lifecycle.statusUpdatedAt,
+                }
+              : {}),
+          },
+          input.expectedVersion,
+        ).record;
       }),
     setFlagged: async (id, value) => {
       await store.updateHeader(id, { isFlagged: value });
@@ -611,6 +698,8 @@ export function createMemorySessionStore(
         headers(s).delete(id);
         messages(s).delete(id);
         rows(s, 'createClaims').delete(id);
+        rows(s, 'boundaries').delete(id);
+        rows(s, 'autoBoundaryProfiles').delete(id);
         return true;
       }),
     commitMessageAdmission: async (input) => write('message.admit', (s) => admit(s, input)),
@@ -989,27 +1078,7 @@ export function createMemorySessionStore(
       }),
     readExecutionBoundary: async (id) => read((s) => boundary(s, id)),
     setExecutionBoundaryKind: async (id, kind, projection) =>
-      write('session.boundary', (s) => {
-        const h = requireHeader(s, id).header,
-          current = boundary(s, id),
-          permissionMode =
-            projection?.permissionMode ??
-            (kind === 'bypass'
-              ? 'bypass'
-              : h.permissionMode === 'bypass'
-                ? 'ask'
-                : h.permissionMode);
-        const next = {
-          ...createGenesisExecutionBoundary(permissionMode),
-          revision: current.revision + 1,
-        };
-        update(s, id, {
-          permissionMode,
-          ...(projection?.labels ? { labels: [...projection.labels] } : {}),
-        });
-        rows(s, 'boundaries').set(id, next);
-        return next;
-      }),
+      write('session.boundary', (s) => setBoundaryKind(s, id, kind, projection).boundary),
     createSandboxBoundaryRequest: async (input) =>
       write('session.boundaryRequest', (s) => {
         assertSafeSessionId(input.requestId);
@@ -1103,7 +1172,7 @@ export function createMemorySessionStore(
             changed = assessment.outcome === 'apply';
             if (changed) {
               current = { ...current, profile: assessment.profile, revision: current.revision + 1 };
-              rows(s, 'boundaries').set(input.sessionId, current);
+              saveBoundary(s, input.sessionId, current);
             }
             settled = {
               ...request!,

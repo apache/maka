@@ -38,8 +38,15 @@ import {
   openInteractiveExecutionStoresForWrite,
   authenticateExecutionStoresWriter,
 } from '../execution-stores.js';
-import { authenticateInteractionStoreWriter } from '../interaction-store.js';
-import { authenticateInteractiveGoalAuthorityWriter } from '../goal-authority.js';
+import {
+  authenticateInteractionStoreWriter,
+  closeSqliteInteractionStoreFacade,
+  openSqliteInteractiveInteractionStoreForWrite,
+} from '../interaction-store.js';
+import {
+  authenticateInteractiveGoalAuthorityWriter,
+  openInteractiveGoalAuthorityForWrite,
+} from '../goal-authority.js';
 import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
@@ -51,6 +58,7 @@ import {
   SessionMetadataConflictError,
   SessionMetadataVersionConflictError,
   type WorkHubMessageAssignmentRequest,
+  type UpdateSessionConfigurationRequest,
 } from '../session-store-contract.js';
 import { assignmentRequest, createCoordinationSession } from './fixtures/workhub-assignment.js';
 import {
@@ -65,6 +73,459 @@ for (const backend of ['Local', 'Memory'] as const) {
     backend === 'Local'
       ? localExecutionPersistenceProvider
       : createMemoryExecutionPersistenceProvider();
+  test(backend + ': closed children cannot escape the execution group authority', async () => {
+    const provider = make();
+    await withProvider(provider, async (stores, root, owner) => {
+      const session = await stores.sessionStore.create(sessionInput(root));
+      await stores.goalStore.commit({
+        sessionId: session.id,
+        expectedAuthorityRevision: null,
+        record: goalRecord(session.id),
+      });
+      assert.equal(await openInteractiveGoalAuthorityForWrite(owner.lease), stores.goalStore);
+      assert.equal(
+        await openSqliteInteractiveInteractionStoreForWrite(owner.lease),
+        stores.interactionStore,
+      );
+      await stores.goalStore.close();
+      closeSqliteInteractionStoreFacade(stores.interactionStore);
+      await assert.rejects(
+        openInteractiveGoalAuthorityForWrite(owner.lease),
+        StorageRootAuthorityError,
+      );
+      await assert.rejects(
+        openSqliteInteractiveInteractionStoreForWrite(owner.lease),
+        StorageRootAuthorityError,
+      );
+      const snapshot = await stores.sessionStore.readHeaderRecordSnapshot(session.id);
+      await stores.sessionStore.removeSessionsVersioned([
+        { sessionId: session.id, expectedVersion: snapshot.revision },
+      ]);
+      await stores.sessionStore.close?.();
+      const reopened = await openInteractiveExecutionStoresForWrite(owner.lease, provider);
+      try {
+        assert.equal(await reopened.goalStore.read(session.id), null);
+        await assert.rejects(stores.goalStore.read(session.id), StorageRootAuthorityError);
+        await assert.rejects(stores.interactionStore.listPending(), StorageRootAuthorityError);
+      } finally {
+        await reopened.sessionStore.close?.();
+      }
+    });
+  });
+  test(backend + ': child bindings stay reserved while group close is pending', async () => {
+    const backendProvider = make();
+    let entered!: () => void, finish!: () => void;
+    const closing = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const provider: ExecutionPersistenceProvider = {
+      async open(input) {
+        const raw = await backendProvider.open(input);
+        return {
+          ...raw,
+          async close() {
+            entered();
+            await release;
+            await raw.close();
+          },
+        };
+      },
+    };
+    await withProvider(provider, async (stores, _root, owner) => {
+      const pending = stores.sessionStore.close!();
+      try {
+        await closing;
+        await assert.rejects(
+          openInteractiveGoalAuthorityForWrite(owner.lease),
+          StorageRootAuthorityError,
+        );
+        await assert.rejects(
+          openSqliteInteractiveInteractionStoreForWrite(owner.lease),
+          StorageRootAuthorityError,
+        );
+      } finally {
+        finish();
+        await pending;
+      }
+    });
+  });
+  test(
+    backend + ': conversation copy rebuilds Tool T1/T2 projections and exact retries',
+    async () => {
+      await withProvider(make(), async ({ runtimeEventStore: r }) => {
+        const { prepared, outcome } = toolInputs();
+        const { sessionId, runId } = prepared.runtimeEvent;
+        const batch = { runId, events: [prepared.runtimeEvent, prepared.dispatchRuntimeEvent] };
+        await r.importConversationCopyRuntimeEvents(sessionId, [batch]);
+        assert.equal(
+          (await r.listUnsettledToolOperations(sessionId))[0]?.operationId,
+          prepared.operationId,
+        );
+        assert.deepEqual(await r.commitToolPrepared(prepared), {
+          created: false,
+          runtimeEventSeq: 2,
+        });
+        assert.deepEqual(await r.commitToolOutcome(outcome), { created: true, runtimeEventSeq: 3 });
+        const complete = { runId, events: [...batch.events, outcome.runtimeEvent] };
+        await r.importConversationCopyRuntimeEvents(sessionId, [complete]);
+        assert.deepEqual(await r.commitToolOutcome(outcome), {
+          created: false,
+          runtimeEventSeq: 3,
+        });
+        assert.deepEqual(await r.listUnsettledToolOperations(sessionId), []);
+        assert.equal((await r.readSessionRuntimeEventEntries(sessionId)).length, 3);
+      });
+    },
+  );
+  test(
+    backend + ': completed conversation copy can replay T2 without a prior live T1',
+    async () => {
+      await withProvider(make(), async ({ runtimeEventStore: r }) => {
+        const { prepared, outcome } = toolInputs();
+        await r.importConversationCopyRuntimeEvents(prepared.runtimeEvent.sessionId, [
+          {
+            runId: prepared.runtimeEvent.runId,
+            events: [prepared.runtimeEvent, prepared.dispatchRuntimeEvent, outcome.runtimeEvent],
+          },
+        ]);
+        assert.deepEqual(await r.commitToolOutcome(outcome), {
+          created: false,
+          runtimeEventSeq: 3,
+        });
+      });
+    },
+  );
+  test(backend + ': a lost copy acknowledgement retries without duplicating facts', async () => {
+    let lost = false;
+    const provider = intercept(
+      make(),
+      'runtimeEventStore',
+      'importConversationCopyRuntimeEvents',
+      async (call) => {
+        const result = await call();
+        if (!lost) {
+          lost = true;
+          throw new Error('lost copy acknowledgement');
+        }
+        return result;
+      },
+    );
+    await withProvider(provider, async ({ runtimeEventStore: r }) => {
+      const { prepared, outcome } = toolInputs();
+      const batches = [
+        {
+          runId: prepared.runtimeEvent.runId,
+          events: [prepared.runtimeEvent, prepared.dispatchRuntimeEvent, outcome.runtimeEvent],
+        },
+      ];
+      await assert.rejects(
+        r.importConversationCopyRuntimeEvents(prepared.runtimeEvent.sessionId, batches),
+        /lost copy acknowledgement/,
+      );
+      await r.importConversationCopyRuntimeEvents(prepared.runtimeEvent.sessionId, batches);
+      assert.deepEqual(await r.commitToolOutcome(outcome), { created: false, runtimeEventSeq: 3 });
+      assert.equal(
+        (await r.readSessionRuntimeEventEntries(prepared.runtimeEvent.sessionId)).length,
+        3,
+      );
+    });
+  });
+  test(
+    backend + ': copy cannot steal another Session tool operation during projection rebuild',
+    async () => {
+      await withProvider(make(), async ({ runtimeEventStore: r }) => {
+        const { prepared, outcome } = toolInputs();
+        await r.commitToolPrepared(prepared);
+        const copied = [
+          prepared.runtimeEvent,
+          prepared.dispatchRuntimeEvent,
+          outcome.runtimeEvent,
+        ].map((e) => ({
+          ...e,
+          id: 'copy-' + e.id,
+          sessionId: 'copy-session',
+          runId: 'copy-run',
+          invocationId: 'copy-invocation',
+        }));
+        await assert.rejects(
+          r.importConversationCopyRuntimeEvents('copy-session', [
+            { runId: 'copy-run', events: copied },
+          ]),
+        );
+        assert.deepEqual(await r.readSessionRuntimeEventEntries('copy-session'), []);
+        assert.equal(
+          (await r.listUnsettledToolOperations(prepared.runtimeEvent.sessionId)).length,
+          1,
+        );
+        assert.deepEqual(await r.commitToolOutcome(outcome), { created: true, runtimeEventSeq: 3 });
+      });
+    },
+  );
+  test(
+    backend + ': copied recovery bundles preserve parked state and reject incomplete evidence',
+    async () => {
+      await withProvider(make(), async ({ runtimeEventStore: r }) => {
+        const { prepared } = toolInputs();
+        const dispatch: RuntimeEvent = {
+          ...prepared.dispatchRuntimeEvent,
+          actions: {
+            toolDispatch: {
+              ...prepared.dispatchRuntimeEvent.actions!.toolDispatch!,
+              recoveryMode: 'reconcile',
+            },
+          },
+        };
+        const reconcile: RuntimeEvent = {
+          ...dispatch,
+          id: 'reconcile',
+          actions: {
+            toolRecovery: {
+              kind: 'maka.tool.reconcile_result',
+              version: 1,
+              payload: {
+                protocol: 'tool_reconcile_v1',
+                operationId: prepared.operationId,
+                observation: 'matches_prior_state',
+                observationSchema: 'state_identity_v1',
+                observationDigest: ('sha256:' + '1'.repeat(64)) as `sha256:${string}`,
+              },
+            },
+          },
+        };
+        const decision: RuntimeEvent = {
+          ...dispatch,
+          id: 'decision',
+          actions: {
+            toolRecovery: {
+              kind: 'maka.tool.recovery_decision',
+              version: 1,
+              payload: {
+                protocol: 'tool_recovery_v1',
+                operationId: prepared.operationId,
+                disposition: 'parked',
+                reasonCode: 'reconcile_matches_prior_state',
+                evidenceEventIds: [prepared.runtimeEvent.id, dispatch.id, reconcile.id],
+              },
+            },
+          },
+        };
+        const { sessionId, runId } = prepared.runtimeEvent;
+        await assert.rejects(
+          r.importConversationCopyRuntimeEvents(sessionId, [
+            { runId, events: [prepared.runtimeEvent, dispatch, decision] },
+          ]),
+        );
+        assert.deepEqual(await r.readSessionRuntimeEventEntries(sessionId), []);
+        const batch = { runId, events: [prepared.runtimeEvent, dispatch, reconcile, decision] };
+        await r.importConversationCopyRuntimeEvents(sessionId, [batch]);
+        await r.importConversationCopyRuntimeEvents(sessionId, [batch]);
+        assert.deepEqual(await r.listUnsettledToolOperations(sessionId), []);
+        assert.equal((await r.readSessionRuntimeEventEntries(sessionId)).length, 4);
+        assert.equal(
+          (
+            await r.commitToolPrepared({
+              ...prepared,
+              dispatchRuntimeEvent: dispatch,
+              recoveryMode: 'reconcile',
+            })
+          ).created,
+          false,
+        );
+      });
+    },
+  );
+  test(
+    backend + ': corrupt copy and conflicting run retries roll back the whole import',
+    async () => {
+      await withProvider(make(), async ({ runtimeEventStore: r }) => {
+        const { prepared, outcome } = toolInputs();
+        const { sessionId, runId } = prepared.runtimeEvent;
+        for (const events of [
+          [prepared.dispatchRuntimeEvent],
+          [prepared.runtimeEvent, prepared.runtimeEvent],
+        ]) {
+          await assert.rejects(
+            r.importConversationCopyRuntimeEvents(sessionId, [{ runId, events }]),
+          );
+          assert.deepEqual(await r.readSessionRuntimeEventEntries(sessionId), []);
+          assert.deepEqual(await r.listUnsettledToolOperations(sessionId), []);
+        }
+        const events = [prepared.runtimeEvent, prepared.dispatchRuntimeEvent, outcome.runtimeEvent];
+        await r.importConversationCopyRuntimeEvents(sessionId, [{ runId, events }]);
+        const newEvent: RuntimeEvent = {
+          ...prepared.runtimeEvent,
+          id: 'other-event',
+          runId: 'other-run',
+          invocationId: 'other-invocation',
+          content: { kind: 'text', text: 'another run' },
+        };
+        for (const conflicting of [
+          events.slice(0, 2),
+          [
+            ...events,
+            { ...newEvent, id: 'suffix', runId, invocationId: prepared.runtimeEvent.invocationId },
+          ],
+        ]) {
+          await assert.rejects(
+            r.importConversationCopyRuntimeEvents(sessionId, [
+              { runId: newEvent.runId, events: [newEvent] },
+              { runId, events: conflicting },
+            ]),
+          );
+          assert.equal((await r.readSessionRuntimeEventEntries(sessionId)).length, 3);
+          assert.deepEqual(await r.readImmutableRuntimeEvents(sessionId, newEvent.runId), []);
+          assert.deepEqual(await r.commitToolOutcome(outcome), {
+            created: false,
+            runtimeEventSeq: 3,
+          });
+        }
+      });
+    },
+  );
+  test(
+    backend + ': model configuration and no-op updates preserve approved sandbox authority',
+    async () => {
+      await withProvider(make(), async ({ sessionStore: s }, root) => {
+        const session = await s.create({
+          ...sessionInput(root),
+          llmConnectionId: 'test-connection',
+          thinkingLevel: 'high',
+        });
+        await s.createSandboxBoundaryRequest({
+          sessionId: session.id,
+          requestId: 'approved',
+          turnId: 'turn',
+          expansion: {
+            filesystem: {
+              entries: [{ path: '/outside/approved', scope: 'subtree', access: 'read' }],
+            },
+          },
+          justification: 'Read approved files.',
+        });
+        await s.settleSandboxBoundaryRequest({
+          sessionId: session.id,
+          requestId: 'approved',
+          decision: 'allow',
+        });
+        const approved = await s.readExecutionBoundary(session.id);
+        assert.equal(approved.revision, 1);
+        let snapshot = await s.readHeaderRecordSnapshot(session.id);
+        const configuration = sessionConfiguration(snapshot.header);
+        const updated = await s.updateSessionConfiguration(session.id, {
+          expectedVersion: snapshot.revision,
+          configuration: { ...configuration, model: 'new-model' },
+          lifecycle: { kind: 'preserve' },
+        });
+        assert.equal(updated.header.model, 'new-model');
+        assert.deepEqual(await s.readExecutionBoundary(session.id), approved);
+        snapshot = await s.readHeaderRecordSnapshot(session.id);
+        const noop = await s.updateSessionConfiguration(session.id, {
+          expectedVersion: snapshot.revision,
+          configuration: sessionConfiguration(snapshot.header),
+          lifecycle: { kind: 'preserve' },
+        });
+        assert.deepEqual(noop, snapshot);
+        assert.deepEqual(await s.setExecutionBoundaryKind(session.id, 'managed'), approved);
+        assert.deepEqual(await s.readHeaderRecordSnapshot(session.id), snapshot);
+        await assert.rejects(
+          s.updateSessionConfiguration(session.id, {
+            expectedVersion: snapshot.revision - 1,
+            configuration: { ...configuration, permissionMode: 'bypass' },
+            lifecycle: { kind: 'preserve' },
+          }),
+          SessionMetadataVersionConflictError,
+        );
+        assert.deepEqual(await s.readExecutionBoundary(session.id), approved);
+      });
+    },
+  );
+  test(backend + ': temporary Explore and Bypass restore approved Auto authority', async () => {
+    await withProvider(make(), async ({ sessionStore: s }, root) => {
+      const session = await s.create(sessionInput(root));
+      await s.createSandboxBoundaryRequest({
+        sessionId: session.id,
+        requestId: 'approved',
+        turnId: 'turn',
+        expansion: {
+          filesystem: {
+            entries: [{ path: '/outside/approved', scope: 'subtree', access: 'read' }],
+          },
+        },
+        justification: 'Read approved files.',
+      });
+      await s.settleSandboxBoundaryRequest({
+        sessionId: session.id,
+        requestId: 'approved',
+        decision: 'allow',
+      });
+      const approved = await s.readExecutionBoundary(session.id);
+      for (const permissionMode of ['explore', 'bypass'] as const) {
+        await s.setExecutionBoundaryKind(
+          session.id,
+          permissionMode === 'bypass' ? 'bypass' : 'managed',
+          { permissionMode },
+        );
+        const restored = await s.setExecutionBoundaryKind(session.id, 'managed', {
+          permissionMode: 'ask',
+        });
+        assert.deepEqual({ ...restored, revision: approved.revision }, approved);
+      }
+      const before = await sessionAuthority(s, session.id);
+      await assert.rejects(
+        s.setExecutionBoundaryKind(session.id, 'bypass', { permissionMode: 'ask' }),
+      );
+      assert.deepEqual(await sessionAuthority(s, session.id), before);
+    });
+  });
+  test(
+    backend + ': configuration cannot clear an unrelated block or invalid timestamp',
+    async () => {
+      await withProvider(make(), async ({ sessionStore: s }, root) => {
+        const session = await s.create({
+          ...sessionInput(root),
+          llmConnectionId: 'test-connection',
+        });
+        const before = await sessionAuthority(s, session.id);
+        const configuration = {
+          ...sessionConfiguration(before.record.header),
+          permissionMode: 'bypass' as const,
+        };
+        await assert.rejects(
+          s.updateSessionConfiguration(session.id, {
+            expectedVersion: before.record.revision,
+            configuration,
+            lifecycle: { kind: 'clear_connection_block', statusUpdatedAt: 10 },
+          }),
+          SessionMetadataConflictError,
+        );
+        assert.deepEqual(await sessionAuthority(s, session.id), before);
+        await s.updateHeader(session.id, {
+          status: 'blocked',
+          blockedReason: 'NO_REAL_CONNECTION',
+        });
+        const blocked = await sessionAuthority(s, session.id);
+        await assert.rejects(
+          s.updateSessionConfiguration(session.id, {
+            expectedVersion: blocked.record.revision,
+            configuration,
+            lifecycle: { kind: 'clear_connection_block', statusUpdatedAt: -1 },
+          }),
+        );
+        assert.deepEqual(await sessionAuthority(s, session.id), blocked);
+        const unblocked = await s.updateSessionConfiguration(session.id, {
+          expectedVersion: blocked.record.revision,
+          configuration,
+          lifecycle: { kind: 'clear_connection_block', statusUpdatedAt: 10 },
+        });
+        assert.equal(unblocked.header.status, 'active');
+        assert.equal(unblocked.header.blockedReason, undefined);
+        assert.equal((await s.readExecutionBoundary(session.id)).kind, 'bypass');
+      });
+    },
+  );
   test(
     backend + ': immutable Session fields, lifecycle no-op and mixed admission ordering',
     async () => {
@@ -267,6 +728,14 @@ for (const backend of ['Local', 'Memory'] as const) {
           );
           await assert.rejects(stores.goalStore.list(), StorageRootAuthorityError);
           await assert.rejects(stores.interactionStore.listPending(), StorageRootAuthorityError);
+          await assert.rejects(
+            openInteractiveGoalAuthorityForWrite(owner.lease),
+            StorageRootAuthorityError,
+          );
+          await assert.rejects(
+            openSqliteInteractiveInteractionStoreForWrite(owner.lease),
+            StorageRootAuthorityError,
+          );
           assert.equal(closes, 1);
         }),
         AggregateError,
@@ -794,6 +1263,37 @@ for (const backend of ['Local', 'Memory'] as const) {
   });
 }
 
+test('Local standalone child close/reopen remains compatible with later group composition', async () => {
+  await withProvider(localExecutionPersistenceProvider, async (initial, _root, owner) => {
+    await initial.sessionStore.close?.();
+    const firstGoal = await openInteractiveGoalAuthorityForWrite(owner.lease);
+    const firstInteraction = await openSqliteInteractiveInteractionStoreForWrite(owner.lease);
+    await firstGoal.close();
+    closeSqliteInteractionStoreFacade(firstInteraction);
+    const goal = await openInteractiveGoalAuthorityForWrite(owner.lease);
+    const interaction = await openSqliteInteractiveInteractionStoreForWrite(owner.lease);
+    assert.notEqual(goal, firstGoal);
+    assert.notEqual(interaction, firstInteraction);
+    const group = await openInteractiveExecutionStoresForWrite(owner.lease);
+    try {
+      assert.equal(group.goalStore, goal);
+      assert.equal(group.interactionStore, interaction);
+      await goal.close();
+      closeSqliteInteractionStoreFacade(interaction);
+      await assert.rejects(
+        openInteractiveGoalAuthorityForWrite(owner.lease),
+        StorageRootAuthorityError,
+      );
+      await assert.rejects(
+        openSqliteInteractiveInteractionStoreForWrite(owner.lease),
+        StorageRootAuthorityError,
+      );
+    } finally {
+      await group.sessionStore.close?.();
+    }
+  });
+});
+
 async function withRollback(
   backend: 'Local' | 'Memory',
   stage: 'workhub' | 't1' | 't2',
@@ -889,6 +1389,28 @@ function graphChild(root: string, r: AgentGraphOperatorProvisionRequest): Create
       initialTurnId: r.initialTurnId,
       initialRunId: r.initialRunId,
     },
+  };
+}
+async function sessionAuthority(s: Stores['sessionStore'], id: string) {
+  return {
+    record: await s.readHeaderRecordSnapshot(id),
+    boundary: await s.readExecutionBoundary(id),
+  };
+}
+function sessionConfiguration(
+  header: Awaited<ReturnType<Stores['sessionStore']['readHeader']>>,
+): UpdateSessionConfigurationRequest['configuration'] {
+  return {
+    backend: header.backend,
+    llmConnectionId: header.llmConnectionId!,
+    llmConnectionSlug: header.llmConnectionSlug!,
+    connectionLocked: header.connectionLocked ?? false,
+    model: header.model,
+    thinkingLevel: header.thinkingLevel,
+    permissionMode: header.permissionMode,
+    collaborationMode: header.collaborationMode ?? 'agent',
+    orchestrationMode: header.orchestrationMode ?? 'default',
+    labels: header.labels ?? [],
   };
 }
 function sessionInput(root: string) {

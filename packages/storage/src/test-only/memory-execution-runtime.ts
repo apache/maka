@@ -43,9 +43,11 @@ import { assertHandoffClaimSource } from '@maka/core/runtime-handoff';
 import { WORKSPACE_AUTHORITY_SESSION_ID } from '@maka/core/workspace-version-authority';
 import {
   validateToolLedgerTransition,
+  scanToolLedger,
   ToolLedgerRejectionError,
   type ToolLedgerTransitionKind,
 } from '@maka/core/tool-ledger-scanner';
+import { interpretScannedToolRecovery } from '@maka/core/tool-recovery-bundle';
 import type { ExecutionRuntimeEventWriter } from '../execution-stores.js';
 import type {
   ToolOperationRecord,
@@ -85,6 +87,92 @@ const partials = (s: MemoryState) => rows<RuntimePartialSnapshot>(s, 'runtimePar
 const ordinals = (s: MemoryState) => rows<SessionRuntimeEventEntry[]>(s, 'runtimeOrdinals');
 const claims = (s: MemoryState) => rows<ContinuationClaimStateV1>(s, 'continuationClaims');
 const operations = (s: MemoryState) => rows<ToolOperationRecord>(s, 'toolOperations');
+type ToolJournalEntry = {
+  operationId: string;
+  eventId: string;
+  state: ToolOperationRecord['currentState'] | 'reconcile_observed';
+  committedAt: number;
+};
+
+/** Reconstruct projections from canonical facts, inside the import transaction. */
+function rebuildToolProjections(s: MemoryState, sessionId: string): void {
+  const sessionEvents = allEvents(s)
+    .filter((e) => e.sessionId === sessionId)
+    .sort((a, b) => a.invocationId.localeCompare(b.invocationId));
+  const scan = scanToolLedger(sessionEvents);
+  if (scan.hasCorruption)
+    throw new Error('Corrupt tool RuntimeEvent ledger: ' + scan.issues[0]?.code);
+  const order = new Map(sessionEvents.map((e, i) => [e.id, i]));
+  const journal = rows<ToolJournalEntry>(s, 'toolJournal');
+  const committedAt = new Map([...journal.values()].map((j) => [j.eventId, j.committedAt]));
+  const removed = new Set<string>();
+  for (const [id, operation] of operations(s)) {
+    if (operation.dispatchEventId && order.has(operation.callEventId)) {
+      operations(s).delete(id);
+      removed.add(id);
+    }
+  }
+  for (const [id, entry] of journal) if (removed.has(entry.operationId)) journal.delete(id);
+  for (const operation of scan.operations) {
+    const event = operation.dispatchEvent;
+    if (!event) continue;
+    const dispatch = event.actions?.toolDispatch;
+    const call = operation.callEvent;
+    if (!dispatch || !call) throw new Error('Incomplete dispatched tool operation');
+    const recovery = interpretScannedToolRecovery(operation, order);
+    if (recovery.kind === 'corruption')
+      throw new Error('Corrupt tool recovery bundle: ' + recovery.code);
+    const response = operation.responseEvent;
+    const decision = recovery.kind === 'valid' ? recovery.decision : undefined;
+    const currentState = decision
+      ? decision.disposition === 'completed'
+        ? 'recovery_completed'
+        : 'recovery_parked'
+      : response
+        ? 'outcome_committed'
+        : 'prepared';
+    const tail: Array<{ event: RuntimeEvent; state: ToolJournalEntry['state'] }> = [];
+    if (recovery.kind === 'valid') {
+      tail.push({ event: recovery.reconcileEvent, state: 'reconcile_observed' });
+      tail.push({ event: recovery.decisionEvent, state: currentState });
+    }
+    if (response) tail.push({ event: response, state: 'outcome_committed' });
+    tail.sort((a, b) => order.get(a.event.id)! - order.get(b.event.id)!);
+    // Operation and journal identities are root-wide, not scoped to this copy.
+    if (operations(s).has(dispatch.operationId))
+      throw new Error('Tool operation identity conflict');
+    operations(s).set(dispatch.operationId, {
+      operationId: dispatch.operationId,
+      invocationId: event.invocationId,
+      runId: event.runId,
+      turnId: event.turnId,
+      providerToolCallId: dispatch.providerToolCallId,
+      toolName: dispatch.toolName,
+      canonicalArgsHash: dispatch.canonicalArgsHash,
+      recoveryMode: dispatch.recoveryMode,
+      currentState,
+      callEventId: call.id,
+      dispatchEventId: event.id,
+      ...(response ? { resultEventId: response.id } : {}),
+      version: 1 + tail.length,
+    });
+    for (const item of [{ event, state: 'prepared' as const }, ...tail]) {
+      const id =
+        item.state === 'prepared'
+          ? `${dispatch.operationId}_prepared`
+          : item.state === 'outcome_committed'
+            ? `${dispatch.operationId}_outcome`
+            : `${item.event.id}_journal`;
+      if (journal.has(id)) throw new Error('Tool journal identity conflict');
+      journal.set(id, {
+        operationId: dispatch.operationId,
+        eventId: item.event.id,
+        state: item.state,
+        committedAt: committedAt.get(item.event.id) ?? item.event.ts,
+      });
+    }
+  }
+}
 function check(...ids: string[]) {
   for (const id of ids) assertSafeId(id, 'Invalid runtime identity');
 }
@@ -486,13 +574,47 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
     },
     importConversationCopyRuntimeEvents: async (sessionId, batches) =>
       a.write('runtime.import', (s) => {
-        for (const batch of batches)
+        check(sessionId);
+        const canonicalBatches = batches.map(({ runId, events }) => {
+          check(runId);
+          return { runId, events: events.map((e) => encodeCanonicalRuntimeEvent(e).event) };
+        });
+        const canonicalEvents = canonicalBatches.flatMap((b) => b.events);
+        if (new Set(canonicalEvents.map((e) => e.id)).size !== canonicalEvents.length)
+          throw new Error('Conversation copy contains duplicate RuntimeEvents');
+        for (const batch of canonicalBatches)
           for (const event of batch.events) {
             if (event.sessionId !== sessionId || event.runId !== batch.runId || event.partial)
               throw new Error('Invalid copied runtime identity');
             assertNoReservedWorkspaceAuthorityAppend(event);
-            insert(s, event);
           }
+        const scan = scanToolLedger(canonicalEvents);
+        if (scan.hasCorruption)
+          throw new Error(
+            'Conversation copy RuntimeEvent ledger is corrupt: ' + scan.issues[0]?.code,
+          );
+        const byRun = new Map<string, RuntimeEvent[]>();
+        for (const { runId, events } of canonicalBatches)
+          byRun.set(runId, [...(byRun.get(runId) ?? []), ...events]);
+        const newRuns = new Set<string>();
+        for (const [runId, events] of byRun) {
+          const existing = immutable(s, sessionId, runId);
+          if (existing.length && !equal(existing, events))
+            throw new Error('Conversation copy RuntimeEvent identity conflict for run ' + runId);
+          if (!existing.length) newRuns.add(runId);
+        }
+        for (const { runId, events } of canonicalBatches)
+          if (newRuns.has(runId)) for (const event of events) insert(s, event);
+        if (
+          canonicalEvents.some(
+            (e) =>
+              e.content?.kind === 'function_call' ||
+              e.content?.kind === 'function_response' ||
+              e.actions?.toolDispatch ||
+              e.actions?.toolRecovery,
+          )
+        )
+          rebuildToolProjections(s, sessionId);
       }),
     resequenceSessionEventOrdinals: async (sessionId) =>
       a.write('runtime.resequence', (s) => {
