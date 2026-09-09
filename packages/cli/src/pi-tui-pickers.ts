@@ -62,7 +62,7 @@ import type {
   OnboardingRejectionReason,
 } from './pi-tui-contracts.js';
 import { ansi, editorTheme, selectListTheme, stripAnsi } from './tui-ansi.js';
-import { renderEditorWithFocus } from './tui-editor-render.js';
+import { hideUnfocusedCursor } from './tui-editor-render.js';
 import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 
 interface TuiPickerCopy {
@@ -678,7 +678,7 @@ export class UserQuestionOverlay implements Component {
     if (!this.onInputRow && this.editor.getText().length === 0) {
       return [padLine(`${prefix}${ansi.dim(this.input.placeholder)}`, width)];
     }
-    return renderEditorRow(this.editor, prefix, width);
+    return renderFieldRow(this.editor, prefix, width);
   }
 }
 
@@ -912,7 +912,7 @@ export class ModelSearchOverlay implements Component {
   }
 
   private renderFieldRow(editor: Editor, label: string, width: number): string[] {
-    return renderEditorRow(editor, `${label} `, width);
+    return renderFieldRow(editor, `${label} `, width);
   }
 }
 
@@ -1050,12 +1050,13 @@ function padLine(text: string, width: number): string {
   return `${trimmed}${' '.repeat(Math.max(0, safeWidth - visibleWidth(trimmed)))}`;
 }
 
-function renderEditorRow(editor: Editor, prefix: string, width: number): string[] {
+function renderFieldRow(editor: Editor, prefix: string, width: number): string[] {
   const prefixWidth = visibleWidth(prefix);
   const contentWidth = Math.max(1, width - prefixWidth);
-  // These inline editors have no autocomplete rows. Keep Editor's wrapping and
+  // These field editors have no autocomplete rows. Keep Editor's wrapping and
   // scrolling, but omit its top/bottom borders.
-  const editorLines = renderEditorWithFocus(editor, contentWidth).slice(1, -1);
+  const lines = editor.render(contentWidth).slice(1, -1);
+  const editorLines = hideUnfocusedCursor(lines, editor.focused);
   if (editorLines.length === 0) return [padLine(prefix, width)];
   return editorLines.map((line, index) =>
     padLine(`${index === 0 ? prefix : ' '.repeat(prefixWidth)}${line}`, width),
@@ -1860,6 +1861,6 @@ export class OnboardingWizard implements Component {
   }
 
   private renderFieldRow(editor: Editor, label: string, width: number): string[] {
-    return renderEditorRow(editor, `${label} `, width);
+    return renderFieldRow(editor, `${label} `, width);
   }
 }

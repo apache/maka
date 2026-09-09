@@ -19,7 +19,7 @@
 
 import type { Component, Editor } from '@earendil-works/pi-tui';
 import { selectListTheme, stripAnsi } from './tui-ansi.js';
-import { renderEditorWithFocus } from './tui-editor-render.js';
+import { hideUnfocusedCursor } from './tui-editor-render.js';
 
 // The pi-tui Editor renders its autocomplete menu at the tail of its render
 // output, i.e. below the input box. The Maka TUI pins the input at the bottom
@@ -125,7 +125,8 @@ export class MakaAutocompleteAboveEditorComponent implements Component {
   }
 
   render(width: number): string[] {
-    const lines = renderEditorWithFocus(this.editor, width);
+    const renderedLines = this.editor.render(width);
+    const lines = hideUnfocusedCursor(renderedLines, this.editor.focused);
     const result = arrangeAutocompleteAboveEditor({
       lines,
       autocompleteShowing: this.editor.isShowingAutocomplete(),

@@ -17,11 +17,8 @@
  * under the License.
  */
 
-import type { Editor } from '@earendil-works/pi-tui';
-
-export function renderEditorWithFocus(editor: Editor, width: number): string[] {
-  const lines = editor.render(width);
-  if (editor.focused) return lines;
+export function hideUnfocusedCursor(lines: string[], focused: boolean): string[] {
+  if (focused) return lines;
   // pi-tui 0.84.4 paints its cursor even when the editor is unfocused.
   // Remove the reverse-video wrapper, keeping the captured text ($1):
   //
