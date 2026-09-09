@@ -354,9 +354,9 @@ function projectOperatorOutput(
   const latestUsage = usageEvents.at(-1);
   const outputTokens = latestUsage?.actions?.tokenUsage?.output;
   const usageEndedAt = latestUsage?.ts;
-  const sampleStartedAt =
-    orderedEvents.find((event) => event.role === 'model' && event.content?.kind === 'text')?.ts ??
-    textEvents[0]!.ts;
+  const sampleStartedAt = orderedEvents.find(
+    (event) => event.role === 'model' && event.content?.kind === 'text',
+  )!.ts;
   const sampleDurationMs =
     outputTokens !== undefined && outputTokens > 0 && usageEndedAt !== undefined
       ? Math.max(0, usageEndedAt - sampleStartedAt)
