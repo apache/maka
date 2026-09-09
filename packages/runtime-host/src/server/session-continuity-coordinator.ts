@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { CoordinationTranscriptIndexPending } from './session-transcript-reader.js';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { SessionEvent, ShellRunUpdate } from '@maka/core/events';
@@ -983,12 +982,6 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
                   transcriptBootstrap = created.bootstrap;
                 } catch (error) {
                   if (error instanceof TranscriptOverlayPreparationRequired) throw error;
-                  if (error instanceof CoordinationTranscriptIndexPending)
-                    return {
-                      ok: false as const,
-                      code: 'transcript_preparing' as const,
-                      message: error.message,
-                    };
                   return {
                     ok: false as const,
                     code:

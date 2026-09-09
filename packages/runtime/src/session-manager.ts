@@ -3605,38 +3605,39 @@ export class SessionManager {
     const hostedAuthority = isRuntimeHostedRootAuthority(this.deps.messageAuthority)
       ? this.deps.messageAuthority
       : undefined;
-    const ownStop = hostedAuthority
-      ? hostedAuthority.stopSession(sessionId, input)
-      : this.runtimeKernel.stopSession(sessionId, input);
-    let childStops: PromiseSettledResult<void>[] = [];
-    let childLookupError: unknown;
-    try {
-      const children = await this.listChildSessions(sessionId);
-      childStops = await Promise.allSettled(
-        children
-          .filter((child) => child.subagentParent?.lifecycle === 'foreground')
-          .map((child) =>
-            hostedAuthority
-              ? hostedAuthority.stopSession(child.id, input)
-              : this.runtimeKernel.stopSession(child.id, input),
-          ),
-      );
-    } catch (error) {
-      childLookupError = error;
-    }
-    await ownStop;
-    const childStopError = childStops.find(
-      (result): result is PromiseRejectedResult => result.status === 'rejected',
-    )?.reason;
-    if (childLookupError !== undefined) throw childLookupError;
-    if (childStopError !== undefined) throw childStopError;
+    await this.#stopSessionTree(
+      sessionId,
+      hostedAuthority
+        ? hostedAuthority.stopSession(sessionId, input)
+        : this.runtimeKernel.stopSession(sessionId, input),
+      (childSessionId) =>
+        hostedAuthority
+          ? hostedAuthority.stopSession(childSessionId, input)
+          : this.runtimeKernel.stopSession(childSessionId, input),
+    );
   }
 
   async deliverHostedRootStop(sessionId: string, input: StopSessionInput = {}): Promise<void> {
-    const ownStop = this.runtimeKernel.stopSession(sessionId, input);
     const authority = isRuntimeHostedRootAuthority(this.deps.messageAuthority)
       ? this.deps.messageAuthority
       : undefined;
+    await this.#stopSessionTree(
+      sessionId,
+      this.runtimeKernel.stopSession(sessionId, input),
+      (childSessionId) =>
+        authority
+          ? authority.stopSession(childSessionId, input)
+          : this.runtimeKernel.stopSession(childSessionId, input),
+    );
+  }
+
+  async #stopSessionTree(
+    sessionId: string,
+    ownStop: Promise<void>,
+    stopChild: (childSessionId: string) => Promise<void>,
+  ): Promise<void> {
+    // Observe immediately while child lookup runs; await below still propagates the original error.
+    void ownStop.catch(() => undefined);
     let childStops: PromiseSettledResult<void>[] = [];
     let childLookupError: unknown;
     try {
@@ -3644,11 +3645,7 @@ export class SessionManager {
       childStops = await Promise.allSettled(
         children
           .filter((child) => child.subagentParent?.lifecycle === 'foreground')
-          .map((child) =>
-            authority
-              ? authority.stopSession(child.id, input)
-              : this.runtimeKernel.stopSession(child.id, input),
-          ),
+          .map((child) => stopChild(child.id)),
       );
     } catch (error) {
       childLookupError = error;

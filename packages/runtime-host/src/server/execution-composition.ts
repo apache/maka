@@ -704,7 +704,7 @@ export async function createExecutionRuntimeHostComposition(
         if (poisonFailure) return;
         poisonFailure = error;
         context.retainUntilProcessExit();
-        beginDrain();
+        // Route poison through the kernel; the composition drain entry detaches admission.
         context.requestDrain();
       },
       onSandboxBoundarySettled: (sessionId) =>
@@ -1178,7 +1178,7 @@ export async function createExecutionRuntimeHostComposition(
         poisonFailure = error;
         runtimePolicyActivation.poison();
         context.retainUntilProcessExit();
-        beginDrain();
+        // Route poison through the kernel; the composition drain entry detaches admission.
         context.requestDrain();
       },
       ...dependencies.oauthAuthorization,
@@ -1393,6 +1393,12 @@ export async function createExecutionRuntimeHostComposition(
         : {}),
     });
     const workHubCoordination = new HostWorkHubCoordinationCoordinator({
+      configureModel: (input) => sessionCatalog.configureWorkHubModel(input),
+      transitionConfiguration: (input) =>
+        requireSessionManager(manager).transitionSessionConfiguration(
+          WORKHUB_COORDINATION_SESSION_ID,
+          input,
+        ),
       stateRoot: context.owner.capability.canonicalPath,
       stores: stores.sessionStore,
       admission: sessionAdmission,
@@ -1595,8 +1601,9 @@ export async function createExecutionRuntimeHostComposition(
             .digest('hex')
             .slice(0, 48);
           const messageId = `whm_${suffix}`;
-          const targetAttachments =
-            !durable && input.attachments?.length
+          const targetAttachments = durable
+            ? durable.targetAttachments
+            : input.attachments?.length
               ? await copyWorkHubAttachmentsToTarget(
                   openedArtifactStore,
                   artifacts,
@@ -1605,7 +1612,7 @@ export async function createExecutionRuntimeHostComposition(
                 )
               : input.attachments;
           const content = normalizeMessageContent({
-            text: input.userText,
+            text: input.delegationText ?? input.userText,
             ...(targetAttachments ? { attachments: targetAttachments } : {}),
           });
           const persisted =
@@ -1666,6 +1673,10 @@ export async function createExecutionRuntimeHostComposition(
                     disposition: input.disposition,
                     userText: input.userText,
                     ...(input.attachments ? { attachments: input.attachments } : {}),
+                    ...(targetAttachments ? { targetAttachments } : {}),
+                    ...(input.delegationText === undefined
+                      ? {}
+                      : { delegationText: input.delegationText }),
                     ...(steered ? { steered: true as const } : {}),
                     ...(input.create ? { create: input.create } : {}),
                     ...(input.replacesActionId && input.replacesDelegationId
@@ -2199,7 +2210,9 @@ export async function createExecutionRuntimeHostComposition(
       releaseConnection: (connectionId: string) => {
         for (const module of domainModules) module.releaseConnection?.(connectionId);
       },
-      beginDrain,
+      // Drain may stop graph operators while its caller still owns a Session admission.
+      // Leave that context; each stop still waits on its own Session queue.
+      beginDrain: () => sessionAdmission.detach(beginDrain),
       recover,
       startMaintenance: () => storageMaintenance.start(),
       close,

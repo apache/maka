@@ -21,12 +21,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { prepareRuntimeHostQuit } from '../runtime-host-quit.js';
 
-test('quit proceeds without consent when no owned Host is probed', async () => {
+test('quit proceeds without consent when there is no owned Host', async () => {
   const probes: string[] = [];
   const owner = {
-    probeOwnedLocalHostActivity: async () => {
-      probes.push('probe');
-      return { kind: 'not_owned' } as const;
+    prepareOwnedLocalHostQuit: async () => {
+      probes.push('prepare');
+      return 'ready' as const;
     },
   };
 
@@ -36,12 +36,12 @@ test('quit proceeds without consent when no owned Host is probed', async () => {
     }),
     'ready',
   );
-  assert.deepEqual(probes, ['probe']);
+  assert.deepEqual(probes, ['prepare']);
 });
 
-test('quit proceeds without consent when the owned Host is clear', async () => {
+test('quit proceeds without consent after the idle Host stops admission', async () => {
   const owner = {
-    probeOwnedLocalHostActivity: async () => ({ kind: 'clear' }) as const,
+    prepareOwnedLocalHostQuit: async () => 'ready' as const,
   };
 
   assert.equal(
@@ -55,9 +55,9 @@ test('quit proceeds without consent when the owned Host is clear', async () => {
 test('background work requires consent before quitting', async () => {
   const probes: string[] = [];
   const owner = {
-    probeOwnedLocalHostActivity: async () => {
-      probes.push('probe');
-      return { kind: 'active_tasks' } as const;
+    prepareOwnedLocalHostQuit: async (mode: string) => {
+      probes.push(mode);
+      return mode === 'interrupt_active_work' ? 'ready' as const : 'active_tasks' as const;
     },
   };
 
@@ -69,7 +69,7 @@ test('background work requires consent before quitting', async () => {
     await prepareRuntimeHostQuit(owner, { confirmInterrupt: async () => true }),
     'ready',
   );
-  assert.deepEqual(probes, ['probe', 'probe']);
+  assert.deepEqual(probes, ['refuse_active_work', 'refuse_active_work', 'interrupt_active_work']);
 });
 
 test('quit proceeds without an owner', async () => {
