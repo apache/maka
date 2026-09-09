@@ -69,10 +69,10 @@ export function createProxiedFetchTransport(
   const proxySnapshot: ProxySettings | null = proxy?.enabled
     ? { ...proxy, bypassList: [...proxy.bypassList] }
     : null;
-  // The direct dispatcher does not own sockets until their connector calls
-  // back. Abort the connector too, including a still-pending TLS handshake.
-  const directConnections = new AbortController();
-  const directDispatcher = new Agent({ connect: { signal: directConnections.signal } });
+  // Dispatchers do not own sockets until their connectors call back. Abort
+  // direct and proxy connection establishment too, including TLS handshakes.
+  const connections = new AbortController();
+  const directDispatcher = new Agent({ connect: { signal: connections.signal } });
   let proxyDispatcher: Dispatcher | undefined;
   let closePromise: Promise<void> | undefined;
   let closed = false;
@@ -84,7 +84,8 @@ export function createProxiedFetchTransport(
       typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     const useProxy =
       proxySnapshot !== null && !matchesBypassList(new URL(url).hostname, proxySnapshot.bypassList);
-    if (useProxy) proxyDispatcher ??= buildProxyDispatcher(proxySnapshot) as Dispatcher;
+    if (useProxy)
+      proxyDispatcher ??= buildProxyDispatcher(proxySnapshot, connections.signal) as Dispatcher;
 
     return (await undiciFetch(
       input as Parameters<typeof undiciFetch>[0],
@@ -102,7 +103,7 @@ export function createProxiedFetchTransport(
   const close = (): Promise<void> => {
     if (closePromise) return closePromise;
     closed = true;
-    directConnections.abort(new Error('Connection effect fetch transport closed'));
+    connections.abort(new Error('Connection effect fetch transport closed'));
     closePromise = Promise.all([
       directDispatcher
         .destroy(new Error('Connection effect fetch transport closed'))
