@@ -264,11 +264,10 @@ traffic.
 
 ## Setup
 
-> **Status: Telegram, Discord, Feishu/Lark, WeCom and QQ are verified
-> end-to-end. The rest are placeholders.** Each remaining section must be
-> walked against a real developer account before it lands — the acceptance
-> criteria require tested instructions, and untested setup steps are worse than
-> none.
+> **Status: Telegram, Slack, Discord, Feishu/Lark, WeCom and QQ are verified
+> end-to-end. DingTalk and WeChat are still placeholders.** Both must be walked
+> against a real developer account before they land — the acceptance criteria
+> require tested instructions, and untested setup steps are worse than none.
 >
 > For DingTalk and WeChat, check
 > [the onboarding architecture doc](architecture/bot-onboarding-runtime.zh-CN.md)
@@ -393,7 +392,78 @@ Messages are chunked at 2000 characters, Discord's own per-message limit.
 
 ### Slack
 
-_TODO — Socket Mode app; note the two distinct tokens (`xoxb-` and `xapp-`)._
+Slack runs over Socket Mode, so like every other channel it dials out and needs
+no public request URL. It is the only channel that takes **two** tokens.
+
+**1. Create the app.** At api.slack.com/apps, create a new app **from scratch**
+in your workspace.
+
+**2. Enable Socket Mode.** This generates an **App-Level Token** beginning
+`xapp-`. Save it — it goes in `appSecret`.
+
+**3. Add bot token scopes** under OAuth & Permissions:
+
+- `chat:write` — send messages
+- `channels:history` — read public channel messages
+- `im:history` — read direct messages
+
+**4. Subscribe to bot events** under Event Subscriptions: `message.channels`
+and `message.im`.
+
+**5. Install to the workspace.** This yields the **Bot User OAuth Token**
+beginning `xoxb-`, which goes in `token`.
+
+| Console value | Maka setting |
+| --- | --- |
+| Bot User OAuth Token (`xoxb-…`) | `token` |
+| App-Level Token (`xapp-…`) | `appSecret` |
+| Signing Secret | *unused* |
+
+⚠️ The field named `appSecret` holds the **app-level token**, not the signing
+secret. Nothing in this channel ever reads the signing secret. Getting this
+wrong fails inside `SocketModeClient.start()` with an error that does not name
+the cause.
+
+**6. Invite the bot to each channel** it should serve: `/invite @yourbot`.
+Posting to a channel the bot has not joined fails with `not_in_channel`.
+
+**7. Turn on direct messages.** Under **App Home → Show Tabs → Messages Tab**,
+enable the tab and check *"Allow users to send Slash commands and messages from
+the messages tab"*. Until then Slack refuses DMs with *"Sending messages to
+this app has been turned off"*, `message.im` never fires, and nothing in the
+bot's own configuration hints at why.
+
+**8. Verify.** Startup calls `auth.test()` to resolve identity, then opens the
+Socket Mode connection. Missing either token short-circuits startup with
+`missing-slack-tokens`.
+
+**Slack reaches `operational` on connect**, unlike every other channel — the
+bridge promotes it as soon as the socket reports `connected`, without waiting
+for any traffic. A healthy-looking Slack channel therefore proves less than a
+healthy-looking Telegram or WeCom one.
+
+**Conversation shape.** `isGroup` is derived as `channel_type !== 'im'`, so
+only true DMs count as private; every other conversation kind, including group
+DMs, is treated as a group. Channel IDs are Slack's own — `C…` for channels,
+`D…` for direct messages.
+
+**Replies stay threaded.** The inbound `sourceMessageId` is `thread_ts ?? ts`,
+so a top-level message uses its own timestamp as the thread root, and replies
+are posted with `thread_ts` to keep them on that thread.
+
+**Only clean user messages are delivered.** The mapper drops any event carrying
+a `subtype` or a `bot_id`, so edits, joins/leaves, file shares and other bot
+posts never reach the handler.
+
+> **Socket Mode does not replay.** Events emitted while the bridge is
+> disconnected are lost, with no offset or cursor to resume from. This differs
+> from Telegram, where `getUpdates` returns messages that arrived while the
+> bridge was down.
+
+> **This channel ignores `proxyUrl` entirely.** Both `WebClient` and
+> `SocketModeClient` are constructed without any agent, so neither the REST
+> calls nor the socket use the configured proxy — not even the partial REST
+> coverage the Discord channel gets from `proxiedFetch`.
 
 ### DingTalk 钉钉
 
