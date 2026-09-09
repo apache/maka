@@ -35,11 +35,11 @@ import type { SessionHealthNoticeView } from './use-shell-chat-model';
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';
-import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { selectLiveTurn } from './use-app-shell-session-ui-reads';
 import { useExternalStoreSelector } from './use-external-store-selector';
 import { useDeepResearchRun } from './use-deep-research-run';
 import { ChatRecoveryNotice, SessionHealthRecoveryNotice } from './chat-recovery-notice';
+import type { TranscriptHistoryPending } from './features/conversation';
 
 const selectShellRunRecord = (state: AppShellSessionUiState, sessionId: string | undefined) =>
   sessionId ? state.shellRunUpdatesBySession[sessionId] : undefined;
@@ -54,6 +54,7 @@ const selectShellRunRecord = (state: AppShellSessionUiState, sessionId: string |
  * is conditionally mounted - the always-mounted Composer lives in a separate
  * region and is not affected by this surface mounting or unmounting.
  */
+
 interface ChatMessageSurfaceProps extends Omit<
   ComponentProps<typeof ChatView>,
   | 'deepResearchRun'
@@ -62,6 +63,7 @@ interface ChatMessageSurfaceProps extends Omit<
   | 'liveTurn'
   | 'shellRunUpdates'
   | 'goalIndicator'
+  | 'historyLoadPending'
 > {
   /**
    * #1985: the live projection and the shell-run records are the only session
@@ -89,11 +91,10 @@ interface ChatMessageSurfaceProps extends Omit<
   connections: LlmConnection[];
   onRefreshConnections: () => Promise<void> | void;
   onSkip: () => Promise<void> | void;
-  hasOlderHistory: boolean;
-  hasNewerHistory: boolean;
-  historyLoadPending: boolean;
-  onLoadEarlierHistory: (anchorTurnId?: string) => Promise<void> | void;
-  onReturnToLatestHistory: () => Promise<void> | void;
+  hasOlderHistory?: boolean;
+  hasNewerHistory?: boolean;
+  historyLoadPending?: TranscriptHistoryPending;
+  onLoadHistory: (target: 'earlier' | 'later' | 'latest', anchorTurnId?: string) => Promise<void> | void;
 }
 
 function captureLiveContent(liveTurn: LiveTurnProjection | undefined) {
@@ -129,13 +130,11 @@ export function ChatMessageSurface({
   hasOlderHistory,
   hasNewerHistory,
   historyLoadPending,
-  onLoadEarlierHistory,
-  onReturnToLatestHistory,
+  onLoadHistory,
   ...chatViewRest
 }: ChatMessageSurfaceProps) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).app;
-  const transcriptCopy = getDesktopConversationCopy(locale).actions;
   // Configuration notices share the Settings label; identity recovery supplies
   // its own label because it opens the composer's connection-and-model picker.
   const goToModelsLabel = copy.goToModels;
@@ -238,6 +237,7 @@ export function ChatMessageSurface({
         {(goalProjection) => (
           <ChatView
             {...chatViewRest}
+            viewportNavigation={sessionUiController.transcriptViewportNavigation}
             liveTurn={seededLiveTurn}
             // Every branch above reseeds `sessionId` to `activeSessionId`, and a
             // render-phase setState re-runs this body before anything commits, so
@@ -248,13 +248,12 @@ export function ChatMessageSurface({
             emptyOverride={emptyOverride}
             goalIndicator={goalProjection.goalIndicator}
             hasOlderHistory={hasOlderHistory}
-            onLoadEarlierHistory={onLoadEarlierHistory}
-            returnToLatest={hasNewerHistory ? {
-              title: transcriptCopy.partialHistoryTitle,
-              label: transcriptCopy.returnLatest,
-              isPending: historyLoadPending,
-              onClick: onReturnToLatestHistory,
-            } : undefined}
+            hasNewerHistory={hasNewerHistory}
+            historyLoadPending={historyLoadPending && historyLoadPending.sessionId === activeSessionId
+              ? historyLoadPending.target === 'earlier' ? 'older' : 'newer'
+              : undefined}
+            onLoadEarlierHistory={(anchorTurnId) => onLoadHistory('earlier', anchorTurnId)}
+            onLoadLaterHistory={(anchorTurnId) => onLoadHistory('later', anchorTurnId)}
           />
         )}
       </ChatViewGoalProjectionConsumer>

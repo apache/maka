@@ -69,7 +69,11 @@ const DARK_THEME_SENTINEL_STORY_IDS = new Set([
   'product-accessibility-dialogs--rename-conversation',
   'product-markdown--rich-assistant-answer',
   'product-settings-pages--appearance',
+  'product-settings-pages--bot-chat-needs-attention',
   'product-shell-official-appshell--default-layout',
+]);
+const FORCED_COLORS_STORY_IDS = new Set([
+  'product-settings-pages--general-forced-colors-focus-ring',
 ]);
 
 // This is a catalog render and accessibility-tree health check.
@@ -161,6 +165,7 @@ export function catalogJobs(
         colorSchemes.map((colorScheme) => ({
           storyId: entry.id,
           colorScheme,
+          forcedColors: FORCED_COLORS_STORY_IDS.has(entry.id) ? 'active' : 'none',
           palette,
         })),
       );
@@ -182,14 +187,24 @@ export function storyViewport(storyId) {
 }
 
 export function jobLabel(job) {
-  return `${job.storyId} (${job.colorScheme}/${job.palette})`;
+  const forcedColors = job.forcedColors === 'active' ? '/forced-colors' : '';
+  return `${job.storyId} (${job.colorScheme}/${job.palette}${forcedColors})`;
 }
 
-async function smokeStory(page, baseUrl, job, options = {}) {
+export function isExpectedConsoleError(storyId, message) {
+  return (
+    storyId === 'product-settings-pages--general-host-settings-error' &&
+    message === '[settings] operation failed: Runtime Host settings read failed in this story.'
+  );
+}
+
+export async function smokeStory(page, baseUrl, job, options = {}) {
   const prefix = `[${jobLabel(job)}]`;
   const browserFailures = [];
   const onConsole = (message) => {
-    if (message.type() === 'error') browserFailures.push(`console.error: ${message.text()}`);
+    if (message.type() === 'error' && !isExpectedConsoleError(job.storyId, message.text())) {
+      browserFailures.push(`console.error: ${message.text()}`);
+    }
   };
   const onPageError = (error) => {
     browserFailures.push(`uncaught page error: ${describeBrowserValue(error)}`);
@@ -200,7 +215,7 @@ async function smokeStory(page, baseUrl, job, options = {}) {
   try {
     await page.addInitScript(installStorybookRenderProbe, { storyId: job.storyId });
     await page.setViewportSize(storyViewport(job.storyId));
-    await page.emulateMedia({ colorScheme: job.colorScheme });
+    await page.emulateMedia({ colorScheme: job.colorScheme, forcedColors: job.forcedColors });
     await page.goto(storyUrl(baseUrl, job), { waitUntil: 'load' });
 
     try {
@@ -361,6 +376,7 @@ async function runCli() {
   const requiredStoryIds = new Set([
     ...REQUIRED_COMPUTER_USE_STORY_IDS,
     ...DARK_THEME_SENTINEL_STORY_IDS,
+    ...FORCED_COLORS_STORY_IDS,
   ]);
   const missingRequiredStories = [...requiredStoryIds].filter((storyId) => !storyIds.has(storyId));
   if (missingRequiredStories.length > 0) {

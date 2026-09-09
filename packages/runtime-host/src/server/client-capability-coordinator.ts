@@ -45,7 +45,6 @@ import {
 import {
   ClientCapabilityInvocationBroker,
   ClientCapabilityInvocationError,
-  type ClientCapabilityInvocationFailure,
 } from './client-capability-invocation-broker.js';
 import type {
   ClientCapabilityOperationHandlerMap,
@@ -78,7 +77,6 @@ const DESKTOP_BROWSER_TOOLS = new Set([
 const DESKTOP_SETTINGS_TOOLS = new Set(['MakaClientSettingsGet', 'MakaClientSettingsUpdate']);
 
 export { ClientCapabilityInvocationError };
-export type { ClientCapabilityInvocationFailure };
 
 export interface ClientCapabilitySnapshot {
   readonly registrationIds: readonly string[];

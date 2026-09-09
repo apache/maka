@@ -21,10 +21,23 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
   dismissAgentGraphPanel,
+  isAgentGraphLive,
   isAgentGraphPanelDismissible,
   reconcileAgentGraphPanelDismissals,
   shouldShowAgentGraphPanel,
 } from '../../renderer/agent-graph-panel-visibility.js';
+
+describe('isAgentGraphLive', () => {
+  it('treats in-flight statuses as live and settled ones as not', () => {
+    for (const status of ['active', 'waiting', 'closing'] as const) {
+      assert.equal(isAgentGraphLive(status), true, status);
+    }
+    for (const status of ['empty', 'stopped', 'failed', 'completed'] as const) {
+      assert.equal(isAgentGraphLive(status), false, status);
+    }
+    assert.equal(isAgentGraphLive(undefined), false);
+  });
+});
 
 describe('isAgentGraphPanelDismissible', () => {
   it('allows hiding a graph that no longer has active work', () => {

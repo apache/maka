@@ -434,7 +434,7 @@ export class HostSessionEffectCoordinator {
     artifactId: string,
   ): Promise<Record<string, unknown> | undefined> {
     const entry = await this.#artifacts.getInSession(sessionId, artifactId);
-    if (!entry.record || entry.record.status !== 'live') return undefined;
+    if (!entry.record) return undefined;
     const read = await this.#artifacts.readTextInSession(sessionId, artifactId, {
       maxBytes: SESSION_EFFECT_ARTIFACT_MAX_BYTES,
     });

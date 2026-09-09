@@ -27,6 +27,7 @@
  */
 
 import * as nodeCrypto from 'node:crypto';
+import type { ModelRetryDecision } from './model-failure.js';
 import { CONTEXT_OFFLOAD_ID_MAX_CODE_POINTS, type SessionContextRef } from './context-offload.js';
 import type {
   AdditionalPermissionRequest,
@@ -579,7 +580,8 @@ export type SessionEvent =
   | ProviderRetryEvent
   | ErrorEvent
   | CompleteEvent
-  | AbortEvent;
+  | AbortEvent
+  | ContextCompactionStartedEvent;
 
 export interface TextDeltaEvent extends BaseEvent {
   type: 'text_delta';
@@ -834,6 +836,7 @@ export type ToolResultContent =
       toolCallId: string;
       toolName: string;
       artifactId?: string;
+      resourceRef?: string;
       bodySha256?: string;
       originalEstimatedTokens: number;
       originalBytes: number;
@@ -1203,6 +1206,7 @@ export interface QueueUpdateEvent extends BaseEvent {
 }
 
 export type ProviderRetryReason =
+  | 'stream_truncated'
   | 'network'
   | 'provider_capacity'
   | 'provider_unavailable'
@@ -1248,6 +1252,7 @@ export interface ProviderRetryStartedEvent extends BaseEvent {
 
 export interface ErrorEvent extends BaseEvent {
   type: 'error';
+  retry?: ModelRetryDecision;
   recoverable: boolean;
   code?: string;
   /** Stable machine-readable reason for UI / telemetry routing. */
@@ -1291,6 +1296,16 @@ export function failureClassFromCompleteStopReason(
 export interface AbortEvent extends BaseEvent {
   type: 'abort';
   reason: 'user_stop' | 'redirect' | 'timeout' | 'crash';
+}
+
+/**
+ * A host-owned explicit context-compaction Turn has started. Synthesized by the
+ * Runtime Host session projector (not the kernel) purely so a client can render
+ * a "compacting" transcript row while the Turn is in flight; it carries no
+ * durable state and is excluded from `BackendSessionEvent` like `queue_update`.
+ */
+export interface ContextCompactionStartedEvent extends BaseEvent {
+  type: 'context_compaction_started';
 }
 
 // ============================================================================

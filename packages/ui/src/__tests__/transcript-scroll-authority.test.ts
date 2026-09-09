@@ -33,6 +33,7 @@ import { test } from 'node:test';
 import { createTranscriptScrollAuthority } from '../transcript-scroll-authority.js';
 
 interface FakeRoot {
+  style: { overflowAnchor: string };
   scrollTop: number;
   scrollHeight: number;
   clientHeight: number;
@@ -50,6 +51,7 @@ interface FakeRoot {
 function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): FakeRoot {
   const listeners = new Set<() => void>();
   const root: FakeRoot = {
+    style: { overflowAnchor: '' },
     scrollTop: 0,
     scrollHeight: options?.scrollHeight ?? 3_000,
     clientHeight: options?.clientHeight ?? 600,
@@ -276,6 +278,22 @@ test('a reader who scrolls up while the answer grows is still the reader', () =>
     root.grow(300);
     resize();
     assert.equal(root.scrollTop, 1_900);
+  });
+});
+
+test('reports both directions even when the reader returns to the last written offset', () => {
+  withObservers(() => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    const directions: string[] = [];
+    authority.subscribeToReaderScroll((direction) => directions.push(direction));
+    root.emitScroll();
+    root.scrollTop = 900;
+    root.emitScroll();
+    root.scrollTop = 2_400;
+    root.emitScroll();
+    assert.deepEqual(directions, ['up', 'down']);
   });
 });
 

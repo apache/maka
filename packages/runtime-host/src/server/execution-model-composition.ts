@@ -43,6 +43,7 @@ import {
 } from '@maka/runtime/network/scoped-fetch-transport';
 import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
   type BackendFactoryContext,
   type BackendPreparationContext,
@@ -101,7 +102,7 @@ type HostExecutionRuntimePolicyAuthority = {
 
 type HostExecutionArtifactAuthority = Pick<
   InteractiveArtifactStoreWriter,
-  'create' | 'createOwned' | 'readDurableAttachmentBinary' | 'deleteOwnedArtifactInSession'
+  'create' | 'readDurableAttachmentBinary'
 >;
 
 type HostExecutionUsageAuthority = {
@@ -310,30 +311,48 @@ async function buildHostAiSdkBackend(
     });
   };
   const recordRunComposition = input.context.recordRunComposition;
+  const recordRequestComposition = input.context.recordRequestComposition;
+  const resolveModelTools = (): readonly MakaTool[] =>
+    modelComposition.resolveTools?.() ?? modelComposition.tools;
+  // RunComposition remains the immutable C0 baseline. Dynamic Tool changes
+  // belong exclusively to RequestComposition epochs, so never re-sample them
+  // while committing the baseline immediately before provider dispatch.
+  const initialModelTools = Object.freeze([...modelComposition.tools]);
+  const runCompositionCommits = new Map<string, Promise<void>>();
   const commitRunComposition = recordRunComposition
     ? async (context: { readonly turnId: string; readonly runId: string }): Promise<void> => {
-        const resolved = await resolveRunPrompt(context);
-        await recordRunComposition(
-          context.runId,
-          createRunCompositionSnapshot({
-            composerId: modelComposition.composerId,
-            composerRevision: modelComposition.composerRevision,
-            sourceRevisions: resolved.sourceRevisions,
-            baseSystemPromptHash: stableHash(resolved.text ?? ''),
-            toolCatalogHash: toolCatalogHash(modelComposition.tools),
-            toolAvailabilityHash: toolAvailabilityHash(modelComposition.toolAvailability),
-            baseProviderOptionsHash: stableHash(providerOptions),
-            toolNames: modelComposition.tools.map(({ name }) => name),
-            contextWindow: contextWindow ?? null,
-          }),
-        );
+        let commit = runCompositionCommits.get(context.runId);
+        if (!commit) {
+          commit = (async (): Promise<void> => {
+            const resolved = await resolveRunPrompt(context);
+            await recordRunComposition(
+              context.runId,
+              createRunCompositionSnapshot({
+                composerId: modelComposition.composerId,
+                composerRevision: modelComposition.composerRevision,
+                sourceRevisions: resolved.sourceRevisions,
+                baseSystemPromptHash: stableHash(resolved.text ?? ''),
+                toolCatalogHash: toolCatalogHash(initialModelTools),
+                toolAvailabilityHash: toolAvailabilityHash(modelComposition.toolAvailability),
+                baseProviderOptionsHash: stableHash(providerOptions),
+                toolNames: initialModelTools.map(({ name }) => name),
+                contextWindow: contextWindow ?? null,
+              }),
+            );
+          })();
+          runCompositionCommits.set(context.runId, commit);
+        }
+        try {
+          await commit;
+        } catch (error) {
+          if (runCompositionCommits.get(context.runId) === commit) {
+            runCompositionCommits.delete(context.runId);
+          }
+          throw error;
+        }
       }
     : undefined;
-  const planProjectionImage = createReadImageSnapshotPlanner(
-    input.artifacts,
-    (sessionId, artifactId) =>
-      input.artifacts.deleteOwnedArtifactInSession(sessionId, artifactId, 'tool_result_projection'),
-  );
+  const planProjectionImage = createReadImageSnapshotPlanner(input.artifacts);
 
   try {
     return new HostAiSdkBackend(
@@ -347,9 +366,9 @@ async function buildHostAiSdkBackend(
             permissionMode: input.context.header.permissionMode,
           }),
         },
-        appendMessage:
-          input.context.appendMessage ??
-          ((message) => input.context.store.appendMessage(input.context.sessionId, message)),
+        ...(input.context.recordSystemNote
+          ? { recordSystemNote: input.context.recordSystemNote }
+          : {}),
         readExecutionBoundary: () =>
           input.context.store.readExecutionBoundary(input.context.sessionId),
         ...(input.context.store.createSandboxBoundaryRequest
@@ -369,7 +388,8 @@ async function buildHostAiSdkBackend(
         apiKey,
         modelId: target.model,
         modelFactory,
-        tools: [...modelComposition.tools],
+        tools: [...resolveModelTools()],
+        resolveTools: resolveModelTools,
         toolAvailability: modelComposition.toolAvailability,
         ...(modelComposition.planTraceContext
           ? { planTraceContext: modelComposition.planTraceContext }
@@ -439,6 +459,12 @@ async function buildHostAiSdkBackend(
               beforeRunProviderDispatch: commitRunComposition,
             }
           : {}),
+        ...(recordRequestComposition
+          ? {
+              recordRequestComposition: (runId, snapshot) =>
+                recordRequestComposition(runId, snapshot),
+            }
+          : {}),
         systemPrompt: async (context) => {
           const resolved = await resolveRunPrompt({
             turnId: context.turnId,
@@ -446,7 +472,7 @@ async function buildHostAiSdkBackend(
               ? { emitSkillCatalogTrace: context.emitSkillCatalogTrace }
               : {}),
           });
-          return resolved.text;
+          return { text: resolved.text, sourceRevisions: resolved.sourceRevisions };
         },
         lookupPricing: pricing,
         recordModelCallAttempt,

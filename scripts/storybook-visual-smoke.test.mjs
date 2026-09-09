@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { catalogJobs, storyUrl } from './storybook-visual-smoke.mjs';
+import { catalogJobs, isExpectedConsoleError, storyUrl } from './storybook-visual-smoke.mjs';
 
 const REFERENCE_STORY_ID = 'product-shell-official-appshell--native-conversation';
 const THEME_PALETTES = [
@@ -42,6 +42,7 @@ test('ordinary catalog stories render the default palette in light mode', () => 
       {
         storyId: 'product-settings--memory',
         colorScheme: 'light',
+        forcedColors: 'none',
         palette: 'default',
       },
     ],
@@ -52,8 +53,16 @@ test('dark theme sentinel stories render the default palette in both colour sche
   const storyId = 'product-settings-pages--appearance';
 
   assert.deepEqual(catalogJobs(storyIndex(storyId), { themePalettes: THEME_PALETTES }), [
-    { storyId, colorScheme: 'light', palette: 'default' },
-    { storyId, colorScheme: 'dark', palette: 'default' },
+    { storyId, colorScheme: 'light', forcedColors: 'none', palette: 'default' },
+    { storyId, colorScheme: 'dark', forcedColors: 'none', palette: 'default' },
+  ]);
+});
+
+test('forced-colors stories render under the forced palette', () => {
+  const storyId = 'product-settings-pages--general-forced-colors-focus-ring';
+
+  assert.deepEqual(catalogJobs(storyIndex(storyId), { themePalettes: THEME_PALETTES }), [
+    { storyId, colorScheme: 'light', forcedColors: 'active', palette: 'default' },
   ]);
 });
 
@@ -65,16 +74,18 @@ test('the reference story renders every palette in both colour schemes', () => {
   assert.equal(jobs.length, 22);
   assert.equal(new Set(jobs.map((job) => `${job.colorScheme}/${job.palette}`)).size, 22);
   assert.deepEqual(jobs.slice(0, 4), [
-    { storyId: REFERENCE_STORY_ID, colorScheme: 'light', palette: 'default' },
-    { storyId: REFERENCE_STORY_ID, colorScheme: 'dark', palette: 'default' },
+    { storyId: REFERENCE_STORY_ID, colorScheme: 'light', forcedColors: 'none', palette: 'default' },
+    { storyId: REFERENCE_STORY_ID, colorScheme: 'dark', forcedColors: 'none', palette: 'default' },
     {
       storyId: REFERENCE_STORY_ID,
       colorScheme: 'light',
+      forcedColors: 'none',
       palette: 'test-palette-1',
     },
     {
       storyId: REFERENCE_STORY_ID,
       colorScheme: 'dark',
+      forcedColors: 'none',
       palette: 'test-palette-1',
     },
   ]);
@@ -123,4 +134,35 @@ test('story URLs encode the selected colour scheme and palette', () => {
   assert.equal(url.searchParams.get('id'), REFERENCE_STORY_ID);
   assert.equal(url.searchParams.get('viewMode'), 'story');
   assert.equal(url.searchParams.get('globals'), 'colorScheme:dark;palette:tokyo-night');
+});
+
+const errorStory = 'product-settings-pages--general-host-settings-error';
+const expectedError =
+  '[settings] operation failed: Runtime Host settings read failed in this story.';
+
+test('allows the intentional settings read failure only in its error story', () => {
+  assert.equal(isExpectedConsoleError(errorStory, expectedError), true);
+  assert.equal(isExpectedConsoleError('product-settings-pages--general', expectedError), false);
+  assert.equal(
+    isExpectedConsoleError(
+      'product-settings-pages--projects-cached-host-revalidation',
+      expectedError,
+    ),
+    false,
+  );
+});
+
+test('keeps unexpected settings errors fatal, including errors in the error story', () => {
+  const missingBridgeError =
+    "[settings] operation failed: Cannot read properties of undefined (reading 'getSnapshot')";
+  assert.equal(isExpectedConsoleError(errorStory, missingBridgeError), false);
+  assert.equal(
+    isExpectedConsoleError(
+      'product-settings-pages--projects-cached-host-revalidation',
+      missingBridgeError,
+    ),
+    false,
+  );
+  assert.equal(isExpectedConsoleError(errorStory, `${expectedError} unexpected detail`), false);
+  assert.equal(isExpectedConsoleError(errorStory, 'unexpected render failure'), false);
 });

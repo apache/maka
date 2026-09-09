@@ -103,3 +103,20 @@ function settledSession(id: string): SessionSummary {
     permissionMode: 'ask',
   };
 }
+
+for (const localState of ['cached', 'pending'] as const) {
+  test(`a ${localState} catalog cannot retire confirmed live content`, () => {
+    const sessionId = 'session-a';
+    const controller = createAppShellSessionUiStateController();
+    controller.setLiveTurnBySession(() => ({ [sessionId]: armLiveTurn('turn-a') }));
+    controller.confirmLiveTurn(sessionId, 'turn-a');
+    const observedLiveTurnBySession = controller.liveTurnBySessionRef.current;
+    reconcileSettledSessionTransients({
+      activeId: sessionId,
+      sessions: [{ ...settledSession(sessionId), localState }],
+      observedLiveTurnBySession,
+      clearTurnTransientStateIfCurrent: controller.clearTurnTransientStateIfCurrent,
+    });
+    assert.equal(controller.getState().liveTurnBySession[sessionId], observedLiveTurnBySession[sessionId]);
+  });
+}

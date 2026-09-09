@@ -45,6 +45,7 @@ import type { DurableToolResultProjection } from '@maka/core/durable-tool-result
 import { DURABLE_TOOL_RESULT_PROJECTION_VERSION } from '@maka/core/durable-tool-result-projection';
 import {
   buildModelProjectionTransition,
+  durableToolResultProjectionDigest,
   type ModelProjectionTransition,
 } from '@maka/core/model-projection-transition';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -57,21 +58,23 @@ import {
   turnKey,
   utf8ByteLength,
 } from './context-budget-helpers.js';
-import {
-  durableProjectionToToolResultOutput,
-  projectionArtifactMedia,
-} from './durable-tool-result-projection.js';
+import { projectionArtifactMedia } from './durable-tool-result-projection.js';
 import { baseToolResultProjection, nextInChain } from './model-projection-transition-ledger.js';
 import {
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
   buildArchivedToolResultPlaceholder,
+  buildLedgerArchivedToolResultPlaceholder,
   isArchivedToolResultPlaceholder,
-  serializeToolResultForArchive,
   type ArchivedToolResultPlaceholder,
   type ArchivedToolResultReason,
   type StaleToolResultArchiveCandidate,
   type StaleToolResultPrunePolicy,
 } from './tool-result-archive.js';
+import type {
+  ToolResultArchiveRecorder,
+  ToolResultArchiveLocation,
+} from './tool-result-archive-capability.js';
+import { serializeToolResultProjectionV1 } from './tool-result-archive-encoding.js';
 
 const DEFAULT_MAX_TOOL_RESULT_ESTIMATED_TOKENS = 2048;
 
@@ -88,10 +91,7 @@ export type ModelProjectionTransitionRecorder = (
  * body that is not the one removed from the model's view.
  */
 export function serializedToolResultProjection(projection: DurableToolResultProjection): string {
-  const output = durableProjectionToToolResultOutput(projection);
-  return serializeToolResultForArchive(
-    output.type === 'execution-denied' ? { kind: 'text', text: output.reason ?? '' } : output.value,
-  );
+  return serializeToolResultProjectionV1(projection);
 }
 
 /** The replacement a pruned Tool Result projects to. */
@@ -107,20 +107,7 @@ export function archivedToolResultProjection(
 
 export interface ToolResultArchiveTransitionServices {
   sessionId: string;
-  archiveToolResult: (input: {
-    sessionId: string;
-    runtimeEventId: string;
-    turnId: string;
-    toolCallId: string;
-    toolName: string;
-    result: unknown;
-    serializedResult: string;
-    bodySha256: string;
-    originalBytes: number;
-    originalEstimatedTokens: number;
-    rewriteVersion: typeof ARCHIVED_TOOL_RESULT_REWRITE_VERSION;
-    reason: ArchivedToolResultReason;
-  }) => Promise<{ artifactId: string } | void> | { artifactId: string } | void;
+  archiveToolResult: ToolResultArchiveRecorder;
   recordTransition: ModelProjectionTransitionRecorder;
   /**
    * Re-read the durable ledger after an append.
@@ -168,7 +155,7 @@ export async function archiveToolResultAsTransition(
   request: ToolResultArchiveTransitionRequest,
 ): Promise<ToolResultArchiveTransitionOutcome | undefined> {
   const bodySha256 = sha256(request.serializedResult);
-  let archived: { artifactId: string } | void;
+  let archived: ToolResultArchiveLocation | void;
   try {
     archived = await Promise.resolve(
       services.archiveToolResult({
@@ -184,16 +171,22 @@ export async function archiveToolResultAsTransition(
         originalEstimatedTokens: request.originalEstimatedTokens,
         rewriteVersion: ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
         reason: request.reason,
+        sourceProjectionDigest: durableToolResultProjectionDigest(request.sourceProjection),
+        ...(request.previousTransitionId
+          ? { previousTransitionId: request.previousTransitionId }
+          : {}),
       }),
     );
   } catch {
     return undefined;
   }
-  const artifactId = archived?.artifactId;
-  if (typeof artifactId !== 'string' || artifactId.trim().length === 0) return undefined;
-
-  const placeholder = buildArchivedToolResultPlaceholder({
-    artifactId,
+  if (!archived) return undefined;
+  if (
+    !archived.ledger &&
+    (typeof archived.artifactId !== 'string' || archived.artifactId.trim().length === 0)
+  )
+    return undefined;
+  const common = {
     runtimeEventId: request.runtimeEventId,
     toolCallId: request.toolCallId,
     toolName: request.toolName,
@@ -202,7 +195,22 @@ export async function archiveToolResultAsTransition(
     originalBytes: request.originalBytes,
     reason: request.reason,
     ...(request.supersession ? { supersession: request.supersession } : {}),
-  });
+  };
+  let placeholder: ArchivedToolResultPlaceholder;
+  try {
+    placeholder = archived.ledger
+      ? buildLedgerArchivedToolResultPlaceholder({
+          ...common,
+          storage: 'ledger',
+          sourceProjectionDigest: durableToolResultProjectionDigest(request.sourceProjection),
+          ...(request.previousTransitionId
+            ? { previousTransitionId: request.previousTransitionId }
+            : {}),
+        })
+      : buildArchivedToolResultPlaceholder({ ...common, artifactId: archived.artifactId });
+  } catch {
+    return undefined;
+  }
 
   let transition: ModelProjectionTransition;
   try {
@@ -224,7 +232,17 @@ export async function archiveToolResultAsTransition(
         : {}),
       now: services.now(),
     });
-    await services.recordTransition(transition);
+    if (
+      placeholder.rewriteVersion === 2 &&
+      Buffer.byteLength(JSON.stringify(transition)) > 32 * 1024
+    )
+      return undefined;
+    if (archived.ledger && archived.commitTransition) {
+      if (!(await archived.commitTransition(transition, services.recordTransition)))
+        return undefined;
+    } else {
+      await services.recordTransition(transition);
+    }
     const winner = await winningTransition(services, transition);
     if (winner && winner.transitionId !== transition.transitionId) {
       // The rival won. Show what the ledger says, not what this writer wrote;
@@ -338,7 +356,7 @@ export function collectReachableArchiveArtifactIds(events: readonly RuntimeEvent
   for (const event of events) {
     const content = event.content;
     if (content?.kind !== 'function_response') continue;
-    if (isArchivedToolResultPlaceholder(content.result)) {
+    if (isArchivedToolResultPlaceholder(content.result) && content.result.rewriteVersion === 1) {
       reachable.add(content.result.artifactId);
     }
   }

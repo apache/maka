@@ -17,8 +17,6 @@
  * under the License.
  */
 
-import { truncateUtf8 } from '@maka/core/diagnostic-log';
-import { redactSecrets } from '@maka/core/redaction';
 import type { RootTurnAdmissionAuthorization } from '@maka/storage/execution-stores';
 import {
   HOST_OPERATION_SPECS,
@@ -73,6 +71,7 @@ import { USAGE_PRICING_OPERATION_SPECS } from '../protocol/usage-pricing.js';
 import { WEB_SEARCH_OPERATION_SPECS } from '../protocol/web-search.js';
 import { WORKHUB_COORDINATION_OPERATION_SPECS } from '../protocol/workhub-coordination.js';
 import { PLUGIN_PLATFORM_OPERATION_SPECS } from '../protocol/plugin-platform.js';
+import { boundedFailureDiagnostic } from './failure-diagnostic.js';
 import { createPeerMeshOperationHandlers } from './peer-mesh-authority.js';
 import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
 
@@ -84,6 +83,8 @@ export interface ConnectionContext {
   credentialId?: string;
   credentialClientInstanceId?: string;
   clientInstanceId?: string;
+  /** EOF/teardown latch; dispatched operations opt in to cancellation. */
+  inputClosedSignal?: AbortSignal;
   turnAdmissionAuthorization?: RootTurnAdmissionAuthorization;
   acquireResidency(): OperationResidency;
 }
@@ -367,7 +368,7 @@ async function dispatchTypedOperation<K extends OperationKey>(
     outcome = decodeOperationOutcome(request.operation, await handler(request.input, context));
   } catch (error) {
     console.error(
-      `[runtime-host] unexpected ${request.operation} failure: ${boundedUnexpectedFailure(error)}`,
+      `[runtime-host] unexpected ${request.operation} failure: ${boundedFailureDiagnostic(error)}`,
     );
     return operationFailureResponse(
       request as RequestFrame,
@@ -388,10 +389,4 @@ async function dispatchTypedOperation<K extends OperationKey>(
         ok: false,
         error: outcome.error,
       };
-}
-
-function boundedUnexpectedFailure(error: unknown): string {
-  const details =
-    error instanceof Error ? error.stack || `${error.name}: ${error.message}` : String(error);
-  return truncateUtf8(redactSecrets(details), 8 * 1024, '\n<diagnostic truncated>');
 }

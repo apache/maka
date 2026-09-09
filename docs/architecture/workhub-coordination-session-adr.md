@@ -48,7 +48,7 @@ durable conversation and execution substrate.
 The role is provisioned lazily when WorkHub first needs it and resolves to the same
 Session after Runtime Host or application restarts. The Session role representation,
 lookup, recovery, and per-Host UI resolution enforce this lifecycle contract. The
-coordination transcript and disposition semantics remain separate later work.
+coordination transcript and typed dispositions use that same Session substrate.
 
 The per-Host boundary is intentional. A Coordination Session coordinates only the
 ordinary Sessions belonging to the same Runtime Host. Switching Runtime Hosts
@@ -73,6 +73,68 @@ It never acquires authority over an ordinary Session's execution or lifecycle.
 
 ## Dispositions and action admission
 
+An admitted Coordination request owns a real root Turn and Run in the reserved
+WorkHub Session. `answer_here` executes the existing model answer path. Action
+Turns execute the Host operation through the same Runtime admission, execution
+ownership, terminal commit, and recovery machinery; admission does not require an
+extra model call. Intent, Resolver, and clarification can later invoke models
+inside this coordination execution without changing target Session authority.
+
+A successful Action Run writes a host-authored, model-hidden
+`RuntimeEvent.actions.coordination` receipt. The transcript projects it as an
+`action_receipt`, not an invented assistant response. Clarification carries its
+prompt; resume carries the target reference and admission acknowledgement.
+The synthetic `workhub.coordination.record` operation is removed. Released history
+remains readable without inventing admissions for old summary rows.
+
+A receipt acknowledges what the operation accepted; it is not the target's current
+execution state. Candidate-snapshot expiry is a distinct refusal. For a replacement
+of an existing Session, the client may refresh its opaque candidate reference at
+most twice while preserving the action, source delegation, and chosen target.
+Routing is not rerun; a missing or renamed target, another refusal, or continued
+snapshot churn stops the attempt. The Host still validates every refreshed proposal.
+
+Re-delivery of a completed request returns that receipt, including
+after restart, without repeating the effect. Incoming execution content is validated
+against the admitted descriptor even when another request wins admission concurrently;
+legacy compatibility ignores only an absent action identity field, never the input digest.
+Failed attempts remain terminal;
+a same-action retry gets a subsequent admitted Turn. If the failed attempt already
+committed a receipt, the new Turn reuses that result without repeating the effect.
+When target resume admission committed before a missing receipt, retry first
+consults the deterministic target Turn admission and acknowledges that original
+Turn. It does not plan another continuation from the newer target lineage.
+
+The shared transcript reader derives receipts directly from RuntimeEvents and
+retains legacy atomic linkage facts and released history. A rebuildable SQLite
+index holds only `(source, sourceSequence)` references in stable page order; it
+contains no message bodies, action results, or execution authority. Initial
+backfill and incremental refresh commit at most 64 references per foreground
+request. An unfinished catch-up returns `transcript_preparing`, including the
+committed index position; it publishes no incomplete snapshot or empty-history
+claim. Subscription clients yield between resumable requests and retain their
+loading state within the open deadline. Later page and overlay-release requests
+retain their independent per-request timeout, not the remaining preparation time.
+Reader recreation resumes the committed
+source positions. There is no detached maintenance worker or second task lifecycle.
+Once caught up, normal pages
+seek the index and project bounded source batches/Turns. Wall-clock regressions
+and later appends cannot renumber existing pages. No receipt is written back into
+the legacy message store. The WorkHub view groups receipt retries by action
+identity rather than exposing each physical attempt as a new conversation card.
+Persisted user inputs and Run terminal states always remain readable, including
+a failed attempt whose receipt was never committed. The projection carries the
+admitted action identity alongside the physical Turn identity. Only a visible
+receipt or atomic link suppresses its input rows; a bounded page without that
+replacement still shows the failed inputs. Missing acknowledgement is presented
+as incomplete confirmation, without claiming the target effect failed.
+Host-only Turns retain execution ownership without activating a model provider.
+An interrupted Host action is
+closed by Runtime recovery and never replayed as a model answer. Target-owned
+claims, assignment atomicity, and resume source-boundary checks still decide
+whether an unfinished effect can continue. Transactional delegation/Stop facts
+remain authoritative for their existing ownership and linkage projections.
+
 Every WorkHub input resolves to exactly one proposed **disposition**:
 
 - `answer_here`: answer in the Coordination Session.
@@ -94,6 +156,24 @@ replacement, the gate additionally requires explicit correction evidence in the
 trusted user text, claims the source delegation in Coordination transcript order,
 and rejects any later competing replacement intent. Neither a model nor a routing
 policy can directly authorize a write, Stop, or expansion of execution authority.
+
+Routing experiments replace Action Intent classification and/or Session Resolver
+recall behind the fixed Action Policy and unchanged Action Gate. A strategy names
+one Intent component and one Resolver component; it has no proposal-producing
+`resolve()` method and owns no visit focus. R2.4 pairs deterministic components;
+R3-A pairs model-assisted intent with model-ranked recall; R3-B pairs model-assisted
+intent with deterministic recall. These are experiment configurations, not separate
+policy implementations or a production model rollout.
+
+Intent output contains no target. Resolver output contains only ranked or ambiguous
+opaque candidate references, or no match; it cannot return creation or a disposition.
+The controller shares one bounded candidate context across arms; deterministic
+components retain full request text, while model adapters bound text at the model
+call boundary. The controller passes validated evidence through the same Policy with the same trusted Session snapshot.
+A model recall budget does not hide known Sessions from exact-name or correction
+rules in that fixed Policy. Policy retains trusted-text creation,
+ambiguity, correction and focus constraints. Model ranking alone cannot authorize
+work, and every resulting proposal still goes through the Host-owned Gate.
 
 ## Delegation links rather than copies transcripts
 
@@ -259,8 +339,8 @@ lets the stop reach a terminal resolution.
   replacement. Its target comes from the shared Session Resolver port, whose
   first implementation is a temporary exact-name baseline; replacing it changes
   recall only, because admission revalidates opaque identity and expected state
-  rather than any display name. Pause, resume, and pronoun-based stop controls
-  remain later work.
+  rather than any display name. Named resume uses ordinary Session continuation admission. Pause and
+  pronoun-based stop controls remain later work.
 
 Reevaluate the per-Host decision if supported workflows require one WorkHub
 conversation to coordinate ordinary Sessions on multiple Runtime Hosts, or if Host

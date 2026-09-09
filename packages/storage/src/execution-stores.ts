@@ -20,6 +20,7 @@
 import type { AgentRunEvent, AgentRunEventType, AgentRunProjectionKey } from '@maka/core/agent-run';
 import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
 import type { RuntimeContinuationAuthorityStore } from '@maka/core/runtime-event-store';
+import type { RuntimeTranscriptQueries } from './runtime-transcript-query.js';
 import type {
   RuntimeInvocationPageInput,
   RuntimeInvocationPageResult,
@@ -83,10 +84,7 @@ export {
   normalizeRootTurnAdmissionPayload,
   rootTurnAdmissionRecordFits,
 } from './agent-run-store.js';
-export {
-  isSessionNotFoundError,
-  SessionReadMarkerMessageNotFoundError,
-} from './session-store.js';
+export { isSessionNotFoundError } from './session-store.js';
 export {
   SessionMetadataConflictError,
   SessionMetadataVersionConflictError,
@@ -127,15 +125,25 @@ export type {
   SessionHeaderSnapshot,
   SessionTranscriptMessageLookupRequest,
   SessionTranscriptPageRequest,
+  CoordinationTranscriptReference,
   SessionTranscriptRecordScanPage,
   SessionTranscriptRecordScanRequest,
   SessionTranscriptStoragePage,
   SessionTranscriptStorageFragment,
+  SessionTurnContribution,
+  SessionTurnContributionPage,
+  SessionTurnLandmark,
+  SessionTurnLandmarkSnapshot,
 } from './session-store.js';
 
 export type ExecutionSessionWriter = SessionAuthorityStore;
+export type {
+  RuntimeTranscriptInvocation,
+  RuntimeTranscriptLandmark,
+} from './runtime-transcript-query.js';
 export type ExecutionAgentRunWriter = DurableAgentRunStore;
 export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
+  RuntimeTranscriptQueries &
   RuntimeContinuationAuthorityStore & {
     readonly toolBoundaryProtocol: ToolBoundaryProtocol;
     commitToolPrepared(input: CommitToolPreparedInput): Promise<ToolCommitResult>;
@@ -193,6 +201,11 @@ export interface ExecutionAgentRunReader {
     type: AgentRunProjectionKey,
   ): Promise<AgentRunEvent | null | undefined>;
   readRootTurnAdmission(sessionId: string, turnId: string): Promise<RootTurnAdmission | undefined>;
+  readRootTurnContinuationAdmission(
+    sessionId: string,
+    sourceTurnId: string,
+    sourceRunId: string,
+  ): Promise<RootTurnAdmission | undefined>;
   readRootTurnSourceMessageReceipt(
     sessionId: string,
     sourceMessageId: string,
@@ -224,6 +237,10 @@ export interface ExecutionRuntimeEventReader {
   ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]>;
+  /** Session-wide events with the ordinal that fixes their transcript order. */
+  readSessionRuntimeEventEntries(
+    sessionId: string,
+  ): Promise<ReadonlyArray<{ ordinal: number; event: RuntimeEvent }>>;
 }
 
 interface ExecutionStoresReaderBase<K extends StorageRootKind> {
@@ -370,6 +387,13 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.createStableSession(request, initialBoundary)),
       assignWorkHubMessage: (request) => run(() => sessionStore.assignWorkHubMessage(request)),
       readWorkHubAssignment: (actionId) => run(() => sessionStore.readWorkHubAssignment(actionId)),
+      readActiveWorkHubAssignmentsByTarget: (targetSessionIds, maxAssignmentsPerTarget) =>
+        run(() =>
+          sessionStore.readActiveWorkHubAssignmentsByTarget(
+            targetSessionIds,
+            maxAssignmentsPerTarget,
+          ),
+        ),
       readWorkHubReplacement: (delegationId) =>
         run(() => sessionStore.readWorkHubReplacement(delegationId)),
       readWorkHubReplacementAbort: (delegationId) =>
@@ -401,6 +425,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.listPendingSandboxBoundaryRequests(sessionId)),
       listSandboxBoundaryRestartClosures: (sessionId) =>
         run(() => sessionStore.listSandboxBoundaryRestartClosures(sessionId)),
+      hasExplicitSandboxBoundaryDenial: (identities) =>
+        run(() => sessionStore.hasExplicitSandboxBoundaryDenial(identities)),
       settleSandboxBoundaryRequest: (input) =>
         run(() => sessionStore.settleSandboxBoundaryRequest(input)),
       setExecutionBoundaryKind: (sessionId, boundaryKind, projection) =>
@@ -416,35 +442,28 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       readCatalogRecord: (sessionId) => run(() => sessionStore.readCatalogRecord(sessionId)),
       probeSessionRemoval: (sessionId) => run(() => sessionStore.probeSessionRemoval(sessionId)),
       readMessagesSnapshot: (sessionId) => run(() => sessionStore.readMessagesSnapshot(sessionId)),
-      readTranscriptPageSnapshot: (sessionId, request) =>
-        run(() => sessionStore.readTranscriptPageSnapshot(sessionId, request)),
-      readTranscriptRecordsSnapshot: (sessionId, request) =>
-        run(() => sessionStore.readTranscriptRecordsSnapshot(sessionId, request)),
       readTranscriptMessagesSnapshot: (sessionId, request) =>
         run(() => sessionStore.readTranscriptMessagesSnapshot(sessionId, request)),
+      readCoordinationTranscriptIndexState: () =>
+        run(() => sessionStore.readCoordinationTranscriptIndexState()),
+      appendCoordinationTranscriptIndex: (records) =>
+        run(() => sessionStore.appendCoordinationTranscriptIndex(records)),
+      readCoordinationTranscriptIndex: (request) =>
+        run(() => sessionStore.readCoordinationTranscriptIndex(request)),
       readTranscriptHighWaterSnapshot: (sessionId) =>
         run(() => sessionStore.readTranscriptHighWaterSnapshot(sessionId)),
-      readTurnContributionsSnapshot: (sessionId, throughSequence, position, maxContributions) =>
-        run(() =>
-          sessionStore.readTurnContributionsSnapshot(
-            sessionId,
-            throughSequence,
-            position,
-            maxContributions,
-          ),
-        ),
-      readTurnLandmarksSnapshot: (sessionId, maxLandmarks) =>
-        run(() => sessionStore.readTurnLandmarksSnapshot(sessionId, maxLandmarks)),
-      readMessagesForRecovery: (sessionId) =>
-        run(() => sessionStore.readMessagesForRecovery(sessionId)),
       listTurnsSnapshot: (sessionId) => run(() => sessionStore.listTurnsSnapshot(sessionId)),
       readHeader: (sessionId) => run(() => sessionStore.readHeader(sessionId)),
       readMessages: (sessionId) => run(() => sessionStore.readMessages(sessionId)),
+      readMessagesAfter: (sessionId, request) =>
+        run(() => sessionStore.readMessagesAfter(sessionId, request)),
       listTurns: (sessionId) => run(() => sessionStore.listTurns(sessionId)),
       appendMessage: (sessionId, message) =>
         run(() => sessionStore.appendMessage(sessionId, message)),
       appendMessages: (sessionId, messages) =>
         run(() => sessionStore.appendMessages(sessionId, messages)),
+      commitMessageCatalogProjection: (sessionId, message) =>
+        run(() => sessionStore.commitMessageCatalogProjection(sessionId, message)),
       commitMessageAdmission: (admission) =>
         run(() => sessionStore.commitMessageAdmission(admission)),
       readMessageAdmission: (sessionId, messageId) =>
@@ -468,8 +487,6 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.updateHeaderVersioned(sessionId, patch, expectedRevision)),
       updateSessionConfiguration: (sessionId, input) =>
         run(() => sessionStore.updateSessionConfiguration(sessionId, input)),
-      markSessionReadThroughMessage: (sessionId, messageId) =>
-        run(() => sessionStore.markSessionReadThroughMessage(sessionId, messageId)),
       setFlagged: (sessionId, isFlagged) =>
         run(() => sessionStore.setFlagged(sessionId, isFlagged)),
       rename: (sessionId, name) => run(() => sessionStore.rename(sessionId, name)),
@@ -520,6 +537,10 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => agentRunStore.admitRootTurn(input)),
       readRootTurnAdmission: (sessionId, turnId) =>
         run(() => agentRunStore.readRootTurnAdmission(sessionId, turnId)),
+      readRootTurnContinuationAdmission: (sessionId, sourceTurnId, sourceRunId) =>
+        run(() =>
+          agentRunStore.readRootTurnContinuationAdmission(sessionId, sourceTurnId, sourceRunId),
+        ),
       readRootTurnStartRejection: (sessionId, turnId) =>
         run(() => agentRunStore.readRootTurnStartRejection(sessionId, turnId)),
       commitRootTurnStartRejection: (input: CommitRootTurnStartRejectionInput) =>
@@ -565,6 +586,14 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
       readSessionRuntimeEventEntries: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEventEntries(sessionId)),
+      resequenceSessionEventOrdinals: (sessionId) =>
+        run(() => runtimeEventStore.resequenceSessionEventOrdinals(sessionId)),
+      readTranscriptHighWater: (sessionId) =>
+        run(() => runtimeEventStore.readTranscriptHighWater(sessionId)),
+      readTranscriptInvocations: (sessionId, request) =>
+        run(() => runtimeEventStore.readTranscriptInvocations(sessionId, request)),
+      readTranscriptLandmarks: (sessionId, throughOrdinal, limit) =>
+        run(() => runtimeEventStore.readTranscriptLandmarks(sessionId, throughOrdinal, limit)),
       claimContinuation: (input) => run(() => runtimeEventStore.claimContinuation(input)),
       readContinuationClaimByBoundary: (boundaryDigest) =>
         run(() => runtimeEventStore.readContinuationClaimByBoundary(boundaryDigest)),
@@ -656,6 +685,10 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
         run(() => agentRunStore.readEventProjection(sessionId, type)),
       readRootTurnAdmission: (sessionId, turnId) =>
         run(() => agentRunStore.readRootTurnAdmission(sessionId, turnId)),
+      readRootTurnContinuationAdmission: (sessionId, sourceTurnId, sourceRunId) =>
+        run(() =>
+          agentRunStore.readRootTurnContinuationAdmission(sessionId, sourceTurnId, sourceRunId),
+        ),
       readRootTurnSourceMessageReceipt: (sessionId, sourceMessageId) =>
         run(() => agentRunStore.readRootTurnSourceMessageReceipt(sessionId, sourceMessageId)),
     },
@@ -678,6 +711,8 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
         run(() => runtimeEventStore.readInvocation(sessionId, invocationId)),
       readSessionRuntimeEvents: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
+      readSessionRuntimeEventEntries: (sessionId) =>
+        run(() => runtimeEventStore.readSessionRuntimeEventEntries(sessionId)),
     },
   };
   freezeExecutionStoresFacade(stores);

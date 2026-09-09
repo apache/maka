@@ -28,7 +28,8 @@ export type DataSettingsCopy = {
   };
   loadFailed: string; openFailed(label: string): string; pathCopied: string; copyFailed: string; copyFailedDetail: string;
   historyCleared: string; historyClearedDetail: string; selectCategory: string; exported: string; exportedDetail(items: readonly string[]): string;
-  exportFailed: string; noCategories: string; tryAgain: string; imported: string; importFailed: string; invalidFile: string;
+  exportFailed: string; noCategories: string; tryAgain: string; imported: string; importFailed: string;
+  importFailures: Record<'not_json' | 'malformed' | 'unsupported_version', string>;
   rows: {
     workspace: string; workspaceDetail: string; loadValueFailed: string; loading: string;
     history: string; historyDetail: string;
@@ -55,7 +56,8 @@ const SETTINGS_DATA_COPY = {
     loadFailed: '载入数据目录失败', openFailed: (label) => `无法打开${label}`, pathCopied: '已复制工作区路径', copyFailed: '复制失败', copyFailedDetail: '剪贴板不可用或被系统拒绝。',
     historyCleared: '已清空输入历史', historyClearedDetail: '已发送的提示词记录已从本机移除。', selectCategory: '请至少选择一个类别',
     exported: '已导出配置', exportedDetail: (items) => `包含：${items.join('、')}`, exportFailed: '导出失败', noCategories: '未选择任何类别', tryAgain: '请稍后重试',
-    imported: '已导入配置', importFailed: '导入失败', invalidFile: '文件无效或版本不受支持。',
+    imported: '已导入配置', importFailed: '导入失败',
+    importFailures: { not_json: '文件不是有效的 JSON。', malformed: '配置文件结构无效。', unsupported_version: '配置文件版本不受支持。' },
     rows: {
       workspace: '工作区路径', workspaceDetail: '任务、设置、凭据和技能文件都存在这个目录下。', loadValueFailed: '载入失败', loading: '正在加载…',
       history: '输入历史', historyDetail: '上箭头 / 下箭头调出的已发送提示词记录，保存在本机、重启后仍在。清空后无法恢复。',
@@ -82,7 +84,8 @@ const SETTINGS_DATA_COPY = {
     loadFailed: '載入資料目錄失敗', openFailed: (label) => `無法開啟${label}`, pathCopied: '已複製工作區路徑', copyFailed: '複製失敗', copyFailedDetail: '剪貼簿不可用或被系統拒絕。',
     historyCleared: '已清空輸入歷史', historyClearedDetail: '已傳送的提示詞記錄已從本機移除。', selectCategory: '請至少選擇一個類別',
     exported: '已匯出設定', exportedDetail: (items) => `包含：${items.join('、')}`, exportFailed: '匯出失敗', noCategories: '未選擇任何類別', tryAgain: '請稍後重試',
-    imported: '已匯入設定', importFailed: '匯入失敗', invalidFile: '檔案無效或版本不受支援。',
+    imported: '已匯入設定', importFailed: '匯入失敗',
+    importFailures: { not_json: '檔案不是有效的 JSON。', malformed: '設定檔結構無效。', unsupported_version: '設定檔版本不受支援。' },
     rows: {
       workspace: '工作區路徑', workspaceDetail: '任務、設定、憑據和技能檔案都存在這個目錄下。', loadValueFailed: '載入失敗', loading: '正在載入…',
       history: '輸入歷史', historyDetail: '上箭頭 / 下箭頭調出的已傳送提示詞記錄，儲存在本機、重啟後仍在。清空後無法恢復。',
@@ -109,7 +112,8 @@ const SETTINGS_DATA_COPY = {
     loadFailed: 'Failed to load data directory', openFailed: (label) => `Could not open ${label}`, pathCopied: 'Workspace path copied', copyFailed: 'Copy failed', copyFailedDetail: 'The clipboard is unavailable or access was denied by the system.',
     historyCleared: 'Input history cleared', historyClearedDetail: 'Sent prompt history was removed from this device.', selectCategory: 'Select at least one category',
     exported: 'Configuration exported', exportedDetail: (items) => `Included: ${items.join(', ')}`, exportFailed: 'Export failed', noCategories: 'No categories selected', tryAgain: 'Try again later',
-    imported: 'Configuration imported', importFailed: 'Import failed', invalidFile: 'The file is invalid or its version is unsupported.',
+    imported: 'Configuration imported', importFailed: 'Import failed',
+    importFailures: { not_json: 'The file is not valid JSON.', malformed: 'The config bundle is malformed.', unsupported_version: 'The config file version is unsupported.' },
     rows: {
       workspace: 'Workspace path', workspaceDetail: 'Tasks, settings, credentials, and skill files are stored in this directory.', loadValueFailed: 'Failed to load', loading: 'Loading…',
       history: 'Input history', historyDetail: 'Previously sent prompts recalled with the Up and Down arrows are kept on this machine and persist across restarts. Clearing them cannot be undone.',

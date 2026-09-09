@@ -90,15 +90,16 @@ test('serializes overlapping multi-Session admissions without lock-order deadloc
   assert.deepEqual(order, ['first:start', 'third', 'first:end', 'second']);
 });
 
-test('keeps the admission open until admitted child work settles', async () => {
+test('keeps the admission open until joined leaf work settles', async () => {
   const gate = new SessionAdmissionGate();
   const childEntered = deferred();
   const releaseChild = deferred();
   let outerSettled = false;
 
   const outer = gate
-    .run('session', (lease) => {
-      void gate.runAdmitted('session', lease, async () => {
+    .run('session', () => {
+      assert.throws(() => gate.runOrJoin('other', () => undefined), /does not match/);
+      void gate.runOrJoin('session', async () => {
         childEntered.resolve();
         await releaseChild.promise;
       });
@@ -171,4 +172,33 @@ test('work detached from an admission takes admissions of its own', async () => 
   await release.promise;
   await detached;
   assert.deepEqual(order, ['active:start', 'active:end', 'detached:admitted']);
+});
+
+test('detached stop waits for its Session admission to release', async () => {
+  const gate = new SessionAdmissionGate();
+  const entered = deferred();
+  const release = deferred();
+  const order: string[] = [];
+  let stop!: Promise<void>;
+  const active = gate.run('session', async () => {
+    order.push('active');
+    stop = gate.detach(() =>
+      gate.run('session', () => {
+        order.push('stop');
+      }),
+    );
+    entered.resolve();
+    await release.promise;
+    order.push('released');
+  });
+  await entered.promise;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  try {
+    assert.deepEqual(order, ['active']);
+  } finally {
+    release.resolve();
+    await active;
+    await stop;
+  }
+  assert.deepEqual(order, ['active', 'released', 'stop']);
 });

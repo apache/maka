@@ -26,7 +26,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, test } from 'node:test';
-import { visibleWidth } from '@earendil-works/pi-tui';
+import { TuiMainScreen, visibleWidth } from '@earendil-works/pi-tui';
 import { SHELL_RUN_UPDATE_BUFFER_MAX_ENTRIES } from '@maka/core/shell-run-result';
 import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import { deriveConnectionSlug } from '@maka/core/llm-connections';
@@ -66,7 +66,12 @@ import { skillInvocationBlockedMessage } from '../session-driver.js';
 import { SafeBoundaryResumeParkedError } from '../runtime-host-session-driver.js';
 import { listApiKeyOnboardableProviders } from '../onboarding-catalog.js';
 import { projectRuntimeHostModelChoices } from '../runtime-host-onboarding.js';
-import { modelChoiceConnectionLabels, OnboardingWizard } from '../pi-tui-pickers.js';
+import {
+  getTuiPickerCopy,
+  modelChoiceConnectionLabels,
+  OnboardingWizard,
+  SessionSearchOverlay,
+} from '../pi-tui-pickers.js';
 import type {
   MakaOnboardingSurface,
   MakaPiTuiTurnActivitySurface,
@@ -242,6 +247,54 @@ function savedOnboardingRefreshFailed(connectionId = 'saved-connection-id'): Onb
 }
 
 describe('Maka Pi TUI runner', () => {
+  test('localizes the session search title and scope in every supported locale', () => {
+    for (const [locale, title, current, all] of [
+      ['en', 'Resume Session', 'Current', 'All'],
+      ['zh-CN', '恢复会话', '当前目录', '全部'],
+      ['zh-TW', '恢復會話', '目前目錄', '全部'],
+    ] as const) {
+      const copy = getTuiPickerCopy(locale);
+      const picker = new SessionSearchOverlay(new TuiMainScreen(new FakeTerminal()), {
+        locale,
+        choices: [],
+        scopeLabel: copy.sessionScopeCurrent,
+        onSelect() {},
+        onCancel() {},
+        onToggleScope() {},
+      });
+      assert.equal(plainTerminalOutput(picker.render(100)[0]!).trim(), `${title} ${current}`);
+      picker.updateChoices([], copy.sessionScopeAll);
+      assert.equal(plainTerminalOutput(picker.render(100)[0]!).trim(), `${title} ${all}`);
+    }
+  });
+
+  test('session names use wide viewports and keep selection across resizing', () => {
+    const name = 'Investigate runtime-host multi-account session isolation and lifecycle';
+    let selected: string | undefined;
+    const picker = new SessionSearchOverlay(new TuiMainScreen(new FakeTerminal()), {
+      locale: 'en',
+      choices: ['first', 'second'].map((value) => ({
+        item: { value, label: `${name} ${value}`, description: '/repo · model' },
+        searchText: name.toLowerCase(),
+      })),
+      scopeLabel: 'Current',
+      onSelect(item) {
+        selected = item.value;
+      },
+      onCancel() {},
+      onToggleScope() {},
+    });
+    assert.ok(plainTerminalOutput(picker.render(160).join('\n')).includes(`${name} second`));
+    picker.handleInput('\x1b[B');
+    for (const width of [40, 80, 160]) {
+      const lines = picker.render(width);
+      assert.ok(lines.every((line) => visibleWidth(line) <= width));
+    }
+    assert.ok(plainTerminalOutput(picker.render(160).join('\n')).includes(`${name} second`));
+    picker.handleInput('\r');
+    assert.equal(selected, 'second');
+  });
+
   test('/help uses the resolved locale for headings and command descriptions', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -713,7 +766,7 @@ describe('Maka Pi TUI runner', () => {
     assert.match(stderr, /fatal probe/);
   });
 
-  test('restores the terminal when driver stop rejects during close', async () => {
+  test('closing the TUI restores the terminal without issuing a Runtime stop', async () => {
     const terminal = new FakeTerminal();
     const driver = new RejectingStopDriver();
     const run = runMakaPiTui({
@@ -735,34 +788,65 @@ describe('Maka Pi TUI runner', () => {
       }),
     ]);
 
-    assert.equal(driver.stopCalls, 1);
+    assert.equal(driver.stopCalls, 0);
     assert.equal(terminal.stopCalls, 1);
     assert.equal(terminal.progressStates.at(-1), false);
   });
 
-  test('restores the terminal before a slow driver stop settles', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new HangingCloseDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'bypass',
-      terminal,
-    });
-
-    terminal.input('/exit');
-    terminal.input('\r');
-    await waitFor(() => driver.stopCalls === 1);
-    try {
-      assert.equal(terminal.stopCalls, 1);
-    } finally {
-      driver.releaseStop();
+  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+    test(`Host controls show localized confirmation and require an affirmative choice (${locale})`, async () => {
+      const terminal = new FakeTerminal();
+      const driver = new RejectingStopDriver();
+      const actions: string[] = [];
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'ask',
+        locale,
+        terminal,
+        hostControl: {
+          status: async () => 'Root: exact-root; epoch: exact-epoch; ready',
+          prepare: async (input, confirm) => {
+            actions.push(input.action);
+            return (await confirm('Owner: exact-installation; epoch: exact-epoch')) !== 'cancel';
+          },
+        },
+      });
+      terminal.input('/host status');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('exact-root'));
+      terminal.input('/host restart');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.screenOutput()).includes('exact-installation'),
+      );
+      const confirmation = plainTerminalOutput(terminal.screenOutput());
+      assert.match(confirmation, locale === 'en' ? /Cancel/ : /取消/);
+      assert.match(confirmation, locale === 'en' ? /Safe handoff/ : /安全交接/);
+      assert.match(
+        confirmation,
+        locale === 'en'
+          ? /Interrupt active work/
+          : locale === 'zh-CN'
+            ? /中断活动任务/
+            : /中斷進行中的工作/,
+      );
+      terminal.input('\r'); // Cancel is the default, never interruption.
+      await waitForTuiPaint(terminal);
+      assert.equal(terminal.stopCalls, 0);
+      terminal.input('/host restart');
+      terminal.input('\r');
+      await waitFor(() => actions.length === 2);
+      terminal.input('\x1b[B');
+      terminal.input('\r');
       await run;
-    }
-  });
+      assert.equal(driver.stopCalls, 0);
+      assert.deepEqual(actions, ['restart', 'restart']);
+    });
+  }
 
   test('restores the terminal when focus reporting fails after TUI start', async () => {
     const terminal = new ThrowingFocusReportTerminal();
@@ -2563,7 +2647,7 @@ Slug openai-work<cursor>
     assert.equal(unsubscribed, true);
   });
 
-  test('keeps tool expansion when kitty protocol reports the Ctrl-O release', async () => {
+  test('keeps the detailed reader open on key release and preserves the draft on close', async () => {
     const terminal = new FakeTerminal();
     const driver = new ToolOutputDriver();
     const run = runMakaPiTui({
@@ -2586,15 +2670,78 @@ Slug openai-work<cursor>
     terminal.input('\x1b[111;5u');
     terminal.input('\x1b[111;5:3u');
 
-    // The compact-only annotation leaving the screen proves the card is
-    // still expanded after the release event.
-    await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('(31 lines)'));
-    // Sentinel render ordered after the release event: if the release had
-    // collapsed the card back, this frame would show the annotation again.
-    terminal.input('z');
-    await waitFor(() => editorInputText(terminal) === 'z');
-    assert.equal(plainTerminalOutput(terminal.screenOutput()).includes('(31 lines)'), false);
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    terminal.input('\x05');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('(31 lines)'));
+    terminal.input('\x0f');
+    await waitFor(
+      () => !plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    terminal.input('draft');
+    await waitFor(() => editorInputText(terminal) === 'draft');
+    terminal.input('\x0f');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    terminal.input('\x0f');
+    await waitFor(() => editorInputText(terminal) === 'draft');
+    terminal.input('\x15');
 
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('hides the reader for a pending question and reopens it without losing the draft', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new ReaderThenQuestionDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('run');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('(31 lines)'));
+    terminal.input('draft');
+    await waitFor(() => editorInputText(terminal) === 'draft');
+    terminal.input('\x0f');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+
+    driver.releaseQuestion();
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Choose an approach'),
+    );
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /DETAILED TRANSCRIPT/);
+
+    terminal.input('\r');
+    await waitFor(() => driver.responses.length === 1);
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('(31 lines)'));
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /DETAILED TRANSCRIPT/);
+    terminal.input('\x0f');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    terminal.input('\x0f');
+    await waitFor(
+      () => !plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    assert.equal(editorInputText(terminal), 'draft');
+
+    terminal.input('\x15');
     exitMaka(terminal);
     await Promise.race([
       run,
@@ -2935,7 +3082,7 @@ Slug openai-work<cursor>
       'the transcript viewer to open',
     );
     let screen = plainTerminalOutput(terminal.screenOutput());
-    assert.match(screen, /PgUp\/PgDn page/);
+    assert.match(screen, /PgUp\/PgDn/);
     assert.match(screen, /filler line 40/);
     assert.doesNotMatch(screen, /filler line 1\s/);
 
@@ -2961,6 +3108,18 @@ Slug openai-work<cursor>
       /Maka · Auto · deepseek-v4-flash · deepseek · \/repo/,
     );
 
+    // Reopening the same session preserves the reader position.
+    terminal.input('\x0f');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /filler line 1/);
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /filler line 40/);
+    terminal.input('q');
+    await waitFor(
+      () => !plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+
     exitMaka(terminal);
     await Promise.race([
       run,
@@ -2968,6 +3127,99 @@ Slug openai-work<cursor>
         throw new Error('TUI did not close during test cleanup');
       }),
     ]);
+  });
+
+  test('resets the cached reader after successful /new with non-persisted session ids', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new NonPersistedLongTranscriptDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'deepseek-v4-flash',
+      connectionSlug: 'deepseek',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/help');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Keybindings'));
+    driver.dropSessionId();
+    terminal.input('/transcript');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    terminal.input('\x1b[H');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('/help'));
+    terminal.input('q');
+    await waitFor(
+      () => !plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+
+    terminal.input('/new');
+    terminal.input('\r');
+    await waitFor(() => driver.startNewSessionCalls === 1);
+    await delay(0);
+    terminal.input('/help');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Keybindings'));
+    terminal.input('/transcript');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    const screen = plainTerminalOutput(terminal.screenOutput());
+    assert.match(screen, /Ctrl\+D/);
+
+    terminal.input('q');
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('does not reset the cached reader when /new fails', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new FailingNewSessionLongTranscriptDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'deepseek-v4-flash',
+      connectionSlug: 'deepseek',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/help');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Keybindings'));
+    terminal.input('/transcript');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    terminal.input('\x1b[H');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('/help'));
+    terminal.input('q');
+    await waitFor(
+      () => !plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+
+    terminal.input('/new');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Could not start a new session'),
+    );
+    terminal.input('\x0f');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('DETAILED TRANSCRIPT'),
+    );
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /\/help/);
+
+    terminal.input('q');
+    exitMaka(terminal);
+    await run;
   });
 
   test('opens the read-only /mcp status on an idle local TUI', async () => {
@@ -3410,6 +3662,128 @@ Slug openai-work<cursor>
     await run;
   });
 
+  test('shows unavailable rather than empty when a driver lacks Todo queries', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new (class extends SlashCommandDriver {
+      override getSessionId(): null {
+        return null;
+      }
+    })();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+    terminal.input('/todo');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Todo unavailable'));
+    assert.equal(plainTerminalOutput(terminal.screenOutput()).includes('No Todo items'), false);
+    terminal.input('\x1b');
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
+  test('refreshes Todo on domain invalidation and clears the old session after /new', async () => {
+    const terminal = new FakeTerminal();
+    let changed: ((sessionId: string) => void) | undefined;
+    let content = 'First current item';
+    let unsubscribed = false;
+    const driver = Object.assign(new SlashCommandDriver(), {
+      async queryTodo(sessionId: string) {
+        return {
+          sessionId,
+          items: sessionId === 'session-new' ? [] : [{ content, status: 'in_progress' as const }],
+        };
+      },
+      subscribeTodoChanges(listener: (sessionId: string) => void) {
+        changed = listener;
+        return () => {
+          unsubscribed = true;
+        };
+      },
+    });
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes(content));
+    content = 'Updated current item';
+    changed?.(driver.getSessionId()!);
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes(content));
+    terminal.input('/new');
+    terminal.input('\r');
+    await waitFor(() => driver.startNewSessionCalls === 1);
+    await waitForTuiPaint(terminal);
+    assert.equal(plainTerminalOutput(terminal.screenOutput()).includes(content), false);
+    terminal.input('/todo');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('No Todo items'));
+    terminal.input('\x1b');
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+    assert.equal(unsubscribed, true);
+  });
+
+  test('opens current Todo during a turn without steering and returns Escape to the composer', async () => {
+    const terminal = new FakeTerminal();
+    const driver = Object.assign(new SteeringTurnDriver(), {
+      async queryTodo(sessionId: string) {
+        return {
+          sessionId,
+          items: [
+            { content: 'Verify current Todo', status: 'in_progress' as const },
+            { content: 'Already marked', status: 'completed' as const },
+          ],
+        };
+      },
+    });
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+    terminal.input('start the work');
+    terminal.input('\r');
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Verify current Todo'),
+    );
+    terminal.input('/todo');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Already marked'));
+    assert.deepEqual(driver.steered, []);
+    terminal.input('\x1b');
+    await waitForTuiPaint(terminal);
+    assert.equal(terminal.progressStates.at(-1), true);
+    terminal.input('draft after closing');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('draft after closing'),
+    );
+    terminal.input('\x03');
+    terminal.input('\x1b');
+    terminal.input('\x1b');
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    terminal.input('\x03');
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
   test('opens /transcript during a running turn instead of steering it', async () => {
     const terminal = new FakeTerminal();
     const driver = new SteeringTurnDriver();
@@ -3473,7 +3847,7 @@ Slug openai-work<cursor>
     await run;
   });
 
-  test('quit during a running turn closes the TUI instead of steering it', async () => {
+  test('quit during a running turn detaches without steering or stopping Host-owned work', async () => {
     const terminal = new FakeTerminal();
     const driver = new SteeringTurnDriver();
     const run = runMakaPiTui({
@@ -3495,7 +3869,7 @@ Slug openai-work<cursor>
 
     await run;
     assert.deepEqual(driver.steered, []);
-    assert.equal(driver.stopCalls, 1);
+    assert.equal(driver.stopCalls, 0);
   });
 
   test('Alt+Enter during a turn queues a followup and shows a pending Queued line', async () => {
@@ -4850,6 +5224,57 @@ Slug openai-work<cursor>
     await run;
   });
 
+  test('searches sessions and preserves the query across Current/All scope', async () => {
+    const terminal = new FakeTerminal(160, 30);
+    const driver = new SlashCommandDriver([
+      {
+        ...fakeSessionSummary('current-session', '/repo', 'Current chat'),
+        model: 'model-a',
+        llmConnectionSlug: 'conn-a',
+      },
+      {
+        ...fakeSessionSummary('current-second', '/repo', 'Current second'),
+        model: 'model-a',
+        llmConnectionSlug: 'conn-a',
+      },
+      {
+        ...fakeSessionSummary('other-session', '/other/repo', 'Other chat'),
+        model: 'model-b',
+        llmConnectionSlug: 'conn-b',
+      },
+    ]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'model-a',
+      connectionSlug: 'conn-a',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Current chat'));
+    terminal.input('\x1b[B');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('→ Current second'));
+    terminal.input('\t');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('→ Current second'));
+    terminal.input('Other');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Other chat'));
+    terminal.input('\t');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('No matching sessions'),
+    );
+    terminal.input('\t');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Other chat'));
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /\/other\/repo/);
+    terminal.input('\x1b');
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('shows localized live status badges in the Session picker', async () => {
     const terminal = new FakeTerminal(160, 30);
     const driver = new SlashCommandDriver([
@@ -4959,6 +5384,10 @@ Slug openai-work<cursor>
     // The foreign row is labeled by its title and marked as a resume-from row.
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('Prior parser work'));
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('resume from Claude Code'));
+
+    // Foreign cwd participates in the advertised path search.
+    terminal.input('repo');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Prior parser work'));
 
     terminal.input('\r');
     await waitFor(() => readDigestCalls === 1);
@@ -9647,6 +10076,80 @@ class ToolOutputDriver extends FakeSessionDriver {
   }
 }
 
+class ReaderThenQuestionDriver extends ToolOutputDriver {
+  readonly responses: UserQuestionResponse[] = [];
+  private release: (() => void) | undefined;
+  private complete: (() => void) | undefined;
+
+  override async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'tool_start',
+      id: 'event-tool-start',
+      turnId: 'turn-1',
+      ts: 1,
+      toolUseId: 'tool-1',
+      toolName: 'Bash',
+      args: { command: 'npm test' },
+    };
+    yield {
+      type: 'tool_result',
+      id: 'event-tool-result',
+      turnId: 'turn-1',
+      ts: 2,
+      toolUseId: 'tool-1',
+      isError: false,
+      content: {
+        kind: 'terminal',
+        cwd: '/repo',
+        cmd: 'npm test',
+        status: 'completed',
+        exitCode: 0,
+        output: pipeOutput(
+          `expanded-tail\n${Array.from({ length: 30 }, (_, i) => `row-${i}`).join('\n')}`,
+        ),
+      },
+    };
+    await new Promise<void>((resolve) => {
+      this.release = resolve;
+    });
+    yield {
+      type: 'user_question_request',
+      id: 'event-question',
+      turnId: 'turn-1',
+      ts: 3,
+      requestId: 'question-1',
+      toolUseId: 'tool-question',
+      questions: [
+        {
+          question: 'Choose an approach',
+          options: [{ label: 'Extend' }, { label: 'Separate' }],
+        },
+      ],
+    };
+    await new Promise<void>((resolve) => {
+      this.complete = resolve;
+    });
+    yield {
+      type: 'complete',
+      id: 'event-complete',
+      turnId: 'turn-1',
+      ts: 4,
+      stopReason: 'end_turn',
+    };
+  }
+
+  releaseQuestion(): void {
+    this.release?.();
+    this.release = undefined;
+  }
+
+  async respondToUserQuestion(response: UserQuestionResponse): Promise<void> {
+    this.responses.push(response);
+    this.complete?.();
+    this.complete = undefined;
+  }
+}
+
 // #4011: an 80-line thinking block renders in full when expanded, so one
 // Ctrl+T pushes its head above the 24-row viewport into scrollback.
 class ThinkingDriver extends ToolOutputDriver {
@@ -10652,23 +11155,6 @@ class FirstSessionPreparedDriver extends SlashCommandDriver {
   }
 }
 
-class HangingCloseDriver extends SlashCommandDriver {
-  stopCalls = 0;
-  private resolveStop: (() => void) | null = null;
-
-  override async stop(): Promise<void> {
-    this.stopCalls += 1;
-    await new Promise<void>((resolve) => {
-      this.resolveStop = resolve;
-    });
-  }
-
-  releaseStop(): void {
-    this.resolveStop?.();
-    this.resolveStop = null;
-  }
-}
-
 class LongTranscriptDriver extends SlashCommandDriver {
   override async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
     yield {
@@ -10686,6 +11172,24 @@ class LongTranscriptDriver extends SlashCommandDriver {
       ts: 2,
       stopReason: 'end_turn',
     };
+  }
+}
+
+class NonPersistedLongTranscriptDriver extends LongTranscriptDriver {
+  private persisted = true;
+
+  override getSessionId(): string | null {
+    return this.persisted ? super.getSessionId() : null;
+  }
+
+  dropSessionId(): void {
+    this.persisted = false;
+  }
+}
+
+class FailingNewSessionLongTranscriptDriver extends NonPersistedLongTranscriptDriver {
+  override async startNewSession(): Promise<void> {
+    throw new Error('new session failed');
   }
 }
 

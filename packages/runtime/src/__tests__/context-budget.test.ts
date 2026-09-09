@@ -138,7 +138,10 @@ test('compaction notes fire for a fold made by the request hook, not only for a 
     ],
   });
   assert.equal(shouldAppendContextCompactedNote(decision('activeStep', 'replaced')), true);
-  assert.equal(shouldAppendContextCompactedNote(decision('priorReplay', 'replaced')), true);
+  // A `priorReplay` `replaced` is a passive re-application of a checkpoint that was
+  // already noted on its own turn (explicit compaction writes a kernel note there),
+  // and it re-emits on every later matching send — so it must NOT re-note (#3587).
+  assert.equal(shouldAppendContextCompactedNote(decision('priorReplay', 'replaced')), false);
   assert.equal(shouldAppendContextCompactedNote(decision('activeStep', 'failedOpen')), false);
   assert.equal(
     shouldAppendContextCompactionFailedOpenNote(decision('activeStep', 'failedOpen')),

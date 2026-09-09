@@ -27,6 +27,7 @@ import type { BotRegistry } from '@maka/runtime/bots';
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { connectRuntimeHost } from '@maka/runtime-host/client';
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import {
   RUNTIME_HOST_PROTOCOL_VERSION,
   type SessionCatalogProjection,
@@ -250,6 +251,9 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
     });
     const ipc = ipcHarness();
     const changes: Array<{ reason: string; sessionId?: string }> = [];
+    // This fixture replaces the real execution composition; initialize its
+    // owned storage before Desktop admits the local candidate.
+    acquireOperationalStateDatabase(base).close();
     const started = await startDesktopRuntimeHostCandidate({
       rootPath: base,
       candidateEntrypoint: new URL('file:///unused-runtime-host-candidate.js'),
@@ -592,7 +596,7 @@ function unusedSessionCopyCleanup() {
 
 function unusedSessionObserver() {
   return {
-    async observe() {},
+    async observe() { return []; },
     async unobserve() {},
   };
 }

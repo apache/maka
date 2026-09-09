@@ -260,7 +260,12 @@ describe('subscription model fetch', () => {
       fetchFn: async () => {
         attempts += 1;
         return Response.json(
-          { error: { message: 'account is not authorized', code: 'account_not_authorized' } },
+          {
+            error: {
+              message: 'Invalid api_key=sk-test-diagnostic-value',
+              code: 'account_not_authorized',
+            },
+          },
           { status: 403, headers: { 'x-request-id': 'req-codex-403' } },
         );
       },
@@ -275,6 +280,7 @@ describe('subscription model fetch', () => {
       (error) => {
         assert.ok(error instanceof Error);
         assert.match(error.message, /Codex OAuth request failed: HTTP 403/);
+        assert.ok(error.message.includes('api_key=sk-test-diagnostic-value'));
         assert.equal((error as { statusCode?: unknown }).statusCode, 403);
         assert.deepEqual((error as { data?: unknown }).data, {
           error: { code: 'account_not_authorized' },

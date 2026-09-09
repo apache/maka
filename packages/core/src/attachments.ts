@@ -284,3 +284,15 @@ export function attachmentKindFromMimeType(
   }
   return 'other';
 }
+
+export type AttachmentIngestBlockedCode =
+  | 'item_too_large'
+  | 'items_invalid'
+  | 'count_limit'
+  | 'duplicate_source'
+  | 'source_expired'
+  | 'total_size_exceeded';
+
+export function attachmentIngestBlocked(code: AttachmentIngestBlockedCode): Error {
+  return new Error(`attachment_ingest:${code}`);
+}

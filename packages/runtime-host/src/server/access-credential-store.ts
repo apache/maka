@@ -27,6 +27,7 @@ import {
   operationAllowsRemoteOwner,
   type SessionCollaborationGrant,
   decodeSessionTurnAccessRequest,
+  decodeCollaborationDisplayName,
   type SessionTurnAccessRequest,
   type OperationKey,
 } from '../protocol/index.js';
@@ -83,6 +84,8 @@ const PERSISTED_GRANT_MIGRATIONS: ReadonlyMap<string, PersistedGrantMigration> =
   // Retired with the second execution-inspection contract; no shipped surface
   // called execution.inspect.resolve.
   ['execution.inspect.resolve', { kind: 'release' }],
+  // Synthetic Coordination recording was retired, not widened into action authority.
+  ['workhub.coordination.record', { kind: 'release' }],
 ]);
 
 export const ACCESS_FILE_NAME = 'runtime-host-access.json';
@@ -98,6 +101,7 @@ export const SESSION_GUEST_OPERATION_GRANTS = Object.freeze([
   'session.shared.query',
   'subscription.open',
   'subscription.close',
+  'subscription.pty_interest.set',
   'session.transcript.page',
   'session.transcript.overlay.release',
 ] as const satisfies readonly OperationKey[]);
@@ -113,6 +117,7 @@ export const CAPABILITY_PROVIDER_OPERATION_GRANTS = Object.freeze([
 ] as const satisfies readonly OperationKey[]);
 
 export interface StoredAccessCredential {
+  readonly displayName?: string;
   readonly credentialId: string;
   readonly credentialHash: string;
   readonly principalId: string;
@@ -313,6 +318,7 @@ function encodeAccessCredentialFile(file: AccessCredentialFile): unknown {
     schemaVersion: file.schemaVersion,
     credentials: file.credentials.map((credential) => ({
       credentialId: credential.credentialId,
+      ...(credential.displayName === undefined ? {} : { displayName: credential.displayName }),
       credentialHash: credential.credentialHash,
       principalId: credential.principalId,
       principalKind: credential.principalKind,
@@ -496,6 +502,9 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
     ...(typeof clientInstanceId === 'string' ? { clientInstanceId } : {}),
     ...(typeof expiresAt === 'string' ? { expiresAt } : {}),
     ...(revokedAt === undefined ? {} : { revokedAt }),
+    ...(value.displayName === undefined
+      ? {}
+      : { displayName: decodeCollaborationDisplayName(value.displayName) }),
   };
 }
 

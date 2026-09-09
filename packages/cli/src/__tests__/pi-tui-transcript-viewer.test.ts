@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { CURSOR_MARKER } from '@earendil-works/pi-tui';
 import { TranscriptViewerOverlay } from '../pi-tui-transcript-viewer.js';
 import { MakaTranscriptComponent } from '../pi-tui-layout.js';
 import { createMakaPiTranscriptState } from '../pi-transcript.js';
@@ -30,7 +31,7 @@ describe('TranscriptViewerOverlay', () => {
     let changes = 0;
     let closed = 0;
     const viewer = new TranscriptViewerOverlay({
-      renderTranscript: () => document,
+      renderTranscript: () => ({ lines: document, anchors: [] }),
       viewportRows: () => 6,
       onChange: () => {
         changes += 1;
@@ -85,7 +86,7 @@ describe('TranscriptViewerOverlay', () => {
   test('follows appended output only while positioned at the end', () => {
     const document = Array.from({ length: 6 }, (_, index) => `line ${index + 1}`);
     const viewer = new TranscriptViewerOverlay({
-      renderTranscript: () => document,
+      renderTranscript: () => ({ lines: document, anchors: [] }),
       viewportRows: () => 5,
       onChange: () => {},
       onClose: () => {},
@@ -123,7 +124,7 @@ describe('TranscriptViewerOverlay', () => {
   test('keeps following after a no-op upward scroll on a short transcript', () => {
     const document = ['line 1', 'line 2'];
     const viewer = new TranscriptViewerOverlay({
-      renderTranscript: () => document,
+      renderTranscript: () => ({ lines: document, anchors: [] }),
       viewportRows: () => 6,
       onChange: () => {},
       onClose: () => {},
@@ -141,11 +142,11 @@ describe('TranscriptViewerOverlay', () => {
     ]);
   });
 
-  test('resumes following after a resize clamps a detached viewport to the tail', () => {
+  test('does not re-enable following merely because resizing reaches the tail', () => {
     const document = Array.from({ length: 12 }, (_, index) => `line ${index + 1}`);
     let viewportRows = 6;
     const viewer = new TranscriptViewerOverlay({
-      renderTranscript: () => document,
+      renderTranscript: () => ({ lines: document, anchors: [] }),
       viewportRows: () => viewportRows,
       onChange: () => {},
       onClose: () => {},
@@ -158,18 +159,18 @@ describe('TranscriptViewerOverlay', () => {
     document.push('line 13');
 
     assert.deepEqual(plain(viewer.render(30)).slice(1, -1).map(trim), [
+      'line 8',
       'line 9',
       'line 10',
       'line 11',
       'line 12',
-      'line 13',
     ]);
   });
 
   test('closes with q or Escape', () => {
     let closed = 0;
     const viewer = new TranscriptViewerOverlay({
-      renderTranscript: () => [],
+      renderTranscript: () => ({ lines: [], anchors: [] }),
       viewportRows: () => 4,
       onChange: () => {},
       onClose: () => {
@@ -186,21 +187,23 @@ describe('TranscriptViewerOverlay', () => {
     const document = ['line 1', 'line 2', 'line 3'];
     let viewportRows = 2;
     const viewer = new TranscriptViewerOverlay({
-      renderTranscript: () => document,
+      renderTranscript: () => ({ lines: document, anchors: [] }),
       viewportRows: () => viewportRows,
       onChange: () => {},
       onClose: () => {},
     });
 
-    assert.deepEqual(plain(viewer.render(30)).map(trim), ['TRANSCRIPT 3-3 of 3', 'line 3']);
+    assert.match(stripAnsi(viewer.render(30)[0]!), /DETAILED TRANSCRIPT 3-3\/3/);
+    assert.equal(trim(stripAnsi(viewer.render(30)[1]!)), 'line 3');
 
     viewportRows = 1;
-    assert.deepEqual(plain(viewer.render(30)).map(trim), ['TRANSCRIPT 0-0 of 3']);
+    assert.match(stripAnsi(viewer.render(30)[0]!), /DETAILED TRANSCRIPT 0-0\/3/);
 
     viewportRows = 4;
     const resized = plain(viewer.render(30)).map(trim);
-    assert.deepEqual(resized.slice(0, 3), ['TRANSCRIPT 2-3 of 3', 'line 2', 'line 3']);
-    assert.match(resized[3] ?? '', /PgUp\/PgDn page/);
+    assert.match(resized[0]!, /DETAILED TRANSCRIPT 2-3\/3/);
+    assert.deepEqual(resized.slice(1, 3), ['line 2', 'line 3']);
+    assert.match(resized[3] ?? '', /Esc\/Ctrl\+O close/);
   });
 
   test('renders through a detached geometry projection', () => {
@@ -218,9 +221,90 @@ describe('TranscriptViewerOverlay', () => {
     }));
 
     const renderDocument = transcript.createDocumentRenderer();
-    assert.ok(plain(renderDocument(40)).some((line) => line.includes('oldest prompt')));
+    assert.ok(plain(renderDocument(40).lines).some((line) => line.includes('oldest prompt')));
     assert.equal(state.renderGeometry.viewportTop, 16);
     assert.strictEqual(state.renderGeometry.entryFirstLine, entryFirstLine);
+  });
+
+  test('keeps the same entry when earlier details collapse and new text arrives', () => {
+    let extra = 0;
+    const viewer = new TranscriptViewerOverlay({
+      renderTranscript: (_, expanded) => {
+        const before = expanded ? ['tool A', 'detail 1', 'detail 2', 'detail 3'] : ['tool A'];
+        return {
+          lines: [...before, 'answer B', 'answer line', 'tail', ...Array(extra).fill('new output')],
+          anchors: [
+            { id: 'a', line: 0 },
+            { id: 'b', line: before.length },
+            { id: 'c', line: before.length + 2 },
+          ],
+        };
+      },
+      viewportRows: () => 4,
+      onClose: () => {},
+      onChange: () => {},
+    });
+    viewer.render(80);
+    viewer.handleInput('\x1b[A');
+    assert.match(stripAnsi(viewer.render(80)[1]!), /answer B/);
+    viewer.handleInput('\x05');
+    extra = 5;
+    assert.match(stripAnsi(viewer.render(80)[1]!), /answer B/);
+    viewer.handleInput('\x05');
+    assert.match(stripAnsi(viewer.render(80)[1]!), /answer B/);
+  });
+
+  test('search locates Chinese text without filtering the document and Escape restores reading', () => {
+    const lines = Array.from({ length: 20 }, (_, i) => (i === 4 ? '账号隔离' : `line ${i}`));
+    const viewer = new TranscriptViewerOverlay({
+      renderTranscript: () => ({ lines, anchors: [] }),
+      viewportRows: () => 6,
+      onClose: () => assert.fail('search Escape must not close the viewer'),
+      onChange: () => {},
+    });
+    const before = plain(viewer.render(80)).slice(1, -1);
+    viewer.handleInput('/');
+    viewer.handleInput('账号');
+    assert.match(stripAnsi(viewer.render(80)[1]!), /账号隔离/);
+    viewer.handleInput('\r');
+    viewer.handleInput('\x1b[B');
+    assert.match(stripAnsi(viewer.render(80)[1]!), /line 5/);
+    viewer.handleInput('\x1b');
+    assert.deepEqual(plain(viewer.render(80)).slice(1, -1), before);
+  });
+
+  test('focuses the search input and emits the hardware cursor marker', () => {
+    const viewer = new TranscriptViewerOverlay({
+      renderTranscript: () => ({ lines: ['account isolation'], anchors: [] }),
+      viewportRows: () => 6,
+      onClose: () => {},
+      onChange: () => {},
+    });
+    viewer.focused = true;
+    viewer.handleInput('/');
+    assert.ok(viewer.render(80).some((line) => line.includes(CURSOR_MARKER)));
+  });
+
+  test('expanding document tools and thinking never changes the live entries', () => {
+    const state = createMakaPiTranscriptState();
+    const thinking = {
+      kind: 'thinking' as const,
+      messageId: 'm',
+      text: 'private reasoning',
+      expanded: false,
+    };
+    state.entries.push(thinking);
+    const transcript = new MakaTranscriptComponent(state, () => ({
+      title: 'Maka',
+      cwd: '/repo',
+      model: 'model',
+      connectionSlug: 'connection',
+      permissionMode: 'ask',
+    }));
+    const render = transcript.createDocumentRenderer();
+    assert.match(plain(render(80, true).lines).join('\n'), /private reasoning/);
+    assert.equal(thinking.expanded, false);
+    assert.doesNotMatch(plain(render(80, false).lines).join('\n'), /private reasoning/);
   });
 
   test('does not replace the frozen live-scrollback render cache', () => {
@@ -239,7 +323,7 @@ describe('TranscriptViewerOverlay', () => {
     state.renderGeometry.viewportTop = 100;
     entry.text = 'background update';
     const renderDocument = transcript.createDocumentRenderer();
-    assert.ok(plain(renderDocument(40)).some((line) => line.includes('background update')));
+    assert.ok(plain(renderDocument(40).lines).some((line) => line.includes('background update')));
 
     const liveLines = plain(transcript.render(40));
     assert.ok(liveLines.some((line) => line.includes('settled text')));

@@ -202,6 +202,11 @@ export type AdmitRootTurnResult =
 export interface RootTurnAdmissionStore {
   admitRootTurn(input: AdmitRootTurnInput): Promise<AdmitRootTurnResult>;
   readRootTurnAdmission(sessionId: string, turnId: string): Promise<RootTurnAdmission | undefined>;
+  readRootTurnContinuationAdmission(
+    sessionId: string,
+    sourceTurnId: string,
+    sourceRunId: string,
+  ): Promise<RootTurnAdmission | undefined>;
   readRootTurnSourceMessageReceipt(
     sessionId: string,
     sourceMessageId: string,
@@ -588,6 +593,33 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       ) {
         throw new Error('Root Turn identity is already rejected');
       }
+      if (admission.execution.kind === 'safe_boundary_continuation') {
+        const sourceOwner = this.#lease.database
+          .prepare(`
+            SELECT turn_id
+            FROM core_root_turn_admissions
+            WHERE session_id = ?
+              AND json_extract(record_json, '$.execution.sourceTurnId') = ?
+              AND json_extract(record_json, '$.execution.sourceRunId') = ?
+              AND json_extract(record_json, '$.execution.kind') = 'safe_boundary_continuation'
+            ORDER BY admitted_at, turn_id
+            LIMIT 1
+          `)
+          .get(
+            admission.sessionId,
+            admission.execution.sourceTurnId,
+            admission.execution.sourceRunId,
+          ) as { turn_id?: unknown } | undefined;
+        if (typeof sourceOwner?.turn_id === 'string') {
+          const owner = readSqliteRootTurnAdmission(
+            this.#lease.database,
+            admission.sessionId,
+            sourceOwner.turn_id,
+          );
+          if (!owner) throw new Error('Root continuation index has no durable admission');
+          return { kind: 'conflict', admission: owner };
+        }
+      }
       for (const source of admission.sourceMessages) {
         const proof = this.#lease.database
           .prepare(`
@@ -633,6 +665,43 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(turnId, 'Invalid turn id');
     return readSqliteRootTurnAdmission(this.#lease.database, sessionId, turnId);
+  }
+
+  async readRootTurnContinuationAdmission(
+    sessionId: string,
+    sourceTurnId: string,
+    sourceRunId: string,
+  ): Promise<RootTurnAdmission | undefined> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(sourceTurnId, 'Invalid source turn id');
+    assertSafeId(sourceRunId, 'Invalid source run id');
+    const row = this.#lease.database
+      .prepare(`
+        SELECT turn_id, record_json
+        FROM core_root_turn_admissions
+        WHERE session_id = ?
+          AND json_extract(record_json, '$.execution.sourceTurnId') = ?
+          AND json_extract(record_json, '$.execution.sourceRunId') = ?
+          AND json_extract(record_json, '$.execution.kind') = 'safe_boundary_continuation'
+        ORDER BY admitted_at, turn_id
+        LIMIT 1
+      `)
+      .get(sessionId, sourceTurnId, sourceRunId) as
+      | {
+          turn_id?: unknown;
+          record_json?: unknown;
+        }
+      | undefined;
+    if (!row) return undefined;
+    if (typeof row.turn_id !== 'string' || typeof row.record_json !== 'string') {
+      throw new Error('Invalid SQLite root turn continuation admission row');
+    }
+    const admission = normalizeRootTurnAdmission(
+      JSON.parse(row.record_json),
+      sessionId,
+      row.turn_id,
+    );
+    return admission;
   }
 
   async readRootTurnStartRejection(
@@ -1960,12 +2029,30 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     });
   }
   if (value.kind === 'workhub_coordination') {
-    if (!hasExactKeys(value, ['kind', 'inputDigest']) || !isSha256Digest(value.inputDigest)) {
+    if (
+      !hasExactKeys(
+        value,
+        value.operation === undefined
+          ? ['kind', 'inputDigest']
+          : [
+              'kind',
+              'inputDigest',
+              'operation',
+              ...(value.actionId === undefined ? [] : ['actionId']),
+            ],
+      ) ||
+      (value.operation !== undefined && value.operation !== 'action') ||
+      (value.actionId !== undefined &&
+        (typeof value.actionId !== 'string' || !isSafeId(value.actionId))) ||
+      !isSha256Digest(value.inputDigest)
+    ) {
       throw new Error('Invalid root execution descriptor');
     }
     return Object.freeze({
       kind: 'workhub_coordination',
+      ...(value.operation === 'action' ? { operation: 'action' as const } : {}),
       inputDigest: value.inputDigest,
+      ...(typeof value.actionId === 'string' ? { actionId: value.actionId } : {}),
     });
   }
   if (value.kind === 'regenerate') {

@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import type { IpcMain } from "electron";
 import type { ActiveInteractionRequestEvent } from '@maka/core/events';
 import { redactSecrets } from '@maka/core/redaction';
@@ -98,6 +99,8 @@ import {
 } from "./runtime-host-session-execution-ipc-main.js";
 import { RuntimeHostSessionObservationRegistry } from "./runtime-host-session-observation-registry.js";
 import { RuntimeHostSessionObserver } from "./runtime-host-session-observer.js";
+import type { TurnMessageSubmitInput, TurnMessageSubmitResult } from '@maka/runtime-host/protocol';
+import type { DesktopTranscriptReplicaSnapshot } from './desktop-transcript-replica.js';
 import type {
   IpcHandler,
   ReconciledControlHandlers,
@@ -114,6 +117,7 @@ import {
 type CandidateIpcMain = ReconnectableReadIpcMain & Pick<IpcMain, "removeHandler">;
 
 export interface DesktopRuntimeHostCandidateDeps {
+  readonly cacheTranscript?: (scope: DesktopTargetScope, snapshot: DesktopTranscriptReplicaSnapshot) => void;
   readonly ipcMain: RuntimeHostTargetIpcMain;
   readonly workspaceRoot: string;
   readonly attachmentApprovals: AttachmentApprovalRegistry;
@@ -137,7 +141,6 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly completeComputerUseTurn: (
     sessionId: string,
   ) => void | Promise<void>;
-  readonly enableE2eControls?: boolean;
   readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
   readonly renderer?: {
     send(channel: string, scope: DesktopTargetScope, payload: unknown): void;
@@ -225,6 +228,7 @@ export type DesktopRuntimeHostCandidateStartResult =
   | Exclude<ConnectOrSpawnRuntimeHostResult, { kind: "connected" }>;
 
 export interface DesktopRuntimeHostCandidate {
+  submitLocalMessage(input: TurnMessageSubmitInput): Promise<TurnMessageSubmitResult>;
   readonly botIncoming: BotIncomingMainService;
   readonly client: DesktopRuntimeHostClient;
   readonly closed: Promise<void>;
@@ -300,6 +304,22 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
     return this.#stopSession(sessionId);
   }
 
+  async submitLocalMessage(input: TurnMessageSubmitInput): Promise<TurnMessageSubmitResult> {
+    const observerId = `local-outbox:${input.messageId}`;
+    await this.#observer.observe(input.sessionId, observerId, {
+      id: -1, send() {}, once() {}, off() {},
+    }, true);
+    try {
+      const result = await this.#client.request('turn.message.submit', input);
+      const turns = result.disposition === 'turn_started'
+        ? [result.turnId] : this.#observer.observedRunningTurnIds(input.sessionId);
+      for (const turnId of turns) await this.#observer.watchTurn(input.sessionId, turnId);
+      return result;
+    } finally {
+      await this.#observer.unobserve(observerId).catch(() => undefined);
+    }
+  }
+
   async #close(): Promise<void> {
     this.#ipc.close();
     this.#detachSessionObservations();
@@ -345,6 +365,10 @@ export async function startDesktopRuntimeHostCandidate(
   if (connection.kind !== "connected") return connection;
   observeLocalRuntimeHostProcess(connection.spawnedProcess);
   try {
+    // A resident managed Host can speak this protocol while still using an
+    // older storage schema. Validate the shared local database before exposing
+    // any candidate services, so startup recovery can update its owning Host.
+    acquireOperationalStateDatabase(input.rootPath, { schemaMigration: 'require_current' }).close();
     return {
       kind: "ready",
       candidate: await createDesktopRuntimeHostCandidate(
@@ -610,6 +634,9 @@ export async function createDesktopRuntimeHostCandidate(
     };
     const sessionObserver = new RuntimeHostSessionObserver({
       client,
+      cacheTranscript: (snapshot) => {
+        if (target.access === 'owner') deps.cacheTranscript?.(scope, snapshot);
+      },
       emitSessionsChanged: (reason, sessionId, extra) =>
         emitSessionsChanged(reason, sessionId, extra),
       emitSessionDomainChanged: (change) =>
@@ -617,6 +644,7 @@ export async function createDesktopRuntimeHostCandidate(
           ? sharedShellRuns?.sessionDomainChanged(change)
           : domains?.sessionDomainChanged(change),
       emitRuntimeResourcePtyData: (event) => domains?.runtimeResourcePtyData(event),
+      emitRuntimeResourcePtyReset: (sessionId) => sendToRenderer?.('shell-runs:resync', { sessionId }),
       emitAgentGraphChanged: (event) => domains?.agentGraphChanged(event),
       emitActiveInteractionsChanged,
       emitSubscriptionRecovered: (sessionId) =>
@@ -672,7 +700,6 @@ export async function createDesktopRuntimeHostCandidate(
         },
       },
       ipc,
-      deps.enableE2eControls === true,
     );
     if (target.access === 'session_guest') {
       const trackedSessionIds = sessionObservations.trackedSessionIds();
@@ -839,6 +866,7 @@ export async function createDesktopRuntimeHostCandidate(
     });
     if (target.access === 'owner') {
       registerRuntimeHostWorkHubIpc(client, ipc, {
+        attachmentIngest: { approvals: deps.attachmentApprovals, stat: deps.stat, resizeImage: deps.resizeImage },
         resolveCreateProject: () => deps.resolveSessionCreateProject({}, target),
         emitSessionsChanged,
       });

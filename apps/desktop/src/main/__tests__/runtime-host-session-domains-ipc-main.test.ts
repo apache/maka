@@ -22,7 +22,7 @@ import test from 'node:test';
 import type { IpcMain } from 'electron';
 import { projectDeepResearchClientProgress } from '@maka/core/deep-research-client-progress';
 import { type DeepResearchRun } from '@maka/core/deep-research-run';
-import { type PlanSessionState } from '@maka/core/plan';
+import { emptyPlanSessionState, type PlanSessionState } from '@maka/core/plan';
 import { type ShellRunUpdate } from '@maka/core/events';
 import {
   encodeDeepResearchSnapshot,
@@ -636,6 +636,7 @@ test('adapts interactive terminal ownership to one Host controller lease', async
       sessionObserver: {
         observe: async (sessionId, observerId) => {
           calls.push({ operation: 'observe', input: { sessionId, observerId } });
+          return [];
         },
         unobserve: async (observerId) => {
           calls.push({ operation: 'unobserve', input: { observerId } });
@@ -764,6 +765,7 @@ test('restores terminal observation after the observer drops its registration', 
         observe: async () => {
           observeCalls += 1;
           observationActive = true;
+          return [];
         },
         unobserve: async () => {
           observationActive = false;
@@ -885,35 +887,32 @@ test('adapts Plan controls and starts approved execution through one Host comman
     ipc,
   );
 
-  assert.deepEqual(await ipc.invoke('plan-mode:requestRevision', 'session-1', 'proposal-1'), state);
+  assert.deepEqual(
+    await ipc.invoke('plan-mode:requestRevision', 'session-1', 'proposal-1'),
+    { ok: true, value: state },
+  );
   const approvalInput = {
     proposalId: 'proposal-1',
     expectedRevision: 2,
     expectedStoreVersion: 3,
     turnId: 'approval-turn',
   };
-  assert.deepEqual(
-    await ipc.invoke('plan-mode:approve', 'session-1', approvalInput),
-    { turnId: 'approval-turn', executionId: 'execution-1' },
-  );
-  assert.deepEqual(
-    await ipc.invoke('plan-mode:approve', 'session-1', approvalInput),
-    { turnId: 'approval-turn', executionId: 'execution-1' },
-  );
-  assert.deepEqual(
-    await ipc.invoke('plan-mode:resume', 'session-1', 'execution-1', 'resume-turn'),
-    {
-      turnId: 'resume-turn',
-      executionId: 'execution-1',
-    },
-  );
-  assert.deepEqual(
-    await ipc.invoke('plan-mode:resume', 'session-1', 'execution-1', 'resume-turn'),
-    {
-      turnId: 'resume-turn',
-      executionId: 'execution-1',
-    },
-  );
+  assert.deepEqual(await ipc.invoke('plan-mode:approve', 'session-1', approvalInput), {
+    ok: true,
+    value: { turnId: 'approval-turn', executionId: 'execution-1' },
+  });
+  assert.deepEqual(await ipc.invoke('plan-mode:approve', 'session-1', approvalInput), {
+    ok: true,
+    value: { turnId: 'approval-turn', executionId: 'execution-1' },
+  });
+  assert.deepEqual(await ipc.invoke('plan-mode:resume', 'session-1', 'execution-1', 'resume-turn'), {
+    ok: true,
+    value: { turnId: 'resume-turn', executionId: 'execution-1' },
+  });
+  assert.deepEqual(await ipc.invoke('plan-mode:resume', 'session-1', 'execution-1', 'resume-turn'), {
+    ok: true,
+    value: { turnId: 'resume-turn', executionId: 'execution-1' },
+  });
   assert.deepEqual(calls, [
     {
       kind: 'control',
@@ -1398,10 +1397,125 @@ function registerDomainsIpc(
     {
       ...deps,
       sessionObserver: deps.sessionObserver ?? {
-        async observe() {},
+        async observe() { return []; },
         async unobserve() {},
       },
     },
     ipcMain,
   );
 }
+
+test('plan control channels rethrow failures outside the expected plan-control set', async () => {
+  const ipc = ipcHarness();
+  const boom = new Error('socket exploded');
+  registerDomainsIpc({
+    client: domainClient({
+      getPlanState: async () => emptyPlanSessionState('session-1'),
+      controlPlan: async () => {
+        throw boom;
+      },
+      startPlanTurn: async () => {
+        throw boom;
+      },
+    }),
+    emitModeChanged: () => {},
+    newId: () => 'fixed-id',
+  }, ipc);
+  await assert.rejects(
+    () => ipc.invoke('plan-mode:requestRevision', 'session-1', 'proposal-1'),
+    (error: unknown) => error === boom,
+  );
+  await assert.rejects(
+    () => ipc.invoke('plan-mode:abandon', 'session-1', 'proposal-1'),
+    (error: unknown) => error === boom,
+  );
+  await assert.rejects(
+    () => ipc.invoke('plan-mode:approve', 'session-1', {
+      proposalId: 'proposal-1',
+      expectedRevision: 2,
+      expectedStoreVersion: 3,
+      turnId: 'turn-1',
+    }),
+    (error: unknown) => error === boom,
+  );
+  await assert.rejects(
+    () => ipc.invoke('plan-mode:resume', 'session-1', 'execution-1', 'turn-1'),
+    (error: unknown) => error === boom,
+  );
+  await assert.rejects(
+    () => ipc.invoke('plan-mode:abandonExecution', 'session-1', 'execution-1'),
+    (error: unknown) => error === boom,
+  );
+});
+
+test('plan control channels return the Host error code across the IPC boundary', async () => {
+  const cases = [
+    {
+      channel: 'plan-mode:requestRevision',
+      args: ['session-1', 'proposal-1'],
+      operation: 'plan.control',
+      code: 'session_busy',
+    },
+    {
+      channel: 'plan-mode:approve',
+      args: [
+        'session-1',
+        { proposalId: 'proposal-1', expectedRevision: 2, expectedStoreVersion: 3, turnId: 'turn-1' },
+      ],
+      operation: 'plan.turn.start',
+      code: 'operation_conflict',
+    },
+    {
+      channel: 'plan-mode:resume',
+      args: ['session-1', 'execution-1', 'turn-1'],
+      operation: 'plan.turn.start',
+      code: 'session_busy',
+    },
+    {
+      channel: 'plan-mode:abandonExecution',
+      args: ['session-1', 'execution-1'],
+      operation: 'plan.control',
+      code: 'persistence_failed',
+    },
+  ] as const;
+  for (const scenario of cases) {
+    const ipc = ipcHarness();
+    const changed: string[] = [];
+    const reject = async () => {
+      throw new RuntimeHostOperationError(scenario.operation, scenario.code, 'Host refused the plan control');
+    };
+    registerDomainsIpc({
+      client: domainClient({
+        getPlanState: async () => emptyPlanSessionState('session-1'),
+        controlPlan: reject,
+        startPlanTurn: reject,
+      }),
+      emitModeChanged: (sessionId) => changed.push(sessionId),
+      newId: () => 'fixed-id',
+    }, ipc);
+    assert.deepEqual(
+      await ipc.invoke(scenario.channel, ...scenario.args),
+      { ok: false, error: { code: scenario.code, message: 'Host refused the plan control' } },
+      `${scenario.channel} must carry the Host error code`,
+    );
+    assert.deepEqual(changed, [], `${scenario.channel} must not report a mode change`);
+  }
+});
+
+test('the plan proposal exit channel rejects instead of returning an envelope', async () => {
+  const ipc = ipcHarness();
+  const changed: string[] = [];
+  const cause = new RuntimeHostOperationError('plan.control', 'operation_conflict', 'Host refused the plan control');
+  registerDomainsIpc({
+    client: domainClient({
+      getPlanState: async () => emptyPlanSessionState('session-1'),
+      controlPlan: async () => {
+        throw cause;
+      },
+    }),
+    emitModeChanged: (sessionId) => changed.push(sessionId),
+    newId: () => 'fixed-id',
+  }, ipc);
+  await assert.rejects(() => ipc.invoke('plan-mode:abandon', 'session-1', 'proposal-1'), (error) => error === cause);
+  assert.deepEqual(changed, []);
+});

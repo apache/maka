@@ -36,7 +36,11 @@ import type {
   PermissionSnapshot,
 } from '@maka/core/capabilities';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { isDragGrantPermissionId, OS_PERMISSION_IDS } from '@maka/core/capabilities';
+import {
+  isCapabilityReasonCode,
+  isDragGrantPermissionId,
+  OS_PERMISSION_IDS,
+} from '@maka/core/capabilities';
 import {
   Banner,
   Button,
@@ -52,7 +56,9 @@ import {
 } from '@astryxdesign/core';
 import { RelativeTime, StatusDot, useMountedRef, useUiLocale } from '@maka/ui';
 import { SettingsPage, SettingsSection } from './settings-section';
+import { getCapabilityReasonCopy } from '../locales/capability-reason-copy';
 import { getPermissionCenterCopy, type PermissionCenterCopy } from '../locales/permission-center-copy';
+import { botStatusReasonCopy } from '../locales/settings-bot-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import {
   useRuntimeHostSettingsErrorReporter,
@@ -402,7 +408,7 @@ function permissionActionFailureCopy(reason: string, message: string | undefined
  * One capability row — a Collapsible whose trigger is the row and whose content
  * is that capability's diagnostics.
  *
- * The four-layer breakdown, the required-permission list and the guidance list
+ * The four-layer breakdown and the required-permission list
  * used to be a `<dl>` and two `<ul>`s with ~180 lines of CSS giving them label
  * columns, tone colors and spacing. They are all "label → value" readouts, so
  * they are Astryx `MetadataList` now.
@@ -421,10 +427,9 @@ function CapabilityRow(props: {
   const { copy, locale } = props;
   const readinessCopy = copy.readiness[capability.readiness];
   const capabilityLabel = localizedCapabilityLabel(capability, locale);
-  const featureReason = localizedSnapshotText(capability.feature.reason, locale);
-  const configurationReason = localizedSnapshotText(capability.configuration.reason, locale);
-  const runtimeReason = localizedSnapshotText(capability.runtimeProbe.reason, locale);
-  const guidance = localizedCapabilityGuidance(capability, locale, copy);
+  const featureReason = capabilityReasonText(capability.feature.reason, capability, copy, locale);
+  const configurationReason = capabilityReasonText(capability.configuration.reason, capability, copy, locale);
+  const runtimeReason = capabilityReasonText(capability.runtimeProbe.reason, capability, copy, locale);
 
   const layers: Array<{ label: string; value: string; reason?: string }> = [
     {
@@ -524,19 +529,6 @@ function CapabilityRow(props: {
               ))}
             </MetadataList>
           )}
-          {guidance.length > 0 && (
-            <VStack gap={1}>
-              <Text type="label" size="sm">{copy.guidance}</Text>
-              <List aria-label={copy.guidanceAria(capabilityLabel)} density="compact">
-                {guidance.map((item, index) => (
-                  <ListItem
-                    key={`${capability.id}-guidance-${index}`}
-                    label={<Text type="supporting" size="sm" color="secondary">{item}</Text>}
-                  />
-                ))}
-              </List>
-            </VStack>
-          )}
           {/*
             PR-UX-POLISH-1 commit 2 (yuejing UX audit + xuan
             ROADMAP-SURFACE-0 + kenji boundary 1): unavailable pause/revoke
@@ -589,7 +581,7 @@ function OsPermissionRow(props: {
   const purpose = permissionCopy?.purpose ?? '';
   const impact = permissionCopy?.impact ?? '';
   const stateCopy = props.copy.osStates[snapshot.status];
-  const reason = localizedSnapshotText(snapshot.reason, props.locale);
+  const reason = osPermissionReasonText(snapshot, props.copy, props.locale);
 
   const showRequest = snapshot.canRequest && snapshot.status !== 'granted';
   const showOpenSettings = snapshot.canOpenSettings && snapshot.status !== 'granted';
@@ -704,17 +696,38 @@ function localizedCapabilityLabel(capability: CapabilitySnapshot, locale: UiLoca
   return capability.label;
 }
 
-function localizedSnapshotText(value: string | undefined, locale: UiLocale): string | undefined {
-  if (!value || (locale !== 'zh-CN' && /[\u3400-\u9fff]/u.test(value))) return undefined;
-  return value;
+function capabilityReasonText(
+  reason: string | undefined,
+  capability: CapabilitySnapshot,
+  copy: PermissionCenterCopy,
+  locale: UiLocale,
+): string | undefined {
+  if (!reason) return undefined;
+  if (reason === 'cu_backend_status') {
+    const missing = capability.osPermissions
+      .filter((permission) => permission.required && permission.status !== 'granted')
+      .map((permission) => copy.osPermissions[permission.id]?.label ?? permission.id);
+    return copy.cuBackendStatus(missing, capability.runtimeProbe.state);
+  }
+  if (isCapabilityReasonCode(reason)) {
+    return getCapabilityReasonCopy(locale)[reason];
+  }
+  if (capability.id.startsWith('bot:')) {
+    return botStatusReasonCopy(reason, locale) ?? copy.reasonFallback;
+  }
+  return copy.reasonFallback;
 }
 
-function localizedCapabilityGuidance(
-  capability: CapabilitySnapshot,
-  locale: UiLocale,
+function osPermissionReasonText(
+  snapshot: OsPermissionSnapshot,
   copy: PermissionCenterCopy,
-): readonly string[] {
-  return capability.guidance.filter((item) => locale === 'zh-CN' || !/[\u3400-\u9fff]/u.test(item));
+  locale: UiLocale,
+): string | undefined {
+  return snapshot.reason
+    ? isCapabilityReasonCode(snapshot.reason)
+      ? getCapabilityReasonCopy(locale)[snapshot.reason]
+      : copy.reasonFallback
+    : undefined;
 }
 
 function featureTone(state: CapabilitySnapshot['feature']['state']): StatusSemantic {

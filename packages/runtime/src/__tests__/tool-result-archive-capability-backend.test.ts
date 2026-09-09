@@ -119,6 +119,7 @@ describe('AiSdkBackend tool-result archive capability', () => {
       reason: 'active_current_turn_tool_result_pruned_before_next_step',
     });
     assert.ok(written, 'the writer must report where it archived the body');
+    assert.ok(written.artifactId);
 
     const page = (await archive.archiveReadTool.impl(
       {
@@ -236,7 +237,6 @@ function backendWith(
   return createTestAiSdkBackend({
     sessionId: 'session-1',
     header: header(),
-    appendMessage: async () => {},
     connection: connection(),
     apiKey: 'sk-test',
     modelId: 'mock-model-id',

@@ -176,9 +176,9 @@ export interface RuntimeHostSessionObservationIpcDeps {
     RuntimeHostSessionObservationRegistry,
     | 'loadTranscriptAround'
     | 'loadTranscriptBefore'
+    | 'loadTranscriptAfter'
     | 'observe'
     | 'openTranscript'
-    | 'releaseTarget'
   >;
   resolveSideConversation(sessionId: string): Promise<boolean>;
 }
@@ -187,14 +187,13 @@ export interface RuntimeHostSessionObservationIpcDeps {
 export function registerRuntimeHostSessionObservationIpc(
   deps: RuntimeHostSessionObservationIpcDeps,
   ipcMain: ReconnectableReadIpcMain,
-  enableE2eControls = false,
 ): void {
   handleReconnectableRead(
     ipcMain,
     'sessions:observe',
     async (event, sessionId: unknown, observerId: unknown) => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
-      await deps.observations.observe(
+      return deps.observations.observe(
         normalizedSessionId,
         requiredId(observerId, 'Session observer'),
         event.sender as RuntimeHostSessionObserverTarget,
@@ -223,11 +222,12 @@ export function registerRuntimeHostSessionObservationIpc(
       event.sender.id,
     );
   });
-  if (enableE2eControls) {
-    ipcMain.handle('sessions:e2e:release-renderer-observations', (event) =>
-      deps.observations.releaseTarget(event.sender.id),
+  ipcMain.handle('sessions:transcript:load-after', async (event, input: unknown) => {
+    await deps.observations.loadTranscriptAfter(
+      normalizeTranscriptRangeRequest(input),
+      event.sender.id,
     );
-  }
+  });
 }
 
 /**
@@ -827,12 +827,26 @@ function normalizeTranscriptRangeRequest(input: unknown): DesktopTranscriptRange
   if (!Number.isSafeInteger(maxBytes)) {
     throw new Error('Invalid Desktop transcript range byte limit');
   }
+  if (
+    (value.navigationVersion !== undefined &&
+      (!Number.isSafeInteger(value.navigationVersion) || (value.navigationVersion as number) < 0)) ||
+    (value.intent !== undefined && value.intent !== 'history' && value.intent !== 'followTail') ||
+    (value.preserveRange !== undefined && typeof value.preserveRange !== 'boolean') ||
+    (value.readingTurnId !== undefined &&
+      (typeof value.readingTurnId !== 'string' || value.readingTurnId.length === 0))
+  ) {
+    throw new Error('Invalid Desktop transcript navigation');
+  }
   return {
     consumerId: requiredId(value.consumerId, 'Transcript consumer'),
     sessionId: requiredId(value.sessionId, 'Session'),
     hostEpoch: requiredId(value.hostEpoch, 'Host epoch'),
     anchorSequence: anchorSequence as number | null,
     maxBytes: maxBytes as number,
+    navigationVersion: value.navigationVersion as number | undefined,
+    intent: value.intent as DesktopTranscriptRangeRequest['intent'],
+    preserveRange: value.preserveRange as boolean | undefined,
+    readingTurnId: value.readingTurnId as string | undefined,
   };
 }
 

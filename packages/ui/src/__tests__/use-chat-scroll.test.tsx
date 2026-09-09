@@ -29,12 +29,14 @@ import {
   type TranscriptScrollAuthority,
 } from '../transcript-scroll-authority.js';
 import { useChatScroll } from '../use-chat-scroll.js';
+import { createTranscriptViewportNavigation } from '../transcript-viewport-navigation.js';
 
 const originalGlobals = {
   CSS: globalThis.CSS,
   document: globalThis.document,
   Element: globalThis.Element,
   HTMLElement: globalThis.HTMLElement,
+  getComputedStyle: globalThis.getComputedStyle,
   MutationObserver: globalThis.MutationObserver,
   Node: globalThis.Node,
   ResizeObserver: globalThis.ResizeObserver,
@@ -55,6 +57,154 @@ afterEach(async () => {
   });
 });
 
+/**
+ * Installs the globals the scroll hook reads onto the LinkeDOM window, either
+ * queueing rAF frames for explicit flushes or running them inline.
+ */
+const installScrollTestEnvironment = (
+  document: Document,
+  window: ReturnType<typeof parseHTML>['window'],
+  { queueFrames = true }: { queueFrames?: boolean } = {},
+): {
+  frames: Map<number, FrameRequestCallback>;
+  resizeCallbacks: ResizeObserverCallback[];
+} => {
+  let frameId = 0;
+  const frames = new Map<number, FrameRequestCallback>();
+  const resizeCallbacks: ResizeObserverCallback[] = [];
+  class TestResizeObserver {
+    constructor(callback: ResizeObserverCallback) {
+      resizeCallbacks.push(callback);
+    }
+    disconnect() {}
+    observe() {}
+    unobserve() {}
+  }
+  class TestMutationObserver {
+    disconnect() {}
+    observe() {}
+    unobserve() {}
+    takeRecords(): MutationRecord[] { return []; }
+  }
+  Object.assign(window, {
+    cancelAnimationFrame: (id: number) => frames.delete(id),
+    requestAnimationFrame: queueFrames
+      ? (callback: FrameRequestCallback) => {
+          const id = ++frameId;
+          frames.set(id, callback);
+          return id;
+        }
+      : (callback: FrameRequestCallback) => {
+          callback(0);
+          return 0;
+        },
+  });
+  Object.assign(globalThis, {
+    CSS: { escape: (value: string) => value },
+    document,
+    Element: window.Element,
+    HTMLElement: window.HTMLElement,
+    MutationObserver: TestMutationObserver,
+    Node: window.Node,
+    ResizeObserver: TestResizeObserver,
+    window,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  return { frames, resizeCallbacks };
+};
+
+test('pages only toward reader input, including wheels at a bounded edge', async () => {
+  const { document, window } = parseHTML('<main id="mount"></main><section id="scroller"></section>');
+  const scroller = document.querySelector<HTMLElement>('#scroller')!;
+  let scrollTop = 0;
+  Object.defineProperties(scroller, {
+    clientHeight: { value: 600 },
+    scrollHeight: { value: 2400 },
+    scrollTop: {
+      get: () => scrollTop,
+      set: (value: number) => { scrollTop = Math.max(0, Math.min(value, 1800)); },
+    },
+  });
+  scroller.getBoundingClientRect = () => ({ top: 0, bottom: 600 } as DOMRect);
+  for (let index = 0; index < 4; index++) {
+    const turn = document.createElement('article');
+    turn.dataset.turnId = `turn-${index}`;
+    turn.getBoundingClientRect = () => ({
+      top: index * 600 - scrollTop, bottom: (index + 1) * 600 - scrollTop,
+    } as DOMRect);
+    scroller.append(turn);
+  }
+  class Observer { disconnect() {} observe() {} }
+  Object.assign(globalThis, {
+    document, window, HTMLElement: window.HTMLElement, Element: window.Element,
+    MutationObserver: Observer, ResizeObserver: Observer,
+    getComputedStyle: () => ({ overflowY: 'auto' }),
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const calls: Array<{ direction: string; anchor?: string }> = [];
+  let authority!: TranscriptScrollAuthority;
+  function Harness({ more }: { more: boolean }) {
+    const scrollRef = useRef(scroller);
+    authority = useTranscriptScrollAuthority();
+    useChatScroll({
+      scrollRef, sessionId: 'guest', messages: [], behavior: 'auto',
+      hasOlderHistory: more, hasNewerHistory: more,
+      onLoadEarlierHistory: (anchor) => { calls.push({ direction: 'up', anchor }); },
+      onLoadLaterHistory: (anchor) => { calls.push({ direction: 'down', anchor }); },
+    });
+    return null;
+  }
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  const render = async (more: boolean) => act(() => mountedRoot!.render(
+    <TranscriptScrollAuthorityProvider><Harness more={more} /></TranscriptScrollAuthorityProvider>,
+  ));
+  await render(true);
+  assert.deepEqual(calls, [], 'mounting at a partial tail is not a request');
+  scroller.scrollTop = 900;
+  scroller.dispatchEvent(new window.Event('scroll'));
+  scroller.scrollTop = 1000;
+  scroller.dispatchEvent(new window.Event('scroll'));
+  assert.deepEqual(calls, [
+    { direction: 'up', anchor: 'turn-1' },
+    { direction: 'down', anchor: 'turn-2' },
+  ], 'overlapping edge bands must not reverse the requested direction');
+
+  scroller.scrollTop = 1800;
+  scroller.dispatchEvent(new window.Event('scroll'));
+  assert.equal(authority.getSnapshot().pinned, false, 'a partial tail must not follow a page fill');
+  const wheel = (target: HTMLElement, deltaY: number) => {
+    const event = new window.Event('wheel', { bubbles: true });
+    Object.defineProperty(event, 'deltaY', { value: deltaY });
+    target.dispatchEvent(event);
+  };
+  calls.length = 0;
+  wheel(scroller, 100);
+  assert.deepEqual(calls, [{ direction: 'down', anchor: 'turn-3' }]);
+
+  const nested = document.createElement('div');
+  Object.defineProperties(nested, {
+    clientHeight: { value: 100 }, scrollHeight: { value: 500 }, scrollTop: { value: 100 },
+  });
+  scroller.append(nested);
+  calls.length = 0;
+  wheel(nested, 100);
+  assert.deepEqual(calls, [], 'scrolling a nested tool output must not page the transcript');
+
+  scroller.scrollTop = 0;
+  scroller.dispatchEvent(new window.Event('scroll'));
+  calls.length = 0;
+  wheel(scroller, -100);
+  assert.deepEqual(calls, [{ direction: 'up', anchor: 'turn-0' }]);
+  assert.equal(scroller.scrollTop, 1, 'keep native anchoring enabled at the start');
+  await render(false);
+  calls.length = 0;
+  wheel(scroller, -100);
+  scroller.scrollTop = 1800;
+  scroller.dispatchEvent(new window.Event('scroll'));
+  wheel(scroller, 100);
+  assert.deepEqual(calls, [], 'do not request beyond authoritative history edges');
+});
+
 test('a session switch restores a Turn anchor after async fill and preserves tail intent', async () => {
   const { document, window } = parseHTML(
     '<main id="mount"></main><section id="scroller"></section>',
@@ -67,9 +217,6 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   let scrollHeight = 600;
   let scrollTop = 0;
   let dispatchCommandScroll = true;
-  let frameId = 0;
-  const frames = new Map<number, FrameRequestCallback>();
-  const resizeCallbacks: ResizeObserverCallback[] = [];
   Object.defineProperties(scroller, {
     clientHeight: { value: 600 },
     scrollHeight: { get: () => scrollHeight },
@@ -92,38 +239,7 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
     toJSON: () => undefined,
   });
 
-  class TestResizeObserver {
-    constructor(callback: ResizeObserverCallback) {
-      resizeCallbacks.push(callback);
-    }
-    disconnect() {}
-    observe() {}
-    unobserve() {}
-  }
-  class TestMutationObserver {
-    disconnect() {}
-    observe() {}
-    takeRecords(): MutationRecord[] { return []; }
-  }
-  Object.assign(window, {
-    cancelAnimationFrame: (id: number) => frames.delete(id),
-    requestAnimationFrame: (callback: FrameRequestCallback) => {
-      const id = ++frameId;
-      frames.set(id, callback);
-      return id;
-    },
-  });
-  Object.assign(globalThis, {
-    CSS: { escape: (value: string) => value },
-    document,
-    Element: window.Element,
-    HTMLElement: window.HTMLElement,
-    MutationObserver: TestMutationObserver,
-    Node: window.Node,
-    ResizeObserver: TestResizeObserver,
-    window,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  });
+  const { frames, resizeCallbacks } = installScrollTestEnvironment(document, window);
 
   const installTranscript = (
     height: number,
@@ -172,7 +288,11 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   };
 
   const anchors = new Map<string, string>();
+  const handledTargets: number[] = [];
+  const viewportNavigation = createTranscriptViewportNavigation();
   const unavailableRestores = new Map<string, string>();
+  const historyRequests: Array<{ direction: 'up' | 'down'; anchor?: string }> = [];
+  let historyPaging = false;
   let authority: TranscriptScrollAuthority | undefined;
   let messageRevision = 0;
   let target: { turnId: string; nonce: number } | undefined;
@@ -190,12 +310,18 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
       messages: [{ id: `message-${messageRevision}` }] as StoredMessage[],
       target,
       restoreTarget,
+      onTargetHandled: (nonce) => handledTargets.push(nonce),
+      viewportNavigation,
       onReadingAnchorChange: (turnId) => {
         unavailableRestores.delete(sessionId);
         if (turnId) anchors.set(sessionId, turnId);
         else anchors.delete(sessionId);
       },
       behavior: 'auto',
+      hasOlderHistory: historyPaging,
+      hasNewerHistory: historyPaging,
+      onLoadEarlierHistory: (anchor) => { historyRequests.push({ direction: 'up', anchor }); },
+      onLoadLaterHistory: (anchor) => { historyRequests.push({ direction: 'down', anchor }); },
     });
     return null;
   }
@@ -286,6 +412,10 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   await renderSession('session-b');
   await flushFrames();
   assert.equal(anchors.get('session-b'), 'turn-b-1');
+  assert.deepEqual(handledTargets, [1]);
+  await renderSession('session-b');
+  await flushFrames();
+  assert.deepEqual(handledTargets, [1]);
 
   target = undefined;
   // With no resident Turn to re-anchor to, abandoning the restore falls back
@@ -301,4 +431,178 @@ test('a session switch restores a Turn anchor after async fill and preserves tai
   await flushFrames();
   assert.equal(authority?.getSnapshot().pinned, true);
   assert.equal(anchors.has('session-b'), false);
+
+  // A send/return-to-latest clears a pending bookmark. Its old frame must not
+  // scroll to the historical Turn if that Turn arrives in a later batch.
+  anchors.set('session-a', 'turn-a-2');
+  collapseTranscript();
+  await renderSession('session-a');
+  assert.equal(authority?.getSnapshot().pinned, false);
+  anchors.delete('session-a');
+  await renderSession('session-a');
+  assert.equal(authority?.getSnapshot().pinned, false, 'clearing a bookmark is not a viewport command');
+  await act(() => viewportNavigation.followLatest('session-a'));
+  installTranscript(3_000, [
+    { id: 'turn-a-2', start: 0, height: 800 },
+    { id: 'turn-a-latest', start: 800, height: 2_200 },
+  ]);
+  await renderSession('session-a');
+  deliverResize();
+  await flushFrames();
+  assert.equal(authority?.getSnapshot().pinned, true);
+  assert.equal(scroller.scrollTop, 2_400);
+  assert.equal(anchors.has('session-a'), false);
+
+  scroller.scrollTop = 1_000;
+  scroller.dispatchEvent(new window.Event('scroll'));
+  assert.equal(anchors.get('session-a'), 'turn-a-latest');
+  installTranscript(800, [{ id: 'geometry-resident', start: 0, height: 800 }]);
+  scroller.scrollTop = scroller.scrollTop;
+  await renderSession('session-a');
+  deliverResize();
+  assert.equal(authority?.getSnapshot().pinned, false);
+  assert.equal(authority?.getSnapshot().awayFromTail, false);
+  assert.equal(anchors.get('session-a'), 'turn-a-latest', 'range geometry does not report a new reading intent');
+
+  // Either adjacent-page gesture supersedes an activation's unfinished
+  // bookmark. A late fill must not move the reader back to that old target.
+  historyPaging = true;
+  for (const direction of ['up', 'down'] as const) {
+    const sessionId = `session-page-${direction}`;
+    const bookmark = `bookmark-${direction}`;
+    anchors.set(sessionId, bookmark);
+    collapseTranscript();
+    installTranscript(3_000, [{ id: 'resident', start: 0, height: 3_000 }]);
+    await renderSession(sessionId);
+    assert.equal(authority?.getSnapshot().pinned, false);
+    scroller.scrollTop = direction === 'up' ? 0 : 2_400;
+    const wheel = new window.Event('wheel', { bubbles: true });
+    Object.defineProperty(wheel, 'deltaY', { value: direction === 'up' ? -100 : 100 });
+    scroller.dispatchEvent(wheel);
+    assert.deepEqual(historyRequests.at(-1), { direction, anchor: 'resident' });
+    const readerTop: number = scroller.scrollTop;
+
+    installTranscript(3_000, [
+      { id: 'resident-before', start: 0, height: 800 },
+      { id: bookmark, start: 800, height: 600 },
+      { id: 'resident-after', start: 1_400, height: 1_600 },
+    ]);
+    await renderSession(sessionId);
+    await flushFrames();
+    assert.equal(scroller.scrollTop, readerTop, `${direction} paging consumes the pending restore`);
+    assert.equal(authority?.getSnapshot().pinned, false);
+  }
+});
+
+/**
+ * A bookmark left on a Turn the last range evicted makes the restore effect
+ * load around it over the range paging just published, and the transcript
+ * stops advancing — the stall the E2E paging guard sees as a timeout.
+ */
+test('a wheel at the top edge reports its anchor before it loads earlier history', async () => {
+  const { document, window } = parseHTML(
+    '<main id="mount"></main><section id="scroller"></section>',
+  );
+  const mount = document.querySelector<HTMLElement>('#mount');
+  const scroller = document.querySelector<HTMLElement>('#scroller');
+  assert.ok(mount);
+  assert.ok(scroller);
+
+  let scrollHeight = 1_600;
+  let scrollTop = 0;
+  Object.defineProperties(scroller, {
+    clientHeight: { value: 600 },
+    scrollHeight: { get: () => scrollHeight },
+    scrollTop: {
+      get: () => scrollTop,
+      // No scroll event follows a write: that is the edge under test.
+      set: (value: number) => {
+        scrollTop = Math.max(0, Math.min(value, scrollHeight - 600));
+      },
+    },
+  });
+  scroller.getBoundingClientRect = () => ({
+    bottom: 600,
+    height: 600,
+    left: 0,
+    right: 800,
+    top: 0,
+    width: 800,
+    x: 0,
+    y: 0,
+    toJSON: () => undefined,
+  });
+
+  installScrollTestEnvironment(document, window, { queueFrames: false });
+
+  const installTurns = (ids: readonly string[]): void => {
+    scrollHeight = ids.length * 800;
+    scroller.replaceChildren();
+    ids.forEach((id, index) => {
+      const element = document.createElement('article');
+      element.dataset.turnId = id;
+      const start = index * 800;
+      element.getBoundingClientRect = () => ({
+        bottom: start + 800 - scrollTop,
+        height: 800,
+        left: 0,
+        right: 800,
+        width: 800,
+        x: 0,
+        top: start - scrollTop,
+        y: start - scrollTop,
+        toJSON: () => undefined,
+      });
+      element.scrollIntoView = () => {
+        scroller.scrollTop = start;
+      };
+      scroller.append(element);
+    });
+  };
+  let anchor: string | undefined;
+  const loads: Array<{ anchorTurnId?: string; anchorWhenAsked?: string }> = [];
+  function Harness() {
+    const scrollRef = useRef<HTMLElement | null>(scroller);
+    useChatScroll({
+      scrollRef,
+      sessionId: 'session-paging',
+      messages: [{ id: 'message-1' }] as StoredMessage[],
+      // A remembered position leaves the hook unpinned, as paging back does.
+      restoreTarget: { turnId: 'turn-0' },
+      onReadingAnchorChange: (turnId) => {
+        anchor = turnId;
+      },
+      behavior: 'auto',
+      hasOlderHistory: true,
+      onLoadEarlierHistory: (anchorTurnId) => {
+        loads.push({ anchorTurnId, anchorWhenAsked: anchor });
+      },
+    });
+    return null;
+  }
+
+  installTurns(['turn-0', 'turn-1']);
+  mountedRoot = createRoot(mount);
+  await act(() => mountedRoot?.render(
+    <TranscriptScrollAuthorityProvider>
+      <Harness />
+    </TranscriptScrollAuthorityProvider>,
+  ));
+  // Settle the authority on "unpinned, away from the tail", where the wheel's
+  // own release publishes nothing and so refreshes no anchor.
+  scroller.dispatchEvent(new window.Event('scroll'));
+  assert.equal(anchor, 'turn-0', 'the restored position is the reading anchor');
+
+  installTurns(['turn-earlier', 'turn-0']);
+  scroller.scrollTop = 0;
+
+  const wheel = new window.Event('wheel');
+  Object.assign(wheel, { deltaY: -120, composedPath: () => [scroller] });
+  scroller.dispatchEvent(wheel);
+
+  assert.deepEqual(
+    loads.at(-1),
+    { anchorTurnId: 'turn-earlier', anchorWhenAsked: 'turn-earlier' },
+    'the wheel bookmarks the Turn it anchors the load to',
+  );
 });

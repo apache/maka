@@ -48,12 +48,14 @@ import {
   buildContextBudgetDiagnosticShell,
   estimateRuntimeEventsTokens,
   mergeContextBudgetDiagnostic,
+  mergeContextBudgetDiagnosticPatches,
   type ContextBudgetPolicy,
 } from './context-budget.js';
 import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
   canReplayHistoryCompactCheckpointForModel,
+  historyCompactSourceDigest,
   matchHistoryCompactCheckpointPrefix,
   projectHistoryCompactCheckpointReplay,
   type HistoryCompactCheckpoint,
@@ -383,8 +385,17 @@ export class AiSdkCompaction {
           : {}),
         ...(automaticMemoryBoundary ? { memoryExtractionBoundary: automaticMemoryBoundary } : {}),
         ...(previousCheckpoint ? { previousCheckpoint } : {}),
-        summarize: async ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) =>
-          await this.summarizeWithFailureCircuit(summarizer, {
+        // The planner projects the covered span to its effective view before
+        // summarizing and pins its digest as coverage.effectiveSourceDigest:
+        // the summary can never quote a body a durable transition removed, and
+        // a later transition invalidates the checkpoint at replay (#4845).
+        projectEffectiveCoverage: (covered) => this.foldEffectiveModelHistory(covered),
+        summarize: async ({
+          coveredRuntimeEvents,
+          newlyFoldedRuntimeEvents,
+          previousCheckpoint,
+        }) => {
+          return await this.summarizeWithFailureCircuit(summarizer, {
             sessionId: this.sessionId,
             turnId: input.turnId,
             runId: input.runId,
@@ -398,7 +409,8 @@ export class AiSdkCompaction {
             ...(previousCheckpoint ? { previousCheckpoint } : {}),
             abortSignal: historyCompactAbortController.signal,
             ...(tracker ? { providerRequestTracker: tracker } : {}),
-          }),
+          });
+        },
       });
       if (historyCompactAbortController.signal.aborted) {
         return { outcome: { kind: 'failed', reason: 'aborted' } };
@@ -543,8 +555,36 @@ export class AiSdkCompaction {
    */
   public async foldEffectiveModelHistory(events: readonly RuntimeEvent[]): Promise<RuntimeEvent[]> {
     const loaded = await this.loadModelProjectionTransitions();
-    if (loaded.transitions.length === 0) return [...events];
-    return reduceEffectiveModelProjections(events, loaded.transitions).events;
+    if (loaded.transitions.length === 0 && loaded.unreadableTargets.size === 0) {
+      return [...events];
+    }
+    // Forward the unreadable set: a target whose transition record this build
+    // cannot decode must fold to the withholding sentinel here too, or this
+    // path becomes the one consumer that replays the body a record removed.
+    return reduceEffectiveModelProjections(events, loaded.transitions, loaded.unreadableTargets)
+      .events;
+  }
+
+  /**
+   * Whether the checkpoint's pinned effective view still is the covered
+   * prefix's effective view. The raw identity match happens later in the
+   * replay authority; this gate is about content currency: a projection
+   * transition committed after the fold changes what the model may see of the
+   * covered span without touching the raw ledger, and the checkpoint's summary
+   * or provider state must not survive that drift (#4845 review).
+   */
+  private checkpointEffectiveCoverageMatches(
+    checkpoint: HistoryCompactCheckpoint,
+    effectiveEvents: readonly RuntimeEvent[],
+  ): boolean {
+    const pinned = checkpoint.coverage.effectiveSourceDigest;
+    if (pinned === undefined) return false;
+    const covered = effectiveEvents
+      .filter(isHistoryCompactContentEvent)
+      .slice(0, checkpoint.coverage.eventCount);
+    if (covered.length !== checkpoint.coverage.eventCount) return false;
+    if (covered.at(-1)?.id !== checkpoint.coverage.through.runtimeEventId) return false;
+    return historyCompactSourceDigest(covered) === pinned;
   }
 
   /**
@@ -662,10 +702,43 @@ export class AiSdkCompaction {
         this.input.modelId,
       )
     ) {
-      nextPolicy = {
-        ...nextPolicy,
-        historyCompact: { ...nextPolicy.historyCompact!, checkpoint: loadedCheckpoint },
-      };
+      // Raw identity first: a coverage miss keeps the apply-stage path, whose
+      // matcher reports the real identity reason (coverage_miss and friends).
+      // This gate is only for the case where the raw identity matches but a
+      // projection transition committed after the fold changed the effective
+      // view the summary (or provider state) was built from (#4845 review).
+      const rawIdentityMatch = matchHistoryCompactCheckpointPrefix(
+        loadedCheckpoint,
+        runtimeContext.filter(isHistoryCompactContentEvent),
+      );
+      if (rawIdentityMatch.reason) {
+        nextPolicy = {
+          ...nextPolicy,
+          historyCompact: { ...nextPolicy.historyCompact!, checkpoint: loadedCheckpoint },
+        };
+      } else if (this.checkpointEffectiveCoverageMatches(loadedCheckpoint, effective.events)) {
+        nextPolicy = {
+          ...nextPolicy,
+          historyCompact: { ...nextPolicy.historyCompact!, checkpoint: loadedCheckpoint },
+        };
+      } else {
+        // Rejecting keeps the stale block from restoring what the transition
+        // removed; the next fold re-summarizes (#4845 review).
+        diagnosticPatch = mergeContextBudgetDiagnosticPatches(
+          diagnosticPatch,
+          compactionDecisionDiagnosticPatch({
+            stage: 'priorReplay',
+            sourceKind: 'runtimeEvents',
+            decision: 'failedOpen',
+            phase: 'pre_turn',
+            boundaryKind: 'historyCompact',
+            ...(loadedCheckpoint.coverage.effectiveSourceDigest !== undefined
+              ? { boundaryIds: [loadedCheckpoint.checkpointId] }
+              : {}),
+            failOpenReason: 'effective_history_changed',
+          }),
+        );
+      }
     }
     return {
       policy: nextPolicy,
@@ -799,13 +872,16 @@ export class AiSdkCompaction {
       headAnchor.sessionId !== this.sessionId ||
       headAnchor.turnId !== input.turnId ||
       headAnchor.role !== 'user' ||
-      headAnchor.author !== 'user' ||
+      (headAnchor.author !== 'user' && headAnchor.author !== 'host') ||
       !isHistoryCompactContentEvent(headAnchor)
     ) {
       return undefined;
     }
+    // Handoff replay is an authenticated predecessor prefix, including the
+    // current logical Turn. The live reader remains physical-run scoped.
+    const handoff = input.continuation?.sourceTurnId === input.turnId;
     const priorContentEvents = (input.runtimeContext ?? [])
-      .filter((event) => event.turnId !== input.turnId)
+      .filter((event) => handoff || event.turnId !== input.turnId)
       .filter(isHistoryCompactContentEvent);
     const state = new MidTurnCapacityCompactState(
       headAnchor,
@@ -889,9 +965,8 @@ export class AiSdkCompaction {
           state.replyReserveTokens = replyReserveTokens(lastUsage?.outputTokens);
         }
       }
-      // The turn's first request folds as a pre_turn boundary, like the
-      // reactive step-0 recovery; later steps fold mid_turn.
-      const phase = options.stepNumber === 0 ? 'pre_turn' : 'mid_turn';
+      // Physical step zero may already be mid-Turn after a handoff.
+      const phase = state.compactionPhase(options.stepNumber);
       // A skipped trigger is never silent: every failure-driven skip records a
       // failedOpen decision.
       const failOpen = (failOpenReason: string): RequestProjection | undefined => {
@@ -1067,15 +1142,15 @@ export class AiSdkCompaction {
     const currentTurnEvents = turnLedger
       .filter((event) => event.turnId === turnId)
       .filter(isHistoryCompactContentEvent);
-    // The head anchor is persisted before backend.send() is invoked, so
-    // its absence is a wiring error, not replication lag — fail open now.
-    if (!currentTurnEvents.some((event) => event.id === state.headAnchor.id)) {
+    const orderedEvents = [...state.priorContentEvents, ...currentTurnEvents];
+    // A fresh anchor belongs to the live ledger; after handoff it belongs to
+    // the authenticated predecessor prefix. Neither path manufactures it.
+    if (!orderedEvents.some((event) => event.id === state.headAnchor.id)) {
       return {
         decision: 'fail',
         diagnosticReason: 'head_anchor_not_durable',
       };
     }
-    const orderedEvents = [...state.priorContentEvents, ...currentTurnEvents];
     const memoryDecision = input.memoryCompactionDecision?.();
     const plan = await planHistoryCompaction({
       sessionId: this.sessionId,
@@ -1104,7 +1179,12 @@ export class AiSdkCompaction {
             },
           }
         : {}),
+      projectEffectiveCoverage: (covered) => this.foldEffectiveModelHistory(covered),
       summarize: async ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) => {
+        // Same contract as the standalone path: the planner hands the
+        // effective (transition-folded) view to the summarizer and pins its
+        // digest, so a summary can never quote a body a durable transition
+        // removed (#4845).
         return await this.summarizeWithFailureCircuit(summarizer, {
           sessionId: this.sessionId,
           turnId,
@@ -1229,7 +1309,7 @@ export class AiSdkCompaction {
   }): Promise<{ messages: ModelMessage[] } | undefined> {
     const state = input.midTurnState;
     if (input.retryAlreadyUsed || !state) return undefined;
-    if (this.modelAdapter.classifyError(input.error) !== 'ContextLength') return undefined;
+    if (this.modelAdapter.classifyError(input.error) !== 'context_overflow') return undefined;
 
     const eligibleImages = collectHistoricalImageToolResults(state.priorContentEvents);
     const imageOmission = omitHistoricalImageToolResults(input.currentMessages, eligibleImages);
@@ -1244,7 +1324,7 @@ export class AiSdkCompaction {
       return { messages: imageOmission.messages };
     }
 
-    const phase = input.stepNumber === 0 ? 'pre_turn' : 'mid_turn';
+    const phase = state.compactionPhase(input.stepNumber);
     // Entering the module spends the send's one attempt whether or not a fold
     // comes out of it; only a selected projection sets `applied`.
     state.compactionAttemptedThisSend = true;
@@ -1497,6 +1577,13 @@ export class MidTurnCapacityCompactState {
      */
     readonly capacity: number | undefined,
   ) {}
+
+  compactionPhase(stepNumber: number): 'pre_turn' | 'mid_turn' {
+    return stepNumber === 0 &&
+      !this.priorContentEvents.some((event) => event.id === this.headAnchor.id)
+      ? 'pre_turn'
+      : 'mid_turn';
+  }
 }
 
 /**

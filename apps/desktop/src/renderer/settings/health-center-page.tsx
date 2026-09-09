@@ -25,9 +25,12 @@ import type {
   HealthSnapshot,
 } from '@maka/core/health';
 import { HEALTH_SIGNAL_LAYERS } from '@maka/core/health';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { Text, VStack } from '@astryxdesign/core';
 import { Button, RelativeTime, StatusDot, useUiLocale, Banner } from '@maka/ui';
+import { capabilityReasonMessage } from '../locales/capability-reason-copy';
 import { getHealthCenterCopy, type HealthCenterCopy } from '../locales/settings-health-copy';
+import { botStatusReasonCopy } from '../locales/settings-bot-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import { SettingsSkeletonStack } from './settings-skeleton';
@@ -187,7 +190,7 @@ export function HealthCenterPage() {
               <Text type="supporting" size="sm" color="secondary">{layerCopy.description}</Text>
             </VStack>,
             ...signals.map((signal) => (
-              <HealthSignalRow key={signal.id} signal={signal} copy={copy} />
+              <HealthSignalRow key={signal.id} signal={signal} copy={copy} locale={locale} />
             )),
           ];
         })}
@@ -198,10 +201,10 @@ export function HealthCenterPage() {
   );
 }
 
-function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy }) {
-  const { signal, copy } = props;
+function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy; locale: UiLocale }) {
+  const { signal, copy, locale } = props;
   const statusCopy = copy.statuses[signal.status];
-  const detail = copy.signalDetail(signal);
+  const detail = localizedSignalDetail(signal, copy, locale);
   return (
     <SettingsRow
       align="start"
@@ -246,6 +249,24 @@ function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy }
         </span>
       )}
     />
+  );
+}
+
+/** Exported as a test seam. Copy catalogs may not runtime-import each other, so
+ * capability codes and bot bridge reasons resolve here before the catalog's own fallback. */
+export function localizedSignalDetail(
+  signal: HealthSignal,
+  copy: HealthCenterCopy,
+  locale: UiLocale,
+): string | undefined {
+  const detail = signal.detail;
+  if (detail?.kind !== 'capability_reason') return copy.signalDetail(signal);
+  return (
+    capabilityReasonMessage(detail.reason, locale) ??
+    (signal.relatedCapabilityId?.startsWith('bot:')
+      ? botStatusReasonCopy(detail.reason, locale)
+      : undefined) ??
+    copy.signalDetail(signal)
   );
 }
 

@@ -1,0 +1,56 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Performance frontend
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.18.1'
+          cache: npm
+      - run: npm ci
+      - run: npm --workspace @maka/desktop run build:workspace-deps
+      - run: npm --workspace @maka/desktop run build
+      - run: npm --workspace @maka/desktop run build-storybook
+      - id: browsers
+        run: npx playwright install --with-deps chromium
+      - name: Electron and Host measurements
+        working-directory: apps/desktop
+        env:
+          MAKA_PERF_OUTPUT: ${{ github.workspace }}/perf-results
+        run: xvfb-run -a npx playwright test --config ../../scripts/perf/playwright.config.ts
+      - name: Storybook measurements
+        if: ${{ !cancelled() && steps.browsers.outcome == 'success' }}
+        run: xvfb-run -a node scripts/perf/storybook.mjs
+      - name: Upload raw measurements and diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: performance-frontend-${{ github.sha }}
+          path: perf-results/
+          if-no-files-found: error
+          retention-days: 30

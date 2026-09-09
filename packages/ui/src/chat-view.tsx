@@ -58,7 +58,9 @@ import {
 } from './chat-turn.js';
 import { useChatScroll } from './use-chat-scroll.js';
 import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
+import type { TranscriptViewportNavigation } from './transcript-viewport-navigation.js';
 import { placeChatConversationItems } from './chat-conversation-items.js';
+import { projectTranscriptRows } from './transcript-row-projection.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { SessionContextLayer, type SessionContextGoal } from './session-context-layer.js';
@@ -72,11 +74,14 @@ export interface LiveContentActivationSnapshot {
   entries: ReadonlyMap<string, string>;
 }
 
-export interface TranscriptHistoryNoticeProps {
-  title: string;
+export type TranscriptHistoryLoadDirection = 'older' | 'newer';
+
+export interface TranscriptHistoryGapRowProps {
+  direction: TranscriptHistoryLoadDirection;
+  description: string;
   actionLabel: string;
   isPending: boolean;
-  onReturnToLatest(): Promise<void> | void;
+  onActivate(): Promise<void> | void;
 }
 
 export interface ChatViewGoalIndicatorProps {
@@ -120,16 +125,18 @@ export function resolveRailAlignedTarget<T extends { turnId: string; nonce: numb
   };
 }
 
-/** Persistent navigation position with a direct path back to the transcript tail. */
-export function TranscriptHistoryNotice({
-  title,
+/** A truthful missing-range boundary rendered at its position in the transcript. */
+export function TranscriptHistoryGapRow({
+  direction,
+  description,
   actionLabel,
   isPending,
-  onReturnToLatest,
-}: TranscriptHistoryNoticeProps) {
+  onActivate,
+}: TranscriptHistoryGapRowProps) {
   return (
     <HStack
-      className="maka-transcript-history-controls"
+      className="maka-transcript-gap-row"
+      data-transcript-gap={direction}
       gap={2}
       hAlign="center"
       vAlign="center"
@@ -138,14 +145,15 @@ export function TranscriptHistoryNotice({
       aria-live="polite"
       aria-atomic="true"
     >
-      <Text type="supporting" color="secondary">{title}</Text>
+      <Text type="supporting" color="secondary">{description}</Text>
       <Button
         label={actionLabel}
         variant="ghost"
         size="sm"
-        isDisabled={isPending}
+        isLoading={isPending}
+        isInterruptible
         onClick={() => {
-          void onReturnToLatest();
+          void onActivate();
         }}
       />
     </HStack>
@@ -163,6 +171,9 @@ export function TranscriptHistoryNotice({
  * plus `hostTurnId` for the grouping once the Host names one.
  */
 export interface TransientUserMessageProjection {
+  deliveryStatus?: string;
+  deliveryDetail?: string;
+  deliveryActions?: readonly { label: string; onClick(): void }[];
   id: string;
   text: string;
   ts: number;
@@ -293,18 +304,17 @@ export function ChatView(props: {
    * chat view only scrolls/highlights the already-rendered turn.
    */
   scrollTargetTurn?: { turnId: string; nonce: number };
+  onScrollTargetHandled?(nonce: number): void;
   /** Runtime-only reading position restored without search focus or highlight. */
   restoreTargetTurn?: { turnId: string; unavailable?: boolean };
+  viewportNavigation?: TranscriptViewportNavigation;
   onReadingAnchorChange?(turnId?: string): void;
   scrollBehavior: ScrollBehavior;
   hasOlderHistory?: boolean;
+  hasNewerHistory?: boolean;
+  historyLoadPending?: TranscriptHistoryLoadDirection;
   onLoadEarlierHistory?(anchorTurnId?: string): Promise<void> | void;
-  returnToLatest?: {
-    title: string;
-    label: string;
-    isPending: boolean;
-    onClick(): Promise<void> | void;
-  };
+  onLoadLaterHistory?(anchorTurnId?: string): Promise<void> | void;
   transcriptTurnIndex?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>;
   onLoadTranscriptTurn?(target: { turnId: string; sequence: number }): void;
   /**
@@ -434,11 +444,31 @@ export function ChatView(props: {
   // being in-flight are separate signals. Wait indicators alone still mark
   // streaming, but delayed flags can lag one frame past complete; terminal
   // evidence must outrank them so copy/regenerate stay actionable.
-  const liveInFlight = !!(props.liveTurn && !props.liveTurn.terminal);
-  const streamingActive = liveInFlight || (!props.liveTurn?.terminal && !!props.runningStatus);
+  // A live context-compaction Turn is not an assistant stream: it renders one
+  // system row (see overlayLiveTurn), not a streaming tail. Keeping it out of
+  // liveInFlight/streamingActive stops chat-turn from adding an empty assistant
+  // article, the generic "pondering" spinner, and a footer placeholder on top.
+  const isCompactionLive = props.liveTurn?.rootExecutionKind === 'context_compact';
+  // overlayLiveTurn renders one "compacting" system row for a live compaction
+  // Turn that has no assistant steps — including in a session with no settled
+  // chat messages yet. The empty-state decision (below) keys off `chat.length`,
+  // which does not see that overlaid row, so it must treat this as visible
+  // content or the row is hidden behind the empty hero.
+  const hasLiveCompactionRow = isCompactionLive && (props.liveTurn?.steps.length ?? 0) === 0;
+  const liveInFlight = !!(props.liveTurn && !props.liveTurn.terminal) && !isCompactionLive;
+  const streamingActive =
+    liveInFlight || (!props.liveTurn?.terminal && !!props.runningStatus && !isCompactionLive);
   const tailTurnId = liveInFlight
     ? props.liveTurn!.turnId
     : (streamingActive ? turns[turns.length - 1]?.turnId : undefined);
+  const boundaryOverlayTurnId = props.liveTurn?.turnId
+    ?? (streamingActive ? tailTurnId : undefined);
+  const transcriptRows = useMemo(() => projectTranscriptRows({
+    turns,
+    hasOlder: props.hasOlderHistory === true,
+    hasNewer: props.hasNewerHistory === true,
+    activeTurnId: boundaryOverlayTurnId,
+  }), [turns, props.hasOlderHistory, props.hasNewerHistory, boundaryOverlayTurnId]);
   // One rail tick per turn that carries a user prompt (Codex-style prompt
   // navigation). Memoized so the rail's IntersectionObserver isn't rebuilt
   // on every render.
@@ -584,10 +614,14 @@ export function ChatView(props: {
     messages: props.messages,
     target: scrollTargetTurn,
     restoreTarget: props.restoreTargetTurn,
+    onTargetHandled: props.onScrollTargetHandled,
+    viewportNavigation: props.viewportNavigation,
     onReadingAnchorChange: props.onReadingAnchorChange,
     behavior: props.scrollBehavior,
     hasOlderHistory: props.hasOlderHistory,
     onLoadEarlierHistory: props.onLoadEarlierHistory,
+    hasNewerHistory: props.hasNewerHistory,
+    onLoadLaterHistory: props.onLoadLaterHistory,
   });
   const { quote: selectionQuote, clear: clearSelectionQuote } = useMessageSelectionQuote(
     scrollRef,
@@ -695,7 +729,8 @@ export function ChatView(props: {
     chat.length === 0
     && transientMessages.length === 0
     && !streamingActive
-    && !hasVisibleConversationItem;
+    && !hasVisibleConversationItem
+    && !hasLiveCompactionRow;
   const emptyContent = props.messageLoading
     ? (
         <div className="maka-chat-message-loading">
@@ -738,21 +773,6 @@ export function ChatView(props: {
         role="region"
         aria-label={copy.conversationAriaLabel(props.activeSession.name)}
       >
-      {props.returnToLatest ? (
-        <TranscriptHistoryNotice
-          title={props.returnToLatest.title}
-          actionLabel={props.returnToLatest.label}
-          isPending={props.returnToLatest.isPending}
-          onReturnToLatest={async () => {
-            // Loading the latest range is the shell's job; putting the viewport
-            // on it is this view's, and setting the pin is the whole of it —
-            // the range that arrives afterwards is growth, and growth is
-            // already followed.
-            await props.returnToLatest?.onClick();
-            scrollAuthority.pinToTail();
-          }}
-        />
-      ) : null}
       <SessionContextLayer
         sessionName={props.activeSession.name}
         branch={props.branchBanner}
@@ -798,7 +818,34 @@ export function ChatView(props: {
                 && !streamingActive
                 ? emptyContent
                 : null}
-              {turns.map((turn) => {
+              {transcriptRows.map((row) => {
+                if (row.kind === 'gap') {
+                  const gap = row.direction === 'older'
+                    ? {
+                        description: copy.transcriptGap.olderDescription,
+                        actionLabel: copy.transcriptGap.olderAction,
+                        activate: () => props.onLoadEarlierHistory?.(turns[0]?.turnId),
+                      }
+                    : {
+                        description: copy.transcriptGap.newerDescription,
+                        actionLabel: copy.transcriptGap.newerAction,
+                        activate: () => props.onLoadLaterHistory?.(turns.at(-1)?.turnId),
+                      };
+                  return (
+                    <TranscriptHistoryGapRow
+                      key={`transcript-gap:${row.direction}`}
+                      direction={row.direction}
+                      description={gap.description}
+                      actionLabel={gap.actionLabel}
+                      isPending={props.historyLoadPending === row.direction}
+                      onActivate={() => {
+                        scrollAuthority.releasePin();
+                        return gap.activate();
+                      }}
+                    />
+                  );
+                }
+                const turn = row.turn;
                 return (
                   <div
                     key={turn.turnId}
@@ -965,11 +1012,11 @@ export function ChatView(props: {
 export function DeepResearchProgressPanel({
   run,
   onContinue,
-  copy = getConversationCopy('zh-CN').chat.deepResearchProgress,
+  copy,
 }: {
   run: DeepResearchClientProgress;
   onContinue?: (run: DeepResearchClientProgress) => void;
-  copy?: ReturnType<typeof getConversationCopy>['chat']['deepResearchProgress'];
+  copy: ReturnType<typeof getConversationCopy>['chat']['deepResearchProgress'];
 }) {
   const completedItems = run.checklist.filter(
     (item) => item.status === 'completed' || item.status === 'skipped',

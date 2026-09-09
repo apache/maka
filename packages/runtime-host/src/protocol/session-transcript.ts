@@ -75,8 +75,6 @@ export interface SessionTranscriptPage {
 
 export interface SessionTranscriptBootstrap {
   readonly throughSequence: number | null;
-  /** Whether every durable sequence is present or policy projection may leave gaps. */
-  readonly durableCoverage: 'complete' | 'projected';
   readonly overlayMessageCount: number;
   readonly durable: SessionTranscriptPage;
   readonly overlay: SessionTranscriptPage;
@@ -194,7 +192,6 @@ export function decodeSessionTranscriptPageInput(value: unknown): SessionTranscr
 export function decodeSessionTranscriptBootstrap(value: unknown): SessionTranscriptBootstrap {
   const bootstrap = requireExactRecord(value, 'Session transcript bootstrap', [
     'throughSequence',
-    'durableCoverage',
     'overlayMessageCount',
     'durable',
     'overlay',
@@ -203,9 +200,6 @@ export function decodeSessionTranscriptBootstrap(value: unknown): SessionTranscr
     bootstrap.throughSequence === null
       ? null
       : requireCount(bootstrap.throughSequence, 'Session transcript watermark');
-  if (bootstrap.durableCoverage !== 'complete' && bootstrap.durableCoverage !== 'projected') {
-    throw invalidProtocolFrame('Invalid Session transcript durable coverage');
-  }
   const overlayMessageCount = requireCount(
     bootstrap.overlayMessageCount,
     'Session transcript overlay message count',
@@ -230,7 +224,6 @@ export function decodeSessionTranscriptBootstrap(value: unknown): SessionTranscr
   }
   return {
     throughSequence,
-    durableCoverage: bootstrap.durableCoverage,
     overlayMessageCount,
     durable,
     overlay,

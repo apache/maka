@@ -31,6 +31,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/deep-research';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import {
   resolveRootControlNamespace,
@@ -824,25 +825,45 @@ async function seedAuthority(
       model: 'fake-model',
       permissionMode: 'ask',
     });
-    await execution.sessionStore.appendMessages(unread.id, [
-      { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'one' },
+    await seedInvocation(execution.runtimeEventStore, {
+      sessionId: unread.id,
+      runId: 'run-1',
+      turnId: 'turn-1',
+      openedAt: 1,
+    });
+    for (const event of [
       {
-        type: 'assistant',
+        id: 'message-1',
+        ts: 1,
+        role: 'user' as const,
+        author: 'user' as const,
+        content: { kind: 'text' as const, text: 'one' },
+      },
+      {
         id: 'message-2',
-        turnId: 'turn-1',
         ts: 2,
-        text: 'two',
-        modelId: 'fake-model',
+        role: 'model' as const,
+        author: 'agent' as const,
+        content: { kind: 'text' as const, text: 'two' },
       },
       {
-        type: 'tool_call',
-        id: 'tool-1',
-        turnId: 'turn-1',
+        id: 'run-1-terminal',
         ts: 3,
-        toolName: 'Read',
-        args: {},
+        role: 'system' as const,
+        author: 'system' as const,
+        status: 'completed' as const,
+        actions: { endInvocation: true },
       },
-    ]);
+    ]) {
+      await execution.runtimeEventStore.appendRuntimeEvent(unread.id, 'run-1', {
+        sessionId: unread.id,
+        invocationId: 'run-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+        partial: false,
+        ...event,
+      });
+    }
     await execution.sessionStore.updateHeader(unread.id, {
       hasUnread: true,
       lastMessageAt: 2,
@@ -887,7 +908,6 @@ async function seedAuthority(
     });
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const todos = await openInteractiveSessionTodoStoreForWrite(owner.lease);
-    await artifacts.recover();
     await Promise.all([
       artifacts.create({
         id: 'retirement-artifact',
@@ -897,7 +917,7 @@ async function seedAuthority(
         kind: 'file',
         content: 'remove me',
         mimeType: 'text/plain',
-        source: 'fixture',
+        source: 'tool_result',
         now: 1,
       }),
       artifacts.create({
@@ -908,7 +928,7 @@ async function seedAuthority(
         kind: 'file',
         content: 'recover cleanup',
         mimeType: 'text/plain',
-        source: 'fixture',
+        source: 'tool_result',
         now: 2,
       }),
       todos.replaceAll(retirement.id, [{ content: 'Remove retirement task', status: 'pending' }]),
@@ -996,7 +1016,6 @@ async function assertRetirementCleanup(
   try {
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    await artifacts.recover();
     assert.deepEqual(await execution.sessionStore.listPendingSessionRetirementCleanupIds(), []);
     for (const sessionId of sessionIds) {
       assert.equal((await artifacts.listPage(sessionId, { offset: 0, limit: 1 })).total, 0);

@@ -90,6 +90,7 @@ import {
 } from '../protocol/index.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { FramedTransport } from '../transport/framed-transport.js';
+import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 
 import {
   CONNECTION_EFFECT_MODEL_IDS,
@@ -773,7 +774,7 @@ test('startup recovery canonically closes pending linked child admissions withou
           assert.equal(terminal.fact.failureClass, 'app_restarted');
         }
         const userMessages: StoredMessage[] = (
-          await stores.sessionStore.readMessages(recovered.sessionId)
+          await readLedgerMessages(stores.runtimeEventStore, recovered.sessionId)
         ).filter((message) => message.type === 'user' && message.turnId === recovered.turnId);
         assert.equal(userMessages.length, recovered.kind === 'linked_child_provider_retry' ? 0 : 1);
         if (recovered.kind !== 'linked_child_provider_retry') {

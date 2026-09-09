@@ -25,7 +25,6 @@ import {
   decodeWorkHubCoordinationActResult,
   decodeWorkHubCoordinationAnswerInput,
   decodeWorkHubCoordinationCandidatesResult,
-  decodeWorkHubCoordinationRecordInput,
   decodeWorkHubCoordinationResolveInput,
   decodeWorkHubCoordinationResolveResult,
   HOST_OPERATION_SPECS,
@@ -54,18 +53,6 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
   assert.deepEqual(
     decodeWorkHubCoordinationAnswerInput({ turnId: 'answer-turn', text: 'What changed?' }),
     { turnId: 'answer-turn', text: 'What changed?' },
-  );
-  assert.deepEqual(
-    decodeWorkHubCoordinationRecordInput({
-      turnId: 'summary-turn',
-      userText: 'Continue payment work',
-      assistantText: 'Submitted to Payment',
-    }),
-    {
-      turnId: 'summary-turn',
-      userText: 'Continue payment work',
-      assistantText: 'Submitted to Payment',
-    },
   );
   assert.deepEqual(
     decodeWorkHubCoordinationActInput({
@@ -171,25 +158,107 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
     (error) => error instanceof RuntimeHostProtocolError,
   );
   assert.equal(HOST_OPERATION_SPECS['workhub.coordination.answer'].mode, 'command');
-  assert.equal(HOST_OPERATION_SPECS['workhub.coordination.record'].mode, 'command');
   assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.answer'), true);
-  assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.record'), true);
   assert.throws(
     () => decodeWorkHubCoordinationAnswerInput({ turnId: 'turn', text: 'answer', extra: true }),
     (error) => error instanceof RuntimeHostProtocolError,
   );
-  assert.throws(
-    () =>
-      decodeWorkHubCoordinationRecordInput({
-        turnId: 'turn',
-        userText: 'user',
-        assistantText: 'x'.repeat(8 * 1024 + 1),
-      }),
-    (error) => error instanceof RuntimeHostProtocolError,
+});
+
+test('WorkHub Coordination resume has closed input and outcome shapes', () => {
+  assert.deepEqual(
+    decodeWorkHubCoordinationActInput({
+      actionId: 'action-resume',
+      userText: 'Resume Payments',
+      proposal: {
+        disposition: 'resume_work',
+        resumesActionId: 'source-action',
+        expects: { targetSessionId: 'payments' },
+      },
+    }),
+    {
+      actionId: 'action-resume',
+      userText: 'Resume Payments',
+      proposal: {
+        disposition: 'resume_work',
+        resumesActionId: 'source-action',
+        expects: { targetSessionId: 'payments' },
+      },
+    },
   );
+
+  for (const invalid of [
+    {
+      actionId: 'action-resume-confirmed',
+      userText: 'Resume Payments',
+      proposal: { disposition: 'resume_work', expects: { targetSessionId: 'payments' } },
+      confirmation: { kind: 'user_stop' },
+    },
+    {
+      actionId: 'action-resume-missing-target',
+      userText: 'Resume Payments',
+      proposal: { disposition: 'resume_work' },
+    },
+    {
+      actionId: 'action-resume-injected',
+      userText: 'Resume Payments',
+      proposal: {
+        disposition: 'resume_work',
+        resumesActionId: 'source-action',
+        expects: { targetSessionId: 'payments' },
+        targetSessionId: 'injected',
+      },
+    },
+  ]) {
+    assert.throws(
+      () => decodeWorkHubCoordinationActInput(invalid),
+      (error) => error instanceof RuntimeHostProtocolError,
+    );
+  }
+
+  for (const result of [
+    {
+      disposition: 'resume_work',
+      outcome: 'resume_started',
+      targetSessionId: 'payments',
+      targetTurnId: 'turn-2',
+    },
+    {
+      disposition: 'resume_work',
+      outcome: 'already_running',
+      targetSessionId: 'payments',
+    },
+  ]) {
+    assert.deepEqual(decodeWorkHubCoordinationActResult(result), result);
+  }
+
+  for (const invalid of [
+    {
+      disposition: 'resume_work',
+      outcome: 'parked',
+      targetSessionId: 'payments',
+    },
+    {
+      disposition: 'resume_work',
+      outcome: 'already_running',
+      targetSessionId: 'payments',
+      parkReason: 'safety_check_failed',
+    },
+    {
+      disposition: 'resume_work',
+      outcome: 'resume_started',
+      targetSessionId: 'payments',
+    },
+  ]) {
+    assert.throws(
+      () => decodeWorkHubCoordinationActResult(invalid),
+      (error) => error instanceof RuntimeHostProtocolError,
+    );
+  }
 });
 
 test('WorkHub Coordination candidates are bounded and carry opaque proposal identities', () => {
+  assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 110);
   const result = decodeWorkHubCoordinationCandidatesResult({
     candidateSetId: `sha256:${'a'.repeat(64)}`,
     candidates: [
@@ -203,10 +272,12 @@ test('WorkHub Coordination candidates are bounded and carry opaque proposal iden
         },
         state: 'active',
         updatedAt: 7,
+        latestDelegationActionId: 'action-a',
       },
     ],
   });
   assert.equal(result.candidates[0]?.candidateRef, 'candidate_a');
+  assert.equal(result.candidates[0]?.latestDelegationActionId, 'action-a');
   assert.equal(HOST_OPERATION_SPECS['workhub.coordination.candidates'].mode, 'query');
   assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.candidates'), true);
   assert.throws(
@@ -411,4 +482,63 @@ test('WorkHub Coordination action results preserve the admitted disposition', ()
       (error) => error instanceof RuntimeHostProtocolError,
     );
   }
+});
+
+test('WorkHub decodes attachment context and user-selected creation defaults without strategy authority', () => {
+  const attachments = [
+    {
+      name: 'requirements.txt',
+      kind: 'other',
+      mimeType: 'text/plain',
+      bytes: 12,
+      ref: {
+        kind: 'session_file',
+        sessionId: 'maka_workhub_coordination',
+        relativePath: 'artifact-1',
+      },
+    },
+  ];
+  const input = {
+    actionId: 'composer-action',
+    userText: 'Create an audit',
+    proposal: { disposition: 'create_new', title: 'Audit' },
+    create: { workspace: { kind: 'host_path', path: '/workspace' } },
+    newWorkDefaults: {
+      model: {
+        llmConnectionId: 'connection-1',
+        llmConnectionSlug: 'primary',
+        model: 'chosen-model',
+      },
+      permissionMode: 'ask',
+    },
+    attachments,
+  };
+  assert.deepEqual(decodeWorkHubCoordinationActInput(input), input);
+  assert.deepEqual(
+    decodeWorkHubCoordinationAnswerInput({ turnId: 'answer-1', text: 'Review file', attachments })
+      .attachments,
+    attachments,
+  );
+  assert.throws(() =>
+    decodeWorkHubCoordinationActInput({
+      ...input,
+      newWorkDefaults: { permissionMode: 'invented' },
+    }),
+  );
+  assert.throws(() =>
+    decodeWorkHubCoordinationActInput({
+      ...input,
+      newWorkDefaults: { ...input.newWorkDefaults, workspace: '/forged' },
+    }),
+  );
+  assert.throws(() =>
+    decodeWorkHubCoordinationActInput({
+      ...input,
+      proposal: { disposition: 'answer_here' },
+      create: undefined,
+    }),
+  );
+  assert.throws(() =>
+    decodeWorkHubCoordinationActInput({ ...input, attachments: Array(9).fill(attachments[0]) }),
+  );
 });

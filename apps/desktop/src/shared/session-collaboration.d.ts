@@ -29,8 +29,13 @@ export type SessionCollaborationImportResult =
         | 'invalid_code'
         | 'insecure_confirmation_required'
         | 'peer_path_unavailable'
+        | 'incompatible_host'
         | 'connection_failed';
-      readonly message?: string;
+    }
+  | {
+      readonly kind: 'error';
+      readonly reason: 'mount_limit_reached';
+      readonly params: { readonly max: number };
     };
 
 export type SessionCollaborationImportPhase =
@@ -49,6 +54,14 @@ export interface SessionCollaborationMountSummary {
   readonly name: string;
   readonly hostId: string;
   readonly readiness: 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
+  readonly failure?: SessionCollaborationMountFailure;
   readonly peerPath?: RuntimeHostPeerConnectionPath;
   readonly session?: SharedSessionCatalogProjection;
 }
+
+export type SessionCollaborationMountFailure =
+  | 'credential_rejected'
+  | 'session_unavailable'
+  | 'peer_path_unavailable'
+  | 'incompatible_host'
+  | 'connection_failed';

@@ -25,7 +25,12 @@
  */
 
 import type { SessionEvent } from '@maka/core/events';
-import type { BackendKind, SessionHeader, StoredMessage } from '@maka/core/session';
+import type {
+  BackendKind,
+  RuntimeSystemNoteKind,
+  SessionHeader,
+  StoredMessage,
+} from '@maka/core/session';
 import type {
   AgentBackend,
   BackendCompactHistoryInput,
@@ -39,6 +44,10 @@ import type { EffectiveOrchestration } from '@maka/core/orchestration';
 import type { AttachmentByteReader } from '@maka/core/attachments';
 import { pricingModelKey } from '@maka/core/usage-stats/pricing';
 import type { PricingConfig, ToolInvocationRecord } from '@maka/core/usage-stats/types';
+import type {
+  RequestCompositionSnapshotInput,
+  RunCompositionSourceRevision,
+} from '@maka/core/run-composition';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 
@@ -72,7 +81,7 @@ import {
   type MemoryExtractionSourceSnapshot,
   type MemoryExtractionTrigger,
 } from './memory-extraction.js';
-import { modelUsesNativeOpenAiResponses, resolveModelRuntime } from './model-runtime.js';
+import { resolveModelRuntime } from './model-runtime.js';
 import { routeApplyPatchTools } from './apply-patch-profile.js';
 import { bindToolResultArchiveDecoder } from './tool-result-archive-capability.js';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
@@ -99,7 +108,6 @@ export type {
 } from '@maka/core/backend-types';
 export { INVALID_TOOL_NAME, repairMakaToolCall } from './ai-sdk-tool-repair.js';
 
-export type AppendMessageFn = (m: StoredMessage) => Promise<void>;
 export type ToolTelemetryRecorder = (record: ToolInvocationRecord) => void;
 export type {
   HistoryCompactCheckpointLoader,
@@ -114,8 +122,6 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   header: SessionHeader;
   /** Host-frozen provider endpoint and credential ownership for this backend generation. */
   providerStateIdentity?: `sha256:${string}`;
-  /** Append-message function bound to this session (e.g. SessionStore wrapper). */
-  appendMessage: AppendMessageFn;
   /** Reads the authoritative session boundary immediately before every local tool invocation. */
   readExecutionBoundary: ToolRuntimeInput['readExecutionBoundary'];
   createSandboxBoundaryRequest?: ToolRuntimeInput['createSandboxBoundaryRequest'];
@@ -124,6 +130,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   // ── Process-singleton deps ─────────────────────────────────────────────
   /** Canonical-named tools available this session. */
   tools: MakaTool[];
+  /** Trusted scoped catalog sampled before each logical model step. */
+  resolveTools?: () => readonly MakaTool[];
   /** Diagnostic-only Plan Mode/execution identity snapshot. */
   planTraceContext?: {
     mode: 'agent' | 'plan';
@@ -153,7 +161,13 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   /** Optional system prompt (skills + workspace AGENTS.md merged upstream). */
   systemPrompt?:
     | string
-    | ((context: SystemPromptContext) => string | undefined | Promise<string | undefined>);
+    | ((
+        context: SystemPromptContext,
+      ) =>
+        | string
+        | undefined
+        | ResolvedSystemPrompt
+        | Promise<string | undefined | ResolvedSystemPrompt>);
   /** Provider-native options passed through to ai-sdk. */
   providerOptions?: Record<string, unknown>;
   /** Test seam for the adapter-owned incremental Responses transport. */
@@ -174,6 +188,11 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   /** Optional diagnostic trace hook for explaining a runtime turn without changing renderer events. */
   recordRunTrace?: RunTraceRecorder;
   /**
+   * Writes one runtime note — something that happened inside this invocation —
+   * to the invocation's RuntimeEvent ledger, which is where its record lives.
+   */
+  recordSystemNote?: (kind: RuntimeSystemNoteKind, turnId: string, data?: unknown) => Promise<void>;
+  /**
    * Commits one settled provider request: the canonical attempt and, when it
    * is the completed main call, the derived latest-context row it authorises.
    * One object so a layer cannot forward half of it (#2323).
@@ -192,6 +211,11 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
     turnId: string;
     runId: string;
   }) => void | Promise<void>;
+  /** Durably binds the effective logical-step surface before provider dispatch. */
+  recordRequestComposition?: (
+    runId: string,
+    snapshot: RequestCompositionSnapshotInput,
+  ) => Promise<string>;
   /**
    * Optional artifact recorder. Runtime derives only deterministic candidates
    * from structured tool results / explicit redirects; desktop main owns
@@ -214,6 +238,11 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   maxProviderImageRequestBytes?: number;
   /** Host-owned bounded long-term-memory extraction. Source tools are Runtime-reserved. */
   memoryExtraction?: MemoryExtractionSourceCapabilities;
+}
+
+export interface ResolvedSystemPrompt {
+  text?: string;
+  sourceRevisions: readonly RunCompositionSourceRevision[];
 }
 
 export interface SystemPromptContext {
@@ -265,7 +294,8 @@ export class AiSdkBackend implements AgentBackend {
   private readonly messageProjection: AiSdkMessageProjection;
   private readonly providerTelemetry: ProviderRequestTelemetry;
   private readonly resolvedProviderOptions: Record<string, unknown>;
-  private readonly toolAvailabilityRuntime: ToolAvailabilityRuntime;
+  private readonly memoryTools: readonly MakaTool[];
+  private readonly applyPatchProfile: ReturnType<typeof resolveModelRuntime>['applyPatchProfile'];
 
   /** Bounds outstanding Code Mode cells on this backend. */
   private readonly codeCellAdmission = new AdmissionLimiter(MAX_ACTIVE_CODE_MODE_CELLS);
@@ -307,15 +337,17 @@ export class AiSdkBackend implements AgentBackend {
     // One resolved options value for every reader: the main call, the
     // auxiliary memory-extraction call, and the provider request all use the
     // same options value, so they cannot disagree on what was sent.
+    const runtime = resolveModelRuntime(input.connection, input.modelId);
     this.resolvedProviderOptions =
       input.providerOptions ??
-      buildProviderOptions(input.connection, input.modelId, input.header.thinkingLevel);
+      buildProviderOptions(input.connection, input.modelId, input.header.thinkingLevel, runtime);
     this.modelAdapter = new ModelAdapter({
       sessionId: input.sessionId,
       connection: input.connection,
       apiKey: input.apiKey,
       modelId: input.modelId,
       modelFactory: input.modelFactory,
+      resolvedRuntime: runtime,
       // `input.providerOptions` is an override escape hatch: when set it owns
       // the whole provider-options namespace (including reasoning effort), and
       // the computed defaults are dropped entirely. Keep providerOptions the
@@ -344,8 +376,8 @@ export class AiSdkBackend implements AgentBackend {
       assertModelCallAccountingReady: input.assertModelCallAccountingReady,
       beforeRunProviderDispatch: input.beforeRunProviderDispatch,
     });
-    const runtime = resolveModelRuntime(input.connection, input.modelId);
     const applyPatchProfile = runtime.applyPatchProfile;
+    this.applyPatchProfile = applyPatchProfile;
     this.messageProjection = new AiSdkMessageProjection({
       modelAdapter: this.modelAdapter,
       applyPatchProfile,
@@ -383,7 +415,7 @@ export class AiSdkBackend implements AgentBackend {
     ) {
       throw new Error('Long-term Memory trigger tool names are reserved by Runtime');
     }
-    const memoryTools = input.memoryExtraction
+    this.memoryTools = input.memoryExtraction
       ? buildMemoryExtractionTriggerTools({
           capabilities: input.memoryExtraction,
           snapshot: (trigger, context) => this.memorySourceSnapshot(trigger, context),
@@ -394,19 +426,37 @@ export class AiSdkBackend implements AgentBackend {
             );
             if (turn) turn.memoryExtractRequested = true;
           },
-          ...(modelUsesNativeOpenAiResponses(input.connection, input.modelId)
+          ...(input.connection.providerType === 'openai' && runtime.wire === 'openai-responses'
             ? { unsupportedReason: 'provider_unsupported' as const }
             : {}),
         })
       : [];
-    const modelTools = routeApplyPatchTools(input.tools, applyPatchProfile);
-    this.toolAvailabilityRuntime = new ToolAvailabilityRuntime(
-      // The archive decoder is a runtime protocol tool, not a host binding:
-      // this session's placeholders name it, so this session advertises it.
-      bindToolResultArchiveDecoder([...modelTools, ...memoryTools], input.toolResultArchive),
-      input.toolAvailability,
-      buildInvalidMakaTool(),
-    );
+  }
+
+  private snapshotToolAvailability(): {
+    hostTools: readonly MakaTool[];
+    runtime: ToolAvailabilityRuntime;
+  } {
+    const hostTools = Object.freeze([...(this.input.resolveTools?.() ?? this.input.tools)]);
+    if (
+      hostTools.some(
+        (tool) => tool.name === MEMORY_REMEMBER_TOOL_NAME || tool.name === MEMORY_EXTRACT_TOOL_NAME,
+      )
+    ) {
+      throw new Error('Long-term Memory trigger tool names are reserved by Runtime');
+    }
+    const modelTools = routeApplyPatchTools(hostTools, this.applyPatchProfile);
+    return {
+      hostTools,
+      runtime: new ToolAvailabilityRuntime(
+        bindToolResultArchiveDecoder(
+          [...modelTools, ...this.memoryTools],
+          this.input.toolResultArchive,
+        ),
+        this.input.toolAvailability,
+        buildInvalidMakaTool(),
+      ),
+    };
   }
 
   private memorySourceSnapshot(
@@ -431,6 +481,7 @@ export class AiSdkBackend implements AgentBackend {
    * long after its step still resolves this turn's watchdog, trace, and run.
    */
   private createToolRuntime(identity: {
+    inheritedSandboxBoundaryDenied: boolean;
     turnId: string;
     runId: string | undefined;
     invocationId: string | undefined;
@@ -440,11 +491,11 @@ export class AiSdkBackend implements AgentBackend {
   }): ToolRuntime {
     const input = this.input;
     return new ToolRuntime({
+      inheritedSandboxBoundaryDenied: identity.inheritedSandboxBoundaryDenied,
       sessionId: input.sessionId,
       header: input.header,
       connection: input.connection,
       modelId: input.modelId,
-      appendMessage: input.appendMessage,
       readExecutionBoundary: input.readExecutionBoundary,
       createSandboxBoundaryRequest: input.createSandboxBoundaryRequest,
       settleSandboxBoundaryRequest: input.settleSandboxBoundaryRequest,
@@ -479,6 +530,13 @@ export class AiSdkBackend implements AgentBackend {
   // send()
   // --------------------------------------------------------------------------
 
+  async prepareRunComposition(input: { runId: string; turnId: string }): Promise<void> {
+    if (!this.input.beforeRunProviderDispatch) {
+      throw new Error('Backend has no durable Run Composition preparation authority');
+    }
+    await this.input.beforeRunProviderDispatch({ sessionId: this.sessionId, ...input });
+  }
+
   private openTurnScope(input: BackendSendInput): AiSdkTurn {
     const turn = new AiSdkTurn(
       {
@@ -487,7 +545,7 @@ export class AiSdkBackend implements AgentBackend {
         messageProjection: this.messageProjection,
         providerTelemetry: this.providerTelemetry,
         compaction: this.compaction,
-        toolAvailabilityRuntime: this.toolAvailabilityRuntime,
+        snapshotToolAvailability: () => this.snapshotToolAvailability(),
         codeCellAdmission: this.codeCellAdmission,
         resolvedProviderOptions: this.resolvedProviderOptions,
         session: this.turnSessionState,
@@ -497,6 +555,7 @@ export class AiSdkBackend implements AgentBackend {
         providerRetrySleep: this.providerRetrySleep,
         createToolRuntime: (owner) =>
           this.createToolRuntime({
+            inheritedSandboxBoundaryDenied: input.continuation?.sandboxBoundaryDenied === true,
             turnId: owner.turnId,
             runId: owner.runId,
             invocationId: input.invocationId ?? input.runId,
