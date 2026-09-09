@@ -4971,60 +4971,6 @@ export class SqliteSessionMetadataStore {
     }
   }
 
-  private replaceSessionMessageSync(
-    sessionId: string,
-    sequence: number,
-    message: StoredMessage,
-    json = JSON.stringify(message),
-  ): void {
-    const encoded = Buffer.from(json, 'utf8');
-    this.db
-      .prepare('DELETE FROM session_message_chunks WHERE session_id = ? AND sequence = ?')
-      .run(sessionId, sequence);
-    this.db
-      .prepare('DELETE FROM session_message_payloads WHERE session_id = ? AND sequence = ?')
-      .run(sessionId, sequence);
-    if (encoded.byteLength <= SQLITE_SESSION_MESSAGE_CHUNK_BYTES) {
-      this.db
-        .prepare(
-          'UPDATE session_messages SET record_json = ? WHERE session_id = ? AND sequence = ?',
-        )
-        .run(json, sessionId, sequence);
-      return;
-    }
-    this.db
-      .prepare('UPDATE session_messages SET record_json = ? WHERE session_id = ? AND sequence = ?')
-      .run(SQLITE_SESSION_MESSAGE_CHUNK_MARKER, sessionId, sequence);
-    this.db
-      .prepare(
-        'INSERT INTO session_message_payloads(session_id, sequence, record_bytes, sha256) VALUES (?, ?, ?, ?)',
-      )
-      .run(
-        sessionId,
-        sequence,
-        encoded.byteLength,
-        createHash('sha256').update(encoded).digest('hex'),
-      );
-    for (
-      let offset = 0;
-      offset < encoded.byteLength;
-      offset += SQLITE_SESSION_MESSAGE_CHUNK_BYTES
-    ) {
-      const chunk = encoded.subarray(offset, offset + SQLITE_SESSION_MESSAGE_CHUNK_BYTES);
-      this.db
-        .prepare(
-          'INSERT INTO session_message_chunks(session_id, sequence, chunk_index, data, sha256) VALUES (?, ?, ?, ?, ?)',
-        )
-        .run(
-          sessionId,
-          sequence,
-          offset / SQLITE_SESSION_MESSAGE_CHUNK_BYTES,
-          chunk,
-          createHash('sha256').update(chunk).digest('hex'),
-        );
-    }
-  }
-
   private readMessagesWith(
     sessionId: string,
     decode: (value: unknown) => StoredMessage,

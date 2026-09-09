@@ -4300,22 +4300,6 @@ export class SessionManager {
     }
   }
 
-  private async requireTurnForAction(
-    sessionId: string,
-    turnId: string,
-    allowed: readonly TurnRecord['status'][],
-    action: string,
-  ): Promise<TurnRecord> {
-    const turn = (await this.getSessionView(sessionId)).turns.find(
-      (candidate) => candidate.turnId === turnId,
-    );
-    if (!turn) throw new Error(`Cannot ${action}: unknown turn ${turnId}`);
-    if (!allowed.includes(turn.status)) {
-      throw new Error(`Cannot ${action}: turn ${turnId} is ${turn.status}`);
-    }
-    return turn;
-  }
-
   /**
    * The Session as its ledger tells it.
    *

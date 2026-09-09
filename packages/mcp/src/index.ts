@@ -1298,11 +1298,6 @@ export class McpClientManager {
     return { entry, config: entry.config };
   }
 
-  private requireOAuthStorage(): McpOAuthStorage {
-    if (!this.oauthStorage) throw new Error('MCP OAuth storage is not configured');
-    return this.oauthStorage;
-  }
-
   /**
    * Begins an interactive authorization round. Runs discovery (and, when
    * stored or configured credentials already satisfy the server, the silent

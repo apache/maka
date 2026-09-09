@@ -853,14 +853,6 @@ export class AgentGraphCoordinator {
     });
   }
 
-  async #readClientModelInput(
-    rootSessionId: string,
-    reconciliationFailures?: readonly AgentGraphClientReconciliationFailure[],
-  ): Promise<BuildAgentGraphClientReadModelInput> {
-    const graphId = await this.currentGraphId(rootSessionId);
-    return this.#readClientModelInputForGraph(rootSessionId, graphId, reconciliationFailures);
-  }
-
   async #readClientModelInputForGraph(
     rootSessionId: string,
     graphId: string,
