@@ -89,6 +89,14 @@ export class SessionMetadataConflictError extends Error {
   readonly name: string = 'SessionMetadataConflictError';
 }
 
+export class AgentGraphIntentClaimConflictError extends SessionMetadataConflictError {
+  readonly name = 'AgentGraphIntentClaimConflictError';
+}
+
+export class AgentGraphScheduleUpdateConflictError extends SessionMetadataConflictError {
+  readonly name = 'AgentGraphScheduleUpdateConflictError';
+}
+
 export class SessionMetadataVersionConflictError extends SessionMetadataConflictError {
   readonly name = 'SessionMetadataVersionConflictError';
 
@@ -387,7 +395,10 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     sessionId: string,
     request: SessionTranscriptMessageLookupRequest,
   ): Promise<StoredMessage[]>;
-  /** Observe successful durable ledger appends. Listeners must not throw. */
+  /**
+   * Instance-local invalidation after successful ledger appends, not a durable
+   * changefeed or a guarantee about remote writers. Listeners must not throw.
+   */
   subscribeTranscriptChanges(listener: (sessionId: string) => void): () => void;
   /** Wait until the durable authority is ready for cross-domain transactions. */
   ready(): Promise<void>;

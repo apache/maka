@@ -391,6 +391,113 @@ for (const failAssignment of [false, true]) {
   });
 }
 
+test('real Host uses the independent Memory provider for messages, history and WorkHub without SQLite execution fallback', {
+  timeout: 60_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-memory-host-')),
+    root = join(base, 'root');
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  let host: HostProcess | undefined, client: RuntimeHostConnection | undefined;
+  try {
+    await withStores(capability, configureDefaultTarget);
+    host = new HostProcess(root, capability.rootId, 'memory');
+    const ready = await host.wait('ready');
+    client = await connectClient(root);
+    await client.request('session.create', {
+      sessionId: 'memory-task',
+      name: 'Memory task',
+      workspace: { kind: 'host_path', path: root },
+      modelTarget: { kind: 'default' },
+    });
+    const ordinary = await client.request('turn.message.submit', {
+      originHostEpoch: ready.hostEpoch,
+      sessionId: 'memory-task',
+      messageId: 'ordinary-message',
+      content: { text: 'Ordinary message through replacement persistence' },
+      placement: 'current_turn',
+    });
+    assert.equal(ordinary.disposition, 'turn_started');
+    if (ordinary.disposition !== 'turn_started') throw new Error('Ordinary Turn did not start');
+    assert.equal(
+      (await waitForTerminalTurn(client, 'memory-task', ordinary.turnId)).status,
+      'completed',
+    );
+    const subscription = await client.openSessionSubscription(
+      { sessionId: 'memory-task', transcript: { kind: 'tail', maxBytes: 16384 } },
+      TIMEOUT,
+    );
+    try {
+      const history = subscription.transcriptBootstrap;
+      assert.ok(history);
+      assert.ok(history.durable.fragments.length > 0);
+      assert.match(
+        history.durable.fragments
+          .map((f) => Buffer.from(f.data, 'base64').toString('utf8'))
+          .join(''),
+        /Ordinary message through replacement persistence/,
+      );
+    } finally {
+      await subscription.close();
+    }
+    await client.request('workhub.coordination.resolve', {});
+    const candidates = await client.request('workhub.coordination.candidates', {});
+    const target = candidates.candidates.find((c) => c.sessionId === 'memory-task');
+    assert.ok(target);
+    const action: WorkHubCoordinationActInput = {
+      actionId: 'memory-delegation',
+      userText: 'Continue payment work',
+      candidateSetId: candidates.candidateSetId,
+      proposal: { disposition: 'delegate_existing', candidateRef: target.candidateRef },
+    };
+    const assigned = await client.request('workhub.coordination.act', action);
+    assert.equal(assigned.disposition, 'delegate_existing');
+    if (assigned.disposition !== 'delegate_existing') throw new Error('Delegation not admitted');
+    assert.equal(
+      (await waitForTerminalTurn(client, assigned.targetSessionId, assigned.targetTurnId)).status,
+      'completed',
+    );
+    assert.deepEqual(await client.request('workhub.coordination.act', action), assigned);
+    const create: WorkHubCoordinationActInput = {
+      actionId: 'memory-create',
+      userText: 'Create a new task to inspect the transaction contract',
+      proposal: { disposition: 'create_new', title: 'Transaction contract' },
+      create: { workspace: { kind: 'host_path', path: root } },
+    };
+    const created = await client.request('workhub.coordination.act', create);
+    assert.equal(created.disposition, 'create_new');
+    if (created.disposition !== 'create_new') throw new Error('New delegation not admitted');
+    assert.equal(
+      (await waitForTerminalTurn(client, created.targetSessionId, created.targetTurnId)).status,
+      'completed',
+    );
+    assert.deepEqual(await client.request('workhub.coordination.act', create), created);
+    await client.close();
+    await host.stop();
+    assert.equal(host.notices.filter((n) => n.type === 'dispatch').length, 3);
+    // The other storage domains still legitimately use Local. Execution facts
+    // must not have escaped to it when the trusted composition selected Memory.
+    await withStores(capability, async ({ execution }) => {
+      assert.deepEqual(await execution.sessionStore.listHeaders(), []);
+      assert.deepEqual(await execution.runtimeEventStore.listSessionInvocations('memory-task'), []);
+      assert.equal(
+        await execution.sessionStore.readWorkHubAssignment('memory-delegation'),
+        undefined,
+      );
+      assert.deepEqual(await execution.sessionStore.listMessageAdmissions('memory-task'), []);
+    });
+  } finally {
+    await client?.close().catch(() => undefined);
+    await host?.stop('SIGKILL');
+    await removePosixEndpointDirectories(capability.rootId);
+    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      recursive: true,
+      force: true,
+    });
+    await rm(join(resolveRootOwnershipNamespace(), capability.rootId + '.lock'), { force: true });
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 async function uploadAttachment(client: RuntimeHostConnection): Promise<AttachmentRef> {
   const bytes = Buffer.from(ATTACHMENT_TEXT);
   const sessionId = WORKHUB_COORDINATION_SESSION_ID;
@@ -472,7 +579,11 @@ class HostProcess {
   readonly closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
   private readonly listeners = new Set<() => void>();
 
-  constructor(root: string, rootId: string, mode: 'crash' | 'recover' | 'fail-assignment-once') {
+  constructor(
+    root: string,
+    rootId: string,
+    mode: 'crash' | 'recover' | 'fail-assignment-once' | 'memory',
+  ) {
     this.child = fork(
       new URL('./fixtures/workhub-assignment-crash-host.js', import.meta.url),
       [root, rootId, mode],

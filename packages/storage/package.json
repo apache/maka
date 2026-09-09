@@ -18,6 +18,8 @@
     "./deep-research-store": "./dist/deep-research-store.js",
     "./encrypted-file-managed-secret-store": "./dist/encrypted-file-managed-secret-store.js",
     "./execution-stores": "./dist/execution-stores.js",
+    "./execution-persistence-provider": "./dist/execution-persistence-provider.js",
+    "./test-only/memory-execution-persistence": "./dist/test-only/memory-execution-persistence.js",
     "./external-sessions": "./dist/external-sessions.js",
     "./file-lifetime-owner": "./dist/file-lifetime-owner.js",
     "./file-update-lock": "./dist/file-update-lock.js",

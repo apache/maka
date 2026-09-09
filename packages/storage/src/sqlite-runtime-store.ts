@@ -32,7 +32,6 @@ export type {
   ToolOperationRecord,
 } from './runtime-event-store-contract.js';
 
-import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
@@ -63,7 +62,6 @@ import {
   isPartialRuntimeEvent,
   isTerminalRuntimeEvent,
   runtimeEventInvocationOpening,
-  TOOL_BOUNDARY_PROTOCOL_V1,
   type RuntimeEvent,
   type RuntimeEventManagedWorkspaceMutationV2,
   type ToolRecoveryMode,
@@ -86,15 +84,28 @@ import type {
   RuntimeInvocationRecord,
   RuntimeInvocationSearchResult,
 } from '@maka/core/runtime-invocation';
-import { type ToolRecoveryDecisionFact } from '@maka/core/tool-recovery-fact';
-import { canonicalToolArgsHash, stableJsonStringify } from '@maka/core/tool-args-identity';
+import type { ToolRecoveryDecisionFact } from '@maka/core/tool-recovery-fact';
+import { stableJsonStringify } from '@maka/core/tool-args-identity';
+import {
+  type RuntimePartialSnapshot,
+  mergeRuntimePartialSnapshots,
+  groupRuntimePartialSnapshots,
+  compareRuntimePartialSnapshots,
+  partialRuntimeStream,
+  completedPartialRuntimeStreamKey,
+} from './runtime-partial-values.js';
+import {
+  assertPreparedInput,
+  assertOutcomeInput,
+  assertPreparedIdentity,
+  assertOutcomeIdentity,
+} from './tool-commit-validation.js';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import {
   scanToolLedger,
   ToolLedgerCorruptionError,
   ToolLedgerRejectionError,
   validateGenericToolLedgerAppend,
-  validateToolLedgerEventLane,
   validateToolLedgerTransition,
 } from '@maka/core/tool-ledger-scanner';
 import {
@@ -4145,115 +4156,6 @@ function toolJournalRecordFromRow(row: ToolJournalRow): ToolJournalEventRecord {
   };
 }
 
-function assertPreparedInput(input: CommitToolPreparedInput): void {
-  if (input.journalEventId !== `${input.operationId}_prepared`) {
-    throw new Error('T1 journal identity must be derived from the tool operation');
-  }
-  assertNoReservedRecoveryFact(input.runtimeEvent);
-  assertNoReservedRecoveryFact(input.dispatchRuntimeEvent);
-  const content = input.runtimeEvent.content;
-  if (content?.kind !== 'function_call')
-    throw new Error('T1 requires a function_call RuntimeEvent');
-  if (content.id !== input.providerToolCallId || content.name !== input.toolName) {
-    throw new Error('T1 RuntimeEvent identity does not match the tool operation');
-  }
-  let derivedArgsHash: string;
-  try {
-    derivedArgsHash = canonicalToolArgsHash(content.name, content.args);
-  } catch {
-    throw new Error('T1 argument hash does not match its canonical function call');
-  }
-  if (
-    derivedArgsHash !== input.canonicalArgsHash ||
-    validateToolLedgerEventLane(input.runtimeEvent).ok !== true
-  ) {
-    throw new Error('T1 argument hash does not match its canonical function call');
-  }
-  const dispatch = input.dispatchRuntimeEvent.actions?.toolDispatch;
-  if (
-    !dispatch ||
-    input.dispatchRuntimeEvent.content !== undefined ||
-    input.dispatchRuntimeEvent.partial ||
-    dispatch.operationId !== input.operationId ||
-    dispatch.providerToolCallId !== input.providerToolCallId ||
-    dispatch.toolName !== input.toolName ||
-    dispatch.canonicalArgsHash !== input.canonicalArgsHash ||
-    dispatch.recoveryMode !== input.recoveryMode ||
-    validateToolLedgerEventLane(input.dispatchRuntimeEvent).ok !== true
-  ) {
-    throw new Error('T1 requires a matching tool-dispatch RuntimeEvent');
-  }
-  assertSameRuntimeIdentity(input.runtimeEvent, input.dispatchRuntimeEvent, 'T1');
-}
-
-function assertOutcomeInput(input: CommitToolOutcomeInput): void {
-  if (input.journalEventId !== `${input.operationId}_outcome`) {
-    throw new Error('T2 journal identity must be derived from the tool operation');
-  }
-  assertNoReservedRecoveryFact(input.runtimeEvent);
-  const content = input.runtimeEvent.content;
-  if (content?.kind !== 'function_response') {
-    throw new Error('T2 requires a function_response RuntimeEvent');
-  }
-  if (
-    input.runtimeEvent.refs?.operationId !== input.operationId ||
-    input.runtimeEvent.refs?.toolCallId !== content.id
-  ) {
-    throw new Error(
-      'T2 requires operation and tool-call refs on the function_response RuntimeEvent',
-    );
-  }
-  if (validateToolLedgerEventLane(input.runtimeEvent).ok !== true) {
-    throw new Error('T2 requires one canonical function-response semantic lane');
-  }
-}
-
-function assertPreparedIdentity(
-  operation: ToolOperationRecord,
-  input: CommitToolPreparedInput,
-): void {
-  const event = input.runtimeEvent;
-  const matches =
-    operation.invocationId === event.invocationId &&
-    operation.runId === event.runId &&
-    operation.turnId === event.turnId &&
-    operation.providerToolCallId === input.providerToolCallId &&
-    operation.toolName === input.toolName &&
-    operation.canonicalArgsHash === input.canonicalArgsHash &&
-    operation.recoveryMode === input.recoveryMode &&
-    operation.callEventId === event.id &&
-    operation.dispatchEventId === input.dispatchRuntimeEvent.id;
-  if (!matches) throw new Error(`Tool operation identity conflict for ${input.operationId}`);
-}
-
-function assertSameRuntimeIdentity(
-  first: RuntimeEvent,
-  second: RuntimeEvent,
-  boundary: string,
-): void {
-  if (
-    first.sessionId !== second.sessionId ||
-    first.invocationId !== second.invocationId ||
-    first.runId !== second.runId ||
-    first.turnId !== second.turnId
-  ) {
-    throw new Error(`${boundary} RuntimeEvents do not share one execution identity`);
-  }
-}
-
-function assertOutcomeIdentity(operation: ToolOperationRecord, event: RuntimeEvent): void {
-  const content = event.content;
-  const matches =
-    content?.kind === 'function_response' &&
-    operation.invocationId === event.invocationId &&
-    operation.runId === event.runId &&
-    operation.turnId === event.turnId &&
-    operation.providerToolCallId === content.id &&
-    operation.toolName === content.name;
-  if (!matches)
-    throw new Error(`Tool operation outcome identity conflict for ${operation.operationId}`);
-}
-
 function assertRuntimeEventIdentity(event: RuntimeEvent): void {
   decodeRuntimeEvent(event);
   for (const [field, value] of Object.entries({
@@ -4782,128 +4684,6 @@ function decodeRuntimePartialStorageRow(row: RuntimePartialStorageRow): RuntimeE
 
 function decodeStoredRuntimeEvent(storedJson: string): RuntimeEvent {
   return decodeRuntimeEvent(JSON.parse(storedJson));
-}
-
-interface RuntimePartialSnapshot {
-  event: RuntimeEvent;
-  afterEventId?: string;
-}
-
-function mergeRuntimePartialSnapshots(
-  immutableEvents: readonly RuntimeEvent[],
-  snapshots: readonly RuntimePartialSnapshot[],
-): RuntimeEvent[] {
-  const { leading, afterEvent } = groupRuntimePartialSnapshots(snapshots);
-  const merged = leading.sort(compareRuntimePartialSnapshots).map(({ event }) => event);
-  for (const event of immutableEvents) {
-    merged.push(event);
-    const anchored = afterEvent.get(event.id);
-    if (!anchored) continue;
-    merged.push(...anchored.sort(compareRuntimePartialSnapshots).map((snapshot) => snapshot.event));
-    afterEvent.delete(event.id);
-  }
-  for (const orphaned of afterEvent.values()) {
-    merged.push(...orphaned.sort(compareRuntimePartialSnapshots).map((snapshot) => snapshot.event));
-  }
-  return merged;
-}
-
-function groupRuntimePartialSnapshots(snapshots: readonly RuntimePartialSnapshot[]): {
-  leading: RuntimePartialSnapshot[];
-  afterEvent: Map<string, RuntimePartialSnapshot[]>;
-} {
-  const leading: RuntimePartialSnapshot[] = [];
-  const afterEvent = new Map<string, RuntimePartialSnapshot[]>();
-  for (const snapshot of snapshots) {
-    if (!snapshot.afterEventId) {
-      leading.push(snapshot);
-      continue;
-    }
-    const grouped = afterEvent.get(snapshot.afterEventId) ?? [];
-    grouped.push(snapshot);
-    afterEvent.set(snapshot.afterEventId, grouped);
-  }
-  return { leading, afterEvent };
-}
-
-function compareRuntimePartialSnapshots(
-  left: RuntimePartialSnapshot,
-  right: RuntimePartialSnapshot,
-): number {
-  return left.event.ts - right.event.ts || left.event.id.localeCompare(right.event.id);
-}
-
-function partialRuntimeStream(event: RuntimeEvent):
-  | {
-      key: string;
-      snapshot: RuntimeEvent;
-      text: string;
-    }
-  | undefined {
-  if (!event.partial || event.status !== undefined || event.actions) return undefined;
-  const content = event.content;
-  let identity: string | undefined;
-  let text = '';
-  if (
-    content?.kind === 'text' &&
-    content.attachments === undefined &&
-    event.refs?.providerEventId &&
-    hasOnlyKeys(event.refs, ['providerEventId'])
-  ) {
-    identity = `${content.kind}:provider:${event.refs.providerEventId}`;
-    text = content.text;
-  } else if (
-    content?.kind === 'thinking' &&
-    content.signature === undefined &&
-    event.refs?.providerEventId &&
-    hasOnlyKeys(event.refs, ['providerEventId'])
-  ) {
-    identity = `${content.kind}:provider:${event.refs.providerEventId}`;
-    text = content.text;
-  } else if (!content && event.refs?.toolCallId && hasOnlyKeys(event.refs, ['toolCallId'])) {
-    identity = `tool:call:${event.refs.toolCallId}`;
-  }
-  if (!identity) return undefined;
-  const key = runtimePartialStreamKey(identity, event);
-  const snapshot =
-    content?.kind === 'text' || content?.kind === 'thinking'
-      ? { ...event, content: { ...content, text: '' } }
-      : event;
-  return { key, snapshot, text };
-}
-
-function completedPartialRuntimeStreamKey(event: RuntimeEvent): string | undefined {
-  if (event.partial) return undefined;
-  const content = event.content;
-  let identity: string | undefined;
-  if ((content?.kind === 'text' || content?.kind === 'thinking') && event.refs?.providerEventId) {
-    identity = `${content.kind}:provider:${event.refs.providerEventId}`;
-  } else if (content?.kind === 'function_response' && event.refs?.toolCallId) {
-    identity = `tool:call:${event.refs.toolCallId}`;
-  }
-  return identity ? runtimePartialStreamKey(identity, event) : undefined;
-}
-
-function runtimePartialStreamKey(identity: string, event: RuntimeEvent): string {
-  return createHash('sha256')
-    .update(
-      JSON.stringify([
-        identity,
-        event.sessionId,
-        event.invocationId,
-        event.runId,
-        event.turnId,
-        event.branch ?? null,
-        event.role,
-        event.author,
-      ]),
-    )
-    .digest('hex');
-}
-
-function hasOnlyKeys(value: object, allowed: readonly string[]): boolean {
-  const allowedSet = new Set(allowed);
-  return Object.keys(value).every((key) => allowedSet.has(key));
 }
 
 function decodeContinuationClaimRow(row: ContinuationClaimStorageRow): ContinuationClaimV1 {
