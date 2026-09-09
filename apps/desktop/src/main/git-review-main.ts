@@ -361,6 +361,20 @@ function dedupeReviewFiles(files: readonly GitReviewFile[]): GitReviewFile[] {
   return [...byPath.values()];
 }
 
+// The branches a review is most likely to compare against, in the order a
+// reader expects them. `origin/HEAD` stays selectable: it is the remote's
+// declared default, and the one name that survives a rename of that branch.
+const BASE_BRANCH_PRIORITY = [
+  'origin/HEAD',
+  'origin/main',
+  'origin/master',
+  'main',
+  'master',
+];
+
+// The branch a review falls back to when the caller names none. The remote's
+// resolved default comes first so the panel shows a concrete name, then the
+// shared priority order covers repositories whose origin/HEAD is unset.
 async function resolveBaseBranch(
   repositoryRoot: string,
   currentBranch: string | null,
@@ -374,13 +388,9 @@ async function resolveBaseBranch(
       'refs/remotes/origin/HEAD',
     ]).catch(() => ''),
   );
-  const candidates = [
-    remoteHead,
-    'origin/main',
-    'origin/master',
-    'main',
-    'master',
-  ].filter((candidate): candidate is string => Boolean(candidate));
+  const candidates = [...new Set([remoteHead, ...BASE_BRANCH_PRIORITY])].filter(
+    (candidate): candidate is string => Boolean(candidate),
+  );
   for (const candidate of candidates) {
     if (candidate === currentBranch) continue;
     if (await gitRefExists(repositoryRoot, candidate, runGit)) return candidate;
@@ -394,13 +404,35 @@ async function listBaseBranches(
 ): Promise<string[]> {
   const output = await runGit(repositoryRoot, [
     'for-each-ref',
-    '--format=%(refname:short)',
+    '--format=%(refname)',
     'refs/heads',
     'refs/remotes',
   ]);
-  return [...new Set(output.split('\n').map((line) => line.trim()).filter(Boolean))]
-    .filter((branch) => !branch.endsWith('/HEAD'))
-    .sort((left, right) => left.localeCompare(right));
+  // `%(refname:short)` reports `refs/remotes/origin/HEAD` as a bare `origin`,
+  // which then reads as a branch of its own. Strip the namespace instead.
+  const branches = [
+    ...new Set(
+      output
+        .split('\n')
+        .map((line) => {
+          const ref = line.trim();
+          if (ref.startsWith('refs/heads/')) return ref.slice('refs/heads/'.length);
+          if (ref.startsWith('refs/remotes/')) return ref.slice('refs/remotes/'.length);
+          return null;
+        })
+        .filter((branch): branch is string => Boolean(branch)),
+    ),
+  ].filter((branch) => branch === 'origin/HEAD' || !branch.endsWith('/HEAD'));
+  return branches.sort((left, right) => {
+    const leftRank = BASE_BRANCH_PRIORITY.indexOf(left);
+    const rightRank = BASE_BRANCH_PRIORITY.indexOf(right);
+    if (leftRank !== rightRank) {
+      if (leftRank === -1) return 1;
+      if (rightRank === -1) return -1;
+      return leftRank - rightRank;
+    }
+    return left.localeCompare(right);
+  });
 }
 
 async function gitRefExists(

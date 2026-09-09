@@ -32,6 +32,9 @@
   offer an action to open the most recently imported task or create another
   independent import. An uncertain result remains visible as a warning while
   still allowing a user-initiated import again in both Desktop and TUI.
+- The Git changes panel can pick which branch it compares against — searchable,
+  per Session — instead of only the branch the backend resolves. The choice
+  persists, and falls back to the resolved branch when the pinned one disappears.
 - Added `/transcript` to browse long TUI sessions without depending on terminal
   scrollback, with line, page, and first/last navigation.
 

@@ -23,6 +23,29 @@
   overflow-y: auto;
 }
 
+/* The comparison header: `<current> -> <base picker>`. The current branch
+   ellipsizes so a long name cannot push the picker past the panel edge. */
+.maka-session-review-branch-row {
+  justify-content: flex-start;
+}
+
+.maka-session-review-current-branch {
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+/* Astryx gives Selector no panel-width prop, and an uncapped panel grows to the
+   longest branch name. The panel's layer stays inside this wrapper, so the cap
+   lands on the surface; the option's `Item` needs `min-width: 0` to let its
+   label ellipsize instead of pushing the row wider. */
+.maka-session-review-base-branch .astryx-popover-surface {
+  max-width: 180px;
+}
+
+.maka-session-review-base-branch [role='option'] .astryx-item {
+  min-width: 0;
+}
+
 .maka-session-review-file-stats {
   flex-shrink: 0;
   white-space: nowrap;

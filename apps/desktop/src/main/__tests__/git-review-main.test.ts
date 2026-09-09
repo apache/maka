@@ -54,8 +54,8 @@ describe('Git Review snapshot authority', () => {
     assert.equal(branch.snapshot.baseBranch, 'main');
     assert.equal(branch.snapshot.currentBranch, 'feature/review');
     assert.deepEqual(branch.snapshot.baseBranchOptions, [
-      'feature/review',
       'main',
+      'feature/review',
     ]);
     assert.deepEqual(
       branch.snapshot.files.map((file) => file.path).sort(),
@@ -97,6 +97,24 @@ describe('Git Review snapshot authority', () => {
       staged.snapshot.files.map((file) => file.path),
       ['staged.txt'],
     );
+  });
+
+  it('lists the remote default branch before the branches it resolves from', async () => {
+    const origin = await repository();
+    await git(origin, 'branch', 'release/0.1');
+    const root = await temporaryRoot();
+    await git(root, 'clone', origin, '.');
+
+    const result = await readGitReview(root, 'branch');
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.snapshot.baseBranch, 'origin/main');
+    assert.deepEqual(result.snapshot.baseBranchOptions, [
+      'origin/HEAD',
+      'origin/main',
+      'main',
+      'origin/release/0.1',
+    ]);
   });
 
   it('returns an explicit non-repository outcome', async () => {
