@@ -23,6 +23,7 @@ import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
   RuntimeHostOperationError,
   RuntimeHostPeerError,
+  RuntimeHostPeerReachabilityUnavailableError,
   RuntimeHostPermanentReconnectError,
   RuntimeHostRequestInterruptedError,
   type RuntimeHostSpawnedProcess,
@@ -1243,6 +1244,58 @@ test('keeps an initially unavailable Direct target live and wakes it on new rout
   assert.equal(manager.current('office')?.candidate, remote.candidate);
   assert.equal(starts, 4);
   await manager.close();
+});
+
+test('repeated offline Guest failures preserve Local readiness without rebroadcasting each retry', async (t) => {
+  const local = candidateHarness();
+  const remote = candidateHarness({ hostId: 'a'.repeat(64), ownership: 'external' });
+  const warn = t.mock.method(console, 'warn', () => {});
+  const guestErrors: string[] = [];
+  let attempts = 0;
+  let recovered = false;
+  let changedFailure = false;
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async (input) => {
+        if (!input.profileTarget) return ready(local.candidate);
+        attempts++;
+        if (recovered) return ready(remote.candidate);
+        throw changedFailure
+          ? new RuntimeHostPeerError('coordination_unavailable', 'relay unavailable')
+          : new RuntimeHostPeerReachabilityUnavailableError('12D3KooWpeer');
+      },
+      onTargetStateChanged: (state) => {
+        if (state.target.profile.id === 'offline-guest' && state.readiness !== 'ready' && state.error) {
+          guestErrors.push(state.error.message);
+        }
+      },
+      reconnectBackoff: { minMs: 60_000, maxMs: 60_000 },
+    },
+  );
+  t.after(() => manager.close());
+  await manager.mountGuest(peerTarget('offline-guest', 'session_guest'), () => {});
+  const initialPublications = guestErrors.length;
+  const initialWarnings = warn.mock.callCount();
+  for (let retry = 0; retry < 3; retry++) {
+    manager.wakePeerRecovery('offline-guest');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.ok(attempts >= 4, 'retries remain live');
+  assert.equal(guestErrors.length, initialPublications, 'identical errors are not Host transitions');
+  assert.equal(warn.mock.callCount(), initialWarnings, 'an offline error is logged once');
+  assert.equal(manager.defaultProfileId(), 'local');
+  assert.equal(manager.current('local')?.candidate, local.candidate);
+
+  changedFailure = true;
+  manager.wakePeerRecovery('offline-guest');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(guestErrors.at(-1), 'relay unavailable', 'a different failure updates diagnostics');
+  recovered = true;
+  manager.wakePeerRecovery('offline-guest');
+  await manager.waitUntilReady('offline-guest');
+  assert.equal(manager.current('offline-guest')?.candidate, remote.candidate);
+  assert.equal(manager.current('local')?.candidate, local.candidate);
 });
 
 test('marks a retrying Direct target unavailable on permanent failure', async () => {

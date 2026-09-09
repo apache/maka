@@ -989,6 +989,12 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
           : false,
         ...(initialSignal ? { initialSignal } : {}),
         onReconnectError: (error) => {
+          const previous = target.state.readiness !== 'ready' ? target.state.error : undefined;
+          if (previous?.name === error.name && previous.message === error.message &&
+            ('code' in previous ? previous.code : undefined) ===
+              ('code' in error ? error.code : undefined)) return;
+          // A repeated failure is not a Host transition. Publishing it again
+          // invalidates unrelated Hosts' catalogs and floods offline diagnostics.
           console.warn('[runtime-host] reconnect attempt failed:', error);
           if (target.valid && target.state.readiness !== 'ready') {
             this.#publishState(target, { ...target.state, error });
