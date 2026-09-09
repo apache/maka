@@ -5441,6 +5441,38 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('/resume checks only the current cwd before rendering the default scope', async () => {
+    const terminal = new FakeTerminal();
+    const sessions = [
+      fakeSessionSummary('current-session', '/repo'),
+      ...Array.from({ length: 16 }, (_, index) =>
+        fakeSessionSummary(`other-session-${index}`, `/other/${index}`),
+      ),
+    ];
+    const driver = new BoundedResumeAvailabilityDriver(sessions);
+    (driver as unknown as { sessionId: string | null }).sessionId = null;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    assert.ok(driver.availabilitySessionIds.length > 0);
+    assert.ok(driver.availabilitySessionIds.every((sessionId) => sessionId === 'current-session'));
+    assert.doesNotMatch(plainTerminalOutput(terminal.output()), /other-session/);
+
+    terminal.input('\x1b');
+    exitMaka(terminal);
+    await run;
+  });
+
   test('/resume excludes foreign sessions when none is attached', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([]);
@@ -10713,13 +10745,15 @@ class RejectingSwitchSessionDriver extends SlashCommandDriver {
 
 class BoundedResumeAvailabilityDriver extends SlashCommandDriver {
   availabilityCalls = 0;
+  readonly availabilitySessionIds: string[] = [];
   activeCalls = 0;
   maxActiveCalls = 0;
 
   async getSessionResumeCandidateAvailability(
-    _session: SessionSummary,
+    session: SessionSummary,
   ): Promise<SessionResumeAvailability> {
     this.availabilityCalls += 1;
+    this.availabilitySessionIds.push(session.id);
     this.activeCalls += 1;
     this.maxActiveCalls = Math.max(this.maxActiveCalls, this.activeCalls);
     await delay(1);

@@ -101,6 +101,7 @@ import {
   type MakaSessionDriver,
   type MakaSideConversationParentStatus,
   type MakaSessionSwitchResult,
+  type SessionResumeAvailability,
 } from './session-driver.js';
 import { SafeBoundaryResumeParkedError } from './runtime-host-session-driver.js';
 import {
@@ -2840,34 +2841,34 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       sessionTree.roots,
       sessionTree.childrenByParentId,
     );
+    const checkSessionAvailability = async (
+      session: SessionSummary,
+    ): Promise<readonly [string, SessionResumeAvailability]> => {
+      try {
+        return await runResumeAvailabilityCheck(async () => {
+          if (!session.cwd) {
+            return [session.id, { available: false, reason: 'Missing working directory' }] as const;
+          }
+          const availability = options.onlyResumable
+            ? ((await input.driver.getSessionResumeCandidateAvailability?.(session)) ??
+              (await input.driver.getSessionResumeAvailability?.(session)) ??
+              (await inspectSessionResumeAvailability(session)))
+            : ((await input.driver.getSessionResumeAvailability?.(session)) ??
+              (await inspectSessionResumeAvailability(session)));
+          return [session.id, availability] as const;
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return [session.id, { available: false, reason: detail }] as const;
+      }
+    };
+    const sessionsToCheck =
+      sessionListScope === 'current' ? sessions.filter((session) => session.cwd === cwd) : sessions;
     // Maka-session availability and the foreign scan are independent I/O; run
     // them concurrently so the picker's open latency is the slower of the two,
     // not their sum.
     const [availabilityEntries, foreignScan] = await Promise.all([
-      Promise.all(
-        sessions.map(async (session) => {
-          try {
-            return await runResumeAvailabilityCheck(async () => {
-              if (!session.cwd) {
-                return [
-                  session.id,
-                  { available: false, reason: 'Missing working directory' },
-                ] as const;
-              }
-              const availability = options.onlyResumable
-                ? ((await input.driver.getSessionResumeCandidateAvailability?.(session)) ??
-                  (await input.driver.getSessionResumeAvailability?.(session)) ??
-                  (await inspectSessionResumeAvailability(session)))
-                : ((await input.driver.getSessionResumeAvailability?.(session)) ??
-                  (await inspectSessionResumeAvailability(session)));
-              return [session.id, availability] as const;
-            });
-          } catch (error) {
-            const detail = error instanceof Error ? error.message : String(error);
-            return [session.id, { available: false, reason: detail }] as const;
-          }
-        }),
-      ),
+      Promise.all(sessionsToCheck.map(checkSessionAvailability)),
       // Foreign (Claude Code / Codex) rows are an import flow: it starts a NEW
       // Session and hands off a turn, which cannot detach from the running
       // one (#3380). Skip the scan mid-turn instead of offering rows whose
@@ -2880,6 +2881,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         : Promise.resolve({ summaries: [] as ForeignSessionSummary[] }),
     ]);
     const availability = new Map(availabilityEntries);
+    const ensureAvailabilityForScope = async (scope: 'current' | 'all'): Promise<void> => {
+      const scopeSessions =
+        scope === 'current' ? sessions.filter((session) => session.cwd === cwd) : sessions;
+      const missingSessions = scopeSessions.filter((session) => !availability.has(session.id));
+      if (missingSessions.length === 0) return;
+      for (const [sessionId, sessionAvailability] of await Promise.all(
+        missingSessions.map(checkSessionAvailability),
+      )) {
+        availability.set(sessionId, sessionAvailability);
+      }
+    };
     // Foreign (Claude Code / Codex) sessions for the current cwd, keyed by a
     // prefixed select value so they never collide with Maka session ids. A scan
     // error is surfaced (not silently swallowed): degrade to no rows but tell
@@ -3000,8 +3012,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         onSelect,
         onCancel: closeOverlay,
         onToggleScope: () => {
-          sessionListScope = sessionListScope === 'current' ? 'all' : 'current';
-          renderScope();
+          const nextScope = sessionListScope === 'current' ? 'all' : 'current';
+          void ensureAvailabilityForScope(nextScope)
+            .then(() => {
+              sessionListScope = nextScope;
+              renderScope();
+            })
+            .catch(reportError);
         },
       });
       sessionPickerOverlayOpen = true;
@@ -3026,7 +3043,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         state.entries.push({
           kind: 'notice',
           level: 'info',
-          text: 'This session has an interrupted run — /resume to continue from the safe boundary.',
+          text: pickerCopy.resumeAvailabilityNotice,
         });
         requestRender();
       }

@@ -664,6 +664,8 @@ export const TUI_COPY_RESOURCES = {
       sessionSearchHint:
         'Search name / id / path / model / connection · Tab scope · ↑↓ select · Enter open · Esc close',
       noMatchingSessions: 'No matching sessions',
+      resumeAvailabilityNotice:
+        'This session has an interrupted run — /resume to continue from the safe boundary.',
       selectPickerHint: '↑↓ select · Enter confirm · Esc close',
       providerConfigured: 'configured',
       addAccount: 'add account',
@@ -769,6 +771,7 @@ export const TUI_COPY_RESOURCES = {
       sessionSearchHint:
         '搜索名称 / ID / 路径 / 模型 / 连接 · Tab 切换范围 · ↑↓ 选择 · Enter 打开 · Esc 关闭',
       noMatchingSessions: '没有匹配的会话',
+      resumeAvailabilityNotice: '此会话有中断的执行，可使用 /resume 从安全边界继续。',
       selectPickerHint: '↑↓ 选择 · Enter 确认 · Esc 关闭',
       providerConfigured: '已设置',
       addAccount: '添加账号',
@@ -864,6 +867,7 @@ export const TUI_COPY_RESOURCES = {
       sessionSearchHint:
         '搜尋名稱 / ID / 路徑 / 模型 / 連線 · Tab 切換範圍 · ↑↓ 選取 · Enter 開啟 · Esc 關閉',
       noMatchingSessions: '沒有符合的會話',
+      resumeAvailabilityNotice: '此會話有中斷的執行，可使用 /resume 從安全邊界繼續。',
       selectPickerHint: '↑↓ 選擇 · Enter 確認 · Esc 關閉',
       providerConfigured: '已設定',
       addAccount: '新增帳號',
