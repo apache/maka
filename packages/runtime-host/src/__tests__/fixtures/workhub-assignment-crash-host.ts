@@ -21,6 +21,7 @@ import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import { FakeBackend } from '@maka/runtime/test-only/fake-backend';
 import { SqliteSessionMetadataStore } from '@maka/storage/sqlite-session-metadata-store';
+import { createMemoryExecutionPersistenceProvider } from '@maka/storage/test-only/memory-execution-persistence';
 import { startExecutionRuntimeHostCandidate } from '../../server/execution-candidate.js';
 import { createExecutionRuntimeHostComposition } from '../../server/execution-composition.js';
 import { runRuntimeHostProcessLifecycle } from '../../server/process-lifecycle.js';
@@ -29,10 +30,10 @@ const [rootPath, expectedRootId, mode] = process.argv.slice(2);
 if (
   !rootPath ||
   !expectedRootId ||
-  !['crash', 'recover', 'fail-assignment-once'].includes(mode ?? '')
+  !['crash', 'recover', 'fail-assignment-once', 'memory'].includes(mode ?? '')
 ) {
   throw new Error(
-    'usage: workhub-assignment-crash-host <root> <root-id> <crash|recover|fail-assignment-once>',
+    'usage: workhub-assignment-crash-host <root> <root-id> <crash|recover|fail-assignment-once|memory>',
   );
 }
 
@@ -87,6 +88,14 @@ const candidate = await startExecutionRuntimeHostCandidate(
   {
     createComposition: (context, options) =>
       createExecutionRuntimeHostComposition(context, options, {
+        ...(mode === 'memory'
+          ? {
+              executionPersistenceProvider: createMemoryExecutionPersistenceProvider({
+                onFailure: (operation, error) =>
+                  console.error('Reference backend failure:', operation, error),
+              }),
+            }
+          : {}),
         primaryBackendFactory: (context) => new ObservedBackend(context),
       }),
   },

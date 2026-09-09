@@ -137,9 +137,9 @@ import {
   normalizeMessageContent,
   type MessageContent,
 } from '@maka/core/events';
-import {
-  type AgentGraphIntentAdmissionSnapshot,
-  type AgentGraphTimelineMetadataSnapshot,
+import type {
+  AgentGraphIntentAdmissionSnapshot,
+  AgentGraphTimelineMetadataSnapshot,
 } from '@maka/core/agent-graph-timeline';
 import {
   AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
@@ -150,7 +150,7 @@ import {
   type CompleteAgentGraphSupervisorWakeAttemptRequest,
   type SupersedeAgentGraphSupervisorWakesRequest,
 } from '@maka/core/agent-graph-supervisor-wake';
-import { type SessionListFilter } from '@maka/core/runtime-inputs';
+import type { SessionListFilter } from '@maka/core/runtime-inputs';
 import {
   assertSafeSessionId,
   SessionNotFoundError,
@@ -413,13 +413,24 @@ export class StoredSessionMessageIncompatibleError extends Error {
   }
 }
 
-export class AgentGraphIntentClaimConflictError extends SessionMetadataConflictError {
-  readonly name = 'AgentGraphIntentClaimConflictError';
-}
-
-export class AgentGraphScheduleUpdateConflictError extends SessionMetadataConflictError {
-  readonly name = 'AgentGraphScheduleUpdateConflictError';
-}
+import {
+  AgentGraphIntentClaimConflictError,
+  AgentGraphScheduleUpdateConflictError,
+} from './session-store-contract.js';
+export {
+  AgentGraphIntentClaimConflictError,
+  AgentGraphScheduleUpdateConflictError,
+} from './session-store-contract.js';
+import {
+  assertGraphLookupIdentity,
+  assertAgentGraphSupervisorWakeClaim,
+  assertAgentGraphSupervisorWakeAttempt,
+  assertAgentGraphSupervisorWakeCompletion,
+  assertAgentGraphClientProjectionRequest,
+  encodeProjectionPayload,
+  assertGraphEventTime,
+  assertGraphIntentId,
+} from './graph-control-values.js';
 
 export function createSqliteSessionMetadataStore(
   path: string,
@@ -6245,6 +6256,16 @@ function assertGraphLookupIdentity(value: string, name: string): void {
   }
 }
 
+function isCanonicalReadOnlySandboxProfile(
+  profile: Extract<ExecutionBoundary, { kind: 'managed' }>['profile'],
+): boolean {
+  const { name: _profileName, ...profilePolicy } = profile;
+  const { name: _canonicalName, ...canonicalPolicy } = requireManagedProfile(
+    createGenesisExecutionBoundary('explore'),
+  );
+  return isDeepStrictEqual(profilePolicy, canonicalPolicy);
+}
+
 function assertSafeBoundaryRequestId(value: string): void {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
     throw new Error('Invalid sandbox boundary request id');
@@ -6261,109 +6282,6 @@ function assertSandboxBoundaryProvenanceId(value: string, name: string): void {
   ) {
     throw new Error(`Invalid sandbox boundary ${name}`);
   }
-}
-
-function assertAgentGraphSupervisorWakeClaim(request: ClaimAgentGraphSupervisorWakeRequest): void {
-  if (request.schemaVersion !== AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION) {
-    throw new Error('Invalid agent graph supervisor wake schema');
-  }
-  assertGraphLookupIdentity(request.graphId, 'graph id');
-  assertGraphLookupIdentity(request.wakeId, 'supervisor wake id');
-  assertGraphLookupIdentity(request.snapshotVersion, 'snapshot version');
-  assertSafeSessionId(request.rootSessionId);
-}
-
-function assertAgentGraphSupervisorWakeAttempt(
-  request: BeginAgentGraphSupervisorWakeAttemptRequest,
-): void {
-  assertGraphLookupIdentity(request.graphId, 'graph id');
-  assertGraphLookupIdentity(request.wakeId, 'supervisor wake id');
-  assertGraphLookupIdentity(request.attemptId, 'supervisor wake attempt id');
-  assertGraphLookupIdentity(request.turnId, 'supervisor wake turn id');
-}
-
-function assertAgentGraphSupervisorWakeCompletion(
-  request: CompleteAgentGraphSupervisorWakeAttemptRequest,
-): void {
-  assertGraphLookupIdentity(request.graphId, 'graph id');
-  assertGraphLookupIdentity(request.wakeId, 'supervisor wake id');
-  assertGraphLookupIdentity(request.attemptId, 'supervisor wake attempt id');
-  if (
-    request.status !== 'waiting_permission' &&
-    request.status !== 'delivered' &&
-    request.status !== 'superseded' &&
-    request.status !== 'retryable_failed'
-  ) {
-    throw new Error('Invalid agent graph supervisor wake completion status');
-  }
-  if (
-    (request.status === 'retryable_failed' || request.status === 'superseded') &&
-    (!request.failureReason?.trim() || request.failureReason.length > 4_000)
-  ) {
-    throw new Error('Agent graph supervisor wake failure reason must be non-empty and bounded');
-  }
-}
-
-function assertAgentGraphClientProjectionRequest(
-  request: CommitAgentGraphClientProjectionRequest,
-): void {
-  if (
-    request.schemaVersion !== AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION ||
-    (request.expectedSnapshotVersion !== null &&
-      typeof request.expectedSnapshotVersion !== 'string') ||
-    typeof request.replaceOperators !== 'boolean' ||
-    !Array.isArray(request.operators) ||
-    !Array.isArray(request.terminalActivities) ||
-    !Array.isArray(request.activityRecords)
-  ) {
-    throw new Error('Invalid agent graph client projection request');
-  }
-  assertGraphLookupIdentity(request.graphId, 'graph id');
-  assertSafeSessionId(request.rootSessionId);
-  if (request.expectedSnapshotVersion !== null) {
-    assertGraphLookupIdentity(request.expectedSnapshotVersion, 'expected snapshot version');
-  }
-  assertGraphLookupIdentity(request.snapshotVersion, 'snapshot version');
-  const operatorIds = new Set<string>();
-  for (const operator of request.operators) {
-    assertGraphLookupIdentity(operator.operatorId, 'operator id');
-    if (operatorIds.has(operator.operatorId)) {
-      throw new Error(`Duplicate agent graph client operator ${operator.operatorId}`);
-    }
-    operatorIds.add(operator.operatorId);
-  }
-  const terminalIds = new Set<string>();
-  for (const terminal of request.terminalActivities) {
-    assertGraphLookupIdentity(terminal.recordId, 'terminal record id');
-    assertGraphEventTime(terminal.eventTime);
-    if (terminalIds.has(terminal.recordId)) {
-      throw new Error(`Duplicate agent graph terminal activity ${terminal.recordId}`);
-    }
-    terminalIds.add(terminal.recordId);
-  }
-  const activityIds = new Set<string>();
-  for (const record of request.activityRecords) {
-    assertGraphLookupIdentity(record.recordId, 'activity record id');
-    assertGraphEventTime(record.eventTime);
-    if (activityIds.has(record.recordId)) {
-      throw new Error(`Duplicate agent graph activity ${record.recordId}`);
-    }
-    activityIds.add(record.recordId);
-  }
-  if (request.incrementalRecordId !== undefined) {
-    assertGraphLookupIdentity(request.incrementalRecordId, 'incremental record id');
-    if (request.expectedSnapshotVersion === null || !activityIds.has(request.incrementalRecordId)) {
-      throw new Error('Invalid incremental agent graph projection record');
-    }
-  }
-}
-
-function encodeProjectionPayload(payload: unknown, name: string): string {
-  const encoded = JSON.stringify(payload);
-  if (encoded === undefined) {
-    throw new Error(`Invalid agent graph ${name} payload`);
-  }
-  return encoded;
 }
 
 function decodeAgentGraphClientProjectionRow(
@@ -6405,18 +6323,6 @@ function decodeAgentGraphClientOperatorProjectionRow(
     payload: JSON.parse(row.payloadJson) as unknown,
     materializedAt: row.materializedAt,
   };
-}
-
-function assertGraphEventTime(value: number): void {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error('Invalid agent graph terminal activity event time');
-  }
-}
-
-function assertGraphIntentId(value: string): void {
-  if (!/^graph_intent_[a-f0-9]{32}$/.test(value)) {
-    throw new Error('Invalid agent graph intent id');
-  }
 }
 
 function decodeStoredMessageRow(
