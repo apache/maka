@@ -167,6 +167,7 @@ export class McpManagementOverlay implements Component {
   private editor: OverlayTextInput | undefined;
   private closed = false;
   private actionAttempt = 0;
+  private actionAbort: AbortController | undefined;
 
   constructor(
     private readonly input: {
@@ -197,10 +198,9 @@ export class McpManagementOverlay implements Component {
     }
     if (this.phase.kind === 'busy') {
       if (matchesKey(data, Key.escape)) {
-        this.actionAttempt += 1;
+        this.cancelActiveAction();
         this.backToList();
       } else if (matchesKey(data, 'q')) {
-        this.actionAttempt += 1;
         this.close();
       }
       return;
@@ -457,14 +457,17 @@ export class McpManagementOverlay implements Component {
     }
     this.clearEditor();
     const attempt = ++this.actionAttempt;
+    const abort = new AbortController();
+    this.actionAbort = abort;
     this.phase = { kind: 'busy', label: actionLabel(action, this.input.locale) };
     this.input.onChange();
     let result: TuiMcpActionResult;
     try {
-      result = await management.execute(action);
+      result = await management.execute(action, { signal: abort.signal });
     } catch {
       result = { status: 'failed', reason: 'manager-failed' };
     }
+    if (this.actionAbort === abort) this.actionAbort = undefined;
     if (this.closed || attempt !== this.actionAttempt) return;
     this.phase = { kind: 'list' };
     this.notice = actionNotice(result, this.input.locale);
@@ -585,12 +588,20 @@ export class McpManagementOverlay implements Component {
   private close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.cancelActiveAction();
     if (this.phase.kind === 'confirm_import') {
       this.management()?.discardImportPreview(this.phase.preview.previewId);
     }
     this.clearEditor();
     this.dispose();
     this.input.onClose();
+  }
+
+  private cancelActiveAction(): void {
+    this.actionAttempt += 1;
+    const abort = this.actionAbort;
+    this.actionAbort = undefined;
+    abort?.abort(new Error('MCP action cancelled'));
   }
 
   private keepSelectionVisible(): void {

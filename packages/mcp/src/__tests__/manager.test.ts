@@ -18,7 +18,10 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, test } from 'node:test';
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
@@ -30,7 +33,13 @@ import {
   type McpProtocolPreference,
   type McpToolBinding,
 } from '@maka/core/mcp';
-import { buildStdioEnvironment, McpClientManager, McpToolCallError } from '../index.js';
+import { deferred } from '@maka/core/test-only/async-primitives';
+import {
+  buildStdioEnvironment,
+  McpClientManager,
+  McpToolCallError,
+  type McpOAuthStorage,
+} from '../index.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const fixturePath = fileURLToPath(new URL('../__fixtures__/stdio-server.js', import.meta.url));
@@ -72,6 +81,88 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       assertLegacyHandshake(fixture);
     });
 
+    test('caller abort stops waiting on the initial OAuth credential read', async () => {
+      const readStarted = deferred<void>();
+      const releaseRead = deferred<void>();
+      let reads = 0;
+      const storage: McpOAuthStorage = {
+        get: async () => {
+          reads += 1;
+          if (reads === 1) {
+            readStarted.resolve();
+            await releaseRead.promise;
+          }
+          return undefined;
+        },
+        set: async () => undefined,
+        delete: async () => undefined,
+      };
+      const manager = createManager({ oauthStorage: storage });
+      const abort = new AbortController();
+      const syncing = manager.sync(
+        {
+          version: MCP_CONFIG_VERSION,
+          mcpServers: {
+            remote: {
+              url: 'https://oauth-read.example/mcp',
+              transport: 'streamable-http',
+            },
+          },
+        },
+        { signal: abort.signal },
+      );
+      await readStarted.promise;
+
+      abort.abort(new Error('cancel initial OAuth credential read'));
+      const rejected = await rejectsWithin(syncing, 100, /cancel initial OAuth credential read/u);
+      releaseRead.resolve();
+      await syncing.catch(() => undefined);
+
+      assert.equal(rejected, true);
+      assert.equal(manager.status('remote')?.state, 'disconnected');
+    });
+
+    test('caller abort stops waiting on the OAuth authorization-owner read', async () => {
+      const readStarted = deferred<void>();
+      const releaseRead = deferred<void>();
+      let reads = 0;
+      const storage: McpOAuthStorage = {
+        get: async () => {
+          reads += 1;
+          if (reads === 2) {
+            readStarted.resolve();
+            await releaseRead.promise;
+          }
+          return undefined;
+        },
+        set: async () => undefined,
+        delete: async () => undefined,
+      };
+      const manager = createManager({ oauthStorage: storage });
+      const abort = new AbortController();
+      const syncing = manager.sync(
+        {
+          version: MCP_CONFIG_VERSION,
+          mcpServers: {
+            remote: {
+              url: 'https://oauth-owner.example/mcp',
+              transport: 'streamable-http',
+            },
+          },
+        },
+        { signal: abort.signal },
+      );
+      await readStarted.promise;
+
+      abort.abort(new Error('cancel OAuth authorization-owner read'));
+      const rejected = await rejectsWithin(syncing, 100, /cancel OAuth authorization-owner read/u);
+      releaseRead.resolve();
+      await syncing.catch(() => undefined);
+
+      assert.equal(rejected, true);
+      assert.equal(manager.status('remote')?.state, 'disconnected');
+    });
+
     test('auto probes before negotiating a legacy Streamable HTTP server', async () => {
       const fixture = await createRemoteFixture('streamable-http');
       const manager = createManager();
@@ -106,7 +197,10 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
     test('strips configured headers when a redirect leaves the endpoint origin', async () => {
       // Undici forwards custom headers (X-API-Key) across cross-origin
       // redirects; the manager's scoped fetch must not.
-      const crossOriginSeen: Array<{ authorization?: string; apiKey?: string }> = [];
+      const crossOriginSeen: Array<{
+        authorization?: string;
+        apiKey?: string;
+      }> = [];
       const target = createServer((req, res) => {
         crossOriginSeen.push({
           ...(typeof req.headers.authorization === 'string'
@@ -126,7 +220,9 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       if (!targetAddress || typeof targetAddress === 'string') throw new Error('no target port');
       const redirector = createServer((req, res) => {
         res
-          .writeHead(307, { location: `http://127.0.0.1:${targetAddress.port}${req.url ?? '/'}` })
+          .writeHead(307, {
+            location: `http://127.0.0.1:${targetAddress.port}${req.url ?? '/'}`,
+          })
           .end();
       });
       await new Promise<void>((resolve, reject) => {
@@ -145,7 +241,10 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
             remote: {
               url: `http://127.0.0.1:${redirectorAddress.port}/mcp`,
               transport: 'streamable-http',
-              headers: { Authorization: 'Bearer remote-test', 'X-API-Key': 'key-123456' },
+              headers: {
+                Authorization: 'Bearer remote-test',
+                'X-API-Key': 'key-123456',
+              },
             },
           },
         });
@@ -320,7 +419,9 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       await waitFor(() => manager.status('remote')?.error?.includes('duplicate tool') === true);
       assert.equal(manager.toolSnapshot(), replacement);
       assert.deepEqual(
-        await manager.callTool(replacement.tools[0]!.binding, { value: 'retained' }),
+        await manager.callTool(replacement.tools[0]!.binding, {
+          value: 'retained',
+        }),
         {
           content: [{ type: 'text', text: 'retained' }],
           structuredContent: undefined,
@@ -329,7 +430,9 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
     });
 
     test('refreshes for legacy list-changed notifications without an advertised flag', async () => {
-      const fixture = await createRemoteFixture('sse', { advertiseToolListChanges: false });
+      const fixture = await createRemoteFixture('sse', {
+        advertiseToolListChanges: false,
+      });
       const manager = createManager();
       await manager.sync(remoteConfig(`${fixture.url}/sse`, 'auto', 'legacy'));
 
@@ -792,7 +895,10 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       await fixture.notifyToolListChanged();
       await gate.started;
 
-      const removal = manager.sync({ version: MCP_CONFIG_VERSION, mcpServers: {} });
+      const removal = manager.sync({
+        version: MCP_CONFIG_VERSION,
+        mcpServers: {},
+      });
       let removedBeforeRelease: boolean;
       try {
         removedBeforeRelease = await settlesWithin(removal, 1_000);
@@ -1334,6 +1440,248 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       assert.deepEqual(manager.toolSnapshot().tools, []);
     });
 
+    test('caller abort cancels sync and reaps its in-flight stdio child', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-mcp-sync-abort-'));
+      const eventLog = join(root, 'events.jsonl');
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const manager = createManager();
+      const abort = new AbortController();
+      const sync = manager.sync(
+        {
+          version: MCP_CONFIG_VERSION,
+          mcpServers: {
+            fixture: {
+              command: process.execPath,
+              args: [fixturePath, '--slow-start', '--ignore-sigterm'],
+              env: { MAKA_MCP_STDIO_EVENT_LOG: eventLog },
+            },
+          },
+        },
+        { signal: abort.signal },
+      );
+      await pollFor(
+        async () => {
+          try {
+            return (await readFile(eventLog, 'utf8')).includes('"event":"start"');
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+            throw error;
+          }
+        },
+        { timeoutMs: 1_000, pollMs: 5 },
+      );
+      const events = await readFile(eventLog, 'utf8');
+      const start = events
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { event: string; pid: number })
+        .find((event) => event.event === 'start');
+      assert.ok(start);
+      abort.abort(new Error('cancelled by caller'));
+      await assert.rejects(sync, /cancelled by caller/u);
+      assert.equal(processExists(start.pid), false);
+      await pollFor(() => manager.status('fixture')?.state === 'disconnected', {
+        timeoutMs: 2_000,
+        pollMs: 5,
+      });
+      assert.equal(manager.status('fixture')?.state, 'disconnected');
+      assert.deepEqual(manager.toolSnapshot().tools, []);
+    });
+
+    test('a repeated disconnect joins the original stdio teardown before reconnecting', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-mcp-repeat-disconnect-'));
+      const eventLog = join(root, 'events.jsonl');
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const manager = createManager();
+      const config = fixtureConfig(['--ignore-sigterm', '--hold-stdin-open']);
+      config.mcpServers.fixture = {
+        ...config.mcpServers.fixture,
+        env: { MAKA_MCP_STDIO_EVENT_LOG: eventLog },
+        protocol: 'legacy',
+      };
+      await manager.sync(config);
+      const events = await readFile(eventLog, 'utf8');
+      const start = events
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { event: string; pid: number })
+        .find((event) => event.event === 'start');
+      assert.ok(start);
+
+      const abort = new AbortController();
+      const firstDisconnect = manager.disconnect('fixture', false, { signal: abort.signal });
+      await pollFor(() => manager.status('fixture')?.state === 'disconnected', {
+        timeoutMs: 1_000,
+        pollMs: 5,
+      });
+      assert.equal(processExists(start.pid), true);
+      abort.abort(new Error('cancel first disconnect wait'));
+      await assert.rejects(firstDisconnect, /cancel first disconnect wait/u);
+      const secondDisconnect = manager.disconnect('fixture');
+
+      assert.equal(await settlesWithin(secondDisconnect, 50), false);
+      process.kill(start.pid, 'SIGKILL');
+      await secondDisconnect;
+      assert.equal(processExists(start.pid), false);
+
+      await manager.reconnect('fixture');
+      const starts = (await readFile(eventLog, 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { event: string; pid: number })
+        .filter((event) => event.event === 'start');
+      assert.equal(starts.length, 2);
+      assert.notEqual(starts[1]?.pid, start.pid);
+      const replacement = starts[1];
+      assert.ok(replacement);
+      process.kill(replacement.pid, 'SIGKILL');
+      await pollFor(() => !processExists(replacement.pid), {
+        timeoutMs: 1_000,
+        pollMs: 5,
+      });
+    });
+
+    test('a joining caller aborts only its wait for a shared in-flight connect', async (t) => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-mcp-joined-connect-abort-'));
+      const eventLog = join(root, 'events.jsonl');
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const manager = createManager();
+      const initialSync = manager.sync({
+        version: MCP_CONFIG_VERSION,
+        mcpServers: {
+          fixture: {
+            command: process.execPath,
+            args: [fixturePath, '--slow-start'],
+            env: { MAKA_MCP_STDIO_EVENT_LOG: eventLog },
+          },
+        },
+      });
+      await pollFor(
+        async () => {
+          try {
+            return (await readFile(eventLog, 'utf8')).includes('"event":"start"');
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+            throw error;
+          }
+        },
+        { timeoutMs: 1_000, pollMs: 5 },
+      );
+      const abort = new AbortController();
+      const joined = manager.connect('fixture', { signal: abort.signal });
+
+      abort.abort(new Error('joining caller cancelled'));
+      await assert.rejects(joined, /joining caller cancelled/u);
+      assert.equal(await settlesWithin(initialSync, 50), false);
+      const eventsBeforeOwnerCancellation = await readFile(eventLog, 'utf8');
+      const start = eventsBeforeOwnerCancellation
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { event: string; pid: number })
+        .find((event) => event.event === 'start');
+      assert.ok(start);
+      assert.equal(processExists(start.pid), true);
+
+      assert.equal(manager.cancelConnect('fixture'), true);
+      await initialSync;
+      await pollFor(() => manager.status('fixture')?.state === 'disconnected', {
+        timeoutMs: 2_000,
+        pollMs: 5,
+      });
+      await pollFor(() => !processExists(start.pid), {
+        timeoutMs: 5_000,
+        pollMs: 5,
+      });
+      assert.deepEqual(manager.toolSnapshot().tools, []);
+    });
+
+    test('caller abort stops waiting on a credential read before sync mutates connections', async () => {
+      let releaseGet!: () => void;
+      const getGate = new Promise<void>((resolve) => {
+        releaseGet = resolve;
+      });
+      const storage: McpOAuthStorage = {
+        get: async () => {
+          await getGate;
+          return undefined;
+        },
+        set: async () => undefined,
+        delete: async () => undefined,
+      };
+      const manager = createManager({ oauthStorage: storage });
+      await manager.sync({
+        version: MCP_CONFIG_VERSION,
+        mcpServers: { fixture: { command: process.execPath, enabled: false } },
+      });
+      const abort = new AbortController();
+      const removing = manager.sync(
+        { version: MCP_CONFIG_VERSION, mcpServers: {} },
+        { signal: abort.signal },
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      abort.abort(new Error('credential read cancelled'));
+
+      assert.equal(await rejectsWithin(removing, 100, /credential read cancelled/u), true);
+      assert.equal(manager.status('fixture')?.state, 'disabled');
+      releaseGet();
+    });
+
+    test('sync waits for every started removal before it settles after a sibling aborts', async () => {
+      const fastRead = deferred<void>();
+      const slowWrite = deferred<void>();
+      let fastReadStarted = false;
+      let slowWriteStarted = false;
+      let removalActive = false;
+      let slowWrites = 0;
+      const storage: McpOAuthStorage = {
+        get: async (serverId) => {
+          if (serverId === 'fast' && removalActive) {
+            fastReadStarted = true;
+            await fastRead.promise;
+          }
+          return undefined;
+        },
+        set: async (serverId) => {
+          if (serverId === 'slow' && removalActive) {
+            slowWrites += 1;
+            slowWriteStarted = true;
+            await slowWrite.promise;
+          }
+        },
+        delete: async () => undefined,
+      };
+      const manager = createManager({ oauthStorage: storage });
+      await manager.sync({
+        version: MCP_CONFIG_VERSION,
+        mcpServers: {
+          fast: { command: process.execPath, enabled: false },
+          slow: { url: 'https://slow.example/mcp', enabled: false },
+        },
+      });
+      const abort = new AbortController();
+      removalActive = true;
+      const removing = manager.sync(
+        { version: MCP_CONFIG_VERSION, mcpServers: {} },
+        { signal: abort.signal },
+      );
+      const observedRemoval = removing.then(
+        () => ({ status: 'fulfilled' as const }),
+        (error: unknown) => ({ status: 'rejected' as const, error }),
+      );
+      await waitFor(() => fastReadStarted && slowWriteStarted);
+      abort.abort(new Error('cancel parallel removals'));
+
+      assert.equal(await settlesWithin(observedRemoval, 50), false);
+      assert.equal(slowWrites, 1);
+      slowWrite.resolve();
+      fastRead.resolve();
+      const result = await observedRemoval;
+      assert.equal(result.status, 'rejected');
+      assert.match(String('error' in result ? result.error : ''), /cancel parallel removals/u);
+      assert.equal(manager.status('fast')?.state, 'disabled');
+      assert.equal(manager.status('slow'), undefined);
+    });
+
     test('cancels installation after remote tool discovery starts', async () => {
       const fixture = await createRemoteFixture('streamable-http');
       const manager = createManager();
@@ -1504,6 +1852,15 @@ function fixtureConfig(extraArgs: string[] = []): McpConfigFile {
   };
 }
 
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 function remoteConfig(
   url: string,
   transport: 'auto' | 'streamable-http' = 'streamable-http',
@@ -1523,7 +1880,11 @@ function remoteConfig(
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-  await pollFor(predicate, { timeoutMs, pollMs: 5, message: 'condition was not reached' });
+  await pollFor(predicate, {
+    timeoutMs,
+    pollMs: 5,
+    message: 'condition was not reached',
+  });
 }
 
 async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
@@ -1531,6 +1892,27 @@ async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Prom
   try {
     return await Promise.race([
       promise.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function rejectsWithin(
+  promise: Promise<unknown>,
+  timeoutMs: number,
+  pattern: RegExp,
+): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise.then(
+        () => false,
+        (error: unknown) => pattern.test(String(error)),
+      ),
       new Promise<boolean>((resolve) => {
         timer = setTimeout(() => resolve(false), timeoutMs);
       }),
@@ -1773,7 +2155,9 @@ function createProtocolServer(options: {
     { name: 'maka-remote-fixture', version: '1.0.0' },
     {
       capabilities: options.advertiseTools
-        ? { tools: options.advertiseToolListChanges === false ? {} : { listChanged: true } }
+        ? {
+            tools: options.advertiseToolListChanges === false ? {} : { listChanged: true },
+          }
         : {},
     },
   );
@@ -1809,7 +2193,10 @@ function createProtocolServer(options: {
                         {
                           name: 'invalid-schema',
                           inputSchema: { type: 'object' as const },
-                          outputSchema: { type: 'string' as const, pattern: '[' },
+                          outputSchema: {
+                            type: 'string' as const,
+                            pattern: '[',
+                          },
                         },
                       ]
                     : [remoteToolDefinition('echo'), remoteToolDefinition('invalid-output')],
@@ -1829,7 +2216,9 @@ function createProtocolServer(options: {
     const args = params.arguments ?? {};
     if (params.name === 'invalid-output') {
       if (args.mode === 'missing') {
-        return { content: [{ type: 'text', text: 'missing structured output' }] };
+        return {
+          content: [{ type: 'text', text: 'missing structured output' }],
+        };
       }
       if (args.mode === 'is-error') {
         return {
@@ -1846,7 +2235,10 @@ function createProtocolServer(options: {
       if (args.mode === 'too-many-error-blocks') {
         return {
           isError: true,
-          content: Array.from({ length: 101 }, () => ({ type: 'text' as const, text: 'x' })),
+          content: Array.from({ length: 101 }, () => ({
+            type: 'text' as const,
+            text: 'x',
+          })),
         };
       }
       if (args.mode === 'oversized-success') {

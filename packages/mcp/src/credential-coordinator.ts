@@ -96,7 +96,13 @@ export class McpCredentialCoordinator {
    * The optional signal fences an ABANDONED erase: a logout whose round
    * timed out must not resume later, adopt whatever record a newer login
    * just stored as its basis, and tombstone the fresh tokens. */
-  async erase(serverId: string, options: { signal?: AbortSignal } = {}): Promise<void> {
+  async erase(
+    serverId: string,
+    options: {
+      signal?: AbortSignal;
+      onCommitStarted?: () => void;
+    } = {},
+  ): Promise<void> {
     this.epochs.set(serverId, this.epoch(serverId) + 1);
     await this.run(serverId, async () => {
       this.assertNotAbandoned(serverId, options.signal);
@@ -112,6 +118,12 @@ export class McpCredentialCoordinator {
         generation: (basis?.generation ?? 0) + 1,
         version: (basis?.version ?? 0) + 1,
       };
+      // From this point the storage implementation owns an in-flight write.
+      // The caller may stop passing cancellation into later work, but it must
+      // not report cancellation or compensate related state until this commit
+      // settles: an atomic backend can durably land the tombstone before its
+      // promise becomes observable as fulfilled.
+      options.onCommitStarted?.();
       await this.commit(serverId, basis, tombstone);
     });
   }

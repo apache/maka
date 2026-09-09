@@ -33,6 +33,8 @@ import {
   RuntimeHostRemoteCompatibilityError,
   runtimeHostProfileTargetFingerprint,
   type RemoteRuntimeHostProfile,
+  type RuntimeHostCapabilityProviderCredentialMutationResult,
+  type RuntimeHostCapabilityProviderCredentialSnapshot,
   type RuntimeHostCapabilityProviderCredentialStore,
   type RuntimeHostConnection,
   type RuntimeHostPeerClient,
@@ -214,52 +216,117 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
     return () => this.#listeners.delete(listener);
   }
 
-  setCredential(credential: string): Promise<void> {
+  setCredential(
+    credential: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<void> {
     this.#cancelConnect();
     return this.#serialize(async () => {
       if (this.#closed) throw new Error('Remote MCP publication is closed');
-      const committed = await this.#deps.profiles.mutateRemoteProfileIfCurrent(
-        this.#profileTarget(),
-        (profile) =>
-          this.#deps.credentials.set(
-            { profile, profileIncarnationId: this.#input.profileIncarnationId },
-            this.#input.ownerClientInstanceId,
-            credential,
-          ),
-      );
-      if (!committed) {
-        await this.#retire('target_mismatch');
-        throw new RuntimeHostProfileConnectionError(
-          'target_mismatch',
-          'Remote MCP publication profile is no longer current',
+      let target: RuntimeHostRemoteProfileIncarnation | undefined;
+      let previous: RuntimeHostCapabilityProviderCredentialSnapshot | undefined;
+      let written: RuntimeHostCapabilityProviderCredentialSnapshot | undefined;
+      let disconnected = false;
+      try {
+        throwIfAborted(options.signal);
+        const committed = await this.#deps.profiles.mutateRemoteProfileIfCurrent(
+          this.#profileTarget(),
+          async (profile) => {
+            throwIfAborted(options.signal);
+            target = {
+              profile,
+              profileIncarnationId: this.#input.profileIncarnationId,
+            };
+            previous = await this.#readCredential(target);
+            throwIfAborted(options.signal);
+            written = await this.#writeCredential(target, previous, credential);
+            throwIfAborted(options.signal);
+          },
         );
+        if (!committed) {
+          await this.#retire('target_mismatch');
+          throw new RuntimeHostProfileConnectionError(
+            'target_mismatch',
+            'Remote MCP publication profile is no longer current',
+          );
+        }
+        throwIfAborted(options.signal);
+        await this.#disconnect();
+        disconnected = true;
+        throwIfAborted(options.signal);
+        await this.#connect(credential, options.signal);
+        throwIfAborted(options.signal);
+      } catch (error) {
+        if (options.signal?.aborted && target && previous && written) {
+          this.#cancelConnect();
+          if (disconnected) await this.#disconnect();
+          const restoration = await this.#restoreCredential(target, previous, written);
+          if (!restoration.restored && !disconnected) {
+            await this.#disconnect();
+            disconnected = true;
+          }
+          if (restoration.current.credential === null) {
+            this.#setUnavailable('credential_required');
+          } else if (disconnected) {
+            await this.#connect(restoration.current.credential);
+          }
+        }
+        throw error;
       }
-      await this.#disconnect();
-      await this.#connect(credential);
     });
   }
 
-  removeCredential(): Promise<void> {
+  removeCredential(options: { readonly signal?: AbortSignal } = {}): Promise<void> {
     this.#cancelConnect();
     return this.#serialize(async () => {
       if (this.#closed) throw new Error('Remote MCP publication is closed');
-      await this.#disconnect();
-      const committed = await this.#deps.profiles.mutateRemoteProfileIfCurrent(
-        this.#profileTarget(),
-        (profile) =>
-          this.#deps.credentials.delete(
-            { profile, profileIncarnationId: this.#input.profileIncarnationId },
-            this.#input.ownerClientInstanceId,
-          ),
-      );
-      if (!committed) {
-        await this.#retire('target_mismatch');
-        throw new RuntimeHostProfileConnectionError(
-          'target_mismatch',
-          'Remote MCP publication profile is no longer current',
+      let target: RuntimeHostRemoteProfileIncarnation | undefined;
+      let previous: RuntimeHostCapabilityProviderCredentialSnapshot | undefined;
+      let deleted: RuntimeHostCapabilityProviderCredentialSnapshot | undefined;
+      let disconnected = false;
+      try {
+        throwIfAborted(options.signal);
+        await this.#disconnect();
+        disconnected = true;
+        throwIfAborted(options.signal);
+        const committed = await this.#deps.profiles.mutateRemoteProfileIfCurrent(
+          this.#profileTarget(),
+          async (profile) => {
+            throwIfAborted(options.signal);
+            target = {
+              profile,
+              profileIncarnationId: this.#input.profileIncarnationId,
+            };
+            previous = await this.#readCredential(target);
+            throwIfAborted(options.signal);
+            deleted = await this.#deleteCredential(target, previous);
+            throwIfAborted(options.signal);
+          },
         );
+        if (!committed) {
+          await this.#retire('target_mismatch');
+          throw new RuntimeHostProfileConnectionError(
+            'target_mismatch',
+            'Remote MCP publication profile is no longer current',
+          );
+        }
+        throwIfAborted(options.signal);
+        this.#setUnavailable('credential_required');
+      } catch (error) {
+        if (options.signal?.aborted && disconnected) {
+          const rollbackTarget = target ?? this.#profileTarget();
+          const prior =
+            previous === undefined ? await this.#readCredential(rollbackTarget) : previous;
+          const restoration =
+            deleted !== undefined
+              ? await this.#restoreCredential(rollbackTarget, prior, deleted)
+              : { restored: true, current: prior };
+          if (restoration.current.credential !== null) {
+            await this.#connect(restoration.current.credential);
+          } else this.#setUnavailable('credential_required');
+        }
+        throw error;
       }
-      this.#setUnavailable('credential_required');
     });
   }
 
@@ -277,12 +344,15 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
     return pending;
   }
 
-  async #connect(credential: string): Promise<void> {
+  async #connect(credential: string, signal?: AbortSignal): Promise<void> {
     const generation = ++this.#generation;
     const abort = new AbortController();
     this.#connectAbort = abort;
+    const forwardAbort = () => abort.abort(abortReason(signal));
+    signal?.addEventListener('abort', forwardAbort, { once: true });
     this.#setUnavailable('host_unavailable');
     try {
+      throwIfAborted(signal);
       const clientInstanceId = await this.#deps.loadClientInstanceId(
         providerIdentityPath(this.#input),
       );
@@ -343,8 +413,110 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
       }
       await this.#closePeer(this.#peerClient);
     } finally {
+      signal?.removeEventListener('abort', forwardAbort);
       if (this.#connectAbort === abort) this.#connectAbort = undefined;
     }
+  }
+
+  async #readCredential(
+    target: RuntimeHostRemoteProfileIncarnation,
+  ): Promise<RuntimeHostCapabilityProviderCredentialSnapshot> {
+    if (this.#deps.credentials.read) {
+      return this.#deps.credentials.read(target, this.#input.ownerClientInstanceId);
+    }
+    return {
+      credential: await this.#deps.credentials.get(target, this.#input.ownerClientInstanceId),
+      revision: null,
+    };
+  }
+
+  async #writeCredential(
+    target: RuntimeHostRemoteProfileIncarnation,
+    previous: RuntimeHostCapabilityProviderCredentialSnapshot,
+    credential: string,
+  ): Promise<RuntimeHostCapabilityProviderCredentialSnapshot> {
+    if (this.#deps.credentials.compareAndSet && this.#deps.credentials.read) {
+      const result = await this.#deps.credentials.compareAndSet(
+        target,
+        this.#input.ownerClientInstanceId,
+        previous.revision,
+        credential,
+      );
+      if (!result.committed) {
+        throw new Error('Runtime Host capability-provider credential changed during update');
+      }
+      return { credential, revision: result.revision };
+    }
+    await this.#deps.credentials.set(target, this.#input.ownerClientInstanceId, credential);
+    return { credential, revision: null };
+  }
+
+  async #deleteCredential(
+    target: RuntimeHostRemoteProfileIncarnation,
+    previous: RuntimeHostCapabilityProviderCredentialSnapshot,
+  ): Promise<RuntimeHostCapabilityProviderCredentialSnapshot> {
+    if (previous.credential === null) return previous;
+    if (this.#deps.credentials.compareAndSet && this.#deps.credentials.read) {
+      const result = await this.#deps.credentials.compareAndSet(
+        target,
+        this.#input.ownerClientInstanceId,
+        previous.revision,
+        null,
+      );
+      if (!result.committed) {
+        throw new Error('Runtime Host capability-provider credential changed during deletion');
+      }
+      return { credential: null, revision: result.revision };
+    }
+    await this.#deps.credentials.delete(target, this.#input.ownerClientInstanceId);
+    return { credential: null, revision: null };
+  }
+
+  async #restoreCredential(
+    target: RuntimeHostRemoteProfileIncarnation,
+    previous: RuntimeHostCapabilityProviderCredentialSnapshot,
+    written: RuntimeHostCapabilityProviderCredentialSnapshot,
+  ): Promise<{
+    readonly restored: boolean;
+    readonly current: RuntimeHostCapabilityProviderCredentialSnapshot;
+  }> {
+    if (
+      this.#deps.credentials.compareAndSet &&
+      this.#deps.credentials.read &&
+      written.revision !== null
+    ) {
+      const result: RuntimeHostCapabilityProviderCredentialMutationResult =
+        await this.#deps.credentials.compareAndSet(
+          target,
+          this.#input.ownerClientInstanceId,
+          written.revision,
+          previous.credential,
+        );
+      if (result.committed) {
+        return {
+          restored: true,
+          current: { credential: previous.credential, revision: result.revision },
+        };
+      }
+      return { restored: false, current: result.current };
+    }
+    const current = await this.#deps.credentials.get(target, this.#input.ownerClientInstanceId);
+    if (current !== written.credential) {
+      return {
+        restored: false,
+        current: { credential: current, revision: null },
+      };
+    }
+    if (previous.credential === null) {
+      await this.#deps.credentials.delete(target, this.#input.ownerClientInstanceId);
+    } else {
+      await this.#deps.credentials.set(
+        target,
+        this.#input.ownerClientInstanceId,
+        previous.credential,
+      );
+    }
+    return { restored: true, current: previous };
   }
 
   async #disconnect(): Promise<void> {
@@ -535,4 +707,14 @@ function classifyUnavailable(error: unknown): TuiMcpPublicationUnavailableReason
   if (error instanceof RuntimeHostProfileConnectionError) return error.reason;
   if (error instanceof RuntimeHostRemoteCompatibilityError) return 'target_mismatch';
   return 'host_unavailable';
+}
+
+function abortReason(signal?: AbortSignal): Error {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new Error(String(signal?.reason ?? 'Remote MCP publication cancelled'));
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortReason(signal);
 }

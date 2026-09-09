@@ -165,4 +165,47 @@ describe('McpCredentialCoordinator', () => {
     await assert.rejects(coordinator.erase('remote', { signal: aborted.signal }), /abandoned/u);
     assert.equal(writes.length, 0);
   });
+
+  test('an erase ignores cancellation after its irreversible commit boundary', async () => {
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    let writeStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      writeStarted = resolve;
+    });
+    let stored: McpOAuthRecord | undefined = {
+      version: 1,
+      generation: 0,
+      tokens: { access_token: 'old-token', token_type: 'Bearer' },
+    };
+    const storage: McpOAuthStorage = {
+      get: async () => stored,
+      set: async (_id, record) => {
+        writeStarted();
+        await writeGate;
+        stored = record;
+      },
+      delete: async () => {},
+    };
+    const coordinator = new McpCredentialCoordinator(storage);
+    const round = new AbortController();
+    let boundaryCalls = 0;
+
+    const erasing = coordinator.erase('remote', {
+      signal: round.signal,
+      onCommitStarted: () => {
+        boundaryCalls += 1;
+        round.abort(new Error('too late to cancel erase'));
+      },
+    });
+    await started;
+    assert.equal(round.signal.aborted, true);
+    assert.equal(boundaryCalls, 1);
+
+    releaseWrite();
+    await erasing;
+    assert.deepEqual(stored, { version: 2, generation: 1 });
+  });
 });
