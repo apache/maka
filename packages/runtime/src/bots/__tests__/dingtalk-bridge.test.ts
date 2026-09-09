@@ -38,26 +38,38 @@ describe('decideDingTalkClose (PR-BOT-DINGTALK-OPERATIONAL-0)', () => {
 });
 
 describe('pickDingTalkSendRoute', () => {
-  it('routes group and direct targets while rejecting empty ids', () => {
-    assert.deepEqual(pickDingTalkSendRoute(' cidp-abc ', 'app-key-1', 'hello'), {
+  it('routes stamped group and 1:1 chatIds to their own endpoints (#5111)', () => {
+    // Real 1:1 and group conversationIds share the same `cid` prefix, so
+    // the stamped route is the only reliable discriminator.
+    assert.deepEqual(pickDingTalkSendRoute('group:cidXXyy==', 'app-key-1', 'hello'), {
       path: '/v1.0/robot/groupMessages/send',
       body: {
         robotCode: 'app-key-1',
-        openConversationId: 'cidp-abc',
+        openConversationId: 'cidXXyy==',
         msgKey: 'sampleText',
         msgParam: '{"content":"hello"}',
       },
     });
-    assert.deepEqual(pickDingTalkSendRoute(' user-99 ', 'app-key-1', 'hi'), {
+    assert.deepEqual(pickDingTalkSendRoute('oto:01234567890123456789', 'app-key-1', 'hi'), {
       path: '/v1.0/robot/oToMessages/batchSend',
       body: {
         robotCode: 'app-key-1',
-        userIds: ['user-99'],
+        userIds: ['01234567890123456789'],
         msgKey: 'sampleText',
         msgParam: '{"content":"hi"}',
       },
     });
     assert.equal(pickDingTalkSendRoute('   ', 'app-key-1', 'hi'), null);
+    assert.equal(pickDingTalkSendRoute('group:', 'app-key-1', 'hi'), null);
+    assert.equal(pickDingTalkSendRoute('oto:', 'app-key-1', 'hi'), null);
+  });
+
+  it('fails closed on unstamped ids instead of guessing prefixes (#5111)', () => {
+    // A bare real 1:1 conversationId starts with `cid` — the old
+    // startsWith('cid') guess routed it to the group endpoint and DingTalk
+    // rejected every direct reply. Both shapes below are unstamped.
+    assert.equal(pickDingTalkSendRoute('cidZz9wYq==', 'app-key-1', 'hi'), null);
+    assert.equal(pickDingTalkSendRoute('cidp-group', 'app-key-1', 'hi'), null);
   });
 });
 
@@ -93,37 +105,60 @@ describe('classifyDingTalkSendResponse', () => {
 });
 
 describe('dingTalkPayloadToEvent', () => {
-  it('maps direct and group messages with stable identity fallbacks', () => {
-    const event = dingTalkPayloadToEvent(
+  it('stamps the send route from conversationType, not from id shapes (#5111)', () => {
+    // Real DingTalk 1:1 and group conversationIds BOTH start with `cid`;
+    // conversationType is the only authoritative discriminator, and the
+    // 1:1 endpoint addresses by senderStaffId.
+    const direct = dingTalkPayloadToEvent(
       {
-        senderId: 'user-1',
+        senderId: '$:LWCP_v1:$AbCdEf',
         senderNick: 'Alice',
-        conversationId: 'cidp-single',
+        senderStaffId: '01234567890123456789',
+        conversationId: 'cidZz9wYq==',
         conversationType: '1',
         text: { content: 'hello' },
         robotCode: 'app-key-1',
       },
       1_700_000_000_000,
     );
-    assert.ok(event);
-    assert.equal(event!.platform, 'dingtalk');
-    assert.equal(event!.userId, 'user-1');
-    assert.equal(event!.userName, 'Alice');
-    assert.equal(event!.chatId, 'cidp-single');
-    assert.equal(event!.isGroup, false);
-    assert.equal(event!.text, 'hello');
-    assert.equal(event!.sourceMessageId, 'cidp-single:1700000000000');
-    const groupEvent = dingTalkPayloadToEvent(
+    assert.ok(direct);
+    assert.equal(direct.platform, 'dingtalk');
+    assert.equal(direct.userId, '$:LWCP_v1:$AbCdEf');
+    assert.equal(direct.userName, 'Alice');
+    assert.equal(direct.chatId, 'oto:01234567890123456789');
+    assert.equal(direct.isGroup, false);
+    assert.equal(direct.text, 'hello');
+    assert.equal(direct.sourceMessageId, 'oto:01234567890123456789:1700000000000');
+
+    const group = dingTalkPayloadToEvent(
       {
         senderId: 'user-2',
-        conversationId: 'cidp-group',
+        conversationId: 'cidZz9wYq==',
         conversationType: '2',
         text: { content: 'hi' },
       },
       1,
     );
-    assert.equal(groupEvent!.isGroup, true);
-    assert.equal(groupEvent!.userName, 'user-2');
+    assert.ok(group);
+    assert.equal(group.chatId, 'group:cidZz9wYq==');
+    assert.equal(group.isGroup, true);
+    assert.equal(group.userName, 'user-2');
+  });
+
+  it('keeps the bare conversationId when no staffId is available (#5111)', () => {
+    // Graceful fallback: the message still arrives, but the send side
+    // fails closed on the unstamped id rather than guessing a route.
+    const event = dingTalkPayloadToEvent(
+      {
+        senderId: 'u1',
+        conversationId: 'cidNoStaff==',
+        conversationType: '1',
+        text: { content: 'hello' },
+      },
+      1,
+    );
+    assert.ok(event);
+    assert.equal(event.chatId, 'cidNoStaff==');
   });
 
   it('drops payloads missing text or routing identity', () => {
