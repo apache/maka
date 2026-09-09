@@ -204,7 +204,14 @@ test('invalid accepted answer never reaches server', async () => {
   assert.equal(fixture.calls.length, 1);
 });
 
-for (const invalidate of ['stop', 'disconnect', 'reconnect', 'close', 'changed refresh'] as const) {
+for (const invalidate of [
+  'stop',
+  'disconnect',
+  'reconnect',
+  'close',
+  'changed refresh',
+  'exhaust',
+] as const) {
   test(`${invalidate} aborts a pending callback even when it ignores cancellation`, async () => {
     const { fixture, manager, binding } = await setup();
     const shown = deferred<void>();
@@ -221,13 +228,28 @@ for (const invalidate of ['stop', 'disconnect', 'reconnect', 'close', 'changed r
         },
       },
     );
-    const rejected = assert.rejects(call, /aborted|stale/);
+    const rejected = assert.rejects(
+      call,
+      invalidate === 'exhaust' ? /retention exhausted/ : /aborted|stale/,
+    );
     await shown.promise;
     if (invalidate === 'stop') controller.abort();
     else if (invalidate === 'disconnect') await manager.disconnect('forms');
     else if (invalidate === 'reconnect') await manager.reconnect('forms');
     else if (invalidate === 'close') await manager.close();
-    else {
+    else if (invalidate === 'exhaust') {
+      fixture.respond = () => inputRequired({ requestState: 's'.repeat(16 * 1024 + 1) });
+      await assert.rejects(
+        manager.callTool(
+          binding,
+          {},
+          {
+            requestInteraction: async () => assert.fail('exhausting call must not publish a form'),
+          },
+        ),
+        /retention exhausted/,
+      );
+    } else {
       fixture.definition = { ...fixture.definition, description: 'new definition' };
       await manager.refreshTools('forms');
     }
@@ -237,7 +259,7 @@ for (const invalidate of ['stop', 'disconnect', 'reconnect', 'close', 'changed r
     ]);
     answer.resolve(accepted);
     await delay(10);
-    assert.equal(fixture.calls.length, 1);
+    assert.equal(fixture.calls.length, invalidate === 'exhaust' ? 2 : 1);
   });
 }
 
