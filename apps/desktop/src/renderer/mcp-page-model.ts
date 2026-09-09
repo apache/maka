@@ -36,7 +36,7 @@ export type McpEditorDraft = {
   env: string;
   url: string;
   transport: 'auto' | 'streamable-http' | 'sse';
-  /** Undefined means the authoring default for the current kind. Stored
+  /** Undefined means the auto authoring default. Stored
    * configs are projected to an explicit value before editing. */
   protocol?: McpProtocolPreference;
   headers: string;
@@ -89,7 +89,7 @@ export function mcpDraftFromConfig(id: string, config: McpServerConfig): McpEdit
 
 export function mcpDraftProtocolPreference(draft: McpEditorDraft): McpProtocolPreference {
   if (draft.kind === 'remote' && draft.transport === 'sse') return 'legacy';
-  return draft.protocol ?? (draft.kind === 'remote' ? 'auto' : 'legacy');
+  return draft.protocol ?? 'auto';
 }
 
 export function mcpConfigFromDraft(draft: McpEditorDraft, copy: McpCopy): McpServerConfig {

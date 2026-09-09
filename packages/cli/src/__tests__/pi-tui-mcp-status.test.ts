@@ -364,7 +364,8 @@ describe('MCP management overlay', () => {
       assert.ok(text.includes(expected.argsHint));
       overlay.handleInput('\r');
       assert.ok(rendered().includes(expected.protocol));
-      overlay.handleInput('2');
+      assert.ok(rendered().includes('auto (Enter)'));
+      overlay.handleInput('\r');
       text = rendered();
       assert.ok(text.includes(expected.cwd));
       assert.ok(text.includes(expected.optionalHint));

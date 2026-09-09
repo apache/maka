@@ -106,14 +106,14 @@ test('legacy SSE projects legacy without erasing an explicit remote pin', () => 
   );
 });
 
-test('a newly-authored stdio MCP persists the one-child legacy default', () => {
+test('a newly-authored stdio MCP persists an explicit auto preference', () => {
   const saved = mcpConfigFromDraft(
     { ...createEmptyMcpDraft(), id: 'local', commandLine: ' node ' },
     copy,
   );
 
   assert.equal(isMcpStdioConfig(saved), true);
-  assert.equal(isMcpStdioConfig(saved) && saved.protocol, 'legacy');
+  assert.equal(isMcpStdioConfig(saved) && saved.protocol, 'auto');
 });
 
 test('stdio editing presents omitted legacy and round-trips explicit modern preferences', () => {
@@ -132,7 +132,7 @@ test('stdio editing presents omitted legacy and round-trips explicit modern pref
 
 test('kind changes preserve an explicit protocol choice and derive only unselected defaults', () => {
   const empty = createEmptyMcpDraft();
-  assert.equal(mcpDraftProtocolPreference(empty), 'legacy');
+  assert.equal(mcpDraftProtocolPreference(empty), 'auto');
   assert.equal(mcpDraftProtocolPreference({ ...empty, kind: 'remote' }), 'auto');
 
   const pinned = { ...empty, kind: 'remote' as const, protocol: '2026-07-28' as const };
