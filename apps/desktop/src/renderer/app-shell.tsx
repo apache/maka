@@ -170,7 +170,6 @@ import {
   abandonTurnRevisionCopyAttempt,
   completeTurnRevisionCopyAttempt,
   createAppShellRevisionActions,
-  revisionContentUnchanged,
   type TurnRevisionDraft,
 } from './app-shell-revision-actions';
 import { createAppShellSessionStartActions } from './app-shell-session-start-actions';
@@ -410,7 +409,6 @@ function AppShellContent({
     removeQuote,
     clearQuotes,
     restoreQuotes,
-    replaceQuotes,
   } = useAppShellComposerQuotes({ draftKey: attachmentDraftKey });
   // Held for the whole of sendOwningItsTarget; see ChatComposerRegion.
   const [newTaskSendPending, setNewTaskSendPending] = useState(false);
@@ -1558,8 +1556,6 @@ function AppShellContent({
     commitRevisionDraft,
     revisionDraftRef,
     toastApi,
-    stagedQuotes: () => pendingQuotes,
-    replaceStagedQuotes: (quotes) => replaceQuotes(attachmentDraftKey, quotes),
   });
 
   async function taskSubmissionReadyAtSend(): Promise<boolean> {
@@ -1672,9 +1668,7 @@ function AppShellContent({
     if (
       revisionSend &&
       revision &&
-      // Text alone cannot decide "unchanged": a quote-only edit (restored
-      // quote removed, text kept) is a real edit (#5109).
-      revisionContentUnchanged(text, revision, pendingQuotes) &&
+      text.trim() === revision.originalText.trim() &&
       !hasPendingContext
     ) {
       const actionCopy = getDesktopConversationCopy(uiLocale).actions;

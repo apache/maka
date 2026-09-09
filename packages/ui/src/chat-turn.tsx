@@ -580,14 +580,13 @@ export const TurnView = memo(function TurnView(props: {
                 ? () => props.onEditUserMessage?.(turn.turnId)
                 : undefined
             }
-            // A revision restages neither attachments nor directory
-            // references, so a turn carrying them can't be edited without
-            // silently dropping context the answer was grounded in. Quotes
-            // are self-contained snapshots: the revision draft restages them
-            // verbatim, so they no longer block editing (#5109).
+            // A revision restages neither attachments, directory references,
+            // nor quotes, so a turn carrying any of them can't be edited
+            // without silently dropping context the answer was grounded in.
             editDisabled={
               (turn.user.attachments?.length ?? 0) > 0 ||
               (turn.user.directoryReferences?.length ?? 0) > 0 ||
+              (turn.user.quotes?.length ?? 0) > 0 ||
               props.editUserMessageTransformed === true ||
               props.editUserMessageDisabled === true ||
               turn.status === 'running' ||
@@ -598,9 +597,11 @@ export const TurnView = memo(function TurnView(props: {
                 ? copy.editMessageDisabledAttachments
                 : (turn.user.directoryReferences?.length ?? 0) > 0
                   ? copy.editMessageDisabledDirectoryReferences
-                  : props.editUserMessageTransformed
-                    ? copy.editMessageDisabledTransformedText
-                    : copy.editMessageDisabledRunning
+                  : (turn.user.quotes?.length ?? 0) > 0
+                    ? copy.editMessageDisabledQuotes
+                    : props.editUserMessageTransformed
+                      ? copy.editMessageDisabledTransformedText
+                      : copy.editMessageDisabledRunning
             }
           />
 
