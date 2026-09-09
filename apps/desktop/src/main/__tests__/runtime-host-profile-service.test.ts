@@ -106,6 +106,48 @@ afterEach(async () => {
   );
 });
 
+for (const hasDeployment of [false, true]) {
+  test(`recovers an abandoned deployment lock before loading Host choices (saved=${hasDeployment})`, async () => {
+    const root = await clientRoot();
+    const catalog = createClientRuntimeHostProfileCatalog(root);
+    const managedServices = createDesktopRuntimeHostManagedServiceStore(root);
+    if (hasDeployment) {
+      await catalog.create(MANAGED_PROFILE, "token");
+      await managedServices.save(MANAGED_PROFILE, MANAGED_SERVICE);
+    }
+    const before = await managedServices.read();
+    await mkdir(join(root, "runtime-host-deployments.json.lock"));
+
+    const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+    const service = createDesktopRuntimeHostProfileService({
+      clientDataRoot: root,
+      startup,
+      catalog,
+      managedServices,
+      states: () => [ready({ profile: LOCAL_RUNTIME_HOST_PROFILE })],
+      enable: async () => undefined,
+      disable: async () => undefined,
+      setDefault: () => undefined,
+      finalizePairing: async () => undefined,
+    });
+    const snapshot = await service.getSnapshot();
+    assert.equal(snapshot.defaultProfileId, LOCAL_RUNTIME_HOST_PROFILE.id);
+    assert.equal(snapshot.entries[0]?.readiness, "ready");
+    assert.equal(snapshot.entries.length, hasDeployment ? 2 : 1);
+    assert.deepEqual(await managedServices.read(), before);
+    if (hasDeployment) assert.equal(snapshot.entries[1]?.managedService, true);
+  });
+}
+
+test("does not discard unexpected contents in an abandoned deployment lock", async () => {
+  const root = await clientRoot();
+  const lock = join(root, "runtime-host-deployments.json.lock");
+  await mkdir(lock);
+  await writeFile(join(lock, "unexpected"), "retain me");
+  await assert.rejects(resolveDesktopRuntimeHostStartup(root), { code: "ENOTEMPTY" });
+  assert.equal(await readFile(join(lock, "unexpected"), "utf8"), "retain me");
+});
+
 test("migrates the former selected Host into enabled and default preferences", async () => {
   const root = await clientRoot();
   await createClientRuntimeHostProfileCatalog(root).create(PROFILE, "token");
