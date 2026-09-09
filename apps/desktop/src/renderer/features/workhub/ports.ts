@@ -24,6 +24,7 @@ import type { ComposerAttachmentService } from '@maka/ui/use-composer-attachment
 import type { SessionEvent, AttachmentRef } from '@maka/core/events';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { OperationInput, OperationOutput } from '@maka/runtime-host/protocol';
+import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../shared/workhub-conversation.js';
 import type { WorkHubControlBridge } from '../../../shared/workhub-control.js';
 import type { WorkHubPresentationBridge } from '../../../shared/workhub-presentation.js';
 import type { WorkHubCoordinationHostChange } from './controller/coordination-lifecycle.js';
@@ -35,6 +36,7 @@ export interface WorkHubTranscriptSnapshot {
   readonly ready: boolean;
 }
 export interface WorkHubTranscript {
+  observationChanged(phase: 'pending' | 'ready'): void;
   loadOlder(): Promise<void>;
   loadLatest(): Promise<void>;
   close(): Promise<void>;
@@ -55,8 +57,7 @@ export interface WorkHubServices {
   readonly attachments: ComposerAttachmentService;
   readAttachmentBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   prepareAttachments(sessionId: string, items: Array<{ approvalId: string; name: string; mimeType?: string } | { file: File }>): Promise<AttachmentRef[]>;
-  /** Undefined means the dispatched admission outcome is still unknown. */
-  answer(sessionId: string, input: { turnId: string; text: string; attachments?: AttachmentRef[] }): Promise<{ turnId: string } | undefined>;
+  answer(sessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
   configureModel(
     sessionId: string,
     input: OperationInput<'workhub.coordination.configureModel'>,
@@ -65,11 +66,13 @@ export interface WorkHubServices {
     sessionId: string,
     handler: (event: SessionEvent) => void,
     onError: (error: unknown) => void,
+    onPhase: (phase: 'pending' | 'ready') => void,
   ): () => void;
   openTranscript(
     sessionId: string,
     handler: (snapshot: WorkHubTranscriptSnapshot) => void,
     signal: AbortSignal,
+    onError: (error: unknown) => void,
   ): Promise<WorkHubTranscript>;
   stop(sessionId: string, turnId: string): Promise<unknown>;
 }

@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import test from 'node:test';
 import { build } from 'esbuild';
+import { deferred, waitFor } from '@maka/core/test-only/async-primitives';
 import type { StoredMessage } from '@maka/core/session';
 import type { MakaBridge } from '../../preload/bridge-contract.js';
 import type { DesktopTranscriptBatch, DesktopTranscriptRangeRequest } from '../../preload/transcript-contract.js';
@@ -149,8 +150,10 @@ test('WorkHub tail navigation converges through the preload with a fragmented sp
     sessionId,
     (snapshot) => projections.push(snapshot.messages.map((message) => message.id)),
     new AbortController().signal,
+    (error) => { throw error; },
   );
   try {
+    await waitFor(() => projections.length === 1, { timeoutMs: 5_000 });
     await handle.loadLatest();
     await responseDelivered;
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -164,3 +167,80 @@ test('WorkHub tail navigation converges through the preload with a fragmented sp
     await handle.close();
   }
 });
+
+
+// Exercise the production adapter with the same cached handle shape returned by
+// preload, and both orderings of initial read failure versus observation readiness.
+for (const initial of ['failure-before-ready', 'failure-after-ready', 'cached'] as const) {
+  test(`WorkHub read reconnects through observation readiness: ${initial}`, async (t) => {
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+    t.after(() => {
+      if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+      else Reflect.deleteProperty(globalThis, 'window');
+    });
+    const sessionId = desktopSessionKey({ hostId: 'owner-host', sessionId: 'coordination' });
+    let openCount = 0;
+    let closedCount = 0;
+    let onReady!: () => void;
+    let onPhase!: (phase: 'pending' | 'ready') => void;
+    let latest: readonly StoredMessage[] = [];
+    const opening = deferred<void>();
+    const errors: unknown[] = [];
+    const services = createDesktopWorkHubServices({
+      attachments: {},
+      sessions: {
+        subscribeEvents(_sessionId, _onEvent, ready, phase) {
+          onReady = ready!;
+          onPhase = phase!;
+          return () => {};
+        },
+      } satisfies Pick<MakaBridge['sessions'], 'subscribeEvents'>,
+      transcripts: {
+        async open(_sessionId, onBatch) {
+          const attempt = ++openCount;
+          if (attempt === 1 && initial !== 'cached') {
+            await opening.promise;
+            throw new Error('transient initial open failure');
+          }
+          const cached = attempt === 1;
+          const snapshot = {
+            sessionId: 'coordination', generation: cached ? 'cached:epoch-1' : `live-${attempt}`,
+            hostEpoch: 'epoch-1', durableThrough: 1, overlay: [], hasOlder: false, hasNewer: false,
+          };
+          const deliver = (navigationVersion = 0) => {
+            for (const batch of encodeDesktopTranscriptSnapshot({
+              ...snapshot, navigationVersion,
+              durable: [{ sequence: 1, message: { type: 'user', id: cached ? 'cached-message' : 'live-message', turnId: 'turn-1', ts: 1, text: cached ? 'Cached history' : 'Live history' } }],
+            })) onBatch({ ...batch, deliverySequence: 1 });
+          };
+          deliver();
+          const unavailable = async () => { throw new Error('Reconnect the Host to load uncached history'); };
+          return {
+            ...snapshot, readThroughMessageId: null,
+            loadBefore: unavailable, loadAfter: unavailable,
+            loadAround: cached ? unavailable : async (_sequence, _maxBytes, navigation) => deliver(navigation?.navigationVersion),
+            close: async () => { closedCount++; },
+          };
+        },
+      } satisfies Pick<MakaBridge['transcripts'], 'open'>,
+    } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
+    const handle = await services.openTranscript(sessionId, (snapshot) => { latest = snapshot.messages; }, new AbortController().signal, (error) => errors.push(error));
+    const unsubscribe = services.observe(sessionId, () => {}, (error) => errors.push(error), handle.observationChanged);
+    try {
+      if (initial === 'failure-after-ready') onReady();
+      opening.resolve();
+      if (initial !== 'cached') await waitFor(() => errors.length > 0, { timeoutMs: 5_000 });
+      else assert.deepEqual(latest.map(({ id }) => id), ['cached-message']);
+      onPhase('pending');
+      onPhase('ready');
+      await waitFor(() => latest.some(({ id }) => id === 'live-message'), { timeoutMs: 5_000 });
+      assert.equal(openCount, 2);
+      assert.equal(closedCount, initial === 'cached' ? 1 : 0);
+      assert.equal(errors.length, initial === 'cached' ? 0 : 1);
+    } finally {
+      unsubscribe();
+      await handle.close();
+    }
+  });
+}

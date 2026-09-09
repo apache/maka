@@ -162,7 +162,7 @@ export function WorkHubRoot() {
             {(controller.error || control?.error) && (
               <div className="workHubLiveError" role="alert">
                 {controller.error ?? control?.error}
-                {!controller.sessionId && (
+                {controller.canRetry && (
                   <Button label={t.retry} variant="ghost" onClick={controller.retry} />
                 )}
               </div>

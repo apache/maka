@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../shared/workhub-conversation.js';
 import { contextBridge, ipcRenderer } from 'electron';
 import { workHubControlBridge } from './workhub-control.js';
 import { workHubPresentationBridge } from './workhub-presentation.js';
@@ -2018,9 +2019,9 @@ const makaBridge = {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
       return ipcRenderer.invoke('workhub:prepareAttachments', scope, await encodeIngestItems(items));
     },
-    async answer(coordinationSessionId: string, input: OperationInput<'workhub.coordination.answer'>) {
+    async answer(coordinationSessionId: string, input: WorkHubAnswerInput) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
-      return ipcRenderer.invoke('workhub:answer', scope, input) as Promise<OperationOutput<'workhub.coordination.answer'> | undefined>;
+      return ipcRenderer.invoke('workhub:answer', scope, input) as Promise<WorkHubAnswerResult>;
     },
     async configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);

@@ -32,6 +32,7 @@ const source = fileURLToPath(new URL('../../../src/main/workhub-presentation.ts'
 
 async function harness(animate = false) {
   let enabled = true;
+  let mainRequests = 0;
   let opening: Promise<void> | undefined;
   const openingStarted = deferred<void>();
   let now = 0;
@@ -135,7 +136,7 @@ async function harness(animate = false) {
   const controller = module.exports.createWorkHubPresentation({
     mainWindow: () => main as unknown as Electron.BrowserWindow,
     isEnabled: async () => enabled,
-    ensureMainWindow: async () => { openingStarted.resolve(); await opening; return main as unknown as Electron.BrowserWindow; },
+    ensureMainWindow: async () => { mainRequests++; openingStarted.resolve(); await opening; return main as unknown as Electron.BrowserWindow; },
     mainModuleDirectory: '/app/dist/main', preloadPath: '/app/dist/preload/preload.cjs',
     onError: (error) => errors.push(error),
     onViewCreated: () => { registeredViews++; return () => { releasedViews++; }; },
@@ -143,7 +144,7 @@ async function harness(animate = false) {
   controller.attachMainWindow(main as unknown as Electron.BrowserWindow);
   controller.registerIpc();
   const command = (sender: Contents, name: string, payload?: unknown) => handler!({ sender, senderFrame: sender.mainFrame }, name, payload);
-  return { controller, main, windows, views, errors, command, advance, setEnabled: (value: boolean) => { enabled = value; }, deferOpening: (value: Promise<void>) => { opening = value; return openingStarted.promise; }, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
+  return { get mainRequests() { return mainRequests; }, controller, main, windows, views, errors, command, advance, setEnabled: (value: boolean) => { enabled = value; }, deferOpening: (value: Promise<void>) => { opening = value; return openingStarted.promise; }, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
 }
 
 test('yields the docked native view to main-window overlays without replacing the conversation', async () => {
@@ -426,6 +427,30 @@ test('control preparation floats the live conversation and focuses the main wind
   h.controller.dispose();
 });
 
+
+test('control preparation refuses disabled presentation before opening and rechecks a pending open', async () => {
+  const h = await harness();
+  h.setEnabled(false);
+  await assert.rejects(h.controller.prepareControl(), /WorkHub is disabled/);
+  assert.equal(h.mainRequests, 0);
+  assert.equal(h.main.focused, 0);
+
+  h.setEnabled(true);
+  const opened = deferred<void>();
+  const opening = h.deferOpening(opened.promise);
+  const control = h.controller.prepareControl();
+  await opening;
+  h.setEnabled(false);
+  await h.controller.refreshSettings();
+  opened.resolve();
+  await assert.rejects(control, /WorkHub is disabled/);
+  assert.equal(h.mainRequests, 1);
+  assert.equal(h.views.length, 0);
+  assert.equal(h.main.focused, 0);
+  h.controller.dispose();
+  await assert.rejects(h.controller.prepareControl(), /disposed/);
+  assert.equal(h.mainRequests, 1);
+});
 
 test('all WorkHub entries obey the client enable setting and disabling retains the renderer', async () => {
   const h = await harness();

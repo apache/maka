@@ -63,14 +63,14 @@ function makeServices(failFirst: boolean, withHistory: boolean): WorkHubServices
       writes.answer(id, input);
       if (failures-- > 0) throw new Error('Temporary Host failure');
       messages = [...messages, { type: 'user', id: input.turnId, turnId: input.turnId, ts: 4, text: input.text, attachments: input.attachments }, { type: 'assistant', id: `${input.turnId}-answer`, turnId: input.turnId, ts: 5, modelId: 'model-a', text: '已收到。' }, { type: 'turn_state', id: `${input.turnId}-done`, turnId: input.turnId, ts: 6, status: 'completed' }];
-      publish(); return { turnId: input.turnId };
+      publish(); return { kind: 'admitted', turnId: input.turnId };
     },
     configureModel: async (id, input) => {
       writes.model(id, input); session = { ...session, revision: session.revision + 1, model: input.modelTarget.model }; updateSessions?.();
       return { kind: 'committed', session: { ...session, workspace: { target: { kind: 'host_path', path: '/projects/maka' }, hostCwd: '/projects/maka' }, createdAt: 0, activityAt: 0, labelsTruncated: false, llmConnectionId: 'connection-test', collaborationMode: 'agent', orchestrationMode: 'default' } };
     },
     observe: () => () => {},
-    openTranscript: async (_id, handler) => { updateTranscript = handler; publish(); return { loadOlder: async () => {}, loadLatest: async () => {}, close: async () => { updateTranscript = undefined; } }; },
+    openTranscript: async (_id, handler) => { updateTranscript = handler; publish(); return { observationChanged: () => {}, loadOlder: async () => {}, loadLatest: async () => {}, close: async () => { updateTranscript = undefined; } }; },
     stop: async () => {},
   };
 }

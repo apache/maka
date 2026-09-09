@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../shared/workhub-conversation.js';
 import type { ConnectionEvent } from '@maka/core/connections';
 import type {
   ConnectionTestResult,
@@ -1012,7 +1013,7 @@ export interface MakaBridge {
   workHub: {
     getSession(coordinationSessionId: string): Promise<DesktopSessionSummary>;
     prepareAttachments(coordinationSessionId: string, items: RendererIngestInput[]): Promise<AttachmentRef[]>;
-    answer(coordinationSessionId: string, input: OperationInput<'workhub.coordination.answer'>): Promise<OperationOutput<'workhub.coordination.answer'> | undefined>;
+    answer(coordinationSessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
     configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>): Promise<OperationOutput<'workhub.coordination.configureModel'>>;
     /** Resolve the active Runtime Host's stable coordination conversation. */
     resolveCoordinationSession(): Promise<string>;

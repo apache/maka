@@ -24,7 +24,7 @@ import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { WorkHubServices } from '../../features/workhub/index.js';
 import {
   DesktopTranscriptRangeStore,
-  createDesktopTranscriptRangeController,
+  createRecoveringDesktopTranscriptRangeController,
 } from './desktop-transcript-range-store.js';
 
 export function createDesktopWorkHubServices(
@@ -80,16 +80,16 @@ export function createDesktopWorkHubServices(
     prepareAttachments: (sessionId, items) => bridge.workHub.prepareAttachments(sessionId, items),
     answer: (sessionId, input) => bridge.workHub.answer(sessionId, input),
     configureModel: (sessionId, input) => bridge.workHub.configureModel(sessionId, input),
-    observe: (sessionId, handler, onError) =>
-      bridge.sessions.subscribeEvents(sessionId, handler, undefined, undefined, onError),
+    observe: (sessionId, handler, onError, onPhase) =>
+      bridge.sessions.subscribeEvents(sessionId, handler, () => onPhase('ready'), onPhase, onError),
     stop: (sessionId, turnId) =>
       bridge.sessions.stop(sessionId, {
         source: 'stop_button',
         expectedTurnId: turnId,
       }),
-    async openTranscript(sessionId, handler, cancellation) {
+    async openTranscript(sessionId, handler, cancellation, onError) {
       const store = new DesktopTranscriptRangeStore(sessionId);
-      const controller = createDesktopTranscriptRangeController(store, (signal) =>
+      const controller = createRecoveringDesktopTranscriptRangeController(store, (signal) =>
         bridge.transcripts.open(
           sessionId,
           (batch) => {
@@ -101,18 +101,13 @@ export function createDesktopWorkHubServices(
             else signal.addEventListener('abort', cancel, { once: true });
           },
         ),
+        { onError },
       );
       const cancel = () => { void controller.close(); };
       cancellation.addEventListener('abort', cancel, { once: true });
       if (cancellation.aborted) cancel();
-      try {
-        await controller.ready();
-      } catch (error) {
-        cancellation.removeEventListener('abort', cancel);
-        await controller.close().catch(() => undefined);
-        throw error;
-      }
       return {
+        observationChanged: controller.observationChanged,
         loadOlder: () => controller.loadBefore(),
         loadLatest: () => controller.loadLatest(),
         close: () => { cancellation.removeEventListener('abort', cancel); return controller.close(); },

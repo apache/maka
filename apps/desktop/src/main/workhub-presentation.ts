@@ -244,9 +244,11 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   }
 
   async function prepareControl(): Promise<void> {
-    const main = await deps.ensureMainWindow();
-    if (disposed) throw new Error('WorkHub presentation is disposed');
     if (!await deps.isEnabled()) throw new Error('WorkHub is disabled');
+    if (disposed) throw new Error('WorkHub presentation is disposed');
+    const main = await deps.ensureMainWindow();
+    if (!await deps.isEnabled()) throw new Error('WorkHub is disabled');
+    if (disposed) throw new Error('WorkHub presentation is disposed');
     attachMainWindow(main);
     if (placement !== 'floating' || !floating?.isVisible()) await detach();
     if (!await deps.isEnabled() || disposed) return;
