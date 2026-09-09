@@ -117,9 +117,14 @@ test('MCP capability publication freezes an accepted callable tool snapshot', as
         },
       ],
     }),
-    callTool: async (actualBinding: McpToolBinding, arguments_: Record<string, unknown>) => {
+    callTool: async (
+      actualBinding: McpToolBinding,
+      arguments_: Record<string, unknown>,
+      options: { onProgress?: (current: number, total: number) => void } = {},
+    ) => {
       assert.equal(accepted, true);
       assert.equal(actualBinding, binding);
+      assert.equal(options.onProgress, undefined);
       return { content: [{ type: 'text' as const, text: JSON.stringify(arguments_) }] };
     },
   } satisfies Pick<McpClientManager, 'toolSnapshot' | 'callTool'>;
@@ -153,6 +158,72 @@ test('MCP capability publication freezes an accepted callable tool snapshot', as
     },
   );
   assert.deepEqual(result, { content: [{ type: 'text', text: '{"path":"README.md"}' }] });
+});
+
+test('MCP capability publication forwards admitted tool progress', async () => {
+  let accepted = false;
+  const binding = 'binding-progress' as McpToolBinding;
+  const manager = {
+    toolSnapshot: () => ({
+      revision: 1,
+      tools: [
+        {
+          binding,
+          descriptor: {
+            serverId: 'workspace.remote',
+            name: 'inspect/file',
+            inputSchema: { type: 'object', additionalProperties: false },
+          },
+        },
+      ],
+    }),
+    callTool: async (
+      actualBinding: McpToolBinding,
+      _arguments: Record<string, unknown>,
+      options: { onProgress?: (current: number, total: number) => void } = {},
+    ) => {
+      assert.equal(accepted, true);
+      assert.equal(actualBinding, binding);
+      assert.equal(typeof options.onProgress, 'function');
+      options.onProgress?.(1, 3);
+      options.onProgress?.(3, 3);
+      return { content: [{ type: 'text' as const, text: 'done' }] };
+    },
+  } satisfies Pick<McpClientManager, 'toolSnapshot' | 'callTool'>;
+  const provider = createMcpCapabilityProvider(manager);
+  assert.ok(provider?.call);
+  const offer = provider.offers()[0];
+  const tool = offer?.tools[0] ?? assert.fail('Expected a projected tool');
+  const seen: Array<[number, number]> = [];
+
+  const result = await provider.call(
+    {
+      kind: 'client.capability.call',
+      invocationId: 'invocation-progress',
+      registrationId: 'registration-1',
+      offerId: offer?.offerId ?? assert.fail('Expected an offer'),
+      serverId: tool.serverId,
+      toolName: tool.name,
+      arguments: {},
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      toolCallId: 'tool-call-1',
+    },
+    {
+      signal: new AbortController().signal,
+      accept: async () => {
+        accepted = true;
+      },
+      progress: (current: number, total: number) => seen.push([current, total]),
+      requestInteraction: async () => assert.fail('Unexpected provider interaction'),
+    },
+  );
+
+  assert.deepEqual(seen, [
+    [1, 3],
+    [3, 3],
+  ]);
+  assert.deepEqual(result, { content: [{ type: 'text', text: 'done' }] });
 });
 
 test('MCP capability publication packs tools across server boundaries', () => {

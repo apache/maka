@@ -121,6 +121,66 @@ describe('McpClientManager modern Streamable HTTP E2E', () => {
     }
   });
 
+  test('forwards numeric tools/call progress and leaves the result unchanged', async () => {
+    const fixture = await createModernRemoteFixture();
+    const manager = createManager();
+    await manager.sync(modernConfig(fixture.url, 'auto'));
+    const seen: Array<[number, number]> = [];
+
+    const result = await manager.callTool(
+      bindingFor(manager, 'echo'),
+      { value: 'go' },
+      {
+        onProgress: (current, total) => seen.push([current, total]),
+      },
+    );
+
+    assert.deepEqual(seen, [
+      [1, 3],
+      [3, 3],
+    ]);
+    assert.deepEqual(result, {
+      content: [{ type: 'text', text: 'go' }],
+      structuredContent: undefined,
+    });
+    assert.equal(fixture.toolCalls.get('echo'), 1);
+    assert.equal(fixture.toolCallProgressTokens.length, 1);
+    assert.notEqual(fixture.toolCallProgressTokens[0], undefined);
+  });
+
+  test('a throwing onProgress listener does not fail the tool call', async () => {
+    const fixture = await createModernRemoteFixture();
+    const manager = createManager();
+    await manager.sync(modernConfig(fixture.url, 'auto'));
+
+    const result = await manager.callTool(
+      bindingFor(manager, 'echo'),
+      { value: 'still-ok' },
+      {
+        onProgress: () => {
+          throw new Error('progress listener failed');
+        },
+      },
+    );
+
+    assert.deepEqual(result, {
+      content: [{ type: 'text', text: 'still-ok' }],
+      structuredContent: undefined,
+    });
+  });
+
+  test('omitting onProgress still returns the tool result', async () => {
+    const fixture = await createModernRemoteFixture();
+    const manager = createManager();
+    await manager.sync(modernConfig(fixture.url, 'auto'));
+
+    assert.deepEqual(await manager.callTool(bindingFor(manager, 'echo'), { value: 'silent' }), {
+      content: [{ type: 'text', text: 'silent' }],
+      structuredContent: undefined,
+    });
+    assert.deepEqual(fixture.toolCallProgressTokens, [undefined]);
+  });
+
   test('surfaces input_required without silently retrying the tool', async () => {
     const fixture = await createModernRemoteFixture();
     const manager = createManager();
@@ -228,6 +288,7 @@ interface ModernRemoteFixture {
   protocolMethods: string[];
   toolCalls: Map<string, number>;
   toolCallHeaders: Map<string, string | undefined>;
+  toolCallProgressTokens: unknown[];
   close(): Promise<void>;
 }
 
@@ -236,6 +297,7 @@ async function createModernRemoteFixture(
 ): Promise<ModernRemoteFixture> {
   const advertiseTools = options.advertiseTools !== false;
   const protocolMethods: string[] = [];
+  const toolCallProgressTokens: unknown[] = [];
   const toolCalls = new Map<string, number>();
   const toolCallHeaders = new Map<string, string | undefined>();
   const errors: Error[] = [];
@@ -278,9 +340,20 @@ async function createModernRemoteFixture(
           }
           return { tools };
         });
-        server.setRequestHandler('tools/call', async ({ params }) => {
+        server.setRequestHandler('tools/call', async ({ params }, extra) => {
           toolCalls.set(params.name, (toolCalls.get(params.name) ?? 0) + 1);
           const args = params.arguments ?? {};
+          const progressToken = extra.mcpReq._meta?.progressToken;
+          if (progressToken !== undefined) {
+            await extra.mcpReq.notify({
+              method: 'notifications/progress',
+              params: { progressToken, progress: 1, total: 3 },
+            });
+            await extra.mcpReq.notify({
+              method: 'notifications/progress',
+              params: { progressToken, progress: 3, total: 3 },
+            });
+          }
           if (params.name === 'needs-input') {
             return inputRequired({ requestState: 'awaiting-confirmation' });
           }
@@ -324,6 +397,7 @@ async function createModernRemoteFixture(
       for (const toolName of readToolCallNames(body)) {
         toolCallHeaders.set(toolName, headerValue(req, 'mcp-param-shard'));
       }
+      toolCallProgressTokens.push(...readToolCallProgressTokens(body));
       await nodeHandler(req, res, body);
     } catch (error) {
       errors.push(error instanceof Error ? error : new Error(String(error)));
@@ -342,6 +416,7 @@ async function createModernRemoteFixture(
     protocolMethods,
     toolCalls,
     toolCallHeaders,
+    toolCallProgressTokens,
     close: async () => {
       await handler.close();
       await new Promise<void>((resolve, reject) =>
@@ -380,6 +455,27 @@ function readProtocolMethods(body: unknown): string[] {
       typeof message.method === 'string'
     ) {
       return [message.method];
+    }
+    return [];
+  });
+}
+
+function readToolCallProgressTokens(body: unknown): unknown[] {
+  return (Array.isArray(body) ? body : [body]).flatMap((message) => {
+    if (
+      typeof message === 'object' &&
+      message !== null &&
+      'method' in message &&
+      message.method === 'tools/call' &&
+      'params' in message &&
+      typeof message.params === 'object' &&
+      message.params !== null
+    ) {
+      const meta =
+        '_meta' in message.params && typeof message.params._meta === 'object'
+          ? message.params._meta
+          : undefined;
+      return [meta && 'progressToken' in meta && meta !== null ? meta.progressToken : undefined];
     }
     return [];
   });
