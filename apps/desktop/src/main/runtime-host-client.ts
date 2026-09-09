@@ -987,12 +987,6 @@ export class DesktopRuntimeHostClient {
 
 
 
-  recordWorkHubCoordination(
-    input: OperationInput<"workhub.coordination.record">,
-  ): Promise<OperationOutput<"workhub.coordination.record">> {
-    return this.request("workhub.coordination.record", input);
-  }
-
   listExternalSessionSources(): Promise<ExternalSessionSourceQueryResult> {
     return this.request("external-session.source.query", {});
   }

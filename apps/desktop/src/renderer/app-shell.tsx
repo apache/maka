@@ -1283,8 +1283,6 @@ function AppShellContent({
       coordination: createDesktopWorkHubCoordinationPort({
         sessionId: workHubCoordinationSessionId ?? 'workhub-coordination-unresolved',
         transcripts: window.maka.transcripts,
-        record: (input) =>
-          window.maka.workHub.record(workHubCoordinationSessionId!, input),
         candidates: () =>
           window.maka.workHub.candidates(workHubCoordinationSessionId!),
         act: (input) =>
@@ -2636,7 +2634,7 @@ function AppShellContent({
                     {workHubEnabled && navSelection.section === 'sessions' && activeId ? (
                       <Button
                         className="workhub-return"
-                        label={uiLocale !== 'en' ? '返回 WorkHub' : 'Return to WorkHub'}
+                        label={shellCopy.returnToWorkHub}
                         variant="secondary"
                         size="sm"
                         onClick={openWorkHub}

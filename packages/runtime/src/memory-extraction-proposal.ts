@@ -58,7 +58,6 @@ const memoryProposalItemSchema = z
 const canonicalMemoryItemSchema = memoryProposalItemSchema.omit({ evidence: true });
 
 export type MemoryProposalItem = z.infer<typeof memoryProposalItemSchema>;
-export type CanonicalMemoryItem = z.infer<typeof canonicalMemoryItemSchema>;
 
 const memoryCanonicalizationSchema = z
   .object({

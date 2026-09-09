@@ -23,6 +23,7 @@ import type { SessionSummary } from '@maka/core/session';
 import { WorkHubComposerServicesProvider } from '../src/renderer/features/workhub/index.js';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, within, waitFor } from 'storybook/test';
+import { WorkHubCoordinationFailure } from '../src/renderer/workhub-controller';
 import type {
   WorkHubController,
   WorkHubCoordinationTurn,
@@ -99,7 +100,7 @@ function controller(turns: readonly WorkHubCoordinationTurn[]): WorkHubControlle
       handler(turns);
       return { close: async () => {} };
     },
-    recordConversationTurn: async ({ turnId }) => ({ turnId }),
+    requestClarification: async ({ turnId }) => ({ turnId }),
     subscribe: () => () => {},
     resetVisitContext: () => {},
   };
@@ -348,7 +349,7 @@ function ConfiguredComposerSurface({ failFirst = false }: { failFirst?: boolean 
     ...controller([submittedTurn()]),
     submit: async (input) => {
       composerWrites.send(input);
-      if (failures.remaining-- > 0) throw new Error('Temporary Host failure');
+      if (failures.remaining-- > 0) throw new WorkHubCoordinationFailure('host_not_ready', 'Temporary Host failure');
       return { kind: 'discussion', requestId: input.requestId, text: input.text, strategyId: 'wh-r2.4-session-context-continuity' };
     },
   }));
@@ -463,5 +464,21 @@ export const ComposerRetainsFailedAttachment: Story = {
     expect(composerWrites.upload).toHaveBeenCalledTimes(1);
     expect(composerWrites.send.mock.calls[0]?.[0].requestId).toBe(composerWrites.send.mock.calls[1]?.[0].requestId);
     canvasElement.dataset.workhubComposerVerified = 'true';
+  },
+};
+
+// Real path: a completed Coordination Run projects host action receipts through
+// the shared transcript, with clarification text and a navigable resume target.
+export const CoordinationActionReceipts: Story = {
+  render: () => <Surface turns={[
+    { messageId: 'clarification-receipt', turnId: 'clarification-action', text: '继续刚才的任务',
+      state: 'completed', result: '你是指支付回调幂等性任务吗？', updatedAt: 1 },
+    { messageId: 'resume-receipt', turnId: 'resume-action', text: `继续${SESSION_NAME}`,
+      state: 'completed', resume: { disposition: 'resume_work', outcome: 'resume_started', targetSessionId: TARGET_SESSION_ID, targetTurnId: 'resumed-target-turn' }, updatedAt: 2 },
+  ]} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText('你是指支付回调幂等性任务吗？')).toBeVisible();
+    await expect(await canvas.findByText('已让中断的工作继续：')).toBeVisible();
   },
 };

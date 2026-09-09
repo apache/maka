@@ -354,8 +354,6 @@ function timestampMs(record: TranscriptRecord): number | undefined {
   return undefined;
 }
 
-export default ClaudeCodeSessionAdapter;
-
 /* ------------------------------------------------------------------ *
  * Transcript -> StoredMessage[]
  * ------------------------------------------------------------------ */

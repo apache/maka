@@ -121,6 +121,7 @@ export interface WorkHubRoutePolicy {
       readonly resolution: 'none' | 'ranked' | 'ambiguous';
       readonly recalledSessionIds: readonly string[];
     };
+    newSessionFallbackTitle: string;
   }): WorkHubRouteDecision;
   initializeFocus(targets: readonly WorkHubRouteTarget[]): void;
   focusSnapshot(): {
@@ -134,6 +135,7 @@ export interface WorkHubRoutePolicy {
 
 export function workHubNewSessionName(
   text: string,
+  fallbackTitle: string,
   parsedIntent?: WorkHubRequestIntent,
 ): string {
   const intent = typeof parsedIntent === 'object'
@@ -145,7 +147,7 @@ export function workHubNewSessionName(
     '',
   );
   const firstClause = withoutCreationPrefix.split(/[，。；;\n]/u)[0]?.trim();
-  return firstClause?.slice(0, 48) || '新工作';
+  return firstClause?.slice(0, 48) || fallbackTitle;
 }
 
 export function boundedWorkHubText(value: string, maxChars: number): string {
@@ -257,7 +259,7 @@ function createWorkHubRoutePolicyVisit(
         'resume_target_ambiguous',
       );
     },
-    resolve({ text, sessions, originPromptBySessionId, explicitTarget, interpretation }) {
+    resolve({ text, sessions, originPromptBySessionId, explicitTarget, interpretation, newSessionFallbackTitle }) {
       const intent = readWorkHubRequestIntent(text);
       if (intent.execution === 'ambiguous') {
         return { kind: 'clarification', options: [], reason: 'ambiguous_command' };
@@ -285,7 +287,7 @@ function createWorkHubRoutePolicyVisit(
       }
       if (correctionText && correctedFrom) {
         if (looksLikeCorrectionCreation(intent)) {
-          return { kind: 'new_session', title: workHubNewSessionName(text, intent), correctedFrom };
+          return { kind: 'new_session', title: workHubNewSessionName(text, newSessionFallbackTitle, intent), correctedFrom };
         }
         const alternatives = sessions.filter((session) =>
           session.target.sessionId !== correctedFrom.sessionId);
@@ -322,7 +324,7 @@ function createWorkHubRoutePolicyVisit(
       }
 
       if (looksLikeExplicitNewSession(intent)) {
-        return { kind: 'new_session', title: workHubNewSessionName(text, intent) };
+        return { kind: 'new_session', title: workHubNewSessionName(text, newSessionFallbackTitle, intent) };
       }
 
       // A failed or uncertain interpretation never authorizes a guessed target.
@@ -423,7 +425,7 @@ function createWorkHubRoutePolicyVisit(
         }
       }
       return looksExecutable(intent) && interpretation?.classification !== 'discussion'
-        ? { kind: 'new_session', title: workHubNewSessionName(text, intent) }
+        ? { kind: 'new_session', title: workHubNewSessionName(text, newSessionFallbackTitle, intent) }
         : { kind: 'discussion' };
     },
     initializeFocus(targets) {

@@ -18,6 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
+import type { StoredMessage } from '@maka/core/session';
+import { projectWorkHubCoordinationTurns } from '../../renderer/workhub-coordination-port.js';
 import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -32,6 +34,7 @@ import {
   submitWorkHubSurfaceInput,
   visibleWorkHubConversation,
   workHubAmbiguousCommandPrompt,
+  workHubCoordinationSummary,
   workHubSurfaceFailure,
   workHubSubmissionClearsDraft,
 } from '../../renderer/workhub-surface.js';
@@ -43,30 +46,37 @@ import {
   type WorkHubDelegationExecutionState,
   type WorkHubSubmitInput,
 } from '../../renderer/workhub-controller.js';
+import { ExpectedOperationError } from '../../renderer/application/contracts/operation-diagnostics.js';
+import { WorkHubCoordinationFailure } from '../../renderer/workhub-coordination-port.js';
 import { WorkHubSendLease } from '../../renderer/workhub-send-lease.js';
+import { getWorkHubCopy } from '../../renderer/locales/workhub-copy.js';
 import {
   createDesktopWorkHubSessionPort,
   type WorkHubDesktopSession,
 } from '../../renderer/workhub-session-port.js';
 
-test('surface turns Action Gate rejections into safe actionable failures', () => {
+test('surface turns Action Gate rejections into safe actionable failures', (context) => {
+  context.mock.method(console, 'error', () => undefined);
   assert.equal(
-    workHubSurfaceFailure(
-      new Error('WorkHub Session candidates changed; refresh before delegating'),
-    ),
+    workHubSurfaceFailure(new ExpectedOperationError('candidates_changed')),
     'candidates_changed',
   );
   assert.equal(
-    workHubSurfaceFailure(
-      new Error('WorkHub linked correction requires an active durable delegation'),
-    ),
+    workHubSurfaceFailure(new ExpectedOperationError('linked_correction_unavailable')),
     'linked_correction_unavailable',
   );
   assert.equal(
-    workHubSurfaceFailure(new Error('Target Session is waiting for user input')),
+    workHubSurfaceFailure(new WorkHubCoordinationFailure('session_busy', 'Host diagnostic')),
     'target_waiting',
   );
-  assert.equal(workHubSurfaceFailure(new Error('private transport detail')), 'delivery_failed');
+  assert.equal(
+    workHubSurfaceFailure(new WorkHubCoordinationFailure('operation_conflict', 'Host diagnostic')),
+    'action_changed',
+  );
+  assert.equal(
+    workHubSurfaceFailure(new Error('WorkHub Session candidates changed; private detail')),
+    'delivery_failed',
+  );
 });
 
 test('surface route gate rejects same-frame duplicate operations and reopens after settle', async () => {
@@ -284,6 +294,31 @@ test('surface keeps the Composer draft when routing fails or the target is waiti
   );
 });
 
+for (const [locale, expected] of [
+  ['zh-CN', '这项工作正在等待你的决定。新请求尚未发送；处理原 Session 中的交互后可以再次发送。'],
+  ['zh-TW', '這項工作正在等待你的決定。新請求尚未傳送；處理原 Session 中的互動後可以再次傳送。'],
+  ['en', 'This work is waiting for your decision. The new request was not sent. Resolve the interaction in its Session, then send again.'],
+] as const) {
+  test(`${locale} waiting summary is a complete message independent of the separate UI paragraphs`, () => {
+    const result = {
+      kind: 'waiting' as const,
+      strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+      requestId: 'waiting',
+      text: 'Continue payments',
+      target: { sessionId: 'payment' },
+    };
+    const projection = { sessions: [], turns: [] };
+    const copy = getWorkHubCopy(locale);
+
+    assert.equal(workHubCoordinationSummary(result, projection, copy), expected);
+    assert.equal(workHubCoordinationSummary(result, projection, {
+      ...copy,
+      waitingForDecision: 'Standalone status paragraph',
+      requestNotSent: 'Standalone retry hint',
+    }), expected);
+  });
+}
+
 test('surface replaces a local discussion placeholder with its durable model answer', () => {
   const local = [
     {
@@ -416,7 +451,7 @@ test('surface keeps clarification and successful routing in WorkHub', async () =
       handler([]);
       return { close: async () => undefined };
     },
-    recordConversationTurn: async ({ turnId }) => ({ turnId }),
+    requestClarification: async ({ turnId }) => ({ turnId }),
     resetVisitContext: () => {},
     subscribe: () => () => {},
     submit: async (input) => {
@@ -449,13 +484,14 @@ test('surface keeps clarification and successful routing in WorkHub', async () =
 
   const clarification = await submitWorkHubSurfaceInput({
     controller,
-    input: { requestId: 'request-1', text: '继续处理重复问题' },
+    input: { newSessionFallbackTitle: '新工作', requestId: 'request-1', text: '继续处理重复问题' },
   });
   assert.equal(clarification.kind, 'clarification');
 
   const submitted = await submitWorkHubSurfaceInput({
     controller,
     input: {
+      newSessionFallbackTitle: '新工作',
       requestId: 'request-1',
       text: '继续处理重复问题',
       explicitTarget: { sessionId: 'payment' },
@@ -477,7 +513,7 @@ test('ambiguous creation is durably clarified before a fresh imperative creates 
     },
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'a'.repeat(64)}`,
         candidates: [],
@@ -514,7 +550,7 @@ test('ambiguous creation is durably clarified before a fresh imperative creates 
   for (const [index, text] of ambiguousTexts.entries()) {
     const ambiguous = await submitAndRecordWorkHubSurfaceInput({
       controller,
-      request: { requestId: `ambiguous-request-${index}`, text },
+      request: { newSessionFallbackTitle: '新工作', requestId: `ambiguous-request-${index}`, text },
       recordedUserText: text,
       summary: () => workHubAmbiguousCommandPrompt('en'),
       onSummaryError: () => assert.fail('clarification should be durable'),
@@ -537,7 +573,7 @@ test('ambiguous creation is durably clarified before a fresh imperative creates 
 
   const submitted = await submitAndRecordWorkHubSurfaceInput({
     controller,
-    request: { requestId: 'direct-request', text: 'Fix login.' },
+    request: { newSessionFallbackTitle: '新工作', requestId: 'direct-request', text: 'Fix login.' },
     recordedUserText: 'Fix login.',
     summary: () => 'unused',
     onSummaryError: () => assert.fail('submitted work is projected from its assignment'),
@@ -559,7 +595,7 @@ test('surface leaves discussion in WorkHub instead of creating a task view', asy
       handler([]);
       return { close: async () => undefined };
     },
-    recordConversationTurn: async ({ turnId }) => ({ turnId }),
+    requestClarification: async ({ turnId }) => ({ turnId }),
     resetVisitContext: () => {},
     subscribe: () => () => {},
     submit: async (input) => ({
@@ -572,7 +608,7 @@ test('surface leaves discussion in WorkHub instead of creating a task view', asy
 
   const result = await submitWorkHubSurfaceInput({
     controller,
-    input: { requestId: 'discussion', text: '这个方向的价值是什么？' },
+    input: { newSessionFallbackTitle: '新工作', requestId: 'discussion', text: '这个方向的价值是什么？' },
   });
 
   assert.equal(result.kind, 'discussion');
@@ -650,7 +686,7 @@ test('real Session projection creates new guide topics and preserves origin ambi
     sessions: port,
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'a'.repeat(64)}`,
         candidates: sessions.map((entry) => ({
@@ -747,18 +783,22 @@ test('real Session projection creates new guide topics and preserves origin ambi
   });
 
   const payment = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'setup-payment',
     text: '检查支付回调重复投递时的幂等性，先只分析风险和测试点，不修改文件。',
   });
   const layout = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'setup-layout',
     text: '优化 WorkHub 在移动端窄屏下的消息布局，先给设计建议，不修改文件。',
   });
   await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'focus-login',
     text: '刷新令牌过期致重复登录的排查计划：补充观测日志字段。',
   });
   const ambiguous = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'ambiguous-repeat',
     text: '继续处理重复问题',
   });
@@ -832,7 +872,7 @@ test('successful delegated submission needs no renderer summary write', async ()
   });
   const result = await submitAndRecordWorkHubSurfaceInput({
     controller,
-    request: { requestId: 'action-1', text: 'Continue payments' },
+    request: { newSessionFallbackTitle: '新工作', requestId: 'action-1', text: 'Continue payments' },
     recordedUserText: 'Continue payments',
     summary: () => 'Sent to Payments',
     onSummaryError: () => assert.fail('no summary write is expected'),
@@ -841,7 +881,7 @@ test('successful delegated submission needs no renderer summary write', async ()
   assert.equal(records, 0);
 });
 
-test('resume records ordinary conversation text without persisting execution fields', async () => {
+test('resume relies on the admitted Host receipt without a second conversation write', async () => {
   const records: unknown[] = [];
   const controller = fakeController({
     submit: async (input) => ({
@@ -852,16 +892,12 @@ test('resume records ordinary conversation text without persisting execution fie
   });
   await submitAndRecordWorkHubSurfaceInput({
     controller,
-    request: { requestId: 'resume-1', text: 'Resume Payments' },
+    request: { newSessionFallbackTitle: '新工作', requestId: 'resume-1', text: 'Resume Payments' },
     recordedUserText: 'Resume Payments',
     summary: () => 'Resume requested. See the target Session for current progress.',
     onSummaryError: () => assert.fail('conversation write must succeed'),
   });
-  assert.deepEqual(records, [{
-    turnId: 'resume-1', userText: 'Resume Payments',
-    assistantText: 'Resume requested. See the target Session for current progress.', disposition: 'summary',
-  }]);
-});
+  assert.deepEqual(records, []);});
 
 test('lease retires only after an acknowledged submission', async () => {
   const { storage } = memoryStorage();
@@ -931,14 +967,53 @@ function memoryStorage() {
 
 function fakeController(input: {
   submit: WorkHubController['submit'];
-  record: WorkHubController['recordConversationTurn'];
+  record: WorkHubController['requestClarification'];
 }): WorkHubController {
   return {
     read: async () => ({ sessions: [], turns: [] }),
     submit: input.submit,
     openConversation: async () => ({ close: async () => undefined }),
-    recordConversationTurn: input.record,
+    requestClarification: input.record,
     subscribe: () => () => undefined,
     resetVisitContext: () => undefined,
   };
+}
+
+for (const kind of ['clarify', 'resume'] as const) {
+  for (const state of ['failed', 'routing'] as const) {
+    test(`committed ${kind} result outranks local ${state} transport uncertainty`, () => {
+      const messages: StoredMessage[] = [
+        { type: 'user', id: 'input', turnId: 'physical-turn', coordinationActionId: 'action', ts: 1, text: 'Request' },
+        { type: 'workhub_coordination', kind: 'action_receipt', schemaVersion: 1,
+          id: 'receipt', turnId: 'physical-turn', ts: 2,
+          receipt: { actionId: 'action', userText: 'Request',
+            ...(kind === 'clarify' ? { clarification: 'Which task?' } : {}),
+            result: kind === 'clarify' ? { disposition: 'clarify', coordinationTurnId: 'physical-turn' } : {
+              disposition: 'resume_work', outcome: 'resume_started', targetSessionId: 'target', targetTurnId: 'target-turn',
+            },
+          },
+        },
+      ];
+      const durable = projectWorkHubCoordinationTurns(messages);
+      const visible = visibleWorkHubConversation(durable, [{ requestId: 'action', text: 'Request', state }]);
+      assert.deepEqual(visible, { coordination: durable, local: [] });
+      assert.equal(visible.coordination.length, 1);
+      const markup = renderToStaticMarkup(createElement(LocaleProvider, { locale: 'en',
+        children: createElement(AstryxLocaleProvider, {
+          children: createElement(WorkHubCoordinationTurnView, {
+            turn: visible.coordination[0]!, projection: { sessions: [], turns: [] }, locale: 'en', onOpenSession: () => undefined,
+          }),
+        }),
+      }));
+      if (kind === 'clarify') assert.match(markup, /Which task\?/u);
+      else {
+        assert.equal(visible.coordination[0]!.resume?.targetSessionId, 'target');
+        assert.match(markup, /<button/u);
+        assert.match(markup, /Carried on the interrupted work/u);
+      }
+      // Without a durable result, keep the local failure/pending state.
+      const pending = visibleWorkHubConversation(projectWorkHubCoordinationTurns(messages.slice(0, 1)), [{ requestId: 'action', text: 'Request', state }]);
+      assert.equal(pending.local.length, 1);
+    });
+  }
 }

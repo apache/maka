@@ -28,6 +28,7 @@ import type {
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import {
   connectOrSpawnRuntimeHost,
+  forceTerminateObservedRegisteredRuntimeHost,
   connectRuntimeHost,
   connectRuntimeHostProfile,
   createClientRuntimeHostProfileCatalog,
@@ -52,6 +53,7 @@ import {
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
 } from '@maka/runtime-host/protocol';
 import {
   readLocalHostDeploymentRecord,
@@ -137,6 +139,7 @@ interface RuntimeHostCliContextDeps {
   readonly profileCatalog?: RuntimeHostProfileCatalog;
   readonly resolveInstallation: typeof resolveRuntimeHostNpmGlobalInstallation;
   readonly isTemporaryNpxInstallation: typeof isTemporaryNpxInstallation;
+  readonly terminateObservedHost: typeof forceTerminateObservedRegisteredRuntimeHost;
   readonly restartDeployment: typeof restartRuntimeHostNpmGlobalDeployment;
   readonly sourceRetirementAvailable: typeof runtimeHostNpmGlobalSourceRetirementAvailable;
 }
@@ -178,6 +181,7 @@ export async function connectRuntimeHostCliConnection(
     createPeerClient: createRuntimeHostPeerClientFromEnvironment,
     resolveInstallation: resolveRuntimeHostNpmGlobalInstallation,
     isTemporaryNpxInstallation,
+    terminateObservedHost: forceTerminateObservedRegisteredRuntimeHost,
     restartDeployment: restartRuntimeHostNpmGlobalDeployment,
     sourceRetirementAvailable: runtimeHostNpmGlobalSourceRetirementAvailable,
     ...overrides,
@@ -272,14 +276,15 @@ export async function connectRuntimeHostCliConnection(
           : await deps.readDeploymentRecord(connected.registration.rootId);
         let replacement: HostHandoffReplacement | undefined;
         let installation;
+        let installationFailure: string | undefined;
         // On-demand managed Hosts are also ephemeral processes. Their durable
         // operator authority, not the process lifetime label, decides who may
         // replace them (including when the Host was already running).
         if (!managed && connected.registration.lifecycleMode === 'ephemeral') {
           try {
             installation = await deps.resolveInstallation();
-          } catch {
-            /* No persistent installation authority. */
+          } catch (error) {
+            installationFailure = error instanceof Error ? error.message : String(error);
           }
           const owner = record?.state.kind === 'handoff' ? record.state.from : record?.state.owner;
           if (
@@ -289,15 +294,17 @@ export async function connectRuntimeHostCliConnection(
                 owner.installationId === installation.owner.installationId))
           ) {
             const expectedInstallation = installation;
-            const canInterrupt = record
-              ? await deps
-                  .sourceRetirementAvailable({
-                    rootId: connected.registration.rootId,
-                    owner: installation.owner,
-                    source: record.state.selected,
-                  })
-                  .catch(() => false)
-              : false;
+            const canInterrupt =
+              connected.processIdentity !== undefined ||
+              (record
+                ? await deps
+                    .sourceRetirementAvailable({
+                      rootId: connected.registration.rootId,
+                      owner: installation.owner,
+                      source: record.state.selected,
+                    })
+                    .catch(() => false)
+                : false);
             replacement = {
               kind: record?.state.kind === 'handoff' ? 'repair' : 'replace',
               canReplaceIdle: true,
@@ -306,6 +313,9 @@ export async function connectRuntimeHostCliConnection(
                 const result = await deps.restartDeployment({
                   rootPath: input.rootPath,
                   registration: connected.registration,
+                  ...(connected.processIdentity
+                    ? { processIdentity: connected.processIdentity }
+                    : {}),
                   activeWorkPolicy,
                   expectedInstallation,
                   ...(attemptSignal ? { signal: attemptSignal } : {}),
@@ -326,11 +336,51 @@ export async function connectRuntimeHostCliConnection(
             };
           }
         }
+        // The same observed-process recovery used by Desktop is available to
+        // persistent local invocations without a deployment owner. This is an
+        // explicit interruption, never an idle inference or an installation claim.
+        const processIdentity = connected.processIdentity;
+        if (
+          !replacement &&
+          !managed &&
+          !record &&
+          !invocationOwned &&
+          connected.registration.lifecycleMode === 'ephemeral' &&
+          processIdentity
+        ) {
+          const registration = connected.registration;
+          replacement = {
+            kind: 'replace',
+            canReplaceIdle: false,
+            canInterrupt: true,
+            execute: async (policy, progress, consent, attemptSignal) => {
+              if (policy !== 'interrupt_active_work' || consent !== 'explicit') {
+                return { kind: 'active_work' };
+              }
+              attemptSignal?.throwIfAborted();
+              if (
+                (await deps.resolveManagedAuthority(registration.rootId)) ||
+                (await deps.readDeploymentRecord(registration.rootId))
+              )
+                return { kind: 'changed' };
+              attemptSignal?.throwIfAborted();
+              progress('retiring');
+              const stopped = await deps.terminateObservedHost(
+                { rootPath: input.rootPath, registration },
+                { processIdentity, isCurrent: () => !signal?.aborted && !attemptSignal?.aborted },
+              );
+              if (!stopped) return { kind: 'changed' };
+              progress('verifying');
+              return { kind: 'completed' };
+            },
+          };
+        }
         return {
           kind: 'blocked',
           blocker: {
             identity: JSON.stringify([
               connected.registration,
+              processIdentity,
               managed?.record,
               record,
               installation,
@@ -342,6 +392,24 @@ export async function connectRuntimeHostCliConnection(
               hostEpoch: connected.registration.hostEpoch,
             },
             reason: record?.state.kind === 'handoff' ? 'repair' : 'upgrade',
+            ...(!replacement
+              ? {
+                  recoveryBlocker:
+                    managed || connected.registration.lifecycleMode === 'service'
+                      ? ('managed' as const)
+                      : record
+                        ? ('owner' as const)
+                        : invocationOwned
+                          ? ('installation' as const)
+                          : ('identity' as const),
+                  diagnostic: [
+                    `Host compatibility: ${connected.registration.compatibilityEpoch}; client: ${RUNTIME_HOST_COMPATIBILITY_EPOCH}.`,
+                    installationFailure,
+                  ]
+                    .filter(Boolean)
+                    .join('\n'),
+                }
+              : {}),
             ...(connected.handshake?.activity ? { activity: connected.handshake.activity } : {}),
             mayExitNaturally:
               !managed &&

@@ -17,12 +17,11 @@
  * under the License.
  */
 
-import { readFile, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   resolveRootControlNamespace,
   resolveRootOwnershipNamespace,
-  STORAGE_ROOT_MARKER_FILE,
 } from '../../root-authority.js';
 
 // A storage root's control directory lives under the real OS account home, not
@@ -40,30 +39,6 @@ export async function removeControlDirectory(rootId: string): Promise<void> {
     rm(join(resolveRootControlNamespace(), rootId), { recursive: true, force: true }),
     rm(join(resolveRootOwnershipNamespace(), `${rootId}.lock`), { force: true }),
   ]);
-}
-
-/**
- * Removes the control directory belonging to a storage root path, reading the
- * rootId from the root's own marker file.
- *
- * Only usable while the root still exists. A test that removes or quarantines
- * its root before teardown has already destroyed the marker that names the
- * control directory, so such tests must record the rootId at resolution time
- * with `trackControlDirectory` instead.
- */
-export async function removeControlDirectoryForRootPath(rootPath: string): Promise<void> {
-  const marker = await readFile(join(rootPath, STORAGE_ROOT_MARKER_FILE), 'utf8').catch(
-    () => undefined,
-  );
-  if (marker === undefined) return;
-  let rootId: unknown;
-  try {
-    rootId = (JSON.parse(marker) as { rootId?: unknown }).rootId;
-  } catch {
-    return;
-  }
-  if (typeof rootId !== 'string') return;
-  await removeControlDirectory(rootId);
 }
 
 const trackedRootIds = new Set<string>();

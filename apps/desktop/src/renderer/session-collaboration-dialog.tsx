@@ -30,6 +30,7 @@ import {
   useToast,
   useUiLocale,
 } from '@maka/ui';
+import { reportUnexpectedError } from './application/contracts/operation-diagnostics.js';
 import type {
   CollaborationAccessQueryResult,
   CollaborationInvitationPrepareResult,
@@ -182,7 +183,8 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
       setInvitation(created.invitation);
       await refresh();
     } catch (error) {
-      toast.error(copy.shareTitle, errorMessage(error));
+      reportUnexpectedError('session-collaboration:prepare', error);
+      toast.error(copy.shareTitle, copy.operationFailed);
     } finally {
       setWorking(false);
     }
@@ -200,7 +202,8 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
       await navigator.clipboard.writeText(invitation.invitationCode);
       toast.success(copy.copied);
     } catch (error) {
-      toast.error(copy.shareTitle, errorMessage(error));
+      reportUnexpectedError('session-collaboration:copy', error);
+      toast.error(copy.shareTitle, copy.copyFailed);
     }
   }
 
@@ -210,7 +213,8 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
       await window.maka.sessionCollaboration.revokePrincipal(props.sessionId, principalId);
       await refresh();
     } catch (error) {
-      toast.error(copy.shareTitle, errorMessage(error));
+      reportUnexpectedError('session-collaboration:revoke-principal', error);
+      toast.error(copy.shareTitle, copy.operationFailed);
     } finally {
       setWorking(false);
     }
@@ -225,7 +229,8 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
       );
       await refresh();
     } catch (error) {
-      toast.error(copy.shareTitle, errorMessage(error));
+      reportUnexpectedError('session-collaboration:revoke-grant', error);
+      toast.error(copy.shareTitle, copy.operationFailed);
     } finally {
       setWorking(false);
     }
@@ -244,7 +249,8 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
       );
       await refresh();
     } catch (error) {
-      toast.error(copy.turnRequests, errorMessage(error));
+      reportUnexpectedError('session-collaboration:decide-turn-request', error);
+      toast.error(copy.turnRequests, copy.operationFailed);
     } finally {
       setWorking(false);
     }
@@ -435,8 +441,4 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
 function guestIdentityLabel(principalId: string, label: string): string {
   const identity = principalId.includes(':') ? principalId.slice(principalId.lastIndexOf(':') + 1) : principalId;
   return `${label} ${identity.slice(0, 8)}`;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

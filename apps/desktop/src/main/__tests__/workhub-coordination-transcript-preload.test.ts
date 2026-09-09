@@ -138,7 +138,6 @@ test('Coordination tail recovery converges through the preload with a fragmented
         return bridge!.transcripts.open(requestedSessionId, handler, registerCancellation);
       },
     },
-    record: async (input) => ({ turnId: input.turnId }),
     candidates: async () => assert.fail('unused'),
     act: async () => assert.fail('unused'),
   });

@@ -314,6 +314,7 @@ export type OrderedSubscriptionFrame = Exclude<
 >;
 
 const SUBSCRIPTION_OPEN_ERRORS = [
+  'transcript_preparing',
   'host_not_ready',
   'host_draining',
   'operation_unavailable',

@@ -100,7 +100,6 @@ test('resolves WorkHub coordination through the dedicated Host operation', async
     { sessionId: 'maka_workhub_coordination' },
     { candidateSetId: `sha256:${'a'.repeat(64)}`, candidates: [] },
     { disposition: 'answer_here', coordinationTurnId: 'action-turn' },
-    { turnId: 'summary-turn' },
   ]);
 
   assert.deepEqual(await client.resolveWorkHubCoordinationSession(), {
@@ -118,14 +117,6 @@ test('resolves WorkHub coordination through the dedicated Host operation', async
     }),
     { disposition: 'answer_here', coordinationTurnId: 'action-turn' },
   );
-  assert.deepEqual(
-    await client.recordWorkHubCoordination({
-      turnId: 'summary-turn',
-      userText: 'Request',
-      assistantText: 'Summary',
-    }),
-    { turnId: 'summary-turn' },
-  );
   assert.deepEqual(requests, [
     { operation: 'workhub.coordination.resolve', input: {} },
     { operation: 'workhub.coordination.candidates', input: {} },
@@ -137,14 +128,7 @@ test('resolves WorkHub coordination through the dedicated Host operation', async
         proposal: { disposition: 'answer_here' },
       },
     },
-    {
-      operation: 'workhub.coordination.record',
-      input: {
-        turnId: 'summary-turn',
-        userText: 'Request',
-        assistantText: 'Summary',
-      },
-    },
+
   ]);
 });
 

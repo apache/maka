@@ -158,7 +158,8 @@
     "./unified-diff": "./dist/unified-diff.js",
     "./dev-single-instance": "./dist/dev-single-instance.js",
     "./maka-wordmark": "./dist/maka-wordmark.js",
-    "./test-only/async-primitives": "./dist/test-only/async-primitives.js"
+    "./test-only/async-primitives": "./dist/test-only/async-primitives.js",
+    "./workhub-action-result": "./dist/workhub-action-result.js"
   },
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo src/model-metadata.generated.ts",

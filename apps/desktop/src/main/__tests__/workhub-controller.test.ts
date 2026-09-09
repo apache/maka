@@ -32,7 +32,7 @@ import {
 } from '../../renderer/workhub-controller.js';
 import {
   createWorkHubRoutePolicy,
-  workHubNewSessionName,
+  workHubNewSessionName as workHubNewSessionNameForLocale,
 } from '../../renderer/features/workhub/index.js';
 import {
   createWorkHubR24RoutingStrategy,
@@ -41,6 +41,8 @@ import {
   WORKHUB_R3A_ROUTING_STRATEGY_ID,
   type WorkHubRoutingStrategy,
 } from '../../renderer/features/workhub/index.js';
+
+const workHubNewSessionName = (text: string) => workHubNewSessionNameForLocale(text, '新工作');
 
 const appShellUrl = [
   new URL('../../renderer/app-shell.tsx', import.meta.url),
@@ -110,7 +112,7 @@ test('conversation acknowledges a durable assignment before projecting target ex
         handler([assignment]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({ candidateSetId: `sha256:${'a'.repeat(64)}`, candidates: [] }),
       act: async () => ({ disposition: 'answer_here', coordinationTurnId: 'unused' }),
     },
@@ -157,7 +159,7 @@ test('conversation feedback never lets an older refresh overwrite newer target s
         handler([assignment]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({ candidateSetId: `sha256:${'b'.repeat(64)}`, candidates: [] }),
       act: async () => ({ disposition: 'answer_here', coordinationTurnId: 'unused' }),
     },
@@ -199,7 +201,7 @@ test('direct stop bypasses routing candidates and preserves a not_owned delegati
         handler([coordinationAssignmentTurn()]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => {
         candidateReads += 1;
         return { candidateSetId: `sha256:${'d'.repeat(64)}`, candidates: [] };
@@ -217,7 +219,7 @@ test('direct stop bypasses routing candidates and preserves a not_owned delegati
   });
   const handle = await controller.openConversation(() => undefined, () => undefined);
 
-  const result = await controller.submit({ requestId: 'stop-1', text: 'Stop Payments' });
+  const result = await controller.submit({ newSessionFallbackTitle: 'New work', requestId: 'stop-1', text: 'Stop Payments' });
   assert.deepEqual(result, {
     kind: 'stop',
     strategyId: WORKHUB_ROUTING_STRATEGY_ID,
@@ -240,7 +242,7 @@ test('direct stop bypasses routing candidates and preserves a not_owned delegati
   }]);
   assert.equal(candidateReads, 0);
 
-  const retry = await controller.submit({ requestId: 'stop-2', text: 'Stop Payments' });
+  const retry = await controller.submit({ newSessionFallbackTitle: 'New work', requestId: 'stop-2', text: 'Stop Payments' });
   assert.equal(retry.kind, 'stop');
   assert.equal(actions.length, 2);
   await handle.close();
@@ -255,13 +257,13 @@ test('an anaphoric stop asks for a fresh named imperative without offering a rou
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => assert.fail('stop clarification must not read route candidates'),
       act: async () => assert.fail('anaphoric stop must not reach the Action Gate'),
     },
   });
   const handle = await controller.openConversation(() => undefined, () => undefined);
-  assert.deepEqual(await controller.submit({ requestId: 'stop-it', text: 'Stop it' }), {
+  assert.deepEqual(await controller.submit({ newSessionFallbackTitle: 'New work', requestId: 'stop-it', text: 'Stop it' }), {
     kind: 'clarification',
     strategyId: WORKHUB_ROUTING_STRATEGY_ID,
     requestId: 'stop-it',
@@ -282,7 +284,7 @@ test('a named resume submits and reports what the Host did', async () => {
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'e'.repeat(64)}`,
         candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
@@ -300,7 +302,7 @@ test('a named resume submits and reports what the Host did', async () => {
   });
   const handle = await controller.openConversation(() => undefined, () => undefined);
 
-  const result = await controller.submit({ requestId: 'resume-1', text: 'Resume Payments' });
+  const result = await controller.submit({ newSessionFallbackTitle: 'New work', requestId: 'resume-1', text: 'Resume Payments' });
 
   assert.deepEqual(result, {
     kind: 'resume',
@@ -327,14 +329,14 @@ test('an anaphoric resume asks for a named work item', async () => {
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => assert.fail('resume clarification must not read route candidates'),
       act: async () => assert.fail('anaphoric resume must not reach the Action Gate'),
     },
   });
   const handle = await controller.openConversation(() => undefined, () => undefined);
 
-  assert.deepEqual(await controller.submit({ requestId: 'resume-it', text: 'Resume it' }), {
+  assert.deepEqual(await controller.submit({ newSessionFallbackTitle: 'New work', requestId: 'resume-it', text: 'Resume it' }), {
     kind: 'clarification',
     strategyId: WORKHUB_ROUTING_STRATEGY_ID,
     requestId: 'resume-it',
@@ -354,7 +356,7 @@ test('a resume the Host will not admit becomes its clarification', async () => {
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'e'.repeat(64)}`,
         candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
@@ -369,7 +371,7 @@ test('a resume the Host will not admit becomes its clarification', async () => {
   });
   const handle = await controller.openConversation(() => undefined, () => undefined);
 
-  assert.deepEqual(await controller.submit({ requestId: 'resume-2', text: 'Resume Payments' }), {
+  assert.deepEqual(await controller.submit({ newSessionFallbackTitle: 'New work', requestId: 'resume-2', text: 'Resume Payments' }), {
     kind: 'clarification',
     strategyId: WORKHUB_ROUTING_STRATEGY_ID,
     requestId: 'resume-2',
@@ -392,7 +394,7 @@ test('a resume identity conflict is not mislabeled as a missing target', async (
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'e'.repeat(64)}`,
         candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
@@ -405,7 +407,7 @@ test('a resume identity conflict is not mislabeled as a missing target', async (
   const handle = await controller.openConversation(() => undefined, () => undefined);
 
   await assert.rejects(
-    controller.submit({ requestId: 'resume-conflict', text: 'Resume Payments' }),
+    controller.submit({ newSessionFallbackTitle: 'New work', requestId: 'resume-conflict', text: 'Resume Payments' }),
     (error) => error === conflict,
   );
   await handle.close();
@@ -419,7 +421,7 @@ test('a Runtime Host without safe-boundary resume explains why it cannot resume'
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'e'.repeat(64)}`,
         candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
@@ -434,7 +436,7 @@ test('a Runtime Host without safe-boundary resume explains why it cannot resume'
   });
   const handle = await controller.openConversation(() => undefined, () => undefined);
 
-  assert.deepEqual(await controller.submit({ requestId: 'resume-disabled', text: 'Resume Payments' }), {
+  assert.deepEqual(await controller.submit({ newSessionFallbackTitle: 'New work', requestId: 'resume-disabled', text: 'Resume Payments' }), {
     kind: 'clarification',
     strategyId: WORKHUB_ROUTING_STRATEGY_ID,
     requestId: 'resume-disabled',
@@ -453,7 +455,7 @@ test('a recovering Runtime Host tells the user to retry resume', async () => {
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'e'.repeat(64)}`,
         candidates: [{ candidateRef: 'candidate-payments', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }],
@@ -465,7 +467,7 @@ test('a recovering Runtime Host tells the user to retry resume', async () => {
   });
   const handle = await controller.openConversation(() => undefined, () => undefined);
 
-  const result = await controller.submit({ requestId: 'resume-recovering', text: 'Resume Payments' });
+  const result = await controller.submit({ newSessionFallbackTitle: 'New work', requestId: 'resume-recovering', text: 'Resume Payments' });
   assert.equal(result.kind, 'clarification');
   if (result.kind === 'clarification') assert.equal(result.reason, 'resume_host_recovering');
   await handle.close();
@@ -484,7 +486,7 @@ test('a named stop reports the Gate refusal instead of judging the target itself
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => assert.fail('stop clarification must not read route candidates'),
       act: async () => {
         submitted += 1;
@@ -497,7 +499,7 @@ test('a named stop reports the Gate refusal instead of judging the target itself
   });
   const handle = await controller.openConversation(() => undefined, () => undefined);
 
-  assert.deepEqual(await controller.submit({ requestId: 'stop-payments', text: 'Stop Payments' }), {
+  assert.deepEqual(await controller.submit({ newSessionFallbackTitle: 'New work', requestId: 'stop-payments', text: 'Stop Payments' }), {
     kind: 'clarification',
     strategyId: WORKHUB_ROUTING_STRATEGY_ID,
     requestId: 'stop-payments',
@@ -518,7 +520,7 @@ test('a stop that fails for any other reason is a fault, not a clarification', a
         handler([]);
         return { close: async () => undefined };
       },
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => assert.fail('stop clarification must not read route candidates'),
       act: async () => {
         throw new WorkHubCoordinationFailure('persistence_failed', 'WorkHub stop state is unavailable');
@@ -528,7 +530,7 @@ test('a stop that fails for any other reason is a fault, not a clarification', a
   const handle = await controller.openConversation(() => undefined, () => undefined);
 
   await assert.rejects(
-    () => controller.submit({ requestId: 'stop-payments', text: 'Stop Payments' }),
+    () => controller.submit({ newSessionFallbackTitle: 'New work', requestId: 'stop-payments', text: 'Stop Payments' }),
     /WorkHub stop state is unavailable/,
   );
   await handle.close();
@@ -548,7 +550,7 @@ test('stop-shaped ordinary work routes normally instead of looping on clarificat
           handler([]);
           return { close: async () => undefined };
         },
-        record: async (input) => ({ turnId: input.turnId }),
+
         candidates: async () => ({
           candidateSetId: `sha256:${'e'.repeat(64)}`,
           candidates: [{
@@ -575,7 +577,7 @@ test('stop-shaped ordinary work routes normally instead of looping on clarificat
     });
     const handle = await controller.openConversation(() => undefined, () => undefined);
 
-    const result = await controller.submit({ requestId: `work-${sessionName}`, text });
+    const result = await controller.submit({ newSessionFallbackTitle: 'New work', requestId: `work-${sessionName}`, text });
     assert.equal(result.kind, 'submitted', text);
     assert.deepEqual(
       actions.map((action) => action.proposal.disposition),
@@ -683,6 +685,7 @@ test('archived Sessions stay inspectable but are excluded from routing targets',
 
   const projection = await controller.read();
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'archived-target',
     text: '支付回调幂等性现在是什么状态？',
   });
@@ -703,6 +706,7 @@ test('submit sends an explicitly targeted request to that Session', async () => 
   const controller = createWorkHubController({ sessions });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-1',
     text: '补充重复投递测试',
     explicitTarget: { sessionId: 'payment' },
@@ -734,6 +738,7 @@ test('submit routes a unique complete Session name without asking', async () => 
   const controller = createWorkHubController({ sessions });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-exact',
     text: '在支付回调幂等性里补充重复投递测试',
   });
@@ -770,6 +775,7 @@ test('an injected R3 strategy still delegates through the shared controller and 
   const controller = createWorkHubController({ sessions, routingStrategy });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: 'New work',
     requestId: 'request-r3-a',
     text: '请实现账本边界检查器',
   });
@@ -797,6 +803,7 @@ test('a unique longer Session name outranks a generic contained Session name', a
   };
 
   const result = await createWorkHubController({ sessions }).submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-layout',
     text: '优化WorkHub移动端消息布局：补充横屏注意点。',
   });
@@ -821,6 +828,7 @@ test('a short Latin Session name does not match inside another word', async () =
   };
 
   const result = await createWorkHubController({ sessions }).submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-parser',
     text: '修复 repair parser 的错误',
   });
@@ -847,6 +855,7 @@ test('a one-character Latin discriminator prevents routing to a different Sessio
     };
 
     const result = await createWorkHubController({ sessions }).submit({
+    newSessionFallbackTitle: '新工作',
       requestId: `request-${requestedName}`,
       text: `请处理 ${requestedName} 的问题`,
     });
@@ -879,6 +888,7 @@ test('submit asks the user when weak relevance matches more than one Session', a
   const controller = createWorkHubController({ sessions });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-ambiguous',
     text: '继续处理重复问题',
   });
@@ -930,12 +940,14 @@ test('submit keeps origin prompts as stable evidence after latest results change
   sessions.submit = async () => ({ turnId: 'turn-focus-login' });
   const controller = createWorkHubController({ sessions });
   await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-focus-login',
     text: '先看登录',
     explicitTarget: { sessionId: 'login' },
   });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-origin-ambiguity',
     text: '继续处理重复问题',
   });
@@ -966,7 +978,7 @@ test('submit creates a new executable topic instead of following one weak old cl
   const controller = createWorkHubController({ sessions });
   const text = '检查支付回调重复投递时的幂等性，先只分析风险和测试点，不修改文件。';
 
-  const result = await controller.submit({ requestId: 'request-payment-new', text });
+  const result = await controller.submit({ newSessionFallbackTitle: '新工作', requestId: 'request-payment-new', text });
 
   assert.equal(result.kind, 'submitted');
   assert.deepEqual(result.kind === 'submitted' ? result.target : undefined, {
@@ -996,7 +1008,7 @@ test('submit does not treat a project name as strong topic evidence', async () =
   const controller = createWorkHubController({ sessions });
   const text = '优化 WorkHub 在移动端窄屏下的消息布局，先给设计建议，不修改文件。';
 
-  const result = await controller.submit({ requestId: 'request-layout-new', text });
+  const result = await controller.submit({ newSessionFallbackTitle: '新工作', requestId: 'request-layout-new', text });
 
   assert.equal(result.kind, 'submitted');
   assert.deepEqual(result.kind === 'submitted' ? result.target : undefined, {
@@ -1018,12 +1030,14 @@ test('submit follows an unambiguous reference to the most recent Work', async ()
   };
   const controller = createWorkHubController({ sessions });
   await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-focus',
     text: '先处理支付',
     explicitTarget: { sessionId: 'payment' },
   });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-pronoun',
     text: '继续它',
   });
@@ -1054,10 +1068,12 @@ test('read seeds current and previous focus from pre-existing ordinary Sessions'
 
   await controller.read();
   const current = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-current-seed',
     text: '继续这个工作',
   });
   const previous = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-previous-seed',
     text: '回到上一个工作',
   });
@@ -1085,6 +1101,7 @@ test('read prefers the Session active when WorkHub opens over raw recency', asyn
 
   await controller.read({ focus: { sessionId: 'login' } });
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-active-seed',
     text: '继续这个工作',
   });
@@ -1128,6 +1145,7 @@ test('a stale opening read cannot overwrite a newer WorkHub focus', async () => 
   await older;
   sessions.list = async () => facts;
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-after-stale-read',
     text: '继续这个工作',
   });
@@ -1153,6 +1171,7 @@ test('an unavailable opening focus falls back to recent routable Sessions', asyn
 
   await controller.read({ focus: { sessionId: 'archived' } });
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-fallback-focus',
     text: '继续这个工作',
   });
@@ -1182,6 +1201,7 @@ test('focus falls back when the current Session is archived after WorkHub opens'
     : entry);
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-after-current-archive',
     text: '继续这个工作',
   });
@@ -1213,6 +1233,7 @@ test('resetVisitContext discards focus from a previous WorkHub mount', async () 
   await controller.read();
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-after-remount',
     text: '继续这个工作',
   });
@@ -1242,6 +1263,7 @@ test('an in-flight submit cannot restore visit focus after WorkHub unmounts', as
   const controller = createWorkHubController({ sessions });
   await controller.read({ focus: { sessionId: 'login' } });
   const inFlight = controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-before-unmount',
     text: '继续这个工作',
   });
@@ -1257,6 +1279,7 @@ test('an in-flight submit cannot restore visit focus after WorkHub unmounts', as
   };
   await controller.read();
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-after-in-flight',
     text: '继续这个工作',
   });
@@ -1298,6 +1321,7 @@ test('an old submit resolves against the visit focus captured before an await', 
   };
 
   const oldSubmission = controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-old-visit',
     text: '继续这个工作',
   });
@@ -1331,12 +1355,14 @@ test('submit routes strong core evidence instead of reusing recent focus', async
   };
   const controller = createWorkHubController({ sessions });
   await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-login-focus',
     text: '先看登录',
     explicitTarget: { sessionId: 'login' },
   });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-topic-shift',
     text: '继续处理支付回调重复投递',
   });
@@ -1371,6 +1397,7 @@ test('submit routes unique strong core evidence without asking', async () => {
   const controller = createWorkHubController({ sessions });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-core',
     text: '刷新令牌过期时，重复登录的观测日志应该记录哪些字段？',
   });
@@ -1399,7 +1426,7 @@ test('submit ignores shared boilerplate when an executable request names a new t
   const controller = createWorkHubController({ sessions });
   const text = '请创建新任务，检查支付回调重复投递；先只分析风险和测试点，不修改文件。';
 
-  const result = await controller.submit({ requestId: 'request-new-topic', text });
+  const result = await controller.submit({ newSessionFallbackTitle: '新工作', requestId: 'request-new-topic', text });
 
   assert.equal(result.kind, 'submitted');
   if (result.kind !== 'submitted') return;
@@ -1417,6 +1444,7 @@ test('submit keeps a foreign two-character clue behind clarification', async () 
   const controller = createWorkHubController({ sessions });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-weak',
     text: '继续登录',
   });
@@ -1438,6 +1466,7 @@ test('submit treats explicit user uncertainty as clarification instead of a new 
   const controller = createWorkHubController({ sessions });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-uncertain',
     text: '继续处理稳定性问题，但我不确定具体是哪一个。',
   });
@@ -1461,6 +1490,7 @@ test('English target uncertainty uses clarification as the routing safety valve'
   };
 
   const result = await createWorkHubController({ sessions }).submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'english-uncertainty',
     text: "I'm not sure which one this belongs to; continue the cleanup.",
   });
@@ -1488,6 +1518,7 @@ test('English routing matches whole words instead of substrings in another ident
   };
 
   const result = await createWorkHubController({ sessions }).submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'english-word-boundary',
     text: 'check the file parser',
   });
@@ -1516,6 +1547,7 @@ test('English core evidence requires a distinctive word or multiple whole-word m
   };
 
   const result = await createWorkHubController({ sessions }).submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'english-core-evidence',
     text: 'fix the parser tokenizer crash',
   });
@@ -1540,6 +1572,7 @@ test('waiting Session rejects a second root request without calling submit', asy
   const controller = createWorkHubController({ sessions });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-waiting',
     text: '排查令牌过期重复登录问题：补充一条等待状态下的新请求。',
   });
@@ -1566,17 +1599,20 @@ test('submit returns to the previous focused Session', async () => {
   };
   const controller = createWorkHubController({ sessions });
   await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-login',
     text: '先看登录',
     explicitTarget: { sessionId: 'login' },
   });
   await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-payment',
     text: '再看支付',
     explicitTarget: { sessionId: 'payment' },
   });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-previous',
     text: '回到上一个工作',
   });
@@ -1604,12 +1640,14 @@ test('submit lets strong foreign core evidence override a vague focus word', asy
   };
   const controller = createWorkHubController({ sessions });
   await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-payment-focus',
     text: '先看支付',
     explicitTarget: { sessionId: 'payment' },
   });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-foreign-core',
     text: '继续处理刷新令牌过期',
   });
@@ -1631,7 +1669,7 @@ test('submit keeps unmatched non-executable conversation in WorkHub', async () =
     sessions,
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'a'.repeat(64)}`,
         candidates: [],
@@ -1647,6 +1685,7 @@ test('submit keeps unmatched non-executable conversation in WorkHub', async () =
   });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-discussion',
     text: '你觉得统一入口最重要的价值是什么？',
   });
@@ -1677,7 +1716,7 @@ test('production submission delegates only through the Runtime-owned candidate r
     sessions,
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'b'.repeat(64)}`,
         candidates: [{
@@ -1704,6 +1743,7 @@ test('production submission delegates only through the Runtime-owned candidate r
   });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'delegate-action',
     text: '继续支付工作',
     explicitTarget: { sessionId: 'payment' },
@@ -1731,7 +1771,7 @@ test('production retry reaches durable Action Gate replay while target is waitin
     sessions,
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'c'.repeat(64)}`,
         candidates: [{
@@ -1758,6 +1798,7 @@ test('production retry reaches durable Action Gate replay while target is waitin
   });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'summary-recovery-action',
     text: '继续支付工作',
     explicitTarget: { sessionId: 'payment' },
@@ -1776,7 +1817,7 @@ test('production sends an explicit correction as a linked replacement', async ()
     sessions,
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'d'.repeat(64)}`,
         candidates: [
@@ -1817,6 +1858,7 @@ test('production sends an explicit correction as a linked replacement', async ()
   });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'linked-correction',
     text: 'No, use target instead',
     explicitTarget: { sessionId: 'target' },
@@ -1901,7 +1943,7 @@ test('production natural-language corrections retain the prior delegation link',
     sessions,
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId,
         candidates: candidates.map((candidate) => {
@@ -1956,11 +1998,13 @@ test('production natural-language corrections retain the prior delegation link',
   });
   await controller.read();
   await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'production-wrong-payment',
     text: '继续这个工作，补充验收项',
   });
 
   const corrected = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'production-natural-correction',
     text: '不是这个，换成登录稳定性，补充刷新令牌失败判定',
   });
@@ -1968,7 +2012,7 @@ test('production natural-language corrections retain the prior delegation link',
 
   const [creationRequestId, creationText] = PRODUCTION_CORRECTION_CREATION_CASES[0];
   assert.equal(
-    (await controller.submit({ requestId: creationRequestId, text: creationText })).kind,
+    (await controller.submit({ newSessionFallbackTitle: '新工作', requestId: creationRequestId, text: creationText })).kind,
     'submitted',
   );
 
@@ -1999,7 +2043,7 @@ test('production correction-shaped creation stays create_new without an existing
     sessions: port([]),
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'c'.repeat(64)}`,
         candidates: [],
@@ -2016,7 +2060,7 @@ test('production correction-shaped creation stays create_new without an existing
   });
 
   for (const [requestId, text] of PRODUCTION_CORRECTION_CREATION_CASES) {
-    const result = await controller.submit({ requestId: `without-focus-${requestId}`, text });
+    const result = await controller.submit({ newSessionFallbackTitle: '新工作', requestId: `without-focus-${requestId}`, text });
     assert.equal(result.kind, 'submitted');
   }
 
@@ -2030,9 +2074,6 @@ test('production clarification is persisted through the typed Action Gate dispos
     sessions: port([]),
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async () => {
-        throw new Error('legacy summary recording must not persist clarification');
-      },
       candidates: async () => ({
         candidateSetId: `sha256:${'c'.repeat(64)}`,
         candidates: [],
@@ -2047,11 +2088,10 @@ test('production clarification is persisted through the typed Action Gate dispos
     },
   });
 
-  assert.deepEqual(await controller.recordConversationTurn({
+  assert.deepEqual(await controller.requestClarification({
     turnId: 'clarification-action',
     userText: '继续稳定性问题',
     assistantText: '请选择目标 Session',
-    disposition: 'clarify',
   }), { turnId: 'clarification-turn' });
   assert.deepEqual(actions, [{
     actionId: 'clarification-action',
@@ -2073,7 +2113,7 @@ test('production creation leaves Session identity and workspace authority to mai
     sessions,
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
+
       candidates: async () => ({
         candidateSetId: `sha256:${'c'.repeat(64)}`,
         candidates: [],
@@ -2090,6 +2130,7 @@ test('production creation leaves Session identity and workspace authority to mai
   });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'create-action',
     text: '请创建新任务，检查支付回调重复投递。',
   });
@@ -2118,6 +2159,7 @@ test('submit treats a design question containing an action word as discussion', 
   const controller = createWorkHubController({ sessions });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-design-question',
     text: '我们应该怎么实现统一入口？',
   });
@@ -2136,6 +2178,7 @@ test('an executable English request may contain what without becoming discussion
   sessions.submit = async () => ({ turnId: 'turn-parser-fix' });
 
   const result = await createWorkHubController({ sessions }).submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'english-what-object',
     text: 'fix what is broken in the parser',
   });
@@ -2160,6 +2203,7 @@ test('submit creates an ordinary Session for a clear unmatched executable goal',
   const controller = createWorkHubController({ sessions });
 
   const result = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-new-work',
     text: '实现导出发票 PDF 功能',
   });
@@ -2191,6 +2235,7 @@ test('explicit new-Session intent outranks generic evidence from existing work',
   sessions.submit = async () => ({ turnId: 'turn-new-session' });
 
   const result = await createWorkHubController({ sessions }).submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'request-explicit-new',
     text: '创建一个全新的普通 Session，标题为 R2.3 新建工作验收，只记录测试计划。',
   });
@@ -2210,6 +2255,7 @@ test('English explicit creation extracts the requested Session name', async () =
   sessions.submit = async () => ({ turnId: 'turn-parser-cleanup' });
 
   const result = await createWorkHubController({ sessions }).submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'english-explicit-new',
     text: 'Create a new session called Parser Cleanup.',
   });
@@ -2347,6 +2393,7 @@ test('English routing boilerplate does not make an old analysis look related', a
   sessions.submit = async () => ({ turnId: 'turn-payment-new' });
 
   const result = await createWorkHubController({ sessions }).submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'english-boilerplate',
     text: "Check payment callback duplicate delivery; just analyze the risks and test cases; don't modify any files.",
   });
@@ -2366,10 +2413,12 @@ test('negated and deliberative creation language never creates a Session', async
   const controller = createWorkHubController({ sessions });
 
   const negated = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'negated-create',
     text: '不要创建一个新任务，我们先讨论这个方向。',
   });
   const deliberative = await controller.submit({
+    newSessionFallbackTitle: '新工作',
     requestId: 'question-create',
     text: '是否应该新建一个任务？',
   });
@@ -2483,6 +2532,7 @@ test('polite executable questions and file-level constraints still create new wo
   for (const text of cases) {
     assert.equal(
       createWorkHubRoutePolicy().resolve({
+      newSessionFallbackTitle: '新工作',
         text,
         sessions: [],
         originPromptBySessionId: new Map(),
@@ -2509,6 +2559,7 @@ test('advisory how-to ambiguity asks for a direct instruction', () => {
   ]) {
     assert.deepEqual(
       createWorkHubRoutePolicy().resolve({
+      newSessionFallbackTitle: '新工作',
         text,
         sessions: [],
         originPromptBySessionId: new Map(),
@@ -2526,6 +2577,7 @@ test('advisory ambiguity overrides explicit, exact-name, and recent-focus routin
 
   assert.deepEqual(
     createWorkHubRoutePolicy().resolve({
+      newSessionFallbackTitle: '新工作',
       text,
       sessions: [login],
       originPromptBySessionId: new Map(),
@@ -2535,6 +2587,7 @@ test('advisory ambiguity overrides explicit, exact-name, and recent-focus routin
   );
   assert.deepEqual(
     createWorkHubRoutePolicy().resolve({
+      newSessionFallbackTitle: '新工作',
       text,
       sessions: [login],
       originPromptBySessionId: new Map(),
@@ -2546,6 +2599,7 @@ test('advisory ambiguity overrides explicit, exact-name, and recent-focus routin
   focusedPolicy.rememberTarget(login.target);
   assert.deepEqual(
     focusedPolicy.resolve({
+      newSessionFallbackTitle: '新工作',
       text: 'Explain how to diagnose this, then fix it.',
       sessions: [login],
       originPromptBySessionId: new Map(),
@@ -2588,6 +2642,7 @@ test('literal negator targets still create new work', () => {
   ]) {
     assert.equal(
       createWorkHubRoutePolicy().resolve({
+      newSessionFallbackTitle: '新工作',
         text,
         sessions: [],
         originPromptBySessionId: new Map(),
@@ -2649,6 +2704,7 @@ test('withdrawing the requested action keeps the input in WorkHub', () => {
   ]) {
     assert.equal(
       createWorkHubRoutePolicy().resolve({
+      newSessionFallbackTitle: '新工作',
         text,
         sessions: [],
         originPromptBySessionId: new Map(),
@@ -2675,6 +2731,7 @@ test('a later affirmative clause creates work after withdrawing an earlier actio
   ]) {
     assert.equal(
       createWorkHubRoutePolicy().resolve({
+      newSessionFallbackTitle: '新工作',
         text,
         sessions: [],
         originPromptBySessionId: new Map(),
@@ -2768,6 +2825,7 @@ test('a correction with a negated creation tail never proposes a new Session', (
     const policy = createWorkHubRoutePolicy();
     policy.rememberTarget(payment.target);
     const decision = policy.resolve({
+      newSessionFallbackTitle: '新工作',
       text,
       sessions: [login, payment],
       originPromptBySessionId: new Map(),
@@ -2785,6 +2843,7 @@ test('a pronoun correction uses the shared affirmative target span', () => {
 
   assert.deepEqual(
     policy.resolve({
+      newSessionFallbackTitle: '新工作',
       text: 'Not this session; move it to Payments',
       sessions: [source, payments],
       originPromptBySessionId: new Map(),
@@ -2815,6 +2874,7 @@ test('correction routing preserves quoted and punctuated Session identities', ()
     const policy = createWorkHubRoutePolicy();
     policy.rememberTarget(source.target);
     const decision = policy.resolve({
+      newSessionFallbackTitle: '新工作',
       text,
       sessions: [source, target],
       originPromptBySessionId: new Map(),
@@ -2853,6 +2913,7 @@ test('a negated existing-target correction never proposes destructive replacemen
     const policy = createWorkHubRoutePolicy();
     policy.rememberTarget(payment.target);
     const decision = policy.resolve({
+      newSessionFallbackTitle: '新工作',
       text,
       sessions: [login, payment],
       originPromptBySessionId: new Map(),
@@ -3071,6 +3132,7 @@ test('indirect questions containing action words stay in WorkHub', () => {
   ]) {
     assert.equal(
       createWorkHubRoutePolicy().resolve({
+      newSessionFallbackTitle: '新工作',
         text,
         sessions: [],
         originPromptBySessionId: new Map(),
@@ -3091,6 +3153,7 @@ test('a fuzzy correction target never becomes destructive routing authority', ()
   policy.rememberTarget(source.target);
 
   const decision = policy.resolve({
+      newSessionFallbackTitle: '新工作',
     text: '不是这个，换成支付页面',
     sessions: [source, paymentCallback],
     originPromptBySessionId: new Map(),
@@ -3135,6 +3198,7 @@ test('a candidate name cannot absorb unquoted withdrawal semantics', () => {
     const policy = createWorkHubRoutePolicy();
     policy.rememberTarget(source.target);
     const decision = policy.resolve({
+      newSessionFallbackTitle: '新工作',
       text,
       sessions: [source, candidate],
       originPromptBySessionId: new Map(),
@@ -3171,6 +3235,7 @@ test('malformed or unbound creation naming stays in WorkHub discussion', () => {
   ]) {
     assert.equal(
       createWorkHubRoutePolicy().resolve({
+      newSessionFallbackTitle: '新工作',
         text,
         sessions: [],
         originPromptBySessionId: new Map(),
@@ -3212,7 +3277,7 @@ for (const createStrategy of [createWorkHubR24RoutingStrategy, () => createWorkH
       routingStrategy,
       coordination: {
         open: async () => ({ close: async () => undefined }),
-        record: async (input) => ({ turnId: input.turnId }),
+
         candidates: async () => ({ candidateSetId: `sha256:${'e'.repeat(64)}`, candidates: [{ candidateRef: 'payments-ref', sessionId: 'payments', sessionName: 'Payments', latestDelegationActionId: 'source-action', workspace: { target: { kind: 'host_path' as const, path: '/workspace/payments' }, hostCwd: '/workspace/payments' }, state: 'active' as const, updatedAt: 1 }] }),
         act: async (input) => {
           assert.equal(input.proposal.disposition, 'resume_work');
@@ -3221,7 +3286,7 @@ for (const createStrategy of [createWorkHubR24RoutingStrategy, () => createWorkH
         },
       },
     });
-    const result = await controller.submit({ requestId: 'resume-strategy', text: 'Resume Payments' });
+    const result = await controller.submit({ newSessionFallbackTitle: 'New work', requestId: 'resume-strategy', text: 'Resume Payments' });
     assert.equal(result.kind, 'resume');
     assert.equal(result.strategyId, routingStrategy.strategyId);
     if (result.kind === 'resume') assert.equal(result.outcome, 'resume_started');
@@ -3232,7 +3297,7 @@ for (const makeStrategy of [createWorkHubR24RoutingStrategy, () => createWorkHub
   test(`all combinations preserve Policy exact naming outside model recall budget: ${makeStrategy().strategyId}`, async () => {
     const entries = Array.from({ length: 14 }, (_, i) => session(`work-${i}`, { sessionName: `任务编号${i}边界`, updatedAt: 14 - i }));
     const controller = createWorkHubController({ sessions: port(entries), routingStrategy: makeStrategy() });
-    const result = await controller.submit({ requestId: 'outside-recall-budget', text: '任务编号13边界：补充测试' });
+    const result = await controller.submit({ newSessionFallbackTitle: 'New work', requestId: 'outside-recall-budget', text: '任务编号13边界：补充测试' });
     assert.equal(result.kind, 'submitted');
     if (result.kind === 'submitted') assert.equal(result.target.sessionId, 'work-13');
   });
@@ -3253,7 +3318,7 @@ test('Policy freezes visit focus before awaiting replaceable Intent', async () =
     } } },
   });
   await controller.read({ focus: { sessionId: 'login' } });
-  const result = controller.submit({ requestId: 'frozen-focus', text: '继续它' });
+  const result = controller.submit({ newSessionFallbackTitle: 'New work', requestId: 'frozen-focus', text: '继续它' });
   await entered;
   await controller.read({ focus: { sessionId: 'payment' } });
   release();
@@ -3267,6 +3332,7 @@ test('deterministic routing preserves executable instructions after the model te
   sessions.create = async () => session('ledger');
   const controller = createWorkHubController({ sessions });
   const result = await controller.submit({
+    newSessionFallbackTitle: 'New work',
     requestId: 'long-executable-input',
     text: '背景资料：' + '日志内容。'.repeat(450) + '\n请实现账本边界检查器',
   });
@@ -3280,15 +3346,57 @@ test('composer defaults apply only to creation while attachments follow explicit
   const newWorkDefaults = { model: { llmConnectionId: 'chosen', llmConnectionSlug: 'chosen', model: 'chosen-model' }, permissionMode: 'bypass' as const };
   const attachments: NonNullable<WorkHubCoordinationActInput['attachments']> = [{ name: 'requirements.txt', kind: 'other', mimeType: 'text/plain', bytes: 12, ref: { kind: 'session_file', sessionId: 'maka_workhub_coordination', relativePath: 'file-1' } }];
   const existing = createWorkHubController({ sessions: port([session('payments')]), onAct: (input) => actions.push(input) });
-  await existing.submit({ requestId: 'explicit-composer', text: 'Continue payments', explicitTarget: { sessionId: 'payments' }, newWorkDefaults, attachments });
+  await existing.submit({ newSessionFallbackTitle: 'New work', requestId: 'explicit-composer', text: 'Continue payments', explicitTarget: { sessionId: 'payments' }, newWorkDefaults, attachments });
   assert.equal(actions[0]?.proposal.disposition, 'delegate_existing');
   assert.equal(actions[0]?.newWorkDefaults, undefined);
   assert.deepEqual(actions[0]?.attachments, attachments);
   const freshPort = port([]);
   freshPort.create = async () => session('created-work');
   const fresh = createWorkHubController({ sessions: freshPort, onAct: (input) => actions.push(input) });
-  await fresh.submit({ requestId: 'new-composer', text: 'Create a new Session for an accessibility audit', newWorkDefaults, attachments });
+  await fresh.submit({ newSessionFallbackTitle: 'New work', requestId: 'new-composer', text: 'Create a new Session for an accessibility audit', newWorkDefaults, attachments });
   assert.equal(actions[1]?.proposal.disposition, 'create_new');
   assert.deepEqual(actions[1]?.newWorkDefaults, newWorkDefaults);
   assert.deepEqual(actions[1]?.attachments, attachments);
 });
+
+for (const mode of ['refresh', 'missing', 'renamed', 'churn', 'conflict'] as const) {
+  test(`replacement candidate refresh preserves the chosen Session (${mode})`, async () => {
+    const actions: WorkHubCoordinationActInput[] = [];
+    let reads = 0;
+    const controller = createGatedWorkHubController({
+      sessions: port([session('source'), session('target')]),
+      coordination: {
+        open: async () => ({ close: async () => undefined }),
+        candidates: async () => {
+          const version = reads++;
+          return {
+            candidateSetId: `sha256:${String(version).repeat(64)}`,
+            candidates: ['other', 'target', 'source'].filter((id) => !(mode === 'missing' && version > 0 && id === 'target')).map((id) => ({
+              candidateRef: `${id}-${version}`, sessionId: id,
+              sessionName: mode === 'renamed' && version > 0 && id === 'target' ? 'different work' : id,
+              workspace: { target: { kind: 'host_path' as const, path: `/workspace/${id}` }, hostCwd: `/workspace/${id}` },
+              state: 'active' as const, updatedAt: version,
+            })),
+          };
+        },
+        act: async (input) => {
+          actions.push(input);
+          if (actions.length === 1 || mode === 'churn') throw new WorkHubCoordinationFailure(
+            mode === 'conflict' ? 'operation_conflict' : 'candidate_set_stale', 'Snapshot changed');
+          return { disposition: 'replace', replacementDisposition: 'delegate_existing', targetSessionId: 'target', targetTurnId: 'replacement-turn' };
+        },
+      },
+    });
+    const submit = () => controller.submit({ newSessionFallbackTitle: 'New task', requestId: 'same-action', text: 'No, use target instead', explicitTarget: { sessionId: 'target' }, correction: { from: { sessionId: 'source' }, sourceActionId: 'source-action' } });
+    if (mode === 'refresh') {
+      assert.equal((await submit()).kind, 'submitted');
+      assert.equal(actions.length, 2);
+      assert.deepEqual(actions.map((action) => action.actionId), ['same-action', 'same-action']);
+      assert.deepEqual(actions.map((action) => action.proposal), [0, 1].map((version) => ({ disposition: 'replace', replacesActionId: 'source-action', target: { disposition: 'delegate_existing', candidateRef: `target-${version}` } })));
+      assert.notEqual(actions[0]!.candidateSetId, actions[1]!.candidateSetId);
+    } else {
+      await assert.rejects(submit, WorkHubCoordinationFailure);
+      assert.equal(actions.length, mode === 'churn' ? 3 : 1);
+    }
+  });
+}

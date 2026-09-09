@@ -924,3 +924,56 @@ describe('RuntimeEvent reference validation', () => {
     );
   });
 });
+
+test('Coordination Runtime receipts survive decoding and reject unrecognized results', () => {
+  const coordination = {
+    actionId: 'action',
+    userText: 'Which task?',
+    clarification: 'Name a task.',
+    result: { disposition: 'clarify' as const, coordinationTurnId: 'turn-1' },
+  };
+  const event = baseEvent({
+    role: 'system',
+    author: 'host',
+    modelVisibility: 'hidden',
+    actions: { coordination },
+  });
+  assert.deepEqual(decodeRuntimeEvent(event).actions?.coordination, coordination);
+  for (const result of [
+    { disposition: 'clarify', coordinationTurnId: '../invalid' },
+    { disposition: 'stop_work', outcome: 'stop_delivered', targetSessionId: 'target' },
+    {
+      disposition: 'stop_work',
+      outcome: 'cancelled_pending',
+      targetSessionId: 'target',
+      targetTurnId: 'turn',
+    },
+    { disposition: 'resume_work', outcome: 'resume_started', targetSessionId: 'target' },
+    {
+      disposition: 'resume_work',
+      outcome: 'already_running',
+      targetSessionId: 'target',
+      targetTurnId: 'turn',
+    },
+  ]) {
+    assert.throws(() =>
+      decodeRuntimeEvent({
+        ...event,
+        actions: { coordination: { ...coordination, result } },
+      }),
+    );
+  }
+
+  assert.throws(() =>
+    decodeRuntimeEvent({
+      ...event,
+      actions: { coordination: { ...coordination, result: { disposition: 'execute_anything' } } },
+    }),
+  );
+  assert.throws(() =>
+    decodeRuntimeEvent({
+      ...event,
+      actions: { coordination: { ...coordination, executionStatus: 'completed' } },
+    }),
+  );
+});

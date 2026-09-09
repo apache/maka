@@ -447,8 +447,9 @@ describe('WorkHub Coordination Action Gate', () => {
           },
           CONTEXT,
         ),
-      /no active durable delegation to resume/u,
+      /resume target delegation changed/u,
     );
+    assert.equal(none.resumeCalls.length, 0);
 
     const several = fakeEffects([session('payments', { name: 'Payments' })]);
     delegatedTo(several, 'payments');
@@ -1211,7 +1212,6 @@ describe('WorkHub Coordination Action Gate', () => {
       CONTEXT,
     );
     assert.equal(effects.answers.length, 1);
-    assert.equal(effects.clarifications.length, 1);
     assert.equal(effects.assignments.length, 0);
   });
 
@@ -2786,11 +2786,6 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     actionClaims,
     removedSessionIds: new Set<string>(),
     answers: [] as Array<{ turnId: string; text: string }>,
-    clarifications: [] as Array<{
-      turnId: string;
-      userText: string;
-      assistantText: string;
-    }>,
     assignments: [] as WorkHubDelegationAssignmentInput[],
     assignmentRecords,
     replacements,
@@ -2824,6 +2819,7 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
       targetTurnId?: string;
     },
     async resume(input: WorkHubDelegationResumeInput) {
+      await input.validateFreshTarget();
       this.resumeCalls.push(input);
       return {
         disposition: 'resume_work' as const,
@@ -2872,9 +2868,6 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     },
     async answer(input: { turnId: string; text: string }) {
       this.answers.push(input);
-    },
-    async clarify(input: { turnId: string; userText: string; assistantText: string }) {
-      this.clarifications.push(input);
     },
     async assign(input: WorkHubDelegationAssignmentInput) {
       this.assignments.push(input);
@@ -3020,7 +3013,6 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     removedSessionIds: Set<string>;
     retirementClaims: WorkHubDelegationRetirementClaim[];
     answers: Array<{ turnId: string; text: string }>;
-    clarifications: Array<{ turnId: string; userText: string; assistantText: string }>;
     assignments: WorkHubDelegationAssignmentInput[];
     assignmentRecords: Map<string, WorkHubDelegationAssignedMessage>;
     replacements: Map<string, WorkHubDelegationReplacementRequestedMessage>;
