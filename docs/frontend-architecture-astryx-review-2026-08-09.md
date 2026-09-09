@@ -1,12 +1,14 @@
 ---
-doc_id: frontend.architecture-astryx-review-2026-08-09
-title: "Frontend architecture and Astryx coverage review"
+doc_id: frontend-architecture-astryx-review-2026-08-09
+title: "Frontend architecture & Astryx coverage review"
 language: en
 source_language: en
 implementation_status: historical
 document_status: historical
 translation_status: source-only
 last_verified: 2026-09-05
+owners:
+  - maka-backend
 ---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
@@ -34,6 +36,13 @@ last_verified: 2026-09-05
 **Scope:** `apps/desktop/src/renderer/**`, `packages/ui/src/**`  
 **Method:** file-level inventory regen + pattern scan + deep reads of shell/settings/modules/ui; prior art `docs/astryx-full-surface-audit.md`, `DESIGN.md`, `docs/astryx-surface-file-inventory.md`  
 **Original evidence:** the committed audit at `0ad579d33` and follow-up implementation at `d68e9d775`; the scratch scan log named by the original review was not committed.
+
+> **Status (verified 2026-09-05):** this is a review record pinned to the HEAD above; its
+> citations describe that tree. Since then the workbar moved under
+> `apps/desktop/src/renderer/features/workbar/` (so `session-workbar.tsx` /
+> `session-workbar-tabs.ts` / `use-shell-layout.ts` no longer sit at their cited paths)
+> and the Astryx core patch is now `patches/@astryxdesign+core+0.5.2.patch`. The findings
+> tables below are kept as written.
 
 ---
 

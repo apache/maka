@@ -1,13 +1,14 @@
 ---
-doc_id: frontend.css-governance
-title: "前端 CSS 治理规范"
+doc_id: frontend-css-governance.zh-CN
+title: "Frontend CSS governance"
 language: zh-CN
 source_language: en
-counterpart: ./frontend-css-governance.md
 implementation_status: current
-document_status: stable
+document_status: current
 translation_status: synced
-last_verified: 2026-09-05
+last_verified: 2026-09-04
+owners:
+  - maka-backend
 ---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one

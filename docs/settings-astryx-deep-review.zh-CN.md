@@ -1,12 +1,14 @@
 ---
-doc_id: frontend.settings-astryx-review-2026-08-03
-title: "Maka 设置页 Astryx 深度审计"
+doc_id: settings-astryx-deep-review.zh-CN
+title: "Maka 设置页深度 Review——以 Astryx 设计语言为基准"
 language: zh-CN
 source_language: zh-CN
 implementation_status: historical
 document_status: historical
 translation_status: source-only
 last_verified: 2026-09-05
+owners:
+  - maka-backend
 ---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
@@ -32,6 +34,8 @@ last_verified: 2026-09-05
 > **生命周期：历史。** 下文记录的是 2026-08-03、`#1972` 落地前的设置页问题与重构目标，不是当前缺陷清单。该方案已经由 `refactor(desktop): rebuild Settings on the Astryx open-group idiom (#1972)` 落地。当前实现以 `settings/settings-section.tsx`、`settings/settings-rows.tsx` 和 `styles/settings/rows.css` 为准；全量 surface 覆盖以生成的 [astryx-surface-file-inventory.md](./astryx-surface-file-inventory.md) 为准。
 >
 > 原审计基于 `settings/astryx-refactor` 分支，使用 Storybook 全页截图（中/英 × 亮/暗）、Astryx 官方 `settings` / `settings-dialog` 模板和 `astryx docs` 原文。2026-09-05 复核确认：`SettingsSection` 的开放行组、`SettingsRow` / `SettingsField` / `SettingsActions` 三种行语法，以及以 `StatusDot` + 文本为主的状态表达均已进入当前实现；页面数量、按钮数量和 CSS 行数等下文数字只描述当时快照。
+
+> **状态(2026-09-05 核验):** 这是一份钉在 2026-08-03 `settings/astryx-refactor` 分支头上的评审记录,下文引用的卡片式布局等描述的都是当时的树。此后 `SettingsSection` 已重写为 open row-group 设计,memory/health 页也改用了 `MoreMenu` 与 `StatusDot`。以下发现按原文保留。
 
 ## 一、Astryx 官方设置语言到底是什么
 
