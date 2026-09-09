@@ -30,6 +30,23 @@ import {
 } from '../provider-error-classification.js';
 
 describe('Provider error classification', () => {
+  test('classifies nested protocol-incomplete invalid_request_error as stream_truncated', () => {
+    const failure = providerModelFailure(
+      new Error('SDK stream error', {
+        cause: {
+          type: 'invalid_request_error',
+          code: 'invalid_request_error',
+          message:
+            'stream error: stream disconnected before completion: stream closed before response.completed',
+        },
+      }),
+    );
+
+    assert.equal(failure.kind, 'stream_truncated');
+    assert.equal(failure.code, 'invalid_request_error');
+    assert.equal(failure.retryable, false);
+  });
+
   test('projects only bounded allowlisted facts into durable diagnostics', () => {
     const diagnostic = providerFailureDiagnostic(
       Object.assign(new Error('must not persist sk-secret-or-prompt'), {

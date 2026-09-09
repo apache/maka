@@ -2028,12 +2028,6 @@ export class AiSdkTurn {
             const settledWatchdogTimeout = consumeWatchdogTimeout();
             providerOutcome = await result.outcome;
             const incompleteStreamTerminal = providerOutcome.kind === 'truncated';
-            const incompleteStreamHasNoObservableOutput =
-              incompleteStreamTerminal &&
-              !attemptSawText &&
-              !attemptSawThinking &&
-              !attemptSawToolActivity &&
-              !attemptSawContinuationMetadata;
             const attemptFailure =
               settledWatchdogTimeout?.error ??
               (providerOutcome.kind === 'completed' ? undefined : providerOutcome.failure);
@@ -2043,6 +2037,15 @@ export class AiSdkTurn {
                 settledWatchdogTimeout || providerOutcome.kind === 'completed'
                   ? this.deps.modelAdapter.normalizeFailure(attemptFailure)
                   : providerOutcome.failure;
+              const protocolIncompleteStreamFailure =
+                providerOutcome.kind === 'failed' && failure.kind === 'stream_truncated';
+              const incompleteStreamHasNoObservableOutput =
+                (incompleteStreamTerminal &&
+                  !attemptSawText &&
+                  !attemptSawThinking &&
+                  !attemptSawToolActivity &&
+                  !attemptSawContinuationMetadata) ||
+                (protocolIncompleteStreamFailure && attemptHasNoObservableOutput());
               if (this.loopStopRequested) {
                 terminalProviderError = settledWatchdogTimeout?.error ?? failure;
                 terminalProviderErrorReason =
@@ -2143,7 +2146,7 @@ export class AiSdkTurn {
                 idleWatchdogRetryCount < MAX_IDLE_WATCHDOG_RETRIES_PER_STEP &&
                 attemptCanRecoverWithSealedThinking();
               const incompleteStreamRecovery =
-                incompleteStreamTerminal &&
+                (incompleteStreamTerminal || protocolIncompleteStreamFailure) &&
                 incompleteStreamRetryCount < MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP &&
                 incompleteStreamHasNoObservableOutput;
               // Same seal-and-retry contract as the watchdog path, entered when
@@ -2181,7 +2184,7 @@ export class AiSdkTurn {
                 retry = { decision: 'declined', because: 'policy' };
               } else if (!(failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery)) {
                 retry =
-                  incompleteStreamTerminal &&
+                  (incompleteStreamTerminal || protocolIncompleteStreamFailure) &&
                   incompleteStreamRetryCount >= MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP
                     ? { decision: 'exhausted', attempts: providerAttempt }
                     : { decision: 'declined', because: 'policy' };
