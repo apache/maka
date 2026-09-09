@@ -32,6 +32,23 @@ import type { ElicitResult } from '@modelcontextprotocol/client';
 // Explicit server bounds are preserved and still checked by Core admission.
 const DEFAULT_STRING_MAX_LENGTH = 256;
 
+/** Inspect raw keys and values before projection can escape control characters.
+ * This is a containment check, not a comparison with redacted output: a state
+ * may itself be identical to the redaction marker.
+ */
+export function containsMcpFormState(value: unknown, states: readonly string[]): boolean {
+  const pending: unknown[] = [value];
+  while (pending.length) {
+    const item = pending.pop();
+    if (typeof item === 'string') {
+      if (states.some((state) => state.length > 0 && item.includes(state))) return true;
+    } else if (item !== null && typeof item === 'object') {
+      for (const [key, child] of Object.entries(item)) pending.push(key, child);
+    }
+  }
+  return false;
+}
+
 function record(value: unknown): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error();
   const prototype = Object.getPrototypeOf(value);

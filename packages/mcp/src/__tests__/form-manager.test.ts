@@ -366,24 +366,179 @@ for (const state of ['private-long-state', '§']) {
   }
 }
 
-test('state echoed into a form fails closed before IPC projection', async () => {
+for (const state of ['opaque-secret-state', 'opaque\nstate', '[redacted]']) {
+  for (const location of ['message', 'property key', 'default'] as const) {
+    test(`state ${JSON.stringify(state)} echoed into a form ${location} fails before projection`, async () => {
+      const { fixture, manager, binding } = await setup();
+      const request = mcpFixtureFormRequest();
+      if (location === 'message') request.params.message = state;
+      else if (location === 'property key') {
+        Object.defineProperty(request.params.requestedSchema.properties, state, {
+          value: { type: 'string' },
+          enumerable: true,
+        });
+      } else {
+        Object.assign(request.params.requestedSchema.properties.name, { default: state });
+      }
+      fixture.respond = (params) =>
+        params.inputResponses
+          ? { content: [] }
+          : inputRequired({ inputRequests: { form: request }, requestState: state });
+      let shown = 0;
+      await assert.rejects(
+        manager.callTool(
+          binding,
+          {},
+          {
+            requestInteraction: async () => {
+              shown++;
+              return accepted;
+            },
+          },
+        ),
+        /private continuation/,
+      );
+      assert.equal(shown, 0);
+      assert.equal(fixture.calls.length, 1);
+    });
+  }
+}
+
+for (const state of ['opaque\nstate', '[redacted]']) {
+  test(`a later call cannot project earlier connection state ${JSON.stringify(state)}`, async () => {
+    const { fixture, manager, binding } = await setup();
+    fixture.respond = (params) =>
+      params.inputResponses
+        ? { content: [] }
+        : inputRequired({
+            inputRequests: { form: mcpFixtureFormRequest() },
+            requestState: state,
+          });
+    await manager.callTool(binding, {}, { requestInteraction: async () => accepted });
+    const request = mcpFixtureFormRequest();
+    request.params.message = state;
+    fixture.respond = (params) =>
+      params.inputResponses
+        ? { content: [] }
+        : inputRequired({
+            inputRequests: { form: request },
+            requestState: 'new-private-state',
+          });
+    let shown = 0;
+    await assert.rejects(
+      manager.callTool(
+        binding,
+        {},
+        {
+          requestInteraction: async () => {
+            shown++;
+            return accepted;
+          },
+        },
+      ),
+      /private continuation/,
+    );
+    assert.equal(shown, 0);
+    assert.equal(fixture.calls.length, 3);
+  });
+}
+
+test('retained state cannot escape through a later output-schema preparation error', async () => {
   const { fixture, manager, binding } = await setup();
-  const request = mcpFixtureFormRequest();
-  request.params.message = 'opaque-secret-state';
-  fixture.respond = () =>
-    inputRequired({ inputRequests: { form: request }, requestState: request.params.message });
-  await assert.rejects(
-    manager.callTool(
-      binding,
-      {},
-      {
-        requestInteraction: async () => assert.fail('private state reached form callback'),
-      },
-    ),
-    /private continuation/,
-  );
-  assert.equal(fixture.calls.length, 1);
+  await manager.callTool(binding, {}, { requestInteraction: async () => accepted });
+  fixture.definition = {
+    ...fixture.definition,
+    outputSchema: { type: 'object', $ref: 'opaque-state' },
+  };
+  await manager.refreshTools('forms');
+  const refreshed = manager.toolSnapshot().tools[0]!.binding;
+  await assert.rejects(manager.callTool(refreshed, {}), (error: unknown) => {
+    assert(error instanceof Error);
+    assert.match(error.message, /invalid output schema/);
+    assert(error.cause instanceof Error);
+    assert.doesNotMatch(error.cause.message, /opaque-state/);
+    return true;
+  });
+  assert.equal(fixture.calls.length, 2);
 });
+
+test('retained state cannot escape through a later header-argument error', async () => {
+  const { fixture, manager, binding } = await setup();
+  await manager.callTool(binding, {}, { requestInteraction: async () => accepted });
+  fixture.definition = {
+    ...fixture.definition,
+    inputSchema: {
+      type: 'object',
+      properties: { 'opaque-state': { type: 'integer', 'x-mcp-header': 'Shard' } },
+    },
+  };
+  await manager.refreshTools('forms');
+  const refreshed = manager.toolSnapshot().tools[0]!.binding;
+  await assert.rejects(
+    manager.callTool(refreshed, { 'opaque-state': Number.MAX_SAFE_INTEGER + 1 }),
+    (error: unknown) => {
+      assert(error instanceof Error);
+      assert.match(error.message, /unsafe integer/);
+      assert.doesNotMatch(error.message, /opaque-state/);
+      return true;
+    },
+  );
+  assert.equal(fixture.calls.length, 2);
+});
+
+for (const interactive of [false, true]) {
+  test(`retention exhaustion fences an already pending ${interactive ? 'interactive' : 'ordinary'} call`, async () => {
+    const { fixture, manager, binding } = await setup();
+    const waiting = deferred<void>();
+    const release = deferred<void>();
+    let stateNumber = 0;
+    fixture.respond = async (params) => {
+      if (params.arguments?.hold) {
+        waiting.resolve();
+        await release.promise;
+        return { content: [{ type: 'text', text: 'state-65' }] };
+      }
+      return params.inputResponses
+        ? { content: [] }
+        : inputRequired({
+            inputRequests: { form: mcpFixtureFormRequest() },
+            requestState: `state-${++stateNumber}`,
+          });
+    };
+    for (let call = 0; call < 64; call++) {
+      await manager.callTool(binding, {}, { requestInteraction: async () => accepted });
+    }
+    const pending = assert.rejects(
+      manager.callTool(
+        binding,
+        { hold: true },
+        {
+          ...(interactive ? { requestInteraction: async () => accepted } : {}),
+        },
+      ),
+      /retention exhausted/,
+    );
+    await waiting.promise;
+    try {
+      await assert.rejects(
+        manager.callTool(
+          binding,
+          {},
+          {
+            requestInteraction: async () => accepted,
+          },
+        ),
+        /retention exhausted/,
+      );
+    } finally {
+      release.resolve();
+    }
+    await pending;
+    const requests = fixture.calls.length;
+    await assert.rejects(manager.callTool(binding, {}), /retention exhausted/);
+    assert.equal(fixture.calls.length, requests);
+  });
+}
 
 for (const limit of ['state', 'count', 'bytes'] as const) {
   test(`rejects excessive ${limit} before displaying a form`, async () => {
