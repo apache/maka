@@ -95,6 +95,7 @@ interface ChatComposerRegionProps
     | 'onSearchMentionFiles'
     | 'sessionReferences'
     | 'onPickSessionReference'
+    | 'waitForSessionReference'
     | 'pendingDirectories'
     | 'onRemoveDirectory'
     | 'onPickDirectory'
@@ -332,6 +333,7 @@ export function ChatComposerRegion({
           onSearchMentionFiles={mentions?.searchMentionFiles}
           sessionReferences={mentions?.sessionReferences}
           onPickSessionReference={mentions?.onPickSessionReference}
+          waitForSessionReference={mentions?.waitForSessionReference}
           {...directoryComposerProps}
           onPickDirectory={
             directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined

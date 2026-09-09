@@ -360,6 +360,8 @@ export const Composer = forwardRef<
     sessionReferences?: ReadonlyArray<ComposerSessionReference>;
     /** Called when the user selects a Session from the `@` picker. */
     onPickSessionReference?(session: ComposerSessionReference): void | Promise<void>;
+    /** Wait for a picked Session reference to settle before committing a send. */
+    waitForSessionReference?(): Promise<boolean>;
     modelLabel?: string;
     activeSession?: SessionSummary;
     activeModelConnectionId?: string;
@@ -1342,6 +1344,10 @@ export const Composer = forwardRef<
     setSendPending(true);
     let sent: boolean | void;
     try {
+      if (props.waitForSessionReference) {
+        const referenceReady = await props.waitForSessionReference();
+        if (!referenceReady) return;
+      }
       const metadata: ComposerSendMetadata = {
         ...(workspaceFileReferences.length > 0 ? { workspaceFileReferences } : {}),
         ...(followUpMode ? { followUpMode } : {}),
