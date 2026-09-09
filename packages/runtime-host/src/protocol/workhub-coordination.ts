@@ -18,6 +18,7 @@
  */
 
 import type { AttachmentRef } from '@maka/core/events';
+import { isWorkHubActionResult, type WorkHubActionResult } from '@maka/core/workhub-action-result';
 import { decodeMessageContent } from './turn.js';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
@@ -213,38 +214,10 @@ export interface WorkHubCoordinationActFromTurnInput {
   readonly delegationText?: string;
 }
 
-export type WorkHubCoordinationActResult =
-  | {
-      readonly disposition: 'delegate_existing';
-      readonly targetSessionId: string;
-      readonly targetTurnId: string;
-      readonly steered?: true;
-    }
-  | {
-      readonly disposition: 'create_new';
-      readonly targetSessionId: string;
-      readonly targetTurnId: string;
-      readonly steered?: true;
-    }
-  | {
-      readonly disposition: 'replace';
-      readonly replacementDisposition: 'delegate_existing' | 'create_new';
-      readonly targetSessionId: string;
-      readonly targetTurnId: string;
-      readonly steered?: true;
-    }
-  | {
-      readonly disposition: 'stop_work';
-      readonly outcome: 'cancelled_pending' | 'stop_delivered' | 'already_terminal' | 'not_owned';
-      readonly targetSessionId: string;
-      readonly targetTurnId?: string;
-    }
-  | {
-      readonly disposition: 'resume_work';
-      readonly outcome: 'resume_started' | 'already_running';
-      readonly targetSessionId: string;
-      readonly targetTurnId?: string;
-    };
+export type WorkHubCoordinationActResult = Exclude<
+  WorkHubActionResult,
+  { disposition: 'answer_here' | 'clarify' }
+>;
 
 export const WORKHUB_COORDINATION_OPERATION_SPECS = {
   'workhub.coordination.configureModel': defineOperation<
@@ -316,11 +289,11 @@ export const WORKHUB_COORDINATION_OPERATION_SPECS = {
   'workhub.coordination.actFromTurn': defineOperation<
     WorkHubCoordinationActFromTurnInput,
     WorkHubCoordinationActResult,
-    (typeof TURN_ERRORS)[number]
+    (typeof TURN_ERRORS)[number] | 'candidate_set_stale'
   >({
     mode: 'command',
     availability: 'ready',
-    errors: TURN_ERRORS,
+    errors: [...TURN_ERRORS, 'candidate_set_stale'],
     decodeInput: decodeWorkHubCoordinationActFromTurnInput,
     decodeOutput: decodeWorkHubCoordinationActResult,
   }),
@@ -494,109 +467,16 @@ function decodeWorkHubCoordinationActionFields(
 }
 
 export function decodeWorkHubCoordinationActResult(value: unknown): WorkHubCoordinationActResult {
-  const result = requireRecord(value, 'WorkHub Coordination action result');
-
-  if (result.disposition === 'delegate_existing' || result.disposition === 'create_new') {
-    const exact = requireShapedRecord(
-      result,
-      'WorkHub Coordination execution action result',
-      ['disposition', 'targetSessionId', 'targetTurnId'],
-      ['steered'],
-    );
-    if (exact.steered !== undefined && exact.steered !== true) {
-      throw invalidProtocolFrame('Invalid WorkHub Coordination steering result');
-    }
-    return {
-      disposition: result.disposition,
-      targetSessionId: requireEntityId(exact.targetSessionId, 'WorkHub target Session id'),
-      targetTurnId: requireEntityId(exact.targetTurnId, 'WorkHub target Turn id'),
-      ...(exact.steered === true ? { steered: true as const } : {}),
-    };
+  if (
+    !isWorkHubActionResult(value) ||
+    value.disposition === 'answer_here' ||
+    value.disposition === 'clarify'
+  ) {
+    throw invalidProtocolFrame('Invalid WorkHub Coordination action result');
   }
-  if (result.disposition === 'replace') {
-    const exact = requireShapedRecord(
-      result,
-      'WorkHub Coordination replacement result',
-      ['disposition', 'replacementDisposition', 'targetSessionId', 'targetTurnId'],
-      ['steered'],
-    );
-    if (
-      exact.replacementDisposition !== 'delegate_existing' &&
-      exact.replacementDisposition !== 'create_new'
-    ) {
-      throw invalidProtocolFrame('Invalid WorkHub replacement disposition');
-    }
-    if (exact.steered !== undefined && exact.steered !== true) {
-      throw invalidProtocolFrame('Invalid WorkHub Coordination steering result');
-    }
-    return {
-      disposition: 'replace',
-      replacementDisposition: exact.replacementDisposition,
-      targetSessionId: requireEntityId(exact.targetSessionId, 'WorkHub target Session id'),
-      targetTurnId: requireEntityId(exact.targetTurnId, 'WorkHub target Turn id'),
-      ...(exact.steered === true ? { steered: true as const } : {}),
-    };
-  }
-  if (result.disposition === 'stop_work') {
-    const exact = requireShapedRecord(
-      result,
-      'WorkHub Coordination stop result',
-      ['disposition', 'outcome', 'targetSessionId'],
-      ['targetTurnId'],
-    );
-    if (
-      exact.outcome !== 'cancelled_pending' &&
-      exact.outcome !== 'stop_delivered' &&
-      exact.outcome !== 'already_terminal' &&
-      exact.outcome !== 'not_owned'
-    ) {
-      throw invalidProtocolFrame('Invalid WorkHub stop outcome');
-    }
-    if (
-      ((exact.outcome === 'stop_delivered' || exact.outcome === 'not_owned') &&
-        exact.targetTurnId === undefined) ||
-      (exact.outcome === 'cancelled_pending' && exact.targetTurnId !== undefined)
-    ) {
-      throw invalidProtocolFrame('Invalid WorkHub stop target Turn');
-    }
-    return {
-      disposition: 'stop_work',
-      outcome: exact.outcome,
-      targetSessionId: requireEntityId(exact.targetSessionId, 'WorkHub target Session id'),
-      ...(exact.targetTurnId === undefined
-        ? {}
-        : {
-            targetTurnId: requireEntityId(exact.targetTurnId, 'WorkHub target Turn id'),
-          }),
-    };
-  }
-  if (result.disposition === 'resume_work') {
-    const exact = requireShapedRecord(
-      result,
-      'WorkHub Coordination resume result',
-      ['disposition', 'outcome', 'targetSessionId'],
-      ['targetTurnId'],
-    );
-    if (exact.outcome !== 'resume_started' && exact.outcome !== 'already_running') {
-      throw invalidProtocolFrame('Invalid WorkHub resume outcome');
-    }
-    // Only a started continuation names a Turn: the Host has one to name, and
-    // the other two outcomes changed nothing that could carry an identity.
-    if ((exact.outcome === 'resume_started') !== (exact.targetTurnId !== undefined)) {
-      throw invalidProtocolFrame('Invalid WorkHub resume target Turn');
-    }
-    return {
-      disposition: 'resume_work',
-      outcome: exact.outcome,
-      targetSessionId: requireEntityId(exact.targetSessionId, 'WorkHub target Session id'),
-      ...(exact.targetTurnId === undefined
-        ? {}
-        : {
-            targetTurnId: requireEntityId(exact.targetTurnId, 'WorkHub target Turn id'),
-          }),
-    };
-  }
-  throw invalidProtocolFrame('Invalid WorkHub Coordination action disposition');
+  return Object.fromEntries(
+    Object.entries(value).filter(([, field]) => field !== undefined),
+  ) as WorkHubCoordinationActResult;
 }
 
 function decodeWorkHubCoordinationCandidate(value: unknown): WorkHubCoordinationCandidate {

@@ -296,7 +296,7 @@ describe('WorkHub Coordination Action Gate', () => {
           },
           CONTEXT,
         ),
-      /no active durable delegation to resume/u,
+      /resume target delegation changed/u,
     );
 
     const several = fakeEffects([session('payments', { name: 'Payments' })]);
@@ -1776,6 +1776,7 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
       targetTurnId?: string;
     },
     async resume(input: WorkHubDelegationResumeInput) {
+      await input.validateFreshTarget();
       this.resumeCalls.push(input);
       return {
         disposition: 'resume_work' as const,

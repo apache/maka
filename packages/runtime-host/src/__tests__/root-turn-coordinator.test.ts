@@ -20,6 +20,12 @@
 import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { readInvocation, seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
+import { GoalManager } from '@maka/runtime/goal-state';
+import {
+  GoalContinuationCoordinator,
+  volatileGoalDurability,
+} from '@maka/runtime/goal-continuation';
+import { HostGoalExecutionCoordinator } from '../server/goal-execution-coordinator.js';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import {
@@ -135,6 +141,148 @@ function assertStartedTurn(outcome: TurnStartOutcome): asserts outcome is Starte
   if (!outcome.ok || outcome.result.kind !== 'started') {
     assert.fail('Expected a started Turn outcome');
   }
+}
+
+for (const cancel of [false, true]) {
+  test(`Goal admission retains activity across the Session gate (${cancel ? 'cancel' : 'complete'})`, async () => {
+    const admissionGate = deferred<void>();
+    const backendStarted = deferred<void>();
+    const finishBackend = deferred<void>();
+    const fixture = await createFailureFixture({
+      registerBackend: (backends) =>
+        backends.register(
+          'ai-sdk',
+          (context) =>
+            new (class extends FakeBackend {
+              override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+                backendStarted.resolve();
+                await finishBackend.promise;
+                yield* super.send(input);
+              }
+            })(context),
+        ),
+    });
+    const goals = new GoalManager({ generateId: randomUUID, now: Date.now });
+    const executions = new HostGoalExecutionCoordinator({
+      executions: fixture.coordinator,
+      runtime: fixture.manager,
+      matchesActive: (sessionId, checkpoint, lease) =>
+        goals.matchesActive(sessionId, checkpoint) && goals.matchesControlLease(sessionId, lease),
+    });
+    let goalActivities = 0;
+    const continuation = new GoalContinuationCoordinator({
+      goalManager: goals,
+      acquireActivity: () => {
+        goalActivities++;
+        const residency = fixture.acquireResidency();
+        return {
+          release: () => {
+            goalActivities--;
+            residency.release();
+          },
+        };
+      },
+      evaluator: {
+        evaluate: async () =>
+          '{"met":true,"impossible":false,"progress":true,"waiting":false,"reason":"done"}',
+      },
+      getRecentContext: async () => '',
+      durability: volatileGoalDurability,
+      admitTurn: (...args) => executions.admitTurn(...args),
+    });
+    const blocker = fixture.sessionAdmission.run(fixture.sessionId, () => admissionGate.promise);
+    try {
+      const queued = fixture.sessionAdmission.waitForNextQueuedRun();
+      goals.create(fixture.sessionId, 'finish work');
+      continuation.recoverActiveGoal(fixture.sessionId);
+      await queued;
+      await waitUntil(() => goalActivities === 0);
+      assert.equal(
+        fixture.liveResidencies(),
+        1,
+        'Hosted admission must own activity after the Goal drain has finished',
+      );
+
+      if (cancel) goals.pause(fixture.sessionId);
+      admissionGate.resolve();
+      await blocker;
+      if (!cancel) {
+        await backendStarted.promise;
+        // Admission must release its temporary lease while the execution remains live.
+        await waitUntil(() => fixture.liveResidencies() === 1);
+        const hold = continuation.holdForHandoff();
+        assert.ok(hold);
+        await withTimeout(hold.settled(), 1_000, 'Goal handoff must not await the full execution');
+        finishBackend.resolve();
+        await fixture.coordinator.whenIdle(fixture.sessionId);
+        hold.release();
+      }
+      await waitUntil(() => fixture.liveResidencies() === 0);
+      assert.equal(fixture.drainRequested(), false);
+      assert.equal(goals.get(fixture.sessionId)?.status, cancel ? 'paused' : 'achieved');
+    } finally {
+      admissionGate.resolve();
+      finishBackend.resolve();
+      await blocker;
+      executions.beginDrain();
+      await continuation.close();
+      await fixture.coordinator.close();
+      await fixture.messages.close();
+      await fixture.dispose();
+    }
+  });
+}
+
+for (const prepared of [false, true]) {
+  test(`Hosted admission releases activity after a rejected gate (${prepared ? 'prepared' : 'direct'})`, async () => {
+    const gate = deferred<'executing' | 'cancelled'>();
+    const entered = deferred<void>();
+    const fixture = await createFailureFixture({
+      registerBackend: (backends) =>
+        backends.register('ai-sdk', (context) => new FakeBackend(context)),
+    });
+    const input = {
+      sessionId: fixture.sessionId,
+      turnId: randomUUID(),
+      runId: randomUUID(),
+      userMessageId: randomUUID(),
+      execution: { kind: 'goal' as const, goalId: randomUUID() },
+      content: { text: 'continue' },
+      admitExecution: () => {
+        entered.resolve();
+        return gate.promise;
+      },
+      start: () => assert.fail('Rejected admission must never start execution'),
+    };
+    const preparation = prepared ? fixture.coordinator.prepare(fixture.sessionId) : undefined;
+    if (preparation) assert.equal(preparation.kind, 'prepared');
+    const admission =
+      preparation?.kind === 'prepared'
+        ? preparation.admission.admit(input)
+        : fixture.coordinator.admit(input);
+    const rejected = assert.rejects(admission, /admission gate failed/);
+    try {
+      await entered.promise;
+      assert.equal(fixture.liveResidencies(), 1);
+      gate.reject(new Error('admission gate failed'));
+      await rejected;
+      assert.equal(fixture.liveResidencies(), 0);
+      assert.equal(fixture.coordinator.whenIdle(fixture.sessionId), undefined);
+      assert.equal(fixture.drainRequested(), false);
+      // A consumed preparation rejects without acquiring a second lease.
+      if (preparation?.kind === 'prepared') {
+        await assert.rejects(preparation.admission.admit(input), /already consumed/);
+        preparation.admission.release();
+        assert.equal(fixture.liveResidencies(), 0);
+      }
+    } finally {
+      gate.reject(new Error('admission gate failed'));
+      await rejected;
+      await fixture.coordinator.close();
+      await fixture.messages.close();
+      await fixture.dispose();
+    }
+  });
 }
 
 test('turn.start rejects the reserved WorkHub Coordination Session identity', async () => {

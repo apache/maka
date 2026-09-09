@@ -142,6 +142,9 @@ import {
   normalizeSessionHeader,
   SessionNotFoundError,
   type ExternalSessionImportLookupResult,
+  type CoordinationTranscriptReference,
+  type CoordinationTranscriptIndexRecord,
+  type CoordinationTranscriptIndexState,
   type SessionMessageScanPage,
   type SessionMessageScanRecord,
   type SessionMessageScanRequest,
@@ -2593,6 +2596,60 @@ export class SqliteSessionMetadataStore {
       );
       unique.forEach((messageId, index) => update.run(index, sessionId, messageId));
     });
+  }
+
+  async readCoordinationTranscriptIndexState(): Promise<CoordinationTranscriptIndexState> {
+    this.assertOpen();
+    return this.db
+      .prepare(`SELECT (SELECT MAX(sequence) FROM coordination_transcript_index) AS highWater,
+      (SELECT MAX(source_sequence) FROM coordination_transcript_index WHERE source = 'legacy') AS legacy,
+      (SELECT MAX(source_sequence) FROM coordination_transcript_index WHERE source = 'runtime') AS runtime`)
+      .get() as unknown as CoordinationTranscriptIndexState;
+  }
+
+  async appendCoordinationTranscriptIndex(
+    records: readonly CoordinationTranscriptReference[],
+  ): Promise<void> {
+    this.assertOpen();
+    if (records.length > 64) throw new Error('Coordination transcript index batch exceeds limit');
+    this.transaction(() => {
+      let sequence =
+        (
+          this.db
+            .prepare('SELECT MAX(sequence) AS value FROM coordination_transcript_index')
+            .get() as { value: number | null }
+        ).value ?? -1;
+      const insert = this.db.prepare(`INSERT INTO coordination_transcript_index
+        (sequence, source, source_sequence) VALUES (?, ?, ?)
+        ON CONFLICT(source, source_sequence) DO NOTHING`);
+      for (const record of records) {
+        if (!Number.isSafeInteger(record.sourceSequence) || record.sourceSequence < 0)
+          throw new Error('Invalid Coordination source sequence');
+        const result = insert.run(sequence + 1, record.source, record.sourceSequence);
+        if (result.changes) sequence++;
+      }
+    });
+  }
+
+  async readCoordinationTranscriptIndex(request: {
+    direction: 'older' | 'newer';
+    throughSequence: number;
+    position: number;
+    limit: number;
+  }): Promise<readonly CoordinationTranscriptIndexRecord[]> {
+    this.assertOpen();
+    if (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > 64)
+      throw new Error('Invalid Coordination transcript index limit');
+    const older = request.direction === 'older';
+    return this.db
+      .prepare(`SELECT sequence, source, source_sequence AS sourceSequence
+      FROM coordination_transcript_index WHERE sequence <= ? AND sequence ${older ? '<=' : '>='} ?
+      ORDER BY sequence ${older ? 'DESC' : 'ASC'} LIMIT ?`)
+      .all(
+        request.throughSequence,
+        request.position,
+        request.limit,
+      ) as unknown as CoordinationTranscriptIndexRecord[];
   }
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {

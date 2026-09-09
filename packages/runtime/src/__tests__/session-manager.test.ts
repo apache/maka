@@ -11922,6 +11922,15 @@ class GatedSteeringBackend implements AgentBackend {
 }
 
 class DelegatingRuntimeKernel implements RuntimeKernelLike {
+  async *runCoordinationOperation(
+    _sessionId: string,
+    _input: Parameters<RuntimeKernelLike['startTurn']>[1],
+    _options: unknown,
+    execute: Parameters<RuntimeKernelLike['runCoordinationOperation']>[3],
+  ): AsyncIterable<SessionEvent> {
+    await execute();
+  }
+
   readonly starts: Array<{
     sessionId: string;
     input: Parameters<RuntimeKernelLike['startTurn']>[1];

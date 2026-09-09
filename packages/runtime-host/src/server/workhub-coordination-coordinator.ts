@@ -126,6 +126,7 @@ type CoordinationSessionActions = Pick<
     assignment: WorkHubDelegationAssignedMessage,
     context: ConnectionContext,
     actionId: string,
+    validateFreshTarget: () => Promise<void>,
   ): Promise<WorkHubResumeResult>;
 };
 
@@ -220,7 +221,12 @@ export class HostWorkHubCoordinationCoordinator {
       resume: async (input, context) => ({
         disposition: 'resume_work',
         targetSessionId: input.source.targetSessionId,
-        ...(await options.sessionActions.resumeDelegation(input.source, context, input.actionId)),
+        ...(await options.sessionActions.resumeDelegation(
+          input.source,
+          context,
+          input.actionId,
+          input.validateFreshTarget,
+        )),
       }),
     });
   }
@@ -235,13 +241,14 @@ export class HostWorkHubCoordinationCoordinator {
       build: (existing) => ({
         type: 'workhub_coordination',
         id: `whp_${suffix}`,
-        turnId: input.actionId,
+        turnId: existing?.turnId ?? input.coordinationTurnId ?? input.actionId,
         ts: existing?.ts ?? Date.now(),
         schemaVersion: WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION,
         kind: 'delegation_replacement_requested',
         actionId: input.actionId,
         actionFingerprint: input.actionFingerprint,
-        coordinationTurnId: input.actionId,
+        coordinationTurnId:
+          existing?.coordinationTurnId ?? input.coordinationTurnId ?? input.actionId,
         targetSessionId: input.targetSessionId,
         targetSessionName: input.targetSessionName,
         disposition: input.disposition,
@@ -310,13 +317,14 @@ export class HostWorkHubCoordinationCoordinator {
       build: (existing) => ({
         type: 'workhub_coordination',
         id: `whq_${suffix}`,
-        turnId: input.actionId,
+        turnId: existing?.turnId ?? input.coordinationTurnId ?? input.actionId,
         ts: existing?.ts ?? Date.now(),
         schemaVersion: WORKHUB_COORDINATION_STOP_SCHEMA_VERSION,
         kind: 'delegation_stop_requested',
         actionId: input.actionId,
         actionFingerprint: input.actionFingerprint,
-        coordinationTurnId: input.actionId,
+        coordinationTurnId:
+          existing?.coordinationTurnId ?? input.coordinationTurnId ?? input.actionId,
         stopsActionId: input.stopsActionId,
         stopsDelegationId: input.stopsDelegationId,
         targetSessionId: input.targetSessionId,
@@ -378,7 +386,7 @@ export class HostWorkHubCoordinationCoordinator {
       build: (existing) => ({
         type: 'workhub_coordination',
         id: `whz_${suffix}`,
-        turnId: request.actionId,
+        turnId: request.coordinationTurnId,
         ts: existing?.ts ?? Date.now(),
         schemaVersion: WORKHUB_COORDINATION_STOP_SCHEMA_VERSION,
         kind: 'delegation_stop_resolved',
@@ -415,13 +423,13 @@ export class HostWorkHubCoordinationCoordinator {
       build: (existing) => ({
         type: 'workhub_coordination',
         id: `whb_${suffix}`,
-        turnId: replacement.actionId,
+        turnId: replacement.coordinationTurnId,
         ts: existing?.ts ?? Date.now(),
         schemaVersion: WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION,
         kind: 'delegation_replacement_aborted',
         actionId: replacement.actionId,
         actionFingerprint: replacement.actionFingerprint,
-        coordinationTurnId: replacement.actionId,
+        coordinationTurnId: replacement.coordinationTurnId,
         abortedActionId: replacement.replacesActionId,
         abortedDelegationId: replacement.replacesDelegationId,
         targetSessionId: replacement.targetSessionId,
@@ -558,6 +566,7 @@ export class HostWorkHubCoordinationCoordinator {
               : {}),
           },
           context,
+          input.turnId,
         ),
       };
     } catch (error) {
@@ -574,7 +583,12 @@ export class HostWorkHubCoordinationCoordinator {
         return {
           ok: false,
           error: {
-            code: error.code === 'target_waiting_for_user' ? 'session_busy' : 'operation_conflict',
+            code:
+              error.code === 'target_waiting_for_user'
+                ? 'session_busy'
+                : error.code === 'candidate_set_stale'
+                  ? 'candidate_set_stale'
+                  : 'operation_conflict',
             message: error.message,
           },
         };

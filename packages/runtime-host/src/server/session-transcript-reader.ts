@@ -22,7 +22,7 @@ import { readRunInvocation } from '@maka/core/runtime-event-store';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import { runtimeHandoffPause } from '@maka/core/runtime-handoff';
 import { readLogicalRuntimeExecution } from '@maka/core/runtime-logical-execution';
-import type { StoredMessage } from '@maka/core/session';
+import { WORKHUB_COORDINATION_SESSION_ID, type StoredMessage } from '@maka/core/session';
 import {
   activePresentationRuntimeEvents,
   affectsRuntimeEventStoredMessageProjection,
@@ -236,6 +236,17 @@ function createDurableLedgerTranscriptReader(input: {
     if (projected.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)) {
       throw new Error('Durable RuntimeEvent transcript projection is incomplete');
     }
+    const admission =
+      turn.invocation.sessionId === WORKHUB_COORDINATION_SESSION_ID
+        ? await input.stores.agentRunStore.readRootTurnAdmission(
+            turn.invocation.sessionId,
+            turn.invocation.turnId,
+          )
+        : undefined;
+    const actionId =
+      admission?.execution.kind === 'workhub_coordination'
+        ? admission.execution.actionId
+        : undefined;
     const ordinals = new Map(turn.events.map((entry) => [entry.event.id, entry.ordinal]));
     const emitted = new Map<number, number>();
     return projected.messages.map((message, index) => {
@@ -248,7 +259,13 @@ function createDurableLedgerTranscriptReader(input: {
         throw new Error('RuntimeEvent exceeds its transcript sequence stride');
       }
       emitted.set(ordinal, offset + 1);
-      return { sequence: ordinal * EVENT_SEQUENCE_STRIDE + offset, message };
+      return {
+        sequence: ordinal * EVENT_SEQUENCE_STRIDE + offset,
+        message:
+          message.type === 'user' && actionId
+            ? { ...message, coordinationActionId: actionId }
+            : message,
+      };
     });
   };
 
@@ -328,10 +345,12 @@ function createDurableLedgerTranscriptReader(input: {
     }
   };
 
+  const source: TranscriptRecordSource = { readHighWater: highWater, scan };
   return {
+    source,
     readHighWater: highWater,
 
-    ...pagedTranscriptReads({ readHighWater: highWater, scan }),
+    ...pagedTranscriptReads(source),
 
     /** One row per Turn, folded from the Turn's own projected messages. */
     async readTurnContributions(

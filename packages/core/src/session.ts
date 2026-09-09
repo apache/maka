@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
+
 import {
   MODEL_FAILURE_MESSAGE_MAX_BYTES,
   isModelRetryDecision,
@@ -767,6 +769,8 @@ export type StoredMessage =
   | SystemNoteMessage;
 
 export interface UserMessage extends MessageContent {
+  /** Derived from the admitted WorkHub action; does not change physical Turn identity. */
+  coordinationActionId?: string;
   type: 'user';
   id: string;
   turnId: string;
@@ -1126,7 +1130,18 @@ export interface WorkHubActionClaim {
 
 export type WorkHubActionClaimOutcome = 'claimed' | 'same_claim' | 'conflict';
 
+export interface WorkHubCoordinationActionMessage {
+  type: 'workhub_coordination';
+  kind: 'action_receipt';
+  schemaVersion: 1;
+  id: string;
+  turnId: string;
+  ts: number;
+  receipt: WorkHubActionReceipt;
+}
+
 export type WorkHubCoordinationMessage =
+  | WorkHubCoordinationActionMessage
   | WorkHubDelegationAssignedMessage
   | WorkHubDelegationReplacementRequestedMessage
   | WorkHubDelegationReplacementAbortedMessage
@@ -1232,6 +1247,7 @@ const USER_MESSAGE_SHAPE = defineObjectShape<UserMessage>()(
     'quotes',
     'inlineReferences',
     'steeringEventId',
+    'coordinationActionId',
     'origin',
   ],
 );
@@ -1490,7 +1506,10 @@ function decodeMessage(
       if (
         hasExactShape(message, USER_MESSAGE_SHAPE) &&
         hasMessageEnvelope(message, true) &&
-        (message.origin === undefined || decodeTurnOrigin(message.origin) !== undefined)
+        (message.origin === undefined || decodeTurnOrigin(message.origin) !== undefined) &&
+        (message.coordinationActionId === undefined ||
+          (typeof message.coordinationActionId === 'string' &&
+            message.coordinationActionId.length > 0))
       ) {
         const {
           displayText,
@@ -1624,6 +1643,16 @@ function decodeMessage(
 }
 
 function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean {
+  if (message.kind === 'action_receipt')
+    return (
+      hasMessageEnvelope(message, true) &&
+      message.schemaVersion === 1 &&
+      Object.keys(message).every((k) =>
+        ['type', 'kind', 'schemaVersion', 'id', 'turnId', 'ts', 'receipt'].includes(k),
+      ) &&
+      isWorkHubActionReceipt(message.receipt)
+    );
+
   if (message.kind === 'delegation_stop_requested') {
     return (
       hasMessageEnvelope(message, true) &&
