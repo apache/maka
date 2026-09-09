@@ -189,6 +189,8 @@ function chineseOverrides(locale: 'zh-CN' | 'zh-TW', astryx: typeof ASTRYX_COPY_
       '@astryx.moreMenu.label': astryx.menus.more,
       '@astryx.selector.searchOptions': astryx.search.options,
       '@astryx.selector.searchPlaceholder': astryx.search.placeholder,
+      '@astryx.selector.emptySearchResults': astryx.search.emptySearch,
+      '@astryx.selector.resultCount': astryx.search.resultCount,
       '@astryx.multiSelector.searchOptions': astryx.search.options,
       '@astryx.multiSelector.searchPlaceholder': astryx.search.placeholder,
       '@astryx.multiSelector.selectPlaceholder': form.selectPlaceholder,

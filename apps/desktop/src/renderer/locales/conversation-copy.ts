@@ -144,6 +144,7 @@ export interface DesktopConversationCopy {
     unbornRepository: string;
     gitFailed: string;
     invalidBaseBranch: string;
+    baseBranchLabel: string;
     truncated: string;
     showMore(remaining: number): string;
     hiddenLines(count: number): string;
@@ -522,6 +523,7 @@ const COPY = {
       unbornRepository: 'Git 仓库还没有可比较的提交',
       gitFailed: '无法读取 Git 工作区变化',
       invalidBaseBranch: '选择的比较分支已不可用',
+      baseBranchLabel: '对比分支',
       truncated: '变化过多，仅显示前一部分文件',
       showMore: (remaining) => `再显示 ${Math.min(20, remaining)} 个文件`,
       hiddenLines: (count) => `另有 ${count} 行未显示`,
@@ -761,6 +763,7 @@ const COPY = {
       unbornRepository: 'Git 倉庫還沒有可比較的提交',
       gitFailed: '無法讀取 Git 工作區變化',
       invalidBaseBranch: '選擇的比較分支已不可用',
+      baseBranchLabel: '對比分支',
       truncated: '變化過多，僅顯示前一部分檔案',
       showMore: (remaining) => `再顯示 ${Math.min(20, remaining)} 個檔案`,
       hiddenLines: (count) => `另有 ${count} 行未顯示`,
@@ -991,6 +994,7 @@ const COPY = {
       unbornRepository: 'This Git repository has no commit to compare yet',
       gitFailed: 'Could not read Git workspace changes',
       invalidBaseBranch: 'The selected comparison branch is unavailable',
+      baseBranchLabel: 'Compare against',
       truncated: 'Too many changes; showing the first files only',
       showMore: (remaining) =>
         `Show ${Math.min(20, remaining)} more file${Math.min(20, remaining) === 1 ? '' : 's'}`,

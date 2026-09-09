@@ -30,9 +30,16 @@ import { redactSecrets as displayRedactSecrets } from '@maka/core/display-redact
 import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { type GitReviewReadResult } from '@maka/core/git-review';
 import { DiffCodePreview, useUiLocale } from '@maka/ui';
-import { ICON_SIZE, GitBranch } from '@maka/ui/icons';
+import { ICON_SIZE, ArrowRight, GitBranch } from '@maka/ui/icons';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy';
 import { useWorkbarServices } from '../../services-context.js';
+import {
+  persistSessionReviewBaseBranch,
+  readSessionReviewBaseBranch,
+  resolveAdoptedBaseBranch,
+  reviewBaseBranchRequestValue,
+} from './session-review-base-branch-model.js';
+import { SessionReviewBaseBranchPicker } from './session-review-base-branch-picker.js';
 
 const REVIEW_FILE_PAGE_SIZE = 20;
 const REVIEW_DIFF_LINE_CAP = 500;
@@ -60,18 +67,57 @@ export function SessionReviewPanel(props: {
   const [loading, setLoading] = useState(false);
   const [visibleFileCount, setVisibleFileCount] = useState(REVIEW_FILE_PAGE_SIZE);
   const [error, setError] = useState<string | null>(null);
+  const [baseBranch, setBaseBranch] = useState(() =>
+    readSessionReviewBaseBranch(props.sessionId),
+  );
   const revisionRef = useRef(0);
+  // Requests read the ref, not the state: adopting a resolved branch must not
+  // re-run the load effect, and a Session switch must not race a stale value.
+  const baseBranchRef = useRef(baseBranch);
+
+  useEffect(() => {
+    const stored = readSessionReviewBaseBranch(props.sessionId);
+    baseBranchRef.current = stored;
+    setBaseBranch(stored);
+  }, [props.sessionId]);
 
   const load = useCallback(async () => {
     const revision = ++revisionRef.current;
     setLoading(true);
     setError(null);
-    try {
-      const nextGit = await review.read({
+    const readReview = (selection: string | null) =>
+      review.read({
         sessionId: props.sessionId,
         source: 'branch',
+        baseBranch: reviewBaseBranchRequestValue(selection),
       });
+    try {
+      let nextGit = await readReview(baseBranchRef.current);
       if (revision !== revisionRef.current) return;
+      if (
+        !nextGit.ok &&
+        nextGit.reason === 'invalid_base_branch' &&
+        baseBranchRef.current !== null
+      ) {
+        // The pinned branch is gone. Drop it and re-read once: the retry has no
+        // selection left to reject, so this cannot loop.
+        baseBranchRef.current = null;
+        setBaseBranch(null);
+        persistSessionReviewBaseBranch(props.sessionId, null);
+        nextGit = await readReview(null);
+        if (revision !== revisionRef.current) return;
+      }
+      if (nextGit.ok) {
+        const adopted = resolveAdoptedBaseBranch(
+          baseBranchRef.current,
+          nextGit.snapshot,
+        );
+        if (adopted !== baseBranchRef.current) {
+          baseBranchRef.current = adopted;
+          setBaseBranch(adopted);
+          persistSessionReviewBaseBranch(props.sessionId, adopted);
+        }
+      }
       setGitResult(nextGit);
     } catch (nextError) {
       if (revision === revisionRef.current) {
@@ -83,6 +129,17 @@ export function SessionReviewPanel(props: {
       if (revision === revisionRef.current) setLoading(false);
     }
   }, [copy.loadFailed, locale, props.sessionId, review]);
+
+  const selectBaseBranch = useCallback(
+    (branch: string) => {
+      if (branch === baseBranchRef.current) return;
+      baseBranchRef.current = branch;
+      setBaseBranch(branch);
+      persistSessionReviewBaseBranch(props.sessionId, branch);
+      void load();
+    },
+    [load, props.sessionId],
+  );
 
   useEffect(() => {
     if (!props.active) return;
@@ -147,6 +204,35 @@ export function SessionReviewPanel(props: {
       aria-busy={loading || undefined}
     >
       <VStack gap={3} align="stretch" width="100%">
+        {/* Rendered independently of the file list: an empty diff is exactly
+            when the base branch is worth changing. */}
+        {gitSnapshot && gitSnapshot.baseBranchOptions.length > 0 ? (
+          <HStack
+            gap={2}
+            align="center"
+            width="100%"
+            className="maka-session-review-branch-row"
+          >
+            {gitSnapshot.currentBranch ? (
+              <>
+                <Text
+                  type="supporting"
+                  maxLines={1}
+                  className="maka-session-review-current-branch"
+                >
+                  {gitSnapshot.currentBranch}
+                </Text>
+                <ArrowRight size={ICON_SIZE.control} aria-hidden />
+              </>
+            ) : null}
+            <SessionReviewBaseBranchPicker
+              baseBranch={baseBranch}
+              baseBranchOptions={gitSnapshot.baseBranchOptions}
+              label={copy.baseBranchLabel}
+              onSelect={selectBaseBranch}
+            />
+          </HStack>
+        ) : null}
         {loading && gitResult === null ? (
           <VStack
             gap={2}
