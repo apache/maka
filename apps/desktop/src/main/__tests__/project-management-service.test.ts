@@ -88,6 +88,7 @@ test('owns Project selection and reversible lifecycle actions in Desktop', async
     assert.equal(relinked.ok, true);
     assert.equal(selectedPaths.at(-1), await realpath(relocatedPath));
   } finally {
+    catalog.close();
     await rm(base, { recursive: true, force: true });
   }
 });

@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -141,7 +141,7 @@ describe('RiveWorkflow tool and CLI bridge', { concurrency: false }, () => {
     });
   });
 
-  it('kills and reaps a Rive child that ignores SIGTERM on abort', async () => {
+  it('kills and reaps an aborted Rive child, including ignored SIGTERM on POSIX', async () => {
     await withFakeRive('ignore-term', async (riveBin, cwd) => {
       const pidFile = join(cwd, 'pid');
       const controller = new AbortController();
@@ -267,11 +267,13 @@ async function withFakeRive(
   fn: (riveBin: string, cwd: string) => Promise<void>,
 ): Promise<void> {
   const cwd = await mkdtemp(join(tmpdir(), 'maka-rive-tool-'));
-  const riveBin = join(cwd, 'rive');
-  await writeFile(riveBin, fakeRiveScript(mode), 'utf8');
-  await chmod(riveBin, 0o755);
   try {
-    await fn(riveBin, cwd);
+    // Node treats the first Rive subcommand as a script path. This exercises a
+    // real shell-free child process on every platform without a shell shim.
+    for (const command of ['workflow', 'scheduler', 'work', 'branch']) {
+      await writeFile(join(cwd, command), fakeRiveScript(mode), 'utf8');
+    }
+    await fn(process.execPath, cwd);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
@@ -280,53 +282,33 @@ async function withFakeRive(
 function fakeRiveScript(mode: string): string {
   if (mode === 'ignore-term') {
     return [
-      '#!/bin/sh',
-      'trap "" TERM',
-      'echo $$ > "$PID_FILE"',
-      'echo RIVE_CHILD_READY',
-      'sleep 20',
-      'echo \'{"protocol":{"state":"completed"},"display":{"summary":"late"}}\'',
-      '',
+      'process.on("SIGTERM", () => {});',
+      'require("node:fs").writeFileSync(process.env.PID_FILE, String(process.pid));',
+      'console.log("RIVE_CHILD_READY");',
+      'setTimeout(() => console.log(JSON.stringify({protocol: {state: "completed"}, display: {summary: "late"}})), 20_000);',
     ].join('\n');
   }
   if (mode === 'sleep') {
-    return [
-      '#!/bin/sh',
-      'sleep 5',
-      'echo \'{"protocol":{"state":"completed"},"display":{"summary":"late"}}\'',
-      '',
-    ].join('\n');
+    return 'setTimeout(() => console.log(JSON.stringify({protocol: {state: "completed"}, display: {summary: "late"}})), 5_000);';
   }
   if (mode === 'bad-json') {
-    return ['#!/bin/sh', 'echo "not json"', ''].join('\n');
+    return 'console.log("not json");';
   }
   if (mode === 'failed-envelope') {
     return [
-      '#!/bin/sh',
-      'cat <<\'JSON\'',
-      '{"error":{"code":"workflow_param_missing","message":"workflow missing param: slack_channel","action":"fix_arguments"}}',
-      'JSON',
-      'exit 1',
-      '',
+      'console.log(JSON.stringify({error: {code: "workflow_param_missing", message: "workflow missing param: slack_channel", action: "fix_arguments"}}));',
+      'process.exitCode = 1;',
     ].join('\n');
   }
   if (mode === 'failed-secret') {
     return [
-      '#!/bin/sh',
-      'echo "api_key=abc123-super-secret" >&2',
-      'cat <<\'JSON\'',
-      '{"error":{"code":"auth","message":"token=abc123-super-secret"}}',
-      'JSON',
-      'exit 1',
-      '',
+      'console.error("api_key=abc123-super-secret");',
+      'console.log(JSON.stringify({error: {code: "auth", message: "token=abc123-super-secret"}}));',
+      'process.exitCode = 1;',
     ].join('\n');
   }
   return [
-    '#!/bin/sh',
-    'echo "token=abc123-super-secret" >&2',
-    'cat <<\'JSON\'',
-    '{"protocol":{"workflow_run_id":"wfrun_fake","scheduler_run_id":"sched_fake","root_work_node_id":"work_root_fake","state":"completed"},"display":{"summary":"Workflow run wfrun_fake root work_root_fake state completed"}}',
-    'JSON',
-    '',
+    'console.error("token=abc123-super-secret");',
+    'console.log(JSON.stringify({protocol: {workflow_run_id: "wfrun_fake", scheduler_run_id: "sched_fake", root_work_node_id: "work_root_fake", state: "completed"}, display: {summary: "Workflow run wfrun_fake root work_root_fake state completed"}}));',
   ].join('\n');
 }
