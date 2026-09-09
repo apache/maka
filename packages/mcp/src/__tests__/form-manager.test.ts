@@ -552,10 +552,15 @@ for (const interactive of [false, true]) {
         ),
         /retention exhausted/,
       );
+      // Cancellation must settle the call while the server is still blocked;
+      // releasing first would also pass if only the post-response fence worked.
+      await Promise.race([
+        pending,
+        delay(500).then(() => assert.fail('pending request was not promptly cancelled')),
+      ]);
     } finally {
       release.resolve();
     }
-    await pending;
     const requests = fixture.calls.length;
     await assert.rejects(manager.callTool(binding, {}), /retention exhausted/);
     assert.equal(fixture.calls.length, requests);
