@@ -805,6 +805,61 @@ test('Host retraction proof is scoped and remains retired after restart while of
   assert.equal(db.store.stagedAttachments('authority', 'cancelled').length, 0);
 });
 
+test('durable cancellation proof retires an old Host epoch without crossing authority or session boundaries', async (t) => {
+  const db = await database(t);
+  const scope = { hostId: 'root', targetEpoch: 'new-target' };
+  const target: DesktopSessionLocalTarget = { partition: 'authority', profileId: 'profile', scope };
+  for (const [partition, sessionId, messageId] of [
+    ['authority', 'session-1', 'cancelled'],
+    ['authority', 'session-1', 'not-cancelled'],
+    ['authority', 'session-2', 'other-session'],
+    ['other-authority', 'session-1', 'cancelled'],
+  ]) {
+    const record = db.store.enqueue(partition!, intent(messageId!, sessionId!));
+    db.store.update({ ...record, state: 'accepted', intent: { ...record.intent, originHostEpoch: 'old-epoch' } });
+  }
+  db.store.enqueue('authority', intent('never-dispatched'));
+  const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+  service.retireCancelledMessages({ ...scope, targetEpoch: 'stale-target' }, 'session-1', ['cancelled']);
+  assert.ok(db.store.get('authority', 'cancelled'));
+  service.retireRetractedMessages(scope, 'new-epoch', 'session-1', ['cancelled']);
+  assert.ok(db.store.get('authority', 'cancelled'));
+  service.retireCancelledMessages(scope, 'session-1', ['cancelled', 'other-session', 'never-dispatched']);
+  service.close();
+  db.reopen();
+  assert.equal(db.store.get('authority', 'cancelled'), undefined);
+  assert.equal(db.store.stagedAttachments('authority', 'cancelled').length, 0);
+  assert.ok(db.store.get('authority', 'not-cancelled'));
+  assert.ok(db.store.get('authority', 'never-dispatched'));
+  assert.ok(db.store.get('authority', 'other-session'));
+  assert.ok(db.store.get('other-authority', 'cancelled'));
+});
+
+test('cancellation cleanup preserves an already scheduled canonical transcript cache write', async (t) => {
+  for (const durable of [false, true]) {
+    const db = await database(t);
+    const target: DesktopSessionLocalTarget = {
+      partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+    };
+    const record = db.store.enqueue('authority', intent('cancelled'));
+    db.store.update({ ...record, state: 'accepted', intent: { ...record.intent, originHostEpoch: 'epoch' } });
+    const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+    db.beforeClose.push(() => service.close());
+    service.cacheTranscript(target.scope, {
+      sessionId: 'session-1', generation: 'generation', hostEpoch: 'epoch', durableThrough: 1,
+      durable: [{ sequence: 1, message: { type: 'user', id: 'completed', turnId: 'turn-1', ts: 1, text: 'keep history' } }],
+      overlay: [], hasOlder: false, hasNewer: false,
+    });
+    if (durable) service.retireCancelledMessages(target.scope, 'session-1', ['cancelled']);
+    else service.retireRetractedMessages(target.scope, 'epoch', 'session-1', ['cancelled']);
+    await nextTurn();
+    service.close();
+    db.reopen();
+    assert.equal(db.store.get('authority', 'cancelled'), undefined);
+    assert.equal(db.store.transcript('authority', 'session-1')?.snapshot.durable[0]?.message.id, 'completed');
+  }
+});
+
 test('retraction before the submit ACK fences the late completion without recreating the intent', async (t) => {
   const { store } = await database(t);
   const ack = deferred<TurnMessageSubmitResult>();

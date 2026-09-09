@@ -146,6 +146,7 @@ async function submitMessageWithReconnect(
 
 export interface RuntimeHostSessionExecutionIpcDeps {
   retireRetractedMessages?: (sessionId: string, messageIds: readonly string[]) => void;
+  retireCancelledMessages?: (sessionId: string, messageIds: readonly string[]) => void;
   client: RuntimeHostSessionExecutionClient;
   observer: RuntimeHostSessionObserver;
   attachmentApprovals: AttachmentApprovalRegistry;
@@ -264,7 +265,7 @@ export function registerRuntimeHostSessionExecutionIpc(
     async (_event, sessionId: string, messageIds: unknown) => {
       if (!Array.isArray(messageIds)) throw new Error('Invalid Message identities');
       const result = await deps.client.queryMessages({ sessionId, messageIds });
-      deps.retireRetractedMessages?.(sessionId, result.cancelledMessageIds);
+      deps.retireCancelledMessages?.(sessionId, result.cancelledMessageIds);
       return result;
     },
   );

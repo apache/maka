@@ -394,6 +394,16 @@ export class DesktopSessionLocalService {
     }
   }
 
+  retireCancelledMessages(scope: DesktopTargetScope, sessionId: string, messageIds: readonly string[]): void {
+    if (this.#closed) return;
+    let target: DesktopSessionLocalTarget;
+    try { target = this.target(scope); } catch { return; }
+    if (this.store.retireCancelledMessages(target.partition, sessionId, messageIds)) {
+      this.deps.changed(target.scope, sessionId);
+      this.wake();
+    }
+  }
+
   close(): void {
     this.#closed = true;
     this.#snapshots.clear();

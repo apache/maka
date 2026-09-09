@@ -785,7 +785,8 @@ test('returns Host-owned cancellation proof to the renderer', async () => {
           ),
         }),
       }),
-      retireRetractedMessages(sessionId, messageIds) { retired.push({ sessionId, messageIds }); },
+      retireCancelledMessages(sessionId, messageIds) { retired.push({ sessionId, messageIds }); },
+      retireRetractedMessages() { assert.fail('Durable cancellation proof must not use the current Host epoch'); },
     },
     ipc,
   );
