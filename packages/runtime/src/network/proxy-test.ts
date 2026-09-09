@@ -41,8 +41,8 @@ export async function testProxyConnection(
   if (!proxy.host || !proxy.port)
     return { ok: false, latencyMs: 0, error: 'Proxy host/port required' };
 
-  const dispatcher = buildProxyDispatcher(proxy);
   const controller = new AbortController();
+  const dispatcher = buildProxyDispatcher(proxy, controller.signal);
   let timedOut = false;
   const disposeDispatcher = async (force = false) => {
     const disposable = dispatcher as {

@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import net from 'node:net';
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import { describe, test } from 'node:test';
 import { PROXY_DEFAULTS, type ProxySettings } from '@maka/core/settings/network-settings';
 import {
@@ -31,8 +32,178 @@ import {
 import { runConnectionModelDiscoveryEffect } from '../../model-fetcher.js';
 import { runConnectionTestEffect, testConnection } from '../../test-connection.js';
 import { createConnectionEffectFetchTransport } from '../scoped-fetch-transport.js';
+import { testProxyConnection } from '../proxy-test.js';
+import { proxiedFetch } from '../../bots/proxied-fetch.js';
+import { setActiveProxy } from '../active-proxy-state.js';
 
 describe('connection effect network transport', () => {
+  for (const authenticated of [false, true]) {
+    test(`SOCKS preserves remote DNS and successful HTTP responses (auth: ${authenticated})`, async () => {
+      const proxy = await startStalledProxy(authenticated ? 'socks-auth-http' : 'socks-http');
+      const transport = createConnectionEffectFetchTransport({
+        ...PROXY_DEFAULTS,
+        enabled: true,
+        type: 'socks5',
+        host: '127.0.0.1',
+        port: proxy.port,
+        username: authenticated ? 'proxy-user' : '',
+        password: authenticated ? 'proxy-password' : '',
+        bypassList: [],
+      });
+      try {
+        const response = await withTimeout(
+          transport.fetch('http://provider.invalid/models'),
+          2_000,
+          'SOCKS request did not finish',
+        );
+        assert.equal(response.status, 200);
+        assert.equal(await response.text(), 'proxy-ok');
+      } finally {
+        await transport.close();
+        await proxy.close();
+      }
+    });
+  }
+
+  for (const type of ['http', 'https', 'socks5'] as const) {
+    test(`immediate close rejects pending and subsequent requests (${type})`, async () => {
+      const transport = createConnectionEffectFetchTransport({
+        ...PROXY_DEFAULTS,
+        enabled: true,
+        type,
+        host: '127.0.0.1',
+        port: 1,
+        bypassList: [],
+      });
+      const request = assert.rejects(transport.fetch('https://provider.invalid/models'));
+      const closed = transport.close();
+      assert.equal(transport.close(), closed);
+      await withTimeout(Promise.all([request, closed]), 2_000, 'immediate close did not finish');
+      await assert.rejects(
+        transport.fetch('https://provider.invalid/models'),
+        /transport is closed/,
+      );
+    });
+  }
+
+  test('proxy connection probe timeout releases its pending TLS tunnel', async () => {
+    const proxy = await startStalledProxy('http-tls');
+    const settings = {
+      ...PROXY_DEFAULTS,
+      enabled: true,
+      type: 'http' as const,
+      host: '127.0.0.1',
+      port: proxy.port,
+      bypassList: [],
+    };
+    const request = testProxyConnection({
+      proxy: settings,
+      url: 'https://provider.invalid/models',
+      timeoutMs: 500,
+    });
+    try {
+      await withTimeout(proxy.started, 2_000, 'probe did not start TLS');
+      const closed = waitForSocketClose([...proxy.sockets][0]!);
+      const result = await withTimeout(request, 2_000, 'probe did not time out');
+      assert.equal(result.ok, false);
+      assert.match(result.error ?? '', /timeout/i);
+      await withTimeout(closed, 1_000, 'probe TLS socket survived timeout');
+    } finally {
+      await proxy.close();
+      await request;
+    }
+  });
+
+  for (const abortRequest of [false, true]) {
+    test(`bot proxy fetch releases pending TLS (caller abort: ${abortRequest})`, async () => {
+      const proxy = await startStalledProxy('http-tls');
+      setActiveProxy({
+        ...PROXY_DEFAULTS,
+        enabled: true,
+        type: 'http',
+        host: '127.0.0.1',
+        port: proxy.port,
+        bypassList: [],
+      });
+      const abort = new AbortController();
+      const request = proxiedFetch('https://provider.invalid/models', {
+        signal: abort.signal,
+        timeoutMs: abortRequest ? 0 : 500,
+      }).catch((error: unknown) => error);
+      try {
+        await withTimeout(proxy.started, 2_000, 'bot fetch did not start TLS');
+        const closed = waitForSocketClose([...proxy.sockets][0]!);
+        if (abortRequest) abort.abort();
+        assert.ok(
+          (await withTimeout(request, 2_000, 'bot fetch did not terminate')) instanceof Error,
+        );
+        await withTimeout(closed, 1_000, 'bot TLS socket survived cancellation');
+      } finally {
+        abort.abort();
+        await proxy.close();
+        await request;
+        setActiveProxy(null);
+      }
+    });
+  }
+
+  for (const stage of [
+    'http-connect',
+    'http-tls',
+    'https-proxy-tls',
+    'socks-greeting',
+    'socks-connect',
+    'socks-tls',
+  ] as const) {
+    for (const abortRequest of [false, true]) {
+      test(`close releases pending ${stage} (request aborted: ${abortRequest})`, {
+        timeout: 5_000,
+      }, async () => {
+        const proxy = await startStalledProxy(stage);
+        const transport = createConnectionEffectFetchTransport({
+          ...PROXY_DEFAULTS,
+          enabled: true,
+          type: stage.startsWith('socks')
+            ? 'socks5'
+            : stage === 'https-proxy-tls'
+              ? 'https'
+              : 'http',
+          host: '127.0.0.1',
+          port: proxy.port,
+          bypassList: [],
+        });
+        const abort = new AbortController();
+        const request = transport
+          .fetch('https://provider.invalid/models', { signal: abort.signal })
+          .catch(() => undefined);
+        let deadline: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await withTimeout(proxy.started, 2_000, `${stage} did not start`);
+          const socket = [...proxy.sockets][0]!;
+          const closed = waitForSocketClose(socket);
+          if (abortRequest) abort.abort();
+          await transport.close();
+          await Promise.race([
+            closed,
+            new Promise<never>((_resolve, reject) => {
+              deadline = setTimeout(
+                () => reject(new Error(`${stage} socket survived transport.close()`)),
+                1_000,
+              );
+            }),
+          ]);
+          await request;
+        } finally {
+          clearTimeout(deadline);
+          abort.abort();
+          await transport.close();
+          await proxy.close();
+          await request;
+        }
+      });
+    }
+  }
+
   for (const abortRequest of [false, true]) {
     test(`close releases a pending TLS handshake (request aborted: ${abortRequest})`, async () => {
       const sockets = new Set<net.Socket>();
@@ -448,6 +619,89 @@ describe('connection effect network transport', () => {
     }
   });
 });
+
+async function startStalledProxy(stage: string) {
+  const sockets = new Set<net.Socket>();
+  let started!: () => void;
+  const reachedStage = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('error', () => {});
+    let phase = stage.startsWith('socks')
+      ? 'greeting'
+      : stage === 'https-proxy-tls'
+        ? 'tls'
+        : 'http';
+    let buffer = Buffer.alloc(0);
+    socket.on('data', (chunk) => {
+      buffer = Buffer.concat([buffer, Buffer.from(chunk)]);
+      if (phase === 'tls') {
+        assert.equal(buffer[0], 22, 'expected a TLS handshake record');
+        phase = 'stalled';
+        started();
+      } else if (phase === 'http' && buffer.includes('\r\n\r\n')) {
+        assert.match(buffer.toString('latin1'), /^CONNECT provider\.invalid:443 /);
+        buffer = Buffer.alloc(0);
+        if (stage === 'http-connect') {
+          phase = 'stalled';
+          started();
+        } else {
+          phase = 'tls';
+          socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        }
+      } else if (phase === 'response' && buffer.includes('\r\n\r\n')) {
+        assert.match(buffer.toString('latin1'), /^GET \/models /);
+        phase = 'done';
+        socket.end(jsonResponse(200, 'proxy-ok'));
+      } else if (phase === 'greeting' && buffer.length >= 2 + buffer[1]!) {
+        assert.equal(buffer[0], 5);
+        if (stage === 'socks-auth-http') assert.ok(buffer.subarray(2).includes(2));
+        buffer = Buffer.alloc(0);
+        if (stage === 'socks-greeting') {
+          phase = 'stalled';
+          started();
+        } else {
+          phase = stage === 'socks-auth-http' ? 'auth' : 'socks-connect';
+          socket.write(Buffer.from([5, stage === 'socks-auth-http' ? 2 : 0]));
+        }
+      } else if (phase === 'auth' && buffer.length >= 3 + buffer[1]!) {
+        const nameLength = buffer[1]!;
+        const passwordLength = buffer[2 + nameLength]!;
+        if (buffer.length < 3 + nameLength + passwordLength) return;
+        assert.equal(buffer[0], 1);
+        assert.equal(buffer.subarray(2, 2 + nameLength).toString(), 'proxy-user');
+        assert.equal(buffer.subarray(3 + nameLength).toString(), 'proxy-password');
+        buffer = Buffer.alloc(0);
+        phase = 'socks-connect';
+        socket.write(Buffer.from([1, 0]));
+      } else if (phase === 'socks-connect' && buffer.length >= 5) {
+        assert.equal(buffer[3], 3, 'the destination hostname must be resolved by the proxy');
+        if (buffer.length < 7 + buffer[4]!) return;
+        assert.equal(buffer.subarray(5, 5 + buffer[4]!).toString(), 'provider.invalid');
+        buffer = Buffer.alloc(0);
+        if (stage === 'socks-connect') {
+          phase = 'stalled';
+          started();
+        } else {
+          phase = stage.endsWith('-http') ? 'response' : 'tls';
+          socket.write(Buffer.from([5, 0, 0, 1, 127, 0, 0, 1, 0, 80]));
+        }
+      }
+    });
+  });
+  return {
+    port: await listen(server),
+    sockets,
+    started: reachedStage,
+    async close() {
+      for (const socket of sockets) socket.destroy();
+      await closeServer(server);
+    },
+  };
+}
 
 function openAiConnection(slug: string) {
   return {
