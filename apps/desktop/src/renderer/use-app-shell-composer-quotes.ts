@@ -79,6 +79,12 @@ export function useAppShellComposerQuotes(options: { draftKey: string }) {
     );
   }
 
+  /** Swaps the whole staged set in one state update (revision edit begin/cancel). */
+  function replaceQuotes(ownerKey: string, quotes: readonly QuoteRef[]): void {
+    setPendingByKey((map) => clearPending(map, ownerKey));
+    restoreQuotes(ownerKey, quotes);
+  }
+
   return {
     pendingQuotes,
     addQuote,
@@ -86,5 +92,6 @@ export function useAppShellComposerQuotes(options: { draftKey: string }) {
     clearQuotes,
     clearAllQuotes,
     restoreQuotes,
+    replaceQuotes,
   };
 }

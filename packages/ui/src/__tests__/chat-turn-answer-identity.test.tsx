@@ -353,6 +353,46 @@ test('does not edit and resend a message with folder references', async () => {
   assert.equal(editCalls, 0, 'folder references must not be silently dropped by revision');
 });
 
+/**
+ * A quote is self-contained snapshot content (#4804): unlike attachments or
+ * folder references it can be staged back into the composer draft as-is, so
+ * a quote-bearing message — including the automatic large-paste quote — is
+ * editable (#5109).
+ */
+test('lets a quote-bearing user message start edit and resend', async () => {
+  const { container, root } = domRoot();
+  let editedTurnId: string | undefined;
+  const turn = {
+    ...turnWith([{ ...ANSWER, live: false }]),
+    status: 'completed' as const,
+    user: {
+      id: 'quoted-ask',
+      role: 'user' as const,
+      text: 'explain this',
+      ts: 1,
+      quotes: [{ text: 'a large pasted excerpt' }],
+    },
+  };
+
+  await act(() => {
+    root.render(
+      <LocaleProvider locale="en">
+        <TurnView turn={turn} onEditUserMessage={(turnId) => { editedTurnId = turnId; }} />
+      </LocaleProvider>,
+    );
+  });
+
+  const editButton = container.querySelector<HTMLButtonElement>('[data-action="edit"]');
+  assert.ok(editButton, 'the edit affordance renders for a quote-bearing message');
+  assert.equal(
+    editButton.getAttribute('aria-disabled'),
+    null,
+    'a quote-bearing message is editable',
+  );
+  editButton.click();
+  assert.equal(editedTurnId, 'turn-1', 'activating the edit affordance starts the revision');
+});
+
 test('keeps Astryx auto formatting live for user-message timestamps', async (context) => {
   const now = Date.UTC(2026, 7, 27, 12);
   context.mock.timers.enable({ apis: ['Date', 'setInterval'], now });
