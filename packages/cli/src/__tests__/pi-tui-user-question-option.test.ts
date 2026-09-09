@@ -28,37 +28,43 @@ import {
 } from '../pi-tui-pickers.js';
 import { ansi, stripAnsi } from '../tui-ansi.js';
 import { FakeTerminal } from './tui-terminal-mock.js';
-import { renderFixture } from './tui-render-fixture.js';
+import { encodeExpectedRows } from './tui-render-expectations.js';
 
 // SGR reverse degrades to identity when the terminal reports no color support
 // (piped CI), so the highlight assertion keys off this build's actual behavior.
 const REVERSE_ON = '\u001b[7m';
 const COLOR_ENABLED = ansi.reverse('').length > 0;
 
-test('Other keeps its wrapped draft and restores its cursor after refocus', () => {
+test('Other preserves its wrapped draft and cursor position across focus changes', () => {
   const WIDTH = 40;
   const ARROW_UP = '\x1b[A';
   const ARROW_DOWN = '\x1b[B';
   const ARROW_LEFT = '\x1b[D';
   const ENTER = '\r';
-  const draft =
-    'Please use the custom provider and keep the current model settings for this workspace';
-  const answers: string[] = [];
-  const overlay = new UserQuestionOverlay(new TuiMainScreen(new FakeTerminal()), {
+
+  const submittedAnswers: string[] = [];
+  const tui = new TuiMainScreen(new FakeTerminal(WIDTH));
+  const question = new UserQuestionOverlay(tui, {
     title: 'Pick one',
     rightLabel: '1 / 1',
     hint: '↑↓ move · type to answer',
     placeholder: 'Other: type answer',
     options: [{ label: 'Preset' }],
     onSelectOption: () => undefined,
-    onSubmitText: (value) => answers.push(value),
+    onSubmitText: (value) => submittedAnswers.push(value),
     onSkip: () => undefined,
   });
-  // Keep all choices and input rows; omit the title, hint, blank row and divider.
-  const assertQuestionBody = (fixture: string) =>
-    assert.deepEqual(overlay.render(WIDTH).slice(3, -1), renderFixture(fixture, WIDTH));
 
-  overlay.handleInput(draft);
+  const assertQuestionBody = (expectedScene: string) => {
+    // Keep all choices and input rows; omit the title, hint, blank row and divider.
+    const actualRows = question.render(WIDTH).slice(3, -1);
+    assert.deepEqual(actualRows, encodeExpectedRows(expectedScene, WIDTH));
+  };
+
+  // Refocus with the cursor at the end of a wrapped answer.
+  const draft =
+    'Please use the custom provider and keep the current model settings for this workspace';
+  question.handleInput(draft);
   assertQuestionBody(`
   Preset
 → Please use the custom provider and
@@ -66,7 +72,7 @@ test('Other keeps its wrapped draft and restores its cursor after refocus', () =
   this workspace<cursor>
 `);
 
-  overlay.handleInput(ARROW_UP);
+  question.handleInput(ARROW_UP);
   assertQuestionBody(`
 <selected>→ Preset</selected>
   Please use the custom provider and
@@ -74,7 +80,7 @@ test('Other keeps its wrapped draft and restores its cursor after refocus', () =
   this workspace
 `);
 
-  overlay.handleInput(ARROW_DOWN);
+  question.handleInput(ARROW_DOWN);
   assertQuestionBody(`
   Preset
 → Please use the custom provider and
@@ -82,7 +88,8 @@ test('Other keeps its wrapped draft and restores its cursor after refocus', () =
   this workspace<cursor>
 `);
 
-  overlay.handleInput(ARROW_LEFT);
+  // Refocus with the cursor over an existing character.
+  question.handleInput(ARROW_LEFT);
   assertQuestionBody(`
   Preset
 → Please use the custom provider and
@@ -90,7 +97,7 @@ test('Other keeps its wrapped draft and restores its cursor after refocus', () =
   this workspac<cursor>e
 `);
 
-  overlay.handleInput(ARROW_UP);
+  question.handleInput(ARROW_UP);
   assertQuestionBody(`
 <selected>→ Preset</selected>
   Please use the custom provider and
@@ -98,7 +105,7 @@ test('Other keeps its wrapped draft and restores its cursor after refocus', () =
   this workspace
 `);
 
-  overlay.handleInput(ARROW_DOWN);
+  question.handleInput(ARROW_DOWN);
   assertQuestionBody(`
   Preset
 → Please use the custom provider and
@@ -106,12 +113,12 @@ test('Other keeps its wrapped draft and restores its cursor after refocus', () =
   this workspac<cursor>e
 `);
 
-  overlay.handleInput(ENTER);
+  question.handleInput(ENTER);
   assertQuestionBody(`
   Preset
 → <cursor>
 `);
-  assert.deepEqual(answers, [draft]);
+  assert.deepEqual(submittedAnswers, [draft]);
 });
 
 test('long options wrap within the row width instead of truncating (#4610)', () => {

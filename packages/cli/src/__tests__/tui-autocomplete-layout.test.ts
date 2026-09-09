@@ -27,12 +27,13 @@ import {
 import { fitPendingQueueLines } from '../pi-tui-layout.js';
 import { editorTheme } from '../tui-ansi.js';
 import { FakeTerminal, plainTerminalOutput } from './tui-terminal-mock.js';
-import { renderFixture } from './tui-render-fixture.js';
+import { encodeExpectedRows } from './tui-render-expectations.js';
 
 test('an overlay hides the composer cursor and preserves its draft and border colors', (t) => {
   const WIDTH = 40;
   const CYAN_FOREGROUND = '\x1b[36m';
   const RESET_FOREGROUND = '\x1b[39m';
+
   // Emit color even under NO_COLOR so accidental style loss remains detectable.
   const borderColor = (text: string) => `${CYAN_FOREGROUND}${text}${RESET_FOREGROUND}`;
   const terminal = new FakeTerminal(WIDTH, 4);
@@ -44,23 +45,26 @@ test('an overlay hides the composer cursor and preserves its draft and border co
   tui.addChild(new Spacer(1)); // Reserve the first row for the overlay.
   tui.addChild(composer);
   tui.setFocus(composer);
-  const render = t.mock.method(composer, 'render');
-  const assertScreen = (fixture: string) => {
+  const composerRenderSpy = t.mock.method(composer, 'render');
+
+  const assertScreen = (expectedScene: string) => {
     tui.renderNow(true);
-    const expected = renderFixture(fixture, WIDTH);
-    // Check the composed screen, including the overlay's placement.
-    assert.deepEqual(
-      terminal
-        .screenOutput()
-        .split('\n')
-        .map((line) => line.padEnd(WIDTH)),
-      expected.map(plainTerminalOutput),
-    );
-    // Check cursor + IME before TUI consumes the marker, retaining border colors.
-    assert.deepEqual(
-      render.mock.calls.at(-1)?.result,
-      expected.slice(1).map((line) => line.replaceAll('─', borderColor('─'))),
-    );
+    const expectedRows = encodeExpectedRows(expectedScene, WIDTH);
+
+    // The terminal screen checks text and overlay placement, but omits styles.
+    const actualScreenRows = terminal
+      .screenOutput()
+      .split('\n')
+      .map((line) => line.padEnd(WIDTH));
+    const expectedScreenRows = expectedRows.map(plainTerminalOutput);
+    assert.deepEqual(actualScreenRows, expectedScreenRows);
+
+    // The real render retains the cursor, IME marker and per-character border colors.
+    const actualComposerRows = composerRenderSpy.mock.calls.at(-1)?.result;
+    const expectedComposerRows = expectedRows
+      .slice(1)
+      .map((line) => line.replaceAll('─', borderColor('─')));
+    assert.deepEqual(actualComposerRows, expectedComposerRows);
   };
 
   assertScreen(`

@@ -98,7 +98,7 @@ import {
   waitForTuiPaint,
 } from './tui-terminal-mock.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
-import { renderFixture } from './tui-render-fixture.js';
+import { encodeExpectedRows } from './tui-render-expectations.js';
 
 // Deadline for `Promise.race([run, …])` close watchdogs. A passing race
 // resolves the moment `run` settles, so this only bounds how long a FAILING
@@ -1687,23 +1687,16 @@ describe('Maka Pi TUI runner', () => {
     assert.equal(terminal.stopCalls, 1);
   });
 
-  test('wizard identity step sends a caller-chosen slug and name on the create target', async (t) => {
+  test('wizard moves focus from Name to Slug and submits the edited identity', async (t) => {
+    const ENTER = '\r';
+    const CLEAR_LINE = '\x15'; // Ctrl+U.
+
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
     const verifyCalls: OnboardingVerifyInput[] = [];
     const saveCalls: OnboardingSaveInput[] = [];
-    const ENTER = '\r';
-    const CLEAR_LINE = '\x15'; // Ctrl+U.
     // Record real renders before TUI consumes the IME marker.
-    const render = t.mock.method(OnboardingWizard.prototype, 'render');
-    const assertIdentity = async (fixture: string) => {
-      await waitFor(() => render.mock.callCount() > 0, 'wizard redraw');
-      const call = render.mock.calls.at(-1);
-      assert.ok(call?.result, 'the wizard must render its fields');
-      // Name, the separating blank row, and Slug in this identity layout.
-      assert.deepEqual(call.result.slice(3, 6), renderFixture(fixture, call.arguments[0]));
-      render.mock.resetCalls();
-    };
+    const wizardRenderSpy = t.mock.method(OnboardingWizard.prototype, 'render');
     const run = runMakaPiTui({
       title: 'Maka',
       driver,
@@ -1734,54 +1727,67 @@ describe('Maka Pi TUI runner', () => {
       }),
     });
 
+    const assertNextIdentityRender = async (expectedScene: string) => {
+      await waitFor(() => wizardRenderSpy.mock.callCount() > 0, 'wizard redraw');
+      const latestRender = wizardRenderSpy.mock.calls.at(-1);
+      assert.ok(latestRender?.result, 'the wizard must render its fields');
+      const [width] = latestRender.arguments;
+      // Name, the separating blank row, and Slug in this identity layout.
+      const actualIdentityRows = latestRender.result.slice(3, 6);
+      assert.deepEqual(actualIdentityRows, encodeExpectedRows(expectedScene, width));
+      // The next assertion must observe a fresh render after the next input.
+      wizardRenderSpy.mock.resetCalls();
+    };
+
     await waitForTuiPaint(terminal);
     terminal.input('/setup');
     terminal.input(ENTER);
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
-    terminal.input(ENTER); // pick the only row -> identity step, name focused
+    terminal.input(ENTER); // Select OpenAI; Name receives focus.
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('2/4'));
-    await assertIdentity(`
+    await assertNextIdentityRender(`
 Name OpenAI<cursor>
 
 Slug openai
 `);
 
     terminal.input(CLEAR_LINE);
-    await assertIdentity(`
+    await assertNextIdentityRender(`
 Name <cursor>
 
 Slug openai
 `);
 
     terminal.input('Work OpenAI');
-    await assertIdentity(`
+    await assertNextIdentityRender(`
 Name Work OpenAI<cursor>
 
 Slug openai
 `);
 
     terminal.input(ENTER);
-    await assertIdentity(`
+    await assertNextIdentityRender(`
 Name Work OpenAI
 
 Slug openai<cursor>
 `);
 
     terminal.input(CLEAR_LINE);
-    await assertIdentity(`
+    await assertNextIdentityRender(`
 Name Work OpenAI
 
 Slug <cursor>
 `);
 
     terminal.input('openai-work');
-    await assertIdentity(`
+    await assertNextIdentityRender(`
 Name Work OpenAI
 
 Slug openai-work<cursor>
 `);
 
-    terminal.input(ENTER); // slug -> key phase
+    // Continue through verification and saving with the edited Name and Slug.
+    terminal.input(ENTER);
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
     terminal.input('sk-live');
     terminal.input(ENTER);

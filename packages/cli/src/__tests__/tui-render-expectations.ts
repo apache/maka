@@ -23,22 +23,21 @@ import { ansi } from '../tui-ansi.js';
 const REVERSE_ON = '\x1b[7m';
 const RESET = '\x1b[0m';
 
-// These fixtures use ASCII input. The cursor covers the next character,
-// or a space at the end of a row, with the IME marker at the same position.
-export function renderFixture(fixture: string, width: number): string[] {
-  return fixture
-    .split('\n')
-    .slice(1, -1)
-    .map((row) => {
-      const selected = row.startsWith('<selected>');
-      const line = row
-        .replace('<selected>', '')
-        .replace('</selected>', '')
-        .replace(
-          /<cursor>(.)?/gu,
-          (_, character = ' ') => `${CURSOR_MARKER}${REVERSE_ON}${character}${RESET}`,
-        );
-      const padded = line + ' '.repeat(width - visibleWidth(line));
-      return selected ? ansi.reverse(padded) : padded;
-    });
+// Encode a multiline expectation as full-width ANSI rows.
+// <cursor> requires both the visible cursor and the IME marker at this position.
+// These tests place the cursor on an ASCII character, or a space at row end.
+// <selected>...</selected> highlights the entire padded row.
+export function encodeExpectedRows(expectedScene: string, width: number): string[] {
+  // Remove only the template literal's framing newlines, preserving indentation.
+  const rows = expectedScene.split('\n').slice(1, -1);
+  return rows.map((row) => {
+    const isSelected = row.startsWith('<selected>');
+    const text = row.replace('<selected>', '').replace('</selected>', '');
+    const withCursor = text.replace(
+      /<cursor>(.)?/gu,
+      (_, character = ' ') => `${CURSOR_MARKER}${REVERSE_ON}${character}${RESET}`,
+    );
+    const paddedRow = withCursor + ' '.repeat(width - visibleWidth(withCursor));
+    return isSelected ? ansi.reverse(paddedRow) : paddedRow;
+  });
 }
