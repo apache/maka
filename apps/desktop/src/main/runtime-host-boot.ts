@@ -160,6 +160,7 @@ import {
   type DesktopModelTargetResolution,
 } from "./task-submission-readiness-main.js";
 import { registerNotificationsIpc } from "./notifications-ipc-main.js";
+import { createHostPrivacyAuthority } from "./notifications-policy.js";
 import { registerMarkdownSaveIpc } from "./markdown-save-ipc-main.js";
 import { registerPetPackIpc } from "./pet-pack-import.js";
 import { registerWorkBoardIpc } from "./work-board-ipc-main.js";
@@ -1104,25 +1105,10 @@ registerNotificationsIpc({
   mainWindowController,
   e2e: isE2e,
   // Privacy state is Host-owned: the local settings copy never receives
-  // privacy updates, so the notification gate asks the authority instead
-  // of trusting the stale local copy (#4981). Any ready host holding
-  // incognito suppresses the banner; an unreachable authority does too.
-  privacyAuthority: {
-    isIncognitoActive: async () => {
-      const entries = runtimeHostManager?.entries() ?? [];
-      const ready = entries.filter(
-        (entry): entry is Extract<typeof entry, { readiness: 'ready' }> =>
-          entry.readiness === 'ready',
-      );
-      const verdicts = await Promise.all(
-        ready.map(async (entry) =>
-          (await entry.candidate.client.queryRuntimePolicy()).policy.privacy
-            .incognitoActive,
-        ),
-      );
-      return verdicts.some((active) => active);
-    },
-  },
+  // privacy updates, so the notification gate asks the notification's own
+  // host instead of trusting the stale local copy (#4981). An unknown or
+  // unreachable verdict suppresses the banner; no verdict is cached.
+  privacyAuthority: createHostPrivacyAuthority(() => runtimeHostManager?.entries() ?? []),
 });
 
 const sessionCopyOwnerProcessId = randomUUID();

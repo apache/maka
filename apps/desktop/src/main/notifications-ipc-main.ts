@@ -39,15 +39,10 @@ interface NotificationsIpcDeps {
   e2e: boolean;
   /**
    * Runtime Host privacy authority (#4981). The local settings copy never
-   * receives privacy updates (`clientOwnedSettingsPatch` excludes the
-   * section, and projection keeps the host's copy), so gating
-   * content-bearing notifications on `settings.privacy.incognitoActive`
-   * can read stale data and expose the session title + reply preview
-   * after incognito is enabled. When provided, its verdict wins; when it
-   * rejects, the notification is suppressed rather than risked
-   * (fail-closed); when absent, the existing local-copy gate applies.
+   * receives privacy updates, so the gate always asks the notification's
+   * own host; an unknown or unreachable verdict suppresses the banner.
    */
-  privacyAuthority?: PrivacyAuthority | undefined;
+  privacyAuthority: PrivacyAuthority;
 }
 
 /**
@@ -64,19 +59,17 @@ interface NotificationsIpcDeps {
 export function registerNotificationsIpc(deps: NotificationsIpcDeps): void {
   const target = deps.ipcMain ?? ipcMain;
   target.handle('notifications:runEnded', async (_event, payload: unknown): Promise<void> => {
-    const raw = (payload ?? {}) as { kind?: unknown; title?: unknown; body?: unknown };
+    const raw = (payload ?? {}) as { kind?: unknown; title?: unknown; body?: unknown; hostId?: unknown };
     if (!isRunNotificationKind(raw.kind)) return;
 
     const supported = Notification.isSupported();
     // Read the toggle lazily so a mid-session settings change takes
     // effect on the very next turn without any cache invalidation.
     const settings = await deps.settingsStore.get();
-    let incognito: boolean;
-    if (deps.privacyAuthority) {
-      incognito = await resolveNotificationIncognito(false, deps.privacyAuthority);
-    } else {
-      incognito = settings.privacy.incognitoActive;
-    }
+    // The banner belongs to one host: only that host can authorize its
+    // content. A missing source stays unknown and suppresses (#4981).
+    const sourceHostId = typeof raw.hostId === 'string' && raw.hostId ? raw.hostId : undefined;
+    const incognito = await resolveNotificationIncognito(deps.privacyAuthority, sourceHostId);
     const gate = {
       enabled: settings.notifications.runComplete,
       supported,

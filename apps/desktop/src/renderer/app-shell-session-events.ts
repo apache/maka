@@ -20,6 +20,7 @@
 import type { ContextCompactionOutcome, SessionEvent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
+import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import {
   applyLiveTurnEvent,
   clearInteractions,
@@ -68,6 +69,20 @@ export interface AppShellSessionDisplayBatch {
 
 export function createAppShellSessionDisplayBatch(): AppShellSessionDisplayBatch {
   return { pendingEvents: new Map(), displayPendingSessions: new Set(), framePending: false };
+}
+
+/**
+ * The run-notification banner belongs to the session's host: only that host
+ * can authorize its content, so the renderer carries its identity to main
+ * (#4981). Legacy session ids have no host component; treat those as
+ * unresolvable rather than failing the notification.
+ */
+export function resolveRunEndedHostId(sessionId: string): string | undefined {
+  try {
+    return parseDesktopSessionKey(sessionId).hostId;
+  } catch {
+    return undefined;
+  }
 }
 
 export function createAppShellSessionEventHandlers(options: {

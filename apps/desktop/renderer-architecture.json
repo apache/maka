@@ -589,7 +589,7 @@
         "nonTriviaTokens": 2316
       },
       "src/renderer/app-shell-session-events.ts": {
-        "importDeclarations": 2,
+        "importDeclarations": 3,
         "bridgePaths": {},
         "environmentCapabilities": {
           "requestAnimationFrame": 1,
@@ -603,12 +603,13 @@
           "createAppShellSessionEventHandlers"
         ],
         "dependencyPaths": {
+          "../shared/runtime-host-identity.js": 1,
           "./locales/conversation-copy.js": 1,
           "./model-connection-errors.js": 1,
           "@maka/ui": 1
         },
-        "importSpecifiers": 8,
-        "nonTriviaTokens": 2808
+        "importSpecifiers": 9,
+        "nonTriviaTokens": 2847
       },
       "src/renderer/app-shell-session-start-actions.ts": {
         "importDeclarations": 2,
@@ -871,8 +872,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 108,
-        "nonTriviaTokens": 13697
+        "importSpecifiers": 109,
+        "nonTriviaTokens": 13721
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
