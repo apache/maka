@@ -36,8 +36,8 @@ export type McpEditorDraft = {
   env: string;
   url: string;
   transport: 'auto' | 'streamable-http' | 'sse';
-  /** Undefined means the auto authoring default. Stored
-   * configs are projected to an explicit value before editing. */
+  /** Undefined selects auto, except remote SSE which stays legacy.
+   * Stored configs are projected to an explicit value before editing. */
   protocol?: McpProtocolPreference;
   headers: string;
   /** Opaque round-trip state: the editor has no OAuth fields, but an
