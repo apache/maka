@@ -284,6 +284,20 @@ export class CdpBridge {
     }
     if (typeof cmd.id !== 'number' || typeof cmd.method !== 'string') return;
     const { id, sessionId } = cmd;
+    // CDP command ids are unique across the whole connection while in flight;
+    // sessionId is routing metadata, not a separate id namespace. Never let a
+    // duplicate replace the first command's pending entry, or whichever
+    // debugger call completes first would consume the shared response slot and
+    // leave the other completion either mismatched or silently discarded.
+    const existing = this.pending.get(id);
+    if (existing?.ws === ws) {
+      this.send({
+        id,
+        error: { code: -32600, message: `duplicate in-flight command id: ${id}` },
+        ...(sessionId ? { sessionId } : {}),
+      });
+      return;
+    }
     this.pending.set(id, { ws, sessionId });
     try {
       const result = await this.wc.debugger.sendCommand(cmd.method, cmd.params ?? {}, sessionId);

@@ -237,6 +237,61 @@ describe('CdpBridge', () => {
     release({});
   });
 
+  it('rejects a duplicate in-flight command id on the same connection', async () => {
+    const { wc, asWebContents } = makeWc();
+    let releaseFirst: (value: unknown) => void = () => {};
+    wc.debugger.impl = (_method, _params, sessionId) => {
+      if (sessionId === 'session-a') return new Promise((resolve) => (releaseFirst = resolve));
+      return Promise.resolve({ fresh: true });
+    };
+    const { cdpEndpoint } = await startBridge(asWebContents);
+    const ws = await open(cdpEndpoint);
+
+    const firstCommandStarted = waitForCommand(wc.debugger);
+    ws.send(JSON.stringify({ id: 7, method: 'Page.navigate', params: {}, sessionId: 'session-a' }));
+    await firstCommandStarted;
+
+    const distinctAnswered = nextMessage(ws);
+    const distinctCommandStarted = waitForCommand(wc.debugger);
+    ws.send(JSON.stringify({ id: 8, method: 'Runtime.evaluate', params: {}, sessionId: 'session-b' }));
+    await distinctCommandStarted;
+    const distinct = (await distinctAnswered) as { id: number; sessionId?: string; result?: unknown };
+    assert.equal(distinct.id, 8);
+    assert.equal(distinct.sessionId, 'session-b');
+    assert.deepEqual(distinct.result, { fresh: true });
+
+    const duplicateRejected = once(ws, 'message', { signal: AbortSignal.timeout(2_000) });
+    ws.send(JSON.stringify({ id: 7, method: 'Runtime.evaluate', params: {}, sessionId: 'session-b' }));
+    const [duplicateData] = await duplicateRejected;
+    const duplicate = JSON.parse(String(duplicateData)) as {
+      id: number;
+      sessionId?: string;
+      error?: { code: number; message: string };
+    };
+    assert.equal(duplicate.id, 7);
+    assert.equal(duplicate.sessionId, 'session-b');
+    assert.equal(duplicate.error?.code, -32600);
+    assert.match(duplicate.error?.message ?? '', /duplicate.*in-flight.*id/i);
+    assert.equal(wc.debugger.calls.length, 2, 'the duplicate command must not reach the debugger');
+
+    const firstAnswered = nextMessage(ws);
+    releaseFirst({ accepted: true });
+    const first = (await firstAnswered) as { id: number; sessionId?: string; result?: unknown };
+    assert.equal(first.id, 7);
+    assert.equal(first.sessionId, 'session-a');
+    assert.deepEqual(first.result, { accepted: true });
+
+    // Completion frees the id for legitimate reuse on the same connection.
+    const reusedAnswered = nextMessage(ws);
+    const reusedCommandStarted = waitForCommand(wc.debugger);
+    ws.send(JSON.stringify({ id: 7, method: 'Runtime.evaluate', params: {}, sessionId: 'session-c' }));
+    await reusedCommandStarted;
+    const reused = (await reusedAnswered) as { id: number; sessionId?: string; result?: unknown };
+    assert.equal(reused.id, 7);
+    assert.equal(reused.sessionId, 'session-c');
+    assert.deepEqual(reused.result, { fresh: true });
+  });
+
   it('a reconnecting client reusing a command id never sees the previous client result', async () => {
     const { wc, asWebContents } = makeWc();
     const resolvers: Array<(value: unknown) => void> = [];
