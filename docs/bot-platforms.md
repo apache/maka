@@ -232,6 +232,11 @@ longer schedule would silently no-op.
    strength of that probe.
 7. **One account per provider.** Onboarding runs a single session per provider;
    there is no multi-account or parallel-onboarding support.
+8. **DingTalk cannot reply to a 1:1 conversation.** The send route is picked by
+   testing the chat ID for a `cid` prefix, which every DingTalk conversation ID
+   carries — including direct ones — so direct replies are posted to the group
+   endpoint and rejected. Reproduced against a live app; see the DingTalk setup
+   section.
 
 ## Security considerations
 
@@ -265,11 +270,11 @@ traffic.
 ## Setup
 
 > **Status: Telegram, Slack, Discord, Feishu/Lark, WeCom and QQ are verified
-> end-to-end. DingTalk and WeChat are still placeholders.** Both must be walked
-> against a real developer account before they land — the acceptance criteria
-> require tested instructions, and untested setup steps are worse than none.
+> end-to-end.** DingTalk is verified for setup and receive only — replying to a
+> 1:1 conversation is broken, and the section records the defect. WeChat is
+> still a placeholder and must be walked against a real setup before it lands.
 >
-> For DingTalk and WeChat, check
+> For WeChat, check
 > [the onboarding architecture doc](architecture/bot-onboarding-runtime.zh-CN.md)
 > first: QR-code onboarding may make most manual steps unnecessary.
 
@@ -467,7 +472,68 @@ posts never reach the handler.
 
 ### DingTalk 钉钉
 
-_TODO — internal app, Stream mode, ClientID/ClientSecret._
+DingTalk Stream is not the Discord/QQ gateway shape. There is no HELLO and no
+READY: the socket opening *is* the operational signal, and every frame must be
+acked or the gateway redelivers it.
+
+**1. Create a 企业内部应用** (custom internal app) in the DingTalk open
+platform, then add the **机器人 / Bot** capability under 应用能力.
+
+**2. Set the message mode to Stream.** In the bot configuration, choose
+**Stream 模式**, not HTTP mode. This is the same decision as WeCom's API mode:
+Maka opens an outbound long connection and never exposes a callback URL, so an
+app configured for HTTP delivery cannot reach it.
+
+**3. Copy the credentials** from 凭证与基础信息:
+
+| Console field | Maka setting |
+| --- | --- |
+| Client ID (AppKey) | `appId` |
+| Client Secret (AppSecret) | `appSecret` |
+
+**4. Publish a version** under 版本管理与发布. As with Feishu, scopes and
+availability do not take effect for the org until a version is released.
+
+**5. Verify.** Startup runs three steps, each with its own failure reason:
+
+1. `GET oapi.dingtalk.com/gettoken` → access token (7200s), refreshed 5 minutes
+   before expiry.
+2. `POST api.dingtalk.com/v1.0/gateway/connections/open` → `{endpoint, ticket}`.
+   Failure reason: `connections-open-<status>`.
+3. WebSocket connect to `endpoint?ticket=…`.
+
+The bridge subscribes to `EVENT` topic `*` plus the `CALLBACK` topic
+`/v1.0/im/bot/messages/get`, and acks every frame including ones it ignores.
+
+**No close code is fatal.** Unlike Discord and QQ, `decideDingTalkClose` maps
+every disconnect to a resumable reconnect, so a misconfigured DingTalk channel
+retries forever instead of stopping with a diagnosable reason.
+
+> **Replying to a 1:1 conversation does not work.** This was reproduced against
+> a live app and is a defect, not a setup step you can work around from the
+> console.
+>
+> An inbound direct message arrives with `conversationType: "1"`, so the bridge
+> correctly derives `isGroup: false`. But it stamps `chatId` as the payload's
+> `conversationId`, and a **1:1 conversation ID also begins with `cid`**.
+> `pickDingTalkSendRoute` decides the destination with
+> `targetId.startsWith('cid')`, so the reply is posted to the group endpoint
+> `/v1.0/robot/groupMessages/send` and fails with `resource.not.found`. The
+> code comment describes the intended prefix as `cidp`, which the implementation
+> does not match.
+>
+> Routing to the 1:1 endpoint instead does not help with what the bridge
+> captures: `/v1.0/robot/oToMessages/batchSend` expects staff user IDs, and the
+> Stream payload's `senderId` is an opaque `$:LWCP_v1:$…` token that it rejects
+> with `staffId.notExisted`. `DingTalkBotMessagePayload` declares only
+> `senderId`, `senderNick`, `conversationId`, `conversationType`, `text`,
+> `robotCode` and `chatbotUserId` — none of which that endpoint accepts.
+>
+> `isGroup` is known accurately at receive time and discarded before send,
+> which is what forces the prefix guess. Group replies were not exercised, so
+> whether the group path works with a correct group conversation ID is
+> unverified. The group-route failure also named `robotCode`, so whether
+> reusing `appId` as the robot code is valid remains unconfirmed.
 
 ### Feishu 飞书 / Lark
 
