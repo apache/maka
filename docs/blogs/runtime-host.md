@@ -33,12 +33,15 @@ The Runtime runs the Agent loop: assemble context, call a model, run tools, and 
 
 Desktop, terminal, and automation clients consequently share the same way in:
 
-```text
-Desktop ─────┐
-Terminal ────┼── Protocol connection ── Runtime Host ── Runtime ── Models and tools
-Automation ──┘                              │
-                                            └── Sessions, execution records,
-                                                background tasks
+```mermaid
+flowchart TD
+    desktop["Desktop"] --> connection["Protocol connection"]
+    terminal["Terminal"] --> connection
+    automation["Automation"] --> connection
+    connection --> host["Runtime Host"]
+    host --> runtime["Runtime"]
+    runtime --> tools["Models and tools"]
+    host --> state["Sessions, execution records<br/>and background tasks"]
 ```
 
 A Host can run locally or on a remote machine. Clients submit requests and read progress; the machine running the work resolves the working directory, accesses files, and runs commands. Opening a remote session in a terminal does not reinterpret the remote project path as a local path.
@@ -65,14 +68,11 @@ Maka centralizes root execution in `RootTurnCoordinator`. A root execution begin
 
 New work first passes through **admission**. This stage serializes checks within a session, reserves an execution slot, and persists the request identity, message content, and associated execution record before handing work to the Runtime. The critical section protects admission; it is not held for the duration of the execution.
 
-```text
-Task from any entry point
-           ↓
-Check the session and reserve a slot
-           ↓
-Persist which work was accepted
-           ↓
-Hand it to the Runtime
+```mermaid
+flowchart TD
+    request["Task from any entry point"] --> reserve["Check the session and reserve a slot"]
+    reserve --> persist["Persist which work was accepted"]
+    persist --> execute["Hand it to the Runtime"]
 ```
 
 Saving admission first has a practical use. A client that sent a request but received no reply can return with the original identity to check. The Host compares identity and content to determine whether it already accepted that work. Reusing an identity with different content is rejected; retrying an accepted request cannot turn it into a new task.
@@ -130,14 +130,18 @@ Long tasks may make it impractical to wait for an idle moment to upgrade. For ru
 
 This requires a distinction between a **Turn** and a **Run**. A Turn is the logical round of work the user started; a Run is one physical execution carrying it out. An upgrade can end the old Run and create a new one while remaining within the same Turn.
 
-```text
-One Turn: fix the failing tests
-
-Old Host / Run A ── Finish current step ── Save handoff record
-                                                   │
-New Host / Run B ◀── Verify history and conditions ──┘
-       │
-       └── Continue with subsequent steps
+```mermaid
+sequenceDiagram
+    participant old as Old Host / Run A
+    participant records as Durable handoff record
+    participant successor as New Host / Run B
+    Note over old,successor: One Turn: fix the failing tests
+    old->>old: Finish current step
+    old->>records: Save handoff record
+    successor->>records: Read handoff record
+    records-->>successor: Return record
+    successor->>successor: Verify record and conditions
+    successor->>successor: Continue subsequent steps
 ```
 
 The handoff record names the successor Run and includes information to verify the completed history. The new Host must validate that history and continuation relationship. Seeing unfinished work in a session is not enough to start executing it.

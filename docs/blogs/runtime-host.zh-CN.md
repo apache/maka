@@ -33,11 +33,15 @@ Runtime 负责 Agent 的执行循环：组装上下文、调用模型、运行�
 
 这让桌面端、终端和自动化程序有了相同的接入方式：
 
-```text
-桌面端 ─────┐
-终端 ───────┼── 协议连接 ── Runtime Host ── Runtime ── 模型与工具
-自动化程序 ─┘                    │
-                                └── 会话、执行记录、后台任务
+```mermaid
+flowchart TD
+    desktop["桌面端"] --> connection["协议连接"]
+    terminal["终端"] --> connection
+    automation["自动化程序"] --> connection
+    connection --> host["Runtime Host"]
+    host --> runtime["Runtime"]
+    runtime --> tools["模型与工具"]
+    host --> state["会话、执行记录、后台任务"]
 ```
 
 Host 可以在本机运行，也可以部署在远程机器上。客户端提交请求和读取进度，执行所在的机器负责解释工作目录、访问文件和运行命令。终端打开远程会话时，不会把远程项目路径重新解释成本机路径。
@@ -64,14 +68,11 @@ Maka 将根执行集中到 `RootTurnCoordinator`。所谓根执行，就是一�
 
 新任务先经过 **admission（接纳）**。这个阶段按会话串行检查，预留执行位置，并持久保存请求身份、消息内容和对应的执行记录，之后才把工作交给 Runtime。串行保护的是接纳阶段，执行开始后不再占着这段临界区。
 
-```text
-来自任一入口的任务
-        ↓
-检查会话并预留位置
-        ↓
-保存“接受了哪项工作”
-        ↓
-交给 Runtime 执行
+```mermaid
+flowchart TD
+    request["来自任一入口的任务"] --> reserve["检查会话并预留位置"]
+    reserve --> persist["保存接受了哪项工作"]
+    persist --> execute["交给 Runtime 执行"]
 ```
 
 先保存接纳记录有一个实际用途：客户端发出请求后没有收到回复，可以带着原请求身份回来核对。Host 比较身份与内容，确认它是否已经接受过这项工作。同一个身份对应不同内容，会被拒绝；已经接受的请求，也不能因为重试就变成新任务。
@@ -129,14 +130,18 @@ Peer 连接进一步处理网络路径变化：在同一 Host 进程内，可以
 
 这需要区分 **Turn** 和 **Run**：Turn 是用户发起的那一轮逻辑工作，Run 是承载它的一次物理执行。升级可以结束旧 Run，再创建新 Run，但仍属于同一个 Turn。
 
-```text
-同一个 Turn：修复失败的测试
-
-旧 Host / Run A ── 完成当前步骤 ── 保存交接记录
-                                       │
-新 Host / Run B ◀── 校验记录与执行条件 ───┘
-       │
-       └── 继续后续步骤
+```mermaid
+sequenceDiagram
+    participant old as 旧 Host / Run A
+    participant records as 持久化交接记录
+    participant successor as 新 Host / Run B
+    Note over old,successor: 同一个 Turn：修复失败的测试
+    old->>old: 完成当前步骤
+    old->>records: 保存交接记录
+    successor->>records: 读取交接记录
+    records-->>successor: 返回记录
+    successor->>successor: 校验记录与执行条件
+    successor->>successor: 继续后续步骤
 ```
 
 交接记录明确指定由哪个后续 Run 接手，并带上已完成历史的校验信息。新 Host 必须验证这份历史和接续关系，不能仅凭“这个会话还有任务”就自行开始。
