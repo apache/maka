@@ -43,12 +43,17 @@ import {
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
 import { RuntimeHostOperationError, type RuntimeHostConnection } from '../client/index.js';
-import type { WorkHubCoordinationActInput } from '../protocol/index.js';
+import type {
+  WorkHubCoordinationActInput,
+  WorkHubCoordinationActResult,
+  WorkHubCoordinationCandidatesResult,
+} from '../protocol/index.js';
 import { connectClient, waitForTerminalTurn } from './fixtures/execution-host-suite.js';
 import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
 
 type Notice =
   | { type: 'ready'; hostEpoch: string }
+  | { type: 'assignment_failed' }
   | {
       type: 'assignment_committed';
       assignment: WorkHubDelegationAssignedMessage;
@@ -267,6 +272,125 @@ for (const disposition of ['create_new', 'delegate_existing'] as const) {
   }
 }
 
+for (const failAssignment of [false, true]) {
+  test(`WorkHub reuses attachments across delegations and retries (assignment failure=${failAssignment})`, {
+    timeout: 60_000,
+  }, async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-workhub-attachment-retry-'));
+    const root = join(base, 'root');
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    let host: HostProcess | undefined;
+    let client: RuntimeHostConnection | undefined;
+    try {
+      await withStores(capability, configureDefaultTarget);
+      host = new HostProcess(
+        root,
+        capability.rootId,
+        failAssignment ? 'fail-assignment-once' : 'recover',
+      );
+      await host.wait('ready');
+      client = await connectClient(root);
+      await client.request('workhub.coordination.resolve', {});
+      const sessionId = 'attachment-target';
+      await client.request('session.create', {
+        sessionId,
+        name: 'Requirements',
+        workspace: { kind: 'host_path', path: root },
+        modelTarget: { kind: 'default' },
+      });
+      const attachment = await uploadAttachment(client);
+      const turnIds: string[] = [];
+      for (const actionId of ['first-delegation', 'second-delegation']) {
+        const candidates: WorkHubCoordinationCandidatesResult = await client.request(
+          'workhub.coordination.candidates',
+          {},
+        );
+        const target = candidates.candidates.find((c) => c.sessionId === sessionId);
+        assert.ok(target);
+        const action: WorkHubCoordinationActInput = {
+          actionId,
+          userText: 'Review the durable requirements',
+          candidateSetId: candidates.candidateSetId,
+          proposal: { disposition: 'delegate_existing', candidateRef: target.candidateRef },
+          attachments: [attachment],
+        };
+        if (failAssignment && actionId === 'first-delegation') {
+          await assert.rejects(
+            client.request('workhub.coordination.act', action),
+            (error: unknown) =>
+              error instanceof RuntimeHostOperationError && error.code === 'persistence_failed',
+          );
+          await host.wait('assignment_failed');
+          assert.equal(host.notices.filter((n) => n.type === 'dispatch').length, 0);
+        }
+        const assigned: WorkHubCoordinationActResult = await client.request(
+          'workhub.coordination.act',
+          action,
+        );
+        assert.ok(assigned.disposition === 'delegate_existing');
+        assert.equal(assigned.targetSessionId, sessionId);
+        turnIds.push(assigned.targetTurnId);
+        assert.equal(
+          (await waitForTerminalTurn(client, sessionId, assigned.targetTurnId)).status,
+          'completed',
+        );
+        assert.deepEqual(await client.request('workhub.coordination.act', action), assigned);
+      }
+      assert.notEqual(turnIds[0], turnIds[1]);
+      await client.close();
+      await host.stop();
+      const dispatched = host.notices.filter((n) => n.type === 'dispatch');
+      assert.equal(dispatched.length, 2);
+      assert.deepEqual(
+        dispatched.map((n) => n.turnId),
+        turnIds,
+      );
+      assert.deepEqual(dispatched[0]!.attachments, dispatched[1]!.attachments);
+      await withStores(capability, async ({ execution, artifacts }) => {
+        const records = await artifacts.listPage(sessionId, { offset: 0, limit: 10 });
+        assert.equal(records.total, 1);
+        assert.deepEqual(dispatched[0]!.attachments, [
+          {
+            ...attachment,
+            ref: { kind: 'session_file', sessionId, relativePath: records.records[0]!.id },
+          },
+        ]);
+        assert.deepEqual(await artifacts.readTextInSession(sessionId, records.records[0]!.id), {
+          ok: true,
+          text: ATTACHMENT_TEXT,
+        });
+        assert.equal(
+          (await artifacts.listPage(WORKHUB_COORDINATION_SESSION_ID, { offset: 0, limit: 10 }))
+            .total,
+          1,
+        );
+        assert.deepEqual(await execution.sessionStore.listMessageAdmissions(sessionId), []);
+        const messages = await execution.sessionStore.readMessagesSnapshot(
+          WORKHUB_COORDINATION_SESSION_ID,
+        );
+        const assignments = messages.filter(
+          (m) => m.type === 'workhub_coordination' && m.kind === 'delegation_assigned',
+        );
+        assert.equal(assignments.length, 2);
+        assert.equal(
+          (await execution.runtimeEventStore.listSessionInvocations(sessionId)).length,
+          2,
+        );
+      });
+    } finally {
+      await client?.close().catch(() => undefined);
+      await host?.stop('SIGKILL');
+      await removePosixEndpointDirectories(capability.rootId);
+      await rm(join(resolveRootControlNamespace(), capability.rootId), {
+        recursive: true,
+        force: true,
+      });
+      await rm(join(resolveRootOwnershipNamespace(), `${capability.rootId}.lock`), { force: true });
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+}
+
 async function uploadAttachment(client: RuntimeHostConnection): Promise<AttachmentRef> {
   const bytes = Buffer.from(ATTACHMENT_TEXT);
   const sessionId = WORKHUB_COORDINATION_SESSION_ID;
@@ -348,7 +472,7 @@ class HostProcess {
   readonly closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
   private readonly listeners = new Set<() => void>();
 
-  constructor(root: string, rootId: string, mode: 'crash' | 'recover') {
+  constructor(root: string, rootId: string, mode: 'crash' | 'recover' | 'fail-assignment-once') {
     this.child = fork(
       new URL('./fixtures/workhub-assignment-crash-host.js', import.meta.url),
       [root, rootId, mode],
