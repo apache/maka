@@ -235,8 +235,9 @@ longer schedule would silently no-op.
 8. **DingTalk cannot reply to a 1:1 conversation.** The send route is picked by
    testing the chat ID for a `cid` prefix, which every DingTalk conversation ID
    carries — including direct ones — so direct replies are posted to the group
-   endpoint and rejected. Reproduced against a live app; see the DingTalk setup
-   section.
+   endpoint and rejected. The 1:1 endpoint needs the payload's `senderStaffId`,
+   which the bridge never captures. Reproduced against a live app, along with
+   the send that does succeed; see the DingTalk setup section.
 
 ## Security considerations
 
@@ -522,18 +523,36 @@ retries forever instead of stopping with a diagnosable reason.
 > code comment describes the intended prefix as `cidp`, which the implementation
 > does not match.
 >
-> Routing to the 1:1 endpoint instead does not help with what the bridge
-> captures: `/v1.0/robot/oToMessages/batchSend` expects staff user IDs, and the
-> Stream payload's `senderId` is an opaque `$:LWCP_v1:$…` token that it rejects
-> with `staffId.notExisted`. `DingTalkBotMessagePayload` declares only
-> `senderId`, `senderNick`, `conversationId`, `conversationType`, `text`,
-> `robotCode` and `chatbotUserId` — none of which that endpoint accepts.
+> Routing to the 1:1 endpoint does not help either, because the bridge does not
+> capture the identifier that endpoint needs.
+> `/v1.0/robot/oToMessages/batchSend` expects staff user IDs, and the payload's
+> `senderId` is an opaque `$:LWCP_v1:$…` token it rejects with
+> `staffId.notExisted`.
 >
-> `isGroup` is known accurately at receive time and discarded before send,
-> which is what forces the prefix guess. Group replies were not exercised, so
-> whether the group path works with a correct group conversation ID is
-> unverified. The group-route failure also named `robotCode`, so whether
-> reusing `appId` as the robot code is valid remains unconfirmed.
+> The field that works is **`senderStaffId`**, which DingTalk does send on every
+> bot message and which `DingTalkBotMessagePayload` does not declare. Posting to
+> the 1:1 endpoint with `userIds: [senderStaffId]` succeeds and returns a
+> `processQueryKey`. Three sends against one live conversation, varying only the
+> target:
+>
+> | Target passed as `chatId` | Route taken | Result |
+> | --- | --- | --- |
+> | `conversationId` — what the bridge stamps | group | `resource.not.found` |
+> | `senderId` | 1:1 | `staffId.notExisted` |
+> | `senderStaffId` | 1:1 | delivered |
+>
+> `isGroup` is known accurately at receive time and discarded before send, which
+> is what forces the prefix guess in the first place.
+>
+> The same payload also carries a `sessionWebhook` with an explicit
+> `sessionWebhookExpiredTime` (about 90 minutes out). Posting a reply there
+> needs neither a robot code nor a staff ID and works for both conversation
+> kinds, so it is a second possible route the bridge does not use.
+>
+> Two things this exercise settled: `robotCode` in the payload equals the app's
+> `appId`, so the bridge's reuse of `appId` as the robot code is correct. Group
+> replies were not exercised, so whether the group path works with a genuine
+> group conversation ID remains unverified.
 
 ### Feishu 飞书 / Lark
 
