@@ -204,7 +204,6 @@ function harness(options: { readonly onClick: () => Promise<void> | void }): Ret
       },
     } as never);
     const layout = createElement(ChatSurfaceLayout, {
-      scrollOwner: 'host',
       scrollToBottomLabel: '回到最新',
       onReturnToTail: options.onClick,
       composer: null,

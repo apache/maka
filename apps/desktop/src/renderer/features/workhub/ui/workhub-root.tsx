@@ -155,7 +155,6 @@ export function WorkHubRoot() {
       <ChatSurfaceLayout
         scrollButton={showConversation ? undefined : null}
         style={!showConversation ? { height: expandedLayoutHeight, flex: 'none', position: 'absolute', bottom: 0, width: '100%' } : undefined}
-        scrollOwner="host"
         onReturnToTail={transcript.hasNewer ? controller.loadLatest : undefined}
         composer={
           <div className="workHubComposerSurface" ref={composerSurface}>
