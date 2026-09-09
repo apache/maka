@@ -165,6 +165,43 @@ function exportedArtifactPath(hydration: SessionBundleHydration, relativePath: s
   return join(hydration.stateRoot, 'artifacts', relativePath);
 }
 
+async function createSubagentSession(
+  store: ReturnType<typeof createSessionStore>,
+  workspaceRoot: string,
+  parentSessionId: string,
+  toolCallId: string,
+): Promise<string> {
+  const child = await store.createSubagent({
+    cwd: workspaceRoot,
+    llmConnectionSlug: CONNECTION_SLUG,
+    model: MODEL,
+    permissionMode: 'ask',
+    subagentParent: {
+      kind: 'subagent' as const,
+      parentSessionId,
+      spawnedBy: { parentRunId: 'parent-run', parentTurnId: 'parent-turn', toolCallId },
+      lifecycle: 'foreground',
+    },
+    subagentRuntime: {
+      schemaVersion: 1,
+      definitionVersion: 1,
+      agentId: 'local-read',
+      agentName: 'Local Read',
+      profile: 'local_read',
+      systemPrompt: 'Read the assigned workspace task.',
+      toolNames: ['Read'],
+      categoryPolicy: { read: 'allow' },
+    },
+    subagentSpawn: {
+      schemaVersion: 1,
+      requestFingerprint: 'a'.repeat(64),
+      initialTurnId: `turn-${toolCallId}`,
+      initialRunId: `run-${toolCallId}`,
+    },
+  } as Parameters<typeof store.createSubagent>[0]);
+  return child.header.id;
+}
+
 async function hydrateExport(
   destination: string,
   sessionId: string,
@@ -604,6 +641,69 @@ test(
       assert.equal(carriedRecord, recordJson);
     } finally {
       exported.close();
+    }
+  }),
+);
+
+test(
+  'exports the subtree under any node, not only a top-level Session',
+  withRoot('maka-session-export-any-node', async (root, workspaceRoot) => {
+    const store = createSessionStore(workspaceRoot);
+    let branchId: string;
+    let parentId: string;
+    let childId: string;
+    let grandchildId: string;
+    try {
+      const source = await store.create({
+        cwd: workspaceRoot,
+        llmConnectionSlug: CONNECTION_SLUG,
+        model: MODEL,
+        permissionMode: 'ask',
+      });
+      const branch = await store.create({
+        cwd: workspaceRoot,
+        llmConnectionSlug: CONNECTION_SLUG,
+        model: MODEL,
+        permissionMode: 'ask',
+      });
+      branchId = branch.id;
+      const parent = await store.create({
+        cwd: workspaceRoot,
+        llmConnectionSlug: CONNECTION_SLUG,
+        model: MODEL,
+        permissionMode: 'ask',
+      });
+      parentId = parent.id;
+      const child = await createSubagentSession(store, workspaceRoot, parent.id, 'call-1');
+      childId = child;
+      grandchildId = await createSubagentSession(store, workspaceRoot, child, 'call-2');
+      // A branch Session points at a source that a bundle rooted here will not
+      // contain. `parent_session_id` is a lineage pointer, not ownership: a
+      // filter that reads it as ownership deletes the very Session being
+      // exported.
+      const db = openDatabase(workspaceRoot);
+      try {
+        db.prepare('UPDATE session_metadata SET parent_session_id = ? WHERE session_id = ?').run(
+          source.id,
+          branch.id,
+        );
+      } finally {
+        db.close();
+      }
+    } finally {
+      await store.close?.();
+    }
+
+    // Migration starts wherever it is pointed and takes what hangs below.
+    for (const [label, sessionId, expected] of [
+      ['top-level parent', parentId, [parentId, childId, grandchildId]],
+      ['mid-tree child, parent outside the bundle', childId, [childId, grandchildId]],
+      ['leaf', grandchildId, [grandchildId]],
+      ['branch Session, source outside the bundle', branchId, [branchId]],
+    ] as const) {
+      const destination = join(root, `${sessionId}.maka-session`);
+      const result = await exportOk(workspaceRoot, sessionId, destination);
+      assert.deepEqual([...result.export.sessionIds].sort(), [...expected].sort(), label);
     }
   }),
 );

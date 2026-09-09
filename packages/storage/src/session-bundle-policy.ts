@@ -344,7 +344,9 @@ async function exportFilteredDatabase(
           .map((column) => column.name)
           .filter((name): name is string => typeof name === 'string'),
       );
-      const sessionColumns = SESSION_OWNING_COLUMNS.filter((name) => names.has(name));
+      const sessionColumns = names.has(SESSION_ROW_OWNER_COLUMN)
+        ? [SESSION_ROW_OWNER_COLUMN]
+        : SESSION_LINK_COLUMNS.filter((name) => names.has(name));
       if (sessionColumns.length > 0) {
         // Delete what the subtree does not own, keeping the original
         // predicate's shape: a row survives only when EVERY session column it
@@ -470,20 +472,25 @@ const PORTABLE_SOURCE_SCHEMA: ReadonlyMap<string, number> = new Map([
 ]);
 
 /**
- * Columns that say which Session a row belongs to.
+ * Ownership, which is not the same thing as naming a Session.
  *
- * A row survives the filter only when every one of these it carries names an
- * exported Session. The list has to name each spelling the schema actually
- * uses: a table whose ownership column is called something else looks
- * Session-less to the filter and is emptied wholesale, which is how
- * `subagent_spawns` -- the record of which tool call spawned a child -- was
- * being dropped from a subtree bundle whose child Sessions were carried.
+ * `session_id` says whose row this is. Everything else in this list is a
+ * Session column only on tables that have no `session_id` -- link tables, whose
+ * whole content is the pair they join, and which are meaningless when one end
+ * is outside the bundle.
  *
- * Nullable columns are matched only when set, so a row with no parent is not
- * deleted for failing to name one.
+ * Keeping the two apart matters. `session_metadata.parent_session_id` is a
+ * lineage POINTER, not ownership: treating it as ownership deleted the very
+ * Session being exported whenever its branch source lay outside the subtree.
+ * And a link table whose columns are spelled `parent_session_id` /
+ * `child_session_id` -- `subagent_spawns`, the record of which tool call
+ * spawned each child -- looked Session-less and was emptied wholesale.
+ *
+ * Nullable columns count only when set, so a row that names no counterpart is
+ * not deleted for failing to name one.
  */
-const SESSION_OWNING_COLUMNS = [
-  'session_id',
+const SESSION_ROW_OWNER_COLUMN = 'session_id';
+const SESSION_LINK_COLUMNS = [
   'source_session_id',
   'target_session_id',
   'parent_session_id',
