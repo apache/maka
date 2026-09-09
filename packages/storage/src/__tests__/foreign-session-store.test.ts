@@ -520,9 +520,15 @@ describe('foreign session store — OpenCode scan (#5053)', () => {
     // IF NOT EXISTS: one test seeds several session rows into the same db.
     const db = new DatabaseSync(dbPath);
     try {
-      db.exec('CREATE TABLE IF NOT EXISTS session (id text PRIMARY KEY, project_id text, workspace_id text, parent_id text, slug text, directory text NOT NULL, path text, title text, version text, time_created integer, time_updated integer, time_compacting integer, time_archived integer)');
-      db.exec('CREATE TABLE IF NOT EXISTS message (id text PRIMARY KEY, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer, data text NOT NULL)');
-      db.exec('CREATE TABLE IF NOT EXISTS part (id text PRIMARY KEY, message_id text NOT NULL, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer, data text NOT NULL)');
+      db.exec(
+        'CREATE TABLE IF NOT EXISTS session (id text PRIMARY KEY, project_id text, workspace_id text, parent_id text, slug text, directory text NOT NULL, path text, title text, version text, time_created integer, time_updated integer, time_compacting integer, time_archived integer)',
+      );
+      db.exec(
+        'CREATE TABLE IF NOT EXISTS message (id text PRIMARY KEY, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer, data text NOT NULL)',
+      );
+      db.exec(
+        'CREATE TABLE IF NOT EXISTS part (id text PRIMARY KEY, message_id text NOT NULL, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer, data text NOT NULL)',
+      );
       db.prepare(
         'INSERT INTO session (id, parent_id, directory, title, time_created, time_updated, time_archived) VALUES (?, ?, ?, ?, ?, ?, ?)',
       ).run(
@@ -604,7 +610,10 @@ describe('foreign session store — OpenCode scan (#5053)', () => {
     );
     const store = createForeignSessionStore({ homeDir: home, env: {} });
     const sessions = await store.listSessions();
-    assert.deepEqual(sessions.map((s) => s.id), ['ses_live']);
+    assert.deepEqual(
+      sessions.map((s) => s.id),
+      ['ses_live'],
+    );
     assert.equal(sessions[0]!.source, 'opencode');
     assert.equal(sessions[0]!.title, 'live session');
     assert.equal(sessions[0]!.cwd, '/repo');
@@ -624,7 +633,10 @@ describe('foreign session store — OpenCode scan (#5053)', () => {
     );
     const store = createForeignSessionStore({ homeDir: home, env: {} });
     const filtered = await store.listSessions({ cwd: '/repo/one' });
-    assert.deepEqual(filtered.map((s) => s.id), ['ses_one']);
+    assert.deepEqual(
+      filtered.map((s) => s.id),
+      ['ses_one'],
+    );
   });
 
   it('builds a digest with user/assistant text and file paths, excluding thinking', async () => {
@@ -647,9 +659,24 @@ describe('foreign session store — OpenCode scan (#5053)', () => {
           },
         ],
         parts: [
-          { id: 'p_u1', messageId: 'msg_u1', timeCreated: 1, data: { type: 'text', text: '帮我修复解析器' } },
-          { id: 'p_a1', messageId: 'msg_a1', timeCreated: 2, data: { type: 'reasoning', text: 'internal thinking' } },
-          { id: 'p_a2', messageId: 'msg_a1', timeCreated: 2, data: { type: 'text', text: '已修复' } },
+          {
+            id: 'p_u1',
+            messageId: 'msg_u1',
+            timeCreated: 1,
+            data: { type: 'text', text: '帮我修复解析器' },
+          },
+          {
+            id: 'p_a1',
+            messageId: 'msg_a1',
+            timeCreated: 2,
+            data: { type: 'reasoning', text: 'internal thinking' },
+          },
+          {
+            id: 'p_a2',
+            messageId: 'msg_a1',
+            timeCreated: 2,
+            data: { type: 'text', text: '已修复' },
+          },
           {
             id: 'p_a3',
             messageId: 'msg_a2',
@@ -658,7 +685,11 @@ describe('foreign session store — OpenCode scan (#5053)', () => {
               type: 'tool',
               callID: 'call_1',
               tool: 'edit',
-              state: { status: 'completed', input: { file_path: '/repo/src/parser.ts' }, output: 'ok' },
+              state: {
+                status: 'completed',
+                input: { file_path: '/repo/src/parser.ts' },
+                output: 'ok',
+              },
             },
           },
         ],

@@ -153,10 +153,7 @@ class FileForeignSessionStore implements ForeignSessionStore {
     if (isCodexImportEnabled(this.env) && (await isDirectory(this.codexRoot))) {
       sources.push('codex');
     }
-    if (
-      isOpencodeImportEnabled(this.env) &&
-      existsSync(join(this.opencodeHome, 'opencode.db'))
-    ) {
+    if (isOpencodeImportEnabled(this.env) && existsSync(join(this.opencodeHome, 'opencode.db'))) {
       sources.push('opencode');
     }
     return sources;
@@ -304,9 +301,7 @@ class FileForeignSessionStore implements ForeignSessionStore {
     return results;
   }
 
-  private async readOpencodeDigest(
-    summary: ForeignSessionSummary,
-  ): Promise<ForeignSessionDigest> {
+  private async readOpencodeDigest(summary: ForeignSessionSummary): Promise<ForeignSessionDigest> {
     if (!isSafeForeignId(summary.id)) {
       throw new Error('opencode session id is not usable');
     }
