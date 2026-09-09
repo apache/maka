@@ -406,12 +406,13 @@ describe('HostInteractionCoordinator', () => {
       const wakeFinished = deferred();
       const resolverStarted = deferred();
       const releaseResolver = deferred();
+      const gate = new SessionAdmissionGate();
       let resolvedRootSessionId: string | undefined;
       let wakeNotificationStarted = false;
       const coordinator = new HostInteractionCoordinator({
         store,
         sandboxBoundaries: stores.sessionStore,
-        sessionAdmission: new SessionAdmissionGate(),
+        sessionAdmission: gate,
         sessions: stores.sessionStore,
         preflightSessionSnapshot: () => true,
         refreshCanonicalContinuity: async () => {},
@@ -423,8 +424,10 @@ describe('HostInteractionCoordinator', () => {
         },
         onSandboxBoundaryGraphWake: async (rootSessionId) => {
           assert.equal(rootSessionId, session.id);
-          wakeNotificationStarted = true;
-          wakeStarted.resolve();
+          await gate.run(rootSessionId, async () => {
+            wakeNotificationStarted = true;
+            wakeStarted.resolve();
+          });
           await releaseWake.promise;
           wakeFinished.resolve();
         },

@@ -900,14 +900,16 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     // acquire the activity lease held by the wake turn parked on this answer.
     // Awaiting that notification here deadlocks the Session (#3328, #3866).
     const resolvedRootSessionId = await this.#resolveSandboxBoundaryRootSession(request.sessionId);
-    const detachedNotification = Promise.resolve()
-      .then(() => {
-        if (!resolvedRootSessionId) return;
-        return this.#onSandboxBoundaryGraphWake(resolvedRootSessionId);
-      })
-      .catch((error: unknown) => {
-        this.#poison(error);
-      });
+    const detachedNotification = this.#sessionAdmission.detach(() =>
+      Promise.resolve()
+        .then(() => {
+          if (!resolvedRootSessionId) return;
+          return this.#onSandboxBoundaryGraphWake(resolvedRootSessionId);
+        })
+        .catch((error: unknown) => {
+          this.#poison(error);
+        }),
+    );
     this.#detachedNotifications.add(detachedNotification);
     void detachedNotification.then(
       () => this.#detachedNotifications.delete(detachedNotification),
