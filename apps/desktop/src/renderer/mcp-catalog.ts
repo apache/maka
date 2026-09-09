@@ -221,6 +221,22 @@ const MCP_CATALOG_COPY = {
     playwright: { name: 'Browser automation', description: 'Let Maka read and operate real web pages through Playwright.', category: 'Design and development', setupLabel: undefined },
     'sequential-thinking': { name: 'Sequential thinking', description: 'Provide revisable, verifiable structured reasoning for complex problems.', category: 'Reasoning and planning', setupLabel: undefined },
   },
+  ko: {
+    dingtalk: { name: 'DingTalk', description: 'Manage contacts, calendars, tasks, and collaboration data.', category: 'Communication', setupLabel: 'Requires Client ID and Client Secret' },
+    feishu: { name: 'Feishu', description: 'Access Feishu documents, calendars, messages, and OpenAPI.', category: 'Communication', setupLabel: 'Requires App ID and App Secret' },
+    slack: { name: 'Slack', description: 'Send messages, manage channels, and collaborate in a Slack workspace.', category: 'Communication', setupLabel: 'Requires Bot Token and Team ID' },
+    line: { name: 'LINE', description: 'Send and manage messages through the LINE Bot Messaging API.', category: 'Communication', setupLabel: 'Requires Channel Access Token' },
+    notion: { name: 'Notion', description: 'Search, read, and update a Notion workspace.', category: 'Knowledge and documents', setupLabel: 'Requires sign-in authorization' },
+    'macos-apps': { name: 'macOS apps', description: 'Connect Calendar and Reminders through native system permissions.', category: 'System and productivity', setupLabel: undefined },
+    'google-calendar': { name: 'Google Calendar', description: 'Manage events, create meetings, and check availability.', category: 'System and productivity', setupLabel: 'Requires an OAuth credentials file' },
+    figma: { name: 'Figma', description: 'Read design files, components, and developer handoff data.', category: 'Design and development', setupLabel: 'Requires a Personal Access Token' },
+    vercel: { name: 'Vercel', description: 'Inspect projects, deployments, logs, and platform documentation.', category: 'Design and development', setupLabel: 'Requires sign-in authorization' },
+    supabase: { name: 'Supabase', description: 'Manage databases, project configuration, migrations, and Edge Functions.', category: 'Design and development', setupLabel: 'Requires sign-in authorization' },
+    filesystem: { name: 'Local files', description: 'Safely read, write, and manage files in selected directories.', category: 'Files and knowledge', setupLabel: 'Requires selecting allowed directories' },
+    memory: { name: 'Persistent memory', description: 'Remember entities, relationships, and important facts in a structured knowledge graph.', category: 'Files and knowledge', setupLabel: undefined },
+    playwright: { name: 'Browser automation', description: 'Let Maka read and operate real web pages through Playwright.', category: 'Design and development', setupLabel: undefined },
+    'sequential-thinking': { name: 'Sequential thinking', description: 'Provide revisable, verifiable structured reasoning for complex problems.', category: 'Reasoning and planning', setupLabel: undefined },
+  },
 } satisfies UiCatalog<Record<McpCatalogId, McpCatalogLocalizedCopy>>;
 
 export function getMcpCatalog(locale: UiLocale): McpCatalogEntry[] {

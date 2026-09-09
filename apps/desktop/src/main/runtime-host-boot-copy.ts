@@ -83,6 +83,22 @@ const STARTUP_RECOVERY_COPY = {
       buttons: ['Retry', 'Use Local', 'Keep Offline'],
     },
   },
+  ko: {
+    storageRoot: {
+      title: 'Maka workspace needs repair',
+      message: 'Maka cannot verify this workspace.',
+      detail: (workspaceRoot) =>
+        `The disk identity may have changed. Repair only if this is the original Maka workspace on this computer, not a copied workspace.\n\n${workspaceRoot}`,
+      buttons: ['Repair Workspace', 'Exit'],
+    },
+    runtimeHost: {
+      title: 'Default Runtime Host is unavailable',
+      message: (profileName) => `Could not connect to ${profileName}`,
+      detail: (message) =>
+        `${message}\n\nRetry, use Local as the default Host, or keep the current selection and resolve it later in Settings.`,
+      buttons: ['Retry', 'Use Local', 'Keep Offline'],
+    },
+  },
 } satisfies UiCatalog<StartupRecoveryCopy>;
 
 export function getStartupRecoveryCopy(locale: UiLocale): StartupRecoveryCopy {

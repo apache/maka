@@ -647,6 +647,7 @@ const PROVIDER_SETTINGS_COPY = {
   'zh-CN': zhCopy,
   'zh-TW': zhTwCopy,
   en: enCopy,
+  ko: enCopy,
 } satisfies UiCatalog<ProviderSettingsCopy>;
 
 export function getProviderSettingsCopy(locale: UiLocale): ProviderSettingsCopy {

@@ -103,6 +103,28 @@ const SETTINGS_USAGE_COPY = {
       pricingEmptyBody: 'Without pricing overrides, costs use the built-in model pricing table. Add custom prices here for specific models.',
     },
   },
+  ko: {
+    saveFailed: 'Failed to save usage settings', toolbarAria: 'Usage range and refresh', rangeAria: 'Usage time range', ranges: ['24h', '7 days', '30 days', 'All'],
+    refreshingAria: 'Refreshing usage', refreshAria: 'Refresh usage', summaryAria: 'Usage summary metrics', totalRequests: 'Model calls', totalCost: 'Total cost', costHelp: 'Final billing is determined by the model provider',
+    totalTokens: 'Total tokens', tokenDetail: (input, output) => `Input ${input} / output ${output}`, cacheTokens: 'Cache tokens',
+    cacheDetail: (miss, read, creation) => `New ${miss} / hit ${read} / created ${creation}`, viewAria: 'Usage view', tabs: ['Activity log', 'Providers', 'Models', 'Tools', 'Pricing'],
+    filtersAria: 'Activity filters', filterPlaceholder: 'Filter by model or tool…', filterAria: 'Filter activity by model or tool', statusAria: 'Filter by activity status',
+    statuses: ['All statuses', 'Success', 'Error', 'Aborted'], details: 'Detailed records', detailsAria: 'Show detailed usage records', recordCount: (count) => `${count} ${count === 1 ? 'record' : 'records'}`, clearFilters: 'Clear filters',
+    summaryOnly: 'Only summary metrics are shown. Enable detailed records to inspect individual model calls and tool calls, filter by model, tool, or status, and investigate costs or failures.',
+    showDetails: 'Show details', filteredEmpty: 'No activity matches these filters', filteredEmptyHelp: 'Adjust or clear the filters to see all activity records.', requestEmpty: 'No activity records',
+    costUnavailable: 'Cost unavailable', incompleteTitle: 'These numbers may be incomplete',
+    incompleteBody: 'Some records could not be read, are not folded in yet, or exceed the display limit, so real usage may be higher than shown.',
+    tables: {
+      providersAria: 'Usage by provider', modelsAria: 'Usage by model', toolsAria: 'Usage by tool', pricingAria: 'Usage pricing configuration', requestsAria: 'Usage activity log',
+      providerHeaders: ['Provider', 'Calls', 'Tokens', 'Cost'], modelHeaders: ['Model', 'Calls', 'Tokens', 'Cost'], toolHeaders: ['Tool', 'Calls', 'Success', 'Errors', 'Average duration'],
+      pricingHeaders: ['Provider', 'Model', 'Input / 1M', 'Output / 1M'], requestHeaders: ['Time', 'Type', 'Target', 'Task', 'Tokens', 'Cost', 'Latency', 'Status'],
+      noPricing: 'No pricing overrides', modelKind: 'Model', toolKind: 'Tool', unknown: 'Unknown', untitledSession: 'Untitled session', openSession: (label) => `Open session "${label}"`, success: 'Success', error: 'Error', aborted: 'Aborted',
+      providerEmptyTitle: 'No provider usage', providerEmptyBody: 'After a model call, provider call counts, tokens, and costs appear here.',
+      modelEmptyTitle: 'No model usage', modelEmptyBody: 'After a model call, call counts, tokens, and costs appear here by model.',
+      toolEmptyTitle: 'No tool calls', toolEmptyBody: 'After an agent calls a tool, calls, successes, errors, and average duration appear here by tool.',
+      pricingEmptyBody: 'Without pricing overrides, costs use the built-in model pricing table. Add custom prices here for specific models.',
+    },
+  }
 } satisfies UiCatalog<UsageSettingsCopy>;
 
 export function getUsageSettingsCopy(locale: UiLocale): UsageSettingsCopy {

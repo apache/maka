@@ -90,6 +90,10 @@ const RUN_NOTIFICATION_COPY = {
     errored: { title: 'Conversation error', body: 'This response did not finish. Click to view details.' },
     completed: { title: 'Response ready', body: 'Maka finished this response. Click to view it.' },
   },
+  ko: {
+    errored: { title: 'Conversation error', body: 'This response did not finish. Click to view details.' },
+    completed: { title: 'Response ready', body: 'Maka finished this response. Click to view it.' },
+  },
 } satisfies UiCatalog<Record<RunNotificationKind, RunNotificationCopy>>;
 
 export function runNotificationCopy(

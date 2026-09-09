@@ -69,7 +69,20 @@ const COPY: Record<UiLocale, SessionHoverCardCopy> = {
     projectAvailable: 'Directory available',
     projectUnavailable: 'Directory unavailable',
   },
+  ko: {
+    sessionDetailsLabel: (name) => `${name} task details`,
+    projectDetailsLabel: (name) => `${name} project details`,
+    groupDetailsLabel: (name) => `${name} group details`,
+    noMessages: 'No messages yet',
+    updated: 'Updated',
+    taskCount: (count) => `${count} ${count === 1 ? 'task' : 'tasks'}`,
+    runningTaskCount: (count) => `${count} running`,
+    locationCount: (count) => `${count} ${count === 1 ? 'location' : 'locations'}`,
+    projectAvailable: 'Directory available',
+    projectUnavailable: 'Directory unavailable',
+  },
 };
+
 
 export function getSessionHoverCardCopy(locale: UiLocale): SessionHoverCardCopy {
   return COPY[locale];

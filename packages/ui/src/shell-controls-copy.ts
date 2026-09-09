@@ -144,6 +144,37 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       resultsLabel: 'Search results',
     },
   },
+  ko: {
+    shared: { close: 'Close' },
+    navigation: {
+      mainLabel: 'Main navigation',
+      newTask: 'New task',
+      automations: 'Scheduled tasks',
+      extensions: 'Extensions',
+      settings: 'Settings',
+      updateDownloaded: (version: string) => `Update ${version} downloaded. Restart to install.`,
+      updateFailed: (version: string) => `Update ${version} failed. Click to retry or download manually.`,
+      pendingTasks: (count: number) => `Scheduled tasks, ${count} active`,
+    },
+    search: {
+      title: 'Search',
+      conversationsLabel: 'Search tasks',
+      placeholder: 'Search task titles and content…',
+      unavailable: 'Search is unavailable in the current environment. Try again later.',
+      errorByReason: {
+        incognito_active: 'Turn off privacy mode to search previous tasks by keyword.',
+        invalid_query: 'Invalid search query. Shorten it or remove credential material and try again.',
+        aborted: 'Search was canceled.',
+        disabled: 'Search is unavailable right now.',
+        provider_error: 'Search failed. Try again.',
+      },
+      errorFallback: 'Search needs to be refreshed. Try again.',
+      introduction:
+        'Start typing to search previous tasks by keyword. Results include local task titles and content only and are not sent over the network.',
+      empty: 'No matching task titles or content. Try another keyword.',
+      resultsLabel: 'Search results',
+    },
+  }
 } satisfies UiCatalog<ShellControlsCopy>;
 
 export function getShellControlsCopy(locale: UiLocale): ShellControlsCopy {

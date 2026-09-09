@@ -97,6 +97,25 @@ const SETTINGS_DAILY_REVIEW_COPY = {
     model: 'Analysis model',
     modelHelp: 'Follows the current task default when unspecified.',
   },
+  ko: {
+    defaultModel: 'Follow task default',
+    saveFailed: 'Failed to save Daily Review settings',
+    aria: 'Daily Review',
+    unavailable: 'Daily Review settings are unavailable in this build.',
+    loadFailed: (error) => `Failed to load Daily Review settings: ${error}`,
+    scheduleTitle: 'Schedule',
+    scheduleDescription: 'Analyze the previous complete local day automatically.',
+    enabled: 'Enable scheduled analysis',
+    enabledHelp: 'Generate an analysis of yesterday’s activity each day.',
+    executeTime: 'Run time',
+    executeTimeHelp: 'Uses your local time in 24-hour format.',
+    executeTimePlaceholder: 'HH:mm',
+    executeTimeInvalid: 'Enter a 24-hour time, for example 08:00.',
+    analysisTitle: 'Analysis',
+    analysisDescription: 'Choose the model used to generate the fixed report structure.',
+    model: 'Analysis model',
+    modelHelp: 'Follows the current task default when unspecified.',
+  }
 } satisfies UiCatalog<DailyReviewSettingsCopy>;
 
 export function getDailyReviewSettingsCopy(locale: UiLocale): DailyReviewSettingsCopy {
