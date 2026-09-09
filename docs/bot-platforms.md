@@ -240,7 +240,8 @@ longer schedule would silently no-op.
    carries — including direct ones — so direct replies are posted to the group
    endpoint and rejected. The 1:1 endpoint needs the payload's `senderStaffId`,
    which the bridge never captures. Reproduced against a live app, along with
-   the send that does succeed; see the DingTalk setup section.
+   the send that does succeed; see the DingTalk setup section. A fix is open as
+   apache/maka#5112.
 
 ## Security considerations
 
@@ -446,7 +447,7 @@ bot's own configuration hints at why.
 
 **8. Verify.** Startup calls `auth.test()` to resolve identity, then opens the
 Socket Mode connection. Missing either token short-circuits startup with
-`missing-slack-tokens`.
+`slack_tokens_missing`.
 
 **Slack reaches `operational` on connect**, unlike every other channel — the
 bridge promotes it as soon as the socket reports `connected`, without waiting
@@ -558,6 +559,13 @@ retries forever instead of stopping with a diagnosable reason.
 > `appId`, so the bridge's reuse of `appId` as the robot code is correct. Group
 > replies were not exercised, so whether the group path works with a genuine
 > group conversation ID remains unverified.
+>
+> **A fix is in flight.** apache/maka#5112 replaces the prefix guess with chat
+> IDs stamped explicitly at receive time — `oto:<senderStaffId>` routes to the
+> 1:1 endpoint and `group:<conversationId>` to the group one, with unprefixed
+> IDs staying on the group endpoint so already-persisted scheduled-task targets
+> keep working. This section describes the behaviour on `main` and should be
+> rewritten around that scheme once it merges.
 
 ### Feishu 飞书 / Lark
 
@@ -616,7 +624,7 @@ allowlist locally to catch group messages too.
 
 **7. Verify.** The channel should reach `operational`. If it does not, the
 reason string on the status distinguishes the failure:
-`missing-feishu-credentials` means `appId` or `appSecret`/`token` is empty,
+`feishu_credentials_missing` means `appId` or `appSecret`/`token` is empty,
 while a handshake failure leaves readiness at `configured` with the underlying
 error as the reason.
 
@@ -669,7 +677,7 @@ Secret once the socket is open.
 WeCom only reaches `operational` after the first message is actually sent or
 received.
 
-Failure reasons distinguish the cases: `no-credentials` means `appId` or
+Failure reasons distinguish the cases: `wecom_credentials_missing` means `appId` or
 `appSecret` is empty, and an authentication failure leaves readiness at
 `configured`. The handshake has a 15-second timeout.
 
