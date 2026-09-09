@@ -18,7 +18,7 @@
  */
 
 import { useEffect } from 'react';
-import { IconButton } from '@astryxdesign/core';
+import { Button, IconButton } from '@astryxdesign/core';
 import { MakaWordmark, useUiLocale, type LiveTurnProjection } from '@maka/ui';
 import { ArrowRight, X } from '@maka/ui/icons';
 import type { StoredMessage } from '@maka/core/session';
@@ -64,6 +64,6 @@ export function WorkHubProgressCard({ request, control, liveTurn, messages, busy
       <IconButton className="workHubProgressClose" size="sm" variant="ghost" icon={<X size={12} />} label={t.progressClose} onClick={() => { void presentation.hide().catch(console.error); }} />
     </div>
     <p className="workHubProgressText">{spoken?.replace(/\s+/g, ' ').trim() || t.progressHint}</p>
-    <button className="workHubProgressOpen" type="button" onClick={() => { void presentation.showConversation().catch(console.error); }}>{t.progressOpen}<ArrowRight size={12} /></button>
+    <Button className="workHubProgressOpen" size="sm" variant="ghost" label={t.progressOpen} endContent={<ArrowRight size={12} />} onClick={() => { void presentation.showConversation().catch(console.error); }} />
   </aside>;
 }
