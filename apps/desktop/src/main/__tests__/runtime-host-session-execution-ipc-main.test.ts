@@ -775,6 +775,7 @@ test("submits an ordinary composer message once under its stable message identit
 
 test('returns Host-owned cancellation proof to the renderer', async () => {
   const ipc = ipcHarness();
+  const retired: unknown[] = [];
   registerExecutionIpc(
     {
       client: executionClient({
@@ -784,6 +785,7 @@ test('returns Host-owned cancellation proof to the renderer', async () => {
           ),
         }),
       }),
+      retireRetractedMessages(sessionId, messageIds) { retired.push({ sessionId, messageIds }); },
     },
     ipc,
   );
@@ -795,6 +797,7 @@ test('returns Host-owned cancellation proof to the renderer', async () => {
     ]),
     { cancelledMessageIds: ['message-cancelled'] },
   );
+  assert.deepEqual(retired, [{ sessionId: 'session-1', messageIds: ['message-cancelled'] }]);
 });
 
 test('returns Host-owned Message execution resolutions to the renderer', async () => {
@@ -1487,6 +1490,7 @@ test("routes per-entry queue mutations to the Runtime Host", async () => {
 });
 
 test("binds steer and stop to Host-owned queue and active Turn identities", async () => {
+  const retired: unknown[] = [];
   const submits: unknown[] = [];
   const interrupts: unknown[] = [];
   const retractions: unknown[] = [];
@@ -1575,6 +1579,7 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
       beforeStop() {
         stopLifecycle.push("teardown");
       },
+      retireRetractedMessages(sessionId, messageIds) { retired.push({ sessionId, messageIds }); },
       newId: () => `id-${++sequence}`,
     },
     ipc,
@@ -1641,6 +1646,10 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
   assert.deepEqual(stopLifecycle, [
     'teardown',
     'interrupt',
+  ]);
+  assert.deepEqual(retired, [
+    { sessionId: 'session-1', messageIds: ['steer-ticket-1'] },
+    { sessionId: 'session-1', messageIds: ['message-followup'] },
   ]);
 
   assert.deepEqual(submits, [

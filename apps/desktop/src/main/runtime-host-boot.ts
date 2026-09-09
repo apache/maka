@@ -1150,6 +1150,8 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
     },
     emitSessionsChanged,
     cacheTranscript: (scope, snapshot) => sessionLocal.cacheTranscript(scope, snapshot),
+    retireRetractedMessages: (scope, hostEpoch, sessionId, messageIds) =>
+      sessionLocal.retireRetractedMessages(scope, hostEpoch, sessionId, messageIds),
     completeComputerUseTurn,
     createSessionCopyCleanup: ({ removeSession, resumeSessionCopy }) =>
       createSessionCopyCleanupAuthority({

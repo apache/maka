@@ -41,6 +41,7 @@ import {
 import type { DesktopSessionSummaryInput } from '../../shared/desktop-session-projection.js';
 import type { DesktopTranscriptReplicaSnapshot } from '../desktop-transcript-replica.js';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
+import { parseDesktopSlashCommand } from '../../renderer/desktop-slash-command.js';
 
 const accepted: TurnMessageSubmitResult = {
   disposition: 'turn_started',
@@ -750,6 +751,78 @@ test('editing a preparation failure preserves bytes across restart and a new sen
   db.store.cancel(target.partition, source.messageId);
   assert.equal(db.store.get(target.partition, resend.messageId)?.state, 'saved');
   assert.equal(db.store.stagedAttachments(target.partition, resend.messageId).length, 1);
+});
+
+test('editing a one-shot orchestration failure restores the slash command before skills and references', async (t) => {
+  const { store } = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+  };
+  const service = new DesktopSessionLocalService(store, { targets: () => [target], changed() {}, onError: assert.fail });
+  t.after(() => service.close());
+  for (const mode of ['swarm', 'graph'] as const) {
+    const source = store.enqueue(target.partition, {
+      ...intent(mode),
+      command: { ...intent(mode).command, turnOrchestration: { mode, source: 'slash_command' },
+        skillIds: ['audit'], content: { text: 'audit repository',
+          inlineReferences: [{ kind: 'workspace_file', value: 'repository', label: 'repository', start: 6 }] } },
+    });
+    store.update({ ...source, state: 'failed' });
+    const draft = service.readFailedMessage(target, 'session-1', mode);
+    assert.equal(draft.text, `/${mode} /skill:audit audit repository`);
+    assert.equal(draft.inlineReferences[0]?.start, draft.text.indexOf('repository'));
+    assert.deepEqual(parseDesktopSlashCommand(draft.text), {
+      kind: mode, command: { kind: 'run_once', task: '/skill:audit audit repository' },
+    });
+    assert.equal(store.get(target.partition, mode)?.state, 'failed');
+  }
+});
+
+test('Host retraction proof is scoped and remains retired after restart while offline', async (t) => {
+  const db = await database(t);
+  const scope = { hostId: 'root', targetEpoch: 'target' };
+  const target: DesktopSessionLocalTarget = { partition: 'authority', profileId: 'profile', scope };
+  for (const [partition, sessionId, messageId, epoch] of [
+    ['authority', 'session-1', 'cancelled', 'epoch'],
+    ['authority', 'session-2', 'other-session', 'epoch'],
+    ['authority', 'session-1', 'other-epoch', 'older'],
+    ['other-authority', 'session-1', 'cancelled', 'epoch'],
+  ]) {
+    const record = db.store.enqueue(partition!, intent(messageId!, sessionId!));
+    db.store.update({ ...record, state: 'accepted', intent: { ...record.intent, originHostEpoch: epoch } });
+  }
+  const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+  service.retireRetractedMessages({ ...scope, targetEpoch: 'stale' }, 'epoch', 'session-1', ['cancelled']);
+  assert.ok(db.store.get('authority', 'cancelled'));
+  service.retireRetractedMessages(scope, 'epoch', 'session-1', ['cancelled', 'other-session', 'other-epoch']);
+  service.close();
+  db.reopen();
+  const offline = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
+  t.after(() => offline.close());
+  assert.deepEqual(offline.listMessages(target, 'session-1').map((message) => message.messageId), ['other-epoch']);
+  assert.equal(offline.listMessages(target, 'session-2').length, 1);
+  assert.ok(db.store.get('other-authority', 'cancelled'));
+  assert.equal(db.store.stagedAttachments('authority', 'cancelled').length, 0);
+});
+
+test('retraction before the submit ACK fences the late completion without recreating the intent', async (t) => {
+  const { store } = await database(t);
+  const ack = deferred<TurnMessageSubmitResult>();
+  let dispatched = false;
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+    client: client('epoch'), submit: async () => { dispatched = true; return ack.promise; },
+  };
+  const service = new DesktopSessionLocalService(store, { targets: () => [target], changed() {}, onError: assert.fail });
+  t.after(() => service.close());
+  store.enqueue('authority', { ...intent(), staged: [] });
+  service.wake();
+  await waitFor(() => dispatched);
+  service.retireRetractedMessages(target.scope, 'epoch', 'session-1', ['message-1']);
+  ack.resolve(accepted);
+  await nextTurn();
+  await nextTurn();
+  assert.equal(store.get('authority', 'message-1'), undefined);
 });
 
 test('editing a submitted failure retains references and rejects unsettled or differently owned messages', async (t) => {

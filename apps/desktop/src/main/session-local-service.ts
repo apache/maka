@@ -223,7 +223,11 @@ export class DesktopSessionLocalService {
     const skillTokens = (command.skillIds ?? []).filter(
       (id) => !command.content.text.split(/\s+/).includes(`/skill:${id}`),
     ).map((id) => `/skill:${id}`);
-    const prefix = skillTokens.length ? `${skillTokens.join(' ')} ` : '';
+    // The composer strips a one-shot orchestration command before admission.
+    // Restore it before skill tokens so the normal slash-command path consumes it again.
+    const mode = command.turnOrchestration?.mode;
+    const tokens = [...(mode === 'swarm' || mode === 'graph' ? [`/${mode}`] : []), ...skillTokens];
+    const prefix = tokens.length ? `${tokens.join(' ')} ` : '';
     return {
       messageId,
       text: prefix + command.content.text,
@@ -376,6 +380,18 @@ export class DesktopSessionLocalService {
         this.deps.onError(error);
       }
     });
+  }
+
+  retireRetractedMessages(
+    scope: DesktopTargetScope, hostEpoch: string, sessionId: string, messageIds: readonly string[],
+  ): void {
+    if (this.#closed) return;
+    let target: DesktopSessionLocalTarget;
+    try { target = this.target(scope); } catch { return; }
+    if (this.store.retireRetractedMessages(target.partition, hostEpoch, sessionId, messageIds)) {
+      this.deps.changed(target.scope, sessionId);
+      this.wake();
+    }
   }
 
   close(): void {

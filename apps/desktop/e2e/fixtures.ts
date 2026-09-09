@@ -422,7 +422,7 @@ async function withE2eWindow(
     railRenderSessions?: boolean;
     newTaskProject?: boolean;
   },
-  use: (page: Page, context: { userDataDir: string; app: ElectronApplication; restart(): Promise<Page> }) => Promise<void>,
+  use: (page: Page, context: { userDataDir: string; app: ElectronApplication; restart(beforeReady?: (app: ElectronApplication) => Promise<void>): Promise<Page> }) => Promise<void>,
 ): Promise<void> {
   const userDataDir = await mkdtemp(path.join(tmpdir(), 'maka-e2e-'));
   // Lives inside the throwaway userData dir so the existing teardown removes
@@ -491,7 +491,7 @@ async function withE2eWindow(
       const rendererDetail = rendererLogs.length > 0 ? `\nRenderer console:\n${rendererLogs.join('\n')}` : '';
       throw new Error(`${detail}${mainDetail}${rendererDetail}`, { cause: error });
     }
-    await use(page, { userDataDir, app, restart: async () => {
+    await use(page, { userDataDir, app, restart: async (beforeReady) => {
       await closeElectronApplication(app!, 5_000);
       app = await electron.launch({
         args: ['.', ...(visibleWindow ? inactiveWindowPlatformArgs() : [])],
@@ -499,6 +499,7 @@ async function withE2eWindow(
         env: buildFixtureEnv(userDataDir, homeDir, { scenario: e2eFixtureScenario, locale, platform, showWindow: visibleWindow }),
       });
       const restored = await app.firstWindow();
+      await beforeReady?.(app);
       await restored.waitForSelector(readinessSelector, { timeout: 20_000 });
       return restored;
     } });
@@ -512,7 +513,7 @@ async function withE2eWindow(
 }
 
 type E2eTestFixtures = {
-  sessionLocalWindow: { page: Page; app: ElectronApplication; restart(): Promise<Page> };
+  sessionLocalWindow: { page: Page; app: ElectronApplication; restart(beforeReady?: (app: ElectronApplication) => Promise<void>): Promise<Page> };
   window: Page;
   gitReviewWindow: { page: Page; projectRoot: string };
   invocableSkillsWindow: Page;

@@ -145,6 +145,7 @@ async function submitMessageWithReconnect(
 }
 
 export interface RuntimeHostSessionExecutionIpcDeps {
+  retireRetractedMessages?: (sessionId: string, messageIds: readonly string[]) => void;
   client: RuntimeHostSessionExecutionClient;
   observer: RuntimeHostSessionObserver;
   attachmentApprovals: AttachmentApprovalRegistry;
@@ -262,7 +263,9 @@ export function registerRuntimeHostSessionExecutionIpc(
     'sessions:queryCancelledMessages',
     async (_event, sessionId: string, messageIds: unknown) => {
       if (!Array.isArray(messageIds)) throw new Error('Invalid Message identities');
-      return deps.client.queryMessages({ sessionId, messageIds });
+      const result = await deps.client.queryMessages({ sessionId, messageIds });
+      deps.retireRetractedMessages?.(sessionId, result.cancelledMessageIds);
+      return result;
     },
   );
 
@@ -871,7 +874,7 @@ function retainedAttachmentsForSession(
 function createRuntimeHostSessionStop(
   deps: Pick<
     RuntimeHostSessionExecutionIpcDeps,
-    "beforeStop" | "client" | "observer" | "emitSessionsChanged"
+    "beforeStop" | "client" | "observer" | "emitSessionsChanged" | "retireRetractedMessages"
   >,
   newId: () => string = randomUUID,
 ): (
@@ -897,6 +900,7 @@ function createRuntimeHostSessionStop(
             }),
           () => deps.client.getSession(sessionId),
         );
+        deps.retireRetractedMessages?.(sessionId, [entry.messageId]);
         deps.emitSessionsChanged('status-change', sessionId);
         return { kind: 'retracted', messageId: entry.messageId };
       }
@@ -938,6 +942,7 @@ function createRuntimeHostSessionStop(
       turnId: turn.turnId,
       runId: turn.runId,
     });
+    deps.retireRetractedMessages?.(sessionId, interrupted.retracted.map((message) => message.messageId));
     deps.emitSessionsChanged("turn-status-change", sessionId, {
       turnId: turn.turnId,
     });

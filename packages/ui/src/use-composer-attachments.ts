@@ -410,7 +410,7 @@ export function useComposerAttachments(options: {
         const file = new File([new Uint8Array(item.content).buffer], item.name, { type: item.mimeType });
         return {
           stagingKey: crypto.randomUUID(), displayName: item.name, mimeType: item.mimeType,
-          kind: attachmentKindFromMimeType(item.mimeType), size: file.size, source: { type: 'file', file },
+          kind: attachmentKindFromMimeType(item.mimeType, item.name), size: file.size, source: { type: 'file', file },
         };
       }),
     ];

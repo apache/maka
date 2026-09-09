@@ -2733,6 +2733,42 @@ test("projects Host queue revisions and newly delivered steering messages", asyn
   await observer.close();
 });
 
+test('requests cancellation proof when an observed queued admission disappears', async () => {
+  const events = new AsyncFrameQueue();
+  const retractions: Array<{ sessionId: string; messageIds: readonly string[] }> = [];
+  const queued = {
+    entryId: 'entry-1', messageId: 'message-followup', content: { text: 'Follow up' },
+    placement: 'next_turn' as const, state: 'queued' as const,
+  };
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => runtimeHostSessionFixture({
+        snapshot: continuitySnapshot({
+          queue: { hostEpoch: 'host-1', queueRevision: 1, steering: [], followup: [queued] },
+        }),
+        activeAssistantStreams: [], transcript: Promise.resolve([]), events,
+        async close() { events.end(); },
+      }),
+    },
+    emitSessionsChanged() {},
+    onMessageRetraction(sessionId, messageIds) { retractions.push({ sessionId, messageIds }); },
+  });
+  try {
+    await observer.observe('session-1', 'observer-1', eventTarget(3), true);
+    assert.deepEqual(retractions, []);
+    events.push({
+      kind: 'subscription.session_projection', hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1', sequence: 1,
+      snapshot: continuitySnapshot({
+        projectionRevision: 2,
+        queue: { hostEpoch: 'host-1', queueRevision: 2, steering: [], followup: [] },
+      }),
+    });
+    await waitFor(() => retractions.length === 1);
+    assert.deepEqual(retractions, [{ sessionId: 'session-1', messageIds: ['message-followup'] }]);
+  } finally { await observer.close(); }
+});
+
 test("publishes Host sidecar and graph invalidations without inventing Session status changes", async () => {
   const events = new AsyncFrameQueue();
   const sessionChanges: Array<{ reason: string; sessionId: string }> = [];

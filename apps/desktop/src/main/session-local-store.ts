@@ -347,6 +347,27 @@ export class DesktopSessionLocalStore {
     });
   }
 
+  /** Host-confirmed cancellation is terminal evidence, even without a transcript row.
+   * Delete in one commit; the delivering worker's ownership check fences a late ACK.
+   */
+  retireRetractedMessages(
+    partition: string, hostEpoch: string, sessionId: string, messageIds: readonly string[],
+  ): boolean {
+    return this.#transaction(() => {
+      let changed = false;
+      const remove = this.#db.prepare(
+        'DELETE FROM outbox WHERE partition = ? AND session_id = ? AND message_id = ?',
+      );
+      for (const messageId of messageIds) {
+        const record = this.get(partition, messageId);
+        if (!record || record.sessionId !== sessionId || record.intent.originHostEpoch !== hostEpoch) continue;
+        if (remove.run(partition, sessionId, messageId).changes) changed = true;
+      }
+      if (changed) this.#revision += 1;
+      return changed;
+    });
+  }
+
   saveTranscript(partition: string, snapshot: DesktopTranscriptReplicaSnapshot): void {
     // Persist durable evidence only. Live assistant fragments and old running
     // claims must not masquerade as current execution after restart.

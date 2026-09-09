@@ -38,8 +38,8 @@
       "electron": "needs a second real Session (Host round trip) to switch to; the focus and draft-restore halves alone would not earn a window"
     },
     "session-local-recovery.spec.ts": {
-      "tests": 4,
-      "electron": "SQLite admission crosses preload and main, survives renderer reload and complete Electron restart, and cached history renders without live IPC. Failed-message recovery reads original attachment bytes through Main/preload, fences an intervening draft, and resubmits through the real Host."
+      "tests": 5,
+      "electron": "SQLite admission crosses preload and main, survives renderer reload and complete Electron restart, and cached history renders without live IPC. Failed-message recovery reads original bytes, fences drafts, and preserves one-shot slash intent through the real composer/Main path. Stop retractions remain retired across offline navigation and application restart."
     },
     "session-workbar.spec.ts": {
       "tests": 6,
