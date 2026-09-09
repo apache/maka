@@ -70,10 +70,16 @@ test('Other keeps its draft and shows a cursor only while its input row is selec
   assert.equal(inputLine(), focused, 'refocus restores the cursor and IME position');
 
   overlay.handleInput(ARROW_LEFT); // Put the cursor on e + combining accent, not a trailing space.
-  assert.ok(inputLine().includes(`${REVERSE_ON}e\u0301`));
+  const focusedOnCharacter = inputLine();
+  assert.ok(focusedOnCharacter.includes(`${REVERSE_ON}e\u0301`));
   overlay.handleInput(ARROW_UP);
   assert.ok(!inputLine().includes(REVERSE_ON), 'a cursor on a character must also disappear');
   overlay.handleInput(ARROW_DOWN);
+  assert.equal(
+    inputLine(),
+    focusedOnCharacter,
+    'refocus restores the cursor on the combining character',
+  );
   overlay.handleInput(ENTER);
   assert.deepEqual(answers, [draft]);
 });
