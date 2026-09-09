@@ -278,6 +278,13 @@ export const GENERALIZED_ERROR_COPY = {
     provider_error: 'Provider returned an error',
     network_error: 'Network error',
   },
+  ko: {
+    timeout: '요청 시간 초과',
+    rate_limited: '모델 속도 제한 초과',
+    auth_failed: '인증 실패',
+    provider_error: '모델 제공자 오류',
+    network_error: '네트워크 오류',
+  },
 } satisfies UiCatalog<Record<GeneralizedErrorClass, string>>;
 
 export function generalizedErrorMessageForLocale(
