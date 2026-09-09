@@ -78,6 +78,7 @@ import { createMcpToolBinding, parseMcpToolBinding } from './tool-binding.js';
 import { McpToolCallError, normalizeToolCallError } from './tool-call-error.js';
 import { discoverMcpTools, type McpDiscoveredTool } from './tool-discovery.js';
 import { McpToolCallPreparer, type McpToolCallPreparationState } from './tool-output-validation.js';
+import { mapMcpToolProgress } from './tool-progress.js';
 import { McpCredentialCoordinator } from './credential-coordinator.js';
 import {
   assertTransportSecurity,
@@ -753,7 +754,11 @@ export class McpClientManager {
   async callTool(
     binding: McpToolBinding,
     args: Record<string, unknown>,
-    options: { signal?: AbortSignal; timeoutMs?: number } = {},
+    options: {
+      signal?: AbortSignal;
+      timeoutMs?: number;
+      onProgress?: (current: number, total: number) => void;
+    } = {},
   ): Promise<McpCallResult> {
     const identity = parseMcpToolBinding(binding);
     if (!identity) {
@@ -808,6 +813,19 @@ export class McpClientManager {
           signal: options.signal,
           timeout: options.timeoutMs ?? this.timeouts.callToolMs,
           toolDefinition: structuredClone(preparation.value.definitionForSdk),
+          ...(options.onProgress
+            ? {
+                onprogress: (progress: unknown) => {
+                  const mapped = mapMcpToolProgress(progress);
+                  if (!mapped) return;
+                  try {
+                    options.onProgress!(mapped.current, mapped.total);
+                  } catch {
+                    // Progress is advisory: a listener failure must not fail the tool.
+                  }
+                },
+              }
+            : {}),
         },
       );
     } catch (error) {

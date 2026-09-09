@@ -107,7 +107,16 @@ export function createMcpCapabilityProvider(
       if (!binding) throw new Error('MCP capability is not part of the published snapshot');
       await options.accept({ kind: 'none' });
       return projectMcpResult(
-        await manager.callTool(binding, frame.arguments, { signal: options.signal }),
+        await manager.callTool(binding, frame.arguments, {
+          signal: options.signal,
+          ...(options.progress
+            ? {
+                onProgress: (current, total) => {
+                  options.progress?.(current, total);
+                },
+              }
+            : {}),
+        }),
       );
     },
   };
