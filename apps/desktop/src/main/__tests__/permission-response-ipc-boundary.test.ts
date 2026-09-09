@@ -286,6 +286,31 @@ describe('permission response IPC boundary', () => {
     );
   });
 
+  it('accepts a retained-attachment-only edit without inline text', () => {
+    // A normal edit can keep an existing attachment while dropping all inline
+    // text; the retained refs travel separately from attachmentItems and must
+    // count as content before the empty-body rejection (#4804).
+    const command = normalizeSessionSendCommand({
+      type: 'send',
+      text: '   ',
+      retainedAttachments: [
+        {
+          kind: 'image',
+          name: 'kept.png',
+          mimeType: 'image/png',
+          bytes: 12,
+          ref: {
+            kind: 'session_file',
+            sessionId: 'session-1',
+            relativePath: 'attachments/kept.png',
+          },
+        },
+      ],
+    });
+    assert.equal(command?.retainedAttachments?.length, 1);
+    assert.equal(command?.retainedAttachments?.[0]?.name, 'kept.png');
+  });
+
   it('accepts only the supported stop source', () => {
     assert.deepEqual(normalizeStopSessionInput(undefined), {});
     assert.deepEqual(

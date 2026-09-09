@@ -214,9 +214,20 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
   // state, ownership, and size limits stay with the ingestion checks, and
   // quotes are normalized below before the command is returned.
   const quotes = normalizeOptionalQuotes(value.quotes).quotes;
+  // A normal edit can keep an existing attachment while dropping all inline
+  // text; the retained refs travel separately from attachmentItems and are
+  // normalized before the empty-body rejection so a retained-attachment-only
+  // edit is not refused (#4804).
+  const retainedAttachments = normalizeOptionalRetainedAttachments(value.retainedAttachments);
   const hasAttachmentItems =
     Array.isArray(value.attachmentItems) && value.attachmentItems.length > 0;
-  if (!text.trim() && skillIds.length === 0 && (quotes?.length ?? 0) === 0 && !hasAttachmentItems) {
+  if (
+    !text.trim() &&
+    skillIds.length === 0 &&
+    (quotes?.length ?? 0) === 0 &&
+    !hasAttachmentItems &&
+    (retainedAttachments.retainedAttachments?.length ?? 0) === 0
+  ) {
     throw new Error('Invalid send text');
   }
   return {
@@ -227,7 +238,7 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
     ...(displayText !== undefined ? { displayText } : {}),
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(value.attachmentItems !== undefined ? { attachmentItems: value.attachmentItems } : {}),
-    ...normalizeOptionalRetainedAttachments(value.retainedAttachments),
+    ...retainedAttachments,
     ...(value.turnOrchestration !== undefined
       ? { turnOrchestration: normalizeTurnOrchestration(value.turnOrchestration) }
       : {}),
