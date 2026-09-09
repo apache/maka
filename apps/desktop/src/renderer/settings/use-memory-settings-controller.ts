@@ -40,7 +40,7 @@ import {
 } from './memory-settings-labels';
 import { deriveMemorySettingsViewModel } from './memory-settings-view-model';
 import { useKeyedActionGuard } from './use-action-guard';
-import { getMemorySettingsCopy } from '../locales/settings-memory-copy';
+import { getMemorySettingsCopy, memoryResultMessage } from '../locales/settings-memory-copy';
 import { readScrollMotionBehavior } from '../scroll-motion-policy';
 import {
   useRuntimeHostSettingsErrorReporter,
@@ -287,7 +287,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
           } else {
             reportHostError(
               copy.text.restoreFailed,
-              memoryResultMessage(result.message, locale, copy.text.restoreFailed),
+              memoryResultMessage(result, copy, copy.text.restoreFailed),
             );
           }
         });
@@ -324,7 +324,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
           } else {
             reportHostError(
               copy.text.restoreFailed,
-              memoryResultMessage(result.message, locale, copy.text.restoreFailed),
+              memoryResultMessage(result, copy, copy.text.restoreFailed),
             );
           }
         });
@@ -345,7 +345,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
         if (!result.ok) {
           reportHostError(
             copy.text.openFailed,
-            memoryResultMessage(result.message, locale, copy.text.openFailed),
+            memoryResultMessage(result, copy, copy.text.openFailed),
           );
         }
       } catch (error) {
@@ -364,7 +364,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
         if (!result.ok) {
           reportHostError(
             copy.text.openPreviousFailed,
-            memoryResultMessage(result.message, locale, copy.text.openPreviousFailed),
+            memoryResultMessage(result, copy, copy.text.openPreviousFailed),
           );
         }
       } catch (error) {
@@ -386,7 +386,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
         if (!result.ok) {
           reportHostError(
             copy.openBackupFailed(localMemoryBackupKindLabel(backup.kind, copy)),
-            memoryResultMessage(result.message, locale, copy.text.openFailed),
+            memoryResultMessage(result, copy, copy.text.openFailed),
           );
         }
       } catch (error) {
@@ -686,8 +686,4 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
     isMemoryActionPending,
     copyLocalMemoryPromptPreview,
   };
-}
-
-function memoryResultMessage(message: string, locale: UiLocale, fallback: string): string {
-  return locale === 'zh-CN' || !/[\u3400-\u9fff]/u.test(message) ? message : fallback;
 }

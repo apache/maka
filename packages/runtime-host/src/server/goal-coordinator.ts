@@ -58,6 +58,7 @@ import type {
   OperationOutcome,
 } from '../protocol/index.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
+import type { HostResidencyKind } from './host-residency-registry.js';
 import type { GoalOperationHandlerMap } from './operation-dispatcher.js';
 import { projectGoalState } from './goal-projection.js';
 import {
@@ -86,7 +87,7 @@ export interface HostGoalCoordinatorOptions {
     checkpoint: GoalCheckpoint,
     controlLease: GoalControlLease,
   ) => GoalTurnAdmission;
-  readonly acquireResidency: () => RuntimeHostResidency;
+  readonly acquireResidency: (kind?: HostResidencyKind) => RuntimeHostResidency;
   readonly onProjectionChanged: (sessionId: string) => void;
   readonly requestDrain: () => void;
   readonly now?: () => number;
@@ -116,7 +117,7 @@ export class HostGoalCoordinator {
   readonly #onProjectionChanged: (sessionId: string) => void;
   readonly #newId: () => string;
   readonly #requestDrain: () => void;
-  readonly #acquireResidency: () => RuntimeHostResidency;
+  readonly #acquireResidency: HostGoalCoordinatorOptions['acquireResidency'];
   readonly #executions: Pick<HostedExecutionAuthority, 'reconcile' | 'subscribe'>;
   readonly #authorityBySession = new Map<string, GoalAuthoritySnapshot>();
   /**
@@ -156,6 +157,7 @@ export class HostGoalCoordinator {
     const tokenCache = this.#tokenCache;
     this.continuation = new GoalContinuationCoordinator({
       goalManager: this.manager,
+      acquireActivity: () => this.#acquireResidency(),
       evaluator: options.evaluator,
       getRecentContext: async (sessionId) => {
         const messages = await options.readSessionMessages(sessionId);
@@ -579,6 +581,7 @@ export class HostGoalCoordinator {
         record,
       });
     }
+    const residency = this.#acquireResidency();
     const commit = this.#persistenceLane.then(async () => {
       let result;
       try {
@@ -607,10 +610,12 @@ export class HostGoalCoordinator {
         throw new Error(`Goal authority changed its committed revision for Session ${sessionId}`);
       }
     });
-    this.#persistenceLane = commit.catch((error) => {
-      this.#persistenceFailure ??= error;
-      this.#requestDrain();
-    });
+    this.#persistenceLane = commit
+      .catch((error) => {
+        this.#persistenceFailure ??= error;
+        this.#requestDrain();
+      })
+      .finally(() => residency.release());
   }
 
   async #deleteOrphanedAuthority(snapshot: GoalAuthoritySnapshot): Promise<void> {
@@ -631,10 +636,10 @@ export class HostGoalCoordinator {
     if (this.#persistenceFailure !== undefined) throw this.#persistenceFailure;
   }
 
-  #syncResidency(goal: GoalState, acquire: () => RuntimeHostResidency): void {
+  #syncResidency(goal: GoalState, acquire: HostGoalCoordinatorOptions['acquireResidency']): void {
     const retained = this.#residencies.get(goal.sessionId);
     if (!TERMINAL_GOAL_STATUSES.has(goal.status)) {
-      if (!retained && !this.#draining) this.#residencies.set(goal.sessionId, acquire());
+      if (!retained && !this.#draining) this.#residencies.set(goal.sessionId, acquire('idle'));
       return;
     }
     retained?.release();

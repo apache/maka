@@ -502,7 +502,7 @@ export function createAppShellChatActions(deps: {
       }
       if (!initialSessionId) {
         if (!initialNewTaskTarget) return false;
-        if (pending?.length) preflightAttachmentItems(pending, uiLocale);
+        if (pending?.length) preflightAttachmentItems(pending);
         const session = await window.maka.newTasks.create(initialNewTaskTarget, {
           name: DEFAULT_SESSION_NAME,
           ...(newChatModel

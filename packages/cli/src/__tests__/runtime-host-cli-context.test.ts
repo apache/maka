@@ -29,6 +29,7 @@ import {
   RuntimeHostRemoteCompatibilityError,
   RuntimeHostStartupError,
   HostHandoffRequiredError,
+  HostHandoffCancelledError,
   type RuntimeHostConnection,
   type RuntimeHostProfileCatalog,
   type RemoteRuntimeHostProfile,
@@ -826,3 +827,193 @@ test('activated managed Host incompatibility stays operator-owned', async () => 
     },
   );
 });
+
+for (const action of ['cancel', 'interrupt', 'retry'] as const) {
+  test(`source CLI observed-process recovery requires explicit interruption: ${action}`, async () => {
+    let stopped = 0;
+    let attention = 0;
+    const registration = hostRegistration({ compatibilityEpoch: 121 });
+    const processIdentity = { startIdentity: 'linux:42:123' };
+    const connection = {
+      rootId: registration.rootId,
+      hostEpoch: 'new-host',
+      connectionId: 'new-connection',
+      selectedProtocol: 0,
+      closed: new Promise<void>(() => {}),
+      status: async () => ({ state: 'ready' }),
+      subscribeConfigurationChanges: () => () => {},
+      subscribeConnectionCatalogChanges: () => () => {},
+      subscribeProjectCatalogChanges: () => () => {},
+      subscribeSessionCatalogChanges: () => () => {},
+      subscribeScheduledTaskChanges: () => () => {},
+      close: async () => {},
+    } as unknown as RuntimeHostConnection;
+    const abort = new AbortController();
+    const timeout = setTimeout(() => abort.abort(new Error('handoff did not settle')), 3000);
+    try {
+      const running = connectRuntimeHostCliConnection(
+        {
+          rootPath: '/source-root',
+          signal: abort.signal,
+          handoffSurface: (submit) => ({
+            update(view) {
+              if (view.state !== 'attention') return;
+              assert.equal(view.reason, 'activity_unknown');
+              assert.deepEqual(view.actions, ['cancel', 'retry', 'interrupt']);
+              assert.equal(stopped, 0);
+              submit(view.revision, attention++ === 0 ? action : 'cancel');
+            },
+            close() {},
+          }),
+        },
+        {
+          isTemporaryNpxInstallation: async () => false,
+          resolveManagedAuthority: async () => undefined,
+          readDeploymentRecord: async () => undefined,
+          resolveInstallation: async () => {
+            throw new Error('development checkout');
+          },
+          connectOrSpawn: async () =>
+            stopped
+              ? connectedHostResult(connection)
+              : {
+                  kind: 'incompatible',
+                  registration,
+                  processIdentity,
+                  handshake: incompatibleRemoteHandshake({ hostEpoch: registration.hostEpoch }),
+                },
+          terminateObservedHost: async (observed, authority) => {
+            assert.equal(observed.registration, registration);
+            assert.equal(authority.processIdentity, processIdentity);
+            assert.equal(authority.isCurrent(), true);
+            stopped++;
+            return true;
+          },
+        },
+      );
+      if (action === 'interrupt') {
+        const context = await running;
+        await context.close();
+        assert.equal(stopped, 1);
+      } else {
+        // Retry preserves the same view; cancellation is a separate user action.
+        if (action === 'retry') setTimeout(() => abort.abort(new HostHandoffCancelledError()), 30);
+        await assert.rejects(running, HostHandoffCancelledError);
+        assert.equal(stopped, 0);
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+}
+
+for (const blocker of ['managed', 'owner', 'temporary', 'identity'] as const) {
+  test(`CLI never offers unowned process recovery for ${blocker}`, async () => {
+    await assert.rejects(
+      connectRuntimeHostCliConnection(
+        { rootPath: '/source-root' },
+        {
+          isTemporaryNpxInstallation: async () => blocker === 'temporary',
+          resolveManagedAuthority: async () =>
+            blocker === 'managed' ? ({ record: {} } as never) : undefined,
+          readDeploymentRecord: async () =>
+            blocker === 'owner'
+              ? ({
+                  state: { kind: 'owned', owner: { kind: 'desktop', installationId: 'other' } },
+                } as never)
+              : undefined,
+          resolveInstallation: async () => {
+            throw new Error('development checkout');
+          },
+          connectOrSpawn: async () => ({
+            kind: 'incompatible',
+            registration: hostRegistration(),
+            ...(blocker === 'identity' ? {} : { processIdentity: { startIdentity: 'observed' } }),
+            handshake: incompatibleRemoteHandshake(),
+          }),
+          terminateObservedHost: async () => {
+            throw new Error('must not terminate');
+          },
+        },
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof HostHandoffRequiredError);
+        assert.deepEqual(error.view.actions, ['cancel', 'retry']);
+        assert.equal(
+          error.view.recoveryBlocker,
+          blocker === 'temporary' ? 'installation' : blocker,
+        );
+        return true;
+      },
+    );
+  });
+}
+
+for (const changed of ['managed', 'owner'] as const) {
+  test(`CLI rechecks ${changed} authority after interruption consent`, async () => {
+    let inspections = 0;
+    let attention = 0;
+    let terminated = false;
+    const abort = new AbortController();
+    const timeout = setTimeout(() => abort.abort(new Error('handoff did not settle')), 3000);
+    try {
+      await assert.rejects(
+        connectRuntimeHostCliConnection(
+          {
+            rootPath: '/source-root',
+            signal: abort.signal,
+            handoffSurface: (submit) => ({
+              update(view) {
+                if (view.state !== 'attention') return;
+                if (attention++ === 0) {
+                  assert.ok(view.actions.includes('interrupt'));
+                  submit(view.revision, 'interrupt');
+                } else {
+                  assert.equal(view.reason, 'operator_required');
+                  assert.ok(!view.actions.includes('interrupt'));
+                  submit(view.revision, 'cancel');
+                }
+              },
+              close() {},
+            }),
+          },
+          {
+            isTemporaryNpxInstallation: async () => false,
+            resolveInstallation: async () => {
+              throw new Error('source installation');
+            },
+            resolveManagedAuthority: async () => {
+              inspections++;
+              return changed === 'managed' && inspections >= 3
+                ? ({ record: {} } as never)
+                : undefined;
+            },
+            readDeploymentRecord: async () =>
+              changed === 'owner' && inspections >= 3
+                ? ({
+                    state: {
+                      kind: 'owned',
+                      owner: { kind: 'desktop', installationId: 'new-owner' },
+                    },
+                  } as never)
+                : undefined,
+            connectOrSpawn: async () => ({
+              kind: 'incompatible',
+              registration: hostRegistration(),
+              processIdentity: { startIdentity: 'observed-process' },
+              handshake: incompatibleRemoteHandshake(),
+            }),
+            terminateObservedHost: async () => {
+              terminated = true;
+              return true;
+            },
+          },
+        ),
+        HostHandoffCancelledError,
+      );
+      assert.equal(terminated, false);
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+}

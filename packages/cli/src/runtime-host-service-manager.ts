@@ -1237,10 +1237,6 @@ async function normalizeStateRoot(requestedRoot: string): Promise<string> {
   }
 }
 
-export async function resolveRuntimeHostManagedStateRoot(requestedRoot: string): Promise<string> {
-  return normalizeStateRoot(requestedRoot);
-}
-
 async function normalizeProjectDirectoryRoots(
   roots: readonly { readonly label: string; readonly path: string }[],
 ): Promise<readonly { readonly label: string; readonly path: string }[]> {

@@ -1105,3 +1105,72 @@ function incompatibleHost(registration: HostRegistration) {
     },
   };
 }
+
+for (const mode of ['explicit', 'safe', 'identity_changed'] as const) {
+  test(`legacy npm restart preserves staged deployment authority during ${mode} recovery`, async (t) => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-legacy-process-recovery-'));
+    t.after(() => rm(base, { recursive: true, force: true }));
+    const sourcePackageRoot = await selfContainedPackage(base, TARGET.version);
+    const authorityRoot = join(base, 'authority');
+    const registration = hostRegistration();
+    const processIdentity = { startIdentity: 'observed-process-start' };
+    const events: string[] = [];
+    const result = await restartRuntimeHostNpmGlobalDeployment(
+      {
+        rootPath: join(base, 'root'),
+        registration,
+        processIdentity,
+        activeWorkPolicy: mode === 'safe' ? 'refuse_active_work' : 'interrupt_active_work',
+        deploymentPathOptions: { platform: 'linux', homeDir: join(base, 'home') },
+      },
+      { authorityRoot },
+      {
+        resolveManagedAuthority: async () => undefined,
+        resolveInstallation: async () => ({
+          owner: CLI_OWNER,
+          observedRelease: {
+            version: TARGET.version,
+            packageRoot: sourcePackageRoot,
+            cliPath: join(sourcePackageRoot, 'dist', 'cli.js'),
+          },
+        }),
+        resolveCandidate: async () => TARGET,
+        withPackage: async (_candidate, use) => {
+          events.push('stage');
+          return use(sourcePackageRoot);
+        },
+        prepareDeployment: prepareRuntimeHostPackageDeployment,
+        connectExisting: async () => incompatibleHost(registration),
+        terminateObservedHost: async (observed, authority) => {
+          assert.equal(observed.registration, registration);
+          assert.equal(authority.processIdentity, processIdentity);
+          assert.equal(authority.isCurrent(), true);
+          events.push('stop');
+          return mode !== 'identity_changed';
+        },
+        activateTarget: async () => {
+          events.push('activate');
+          return mode === 'safe'
+            ? { kind: 'active_work', settle: async () => {} }
+            : { kind: 'ready', settle: async () => {} };
+        },
+      },
+    );
+    if (mode === 'explicit') {
+      assert.equal(result.kind, 'completed');
+      assert.deepEqual(events, ['stage', 'stop', 'activate']);
+      assert.deepEqual((await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot }))?.state, {
+        kind: 'owned',
+        owner: CLI_OWNER,
+        selected: TARGET,
+      });
+    } else if (mode === 'safe') {
+      assert.equal(result.kind, 'active_work');
+      assert.deepEqual(events, ['stage', 'activate']);
+      assert.equal(await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot }), undefined);
+    } else {
+      assert.equal(result.kind, 'recovery_required');
+      assert.deepEqual(events, ['stage', 'stop']);
+    }
+  });
+}

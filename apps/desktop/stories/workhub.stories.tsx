@@ -23,6 +23,7 @@ import type { SessionSummary } from '@maka/core/session';
 import { WorkHubComposerServicesProvider } from '../src/renderer/features/workhub/index.js';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, within, waitFor } from 'storybook/test';
+import { WorkHubCoordinationFailure } from '../src/renderer/workhub-controller';
 import type {
   WorkHubController,
   WorkHubCoordinationTurn,
@@ -348,7 +349,7 @@ function ConfiguredComposerSurface({ failFirst = false }: { failFirst?: boolean 
     ...controller([submittedTurn()]),
     submit: async (input) => {
       composerWrites.send(input);
-      if (failures.remaining-- > 0) throw new Error('Temporary Host failure');
+      if (failures.remaining-- > 0) throw new WorkHubCoordinationFailure('host_not_ready', 'Temporary Host failure');
       return { kind: 'discussion', requestId: input.requestId, text: input.text, strategyId: 'wh-r2.4-session-context-continuity' };
     },
   }));

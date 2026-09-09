@@ -938,7 +938,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         ),
       );
     }
-    return this.runCommand(async () => {
+    // Admission is active work even while queued behind a Session gate. Its
+    // residency overlaps the execution residency until admission settles.
+    const residency = this.acquireRecoveryResidency();
+    const admission = this.runCommand(async () => {
       const activeAtEntry = this.#executions.has(input.sessionId);
       let reservation =
         preparedReservation ?? (activeAtEntry ? undefined : this.reserveRootTurn(input.sessionId));
@@ -1105,6 +1108,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       if (error instanceof HostedRootAdmissionGateError) throw error.cause;
       throw error;
     });
+    return admission.finally(() => residency.release());
   }
 
   lookup(sessionId: string, turnId: string): Promise<HostedExecutionIdentity | undefined> {

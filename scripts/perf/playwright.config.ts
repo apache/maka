@@ -17,17 +17,14 @@
  * under the License.
  */
 
-import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { subscriptionResultMessage } from '../../renderer/features/connection-settings/index.js';
-
-test('Traditional Chinese subscription errors reject raw Simplified backend copy', () => {
-  assert.equal(
-    subscriptionResultMessage('GitHub Copilot 登录已过期。', '請重新登入。', 'zh-TW'),
-    '請重新登入。',
-  );
-  assert.equal(
-    subscriptionResultMessage('network unreachable', '請重新登入。', 'zh-TW'),
-    '網路錯誤',
-  );
+import { defineConfig } from '@playwright/test';
+export default defineConfig({
+  testDir: '.',
+  testMatch: 'frontend.spec.ts',
+  workers: 1,
+  retries: 0,
+  timeout: 180000,
+  captureGitInfo: { commit: false, diff: false },
+  outputDir: '../../perf-results/playwright',
+  use: { trace: 'on' },
 });

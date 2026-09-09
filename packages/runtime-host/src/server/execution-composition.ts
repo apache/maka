@@ -671,7 +671,7 @@ export async function createExecutionRuntimeHostComposition(
         usage: openedUsageStores,
         requestDrain: context.requestDrain,
       }),
-      acquireResidency: () => context.acquireResidency('daily-review'),
+      acquireResidency: (kind) => context.acquireResidency('daily-review', kind),
       requestDrain: context.requestDrain,
     });
     let poisonFailure: Error | undefined;
@@ -1360,7 +1360,7 @@ export async function createExecutionRuntimeHostComposition(
       }),
       admitTurn: (sessionId, text, checkpoint, controlLease) =>
         goalExecutionCoordinator.admitTurn(sessionId, text, checkpoint, controlLease),
-      acquireResidency: () => context.acquireResidency('goal'),
+      acquireResidency: (kind) => context.acquireResidency('goal', kind),
       onProjectionChanged: (sessionId) => continuityCoordinator.enqueueCanonicalRefresh(sessionId),
       requestDrain: context.requestDrain,
     });
@@ -1723,7 +1723,7 @@ export async function createExecutionRuntimeHostComposition(
           taskId: string,
         ) => hostChanges.publishScheduledTask(revision, reason, taskId),
       },
-      acquireResidency: () => context.acquireResidency('scheduled-task'),
+      acquireResidency: (kind) => context.acquireResidency('scheduled-task', kind),
       requestDrain: context.requestDrain,
     });
     scheduledTaskTool = scheduledTasks.modelTool;
@@ -2127,6 +2127,7 @@ export async function createExecutionRuntimeHostComposition(
         if (draining || signal.aborted) return undefined;
         const goalHold = goal?.holdForHandoff();
         const scheduleHold = scheduledTasks?.holdForHandoff();
+        const dailyReviewHold = dailyReview?.holdForHandoff();
         let root: Awaited<ReturnType<RootTurnCoordinator['prepareHandoff']>>;
         let detached = false;
         const cancel = () => {
@@ -2134,16 +2135,21 @@ export async function createExecutionRuntimeHostComposition(
           root?.cancel();
           goalHold?.release();
           scheduleHold?.release();
+          dailyReviewHold?.release();
           signal.removeEventListener('abort', cancel);
         };
         signal.addEventListener('abort', cancel, { once: true });
         try {
-          if (!goalHold || !scheduleHold) {
+          if (!goalHold || !scheduleHold || !dailyReviewHold) {
             cancel();
             return undefined;
           }
           await waitForHostedExecutionIdleOrAbort(
-            Promise.all([goalHold.settled(), scheduleHold.settled()]).then(() => undefined),
+            Promise.all([
+              goalHold.settled(),
+              scheduleHold.settled(),
+              dailyReviewHold.settled(),
+            ]).then(() => undefined),
             signal,
           );
           root = await requireRootCoordinator(coordinator).prepareHandoff(hostEpoch, signal);
@@ -2158,8 +2164,9 @@ export async function createExecutionRuntimeHostComposition(
               await waitForHostedExecutionIdleOrAbort(scheduleHold.settled(), signal);
               const goals = await goalHold.residencies(prepared.executions);
               const roots = await prepared.residencies();
-              if (!goals || !roots || signal.aborted || draining) return undefined;
-              return [...roots, ...goals, ...scheduleHold.residencies()];
+              const reviews = dailyReviewHold.residencies();
+              if (!goals || !roots || !reviews || signal.aborted || draining) return undefined;
+              return [...roots, ...goals, ...scheduleHold.residencies(), ...reviews];
             },
             detach: async () => {
               detached = true;

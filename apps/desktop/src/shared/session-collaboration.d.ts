@@ -31,7 +31,11 @@ export type SessionCollaborationImportResult =
         | 'peer_path_unavailable'
         | 'incompatible_host'
         | 'connection_failed';
-      readonly message?: string;
+    }
+  | {
+      readonly kind: 'error';
+      readonly reason: 'mount_limit_reached';
+      readonly params: { readonly max: number };
     };
 
 export type SessionCollaborationImportPhase =

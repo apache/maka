@@ -40,6 +40,18 @@
   max-width: var(--maka-reading-measure);
 }
 
+/* Reaching the transcript tail fades the scroll-to-bottom control while the
+   composer below it stays still. Both otherwise share the dock's filtered
+   compositing surface, so Chromium may re-raster the thin context-gauge paths
+   for that opacity transition: their DOM box does not move, but the icon
+   visibly hops by a device pixel. Keep the fading control in its own small
+   paint/compositing boundary. `astryx-chat-layout-scroll-button` is Astryx's
+   published theme class; the child is its fixed 32px transition container. */
+.astryx-chat-layout-scroll-button > div {
+  contain: layout style paint;
+  will-change: opacity, transform;
+}
+
 .maka-composer-queue {
   width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-6))));
   max-width: var(--maka-reading-measure);

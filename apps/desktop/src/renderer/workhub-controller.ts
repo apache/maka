@@ -43,6 +43,8 @@ import type {
   WorkHubCoordinationActResult,
   WorkHubCoordinationCandidatesResult,
 } from '@maka/runtime-host/protocol';
+import { ExpectedOperationError } from './application/contracts/operation-diagnostics.js';
+
 
 /**
  * A Host operation the Coordination port could not complete. It lives beside
@@ -165,6 +167,7 @@ export interface WorkHubSubmitInput {
   newWorkDefaults?: WorkHubCoordinationActInput['newWorkDefaults'];
   requestId: string;
   text: string;
+  newSessionFallbackTitle: string;
   retryAction?: true;
   explicitTarget?: WorkHubSessionTarget;
   correction?: WorkHubCorrectionContext;
@@ -289,6 +292,10 @@ export interface WorkHubController {
   resetVisitContext(): void;
 }
 
+export type WorkHubExpectedFailureCode =
+  | 'candidates_changed'
+  | 'linked_correction_unavailable';
+
 export function createWorkHubController(deps: {
   sessions: WorkHubSessionPort;
   coordination: WorkHubCoordinationPort;
@@ -306,7 +313,9 @@ export function createWorkHubController(deps: {
   ): WorkHubCorrectionContext => {
     const sourceActionId = candidateBySessionId.get(from.sessionId)?.latestDelegationActionId;
     if (!sourceActionId) {
-      throw new Error('WorkHub linked correction requires an active durable delegation');
+      throw new ExpectedOperationError<WorkHubExpectedFailureCode>(
+        'linked_correction_unavailable',
+      );
     }
     return { from, sourceActionId };
   };
@@ -631,6 +640,7 @@ export function createWorkHubController(deps: {
         sessions: routable,
         originPromptBySessionId: new Map(routingEvidence.map((entry) => [entry.target.sessionId, entry.originPrompt])),
         ...(input.explicitTarget ? { explicitTarget: input.explicitTarget } : {}),
+        newSessionFallbackTitle: input.newSessionFallbackTitle,
         ...(evidence ? { interpretation: {
           classification: evidence.classification,
           resolution: evidence.resolution.kind,
@@ -720,7 +730,7 @@ export function createWorkHubController(deps: {
         (session) => session.target.sessionId === target.sessionId,
       );
       if (!targetSession) {
-        throw new Error('WorkHub target Session is unavailable');
+        throw new ExpectedOperationError<WorkHubExpectedFailureCode>('candidates_changed');
       }
       if (targetSession?.state === 'waiting_for_user' && !input.retryAction) {
         return {
@@ -733,7 +743,7 @@ export function createWorkHubController(deps: {
       }
       const candidate = candidateBySessionId.get(target.sessionId);
       if (!candidate) {
-        throw new Error('WorkHub target Session is unavailable');
+        throw new ExpectedOperationError<WorkHubExpectedFailureCode>('candidates_changed');
       }
       const action: WorkHubCoordinationActInput = correction
         ? {
