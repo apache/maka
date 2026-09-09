@@ -32,6 +32,7 @@ import {
   createForeignSessionStore,
   isClaudeCodeImportEnabled,
   isCodexImportEnabled,
+  isOpencodeImportEnabled,
 } from '../foreign-session-store.js';
 
 const NOW = Date.now();
@@ -495,6 +496,186 @@ describe('foreign session store — Codex scan', () => {
     assert.equal(all.length, 1);
     assert.equal(all[0]!.id, 't9');
     assert.equal(all[0]!.title, '走兜底路径');
+  });
+});
+
+describe('foreign session store — OpenCode scan (#5053)', () => {
+  async function seedOpencodeSession(
+    home: string,
+    session: {
+      id: string;
+      directory: string;
+      title: string;
+      timeUpdated: number;
+      parentId?: string;
+      timeArchived?: number | null;
+    },
+    transcript: {
+      messages: { id: string; timeCreated: number; data: unknown }[];
+      parts: { id: string; messageId: string; timeCreated: number; data: unknown }[];
+    },
+  ): Promise<void> {
+    const dbPath = join(home, '.local', 'share', 'opencode', 'opencode.db');
+    await mkdir(join(home, '.local', 'share', 'opencode'), { recursive: true });
+    // IF NOT EXISTS: one test seeds several session rows into the same db.
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec('CREATE TABLE IF NOT EXISTS session (id text PRIMARY KEY, project_id text, workspace_id text, parent_id text, slug text, directory text NOT NULL, path text, title text, version text, time_created integer, time_updated integer, time_compacting integer, time_archived integer)');
+      db.exec('CREATE TABLE IF NOT EXISTS message (id text PRIMARY KEY, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer, data text NOT NULL)');
+      db.exec('CREATE TABLE IF NOT EXISTS part (id text PRIMARY KEY, message_id text NOT NULL, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer, data text NOT NULL)');
+      db.prepare(
+        'INSERT INTO session (id, parent_id, directory, title, time_created, time_updated, time_archived) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run(
+        session.id,
+        session.parentId ?? null,
+        session.directory,
+        session.title,
+        session.timeUpdated - 1_000,
+        session.timeUpdated,
+        session.timeArchived ?? null,
+      );
+      const message = db.prepare(
+        'INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)',
+      );
+      for (const row of transcript.messages) {
+        message.run(row.id, session.id, row.timeCreated, JSON.stringify(row.data));
+      }
+      const part = db.prepare(
+        'INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)',
+      );
+      for (const row of transcript.parts) {
+        part.run(row.id, row.messageId, session.id, row.timeCreated, JSON.stringify(row.data));
+      }
+    } finally {
+      db.close();
+    }
+  }
+
+  it('defaults the flag on and disables it with exactly "0"', () => {
+    assert.equal(isOpencodeImportEnabled({}), true);
+    assert.equal(isOpencodeImportEnabled({ MAKA_IMPORT_OPENCODE: '0' }), false);
+  });
+
+  it('reports opencode only when enabled AND the database exists', async () => {
+    const home = await tempHome();
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    assert.deepEqual(await store.availableSources(), []);
+    await seedOpencodeSession(
+      home,
+      { id: 'ses_1', directory: '/repo', title: 't', timeUpdated: NOW },
+      { messages: [], parts: [] },
+    );
+    assert.deepEqual(await store.availableSources(), ['opencode']);
+    const disabled = createForeignSessionStore({
+      homeDir: home,
+      env: { MAKA_IMPORT_OPENCODE: '0' },
+    });
+    assert.deepEqual(await disabled.availableSources(), []);
+  });
+
+  it('lists parent sessions and drops archived ones', async () => {
+    const home = await tempHome();
+    await seedOpencodeSession(
+      home,
+      { id: 'ses_live', directory: '/repo', title: 'live session', timeUpdated: NOW },
+      { messages: [], parts: [] },
+    );
+    await seedOpencodeSession(
+      home,
+      {
+        id: 'ses_archived',
+        directory: '/repo',
+        title: 'old',
+        timeUpdated: NOW,
+        timeArchived: NOW,
+      },
+      { messages: [], parts: [] },
+    );
+    await seedOpencodeSession(
+      home,
+      {
+        id: 'ses_child',
+        directory: '/repo',
+        title: 'child',
+        timeUpdated: NOW,
+        parentId: 'ses_live',
+      },
+      { messages: [], parts: [] },
+    );
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const sessions = await store.listSessions();
+    assert.deepEqual(sessions.map((s) => s.id), ['ses_live']);
+    assert.equal(sessions[0]!.source, 'opencode');
+    assert.equal(sessions[0]!.title, 'live session');
+    assert.equal(sessions[0]!.cwd, '/repo');
+  });
+
+  it('filters by cwd through to the opencode database', async () => {
+    const home = await tempHome();
+    await seedOpencodeSession(
+      home,
+      { id: 'ses_one', directory: '/repo/one', title: 'one', timeUpdated: NOW },
+      { messages: [], parts: [] },
+    );
+    await seedOpencodeSession(
+      home,
+      { id: 'ses_two', directory: '/repo/two', title: 'two', timeUpdated: NOW },
+      { messages: [], parts: [] },
+    );
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const filtered = await store.listSessions({ cwd: '/repo/one' });
+    assert.deepEqual(filtered.map((s) => s.id), ['ses_one']);
+  });
+
+  it('builds a digest with user/assistant text and file paths, excluding thinking', async () => {
+    const home = await tempHome();
+    await seedOpencodeSession(
+      home,
+      { id: 'ses_digest', directory: '/repo', title: 'with content', timeUpdated: NOW },
+      {
+        messages: [
+          { id: 'msg_u1', timeCreated: 1, data: { role: 'user', time: { created: 1 } } },
+          {
+            id: 'msg_a1',
+            timeCreated: 2,
+            data: { role: 'assistant', time: { created: 2 }, finish: 'stop', modelID: 'm' },
+          },
+          {
+            id: 'msg_a2',
+            timeCreated: 3,
+            data: { role: 'assistant', time: { created: 3 }, finish: 'tool-calls', modelID: 'm' },
+          },
+        ],
+        parts: [
+          { id: 'p_u1', messageId: 'msg_u1', timeCreated: 1, data: { type: 'text', text: '帮我修复解析器' } },
+          { id: 'p_a1', messageId: 'msg_a1', timeCreated: 2, data: { type: 'reasoning', text: 'internal thinking' } },
+          { id: 'p_a2', messageId: 'msg_a1', timeCreated: 2, data: { type: 'text', text: '已修复' } },
+          {
+            id: 'p_a3',
+            messageId: 'msg_a2',
+            timeCreated: 3,
+            data: {
+              type: 'tool',
+              callID: 'call_1',
+              tool: 'edit',
+              state: { status: 'completed', input: { file_path: '/repo/src/parser.ts' }, output: 'ok' },
+            },
+          },
+        ],
+      },
+    );
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const [session] = await store.listSessions();
+    assert.ok(session);
+    const digest = await store.readDigest(session);
+    assert.equal(digest.source, 'opencode');
+    assert.deepEqual(digest.userMessages, ['帮我修复解析器']);
+    assert.deepEqual(digest.assistantTexts, ['已修复']);
+    assert.deepEqual(digest.filesTouched, ['/repo/src/parser.ts']);
+    assert.ok(
+      !JSON.stringify(digest).includes('internal thinking'),
+      'thinking blocks never enter the digest',
+    );
   });
 });
 

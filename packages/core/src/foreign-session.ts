@@ -45,7 +45,7 @@
 import { redactSecrets } from './redaction.js';
 import { sanitizeUnicodeText } from './text-sanitize.js';
 
-export const FOREIGN_SESSION_SOURCES = ['claude-code', 'codex'] as const;
+export const FOREIGN_SESSION_SOURCES = ['claude-code', 'codex', 'opencode'] as const;
 export type ForeignSessionSource = (typeof FOREIGN_SESSION_SOURCES)[number];
 
 /** Scanner result caps (per issue #1057: max 50 sessions, 30-day window). */
@@ -722,7 +722,7 @@ export function buildForeignSessionHandoffMessage(digest: ForeignSessionDigest):
 
 /** Human-facing product name for a foreign session source. */
 export function foreignSourceLabel(source: ForeignSessionSource): string {
-  return source === 'claude-code' ? 'Claude Code' : 'Codex';
+  return source === 'claude-code' ? 'Claude Code' : source === 'opencode' ? 'OpenCode' : 'Codex';
 }
 
 /** Short human-facing label for the resumed-session turn (transcript/sidebar). */

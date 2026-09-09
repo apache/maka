@@ -43,6 +43,7 @@
  * rollout-file directory walk as fallback.
  */
 
+import { existsSync } from 'node:fs';
 import { open, readdir, realpath, stat, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
@@ -50,6 +51,7 @@ import {
   CODEX_SUPPORTED_THREAD_SOURCES,
   FOREIGN_SESSION_DIGEST_MAX_READ_BYTES,
   FOREIGN_SESSION_HEAD_BYTES,
+  FOREIGN_SESSION_PATH_MAX_CODE_POINTS,
   FOREIGN_SESSION_SCAN_MAX_AGE_MS,
   FOREIGN_SESSION_SCAN_MAX_SESSIONS,
   FOREIGN_SESSION_TITLE_WINDOW_BYTES,
@@ -69,6 +71,7 @@ import {
   pushDigestFile,
   pushDigestMessage,
   sanitizeForeignMessage,
+  sanitizeForeignText,
   sanitizeForeignTitle,
   type ClaudeTitleCandidates,
   type ClaudeTranscriptMeta,
@@ -77,6 +80,7 @@ import {
   type ForeignSessionSource,
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
+import { OpenCodeSessionAdapter } from './opencode-session-adapter.js';
 
 export interface ForeignSessionScanOptions {
   /** Only sessions whose recorded cwd equals this path (after realpath-free
@@ -111,6 +115,12 @@ export function isCodexImportEnabled(
   return env.MAKA_IMPORT_CODEX !== '0';
 }
 
+export function isOpencodeImportEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env.MAKA_IMPORT_OPENCODE !== '0';
+}
+
 export function createForeignSessionStore(
   options: ForeignSessionStoreOptions = {},
 ): ForeignSessionStore {
@@ -131,6 +141,10 @@ class FileForeignSessionStore implements ForeignSessionStore {
     return join(this.homeDir, '.codex');
   }
 
+  private get opencodeHome(): string {
+    return join(this.homeDir, '.local', 'share', 'opencode');
+  }
+
   async availableSources(): Promise<ForeignSessionSource[]> {
     const sources: ForeignSessionSource[] = [];
     if (isClaudeCodeImportEnabled(this.env) && (await isDirectory(this.claudeRoot))) {
@@ -138,6 +152,12 @@ class FileForeignSessionStore implements ForeignSessionStore {
     }
     if (isCodexImportEnabled(this.env) && (await isDirectory(this.codexRoot))) {
       sources.push('codex');
+    }
+    if (
+      isOpencodeImportEnabled(this.env) &&
+      existsSync(join(this.opencodeHome, 'opencode.db'))
+    ) {
+      sources.push('opencode');
     }
     return sources;
   }
@@ -151,6 +171,9 @@ class FileForeignSessionStore implements ForeignSessionStore {
     }
     if (sources.includes('codex')) {
       results.push(...(await this.listCodexSessions(options, now)));
+    }
+    if (sources.includes('opencode')) {
+      results.push(...(await this.listOpencodeSessions(options, now)));
     }
     results.sort((a, b) => b.updatedAtMs - a.updatedAtMs);
     // Sanitize + redact display metadata at the single return choke point.
@@ -250,6 +273,71 @@ class FileForeignSessionStore implements ForeignSessionStore {
   }
 
   /* ------------------------------ Codex ------------------------------- */
+
+  private async listOpencodeSessions(
+    options: ForeignSessionScanOptions,
+    now: number,
+  ): Promise<ForeignSessionSummary[]> {
+    // The adapter owns every opencode read (schema introspection, child/parent
+    // rules, transcript conversion); the scan layers the #1057 bounds on top.
+    const adapter = new OpenCodeSessionAdapter({ opencodeHome: this.opencodeHome });
+    const externals = await adapter.listSessions(
+      options.cwd !== undefined ? { cwd: options.cwd } : undefined,
+    );
+    const dbPath = join(this.opencodeHome, 'opencode.db');
+    const results: ForeignSessionSummary[] = [];
+    for (const session of externals) {
+      if (results.length >= FOREIGN_SESSION_SCAN_MAX_SESSIONS) break;
+      if (session.archived === true) continue;
+      if (!isSafeForeignId(session.id)) continue;
+      const updatedAtMs = session.updatedAt ?? 0;
+      if (now - updatedAtMs > FOREIGN_SESSION_SCAN_MAX_AGE_MS) continue;
+      results.push({
+        source: 'opencode',
+        id: session.id,
+        title: sanitizeForeignTitle(session.name) || session.id,
+        cwd: session.cwd ?? '',
+        updatedAtMs,
+        transcriptPath: dbPath,
+      });
+    }
+    return results;
+  }
+
+  private async readOpencodeDigest(
+    summary: ForeignSessionSummary,
+  ): Promise<ForeignSessionDigest> {
+    if (!isSafeForeignId(summary.id)) {
+      throw new Error('opencode session id is not usable');
+    }
+    const adapter = new OpenCodeSessionAdapter({ opencodeHome: this.opencodeHome });
+    const session = await adapter.readSession(summary.id);
+    const acc = createDigestAccumulator();
+    for (const message of session.messages) {
+      if (message.type === 'user') {
+        pushDigestMessage(acc, 'user', message.text);
+      } else if (message.type === 'assistant') {
+        // Thinking-only rows carry text: '' and never enter the digest —
+        // the #1057 contract excludes thinking blocks.
+        if (message.text.length > 0) pushDigestMessage(acc, 'assistant', message.text);
+      } else if (message.type === 'tool_call') {
+        const args = message.args as Record<string, unknown>;
+        for (const key of ['file_path', 'path', 'notebook_path']) {
+          const value = args?.[key];
+          if (typeof value === 'string' && value.length > 0) {
+            pushDigestFile(acc, sanitizeForeignText(value, FOREIGN_SESSION_PATH_MAX_CODE_POINTS));
+          }
+        }
+      }
+    }
+    return finishDigest(acc, {
+      source: 'opencode',
+      id: summary.id,
+      title: summary.title,
+      cwd: summary.cwd,
+      updatedAtMs: summary.updatedAtMs,
+    });
+  }
 
   private async listCodexSessions(
     options: ForeignSessionScanOptions,
@@ -376,6 +464,10 @@ class FileForeignSessionStore implements ForeignSessionStore {
   /* ------------------------------ Digest ------------------------------ */
 
   async readDigest(summary: ForeignSessionSummary): Promise<ForeignSessionDigest> {
+    // OpenCode is SQLite-backed, not a transcript file: the digest reads
+    // through the adapter by session id, so the file-confinement checks
+    // below do not apply.
+    if (summary.source === 'opencode') return this.readOpencodeDigest(summary);
     // The transcript path was produced by our own scan, but re-confine it
     // anyway: digests can be requested long after the scan, and the file
     // may have been swapped for a symlink in between.
