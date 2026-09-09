@@ -1146,6 +1146,31 @@ test('coalesces concurrent enable requests for one remote profile', async () => 
   await manager.close();
 });
 
+test('disable cancels queued starts without affecting a subsequent enable', async () => {
+  const local = candidateHarness();
+  const remote = candidateHarness({ ownership: 'external', hostId: 'office' });
+  let remoteStarts = 0;
+  const manager = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async (input) => {
+      if (!input.profileTarget) return ready(local.candidate);
+      remoteStarts++;
+      return ready(remote.candidate);
+    },
+  });
+  try {
+    const first = assert.rejects(manager.enable(remoteTarget('office')), /profile was disabled/);
+    const second = assert.rejects(manager.enable(remoteTarget('office')), /profile was disabled/);
+    const disabling = manager.disable('office');
+    await Promise.all([first, second, disabling]);
+    assert.equal(remoteStarts, 0);
+    assert.equal(manager.entries().some((entry) => entry.target.profile.id === 'office'), false);
+    await manager.enable(remoteTarget('office'));
+    assert.equal(manager.current('office')?.readiness, 'ready');
+  } finally {
+    await manager.close();
+  }
+});
+
 test('close cancels an initial remote compatibility handoff', { timeout: 5_000 }, async () => {
   const local = candidateHarness();
   const shown = deferred<void>();

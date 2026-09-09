@@ -289,7 +289,10 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
   readonly #ipcMain: RuntimeHostReconnectingIpcMain;
   readonly #observationRegistries = new Set<RuntimeHostSessionObservationRegistry>();
   readonly #targets = new Map<string, DesktopRuntimeHostTargetGeneration>();
-  readonly #targetMutations = new Map<string, Promise<void>>();
+  readonly #targetMutations = new Map<string, {
+    readonly settled: Promise<void>;
+    readonly connectionAbort: AbortController;
+  }>();
   readonly #baseInput: DesktopRuntimeHostCandidateStartInput;
   readonly #shutdown = new AbortController();
   #defaultProfileId: string = LOCAL_RUNTIME_HOST_PROFILE.id;
@@ -562,8 +565,8 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     if (isSessionGuestProfile(profileTarget.profile)) {
       throw new Error('Session Guest targets must be mounted instead of enabled as profiles');
     }
-    return this.#mutateTarget(profileTarget.profile.id, () =>
-      this.#enable(profileTarget, false, undefined, undefined, onHostStatus),
+    return this.#mutateTarget(profileTarget.profile.id, (signal) =>
+      this.#enable(profileTarget, false, signal, undefined, onHostStatus),
     );
   }
 
@@ -577,11 +580,11 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     if (!isSessionGuestProfile(profileTarget.profile)) {
       return Promise.reject(new Error('A Session Guest target is required'));
     }
-    return this.#mutateTarget(profileTarget.profile.id, () =>
+    return this.#mutateTarget(profileTarget.profile.id, (connectionSignal) =>
       this.#enable(
         profileTarget,
         true,
-        signal,
+        signal ? AbortSignal.any([signal, connectionSignal]) : connectionSignal,
         onConnectionPhase,
         onHostStatus,
         onSessionCatalogChanged,
@@ -667,6 +670,13 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
   }
 
   async disable(profileId: string): Promise<void> {
+    if (profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
+      throw new Error('Local Runtime Host cannot be disabled');
+    }
+    // Cancel both running and queued starts before waiting for their cleanup.
+    this.#targetMutations.get(profileId)?.connectionAbort.abort(
+      new Error('Runtime Host profile was disabled'),
+    );
     return this.#mutateTarget(profileId, () => this.#disable(profileId));
   }
 
@@ -957,7 +967,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
   async #close(): Promise<void> {
     this.#closed = true;
     this.#shutdown.abort(new Error('Desktop Runtime Host manager is closed'));
-    await Promise.allSettled([...this.#targetMutations.values()]);
+    await Promise.allSettled([...this.#targetMutations.values()].map((mutation) => mutation.settled));
     const results = await Promise.allSettled(
       [...this.#targets.values()].map((target) => this.#removeTarget(target)),
     );
@@ -1343,21 +1353,23 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     }
   }
 
-  #mutateTarget<T>(profileId: string, operation: () => Promise<T>): Promise<T> {
+  #mutateTarget<T>(profileId: string, operation: (connectionSignal: AbortSignal) => Promise<T>): Promise<T> {
     if (this.#closed) {
       return Promise.reject(new Error('Desktop Runtime Host manager is closed'));
     }
-    const previous = this.#targetMutations.get(profileId) ?? Promise.resolve();
-    const pending = previous.catch(() => undefined).then(operation);
+    const previous = this.#targetMutations.get(profileId);
+    const connectionAbort = previous && !previous.connectionAbort.signal.aborted
+      ? previous.connectionAbort : new AbortController();
+    const pending = (previous?.settled ?? Promise.resolve()).then(() => operation(connectionAbort.signal));
     const settled = pending.then(
       () => undefined,
       () => undefined,
     ).finally(() => {
-      if (this.#targetMutations.get(profileId) === settled) {
+      if (this.#targetMutations.get(profileId)?.settled === settled) {
         this.#targetMutations.delete(profileId);
       }
     });
-    this.#targetMutations.set(profileId, settled);
+    this.#targetMutations.set(profileId, { settled, connectionAbort });
     return pending;
   }
 

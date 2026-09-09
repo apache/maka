@@ -22,6 +22,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
+import { deferred } from "@maka/core/test-only/async-primitives";
 import {
   createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
@@ -31,6 +32,7 @@ import {
   RuntimeHostPermanentReconnectError,
   RuntimeHostRemoteCompatibilityError,
   type ResolvedRuntimeHostProfile,
+  type HostHandoffView,
 } from "@maka/runtime-host/client";
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -39,8 +41,10 @@ import {
 } from "@maka/runtime-host/protocol";
 import {
   RuntimeHostPairingFinalizationInterruptedError,
+  startRuntimeHostDesktopManager,
   type RuntimeHostDesktopTargetState,
 } from "../runtime-host-desktop-manager.js";
+import type { DesktopRuntimeHostCandidate, DesktopRuntimeHostCandidateStartInput } from "../runtime-host-desktop-candidate.js";
 import {
   createDesktopRuntimeHostManagedServiceStore,
   findDesktopRuntimeHostManagedServiceBinding,
@@ -1632,50 +1636,81 @@ test("does not recover pairing through unreadable saved preferences", async () =
   assert.equal(await readFile(preferencesPath, "utf8"), savedPreferences);
 });
 
-test("does not retain a startup connection after its profile is disabled", async () => {
+test("disabling a startup compatibility handoff releases Host settings and permits re-enabling", { timeout: 5_000 }, async () => {
   const root = await clientRoot();
   const catalog = createClientRuntimeHostProfileCatalog(root);
   await catalog.create(PROFILE, "token");
-  await writeFile(
-    join(root, "runtime-host-profile-selection.json"),
-    `${JSON.stringify({
-      schemaVersion: 2,
-      defaultProfileId: "local",
-      enabledRemoteProfileIds: [PROFILE.id],
-    })}\n`,
-  );
+  await writeFile(join(root, "runtime-host-profile-selection.json"), JSON.stringify({
+    schemaVersion: 2, defaultProfileId: "local", enabledRemoteProfileIds: [PROFILE.id],
+  }));
   const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
-  let finishEnable!: () => void;
-  const enableReady = new Promise<void>((resolve) => {
-    finishEnable = resolve;
+  const shown = deferred<void>();
+  const disableCalled = deferred<void>();
+  const localClosed = deferred<void>();
+  const remoteClosed = deferred<void>();
+  let connectionSignal: AbortSignal | undefined;
+  let surfaceClosed = false;
+  let compatible = false;
+  const manager = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async (input) => {
+      const remote = !!input.profileTarget;
+      if (remote) {
+        connectionSignal = input.signal;
+        if (!compatible) throw new RuntimeHostRemoteCompatibilityError(PROFILE.id, {
+          kind: 'incompatible', hostEpoch: 'old-remote', compatibilityEpoch: 1,
+          protocolMin: 0, protocolMax: 0, compositionId: 'interactive',
+          compositionRevision: 'old', state: 'ready', replacement: 'blocked_by_residency',
+        });
+      }
+      const closed = remote ? remoteClosed : localClosed;
+      return { kind: 'ready', candidate: {
+        client: { hostId: remote ? ROOT_ID : 'local-host', hostEpoch: remote ? 'remote' : 'local' },
+        hostOwnership: remote ? 'external' : 'owned_ephemeral',
+        closed: closed.promise, close: async () => { closed.resolve(); },
+      } as DesktopRuntimeHostCandidate };
+    },
+    handoffSurface: () => ({
+      update: (_view: HostHandoffView) => shown.resolve(),
+      close: () => { surfaceClosed = true; },
+    }),
   });
-  let connected = false;
   const service = createDesktopRuntimeHostProfileService({
-    clientDataRoot: root,
-    startup,
-    catalog,
-    states: () => [connectingLocal()],
-    enable: async () => {
-      await enableReady;
-      connected = true;
+    clientDataRoot: root, startup, catalog,
+    states: () => manager.entries(),
+    enable: (target) => {
+      assert.notEqual(target.profile.kind, 'local');
+      if (target.profile.kind === 'local') throw new Error('Expected remote profile');
+      return manager.enable({ profile: target.profile, credential: target.credential });
     },
-    disable: async () => {
-      connected = false;
+    disable: (id) => {
+      const task = manager.disable(id);
+      disableCalled.resolve();
+      return task;
     },
-    setDefault: () => undefined,
-    finalizePairing: async () => undefined,
+    setDefault: (id) => manager.setDefaultProfile(id),
+    finalizePairing: (id) => manager.finalizePairing(id),
   });
-
-  const startupTask = service.startEnabledProfiles();
-  await service.setEnabled(PROFILE.id, false);
-  finishEnable();
-  await startupTask;
-
-  assert.equal(connected, false);
-  assert.equal(
-    (await service.getSnapshot()).entries.find((entry) => entry.profile.id === PROFILE.id)?.enabled,
-    false,
-  );
+  const starting = service.startEnabledProfiles();
+  let disabling: Promise<unknown> | undefined;
+  let settings: Promise<unknown> | undefined;
+  try {
+    await shown.promise;
+    disabling = service.setEnabled(PROFILE.id, false);
+    settings = service.getSnapshot();
+    await disableCalled.promise;
+    assert.equal(connectionSignal?.aborted, true);
+    await Promise.all([starting, disabling, settings]);
+    assert.equal(surfaceClosed, true);
+    assert.equal(manager.entries().some((entry) => entry.target.profile.id === PROFILE.id), false);
+    assert.equal((await service.getSnapshot()).entries.find((entry) => entry.profile.id === PROFILE.id)?.enabled, false);
+    compatible = true;
+    const enabled = await service.setEnabled(PROFILE.id, true);
+    assert.equal(enabled.entries.find((entry) => entry.profile.id === PROFILE.id)?.readiness, 'ready');
+    assert.equal(connectionSignal?.aborted, false);
+  } finally {
+    await manager.close();
+    await Promise.allSettled([starting, disabling, settings]);
+  }
 });
 
 test("keeps enablement, default selection, and removal as separate states", async () => {
