@@ -122,8 +122,6 @@ A person might interact on a laptop, leave a long task running on a Host at home
 
 Future clients could become lighter entry points: discover the Hosts a user is authorized to access, remember where each task belongs, and use whichever connection path is currently available. Cross-device task discovery, identity continuity, and offline experience still need work. A cached row in a task list cannot establish that the task is still running.
 
-A concrete first test would be one task surviving client sleep, a network change, and access from another client: find the correct Host, recover progress, and pick up pending interactions without pairing again or submitting the task again.
-
 ### From Choosing a Machine to Combining Capabilities
 
 One machine may be suited to builds, another may have local applications attached, and another may offer model inference. A future Maka could route requests to suitable nodes according to the capabilities a task needs.
@@ -140,15 +138,13 @@ flowchart TD
     owner -.->|"Request collaboration"| collaborator["Authorized collaborator"]
 ```
 
-A capability can be called remotely while its provider retains permission to decide what it will execute. One concrete capability is enough for a first step: return a verifiable result from a remote build, then establish that disconnection, cancellation, and repeated requests do not leave that build without an accountable executor. The network delivers messages; the capability protocol defines the execution commitment.
+A capability can be called remotely while its provider retains permission to decide what it will execute. The network delivers messages; the capability protocol defines the execution commitment.
 
 ### From Shared Sessions to Tasks Across Hosts
 
 Session sharing currently lets another person participate in work on a particular Host. A further step would let several Hosts take responsibility for subtasks: one builds and tests, another validates a specific environment, and both return results to the Host responsible for the overall turn.
 
 This has different failure modes from spawning several subagents within one Host. Nodes can go offline independently, results can arrive late, and a remote task can still be running after cancellation. Cross-Host collaboration needs durable delegation records, explicit executors, result provenance, and cancellation rules. Peer Mesh supplies connectivity; it does not create those scheduling semantics or replicate different Hosts' State Roots into one shared state.
-
-A useful first proof is a small, complete collaboration cycle: delegate and finish one subtask across two Hosts, interrupt the network, then establish that execution is not duplicated, results can be verified, and permissions remain within the grant. Once that cycle works, the same contract has a basis for extending to more nodes.
 
 The long-term value of Peer Mesh lies in these workflows. Devices retain their data and permissions while tasks use capabilities distributed across them. Maka's scope of collaboration can then grow from one client and one Host into a network of participants able to contribute to the work.
 
