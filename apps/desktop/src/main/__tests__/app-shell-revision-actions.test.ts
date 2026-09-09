@@ -21,12 +21,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import type { StoredMessage } from '@maka/core/session';
-import type { QuoteRef } from '@maka/core/events';
-import {
-  createAppShellRevisionActions,
-  revisionContentUnchanged,
-  type TurnRevisionDraft,
-} from '../../renderer/app-shell-revision-actions.js';
+import { createAppShellRevisionActions } from '../../renderer/app-shell-revision-actions.js';
 
 function userMessage(turnId: string, text: string, extra: Record<string, unknown> = {}): StoredMessage {
   return {
@@ -39,27 +34,22 @@ function userMessage(turnId: string, text: string, extra: Record<string, unknown
   } as StoredMessage;
 }
 
-function createActions(input: {
-  messages: StoredMessage[];
-  staged?: QuoteRef[];
-}) {
-  const stagedNow = [...(input.staged ?? [])];
-  const replacedWith: QuoteRef[][] = [];
-  const drafts: (TurnRevisionDraft | null)[] = [];
-  const composerState = { text: '' };
-  const revisionDraftRef = { current: null as TurnRevisionDraft | null };
+function createActions(input: { messages: StoredMessage[] }) {
+  const drafts: unknown[] = [];
+  let composerText = '';
+  const revisionDraftRef: { current: unknown } = { current: null };
   const actions = createAppShellRevisionActions({
     uiLocale: 'en' as never,
     activeIdRef: { current: 'session-1' },
     composerRef: {
       current: {
-        getText: () => composerState.text,
+        getText: () => composerText,
         setText: (text: string) => {
-          composerState.text = text;
+          composerText = text;
         },
         focus: () => {},
         setDraft: (_sessionId: string, text: string) => {
-          composerState.text = text;
+          composerText = text;
         },
         clearDraft: () => {},
       } as never,
@@ -70,7 +60,7 @@ function createActions(input: {
     refreshMessages: async () => true,
     refreshSessions: async () => [],
     setMessages: () => {},
-    commitRevisionDraft: (draft: TurnRevisionDraft | null) => {
+    commitRevisionDraft: (draft: unknown) => {
       revisionDraftRef.current = draft;
       drafts.push(draft);
     },
@@ -79,35 +69,11 @@ function createActions(input: {
       info: () => {},
       error: () => {},
     },
-    stagedQuotes: () => [...stagedNow],
-    replaceStagedQuotes: (quotes: readonly QuoteRef[]) => {
-      replacedWith.push([...quotes]);
-      stagedNow.splice(0, stagedNow.length, ...quotes.map((quote) => ({ ...quote })));
-    },
   } as never);
-  return Object.assign(actions, {
-    drafts,
-    stagedNow,
-    replacedWith,
-    composerState,
-  });
+  return Object.assign(actions, { drafts, composerState: { get text(): string { return composerText; } } });
 }
 
 describe('app-shell revision actions with structured context (#5109)', () => {
-  it('opens a draft on a quote-bearing message and stages its quotes', () => {
-    const quotes = [{ text: 'a large pasted excerpt' }];
-    const h = createActions({
-      messages: [userMessage('turn-1', 'explain this', { quotes })],
-    });
-
-    h.beginEditUserMessage('turn-1');
-
-    assert.ok(h.drafts.at(-1), 'the draft opens instead of rejecting the quote');
-    assert.deepEqual(h.drafts.at(-1)?.originalQuotes, quotes);
-    assert.deepEqual(h.replacedWith.at(-1), quotes, 'the source quotes are staged for editing');
-    assert.equal(h.composerState.text, 'explain this');
-  });
-
   it('keeps editing allowed when only earlier turns carry attachments', () => {
     const h = createActions({
       messages: [
@@ -129,6 +95,7 @@ describe('app-shell revision actions with structured context (#5109)', () => {
     h.beginEditUserMessage('turn-2');
 
     assert.ok(h.drafts.at(-1), 'a retained historical attachment must not block the edit');
+    assert.equal(h.composerState.text, 'plain follow-up');
   });
 
   it('rejects a source message that itself carries attachments', () => {
@@ -151,58 +118,5 @@ describe('app-shell revision actions with structured context (#5109)', () => {
     h.beginEditUserMessage('turn-1');
 
     assert.equal(h.drafts.at(-1), undefined, 'attachment-bearing sources stay explicitly rejected');
-  });
-
-  it('cancels back to the pre-edit composer text and staged quotes', async () => {
-    const preExisting = [{ text: 'staged before editing' }];
-    const h = createActions({
-      messages: [userMessage('turn-1', 'explain this', { quotes: [{ text: 'excerpt' }] })],
-      staged: preExisting,
-    });
-
-    h.beginEditUserMessage('turn-1');
-    assert.deepEqual(h.stagedNow, [{ text: 'excerpt' }]);
-    await h.cancelRevisionDraft();
-
-    assert.equal(h.composerState.text, '');
-    assert.deepEqual(h.stagedNow, preExisting, 'cancel restores the pre-edit staged quotes');
-    assert.equal(h.drafts.at(-1), null);
-  });
-});
-
-describe('revisionContentUnchanged (#5109)', () => {
-  const draft = (originalQuotes: readonly QuoteRef[]): TurnRevisionDraft =>
-    ({
-      sourceSessionId: 'session-1',
-      sourceTurnId: 'turn-1',
-      copyId: 'copy-1',
-      copyPhase: 'reserved',
-      draftSessionId: 'session-1',
-      originalText: 'explain this',
-      previousComposerText: '',
-      originalQuotes,
-    }) as TurnRevisionDraft;
-
-  it('ignores a text-only match when the staged quotes differ from the source', () => {
-    const unchanged = revisionContentUnchanged(
-      'explain this',
-      draft([{ text: 'a large pasted excerpt' }]),
-      [],
-    );
-    assert.equal(
-      unchanged,
-      false,
-      'removing the restored quote is an explicit edit, not an unchanged resend',
-    );
-  });
-
-  it('is unchanged when the text and the staged quotes both match the source', () => {
-    const quotes = [{ text: 'a large pasted excerpt' }];
-    assert.equal(revisionContentUnchanged('explain this', draft(quotes), quotes), true);
-  });
-
-  it('a text change alone is a real edit', () => {
-    const quotes = [{ text: 'excerpt' }];
-    assert.equal(revisionContentUnchanged('rewritten', draft(quotes), quotes), false);
   });
 });

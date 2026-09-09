@@ -18,7 +18,6 @@
  */
 
 import type { StoredMessage } from '@maka/core/session';
-import type { QuoteRef } from '@maka/core/events';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import { userFacingText } from '@maka/core/session';
@@ -61,14 +60,9 @@ export type TurnRevisionDraft = {
   /** Active owner of the draft. Changes to the branch child after prepare. */
   draftSessionId: string;
   originalText: string;
-  /** The source message's quotes: the canonical structured content the
-   *  replacement submit must carry unless the user edits it away (#5109). */
-  originalQuotes: readonly QuoteRef[];
   /** Composer text that was present before edit began; restored on cancel.
    *  Staged Skills ride along inside it as `/skill:<id>` chips. */
   previousComposerText: string;
-  /** Staged quotes present before edit began; restored on cancel. */
-  previousQuotes: readonly QuoteRef[];
 };
 
 export interface AppShellRevisionActions {
@@ -76,23 +70,6 @@ export interface AppShellRevisionActions {
   /** Lazily create the before-turn branch immediately before normal send. */
   prepareRevisionSend(text: string): Promise<boolean>;
   cancelRevisionDraft(): Promise<void>;
-}
-
-/**
- * Whether a revision send would reproduce the source message exactly:
- * same text AND the staged quotes still equal the source's quotes. Text
- * alone cannot decide this — a quote-only edit (all text unchanged, the
- * restored quote removed) must count as a real edit (#5109).
- */
-export function revisionContentUnchanged(
-  text: string,
-  draft: Pick<TurnRevisionDraft, 'originalText' | 'originalQuotes'>,
-  stagedQuotes: readonly QuoteRef[],
-): boolean {
-  if (text.trim() !== draft.originalText.trim()) return false;
-  const canonical = (quotes: readonly QuoteRef[]) =>
-    JSON.stringify(quotes.map((quote) => [quote.text, quote.label ?? '', quote.sourceTurnId ?? '']));
-  return canonical(stagedQuotes) === canonical(draft.originalQuotes);
 }
 
 /**
@@ -122,10 +99,6 @@ export function createAppShellRevisionActions(deps: {
   commitRevisionDraft: (draft: TurnRevisionDraft | null) => void;
   revisionDraftRef: RefBox<TurnRevisionDraft | null>;
   toastApi: ToastApi;
-  /** Currently staged quotes for the composer draft, keyed by the shell. */
-  stagedQuotes: () => readonly QuoteRef[];
-  /** Replaces the whole staged-quote set (edit begin swaps source quotes in). */
-  replaceStagedQuotes: (quotes: readonly QuoteRef[]) => void;
 }): AppShellRevisionActions {
   const {
     uiLocale,
@@ -140,8 +113,6 @@ export function createAppShellRevisionActions(deps: {
     commitRevisionDraft,
     revisionDraftRef,
     toastApi,
-    stagedQuotes,
-    replaceStagedQuotes,
   } = deps;
   const copy = getDesktopConversationCopy(uiLocale).actions;
   let revisionPreparationAbort: AbortController | undefined;
@@ -197,10 +168,6 @@ export function createAppShellRevisionActions(deps: {
     }
 
     const prompt = userFacingText(userMessage);
-    // Snapshot: the staged set is replaced below, and the draft must keep
-    // the pre-edit contents for cancel, not a live reference to the array.
-    const previousQuotes = [...stagedQuotes()];
-    const sourceQuotes = userMessage.quotes ?? [];
     const copyAttempt = acquireSessionCopyAttempt(
       revisionCopyKey(sessionId, turnId),
       turnId,
@@ -212,11 +179,8 @@ export function createAppShellRevisionActions(deps: {
       copyPhase: copyAttempt.phase,
       draftSessionId: sessionId,
       originalText: prompt,
-      originalQuotes: sourceQuotes,
       previousComposerText: composerRef.current?.getText() ?? '',
-      previousQuotes,
     });
-    replaceStagedQuotes(sourceQuotes);
     composerRef.current?.setText(prompt);
     composerRef.current?.focus();
     toastApi.info(copy.revisionStartedTitle, copy.revisionStartedDescription);
@@ -410,7 +374,6 @@ export function createAppShellRevisionActions(deps: {
     else completeRevisionCopyAttempt(draft);
     commitRevisionDraft(null);
     composerRef.current?.setDraft(draft.sourceSessionId, draft.previousComposerText);
-    replaceStagedQuotes(draft.previousQuotes);
     if (draft.draftSessionId !== draft.sourceSessionId) {
       composerRef.current?.clearDraft(draft.draftSessionId);
     }
