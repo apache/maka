@@ -122,6 +122,7 @@ type CandidateIpcMain = ReconnectableReadIpcMain & Pick<IpcMain, "removeHandler"
 export interface DesktopRuntimeHostCandidateDeps {
   readonly terminalCloses?: import('./terminal-close-intents.js').TerminalCloseIntents;
   readonly retireRetractedMessages?: (scope: DesktopTargetScope, hostEpoch: string, sessionId: string, messageIds: readonly string[]) => void;
+  readonly retireCancelledMessages?: (scope: DesktopTargetScope, sessionId: string, messageIds: readonly string[]) => void;
   readonly cacheTranscript?: (scope: DesktopTargetScope, snapshot: DesktopTranscriptReplicaSnapshot) => void;
   readonly ipcMain: RuntimeHostTargetIpcMain;
   readonly workspaceRoot: string;
@@ -666,6 +667,11 @@ export async function createDesktopRuntimeHostCandidate(
         deps.retireRetractedMessages?.(scope, client.hostEpoch, sessionId, messageIds);
       }
     };
+    const retireCancelledMessages = (sessionId: string, messageIds: readonly string[]) => {
+      if (target.access === 'owner' && isTargetActive()) {
+        deps.retireCancelledMessages?.(scope, sessionId, messageIds);
+      }
+    };
     const sessionObserver = new RuntimeHostSessionObserver({
       client,
       transcriptHistoryBytes: deps.transcriptHistoryBytes,
@@ -674,7 +680,7 @@ export async function createDesktopRuntimeHostCandidate(
         // Another client may have stopped the Turn: confirm with the Host first.
         if (target.access !== 'owner' || !isTargetActive()) return;
         void client.queryMessages({ sessionId, messageIds })
-          .then((result) => retireRetractedMessages(sessionId, result.cancelledMessageIds))
+          .then((result) => retireCancelledMessages(sessionId, result.cancelledMessageIds))
           .catch(reportError);
       },
       cacheTranscript: (snapshot) => {
@@ -934,6 +940,7 @@ export async function createDesktopRuntimeHostCandidate(
             client,
             observer: sessionObserver,
             retireRetractedMessages,
+            retireCancelledMessages,
             attachmentApprovals: deps.attachmentApprovals,
             emitSessionsChanged,
             stat: deps.stat,

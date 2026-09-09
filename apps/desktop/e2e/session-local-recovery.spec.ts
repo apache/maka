@@ -272,6 +272,19 @@ test('a failed message restores its durable attachment without replacing a newer
   await expect(page.locator('.maka-transient-message').filter({ hasText: 'queued recovery follow-up' })).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath('stopped-queue-retired.png') });
 
+  // A visible live reply is not yet proof that the offline transcript was saved.
+  await expect.poll(() => app.evaluate(() => {
+    const require = process.getBuiltinModule('module').createRequire(`${process.cwd()}/`);
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(require('node:path').join(require('electron').app.getPath('userData'), 'session-experience.sqlite'), { readOnly: true });
+    try {
+      // This fixture owns one Session. Renderer ids include a Host prefix,
+      // while SQLite stores the raw Host Session id.
+      return db.prepare('SELECT snapshot FROM transcripts').all()
+        .some((row) => row.snapshot.includes('continue after recovery stop'));
+    } finally { db.close(); }
+  })).toBe(true);
+
   // Disable Host reads before navigation: only the local durable state can
   // suppress the cancelled message now, not a successful cancellation query.
   await makeHostUnavailable(app);
@@ -359,6 +372,73 @@ test('one-shot orchestration survives the actual composer send, edit and resend 
     await ensureSidebarExpanded(page);
     await page.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
   }
+});
+
+test('durable cancellation proof survives a real Host restart after local cleanup was missed', async ({ sessionLocalWindow }) => {
+  const { page, app } = sessionLocalWindow;
+  await page.locator(COMPOSER_INPUT).fill('__e2e_hold_open__');
+  await awaitSendReady(page);
+  await page.locator(COMPOSER_INPUT).press('Enter');
+  await expect(page.getByText('Fake backend waiting for the test to stop the Turn.', { exact: true })).toBeVisible();
+  await ensureSidebarExpanded(page);
+  const sessionId = (await page.locator('[data-session-id]:has([aria-current="page"])').getAttribute('data-session-id'))!;
+  await page.locator(COMPOSER_INPUT).fill('cancelled across Host restart');
+  await page.locator(COMPOSER_INPUT).press('Enter');
+  await expect(page.getByText('已排队，等待下一轮回复', { exact: true })).toBeVisible();
+  const before = await app.evaluate(() => {
+    const require = process.getBuiltinModule('module').createRequire(`${process.cwd()}/`);
+    const { DesktopSessionLocalService } = require(require('node:path').resolve('dist/main/session-local-service.js'));
+    // Model a disconnected/crashed client that misses local cleanup after Host commit.
+    DesktopSessionLocalService.prototype.retireRetractedMessages = () => {};
+    DesktopSessionLocalService.prototype.retireCancelledMessages = () => {};
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(require('node:path').join(require('electron').app.getPath('userData'), 'session-experience.sqlite'), { readOnly: true });
+    try {
+      return db.prepare('SELECT payload FROM outbox').all().map((row) => JSON.parse(row.payload))
+        .find((record) => record.intent.command.content.text === 'cancelled across Host restart');
+    } finally { db.close(); }
+  });
+  expect(before.intent.originHostEpoch).toBeTruthy();
+  await page.locator(COMPOSER_INPUT).press('Escape');
+  await expect(page.getByText('已中断', { exact: true })).toBeVisible();
+  expect(await page.evaluate(({ sessionId, messageId }) =>
+    window.maka.sessions.queryCancelledMessages(sessionId, [messageId]),
+    { sessionId, messageId: before.messageId },
+  )).toEqual({ cancelledMessageIds: [before.messageId] });
+  expect((await page.evaluate((id) => window.maka.sessionLocal.listMessages(id), sessionId))
+    .some((message) => message.messageId === before.messageId)).toBe(true);
+
+  let currentApp: ElectronApplication;
+  const restarted = await sessionLocalWindow.restart(async (launched) => {
+    currentApp = launched;
+    await launched.evaluate(() => {
+      const require = process.getBuiltinModule('module').createRequire(`${process.cwd()}/`);
+      const { DesktopRuntimeHostClient } = require(require('node:path').resolve('dist/main/runtime-host-client.js'));
+      const query = DesktopRuntimeHostClient.prototype.queryMessages;
+      DesktopRuntimeHostClient.prototype.queryMessages = function (input) {
+        globalThis.__e2eCancellationEpoch = this.hostEpoch;
+        return query.call(this, input);
+      };
+    });
+  });
+  await ensureSidebarExpanded(restarted);
+  await restarted.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
+  expect(await restarted.evaluate(({ sessionId, messageId }) =>
+    window.maka.sessions.queryCancelledMessages(sessionId, [messageId]),
+    { sessionId, messageId: before.messageId },
+  )).toEqual({ cancelledMessageIds: [before.messageId] });
+  const currentEpoch = await currentApp!.evaluate(() => globalThis.__e2eCancellationEpoch);
+  expect(currentEpoch).toBeTruthy();
+  expect(currentEpoch).not.toBe(before.intent.originHostEpoch);
+  await expect.poll(() => restarted.evaluate(async ({ sessionId, messageId }) =>
+    (await window.maka.sessionLocal.listMessages(sessionId)).some((message) => message.messageId === messageId),
+    { sessionId, messageId: before.messageId },
+  )).toBe(false);
+  await makeHostUnavailable(currentApp!);
+  await restarted.reload();
+  await ensureSidebarExpanded(restarted);
+  await restarted.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
+  await expect(restarted.getByText('cancelled across Host restart', { exact: true })).toHaveCount(0);
 });
 
 async function makeHostUnavailable(app: ElectronApplication): Promise<void> {

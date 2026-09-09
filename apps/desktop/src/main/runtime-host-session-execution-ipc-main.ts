@@ -166,6 +166,7 @@ async function submitMessageWithReconnect(
 
 export interface RuntimeHostSessionExecutionIpcDeps {
   retireRetractedMessages?: (sessionId: string, messageIds: readonly string[]) => void;
+  retireCancelledMessages?: (sessionId: string, messageIds: readonly string[]) => void;
   client: RuntimeHostSessionExecutionClient;
   observer: RuntimeHostSessionObserver;
   attachmentApprovals: AttachmentApprovalRegistry;
@@ -366,7 +367,7 @@ export function registerRuntimeHostSessionExecutionIpc(
       if (new Set(cancelledMessageIds).size !== cancelledMessageIds.length) {
         throw new Error('Duplicate cancelled Message identities');
       }
-      deps.retireRetractedMessages?.(normalizedSessionId, cancelledMessageIds);
+      deps.retireCancelledMessages?.(normalizedSessionId, cancelledMessageIds);
       return { cancelledMessageIds };
     },
   );
