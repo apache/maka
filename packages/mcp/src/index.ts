@@ -23,6 +23,9 @@ import {
   Client,
   extractWWWAuthenticateParams,
   LATEST_PROTOCOL_VERSION,
+  CLIENT_CAPABILITIES_META_KEY,
+  isInputRequiredResult,
+  type ElicitResult,
   SdkErrorCode,
   SdkHttpError,
   SSEClientTransport,
@@ -34,6 +37,9 @@ import {
   type VersionNegotiationOptions,
 } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import type { InteractionFormInput, InteractionFormResult } from '@maka/core/interaction';
+import { setTimeout as delay } from 'node:timers/promises';
+import { prepareMcpForm } from './form-elicitation.js';
 import { redactSecrets } from '@maka/core/redaction';
 import { serializedByteLength } from '@maka/core/serialized-byte-length';
 import {
@@ -267,6 +273,14 @@ export class McpClientManager {
    * pass — and racing one against the round trips the round's version
    * fence, failing the user's login over nothing they did. */
   private readonly interactiveRounds = new Set<string>();
+  private readonly formCalls = new Map<
+    AbortController,
+    {
+      binding: McpToolBinding;
+      serverId: string;
+      states: string[];
+    }
+  >();
   private bindingIndex = new Map<McpToolBinding, ToolBindingTarget>();
   private readonly listeners = new Set<McpManagerChangeListener>();
   private syncQueue: Promise<void> = Promise.resolve();
@@ -386,6 +400,14 @@ export class McpClientManager {
       (value.length >= MIN_SUBSTITUTION_LENGTH ? inventory.substitute : inventory.withhold).push(
         value,
       );
+    }
+    for (const call of this.formCalls.values()) {
+      if (call.serverId !== serverId) continue;
+      for (const state of call.states) {
+        (state.length >= MIN_SUBSTITUTION_LENGTH ? inventory.substitute : inventory.withhold).push(
+          state,
+        );
+      }
     }
     return inventory;
   }
@@ -753,7 +775,14 @@ export class McpClientManager {
   async callTool(
     binding: McpToolBinding,
     args: Record<string, unknown>,
-    options: { signal?: AbortSignal; timeoutMs?: number } = {},
+    options: {
+      signal?: AbortSignal;
+      timeoutMs?: number;
+      requestInteraction?: (
+        form: InteractionFormInput,
+        options?: { cancellationSignal?: AbortSignal },
+      ) => Promise<InteractionFormResult>;
+    } = {},
   ): Promise<McpCallResult> {
     const identity = parseMcpToolBinding(binding);
     if (!identity) {
@@ -800,94 +829,191 @@ export class McpClientManager {
         cause: preparation.cause,
       });
     }
-    let result;
+    const requestInteraction =
+      entry.status.negotiatedProtocol?.era === 'modern' ? options.requestInteraction : undefined;
+    const controller = requestInteraction ? new AbortController() : undefined;
+    const signal = controller
+      ? options.signal
+        ? AbortSignal.any([controller.signal, options.signal])
+        : controller.signal
+      : options.signal;
+    const states: string[] = [];
+    if (controller) this.formCalls.set(controller, { binding, serverId, states });
+    const assertCurrent = () => {
+      signal?.throwIfAborted();
+      if (
+        this.closed ||
+        entry.closing ||
+        this.connections.get(serverId) !== entry ||
+        entry.client !== client ||
+        entry.status.state !== 'connected' ||
+        entry.connectionGeneration !== identity.connectionGeneration ||
+        entry.toolSnapshot.get(toolName)?.binding !== binding
+      )
+        throw new McpToolCallError(serverId, toolName, 'tool binding is stale');
+    };
     try {
-      result = await client.callTool(
-        { name: toolName, arguments: args },
-        {
-          signal: options.signal,
-          timeout: options.timeoutMs ?? this.timeouts.callToolMs,
-          toolDefinition: structuredClone(preparation.value.definitionForSdk),
-        },
-      );
+      const originalArguments = requestInteraction ? structuredClone(args) : args;
+      let continuation: { inputResponses?: Record<string, ElicitResult>; requestState?: string } =
+        {};
+      let rounds = 0;
+      let result;
+      while (true) {
+        if (requestInteraction) assertCurrent();
+        result = await client.callTool(
+          {
+            name: toolName,
+            arguments: originalArguments,
+            ...continuation,
+            ...(requestInteraction
+              ? {
+                  _meta: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: { form: {} } } },
+                }
+              : {}),
+          },
+          {
+            signal,
+            timeout: options.timeoutMs ?? this.timeouts.callToolMs,
+            toolDefinition: structuredClone(preparation.value.definitionForSdk),
+            ...(requestInteraction ? { allowInputRequired: true } : {}),
+          },
+        );
+        if (requestInteraction) assertCurrent();
+        if (!requestInteraction || !isInputRequiredResult(result)) break;
+        if (++rounds > 8)
+          throw new McpToolCallError(serverId, toolName, 'form round limit exceeded');
+        const state = result.requestState;
+        if (
+          state !== undefined &&
+          (typeof state !== 'string' || Buffer.byteLength(state) > 16 * 1024)
+        ) {
+          throw new McpToolCallError(
+            serverId,
+            toolName,
+            'form continuation state exceeds the limit',
+          );
+        }
+        if (state) {
+          states.push(state);
+          (state.length >= MIN_SUBSTITUTION_LENGTH
+            ? inventory.substitute
+            : inventory.withhold
+          ).push(state);
+        }
+        const requests = result.inputRequests ?? {};
+        const keys = Object.keys(requests).sort(compareText);
+        if (keys.length > 8 || serializedByteLength(requests, 64 * 1024) > 64 * 1024) {
+          throw new McpToolCallError(serverId, toolName, 'form input requests exceed the limit');
+        }
+        // Validate every sibling before publishing any user-facing Interaction.
+        const forms = keys.map((key) => ({
+          key,
+          prepared: prepareMcpForm(requests[key], { name: toolName, source: serverId }),
+        }));
+        for (const { prepared } of forms) {
+          if (
+            JSON.stringify(deepScrub(prepared.form, inventory)) !== JSON.stringify(prepared.form)
+          ) {
+            throw new McpToolCallError(
+              serverId,
+              toolName,
+              'form contains private continuation material',
+            );
+          }
+        }
+        const responses: Record<string, ElicitResult> = {};
+        for (const { key, prepared } of forms) {
+          assertCurrent();
+          // Providers may ignore cancellationSignal. Racing the callback still
+          // settles their invocation, which closes the canonical Host form.
+          const answer = await waitForMcpForm(
+            () => requestInteraction(prepared.form, { cancellationSignal: signal }),
+            signal!,
+          );
+          assertCurrent();
+          Object.defineProperty(responses, key, {
+            value: prepared.respond(answer),
+            enumerable: true,
+            configurable: true,
+            writable: true,
+          });
+        }
+        continuation = {
+          ...(keys.length ? { inputResponses: responses } : {}),
+          ...(state === undefined ? {} : { requestState: state }),
+        };
+        if (!keys.length) await delay(25, undefined, { signal });
+      }
+      // The SDK's legacy compatibility schema defaults a missing content array
+      // before returning, but retains deferred-result compatibility fields.
+      // Reject every decoded marker and any future content-less result.
+      if (
+        !Object.hasOwn(result, 'content') ||
+        Object.hasOwn(result, 'toolResult') ||
+        Object.hasOwn(result, 'task') ||
+        Object.hasOwn(result, 'inputRequests') ||
+        Object.hasOwn(result, 'requestState')
+      ) {
+        throw new McpToolCallError(
+          serverId,
+          toolName,
+          'server returned an unsupported deferred tool result',
+        );
+      }
+      if (!Array.isArray(result.content)) {
+        throw new McpToolCallError(serverId, toolName, 'server returned invalid content');
+      }
+      if (result.isError) {
+        // The server writes this text; it can echo a secret it was sent.
+        throw new McpToolCallError(
+          serverId,
+          toolName,
+          scrubKnownSecrets(redactSecrets(summarizeErrorContent(result.content)), inventory),
+        );
+      }
+      assertSuccessfulToolResultBudget(serverId, toolName, result, { raw: true });
+      const validateOutput = preparation.value.validateOutput;
+      if (validateOutput) {
+        if (result.structuredContent === undefined) {
+          throw new McpToolCallError(serverId, toolName, 'server returned an invalid tool result');
+        }
+        let validation;
+        try {
+          validation = validateOutput(result.structuredContent);
+        } catch (cause) {
+          throw new McpToolCallError(serverId, toolName, 'server returned an invalid tool result', {
+            cause,
+          });
+        }
+        if (!validation.valid) {
+          throw new McpToolCallError(serverId, toolName, 'server returned an invalid tool result', {
+            cause: new Error(validation.errorMessage),
+          });
+        }
+      }
+      // Success payloads cross toward the renderer and the transcript too; a
+      // server can embed the credential it was just sent into a result.
+      const published = {
+        content: deepScrub(result.content.map(normalizeContent), inventory),
+        structuredContent: deepScrub(result.structuredContent, inventory),
+      };
+      assertSuccessfulToolResultBudget(serverId, toolName, published);
+      return published;
     } catch (error) {
-      // A 401 after connect means the server revoked the session, not that
-      // one call hiccuped: leave `connected` and the UI never offers the
-      // login it now needs.
+      const normalized = normalizeToolCallError(serverId, toolName, error, signal);
       if (
         isAuthRequiredError(error) &&
         this.connections.get(serverId) === entry &&
         entry.client === client
       ) {
-        this.markError(entry, error);
+        this.markError(entry, scrubbedError(error, inventory));
       }
-      // The transport error can carry reflected request material (the body
-      // of a failed POST); scrub it like every other outbound message. The
-      // cause chain still holds the RAW transport error — the rejection
-      // leaves the manager (IPC, logs, telemetry), and any cause-aware
-      // serializer downstream would expose it — so the retained cause is an
-      // allowlisted copy: typed identity (name, code, status, SDK brands)
-      // with a scrubbed message and no deeper chain or payload fields.
-      const normalized = normalizeToolCallError(serverId, toolName, error, options.signal);
       normalized.message = scrubKnownSecrets(normalized.message, inventory);
       normalized.cause = sanitizedCause(normalized.cause, inventory);
       throw normalized;
+    } finally {
+      if (controller) this.formCalls.delete(controller);
     }
-    // The SDK's legacy compatibility schema defaults a missing content array
-    // before returning, but retains deferred-result compatibility fields.
-    // Reject every decoded marker and any future content-less result.
-    if (
-      !Object.hasOwn(result, 'content') ||
-      Object.hasOwn(result, 'toolResult') ||
-      Object.hasOwn(result, 'task') ||
-      Object.hasOwn(result, 'inputRequests') ||
-      Object.hasOwn(result, 'requestState')
-    ) {
-      throw new McpToolCallError(
-        serverId,
-        toolName,
-        'server returned an unsupported deferred tool result',
-      );
-    }
-    if (!Array.isArray(result.content)) {
-      throw new McpToolCallError(serverId, toolName, 'server returned invalid content');
-    }
-    if (result.isError) {
-      // The server writes this text; it can echo a secret it was sent.
-      throw new McpToolCallError(
-        serverId,
-        toolName,
-        scrubKnownSecrets(redactSecrets(summarizeErrorContent(result.content)), inventory),
-      );
-    }
-    assertSuccessfulToolResultBudget(serverId, toolName, result, { raw: true });
-    const validateOutput = preparation.value.validateOutput;
-    if (validateOutput) {
-      if (result.structuredContent === undefined) {
-        throw new McpToolCallError(serverId, toolName, 'server returned an invalid tool result');
-      }
-      let validation;
-      try {
-        validation = validateOutput(result.structuredContent);
-      } catch (cause) {
-        throw new McpToolCallError(serverId, toolName, 'server returned an invalid tool result', {
-          cause,
-        });
-      }
-      if (!validation.valid) {
-        throw new McpToolCallError(serverId, toolName, 'server returned an invalid tool result', {
-          cause: new Error(validation.errorMessage),
-        });
-      }
-    }
-    // Success payloads cross toward the renderer and the transcript too; a
-    // server can embed the credential it was just sent into a result.
-    const published = {
-      content: deepScrub(result.content.map(normalizeContent), inventory),
-      structuredContent: deepScrub(result.structuredContent, inventory),
-    };
-    assertSuccessfulToolResultBudget(serverId, toolName, published);
-    return published;
   }
 
   async test(serverId: string): Promise<McpTestResult> {
@@ -1131,9 +1257,14 @@ export class McpClientManager {
         ),
         stderr: 'pipe',
       });
-      attachStderrTail(transport, entry, collectConfigSecrets(entry.config), () => {
-        if (this.connections.get(serverId) === entry) this.emit(entry.status);
-      });
+      attachStderrTail(
+        transport,
+        entry,
+        () => this.secretsFor(serverId, entry.config),
+        () => {
+          if (this.connections.get(serverId) === entry) this.emit(entry.status);
+        },
+      );
       const { client, events } = this.createClient(resolveMcpProtocolPreference(entry.config));
       const isClosed = this.watchClientClose(serverId, entry, client);
       try {
@@ -2053,6 +2184,13 @@ export class McpClientManager {
     entry.toolSnapshot = snapshot;
     this.bindingIndex = nextIndex;
     this.callableSnapshot = nextCallableSnapshot;
+    // Notify after publishing the replacement so every resumed callback sees
+    // the same retired binding. Unchanged refreshes preserve binding tokens.
+    for (const [controller, call] of this.formCalls) {
+      if (call.serverId === entry.status.serverId && !nextIndex.has(call.binding)) {
+        controller.abort(new Error('MCP tool binding is stale'));
+      }
+    }
   }
 
   private buildCallableSnapshot(
@@ -2604,7 +2742,7 @@ export function buildStdioEnvironment(
 function attachStderrTail(
   transport: StdioClientTransport,
   entry: Connection,
-  secrets: SecretInventory,
+  secrets: () => SecretInventory,
   onUpdate: () => void,
 ): void {
   let pending = '';
@@ -2613,7 +2751,7 @@ function attachStderrTail(
   let physicalSuffix = '';
   const append = (lines: string[]) => {
     const rendered = lines
-      .map((line) => formatMcpDiagnosticText(scrubKnownSecrets(line, secrets), STDERR_LINE_CHARS))
+      .map((line) => formatMcpDiagnosticText(scrubKnownSecrets(line, secrets()), STDERR_LINE_CHARS))
       .filter(Boolean);
     if (rendered.length === 0) return;
     const next = [...(entry.status.stderrTail ?? []), ...rendered]
@@ -3091,4 +3229,26 @@ class McpAbandonSupersededError extends Error {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Race even handlers that do not accept a cancellation signal, and always
+ * consume a late callback rejection after the invocation has been released. */
+async function waitForMcpForm<T>(request: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  let abort!: () => void;
+  const cancelled = new Promise<never>((_, reject) => {
+    abort = () => reject(signal.reason ?? new Error('MCP form cancelled'));
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => {
+        signal.throwIfAborted();
+        return request();
+      }),
+      cancelled,
+    ]);
+  } finally {
+    signal.removeEventListener('abort', abort);
+  }
 }

@@ -7,7 +7,8 @@
   "private": true,
   "exports": {
     ".": "./dist/index.js",
-    "./test-only/stdio-server": "./dist/__fixtures__/stdio-server.js"
+    "./test-only/stdio-server": "./dist/__fixtures__/stdio-server.js",
+    "./test-only/form-server": "./dist/__fixtures__/form-server.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
