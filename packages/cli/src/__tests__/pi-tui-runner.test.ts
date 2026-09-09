@@ -1727,7 +1727,7 @@ describe('Maka Pi TUI runner', () => {
       }),
     });
 
-    const assertNextIdentityRender = async (expectedScene: string) => {
+    const assertIdentityFields = async (expectedScene: string) => {
       await waitFor(() => wizardRenderSpy.mock.callCount() > 0, 'wizard redraw');
       const latestRender = wizardRenderSpy.mock.calls.at(-1);
       assert.ok(latestRender?.result, 'the wizard must render its fields');
@@ -1745,42 +1745,42 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
     terminal.input(ENTER); // Select OpenAI; Name receives focus.
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('2/4'));
-    await assertNextIdentityRender(`
+    await assertIdentityFields(`
 Name OpenAI<cursor>
 
 Slug openai
 `);
 
     terminal.input(CLEAR_LINE);
-    await assertNextIdentityRender(`
+    await assertIdentityFields(`
 Name <cursor>
 
 Slug openai
 `);
 
     terminal.input('Work OpenAI');
-    await assertNextIdentityRender(`
+    await assertIdentityFields(`
 Name Work OpenAI<cursor>
 
 Slug openai
 `);
 
     terminal.input(ENTER);
-    await assertNextIdentityRender(`
+    await assertIdentityFields(`
 Name Work OpenAI
 
 Slug openai<cursor>
 `);
 
     terminal.input(CLEAR_LINE);
-    await assertNextIdentityRender(`
+    await assertIdentityFields(`
 Name Work OpenAI
 
 Slug <cursor>
 `);
 
     terminal.input('openai-work');
-    await assertNextIdentityRender(`
+    await assertIdentityFields(`
 Name Work OpenAI
 
 Slug openai-work<cursor>
@@ -1804,7 +1804,7 @@ Slug openai-work<cursor>
     await waitFor(() => saveCalls.length === 1);
     assert.deepEqual(saveCalls[0]?.target, verifyCalls[0]?.target);
 
-    process.emit('SIGTERM');
+    exitMaka(terminal);
     await Promise.race([
       run,
       delay(CLOSE_BUDGET_MS).then(() => {
