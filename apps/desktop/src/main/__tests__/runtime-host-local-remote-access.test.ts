@@ -37,8 +37,8 @@ import type { createDesktopRuntimeHostLocalOperator } from '../runtime-host-loca
 
 const testOperator = (modulePath: string) => ({
   kind: 'node' as const,
-  platform: 'posix' as const,
-  nodePath: '/usr/bin/node',
+  platform: process.platform === 'win32' ? 'win32' as const : 'posix' as const,
+  nodePath: process.execPath,
   modulePath,
 });
 
@@ -518,7 +518,9 @@ test('does not persist recoverable setup authority before Desktop ownership comm
   assert.equal(setupCalls, 0);
 });
 
-test('adopts a released handoff through its existing legacy operator', async (t) => {
+test('adopts a released handoff through its existing legacy operator', {
+  skip: process.platform === 'win32' && 'Legacy POSIX handoff requires POSIX deployment paths',
+}, async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-local-remote-access-prestart-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const clientDataRoot = join(base, 'client');
@@ -593,7 +595,8 @@ test('migrates a released managed receipt before exposing it to lifecycle operat
   const clientDataRoot = join(base, 'client');
   const rootPath = join(clientDataRoot, 'workspaces', 'default');
   const rootId = 'a'.repeat(64);
-  const operatorPath = join(base, 'installed', 'operator');
+  // The released schema describes a POSIX executable, regardless of the test host.
+  const operatorPath = '/opt/maka/installed/operator';
   const lifecyclePath = join(clientDataRoot, 'runtime-host-local-service.json');
   await mkdir(rootPath, { recursive: true });
   await writeFile(

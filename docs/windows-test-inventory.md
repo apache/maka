@@ -16,16 +16,17 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 19 |
+| portable-candidate | 20 |
 | platform-contract | 31 |
 
-Total Windows-excluded declarations: **77**
+Total Windows-excluded declarations: **78**
 
 ## Inventory
 
 | Classification | Test | Skip expression |
 |---|---|---|
 | platform-contract | `apps/desktop/src/main/__tests__/project-context-root.test.ts` rejects a session cwd without read and traversal access | `process.platform === 'win32' ? 'POSIX permissions are required to make the session cwd inaccessible' : process.getuid?.() === 0` |
+| portable-candidate | `apps/desktop/src/main/__tests__/runtime-host-local-remote-access.test.ts` adopts a released handoff through its existing legacy operator | `process.platform === 'win32' && 'Legacy POSIX handoff requires POSIX deployment paths'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` imports the login PATH without importing application control variables | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` keeps the inherited PATH and does not log shell stderr when capture fails | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` kills login-shell descendants when capture times out | `process.platform === 'win32'` |
