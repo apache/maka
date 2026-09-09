@@ -60,6 +60,8 @@ test('Session search stays name-only and @ keeps the menu open after spaces', ()
   const dependencyPatch = readRepoFile('patches/@astryxdesign+core+0.5.2.patch');
 
   assert.match(composer, /const searchQuery = query\.trim\(\)/);
+  assert.match(composer, /const sessionOnly = \/\\s\/u\.test\(query\)/);
+  assert.match(composer, /!sessionOnly && source\.onSearchMentionFiles/);
   assert.match(composer, /mentionQueryMatches\(searchQuery, session\.name\)/);
   assert.doesNotMatch(composer, /session\.lastMessagePreview \?\?/);
   assert.match(dependencyPatch, /if \(trigger\.character !== '@' && \/\[ \\n\]\/u\.test\(query\)\) return null;/);

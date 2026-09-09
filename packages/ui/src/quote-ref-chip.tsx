@@ -31,6 +31,13 @@ export function stripQuoteHeadingMarkers(text: string): string {
   return text.replace(/^#{1,6}[ \t]+/, '');
 }
 
+/** Human-readable provenance kept with a cross-session snapshot QuoteRef. */
+export function quoteProvenanceSummary(quote: QuoteRef): string | undefined {
+  if (!quote.sourceSessionId || quote.sourceCapturedAt === undefined) return undefined;
+  const capturedAt = new Date(quote.sourceCapturedAt).toISOString();
+  return `captured ${capturedAt}${quote.sourceTruncated ? ' · truncated' : ''}`;
+}
+
 /** Inline quote chip for the composer (removable) and sent user messages (read-only). */
 export function QuoteRefChip(props: {
   quote: QuoteRef;
@@ -46,17 +53,19 @@ export function QuoteRefChip(props: {
   const label = props.quote.label;
   const displayText = stripQuoteHeadingMarkers(props.quote.text);
   const full = label ? `${label}: ${displayText}` : displayText;
+  const provenance = quoteProvenanceSummary(props.quote);
+  const fullWithProvenance = provenance ? `${full} · ${provenance}` : full;
 
   useLayoutEffect(() => {
     const el = measureRef.current;
     if (!el || expanded) return;
     setClipped(el.scrollWidth > el.clientWidth + 1);
-  }, [expanded, displayText, label]);
+  }, [expanded, displayText, label, provenance]);
 
   const canExpand = clipped || expanded;
   const a11yLabel = canExpand
-    ? (expanded ? copy.quoteCollapseAriaLabel : copy.quoteExpandAriaLabel)
-    : full;
+    ? `${expanded ? copy.quoteCollapseAriaLabel : copy.quoteExpandAriaLabel}: ${fullWithProvenance}`
+    : fullWithProvenance;
   const SourceIcon = props.quote.sourceSessionId ? MessagesSquare : TextQuote;
 
   return (
@@ -67,7 +76,7 @@ export function QuoteRefChip(props: {
         props.onRemove ? 'maka-quote-chip-removable' : 'maka-quote-chip-readonly',
         props.className,
       )}
-      title={expanded ? undefined : full}
+      title={expanded ? undefined : fullWithProvenance}
     >
       <SourceIcon
         className={cn('maka-quote-chip-icon', expanded && 'maka-quote-chip-icon-expanded')}
@@ -95,6 +104,7 @@ export function QuoteRefChip(props: {
         >
           {label ? <span className="maka-quote-chip-label">{label} </span> : null}
           {displayText}
+          {provenance ? <span className="maka-quote-chip-provenance"> · {provenance}</span> : null}
         </span>
       </Button>
       {props.onRemove ? (

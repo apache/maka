@@ -58,6 +58,8 @@ export function useSessionReferenceComposer(options: {
   const contextKey = `${options.activeId ?? ''}\u0000${options.hostId ?? ''}`;
   const contextKeyRef = useRef(contextKey);
   contextKeyRef.current = contextKey;
+  const [pendingReferences, setPendingReferences] = useState<readonly SessionReferenceSession[]>([]);
+  const pendingReferencesRef = useRef<SessionReferenceSession[]>([]);
   const pendingPromise = useRef<Promise<boolean> | null>(null);
   const pendingContextKey = useRef<string | undefined>(undefined);
   const references = useMemo(
@@ -79,6 +81,8 @@ export function useSessionReferenceComposer(options: {
   );
   useEffect(() => {
     generation.current += 1;
+    pendingReferencesRef.current = [];
+    setPendingReferences([]);
     pendingPromise.current = null;
     pendingContextKey.current = undefined;
     setPending(false);
@@ -89,8 +93,6 @@ export function useSessionReferenceComposer(options: {
     setError({ contextKey, title, detail });
   }, [contextKey]);
   const pick = useCallback(async (session: { id: string }): Promise<void> => {
-    const request = ++generation.current;
-    const requestContextKey = contextKey;
     const source = options.sessions.find((candidate) => candidate.id === session.id);
     if (
       !source ||
@@ -106,18 +108,55 @@ export function useSessionReferenceComposer(options: {
       return;
     }
     setError(undefined);
-    setPending(true);
+    const selected = {
+      id: source.id,
+      name: source.name,
+      status: source.status,
+      lastMessageAt: source.lastMessageAt,
+      lastMessagePreview: source.lastMessagePreview,
+    } satisfies SessionReferenceSession;
+    if (!pendingReferencesRef.current.some((reference) => reference.id === selected.id)) {
+      const next = [...pendingReferencesRef.current, selected];
+      pendingReferencesRef.current = next;
+      setPendingReferences(next);
+    }
+  }, [options.activeId, options.errorCopy, options.hostId, options.sessions, reportError]);
+
+  const waitForPending = useCallback(async (): Promise<boolean> => {
+    const operation = pendingPromise.current;
+    if (operation && pendingContextKey.current === contextKey) return operation;
+    const selected = pendingReferencesRef.current;
+    if (selected.length === 0) return true;
+    const request = ++generation.current;
+    const requestContextKey = contextKey;
     pendingContextKey.current = requestContextKey;
-    const operation = (async (): Promise<boolean> => {
+    setPending(true);
+    const operationPromise = (async (): Promise<boolean> => {
       try {
-        const snapshot = await services.sessions.readSnapshot(source.id);
+        const sources = selected.map((reference) => options.sessions.find((candidate) =>
+          candidate.id === reference.id &&
+          !candidate.isArchived &&
+          candidate.shared !== true &&
+          candidate.id !== options.activeId &&
+          candidate.runtimeHostId === options.hostId,
+        ));
+        if (sources.some((source) => source === undefined)) {
+          reportError(options.errorCopy.unavailableTitle, options.errorCopy.unavailableDetail);
+          return false;
+        }
+        const snapshots = await Promise.all(
+          sources.map((source) => services.sessions.readSnapshot(source!.id)),
+        );
         if (request !== generation.current || requestContextKey !== contextKeyRef.current) return false;
-        if (!snapshot.text.trim()) {
+        if (snapshots.some((snapshot) => !snapshot.text.trim())) {
           reportError(options.errorCopy.emptyTitle, options.errorCopy.emptyDetail);
           return false;
         }
-        options.addQuote?.(sessionSnapshotToQuote(snapshot));
-        return options.addQuote !== undefined;
+        if (!options.addQuote) return false;
+        for (const snapshot of snapshots) options.addQuote(sessionSnapshotToQuote(snapshot));
+        pendingReferencesRef.current = [];
+        setPendingReferences([]);
+        return true;
       } catch {
         if (request === generation.current && requestContextKey === contextKeyRef.current) {
           reportError(options.errorCopy.readFailedTitle, options.errorCopy.readFailedDetail);
@@ -131,19 +170,23 @@ export function useSessionReferenceComposer(options: {
         }
       }
     })();
-    pendingPromise.current = operation;
-    await operation;
+    pendingPromise.current = operationPromise;
+    return operationPromise;
   }, [contextKey, options.activeId, options.addQuote, options.errorCopy, options.hostId, options.sessions, reportError, services]);
 
-  const waitForPending = useCallback(async (): Promise<boolean> => {
-    const operation = pendingPromise.current;
-    return operation && pendingContextKey.current === contextKey ? operation : true;
-  }, [contextKey]);
+  const removePendingReference = useCallback((sessionId: string): void => {
+    const next = pendingReferencesRef.current.filter((reference) => reference.id !== sessionId);
+    if (next.length === pendingReferencesRef.current.length) return;
+    pendingReferencesRef.current = next;
+    setPendingReferences(next);
+  }, []);
 
   return {
     references,
     pick,
     pending,
+    pendingReferences,
+    removePendingReference,
     error: error?.contextKey === contextKey
       ? { title: error.title, detail: error.detail }
       : undefined,

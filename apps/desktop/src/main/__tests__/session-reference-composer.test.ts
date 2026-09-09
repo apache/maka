@@ -148,8 +148,12 @@ test('Session reference picker keeps same-Host sessions and send waits for the s
     pick = latest!.pick({ id: 'source' });
     await Promise.resolve();
   });
-  assert.equal(latest?.pending, true);
-  const waiting = latest!.waitForPending();
+  assert.equal(latest?.pending, false);
+  assert.deepEqual(latest?.pendingReferences.map((item) => item.id), ['source']);
+  let waiting!: Promise<boolean>;
+  await act(() => {
+    waiting = latest!.waitForPending();
+  });
   const pendingQuotes = latestQuotes!.pendingQuotes;
   await act(async () => {
     releaseSnapshot({
@@ -173,7 +177,7 @@ test('Session reference picker keeps same-Host sessions and send waits for the s
   }]);
 });
 
-test('an immediate send observes the selected Session snapshot in its QuoteRef payload', async () => {
+test('send resolves the selected Session snapshot at the send boundary', async () => {
   const { document, window } = parseHTML('<div id="root"></div>');
   Object.assign(globalThis, {
     document,
@@ -202,12 +206,14 @@ test('an immediate send observes the selected Session snapshot in its QuoteRef p
     model: 'model',
     permissionMode: 'ask' as const,
   };
+  let reads = 0;
   const services: ConversationServices = {
     ...sessionLocalServices,
     sessions: {
       list: async () => [source],
       subscribeChanges: () => () => undefined,
       readSnapshot: async () => new Promise<SessionSnapshot>((resolve) => {
+        reads += 1;
         queueMicrotask(() => resolve({
           reference: { sessionId: 'source', sessionName: 'Research', capturedAt: 2 },
           items: [],
@@ -262,8 +268,9 @@ test('an immediate send observes the selected Session snapshot in its QuoteRef p
 
   await act(async () => {
     const pick = latest!.pick({ id: 'source' });
-    await latest!.waitForPending();
     await pick;
+    assert.equal(reads, 0);
+    await latest!.waitForPending();
   });
 
   assert.deepEqual(sendCapturedQuotes(), [{
@@ -352,8 +359,11 @@ test('ignores a snapshot that resolves after the Composer owner changes', async 
     }));
   });
   let pick!: Promise<void>;
+  let waiting!: Promise<boolean>;
   await act(async () => {
     pick = latest!.pick({ id: 'source' });
+    await pick;
+    waiting = latest!.waitForPending();
     await Promise.resolve();
   });
   await act(async () => {
@@ -372,6 +382,7 @@ test('ignores a snapshot that resolves after the Composer owner changes', async 
       maxChars: 12_000,
       truncated: false,
     });
+    await waiting;
     await pick;
   });
   assert.deepEqual(latestQuotes?.pendingQuotes, []);

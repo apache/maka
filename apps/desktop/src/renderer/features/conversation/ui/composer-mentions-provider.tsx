@@ -57,6 +57,8 @@ export interface ComposerMentions {
   searchMentionFiles(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
   readonly sessionReferences: ReadonlyArray<SessionReferenceSession>;
   readonly onPickSessionReference?: (session: SessionReferenceSession) => Promise<void>;
+  readonly pendingSessionReferences: ReadonlyArray<SessionReferenceSession>;
+  onRemovePendingSessionReference(sessionId: string): void;
   readonly sessionReferenceError?: { title: string; detail: string };
   waitForSessionReference(): Promise<boolean>;
 }
@@ -287,6 +289,8 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     sessionReferences: surface.onAddQuote && referenceEnabled ? reference.references : [],
     onPickSessionReference:
       surface.onAddQuote && referenceEnabled ? reference.pick : undefined,
+    pendingSessionReferences: reference.pendingReferences,
+    onRemovePendingSessionReference: reference.removePendingReference,
     sessionReferenceError: reference.error,
     waitForSessionReference: reference.waitForPending,
   }), [
@@ -295,6 +299,8 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     liveCatalog.skills,
     reference.error,
     reference.pick,
+    reference.pendingReferences,
+    reference.removePendingReference,
     reference.references,
     reference.waitForPending,
     searchMentionFiles,

@@ -360,6 +360,10 @@ export const Composer = forwardRef<
     sessionReferences?: ReadonlyArray<ComposerSessionReference>;
     /** Called when the user selects a Session from the `@` picker. */
     onPickSessionReference?(session: ComposerSessionReference): void | Promise<void>;
+    /** Session references selected but not yet read at the send boundary. */
+    pendingSessionReferences?: ReadonlyArray<ComposerSessionReference>;
+    /** Remove a selected Session reference before it is resolved for send. */
+    onRemovePendingSessionReference?(sessionId: string): void;
     /** Wait for a picked Session reference to settle before committing a send. */
     waitForSessionReference?(): Promise<boolean>;
     modelLabel?: string;
@@ -954,8 +958,9 @@ export const Composer = forwardRef<
   if (!searchSourcesRef.current) {
     const runMentionSearch = (query: string): Promise<SearchableItem[]> => {
       const source = mentionSourceRef.current;
+      const sessionOnly = /\s/u.test(query);
       const searchQuery = query.trim();
-      const files = source.onSearchMentionFiles
+      const files = !sessionOnly && source.onSearchMentionFiles
         ? source.onSearchMentionFiles(searchQuery).then((entries) =>
             entries
               .filter((file) => mentionQueryMatches(searchQuery, file.relativePath))
@@ -1571,6 +1576,7 @@ export const Composer = forwardRef<
    * Skill is a chip in the draft itself, visible where it will be sent from.
    */
   const drawerTokenCount =
+    (props.pendingSessionReferences?.length ?? 0) +
     (props.pendingQuotes?.length ?? 0) +
     (props.pendingAttachments?.length ?? 0) +
     (props.pendingDirectories?.length ?? 0);
@@ -1836,6 +1842,23 @@ export const Composer = forwardRef<
                     reference={reference}
                     onRemove={props.onRemoveDirectory ? () => props.onRemoveDirectory?.(index) : undefined}
                   />
+                ))}
+                {props.pendingSessionReferences?.map((session) => (
+                  <Tooltip
+                    key={`pending-session:${session.id}`}
+                    content={`${session.name} · snapshot captured when sent`}
+                    focusTrigger="always"
+                  >
+                    <Token
+                      size="sm"
+                      className="maka-composer-session-token"
+                      icon={<MessagesSquare aria-hidden="true" />}
+                      label={`Session: ${session.name}`}
+                      onRemove={props.onRemovePendingSessionReference
+                        ? () => props.onRemovePendingSessionReference?.(session.id)
+                        : undefined}
+                    />
+                  </Tooltip>
                 ))}
                 {props.pendingQuotes?.map((quote, index) => (
                   <Token
