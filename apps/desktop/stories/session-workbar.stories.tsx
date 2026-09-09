@@ -27,8 +27,11 @@ import type { SessionSummary } from '@maka/core/session';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ToastProvider } from '@maka/ui';
-import { WorkbarServicesProvider, WorkbarTitlebarActions } from '../src/renderer/features/workbar';
-import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
+import { WorkbarServicesProvider } from '../src/renderer/features/workbar';
+import {
+  WorkbarSurface,
+  WorkbarTitlebarActionsView,
+} from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
@@ -992,7 +995,7 @@ function Workbar(props: {
       >
         <div className="mainColumn">
           {props.collapsible && (
-            <WorkbarTitlebarActions
+            <WorkbarTitlebarActionsView
               available
               collapsed={collapsed}
               onToggle={() => setCollapsed(false)}

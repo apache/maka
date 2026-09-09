@@ -69,6 +69,10 @@ const project: ProjectRecord = {
 };
 
 const hiddenSessionIds = new Set(['hidden']);
+const hiddenSessionIdsStore = {
+  getState: () => hiddenSessionIds,
+  subscribe: () => () => undefined,
+};
 
 const fakeServices = createFakeSessionNavigationServices();
 
@@ -217,7 +221,7 @@ describe('useSessionNavigationReads', () => {
             sessions: linkedCatalog,
             activeSessionId: 'child',
             activeSession: linkedCatalog[1],
-            hiddenSessionIds,
+            hiddenSessionIdsStore,
           }),
         }),
       ),
