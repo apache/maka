@@ -287,6 +287,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     const plugin = await input.resolveAdditionalSystemPrompt(context, base.text);
     return Object.freeze({
       text: plugin.text,
+      ...(plugin.contexts ? { contexts: plugin.contexts } : {}),
       sourceRevisions: mergeSourceRevisions(base.sourceRevisions, plugin.sourceRevisions),
     });
   };

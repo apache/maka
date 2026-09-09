@@ -70,41 +70,30 @@ export interface PluginAgentResumeOptions {
 export interface PluginAgentRuntime {
   create(
     options: PluginAgentCreateOptions,
-    initiator: PluginAgentInvocation | undefined,
+    initiator: PluginAgentInvocation,
   ): Promise<PluginAgentDescriptor>;
   resume(
     options: PluginAgentResumeOptions,
-    initiator: PluginAgentInvocation | undefined,
+    initiator: PluginAgentInvocation,
   ): Promise<PluginAgentDescriptor>;
-  get(
+  get(id: string, initiator: PluginAgentInvocation): Promise<PluginAgentDescriptor | undefined>;
+  list(initiator: PluginAgentInvocation): Promise<readonly PluginAgentDescriptor[]>;
+  roots(initiator: PluginAgentInvocation): Promise<readonly PluginAgentDescriptor[]>;
+  followup(id: string, message: unknown, initiator: PluginAgentInvocation): Promise<unknown>;
+  steer(id: string, message: unknown, initiator: PluginAgentInvocation): Promise<unknown>;
+  inject(id: string, message: unknown, initiator: PluginAgentInvocation): Promise<unknown>;
+  cancel(id: string, initiator: PluginAgentInvocation): Promise<unknown>;
+  whenIdle(
     id: string,
-    initiator: PluginAgentInvocation | undefined,
-  ): Promise<PluginAgentDescriptor | undefined>;
-  list(initiator: PluginAgentInvocation | undefined): Promise<readonly PluginAgentDescriptor[]>;
-  roots(initiator: PluginAgentInvocation | undefined): Promise<readonly PluginAgentDescriptor[]>;
-  followup(
-    id: string,
-    message: unknown,
-    initiator: PluginAgentInvocation | undefined,
-  ): Promise<unknown>;
-  steer(
-    id: string,
-    message: unknown,
-    initiator: PluginAgentInvocation | undefined,
-  ): Promise<unknown>;
-  inject(
-    id: string,
-    message: unknown,
-    initiator: PluginAgentInvocation | undefined,
-  ): Promise<unknown>;
-  cancel(id: string, initiator: PluginAgentInvocation | undefined): Promise<unknown>;
-  whenIdle(id: string, signal: AbortSignal | undefined): Promise<void>;
-  snapshot(id: string, initiator: PluginAgentInvocation | undefined): Promise<unknown>;
-  inbox(id: string, initiator: PluginAgentInvocation | undefined): Promise<unknown>;
-  result(id: string, initiator: PluginAgentInvocation | undefined): Promise<unknown>;
-  artifacts(id: string, initiator: PluginAgentInvocation | undefined): Promise<unknown>;
-  transcript(id: string, initiator: PluginAgentInvocation | undefined): Promise<unknown>;
-  dispose(id: string, initiator: PluginAgentInvocation | undefined): Promise<void>;
+    signal: AbortSignal | undefined,
+    initiator: PluginAgentInvocation,
+  ): Promise<void>;
+  snapshot(id: string, initiator: PluginAgentInvocation): Promise<unknown>;
+  inbox(id: string, initiator: PluginAgentInvocation): Promise<unknown>;
+  result(id: string, initiator: PluginAgentInvocation): Promise<unknown>;
+  artifacts(id: string, initiator: PluginAgentInvocation): Promise<unknown>;
+  transcript(id: string, initiator: PluginAgentInvocation): Promise<unknown>;
+  dispose(id: string, initiator: PluginAgentInvocation): Promise<void>;
 }
 
 export interface PluginAgent {
@@ -189,30 +178,35 @@ export class PluginAgentService extends Service {
   }
 
   async create(options: PluginAgentCreateOptions = {}): Promise<PluginAgent> {
-    return this.handle(await this.runtime().create(options, this.currentInvocation()));
+    const invocation = this.requireInvocation();
+    return this.handle(await this.runtime().create(options, invocation), invocation);
   }
 
   async resume(options: PluginAgentResumeOptions): Promise<PluginAgent> {
-    return this.handle(await this.runtime().resume(options, this.currentInvocation()));
+    const invocation = this.requireInvocation();
+    return this.handle(await this.runtime().resume(options, invocation), invocation);
   }
 
   async get(id: string): Promise<PluginAgent | undefined> {
-    const descriptor = await this.runtime().get(assertId(id), this.currentInvocation());
-    return descriptor ? this.handle(descriptor) : undefined;
+    const invocation = this.requireInvocation();
+    const descriptor = await this.runtime().get(assertId(id), invocation);
+    return descriptor ? this.handle(descriptor, invocation) : undefined;
   }
 
   async list(): Promise<readonly PluginAgent[]> {
+    const invocation = this.requireInvocation();
     return Object.freeze(
-      (await this.runtime().list(this.currentInvocation())).map((descriptor) =>
-        this.handle(descriptor),
+      (await this.runtime().list(invocation)).map((descriptor) =>
+        this.handle(descriptor, invocation),
       ),
     );
   }
 
   async roots(): Promise<readonly PluginAgent[]> {
+    const invocation = this.requireInvocation();
     return Object.freeze(
-      (await this.runtime().roots(this.currentInvocation())).map((descriptor) =>
-        this.handle(descriptor),
+      (await this.runtime().roots(invocation)).map((descriptor) =>
+        this.handle(descriptor, invocation),
       ),
     );
   }
@@ -222,25 +216,27 @@ export class PluginAgentService extends Service {
     return this.agentRuntime;
   }
 
-  private handle(descriptor: PluginAgentDescriptor): PluginAgent {
+  private handle(
+    descriptor: PluginAgentDescriptor,
+    invocation: PluginAgentInvocation = this.requireInvocation(),
+  ): PluginAgent {
     const service = this;
     const id = assertId(descriptor.id);
-    const invoke = () => service.currentInvocation();
     return Object.freeze({
       ...descriptor,
       id,
-      followup: (message: unknown) => service.runtime().followup(id, message, invoke()),
-      steer: (message: unknown) => service.runtime().steer(id, message, invoke()),
-      inject: (message: unknown) => service.runtime().inject(id, message, invoke()),
-      cancel: () => service.runtime().cancel(id, invoke()),
+      followup: (message: unknown) => service.runtime().followup(id, message, invocation),
+      steer: (message: unknown) => service.runtime().steer(id, message, invocation),
+      inject: (message: unknown) => service.runtime().inject(id, message, invocation),
+      cancel: () => service.runtime().cancel(id, invocation),
       whenIdle: (signal?: AbortSignal) =>
-        service.runtime().whenIdle(id, signal ?? invoke()?.abortSignal),
-      snapshot: () => service.runtime().snapshot(id, invoke()),
-      inbox: () => service.runtime().inbox(id, invoke()),
-      result: () => service.runtime().result(id, invoke()),
-      artifacts: () => service.runtime().artifacts(id, invoke()),
-      transcript: () => service.runtime().transcript(id, invoke()),
-      dispose: () => service.runtime().dispose(id, invoke()),
+        service.runtime().whenIdle(id, signal ?? invocation.abortSignal, invocation),
+      snapshot: () => service.runtime().snapshot(id, invocation),
+      inbox: () => service.runtime().inbox(id, invocation),
+      result: () => service.runtime().result(id, invocation),
+      artifacts: () => service.runtime().artifacts(id, invocation),
+      transcript: () => service.runtime().transcript(id, invocation),
+      dispose: () => service.runtime().dispose(id, invocation),
     });
   }
 }

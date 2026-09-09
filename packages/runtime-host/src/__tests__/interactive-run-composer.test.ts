@@ -154,6 +154,25 @@ test('the composer caches the Host base but reassembles scoped Plugin prompts ea
   );
 });
 
+test('the composer preserves scoped dynamic contexts for each model step', async () => {
+  const contexts = [{ name: 'plugin:context', text: 'EPHEMERAL_CONTEXT' }];
+  const composer = createFixtureComposer({
+    resolveAdditionalSystemPrompt: async (_context, baseText) => ({
+      text: baseText,
+      contexts,
+      sourceRevisions: [],
+    }),
+  });
+
+  const prompt = await composer.resolveSystemPrompt({
+    sessionId: 'session',
+    turnId: 'turn',
+    cwd: '/workspace',
+  });
+
+  assert.deepEqual(prompt.contexts, contexts);
+});
+
 test('scoped Plugin Skill contributions join the canonical model inventory', async () => {
   const composer = createFixtureComposer({
     skills: {

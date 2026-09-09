@@ -1456,7 +1456,7 @@ export async function createExecutionRuntimeHostComposition(
         | undefined,
     ) => {
       const sessions = await manager!.listSessions();
-      if (!initiator) return sessions;
+      if (!initiator) return [];
       const visible = new Set([initiator.sessionId]);
       let changed = true;
       while (changed) {
@@ -1550,7 +1550,7 @@ export async function createExecutionRuntimeHostComposition(
       id: string,
       message: unknown,
       placement: 'current_turn' | 'next_turn',
-      initiator: import('@maka/runtime/plugin-agent-service').PluginAgentInvocation | undefined,
+      initiator: import('@maka/runtime/plugin-agent-service').PluginAgentInvocation,
     ) => {
       if (!(await visibleAgentSessions(initiator)).some((session) => session.id === id)) {
         throw new Error('Agent is outside the current ownership tree');
@@ -1578,7 +1578,7 @@ export async function createExecutionRuntimeHostComposition(
     };
     pluginAgents.bindRuntime({
       create: async (options, initiator) => {
-        const spawn = initiator?.toolContext?.spawnChildSession;
+        const spawn = initiator.toolContext?.spawnChildSession;
         if (!spawn) throw new Error('Agent creation requires an active Tool invocation');
         if (!options.prompt?.trim()) throw new Error('Agent creation requires a prompt');
         return new Promise((resolve, reject) => {
@@ -1625,7 +1625,10 @@ export async function createExecutionRuntimeHostComposition(
         }
         await coordinator.stopSession(id, { source: 'stop_button' });
       },
-      whenIdle: async (id, signal) => {
+      whenIdle: async (id, signal, initiator) => {
+        if (!(await visibleAgentSessions(initiator)).some((session) => session.id === id)) {
+          throw new Error('Agent is outside the current ownership tree');
+        }
         const wait = coordinator.whenIdle(id);
         if (!wait) return;
         if (!signal) return wait;

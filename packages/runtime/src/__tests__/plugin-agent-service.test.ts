@@ -66,7 +66,8 @@ test('Agent handles expose the complete control and query surface', async () => 
     },
   };
   agents.bindRuntime(runtime);
-  const agent = await agents.create();
+  const invocation = toolContext('session-a');
+  const agent = await agents.withInvocation(invocation, () => agents.create());
   await agent.followup('next');
   await agent.steer('now');
   await agent.inject('context');
@@ -91,6 +92,42 @@ test('Agent handles expose the complete control and query surface', async () => 
     'transcript',
     'dispose',
   ]);
+  await root.fiber.dispose();
+});
+
+test('Agent access fails closed without an invocation and handles retain their authority', async () => {
+  const root = new Context();
+  const agents = new PluginAgentService(root);
+  const observed: string[] = [];
+  const descriptor = { id: 'child', sessionId: 'child', root: false };
+  agents.bindRuntime({
+    create: async (_options, initiator) => {
+      observed.push(`create:${initiator.sessionId}`);
+      return descriptor;
+    },
+    resume: async () => descriptor,
+    get: async () => descriptor,
+    list: async () => [descriptor],
+    roots: async () => [],
+    followup: async (_id, _message, initiator) => {
+      observed.push(`followup:${initiator.sessionId}`);
+    },
+    steer: async () => undefined,
+    inject: async () => undefined,
+    cancel: async () => undefined,
+    whenIdle: async () => undefined,
+    snapshot: async () => undefined,
+    inbox: async () => undefined,
+    result: async () => undefined,
+    artifacts: async () => undefined,
+    transcript: async () => undefined,
+    dispose: async () => undefined,
+  });
+
+  await assert.rejects(() => agents.list(), /requires an active Agent invocation/u);
+  const handle = await agents.withInvocation(toolContext('session-a'), () => agents.create());
+  await agents.withInvocation(toolContext('session-b'), () => handle.followup('next'));
+  assert.deepEqual(observed, ['create:session-a', 'followup:session-a']);
   await root.fiber.dispose();
 });
 
