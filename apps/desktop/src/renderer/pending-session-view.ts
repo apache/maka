@@ -26,6 +26,46 @@ export interface PendingSessionViewInput {
   permissionMode: PermissionMode;
 }
 
+export interface RuntimeHostSessionProjection<T extends SessionSummary> {
+  hostActiveId: string | undefined;
+  hostActiveSession: T | undefined;
+  ownerActiveId: string | undefined;
+  sharedSessionActive: boolean;
+}
+
+/**
+ * Projects the local catalog's active row onto the Runtime Host boundary.
+ *
+ * A pending row is already a real chat target locally, but the Runtime Host
+ * has not accepted it yet. Host-only readers must therefore wait for the
+ * authoritative catalog replacement instead of querying an id that cannot
+ * exist there yet. Cached rows are deliberately retained: they represent a
+ * previously accepted Host session whose readable local history may be shown
+ * while the Host reconnects.
+ */
+export function projectRuntimeHostSession<
+  T extends SessionSummary & {
+    readonly localState?: 'pending' | 'cached';
+    readonly shared?: true;
+  },
+>(session: T | undefined): RuntimeHostSessionProjection<T> {
+  const sharedSessionActive = session?.shared === true;
+  if (!session || session.localState === 'pending') {
+    return {
+      hostActiveId: undefined,
+      hostActiveSession: undefined,
+      ownerActiveId: undefined,
+      sharedSessionActive,
+    };
+  }
+  return {
+    hostActiveId: session.id,
+    hostActiveSession: session,
+    ownerActiveId: sharedSessionActive ? undefined : session.id,
+    sharedSessionActive,
+  };
+}
+
 /**
  * The `SessionSummary` the chat view shows between "a session id became active"
  * and "its real summary arrived".

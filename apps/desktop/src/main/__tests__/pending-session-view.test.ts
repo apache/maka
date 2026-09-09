@@ -19,7 +19,10 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { pendingSessionView } from '../../renderer/pending-session-view.js';
+import {
+  pendingSessionView,
+  projectRuntimeHostSession,
+} from '../../renderer/pending-session-view.js';
 
 test('the pending chat view names no connection or model it cannot know', () => {
   const view = pendingSessionView({
@@ -61,4 +64,69 @@ test('the pending chat view matches no offered model choice', () => {
     ),
     false,
   );
+});
+
+test('a pending session is not exposed to Runtime Host consumers', () => {
+  const pending = {
+    ...pendingSessionView({
+      sessionId: 'session-pending',
+      name: '新任务',
+      permissionMode: 'ask',
+    }),
+    localState: 'pending' as const,
+  };
+
+  assert.deepEqual(projectRuntimeHostSession(pending), {
+    hostActiveId: undefined,
+    hostActiveSession: undefined,
+    ownerActiveId: undefined,
+    sharedSessionActive: false,
+  });
+});
+
+test('authoritative and cached sessions remain available to Runtime Host consumers', () => {
+  const authoritative = pendingSessionView({
+    sessionId: 'session-authoritative',
+    name: '已接纳任务',
+    permissionMode: 'ask',
+  });
+  const cached = {
+    ...pendingSessionView({
+      sessionId: 'session-cached',
+      name: '缓存任务',
+      permissionMode: 'ask',
+    }),
+    localState: 'cached' as const,
+  };
+
+  assert.deepEqual(projectRuntimeHostSession(authoritative), {
+    hostActiveId: authoritative.id,
+    hostActiveSession: authoritative,
+    ownerActiveId: authoritative.id,
+    sharedSessionActive: false,
+  });
+  assert.deepEqual(projectRuntimeHostSession(cached), {
+    hostActiveId: cached.id,
+    hostActiveSession: cached,
+    ownerActiveId: cached.id,
+    sharedSessionActive: false,
+  });
+});
+
+test('a shared session is Host-backed but has no local-owner capabilities', () => {
+  const shared = {
+    ...pendingSessionView({
+      sessionId: 'session-shared',
+      name: '共享任务',
+      permissionMode: 'ask',
+    }),
+    shared: true as const,
+  };
+
+  assert.deepEqual(projectRuntimeHostSession(shared), {
+    hostActiveId: shared.id,
+    hostActiveSession: shared,
+    ownerActiveId: undefined,
+    sharedSessionActive: true,
+  });
 });
