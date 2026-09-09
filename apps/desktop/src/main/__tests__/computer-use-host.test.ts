@@ -78,17 +78,17 @@ describe('Computer Use host health', () => {
       }));
 
       const validForDevelopment = createComputerUseHost({
+        platform: 'darwin',
         isPackaged: false,
         resourcesPath: directory,
         manifestPath,
         binaryPath,
         physicalInputRecentlyActive: () => false,
       });
-      assert.equal(validForDevelopment.selected.backendId, process.platform === 'darwin'
-        ? 'maka-cu'
-        : 'none');
+      assert.equal(validForDevelopment.selected.backendId, 'maka-cu');
 
       const blockedForDistribution = createComputerUseHost({
+        platform: 'darwin',
         isPackaged: true,
         resourcesPath: directory,
         manifestPath,
@@ -101,15 +101,14 @@ describe('Computer Use host health', () => {
         makaCu: { binarySha256: hash, distributionReady: true },
       }));
       const validForDistribution = createComputerUseHost({
+        platform: 'darwin',
         isPackaged: true,
         resourcesPath: directory,
         manifestPath,
         binaryPath,
         physicalInputRecentlyActive: () => false,
       });
-      assert.equal(validForDistribution.selected.backendId, process.platform === 'darwin'
-        ? 'maka-cu'
-        : 'none');
+      assert.equal(validForDistribution.selected.backendId, 'maka-cu');
 
       await writeFile(manifestPath, JSON.stringify({
         makaCu: {
@@ -118,6 +117,7 @@ describe('Computer Use host health', () => {
         },
       }));
       const invalid = createComputerUseHost({
+        platform: 'darwin',
         isPackaged: false,
         resourcesPath: directory,
         manifestPath,
@@ -129,6 +129,7 @@ describe('Computer Use host health', () => {
       const linkedBinaryPath = join(directory, 'linked-maka-cu');
       await symlink(binaryPath, linkedBinaryPath);
       const linked = createComputerUseHost({
+        platform: 'darwin',
         isPackaged: false,
         resourcesPath: directory,
         manifestPath,
@@ -136,6 +137,40 @@ describe('Computer Use host health', () => {
         physicalInputRecentlyActive: () => false,
       });
       assert.equal(linked.selected.backendId, 'none');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed on a platform with no executor binding even when a binary is pinned', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maka-cu-host-platform-'));
+    try {
+      const binaryPath = join(directory, 'maka-cu');
+      const manifestPath = join(directory, 'bundled-tools.json');
+      const bytes = Buffer.from('#!/bin/sh\nexit 0\n');
+      await writeFile(binaryPath, bytes);
+      await chmod(binaryPath, 0o755);
+      const hash = createHash('sha256').update(bytes).digest('hex');
+      await writeFile(manifestPath, JSON.stringify({
+        makaCu: { binarySha256: hash, distributionReady: true },
+      }));
+
+      for (const platform of ['linux', 'win32', 'freebsd'] as const) {
+        const selected = createComputerUseHost({
+          platform,
+          isPackaged: false,
+          resourcesPath: directory,
+          manifestPath,
+          binaryPath,
+          physicalInputRecentlyActive: () => false,
+        });
+        assert.equal(selected.selected.backendId, 'none');
+        assert.equal(
+          selected.selected.unavailableReason,
+          'unsupported_platform',
+          `${platform} must report a typed unsupported selection`,
+        );
+      }
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

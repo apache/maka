@@ -17,17 +17,24 @@
  * under the License.
  */
 
-// Supervises one `maka-cu` executor child and speaks `maka.cu/2` to it over
-// line-delimited JSON-RPC 2.0 on stdio (`maka-cu`'s docs/HOST_PROTOCOL.md §1).
+// The shared supervised-child lifecycle for every `maka.cu/2` executor the
+// host runs: verified launch, bounded handshake, framed JSON-RPC requests with
+// per-request stages, `$/cancel`-first cancellation and deadlines, bounded
+// restart/backoff, generation invalidation on exit, graceful SIGTERM disposal,
+// and host-owned work-directory cleanup.
 //
-// The framing decoder and the lifecycle vocabulary are shared with the
-// cua-driver service (stdio-json-rpc.ts). The supervision policy is not, and
-// that is deliberate: this executor cancels with `$/cancel` and waits for its
-// own answer instead of being killed (§7.2), shuts down on SIGTERM with a
-// declared grace window (§11), owns its image directory (§8), and has one child
-// rather than a role pair. Folding those into the cua-driver supervisor would
-// mean a constructor flag per divergence, and every flag is a chance to run
-// maka-cu's teardown against cua-driver.
+// This is deliberately the ONLY implementation of that lifecycle in this
+// package. Darwin, Windows and any future desktop platform point their own
+// native `maka.cu/2` binary at this service; they must not copy spawn,
+// handshake, pending-request, cancel, timeout, restart, generation or disposal
+// authority into a second supervisor (see #3896). Platform-specific policy —
+// permission prompts, window/element identity, capture, effect verification and
+// artifact closure — stays in the backend and the Desktop composition, never in
+// the process lifecycle.
+//
+// The framing decoder itself (stdio-json-rpc.ts) is shared with that same
+// single lifecycle so the UTF-8 byte budget and the protocol-violation
+// vocabulary are also written down exactly once.
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
@@ -198,6 +205,15 @@ export interface MakaCuHandshake {
 export interface MakaCuServiceOptions {
   /** Absolute path to the `maka-cu` executable; spawned as a DIRECT child (§11). */
   binaryPath: string;
+  /**
+   * Executor subcommand/argv after the executable path.
+   *
+   * The shipped Darwin executor is invoked as `maka-cu host`. A future
+   * platform binary behind the same `maka.cu/2` contract may need a different
+   * first argument or a platform launcher prefix; that difference belongs
+   * here, in the composition, not in a second child-process supervisor.
+   */
+  childArgs?: readonly string[];
   /** Host-owned image directory, purged before every spawn (§8, §11). */
   imageDir: string;
   hostVersion: string;
@@ -387,7 +403,7 @@ export class MakaCuService {
     // the host reported an exhausted restart budget rather than a wrong argv.
     // §11 said "spawns the executor as a direct child" and did not say with
     // what, so the two sides each picked, and disagreed.
-    const child = spawn(executablePath, ['host'], {
+    const child = spawn(executablePath, [...(this.opts.childArgs ?? ['host'])], {
       stdio: ['pipe', 'pipe', 'pipe'],
       // §13: no env-var behaviour switches. Everything behavioural is a
       // `host.hello` parameter, so the wire says what the executor will do.

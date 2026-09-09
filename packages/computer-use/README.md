@@ -55,8 +55,11 @@ hold:
 3. the composition supplies the executable's expected SHA-256 digest.
 
 On another platform, with missing inputs, or when backend construction fails,
-selection fails closed to `backendId: 'none'` with an empty tool set. This
-package does not discover, download, or choose an unpinned executable.
+selection fails closed to `backendId: 'none'` with an empty tool set and a
+typed `unavailableReason` (`unsupported_platform`, `missing_executable`, or
+`backend_failed`) so a capability UI can say *why* Computer Use is off rather
+than silently treating three different states as the same absence. This package
+does not discover, download, or choose an unpinned executable.
 
 The executable's build, provenance, signing, and distribution status are
 separate release concerns. See
@@ -69,6 +72,30 @@ Cross-platform work is tracked separately:
 - [#3891](https://github.com/apache/maka/issues/3891) — Linux backend;
 - [#3785](https://github.com/apache/maka/issues/3785) — Windows executor
   hardening and production evidence.
+
+## Platform abstraction
+
+`CuDispatchBackend` (owned by Runtime) is the model-facing platform seam;
+`selectComputerUseBackend()` is the selection seam. Selection consults
+`CU_PLATFORM_BACKEND_BINDINGS`, a one-row-per-native-platform table mapping a
+platform to the executor id it is allowed to run. The table is deliberately not
+a per-platform backend catalogue: macOS, Windows and a future Linux executor
+all speak the same `maka.cu/2` contract and are supervised by the same
+`MakaCuService` lifecycle, so the platform's only job is to prove it has a
+pinned native executable behind that contract.
+
+There are no Linux/Windows placeholder backends that succeed or no-op, and no
+empty `maka.cu`-shaped stub is exported for an OS without an executor. A
+platform without a binding selects `none` with
+`unavailableReason: 'unsupported_platform'` — the capability is visibly absent,
+never silently inert. Adding a platform means adding its native executor and
+Desktop artifact provenance, then registering the binding; it never means
+copying the supervisor or protocol adapter.
+
+`selectComputerUseBackend({ platform })` and
+`createComputerUseHost({ platform })` are test seams. Production callers omit
+them and Node's own platform is used, but tests inject `darwin` so selector and
+host assertions run on every CI OS instead of being skipped off-macOS.
 
 ## Protocol and lifecycle
 
