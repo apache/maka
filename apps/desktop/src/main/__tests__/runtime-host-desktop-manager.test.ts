@@ -19,9 +19,11 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deferred } from '@maka/core/test-only/async-primitives';
 import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
   RuntimeHostOperationError,
+  RuntimeHostRemoteCompatibilityError,
   RuntimeHostPeerError,
   RuntimeHostPermanentReconnectError,
   RuntimeHostRequestInterruptedError,
@@ -316,50 +318,77 @@ test('retires the owned ephemeral Host before Desktop quit', async () => {
   assert.ok(!events.includes('resume-launches'));
 });
 
-test('probes owned Host activity for the quit consent dialog without retiring it', async () => {
-  const active = candidateHarness({ upgradeBlockingActivity: true });
+test('quit refuses active work before asking for consent', async () => {
+  const active = candidateHarness({ activeTasks: true });
   const owner = await startRuntimeHostDesktopManager(
     {} as DesktopRuntimeHostCandidateStartInput,
     { startCandidate: async () => ready(active.candidate) },
   );
 
-  assert.deepEqual(await owner.probeOwnedLocalHostActivity(), { kind: 'active_tasks' });
-  assert.equal(active.prepareRetirementCalls, 0);
+  assert.deepEqual(await owner.prepareOwnedLocalHostQuit('refuse_active_work'), 'active_tasks');
+  assert.equal(active.prepareRetirementCalls, 1);
   await owner.close();
 });
 
-test('probe treats an idle activity report as clear and never retires', async () => {
+test('quit commits idle retirement without waiting for process exit', async () => {
   const current = candidateHarness({ upgradeBlockingActivity: false });
   const owner = await startRuntimeHostDesktopManager(
     {} as DesktopRuntimeHostCandidateStartInput,
-    { startCandidate: async () => ready(current.candidate) },
+    {
+      startCandidate: async () => ready(current.candidate),
+      waitForHostExit: async () => assert.fail('quit must not wait for process exit'),
+    },
   );
 
-  assert.deepEqual(await owner.probeOwnedLocalHostActivity(), { kind: 'clear' });
-  assert.equal(current.prepareRetirementCalls, 0);
+  assert.equal(await owner.prepareOwnedLocalHostQuit('refuse_active_work'), 'ready');
+  assert.equal(current.prepareRetirementCalls, 1);
   await owner.close();
 });
 
-test('probe reports not_owned for a Host this Desktop does not own', async () => {
+test('quit preserves a Host this Desktop does not own', async () => {
   const external = candidateHarness({ ownership: 'external' });
   const owner = await startRuntimeHostDesktopManager(
     {} as DesktopRuntimeHostCandidateStartInput,
     { startCandidate: async () => ready(external.candidate) },
   );
 
-  assert.deepEqual(await owner.probeOwnedLocalHostActivity(), { kind: 'not_owned' });
+  assert.deepEqual(await owner.prepareOwnedLocalHostQuit('refuse_active_work'), 'ready');
   await owner.close();
 });
 
-test('probe failure never blocks quit', async () => {
+test('an unreachable Host never blocks quit', async () => {
   const wedged = candidateHarness({ diagnosticsError: new Error('connection lost') });
   const owner = await startRuntimeHostDesktopManager(
     {} as DesktopRuntimeHostCandidateStartInput,
     { startCandidate: async () => ready(wedged.candidate) },
   );
 
-  assert.deepEqual(await owner.probeOwnedLocalHostActivity(), { kind: 'clear' });
+  assert.deepEqual(await owner.prepareOwnedLocalHostQuit('refuse_active_work'), 'ready');
   await owner.close();
+});
+
+test('replacement still waits for process exit after quit has prepared retirement', async () => {
+  const current = candidateHarness({ disconnectOnPrepare: true });
+  const exit = deferred<void>();
+  const waiting = deferred<void>();
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => ready(current.candidate),
+    waitForHostExit: async () => { waiting.resolve(); await exit.promise; },
+  });
+  try {
+    assert.equal(await owner.prepareOwnedLocalHostQuit('refuse_active_work'), 'ready');
+    let retired = false;
+    const replacement = owner.retireOwnedLocalHost('refuse_active_work').then(() => { retired = true; });
+    await waiting.promise;
+    assert.equal(retired, false);
+    assert.equal(current.prepareRetirementCalls, 1);
+    exit.resolve();
+    await replacement;
+    assert.equal(retired, true);
+  } finally {
+    exit.resolve();
+    await owner.close();
+  }
 });
 
 test('does not retire the local Host twice when an update handoff triggers quit', async () => {
@@ -1115,6 +1144,49 @@ test('coalesces concurrent enable requests for one remote profile', async () => 
   await Promise.all([first, second]);
   assert.equal(starts, 2);
   await manager.close();
+});
+
+test('close cancels an initial remote compatibility handoff', { timeout: 5_000 }, async () => {
+  const local = candidateHarness();
+  const shown = deferred<void>();
+  let signal: AbortSignal | undefined;
+  let surfaceClosed = false;
+  let submit: Parameters<OpenHostHandoffSurface>[0] | undefined;
+  let view: HostHandoffView | undefined;
+  const manager = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async (input) => {
+      if (!input.profileTarget) return ready(local.candidate);
+      signal = input.signal;
+      throw new RuntimeHostRemoteCompatibilityError('office', {
+        kind: 'incompatible', hostEpoch: 'old-remote', compatibilityEpoch: 1,
+        protocolMin: 0, protocolMax: 0, compositionId: 'interactive',
+        compositionRevision: 'old', state: 'ready', replacement: 'blocked_by_residency',
+      });
+    },
+    handoffSurface: (choose) => {
+      submit = choose;
+      return {
+        update: (next) => { view = next; shown.resolve(); },
+        close: () => { surfaceClosed = true; },
+      };
+    },
+  });
+  const enabling = manager.enable(remoteTarget('office')).catch((error: unknown) => error);
+  await shown.promise;
+  const closing = manager.close();
+  try {
+    assert.equal(signal?.aborted, true);
+    await closing;
+    const error = await enabling;
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /manager is closed/);
+    assert.equal(surfaceClosed, true);
+    assert.equal(local.closeCalls, 1);
+  } finally {
+    if (view) submit?.(view.revision, 'cancel');
+    await enabling;
+    await closing;
+  }
 });
 
 test('waits for an in-flight remote enable before closing', async () => {
