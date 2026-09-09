@@ -15215,7 +15215,11 @@ describe('AiSdkBackend steering durability and identity', () => {
       parts.find((part) => part.type !== 'text' && part.mediaType === 'image/png'),
       `expected a native image part on the steering replay, got: ${JSON.stringify(parts)}`,
     );
-    assert.match(parts[0]?.text ?? '', /steered earlier/, 'the envelope text stays the leading part');
+    assert.match(
+      parts[0]?.text ?? '',
+      /steered earlier/,
+      'the envelope text stays the leading part',
+    );
     assert.ok(
       steeredReplay?.providerOptions,
       'the steering provider identity survives the materialization',
