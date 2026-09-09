@@ -74,6 +74,7 @@ export interface RuntimeHostUpdateCheckOptions {
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
   readonly managedRootId?: string;
   readonly operatorDeploymentId?: string;
+  readonly allowInterruptActiveTasks?: boolean;
   /** Internal non-reentrant lock ownership propagated by the canonical coordinator. */
   readonly deploymentLockHeld?: boolean;
 }
@@ -135,6 +136,7 @@ async function resolveManagedRuntimeHostUpdate(
     nodePath: process.execPath,
     cliPath: process.argv[1] ?? '',
     ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
+    ...(options.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
   };
   const backend = options.managedRootId
     ? undefined

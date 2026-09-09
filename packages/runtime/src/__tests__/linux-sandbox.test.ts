@@ -402,7 +402,7 @@ describe('discoverNestedProtectedMetadataPaths', () => {
 });
 
 describe('LinuxBubblewrapBackend', () => {
-  it('keeps mutable protected-metadata materialization out of probe', () => {
+  it('fails when protected-metadata discovery fails during transform', () => {
     let scans = 0;
     const backend = new LinuxBubblewrapBackend({
       capability: { available: true, bwrapPath: '/usr/bin/bwrap' },
@@ -413,8 +413,6 @@ describe('LinuxBubblewrapBackend', () => {
     });
     const request = workspaceRequest(protectedMetadataProfile());
 
-    assert.equal(backend.probe(request).ok, true);
-    assert.equal(scans, 0);
     const transformed = backend.transform(request);
     assert.equal(scans, 1);
     assert.equal(transformed.ok, false);

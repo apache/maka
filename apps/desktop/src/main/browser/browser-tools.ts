@@ -19,7 +19,10 @@
 
 import { z } from 'zod';
 import { htmlToMarkdown } from '@jackwener/opencli/utils';
+import type { IPage } from '@jackwener/opencli/types';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
+import { browserOriginAdmission } from './browser-origin-admission.js';
+import type { BrowserOriginLease } from './browser-host.js';
 import {
   type BrowserPageRun,
   type TakeoverMode,
@@ -34,11 +37,10 @@ import { parseNavigable } from './logic.js';
  * (click / type) take a ref and self-verify the match. All six drive the
  * conversation's OWN embedded-browser view through BrowserSession.
  *
- * Permission: every tool is the dedicated `browser` category — Maka's mode
- * gates it (block in `explore`, prompt in `ask` AND `execute`), so a browser
- * action on the user's logged-in sessions is never silently auto-allowed; the
- * visible view plus the user's "allow for this turn" is the safety net. A
- * finer origin-keyed grant (remember "allow this site") is a later refinement.
+ * Permission: the Runtime Host admits these Client Capability calls against an
+ * Origin-keyed Session Grant. The Desktop provider binds that approved Origin
+ * to this exact invocation; the page-host lease below then keeps it valid for
+ * the entire action, in addition to the visible-view safety boundary.
  */
 
 const BROWSER_TOOL_CATEGORY = 'browser' as const;
@@ -76,11 +78,20 @@ export function takeoverNote(info: { takeoverReloaded: boolean }): string {
 }
 
 /**
- * Shared run path for the browser_* tools. Permission is decided by the engine
- * BEFORE impl runs (via the tool's category), so this only guards availability
- * and runs the action through BrowserSession with its tool-level timeout and
- * the user's stop signal.
+ * Shared run path for the browser_* tools. Host admission happens before impl;
+ * this layer carries its approved Origin across BrowserSession and checks it
+ * before and after every page operation, alongside timeout and stop handling.
  */
+type BrowserActionResult<T> =
+  | { readonly kind: 'completed'; readonly value: T }
+  | { readonly kind: 'navigated'; readonly url: string; readonly requiresApproval: boolean };
+
+class BrowserOriginLeaseLostError extends Error {
+  constructor(readonly url: string) {
+    super('Browser Origin lease was lost');
+  }
+}
+
 async function runBrowserAction<T>(input: {
   sessionId: string;
   label: string;
@@ -90,15 +101,65 @@ async function runBrowserAction<T>(input: {
   // omit for the pure-observe default, which never reloads.
   takeover?: TakeoverMode;
   run: BrowserPageRun<T>;
-}): Promise<T> {
+}): Promise<BrowserActionResult<T>> {
   if (!browserAutomationAvailable()) {
     throw new Error('Browser automation is only available inside the desktop app.');
   }
-  return withBrowserPage(input.sessionId, input.label, input.run, {
+  const admission = browserOriginAdmission(input.sessionId);
+  if (!admission) {
+    throw new Error('Browser action is missing its admitted Origin scope.');
+  }
+  return withBrowserPage(input.sessionId, input.label, async (page, info) => {
+    const lease = info.originLease;
+    if (!lease) throw new Error('Browser action is missing its page-host Origin lease.');
+    const started = lease.snapshot();
+    try {
+      assertOriginLease(lease);
+      const value = await input.run(guardBrowserPage(page, lease), info);
+      const finished = assertOriginLease(lease);
+      if ((input.takeover ?? 'observe') === 'mutate' && finished.epoch !== started.epoch) {
+        return { kind: 'navigated', url: finished.url, requiresApproval: false };
+      }
+      return { kind: 'completed', value };
+    } catch (error) {
+      if (error instanceof BrowserOriginLeaseLostError) {
+        return { kind: 'navigated', url: error.url, requiresApproval: true };
+      }
+      throw error;
+    }
+  }, {
     abort: input.abortSignal,
+    originAdmission: { approvedUrl: admission.url },
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     ...(input.takeover ? { takeover: input.takeover } : {}),
   });
+}
+
+function assertOriginLease(lease: BrowserOriginLease) {
+  const snapshot = lease.snapshot();
+  if (snapshot.violatedUrl !== undefined) {
+    throw new BrowserOriginLeaseLostError(snapshot.violatedUrl);
+  }
+  return snapshot;
+}
+
+function guardBrowserPage(page: IPage, lease: BrowserOriginLease): IPage {
+  return new Proxy(page, {
+    get(target, key, receiver) {
+      const member = Reflect.get(target, key, receiver);
+      if (typeof member !== 'function') return member;
+      return async (...args: unknown[]) => {
+        if (key === 'goto') {
+          lease.startNavigation(String(args[0] ?? ''));
+        } else {
+          assertOriginLease(lease);
+        }
+        const value = await Reflect.apply(member, target, args);
+        assertOriginLease(lease);
+        return value;
+      };
+    },
+  }) as IPage;
 }
 
 export function buildBrowserNavigateTool(): MakaTool<{ url: string }, string> {
@@ -107,7 +168,7 @@ export function buildBrowserNavigateTool(): MakaTool<{ url: string }, string> {
     displayName: '浏览器导航',
     description:
       'Open a URL in the conversation\'s embedded browser. Pass a full http:// or https:// URL; other schemes are rejected. ' +
-      'Returns the URL actually landed on (after redirects) and the page title. Follow with browser_snapshot to see what is on the page.',
+      'Returns the sanitized URL actually landed on (after redirects). Follow with browser_snapshot to see what is on the page.',
     parameters: z.object({
       url: z.string().min(1).max(4000).describe('Full http:// or https:// URL to open. Other schemes are rejected.'),
     }),
@@ -133,14 +194,11 @@ export function buildBrowserNavigateTool(): MakaTool<{ url: string }, string> {
           // getCurrentUrl() would just echo it back and a redirect would never
           // be visible.
           const landed = await page.evaluate<string>('window.location.href').catch(() => url);
-          const title = await page.evaluate<string>('document.title').catch(() => '');
-          return { landed: typeof landed === 'string' && landed ? landed : url, title, info };
+          return { landed: typeof landed === 'string' && landed ? landed : url, info };
         },
       });
-      return (
-        [`Loaded ${result.landed}`, result.title ? `Title: ${result.title}` : undefined].filter(Boolean).join('\n') +
-        takeoverNote(result.info)
-      );
+      if (result.kind === 'navigated') return navigationResult(result.url, result.requiresApproval);
+      return `Loaded ${sanitizedPageUrl(result.value.landed)}` + takeoverNote(result.value.info);
     },
   };
 }
@@ -165,9 +223,12 @@ export function buildBrowserSnapshotTool(): MakaTool<Record<string, never>, stri
           return { snapshot, url, info };
         },
       });
+      if (result.kind === 'navigated') return navigationResult(result.url, result.requiresApproval);
       const text =
-        typeof result.snapshot === 'string' ? result.snapshot : JSON.stringify(result.snapshot, null, 2);
-      return (result.url ? `${result.url}\n\n${text}` : text) + takeoverNote(result.info);
+        typeof result.value.snapshot === 'string'
+          ? result.value.snapshot
+          : JSON.stringify(result.value.snapshot, null, 2);
+      return (result.value.url ? `${result.value.url}\n\n${text}` : text) + takeoverNote(result.value.info);
     },
   };
 }
@@ -190,18 +251,52 @@ export function buildBrowserClickTool(): MakaTool<{ ref: string }, string> {
         abortSignal,
         // A mutating action: harden a taken-over page (reload once) before clicking.
         takeover: 'mutate',
-        run: async (page, info) => ({ outcome: await page.click(normalizeElementRef(ref)), info }),
+        run: async (page, info) => {
+          const outcome = await page.click(normalizeElementRef(ref));
+          return { outcome, info };
+        },
       });
-      const { matches_n, match_level } = result.outcome;
+      if (result.kind === 'navigated') return navigationResult(result.url, result.requiresApproval);
+      const { matches_n, match_level } = result.value.outcome;
       return (
         `Clicked ${ref} (matched ${matches_n} element${matches_n === 1 ? '' : 's'}, ${match_level} match).` +
         (matches_n > 1
           ? ' Multiple matches — verify the right element reacted, or re-snapshot for a tighter ref.'
           : '') +
-        takeoverNote(result.info)
+        takeoverNote(result.value.info)
       );
     },
   };
+}
+
+function sanitizedPageUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'an unapproved page';
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return 'an unapproved page';
+  }
+}
+
+function unapprovedPageOrigin(value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'an unapproved page';
+    // The pathname may itself contain credentials or reset tokens; disclose it only after approval.
+    return url.origin;
+  } catch {
+    return 'an unapproved page';
+  }
+}
+
+function navigationResult(url: string, requiresApproval: boolean): string {
+  if (requiresApproval) {
+    return `Navigated to ${unapprovedPageOrigin(url)}. Access to the new site requires approval on the next Browser call.`;
+  }
+  return (
+    `Navigated to ${sanitizedPageUrl(url)}.`
+  );
 }
 
 export function buildBrowserTypeTool(): MakaTool<{ ref: string; text: string; submit?: boolean }, string> {
@@ -233,14 +328,15 @@ export function buildBrowserTypeTool(): MakaTool<{ ref: string; text: string; su
           return { outcome, info };
         },
       });
-      const { verified, actual, match_level } = result.outcome;
+      if (result.kind === 'navigated') return navigationResult(result.url, result.requiresApproval);
+      const { verified, actual, match_level } = result.value.outcome;
       const lines = [
         `Filled ${ref} (${match_level} match)${submit ? ', then pressed Enter' : ''}.`,
         verified
           ? 'Verified: the field contains the requested text.'
           : `Not verified — the field now contains: ${JSON.stringify(actual)}`,
       ];
-      return lines.join('\n') + takeoverNote(result.info);
+      return lines.join('\n') + takeoverNote(result.value.info);
     },
   };
 }
@@ -292,7 +388,7 @@ export function buildBrowserWaitTool(): MakaTool<
         : selector
           ? `selector ${JSON.stringify(selector)}`
           : `${requested}s pause`;
-      const info = await runBrowserAction({
+      const result = await runBrowserAction({
         sessionId,
         label: 'wait',
         abortSignal,
@@ -322,7 +418,8 @@ export function buildBrowserWaitTool(): MakaTool<
           return pageInfo;
         },
       });
-      return `Done: ${condition}.` + takeoverNote(info);
+      if (result.kind === 'navigated') return navigationResult(result.url, result.requiresApproval);
+      return `Done: ${condition}.` + takeoverNote(result.value);
     },
   };
 }
@@ -358,27 +455,28 @@ export function buildBrowserExtractTool(): MakaTool<{ selector?: string; start?:
           return { read, url, info };
         },
       });
-      if (typeof result.read?.html !== 'string') {
+      if (result.kind === 'navigated') return navigationResult(result.url, result.requiresApproval);
+      if (typeof result.value.read?.html !== 'string') {
         throw new Error(
           selector
             ? `No element matches selector ${JSON.stringify(selector)}.`
             : 'The page has no readable body yet — navigate somewhere first.',
         );
       }
-      const markdown = htmlToMarkdown(result.read.html);
+      const markdown = htmlToMarkdown(result.value.read.html);
       const chunk = markdown.slice(start, start + EXTRACT_CHAR_LIMIT);
       const nextStart = start + chunk.length;
       const hasMore = nextStart < markdown.length;
       return (
-        (result.url ? `${result.url}\n\n` : '') +
+        (result.value.url ? `${result.value.url}\n\n` : '') +
         chunk +
         (hasMore
           ? `\n\n(Content continues — call browser_extract again with start=${nextStart}. next_start_char: ${nextStart})`
           : '') +
-        (result.read.truncated
+        (result.value.read.truncated
           ? "\n\n(The page's HTML was larger than the extraction ceiling; trailing content was dropped before conversion. Use `selector` to target the part you need.)"
           : '') +
-        takeoverNote(result.info)
+        takeoverNote(result.value.info)
       );
     },
   };

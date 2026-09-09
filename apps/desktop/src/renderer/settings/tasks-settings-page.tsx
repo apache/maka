@@ -125,7 +125,7 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
       title: isSearching
         ? copy.purgeMatchesConfirmTitle(ids.length)
         : copy.purgeAllConfirmTitle(ids.length),
-      description: copy.purgeConfirmBody,
+      description: `${copy.purgeConfirmBody} ${copy.purgeSubtaskNote}`,
       confirmLabel: copy.purgeConfirmAction,
       cancelLabel: getSettingsSharedCopy(locale).cancel,
       destructive: true,
@@ -140,6 +140,14 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
       // dropping the other is how a count quietly stops adding up.
       const kept =
         outcome.restored.length > 0 ? copy.purgeKeptRestored(outcome.restored.length) : undefined;
+      // A bulk purge of parents archives their linked subtasks; say how many so
+      // the archived rows that appear next are not a surprise.
+      const moved =
+        outcome.archivedSubtasks > 0 ? copy.purgedSubtaskNote(outcome.archivedSubtasks) : undefined;
+      const detail = (...parts: Array<string | undefined>) => {
+        const text = parts.filter(Boolean).join(' ');
+        return text.length > 0 ? text : undefined;
+      };
       if (!outcome.verified || outcome.remaining.length > 0) {
         // A reason beats a count: a task refuses to retire while its turn is
         // still running, and "N still there" gives the reader nothing to do.
@@ -150,14 +158,14 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
             : copy.purgeFailedBody(outcome.remaining.length);
         toast.error(
           copy.purgeFailedTitle,
-          kept ? `${reason} ${kept}` : reason,
+          detail(reason, moved, kept),
           undefined,
           outcome.firstFailure
             ? { sessionId: outcome.firstFailure.sessionId }
             : undefined,
         );
       } else {
-        toast.success(copy.purgedToast(outcome.removed), kept);
+        toast.success(copy.purgedToast(outcome.removed), detail(moved, kept));
       }
     } finally {
       if (mountedRef.current) setPurging(false);

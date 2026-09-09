@@ -27,6 +27,7 @@ import {
   clearResolvedSkillPreferenceReviews,
   createManagedSkillLock,
   encodeSkillRuntimePreferences,
+  getBundledSkillSource,
   listManagedSkillSources,
   patchSkillRuntimePreference,
   readManagedSkillSource,
@@ -37,6 +38,40 @@ import {
 } from '../skills.js';
 
 describe('shared bundled skill catalog', () => {
+  it('trusts the Computer Use lock shipped immediately before the current bundled body', () => {
+    const source = getBundledSkillSource('computer-use');
+    assert.ok(source);
+    const previousHash = 'sha256:64aa2ef2d608e15792cc04eff7204731671b6b18818964ba95c65f53c694db62';
+
+    assert.equal(source.legacyContentSha256.includes(previousHash), true);
+    assert.deepEqual(
+      validateSkillLock({
+        lock: {
+          schemaVersion: 1,
+          id: source.id,
+          sourceType: 'bundled',
+          sourceName: source.sourceName,
+          sourceVersion: source.sourceVersion,
+          contentSha256: previousHash,
+          installedAt: '2026-09-02T00:00:00.000Z',
+        },
+        skillId: source.id,
+        currentContentSha256: previousHash,
+      }),
+      {
+        sourceType: 'bundled',
+        sourceName: source.sourceName,
+        sourceVersion: source.sourceVersion,
+        installedAt: '2026-09-02T00:00:00.000Z',
+        contentSha256: previousHash,
+        userModified: false,
+        validationStatus: 'ok',
+        validationCodes: [],
+        managedUpdateStatus: 'not_managed',
+      },
+    );
+  });
+
   it('constructs and validates managed provenance and update status', () => {
     const installedHash = `sha256:${'1'.repeat(64)}`;
     const updatedHash = `sha256:${'2'.repeat(64)}`;

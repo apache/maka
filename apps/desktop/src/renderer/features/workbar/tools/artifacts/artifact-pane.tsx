@@ -60,12 +60,11 @@ import {
   Copy,
   Trash2,
 } from '@maka/ui/icons';
-import type { ArtifactDescriptor, ArtifactKind } from '@maka/core/artifacts';
+import { canUserDeleteArtifact, type ArtifactDescriptor, type ArtifactKind } from '@maka/core/artifacts';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { formatRelativeTimestamp } from '@maka/core/relative-time';
-import { generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale, redactSecrets } from '@maka/core/redaction';
 import {
-  Badge,
   Banner,
   Button,
   MoreMenu,
@@ -84,6 +83,7 @@ import { useWorkbarServices } from '../../services-context.js';
 
 export function ArtifactPane(props: {
   sessionId: string;
+  refreshEnabled: boolean;
   onCountChange?: (count: number) => void;
   onDismiss?: () => void;
 }) {
@@ -133,7 +133,7 @@ export function ArtifactPane(props: {
     setSelectedId(null);
   }, [sessionId]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (showFailureToast = true) => {
     const requestSeq = ++artifactListRequestSeqRef.current;
     if (!sessionId) {
       recordsSessionIdRef.current = undefined;
@@ -143,9 +143,7 @@ export function ArtifactPane(props: {
       return;
     }
     try {
-      const next = await artifacts.list(sessionId, {
-        includeDeleted: true,
-      });
+      const next = await artifacts.list(sessionId);
       if (artifactPaneMountedRef.current && requestSeq === artifactListRequestSeqRef.current) {
         recordsSessionIdRef.current = sessionId;
         setRecordsSessionId(sessionId);
@@ -160,7 +158,7 @@ export function ArtifactPane(props: {
           recordsSessionIdRef.current = undefined;
           setRecordsSessionId(undefined);
           setRecords([]);
-        } else {
+        } else if (showFailureToast) {
           toast.error(copy.pane.refreshFailed, message, undefined, { sessionId });
         }
       }
@@ -168,22 +166,22 @@ export function ArtifactPane(props: {
   }, [artifacts, copy, locale, sessionId, toast]);
 
   useEffect(() => {
-    void refresh();
-    if (!sessionId) return;
-    // Keep the list in sync without polling. The
-    // backend emits `{ reason: 'created' | 'deleted' | 'purged' }` on the
-    // `artifacts:changed` channel; we just re-list since the list is bounded
-    // (one session's worth) and the metadata is already in memory on main.
-    const unsubscribe = artifacts.subscribeChanges((event) => {
-      if (event.sessionId === sessionId) {
-        void refresh();
-      }
-    });
-    return () => {
-      artifactListRequestSeqRef.current += 1;
-      unsubscribe();
+    if (!props.refreshEnabled) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Writeback can commit after the terminal Session event. Read the existing
+    // catalog while the workbar is visible, including its background file tab's count.
+    const poll = async () => {
+      await refresh(false);
+      if (!stopped) timer = setTimeout(() => void poll(), 2_000);
     };
-  }, [artifacts, sessionId, refresh]);
+    void poll();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      artifactListRequestSeqRef.current += 1;
+    };
+  }, [props.refreshEnabled, sessionId, refresh]);
 
   const activeRecords = useMemo(
     () => (recordsSessionId === sessionId ? filterUserVisibleArtifacts(records) : []),
@@ -194,7 +192,6 @@ export function ArtifactPane(props: {
     props.onCountChange?.(activeRecords.length);
   }, [activeRecords.length, props.onCountChange]);
 
-  // 已删除墓碑记录保持可选，用于展示明确失败态；只有选中 id 彻底消失时才回退到最新 live artifact。
   useEffect(() => {
     if (activeRecords.length === 0) {
       if (selectedId !== null) setSelectedId(null);
@@ -356,6 +353,7 @@ export function ArtifactPane(props: {
   async function deleteArtifact(artifactId: string) {
     const actionSessionId = sessionId;
     const record = activeRecords.find((entry) => entry.id === artifactId);
+    if (!record || !canUserDeleteArtifact(record)) return;
     const name = record?.name ?? copy.pane.fallbackName;
     const ok = await toast.confirm({
       title: copy.pane.deleteTitle(name),
@@ -494,7 +492,6 @@ export function ArtifactPane(props: {
                   // ArrowUp/Down.
                   tabIndex={-1}
                   data-selected={record.id === selectedId ? 'true' : 'false'}
-                  data-deleted={record.status === 'deleted' ? 'true' : 'false'}
                   onClick={() => openPreview(record.id)}
                   label={record.name}
                   icon={(
@@ -508,9 +505,6 @@ export function ArtifactPane(props: {
                       <span className="maka-artifact-row-time">
                         {formatRelativeTimestamp(record.createdAt, Date.now(), locale)}
                       </span>
-                      {record.status === 'deleted' && (
-                        <Badge variant="error" className="maka-artifact-row-badge" label={copy.pane.deletedBadge} />
-                      )}
                     </span>
                   )}
                 />
@@ -566,22 +560,14 @@ export function ArtifactPane(props: {
                       onClick: () => void runArtifactAction(`${previewRecord.id}:copy`, () => copyText(previewRecord.id)),
                     }]
                   : []),
-                { type: 'divider' as const },
-                {
-                  label:
-                    previewRecord.source === 'deep_research' ||
-                    previewRecord.source === 'tool_result_archive'
-                      ? copy.pane.deleteReadOnly
-                      : copy.pane.delete,
+                ...(canUserDeleteArtifact(previewRecord) ? [{ type: 'divider' as const }, {
+                  label: copy.pane.delete,
                   icon: <Trash2 size={ICON_SIZE.control} aria-hidden="true" />,
-                  isDisabled:
-                    previewRecord.source === 'deep_research' ||
-                    previewRecord.source === 'tool_result_archive',
                   onClick: () => void runArtifactAction(
                     `${previewRecord.id}:delete`,
                     () => deleteArtifact(previewRecord.id),
                   ),
-                },
+                }] : []),
               ]}
             />
           </header>
@@ -619,10 +605,17 @@ function saveArtifactFailureCopy(reason: string, copy: ArtifactCopy): string {
       return copy.pane.saveFailures.not_found;
     case 'not_allowed':
       return copy.pane.saveFailures.not_allowed;
+    case 'write_failed':
+    case 'target_write_failed':
+      return copy.pane.saveFailures.target_write_failed;
     case 'deleted':
       return copy.pane.saveFailures.deleted;
-    case 'write_failed':
-      return copy.pane.saveFailures.write_failed;
+    case 'source_failed':
+      return copy.pane.saveFailures.source_failed;
+    case 'size_mismatch':
+      return copy.pane.saveFailures.size_mismatch;
+    case 'replace_failed':
+      return copy.pane.saveFailures.replace_failed;
     default:
       return copy.pane.saveFailures.default;
   }
@@ -631,11 +624,8 @@ function saveArtifactFailureCopy(reason: string, copy: ArtifactCopy): string {
 function artifactActionErrorMessage(error: unknown, locale: UiLocale, copy: ArtifactCopy): string {
   const raw = redactSecrets(error instanceof Error ? error.message : String(error ?? '')).trim();
   if (!raw) return copy.pane.actionFailed;
-  const classified = locale === 'zh'
-    ? generalizedErrorMessageChinese(new Error(raw), '')
-    : generalizedErrorMessage(new Error(raw), '');
-  if (classified) return classified;
-  return locale === 'zh' && /[\u4e00-\u9fff]/.test(raw) ? raw : copy.pane.actionFailed;
+  const classified = generalizedErrorMessageForLocale(new Error(raw), '', locale);
+  return classified || copy.pane.actionFailed;
 }
 
 function KindIcon(props: { kind: ArtifactKind }) {
@@ -664,5 +654,5 @@ function KindIcon(props: { kind: ArtifactKind }) {
    formatter cache. Removed; we import the shared helper. */
 
 function preferredArtifactSelectionId(records: readonly ArtifactDescriptor[]): string | null {
-  return (records.find((record) => record.status !== 'deleted') ?? records[0])?.id ?? null;
+  return records[0]?.id ?? null;
 }

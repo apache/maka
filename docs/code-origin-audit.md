@@ -1,3 +1,15 @@
+---
+doc_id: code-origin-audit
+title: "Code origin audit"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-04
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -161,7 +173,7 @@ Upstream is MIT, Copyright (c) 2025 opencode. The repository now resolves to `an
 
 ### models.dev data snapshot
 
-`packages/core/src/model-metadata.generated.ts` and `packages/runtime/src/telemetry/model-pricing.generated.ts` are checked-in, shipped derivations of `https://models.dev/api.json`, together about 27,800 lines. Upstream `anomalyco/models.dev` is MIT, Copyright (c) 2025 models.dev. The individual entries are facts and are not themselves copyrightable, but the selection and arrangement — which providers and fields are carried, and upstream's normalized structures such as `lifecycle` and `thinkingOptions.efforts` — come from that database. The same generator boundary applies: models.dev is not an npm dependency, so the root `LICENSE` records its source, repository, copyright, MIT permission notice, generated outputs, and snapshot provenance explicitly. The checked snapshot and generated headers bind the redistributed projection to recorded digests, making the fixed input identifiable without relying on the npm notice generator.
+`packages/core/src/model-metadata.generated.ts` and `packages/runtime/src/telemetry/model-pricing.generated.ts` are build-time, untracked derivations of the committed `scripts/model-metadata/models-dev-api.snapshot.json` projection selected from `https://models.dev/api.json`. This is a two-level authority boundary: models.dev remains the upstream refresh source, while the committed snapshot is the sole build input for a particular repository revision and release. An explicit refresh imports upstream changes for review; normal installation and build paths never fetch a moving latest response. At run time the Runtime Host fetches `https://models.dev/api.json` once at startup and holds the projection in memory for that process; it is never written to disk and never enters a build, so the redistributed artifact stays bound to the committed snapshot. That fetch goes through the same outbound admission as the WebFetch tool, so privacy mode suppresses it and a configured proxy carries it. Upstream `anomalyco/models.dev` is MIT, Copyright (c) 2025 models.dev. The individual entries are facts and are not themselves copyrightable, but the selection and arrangement — which providers and fields are carried, and upstream's normalized structures such as `lifecycle` and `thinkingOptions.efforts` — come from that database. The same generator boundary applies: models.dev is not an npm dependency, so the root `LICENSE` records its source, repository, copyright, MIT permission notice, generated outputs, and snapshot provenance explicitly. The committed snapshot and generated headers bind the redistributed projection to recorded digests, making the fixed input identifiable without relying on the npm notice generator or a runtime network request.
 
 ### PawWork browser port
 
@@ -220,13 +232,13 @@ The exact boundary, locally authored divergences, and artifact reproducibility l
 
 A maintainer confirmed that the following assets were AI-generated and that no third-party image, logo, or artwork was uploaded as input:
 
-- `.github/assets/maka-hero.en.png`
-- `.github/assets/maka-hero.zh-CN.png`
 - `apps/desktop/assets/icon.png`
 - `apps/desktop/resources/status/cu-status.png`
 - `apps/desktop/resources/status/cu-status@2x.png`
 
-The first three used ChatGPT Image. The status PNGs were exported from an AI-generated SVG. Exact prompts were not retained and may have requested a visual style reference, so this confirmation is provenance evidence rather than a guarantee that no style or IP concern exists.
+`icon.png` used ChatGPT Image, as did the former README heroes `.github/assets/maka-hero.en.png` and `maka-hero.zh-CN.png`, removed on 2026-09-04. The status PNGs were exported from an AI-generated SVG. Exact prompts were not retained and may have requested a visual style reference, so this confirmation is provenance evidence rather than a guarantee that no style or IP concern exists.
+
+The README heroes now in `.github/assets/readme-hero.*.png` are not generated art: `website/scripts/readme-hero.mjs` renders them from the built website, so they carry only the site's own copy, styles and fonts, whose provenance is recorded with `website/`.
 
 ### Source archive non-text inventory
 
@@ -234,7 +246,7 @@ The ASF source verifier reads this inventory from the candidate itself. A
 non-text image must match one of these paths; executable and archive magic is
 rejected even if a path is listed here.
 
-- `.github/assets/*.png`: the AI-generated hero images recorded above.
+- `.github/assets/*.png`: the README hero images rendered from the website, recorded above.
 - `apps/desktop/assets/icon.png`: the AI-generated application mark recorded above.
 - `apps/desktop/assets/app-icons/*.png`: `mono.png` is the contributor-submitted grayscale derivative of the application mark from pull request #3431; the remaining variants are reproducibly rendered from the Apache-licensed geometry and palette in `scripts/generate-app-icons.py` and byte-checked by `scripts/generate-app-icons.test.mjs`.
 - `apps/desktop/build/*.png`: contributor-submitted DMG artwork from pull request #3817; that contribution records Codex as review and verification assistance, not as the source of the artwork.

@@ -34,11 +34,30 @@ export class HostConfigurationCoordinator {
     input: ConfigurationCredentialExportInput,
   ): Promise<OperationOutcome<'configuration.credentials.export'>> {
     try {
-      const material = await this.policy.exportCredentialMaterial(input.locator);
+      const exported = input.expectedConnection
+        ? await this.policy.exportCredentialMaterial(input.locator, input.expectedConnection)
+        : {
+            kind: 'exported' as const,
+            material: await this.policy.exportCredentialMaterial(input.locator),
+          };
+      if (exported.kind === 'connection_stale') {
+        return {
+          ok: true,
+          result: {
+            credential: null,
+            connectionStale: {
+              expected: exported.expected,
+              actual: exported.actual,
+            },
+          },
+        };
+      }
+      const material = exported.material;
       const credential = material
         ? {
             locator: material.locator,
             secretBase64: Buffer.from(material.secret, 'utf8').toString('base64'),
+            ...(material.proxyTarget === undefined ? {} : { proxyTarget: material.proxyTarget }),
           }
         : null;
       return { ok: true, result: { credential } };

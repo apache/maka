@@ -42,7 +42,7 @@ export const RetainedFunctionalMotion: Story = {
       <style>{'@keyframes maka-shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }'}</style>
       <div style={{ alignItems: 'center', display: 'grid', gap: 8, justifyItems: 'center' }}>
         <Spinner style={{ height: 20, width: 20 }} />
-        <span style={{ color: 'var(--foreground-secondary)', fontSize: 12, fontWeight: 600 }}>Spinner</span>
+        <span style={{ color: 'var(--muted-foreground)', fontSize: 12, fontWeight: 600 }}>Spinner</span>
       </div>
       <div style={{ alignItems: 'center', display: 'grid', gap: 8, justifyItems: 'center' }}>
         <span
@@ -57,7 +57,7 @@ export const RetainedFunctionalMotion: Story = {
             width: 96,
           }}
         />
-        <span style={{ color: 'var(--foreground-secondary)', fontSize: 12, fontWeight: 600 }}>Shimmer</span>
+        <span style={{ color: 'var(--muted-foreground)', fontSize: 12, fontWeight: 600 }}>Shimmer</span>
       </div>
     </div>
   ),

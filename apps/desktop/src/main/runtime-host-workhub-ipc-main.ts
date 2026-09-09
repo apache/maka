@@ -25,13 +25,15 @@ import type {
   WorkspaceTarget,
 } from '@maka/runtime-host/protocol';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import { prepareIngestItems, resolveAttachmentRefs } from './attachment-ingest.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
 
 type RuntimeHostWorkHubClient = Pick<
   DesktopRuntimeHostClient,
+  | 'ingestAttachment'
   | 'actWorkHubCoordination'
-  | 'answerWorkHubCoordination'
   | 'listWorkHubCoordinationCandidates'
   | 'recordWorkHubCoordination'
   | 'resolveWorkHubCoordinationSession'
@@ -40,6 +42,7 @@ type RuntimeHostWorkHubClient = Pick<
 type RendererWorkHubActionInput = Omit<WorkHubCoordinationActInput, 'create'>;
 
 export interface RuntimeHostWorkHubIpcOptions {
+  attachmentIngest?: Pick<Parameters<typeof prepareIngestItems>[0], 'approvals' | 'stat'> & { resizeImage?: (bytes: Uint8Array) => Promise<Uint8Array> };
   resolveCreateProject(): Promise<WorkspaceTarget>;
   emitSessionsChanged(reason: 'created' | 'status-change', sessionId: string): void;
 }
@@ -53,13 +56,20 @@ export function registerRuntimeHostWorkHubIpc(
   ipcMain.handle('workhub:resolveCoordinationSession', () =>
     client.resolveWorkHubCoordinationSession(),
   );
-  ipcMain.handle('workhub:answer', (_event, input) =>
-    client.answerWorkHubCoordination(input),
-  );
   ipcMain.handle('workhub:record', (_event, input) =>
     client.recordWorkHubCoordination(input),
   );
   ipcMain.handle('workhub:candidates', () => client.listWorkHubCoordinationCandidates());
+  ipcMain.handle('workhub:prepareAttachments', async (event, items: unknown) => {
+    if (!options.attachmentIngest) throw new Error('WorkHub attachments are unavailable');
+    const prepared = await prepareIngestItems({ ...options.attachmentIngest, senderId: event.sender.id, items });
+    const refs = await resolveAttachmentRefs({
+      files: prepared.files,
+      resizeImage: options.attachmentIngest.resizeImage,
+      snapshot: ({ name, mimeType, content }) => client.ingestAttachment({ sessionId: WORKHUB_COORDINATION_SESSION_ID, name, mimeType, content }),
+    });
+    return prepared.commit(() => refs);
+  });
   ipcMain.handle('workhub:act', async (_event, rawInput: RendererWorkHubActionInput) => {
     try {
       const proposal = rawInput?.proposal;
@@ -67,11 +77,23 @@ export function registerRuntimeHostWorkHubIpc(
         actionId: rawInput?.actionId,
         userText: rawInput?.userText,
         proposal,
-      } as Pick<WorkHubCoordinationActInput, 'actionId' | 'userText' | 'proposal'>;
+        ...(rawInput?.attachments ? { attachments: rawInput.attachments } : {}),
+        ...(rawInput?.confirmation === undefined
+          ? {}
+          : { confirmation: rawInput.confirmation }),
+      } as Pick<
+        WorkHubCoordinationActInput,
+        'actionId' | 'userText' | 'proposal' | 'confirmation'
+      >;
       let result: WorkHubCoordinationActResult;
-      if (proposal?.disposition === 'create_new') {
+      const createsTarget =
+        proposal?.disposition === 'create_new' ||
+        (proposal?.disposition === 'replace' &&
+          proposal.target.disposition === 'create_new');
+      if (createsTarget) {
         result = await client.actWorkHubCoordination({
           ...base,
+          ...(rawInput.newWorkDefaults ? { newWorkDefaults: rawInput.newWorkDefaults } : {}),
           create: {
             workspace: await options.resolveCreateProject(),
           },
@@ -84,9 +106,15 @@ export function registerRuntimeHostWorkHubIpc(
             : { candidateSetId: rawInput.candidateSetId }),
         });
       }
-      if (result.disposition === 'create_new') {
+      if (
+        result.disposition === 'create_new' ||
+        (result.disposition === 'replace' && result.replacementDisposition === 'create_new')
+      ) {
         options.emitSessionsChanged('created', result.targetSessionId);
-      } else if (result.disposition === 'delegate_existing') {
+      } else if (
+        result.disposition === 'delegate_existing' ||
+        result.disposition === 'replace'
+      ) {
         options.emitSessionsChanged('status-change', result.targetSessionId);
       }
       return { ok: true, result } satisfies OperationOutcome<'workhub.coordination.act'>;

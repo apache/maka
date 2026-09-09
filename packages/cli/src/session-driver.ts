@@ -23,9 +23,11 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { CreateSessionInput, TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type {
@@ -142,6 +144,8 @@ export interface MakaUserCommand {
 
 export interface MakaSessionDriver {
   listSessions(): Promise<SessionSummary[]>;
+  /** Reads the current committed Todo projection for the attached Session. */
+  queryTodo?(sessionId: string): Promise<{ sessionId: string; items: SessionTodoItem[] }>;
   getSessionResumeAvailability?(session: SessionSummary): Promise<SessionResumeAvailability>;
   getSessionResumeCandidateAvailability?(
     session: SessionSummary,
@@ -168,6 +172,7 @@ export interface MakaSessionDriver {
   retractQueued?(): Promise<MakaRetractedMessages>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;
+  respondToUserForm?(response: InteractionFormResponse): Promise<void>;
   setModel(model: string, connectionSlug?: string, connectionId?: string): Promise<void>;
   setThinkingLevel(level: ThinkingLevel | undefined): Promise<void>;
   setPermissionMode(mode: PermissionMode): Promise<void>;
@@ -222,6 +227,8 @@ export interface MakaSessionDriver {
    * resumed, cleared, or when the attached session changes.
    */
   subscribeGoalChanges?(listener: (goal: GoalProjection | null) => void): () => void;
+  /** Fires when the attached Session's committed Todo projection is invalidated. */
+  subscribeTodoChanges?(listener: (sessionId: string) => void): () => void;
   /**
    * Applies a goal control action (pause/resume/clear) with optimistic
    * revision retry, mirroring the desktop client. Resolves with the resulting

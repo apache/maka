@@ -54,3 +54,50 @@ test('root admission preserves and validates each source submission digest', () 
     ]),
   );
 });
+
+test('root admission preserves and validates each source submitted placement', () => {
+  const content = { text: 'promoted follow-up' } as const;
+  const source = {
+    messageId: 'promoted-message',
+    content,
+    submittedPlacement: 'next_turn' as const,
+    placement: 'current_turn' as const,
+    disposition: 'steering' as const,
+  };
+
+  assert.equal(
+    normalizeRootTurnAdmissionPayload(content, [source]).sourceMessages[0]?.submittedPlacement,
+    'next_turn',
+  );
+  assert.throws(() =>
+    normalizeRootTurnAdmissionPayload(content, [
+      { ...source, submittedPlacement: 'invalid-placement' },
+    ]),
+  );
+});
+
+test('root admission preserves and validates each source Skill outcome', () => {
+  const content = { text: 'prepared', displayText: '/skill:writer draft' } as const;
+  const skillInvocation = {
+    loaded: [{ id: 'writer', name: 'Writer' }],
+    failed: [{ request: 'typo', reason: 'not_found' as const }],
+    receipts: [],
+  };
+  const source = {
+    messageId: 'message-skill',
+    content,
+    skillInvocation,
+    placement: 'next_turn' as const,
+    disposition: 'followup' as const,
+  };
+
+  assert.deepEqual(
+    normalizeRootTurnAdmissionPayload(content, [source]).sourceMessages[0]?.skillInvocation,
+    skillInvocation,
+  );
+  assert.throws(() =>
+    normalizeRootTurnAdmissionPayload(content, [
+      { ...source, skillInvocation: { loaded: [], failed: [], receipts: 'invalid' } },
+    ]),
+  );
+});

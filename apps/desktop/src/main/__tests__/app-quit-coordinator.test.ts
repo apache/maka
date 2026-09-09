@@ -26,7 +26,7 @@ describe('app quit coordinator', () => {
     let resumeQuitCount = 0;
     let preventedCount = 0;
     const coordinator = createAppQuitCoordinator({
-      prepareToQuit: async () => {},
+      prepareToQuit: async () => 'ready' as const,
       cleanup: async () => {},
       focusOrCreateWindow: () => {},
       onPreparationError: () => {},
@@ -64,7 +64,7 @@ describe('app quit coordinator', () => {
       releaseCleanup = resolve;
     });
     const coordinator = createAppQuitCoordinator({
-      prepareToQuit: async () => {},
+      prepareToQuit: async () => 'ready',
       cleanup: async () => {
         cleanupCount += 1;
         await cleanupPending;
@@ -113,7 +113,7 @@ describe('app quit coordinator', () => {
     let focusOrCreateCount = 0;
     let windowCreationSignal: AbortSignal | undefined;
     const coordinator = createAppQuitCoordinator({
-      prepareToQuit: async () => {},
+      prepareToQuit: async () => 'ready',
       cleanup: () => new Promise<void>(() => {}),
       focusOrCreateWindow: (signal) => {
         focusOrCreateCount += 1;
@@ -133,11 +133,39 @@ describe('app quit coordinator', () => {
     assert.equal(windowCreationSignal?.aborted, true);
   });
 
+  it('restores the running app when quit preparation is cancelled', async () => {
+    let cleanupCount = 0;
+    let focusOrCreateCount = 0;
+    let resumeQuitCount = 0;
+    const coordinator = createAppQuitCoordinator({
+      prepareToQuit: async () => 'cancelled',
+      cleanup: async () => {
+        cleanupCount += 1;
+      },
+      focusOrCreateWindow: () => {
+        focusOrCreateCount += 1;
+      },
+      onPreparationError: () => {},
+      onCleanupError: () => {},
+      onWindowCreationError: () => {},
+      resumeQuit: () => {
+        resumeQuitCount += 1;
+      },
+    });
+
+    coordinator.handleBeforeQuit({ preventDefault: () => {} });
+    await flushQuitCoordinator();
+
+    assert.equal(cleanupCount, 0);
+    assert.equal(resumeQuitCount, 0);
+    assert.equal(focusOrCreateCount, 1);
+  });
+
   it('reports window creation failure without leaking an unhandled rejection', async () => {
     const failure = new Error('window load failed');
     const reportedErrors: unknown[] = [];
     const coordinator = createAppQuitCoordinator({
-      prepareToQuit: async () => {},
+      prepareToQuit: async () => 'ready',
       cleanup: async () => {},
       focusOrCreateWindow: async () => {
         throw failure;
@@ -166,6 +194,7 @@ describe('app quit coordinator', () => {
       prepareToQuit: async () => {
         preparationCount += 1;
         if (preparationCount === 1) throw preparationError;
+        return 'ready';
       },
       cleanup: async () => {
         cleanupCount += 1;
@@ -203,7 +232,7 @@ describe('app quit coordinator', () => {
     let focusOrCreateCount = 0;
     let resumeQuitCount = 0;
     const deps = {
-      prepareToQuit: async () => {},
+      prepareToQuit: async () => 'ready' as const,
       cleanup: async () => {
         throw cleanupError;
       },

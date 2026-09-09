@@ -106,8 +106,10 @@ export interface AgentGraphCoordinatorRuntime {
 
 export interface AgentGraphCoordinatorInput {
   sessionStore: AgentGraphCoordinatorSessionStore;
-  runStore: Pick<AgentRunStore, 'listSessionRuns'>;
-  runtimeEventStore: Pick<RuntimeEventStore, 'readImmutableRuntimeEvents'>;
+  runtimeEventStore: Pick<
+    RuntimeEventStore,
+    'readImmutableRuntimeEvents' | 'listSessionInvocations'
+  >;
   controlStore: AgentGraphScheduleControlStore &
     AgentGraphClientProjectionStore &
     AgentGraphTimelineMetadataStore;
@@ -136,6 +138,11 @@ export interface AgentGraphExecutionStopInput {
   stopSupervisor(): Promise<void>;
   withSupervisorWakesSuppressed(operation: () => Promise<void>): Promise<void>;
 }
+
+export type AgentGraphRetirementDisposition =
+  | { readonly kind: 'clear' }
+  | { readonly kind: 'quiescent_open' }
+  | { readonly kind: 'busy'; readonly status: 'active' | 'waiting' | 'closing' };
 
 interface GraphDriver {
   rootSessionId: string;
@@ -390,6 +397,32 @@ export class AgentGraphCoordinator {
   }
 
   /**
+   * Classify durable graph state for Session retirement without changing the
+   * broader live-state semantics used by recovery and graph epoch selection.
+   */
+  async readRetirementDisposition(rootSessionId: string): Promise<AgentGraphRetirementDisposition> {
+    const snapshot = buildAgentGraphClientSnapshot(
+      await this.#readClientModelInputForGraph(
+        rootSessionId,
+        await this.currentGraphId(rootSessionId),
+      ),
+    );
+    if (snapshot.scheduleRevision === 0) return { kind: 'clear' };
+    switch (snapshot.status) {
+      case 'empty':
+      case 'completed':
+        return { kind: 'clear' };
+      case 'stopped':
+      case 'failed':
+        return { kind: 'quiescent_open' };
+      case 'active':
+      case 'waiting':
+      case 'closing':
+        return { kind: 'busy', status: snapshot.status };
+    }
+  }
+
+  /**
    * Reconstruct one stable, reference-only control/data-plane timeline page.
    *
    * SQLite supplies one metadata snapshot; AgentRun and immutable RuntimeEvent
@@ -405,7 +438,6 @@ export class AgentGraphCoordinator {
       rootSessionId,
       graphId,
       controlStore: this.#input.controlStore,
-      runStore: this.#input.runStore,
       runtimeEventStore: this.#input.runtimeEventStore,
       options,
     });
@@ -547,7 +579,6 @@ export class AgentGraphCoordinator {
       readCommittedAgentGraphProjection({
         graphId,
         operators: topology.operators,
-        runStore: this.#input.runStore,
         runtimeEventStore: this.#input.runtimeEventStore,
       }),
       this.#input.controlStore.listAgentGraphIntentClaims(graphId),
@@ -1242,7 +1273,6 @@ export class AgentGraphCoordinator {
       const projection = await readCommittedAgentGraphProjection({
         graphId: sourceGraphId,
         operators: topology.operators,
-        runStore: this.#input.runStore,
         runtimeEventStore: this.#input.runtimeEventStore,
       });
       recordsBySource.set(

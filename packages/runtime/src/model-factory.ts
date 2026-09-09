@@ -35,7 +35,6 @@ import {
   type SharedV4ProviderOptions,
 } from '@ai-sdk/provider';
 import { type RuntimeExecutionConnection } from '@maka/core/llm-connections';
-import type { ProviderRuntimeAdapter } from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
@@ -51,20 +50,20 @@ import {
   type OpenAiChatReasoningTransportState,
 } from './openai-chat-reasoning-transport.js';
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
-import {
-  anthropicV1BaseUrl,
-  googleV1BetaBaseUrl,
-  openAiResponsesBaseUrl,
-  openResponsesUrl,
-} from './provider-urls.js';
+import { openResponsesUrl } from './provider-urls.js';
+import { createOpenResponsesCompatibilityFinalizer } from './open-responses-compatibility.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
+import { runtimeProviderName, type RuntimeProviderAdapter } from './provider-runtime-policy.js';
 import { openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
+import { createStreamUsageFallbackFetch } from './stream-usage-fallback-fetch.js';
+import { withOpenCodeSessionHeader } from './opencode-session-header.js';
 
 export interface ModelFactoryInput {
   connection: RuntimeExecutionConnection;
   apiKey: string;
   modelId: string;
+  sessionId?: string;
   fetch?: typeof globalThis.fetch;
   requestHeaders?: Readonly<Record<string, string>>;
   resolvedRuntime?: ResolvedModelRuntime;
@@ -78,6 +77,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
     connection,
     apiKey,
     modelId,
+    sessionId,
     fetch,
     requestHeaders,
     resolvedRuntime,
@@ -86,32 +86,30 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
   } = input;
   const runtime = resolvedRuntime ?? resolveModelRuntime(connection, modelId);
   const { adapter, baseUrl: baseURL, wire, reasoningReplay } = runtime;
+  const effectiveRequestHeaders = withOpenCodeSessionHeader(
+    connection.providerType,
+    sessionId,
+    requestHeaders,
+  );
   const hasRequestCustomization =
-    Object.keys(requestHeaders ?? {}).length > 0 ||
+    Object.keys(effectiveRequestHeaders ?? {}).length > 0 ||
     Object.keys(connection.requestBodyOverlay ?? {}).length > 0;
-  const requestFetch = createRequestCustomizationFetch(fetch ?? globalThis.fetch, {
-    headers: requestHeaders,
+  const baseFetch = fetch ?? globalThis.fetch;
+  const requestCustomization = {
+    headers: effectiveRequestHeaders,
     bodyOverlay: connection.requestBodyOverlay,
-  });
-
-  if (adapter.kind === 'google' && adapter.normalizeBaseUrl === false) {
-    return createGoogle({ apiKey, baseURL, fetch: requestFetch }).chat(modelId);
-  }
+  } as const;
+  const requestFetch = createRequestCustomizationFetch(baseFetch, requestCustomization);
 
   switch (adapter.kind) {
     case 'anthropic':
       return createAnthropic({
         ...(adapter.auth === 'bearer' ? { authToken: apiKey } : { apiKey }),
-        baseURL: adapter.normalizeBaseUrl ? anthropicV1BaseUrl(baseURL) : baseURL,
+        baseURL,
         fetch: requestFetch,
-        headers: { 'anthropic-beta': ANTHROPIC_BETA },
+        headers:
+          adapter.includeBetaHeaders === false ? undefined : { 'anthropic-beta': ANTHROPIC_BETA },
       }).chat(modelId);
-
-    case 'unavailable':
-      // A retired provider must never reach model construction. The pickers
-      // filter it out and `resolveModelRuntime` refuses earlier; this is the
-      // backstop that keeps a stored connection from silently sending.
-      throw new Error('This provider is retired and can no longer be used to send.');
 
     case 'openai-codex':
       return createOpenAI({
@@ -124,31 +122,10 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         headers: openAiCodexHeaders(apiKey),
       }).responses(modelId);
 
-    case 'github-copilot': {
-      if (wire === 'openai-responses') {
-        return createOpenAI({ apiKey, baseURL, fetch: requestFetch }).responses(modelId);
-      }
-      if (wire === 'anthropic-messages') {
-        return createAnthropic({
-          authToken: apiKey,
-          baseURL: anthropicV1BaseUrl(baseURL),
-          fetch: requestFetch,
-        }).chat(modelId);
-      }
-      return createOpenAICompatible({
-        name: 'github-copilot',
-        apiKey,
-        baseURL,
-        fetch: requestFetch,
-      }).chatModel(modelId);
-    }
-
     case 'openai': {
       const openai = createOpenAI({
         apiKey,
-        // The native adapter appends `/responses`; reduce endpoint-form
-        // overrides back to their base so probe-approved relay URLs work.
-        baseURL: wire === 'openai-responses' && baseURL ? openAiResponsesBaseUrl(baseURL) : baseURL,
+        baseURL,
         fetch:
           !hasRequestCustomization && openAiResponsesTransportState
             ? openAiResponsesTransportState.wrapFetch(requestFetch)
@@ -160,7 +137,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
     case 'google':
       return createGoogle({
         apiKey,
-        baseURL: googleV1BetaBaseUrl(baseURL),
+        baseURL,
         fetch: requestFetch,
       }).chat(modelId);
 
@@ -174,22 +151,29 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         );
       }
       if (wire === 'openai-responses') {
-        if (reasoningReplay.kind !== 'responses') {
-          throw new Error('Responses wire requires a Responses continuation contract');
-        }
         if (reasoningReplay.contract.adapter === 'open-responses') {
+          const finalizeBody = createOpenResponsesCompatibilityFinalizer(
+            reasoningReplay.contract.compatibility,
+          );
+          // Request customization is applied first; provider compatibility is
+          // the final authority before network dispatch, so an overlay cannot
+          // re-enable storage or violate the provider's tool-choice contract.
+          const responsesFetch = finalizeBody
+            ? createRequestCustomizationFetch(baseFetch, {
+                ...requestCustomization,
+                finalizeBody,
+              })
+            : requestFetch;
           return createOpenResponses({
-            name: openAiCompatibleProviderName(adapter, connection),
+            name: runtimeProviderName(adapter, connection),
             apiKey,
             url: openResponsesUrl(baseURL),
-            fetch: requestFetch,
+            fetch: responsesFetch,
           })(modelId);
         }
         return createOpenAI({
           apiKey,
-          // Endpoint-form overrides (`…/responses`) probe successfully; the
-          // native adapter appends `/responses` itself, so pass the base.
-          baseURL: baseURL ? openAiResponsesBaseUrl(baseURL) : baseURL,
+          baseURL,
           fetch: requestFetch,
         }).responses(modelId);
       }
@@ -200,7 +184,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         requestFetch,
         openAiChatReasoningTransportState ??
           createOpenAiChatReasoningTransportState(reasoningReplay.requestField),
-        connection.providerType === 'kimi-coding-plan',
+        adapter.normalizeUsage,
       );
       const transformRequestBody = adapter.replayAssistantReasoningDetails
         ? composeRequestTransforms(
@@ -209,11 +193,17 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
           )
         : reasoningTransport.transformRequestBody;
       const model = createOpenAICompatible({
-        name: openAiCompatibleProviderName(adapter, connection),
+        name: runtimeProviderName(adapter, connection),
         apiKey,
         baseURL,
-        includeUsage: adapter.includeUsage,
-        fetch: reasoningTransport.fetch,
+        // Ask every Chat Completions server for stream usage unless the
+        // registry opts a provider out. Usage is the only signal the runtime's
+        // context handling reads (#4559): without `stream_options.include_usage`
+        // an OpenAI-compatible relay or a local Ollama returns none, and the
+        // proactive compaction baseline, the eviction check, and the usage
+        // indicator all go dark for exactly the connections that need them.
+        includeUsage: adapter.includeUsage ?? true,
+        fetch: createStreamUsageFallbackFetch(reasoningTransport.fetch, baseURL),
         transformRequestBody,
         ...(adapter.replayAssistantReasoningDetails
           ? { metadataExtractor: reasoningDetailsMetadataExtractor() }
@@ -458,11 +448,13 @@ export function buildProviderOptions(
   connection: RuntimeExecutionConnection,
   modelId: string,
   thinkingLevel?: ThinkingLevel,
+  runtime = resolveModelRuntime(connection, modelId),
 ): SharedV4ProviderOptions {
   return withParallelToolCallOptions(
     connection,
     modelId,
-    buildThinkingProviderOptions(connection, modelId, thinkingLevel),
+    buildThinkingProviderOptions(connection, modelId, thinkingLevel, runtime),
+    runtime,
   );
 }
 
@@ -470,6 +462,7 @@ function buildThinkingProviderOptions(
   connection: RuntimeExecutionConnection,
   modelId: string,
   thinkingLevel?: ThinkingLevel,
+  runtime = resolveModelRuntime(connection, modelId),
 ): SharedV4ProviderOptions {
   const thinkingOptions = thinkingOptionsForModel(connection.providerType, modelId);
   const level = resolveThinkingLevel(connection, modelId, thinkingLevel);
@@ -484,7 +477,7 @@ function buildThinkingProviderOptions(
       // sweep keeps that tripwire armed.
       if (thinkingLevel === 'off') return {};
       const effort = level ?? 'max';
-      if (connection.models?.find((model) => model.id === modelId)?.apiProtocol === 'openai-chat') {
+      if (runtime.wire === 'openai-chat') {
         // The kimiCodingPlan provider-options namespace is the
         // openai-compatible adapter name; ai-sdk resolves its camelCase
         // alias to the kimi-coding-plan schema key (reasoning_effort).
@@ -560,7 +553,7 @@ function buildThinkingProviderOptions(
       };
     }
     case 'openai': {
-      const usesResponses = resolveModelRuntime(connection, modelId).wire === 'openai-responses';
+      const usesResponses = runtime.wire === 'openai-responses';
       const reasoningEffort =
         level === 'off'
           ? 'none'
@@ -583,9 +576,7 @@ function buildThinkingProviderOptions(
       };
     case 'xai':
     case 'xai-oauth':
-      // Only grok-4.5 needs the Responses reasoning extras; every other xAI
-      // model serves the plain OpenAI-compatible chat wire handled below.
-      if (modelId === 'grok-4.5') {
+      if (runtime.wire === 'openai-responses') {
         return {
           openai: {
             store: false,
@@ -596,7 +587,7 @@ function buildThinkingProviderOptions(
           },
         };
       }
-      return buildFamilyWire(connection, modelId, level, thinkingOptions, thinkingLevel);
+      return buildFamilyWire(connection, modelId, level, thinkingOptions, thinkingLevel, runtime);
     case 'volcengine-ark':
       return {
         [toCamelCase(connection.providerType)]: {
@@ -641,7 +632,7 @@ function buildThinkingProviderOptions(
     // above (level is defined only when metadata declares it) is what makes
     // this safe to generalize: undeclared models never reach the wire.
     default:
-      return buildFamilyWire(connection, modelId, level, thinkingOptions, thinkingLevel);
+      return buildFamilyWire(connection, modelId, level, thinkingOptions, thinkingLevel, runtime);
   }
 }
 
@@ -649,8 +640,8 @@ function withParallelToolCallOptions(
   connection: RuntimeExecutionConnection,
   modelId: string,
   options: SharedV4ProviderOptions,
+  runtime: ResolvedModelRuntime,
 ): SharedV4ProviderOptions {
-  const runtime = resolveModelRuntime(connection, modelId);
   if (runtime.parallelToolCalls === undefined) return options;
 
   let providerKey: string;
@@ -658,16 +649,9 @@ function withParallelToolCallOptions(
   if (runtime.adapter.kind === 'openai' || runtime.adapter.kind === 'openai-codex') {
     providerKey = 'openai';
     optionKey = 'parallelToolCalls';
-  } else if (runtime.adapter.kind === 'github-copilot') {
-    if (runtime.wire === 'anthropic-messages') return options;
-    providerKey = runtime.wire === 'openai-responses' ? 'openai' : 'githubCopilot';
-    optionKey = runtime.wire === 'openai-responses' ? 'parallelToolCalls' : 'parallel_tool_calls';
   } else if (runtime.adapter.kind === 'openai-compatible') {
     if (runtime.wire === 'openai-responses') {
-      if (
-        runtime.reasoningReplay.kind !== 'responses' ||
-        runtime.reasoningReplay.contract.adapter !== 'openai'
-      ) {
+      if (runtime.reasoningReplay.contract.adapter !== 'openai') {
         return options;
       }
       providerKey = 'openai';
@@ -696,8 +680,9 @@ function buildFamilyWire(
   level: ThinkingLevel | undefined,
   thinkingOptions: ThinkingOptions | undefined,
   requestedLevel: ThinkingLevel | undefined,
+  runtime: ResolvedModelRuntime,
 ): SharedV4ProviderOptions {
-  const { adapter, wire, reasoningReplay } = resolveModelRuntime(connection, modelId);
+  const { adapter, wire, reasoningReplay } = runtime;
   const explicitReasoningEffort = level ? (level === 'off' ? 'none' : level) : undefined;
   const serviceTier =
     wire === 'openai-responses' &&
@@ -711,13 +696,10 @@ function buildFamilyWire(
   // consumes a provider-native reasoningEffort through the same namespace,
   // keyed by the provider name getAIModel passes to createOpenResponses.
   if (wire === 'openai-responses') {
-    if (reasoningReplay.kind !== 'responses') {
-      throw new Error('Responses wire requires a Responses continuation contract');
-    }
     // Connection-aware: a relay model's declared variants count too.
     const reasons = thinkingVariantsForConnection(connection, modelId).length > 0;
     if (reasoningReplay.contract.adapter === 'open-responses') {
-      // @ai-sdk/open-responses@2.0.28 passes a provider-native reasoningEffort
+      // @ai-sdk/open-responses@2.0.34 passes a provider-native reasoningEffort
       // through verbatim, ahead of the cross-provider top-level `reasoning`
       // enum that cannot express DeepSeek's `max` (whose documented mapping
       // sends `xhigh` to high, not max). The SDK resolves providerOptions
@@ -725,7 +707,7 @@ function buildFamilyWire(
       // openai-compatible — so key by the same name getAIModel passes.
       return explicitReasoningEffort || serviceTier
         ? {
-            [openAiCompatibleProviderName(adapter, connection)]: {
+            [runtimeProviderName(adapter, connection)]: {
               ...(explicitReasoningEffort ? { reasoningEffort: explicitReasoningEffort } : {}),
               ...(serviceTier ? { serviceTier } : {}),
             },
@@ -795,33 +777,9 @@ function buildFamilyWire(
             ? { thinking: { type: 'disabled' as const } }
             : {},
       };
-    case 'github-copilot': {
-      // Copilot routes per account-declared model protocol (mirrors the
-      // getAIModel case), defaulting to its OpenAI-compatible chat wire. Its
-      // Responses protocol is answered by the wire branch above.
-      const copilotProtocol = connection.models?.find((model) => model.id === modelId)?.apiProtocol;
-      if (copilotProtocol === 'anthropic-messages') {
-        return level !== 'off' ? { anthropic: { effort: level } } : {};
-      }
-      return { githubCopilot: { reasoningEffort: explicitReasoningEffort } };
-    }
     default:
       return {};
   }
-}
-
-/**
- * The provider IDENTITY passed as `name` to `createOpenAICompatible` in
- * `getAIModel` — the raw slug for custom relays. Distinct from the
- * providerOptions key the SDK wants: see `openAiCompatibleProviderOptionsKey`.
- */
-function openAiCompatibleProviderName(
-  adapter: ProviderRuntimeAdapter,
-  connection: RuntimeExecutionConnection,
-): string {
-  return adapter.kind === 'openai-compatible' && adapter.name === 'connection'
-    ? connection.slug
-    : connection.providerType;
 }
 
 // Mirrors @ai-sdk/openai-compatible's own toCamelCase derivation, so the
@@ -844,8 +802,8 @@ function toCamelCase(name: string): string {
  * silently read nothing for dashed providers.
  */
 function openAiCompatibleProviderOptionsKey(
-  adapter: ProviderRuntimeAdapter,
+  adapter: RuntimeProviderAdapter,
   connection: RuntimeExecutionConnection,
 ): string {
-  return toCamelCase(openAiCompatibleProviderName(adapter, connection));
+  return toCamelCase(runtimeProviderName(adapter, connection));
 }

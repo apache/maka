@@ -47,6 +47,7 @@ import {
 } from '../model/task-entry-selection.js';
 import type {
   TaskEntryCatalog,
+  TaskEntryError,
   TaskEntryHostRef,
   TaskEntryProjectMutationResult,
   TaskEntryTarget,
@@ -54,14 +55,9 @@ import type {
 import { useTaskEntryServices } from '../services-context.js';
 import type { TaskEntryHostModel } from '../ui/task-entry-host.js';
 
-export interface TaskEntryError {
-  readonly title: string;
-  readonly description?: string;
-  readonly profileId: string;
-}
-
 export interface UseTaskEntryControllerInput {
   reportError(error: TaskEntryError): void;
+  manageProjects(profileId: string): void;
 }
 
 export interface TaskEntryControllerSelectors {
@@ -137,6 +133,7 @@ export function useTaskEntryController(
   const copy = getShellCopy(locale).projectActions;
   const conversationCopy = getConversationCopy(locale).workspace;
   const reportError = input.reportError;
+  const manageProjects = input.manageProjects;
   const { catalog: service } = useTaskEntryServices();
   const [catalog, setCatalog] = useState<TaskEntryCatalog>(EMPTY_CATALOG);
   const [selectedProfileId, setSelectedProfileId] = useState<string>();
@@ -453,6 +450,7 @@ export function useTaskEntryController(
           ...(host.capabilities.selectNoProject
             ? { onSelectNoProject: () => selectNoProject(host) }
             : {}),
+          onManage: () => manageProjects(host.profile.id),
         };
       }),
       ...(catalogNeedsRetry
@@ -473,6 +471,7 @@ export function useTaskEntryController(
     copy.runtimeHostReadiness,
     currentProject?.name,
     error,
+    manageProjects,
     pending,
     refreshing,
     refresh,

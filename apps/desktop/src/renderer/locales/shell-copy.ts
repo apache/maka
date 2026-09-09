@@ -17,18 +17,21 @@
  * under the License.
  */
 
-import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
-
-import { type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
 
 import { type PermissionMode } from '@maka/core/permission';
 
-import { type ChatDefaultPermissionMode, type SettingsSection } from '@maka/core/settings';
+import { type SettingsSection } from '@maka/core/settings';
 
 import { type SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
 
-import { type ThinkingLevel } from '@maka/core/model-thinking';
 import { type GoalStatus } from '@maka/core/goal';
+import {
+  classifyGeneralizedError,
+  generalizedErrorMessageForLocale,
+  unexpectedOperationFallback,
+} from '@maka/core/redaction';
+import type { AttachmentIngestBlockedCode } from '@maka/core/attachments';
 
 export const STATIC_COMMAND_IDS = [
   'action:new-chat',
@@ -64,6 +67,10 @@ type CommandCopy = {
   label: string;
   group: string;
   hint?: string;
+  platformHint?: {
+    apple: string;
+    other: string;
+  };
 };
 
 const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
@@ -268,6 +275,17 @@ type ShellCopy = {
     deletedTitle(name: string): string;
     /** The task was restored elsewhere, so the delete was called off. */
     deleteRestoredTitle(name: string): string;
+    /** Appended to the delete confirm when the task has linked subagent subtasks. */
+    deleteSubtaskNote(): string;
+    /** Appended to the delete confirm when the subtask preview could not be read. */
+    deleteSubtaskNoteUncertain(): string;
+    /** Toast description after deleting a task that had linked subagent subtasks. */
+    deletedSubtaskNote(count: number): string;
+    /** Where the archived tasks went, said by the toast rather than a dialog. */
+    bulkArchiveDescription: string;
+    bulkArchivedTitle(count: number): string;
+    bulkArchiveFailedTitle: string;
+    bulkFailedBody(count: number): string;
   };
   skillActions: {
     refreshSkillsFailedTitle: string;
@@ -324,22 +342,15 @@ type ShellCopy = {
     runtimeFailures: Record<'not_found' | 'blocked_path' | 'state_error' | 'write_failed', string>;
   };
   sessionSettingsActions: {
-    permissionLabels: Record<ChatDefaultPermissionMode, string>;
-    permissionDescriptions: Record<PermissionMode, string>;
     bypassConfirmTitle: string;
     bypassConfirmDescription: string;
     bypassConfirmLabel: string;
     bypassCancelLabel: string;
-    permissionSwitched(label: string): string;
     permissionFailedTitle: string;
     permissionFallback: string;
-    modelSwitchedTitle: string;
-    modelSwitchedDescription(from: string, to: string): string;
+    attachmentIngestBlocked: Record<AttachmentIngestBlockedCode, string>;
     modelFailedTitle: string;
     modelFallback: string;
-    thinkingUpdatedTitle: string;
-    thinkingDefault: string;
-    thinkingLabels: Record<ThinkingLevel, string>;
     thinkingFailedTitle: string;
     thinkingFallback: string;
   };
@@ -376,13 +387,9 @@ type ShellCopy = {
     copyFailed: string;
     copyReport: string;
     title: string;
-    descriptionBeforeRetry: string;
+    description: string;
     retry: string;
-    descriptionBeforeReload: string;
     reload: string;
-    descriptionAfterReload: string;
-    errorDetails: string;
-    componentStack: string;
     clipboardFailure: string;
   };
   commandPalette: {
@@ -433,6 +440,7 @@ type ShellCopy = {
     workspaceActions: string;
   };
   app: {
+    returnToWorkHub: string;
     loadingWorkbarLabel: string;
     loadingWorkbar: string;
     useSkillPrompt(skillName: string): string;
@@ -474,22 +482,12 @@ type ShellCopy = {
     resizeConversationList: string;
     skipErrorTitle: string;
     tryAgainLater: string;
-    updateInstallFailedTitle: string;
-    updateInstallFailedFallback: string;
-    updateInstallManualFallback: string;
-    updateActiveTasksTitle: string;
-    updateActiveTasksDescription: string;
-    updateActiveTasksConfirm: string;
-    updateActiveTasksCancel: string;
-    updateRetryFailedTitle: string;
-    updateRetryFailedFallback: string;
     loading: string;
     goToModels: string;
     boundaryUnreadableTitle: string;
     boundaryUnreadableDetail: string;
     boundaryUnreadableRetry: string;
     boundaryUnreadableRetrying: string;
-    permissionModeChanging: string;
     permissionModeStreaming: string;
     permissionModeRunning: string;
     permissionModeWaiting: string;
@@ -532,7 +530,7 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   'action:new-chat': { label: '新建任务', hint: '开始新的任务', group: '操作' },
   'action:side-chat': {
     label: '打开侧边对话',
-    hint: '⌥⌘S',
+    platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: '操作',
   },
   'action:new-deep-research': {
@@ -545,7 +543,11 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     hint: '打开定时任务表单',
     group: '操作',
   },
-  'action:open-settings': { label: '打开设置', hint: '⌘,', group: '操作' },
+  'action:open-settings': {
+    label: '打开设置',
+    platformHint: { apple: '⌘,', other: 'Ctrl+,' },
+    group: '操作',
+  },
   'action:keyboard-help': { label: '查看键盘快捷键', hint: '?', group: '操作' },
   'theme:light': { label: '主题 · 浅色', group: '主题' },
   'theme:dark': { label: '主题 · 深色', group: '主题' },
@@ -597,7 +599,10 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:copy-diagnostics': {
     label: '复制诊断信息',
-    hint: '⇧⌘D · 脱敏日志 · 仅写入剪贴板',
+    platformHint: {
+      apple: '⇧⌘D · 脱敏日志 · 仅写入剪贴板',
+      other: 'Ctrl+Shift+D · 脱敏日志 · 仅写入剪贴板',
+    },
     group: '诊断',
   },
   'diag:test-network-proxy': {
@@ -620,7 +625,7 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'action:side-chat': {
     label: 'Open side chat',
-    hint: '⌥⌘S',
+    platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: 'Actions',
   },
   'action:new-deep-research': {
@@ -635,7 +640,7 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'action:open-settings': {
     label: 'Open Settings',
-    hint: '⌘,',
+    platformHint: { apple: '⌘,', other: 'Ctrl+,' },
     group: 'Actions',
   },
   'action:keyboard-help': {
@@ -693,7 +698,10 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:copy-diagnostics': {
     label: 'Copy diagnostics',
-    hint: '⇧⌘D · Redacted logs · clipboard only',
+    platformHint: {
+      apple: '⇧⌘D · Redacted logs · clipboard only',
+      other: 'Ctrl+Shift+D · Redacted logs · clipboard only',
+    },
     group: 'Diagnostics',
   },
   'diag:test-network-proxy': {
@@ -747,7 +755,7 @@ const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
 };
 
 const SHELL_COPY_BY_LOCALE = {
-  zh: {
+  'zh-CN': {
     navigation: { settings: '设置' },
     actions: { retry: '重试' },
     paths: {
@@ -892,6 +900,13 @@ const SHELL_COPY_BY_LOCALE = {
       cancelLabel: '取消',
       deletedTitle: (name: string) => `已删除 ${name}`,
       deleteRestoredTitle: (name: string) => `${name} 已被恢复，未删除`,
+      deleteSubtaskNote: () => '其普通子任务不会被删除，将保留并移入归档。',
+      deleteSubtaskNoteUncertain: () => '其普通子任务（如有）不会被删除，将保留并移入归档。',
+      deletedSubtaskNote: (count: number) => `${count} 个子任务已移入归档`,
+      bulkArchiveDescription: '归档后可在「设置 › 活动 › 已归档任务」中找回。',
+      bulkArchivedTitle: (count: number) => `已归档 ${count} 个任务`,
+      bulkArchiveFailedTitle: '部分任务未能归档',
+      bulkFailedBody: (count: number) => `还有 ${count} 个没有处理成功。`,
     },
     skillActions: {
       refreshSkillsFailedTitle: '刷新技能失败',
@@ -980,38 +995,23 @@ const SHELL_COPY_BY_LOCALE = {
       },
     },
     sessionSettingsActions: {
-      permissionLabels: {
-        ask: '自动',
-        bypass: '完全权限',
-      },
-      permissionDescriptions: {
-        explore: '只读：只读取和搜索，写入文件和访问网络会先来问你。',
-        ask: '自动：在 Maka 的保护层内执行；需要超出当前权限范围时会先来问你。',
-        bypass: '本地工具直接访问你的文件和网络，不经 Maka 的保护层。',
-      },
       bypassConfirmTitle: '切换到完全权限？',
       bypassConfirmDescription:
         '本地工具将直接读写你的文件并访问网络，不经 Maka 的保护层。仅用于你完全信任、或已在外部隔离环境中运行的任务。',
       bypassConfirmLabel: '开启完全权限',
       bypassCancelLabel: '保持自动',
-      permissionSwitched: (label: string) => `已切到 ${label}`,
       permissionFailedTitle: '切换权限模式失败',
       permissionFallback: '权限模式暂时无法切换，请稍后重试。',
-      modelSwitchedTitle: '已切换当前任务模型',
-      modelSwitchedDescription: (from, to) => `${from} → ${to}`,
+      attachmentIngestBlocked: {
+        item_too_large: '单个附件超出大小限制。',
+        items_invalid: '附件信息无效，请重新选择文件后再发送。',
+        count_limit: '一次最多添加 8 个附件。',
+        duplicate_source: '附件来源重复，请勿重复添加同一文件。',
+        total_size_exceeded: '附件总量超出大小限制。',
+        source_expired: '附件来源已过期或无效，请重新选择文件后再发送。',
+      },
       modelFailedTitle: '切换模型失败',
       modelFallback: '模型暂时无法切换，请稍后重试。',
-      thinkingUpdatedTitle: '已更新思考级别',
-      thinkingDefault: '默认',
-      thinkingLabels: {
-        off: '关',
-        minimal: '最少',
-        low: '低',
-        medium: '中',
-        high: '高',
-        xhigh: '超高',
-        max: '最高',
-      },
       thinkingFailedTitle: '切换思考级别失败',
       thinkingFallback: '思考级别暂时无法切换，请稍后重试。',
     },
@@ -1055,14 +1055,11 @@ const SHELL_COPY_BY_LOCALE = {
       copyFailed: '复制失败',
       copyReport: '复制诊断信息',
       title: 'Maka 渲染层崩溃了',
-      descriptionBeforeRetry: '已捕获一次未处理的 React 异常。下面是错误摘要；点',
+      description:
+        '已捕获一次未处理的 React 异常。可以重试以清除这次崩溃，或重新加载整个窗口。需要交接时先复制诊断信息。',
       retry: '重试',
-      descriptionBeforeReload: '清掉这次崩溃，',
       reload: '重新加载',
-      descriptionAfterReload: '会刷新整个窗口。需要交接时先复制诊断信息。',
-      errorDetails: '错误详情',
-      componentStack: '组件栈',
-      clipboardFailure: '剪贴板不可用或被系统拒绝；可以手动选择上面的错误摘要。',
+      clipboardFailure: '剪贴板不可用或被系统拒绝，请稍后重试。',
     },
     commandPalette: {
       label: '命令面板',
@@ -1177,6 +1174,7 @@ const SHELL_COPY_BY_LOCALE = {
       workspaceActions: '工作区辅助操作',
     },
     app: {
+      returnToWorkHub: '返回 WorkHub',
       loadingWorkbarLabel: '正在加载任务工作栏',
       loadingWorkbar: '正在加载任务工作栏…',
       useSkillPrompt: (skillName: string) => `使用 ${skillName} 技能：`,
@@ -1222,22 +1220,12 @@ const SHELL_COPY_BY_LOCALE = {
       resizeConversationList: '调整任务列表宽度',
       skipErrorTitle: '跳过失败',
       tryAgainLater: '请稍后重试。',
-      updateInstallFailedTitle: '无法安装更新',
-      updateInstallFailedFallback: '请稍后重试。',
-      updateInstallManualFallback: '请稍后重试，或手动下载最新版本。',
-      updateActiveTasksTitle: '仍有任务正在运行',
-      updateActiveTasksDescription: '仍有任务正在运行。更新会中断这些任务，是否继续？',
-      updateActiveTasksConfirm: '仍然更新',
-      updateActiveTasksCancel: '取消',
-      updateRetryFailedTitle: '无法重新下载更新',
-      updateRetryFailedFallback: '请稍后重试，或手动下载最新版本。',
       loading: '加载中',
       goToModels: '去模型',
       boundaryUnreadableTitle: '暂时读不到这个任务的权限',
       boundaryUnreadableDetail: '在读到之前，这里暂时不能输入。可以重试，或先切换到别的任务。',
       boundaryUnreadableRetry: '重试',
       boundaryUnreadableRetrying: '重试中…',
-      permissionModeChanging: '权限模式正在切换，完成后再继续操作。',
       permissionModeStreaming: '当前任务正在流式输出，等结束后再切换权限模式。',
       permissionModeRunning: '当前任务正在运行，等结束后再切换权限模式。',
       permissionModeWaiting: '当前有工具调用正在等待确认，处理后再切换权限模式。',
@@ -1267,6 +1255,508 @@ const SHELL_COPY_BY_LOCALE = {
       graphHistoryTitle: 'Graph 历史',
       graphHistoryDescription: '请在 Agent Graph 面板的运行轮次菜单中查看历史记录。',
       resizeWorkbar: '调整任务工作栏宽度',
+    },
+  },
+  'zh-TW': {
+    navigation: { settings: '設定' },
+    actions: { retry: '重試' },
+    paths: {
+      workspace: '工作區資料夾',
+      project: '專案目錄',
+      skills: 'Skills 資料夾',
+    },
+    errors: {
+      messageRead: '任務內容暫時無法讀取，請稍後重試。',
+      messageRefresh: '任務內容暫時無法重新整理，請稍後重試。',
+      openPath: (path: string) => `無法開啟${path}，請稍後重試。`,
+      workspaceUnavailableTitle: '工作目錄不可用',
+      workspaceUnavailableDescription: '工作目錄不存在或無法存取。請選擇有效目錄建立新任務。',
+    },
+    chatActions: {
+      newConversation: '建立任務',
+      sendFailedTitle: '傳送失敗',
+      sendFailedFallback: '訊息暫時無法傳送，請稍後重試。',
+      skillInvocationBlockedTitle: 'Skill 呼叫失敗，訊息未傳送',
+      skillInvocationBlockedDescription: (items) => `${items.join('、')}。請調整選擇後重試。`,
+      skillInvocationFailedTitle: '部分 Skill 未能呼叫',
+      skillInvocationFailedDescription: (items) => `${items.join('、')}。其餘 Skill 已正常呼叫。`,
+      skillInvocationFailureReason: {
+        invalid_name: '名稱無效',
+        not_found: '未找到',
+        disabled: '已停用',
+        host_incompatible: '目前環境缺少依賴',
+        resolution_failed: '解析失敗',
+        too_many_requests: 'Skill 呼叫請求超過 50 個上限',
+      },
+      responseFailedTitle: '響應失敗',
+      responseFailedFallback: '任務操作失敗，請稍後重試。',
+      refreshFailedTitle: '重新整理任務失敗',
+      sessionStartFailedTitle: '開始任務失敗',
+      sessionStartFailedFallback: '任務暫時無法開始，請稍後重試。',
+    },
+    projectActions: {
+      currentProject: '目前專案',
+      readPathFailedTitle: '讀取專案路徑失敗',
+      readPathFailedFallback: '專案路徑暫時無法讀取，請稍後重試。',
+      selectDirectoryFailedTitle: '選擇工作目錄失敗',
+      selectedPathUnreadable: '所選路徑不存在或不可讀。',
+      directorySwitchedTitle: '已切換工作目錄',
+      projectUpdateFailedTitle: '專案操作失敗',
+      projectUpdateFailedFallback: '暫時無法更新專案，請稍後重試。',
+      catalogUnavailable: 'Runtime Host 暫時不可用',
+      retryCatalog: '重試載入',
+      remoteDirectoryTitle: (host: string) => `在 ${host} 上新增專案`,
+      remoteDirectoryBreadcrumbs: '目前資料夾',
+      remoteDirectoryHome: '主目錄',
+      remoteDirectoryEmpty: '此資料夾中沒有子資料夾',
+      remoteDirectorySelect: '新增此資料夾',
+      remoteDirectoryCancel: '取消',
+      remoteDirectoryRetry: '重試',
+      remoteDirectoryLoading: '正在讀取資料夾…',
+      remoteDirectoryShowHidden: '顯示隱藏目錄',
+      remoteDirectoryHideHidden: '不顯示隱藏目錄',
+      runtimeHostReadiness: {
+        connecting: '連線中',
+        reconnecting: '正在重連',
+        unavailable: '不可用',
+      },
+      openFailedTitle: (path: string) => `無法開啟${path}`,
+      openPathLabels: {
+        workspace: '工作區目錄',
+        skills: 'Skills 目錄',
+        memory: '記憶目錄',
+        project: '專案目錄',
+      },
+      openPathFailures: {
+        'unknown-key': '未知的工作區目錄。',
+        'not-allowed': '路徑不在允許開啟的工作區範圍內。',
+        missing: '目錄不存在。',
+        'not-a-directory': '目標不是目錄。',
+        'open-failed': '系統沒有開啟該目錄。',
+        unknown: '無法開啟目錄。',
+      },
+    },
+    commandActions: {
+      connectionVerified: (name: string) => `連線已驗證 · ${name}`,
+      connectionLatency: (latency: number | string, model?: string) =>
+        `延遲 ${latency} ms${model ? ` · ${model}` : ''}`,
+      connectionTestFailed: (name: string) => `連線測試失敗 · ${name}`,
+      testErrorTitle: '測試出錯',
+      connectionUnavailable: '連線測試暫時不可用，請稍後重試。',
+      connectionFailures: {
+        rateLimit: '目前帳號或模型服務觸發速率限制，請稍後重試。',
+        timeout: '請求超時，請檢查網路或代理後重試。',
+        auth: '鑑權失敗，請檢查模型金鑰、訂閱帳號登入或憑據設定後重試。',
+        network: '網路錯誤，請檢查網路或代理後重試。',
+        provider: '模型服務返回錯誤，請稍後重試。',
+        unknown: '連線測試失敗，請稍後重試。',
+      },
+      setDefaultSuccess: (name: string) => `已設為預設 · ${name}`,
+      setDefaultFailedTitle: '切換預設失敗',
+      setDefaultFallback: '預設模型暫時無法切換，請稍後重試。',
+      newConversation: '建立任務',
+      conversationCopiedTitle: '已複製任務為 Markdown',
+      lineCount: (lines: number) => `${lines} 行 · 可貼上到 Notion / Obsidian / GitHub`,
+      copyFailedTitle: '複製失敗',
+      clipboardUnavailable: '剪貼簿不可用',
+      conversationSavedTitle: '已儲存目前任務',
+      saveSummary: (lines: number, fileName: string) => `${lines} 行 · 儲存為 ${fileName}`,
+      saveFailedTitle: '儲存失敗',
+      invalidExport: '匯出內容無效',
+      writeFailed: '無法寫入選擇的位置',
+      exportFallback: '匯出目前任務失敗，請稍後重試。',
+      memoryOpenFailedTitle: '無法開啟 MEMORY.md',
+      openFailedTitle: '開啟失敗',
+      memoryOpenFallback: '無法開啟 MEMORY.md，請稍後重試。',
+      today: '今天',
+      reviewCopiedTitle: '已複製今日回顧為 Markdown',
+      reviewSummary: (sessions: number, requests: number) => `${sessions} 個任務 · ${requests} 個請求`,
+      reviewCopyFallback: '今日回顧暫時不可用，或剪貼簿被系統拒絕。',
+      reviewPastedTitle: '已追加今日回顧到輸入框',
+      reviewCopied: (label: string) => `已複製${label}回顧`,
+      reviewPasted: (label: string) => `已追加${label}回顧到輸入框`,
+      reviewSaved: (label: string) => `已儲存${label}回顧`,
+      reviewSaveFallback: '儲存每日回顧失敗，請稍後重試。',
+      pasteFailedTitle: '貼上失敗',
+      reviewUnavailable: '今日回顧暫時不可用，請稍後重試。',
+      diagnosticsCopiedTitle: '已複製診斷資訊',
+      diagnosticsCopiedDescription: '檢查內容後，可直接貼上到問題報告',
+      clipboardDenied: '剪貼簿不可用或被系統拒絕',
+      networkPassedTitle: '網路代理測試透過',
+      networkFailedTitle: '網路代理測試失敗',
+      genericTestFailedTitle: '測試失敗',
+      networkTestFallback: '網路代理測試暫時不可用，請稍後重試。',
+    },
+    sessionRowActions: {
+      actionFallback: '任務操作失敗，請稍後重試。',
+      flagFailedTitle: '標記任務失敗',
+      unflagFailedTitle: '取消標記失敗',
+      archiveFailedTitle: '歸檔任務失敗',
+      unarchiveFailedTitle: '恢復任務失敗',
+      renameFailedTitle: '重新命名任務失敗',
+      deleteFailedTitle: '刪除任務失敗',
+      currentConversation: '目前任務',
+      deleteTitle: (name: string) => `刪除 "${name}"`,
+      deleteDescription: '任務和全部訊息會從磁碟上永久移除。該操作不可撤銷。',
+      deleteLabel: '刪除',
+      cancelLabel: '取消',
+      deletedTitle: (name: string) => `已刪除 ${name}`,
+      deleteRestoredTitle: (name: string) => `${name} 已被恢復，未刪除`,
+      deleteSubtaskNote: () => '其普通子任務不會被刪除，將保留並移入歸檔。',
+      deleteSubtaskNoteUncertain: () => '其普通子任務（如有）不會被刪除，將保留並移入歸檔。',
+      deletedSubtaskNote: (count: number) => `${count} 個子任務已移入歸檔`,
+      bulkArchiveDescription: '歸檔後可在「設定 › 活動 › 已歸檔任務」中找回。',
+      bulkArchivedTitle: (count: number) => `已歸檔 ${count} 個任務`,
+      bulkArchiveFailedTitle: '部分任務無法歸檔',
+      bulkFailedBody: (count: number) => `還有 ${count} 個未處理成功。`,
+    },
+    skillActions: {
+      refreshSkillsFailedTitle: '重新整理技能失敗',
+      refreshSkillsFallback: '重新整理技能失敗，請稍後重試。',
+      refreshSourcesFailedTitle: '重新整理來源庫失敗',
+      refreshSourcesFallback: '重新整理來源庫失敗，請稍後重試。',
+      refreshBundledFailedTitle: '重新整理內建技能失敗',
+      refreshBundledFallback: '重新整理內建技能失敗，請稍後重試。',
+      installBundledFailedTitle: '無法安裝內建 Skill',
+      installBundledFallback: '無法安裝內建 Skill，請稍後重試。',
+      installedBundledTitle: '已安裝內建 Skill',
+      installedDescription: (id: string) => `${id}/SKILL.md 已放到目前工作區。`,
+      importSourceFailedTitle: '無法匯入 Skill 來源',
+      importSourceFallback: '無法匯入 Skill 來源，請稍後重試。',
+      importedSourceTitle: '已匯入 Skill 來源',
+      installFailedTitle: '無法安裝 Skill',
+      installFallback: '無法安裝 Skill，請稍後重試。',
+      installedTitle: '已安裝 Skill',
+      previewFailedTitle: '無法預覽 Skill 更新',
+      previewFallback: '無法預覽 Skill 更新，請稍後重試。',
+      updateFailedTitle: '無法更新 Skill',
+      updateFallback: '無法更新 Skill，請稍後重試。',
+      updatedTitle: '已更新 Skill',
+      forceUpdatedTitle: '已覆蓋更新 Skill',
+      updatedDescription: (id: string) => `${id}/SKILL.md 已更新到來源庫版本。`,
+      toggleFailedTitle: '無法切換 Skill',
+      toggleFallback: '無法切換 Skill，請稍後重試。',
+      enabledTitle: '已啟用 Skill',
+      disabledTitle: '已停用 Skill',
+      pinnedTitle: '已固定到技能上下文',
+      unpinnedTitle: '已取消固定',
+      runtimeDescription: (name: string) => `${name} 已更新目前專案的執行狀態。`,
+      deleteFailedTitle: '無法刪除 Skill',
+      deleteFallback: '無法刪除 Skill，請稍後重試。',
+      deletedTitle: '已刪除 Skill',
+      deletedDescription: (id: string) => `${id} 已移除。`,
+      openFailedTitle: '無法開啟 Skill',
+      openFallback: '無法開啟 Skill，請稍後重試。',
+      openFailures: {
+        invalid_id: 'Skill 名稱不在允許範圍內。',
+        missing: '沒有找到對應的 SKILL.md。',
+        blocked_path: 'Skill 路徑不在工作區 skills 目錄內，已阻止開啟。',
+        not_file: '目標不是一個可開啟的 SKILL.md 檔案。',
+        not_directory: '目標不是一個可開啟的目錄。',
+        open_failed: '系統開啟檔案失敗。',
+      },
+      sourceFailures: {
+        invalid_skill: '請選擇有效的 SKILL.md 檔案。',
+        already_exists: '來源庫裡已經有同名 Skill。',
+        blocked_path: '該檔案路徑不允許匯入。',
+        write_failed: '寫入來源庫失敗，請檢查檔案權限。',
+        cancelled: '已取消。',
+      },
+      installFailures: {
+        not_found: '沒有找到這個 Skill 來源。',
+        already_exists: '目前工作區已經有同名 Skill。',
+        blocked_path: '目標路徑不允許寫入。',
+        write_failed: '寫入工作區失敗，請檢查檔案權限。',
+      },
+      updateFailures: {
+        not_managed: '這個 Skill 不是受管理來源。',
+        source_missing: '來源庫中找不到對應來源。',
+        local_modified: '工作區副本已經被修改。請開啟本地檔案和來原始檔手動比較後再更新。',
+        metadata_error: 'Skill 後設資料異常，不能安全更新。',
+        blocked_path: '目標路徑不允許寫入。',
+        write_failed: '寫入工作區失敗，請檢查檔案權限。',
+      },
+      previewFailures: {
+        not_managed: '這個 Skill 不是受管理來源。',
+        source_missing: '來源庫中找不到對應來源。',
+        metadata_error: 'Skill 後設資料異常，不能安全預覽。',
+        blocked_path: '目標路徑不允許讀取。',
+        read_failed: '讀取 Skill 內容失敗，請檢查檔案權限。',
+      },
+      deleteFailures: {
+        not_found: '目前工作區找不到這個 Skill。',
+        blocked_path: 'Skill 路徑不允許刪除。',
+        blocked_scope: '專案內的 Skill 由倉庫管理，請直接在專案裡刪除。',
+        delete_failed: '刪除 Skill 失敗，請檢查檔案權限。',
+      },
+      runtimeFailures: {
+        not_found: '目前工作區找不到這個 Skill。',
+        blocked_path: 'Skill 狀態路徑不允許寫入。',
+        state_error: '目前工作區的 Skill 狀態檔案異常，需要先修復。',
+        write_failed: '寫入目前專案的 Skill 狀態失敗，請檢查檔案權限。',
+      },
+    },
+    sessionSettingsActions: {
+      bypassConfirmTitle: '切換到完全權限？',
+      bypassConfirmDescription:
+        '本地工具將直接讀寫你的檔案並存取網路，不經 Maka 的保護層。僅用於你完全信任、或已在外部隔離環境中執行的任務。',
+      bypassConfirmLabel: '開啟完全權限',
+      bypassCancelLabel: '保持自動',
+      permissionFailedTitle: '切換權限模式失敗',
+      permissionFallback: '權限模式暫時無法切換，請稍後重試。',
+      attachmentIngestBlocked: {
+        item_too_large: '單一附件超出大小限制。',
+        items_invalid: '附件資訊無效，請重新選擇檔案後再傳送。',
+        count_limit: '一次最多新增 8 個附件。',
+        duplicate_source: '附件來源重複，請勿重複新增同一檔案。',
+        total_size_exceeded: '附件總量超出大小限制。',
+        source_expired: '附件來源已過期或無效，請重新選擇檔案後再傳送。',
+      },
+      modelFailedTitle: '切換模型失敗',
+      modelFallback: '模型暫時無法切換，請稍後重試。',
+      thinkingFailedTitle: '切換思考級別失敗',
+      thinkingFallback: '思考級別暫時無法切換，請稍後重試。',
+    },
+    goalDialog: {
+      title: '設定 Goal',
+      description: 'Goal 會在每輪結束後自動續行，直到達成、判定不可行，或觸及下面的預算。隨時可在輸入框上方停止。',
+      conditionLabel: '達成條件',
+      conditionDescription: '用一句話說明什麼算做完；Maka 每輪都據此判斷。',
+      conditionPlaceholder: '例如：所有測試透過，且 lint 無告警',
+      maxIterationsLabel: '最多輪數',
+      maxIterationsDescription: '留空使用預設值。',
+      maxIterationsInvalid: (max) => `請填 1 到 ${max} 之間的整數，或留空。`,
+      tokenBudgetLabel: 'Token 預算',
+      tokenBudgetDescription: '留空表示不設 token 上限。',
+      tokenBudgetInvalid: (min) => `請填不小於 ${min} 的整數，或留空。`,
+      cancel: '取消',
+      close: '關閉',
+      submit: '開始',
+      failedFallback: '無法設定 Goal，請稍後重試。',
+      statusLabels: {
+        active: '進行中',
+        waiting: '等待中',
+        paused: '已暫停',
+        achieved: '已達成',
+        impossible: '不可行',
+        cleared: '已清除',
+        stalled: '已停滯',
+        budget_limited: '已達到 Token 預算',
+        max_iterations: '已達到最多輪數',
+      },
+      reconciledMatching: (condition, status) =>
+        `已重新讀取目前 Goal：“${condition}”（${status}）。它符合你的請求，但無法確認剛才的操作是否提交。`,
+      reconciledDifferent: (condition, status) =>
+        `已重新讀取目前 Goal：“${condition}”（${status}）。它與本次請求不同。`,
+      reconciledNoGoal: '已重新讀取目前狀態：目前未讀到 Goal。',
+      reconciliationUnavailable: '連線中斷後暫時無法確認目前 Goal 狀態。請關閉後重新開啟再檢查；此視窗不會重複提交。',
+    },
+    errorBoundary: {
+      copyPending: '複製中…',
+      copied: '已複製',
+      copyFailed: '複製失敗',
+      copyReport: '複製診斷資訊',
+      title: 'Maka 渲染層崩潰了',
+      description:
+        '已捕捉一次未處理的 React 例外狀況。可以重試以清除這次崩潰，或重新載入整個視窗。需要交接時請先複製診斷資訊。',
+      retry: '重試',
+      reload: '重新載入',
+      clipboardFailure: '剪貼簿無法使用或遭系統拒絕，請稍後重試。',
+    },
+    commandPalette: {
+      label: '命令面板',
+      searchLabel: '命令面板搜尋',
+      placeholder: '搜尋命令、設定項或任務…',
+      closeLabel: '關閉命令面板',
+      resultsLabel: '命令面板結果',
+      emptyTitle: '沒有符合的命令',
+      emptyDescription: '換個關鍵詞，或按 Esc 關閉。',
+      selectHint: '選擇',
+      runHint: '執行',
+      closeHint: '關閉',
+      current: '目前',
+      groups: {
+        settings: '設定',
+        permissions: '權限',
+        connections: '連線',
+        conversations: '任務',
+      },
+      staticKeywords: STATIC_COMMAND_KEYWORDS,
+      commands: ZH_STATIC_COMMANDS,
+      settingsSections: ZH_SETTINGS_SECTIONS,
+      permissionModes: {
+        explore: { label: '權限 · 只讀', hint: '讀取和搜尋直通，寫入和網路仍需確認' },
+        ask: { label: '權限 · 自動', hint: '在 Maka 的保護層內執行；需要超出目前權限範圍時再詢問' },
+        bypass: {
+          label: '權限 · 完全權限',
+          hint: '不經 Maka 的保護層，直接存取你的檔案和網路',
+        },
+      },
+      settingsCommand: (section: string) => `設定 · ${section}`,
+      testDefaultConnection: (name: string) => `測試預設連線 · ${name}`,
+      setDefaultConnection: (name: string) => `設為預設 · ${name}`,
+      testConnection: (name: string) => `測試連線 · ${name}`,
+      settingsKeywords: (section: SettingsSection, label: string) => [section, label, 'settings', '設定'],
+      permissionKeywords: (mode: PermissionMode) => [mode, 'permission', 'mode', '權限', '模式'],
+      connectionKeywords: (action: 'default' | 'test', name: string, providerType: string) => [
+        action,
+        'connection',
+        '連線',
+        '預設',
+        '測試',
+        name,
+        providerType,
+      ],
+    },
+    keyboardHelp: {
+      title: '鍵盤快捷鍵',
+      sections: [
+        {
+          heading: '通用',
+          rows: [
+            {
+              keys: ['⌘', 'K'],
+              description: '開啟命令面板（跳任務 / 設定 / 主題等）',
+            },
+            { keys: ['?'], description: '開啟 / 關閉此快捷鍵面板' },
+            { keys: ['⌘', 'N'], description: '建立任務' },
+            { keys: ['⌘', ','], description: '開啟設定' },
+            {
+              keys: ['⌘', 'Shift', 'D'],
+              description: '複製目前上下文的診斷資訊',
+            },
+            { keys: ['Esc'], description: '關閉目前模態框' },
+          ],
+        },
+        {
+          heading: 'Composer 輸入',
+          rows: [
+            { keys: ['Enter'], description: '傳送訊息' },
+            { keys: ['Shift', 'Enter'], description: '插入換行' },
+            { keys: ['Alt', 'Enter'], description: '插入換行（備用）' },
+          ],
+        },
+        {
+          heading: '任務列表',
+          rows: [
+            { keys: ['Tab'], description: '在任務與導航之間移動焦點' },
+            { keys: ['↑', '↓'], description: '上下移動聚焦的任務' },
+            { keys: ['Home', 'End'], description: '跳到列表頂部 / 底部' },
+            { keys: ['Enter'], description: '開啟聚焦的任務' },
+            { keys: ['Delete'], description: '彈出刪除確認（永遠不靜默刪除）' },
+            { keys: ['F'], description: '聚焦任務列表搜尋框（按 Esc 清空）' },
+          ],
+        },
+        {
+          heading: '聊天區',
+          rows: [
+            { keys: ['Tab'], description: '聚焦工具活動 / 複製按鈕' },
+            { keys: ['Space', 'Enter'], description: '展開 / 摺疊工具呼叫' },
+          ],
+        },
+        {
+          heading: '面板調整',
+          rows: [
+            { keys: ['Tab'], description: '聚焦左右分割條' },
+            { keys: ['←', '→'], description: '微調任務列表寬度（±10 px）' },
+            { keys: ['Shift', '←', '→'], description: '快速調整（±50 px）' },
+            { keys: ['Home', 'End'], description: '直接拉到最小 / 最大寬度' },
+          ],
+        },
+      ],
+    },
+    chrome: {
+      windowActions: '視窗快捷操作',
+      searchConversations: '搜尋任務',
+      expandSidebar: '展開側邊欄',
+      collapseSidebar: '收起側邊欄',
+      newTask: '新任務',
+      expandWorkbar: '展開任務工作欄',
+      collapseWorkbar: '收起任務工作欄',
+      workspaceActions: '工作區輔助操作',
+    },
+    app: {
+      returnToWorkHub: '返回 WorkHub',
+      loadingWorkbarLabel: '正在載入任務工作欄',
+      loadingWorkbar: '正在載入任務工作欄…',
+      useSkillPrompt: (skillName: string) => `使用 ${skillName} 技能：`,
+      newConversation: '建立任務',
+      compactSuccessTitle: '上下文已壓縮',
+      compactSuccessDescription: '較早的上下文已替換為檢查點摘要。',
+      compactStartedTitle: '正在壓縮上下文',
+      compactStartedDescription: '正在將較早的上下文整理為檢查點摘要。',
+      compactUnchangedTitle: '無需壓縮',
+      compactUnchangedDescription: '任務已使用最新的檢查點。',
+      compactErrorTitle: '壓縮失敗',
+      compactErrorFallback: '任務暫時無法壓縮，請稍後重試。',
+      slashCommands: {
+        compact: { name: '壓縮上下文', description: '壓縮舊歷史並保留目前任務' },
+        graph: { name: '使用 Graph', description: '檢視、切換或單次執行 Graph' },
+        side: { name: '開啟側聊', description: '在右側開始一個具體話題' },
+        swarm: { name: '使用 Swarm', description: '檢視、切換或單次執行 Swarm' },
+      },
+      sideChatUnavailableTitle: '暫時無法開啟側邊對話',
+      sideChatUnavailableDescription: '請先在主任務中傳送一條訊息，再使用 /side。',
+      sideChatContextPendingTitle: '先處理待發送的上下文',
+      sideChatContextPendingDescription:
+        '目前 Composer 還有附件、引用或檔案 mention。請先發送或移除它們，再使用 /side。',
+      resumeStartedTitle: '已開始安全恢復',
+      resumeStartedDescription: '正在從最後一個完整執行邊界繼續',
+      resumeFailedTitle: '恢復失敗',
+      resumeFailedFallback: '無法啟動安全恢復，請檢查任務狀態後重試。',
+      goalClearFailedTitle: '停止目標失敗',
+      goalClearFailedFallback: '目標仍可能繼續執行，請立即重試。',
+      goalPauseFailedTitle: '暫停目標失敗',
+      goalPauseFailedFallback: '目標可能仍在自動續行，請立即重試。',
+      goalResumeFailedTitle: '恢復目標失敗',
+      goalResumeFailedFallback: '目標仍處於暫停狀態，請重試。',
+      appearanceLoadErrorTitle: '載入外觀設定失敗',
+      appearanceLoadErrorFallback: '外觀設定暫時無法載入，請稍後重試。',
+      memoryRefreshErrorTitle: '重新整理本地記憶狀態失敗',
+      memoryLoadErrorTitle: '載入本地記憶狀態失敗',
+      memoryErrorFallback: '本地記憶狀態暫時無法重新整理，請稍後重試。',
+      openModelSettings: '開啟設定 · 模型',
+      configureModelsOnHost: (hostName: string) =>
+        `請先在 ${hostName} 上設定模型連線。`,
+      sidebarCollapsed: '側邊欄已收起',
+      resizeConversationList: '調整任務列表寬度',
+      skipErrorTitle: '跳過失敗',
+      tryAgainLater: '請稍後重試。',
+      loading: '載入中',
+      goToModels: '去模型',
+      boundaryUnreadableTitle: '暫時讀不到這個任務的權限',
+      boundaryUnreadableDetail: '在讀到之前，這裡暫時不能輸入。可以重試，或先切換到別的任務。',
+      boundaryUnreadableRetry: '重試',
+      boundaryUnreadableRetrying: '重試中…',
+      permissionModeStreaming: '目前任務正在流式輸出，等結束後再切換權限模式。',
+      permissionModeRunning: '目前任務正在執行，等結束後再切換權限模式。',
+      permissionModeWaiting: '目前有工具呼叫正在等待確認，處理後再切換權限模式。',
+      modeChangeLoading: '會話還在載入，稍候即可切換模式。',
+      modeChanging: '模式正在切換，完成後再繼續操作。',
+      modeChangeStreaming: '目前任務正在流式輸出，等結束後再切換模式。',
+      modeChangeRunning: '目前任務正在執行，等結束後再切換模式。',
+      modeChangeWaiting: '目前有工具呼叫正在等待確認，處理後再切換模式。',
+      goalTurnActive: 'Goal 從下一輪開始生效。等目前這一輪結束後再設定。',
+      planModeFailedTitle: '切換 Plan 模式失敗',
+      planModeFallback: 'Plan 模式暫時無法切換，請稍後重試。',
+      orchestrationModeFailedTitle: '切換編排模式失敗',
+      orchestrationModeFallback: '編排模式暫時無法切換，請稍後重試。',
+      planModeExitPendingTitle: '放棄目前方案？',
+      planModeExitPendingDescription: (title: string) =>
+        `「${title}」尚未審批。退出 Plan Mode 後，該方案會標記為已放棄，但歷史記錄仍會保留。`,
+      planModeExitConfirm: '放棄並退出',
+      planModeExitCancel: '繼續規劃',
+      planModeExecutionActiveTitle: '計劃仍在執行',
+      planModeExecutionActiveDescription: '請先中斷目前執行，再進入 Plan Mode 調整方案。',
+      swarmModeEnabledTitle: 'Swarm Mode 已開啟',
+      swarmModeDisabledTitle: 'Swarm Mode 未開啟',
+      swarmModeStatusDescription: '使用 /swarm on、/swarm off，或 /swarm <任務> 單次執行。',
+      graphModeEnabledTitle: 'Graph Mode 已開啟',
+      graphModeDisabledTitle: 'Graph Mode 未開啟',
+      graphModeStatusDescription: '使用 /graph on、/graph off，或 /graph <任務> 單次執行。',
+      graphHistoryTitle: 'Graph 歷史',
+      graphHistoryDescription: '請在 Agent Graph 面板的執行輪次選單中檢視歷史記錄。',
+      resizeWorkbar: '調整任務工作欄寬度',
     },
   },
   en: {
@@ -1417,6 +1907,15 @@ const SHELL_COPY_BY_LOCALE = {
       cancelLabel: 'Cancel',
       deletedTitle: (name: string) => `Deleted ${name}`,
       deleteRestoredTitle: (name: string) => `${name} was restored, so it was kept`,
+      deleteSubtaskNote: () => 'Its ordinary subtasks will be kept and moved to Archived.',
+      deleteSubtaskNoteUncertain: () =>
+        'Its ordinary subtasks, if any, will be kept and moved to Archived.',
+      deletedSubtaskNote: (count: number) =>
+        count === 1 ? '1 subtask moved to Archived' : `${count} subtasks moved to Archived`,
+      bulkArchiveDescription: 'Archived tasks stay available under Settings › Activity.',
+      bulkArchivedTitle: (count: number) => `Archived ${count} tasks`,
+      bulkArchiveFailedTitle: 'Some tasks were not archived',
+      bulkFailedBody: (count: number) => `${count} of them did not go through.`,
     },
     skillActions: {
       refreshSkillsFailedTitle: 'Could not refresh Skills',
@@ -1506,38 +2005,23 @@ const SHELL_COPY_BY_LOCALE = {
       },
     },
     sessionSettingsActions: {
-      permissionLabels: {
-        ask: 'Auto',
-        bypass: 'Full access',
-      },
-      permissionDescriptions: {
-        explore: 'Read only: reads and searches only; writing files and network access ask you first.',
-        ask: "Auto: runs inside Maka's protection layer and asks before anything goes beyond the current permissions.",
-        bypass: "Local tools reach your files and your network directly, outside Maka's protection layer.",
-      },
       bypassConfirmTitle: 'Switch to full access?',
       bypassConfirmDescription:
         "Local tools will read and write your files and reach the network directly, outside Maka's protection layer. Use only for tasks you fully trust, or ones already isolated by their environment.",
       bypassConfirmLabel: 'Turn on full access',
       bypassCancelLabel: 'Keep Auto',
-      permissionSwitched: (label: string) => `Switched to ${label}`,
       permissionFailedTitle: 'Could not change permission mode',
       permissionFallback: 'The permission mode could not be changed. Try again later.',
-      modelSwitchedTitle: 'Task model changed',
-      modelSwitchedDescription: (from, to) => `${from} → ${to}`,
+      attachmentIngestBlocked: {
+        item_too_large: 'One attachment exceeds the size limit.',
+        items_invalid: 'The attachment list is invalid. Pick the files again and resend.',
+        count_limit: 'At most 8 attachments per message.',
+        duplicate_source: 'Duplicate attachment source. Do not add the same file twice.',
+        total_size_exceeded: 'The total attachment size exceeds the limit.',
+        source_expired: 'The attachment source expired or is invalid. Pick the files again and resend.',
+      },
       modelFailedTitle: 'Could not change model',
       modelFallback: 'The model could not be changed. Try again later.',
-      thinkingUpdatedTitle: 'Thinking level updated',
-      thinkingDefault: 'Default',
-      thinkingLabels: {
-        off: 'Off',
-        minimal: 'Minimal',
-        low: 'Low',
-        medium: 'Medium',
-        high: 'High',
-        xhigh: 'Extra high',
-        max: 'Maximum',
-      },
       thinkingFailedTitle: 'Could not change thinking level',
       thinkingFallback: 'The thinking level could not be changed. Try again later.',
     },
@@ -1581,14 +2065,11 @@ const SHELL_COPY_BY_LOCALE = {
       copyFailed: 'Copy failed',
       copyReport: 'Copy diagnostics',
       title: 'The Maka renderer crashed',
-      descriptionBeforeRetry: 'An unhandled React error was caught. The summary is below. Choose',
+      description:
+        'An unhandled React error was caught. Try again to clear this crash, or reload to refresh the entire window. Copy the diagnostics before handing off the issue.',
       retry: 'Try again',
-      descriptionBeforeReload: 'to clear this crash, or',
       reload: 'Reload',
-      descriptionAfterReload: 'to refresh the entire window. Copy the diagnostics before handing off the issue.',
-      errorDetails: 'Error details',
-      componentStack: 'Component stack',
-      clipboardFailure: 'The clipboard is unavailable or was denied. You can select the error summary above manually.',
+      clipboardFailure: 'The clipboard is unavailable or was denied. Try again later.',
     },
     commandPalette: {
       label: 'Command palette',
@@ -1742,6 +2223,7 @@ const SHELL_COPY_BY_LOCALE = {
       workspaceActions: 'Workspace actions',
     },
     app: {
+      returnToWorkHub: 'Return to WorkHub',
       loadingWorkbarLabel: 'Loading task workbar',
       loadingWorkbar: 'Loading task workbar…',
       useSkillPrompt: (skillName: string) => `Use the ${skillName} skill: `,
@@ -1788,15 +2270,6 @@ const SHELL_COPY_BY_LOCALE = {
       resizeConversationList: 'Resize task list',
       skipErrorTitle: 'Could not skip onboarding',
       tryAgainLater: 'Try again later.',
-      updateInstallFailedTitle: 'Could not install update',
-      updateInstallFailedFallback: 'Try again later.',
-      updateInstallManualFallback: 'Try again later, or download the latest version manually.',
-      updateActiveTasksTitle: 'Tasks are still running',
-      updateActiveTasksDescription: 'Tasks are still running. Updating will interrupt them. Continue?',
-      updateActiveTasksConfirm: 'Update anyway',
-      updateActiveTasksCancel: 'Cancel',
-      updateRetryFailedTitle: 'Could not retry update download',
-      updateRetryFailedFallback: 'Try again later, or download the latest version manually.',
       loading: 'Loading',
       goToModels: 'Go to Models',
       boundaryUnreadableTitle: 'Could not read this task’s permissions',
@@ -1804,7 +2277,6 @@ const SHELL_COPY_BY_LOCALE = {
         'Until they can be read, you cannot type here. Try again, or switch to another task.',
       boundaryUnreadableRetry: 'Try again',
       boundaryUnreadableRetrying: 'Trying again…',
-      permissionModeChanging: 'The permission mode is changing. Wait for it to finish before continuing.',
       permissionModeStreaming:
         'This task is streaming. Wait for it to finish before changing the permission mode.',
       permissionModeRunning: 'This task is running. Wait for it to finish before changing the permission mode.',
@@ -1845,5 +2317,63 @@ export function getShellCopy(locale: UiLocale): ShellCopy {
 }
 
 export function localizedShellErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {
-  return locale === 'zh' ? generalizedErrorMessageChinese(error, fallback) : generalizedErrorMessage(error, fallback);
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  const maps = getShellCopy(locale).sessionSettingsActions;
+  // The reason token survives the Electron IPC wrapper and is always the
+  // message tail: a bare `attachment_ingest:<code>` from the preload probe or
+  // the IPC-wrapped error line. End-anchored so an unrelated path that merely
+  // contains the substring never matches.
+  const blocked = lookupCopy(
+    maps.attachmentIngestBlocked,
+    message.match(/(?:^|[ :"'])attachment_ingest:([a-z_]+)$/u)?.[1],
+  );
+  if (blocked) return blocked;
+  // A classified failure (timeout / rate limit / auth / provider / network)
+  // is expected; only an unrecognized one lands the redacted diagnostic.
+  return classifyGeneralizedError(error)
+    ? generalizedErrorMessageForLocale(error, fallback, locale)
+    : unexpectedOperationFallback(error, fallback, 'desktop');
+}
+
+export function sessionSettingFailureCopy(
+  locale: UiLocale,
+  setting: 'model' | 'thinking' | 'permission' | 'plan' | 'orchestration',
+  error: unknown,
+): { title: string; description: string } {
+  const copy = getShellCopy(locale);
+  const failure = setting === 'model'
+    ? { title: copy.sessionSettingsActions.modelFailedTitle, fallback: copy.sessionSettingsActions.modelFallback }
+    : setting === 'thinking'
+      ? { title: copy.sessionSettingsActions.thinkingFailedTitle, fallback: copy.sessionSettingsActions.thinkingFallback }
+      : setting === 'permission'
+        ? { title: copy.sessionSettingsActions.permissionFailedTitle, fallback: copy.sessionSettingsActions.permissionFallback }
+        : setting === 'plan'
+          ? { title: copy.app.planModeFailedTitle, fallback: copy.app.planModeFallback }
+          : { title: copy.app.orchestrationModeFailedTitle, fallback: copy.app.orchestrationModeFallback };
+  return {
+    title: failure.title,
+    description: localizedShellErrorMessage(error, failure.fallback, locale),
+  };
+}
+
+export function confirmBypassPermission(
+  toast: {
+    confirm(input: {
+      title: string;
+      description?: string;
+      confirmLabel?: string;
+      cancelLabel?: string;
+      destructive?: boolean;
+    }): Promise<boolean>;
+  },
+  locale: UiLocale,
+): Promise<boolean> {
+  const copy = getShellCopy(locale).sessionSettingsActions;
+  return toast.confirm({
+    title: copy.bypassConfirmTitle,
+    description: copy.bypassConfirmDescription,
+    confirmLabel: copy.bypassConfirmLabel,
+    cancelLabel: copy.bypassCancelLabel,
+    destructive: true,
+  });
 }

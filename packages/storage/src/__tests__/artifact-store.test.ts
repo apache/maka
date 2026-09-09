@@ -18,6 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
+import fsPromises from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { createHash } from 'node:crypto';
 import {
   link,
@@ -41,10 +43,9 @@ import {
 } from '@maka/core/artifacts';
 import {
   ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES,
-  type ArtifactStore,
+  type ArtifactAuthorityStore,
   type ArtifactStoreWriteAuthority,
   type CreateArtifactInput,
-  createSqliteArtifactStore,
   createSqliteArtifactStoreWriteAuthority,
   isSafeRelativeArtifactPath,
   resolveArtifactPath,
@@ -61,10 +62,38 @@ function trackArtifactStoreCloser(root: string, close: () => void): void {
   artifactStoreClosersByRoot.set(root, closers);
 }
 
-function createArtifactStore(root: string): ArtifactStore {
-  const store = createSqliteArtifactStore(root);
-  trackArtifactStoreCloser(root, () => store.close?.());
-  return store;
+function createArtifactStore(root: string): ArtifactAuthorityStore {
+  const authority = createSqliteArtifactStoreWriteAuthority(root);
+  trackArtifactStoreCloser(root, () => authority.close());
+  return authority.store;
+}
+
+async function listArtifacts(store: ArtifactAuthorityStore, sessionId: string) {
+  return (await store.listPage(sessionId, { offset: 0, limit: Number.MAX_SAFE_INTEGER })).records;
+}
+
+async function getArtifact(
+  store: ArtifactAuthorityStore,
+  artifactId: string,
+  sessionId = 'session-1',
+) {
+  return (await store.getInSession(sessionId, artifactId)).record;
+}
+
+function readArtifactText(
+  store: ArtifactAuthorityStore,
+  artifactId: string,
+  sessionId = 'session-1',
+) {
+  return store.readTextInSession(sessionId, artifactId);
+}
+
+function readArtifactBinary(
+  store: ArtifactAuthorityStore,
+  artifactId: string,
+  sessionId = 'session-1',
+) {
+  return store.readBinaryInSession(sessionId, artifactId);
 }
 
 function createArtifactStoreWriteAuthority(root: string): ArtifactStoreWriteAuthority {
@@ -92,7 +121,7 @@ describe('SQLite Artifact store', () => {
       assert.equal((await stat(root)).isDirectory(), true);
       assert.equal(created.id, 'missing-root');
       assert.deepEqual(
-        (await createArtifactStore(root).list('session-1')).map((record) => record.id),
+        (await listArtifacts(createArtifactStore(root), 'session-1')).map((record) => record.id),
         ['missing-root'],
       );
     } finally {
@@ -115,25 +144,27 @@ describe('SQLite Artifact store', () => {
       assert.equal(first.relativePath, 'session-1/artifact-1-artifact-1.txt');
       assert.equal(first.sizeBytes, 7);
       assert.deepEqual(
-        (await store.list('session-1')).map((record) => record.id),
+        (await listArtifacts(store, 'session-1')).map((record) => record.id),
         ['artifact-2', 'artifact-1'],
       );
-      assert.deepEqual(await store.readText(first.id), { ok: true, text: '# Notes' });
+      assert.deepEqual(await readArtifactText(store, first.id), { ok: true, text: '# Notes' });
 
       const reopened = createArtifactStore(root);
-      assert.deepEqual(await reopened.get(second.id), second);
+      assert.deepEqual(await getArtifact(reopened, second.id), second);
       await assert.rejects(
         () => reopened.create(artifactInput('artifact-1', 'replacement', 300)),
         /Artifact artifact-1 already exists/,
       );
-      assert.deepEqual(await reopened.readText('artifact-1'), { ok: true, text: '# Notes' });
+      assert.deepEqual(await readArtifactText(reopened, 'artifact-1'), {
+        ok: true,
+        text: '# Notes',
+      });
     });
   });
 
   test('lists only live Artifacts committed by one exact Turn', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
-      await authority.recover();
       const { store } = authority;
       await store.create({ ...artifactInput('turn-a-new', 'new', 30), turnId: 'turn-a' });
       await store.create({ ...artifactInput('turn-b', 'other turn', 20), turnId: 'turn-b' });
@@ -168,7 +199,10 @@ describe('SQLite Artifact store', () => {
         const input = { ...artifactInput(id, 'compacted', 1), turnId };
         const created = await createArtifactStore(root).create(input);
         assert.equal(created.turnId, input.turnId);
-        assert.equal((await createArtifactStore(root).get(created.id))?.turnId, input.turnId);
+        assert.equal(
+          (await getArtifact(createArtifactStore(root), created.id))?.turnId,
+          input.turnId,
+        );
       }
 
       for (const turnId of [
@@ -192,7 +226,6 @@ describe('SQLite Artifact store', () => {
   test('owns stable session revisions across paging, reopen, mutations, and no-ops', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
-      await authority.recover();
       const { store } = authority;
       const empty = await store.listPage('session-1', { offset: 0, limit: 2 });
       assert.equal(empty.total, 0);
@@ -215,7 +248,6 @@ describe('SQLite Artifact store', () => {
       assert.equal((await store.getInSession('session-1', 'first')).revision, created.revision);
 
       const reopenedAuthority = createArtifactStoreWriteAuthority(root);
-      await reopenedAuthority.recover();
       const reopenedPage = await reopenedAuthority.store.listPage('session-1', {
         offset: 0,
         limit: 2,
@@ -245,8 +277,14 @@ describe('SQLite Artifact store', () => {
       assert.equal(deletedResult.kind, 'deleted');
       const deleted = await store.listPage('session-1', { offset: 0, limit: 3 });
       assert.notEqual(deleted.revision, created.revision);
-      assert.equal(deleted.records.find((record) => record.id === 'first')?.status, 'deleted');
-      assert.equal((await store.deleteUserArtifactInSession('session-1', 'first')).kind, 'deleted');
+      assert.equal(
+        deleted.records.find((record) => record.id === 'first'),
+        undefined,
+      );
+      assert.equal(
+        (await store.deleteUserArtifactInSession('session-1', 'first')).kind,
+        'not_found',
+      );
       assert.equal(
         (await store.listPage('session-1', { offset: 0, limit: 3 })).revision,
         deleted.revision,
@@ -255,9 +293,9 @@ describe('SQLite Artifact store', () => {
       await store.create(firstInput);
       const revived = await store.listPage('session-1', { offset: 0, limit: 3 });
       assert.notEqual(revived.revision, deleted.revision);
-      assert.equal(revived.records.find((record) => record.id === 'first')?.status, 'live');
+      assert.equal(revived.records.find((record) => record.id === 'first')?.id, 'first');
 
-      await store.purge(['first', 'second', 'revision-race']);
+      await store.purgeSessionArtifacts('session-1');
       const purged = await store.listPage('session-1', { offset: 0, limit: 2 });
       assert.equal(purged.revision, empty.revision);
       assert.equal(purged.total, 0);
@@ -267,7 +305,6 @@ describe('SQLite Artifact store', () => {
   test('copies an exact turn-scoped Artifact snapshot and purges only the target Session', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
-      await authority.recover();
       const { store } = authority;
       const retained = await store.create({
         ...artifactInput('retained-artifact', 'retained', 10),
@@ -278,7 +315,7 @@ describe('SQLite Artifact store', () => {
         ...artifactInput('deleted-artifact', 'deleted', 11),
         turnId: 'turn-retained',
       });
-      await store.delete(deleted.id);
+      await store.deleteUserArtifactInSession('session-1', deleted.id);
       await store.create({
         ...artifactInput('later-artifact', 'later', 20),
         turnId: 'turn-later',
@@ -292,40 +329,31 @@ describe('SQLite Artifact store', () => {
       const copiedId = copied.artifactIds.get(retained.id);
       const copiedDeletedId = copied.artifactIds.get(deleted.id);
       assert.ok(copiedId);
-      assert.ok(copiedDeletedId);
+      assert.equal(copiedDeletedId, undefined);
       assert.notEqual(copiedId, retained.id);
-      const target = await store.list('session-copy');
+      const target = await listArtifacts(store, 'session-copy');
       assert.equal(target.length, 1);
       assert.equal(target[0]?.id, copiedId);
       assert.equal(target[0]?.turnId, retained.turnId);
       assert.equal(copied.relativePaths.get(retained.relativePath), target[0]?.relativePath);
-      assert.deepEqual(await store.readText(copiedId!), {
+      assert.deepEqual(await readArtifactText(store, copiedId!, 'session-copy'), {
         ok: true,
         text: 'retained',
       });
-      const targetWithTombstones = await store.list('session-copy', { includeDeleted: true });
-      assert.equal(targetWithTombstones.find((record) => record.id === copiedId)?.status, 'live');
-      const copiedDeleted = targetWithTombstones.find((record) => record.id === copiedDeletedId);
-      assert.equal(copiedDeleted?.status, 'deleted');
-      assert.equal(copied.relativePaths.get(deleted.relativePath), copiedDeleted?.relativePath);
-      assert.deepEqual(await store.readText(copiedDeletedId!, { includeDeleted: true }), {
-        ok: true,
-        text: 'deleted',
-      });
+      assert.equal(copied.relativePaths.get(deleted.relativePath), undefined);
 
       await store.purgeSessionArtifacts('session-copy');
-      assert.deepEqual(await store.list('session-copy'), []);
-      assert.deepEqual((await store.list('session-1')).map((record) => record.id).sort(), [
-        'later-artifact',
-        'retained-artifact',
-      ]);
+      assert.deepEqual(await listArtifacts(store, 'session-copy'), []);
+      assert.deepEqual(
+        (await listArtifacts(store, 'session-1')).map((record) => record.id).sort(),
+        ['later-artifact', 'retained-artifact'],
+      );
     });
   });
 
   test('excludes selected Artifacts from a conversation snapshot', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
-      await authority.recover();
       const { store } = authority;
       await store.create({
         ...artifactInput('retained-artifact', 'retained', 10),
@@ -346,17 +374,16 @@ describe('SQLite Artifact store', () => {
 
       assert.equal(copied.artifactIds.has('excluded-archive'), false);
       assert.deepEqual(
-        (await store.list('session-copy')).map((record) => record.name),
+        (await listArtifacts(store, 'session-copy')).map((record) => record.name),
         ['retained-artifact.txt'],
       );
-      assert.equal((await store.get('excluded-archive'))?.sessionId, 'session-1');
+      assert.equal((await getArtifact(store, 'excluded-archive'))?.sessionId, 'session-1');
     });
   });
 
   test('copies explicit linked child Artifacts into a conversation snapshot', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
-      await authority.recover();
       const { store } = authority;
       await store.create({
         ...artifactInput('child-artifact', 'child result', 10),
@@ -373,37 +400,97 @@ describe('SQLite Artifact store', () => {
 
       const copiedId = copied.artifactIds.get('child-artifact');
       assert.ok(copiedId);
-      assert.deepEqual(await store.readText(copiedId), { ok: true, text: 'child result' });
-      assert.equal((await store.get(copiedId))?.sessionId, 'session-copy');
-      assert.equal((await store.get('child-artifact'))?.sessionId, 'child-session');
+      assert.deepEqual(await readArtifactText(store, copiedId, 'session-copy'), {
+        ok: true,
+        text: 'child result',
+      });
+      assert.equal((await getArtifact(store, copiedId, 'session-copy'))?.sessionId, 'session-copy');
+      assert.equal(
+        (await getArtifact(store, 'child-artifact', 'child-session'))?.sessionId,
+        'child-session',
+      );
     });
   });
 
-  test('user delete evaluates current-generation policy before tombstone state', async () => {
+  test('includes explicit same-Session Artifacts outside the copied turns', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
-      await authority.recover();
+      const { store } = authority;
+      await store.create({
+        ...artifactInput('retained-artifact', 'retained', 10),
+        turnId: 'turn-retained',
+      });
+      // A user upload carries the uploadId sentinel as its turnId, so it is
+      // never a member of the copied conversation turns.
+      const upload = await store.create({
+        ...artifactInput('attachment-upload', 'uploaded bytes', 11),
+        turnId: 'upload-sentinel',
+        source: 'user_upload',
+      });
+
+      const withoutInclude = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy',
+        turnIds: ['turn-retained'],
+      });
+      assert.equal(withoutInclude.artifactIds.has(upload.id), false);
+
+      const withInclude = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy-2',
+        turnIds: ['turn-retained'],
+        includeArtifactIds: [upload.id],
+      });
+      const copiedUploadId = withInclude.artifactIds.get(upload.id);
+      assert.ok(copiedUploadId);
+      assert.deepEqual(await readArtifactText(store, copiedUploadId, 'session-copy-2'), {
+        ok: true,
+        text: 'uploaded bytes',
+      });
+      assert.equal(
+        (await getArtifact(store, copiedUploadId, 'session-copy-2'))?.sessionId,
+        'session-copy-2',
+      );
+      // Unknown include ids are a no-op, not an error.
+      const withUnknown = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy-3',
+        turnIds: ['turn-retained'],
+        includeArtifactIds: ['does-not-exist'],
+      });
+      assert.equal(withUnknown.artifactIds.has('does-not-exist'), false);
+    });
+  });
+
+  test('user deletion respects the current artifact source while owner cleanup remains possible', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
       const { store } = authority;
       const input = artifactInput('current-policy', 'replaceable', 1);
       await store.create(input);
-      await store.purge([input.id]);
-      const protectedRecord = await store.create({
+      await store.deleteUserArtifactInSession(input.sessionId, input.id);
+      await store.create({
         ...input,
         content: 'protected replacement',
         source: 'deep_research',
       });
 
-      assert.deepEqual(await store.deleteUserArtifactInSession(input.sessionId, input.id), {
-        kind: 'protected',
+      assert.equal(
+        (await store.deleteUserArtifactInSession(input.sessionId, input.id)).kind,
+        'protected',
+      );
+      assert.equal((await getArtifact(store, input.id))?.source, 'deep_research');
+      assert.deepEqual(await store.readTextInSession(input.sessionId, input.id), {
+        ok: true,
+        text: 'protected replacement',
       });
-      assert.deepEqual(await store.get(input.id), protectedRecord);
       assert.deepEqual(await store.deleteUserArtifactInSession('different-session', input.id), {
         kind: 'not_found',
       });
 
-      await store.delete(input.id);
+      await store.purgeSessionArtifacts(input.sessionId);
       assert.deepEqual(await store.deleteUserArtifactInSession(input.sessionId, input.id), {
-        kind: 'protected',
+        kind: 'not_found',
       });
     });
   });
@@ -436,12 +523,14 @@ describe('SQLite Artifact store', () => {
         const created = await createArtifactStore(root).create(input);
         const reopened = createArtifactStore(root);
 
-        assert.deepEqual(await reopened.list(input.sessionId), [
+        assert.deepEqual(await listArtifacts(reopened, input.sessionId), [
           created,
-          ...(await reopened.list(input.sessionId)).filter((record) => record.id !== created.id),
+          ...(await listArtifacts(reopened, input.sessionId)).filter(
+            (record) => record.id !== created.id,
+          ),
         ]);
-        assert.deepEqual(await reopened.get(created.id), created);
-        assert.deepEqual(await reopened.readText(created.id), {
+        assert.deepEqual(await getArtifact(reopened, created.id), created);
+        assert.deepEqual(await readArtifactText(reopened, created.id), {
           ok: true,
           text: input.content,
         });
@@ -450,15 +539,17 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('rejects metadata names that neither writer could have produced', async () => {
+  test('ignores metadata names that neither writer could have produced', async () => {
     for (const name of ['short ', 'embedded\ttab', 'embedded\nnewline']) {
       await withWorkspace(async (root) => {
         await writeArtifactMetadata(root, [
           canonicalRecord({ id: 'invalid-name', sessionId: 'session-1', name, sizeBytes: 0 }),
         ]);
-        await assert.rejects(
-          () => createArtifactStore(root).list('session-1', { includeDeleted: true }),
-          /Invalid artifact metadata record 1/,
+        const store = createArtifactStore(root);
+        assert.deepEqual(await listArtifacts(store, 'session-1'), []);
+        assert.equal(
+          (await store.create(artifactInput('replacement', 'kept', 1))).id,
+          'replacement',
         );
       });
     }
@@ -474,16 +565,13 @@ describe('SQLite Artifact store', () => {
 
       const created = await createArtifactStore(root).create(input);
       assert.equal(created.name, 'a'.repeat(119));
-      const targetPath = join(root, 'artifacts', created.relativePath);
-      const stagingPath = publicationStagingPath(targetPath);
-      await writeFile(stagingPath, input.content, { flag: 'wx' });
-
       const authority = createArtifactStoreWriteAuthority(root);
       const reopened = authority.store;
-      await authority.recover();
-      await assert.rejects(() => stat(stagingPath), { code: 'ENOENT' });
       assert.deepEqual(await reopened.create(input), created);
-      assert.deepEqual(await reopened.readText(created.id), { ok: true, text: input.content });
+      assert.deepEqual(await readArtifactText(reopened, created.id), {
+        ok: true,
+        text: input.content,
+      });
     });
   });
 
@@ -517,13 +605,13 @@ describe('SQLite Artifact store', () => {
       });
 
       const reopened = createArtifactStore(root);
-      assert.deepEqual(await reopened.get(report.id), report);
-      assert.deepEqual(await reopened.get(archive.id), archive);
-      assert.deepEqual(await reopened.readText(report.id), {
+      assert.deepEqual(await getArtifact(reopened, report.id), report);
+      assert.deepEqual(await getArtifact(reopened, archive.id), archive);
+      assert.deepEqual(await readArtifactText(reopened, report.id), {
         ok: true,
         text: '<h1>Research</h1>',
       });
-      assert.deepEqual(await reopened.readText(archive.id), {
+      assert.deepEqual(await readArtifactText(reopened, archive.id), {
         ok: true,
         text: '{"ok":true}',
       });
@@ -540,7 +628,7 @@ describe('SQLite Artifact store', () => {
       const replayed = await createArtifactStore(root).create(input);
       assert.deepEqual(replayed, first);
       await assert.rejects(() => stat(metadataPath), { code: 'ENOENT' });
-      assert.deepEqual(await createArtifactStore(root).readText(first.id), {
+      assert.deepEqual(await readArtifactText(createArtifactStore(root), first.id), {
         ok: true,
         text: '# Durable result',
       });
@@ -566,31 +654,20 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('exact tombstone replay atomically revives only an unchanged canonical payload', async () => {
+  test('a stable id can be created again after physical deletion', async () => {
     await withWorkspace(async (root) => {
       const input = deepResearchArtifactInput('stable-revive', '# Revivable');
       const store = createArtifactStore(root);
       const first = await store.create(input);
-      await store.delete(first.id);
-      const deleted = await store.get(first.id);
-      assert.equal(deleted?.status, 'deleted');
+      await store.deleteOwnedArtifactInSession(input.sessionId, first.id, input.source);
+      assert.equal(await getArtifact(store, first.id), null);
 
-      const revived = await createArtifactStore(root).create(input);
-      assert.deepEqual(revived, { ...first, status: 'live' });
-      assert.deepEqual(await createArtifactStore(root).readText(first.id), {
+      const recreated = await createArtifactStore(root).create(input);
+      assert.deepEqual({ ...recreated, createdAt: first.createdAt }, first);
+      assert.deepEqual(await readArtifactText(createArtifactStore(root), first.id), {
         ok: true,
         text: '# Revivable',
       });
-
-      const reopened = createArtifactStore(root);
-      await reopened.delete(first.id);
-      await writeFile(join(root, 'artifacts', first.relativePath), '# Rewritten', 'utf8');
-      assert.equal(Buffer.byteLength(input.content), Buffer.byteLength('# Rewritten'));
-      await assert.rejects(
-        () => createArtifactStore(root).create(input),
-        /already exists with different metadata or content/,
-      );
-      assert.equal((await createArtifactStore(root).get(first.id))?.status, 'deleted');
     });
   });
 
@@ -601,7 +678,7 @@ describe('SQLite Artifact store', () => {
       await Promise.all(ids.map((id, index) => store.create(artifactInput(id, id, index + 1))));
 
       const reopened = createArtifactStore(root);
-      const rows = await reopened.list('session-1', { includeDeleted: true });
+      const rows = await listArtifacts(reopened, 'session-1');
       assert.deepEqual(rows.map((record) => record.id).sort(), ids.sort());
       await assert.rejects(() => stat(join(root, 'artifacts', 'metadata.jsonl')), {
         code: 'ENOENT',
@@ -618,7 +695,7 @@ describe('SQLite Artifact store', () => {
         second.create(artifactInput('independent-second', 'second', 2)),
       ]);
 
-      const rows = await createArtifactStore(root).list('session-1', { includeDeleted: true });
+      const rows = await listArtifacts(createArtifactStore(root), 'session-1');
       assert.deepEqual(rows.map((record) => record.id).sort(), [
         'independent-first',
         'independent-second',
@@ -651,7 +728,7 @@ describe('SQLite Artifact store', () => {
         kind: 'file',
         content: bytes,
         mimeType: 'application/octet-stream',
-        source: 'fixture',
+        source: 'tool_result',
         summary: 'accepted summary',
         now: 7,
       };
@@ -682,18 +759,17 @@ describe('SQLite Artifact store', () => {
         relativePath: 'session-1/accepted-id-accepted.bin',
         sizeBytes: 4,
         mimeType: 'application/octet-stream',
-        source: 'fixture',
+        source: 'tool_result',
         summary: 'accepted summary',
-        status: 'live',
       });
       assert.deepEqual(
         await readFile(join(root, 'artifacts', record.relativePath)),
         Buffer.from('safe'),
       );
       const reopened = createArtifactStore(root);
-      assert.deepEqual(await reopened.get(record.id), record);
-      assert.deepEqual(await reopened.list('session-1'), [record]);
-      assert.equal(await reopened.get('mutated-id'), null);
+      assert.deepEqual(await getArtifact(reopened, record.id), record);
+      assert.deepEqual(await listArtifacts(reopened, 'session-1'), [record]);
+      assert.equal(await getArtifact(reopened, 'mutated-id'), null);
     });
   });
 
@@ -703,38 +779,18 @@ describe('SQLite Artifact store', () => {
       const writer = createArtifactStore(root);
       await stale.create(artifactInput('first', 'first', 1));
       assert.deepEqual(
-        (await stale.list('session-1')).map((record) => record.id),
+        (await listArtifacts(stale, 'session-1')).map((record) => record.id),
         ['first'],
       );
 
       await writer.create(artifactInput('second', 'second', 2));
 
       assert.deepEqual(
-        (await stale.list('session-1')).map((record) => record.id),
+        (await listArtifacts(stale, 'session-1')).map((record) => record.id),
         ['second', 'first'],
       );
-      assert.equal((await stale.get('second'))?.id, 'second');
-      assert.deepEqual(await stale.readText('second'), { ok: true, text: 'second' });
-    });
-  });
-
-  test('snapshots purge inputs before lock waits', async () => {
-    await withWorkspace(async (root) => {
-      const authority = createArtifactStoreWriteAuthority(root);
-      await authority.recover();
-      const { store } = authority;
-      await store.create(artifactInput('purge-me', 'purge', 2));
-      await store.create(artifactInput('keep-me', 'keep', 3));
-
-      const purgeIds = ['purge-me'];
-      const purgeLock = await holdArtifactWriterLock(root);
-      const purged = store.purge(purgeIds);
-      purgeIds[0] = 'keep-me';
-      purgeLock.release();
-      await purgeLock.finished;
-      await purged;
-      assert.equal(await store.get('purge-me'), null);
-      assert.equal((await store.get('keep-me'))?.status, 'live');
+      assert.equal((await getArtifact(stale, 'second'))?.id, 'second');
+      assert.deepEqual(await readArtifactText(stale, 'second'), { ok: true, text: 'second' });
     });
   });
 
@@ -742,7 +798,7 @@ describe('SQLite Artifact store', () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
       await store.create(artifactInput('published', 'kept', 1));
-      store.close?.();
+      store.close();
 
       await assert.rejects(
         () => store.create(artifactInput('rejected', 'not durable', 2)),
@@ -753,62 +809,26 @@ describe('SQLite Artifact store', () => {
         { code: 'ENOENT' },
       );
       const reopened = createArtifactStore(root);
-      assert.equal(await reopened.get('rejected'), null);
+      assert.equal(await getArtifact(reopened, 'rejected'), null);
     });
   });
 
-  test('explicit write recovery removes an uncommitted publication and permits stable-id retry', async () => {
+  test('legacy publication residue cannot block stable-id creation', async () => {
     await withWorkspace(async (root) => {
       const residue = await createPublicationResidue(root, 'stable-retry', 'retry.txt', 'old');
       const authority = createArtifactStoreWriteAuthority(root);
       const { store } = authority;
-
-      await assert.rejects(
-        () =>
-          store.create({
-            ...artifactInput('stable-retry', 'new', 1),
-            name: 'retry.txt',
-          }),
-        /Artifact write recovery is required/,
-      );
-      await assert.rejects(() => store.delete('missing'), /Artifact write recovery is required/);
-      await assert.rejects(() => store.purge(['missing']), /Artifact write recovery is required/);
-      assert.equal(await readFile(residue.stagingPath, 'utf8'), 'old');
-      assert.equal(await readFile(residue.targetPath, 'utf8'), 'old');
-
-      await authority.recover();
-      await assert.rejects(() => stat(residue.stagingPath), { code: 'ENOENT' });
-      await assert.rejects(() => stat(residue.targetPath), { code: 'ENOENT' });
-
       const retried = await store.create({
         ...artifactInput('stable-retry', 'new', 1),
         name: 'retry.txt',
       });
       assert.equal(retried.id, 'stable-retry');
-      assert.deepEqual(await store.readText(retried.id), { ok: true, text: 'new' });
+      assert.deepEqual(await readArtifactText(store, retried.id), { ok: true, text: 'new' });
+      assert.equal(await readFile(residue.stagingPath, 'utf8'), 'old');
     });
   });
 
-  test('explicit write recovery completes a committed publication without removing its payload', async () => {
-    await withWorkspace(async (root) => {
-      const first = createArtifactStore(root);
-      const record = await first.create(artifactInput('committed', 'durable', 1));
-      const targetPath = join(root, 'artifacts', record.relativePath);
-      const stagingPath = publicationStagingPath(targetPath);
-      await writeFile(stagingPath, await readFile(targetPath));
-      assert.notEqual((await stat(targetPath)).ino, (await stat(stagingPath)).ino);
-
-      const authority = createArtifactStoreWriteAuthority(root);
-      const reopened = authority.store;
-      await authority.recover();
-
-      await assert.rejects(() => stat(stagingPath), { code: 'ENOENT' });
-      assert.equal(await readFile(targetPath, 'utf8'), 'durable');
-      assert.deepEqual(await reopened.readText(record.id), { ok: true, text: 'durable' });
-    });
-  });
-
-  test('self-managed SQLite mutation adopts an exact stable-id target-only orphan', async () => {
+  test('stable-id creation replaces an untracked payload', async () => {
     await withWorkspace(async (root) => {
       const input = {
         ...artifactInput('target-orphan', 'orphan bytes', 1),
@@ -822,147 +842,14 @@ describe('SQLite Artifact store', () => {
       const adopted = await bare.create(input);
       assert.equal(adopted.name, 'report.txt');
       assert.equal(adopted.relativePath, 'session-1/target-orphan-report.txt');
-      assert.deepEqual(await createArtifactStore(root).readText(adopted.id), {
+      assert.deepEqual(await readArtifactText(createArtifactStore(root), adopted.id), {
         ok: true,
         text: input.content,
       });
     });
   });
 
-  test('self-managed SQLite mutations recover target-local publications without rescanning unrelated sessions', async () => {
-    await withWorkspace(async (root) => {
-      const store = createArtifactStore(root);
-      await store.create(artifactInput('delete-me', 'delete', 1));
-      await store.create(artifactInput('purge-me', 'purge', 2));
-
-      const unrelated = await createPublicationResidue(
-        root,
-        'unrelated',
-        'unrelated.txt',
-        'publication bytes',
-        'session-2',
-      );
-      await rm(unrelated.targetPath);
-      await writeFile(unrelated.targetPath, 'different bytes');
-
-      const created = await store.create({
-        ...artifactInput('target-only', 'created', 3),
-        sessionId: 'session-1',
-      });
-      assert.equal(created.id, 'target-only');
-      await store.delete('delete-me');
-      await store.purge(['purge-me']);
-      assert.equal((await store.get('delete-me'))?.status, 'deleted');
-      assert.equal(await store.get('purge-me'), null);
-
-      await assert.rejects(
-        () => createArtifactStoreWriteAuthority(root).recover(),
-        /Artifact publication residue does not match canonical state/,
-      );
-    });
-  });
-
-  test('authority recovery adopts only its pre-existing exact stable-id orphan snapshot', async () => {
-    await withWorkspace(async (root) => {
-      const input = artifactInput('drifted-orphan', 'expected bytes', 1);
-      const orphanPath = join(root, 'artifacts', 'session-1', 'drifted-orphan-drifted-orphan.txt');
-      await mkdir(dirname(orphanPath), { recursive: true });
-      await writeFile(orphanPath, 'drifted bytes!', { flag: 'wx' });
-      const authority = createArtifactStoreWriteAuthority(root);
-      const authorized = authority.store;
-      await authority.recover();
-      await rm(orphanPath);
-      await writeFile(orphanPath, input.content, { flag: 'wx' });
-
-      await assert.rejects(
-        () => authorized.create(input),
-        /already exists with different metadata or content/,
-      );
-      assert.equal(await readFile(orphanPath, 'utf8'), input.content);
-      await assert.rejects(() => stat(join(root, 'artifacts', 'metadata.jsonl')), {
-        code: 'ENOENT',
-      });
-    });
-
-    await withWorkspace(async (root) => {
-      const input = artifactInput('late-payload', 'same bytes', 1);
-      const authority = createArtifactStoreWriteAuthority(root);
-      const store = authority.store;
-      await authority.recover();
-      const residue = await createPublicationResidue(
-        root,
-        input.id,
-        input.name,
-        input.content as string,
-      );
-
-      await assert.rejects(() => store.create(input), /Artifact write recovery is required/);
-      assert.equal(await readFile(residue.stagingPath, 'utf8'), input.content);
-      assert.equal(await readFile(residue.targetPath, 'utf8'), input.content);
-    });
-  });
-
-  test('write recovery removes only canonical purge-intent temp files', async () => {
-    await withWorkspace(async (root) => {
-      const artifactRoot = join(root, 'artifacts');
-      await mkdir(artifactRoot, { recursive: true });
-      const canonicalTemps = [
-        join(
-          artifactRoot,
-          '.artifact-purge-intent.json.123.00000000-0000-4000-8000-000000000000.tmp',
-        ),
-      ];
-      const unknownFiles = [
-        join(artifactRoot, 'metadata.jsonl.123.00000000-0000-4000-8000-000000000000.tmp'),
-        join(artifactRoot, 'metadata.jsonl.123.1700000000000.tmp'),
-        join(artifactRoot, 'metadata.jsonl.123.not-a-uuid.tmp'),
-        join(artifactRoot, '.artifact-purge-intent.json.123.not-a-uuid.tmp'),
-        join(artifactRoot, 'other.jsonl.123.00000000-0000-4000-8000-000000000000.tmp'),
-      ];
-      for (const path of canonicalTemps) await writeFile(path, 'stale', 'utf8');
-      for (const path of unknownFiles) await writeFile(path, 'keep', 'utf8');
-
-      await createArtifactStoreWriteAuthority(root).recover();
-
-      for (const path of canonicalTemps) {
-        await assert.rejects(() => stat(path), { code: 'ENOENT' });
-      }
-      for (const path of unknownFiles) assert.equal(await readFile(path, 'utf8'), 'keep');
-    });
-  });
-
-  test('write recovery fails closed on a non-file canonical transaction temp', async () => {
-    await withWorkspace(async (root) => {
-      const artifactRoot = join(root, 'artifacts');
-      const canonicalTemp = join(
-        artifactRoot,
-        '.artifact-purge-intent.json.123.00000000-0000-4000-8000-000000000000.tmp',
-      );
-      await mkdir(canonicalTemp, { recursive: true });
-
-      await assert.rejects(
-        () => createArtifactStoreWriteAuthority(root).recover(),
-        /Artifact recovery temp is not a regular file/,
-      );
-      assert.equal((await stat(canonicalTemp)).isDirectory(), true);
-    });
-  });
-
-  test('fails closed on mismatched publication residue', async () => {
-    await withWorkspace(async (root) => {
-      const residue = await createPublicationResidue(root, 'mismatch', 'file.txt', 'payload');
-      await rm(residue.targetPath);
-      await writeFile(residue.targetPath, 'different inode', 'utf8');
-      await assert.rejects(
-        () => createArtifactStoreWriteAuthority(root).recover(),
-        /Artifact publication residue does not match canonical state/,
-      );
-      assert.equal(await readFile(residue.stagingPath, 'utf8'), 'payload');
-      assert.equal(await readFile(residue.targetPath, 'utf8'), 'different inode');
-    });
-  });
-
-  test('metadata fails closed on invalid path identities and bounded turn keys', async () => {
+  test('invalid path identities and turn keys cannot block later artifact writes', async () => {
     const invalidIdentities = [
       { field: 'id', value: 'a'.repeat(ARTIFACT_ENTITY_ID_MAX_CHARS + 1) },
       { field: 'id', value: '.' },
@@ -974,65 +861,104 @@ describe('SQLite Artifact store', () => {
     for (const { field, value } of invalidIdentities) {
       await withWorkspace(async (root) => {
         await writeArtifactMetadata(root, [recordWithIdentity(field, value)]);
-        await assert.rejects(
-          () => createArtifactStore(root).list('session-1', { includeDeleted: true }),
-          /Invalid artifact metadata record 1/,
+        const store = createArtifactStore(root);
+        assert.deepEqual(await listArtifacts(store, 'session-1'), []);
+        assert.equal(
+          (await store.create(artifactInput('replacement', 'kept', 1))).id,
+          'replacement',
         );
       });
     }
   });
 
-  test('purge-intent recovery fails closed on non-canonical artifact identities', async () => {
-    for (const artifactId of [
-      'a'.repeat(ARTIFACT_ENTITY_ID_MAX_CHARS + 1),
-      '.',
-      'artifact/id',
-      'artifact id',
-      'artifact\nid',
-    ]) {
-      await withWorkspace(async (root) => {
-        const intentPath = join(root, 'artifacts', '.artifact-purge-intent.json');
-        await mkdir(dirname(intentPath), { recursive: true });
-        await writeFile(
-          intentPath,
-          JSON.stringify({ schemaVersion: 1, artifactIds: [artifactId] }),
-          'utf8',
-        );
+  test('legacy purge-intent residue cannot block later writes', async () => {
+    await withWorkspace(async (root) => {
+      const intentPath = join(root, 'artifacts', '.artifact-purge-intent.json');
+      await mkdir(dirname(intentPath), { recursive: true });
+      await writeFile(intentPath, 'not valid json', 'utf8');
 
-        await assert.rejects(
-          () => createArtifactStoreWriteAuthority(root).recover(),
-          /Invalid artifact purge intent/,
-        );
-        assert.equal((await stat(intentPath)).isFile(), true);
-      });
-    }
+      const authority = createArtifactStoreWriteAuthority(root);
+      const record = await authority.store.create(artifactInput('after-retired-purge', 'kept', 1));
+
+      assert.equal(record.id, 'after-retired-purge');
+      assert.equal(await readFile(intentPath, 'utf8'), 'not valid json');
+    });
   });
 
-  test('soft delete tombstones bytes until idempotent purge', async () => {
+  test('user delete physically removes metadata and bytes idempotently', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
       const record = await store.create(artifactInput('artifact-1', '<h1>Report</h1>', 1));
 
-      await store.delete(record.id);
-      await store.delete(record.id);
-      assert.deepEqual(await store.list('session-1'), []);
-      assert.equal((await store.get(record.id))?.status, 'deleted');
-      assert.deepEqual(await store.readText(record.id), { ok: false, reason: 'deleted' });
-      assert.deepEqual(await store.readText(record.id, { includeDeleted: true }), {
-        ok: true,
-        text: '<h1>Report</h1>',
-      });
-      assert.equal(
-        await readFile(join(root, 'artifacts', record.relativePath), 'utf8'),
-        '<h1>Report</h1>',
-      );
-
-      await store.purge([record.id]);
-      await store.purge([record.id]);
-      assert.equal(await store.get(record.id), null);
+      await store.deleteUserArtifactInSession(record.sessionId, record.id);
+      await store.deleteUserArtifactInSession(record.sessionId, record.id);
+      assert.deepEqual(await listArtifacts(store, 'session-1'), []);
+      assert.equal(await getArtifact(store, record.id), null);
       await assert.rejects(() => stat(join(root, 'artifacts', record.relativePath)), {
         code: 'ENOENT',
       });
+    });
+  });
+
+  test('a partial purge retains its cleanup obligations across reopen', async (t) => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      const first = await authority.store.create(artifactInput('purge-first', 'first', 1));
+      const second = await authority.store.create(artifactInput('purge-second', 'second', 2));
+      const target = await fsPromises.realpath(join(root, 'artifacts', second.relativePath));
+      const originalRm = fsPromises.rm;
+      const injected = t.mock.method(
+        fsPromises,
+        'rm',
+        async (...[path, options]: Parameters<typeof originalRm>) => {
+          if (path === target)
+            throw Object.assign(new Error('injected unlink failure'), { code: 'EIO' });
+          return originalRm(path, options);
+        },
+      );
+      syncBuiltinESMExports();
+      try {
+        await assert.rejects(authority.store.purgeSessionArtifacts(first.sessionId), {
+          code: 'EIO',
+        });
+      } finally {
+        injected.mock.restore();
+        syncBuiltinESMExports();
+      }
+      authority.close();
+      const reopened = createArtifactStore(root);
+      assert.equal((await listArtifacts(reopened, first.sessionId)).length, 2);
+      if (process.platform !== 'win32') {
+        const originalOpen = fsPromises.open;
+        const syncFailure = t.mock.method(
+          fsPromises,
+          'open',
+          async (...args: Parameters<typeof originalOpen>) => {
+            if (args[0] === dirname(target)) {
+              throw Object.assign(new Error('injected directory sync failure'), { code: 'EIO' });
+            }
+            return originalOpen(...args);
+          },
+        );
+        syncBuiltinESMExports();
+        try {
+          // The second attempt sees no payloads, but still owes the directory sync.
+          for (let attempt = 0; attempt < 2; attempt++) {
+            await assert.rejects(reopened.purgeSessionArtifacts(first.sessionId), { code: 'EIO' });
+            assert.equal((await listArtifacts(reopened, first.sessionId)).length, 2);
+          }
+        } finally {
+          syncFailure.mock.restore();
+          syncBuiltinESMExports();
+        }
+      }
+      await reopened.purgeSessionArtifacts(first.sessionId);
+      assert.deepEqual(await listArtifacts(reopened, first.sessionId), []);
+      for (const record of [first, second]) {
+        await assert.rejects(stat(join(root, 'artifacts', record.relativePath)), {
+          code: 'ENOENT',
+        });
+      }
     });
   });
 
@@ -1064,15 +990,18 @@ describe('SQLite Artifact store', () => {
 
         const store = createArtifactStore(root);
         await assert.rejects(
-          () => store.purge([safeRecord.id, escapedRecord.id]),
+          () => store.deleteUserArtifactInSession(escapedRecord.sessionId, escapedRecord.id),
           /outside the artifact root/,
         );
 
         assert.equal(await readFile(externalPath, 'utf8'), 'external');
         assert.equal(await readFile(join(artifactRoot, safeRecord.relativePath), 'utf8'), 'safe');
         assert.equal(await readFile(metadataPath, 'utf8'), metadataBefore);
-        assert.equal((await store.get(safeRecord.id))?.id, safeRecord.id);
-        assert.equal((await store.get(escapedRecord.id))?.id, escapedRecord.id);
+        assert.equal((await getArtifact(store, safeRecord.id))?.id, safeRecord.id);
+        assert.equal(
+          (await getArtifact(store, escapedRecord.id, escapedRecord.sessionId))?.id,
+          escapedRecord.id,
+        );
       });
     } finally {
       await rm(outsideRoot, { recursive: true, force: true });
@@ -1097,11 +1026,11 @@ describe('SQLite Artifact store', () => {
       await writeArtifactMetadata(root, [record]);
 
       const store = createArtifactStore(root);
-      await store.purge([record.id]);
+      await store.deleteUserArtifactInSession(record.sessionId, record.id);
 
       assert.equal(await readFile(targetPath, 'utf8'), 'keep target');
       await assert.rejects(() => stat(linkPath), { code: 'ENOENT' });
-      assert.equal(await store.get(record.id), null);
+      assert.equal(await getArtifact(store, record.id), null);
     });
   });
 
@@ -1131,12 +1060,15 @@ describe('SQLite Artifact store', () => {
       assert.equal(firstStat.ino, secondStat.ino);
 
       const store = createArtifactStore(root);
-      await store.purge([first.id]);
+      await store.deleteUserArtifactInSession(first.sessionId, first.id);
 
       await assert.rejects(() => stat(firstPath), { code: 'ENOENT' });
       assert.equal(await readFile(secondPath, 'utf8'), 'shared bytes');
-      assert.equal((await store.get(second.id))?.id, second.id);
-      assert.deepEqual(await store.readText(second.id), { ok: true, text: 'shared bytes' });
+      assert.equal((await getArtifact(store, second.id))?.id, second.id);
+      assert.deepEqual(await readArtifactText(store, second.id), {
+        ok: true,
+        text: 'shared bytes',
+      });
     });
   });
 
@@ -1166,9 +1098,12 @@ describe('SQLite Artifact store', () => {
       await writeArtifactMetadata(root, [lower, upper]);
 
       const store = createArtifactStore(root);
-      await assert.rejects(() => store.purge([lower.id]), /path is still referenced/);
+      await assert.rejects(
+        () => store.deleteUserArtifactInSession(lower.sessionId, lower.id),
+        /path is still referenced/,
+      );
       assert.equal(await readFile(upperPath, 'utf8'), 'shared bytes');
-      assert.equal((await store.get(upper.id))?.status, 'live');
+      assert.equal((await getArtifact(store, upper.id))?.id, upper.id);
     });
   });
 
@@ -1201,102 +1136,42 @@ describe('SQLite Artifact store', () => {
       await writeArtifactMetadata(root, [lower, upper]);
 
       const store = createArtifactStore(root);
-      await assert.rejects(() => store.purge([lower.id]), /path is still referenced/);
+      await assert.rejects(
+        () => store.deleteUserArtifactInSession(lower.sessionId, lower.id),
+        /path is still referenced/,
+      );
 
-      assert.deepEqual(await store.readText(upper.id), { ok: true, text: 'shared bytes' });
+      assert.deepEqual(await readArtifactText(store, upper.id), { ok: true, text: 'shared bytes' });
       assert.equal((await lstat(lowerPath)).isSymbolicLink(), true);
       assert.equal((await lstat(upperPath)).isSymbolicLink(), true);
       assert.equal(await readFile(targetPath, 'utf8'), 'shared bytes');
     });
   });
 
-  test('startup recovery completes purge after payload removal but before metadata commit', async () => {
-    await withWorkspace(async (root) => {
-      const authority = createArtifactStoreWriteAuthority(root);
-      const store = authority.store;
-      await authority.recover();
-      const record = await store.create(artifactInput('purge-retry', 'remove me', 1));
-      const payloadPath = join(root, 'artifacts', record.relativePath);
-      const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
-      const purgeIntentPath = join(root, 'artifacts', '.artifact-purge-intent.json');
-      await rm(payloadPath);
-      await writeFile(
-        purgeIntentPath,
-        JSON.stringify({ schemaVersion: 1, artifactIds: [record.id] }),
-        'utf8',
-      );
-      await assert.rejects(() => stat(payloadPath), { code: 'ENOENT' });
-      assert.equal((await store.get(record.id))?.id, record.id);
-      assert.deepEqual(JSON.parse(await readFile(purgeIntentPath, 'utf8')), {
-        schemaVersion: 1,
-        artifactIds: [record.id],
-      });
-      await assert.rejects(
-        () => store.create(artifactInput('same-instance-blocked', 'blocked', 2)),
-        /Artifact write recovery is required/,
-      );
-
-      await authority.recover();
-      await authority.recover();
-
-      assert.equal(await store.get(record.id), null);
-      await assert.rejects(() => stat(metadataPath), { code: 'ENOENT' });
-      await assert.rejects(() => stat(purgeIntentPath), { code: 'ENOENT' });
-      await store.purge([record.id]);
-
-      await writeFile(
-        purgeIntentPath,
-        JSON.stringify({ schemaVersion: 1, artifactIds: [record.id] }),
-        'utf8',
-      );
-      await createArtifactStoreWriteAuthority(root).recover();
-      await assert.rejects(() => stat(metadataPath), { code: 'ENOENT' });
-      await assert.rejects(() => stat(purgeIntentPath), { code: 'ENOENT' });
-    });
-  });
-
-  test('self-managed SQLite stores recover an interrupted purge before the next write', async () => {
-    await withWorkspace(async (root) => {
-      const store = createArtifactStore(root);
-      const record = await store.create(artifactInput('interrupted-purge', 'remove me', 1));
-      await rm(join(root, 'artifacts', record.relativePath));
-      await writeFile(
-        join(root, 'artifacts', '.artifact-purge-intent.json'),
-        JSON.stringify({ schemaVersion: 1, artifactIds: [record.id] }),
-        'utf8',
-      );
-
-      const reopened = createArtifactStore(root);
-      const next = await reopened.create(artifactInput('after-recovery', 'kept', 2));
-      assert.equal(next.id, 'after-recovery');
-      assert.equal(await reopened.get(record.id), null);
-      await assert.rejects(() => stat(join(root, 'artifacts', '.artifact-purge-intent.json')), {
-        code: 'ENOENT',
-      });
-    });
-  });
-
-  test('durable attachment reads authenticate the owning session and reject tombstoned bytes', async () => {
+  test('durable attachment reads report physically deleted bytes as missing', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
       const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
       await store.create({ ...artifactInput('image', png, 1), name: 'image.png', kind: 'image' });
-      await store.delete('image');
+      await store.deleteUserArtifactInSession('session-1', 'image');
 
-      assert.deepEqual(await store.readBinary('image'), { ok: false, reason: 'deleted' });
+      assert.deepEqual(await readArtifactBinary(store, 'image'), {
+        ok: false,
+        reason: 'not_found',
+      });
       assert.deepEqual(
         await store.readDurableAttachmentBinary({
           artifactId: 'image',
           sessionId: 'other-session',
         }),
-        { ok: false, reason: 'session_mismatch' },
+        { ok: false, reason: 'not_found' },
       );
       assert.deepEqual(
         await store.readDurableAttachmentBinary({
           artifactId: 'image',
           sessionId: 'session-1',
         }),
-        { ok: false, reason: 'deleted' },
+        { ok: false, reason: 'not_found' },
       );
     });
   });
@@ -1312,8 +1187,8 @@ describe('SQLite Artifact store', () => {
         name: 'unknown.bin',
       });
 
-      assert.deepEqual(await store.readText('large'), { ok: false, reason: 'too_large' });
-      assert.deepEqual(await store.readBinary('unknown'), {
+      assert.deepEqual(await readArtifactText(store, 'large'), { ok: false, reason: 'too_large' });
+      assert.deepEqual(await readArtifactBinary(store, 'unknown'), {
         ok: false,
         reason: 'unsupported_mime',
       });
@@ -1331,12 +1206,16 @@ describe('SQLite Artifact store', () => {
         name: 'boundary.txt',
         kind: 'file',
         content: 'boundary',
+        source: 'tool_result',
         now: 1,
       });
 
       assert.equal(record.id.length, ARTIFACT_ENTITY_ID_MAX_CHARS);
-      assert.deepEqual(await createArtifactStore(root).get(boundaryId), record);
-      assert.deepEqual(await createArtifactStore(root).list(boundaryId), [record]);
+      assert.deepEqual(
+        await getArtifact(createArtifactStore(root), boundaryId, boundaryId),
+        record,
+      );
+      assert.deepEqual(await listArtifacts(createArtifactStore(root), boundaryId), [record]);
     });
   });
 
@@ -1430,7 +1309,7 @@ describe('SQLite Artifact store', () => {
           }),
           { ok: false, reason: 'not_allowed' },
         );
-        assert.deepEqual(await createArtifactStore(root).readText(record.id), {
+        assert.deepEqual(await readArtifactText(createArtifactStore(root), record.id), {
           ok: false,
           reason: 'not_allowed',
         });
@@ -1491,7 +1370,7 @@ function artifactInput(id: string, content: string | Uint8Array, now: number) {
     name: `${id}.txt`,
     kind: 'file' as const,
     content,
-    source: 'fixture' as const,
+    source: 'tool_result' as const,
     now,
   };
 }
@@ -1526,8 +1405,7 @@ function canonicalRecord(input: {
     kind: 'file',
     relativePath: `${input.sessionId}/${input.id}-${input.name}`,
     sizeBytes: input.sizeBytes,
-    source: 'fixture',
-    status: 'live',
+    source: 'tool_result',
   };
 }
 
@@ -1551,7 +1429,7 @@ async function writeArtifactMetadata(
 ): Promise<string> {
   const repository = createSqliteArtifactMetadataRepository(root);
   try {
-    repository.replaceAll(records);
+    repository.applyChanges({ upserts: records });
   } finally {
     repository.close();
   }

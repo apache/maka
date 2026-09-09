@@ -95,7 +95,7 @@ hook/filter/submodule/LFS，也不接入 T1/T2。
   process-crash 自动恢复或断电恢复；
 - Windows 保留 Git tree 中的 executable bit，不把它映射成 ACL 权威。
 
-上述规则是 portable lexical materialization policy v2。它不证明 Windows path-length、8.3 alias 或
+上述规则是 portable lexical materialization policy v3。它不证明 Windows path-length、8.3 alias 或
 目标 volume 的大小写行为；这些能力必须由未来 projection owner 的
 `FilesystemMaterializationProfileV1` 在 fresh destination 上独立验证。v2 import 只验证 attributes
 语义并复制 immutable objects；真正 materialize 和 candidate 写回必须消费同一 policy，并对受支持文本

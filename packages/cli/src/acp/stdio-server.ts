@@ -19,13 +19,19 @@
 
 import { Readable, Writable } from 'node:stream';
 import { ndJsonStream } from '@agentclientprotocol/sdk';
+import type { RuntimeHostConnection } from '@maka/runtime-host/client';
 import { createMakaAcpAgent } from './maka-acp-agent.js';
+import { AcpSessionRegistry } from './session-registry.js';
+import { connectRuntimeHostCliConnection } from '../runtime-host-cli-context.js';
 
 export interface MakaAcpStdioServerInput {
+  readonly workspaceRoot: string;
+  readonly clientDataRoot: string;
   readonly version: string;
 }
 
 export interface MakaAcpStdioServerDependencies {
+  readonly connectRuntimeHostCliConnection?: typeof connectRuntimeHostCliConnection;
   readonly stdin?: Readable;
   readonly stdout?: Writable;
 }
@@ -34,6 +40,23 @@ export async function runMakaAcpStdioServer(
   input: MakaAcpStdioServerInput,
   dependencies: MakaAcpStdioServerDependencies = {},
 ): Promise<number> {
+  const sessionRegistry = new AcpSessionRegistry({
+    connect: async (signal) => {
+      const context = await (
+        dependencies.connectRuntimeHostCliConnection ?? connectRuntimeHostCliConnection
+      )({
+        rootPath: input.workspaceRoot,
+        clientDataRoot: input.clientDataRoot,
+        signal,
+      });
+      return {
+        request: context.connection.request.bind(
+          context.connection,
+        ) as RuntimeHostConnection['request'],
+        close: () => context.close(),
+      };
+    },
+  });
   const stdin = dependencies.stdin ?? process.stdin;
   const stdout = dependencies.stdout ?? process.stdout;
   let stdioError: Error | undefined;
@@ -47,7 +70,10 @@ export async function runMakaAcpStdioServer(
       Writable.toWeb(stdout) as WritableStream<Uint8Array>,
       Readable.toWeb(stdin) as ReadableStream<Uint8Array>,
     );
-    const connection = createMakaAcpAgent({ version: input.version }).connect(stream);
+    const connection = createMakaAcpAgent({
+      version: input.version,
+      sessionRegistry,
+    }).connect(stream);
     await connection.closed;
     if (stdioError) {
       throw stdioError;
@@ -56,5 +82,6 @@ export async function runMakaAcpStdioServer(
   } finally {
     stdin.off('error', recordStdioError);
     stdout.off('error', recordStdioError);
+    await sessionRegistry.dispose();
   }
 }

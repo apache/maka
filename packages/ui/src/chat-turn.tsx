@@ -18,9 +18,8 @@
  */
 
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
-import { useMountedRef } from './use-mounted-ref.js';
 import { ICON_SIZE, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
-import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
+import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration, turnAbortStatusLabel } from './chat-display-helpers.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
@@ -67,10 +66,14 @@ import { Marker, markerVariants } from './primitives/chat.js';
 import { ToolTrow, toolTrowHasVisibleSpinner } from './tool-activity.js';
 import { formatBytes } from './tool-activity/preview-utils.js';
 import { useUiLocale } from './locale-context.js';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getConversationCopy } from './conversation-copy.js';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { InlineReferenceText } from './inline-reference.js';
+import { DirectoryReferenceChip } from './directory-reference-chip.js';
 import { redactSecrets } from './redact.js';
+import { useAttachmentImageSource } from './attachment-image.js';
+import { resolvePreviewKind } from './artifact-preview-registry.js';
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -89,19 +92,6 @@ export function LocalizedChatMessage({
   );
 }
 
-/**
- * Injected host capability that reads a session attachment's bytes. @maka/ui is
- * host-agnostic: it never reaches into the desktop preload or any other host
- * global. The desktop renderer threads its attachment reader through this prop;
- * non-desktop hosts (Storybook, tests, a future web shell) can omit it or supply
- * their own reader,
- * in which case an image attachment stays in its pending skeleton.
- */
-export type ReadAttachmentBytes = (
-  sessionId: string,
-  relativePath: string,
-) => Promise<{ ok: true; base64: string; mimeType: string } | { ok: false }>;
-
 function legacySentSkillTokens(text: string) {
   const values = new Set(
     [...text.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))].map((match) => match[0]),
@@ -109,32 +99,27 @@ function legacySentSkillTokens(text: string) {
   return [...values].map((value) => ({ value, label: value, variant: 'neutral' as const }));
 }
 
-function AttachmentImage(props: { attachment: AttachmentRef; onReadAttachmentBytes?: ReadAttachmentBytes }) {
-  const [src, setSrc] = useState<string | undefined>(undefined);
-  const { onReadAttachmentBytes } = props;
-  useEffect(() => {
-    if (props.attachment.ref.kind !== 'session_file') return;
-    // No host reader (non-desktop host, or the capability wasn't wired): leave the
-    // thumbnail in its pending skeleton rather than reaching into a host global.
-    if (!onReadAttachmentBytes) return;
-    let cancelled = false;
-    onReadAttachmentBytes(props.attachment.ref.sessionId, props.attachment.ref.relativePath)
-      .then((result) => {
-        if (cancelled || !result.ok) return;
-        setSrc(`data:${result.mimeType};base64,${result.base64}`);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [props.attachment, onReadAttachmentBytes]);
+function AttachmentImage(props: { attachment: AttachmentRef }) {
+  const preview = resolvePreviewKind({
+    name: props.attachment.name,
+    kind: 'image',
+    mimeType: props.attachment.mimeType,
+    sizeBytes: props.attachment.bytes,
+  });
+  const ref = preview.kind === 'image' && props.attachment.ref.kind === 'session_file'
+    ? {
+        sessionId: props.attachment.ref.sessionId,
+        artifactId: props.attachment.ref.relativePath,
+      }
+    : undefined;
+  const src = useAttachmentImageSource(ref);
   if (!src) {
     return (
       <Thumbnail
         className="maka-user-attachment-thumbnail"
         alt={props.attachment.name}
         label={props.attachment.name}
-        isLoading
+        isLoading={preview.kind === 'image'}
       />
     );
   }
@@ -170,8 +155,8 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   ts?: number;
   attachments?: readonly AttachmentRef[];
   quotes?: readonly QuoteRef[];
+  directoryReferences?: readonly import('@maka/core/events').DirectoryReference[];
   inlineReferences?: readonly InlineReference[];
-  onReadAttachmentBytes?: ReadAttachmentBytes;
   /** When set on a user message, show an edit affordance that starts a revision draft. */
   onEditUserMessage?: () => void;
   editDisabled?: boolean;
@@ -241,6 +226,13 @@ const UserMessageBody = memo(function UserMessageBody(props: {
           ))}
         </HStack>
       ) : null}
+      {props.directoryReferences?.length ? (
+        <HStack gap={1} wrap="wrap" maxWidth="100%">
+          {props.directoryReferences.map((reference, index) => (
+            <DirectoryReferenceChip key={index} reference={reference} />
+          ))}
+        </HStack>
+      ) : null}
       {props.quotes && props.quotes.length > 0 ? (
         <div className="maka-user-quotes">
           {props.quotes.map((quote, index) => (
@@ -254,7 +246,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
             <AttachmentImage
               key={`${attachment.name}-${index}`}
               attachment={attachment}
-              onReadAttachmentBytes={props.onReadAttachmentBytes}
             />
           ))}
         </HStack>
@@ -277,7 +268,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
 export function TransientUserMessage(props: {
   message: TransientUserMessageProjection;
-  onReadAttachmentBytes?: ReadAttachmentBytes;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const message = props.message;
@@ -294,9 +284,17 @@ export function TransientUserMessage(props: {
           ts={message.ts}
           attachments={message.attachments}
           quotes={message.quotes}
+          directoryReferences={message.directoryReferences}
           inlineReferences={message.inlineReferences}
-          onReadAttachmentBytes={props.onReadAttachmentBytes}
         />
+        {message.deliveryStatus && (
+          <div className="maka-message-delivery" role="status" title={message.deliveryDetail}>
+            <span>{message.deliveryStatus}</span>
+            {message.deliveryActions?.map((action) => (
+              <UiButton key={action.label} label={action.label} variant="ghost" size="sm" onClick={action.onClick} />
+            ))}
+          </div>
+        )}
       </LocalizedChatMessage>
     </div>
   );
@@ -308,7 +306,7 @@ function accessibleTextExcerpt(text: string): string {
   return normalized.length > 48 ? `${normalized.slice(0, 47)}…` : normalized;
 }
 
-function accessibleActionContext(text: string, ts: number | undefined, locale: 'zh' | 'en'): string {
+function accessibleActionContext(text: string, ts: number | undefined, locale: UiLocale): string {
   return [
     accessibleTextExcerpt(text),
     ts === undefined ? undefined : formatAbsoluteTimestamp(ts, locale),
@@ -456,13 +454,6 @@ export const TurnView = memo(function TurnView(props: {
     initialLiveContent?: ReadonlyMap<string, string>;
   };
   /**
-   * Injected host reader for image attachment bytes. Threaded down to the user
-   * message's `AttachmentImage` thumbnails; absent on non-desktop hosts, where
-   * image thumbnails stay in their pending skeleton. Keeps @maka/ui from
-   * reaching into the desktop preload directly.
-   */
-  onReadAttachmentBytes?: ReadAttachmentBytes;
-  /**
    * Open a linked subagent child session in the main chat column. Threaded into
    * linked subagent tool rows; omitted when the host has no navigation.
    */
@@ -579,18 +570,19 @@ export const TurnView = memo(function TurnView(props: {
             ts={turn.user.ts}
             attachments={turn.user.attachments}
             quotes={turn.user.quotes}
+            directoryReferences={turn.user.directoryReferences}
             inlineReferences={turn.user.inlineReferences}
-            onReadAttachmentBytes={props.onReadAttachmentBytes}
             onEditUserMessage={
               props.onEditUserMessage && !turn.user.hostOrigin
                 ? () => props.onEditUserMessage?.(turn.turnId)
                 : undefined
             }
-            // A revision restages neither attachments nor quotes, so a turn
-            // carrying either can't be edited without silently dropping the
-            // reference the answer was grounded in.
+            // A revision restages neither attachments, directory references,
+            // nor quotes, so a turn carrying any of them can't be edited
+            // without silently dropping context the answer was grounded in.
             editDisabled={
               (turn.user.attachments?.length ?? 0) > 0 ||
+              (turn.user.directoryReferences?.length ?? 0) > 0 ||
               (turn.user.quotes?.length ?? 0) > 0 ||
               props.editUserMessageTransformed === true ||
               props.editUserMessageDisabled === true ||
@@ -600,11 +592,13 @@ export const TurnView = memo(function TurnView(props: {
             editDisabledReason={
               (turn.user.attachments?.length ?? 0) > 0
                 ? copy.editMessageDisabledAttachments
-                : (turn.user.quotes?.length ?? 0) > 0
-                  ? copy.editMessageDisabledQuotes
-                  : props.editUserMessageTransformed
-                    ? copy.editMessageDisabledTransformedText
-                    : copy.editMessageDisabledRunning
+                : (turn.user.directoryReferences?.length ?? 0) > 0
+                  ? copy.editMessageDisabledDirectoryReferences
+                  : (turn.user.quotes?.length ?? 0) > 0
+                    ? copy.editMessageDisabledQuotes
+                    : props.editUserMessageTransformed
+                      ? copy.editMessageDisabledTransformedText
+                      : copy.editMessageDisabledRunning
             }
           />
 
@@ -614,9 +608,17 @@ export const TurnView = memo(function TurnView(props: {
         <ChatSystemMessage
           key={note.id}
           className="maka-chat-system-message"
-          aria-label={copy.systemAriaLabel}
+          variant={note.compactionState === "running" || note.compactionState === "compacted" ? "divider" : "default"}
+          data-compaction-state={note.compactionState}
+          aria-label={note.compactionState === "running" ? note.text : copy.systemAriaLabel}
         >
-          {note.text}
+          {note.compactionState ? (
+            <span className="maka-compaction-status">
+              {note.compactionState === "running" && <Spinner size="sm" shade="subtle" aria-hidden="true" />}
+              <span>{note.text}</span>
+              {note.compactionState === "running" && <TurnElapsedTime startedAt={turn.startedAt} />}
+            </span>
+          ) : note.text}
         </ChatSystemMessage>
       ))}
       {conversationSegments.map((segment, segmentIndex) => {
@@ -635,8 +637,8 @@ export const TurnView = memo(function TurnView(props: {
                 ts={message.ts}
                 attachments={message.attachments}
                 quotes={message.quotes}
+                directoryReferences={message.directoryReferences}
                 inlineReferences={message.inlineReferences}
-                onReadAttachmentBytes={props.onReadAttachmentBytes}
               />
             </LocalizedChatMessage>
           );
@@ -701,12 +703,12 @@ export const TurnView = memo(function TurnView(props: {
                   container="section"
                   className="maka-turn-failed-banner"
                   title={props.failedReasonLabel}
-                  {...(props.safeResumeAction?.detail ?? props.failedExecutionStateLabel
-                    ? {
-                        description:
-                          props.safeResumeAction?.detail ?? props.failedExecutionStateLabel,
-                      }
-                    : {})}
+                  description={
+                    <>
+                      {props.safeResumeAction?.detail ?? props.failedExecutionStateLabel}
+                      {!turn.failureMessage && <span className="maka-turn-failure-unavailable">{copy.failureDetailsUnavailable}</span>}
+                    </>
+                  }
                   {...(props.safeResumeAction
                     ? {
                         endContent: (
@@ -724,7 +726,11 @@ export const TurnView = memo(function TurnView(props: {
                         ),
                       }
                     : {})}
-                />
+                >
+                  {turn.failureMessage && (
+                    <pre className="maka-turn-failure-detail">{turn.failureMessage}</pre>
+                  )}
+                </Banner>
               )}
               {ownsTurnChrome && props.liveStreaming && (
                 <>
@@ -902,52 +908,13 @@ function TurnFooterActions(props: {
   assistantText?: string;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  const [copyPhase, setCopyPhase] = useState<ClipboardCopyPhase | null>(null);
-  const copyPendingRef = useRef(false);
-  const copyResetTimerRef = useRef<number | null>(null);
-  const copyMountedRef = useMountedRef();
-
-  function clearCopyResetTimer() {
-    if (copyResetTimerRef.current === null) return;
-    window.clearTimeout(copyResetTimerRef.current);
-    copyResetTimerRef.current = null;
-  }
-
-  useEffect(() => {
-    return () => {
-      clearCopyResetTimer();
-    };
-  }, []);
-
-  function settleCopy(phase: Exclude<ClipboardCopyPhase, 'pending'>) {
-    if (!copyMountedRef.current) return;
-    setCopyPhase(phase);
-    copyResetTimerRef.current = window.setTimeout(() => {
-      if (!copyMountedRef.current) return;
-      setCopyPhase(null);
-      copyResetTimerRef.current = null;
-    }, 1400);
-  }
-
-  async function copyAssistantText() {
-    if (!props.assistantText || copyPendingRef.current) return;
-    copyPendingRef.current = true;
-    clearCopyResetTimer();
-    setCopyPhase('pending');
-    try {
-      await navigator.clipboard.writeText(props.assistantText);
-      settleCopy('copied');
-    } catch {
-      settleCopy('failed');
-    } finally {
-      copyPendingRef.current = false;
-    }
-  }
+  const copyFeedback = useClipboardCopyFeedback(1400, { redact: false });
+  const copyPhase = copyFeedback.phaseFor('answer');
 
   async function handleClick(action: TurnFooterActionMeta) {
     if (!action.enabled) return;
     if (action.id === 'copy') {
-      await copyAssistantText();
+      await copyFeedback.copy('answer', props.assistantText ?? '');
       return;
     }
     if (action.id === 'info') return; // tooltip-only meta display, no action
@@ -1013,22 +980,17 @@ const STATUS_FOOTER_ICON: Record<TurnFooterActionMeta['id'], ReactNode> = {
   info: <Info size={ICON_SIZE.control} aria-hidden="true" />,
 };
 
-/** How long one working phrase holds before the next fades in. */
-const WORKING_PHRASE_INTERVAL_MS = 20_000;
-/** Must match the `.maka-turn-working-phrase` transition duration in styles.css. */
-const WORKING_PHRASE_FADE_MS = 300;
 const ELAPSED_TICK_MS = 1_000;
 
 /**
- * The live turn's running status line: a working phrase that rotates every 20s,
- * and the elapsed clock beside it.
+ * The live turn's running status line: a truthful activity label and the
+ * elapsed clock beside it.
  *
- * The elapsed time is what actually carries the message — it is the only part
- * that proves the harness and the model are still moving, and it is why the
- * phrase pool can afford to be playful rather than informative. Both are driven
- * by the clock, so this component owns its own timers and re-renders only
- * itself: hoisting the seconds into the turn (let alone the shell) would repaint
- * the whole transcript once a second while an answer streams into it.
+ * A quiet provider request does not prove that the model is actively making
+ * semantic progress. The default therefore says only that Maka is waiting for
+ * model output. A concrete tool label can replace it when Runtime has direct
+ * evidence of work in flight. The clock is local presentation state so ticking
+ * it does not repaint the whole transcript.
  *
  * `startedAt` is the turn's own first-message timestamp, so the clock measures
  * the wait the user actually experienced — from pressing send, not from
@@ -1042,15 +1004,34 @@ export function TurnRunningStatus(props: {
   activityLabel?: string;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  const phrases = copy.workingPhrases;
+
+  return (
+    <div
+      className="maka-turn-processing"
+      role="status"
+      aria-label={props.activityLabel ?? copy.awaitingModelOutput}
+    >
+      {props.showSpinner !== false && (
+        <Spinner size="md" shade="subtle" aria-hidden="true" />
+      )}
+      {/* Name the activity once; the clock must not announce each second. */}
+      <span className="maka-turn-indicator-text" aria-hidden="true">
+        <span className="maka-turn-status-label">
+          {props.activityLabel ?? copy.awaitingModelOutput}
+        </span>
+        <TurnElapsedTime startedAt={props.startedAt} separator />
+      </span>
+    </div>
+  );
+}
+
+function TurnElapsedTime(props: { startedAt?: number; separator?: boolean }) {
   const { startedAt } = props;
-  const rootRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLSpanElement>(null);
   // Undefined until an effect measures it, which is also what keeps a static
   // render deterministic: the clock is a client-only value, so server markup
   // and the first paint carry the phrase alone.
   const [elapsedMs, setElapsedMs] = useState<number | undefined>(undefined);
-  const [phraseIndex, setPhraseIndex] = useState(0);
-  const [phraseFading, setPhraseFading] = useState(false);
 
   useEffect(() => {
     // Frozen (fixture / reduced motion) the clock is dropped rather than
@@ -1065,47 +1046,13 @@ export function TurnRunningStatus(props: {
     return () => window.clearInterval(tick);
   }, [startedAt]);
 
-  useEffect(() => {
-    if (phrases.length < 2 || !isTimeDrivenMotionEnabled(rootRef.current)) return;
-    let fadeTimer: number | undefined;
-    const rotate = window.setInterval(() => {
-      setPhraseFading(true);
-      fadeTimer = window.setTimeout(() => {
-        setPhraseIndex((current) => (current + 1) % phrases.length);
-        setPhraseFading(false);
-      }, WORKING_PHRASE_FADE_MS);
-    }, WORKING_PHRASE_INTERVAL_MS);
-    return () => {
-      window.clearInterval(rotate);
-      if (fadeTimer !== undefined) window.clearTimeout(fadeTimer);
-    };
-  }, [phrases.length]);
-
   return (
-    <div
-      className="maka-turn-processing"
-      role="status"
-      aria-label={props.activityLabel ?? copy.processing}
-      ref={rootRef}
-    >
-      {props.showSpinner !== false && (
-        <Spinner size="md" shade="subtle" aria-hidden="true" />
-      )}
-      {/* Every visible token here moves on the clock. Announcing either would
-          talk over the answer being streamed beside it, so the row's label is
-          its whole accessible name and the text is decoration. */}
-      <span className="maka-turn-indicator-text" aria-hidden="true">
-        <span className="maka-turn-working-phrase" data-fading={phraseFading || undefined}>
-          {props.activityLabel ?? phrases[phraseIndex] ?? copy.processing}
-        </span>
-        {elapsedMs !== undefined && (
-          <>
-            <span className="maka-turn-status-separator">·</span>
-            <span className="maka-turn-elapsed">{formatTurnDuration(elapsedMs)}</span>
-          </>
-        )}
-      </span>
-    </div>
+    <span className="maka-turn-elapsed" aria-hidden="true" ref={rootRef}>
+      {elapsedMs !== undefined && <>
+        {props.separator && <span className="maka-turn-status-separator">·</span>}
+        {formatTurnDuration(elapsedMs)}
+      </>}
+    </span>
   );
 }
 
@@ -1226,6 +1173,7 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
   return (
     <ChatMessageBubble
       variant="ghost"
+      data-maka-transcript-boundary="default"
       // Astryx's own seam for a bubble that spans the message column: it sets
       // the width and drops the default max(80%, 280px) cap in one prop.
       width="100%"
@@ -1330,7 +1278,10 @@ function ProcessingBlock(props: {
 }) {
   const { entries } = props;
   return (
-    <div className="maka-processing-sequence">
+    <div
+      className="maka-processing-sequence"
+      data-maka-transcript-boundary="large"
+    >
       {entries.map((entry, index) => (
         <TurnTimelineEntry
           key={timelineEntryKey(entry, index)}
@@ -1350,6 +1301,7 @@ function DeepThinking(props: { text: string; live: boolean; settledText?: string
   return (
     <ChatReasoning
       className="maka-deep-thinking"
+      data-maka-transcript-boundary="large"
       label={label}
       previewText={reasoningPreviewText(props.text)}
       isStreaming={props.live}

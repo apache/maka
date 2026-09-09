@@ -363,11 +363,23 @@ export function createHostOAuthModelFetch(input: {
       sessionId: input.sessionId,
       modelId: input.modelId,
       fetchFn: authenticatedFetch,
-      ...(input.binding.forceRefresh &&
-      (input.binding.providerType === 'openai-codex' || input.binding.providerType === 'xai-oauth')
+      ...(input.binding.forceRefresh
         ? {
-            refreshOAuthAccessToken: async () =>
-              (tokens = await input.binding.forceRefresh!()).access_token,
+            refreshOAuthAccessToken: async (signal) => {
+              const rejected = tokens.access_token;
+              const refreshing = input.binding.forceRefresh!();
+              // The refresh is left to settle on its own: it may already have
+              // spent the grant, and a CAS-persisted newer generation is worth
+              // keeping even though this request no longer wants it. What the
+              // caller must not do is wait out its timeout after giving up.
+              observeSettled(refreshing);
+              tokens = await waitForCaller(refreshing, signal);
+              // A record with no refresh grant behind it (a GitHub account
+              // token GitHub declared no lifetime for) resolves to the token
+              // the provider just rejected. Replaying it would spend a second
+              // request to be told the same thing.
+              return tokens.access_token === rejected ? null : tokens.access_token;
+            },
           }
         : {}),
     });
@@ -380,6 +392,11 @@ function effectiveRequestSignal(
   init: Parameters<typeof fetch>[1],
 ): AbortSignal | null | undefined {
   return init?.signal !== undefined ? init.signal : url instanceof Request ? url.signal : undefined;
+}
+
+/** Keeps a promise the caller stopped awaiting from surfacing as unhandled. */
+function observeSettled(pending: Promise<unknown>): void {
+  void pending.catch(() => undefined);
 }
 
 async function waitForCaller<T>(pending: Promise<T>, signal?: AbortSignal | null): Promise<T> {

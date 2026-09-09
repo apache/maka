@@ -325,7 +325,7 @@ guards: isValidPluginFolderName（无 ../\/前导.）; BLOCKED{员工管理,招�
 2. **磁盘 artifact + JSON 指针 fan-in（两家都用）**：member 把重产物落盘，只回小 JSON 指针，orchestrator 上下文保持极小。maka 实现专家团时必须这样，否则 lead 上下文爆炸。
 
 ## C3. maka 落地要点（详见 [expert-team-plan.md](expert-team-plan.md)）
-- **单专家** = `mode:expert:<id>` 标签 + 人格 fragment（照抄 Deep Research 的 `explore-agent.ts` 路径），人格经 `childInstruction` 边界注入（继承权限/隐私/工作区）。`defaultInitPrompt` 学 WorkBuddy 只 pre-fill composer（P0 简单）。
+- **单专家** = `mode:expert:<id>` 标签 + 人格 fragment（照抄 Deep Research 的 `deep-research.ts` 路径），人格经 `childInstruction` 边界注入（继承权限/隐私/工作区）。`defaultInitPrompt` 学 WorkBuddy 只 pre-fill composer（P0 简单）。
 - **专家团** = lead 用 `mode:expert:<teamId>` + orchestrator 人格，member 注册进 `agent-catalog.ts` 的 `BUILTIN_AGENT_DEFINITIONS`（各带窄 `tools`），lead 用现有 `agent_spawn`/`spawnChildAgent` 派生（星型，非隔离，单轮 fan-out + await fan-in，回指针）。**先不做 Teams mailbox**。
 - **专家中心** = 克隆 `skills-panel.tsx`（市场/内置/已安装）+ `managed-skill-sources.ts`（加 `sourceType:'remote'` 拉 COS 式 manifest，`contentSha256` 已就绪）。
 - **数字同事** = P2 持久化外壳（雇佣专家 + 昵称/头像/仓库/资料库/模型），IM 绑定/云端是最重的 P3+，需评估是否值得（WorkBuddy 靠云后端 + IM CLI 子进程，成本高）。

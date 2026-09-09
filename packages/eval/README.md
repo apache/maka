@@ -27,9 +27,51 @@ Experiment → Cells → Attempts → Results
        Runtime Host executes Maka subjects
 ```
 
+- [Architecture](#architecture)
+- [Experiment spec format](#experiment-spec-format)
+- [Running an evaluation](#running-an-evaluation)
+- [Extending: custom executors and subjects](#extending-custom-executors-and-subjects)
+- [Relay protocol](#relay-protocol)
+- [Docker harness profiles](#docker-harness-profiles)
+- [Egress audit and security model](#egress-audit-and-security-model)
+- [Troubleshooting](#troubleshooting)
+
+## Architecture
+
 An Experiment combines one benchmark, one executor, all subjects, all tasks, a repetition count, one shared budget, one verifier, and a frozen task-group concurrency limit. Cells are the Cartesian product `task × repetition × subject`. All subject arms in one task repetition start together; independent task groups run up to the declared limit. A repetition is a new experimental sample; an infrastructure retry appends a replacement attempt to the same cell; continuation remains internal to Runtime Host. Each subject declares only the credential environment names its cells receive.
 
-Run a fully expanded spec through the public CLI:
+The experiment directory contains the frozen `experiment.json` and append-only attempt records. There is no second mutable results file. A leftover `.writer.lock` means the previous writer did not complete; remove it only after proving that no writer process remains.
+
+The built-in Harbor and Pier executors use one relay Agent. The framework prepares the task environment, the relay invokes exactly one Eval subject from `Agent.run()`, and the framework runs its native verifier and finalizer. Harbor and Pier use separate, explicitly versioned Python environments because their Agent and task contracts differ.
+
+Maka subjects ask the Runtime Host client to run one owned execution in a dedicated Host root. Session, Turn, Goal and continuation semantics remain inside Runtime Host. External subjects declare a command and arguments, and may add non-secret environment values, target-to-source bindings for declared credentials, and an explicit result contract. Omitted credential bindings use declared names unchanged. The generic `exit-code` contract discards unstructured stdout and records null usage and cost. The structured `protocol-v1` contract is restricted to the bundled external wrapper so the shared relay can separate a bounded result frame from Harbor/Pier's merged process output; cohort-specific wrappers do not gain Runtime authority.
+
+The result kernel contains only score, normalized usage, attributable cost, duration, status, and artifacts. Specs carry every semantic setting; environment variables are reserved for credentials and machine-local paths.
+
+## Experiment spec format
+
+A spec decodes to the `ExperimentSpec` interface ([`experiment.ts:46-70`](src/experiment.ts)), validated field-by-field by `parseExperimentSpec` ([`spec.ts:22`](src/spec.ts)) — there is no external JSON-schema dependency; the decoder is hand-written and strict (unrecognized top-level keys are rejected).
+
+| Field | Type | Notes |
+|---|---|---|
+| `schemaVersion` | `'maka.eval.v1'` | Must match exactly; any other value throws `unsupported experiment schema`. |
+| `id` | `string` | Experiment identifier. |
+| `benchmark` | `{ id, version, config }` | `config` is an arbitrary JSON object. |
+| `executor` | `{ kind, config }` | `kind` selects the executor (e.g. `harbor`, `pier`); see [Running an evaluation](#running-an-evaluation). |
+| `execution` | `{ maxConcurrentTaskGroups }` | Optional; defaults to `{ maxConcurrentTaskGroups: 1 }` when omitted. |
+| `subjects` | `{ id, kind, credentials, config }[]` | `kind` is `'maka'` or `'external'`. At least one subject is required. |
+| `tasks` | `{ id, input, config }[]` | At least one task is required. |
+| `repetitions` | `number` | Positive integer sample count per cell. |
+| `budget` | `JsonObject` | Arbitrary JSON, interpreted by the executor/benchmark. |
+| `verifier` | `JsonObject` | Arbitrary JSON, interpreted by the benchmark's verifier. |
+
+The parsed spec is deep-frozen ([`spec.ts:71,146-152`](src/spec.ts)). `expandExperiment(spec)` ([`experiment.ts:84-101`](src/experiment.ts)) then produces the Cartesian product of cells, each identified as `${task.id}::${repetition}::${subject.id}`.
+
+The checked-in Terminal-Bench 2.1 four-arm cohort is `experiments/terminal-bench-2.1-deepseek-v4-flash-four-arm.json`. It freezes provider endpoints, framework version, container paths and read-only mount policy. Set each declared machine-path environment variable to its trusted prepared directory, and set the declared API-key credentials. Machine-local paths select artifacts; they do not alter experiment semantics and are not presented as a cryptographic identity scheme.
+
+## Running an evaluation
+
+`maka eval` is a subcommand of the main `maka` CLI (see [`packages/cli/src/cli-core.ts`](../cli/src/cli-core.ts)) — it is not a separate binary. Run a fully expanded spec through the public CLI:
 
 ```sh
 maka eval run experiment.json --out .maka-eval/run-001
@@ -39,17 +81,54 @@ Use `--cell <cell-id>` to replace one failed or indeterminate cell. The attempt 
 
 Before starting a trial, the public CLI validates the selected executor's machine paths, bundled relay files, pinned Harbor or Pier Python distribution, and Docker daemon availability for Docker environments. A missing or mismatched prerequisite is reported with the configured environment-variable name and expected framework version; the CLI does not start a trial or install external software. Subject-specific toolchain verification remains part of subject preparation and also completes before any trial starts.
 
-The built-in Harbor and Pier executors use one relay Agent. The framework prepares the task environment, the relay invokes exactly one Eval subject from `Agent.run()`, and the framework runs its native verifier and finalizer. Harbor and Pier use separate, explicitly versioned Python environments because their Agent and task contracts differ.
+## Extending: custom executors and subjects
 
-Maka subjects ask the Runtime Host client to run one owned execution in a dedicated Host root. Session, Turn, Goal and continuation semantics remain inside Runtime Host. External subjects declare a command and arguments, and may add non-secret environment values, target-to-source bindings for declared credentials, and an explicit result contract. Omitted credential bindings use declared names unchanged. The generic `exit-code` contract discards unstructured stdout and records null usage and cost. The structured `protocol-v1` contract is restricted to the bundled external wrapper so the shared relay can separate a bounded result frame from Harbor/Pier's merged process output; cohort-specific wrappers do not gain Runtime authority.
+An executor decides how one attempt runs; a subject decides how one cell's agent is invoked. Both are pluggable interfaces defined in [`runner.ts:74-130`](src/runner.ts):
 
-The result kernel contains only score, normalized usage, attributable cost, duration, status, and artifacts. Specs carry every semantic setting; environment variables are reserved for credentials and machine-local paths.
+```ts
+export interface SubjectAdapter {
+  readonly kind: ExperimentCell['subject']['kind'];
+  validate?(cell: ExperimentCell): void;
+  prepare?(input: { readonly spec: ExperimentSpec; readonly cells: readonly ExperimentCell[] }): Promise<void>;
+  canReuse?(input: { readonly cell: ExperimentCell; readonly attempt: CellAttempt }): boolean;
+  execute(input: { readonly cell: ExperimentCell; readonly context: SubjectExecutionContext }): Promise<SubjectExecutionResult>;
+}
 
-The checked-in Terminal-Bench 2.1 four-arm cohort is `experiments/terminal-bench-2.1-deepseek-v4-flash-four-arm.json`. It freezes provider endpoints, framework version, container paths and read-only mount policy. Set each declared machine-path environment variable to its trusted prepared directory, and set the declared API-key credentials. Machine-local paths select artifacts; they do not alter experiment semantics and are not presented as a cryptographic identity scheme.
+export interface ExperimentExecutor {
+  readonly kind: string;
+  validate?(cell: ExperimentCell): void;
+  runAttempt(
+    input: { readonly cell: ExperimentCell; readonly subjectCredentialNames: readonly string[]; readonly signal?: AbortSignal },
+    operation: (attempt: { readonly context: SubjectExecutionContext; verify(): Promise<ExecutorVerification> }) => Promise<EvalResult>,
+  ): Promise<ExecutorAttemptOutcome>;
+}
+```
+
+The built-in Harbor and Pier executors are two instantiations of one generic implementation (`createHarborExecutor`/`createPierExecutor`, both delegating to `createHarnessExecutor(framework, config, specPath)` in [`harness-executor.ts:108-121`](src/harness-executor.ts)), parameterized by `HarnessFramework`. The built-in subjects are `createMakaSubjectAdapter()` ([`maka-subject.ts`](src/maka-subject.ts)) and `createExternalSubjectAdapter()` ([`external-subject.ts`](src/external-subject.ts)).
+
+To swap in a custom executor or subject set, pass overrides to `runMakaEvalCli` ([`cli.ts:36-42`](src/cli.ts)) rather than the CLI's default wiring:
+
+```ts
+export interface EvalCliDependencies {
+  readonly loadExecutor: (spec: ExperimentSpec, specPath: string) => ExperimentExecutor;
+  readonly subjects: readonly SubjectAdapter[];
+  readonly signal?: AbortSignal;
+  readonly stdout: (text: string) => void;
+  readonly stderr: (text: string) => void;
+}
+```
+
+Any object implementing `runAttempt`/`validate` (executor) or `execute`/`validate`/`prepare`/`canReuse` (subject) can be supplied this way — `prepare`, `canReuse`, and `validate` are all optional.
+
+## Relay protocol
+
+Harbor/Pier subprocess stdout is merged Docker stdout/stderr that can interleave, so a structured result cannot simply be parsed from the tail of the output. `writeRelayResult` ([`relay-result-frame.ts:24,34-43`](src/relay-result-frame.ts)) emits one line — `MAKA-EVAL-RESULT-V1 <token> <bytes> <sha256> <base64url payload>` — whose JSON payload is capped at 2 KiB and whose complete line stays below Linux `PIPE_BUF`, so the executor can extract a verified, size-capped result frame out of otherwise-unstructured merged output. `takeRelayResultToken` consumes a one-time environment-variable token (`MAKA_EVAL_RESULT_TOKEN`) so the frame can be authenticated per-attempt.
 
 The single-arm DeepSeek Harness cohort is `experiments/terminal-bench-2.1-deepseek-v4-flash-deepseek-harness.json`. The harness ships no benchmark runner: its `BENCHMARK.md` names the checked-in `examples/jsonrpc-agent` minimal composition and asks for one workspace and session id per task. `harbor/deepseek-harness-profile/` is that composition, carried as a complete harness profile whose manifest declares no bundles. Because the tree is composed over an empty entry list, every entry the model can observe is named in one file, an upstream bundle gaining a plugin cannot widen this arm's tool surface, and a missing service is a boot failure rather than a silent downgrade. The composition was validated against upstream request-for-request: identical tool names, byte-identical tool schemas, byte-identical system prompt, identical message sequence. The one deviation, recorded in the file, is that reasoning is pinned to max because the adapter default resolves to `reasoning_effort=high` on the wire.
 
 Build that arm's toolchain with `node scripts/prepare-deepseek-harness-toolchain.mjs --out <dir> --write`, only from a complete Git checkout. The optional toolchain's runtime manifests and reviewed lockfile under `harbor/deepseek-harness-toolchain/` are intentionally excluded from ASF source archives because its external runtime dependency closure is not a source-release input. It runs inside a pinned `linux/amd64` container because the composition depends on `node-pty`, which publishes no Linux prebuild, and it copies that container's Node into the toolchain so the executed path resolves inside the mounted root. Dependencies are installed with `npm ci` from the reviewed lockfile in `harbor/deepseek-harness-toolchain/`, so a harness version does not silently mean two different trees. The recorded fingerprint is the digest of `checksums.sha256`, which lists every regular file the build put in the tree, and verification recomputes that digest from the manifest on disk rather than reading the value the tree reports for itself. The constant in `src/toolchain-verification.ts` therefore pins the manifest, and the manifest pins the content of every file it names. It does not pin the tree's closure: verification walks the manifest rather than the directory, so a file added to a mounted toolchain afterwards is neither named nor refused. That is the existing behaviour of `verifyToolchainDirectory` for all eight arms and belongs to it. Native modules are compiled during the build and need not come out byte-identical on another machine, so a rebuild can still produce a new fingerprint; `--write` re-pins it and verification fails closed until the two agree. `--out` is rebuilt from scratch: it must name a directory, and one that is either empty or a previous build of this toolchain.
+
+## Docker harness profiles
 
 `experiments/terminal-bench-2.1-deepseek-v4-flash-maka-vs-deepseek-harness.json` runs Maka and the harness arm in one task group, so each task starts one container of each at the same moment rather than comparing two runs on two occasions. Two properties of that spec do not follow from the framework and belong to whoever reads its results.
 
@@ -58,6 +137,12 @@ Pairing is not preserved. Task groups are an execution unit: cells are grouped b
 Both arms meet the same policy: `egressProxy` is executor configuration, subjects cannot override it, and no subject in that spec declares one. What that proves is bounded in two ways. The URL policy is a blocklist for known contamination surfaces, so it addresses a subject that stumbles onto an answers page and not one deliberately looking for one; issues #2976 and #2977 describe channels that remain outside the audited path. And an equal policy is equal opportunity, not equal use — whether an arm reaches a residual channel depends on how that arm behaves, which is precisely this experiment's independent variable. Because those channels are by definition unaudited, a difference in use between the arms would not appear in the evidence either way.
 
 Single-arm results are not drawn from the same run as the multi-arm cohort. Task groups hold every subject for one task, so each arm adds a container: the eight-arm cohort reaches 128 concurrent trials at its declared limit, and this spec raises its own limit so its 89 cells run under comparable machine load. They remain separate runs on separate occasions, which no setting can change.
+
+The DeepSeek Harness Eval profile also extends its persistent Bash deadline beyond Terminal-Bench's longest native subject timeout, so the benchmark remains the authoritative deadline and a local five-minute tool timeout cannot interrupt `apt` or `dpkg` before verification. Every subject runs with `DEBIAN_FRONTEND=noninteractive` and `TZ=Etc/UTC` in its execution environment, because an interactive package prompt in an unattended container is indistinguishable from a hung command, and that is a property of the container rather than of any one arm.
+
+The local image tag remains a machine deployment identity rather than a registry digest; digest pinning is tracked in issue #2953.
+
+## Egress audit and security model
 
 External provider metering does not depend on the subject exiting cleanly. The wrapper's proxy writes
 `agent/<profile>.provider-usage.json` at the start of every request, at its settlement, and at the
@@ -183,14 +268,15 @@ service started through a PTY is two removes from the group the relay records �
 assumed. Any rule that depended on signalling that group would hold for some agent frameworks and
 silently not for others.
 
-The DeepSeek Harness Eval profile also extends its persistent Bash deadline beyond Terminal-Bench's
-longest native subject timeout, so the benchmark remains the authoritative deadline and a local
-five-minute tool timeout cannot interrupt `apt` or `dpkg` before verification. Every subject runs
-with `DEBIAN_FRONTEND=noninteractive` and `TZ=Etc/UTC` in its execution environment, because an
-interactive package prompt in an unattended container is indistinguishable from a hung command, and
-that is a property of the container rather than of any one arm.
+## Troubleshooting
 
-The local image tag remains a machine deployment identity rather than a registry digest; digest
-pinning is tracked in issue #2953.
-
-The experiment directory contains the frozen `experiment.json` and append-only attempt records. There is no second mutable results file. A leftover `.writer.lock` means the previous writer did not complete; remove it only after proving that no writer process remains.
+| Symptom | Cause | Fix |
+|---|---|---|
+| `machine path <name> is unavailable` at CLI start | A declared machine-path env var points at a directory that doesn't exist or isn't writable/searchable ([`install-preflight.ts:273,279`](src/install-preflight.ts)). | Point the env var at a real, accessible directory before running `maka eval run`. |
+| `<framework> Python environment <env> is unavailable or does not provide <distribution>@<version>` | The pinned Harbor/Pier Python distribution isn't installed at the expected version in the interpreter the env var points to ([`install-preflight.ts:155-157`](src/install-preflight.ts)). | Install/upgrade the framework's Python distribution to the pinned version, or point the env var at an interpreter that already has it. |
+| `Docker CLI or daemon is unavailable: ...` | `docker version` failed — the Docker CLI isn't on PATH or the daemon isn't running ([`install-preflight.ts:172`](src/install-preflight.ts)). Only checked for Docker-based environments. | Start the Docker daemon / install the Docker CLI before running a Docker-environment spec. |
+| HTTP 451 with header `X-Maka-Eval-Egress-Rule: <ruleId>` from inside a subject | The egress proxy blocked a request matching a benchmark/public-solution contamination rule (see [Egress audit and security model](#egress-audit-and-security-model)). | This is intentional — the subject reached a blocked URL. If the block is a false positive against a legitimate dependency, it needs a rule change, not a bypass. |
+| HTTP 503 with header `X-Maka-Eval-Egress-Rule: policy_error` | The egress proxy couldn't classify the request at all. | Check the request against the proxy's supported request shapes; this is a proxy-side gap, not a benchmark contamination hit. |
+| Result status `infra_failed`, reason `egress audit log missing` | The subject's egress audit log wasn't produced for a Harbor cell — this always wins over a subject timeout or a missing verifier reward. | Check that the egress-proxy Compose overlay came up for the cell; this indicates infrastructure, not subject, failure. |
+| Result status `infra_failed`, message matching `failed to read egress audit log ... (EISDIR)` | The audit-log path resolved to a directory instead of a file. | Check the egress-proxy volume mount for the cell — something replaced the expected file path with a directory. |
+| A leftover `.writer.lock` in an experiment directory | A previous `FileAttemptStore` writer did not complete (crash, kill). | Confirm no writer process for that experiment is still running, then remove the lock file — see [Architecture](#architecture). |

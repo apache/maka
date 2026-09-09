@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { setImmediate as delayImmediate } from 'node:timers/promises';
 import test from 'node:test';
@@ -44,9 +45,20 @@ import type { SessionContinuityFrameSink } from '../server/session-continuity-se
 import type { SessionTranscriptReader } from '../server/session-transcript-reader.js';
 import { ClientSessionSubscription } from '../client/session-subscription.js';
 import { transcriptReader } from './fixtures/session-transcript-reader.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const HOST_EPOCH = 'host-epoch';
 const SESSION_ID = 'session-1';
+const TEST_OWNER_IDENTITY = {
+  principalId: 'local_owner',
+  principalKind: 'local_owner',
+} as const;
+type TestIdentity =
+  | typeof TEST_OWNER_IDENTITY
+  | {
+      readonly principalId: string;
+      readonly principalKind: 'session_guest';
+    };
 
 test('open is an inactive publication barrier and live sequence starts at nextSequence', async () => {
   const read = deferred<CanonicalSessionProjection | null>();
@@ -77,7 +89,7 @@ test('open is an inactive publication barrier and live sequence starts at nextSe
   connection.activate(outcome.result.subscriptionId);
   await delayImmediate();
   assert.deepEqual(
-    sink.frames.map((frame) => frame.sequence),
+    sink.frames.map((frame) => ('sequence' in frame ? frame.sequence : undefined)),
     [1],
   );
   assert.equal(sink.frames[0]?.kind, 'subscription.session_delta');
@@ -85,6 +97,53 @@ test('open is an inactive publication barrier and live sequence starts at nextSe
   connection.abort(outcome.result.subscriptionId);
   await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(2));
   assert.equal(sink.frames.length, 1);
+  coordinator.close();
+});
+
+test('Guest revocation wins a concurrent subscription open', async () => {
+  const read = deferred<CanonicalSessionProjection | null>();
+  const grant = {
+    kind: 'session_observation' as const,
+    grantId: 'grant-1',
+    principalId: 'guest-1',
+    sessionId: SESSION_ID,
+    createdAt: '2026-08-30T00:00:00.000Z',
+  };
+  let active = true;
+  let publishRevocation: ((revoked: typeof grant) => void) | undefined;
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    () => read.promise,
+    new SessionAdmissionGate(),
+    undefined,
+    undefined,
+    undefined,
+    {
+      activeSessionGrant: () => (active ? grant : undefined),
+      subscribeGrantRevocations: (listener) => {
+        publishRevocation = listener;
+        return () => undefined;
+      },
+    },
+  );
+  coordinator.attachConnection('guest-connection', new RecordingSink());
+
+  const opening = coordinator.handlers['subscription.open'](
+    { sessionId: SESSION_ID, transcript: { kind: 'none' } },
+    connectionContext('guest-connection', {
+      principalId: 'guest-1',
+      principalKind: 'session_guest',
+    }),
+  );
+  await delayImmediate();
+  active = false;
+  publishRevocation?.(grant);
+  read.resolve(canonical());
+
+  assert.deepEqual(await opening, {
+    ok: false,
+    error: { code: 'not_found', message: 'Session was not found' },
+  });
   coordinator.close();
 });
 
@@ -118,6 +177,86 @@ test('forwards the durable steering echo to subscribers as a session event', asy
   assert.deepEqual(frame.event, steering);
 
   connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
+test('projects model-only user content out of Guest queue and steering frames', async () => {
+  const grant = {
+    kind: 'session_observation' as const,
+    grantId: 'grant-1',
+    principalId: 'guest-1',
+    sessionId: SESSION_ID,
+    createdAt: '2026-08-30T00:00:00.000Z',
+  };
+  const sink = new RecordingSink();
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () =>
+      canonical({
+        queue: {
+          hostEpoch: HOST_EPOCH,
+          queueRevision: 1,
+          steering: [],
+          followup: [
+            {
+              entryId: 'entry-1',
+              messageId: 'message-1',
+              content: { text: 'private skill body', displayText: 'visible prompt' },
+              placement: 'next_turn',
+              state: 'queued',
+            },
+          ],
+        },
+      }),
+    new SessionAdmissionGate(),
+    undefined,
+    undefined,
+    undefined,
+    {
+      activeSessionGrant: () => grant,
+      subscribeGrantRevocations: () => () => undefined,
+    },
+  );
+  const connection = coordinator.attachConnection('guest-connection', sink);
+  const opened = await open(
+    coordinator,
+    'guest-connection',
+    { kind: 'none' },
+    {
+      principalId: grant.principalId,
+      principalKind: 'session_guest',
+    },
+  );
+  assert.deepEqual(opened.snapshot.queue.followup[0]?.content, { text: 'visible prompt' });
+  connection.activate(opened.subscriptionId);
+  coordinator.enqueueAgentGraphChanged({
+    rootSessionId: SESSION_ID,
+    graphId: 'private-graph',
+    reason: 'observation',
+  });
+  await delayImmediate();
+  assert.equal(sink.frames.length, 0);
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'steering_message',
+    id: 'steering-event-1',
+    turnId: 'turn-1',
+    ts: 7,
+    messageId: 'steering-message-1',
+    content: { text: 'private skill body', displayText: 'visible steer' },
+  });
+
+  const frame = sink.frames.find((candidate) => candidate.kind === 'subscription.session_event');
+  assert.equal(frame?.kind, 'subscription.session_event');
+  if (frame?.kind === 'subscription.session_event') {
+    assert.deepEqual(frame.event, {
+      type: 'steering_message',
+      id: 'steering-event-1',
+      turnId: 'turn-1',
+      ts: 7,
+      messageId: 'steering-message-1',
+      content: { text: 'visible steer' },
+    });
+  }
   coordinator.close();
 });
 
@@ -574,8 +713,8 @@ test('coalesces typed domain invalidations without publishing continuity project
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
-  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'task');
-  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'task');
+  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'todo');
+  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'todo');
   coordinator.enqueueSessionDomainChanged(SESSION_ID, 'plan');
   coordinator.enqueueSessionDomainChanged(SESSION_ID, 'usage');
   await waitFor(() => sink.frames.length === 3);
@@ -587,7 +726,7 @@ test('coalesces typed domain invalidations without publishing continuity project
         : frame.kind,
     ),
     [
-      { kind: 'subscription.session_domain_changed', sequence: 1, domain: 'task' },
+      { kind: 'subscription.session_domain_changed', sequence: 1, domain: 'todo' },
       { kind: 'subscription.session_domain_changed', sequence: 2, domain: 'plan' },
       { kind: 'subscription.session_domain_changed', sequence: 3, domain: 'usage' },
     ],
@@ -597,10 +736,24 @@ test('coalesces typed domain invalidations without publishing continuity project
 
 test('fans one bounded Runtime Resource burst out to an inherited Session view', async () => {
   const childSessionId = 'child-session';
+  const grant = {
+    kind: 'session_observation' as const,
+    grantId: 'grant-1',
+    principalId: 'guest-1',
+    sessionId: childSessionId,
+    createdAt: '2026-08-30T00:00:00.000Z',
+  };
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async (sessionId) => canonicalFor(sessionId),
     new SessionAdmissionGate(),
+    undefined,
+    undefined,
+    undefined,
+    {
+      activeSessionGrant: () => grant,
+      subscribeGrantRevocations: () => () => undefined,
+    },
   );
   const sink = new RecordingSink();
   const connection = coordinator.attachConnection('connection-1', sink);
@@ -611,6 +764,18 @@ test('fans one bounded Runtime Resource burst out to an inherited Session view',
   assert.equal(outcome.ok, true);
   if (!outcome.ok) return;
   connection.activate(outcome.result.subscriptionId);
+  const guestSink = new RecordingSink();
+  const guestConnection = coordinator.attachConnection('guest-connection', guestSink);
+  const guestOutcome = await coordinator.handlers['subscription.open'](
+    { sessionId: childSessionId, transcript: { kind: 'none' } },
+    connectionContext('guest-connection', {
+      principalId: grant.principalId,
+      principalKind: 'session_guest',
+    }),
+  );
+  assert.equal(guestOutcome.ok, true);
+  if (!guestOutcome.ok) return;
+  guestConnection.activate(guestOutcome.result.subscriptionId);
   const updates = Array.from({ length: 64 }, (_, index) => {
     const update = shellRunUpdate({
       sessionId: 'parent-session',
@@ -619,6 +784,7 @@ test('fans one bounded Runtime Resource burst out to an inherited Session view',
     update.result.ref = `shell:run-${index}`;
     return update;
   });
+  updates[updates.length - 1]!.sessionId = childSessionId;
 
   for (const update of updates) coordinator.enqueueRuntimeResourceChanged(update);
   await waitFor(() => sink.frames.length === 1);
@@ -635,10 +801,24 @@ test('fans one bounded Runtime Resource burst out to an inherited Session view',
       ref: update.result.ref,
     })),
   });
+  assert.deepEqual(guestSink.frames[0], {
+    kind: 'subscription.session_domain_changed',
+    hostEpoch: HOST_EPOCH,
+    subscriptionId: guestOutcome.result.subscriptionId,
+    sequence: 1,
+    sessionId: childSessionId,
+    domain: 'runtime_resource',
+    resources: [
+      {
+        sourceSessionId: childSessionId,
+        ref: updates[updates.length - 1]!.result.ref,
+      },
+    ],
+  });
   coordinator.close();
 });
 
-test('publishes live PTY bytes on the source Session continuity sequence', async () => {
+test('publishes live PTY bytes independently of the Session continuity sequence', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async () => canonical(),
@@ -652,6 +832,36 @@ test('publishes live PTY bytes on the source Session continuity sequence', async
   await coordinator.enqueueRuntimeResourcePtyData({
     sessionId: SESSION_ID,
     ref: 'maka://runtime/background-tasks/shell-1',
+    sequence: 4,
+    data: 'hidden',
+  });
+  assert.equal(sink.frames.length, 0, 'hidden terminal must not consume network output');
+  const interest = {
+    subscriptionId: opened.subscriptionId,
+    refs: ['maka://runtime/background-tasks/shell-1'],
+  };
+  assert.equal(
+    (
+      await coordinator.handlers['subscription.pty_interest.set'](
+        interest,
+        connectionContext('other-connection'),
+      )
+    ).ok,
+    false,
+  );
+  assert.equal(
+    (
+      await coordinator.handlers['subscription.pty_interest.set'](
+        interest,
+        connectionContext('connection-1'),
+      )
+    ).ok,
+    true,
+  );
+
+  await coordinator.enqueueRuntimeResourcePtyData({
+    sessionId: SESSION_ID,
+    ref: 'maka://runtime/background-tasks/shell-1',
     sequence: 5,
     data: 'ready',
   });
@@ -659,12 +869,65 @@ test('publishes live PTY bytes on the source Session continuity sequence', async
     kind: 'subscription.runtime_resource_pty_data',
     hostEpoch: HOST_EPOCH,
     subscriptionId: opened.subscriptionId,
-    sequence: 1,
     sessionId: SESSION_ID,
     ref: 'maka://runtime/background-tasks/shell-1',
     ptySequence: 5,
     data: 'ready',
   });
+  await coordinator.handlers['subscription.pty_interest.set'](
+    { ...interest, refs: [] },
+    connectionContext('connection-1'),
+  );
+  await coordinator.enqueueRuntimeResourcePtyData({
+    sessionId: SESSION_ID,
+    ref: interest.refs[0]!,
+    sequence: 6,
+    data: 'hidden again',
+  });
+  assert.equal(sink.frames.length, 1);
+  coordinator.close();
+});
+
+test('PTY overflow is bounded and requests terminal-only recovery while Session state progresses', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const blocked = deferred<void>();
+  const frames: SubscriptionFrame[] = [];
+  const connection = coordinator.attachConnection('connection-1', {
+    async send(frame) {
+      frames.push(frame);
+      if (frame.kind === 'subscription.runtime_resource_pty_data' && frames.length === 1)
+        await blocked.promise;
+    },
+  });
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+  await coordinator.handlers['subscription.pty_interest.set'](
+    { subscriptionId: opened.subscriptionId, refs: ['maka://runtime/background-tasks/shell-1'] },
+    connectionContext('connection-1'),
+  );
+  for (let sequence = 1; sequence <= 1000; sequence += 1) {
+    await coordinator.enqueueRuntimeResourcePtyData({
+      sessionId: SESSION_ID,
+      ref: 'maka://runtime/background-tasks/shell-1',
+      sequence,
+      data: 'x'.repeat(4096),
+    });
+  }
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
+  assert.equal(frames.length, 2);
+  assert.equal(frames[1]?.kind, 'subscription.session_delta');
+  if (frames[1]?.kind === 'subscription.session_delta') assert.equal(frames[1].sequence, 1);
+  blocked.resolve();
+  await delayImmediate();
+  assert.ok(
+    frames.some((frame) => frame.kind === 'subscription.runtime_resource_pty_data' && frame.reset),
+  );
+  assert.ok(frames.length <= 10, 'retained PTY backlog exceeded its frame budget');
+  assert.ok(frames.every((frame) => frame.kind !== 'subscription.closed'));
   coordinator.close();
 });
 
@@ -702,7 +965,7 @@ test('slow subscriber receives a terminal eviction without delaying another subs
     reason: 'slow_consumer',
   });
   assert.deepEqual(
-    fastSink.frames.map((frame) => frame.sequence),
+    fastSink.frames.map((frame) => ('sequence' in frame ? frame.sequence : undefined)),
     Array.from({ length: 32 }, (_, index) => index + 1),
   );
   coordinator.close();
@@ -1672,6 +1935,87 @@ test('an in-flight transcript page cannot outlive its owning connection', async 
   coordinator.close();
 });
 
+test('an in-flight transcript page cannot outlive its Guest observation grant', async () => {
+  const message = assistantMessage('界'.repeat(20_000));
+  const continued = deferred<void>();
+  const baseReader = transcriptReader([message]);
+  let blockPage = false;
+  const reader: SessionTranscriptReader = {
+    ...baseReader,
+    readDurableRecords: async (sessionId, request) => {
+      if (blockPage) await continued.promise;
+      return baseReader.readDurableRecords(sessionId, request);
+    },
+  };
+  const grant = {
+    kind: 'session_observation' as const,
+    grantId: 'grant-1',
+    principalId: 'guest-1',
+    sessionId: SESSION_ID,
+    createdAt: '2026-08-30T00:00:00.000Z',
+  };
+  let active = true;
+  let publishRevocation: ((revoked: typeof grant) => void) | undefined;
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+    undefined,
+    reader,
+    undefined,
+    {
+      activeSessionGrant: () => (active ? grant : undefined),
+      subscribeGrantRevocations: (listener) => {
+        publishRevocation = listener;
+        return () => undefined;
+      },
+    },
+  );
+  coordinator.attachConnection('guest-connection', new RecordingSink());
+  const opened = await open(
+    coordinator,
+    'guest-connection',
+    {
+      kind: 'tail',
+      maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+    },
+    {
+      principalId: grant.principalId,
+      principalKind: 'session_guest',
+    },
+  );
+  const cursor = opened.transcript?.durable.nextCursor;
+  assert.ok(cursor);
+  if (!opened.transcript || !cursor) return;
+
+  blockPage = true;
+  const reading = coordinator.handlers['session.transcript.page'](
+    {
+      subscriptionId: opened.subscriptionId,
+      source: 'durable',
+      direction: 'older',
+      throughSequence: opened.transcript.throughSequence,
+      cursor,
+      anchorSequence: null,
+      maxBytes: 1024,
+    },
+    connectionContext('guest-connection', {
+      principalId: grant.principalId,
+      principalKind: 'session_guest',
+    }),
+  );
+  await delayImmediate();
+  active = false;
+  publishRevocation?.(grant);
+  continued.resolve();
+
+  assert.deepEqual(await reading, {
+    ok: false,
+    error: { code: 'not_found', message: 'Session subscription was not found' },
+  });
+  coordinator.close();
+});
+
 test('a durable append refresh advances transcript before its completion event', async () => {
   const durable = [assistantMessage('first')];
   const reader = transcriptReader(durable);
@@ -1811,9 +2155,9 @@ test('rejoin seeds tool_result_preview at the open nextSequence without sequence
   connection.activate(opened.subscriptionId);
   await delayImmediate();
   assert.equal(sink.frames.length, 1);
-  assert.equal(sink.frames[0]?.sequence, 1);
   assert.equal(sink.frames[0]?.kind, 'subscription.session_event');
   if (sink.frames[0]?.kind !== 'subscription.session_event') return;
+  assert.equal(sink.frames[0].sequence, 1);
   assert.equal(sink.frames[0].event.type, 'tool_result_preview');
 
   const client = new ClientSessionSubscription(
@@ -1824,6 +2168,82 @@ test('rejoin seeds tool_result_preview at the open nextSequence without sequence
     },
   );
   assert.doesNotThrow(() => client.accept(sink.frames[0]!));
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
+test('live tool_start projects intent and a bounded args preview, never full args', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-tool-start', sink);
+  const opened = await open(coordinator, 'connection-tool-start');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'tool_start',
+    id: 'start-1',
+    turnId: 'turn-1',
+    ts: 1,
+    toolUseId: 'tool-1',
+    toolName: 'Bash',
+    intent: '只读探索:检查渲染入口',
+    args: { command: 'git status --porcelain', content: 'x'.repeat(100 * 1024) },
+  });
+  await delayImmediate();
+
+  const frame = sink.frames.find((candidate) => candidate.kind === 'subscription.session_event');
+  assert.ok(frame && frame.kind === 'subscription.session_event');
+  const event = frame.event;
+  assert.equal(event.type, 'tool_start');
+  if (event.type !== 'tool_start') return;
+  assert.equal(event.intent, '只读探索:检查渲染入口');
+  assert.deepEqual(event.argsPreview, { command: 'git status --porcelain' });
+  assert.equal('args' in event, false);
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
+test('live tool_start never forwards a generic input payload as argsPreview', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-tool-input', sink);
+  const opened = await open(coordinator, 'connection-tool-input');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'tool_start',
+    id: 'start-input',
+    turnId: 'turn-1',
+    ts: 1,
+    toolUseId: 'tool-input',
+    toolName: 'third_party_tool',
+    args: {
+      input: 'short private body',
+      inputPreview: { text: 'forged private body', bytes: 19, truncated: false },
+      size: { cols: 80, rows: 24 },
+      questions: [{ question: 'forged private question' }],
+    },
+  });
+  await delayImmediate();
+
+  const frame = sink.frames.find((candidate) => candidate.kind === 'subscription.session_event');
+  assert.ok(frame && frame.kind === 'subscription.session_event');
+  const event = frame.event;
+  assert.equal(event.type, 'tool_start');
+  if (event.type !== 'tool_start') return;
+  assert.equal(event.argsPreview, undefined);
+  assert.doesNotMatch(JSON.stringify(event), /private body/);
+  assert.doesNotMatch(JSON.stringify(event), /private question/);
 
   connection.abort(opened.subscriptionId);
   coordinator.close();
@@ -1972,10 +2392,11 @@ async function open(
   transcript: { readonly kind: 'none' } | { readonly kind: 'tail'; readonly maxBytes: number } = {
     kind: 'none',
   },
+  identity: TestIdentity = TEST_OWNER_IDENTITY,
 ) {
   const outcome = await coordinator.handlers['subscription.open'](
     { sessionId: SESSION_ID, transcript },
-    connectionContext(connectionId),
+    connectionContext(connectionId, identity),
   );
   if (!outcome.ok) throw new Error(outcome.error.message);
   assert.equal(outcome.ok, true);
@@ -2077,11 +2498,15 @@ async function consumeBootstrapOverlay(
   );
 }
 
-function connectionContext(connectionId: string): ConnectionContext {
+function connectionContext(
+  connectionId: string,
+  identity: TestIdentity = TEST_OWNER_IDENTITY,
+): ConnectionContext {
   return {
     hostEpoch: HOST_EPOCH,
     connectionId,
-    principal: 'local_os_user',
+    principal: identity.principalId,
+    principalKind: identity.principalKind,
     acquireResidency: () => ({ release() {} }),
   };
 }
@@ -2239,21 +2664,9 @@ function assistantMessage(text: string): Extract<StoredMessage, { type: 'assista
     modelId: 'test-model',
   };
 }
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await delayImmediate();
-  }
-  throw new Error('Timed out waiting for continuity state');
+  await pollFor(predicate, {
+    attempts: 100,
+    message: 'Timed out waiting for continuity state',
+  });
 }

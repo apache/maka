@@ -94,6 +94,16 @@ describe('Agent Graph Client protocol', () => {
     const inspection = operatorInspection(snapshot);
     assert.deepEqual(decodeAgentGraphClientSnapshot(snapshot), snapshot);
     assert.deepEqual(decodeAgentGraphOperatorInspection(inspection), inspection);
+    const formActivity = {
+      ...activity(),
+      facets: ['form_request'] as const,
+      signals: [{ kind: 'attention' as const, reason: 'form_request' as const }],
+    };
+    assert.deepEqual(
+      decodeAgentGraphClientSnapshot({ ...snapshot, recentActivity: [formActivity] })
+        .recentActivity,
+      [formActivity],
+    );
     AGENT_GRAPH_OPERATION_SPECS['agent.graph.query'].assertOutputForInput?.(
       { rootSessionId: 'root-1' },
       snapshot,

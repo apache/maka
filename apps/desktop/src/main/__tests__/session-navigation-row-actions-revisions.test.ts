@@ -40,7 +40,15 @@ function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSu
   };
 }
 
-function createService(calls: string[]) {
+function createService(
+  calls: string[],
+  opts: {
+    disposition?: 'removed' | 'restored';
+    archivedSubtaskCount?: number;
+    preview?: { count?: number; throws?: boolean };
+  } = {},
+) {
+  const { disposition = 'removed', archivedSubtaskCount = 0, preview = {} } = opts;
   return {
     list: async () => [],
     setFlagged: async (id: string, value: boolean, options: { revisionFamily: true }) => {
@@ -60,7 +68,12 @@ function createService(calls: string[]) {
       options: { revisionFamily: true; requireArchived: boolean },
     ) => {
       calls.push(`remove:${id}:${options.revisionFamily}:${options.requireArchived}`);
-      return 'removed' as const;
+      return { disposition, archivedSubtaskCount };
+    },
+    previewRemoval: async (id: string) => {
+      calls.push(`preview:${id}`);
+      if (preview.throws) throw new Error('preview failed');
+      return preview.count ?? 0;
     },
   };
 }
@@ -104,11 +117,120 @@ describe('revision-family session row actions', () => {
       'flag:version:true:true',
       'rename:branch:Independent branch:true',
       'archive:version:true',
+      // The delete asks the Host how many subtasks it would archive before the
+      // confirm, then removes.
+      'preview:root',
       // `root` is not archived, so the delete states no archived premise —
       // requiring one would refuse every delete from the rail.
       'remove:root:true:false',
     ]);
     assert.deepEqual(selections, [undefined, undefined]);
     assert.deepEqual(cleared, ['root', 'version', 'root', 'version']);
+  });
+});
+
+function deleteHarness(
+  sessions: readonly SessionSummary[],
+  disposition: 'removed' | 'restored' = 'removed',
+  archivedSubtaskCount = 0,
+  preview: { count?: number; throws?: boolean } = {},
+) {
+  const calls: string[] = [];
+  const confirms: Array<{ title: string; description: string }> = [];
+  const successes: Array<{ title: string; description?: string }> = [];
+  const actions = createSessionNavigationRowActions({
+    uiLocale: 'en',
+    activeIdRef: { current: undefined },
+    clearActiveMessages: () => undefined,
+    clearSessionRendererState: () => undefined,
+    pendingSessionRowActionsRef: { current: new Set<string>() },
+    refreshSessions: async () => [...sessions],
+    service: createService(calls, { disposition, archivedSubtaskCount, preview }),
+    sessionsRef: { current: [...sessions] },
+    setActiveId: () => undefined,
+    toastApi: {
+      success: (title, description) => { successes.push({ title, description }); },
+      error: () => undefined,
+      confirm: async (options) => { confirms.push({ title: options.title, description: options.description }); return true; },
+    },
+  });
+  return { actions, calls, confirms, successes };
+}
+
+describe('delete confirm warns off the Host preview, toast reports the Host count', () => {
+  it('warns when the Host preview reports subtasks, and the toast reports the executed count', async () => {
+    const parent = summary('parent', { name: 'hi' });
+    // The confirm warns off the Host preview (1); the toast reports the Host's
+    // executed count (2). Neither is a renderer estimate, and the two Host reads
+    // are independent — the confirm never leaks the executed number.
+    const { actions, calls, confirms, successes } = deleteHarness(
+      [parent],
+      'removed',
+      2,
+      { count: 1 },
+    );
+
+    await actions.deleteSession('parent');
+
+    // Preview runs before the remove.
+    assert.deepEqual(
+      calls.filter((c) => c.startsWith('preview:') || c.startsWith('remove:')),
+      ['preview:parent', 'remove:parent:true:false'],
+    );
+    assert.equal(confirms.length, 1);
+    assert.match(confirms[0].description, /kept and moved to Archived/);
+    assert.doesNotMatch(confirms[0].description, /\d/);
+    assert.deepEqual(successes, [{ title: 'Deleted hi', description: '2 subtasks moved to Archived' }]);
+  });
+
+  it('shows no subtask note when the Host preview reports zero', async () => {
+    // e.g. a parent whose only children are graph operators: the renderer can't
+    // tell from its projection, but the Host preview says 0, so no false promise.
+    const { actions, confirms, successes } = deleteHarness(
+      [summary('parent', { name: 'hi' })],
+      'removed',
+      0,
+      { count: 0 },
+    );
+
+    await actions.deleteSession('parent');
+
+    assert.equal(confirms.length, 1);
+    assert.doesNotMatch(confirms[0].description, /subtask/);
+    assert.deepEqual(successes, [{ title: 'Deleted hi', description: undefined }]);
+  });
+
+  it('warns with uncertainty and still deletes when the preview call fails', async () => {
+    const { actions, calls, confirms, successes } = deleteHarness(
+      [summary('parent', { name: 'hi' })],
+      'removed',
+      0,
+      { throws: true },
+    );
+
+    await actions.deleteSession('parent');
+
+    // Fail-open would hide the warning; instead the confirm hedges so it never
+    // silently omits that subtasks may survive.
+    assert.match(confirms[0].description, /if any.*kept and moved to Archived/);
+    // The delete is not blocked by a preview failure.
+    assert.ok(calls.includes('remove:parent:true:false'));
+    assert.deepEqual(successes, [{ title: 'Deleted hi', description: undefined }]);
+  });
+
+  it('stays silent on the toast when a concurrent restore calls the delete off', async () => {
+    const { actions, confirms, successes } = deleteHarness(
+      [summary('parent', { name: 'hi' })],
+      'restored',
+      0,
+      { count: 1 },
+    );
+
+    await actions.deleteSession('parent');
+
+    // The confirm still warns — the person is deciding before the race resolves.
+    assert.match(confirms[0].description, /kept and moved to Archived/);
+    // But nothing was deleted, so nothing moved to the archive.
+    assert.deepEqual(successes, [{ title: 'hi was restored, so it was kept', description: undefined }]);
   });
 });

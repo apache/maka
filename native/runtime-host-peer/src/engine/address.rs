@@ -50,21 +50,33 @@ pub(super) fn peer_id_from_address(address: &Multiaddr) -> Option<PeerId> {
     })
 }
 
-pub(super) fn coordination_relay_peer_id(address: &Multiaddr) -> Result<PeerId, PeerError> {
+pub(crate) fn coordination_relay_peer_id(address: &Multiaddr) -> Result<PeerId, PeerError> {
+    base_relay_peer_id(address, "coordination_unavailable", "coordination relay")
+}
+
+pub(crate) fn transit_relay_peer_id(address: &Multiaddr) -> Result<PeerId, PeerError> {
+    base_relay_peer_id(address, "transit_unavailable", "transit relay")
+}
+
+fn base_relay_peer_id(
+    address: &Multiaddr,
+    error_code: &'static str,
+    label: &str,
+) -> Result<PeerId, PeerError> {
     let mut peer_id = None;
     for protocol in address.iter() {
         match protocol {
             Protocol::P2p(_) if peer_id.is_some() => {
                 return Err(PeerError::new(
-                    "coordination_unavailable",
-                    "coordination relay address must name exactly one peer",
+                    error_code,
+                    format!("{label} address must name exactly one peer"),
                 ));
             }
             Protocol::P2p(value) => peer_id = Some(value),
             Protocol::P2pCircuit => {
                 return Err(PeerError::new(
-                    "coordination_unavailable",
-                    "coordination relay address must be a base relay address",
+                    error_code,
+                    format!("{label} address must be a base relay address"),
                 ));
             }
             _ => {}
@@ -73,8 +85,8 @@ pub(super) fn coordination_relay_peer_id(address: &Multiaddr) -> Result<PeerId, 
     match (peer_id, address.iter().last()) {
         (Some(peer_id), Some(Protocol::P2p(terminal))) if peer_id == terminal => Ok(peer_id),
         _ => Err(PeerError::new(
-            "coordination_unavailable",
-            "coordination relay address must end with its peer identity",
+            error_code,
+            format!("{label} address must end with its peer identity"),
         )),
     }
 }
@@ -83,4 +95,16 @@ pub(super) fn is_relayed_address(address: &Multiaddr) -> bool {
     address
         .iter()
         .any(|protocol| matches!(protocol, Protocol::P2pCircuit))
+}
+
+pub(super) fn relay_peer_id_from_circuit_address(address: &Multiaddr) -> Option<PeerId> {
+    let mut previous_peer = None;
+    for protocol in address.iter() {
+        match protocol {
+            Protocol::P2p(peer_id) => previous_peer = Some(peer_id),
+            Protocol::P2pCircuit => return previous_peer,
+            _ => {}
+        }
+    }
+    None
 }

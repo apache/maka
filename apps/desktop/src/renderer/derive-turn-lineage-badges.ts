@@ -46,11 +46,11 @@ export interface TurnLineageBadgeInput {
   regeneratedToTurnId?: string;
   /** True when the target turn id still exists in the materialized view. */
   existsTurn(turnId: string): boolean;
-  locale?: UiLocale;
+  locale: UiLocale;
 }
 
 export function deriveTurnLineageBadges(input: TurnLineageBadgeInput): TurnLineageBadge[] {
-  const copy = getDesktopConversationCopy(input.locale ?? 'zh').lineage;
+  const copy = getDesktopConversationCopy(input.locale).lineage;
   const badges: TurnLineageBadge[] = [];
 
   const forwardFrom = input.regeneratedFromTurnId ?? input.retriedFromTurnId;

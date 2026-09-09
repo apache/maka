@@ -17,9 +17,19 @@
  * under the License.
  */
 
-import { useLayoutEffect, useRef, type ComponentProps, type RefObject } from 'react';
-import { Button, Composer, SandboxBoundaryPrompt, UserQuestionPrompt, Banner } from '@maka/ui';
-import type { ComposerHandle, ComposerInteraction } from '@maka/ui';
+import { useLayoutEffect, useRef, type ComponentProps, type ComponentType, type ReactNode, type RefObject } from 'react';
+import {
+  Banner,
+  Button,
+  ClientCapabilityPrompt,
+  Composer,
+  type ComposerInteraction,
+  ComposerGoalProjectionConsumer,
+  FormInteractionPrompt,
+  SandboxBoundaryPrompt,
+  UserQuestionPrompt,
+} from '@maka/ui';
+import type { ComposerHandle } from '@maka/ui';
 import { useComposerMentionsContext } from './composer-mentions.js';
 import {
   readNewTaskReloadDraft,
@@ -55,7 +65,7 @@ interface BoundaryUnreadableNotice {
 
 /**
  * The composer region of the chat surface (issue #1043): the composer
- * interaction slot (permission / user-question prompts) plus the always-mounted
+ * interaction slot (boundary / question / form prompts) plus the always-mounted
  * Composer itself.
  *
  * AppShell renders this as a stable sibling of the section switch, so it is
@@ -74,12 +84,18 @@ interface ChatComposerRegionProps
     | 'hidden'
     | 'draftKey'
     | 'stopPending'
+    | 'goalActive'
+    | 'onSetGoal'
+    | 'allowAttachmentImportWhileStreaming'
     // Read from ComposerMentionsProvider, so a catalog reload repaints the
     // popups without re-rendering the shell that would otherwise pass them.
     | 'mentionSkills'
     | 'mentionSkillsUnavailable'
     | 'mentionSkillsLoading'
     | 'onSearchMentionFiles'
+    | 'pendingDirectories'
+    | 'onRemoveDirectory'
+    | 'onPickDirectory'
   > {
   composerRef: RefObject<ComposerHandle | null>;
   active: boolean;
@@ -91,11 +107,98 @@ interface ChatComposerRegionProps
   newTaskSendPending: boolean;
   stopPendingBySession: Record<string, boolean>;
   respondToSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['onRespond'];
-  activeSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['request'] | undefined;
-  activeQuestion: ComponentProps<typeof UserQuestionPrompt>['request'] | undefined;
+  respondToClientCapability: ComponentProps<typeof ClientCapabilityPrompt>['onRespond'];
   respondToUserQuestion: ComponentProps<typeof UserQuestionPrompt>['onRespond'];
+  respondToUserForm: ComponentProps<typeof FormInteractionPrompt>['onRespond'];
   stop: ComponentProps<typeof UserQuestionPrompt>['onStop'];
   boundaryUnreadableNotice?: BoundaryUnreadableNotice;
+  /**
+   * Tokens the provider counted for the session's latest request on the active
+   * route, or nothing when that cannot be established. Resolved by the owner,
+   * which knows the transcript range and the route; this control never derives
+   * it from the rendered slice. This is the per-turn anchor: it moves when a
+   * turn's usage record lands. `LiveContextUsageProbe` overlays the
+   * per-settled-request snapshot (#4717) whenever that snapshot can vouch for
+   * the same route, and this value is the fallback when it cannot.
+   */
+  latestRequestUsageTokens?: number;
+  onOpenContextUsage(): void;
+  /**
+   * The live overlay for the gauge (#4717), injected rather than imported:
+   * the subscription owns services that live behind the Workbar services
+   * context, and this region must stay loadable without it (the draft-handoff
+   * suite mounts it bare). Absent, the per-turn anchor alone drives the gauge.
+   */
+  LiveContextUsageProbe?: ComponentType<{
+    sessionId: string | undefined;
+    model: string | undefined;
+    providerType: string | undefined;
+    /**
+     * The snapshot's reading as a PAIR: the metered tokens and the window the
+     * same request was metered against. Dropping the window would leave the
+     * gauge to divide the snapshot's numerator by whatever window the live
+     * catalog currently reports — one row's tokens against another row's
+     * ceiling.
+     */
+    children: (
+      usage: { readonly usageTokens: number; readonly contextWindow?: number } | undefined,
+    ) => ReactNode;
+  }>;
+  directoryComposerProps: Pick<
+    ComponentProps<typeof Composer>,
+    'pendingDirectories' | 'onRemoveDirectory' | 'onPickDirectory'
+  >;
+  directoryPickerEnabled: boolean;
+}
+
+/**
+ * The session's latest provider-counted request, or nothing.
+ *
+ * A token count belongs to one request on one route: it is a number in that
+ * model's tokenizer, and it is only the session's latest if nothing newer
+ * exists. The runtime enforces both when it reads an anchor back, refusing one
+ * whose run header names another model or connection. A control that shows the
+ * number has to enforce the same two facts or it will display a precise-looking
+ * figure about a request the user is not making — model A's tokens against
+ * model B's window, or a historical range's usage presented as current.
+ *
+ * So this refuses rather than approximates, and the three refusals are the
+ * three normal states that break the pairing:
+ *
+ * - the loaded transcript range is not the session tail, so a newer request may
+ *   exist that this range cannot see;
+ * - the newest usage row carries no anchor, which is what manual `/compact`
+ *   writes, so the scan continues past it exactly as the runtime's does;
+ * - the anchor names a different route than the active one, or names none at
+ *   all because it was written before anchors carried their route.
+ */
+export interface LatestRequestUsageAnchor {
+  inputTokens: number;
+  outputTokens?: number;
+  modelId?: string;
+  connectionId?: string;
+}
+
+export function selectLatestRequestUsage(
+  messages: readonly { type: string; lastRequestAnchor?: LatestRequestUsageAnchor }[],
+  /** `hasNewer` means the loaded range is not the session tail. */
+  range: { hasNewer?: boolean } | undefined,
+  model: string | undefined,
+  route: { llmConnectionId?: string } | undefined,
+): number | undefined {
+  const connectionId = route?.llmConnectionId;
+  if (range?.hasNewer || model === undefined || connectionId === undefined) return undefined;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.type !== 'token_usage') continue;
+    const anchor = message.lastRequestAnchor;
+    if (!anchor) continue;
+    if (anchor.modelId !== model || anchor.connectionId !== connectionId) return undefined;
+    if (!Number.isFinite(anchor.inputTokens) || anchor.inputTokens <= 0) return undefined;
+    const output = Number.isFinite(anchor.outputTokens ?? 0) ? Math.max(0, anchor.outputTokens ?? 0) : 0;
+    return anchor.inputTokens + output;
+  }
+  return undefined;
 }
 
 export function ChatComposerRegion({
@@ -108,14 +211,40 @@ export function ChatComposerRegion({
   newTaskSendPending,
   stopPendingBySession,
   respondToSandboxBoundary,
-  activeSandboxBoundary,
-  activeQuestion,
+  respondToClientCapability,
   respondToUserQuestion,
+  respondToUserForm,
   stop,
   boundaryUnreadableNotice,
+  latestRequestUsageTokens,
+  onOpenContextUsage,
+  LiveContextUsageProbe,
+  directoryComposerProps,
+  directoryPickerEnabled,
   ...composerRest
 }: ChatComposerRegionProps) {
   const mentions = useComposerMentionsContext();
+  const activeSandboxBoundary =
+    activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
+  const activeClientCapability =
+    activeInteraction?.type === 'client_capability_request' ? activeInteraction : undefined;
+  const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
+  const activeForm = activeInteraction?.type === 'form_request' ? activeInteraction : undefined;
+  const activeModelChoice = composerRest.activeModel
+    ? composerRest.modelChoices?.find(
+        (choice) =>
+          choice.connectionId === composerRest.activeModelConnectionId &&
+          choice.model === composerRest.activeModel,
+      )
+    : undefined;
+  const contextUsage = activeId
+    ? {
+        usageTokens: latestRequestUsageTokens,
+        declaredContextWindow: activeModelChoice?.declaredContextWindow,
+        metadataContextWindow: activeModelChoice?.contextWindow,
+        onOpen: onOpenContextUsage,
+      }
+    : undefined;
   const previousNewTaskDraftKey = useRef(newTaskDraftKey);
   useLayoutEffect(() => {
     const previous = previousNewTaskDraftKey.current;
@@ -173,6 +302,47 @@ export function ChatComposerRegion({
     );
   }, [composerRef, newTaskDraftKey, newTaskSendPending]);
 
+  // The composer body as a function of the gauge's live reading, so the probe
+  // — when mounted — can feed it the per-settled-request snapshot (#4717), and
+  // the anchor prop remains the reading it falls back to.
+  const renderComposer = (
+    liveContextUsage: { readonly usageTokens: number; readonly contextWindow?: number } | undefined,
+  ) => (
+    <ComposerGoalProjectionConsumer>
+      {(goalProjection) => (
+        <Composer
+          ref={composerRef}
+          {...composerRest}
+          contextUsage={contextUsage && liveContextUsage
+            ? {
+                ...contextUsage,
+                usageTokens: liveContextUsage.usageTokens,
+                meteredContextWindow: liveContextUsage.contextWindow,
+              }
+            : contextUsage}
+          // AppShell carries staged attachments into both queued and steering
+          // follow-ups. Other Composer hosts remain gated by default because a
+          // text-only running-turn submission would leave attachments behind.
+          allowAttachmentImportWhileStreaming
+          mentionSkills={mentions?.mentionSkills}
+          mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
+          mentionSkillsLoading={mentions?.mentionSkillsLoading}
+          onSearchMentionFiles={mentions?.searchMentionFiles}
+          {...directoryComposerProps}
+          onPickDirectory={
+            directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined
+          }
+          hidden={!active || onboardingComposerHidden || Boolean(activeInteraction)}
+          draftKey={activeId ?? newTaskDraftKey}
+          draftPersistence={newTaskDraftPersistence}
+          stopPending={activeId ? stopPendingBySession[activeId] === true : false}
+          goalActive={goalProjection.goalActive}
+          onSetGoal={goalProjection.onSetGoal}
+        />
+      )}
+    </ComposerGoalProjectionConsumer>
+  );
+
   return (
     <>
       <div className="maka-composer-interaction-slot">
@@ -205,6 +375,12 @@ export function ChatComposerRegion({
             onRespond={respondToSandboxBoundary}
           />
         )}
+        {activeClientCapability && (
+          <ClientCapabilityPrompt
+            request={activeClientCapability}
+            onRespond={respondToClientCapability}
+          />
+        )}
         {activeQuestion && (
           <UserQuestionPrompt
             request={activeQuestion}
@@ -213,19 +389,24 @@ export function ChatComposerRegion({
             stopPending={activeId ? stopPendingBySession[activeId] === true : false}
           />
         )}
+        {activeForm && (
+          <FormInteractionPrompt
+            request={activeForm}
+            onRespond={respondToUserForm}
+          />
+        )}
       </div>
-      <Composer
-        ref={composerRef}
-        {...composerRest}
-        mentionSkills={mentions?.mentionSkills}
-        mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
-        mentionSkillsLoading={mentions?.mentionSkillsLoading}
-        onSearchMentionFiles={mentions?.searchMentionFiles}
-        hidden={!active || onboardingComposerHidden || Boolean(activeInteraction)}
-        draftKey={activeId ?? newTaskDraftKey}
-        draftPersistence={newTaskDraftPersistence}
-        stopPending={activeId ? stopPendingBySession[activeId] === true : false}
-      />
+      {LiveContextUsageProbe ? (
+        <LiveContextUsageProbe
+          sessionId={activeId}
+          model={composerRest.activeModel}
+          providerType={composerRest.activeProviderType}
+        >
+          {renderComposer}
+        </LiveContextUsageProbe>
+      ) : (
+        renderComposer(undefined)
+      )}
     </>
   );
 }

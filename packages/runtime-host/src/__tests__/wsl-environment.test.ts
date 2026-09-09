@@ -22,6 +22,13 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import test from 'node:test';
 import { connectRuntimeHostWslEnvironment } from '../client/wsl-environment.js';
 
+const operator = (modulePath: string) => ({
+  kind: 'node' as const,
+  platform: 'posix' as const,
+  nodePath: '/usr/bin/node',
+  modulePath,
+});
+
 test('passes WSL target values as literal argv to the absolute operator', async () => {
   const sentinel = new Error('stop after argv capture');
   let invocation: { readonly executable: string; readonly args: readonly string[] } | undefined;
@@ -29,7 +36,7 @@ test('passes WSL target values as literal argv to the absolute operator', async 
     connectRuntimeHostWslEnvironment(
       {
         distribution: 'Ubuntu work; echo unsafe',
-        operatorPath: "/opt/Maka operator's/bin/maka-operator",
+        operator: operator("/opt/Maka operator's/bin/maka-operator.mjs"),
         rootId: 'a'.repeat(64),
         clientInstanceId: 'desktop-test',
       },
@@ -49,7 +56,8 @@ test('passes WSL target values as literal argv to the absolute operator', async 
       '--distribution',
       'Ubuntu work; echo unsafe',
       '--exec',
-      "/opt/Maka operator's/bin/maka-operator",
+      '/usr/bin/node',
+      "/opt/Maka operator's/bin/maka-operator.mjs",
       'connect',
       '--framed',
       '--root-id',
@@ -66,7 +74,7 @@ test('owns WSL bridge cancellation without emitting a child-stream error', async
   const connection = connectRuntimeHostWslEnvironment(
     {
       distribution: 'Ubuntu',
-      operatorPath: '/opt/maka/operator',
+      operator: operator('/opt/maka/operator.mjs'),
       rootId: 'a'.repeat(64),
       clientInstanceId: 'desktop-test',
       signal: abort.signal,
@@ -94,7 +102,7 @@ test('contains oversized WSL bridge diagnostics inside the connection failure', 
     connectRuntimeHostWslEnvironment(
       {
         distribution: 'Ubuntu',
-        operatorPath: '/opt/maka/operator',
+        operator: operator('/opt/maka/operator.mjs'),
         rootId: 'a'.repeat(64),
         clientInstanceId: 'desktop-test',
         handshakeTimeoutMs: 10_000,

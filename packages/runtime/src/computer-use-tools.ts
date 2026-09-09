@@ -74,7 +74,6 @@ import {
   snapshotComputerParams,
   summarize,
   summarizeEvidence,
-  coordinate,
   text,
   type ComputerParams,
   type ComputerSummaryAction,
@@ -87,6 +86,7 @@ import type {
   CuObservedElement,
   CuOverlayHook,
   CuOverlayHookContext,
+  CuPresentationAction,
   CuPresentationFence,
   CuRunContext,
   CuRunResult,
@@ -134,7 +134,7 @@ export const computerWireParams = z
     action: z
       .enum(CU_TOOL_ACTION_TYPES as unknown as [string, ...string[]])
       .describe(
-        'Operation to perform. Required fields by action: list_apps takes an optional app to filter by — pass the name you were given ("TextEdit", "文本编辑") and it returns the matching app ids, which is far cheaper than listing everything; without it only apps that currently have a window are listed; launch_app requires app; observe/screenshot require app or window_id, and observe takes an optional menu to open one menu bar menu and an optional query to show only the matching part of a large window; click_element requires observation_id and element_id; set_value requires observation_id, element_id, and value; select_text/secondary_action require observation_id, element_id, and text; scroll_element requires observation_id, element_id, and scroll_direction, with optional scroll_amount; element_sequence requires observation_id and steps, where each step names a control by the label it shows and optionally its role — prefer it whenever several controls must be operated in order, since it costs one call instead of one per control; window_action requires observation_id, element_id and window_action (move, resize or minimize), with position for move and size for resize — element_id is the window itself, which is the first element of the observation, and position is in screen points, the same space the observation reports its window bounds and displays in, so moving a window to the left edge of a screen means that display x with y unchanged. Raw key and coordinate actions remain in this provider schema for compatibility, but the shipping maka-cu host refuses them.',
+        'Operation to perform. Required fields by action: list_apps takes an optional app to filter by — pass the name you were given ("TextEdit", "文本编辑") and it returns the matching app ids, which is far cheaper than listing everything; without it only apps that currently have a window are listed; launch_app requires app; observe/screenshot require app or window_id, and observe takes an optional menu to open one menu bar menu and an optional query to show only the matching part of a large window; click_element requires observation_id and element_id; set_value requires observation_id, element_id, and value; select_text/secondary_action require observation_id, element_id, and text; scroll_element requires observation_id, element_id, and scroll_direction, with optional scroll_amount; element_sequence requires observation_id and steps, where each step names a control by the label it shows and optionally its role — prefer it whenever several controls must be operated in order, since it costs one call instead of one per control; window_action requires observation_id, element_id and window_action (move, resize or minimize), with position for move and size for resize — element_id is the window itself, which is the first element of the observation, and position is in screen points, the same space the observation reports its window bounds and displays in, so moving a window to the left edge of a screen means that display x with y unchanged. Coordinate input is not part of the production action space.',
       ),
     // "Exact" was already in this description and was not enough. On a real
     // desktop chain the model asked for "Calculator" and got nothing, because
@@ -221,7 +221,7 @@ export const computerWireParams = z
       .max(256)
       .optional()
       .describe(
-        'Required for every action that targets an observed element or coordinate. Copy it exactly from the immediately preceding observe or fresh observation result.',
+        'Required for every action that targets an observed element or focused control. Copy it exactly from the immediately preceding observe or fresh observation result.',
       ),
     element_id: z
       .string()
@@ -234,23 +234,17 @@ export const computerWireParams = z
     value: text
       .optional()
       .describe('Required only for set_value. The complete replacement value to write.'),
-    coordinate: coordinate
-      .optional()
-      .describe(
-        'Required for coordinate pointer actions. Coordinates are in the referenced observation screenshot.',
-      ),
-    start_coordinate: coordinate.optional().describe('Required only for left_click_drag.'),
     text: text
       .optional()
       .describe(
-        'Required for select_text, secondary_action, press_key, type, key, and hold_key. ' +
+        'Required for select_text, secondary_action, press_key, type, and key. ' +
           'For secondary_action it must be one of the names the element itself advertises — an observation writes them ' +
           'after the label as "+show_menu,raise", and an element with none offers nothing beyond a plain click_element.',
       ),
     scroll_direction: z
       .enum(['up', 'down', 'left', 'right'])
       .optional()
-      .describe('Direction for scroll and scroll_element.'),
+      .describe('Direction for scroll_element.'),
     scroll_amount: z
       .number()
       .int()
@@ -258,21 +252,14 @@ export const computerWireParams = z
       .max(100)
       .optional()
       .describe(
-        `Amount for scroll and scroll_element, in tenths of a page (${SCROLL_UNITS_PER_PAGE} = one page).`,
+        `Amount for scroll_element, in tenths of a page (${SCROLL_UNITS_PER_PAGE} = one page).`,
       ),
-    duration: z
-      .number()
-      .min(0)
-      .max(60)
-      .optional()
-      .describe('Duration in seconds for wait or hold_key.'),
+    duration: z.number().min(0).max(60).optional().describe('Duration in seconds for wait.'),
     window_action: z
       .enum(['move', 'resize', 'minimize'])
       .optional()
       .describe(
-        'Required for window_action. Moving or resizing a window is its own verb because dragging its title bar ' +
-          'is a coordinate action, and a window Computer Use drives is behind something else, so the drag is refused. ' +
-          'This is not, and it does not bring the application forward. ' +
+        'Required for window_action. Moving or resizing a window is a semantic window operation and does not bring the application forward. ' +
           // The one action here that cannot be taken back. Measured: the moment
           // it succeeds, list_apps reports windowCount 0 for that application
           // and observe answers target_missing — a minimized window is not in
@@ -315,15 +302,6 @@ export const computerWireParams = z
         'Required only for element_sequence. Each step names a control by the label it shows in the observation (and its role when the label alone is ambiguous). ' +
           '`do` defaults to click; use set_value with `value` to write into a field. The host re-observes before every step, so labels — not element_ids — are what carry across.',
       ),
-    region: z
-      .tuple([
-        z.number().int().nonnegative(),
-        z.number().int().nonnegative(),
-        z.number().int().nonnegative(),
-        z.number().int().nonnegative(),
-      ])
-      .optional()
-      .describe('Required only for zoom: [x1, y1, x2, y2] in the referenced observation.'),
   })
   .strict();
 
@@ -357,22 +335,9 @@ export const COMPUTER_USE_MODEL_SCREENSHOT_POLICY = {
   element_sequence: 'never',
   press_key: 'never',
   screenshot: 'always',
-  cursor_position: 'never',
-  mouse_move: 'always',
-  left_click: 'always',
-  right_click: 'always',
-  middle_click: 'always',
-  double_click: 'always',
-  triple_click: 'always',
-  left_mouse_down: 'always',
-  left_mouse_up: 'always',
-  left_click_drag: 'always',
   type: 'always',
   key: 'always',
-  hold_key: 'always',
-  scroll: 'always',
   wait: 'never',
-  zoom: 'always',
 } as const satisfies Record<CuToolActionType, 'always' | 'explicit' | 'never'>;
 
 function shouldSendScreenshotToModel(input: ComputerParams): boolean {
@@ -443,17 +408,13 @@ function shouldReobserveAfter(outcome: CuRunResult['outcome']): boolean {
 }
 
 /**
- * The pointer-shaped stand-in a semantic action shows the presentation layer.
+ * The semantic action shown to the presentation layer.
  *
- * The cursor overlay and the mirror speak in clicks and coordinates; a semantic
- * action has an element. This is the same translation the single-action path
- * already does inline, named so a sequence can reuse it.
+ * Presentation may use the observed element's centre to animate a cursor, but
+ * this value has no coordinate and cannot be dispatched by a backend.
  */
-function summarySemanticAction(action: CuSemanticAction, binding: CuaBoundAction): CuAction {
-  const coordinate = binding.sourceCoordinate ?? { x: 0, y: 0 };
-  return action.type === 'set_value'
-    ? { type: 'type', text: action.value }
-    : { type: 'left_click', coordinate };
+function summarySemanticAction(action: CuSemanticAction): CuPresentationAction {
+  return { type: action.type };
 }
 
 function observationText(observation: CuObservation): string {
@@ -1149,7 +1110,6 @@ export function buildComputerUseTools(deps: {
             : {}),
         })
       : bindCuaActionToObservation(active, action as CuAction);
-    if (!bound) return { rejection: 'target_missing' };
     const claim = record.state.claimAction(bound);
     return claim.ok ? bound : { rejection: claim.reason };
   }
@@ -1325,22 +1285,6 @@ export function buildComputerUseTools(deps: {
     }
   }
 
-  function presentationScreenPoint(boundAction: CuaBoundAction | undefined): CuPoint | undefined {
-    // An element action is aimed at an element, not at a coordinate, so it
-    // carries the point directly. Only a coordinate action has a screenshot
-    // pixel to map back onto the screen.
-    if (boundAction?.presentationScreenPoint) return boundAction.presentationScreenPoint;
-    const source = boundAction?.sourceStartCoordinate ?? boundAction?.sourceCoordinate;
-    const sourceBounds = boundAction?.target.sourceBoundsPx;
-    const windowBounds = boundAction?.target.bounds;
-    if (!source || !sourceBounds || !windowBounds) return undefined;
-    if (sourceBounds.width <= 0 || sourceBounds.height <= 0) return undefined;
-    return {
-      x: windowBounds.x + (source.x / sourceBounds.width) * windowBounds.width,
-      y: windowBounds.y + (source.y / sourceBounds.height) * windowBounds.height,
-    };
-  }
-
   async function waitForPresentationReady(
     fence: CuPresentationFence | undefined,
     signal: AbortSignal,
@@ -1400,7 +1344,7 @@ export function buildComputerUseTools(deps: {
   }
 
   async function runWithPresentation(
-    action: CuAction,
+    action: CuPresentationAction,
     context: CuRunContext,
     signal: AbortSignal,
     dispatch: () => Promise<CuRunResult>,
@@ -1458,9 +1402,7 @@ export function buildComputerUseTools(deps: {
         };
       }
     }
-    const cursorPoint = context.boundAction
-      ? presentationScreenPoint(context.boundAction)
-      : undefined;
+    const cursorPoint = context.boundAction?.presentationScreenPoint;
     // `requireTarget` uses { pid: -1, windowId: -1 } as its miss sentinel, and
     // -1 is not undefined — an unguarded field would hand `window:-1:0` to the
     // reorder and rely on it throwing.
@@ -1571,9 +1513,7 @@ export function buildComputerUseTools(deps: {
       'A "+name,name" suffix lists what that element accepts as a secondary_action, and an element with no suffix ' +
       'offers nothing beyond click_element that this executor knows of; raise is how a window is brought forward. ' +
       '[focused] marks where a key sent without an element_id will land, when the executor reports focus. ' +
-      'The shipping maka-cu host keeps compatibility key and coordinate dispatch disabled. press_key, type, key, hold_key, ' +
-      'pointer clicks, drag, coordinate scroll and mouse movement remain in the provider schema for compatibility but fail closed. ' +
-      'cursor_position, hold_key and zoom also have no maka.cu/2 execution path. Use click_element, set_value, select_text, ' +
+      'Coordinate mutation is not part of the Computer Use action space. Use click_element, set_value, select_text, ' +
       'scroll_element, secondary_action, window_action or element_sequence; if those cannot express the task, report the capability gap. ' +
       'A screenshot provides visual evidence but does not enable synthetic input. ' +
       'Never guess the current foreground app; list_apps or observe an explicit app/window first. ' +
@@ -1849,7 +1789,7 @@ export function buildComputerUseTools(deps: {
               let presentation: Awaited<ReturnType<typeof runWithPresentation>> | undefined;
               try {
                 presentation = await runWithPresentation(
-                  summarySemanticAction(semantic, binding),
+                  summarySemanticAction(semantic),
                   operationContext,
                   abortSignal,
                   () =>
@@ -2157,7 +2097,7 @@ export function buildComputerUseTools(deps: {
             // observation costs: measured across these runs the text alone is
             // about 428 tokens, and a 460x816 capture adds roughly 500 more on
             // top of a 267-token increase in the text. A picture serves
-            // coordinate actions and a person glancing at the screen, and those
+            // a model action and a person glancing at the screen, and those
             // are worth asking for rather than paying for by default.
             //
             // An earlier version of this comment justified the default with
@@ -2492,28 +2432,7 @@ export function buildComputerUseTools(deps: {
               ...modelAction,
               observationId: record.backendObservationId,
             };
-            const summaryAction: CuAction =
-              semanticAction.type === 'click_element'
-                ? {
-                    type: 'left_click',
-                    coordinate: binding.sourceCoordinate ?? { x: 0, y: 0 },
-                  }
-                : semanticAction.type === 'press_key'
-                  ? { type: 'key', text: semanticAction.key }
-                  : semanticAction.type === 'set_value'
-                    ? { type: 'type', text: semanticAction.value }
-                    : semanticAction.type === 'select_text'
-                      ? { type: 'type', text: semanticAction.text }
-                      : semanticAction.type === 'scroll_element'
-                        ? {
-                            type: 'scroll',
-                            scrollDirection: semanticAction.direction,
-                            scrollAmount: Math.round(
-                              (semanticAction.pages ?? 1) * SCROLL_UNITS_PER_PAGE,
-                            ),
-                            coordinate: binding.sourceCoordinate ?? { x: 0, y: 0 },
-                          }
-                        : { type: 'key', text: semanticAction.action };
+            const summaryAction = summarySemanticAction(semanticAction);
             let result: CuRunResult | undefined;
             let consumeFailure: BindingFailureReason | undefined;
             let presentation: Awaited<ReturnType<typeof runWithPresentation>> | undefined;
@@ -2708,7 +2627,7 @@ export function buildComputerUseTools(deps: {
             boundAction = binding;
           }
           // A capture-bearing action additionally needs Screen Recording (S12).
-          const capturing = action.type === 'screenshot' || action.type === 'zoom';
+          const capturing = action.type === 'screenshot';
           if (capturing && !tcc.screenRecording) {
             return {
               text: 'maka_computer failed: permission_missing — Screen Recording not granted (System Settings → Privacy & Security → Screen Recording)',
@@ -2775,10 +2694,7 @@ export function buildComputerUseTools(deps: {
             }
             let freshObservation: CuObservation | undefined;
             try {
-              // Same on the coordinate path: a refused action leaves the model
-              // needing a current frame, and making it spend a round trip to
-              // ask for one is the cost this whole result shape exists to
-              // avoid.
+              // A refused mutation leaves the model needing a current frame.
               freshObservation =
                 actionLease && shouldReobserveAfter(result.outcome)
                   ? await freshFullObservation(state, record, result, abortSignal, {
@@ -2806,7 +2722,7 @@ export function buildComputerUseTools(deps: {
             const modelRefresh = freshObservation
               ? `\nFresh observation:\n${observationText(freshObservation)}`
               : actionLease
-                ? '\nObservation consumed; call observe before the next coordinate or element action.'
+                ? '\nObservation consumed; call observe before the next element or keyboard action.'
                 : '';
             const persistedRefresh = freshObservation
               ? `\nFresh observation: ${persistedObservationText(freshObservation)}`
@@ -2843,8 +2759,8 @@ export function buildComputerUseTools(deps: {
     },
     // Map the raw result into model-visible content. Semantic actions already
     // return a fresh accessibility observation, so their automatically captured
-    // PiP frame stays local. Explicit visual requests and legacy coordinate
-    // actions still receive the native image block.
+    // PiP frame stays local. Explicit visual requests receive the native image
+    // block.
     toModelOutput: ({ output }) => {
       const o = (output ?? {}) as Partial<ComputerToolResult> & { error?: unknown };
       const text =

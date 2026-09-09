@@ -35,7 +35,6 @@ function statusHasSpinner(toolStatuses: readonly ('running' | 'completed')[]): b
   const turn: TurnViewModel = {
     turnId: 'turn-1',
     status: 'running',
-    partialOutputRetained: false,
     tools,
     notes: [],
     startedAt: 1,
@@ -50,6 +49,23 @@ function statusHasSpinner(toolStatuses: readonly ('running' | 'completed')[]): b
   return document.querySelector('.maka-turn-processing .astryx-spinner') !== null;
 }
 
+function runningStatusText(locale: 'en' | 'zh-CN'): string {
+  const turn: TurnViewModel = {
+    turnId: 'turn-1',
+    status: 'running',
+    tools: [],
+    notes: [],
+    startedAt: 1,
+    timeline: [],
+  };
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale={locale}>
+      <TurnView turn={turn} liveStreaming={{ runningStatus: true }} />
+    </LocaleProvider>,
+  );
+  return parseHTML(markup).document.querySelector('.maka-turn-processing')?.textContent ?? '';
+}
+
 test('hands the spinner to the turn status after the tool settles', () => {
   assert.equal(statusHasSpinner(['running']), false);
   assert.equal(statusHasSpinner(['completed']), true);
@@ -57,4 +73,9 @@ test('hands the spinner to the turn status after the tool settles', () => {
 
 test('keeps the turn spinner when a collapsed group hides the running tool', () => {
   assert.equal(statusHasSpinner(['running', 'completed']), true);
+});
+
+test('describes provider silence without inventing semantic progress', () => {
+  assert.equal(runningStatusText('zh-CN'), '等待模型输出…');
+  assert.equal(runningStatusText('en'), 'Waiting for model output…');
 });

@@ -23,122 +23,102 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { stringify } from 'yaml';
-import { assertDesktopNightlyFeedAdvance, stageDesktopNightly } from './desktop-nightly.mjs';
+import { parse, stringify } from 'yaml';
+import { writeDesktopReleaseInput } from './desktop-nightly-fixture.mjs';
+import { addDesktopNightlyAttestation, stageDesktopNightly } from './desktop-nightly.mjs';
 import { verifyDesktopUpdateArtifacts } from './desktop-update-contract.mjs';
 
-async function writeUpdateSet(directory, version, platform) {
-  const isMac = platform === 'mac';
-  const artifact = isMac ? `Maka-${version}-mac-arm64.zip` : `Maka-${version}-win-x64.exe`;
-  const metadata = isMac ? 'latest-mac.yml' : 'latest.yml';
-  const bytes = Buffer.from(`${platform} nightly bytes`);
-  const sha512 = createHash('sha512').update(bytes).digest('base64');
-  await writeFile(join(directory, artifact), bytes);
-  await writeFile(join(directory, `${artifact}.blockmap`), `${platform} blockmap`);
-  await writeFile(
-    join(directory, metadata),
-    stringify({
-      version,
-      files: [{ url: artifact, sha512, size: bytes.byteLength }],
-      path: artifact,
-      sha512,
-      releaseDate: '2026-08-29T18:17:00.000Z',
-    }),
-  );
-}
-
-test('staging separates append-only payloads from the mutable Nightly feed', async (t) => {
+test('staging creates only the exact GitHub Release assets', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-desktop-nightly-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const input = join(root, 'input');
   const output = join(root, 'output');
   const version = '0.2.0-dev.42.20260829';
   await mkdir(input);
-  await Promise.all([
-    writeUpdateSet(input, version, 'mac'),
-    writeUpdateSet(input, version, 'win'),
-    writeFile(join(input, `Maka-${version}-mac-arm64.dmg`), 'dmg'),
-    writeFile(join(input, `Maka-${version}-win-x64.zip`), 'windows zip'),
-  ]);
+  await writeDesktopReleaseInput(input, version, { nightly: true });
 
   await stageDesktopNightly({
     inputDirectory: input,
     outputDirectory: output,
     version,
-    sourceCommit: 'a'.repeat(40),
   });
 
   const payloadNames = [
     `Maka-${version}-mac-arm64.dmg`,
     `Maka-${version}-mac-arm64.zip`,
     `Maka-${version}-mac-arm64.zip.blockmap`,
+    `Maka-${version}-mac-x64.dmg`,
+    `Maka-${version}-mac-x64.zip`,
+    `Maka-${version}-mac-x64.zip.blockmap`,
     `Maka-${version}-win-x64.exe`,
     `Maka-${version}-win-x64.exe.blockmap`,
     `Maka-${version}-win-x64.zip`,
+    // Linux artifact names use the packaging ecosystem's architecture, and
+    // neither distributable has a sidecar blockmap.
+    `Maka-${version}-linux-x86_64.AppImage`,
+    `Maka-${version}-linux-amd64.deb`,
+    `Maka-${version}-linux-arm64.AppImage`,
+    `Maka-${version}-linux-arm64.deb`,
   ];
+  const release = join(output, 'release');
   for (const name of payloadNames) {
-    assert.deepEqual(
-      await readFile(join(output, 'versions', version, name)),
-      await readFile(join(input, name)),
-      name,
-    );
+    assert.deepEqual(await readFile(join(release, name)), await readFile(join(input, name)), name);
   }
   await Promise.all([
     verifyDesktopUpdateArtifacts({
-      directory: output,
-      metadataName: 'feed/latest-mac.yml',
+      directory: release,
+      metadataName: 'dev-mac.yml',
       version,
-      artifactName: `versions/${version}/Maka-${version}-mac-arm64.zip`,
+      artifactNames: [`Maka-${version}-mac-arm64.zip`, `Maka-${version}-mac-x64.zip`],
     }),
     verifyDesktopUpdateArtifacts({
-      directory: output,
-      metadataName: 'feed/latest.yml',
+      directory: release,
+      metadataName: 'dev.yml',
       version,
-      artifactName: `versions/${version}/Maka-${version}-win-x64.exe`,
+      artifactNames: [`Maka-${version}-win-x64.exe`],
+    }),
+    verifyDesktopUpdateArtifacts({
+      directory: release,
+      metadataName: 'dev-linux.yml',
+      version,
+      artifactNames: [`Maka-${version}-linux-x86_64.AppImage`, `Maka-${version}-linux-amd64.deb`],
+    }),
+    verifyDesktopUpdateArtifacts({
+      directory: release,
+      metadataName: 'dev-linux-arm64.yml',
+      version,
+      artifactNames: [`Maka-${version}-linux-arm64.AppImage`, `Maka-${version}-linux-arm64.deb`],
     }),
   ]);
 
-  const macMetadata = (await import('yaml')).parse(
-    await readFile(join(output, 'feed', 'latest-mac.yml'), 'utf8'),
+  // Both macOS architectures reach one feed, and the per-runner feeds do not
+  // reach the release at all.
+  const macFeed = parse(await readFile(join(release, 'dev-mac.yml'), 'utf8'));
+  assert.deepEqual(
+    macFeed.files.map((file) => file.url).sort(),
+    [`Maka-${version}-mac-arm64.zip`, `Maka-${version}-mac-x64.zip`].sort(),
   );
-  const windowsMetadata = (await import('yaml')).parse(
-    await readFile(join(output, 'feed', 'latest.yml'), 'utf8'),
+
+  assert.deepEqual(
+    (await readdir(release)).sort(),
+    [...payloadNames, 'dev-mac.yml', 'dev.yml', 'dev-linux.yml', 'dev-linux-arm64.yml'].sort(),
   );
-  assert.equal(macMetadata.files[0].url, `versions/${version}/Maka-${version}-mac-arm64.zip`);
-  assert.equal(windowsMetadata.path, `versions/${version}/Maka-${version}-win-x64.exe`);
-  const index = await readFile(join(output, 'feed', 'index.html'), 'utf8');
-  assert.match(index, /Desktop Nightly is a developer snapshot, not an Apache release/u);
-  assert.match(index, new RegExp(`source commit <code>${'a'.repeat(40)}</code>`, 'u'));
-  assert.match(index, new RegExp(`versions/${version}/Maka-${version}-mac-arm64\.dmg`, 'u'));
-  assert.match(index, new RegExp(`versions/${version}/Maka-${version}-win-x64\.exe`, 'u'));
-  assert.deepEqual((await readdir(join(output, 'feed'))).sort(), [
-    'index.html',
-    'latest-mac.yml',
-    'latest.yml',
-  ]);
-  assert.deepEqual((await readdir(join(output, 'versions', version))).sort(), payloadNames);
+  assert.deepEqual(await readdir(output), ['release']);
 });
 
-test('the Desktop feed advances only to a newer npm run number', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'maka-desktop-nightly-feed-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  await Promise.all([
-    writeFile(join(directory, 'latest-mac.yml'), 'version: 0.2.0-dev.42.20260829\n'),
-    writeFile(join(directory, 'latest.yml'), 'version: 0.2.0-dev.42.20260829\n'),
-  ]);
-  await assert.doesNotReject(
-    assertDesktopNightlyFeedAdvance({
-      directory,
-      candidateVersion: '0.3.0-dev.43.20260828',
-      productVersion: '0.3.0',
-    }),
-  );
-  await assert.rejects(
-    assertDesktopNightlyFeedAdvance({
-      directory,
-      candidateVersion: '0.2.0-dev.41.20260830',
-      productVersion: '0.2.0',
-    }),
-    /does not advance current run/u,
-  );
+test('one attestation bundle is staged only as a GitHub Release asset', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-desktop-nightly-attestation-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const output = join(root, 'output');
+  const release = join(output, 'release');
+  const version = '0.2.0-dev.42.20260829';
+  const bundle = join(root, 'bundle.json');
+  const bytes = Buffer.from('one offline Sigstore bundle');
+  await Promise.all([mkdir(release, { recursive: true }), writeFile(bundle, bytes)]);
+
+  await addDesktopNightlyAttestation({ outputDirectory: output, version, bundlePath: bundle });
+
+  const name = `Maka-${version}-attestation.sigstore.json`;
+  assert.deepEqual(await readFile(join(release, name)), bytes);
+  assert.deepEqual(await readdir(output), ['release']);
 });

@@ -10,7 +10,7 @@ Policy: every package must resolve to an ASF-compatible SPDX license. Compound
 expressions record the compatible selected license. Packages without a shipped
 license file require an exact name@version text override in the generator.
 
-Package: @ai-sdk/anthropic@4.0.40
+Package: @ai-sdk/anthropic@4.0.46
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/anthropic
@@ -32,7 +32,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/code-mode@1.0.27
+Package: @ai-sdk/code-mode@1.0.42
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/code-mode
@@ -54,7 +54,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/cohere@4.0.28
+Package: @ai-sdk/cohere@4.0.35
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/cohere
@@ -76,7 +76,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/gateway@4.0.56
+Package: @ai-sdk/gateway@4.0.69
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/gateway
@@ -98,7 +98,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/google@4.0.47
+Package: @ai-sdk/google@4.0.58
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/google
@@ -120,7 +120,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/open-responses@2.0.29
+Package: @ai-sdk/open-responses@2.0.36
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/open-responses
@@ -142,7 +142,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/openai@4.0.44
+Package: @ai-sdk/openai@4.0.52
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/openai
@@ -164,7 +164,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/openai-compatible@3.0.32
+Package: @ai-sdk/openai-compatible@3.0.41
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/openai-compatible
@@ -186,7 +186,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/provider@4.0.7
+Package: @ai-sdk/provider@4.0.9
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/provider
@@ -208,7 +208,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/provider-utils@5.0.28
+Package: @ai-sdk/provider-utils@5.0.34
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/provider-utils
@@ -418,7 +418,7 @@ Apache License
 
 ================================================================================
 
-Package: @ant-design/icons-svg@4.5.0
+Package: @ant-design/icons-svg@4.6.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/ant-design/ant-design-icons.git
@@ -478,7 +478,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: @astryxdesign/core@0.5.0
+Package: @astryxdesign/core@0.5.2
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/facebook/astryx.git#packages/core
@@ -508,7 +508,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: @astryxdesign/theme-neutral@0.5.0
+Package: @astryxdesign/theme-neutral@0.5.2
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/facebook/astryx.git#packages/themes/neutral
@@ -813,126 +813,6 @@ THE SOFTWARE.
 
 ================================================================================
 
-Package: @dnd-kit/accessibility@3.1.1
-Declared license: MIT
-Selected license: MIT
-Repository: git+https://github.com/clauderic/dnd-kit.git#packages/accessibility
-
---- LICENSE ---
-MIT License
-
-Copyright (c) 2021, Claudéric Demers
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-================================================================================
-
-Package: @dnd-kit/core@6.3.1
-Declared license: MIT
-Selected license: MIT
-Repository: git+https://github.com/clauderic/dnd-kit.git#packages/core
-
---- LICENSE ---
-MIT License
-
-Copyright (c) 2021, Claudéric Demers
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-================================================================================
-
-Package: @dnd-kit/sortable@10.0.0
-Declared license: MIT
-Selected license: MIT
-Repository: git+https://github.com/clauderic/dnd-kit.git#packages/sortable
-
---- LICENSE ---
-MIT License
-
-Copyright (c) 2021, Claudéric Demers
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-================================================================================
-
-Package: @dnd-kit/utilities@3.2.2
-Declared license: MIT
-Selected license: MIT
-Repository: git+https://github.com/clauderic/dnd-kit.git#packages/utilities
-
---- LICENSE ---
-MIT License
-
-Copyright (c) 2021, Claudéric Demers
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-================================================================================
-
 Package: @formatjs/fast-memoize@3.1.7
 Declared license: MIT
 Selected license: MIT
@@ -952,6 +832,24 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ================================================================================
 
 Package: @formatjs/icu-messageformat-parser@3.5.15
+Declared license: MIT
+Selected license: MIT
+Repository: https://github.com/formatjs/formatjs.git#packages/icu-messageformat-parser
+
+--- LICENSE.md ---
+MIT License
+
+Copyright (c) 2023 FormatJS
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+================================================================================
+
+Package: @formatjs/icu-messageformat-parser@3.5.17
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/formatjs/formatjs.git#packages/icu-messageformat-parser
@@ -1076,7 +974,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: @jackwener/opencli@1.8.6
+Package: @jackwener/opencli@1.8.7
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: git+https://github.com/jackwener/opencli.git
@@ -3255,7 +3153,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-Package: @slack/socket-mode@3.0.0
+Package: @slack/socket-mode@3.0.1
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/slackapi/node-slack-sdk.git
@@ -3286,7 +3184,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-Package: @slack/types@3.0.0
+Package: @slack/types@3.1.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/slackapi/node-slack-sdk.git
@@ -3317,7 +3215,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-Package: @slack/web-api@8.0.0
+Package: @slack/web-api@8.1.1
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/slackapi/node-slack-sdk.git
@@ -4428,7 +4326,7 @@ MIT License
 
 ================================================================================
 
-Package: @types/node@26.2.0
+Package: @types/node@26.4.0
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/DefinitelyTyped/DefinitelyTyped.git#types/node
@@ -4467,6 +4365,36 @@ Repository: https://github.com/DefinitelyTyped/DefinitelyTyped.git
 MIT License
 
     Copyright (c) Microsoft Corporation. All rights reserved.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE
+
+================================================================================
+
+Package: @types/retry@0.12.5
+Declared license: MIT
+Selected license: MIT
+Repository: https://github.com/DefinitelyTyped/DefinitelyTyped.git#types/retry
+
+--- LICENSE ---
+MIT License
+
+    Copyright (c) Microsoft Corporation.
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to deal
@@ -4980,7 +4908,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-Package: ai@7.0.70
+Package: ai@7.0.85
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/ai
@@ -6347,6 +6275,37 @@ THE SOFTWARE.
 ================================================================================
 
 Package: commander@14.0.3
+Declared license: MIT
+Selected license: MIT
+Repository: git+https://github.com/tj/commander.js.git
+
+--- LICENSE ---
+(The MIT License)
+
+Copyright (c) 2011 TJ Holowaychuk <tj@vision-media.ca>
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+'Software'), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+================================================================================
+
+Package: commander@15.0.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/tj/commander.js.git
@@ -9021,7 +8980,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: fast-uri@3.1.5
+Package: fast-uri@3.1.7
 Declared license: BSD-3-Clause
 Selected license: BSD-3-Clause
 Repository: git+https://github.com/fastify/fast-uri.git
@@ -9175,7 +9134,7 @@ OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHE
 
 ================================================================================
 
-Package: fs-native-extensions@1.5.0
+Package: fs-native-extensions@1.5.1
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: git+https://github.com/holepunchto/fs-native-extensions.git
@@ -9994,6 +9953,48 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ================================================================================
 
+Package: intl-messageformat@11.2.14
+Declared license: BSD-3-Clause
+Selected license: BSD-3-Clause
+Repository: git@github.com:formatjs/formatjs.git
+
+--- LICENSE.md ---
+Copyright (c) 2023, Oath Inc.
+
+Licensed under the terms of the New BSD license. See below for terms.
+
+Redistribution and use of this software in source and binary forms,
+with or without modification, are permitted provided that the following
+conditions are met:
+
+- Redistributions of source code must retain the above
+  copyright notice, this list of conditions and the
+  following disclaimer.
+
+- Redistributions in binary form must reproduce the above
+  copyright notice, this list of conditions and the
+  following disclaimer in the documentation and/or other
+  materials provided with the distribution.
+
+- Neither the name of Oath Inc. nor the names of its
+  contributors may be used to endorse or promote products
+  derived from this software without specific prior
+  written permission of Oath Inc.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+================================================================================
+
 Package: invariant@2.2.4
 Declared license: MIT
 Selected license: MIT
@@ -10443,6 +10444,36 @@ OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHE
 ================================================================================
 
 Package: katex@0.16.47
+Declared license: MIT
+Selected license: MIT
+Repository: https://github.com/KaTeX/KaTeX.git
+
+--- LICENSE ---
+The MIT License (MIT)
+
+Copyright (c) 2013-2020 Khan Academy and other contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+
+Package: katex@0.18.5
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/KaTeX/KaTeX.git
@@ -11185,7 +11216,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-Package: lucide-react@1.33.0
+Package: lucide-react@1.38.0
 Declared license: ISC
 Selected license: ISC
 Repository: https://github.com/lucide-icons/lucide.git#packages/lucide-react
@@ -11320,7 +11351,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: mermaid@11.17.0
+Package: mermaid@11.17.2
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/mermaid-js/mermaid
@@ -12358,7 +12389,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-Package: qs@6.15.3
+Package: qs@6.16.0
 Declared license: BSD-3-Clause
 Selected license: BSD-3-Clause
 Repository: https://github.com/ljharb/qs.git
@@ -13227,7 +13258,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: simple-icons@16.28.0
+Package: simple-icons@16.29.0
 Declared license: CC0-1.0
 Selected license: CC0-1.0
 Repository: git+ssh://git@github.com/simple-icons/simple-icons.git
@@ -13469,6 +13500,35 @@ SOFTWARE.
 
 ================================================================================
 
+Package: systeminformation@5.33.8
+Declared license: MIT
+Selected license: MIT
+Repository: git+https://github.com/sebhildebrandt/systeminformation.git
+
+--- LICENSE ---
+The MIT License (MIT)
+
+Copyright (c) 2014-2026 Sebastian Hildebrandt
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+================================================================================
+
 Package: tiny-typed-emitter@2.1.0
 Declared license: MIT
 Selected license: MIT
@@ -13556,27 +13616,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-================================================================================
-
-Package: tslib@2.8.1
-Declared license: 0BSD
-Selected license: 0BSD
-Repository: https://github.com/Microsoft/tslib.git
-
---- LICENSE.txt ---
-Copyright (c) Microsoft Corporation.
-
-Permission to use, copy, modify, and/or distribute this software for any
-purpose with or without fee is hereby granted.
-
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
-REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
-AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
-INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
-LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
-OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
-PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
 
@@ -13754,7 +13793,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: undici@8.10.0
+Package: undici@8.10.1
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/nodejs/undici.git
@@ -14261,7 +14300,7 @@ ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
 
-Package: zod@4.4.3
+Package: zod@4.5.4
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/colinhacks/zod.git
@@ -14292,7 +14331,7 @@ SOFTWARE.
 ================================================================================
 
 Embedded component: quickjs-emscripten (embedded runtime)
-Embedded by: @ai-sdk/code-mode@1.0.27
+Embedded by: @ai-sdk/code-mode@1.0.42
 Selected license: MIT
 Repository: https://github.com/justjake/quickjs-emscripten
 
@@ -14322,7 +14361,7 @@ SOFTWARE.
 ================================================================================
 
 Embedded component: QuickJS JavaScript engine (embedded runtime)
-Embedded by: @ai-sdk/code-mode@1.0.27
+Embedded by: @ai-sdk/code-mode@1.0.42
 Selected license: MIT
 Repository: https://github.com/bellard/quickjs
 

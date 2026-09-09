@@ -33,20 +33,16 @@ export type PeerMeshOperationHandlers = Pick<
   | 'peer.mesh.leave'
   | 'peer.mesh.close'
   | 'peer.mesh.reconcile'
+  | 'peer.mesh.transit.set'
+  | 'peer.mesh.display-name.set'
+  | 'peer.mesh.rename'
 >;
 
 export function createPeerMeshOperationHandlers(
   mesh: PeerMeshNode | undefined,
   options: { readonly requestDrain?: () => void } = {},
 ): PeerMeshOperationHandlers {
-  const query = (): PeerMeshQueryResult =>
-    mesh
-      ? {
-          available: true,
-          localPeerId: mesh.localPeerId(),
-          meshes: mesh.status().map(projectPeerMeshStatus),
-        }
-      : { available: false, meshes: [] };
+  const query = (): PeerMeshQueryResult => projectPeerMeshQuery(mesh);
   const unavailable = <K extends keyof PeerMeshOperationHandlers>(): OperationOutcome<K> =>
     ({
       ok: false,
@@ -144,17 +140,68 @@ export function createPeerMeshOperationHandlers(
         return { ok: true, result: query() };
       });
     },
+    'peer.mesh.transit.set': async (input) => {
+      if (!mesh) return unavailable();
+      return mutate(async () => {
+        await mesh.setTransitMesh(input.meshId);
+        return { ok: true, result: query() };
+      });
+    },
+    'peer.mesh.display-name.set': async (input) => {
+      if (!mesh) return unavailable();
+      return mutate(async () => {
+        await mesh.setDisplayName(input.displayName);
+        return { ok: true, result: query() };
+      });
+    },
+    'peer.mesh.rename': async (input) => {
+      if (!mesh) return unavailable();
+      return mutate(async () => {
+        await mesh.setMeshDisplayName(input.meshId, input.displayName);
+        return { ok: true, result: query() };
+      });
+    },
   };
 }
 
 export function projectPeerMeshStatus(status: PeerMeshStatus): PeerMeshProjection {
   return Object.freeze({
     meshId: status.roster.roster.meshId,
+    ...(status.roster.roster.displayName ? { displayName: status.roster.roster.displayName } : {}),
     role: status.role,
-    authorityPeerId: status.authority.peerId,
+    authorityPeerId: status.authorityPeerId,
     revision: status.roster.roster.revision,
     closed: status.roster.roster.closed,
     members: Object.freeze(status.memberRoutes.map((member) => Object.freeze({ ...member }))),
     pendingInvitationCount: status.pendingInvitationCount,
+  });
+}
+
+export function projectPeerMeshQuery(mesh: PeerMeshNode | undefined): PeerMeshQueryResult {
+  if (!mesh) return { available: false, meshes: [] };
+  const displayName = mesh.displayName();
+  return Object.freeze({
+    available: true,
+    localPeerId: mesh.localPeerId(),
+    ...(displayName ? { localDisplayName: displayName } : {}),
+    meshes: Object.freeze(mesh.status().map(projectPeerMeshStatus)),
+    transit: projectTransitSnapshot(mesh.transitMeshId(), mesh.transitSnapshot()),
+  });
+}
+
+function projectTransitSnapshot(
+  meshId: string | null,
+  snapshot: ReturnType<PeerMeshNode['transitSnapshot']>,
+) {
+  return Object.freeze({
+    meshId,
+    allowedMemberCount: snapshot.allowedPeerCount,
+    activeReservationCount: snapshot.activeReservationCount,
+    activeCircuitCount: snapshot.activeCircuitCount,
+    maxReservationCount: snapshot.maxReservationCount,
+    maxCircuitCount: snapshot.maxCircuitCount,
+    maxCircuitsPerPeer: snapshot.maxCircuitsPerPeer,
+    maxCircuitDurationSeconds: snapshot.maxCircuitDurationSeconds,
+    maxCircuitBytes: snapshot.maxCircuitBytes,
   });
 }

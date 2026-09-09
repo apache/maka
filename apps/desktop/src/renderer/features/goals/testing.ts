@@ -21,6 +21,7 @@ import type { GoalServices } from './ports.js';
 
 export { GoalServicesProvider } from './services-context.js';
 export { GoalDialog } from './ui/goal-dialog.js';
+export { GoalProvider } from './ui/goal-provider.js';
 export { readGoalBudget } from './model/goal-budget.js';
 export { isLiveGoal } from './model/live-goal.js';
 export { interpretGoalArmOutcome } from './model/goal-arm-outcome.js';
@@ -29,7 +30,7 @@ export {
   type GoalController,
   type UseGoalControllerInput,
 } from './controller/use-goal-controller.js';
-export type { GoalServices } from './ports.js';
+export type { GoalArmInput, GoalServices } from './ports.js';
 
 const noopSubscription = (): (() => void) => () => undefined;
 

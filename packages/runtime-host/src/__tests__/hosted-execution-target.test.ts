@@ -213,6 +213,9 @@ function catalogPage(
         enabled: true,
         enabledModelIdCount: enabledModelIds.length,
         modelCount: models.length,
+        // These tests are about which endpoint a target resolves to, not about
+        // what the models are, so the page carries no resolved entries.
+        catalogEntryCount: 0,
       },
       ...enabledModelIds.map((modelId, itemIndex) => ({
         kind: 'enabled_model_id' as const,

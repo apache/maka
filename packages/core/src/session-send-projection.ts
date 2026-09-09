@@ -38,11 +38,8 @@
  * notice's "send will fail" answer either.
  */
 
-import {
-  isConnectionReady,
-  normalizeOpenAiCodexConnection,
-  type ChatConfigurationReason,
-} from './connection-readiness.js';
+import { isConnectionReady, type ChatConfigurationReason } from './connection-readiness.js';
+import { normalizeOpenAiCodexConnection } from './model-catalog.js';
 import type { IdentifiedLlmConnection, LlmConnection } from './llm-connections.js';
 
 export interface SessionSendProjectionSession {

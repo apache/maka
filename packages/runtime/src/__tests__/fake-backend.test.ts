@@ -17,17 +17,16 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
-import type { SessionHeader } from '@maka/core/session';
 import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '../test-only/fake-backend.js';
 import {
   RuntimeInteractionInvariantError,
   bindRuntimeInteractionRun,
   type RuntimeUserQuestionContinuation,
 } from '../interaction-authority.js';
-import type { SessionStore } from '../session-manager.js';
 
 test('Fake question publication waits for exact hosted admission', async () => {
   const admissionStarted = deferred<void>();
@@ -43,18 +42,15 @@ test('Fake question publication waits for exact hosted admission', async () => {
           admissionStarted.resolve();
           await allowAdmission.promise;
         },
+        acceptFormRequest: async () => {},
+        withdrawFormRequest: async () => {},
         close: async () => {},
         release: () => {},
       }),
     },
     { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1' },
   );
-  const backend = new FakeBackend({
-    sessionId: 'session-1',
-    header: { model: 'fake-model' } as SessionHeader,
-    store: {} as SessionStore,
-    appendMessage: async () => {},
-  });
+  const backend = new FakeBackend({ sessionId: 'session-1' });
   const iterator = backend
     .send({
       turnId: 'turn-1',
@@ -98,12 +94,7 @@ test('Fake question publication waits for exact hosted admission', async () => {
 });
 
 test('pullSteering drains queued messages at step boundaries as steering events', async () => {
-  const backend = new FakeBackend({
-    sessionId: 'session-1',
-    header: { model: 'fake-model' } as SessionHeader,
-    store: {} as SessionStore,
-    appendMessage: async () => {},
-  });
+  const backend = new FakeBackend({ sessionId: 'session-1' });
   // Queue two steering messages, delivered one per step boundary, then dry up.
   const pending = [
     { id: 'lease-1', messageId: 'message-1', content: { text: 'do X' } },
@@ -135,12 +126,7 @@ test('a batch of leases settles per lease: delivered ones ack, undelivered ones 
   // while suspended at B's yield: A crossed its yield (delivered — the
   // consumer pulled past it), B did not. Batch settlement would nack both,
   // redelivering the already-delivered A.
-  const backend = new FakeBackend({
-    sessionId: 'session-1',
-    header: { model: 'fake-model' } as SessionHeader,
-    store: {} as SessionStore,
-    appendMessage: async () => {},
-  });
+  const backend = new FakeBackend({ sessionId: 'session-1' });
   let pulled = false;
   const acked: string[] = [];
   const nacked: string[] = [];
@@ -180,12 +166,7 @@ test('a lease is acked only after its event is consumed, and nacked when the con
   // durable ledger, so its delivery boundary is the consumer receiving the
   // echoed event; acking at pull time marked messages delivered that a
   // detaching consumer never saw, silently dropping them.
-  const backend = new FakeBackend({
-    sessionId: 'session-1',
-    header: { model: 'fake-model' } as SessionHeader,
-    store: {} as SessionStore,
-    appendMessage: async () => {},
-  });
+  const backend = new FakeBackend({ sessionId: 'session-1' });
   const pending = [{ id: 'lease-1', messageId: 'message-1', content: { text: 'do X' } }];
   const acked: string[] = [];
   const nacked: string[] = [];
@@ -214,11 +195,3 @@ test('a lease is acked only after its event is consumed, and nacked when the con
   assert.deepEqual(acked, []);
   assert.deepEqual(nacked, ['lease-1']);
 });
-
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}

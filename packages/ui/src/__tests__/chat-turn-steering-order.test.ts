@@ -30,7 +30,6 @@ test('renders steering where it arrived in the assistant timeline', () => {
   const turn: TurnViewModel = {
     turnId: 'turn-1',
     status: 'failed',
-    partialOutputRetained: false,
     user: { id: 'original', role: 'user', text: 'original request', ts: 1 },
     tools: [],
     notes: [],

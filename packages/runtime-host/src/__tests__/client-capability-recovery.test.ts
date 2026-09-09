@@ -60,6 +60,12 @@ test('successor recovery durably settles dispatched Client Capabilities as outco
           },
         },
         isError: true,
+        modelProjection: {
+          version: 1,
+          kind: 'text',
+          text: 'Error: outcome_unknown: the Host restarted after dispatching this Client Capability call. The client-side effect may have happened; do not retry it automatically.',
+          isError: true,
+        },
       },
       refs: {
         operationId: 'capability-operation',
@@ -132,6 +138,7 @@ async function prepare(
         toolName: 'client_tool',
         canonicalArgsHash,
         recoveryMode,
+        resultProjectionVersion: 1,
       },
     },
     refs: { operationId, toolCallId: providerToolCallId },

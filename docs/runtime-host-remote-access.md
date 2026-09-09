@@ -124,10 +124,11 @@ maka runtime-host service peer descriptor \
 ```
 
 The descriptor contains the PeerId, Root ID, and candidate routes, but never an access credential.
-Use those values with `runtime-host profile set --peer-id ... --peer-route ...`; supply the
-credential created by setup through `MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL`. Disable and re-enable
-preserve the PeerId and listener settings; `peer rotate` intentionally changes the PeerId, and
-service uninstall removes its key while retaining the State Root. Pass
+Raw descriptor routes are diagnostic output, not a durable Client profile: routes can change and
+are not authenticated as a current reachability claim. Use a one-time connection code when adding
+a Direct peer to Desktop. Disable and re-enable preserve the PeerId and listener settings; `peer
+rotate` intentionally changes the PeerId, and service uninstall removes its key while retaining the
+State Root. Pass
 `peer enable --clear-coordination-relays` to remove every configured coordination relay.
 
 This direct-only path is experimental and may fail on restrictive NAT or UDP-blocked networks. It
@@ -140,6 +141,15 @@ best-effort discovery with `peer enable --no-automatic-relay-discovery` or
 observe the discovery connection and may refuse or drop reservations. Only accepted reservations
 are advertised to Mesh peers, and Maka still requires the application stream to upgrade to a direct
 connection instead of carrying Session traffic through the relay.
+
+Maka races its supported direct transports automatically; users do not select QUIC or WebRTC.
+WebRTC uses STUN only to discover a public address and never sends Session traffic through the STUN
+provider. The default best-effort policy uses Cloudflare's public STUN endpoint, which can observe
+the source IP and request timing and has no Maka availability guarantee. Configure this from
+Desktop's advanced Peer Mesh settings, or use `peer enable --no-public-stun`,
+`peer enable --default-public-stun`, or repeat `peer enable --webrtc-stun <stun-url>` for private
+STUN endpoints. Maka does not use TURN; if no direct path succeeds, only an explicitly approved Mesh
+member can carry application traffic.
 
 ### Direct TLS
 
@@ -197,11 +207,16 @@ manager, and adds a Direct peer listener alongside Local IPC. Share the one-time
 with the other Desktop. Turning remote access off removes only the Direct peer listener; removing
 the background service returns Local Host ownership to Desktop and retains all data.
 
+The Host can also print a complete one-time code with
+`maka runtime-host access connection-code [--name <display-name>] [--root <path>]`. Direct peer
+must already be enabled. The code contains the current live routes and a pending Owner credential;
+it expires after 15 minutes and is consumed by one Desktop.
+
 The credential is stored separately from the Profile. Desktop keeps Local and every enabled remote Host connected independently. Choose one as the default for new Sessions; existing Sessions continue to use their owning Host. A failed remote connection remains visible without interrupting the other Hosts. After connecting, choose a Project registered on that Host; Client-local directory actions remain unavailable.
 
 During guided pairing, the delivered credential has the selected Client grants and expires after 15 minutes unless Desktop explicitly finalizes it after saving the local binding.
 
-For an SSH-managed computer, open its **Manage** action to inspect the installed release, service state, published directory roots, and recent logs, or to start, restart, repair, or uninstall the service. Uninstalling preserves the remote State Root and does not remove the Desktop Profile; removing a Profile does not uninstall the remote service. Manually configured direct connections remain usable but must be managed on the Host machine.
+For an SSH-managed computer, open its **Manage** action to create a connection code, inspect the installed release, service state, published directory roots, and recent logs, or to start, restart, repair, or uninstall the service. Uninstalling preserves the remote State Root and does not remove the Desktop Profile; removing a Profile does not uninstall the remote service. Manually configured direct connections remain usable but must be managed on the Host machine.
 
 ## Connect TUI or CLI
 

@@ -64,7 +64,7 @@ function report(input: Partial<CapabilityAuditReport['summary']>): CapabilityAud
       declaredToolKindCount: 0,
       scheduledTaskCount: 0,
       enabledScheduledTaskCount: 0,
-      executableScheduledTaskCount: 0,
+      activeScheduledTaskCount: 0,
       failedScheduledTaskCount: 0,
       skippedScheduledTaskCount: 0,
       ...input,
@@ -123,7 +123,7 @@ export const WithRisks: Story = {
           declaredToolKindCount: 5,
           scheduledTaskCount: 6,
           enabledScheduledTaskCount: 5,
-          executableScheduledTaskCount: 4,
+          activeScheduledTaskCount: 4,
           failedScheduledTaskCount: 1,
           skippedScheduledTaskCount: 1,
         })}

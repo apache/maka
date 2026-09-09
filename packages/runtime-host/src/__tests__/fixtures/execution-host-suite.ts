@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -34,22 +35,27 @@ import { createServer, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
-import type { AgentRunHeader } from '@maka/core/agent-run';
 import {
+  runtimeInvocationOutcome,
+  type RuntimeInvocationRecord,
+} from '@maka/core/runtime-invocation';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
+import {
+  aggregateMessageContents,
   messageContentDigest,
   normalizeMessageContent,
   type MessageContent,
 } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import type { StoredMessage } from '@maka/core/session';
-import type { Task } from '@maka/core/task-ledger';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { BackendRegistry, SessionManager } from '@maka/runtime/session-manager';
-import { buildTaskLedgerTools } from '@maka/runtime/task-ledger-tools';
+import { readLedgerMessages } from './ledger-transcript.js';
 import {
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
@@ -65,6 +71,7 @@ import {
   openInteractiveExecutionStoresForRead,
   openInteractiveExecutionStoresForWrite,
 } from '@maka/storage/execution-stores';
+import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import {
   resolveRootControlNamespace,
@@ -73,7 +80,6 @@ import {
   tryAcquireInteractiveRootReader,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import {
   connectRuntimeHost,
@@ -89,19 +95,15 @@ import {
   encodeProtocolMessage,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  TASK_LEDGER_PAGE_MAX_ITEMS,
   type ClientFrame,
   type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
-  type TaskLedgerQueryResult,
-  type TaskLedgerRevision,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
   type TurnStartResult,
 } from '../../protocol/index.js';
 import { SessionAdmissionGate } from '../../server/session-admission-gate.js';
-import { HostTaskLedgerCoordinator } from '../../server/task-ledger-coordinator.js';
 import { continuationSafetyDigest } from '../../server/root-turn-coordinator.js';
 import { FramedTransport } from '../../transport/framed-transport.js';
 import { removePosixEndpointDirectories } from './endpoint-hygiene.js';
@@ -124,7 +126,7 @@ export interface ExecutionHostHandle {
 }
 
 export interface TurnLedger {
-  runs: AgentRunHeader[];
+  runs: RuntimeInvocationRecord[];
   userMessages: Array<Extract<StoredMessage, { type: 'user' }>>;
   runtimeEvents: RuntimeEvent[];
   terminalEvents: RuntimeEvent[];
@@ -179,24 +181,31 @@ export class ExecutionFixture {
       const sourceTurnId = randomUUID();
       const createdAt = Date.now();
       const workspace = await resolveWorkspaceIdentity({ path: this.root });
-      const sourceRun: AgentRunHeader = {
-        runId: sourceRunId,
-        invocationId: sourceInvocationId,
+      const sourceRun = await seedInvocation(stores.runtimeEventStore, {
         sessionId: this.sessionId,
+        invocationId: sourceInvocationId,
+        runId: sourceRunId,
         turnId: sourceTurnId,
-        status: 'created',
-        backendKind: 'fake',
-        llmConnectionId: FAKE_CONNECTION_ID,
-        llmConnectionSlug: 'fake',
-        modelId: 'fake-model',
-        cwd: this.root,
-        workspaceIdentity: workspace.workspaceIdentity,
-        permissionMode: 'ask',
-        collaborationMode: 'agent',
-        createdAt,
-        updatedAt: createdAt,
-      };
-      await stores.agentRunStore.createRun(sourceRun, { durable: true });
+        openedAt: createdAt,
+        opening: {
+          route: {
+            provenance: 'runtime',
+            backendKind: 'fake',
+            llmConnectionId: FAKE_CONNECTION_ID,
+            llmConnectionSlug: 'fake',
+            modelId: 'fake-model',
+          },
+          configuration: {
+            cwd: this.root,
+            workspaceIdentity: workspace.workspaceIdentity,
+            permissionMode: 'ask',
+            collaborationMode: 'agent',
+            orchestrationMode: 'default',
+            orchestrationSource: 'session',
+            toolMode: 'direct',
+          },
+        },
+      });
       await stores.runtimeEventStore.appendRuntimeEvent(this.sessionId, sourceRunId, {
         id: randomUUID(),
         sessionId: this.sessionId,
@@ -254,7 +263,6 @@ export class ExecutionFixture {
         recoveryReason: 'test_safe_boundary_source',
       });
       await commitTerminalRunWithRuntimeFact({
-        runStore: stores.agentRunStore,
         runtimeEventStore: stores.runtimeEventStore,
         newId: randomUUID,
         sessionId: this.sessionId,
@@ -269,7 +277,9 @@ export class ExecutionFixture {
         sourceInvocationId,
         sourceRunId,
         sourceTurnId,
-        sourceRuntimeEventHighWater: requiredToolName ? 4 : 2,
+        // The opening fact is event 1 of the invocation, ahead of the user event,
+        // any tool pair, and the terminal event.
+        sourceRuntimeEventHighWater: requiredToolName ? 5 : 3,
       };
     } finally {
       await stores?.sessionStore.close?.();
@@ -278,10 +288,7 @@ export class ExecutionFixture {
   }
 
   async seedSafeBoundaryContinuationCrash(
-    failpoint:
-      | 'after_continuation_claim_committed'
-      | 'after_run_created'
-      | 'after_continuation_start_committed',
+    failpoint: 'after_continuation_claim_committed' | 'after_continuation_start_committed',
   ): Promise<{
     sourceRunId: string;
     sourceRuntimeEventHighWater: number;
@@ -296,16 +303,7 @@ export class ExecutionFixture {
     try {
       stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const backends = new BackendRegistry();
-      backends.register(
-        'ai-sdk',
-        (ctx) =>
-          new FakeBackend({
-            sessionId: ctx.sessionId,
-            header: ctx.header,
-            store: ctx.store,
-            appendMessage: ctx.appendMessage,
-          }),
-      );
+      backends.register('ai-sdk', (ctx) => new FakeBackend({ sessionId: ctx.sessionId }));
       const workspace = await resolveWorkspaceIdentity({ path: this.root });
       let markReached!: () => void;
       const reached = new Promise<void>((resolve) => {
@@ -399,11 +397,15 @@ export class ExecutionFixture {
     try {
       stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const workspace = await resolveWorkspaceIdentity({ path: this.root });
+      const backends = new BackendRegistry();
+      backends.register('ai-sdk', () => {
+        throw new Error('pending continuation setup must not build a backend');
+      });
       const manager = new SessionManager({
         store: stores.sessionStore,
         runStore: stores.agentRunStore,
         runtimeEventStore: stores.runtimeEventStore,
-        backends: new BackendRegistry(),
+        backends,
         safeBoundaryResumeEnabled: true,
         inspectContinuationSafety: async () => ({
           workspaceIdentity: workspace.workspaceIdentity,
@@ -548,25 +550,31 @@ export class ExecutionFixture {
       assert.equal(child.created, true);
       if (sourceRunId) {
         const sourceTs = Date.now();
-        const sourceRun: AgentRunHeader = {
-          runId: sourceRunId,
-          invocationId: sourceRunId,
+        const sourceRun = await seedInvocation(stores.runtimeEventStore, {
           sessionId: child.header.id,
+          invocationId: sourceRunId,
+          runId: sourceRunId,
           turnId: `source-turn-${kind}`,
-          status: 'created',
-          backendKind: 'fake',
-          llmConnectionId: FAKE_CONNECTION_ID,
-          llmConnectionSlug: 'fake',
-          modelId: 'fake-model',
-          cwd: this.root,
-          permissionMode: 'explore',
-          collaborationMode: 'agent',
-          createdAt: sourceTs,
-          updatedAt: sourceTs,
-          agentId,
-          agentName,
-        };
-        await stores.agentRunStore.createRun(sourceRun, { durable: true });
+          openedAt: sourceTs,
+          opening: {
+            route: {
+              provenance: 'runtime',
+              backendKind: 'fake',
+              llmConnectionId: FAKE_CONNECTION_ID,
+              llmConnectionSlug: 'fake',
+              modelId: 'fake-model',
+            },
+            configuration: {
+              cwd: this.root,
+              permissionMode: 'explore',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+              orchestrationSource: 'session',
+              toolMode: 'direct',
+            },
+            lineage: { agentId, agentName },
+          },
+        });
         const sourceTerminal = buildRecoveredTerminalRuntimeEvent({
           id: randomUUID(),
           run: sourceRun,
@@ -576,7 +584,6 @@ export class ExecutionFixture {
           recoveryReason: 'test_source_terminal',
         });
         await commitTerminalRunWithRuntimeFact({
-          runStore: stores.agentRunStore,
           runtimeEventStore: stores.runtimeEventStore,
           newId: randomUUID,
           sessionId: child.header.id,
@@ -648,28 +655,35 @@ export class ExecutionFixture {
     try {
       stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const ts = Date.now();
-      await stores.agentRunStore.createRun(
-        {
-          runId: graph.runId,
-          invocationId: graph.runId,
-          sessionId: graph.sessionId,
-          turnId: graph.turnId,
-          status: 'created',
-          backendKind: 'fake',
-          llmConnectionId: FAKE_CONNECTION_ID,
-          llmConnectionSlug: 'fake',
-          modelId: 'fake-model',
-          cwd: this.root,
-          permissionMode: 'explore',
-          collaborationMode: 'agent',
-          createdAt: ts,
-          updatedAt: ts,
-          resumedFromRunId: randomUUID(),
-          agentId: graph.agentId,
-          agentName: graph.agentName,
+      await seedInvocation(stores.runtimeEventStore, {
+        sessionId: graph.sessionId,
+        invocationId: graph.runId,
+        runId: graph.runId,
+        turnId: graph.turnId,
+        openedAt: ts,
+        opening: {
+          route: {
+            provenance: 'runtime',
+            backendKind: 'fake',
+            llmConnectionId: FAKE_CONNECTION_ID,
+            llmConnectionSlug: 'fake',
+            modelId: 'fake-model',
+          },
+          configuration: {
+            cwd: this.root,
+            permissionMode: 'explore',
+            collaborationMode: 'agent',
+            orchestrationMode: 'default',
+            orchestrationSource: 'session',
+            toolMode: 'direct',
+          },
+          lineage: {
+            resumedFromRunId: randomUUID(),
+            agentId: graph.agentId,
+            agentName: graph.agentName,
+          },
         },
-        { durable: true },
-      );
+      });
     } finally {
       await stores?.sessionStore.close?.();
       await owner.close();
@@ -708,6 +722,7 @@ export class ExecutionFixture {
         submittedPlacement: 'current_turn',
         placement: 'current_turn',
         disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
         admittedAt,
       });
       const result = await stores.agentRunStore.admitRootTurn({
@@ -733,6 +748,153 @@ export class ExecutionFixture {
     } finally {
       await stores?.sessionStore.close?.();
       await owner.close();
+    }
+  }
+
+  /**
+   * @param recordedPromptEventId The id the Run already recorded its prompt
+   * under, for the crash that happened after `begin()` wrote it. An older build
+   * derived that id differently, so it is a parameter rather than the id
+   * recovery would derive today.
+   */
+  async seedLegacyRootWithoutSourceTranscripts(
+    runState: 'missing' | 'created' | 'terminal' = 'terminal',
+    recordedPromptEventId?: string,
+  ): Promise<{
+    turnId: string;
+    runId: string;
+    sources: readonly [
+      { messageId: string; content: MessageContent; admittedAt: number },
+      { messageId: string; content: MessageContent; admittedAt: number },
+    ];
+  }> {
+    const owner = await tryAcquireInteractiveRootOwner(this.capability);
+    assert.ok(owner);
+    if (!owner) throw new Error('Unable to acquire execution root for legacy Root setup');
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
+    try {
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const turnId = randomUUID();
+      const runId = randomUUID();
+      const admittedAt = Date.now();
+      const followup = {
+        messageId: randomUUID(),
+        content: { text: 'legacy follow-up source' },
+        admittedAt,
+      };
+      const steering = {
+        messageId: randomUUID(),
+        content: { text: 'legacy steering source' },
+        admittedAt,
+      };
+      const normalizedInput = aggregateMessageContents([followup.content, steering.content]);
+      const admission = await stores.agentRunStore.admitRootTurn({
+        sessionId: this.sessionId,
+        turnId,
+        proposedRunId: runId,
+        proposedUserMessageId: null,
+        execution: {
+          kind: 'external_message',
+          inputDigest: messageContentDigest(normalizedInput),
+        },
+        previousRootTurnId: null,
+        normalizedInput,
+        sourceMessages: [
+          {
+            messageId: followup.messageId,
+            content: followup.content,
+            submittedContentDigest: messageContentDigest(followup.content),
+            placement: 'next_turn',
+            disposition: 'followup',
+          },
+          {
+            messageId: steering.messageId,
+            content: steering.content,
+            submittedContentDigest: messageContentDigest(steering.content),
+            placement: 'current_turn',
+            disposition: 'steering',
+          },
+        ],
+        admittedAt,
+      });
+      assert.equal(admission.kind, 'admitted');
+      const run = { runId, invocationId: runId, sessionId: this.sessionId, turnId };
+      if (runState !== 'missing') {
+        await seedInvocation(stores.runtimeEventStore, {
+          sessionId: this.sessionId,
+          invocationId: runId,
+          runId,
+          turnId,
+          openedAt: admittedAt,
+          opening: {
+            route: {
+              provenance: 'unknown',
+              backendKind: 'fake',
+              llmConnectionSlug: 'fake',
+              modelId: 'fake-model',
+            },
+            configuration: {
+              cwd: this.root,
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+              orchestrationSource: 'session',
+              toolMode: 'direct',
+            },
+          },
+        });
+      }
+      if (runState !== 'missing' && recordedPromptEventId) {
+        await stores.runtimeEventStore.appendRuntimeEvent(this.sessionId, runId, {
+          ...run,
+          id: recordedPromptEventId,
+          ts: admittedAt,
+          partial: false,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', ...normalizedInput },
+        });
+      }
+      if (runState === 'terminal') {
+        const terminalAt = admittedAt + 1;
+        const terminal = buildRecoveredTerminalRuntimeEvent({
+          id: randomUUID(),
+          run,
+          status: 'failed',
+          ts: terminalAt,
+          failureClass: 'legacy_terminal',
+          recoveryReason: 'test_legacy_terminal_root',
+        });
+        await commitTerminalRunWithRuntimeFact({
+          runtimeEventStore: stores.runtimeEventStore,
+          newId: randomUUID,
+          sessionId: this.sessionId,
+          runId,
+          turnId,
+          status: 'failed',
+          ts: terminalAt,
+          terminalEvent: terminal,
+          failureClass: 'legacy_terminal',
+        });
+      }
+      return { turnId, runId, sources: [followup, steering] };
+    } finally {
+      await stores?.sessionStore.close?.();
+      await owner.close();
+    }
+  }
+
+  deleteRootSourceProof(messageId: string): void {
+    const database = new DatabaseSync(join(this.root, OPERATIONAL_STATE_DATABASE_NAME));
+    try {
+      const result = database
+        .prepare(
+          'DELETE FROM core_root_source_message_proofs WHERE session_id = ? AND message_id = ?',
+        )
+        .run(this.sessionId, messageId);
+      assert.equal(result.changes, 1);
+    } finally {
+      database.close();
     }
   }
 
@@ -821,7 +983,7 @@ export class ExecutionFixture {
     let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
     try {
       stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-      const messages = await stores.sessionStore.readMessages(this.sessionId);
+      const messages = await readLedgerMessages(stores.runtimeEventStore, this.sessionId);
       const source = messages.find(
         (message): message is Extract<StoredMessage, { type: 'user' }> =>
           message.type === 'user' && message.turnId === sourceTurnId,
@@ -879,30 +1041,45 @@ export class ExecutionFixture {
       });
       assert.equal(result.kind, 'admitted');
       if (createRun) {
-        await stores.agentRunStore.createRun({
-          runId: result.admission.runId,
-          invocationId: result.admission.runId,
+        await seedInvocation(stores.runtimeEventStore, {
           sessionId: this.sessionId,
+          invocationId: result.admission.runId,
+          runId: result.admission.runId,
           turnId,
-          status: 'created',
-          backendKind: 'fake',
-          llmConnectionId: FAKE_CONNECTION_ID,
-          llmConnectionSlug: 'fake',
-          modelId: 'fake-model',
-          cwd: this.root,
-          permissionMode: 'ask',
-          createdAt: admittedAt,
-          updatedAt: admittedAt,
+          openedAt: admittedAt,
+          opening: {
+            route: {
+              provenance: 'runtime',
+              backendKind: 'fake',
+              llmConnectionId: FAKE_CONNECTION_ID,
+              llmConnectionSlug: 'fake',
+              modelId: 'fake-model',
+            },
+            configuration: {
+              cwd: this.root,
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+              orchestrationSource: 'session',
+              toolMode: 'direct',
+            },
+          },
         });
       }
       assert.ok(result.admission.userMessageId);
       if (createUserMessage) {
-        await stores.sessionStore.appendMessage(this.sessionId, {
-          type: 'user',
+        assert.ok(createRun, 'a seeded UserMessage needs the invocation that carries it');
+        await stores.runtimeEventStore.appendRuntimeEvent(this.sessionId, result.admission.runId, {
           id: result.admission.userMessageId,
+          sessionId: this.sessionId,
+          invocationId: result.admission.runId,
+          runId: result.admission.runId,
           turnId,
           ts: admittedAt,
-          ...content,
+          partial: false,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', ...content },
         });
       }
       return {
@@ -984,15 +1161,15 @@ export class ExecutionFixture {
       stores = await openInteractiveExecutionStoresForRead(reader.lease);
       const admission = await stores.agentRunStore.readRootTurnAdmission(this.sessionId, turnId);
       assert.ok(admission);
-      const runs = (await stores.agentRunStore.listSessionRuns(this.sessionId)).filter(
-        (candidate) => candidate.turnId === turnId,
-      );
-      const run = await stores.agentRunStore.readRun(this.sessionId, admission.runId);
-      const messages = await stores.sessionStore.readMessages(this.sessionId);
+      const invocations = await stores.runtimeEventStore.listSessionInvocations(this.sessionId);
+      const runs = invocations.filter((candidate) => candidate.turnId === turnId);
+      const run = invocations.find((candidate) => candidate.runId === admission.runId);
+      assert.ok(run);
       const runtimeEvents = await stores.runtimeEventStore.readImmutableRuntimeEvents(
         this.sessionId,
         admission.runId,
       );
+      const messages = await readLedgerMessages(stores.runtimeEventStore, this.sessionId);
       return {
         runs,
         userMessages: messages.filter(
@@ -1021,12 +1198,26 @@ export class ExecutionFixture {
     }
   }
 
+  async readTurnRuns(turnId: string) {
+    const reader = await acquireReader(this.capability);
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForRead>> | undefined;
+    try {
+      stores = await openInteractiveExecutionStoresForRead(reader.lease);
+      return (await stores.runtimeEventStore.listSessionInvocations(this.sessionId)).filter(
+        (candidate) => candidate.turnId === turnId,
+      );
+    } finally {
+      await stores?.sessionStore.close?.();
+      await reader.close();
+    }
+  }
+
   async readSessionUserMessages(): Promise<Array<Extract<StoredMessage, { type: 'user' }>>> {
     const reader = await acquireReader(this.capability);
     let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForRead>> | undefined;
     try {
       stores = await openInteractiveExecutionStoresForRead(reader.lease);
-      return (await stores.sessionStore.readMessages(this.sessionId)).filter(
+      return (await readLedgerMessages(stores.runtimeEventStore, this.sessionId)).filter(
         (message): message is Extract<StoredMessage, { type: 'user' }> => message.type === 'user',
       );
     } finally {
@@ -1060,7 +1251,7 @@ export class ExecutionFixture {
       stores = await openInteractiveExecutionStoresForRead(reader.lease);
       const [admission, runs, messages] = await Promise.all([
         stores.agentRunStore.readRootTurnAdmission(this.sessionId, turnId),
-        stores.agentRunStore.listSessionRuns(this.sessionId),
+        stores.runtimeEventStore.listSessionInvocations(this.sessionId),
         stores.sessionStore.readMessages(this.sessionId),
       ]);
       return {
@@ -1596,22 +1787,6 @@ async function acquireReader(capability: StorageRootCapability<'interactive'>) {
       throw new Error('Interactive root reader could not acquire the released root');
     await sleep(20);
   }
-}
-
-export function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  message: string,
-): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  return Promise.race([
-    promise,
-    new Promise<T>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-    }),
-  ]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
 }
 
 function sleep(ms: number): Promise<void> {

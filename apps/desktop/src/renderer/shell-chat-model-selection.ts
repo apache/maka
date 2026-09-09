@@ -29,6 +29,27 @@ export type NewChatModelCandidate = Omit<NewChatModel, 'llmConnectionId'> & {
   llmConnectionId?: string;
 };
 
+type ComposerModelTarget = {
+  llmConnectionId?: string;
+  llmConnectionSlug: string;
+  model?: string;
+};
+
+export function composerModelSupportsVision(input: {
+  active: ComposerModelTarget | undefined;
+  next: NewChatModel | undefined;
+  choices: readonly ChatModelChoice[];
+}): boolean | undefined {
+  const target = input.active ?? input.next;
+  if (!target?.llmConnectionId || !target.model) return undefined;
+  return input.choices.find(
+    (choice) =>
+      choice.connectionId === target.llmConnectionId &&
+      choice.connectionSlug === target.llmConnectionSlug &&
+      choice.model === target.model,
+  )?.supportsVision;
+}
+
 export function pickNewChatModel(input: {
   pending: NewChatModelCandidate | null;
   activationCandidate?: NewChatModelCandidate;

@@ -49,12 +49,16 @@ import {
 import {
   resolveRuntimeHostManagedServiceId,
   RUNTIME_HOST_SERVICE_LOG_MAX_BYTES,
+  type RuntimeHostReconciliationProvider,
+  type RuntimeHostServiceErrorCode,
+  type RuntimeHostSupervisorProvider,
 } from '@maka/runtime-host/operator';
 import {
   withLegacyFileUpdateLockLease,
   withProcessLifetimeFileUpdateLock,
 } from '@maka/storage/process-lifetime-file-update-lock';
 import {
+  discoverMarkedStorageRoot,
   resolveExistingStorageRoot,
   tryAcquireInteractiveRootOwner,
   type InteractiveRootOwner,
@@ -148,17 +152,24 @@ export interface RuntimeHostServiceDeployment {
 }
 
 export interface RuntimeHostManagedServiceStatus extends RuntimeHostServiceObservedStatus {
-  readonly manager: 'systemd_user' | 'launch_agent' | 'on_demand' | 'none';
+  readonly manager:
+    | 'systemd_user'
+    | 'launch_agent'
+    | 'openrc_user'
+    | 'openrc_system'
+    | 'windows_task'
+    | 'on_demand'
+    | 'none';
   readonly config: RuntimeHostManagedServiceConfig | null;
   readonly installedVersion: string | null;
   readonly lifecycle?: {
     readonly mode: 'on_demand' | 'supervised';
     readonly availability: 'activation' | 'session' | 'environment' | 'machine';
-    readonly provider?: 'systemd_user' | 'launch_agent' | 'openrc_user' | 'openrc_system';
+    readonly provider?: RuntimeHostSupervisorProvider;
   };
   readonly reconciliation?: {
     readonly trigger: 'manual' | 'activation' | 'scheduled';
-    readonly provider?: 'systemd_timer' | 'launch_agent_timer' | 'openrc_supervised_loop';
+    readonly provider?: RuntimeHostReconciliationProvider;
   };
 }
 
@@ -229,6 +240,7 @@ export interface RuntimeHostManagedServiceInput {
   readonly cliPath: string;
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
   readonly expectedConfigFingerprint?: string;
+  readonly expectedHost?: { readonly hostEpoch: string; readonly pid: number };
   readonly allowInterruptActiveTasks?: boolean;
 }
 
@@ -277,7 +289,8 @@ export type RuntimeHostServiceManagerOverrides = Partial<RuntimeHostServiceManag
 
 export class RuntimeHostServiceManagerError extends Error {
   constructor(
-    readonly code:
+    readonly code: Extract<
+      RuntimeHostServiceErrorCode,
       | 'unsupported_platform'
       | 'service_manager_unavailable'
       | 'linger_disabled'
@@ -287,11 +300,13 @@ export class RuntimeHostServiceManagerError extends Error {
       | 'target_mismatch'
       | 'configuration_changed'
       | 'configuration_incomplete'
+      | 'active_tasks'
       | 'retirement_failed'
       | 'update_requires_retirement'
       | 'update_incomplete'
       | 'service_manager_operation_failed'
-      | 'uninstall_incomplete',
+      | 'uninstall_incomplete'
+    >,
     message: string,
     options?: ErrorOptions,
   ) {
@@ -319,6 +334,12 @@ export async function manageRuntimeHostService(
   backend: RuntimeHostServiceBackend,
   overrides: Partial<RuntimeHostServiceManagerDeps> = {},
 ): Promise<RuntimeHostManagedServiceResult> {
+  if (input.expectedHost) {
+    throw new RuntimeHostServiceManagerError(
+      'target_mismatch',
+      'An exact Host fence requires the canonical managed deployment operator',
+    );
+  }
   const deps = runtimeHostServiceManagerDeps(overrides);
   const configPath = resolveRuntimeHostManagedServiceConfigPath(input.clientDataRoot);
   const configDirectory = dirname(configPath);
@@ -686,11 +707,28 @@ async function manageRuntimeHostServiceLocked(
       'Runtime Host service is not installed',
     );
   }
-  await resolveExpectedServiceRoot(config, input);
+  const expectedRoot = await resolveExpectedServiceRoot(config, input);
   if (input.action === 'start' || input.action === 'restart') {
+    if (config.schemaVersion === 2) await backend.verifyDeployment(config);
+    if (input.action === 'restart') {
+      const root = expectedRoot ?? (await discoverMarkedStorageRoot({ path: config.rootPath }));
+      const service = await readServiceStatus(configPath, backend);
+      const retired = await retireManagedRuntimeHostService(
+        { ...service, config },
+        root,
+        backend,
+        deps,
+        input.allowInterruptActiveTasks ?? false,
+      );
+      if (retired.retirement.kind === 'active_tasks') {
+        throw new RuntimeHostServiceManagerError(
+          'active_tasks',
+          'Runtime Host still owns active work; it was not restarted',
+        );
+      }
+    }
     try {
-      if (config.schemaVersion === 2) await backend.verifyDeployment(config);
-      await backend[input.action]();
+      await backend.start();
       await deps.waitForReady(config, backend);
     } catch (error) {
       try {
@@ -1197,10 +1235,6 @@ async function normalizeStateRoot(requestedRoot: string): Promise<string> {
       { cause: error },
     );
   }
-}
-
-export async function resolveRuntimeHostManagedStateRoot(requestedRoot: string): Promise<string> {
-  return normalizeStateRoot(requestedRoot);
 }
 
 async function normalizeProjectDirectoryRoots(

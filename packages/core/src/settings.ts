@@ -40,6 +40,7 @@ import type { UsageProvenance } from './usage-ledger-merge.js';
 import {
   UI_LOCALE_PREFERENCES,
   isUiLocalePreference,
+  normalizeUiLocalePreference,
   type UiLocalePreference,
 } from './ui-locale.js';
 import { normalizeSubagentSettings, type SubagentSettings } from './subagent-settings.js';
@@ -99,9 +100,44 @@ export interface NetworkProxySettings {
   port: number;
   authEnabled: boolean;
   username: string;
-  password: string;
   bypassList: string[];
   autoBypassDomains: string[];
+}
+
+export interface NetworkProxyCredentialTarget {
+  readonly protocol: ProxyProtocol;
+  readonly host: string;
+  readonly port: number;
+  readonly username: string;
+}
+
+export function networkProxyCredentialTarget(
+  proxy: Pick<NetworkProxySettings, 'protocol' | 'host' | 'port' | 'username'>,
+): NetworkProxyCredentialTarget {
+  return {
+    protocol: proxy.protocol,
+    host: proxy.host.trim().toLowerCase(),
+    port: proxy.port,
+    username: proxy.username,
+  };
+}
+
+export type NetworkProxyCredentialOperation =
+  | {
+      kind: 'replace';
+      secret: string;
+      expectedTarget?: NetworkProxyCredentialTarget;
+    }
+  | { kind: 'delete' };
+
+/** A write-only proxy patch. Credential operations are never persisted. */
+export type NetworkProxySettingsPatch = Partial<NetworkProxySettings> & {
+  credential?: NetworkProxyCredentialOperation;
+};
+
+/** Runtime Host read projection; the saved secret itself never crosses IPC. */
+export interface RuntimeHostNetworkProxySettings extends NetworkProxySettings {
+  readonly passwordConfigured: boolean;
 }
 
 /**
@@ -552,6 +588,12 @@ export interface AppSettings {
   subagents: SubagentSettings;
 }
 
+export interface RuntimeHostAppSettings extends Omit<AppSettings, 'network'> {
+  network: {
+    proxy: RuntimeHostNetworkProxySettings;
+  };
+}
+
 export interface UsageRequestLog {
   id: string;
   ts: number;
@@ -642,6 +684,7 @@ export type SettingsTestResultCode =
   | 'proxy_reachable'
   | 'proxy_disabled'
   | 'proxy_configuration_missing'
+  | 'proxy_credential_missing'
   | 'proxy_timeout'
   | 'proxy_http_error'
   | 'proxy_unreachable'
@@ -649,11 +692,19 @@ export type SettingsTestResultCode =
   | 'bot_token_missing'
   | 'bot_token_invalid'
   | 'bot_app_credentials_missing'
+  | 'slack_tokens_missing'
+  | 'wecom_credentials_missing'
+  | 'dingtalk_credentials_missing'
+  | 'dingtalk_no_access_token'
+  | 'qq_credentials_missing'
+  | 'qq_no_access_token'
+  | 'wechat_bridge_url_invalid'
+  | 'wechat_ilink_credentials_incomplete'
   | 'bot_connection_failed';
 
 export type UpdateAppSettingsInput = Partial<{
   network: Partial<{
-    proxy: Partial<NetworkProxySettings>;
+    proxy: NetworkProxySettingsPatch;
   }>;
   botChat: BotChatSettingsPatch;
   usage: Partial<UsageSettings>;
@@ -681,8 +732,8 @@ export interface UpdateAppSettingsWarnings {
   personalization?: PersonalizationSettingsWarning[];
 }
 
-export interface UpdateAppSettingsResult {
-  settings: AppSettings;
+export interface UpdateAppSettingsResult<TSettings extends AppSettings = AppSettings> {
+  settings: TSettings;
   warnings?: UpdateAppSettingsWarnings;
 }
 
@@ -706,7 +757,6 @@ export function createDefaultSettings(): AppSettings {
         port: 7890,
         authEnabled: false,
         username: '',
-        password: '',
         bypassList: ['metaso.cn', 'baidu.com'],
         autoBypassDomains: DEFAULT_PROXY_BYPASS_DOMAINS,
       },
@@ -763,6 +813,15 @@ export function createDefaultSettings(): AppSettings {
 }
 
 export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInput): AppSettings {
+  const {
+    credential: _credential,
+    password: _legacyPassword,
+    passwordConfigured: _derivedStatus,
+    ...proxyPatch
+  } = (patch.network?.proxy ?? {}) as NetworkProxySettingsPatch & {
+    password?: unknown;
+    passwordConfigured?: unknown;
+  };
   return {
     ...current,
     network: {
@@ -770,7 +829,7 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
       ...(patch.network ?? {}),
       proxy: {
         ...current.network.proxy,
-        ...(patch.network?.proxy ?? {}),
+        ...proxyPatch,
       },
     },
     botChat: mergeBotChatSettings(current.botChat, patch.botChat),
@@ -928,13 +987,12 @@ export function normalizeSettings(input: unknown): AppSettings {
     // PR-LANG-PREF-0: closed-enum fail-closed for the new
     // `personalization.uiLocale` preference. mergeSettings spreads
     // raw user values, so an unknown value would otherwise reach the
-    // renderer outside the closed reactive-locale contract. Fall back to
-    // 'auto' on any miss.
+    // renderer outside the closed reactive-locale contract. Preserve the
+    // former generic `zh` preference as Simplified Chinese, then fall back to
+    // 'auto' on any other miss.
     personalization: {
       ...base.personalization,
-      uiLocale: isUiLocalePreference(base.personalization.uiLocale)
-        ? base.personalization.uiLocale
-        : 'auto',
+      uiLocale: normalizeUiLocalePreference(base.personalization.uiLocale),
       selectedPetId: normalizeSelectedPetId(base.personalization.selectedPetId),
     },
     botChat: normalizeBotChatSettings(base.botChat, value.botChat),

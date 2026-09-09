@@ -17,9 +17,10 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
-import { act, createElement, StrictMode } from 'react';
+import { act, createElement, StrictMode, useLayoutEffect } from 'react';
 import type { ShellRunUpdate } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import { LocaleProvider } from '@maka/ui';
@@ -59,25 +60,20 @@ function shellUpdate(sessionId: string, ref: string): ShellRunUpdate {
     result: { ref },
   } as ShellRunUpdate;
 }
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((next, fail) => {
-    resolve = next;
-    reject = fail;
-  });
-  return { promise, resolve, reject };
-}
-
 let latestController: WorkbarController | undefined;
 let controllerRenderSnapshots: Array<{
   activeId: string | undefined;
   terminalOwnerIds: Array<string | undefined>;
 }> = [];
 
-function ControllerProbe(props: UseWorkbarControllerInput) {
-  latestController = useWorkbarController(props);
+type ControllerProbeInput = UseWorkbarControllerInput & { openOnActivation?: boolean };
+
+function ControllerProbe(props: ControllerProbeInput) {
+  const workbar = useWorkbarController(props);
+  latestController = workbar;
+  useLayoutEffect(() => {
+    if (props.openOnActivation) workbar.host.onOpenLauncher('right');
+  }, [props.activeSession?.id, props.openOnActivation]);
   controllerRenderSnapshots.push({
     activeId: latestController.host.activeId,
     terminalOwnerIds: [
@@ -93,7 +89,7 @@ function ControllerProbe(props: UseWorkbarControllerInput) {
 function renderController(
   root: ReturnType<typeof installReactRenderer>['root'],
   services: WorkbarServices,
-  input: UseWorkbarControllerInput,
+  input: ControllerProbeInput,
   strictMode = false,
 ) {
   const probe = createElement(
@@ -143,6 +139,73 @@ describe('useWorkbarController', () => {
     delete (globalThis as { window?: unknown }).window;
   });
 
+  it('keeps right-panel visibility independent across Session navigation', async () => {
+    const { root } = installReactRenderer();
+    const services = createFakeWorkbarServices();
+    const authoritativeSessionIds = new Set(['a', 'b']);
+    const show = (id: string | undefined) => renderController(root, services, {
+      ...input(id ? session(id) : undefined),
+      authoritativeSessionIds,
+    });
+
+    await act(async () => show('a'));
+    await act(async () => controller().commands.toggleRight());
+    assert.equal(controller().host.rightCollapsed, false);
+    await act(async () => show(undefined));
+    await act(async () => show('b'));
+    assert.equal(controller().host.rightCollapsed, true);
+    await act(async () => show('a'));
+    assert.equal(controller().host.rightCollapsed, false);
+  });
+
+  it('keeps an open requested in the activation commit bound to the new Session', async () => {
+    const { root } = installReactRenderer();
+    const services = createFakeWorkbarServices();
+    const authoritativeSessionIds = new Set(['a', 'b']);
+    await act(async () => renderController(root, services, {
+      ...input(session('a')), authoritativeSessionIds,
+    }, true));
+    await act(async () => renderController(root, services, {
+      ...input(session('b')), authoritativeSessionIds, openOnActivation: true,
+    }, true));
+    assert.equal(controller().host.rightCollapsed, false);
+    await act(async () => renderController(root, services, {
+      ...input(session('a')), authoritativeSessionIds,
+    }, true));
+    assert.equal(controller().host.rightCollapsed, true);
+    await act(async () => renderController(root, services, {
+      ...input(session('b')), authoritativeSessionIds,
+    }, true));
+    assert.equal(controller().host.rightCollapsed, false);
+  });
+
+  it("preserves the active Session's visibility while removing the previous Session's Terminal", async () => {
+    const { root } = installReactRenderer();
+    const defaults = createFakeWorkbarServices();
+    const services = createFakeWorkbarServices({
+      terminal: {
+        ...defaults.terminal,
+        start: async (sessionId) => shellUpdate(sessionId, 'terminal-a'),
+      },
+    });
+    const authoritativeSessionIds = new Set(['a', 'b']);
+    const show = (id: string) => renderController(root, services, {
+      ...input(session(id)),
+      authoritativeSessionIds,
+    });
+
+    await act(async () => show('b'));
+    await act(async () => controller().commands.toggleRight());
+    assert.equal(controller().host.rightCollapsed, false);
+    await act(async () => show('a'));
+    await act(async () => controller().commands.openTool('terminal'));
+    assert.equal(controller().host.panelsState.right.tabs.length, 1);
+    await act(async () => show('b'));
+
+    assert.equal(controller().host.panelsState.right.tabs.length, 0);
+    assert.equal(controller().host.rightCollapsed, false);
+  });
+
   it('projects the canonical project and absorbed aliases into the host model', async () => {
     const { root } = installReactRenderer();
     const controllerInput = input(session('a'));
@@ -155,6 +218,32 @@ describe('useWorkbarController', () => {
 
     assert.equal(controller().host.projectId, 'project-canonical');
     assert.deepEqual(controller().host.projectAliases, ['project-absorbed']);
+  });
+
+  it('routes Client Capability decisions to the active Session', async () => {
+    const { root } = installReactRenderer();
+    const responses: Array<{ sessionId: string; requestId: string; decision: string }> = [];
+    const defaults = createFakeWorkbarServices();
+    const services = createFakeWorkbarServices({
+      sideChat: {
+        ...defaults.sideChat,
+        respondToClientCapability: async (sessionId, response) => {
+          responses.push({ sessionId, ...response });
+        },
+      },
+    });
+
+    await act(async () => renderController(root, services, input(session('a'))));
+    await act(async () =>
+      controller().commands.respondToClientCapability({
+        requestId: 'capability-1',
+        decision: 'allow',
+      }),
+    );
+
+    assert.deepEqual(responses, [
+      { sessionId: 'a', requestId: 'capability-1', decision: 'allow' },
+    ]);
   });
 
   it('keeps the initial Session active after StrictMode replays mount effects', async () => {
@@ -453,9 +542,6 @@ describe('useWorkbarController', () => {
     await act(async () => controller().commands.toggleRight());
     assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
 
-    await act(async () =>
-      controller().host.onPreparingStateChange?.(panelId, false),
-    );
     await act(async () => controller().host.onContentStateChange?.(panelId, true));
     const tab = controller().host.panelsState.right.tabs.find(
       (candidate) => candidate.id === `side-chat:${panelId}`,

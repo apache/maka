@@ -21,8 +21,8 @@ import { randomUUID } from 'node:crypto';
 import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
-  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   OPENCODE_FREE_DEFAULT_MODEL,
+  defaultEnabledModelIdsWhenOmitted,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
@@ -44,6 +44,14 @@ interface BootstrapSeed {
   readonly baseUrl?: string;
   readonly secret?: string;
 }
+
+/**
+ * What the seeded OpenCode Free connection starts with — the provider's own
+ * declaration of the models a fresh connection to it enables, so the seed and
+ * a hand-added connection cannot drift apart.
+ */
+const OPENCODE_FREE_SEED_MODEL_IDS: readonly string[] =
+  defaultEnabledModelIdsWhenOmitted('opencode-free') ?? [];
 
 interface BootstrapJournal {
   readonly version: 1;
@@ -69,7 +77,7 @@ export async function ensureBootstrapRuntimePolicy(input: {
         slug: 'opencode-free',
         providerType: 'opencode-free',
         legacyEnabledModelIds: LEGACY_OPENCODE_FREE_SEEDS,
-        enabledModelIds: OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
+        enabledModelIds: OPENCODE_FREE_SEED_MODEL_IDS,
         defaultModelId: OPENCODE_FREE_DEFAULT_MODEL,
         retiredModelIds: retiredOpencodeFreeModelIds(),
       });
@@ -114,7 +122,7 @@ function bootstrapSeeds(environment: BootstrapEnvironment): readonly BootstrapSe
       slug: 'opencode-free',
       name: 'OpenCode Free',
       providerType: 'opencode-free',
-      enabledModelIds: OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
+      enabledModelIds: OPENCODE_FREE_SEED_MODEL_IDS,
     },
   ];
   const deepseek = environment.DEEPSEEK_API_KEY?.trim();
@@ -198,7 +206,7 @@ const LEGACY_OPENCODE_FREE_SEEDS: readonly (readonly string[])[] = [
 ];
 
 function retiredOpencodeFreeModelIds(): readonly string[] {
-  const current = new Set(OPENCODE_FREE_DEFAULT_ENABLED_MODELS);
+  const current = new Set(OPENCODE_FREE_SEED_MODEL_IDS);
   return [...new Set(LEGACY_OPENCODE_FREE_SEEDS.flat())].filter((id) => !current.has(id));
 }
 

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -36,6 +37,11 @@ import {
   type CandidateExitDetails,
   type OwnedCandidateAttempt,
 } from '../client/launcher.js';
+import {
+  resolveExistingStorageRoot,
+  resolveExistingStorageRootControlDirectory,
+} from '@maka/storage/root-authority';
+import { readHostRegistration } from '../control/registration.js';
 
 test('owned connection keeps a fresh Host alive for its full election window', async () => {
   const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-first-connection-'));
@@ -256,8 +262,20 @@ test('owned Host exits promptly after its first connection closes', async () => 
 
   assert.equal(result.kind, 'connected', connectFailure(result));
   if (result.kind !== 'connected') return;
+  const controlDirectory = await resolveHostControlDirectory(rootPath, result.connection.rootId);
   await result.connection.close();
-  assert.equal(await result.host.settle(500), true);
+  // Promptness is when the Host starts shutting down, not how long shutting
+  // down takes: the owned launch's idleGraceMs is 0 against a 30 s default.
+  // The kernel publishes its draining registration as the first step of
+  // shutdown, so the registration reports the idle grace directly. Reading it
+  // from `settle` alone could not separate the two, which is why a loaded
+  // machine that only made the shutdown itself slow failed this assertion.
+  await waitForHostShutdownStart(controlDirectory, 10_000);
+  // The exit is a second claim with a bound of its own, and the kernel sets
+  // it: shutdown gets `shutdownGraceMs` (10 s) to close every resource before
+  // the kernel force-terminates the process. Anything below that fails a Host
+  // that is starved rather than stuck.
+  assert.equal(await result.host.settle(15_000), true);
 });
 
 test('an exited owned Candidate permits one real successor in the same election', {
@@ -431,6 +449,38 @@ test('pre-cancelled hosted execution does not start a Runtime Host', async () =>
   assert.deepEqual(await readdir(rootPath), []);
 });
 
+async function resolveHostControlDirectory(rootPath: string, rootId: string): Promise<string> {
+  const capability = await resolveExistingStorageRoot({
+    path: rootPath,
+    kind: 'interactive',
+    expectedRootId: rootId,
+  });
+  const { controlDirectory } = await resolveExistingStorageRootControlDirectory(capability);
+  return controlDirectory;
+}
+
+/**
+ * Resolves once the Host has begun shutting down. `draining` is the state the
+ * kernel publishes before it does any shutdown work, and the registration is
+ * removed near the end of that work, so either observation proves shutdown
+ * started; the Host was serving this Client, so its registration existed.
+ */
+async function waitForHostShutdownStart(
+  controlDirectory: string,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    // readHostRegistration already maps a missing file to `undefined`; the
+    // unguarded await lets real I/O or decode errors fail this wait loudly
+    // instead of masquerading as "shutdown started".
+    const registration = await readHostRegistration(controlDirectory);
+    if (!registration || registration.state === 'draining') return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('owned Host did not begin shutting down after its first connection closed');
+}
+
 function connectFailure(
   result:
     | Awaited<ReturnType<typeof connectOwnedRuntimeHostWithDependencies>>
@@ -456,15 +506,4 @@ async function waitForDefined<T>(
       setTimeout(resolve, 20);
     });
   }
-}
-
-function deferred<T>(): {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
 }

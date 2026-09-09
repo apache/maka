@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import type { FileHandle } from 'node:fs/promises';
+import { chmod, lstat, mkdir, type FileHandle } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import {
   openStableNativeLockFile,
   releaseNativeFileLock,
@@ -29,10 +30,40 @@ export interface FileLifetimeOwner {
 }
 
 export async function acquireFileLifetimeOwner(path: string): Promise<FileLifetimeOwner> {
+  const owner = await tryAcquireOpenedFileLifetimeOwner(path);
+  if (!owner) throw new Error(`Another process owns ${path}`);
+  return owner;
+}
+
+/** Try once to own one named file for the lifetime of this process handle. */
+export async function tryAcquireFileLifetimeOwner(
+  path: string,
+): Promise<FileLifetimeOwner | undefined> {
+  const directory = dirname(path);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const directoryStat = await lstat(directory);
+  if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+    throw new Error(`File lifetime owner root is not a directory: ${directory}`);
+  }
+  if (process.platform !== 'win32') await chmod(directory, 0o700);
+
+  return tryAcquireOpenedFileLifetimeOwner(path);
+}
+
+async function tryAcquireOpenedFileLifetimeOwner(
+  path: string,
+): Promise<FileLifetimeOwner | undefined> {
   const handle = await openStableNativeLockFile(path);
-  if (!tryAcquireNativeFileLock(handle)) {
+  let acquired: boolean;
+  try {
+    acquired = tryAcquireNativeFileLock(handle);
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    throw error;
+  }
+  if (!acquired) {
     await handle.close();
-    throw new Error(`Another process owns ${path}`);
+    return undefined;
   }
   return new FileLifetimeOwnerImpl(handle);
 }

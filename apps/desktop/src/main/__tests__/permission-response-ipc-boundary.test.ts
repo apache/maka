@@ -22,6 +22,7 @@ import { describe, it } from 'node:test';
 
 import {
   normalizeBranchFromTurnInput,
+  normalizeClientCapabilityResponse,
   normalizeRegenerateTurnInput,
   normalizeReviseBeforeTurnInput,
   normalizeRuntimeHostBranchFromTurnInput,
@@ -50,6 +51,14 @@ describe('permission response IPC boundary', () => {
       }),
       { requestId: 'question-1', answers: ['Option A', null] },
     );
+    assert.deepEqual(
+      normalizeClientCapabilityResponse({
+        requestId: 'capability-1',
+        decision: 'allow',
+        ignored: true,
+      }),
+      { requestId: 'capability-1', decision: 'allow' },
+    );
 
     const invalidPermissionResponses = [
       null,
@@ -59,6 +68,12 @@ describe('permission response IPC boundary', () => {
     ];
     for (const response of invalidPermissionResponses) {
       assert.throws(() => normalizeSandboxBoundaryResponse(response), /sandbox boundary response/);
+    }
+    for (const response of invalidPermissionResponses) {
+      assert.throws(
+        () => normalizeClientCapabilityResponse(response),
+        /Client Capability response/,
+      );
     }
 
     const invalidQuestionResponses = [
@@ -77,6 +92,11 @@ describe('permission response IPC boundary', () => {
       sourceTurnId: 'turn-2',
       turnId: 'turn-3',
     });
+    // A through-turn branch keeps its sourceTurnId; a spurious copyId is dropped.
+    assert.deepEqual(
+      normalizeBranchFromTurnInput({ sourceTurnId: 'turn-legacy', copyId: 'ignored-here' }),
+      { sourceTurnId: 'turn-legacy' },
+    );
     assert.deepEqual(
       normalizeBranchFromTurnInput({
         sourceTurnId: 'turn-3',
@@ -84,7 +104,16 @@ describe('permission response IPC boundary', () => {
         sideConversation: true,
         ignored: 1,
       }),
-      { sourceTurnId: 'turn-3', name: 'Branch name', sideConversation: true },
+      {
+        sourceTurnId: 'turn-3',
+        name: 'Branch name',
+        sideConversation: true,
+      },
+    );
+    // An empty side-conversation branch omits sourceTurnId entirely.
+    assert.deepEqual(
+      normalizeBranchFromTurnInput({ sideConversation: true }),
+      { sideConversation: true },
     );
     assert.deepEqual(
       normalizeRuntimeHostBranchFromTurnInput({
@@ -115,11 +144,23 @@ describe('permission response IPC boundary', () => {
 
     const invalidActions: Array<() => unknown> = [
       () => normalizeRegenerateTurnInput({ sourceTurnId: 'turn-1', turnId: 1 }),
-      () => normalizeBranchFromTurnInput({ sourceTurnId: 'turn-1', name: 1 }),
-      () => normalizeBranchFromTurnInput({ sourceTurnId: 'turn-1', sideConversation: 'yes' }),
-      () => normalizeBranchFromTurnInput({ sourceTurnId: 'x'.repeat(129) }),
+      () =>
+        normalizeBranchFromTurnInput({
+          sourceTurnId: 'turn-1',
+          name: 1,
+        }),
+      () =>
+        normalizeBranchFromTurnInput({
+          sourceTurnId: 'turn-1',
+          sideConversation: 'yes',
+        }),
+      () =>
+        normalizeBranchFromTurnInput({ sourceTurnId: 'x'.repeat(129) }),
       () => normalizeReviseBeforeTurnInput({ sourceTurnId: 1 }),
-      () => normalizeRuntimeHostBranchFromTurnInput({ sourceTurnId: 'turn-1' }),
+      () =>
+        normalizeRuntimeHostBranchFromTurnInput({
+          sourceTurnId: 'turn-1',
+        }),
       () => normalizeRuntimeHostReviseBeforeTurnInput({ sourceTurnId: 'turn-1', copyId: '' }),
     ];
     for (const action of invalidActions) assert.throws(action, /Invalid/);

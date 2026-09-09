@@ -31,6 +31,7 @@ import { EXTERNAL_SESSION_OPERATION_SPECS } from './external-session.js';
 import { CLIENT_CAPABILITY_OPERATION_SPECS } from './client-capability.js';
 import { invalidProtocolFrame } from './errors.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from './host-status.js';
+import { HOST_RESOURCE_OPERATION_SPECS } from './host-resources.js';
 import { HOSTED_EXECUTION_OPERATION_SPECS } from './hosted-execution.js';
 import { GOAL_OPERATION_SPECS } from './goal.js';
 import { INTERACTION_OPERATION_SPECS } from './interaction.js';
@@ -40,6 +41,7 @@ import { NETWORK_PROXY_OPERATION_SPECS } from './network-proxy.js';
 import { OAUTH_OPERATION_SPECS } from './oauth.js';
 import { PLAN_OPERATION_SPECS } from './plan.js';
 import { PEER_MESH_OPERATION_SPECS } from './peer-mesh.js';
+import { PLUGIN_PLATFORM_OPERATION_SPECS } from './plugin-platform.js';
 import { PROJECT_CATALOG_OPERATION_SPECS } from './project-catalog.js';
 import {
   composeOperationSpecMaps,
@@ -54,11 +56,12 @@ import { SESSION_CATALOG_OPERATION_SPECS } from './session-catalog.js';
 import { SESSION_CONTINUITY_OPERATION_SPECS } from './session-continuity.js';
 import { SESSION_TRANSCRIPT_OPERATION_SPECS } from './session-transcript.js';
 import { SESSION_TURNS_OPERATION_SPECS } from './session-turns.js';
+import { SESSION_TODO_OPERATION_SPECS } from './session-todo.js';
+import { SESSION_COLLABORATION_OPERATION_SPECS } from './session-collaboration.js';
 import { SESSION_REVISION_OPERATION_SPECS } from './session-revision.js';
 import { SESSION_RETIREMENT_OPERATION_SPECS } from './session-retirement.js';
 import { SESSION_EFFECT_OPERATION_SPECS } from './session-effects.js';
 import { SKILL_CATALOG_OPERATION_SPECS } from './skill-catalog.js';
-import { TASK_LEDGER_OPERATION_SPECS } from './task-ledger.js';
 import { TURN_OPERATION_SPECS } from './turn.js';
 import { USAGE_PRICING_OPERATION_SPECS } from './usage-pricing.js';
 import { WEB_SEARCH_OPERATION_SPECS } from './web-search.js';
@@ -69,11 +72,13 @@ export type {
   HostDiagnosticsResult,
   HostActivitySnapshot,
   HostLifecycleState,
+  HostPeerEndpoint,
   HostStatusInput,
   HostStatusResult,
   HostUpgradePrepareInput,
   HostUpgradePrepareResult,
 } from './host-status.js';
+export { isHostActivityIdle } from './host-status.js';
 export type {
   HostOperationError,
   HostOperationErrorCode,
@@ -157,19 +162,23 @@ export * from './agent-graph.js';
 export * from './execution-inspect.js';
 export * from './client-capability.js';
 export * from './goal.js';
+export * from './host-resources.js';
 export * from './memory.js';
 export * from './network-proxy.js';
 export * from './oauth.js';
 export * from './plan.js';
+export * from './plugin-platform.js';
 export * from './project-catalog.js';
 export * from './runtime-policy.js';
 export * from './runtime-resource.js';
 export * from './scheduled-task.js';
 export * from './session-catalog.js';
+export * from './session-collaboration.js';
 export * from './session-revision.js';
 export * from './session-retirement.js';
 export * from './session-transcript.js';
 export * from './session-turns.js';
+export * from './session-todo.js';
 export * from './session-effects.js';
 export * from './skill-catalog.js';
 export * from './usage-pricing.js';
@@ -178,9 +187,11 @@ export * from './workspace.js';
 
 export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   HOST_BOOTSTRAP_OPERATION_SPECS,
+  HOST_RESOURCE_OPERATION_SPECS,
   PEER_MESH_OPERATION_SPECS,
   HOSTED_EXECUTION_OPERATION_SPECS,
   ACCESS_AUTHORITY_OPERATION_SPECS,
+  SESSION_COLLABORATION_OPERATION_SPECS,
   AGENT_GRAPH_OPERATION_SPECS,
   GOAL_OPERATION_SPECS,
   TURN_OPERATION_SPECS,
@@ -196,7 +207,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   PLAN_OPERATION_SPECS,
   PROJECT_CATALOG_OPERATION_SPECS,
   MESSAGE_OPERATION_SPECS,
-  TASK_LEDGER_OPERATION_SPECS,
+  SESSION_TODO_OPERATION_SPECS,
   INTERACTION_OPERATION_SPECS,
   SESSION_CONTINUITY_OPERATION_SPECS,
   SESSION_TRANSCRIPT_OPERATION_SPECS,
@@ -215,6 +226,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   NETWORK_PROXY_OPERATION_SPECS,
   CONFIGURATION_OPERATION_SPECS,
   WORKHUB_COORDINATION_OPERATION_SPECS,
+  PLUGIN_PLATFORM_OPERATION_SPECS,
 );
 
 export type OperationSpecMap = typeof HOST_OPERATION_SPECS;
@@ -234,6 +246,13 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'client.capability.replace',
   'client.capability.unregister',
   'configuration.credentials.export',
+  'collaboration.access.query',
+  'collaboration.grant.revoke',
+  'collaboration.invitation.prepare',
+  'collaboration.principal.revoke',
+  'collaboration.principal.rename',
+  'collaboration.turn-request.decide',
+  'collaboration.turn-request.query',
   'connection.catalog.create',
   'connection.catalog.query',
   'connection.catalog.remove',
@@ -261,12 +280,14 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'goal.control',
   'goal.query',
   'host.diagnostics.query',
+  'host.resources.query',
   'host.status',
   'interaction.answer',
   'interaction.query',
   'memory.mutate',
   'memory.query',
   'network-proxy.test',
+  'oauth.enrollment.query',
   'oauth.login.cancel',
   'oauth.login.query',
   'oauth.login.start',
@@ -283,6 +304,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'queue.entry.update',
   'queue.retract',
   'runtime.policy.mutate',
+  'runtime.policy.network-proxy.update',
   'runtime.policy.query',
   'runtime.resource.controller.acquire',
   'runtime.resource.controller.control',
@@ -298,10 +320,12 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'session.create',
   'session.execution_boundary.query',
   'session.lifecycle.set',
+  'session.shared.query',
   'session.metadata.update',
   'session.read_marker.set',
   'session.recap.generate',
   'session.remove',
+  'session.remove.preview',
   'session.revision.abandon',
   'session.revision.create',
   'session.transcript.page',
@@ -315,8 +339,10 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'skill.catalog.query',
   'subscription.close',
   'subscription.open',
-  'task.ledger.query',
+  'subscription.pty_interest.set',
+  'session.todo.query',
   'turn.interrupt',
+  'turn.message.execution.query',
   'turn.message.query',
   'turn.message.submit',
   'turn.query',

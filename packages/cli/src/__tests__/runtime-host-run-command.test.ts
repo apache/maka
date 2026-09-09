@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
@@ -285,6 +286,77 @@ describe('Runtime Host maka run adapter', () => {
     );
   });
 
+  test('keeps a sandbox failure unresolved after an unrelated tool succeeds', async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const fixture = runFixture({
+      turnEvents: sandboxBoundaryEvents(
+        'turn-1',
+        'step-1',
+        'step-2',
+        'Boundary was not widened',
+        'tool_search',
+      ),
+    });
+    const exitCode = await runFixtureCommand(
+      fixture,
+      ['request inaccessible work'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
+    );
+
+    assert.equal(exitCode, 1);
+    assert.equal(stdout.join(''), '');
+    assert.equal(
+      stderr.join(''),
+      'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
+    );
+  });
+
+  test('keeps the boundary unresolved when a later same-named call succeeds (live)', async () => {
+    const fixture = runFixture({
+      turnEvents: sandboxBoundaryEvents('turn-1', 'step-1', 'step-2', 'Partial answer', 'Read'),
+    });
+
+    const exitCode = await runFixtureCommand(fixture, ['accept same-name different target']);
+
+    assert.equal(exitCode, 1);
+  });
+
+  test('keeps the boundary unresolved when a later same-named call succeeds (durable)', async () => {
+    const fixture = runFixture({
+      graph: true,
+      finalMessages: sandboxBoundaryMessages('step-1', 'step-2', 'Read'),
+    });
+
+    const exitCode = await runFixtureCommand(fixture, [
+      'accept durable same-name different target',
+      '--graph',
+    ]);
+
+    assert.equal(exitCode, 1);
+  });
+
+  test('returns exit code 1 when a denied widening precedes any later tool success', async () => {
+    const stderr: string[] = [];
+    const fixture = runFixture({
+      turnEvents: deniedWideningEvents('turn-1'),
+    });
+
+    const exitCode = await runFixtureCommand(
+      fixture,
+      ['accept post-denial success'],
+      () => {},
+      (text) => stderr.push(text),
+    );
+
+    assert.equal(exitCode, 1);
+    assert.equal(
+      stderr.join(''),
+      'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
+    );
+  });
+
   test('returns exit code 1 when reconnect restores a missed sandbox failure', async () => {
     let publishReplacement = () => {};
     const fixture = runFixture({
@@ -323,18 +395,26 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(stdout.join(''), 'Final graph answer\n');
   });
 
-  test('returns exit code 0 when a root Graph boundary failure recovers', async () => {
+  test('keeps a root Graph boundary failure unresolved even when a later same-named call succeeds', async () => {
     const stdout: string[] = [];
+    const stderr: string[] = [];
     const fixture = runFixture({
       graph: true,
       turnEvents: sandboxBoundaryEvents('turn-1', 'step-1', 'step-2', 'Recovered answer'),
     });
-    const exitCode = await runFixtureCommand(fixture, ['recover once', '--graph'], (text) =>
-      stdout.push(text),
+    const exitCode = await runFixtureCommand(
+      fixture,
+      ['recover once', '--graph'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
     );
 
-    assert.equal(exitCode, 0);
-    assert.equal(stdout.join(''), 'Final graph answer\n');
+    assert.equal(exitCode, 1);
+    assert.equal(stdout.join(''), '');
+    assert.equal(
+      stderr.join(''),
+      'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
+    );
   });
 
   test('returns exit code 1 when a same-step Graph sibling succeeds after a sandbox failure', async () => {
@@ -437,7 +517,7 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(observed.at(-1)?.finalOutput, 'Final graph answer');
   });
 
-  test('reports a recovered sandbox boundary from live and durable Turns', async () => {
+  test('keeps the sandbox boundary unresolved across live and durable Turns', async () => {
     const live = await observeFixtureOutcome({
       turnEvents: sandboxBoundaryEvents('turn-1', 'step-1', 'step-2', 'Recovered answer'),
     });
@@ -446,8 +526,8 @@ describe('Runtime Host maka run adapter', () => {
       finalMessages: sandboxBoundaryMessages('step-1', 'step-2'),
     });
 
-    assert.equal(live.sandboxBoundary, 'recovered');
-    assert.equal(durable.sandboxBoundary, 'recovered');
+    assert.equal(live.sandboxBoundary, 'unresolved');
+    assert.equal(durable.sandboxBoundary, 'unresolved');
   });
 
   test('leaves sandbox failures unresolved when their provider steps are unavailable', async () => {
@@ -463,7 +543,7 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(durable.sandboxBoundary, 'unresolved');
   });
 
-  test('returns a recovered boundary to unresolved after a later sandbox failure', async () => {
+  test('keeps the boundary unresolved across interleaved successes and a later sandbox failure', async () => {
     const outcome = await observeFixtureOutcome({
       turnEvents: sandboxFailureAfterRecoveryEvents('turn-1'),
     });
@@ -497,15 +577,6 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(live.failure?.class, 'tool_step_cap_reached');
     assert.equal(durable.status, 'failed');
     assert.equal(durable.failure?.class, 'tool_step_cap_reached');
-  });
-
-  test('classifies a standalone context-budget completion as failed', async () => {
-    const outcome = await observeFixtureOutcome({
-      turnEvents: completionEvents('turn-1', 'context_budget_exhausted'),
-    });
-
-    assert.equal(outcome.status, 'failed');
-    assert.equal(outcome.failure?.class, 'context_budget_exhausted');
   });
 
   test('uses the latest durable terminal state for a Graph Turn', async () => {
@@ -633,6 +704,7 @@ describe('Runtime Host maka run adapter', () => {
           providerType: 'openai' as const,
           enabled: true,
           enabledModelIds: ['gpt-5'],
+          catalogEntries: [],
           models: [{ id: 'gpt-5' }, { id: 'gpt-6-preview' }],
         },
       ],
@@ -672,6 +744,7 @@ describe('Runtime Host maka run adapter', () => {
     const prepareStarted = deferred<void>();
     const fixture = runFixture({
       graph: true,
+      strictTurnStopInput: true,
       prepareGate: prepareGate.promise,
       onPrepareStarted: () => prepareStarted.resolve(),
     });
@@ -721,6 +794,33 @@ describe('Runtime Host maka run adapter', () => {
         }),
       ),
       new Error('interactive user questions are unavailable in non-interactive mode'),
+    );
+    assert.deepEqual(fixture.exactTurnStops, [
+      { sessionId: session.id, turnId: 'turn-1', runId: 'run-1' },
+    ]);
+  });
+
+  test('fails and stops instead of dropping an interactive form', async () => {
+    const fixture = runFixture({
+      turnEvents: formEvents('turn-1'),
+      pendingInteractions: [pendingForm('turn-1')],
+      pendingAfterTurnStarts: true,
+    });
+    const session = await fixture.context.runtime.createSession({
+      cwd: '/workspace',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+
+    await assert.rejects(
+      collect(
+        fixture.context.runtime.sendMessage(session.id, {
+          turnId: 'turn-1',
+          text: 'configure deployment',
+        }),
+      ),
+      new Error('interactive user forms are unavailable in non-interactive mode'),
     );
     assert.deepEqual(fixture.exactTurnStops, [
       { sessionId: session.id, turnId: 'turn-1', runId: 'run-1' },
@@ -868,6 +968,7 @@ function runFixture(input: {
   onGraphStop?: () => void;
   initialMessages?: StoredMessage[];
   finalMessages?: StoredMessage[];
+  strictTurnStopInput?: boolean;
 }) {
   const switches: string[] = [];
   const moves: string[] = [];
@@ -1008,6 +1109,13 @@ function runFixture(input: {
         return { rootSessionId: requestInput.rootSessionId, graphId: 'graph-1' };
       }
       if (operation === 'turn.stop') {
+        if (input.strictTurnStopInput) {
+          const allowed = new Set(['sessionId', 'turnId', 'runId']);
+          const unexpected = Object.keys(requestInput).filter((key) => !allowed.has(key));
+          if (unexpected.length > 0) {
+            throw new Error(`Unknown turn.stop input field: ${unexpected.join(', ')}`);
+          }
+        }
         exactTurnStops.push({
           sessionId: String(requestInput.sessionId),
           turnId: String(requestInput.turnId),
@@ -1140,6 +1248,7 @@ function connectionCatalog() {
         providerType: 'openai' as const,
         enabled: true,
         enabledModelIds: ['gpt-5'],
+        catalogEntries: [],
         models: [{ id: 'gpt-5' }],
       },
     ],
@@ -1239,14 +1348,19 @@ async function* questionEvents(turnId: string): AsyncIterable<SessionEvent> {
   };
 }
 
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
+async function* formEvents(turnId: string): AsyncIterable<SessionEvent> {
+  yield {
+    type: 'form_request',
+    id: `${turnId}-form`,
+    turnId,
+    ts: 1,
+    requestId: 'form-1',
+    toolUseId: 'tool-1',
+    message: 'Configure deployment',
+    requester: { name: 'deploy', source: 'Acme MCP' },
+    fields: [{ kind: 'string', name: 'version', label: 'Version', required: true }],
+  };
 }
-
 function pendingQuestion(turnId: string): InteractionPendingSnapshot {
   return {
     schemaVersion: 1,
@@ -1261,6 +1375,26 @@ function pendingQuestion(turnId: string): InteractionPendingSnapshot {
       kind: 'question',
       toolUseId: 'tool-question',
       questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }],
+    },
+  };
+}
+
+function pendingForm(turnId: string): InteractionPendingSnapshot {
+  return {
+    schemaVersion: 1,
+    interactionId: 'form-1',
+    sessionId: 'session-created',
+    turnId,
+    runId: turnId === 'turn-1' ? 'run-1' : 'run-2',
+    revision: 1,
+    status: 'pending',
+    outcome: null,
+    request: {
+      kind: 'form',
+      toolUseId: 'tool-form',
+      message: 'Configure deployment',
+      requester: { name: 'deploy', source: 'Acme MCP' },
+      fields: [{ kind: 'string', name: 'version', label: 'Version', required: true }],
     },
   };
 }
@@ -1321,7 +1455,6 @@ function graphMessages(includeTerminal = true): StoredMessage[] {
       turnId: 'turn-2',
       ts: 5,
       status: 'completed',
-      partialOutputRetained: false,
     });
   }
   return messages;
@@ -1348,7 +1481,6 @@ function sandboxBoundaryMessages(
       turnId: 'turn-2',
       ts: 10,
       status: 'completed',
-      partialOutputRetained: true,
     },
   ];
 }
@@ -1368,7 +1500,6 @@ function multipleSandboxFailureMessages(): StoredMessage[] {
       turnId: 'turn-2',
       ts: 11,
       status: 'completed',
-      partialOutputRetained: true,
     },
   ];
 }
@@ -1383,7 +1514,6 @@ function abortedGraphMessages(): StoredMessage[] {
       ts: 5,
       status: 'aborted',
       abortSource: 'user_interrupt',
-      partialOutputRetained: true,
     },
   ];
 }
@@ -1398,7 +1528,6 @@ function failedGraphMessages(errorClass: string): StoredMessage[] {
       ts: 5,
       status: 'failed',
       errorClass,
-      partialOutputRetained: true,
     },
   ];
 }
@@ -1412,7 +1541,6 @@ function failedThenCompletedGraphMessages(): StoredMessage[] {
       turnId: 'turn-2',
       ts: 6,
       status: 'completed',
-      partialOutputRetained: true,
     },
   ];
 }
@@ -1449,7 +1577,6 @@ function multiWakeGraphMessages(includeFinalTerminal: boolean): StoredMessage[] 
       turnId: 'turn-3',
       ts: 8,
       status: 'completed',
-      partialOutputRetained: false,
     });
   }
   return messages;
@@ -1480,14 +1607,28 @@ async function* sandboxBoundaryEvents(
   successToolName = 'Read',
 ): AsyncIterable<SessionEvent> {
   const sameStep = failureStepId !== undefined && failureStepId === successStepId;
-  if (failureStepId !== undefined) yield toolStart(turnId, 'tool-1', failureStepId, 1);
-  if (sameStep) yield toolStart(turnId, 'tool-2', successStepId, 2, successToolName);
+  if (failureStepId !== undefined) {
+    yield toolStart(turnId, 'tool-1', failureStepId, 1);
+  }
+  if (sameStep) {
+    yield toolStart(turnId, 'tool-2', successStepId, 2, successToolName);
+  }
   yield sandboxFailureToolResult(turnId, 3);
   if (successStepId !== undefined && !sameStep) {
     yield toolStart(turnId, 'tool-2', successStepId, 4, successToolName);
   }
   yield successfulToolResult(turnId, 5);
   yield* eventsFor(turnId, text, 6);
+}
+
+async function* deniedWideningEvents(turnId: string): AsyncIterable<SessionEvent> {
+  yield toolStart(turnId, 'tool-1', 'step-1', 1);
+  yield sandboxFailureToolResult(turnId, 2);
+  yield toolStart(turnId, 'tool-2', 'step-2', 3, 'request_sandbox_boundary');
+  yield successfulToolResult(turnId, 4, 'tool-2');
+  yield toolStart(turnId, 'tool-3', 'step-3', 5);
+  yield successfulToolResult(turnId, 6, 'tool-3');
+  yield* eventsFor(turnId, 'Recovered answer', 7);
 }
 
 async function* projectedSameStepSandboxFailureEvents(turnId: string): AsyncIterable<SessionEvent> {

@@ -21,10 +21,13 @@ import { Buffer } from 'node:buffer';
 import { open } from 'node:fs/promises';
 import { basename } from 'node:path';
 import {
+  attachmentIngestBlocked,
   attachmentKindFromMimeType,
-  guessMimeFromName,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_COUNT,
+  ATTACHMENT_MIME_SNIFF_BYTES,
+  resolveAttachmentMimeType,
+  sniffAttachmentMimeType,
 } from '@maka/core/attachments';
 import type { ArtifactKind } from '@maka/core/artifacts';
 import type { AttachmentRef } from '@maka/core/events';
@@ -47,23 +50,34 @@ export interface AttachmentSnapshotInput {
  * only canonical Session Artifacts, so every path is read once under the byte
  * cap and handed to the Host-owned ingest boundary.
  */
-export async function resolveAttachmentRefs(input: {
+export async function resolveAttachmentRefs<T = AttachmentRef>(input: {
   files: AttachmentIngestFile[];
-  snapshot: (input: AttachmentSnapshotInput) => Promise<AttachmentRef>;
+  snapshot: (input: AttachmentSnapshotInput) => Promise<T>;
   resizeImage?: (bytes: Uint8Array) => Promise<Uint8Array>;
   maxBytes?: number;
-}): Promise<AttachmentRef[]> {
+  maxTotalBytes?: number;
+}): Promise<T[]> {
   const maxBytes = input.maxBytes ?? MAX_ATTACHMENT_BYTES;
-  const refs: AttachmentRef[] = [];
+  const maxTotalBytes = input.maxTotalBytes ?? Infinity;
+  let readBytes = 0;
+  let snapshotBytes = 0;
+  const refs: T[] = [];
   for (const file of input.files) {
     const name = attachmentFileName(file);
-    const mimeType = file.mimeType && file.mimeType.length > 0 ? file.mimeType : guessMimeFromName(name);
+    let bytes: Uint8Array = isPathAttachment(file)
+      ? await readFileCapped(file.path, Math.min(maxBytes, maxTotalBytes - readBytes))
+      : file.content;
+    readBytes += bytes.byteLength;
+    if (readBytes > maxTotalBytes) throw attachmentIngestBlocked('total_size_exceeded');
+    let mimeType = resolveAttachmentMimeType(bytes, file.mimeType, name);
     const kind = attachmentKindFromMimeType(mimeType, name);
 
-    let bytes: Uint8Array = isPathAttachment(file) ? await readFileCapped(file.path, maxBytes) : file.content;
     if (kind === 'image' && input.resizeImage) {
       bytes = await input.resizeImage(bytes);
+      mimeType = sniffAttachmentMimeType(bytes) ?? mimeType;
     }
+    snapshotBytes += bytes.byteLength;
+    if (snapshotBytes > maxTotalBytes) throw attachmentIngestBlocked('total_size_exceeded');
     const artifactKind: ArtifactKind =
       kind === 'image' ? 'image' : kind === 'pdf' ? 'pdf' : 'file';
     refs.push(
@@ -79,6 +93,66 @@ export async function resolveAttachmentRefs(input: {
   return refs;
 }
 
+/**
+ * Content type for a user-picked path, read cheaply from a short prefix so the
+ * composer can stage — and later preview — an attachment by its bytes rather
+ * than its extension. Mirrors the send-path precedence in
+ * {@link resolveAttachmentMimeType}: a real image named `report.pdf` resolves
+ * to its image MIME (so the composer shows a thumbnail and the vision notice),
+ * a disguised file loses its spoofed image/PDF claim. A read failure resolves
+ * an empty prefix through the same policy, so staging stays unblocked without
+ * reinstating the name's unverified image/PDF claim (the send path re-reads).
+ */
+export async function sniffPickedAttachmentMimeType(path: string, name: string): Promise<string> {
+  let prefix: Uint8Array = new Uint8Array();
+  try {
+    prefix = await readFilePrefix(path, ATTACHMENT_MIME_SNIFF_BYTES);
+  } catch {
+    // Fall through with the empty prefix: routing it through
+    // resolveAttachmentMimeType downgrades a claimed image/PDF name rather than
+    // trusting it, keeping one owner for the content-first policy.
+  }
+  return resolveAttachmentMimeType(prefix, undefined, name);
+}
+
+/**
+ * Resolve the paths returned by the pick dialog into approval-plan entries,
+ * each staged under its content-sniffed MIME rather than its extension — the
+ * headline behavior of this feature, extracted from the `attachments:pickFiles`
+ * IPC handler so the content decision is testable without a native dialog.
+ * `stat` is injected (the handler passes `node:fs/promises`); sizes come from
+ * main, never the renderer.
+ */
+export async function resolvePickedAttachments(
+  paths: readonly string[],
+  stat: (path: string) => Promise<{ size: number }>,
+): Promise<Array<{ path: string; name: string; mimeType: string; size: number }>> {
+  return Promise.all(
+    paths.map(async (path) => {
+      const name = basename(path);
+      return {
+        path,
+        name,
+        size: (await stat(path)).size,
+        mimeType: await sniffPickedAttachmentMimeType(path, name),
+      };
+    }),
+  );
+}
+
+/** Read up to `byteCount` leading bytes without loading the whole file, for
+ * content sniffing at pick time (a full read waits until send). */
+async function readFilePrefix(path: string, byteCount: number): Promise<Uint8Array> {
+  const fh = await open(path, 'r');
+  try {
+    const buf = Buffer.alloc(byteCount);
+    const { bytesRead } = await fh.read(buf, 0, byteCount, 0);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
+}
+
 function isPathAttachment(file: AttachmentIngestFile): file is Extract<AttachmentIngestFile, { path: string }> {
   return 'path' in file;
 }
@@ -91,7 +165,7 @@ export async function readFileCapped(path: string, maxBytes: number): Promise<Ui
   try {
     const buf = Buffer.alloc(maxBytes + 1);
     const { bytesRead } = await fh.read(buf, 0, maxBytes + 1, 0);
-    if (bytesRead > maxBytes) throw new Error('单个附件超出大小限制。');
+    if (bytesRead > maxBytes) throw attachmentIngestBlocked('item_too_large');
     return buf.subarray(0, bytesRead);
   } finally {
     await fh.close();
@@ -113,35 +187,44 @@ function attachmentFileName(file: AttachmentIngestFile): string {
  * BEFORE any file is read or artifact created. Count, per-file byte cap, and
  * approval-token checks all run here so a too-large / unapproved / forged
  * request is rejected with zero I/O. Path sizes come from main-side `stat`,
- * never from the renderer. Each approval token is consumed exactly once.
+ * never from the renderer. Approvals remain valid through asynchronous
+ * preparation; commit revalidates all tokens and consumes them only after
+ * its synchronous admission succeeds, with no intervening event-loop turn.
  */
-export async function resolveIngestItems(input: {
+export async function prepareIngestItems(input: {
   senderId: number;
   items: unknown;
   approvals: AttachmentApprovalRegistry;
   stat: (path: string) => Promise<{ size: number }>;
   maxAttachments?: number;
   maxBytes?: number;
-}): Promise<AttachmentIngestFile[]> {
+  maxTotalBytes?: number;
+}): Promise<{
+  files: AttachmentIngestFile[];
+  commit<T>(admit: () => T): T;
+}> {
   const maxAttachments = input.maxAttachments ?? MAX_ATTACHMENT_COUNT;
   const maxBytes = input.maxBytes ?? MAX_ATTACHMENT_BYTES;
-  if (!Array.isArray(input.items)) throw new Error('附件信息无效，请重新选择文件后再发送。');
-  if (input.items.length > maxAttachments) throw new Error('一次最多添加 8 个附件。');
+  let remainingBytes = input.maxTotalBytes ?? Infinity;
+  if (!Array.isArray(input.items)) throw attachmentIngestBlocked('items_invalid');
+  if (input.items.length > maxAttachments) throw attachmentIngestBlocked('count_limit');
   // Phase 1: validate every item with no side effects. Approval tokens are
   // peeked (not consumed) so a later invalid item does not burn earlier ones.
   const planned: AttachmentIngestFile[] = [];
   const approvalIds: string[] = [];
   const seenApprovalIds = new Set<string>();
   for (const item of input.items) {
-    if (!item || typeof item !== 'object') throw new Error('附件信息无效，请重新选择文件后再发送。');
+    if (!item || typeof item !== 'object') throw attachmentIngestBlocked('items_invalid');
     const record = item as Record<string, unknown>;
     if (typeof record.approvalId === 'string' && typeof record.name === 'string') {
-      if (seenApprovalIds.has(record.approvalId)) throw new Error('附件来源重复，请勿重复添加同一文件。');
+      if (seenApprovalIds.has(record.approvalId)) throw attachmentIngestBlocked('duplicate_source');
       seenApprovalIds.add(record.approvalId);
       const approved = input.approvals.peekApproval(input.senderId, record.approvalId);
-      if (!approved) throw new Error('附件来源已过期或无效，请重新选择文件后再发送。');
+      if (!approved) throw attachmentIngestBlocked('source_expired');
       const statResult = await input.stat(approved.path);
-      if (statResult.size > maxBytes) throw new Error('单个附件超出大小限制。');
+      if (statResult.size > maxBytes) throw attachmentIngestBlocked('item_too_large');
+      if (statResult.size > remainingBytes) throw attachmentIngestBlocked('total_size_exceeded');
+      remainingBytes -= statResult.size;
       const mimeType = pickMimeType(record.mimeType, approved.mimeType);
       planned.push({ path: approved.path, ...(mimeType ? { mimeType } : {}), size: statResult.size });
       approvalIds.push(record.approvalId);
@@ -152,24 +235,40 @@ export async function resolveIngestItems(input: {
       // string must not be decoded into main memory. base64 encodes 3 bytes
       // per 4 chars, so ceil(maxBytes*4/3)+padding is a safe upper bound.
       const maxBase64Len = Math.ceil((maxBytes * 4) / 3) + 4;
-      if (record.base64.length > maxBase64Len) throw new Error('单个附件超出大小限制。');
+      if (record.base64.length > maxBase64Len) throw attachmentIngestBlocked('item_too_large');
+      if (Buffer.byteLength(record.base64, 'base64') > remainingBytes)
+        throw attachmentIngestBlocked('total_size_exceeded');
       const content = Buffer.from(record.base64, 'base64');
-      if (content.byteLength > maxBytes) throw new Error('单个附件超出大小限制。');
+      if (content.byteLength > maxBytes) throw attachmentIngestBlocked('item_too_large');
+      remainingBytes -= content.byteLength;
       const mimeType = typeof record.mimeType === 'string' && record.mimeType.length > 0 ? record.mimeType : undefined;
       planned.push({ name: record.name, ...(mimeType ? { mimeType } : {}), size: content.byteLength, content });
       continue;
     }
-    throw new Error('附件信息无效，请重新选择文件后再发送。');
+    throw attachmentIngestBlocked('items_invalid');
   }
-  // Phase 2: consume all approval tokens now that every item validated. Peek
-  // passed, so each consume succeeds unless a concurrent request raced on the
-  // same token; in that rare case we surface it as an expired-token error.
-  for (const id of approvalIds) {
-    if (!input.approvals.consumeApproval(input.senderId, id)) {
-      throw new Error('附件来源已过期或无效，请重新选择文件后再发送。');
-    }
-  }
-  return planned;
+  return {
+    files: planned,
+    commit(admit) {
+      // Validate the whole set before admission: a concurrent send, sender
+      // teardown or expiry during preparation must not burn another token.
+      for (const id of approvalIds) {
+        if (!input.approvals.peekApproval(input.senderId, id))
+          throw attachmentIngestBlocked('source_expired');
+      }
+      const result = admit();
+      for (const id of approvalIds) input.approvals.consumeApproval(input.senderId, id);
+      return result;
+    },
+  };
+}
+
+/** Existing Host-direct callers redeem approvals before uploading. */
+export async function resolveIngestItems(
+  input: Parameters<typeof prepareIngestItems>[0],
+): Promise<AttachmentIngestFile[]> {
+  const prepared = await prepareIngestItems(input);
+  return prepared.commit(() => prepared.files);
 }
 
 function pickMimeType(renderer: unknown, approved: string | undefined): string | undefined {

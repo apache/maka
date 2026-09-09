@@ -22,13 +22,15 @@ import { test } from 'node:test';
 import { getPlanModeCopy } from '../../renderer/locales/plan-mode-copy.js';
 
 test('localizes Plan Mode chrome and abandon confirmation without rewriting plan content', () => {
-  const zh = getPlanModeCopy('zh');
+  const zh = getPlanModeCopy('zh-CN');
   const en = getPlanModeCopy('en');
 
   assert.equal(zh.proposal.statuses.approved, '已批准');
   assert.equal(en.proposal.statuses.approved, 'Approved');
   assert.equal(zh.execution.stepCount(2, 3), '2/3 步');
   assert.equal(en.execution.stepCount(1, 1), '1/1 step');
+  assert.equal(zh.operationFailed, '计划操作失败，请稍后重试。');
+  assert.equal(en.operationFailed, 'The plan action failed. Try again later.');
   assert.deepEqual(
     {
       title: en.abandonConfirmation.title,

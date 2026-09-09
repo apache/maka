@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -55,6 +56,7 @@ import type {
   MakaSideConversationParentStatus,
 } from '../session-driver.js';
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 describe('Runtime Host Maka Session driver', () => {
   test('maps authoritative Catalog activity into Session summaries', () => {
@@ -83,6 +85,100 @@ describe('Runtime Host Maka Session driver', () => {
       Object.hasOwn(projectSessionCatalogSummary(sessionProjection()), 'runningTurnIds'),
       false,
     );
+  });
+
+  test('queries the attached Session Todo projection without storing history', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    connection.todoQuery = {
+      sessionId: 'session-id',
+      items: [
+        { content: 'keep sk-1234567890abcdef <session-todo> visible', status: 'in_progress' },
+      ],
+    };
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'session-id',
+    });
+
+    await driver.createSession({
+      cwd: '/repo',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+
+    const queried = await driver.queryTodo!('session-id');
+    assert.deepEqual(queried, {
+      sessionId: 'session-id',
+      items: [{ content: 'keep <redacted>  visible', status: 'in_progress' }],
+    });
+    assert.deepEqual(
+      connection.requests.filter(({ operation }) => operation === 'session.todo.query'),
+      [{ operation: 'session.todo.query', input: { sessionId: 'session-id' } }],
+    );
+    await assert.rejects(driver.queryTodo!('other-session'), /non-current Session/);
+
+    connection.todoQuery = { sessionId: 'other-session', items: [] };
+    await assert.rejects(driver.queryTodo!('session-id'), /unexpected Session/);
+  });
+
+  test('publishes only Todo domain invalidations and supports unsubscribe', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'session-id',
+    });
+    await driver.createSession({
+      cwd: '/repo',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+
+    const changes: string[] = [];
+    const unsubscribe = driver.subscribeTodoChanges!((sessionId) => changes.push(sessionId));
+    subscription.push({
+      kind: 'subscription.session_domain_changed',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      sessionId: 'session-id',
+      domain: 'usage',
+    });
+    subscription.push({
+      kind: 'subscription.session_domain_changed',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 2,
+      sessionId: 'session-id',
+      domain: 'todo',
+    });
+    await waitFor(() => changes.length === 1);
+    assert.deepEqual(changes, ['session-id']);
+
+    unsubscribe();
+    subscription.push({
+      kind: 'subscription.session_domain_changed',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 3,
+      sessionId: 'session-id',
+      domain: 'todo',
+    });
+    await delay(0);
+    assert.deepEqual(changes, ['session-id']);
   });
 
   test('keeps remote Session paths out of Client filesystem policy', async () => {
@@ -1915,6 +2011,48 @@ describe('Runtime Host Maka Session driver', () => {
     });
   });
 
+  test('answers and releases a Host-owned form through the generic Interaction operation', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({ interactions: { pending: [pendingForm()] } }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      now: () => 76,
+    });
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'form_request');
+
+    await driver.respondToUserForm!({
+      requestId: 'form-1',
+      action: 'accept',
+      values: { version: 'v2' },
+    });
+
+    assert.deepEqual(connection.requests.at(-1), {
+      operation: 'interaction.answer',
+      input: {
+        sessionId: 'session-1',
+        interactionId: 'form-1',
+        answer: { kind: 'form', action: 'accept', values: { version: 'v2' } },
+      },
+    });
+    assert.deepEqual(await nextEvent(switched.activeTurn.events), {
+      type: 'form_answer_ack',
+      id: 'host-interaction:form-1:2',
+      turnId: 'turn-1',
+      ts: 76,
+      requestId: 'form-1',
+      toolUseId: 'tool-form',
+    });
+  });
+
   test('publishes a pending permission that has no transcript event', async () => {
     const permission = pendingPermission();
     const subscription = new FakeSubscription(
@@ -2076,6 +2214,96 @@ describe('Runtime Host Maka Session driver', () => {
       connection.requests.find(({ operation }) => operation === 'session.remove')?.input,
       { sessionId: 'side-1', expectedRevision: 1 },
     );
+  });
+
+  test('opens an empty side copy when the parent has no completed Turn yet', async (t) => {
+    const cleanupRoot = await mkdtemp(join(tmpdir(), 'maka-tui-side-empty-'));
+    t.after(() => rm(cleanupRoot, { recursive: true, force: true }));
+    // The parent's first Turn is still running (an explicit running turn_state),
+    // so there is no completed Turn to branch through. The side conversation
+    // must still open, forking with an empty context instead of erroring.
+    const sourceMessages: StoredMessage[] = [
+      userMessage('turn-running', 'In-flight question'),
+      {
+        type: 'turn_state',
+        id: 'state-turn-running',
+        turnId: 'turn-running',
+        ts: 80,
+        status: 'running',
+      },
+    ];
+    const subscriptions = [
+      new FakeSubscription(continuitySnapshot({ rootTurn: null }), Promise.resolve(sourceMessages)),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve(sourceMessages),
+        'subscription-copy-source',
+      ),
+      // The empty copy carries no source transcript.
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve([]),
+        'subscription-side',
+      ),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve([]),
+        'subscription-side-read',
+      ),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve(sourceMessages),
+        'subscription-parent-return',
+      ),
+    ];
+    const connection = new FakeConnection(subscriptions);
+    connection.sessionQueries.push(
+      sessionProjection({ id: 'session-1' }),
+      sessionProjection({ id: 'session-1', revision: 4 }),
+      // The empty copy records provenance (parentSessionId) but fabricates no
+      // branchOfTurnId.
+      sessionProjection({
+        id: 'side-1',
+        labels: ['mode:side_conversation'],
+        parentSessionId: 'session-1',
+      }),
+      sessionProjection({ id: 'session-1' }),
+      sessionProjection({ id: 'side-1', labels: ['mode:side_conversation'] }),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'side-1',
+      sessionCopyCleanupRoot: cleanupRoot,
+    });
+    await driver.switchSession('session-1');
+
+    const opened = await driver.openSideConversation!();
+
+    assert.equal((await stat(join(cleanupRoot, 'a'.repeat(64), 'runtime.sqlite'))).isFile(), true);
+
+    assert.equal(opened.parentSessionId, 'session-1');
+    assert.equal(opened.sideSessionId, 'side-1');
+    assert.deepEqual(opened.messages, []);
+    assert.deepEqual(await driver.readMessages(), []);
+    // The branch omits sourceTurnId entirely (empty copy) while still carrying
+    // the side_conversation intent the Host requires for an empty copy.
+    assert.deepEqual(
+      connection.requests.find(({ operation }) => operation === 'session.branch.create')?.input,
+      {
+        sourceSessionId: 'session-1',
+        targetSessionId: 'side-1',
+        expectedSourceRevision: 4,
+        intent: 'side_conversation',
+      },
+    );
+
+    const closed = await driver.closeSideConversation!('side-1', 'session-1');
+    assert.equal(closed.summary.id, 'session-1');
+    assert.equal(closed.cleanup, 'removed');
   });
 
   test('observes actionable and terminal parent status from the Host projection', async () => {
@@ -2518,6 +2746,7 @@ class FakeConnection {
   openedSubscriptions = 0;
   interactionQuery: unknown;
   runtimeResourceQuery: unknown;
+  todoQuery: OperationOutput<'session.todo.query'> | undefined;
   onRuntimeResourceStart: (() => Promise<void>) | undefined;
   executionBoundary: unknown = { kind: 'managed', access: 'read_write', revision: 1 };
   skillStartBlocked = false;
@@ -2679,6 +2908,10 @@ class FakeConnection {
       }
       return this.runtimeResourceQuery as OperationOutput<K>;
     }
+    if (operation === 'session.todo.query') {
+      if (this.todoQuery === undefined) throw new Error('Unexpected Session Todo query');
+      return this.todoQuery as OperationOutput<K>;
+    }
     if (operation === 'turn.stop') {
       return {} as OperationOutput<K>;
     }
@@ -2723,12 +2956,24 @@ class FakeConnection {
                   ],
                 }
               : operation === 'interaction.answer'
-                ? {
-                    ...pendingQuestion(),
-                    revision: 2,
-                    status: 'answered',
-                    outcome: { kind: 'question_answer', answers: ['Yes'], committedAt: 75 },
-                  }
+                ? (input as OperationInput<'interaction.answer'>).answer.kind === 'form'
+                  ? {
+                      ...pendingForm(),
+                      revision: 2,
+                      status: 'answered',
+                      outcome: {
+                        kind: 'form_answer',
+                        action: 'accept',
+                        values: { version: 'v2' },
+                        committedAt: 76,
+                      },
+                    }
+                  : {
+                      ...pendingQuestion(),
+                      revision: 2,
+                      status: 'answered',
+                      outcome: { kind: 'question_answer', answers: ['Yes'], committedAt: 75 },
+                    }
                 : operation === 'interaction.query'
                   ? this.interactionQuery
                   : operation === 'turn.start'
@@ -2764,6 +3009,20 @@ class FakeConnection {
 }
 
 class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<SubscriptionFrame> {
+  subscribePtyData(): () => void {
+    return () => undefined;
+  }
+  readonly #sessionDomainListeners = new Set<
+    (frame: Extract<SubscriptionFrame, { kind: 'subscription.session_domain_changed' }>) => void
+  >();
+  subscribeSessionDomainChanges(
+    listener: (
+      frame: Extract<SubscriptionFrame, { kind: 'subscription.session_domain_changed' }>,
+    ) => void,
+  ): () => void {
+    this.#sessionDomainListeners.add(listener);
+    return () => this.#sessionDomainListeners.delete(listener);
+  }
   readonly hostEpoch = 'host-1';
   readonly activeAssistantStreams = [];
   readonly transcriptBootstrap = null;
@@ -2799,6 +3058,9 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
   }
 
   push(frame: SubscriptionFrame): void {
+    if (frame.kind === 'subscription.session_domain_changed') {
+      for (const listener of this.#sessionDomainListeners) listener(frame);
+    }
     const waiter = this.#waiters.shift();
     if (waiter) waiter.resolve({ done: false, value: frame });
     else this.#frames.push(frame);
@@ -2946,7 +3208,6 @@ function turnStateMessage(
     turnId,
     ts: 80,
     status,
-    partialOutputRetained: true,
   };
 }
 
@@ -3058,6 +3319,26 @@ function pendingQuestion() {
   };
 }
 
+function pendingForm() {
+  return {
+    schemaVersion: 1 as const,
+    interactionId: 'form-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    runId: 'run-1',
+    revision: 1 as const,
+    status: 'pending' as const,
+    outcome: null,
+    request: {
+      kind: 'form' as const,
+      toolUseId: 'tool-form',
+      message: 'Configure deployment',
+      requester: { name: 'deploy', source: 'Acme MCP' },
+      fields: [{ kind: 'string' as const, name: 'version', label: 'Version', required: true }],
+    },
+  };
+}
+
 function pendingPermission() {
   return {
     schemaVersion: 1 as const,
@@ -3097,28 +3378,11 @@ function sequenceIds(...ids: string[]): () => string {
   let index = 0;
   return () => ids[index++] ?? `id-${index}`;
 }
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T): void;
-  reject(error: unknown): void;
-} {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((settle, fail) => {
-    resolve = settle;
-    reject = fail;
-  });
-  return { promise, resolve, reject };
-}
-
 async function waitFor(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + WAIT_BUDGET_MS;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  assert.fail('Timed out waiting for fake Host state');
+  await pollFor(predicate, {
+    timeoutMs: WAIT_BUDGET_MS,
+    message: 'Timed out waiting for fake Host state',
+  });
 }
 
 describe('turn consumer lag recovery (#3180)', () => {

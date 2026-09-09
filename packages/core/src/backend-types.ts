@@ -30,16 +30,19 @@
 import type {
   AttachmentRef,
   ContextCompactionOutcome,
+  DirectoryReference,
   MessageContent,
   QuoteRef,
   SessionEvent,
   SandboxBoundaryRequestEvent,
+  FormRequestEvent,
   UserQuestionRequestEvent,
 } from './events.js';
-import type { InteractionClosureReason } from './interaction.js';
+import type { InteractionClosureReason, InteractionFormResult } from './interaction.js';
 import type { RuntimeEvent } from './runtime-event.js';
 import type { SandboxBoundaryResponse, SandboxBoundarySettlement } from './sandbox-boundary.js';
 import type { StoredMessage, PersistedBackendKind } from './session.js';
+import type { RuntimeInvocationRecord } from './runtime-invocation.js';
 import type { UserQuestionResponse } from './user-question.js';
 import type { ContextBudgetDiagnostic } from './usage-stats/types.js';
 import type { EffectiveOrchestration } from './orchestration.js';
@@ -50,6 +53,8 @@ export interface RuntimeContinuationMetadata {
   sourceRunId: string;
   sourceTurnId: string;
   sourceRuntimeEventHighWater: number;
+  /** Restored by Runtime from authoritative decisions on the authenticated continuation chain. */
+  sandboxBoundaryDenied?: boolean;
 }
 
 export interface BackendSendInput {
@@ -60,7 +65,7 @@ export interface BackendSendInput {
   /** Caller-generated turn id shared by the persisted UserMessage and every emitted event. */
   turnId: string;
   /** Trusted per-turn cap on provider tool-call steps. */
-  maxSteps?: number;
+  maxSteps?: number | null;
   /** Trusted effective orchestration snapshot for this run. */
   orchestration?: EffectiveOrchestration;
   /** Trusted per-run tool protocol override. Direct remains the default. */
@@ -73,23 +78,36 @@ export interface BackendSendInput {
   headAnchorRuntimeEvent?: RuntimeEvent;
   text: string;
   attachments?: AttachmentRef[];
+  /** Live Host-bound directories folded into model text without eager filesystem reads. */
+  directoryReferences?: DirectoryReference[];
   /** Inline quoted excerpts folded into the model-facing user content. */
   quotes?: QuoteRef[];
   /**
-   * Prior conversation projected from the RuntimeEvent ledger into the
-   * existing StoredMessage public shape. Adapters materialize this into the
-   * SDK's expected conversation shape when native RuntimeEvent replay is not
-   * available.
+   * Legacy caller projection retained for source compatibility. Runtime
+   * backends must not use it as provider history; RuntimeEvents are the only
+   * model-history authority.
    */
-  context: StoredMessage[];
+  context?: StoredMessage[];
   /**
-   * Optional prior RuntimeEvent ledger for model-history projection. Backends
-   * prefer this when supplied and usable; `context` is the RuntimeEvent-derived
-   * compatibility projection.
+   * Optional prior RuntimeEvent ledger for model-history projection.
    */
   runtimeContext?: RuntimeEvent[];
+  /**
+   * The invocations `runtimeContext` came from, used only to verify
+   * provider-owned replay against the current model route. RuntimeEvents stay
+   * the transcript authority; route provenance is read off each opening fact.
+   */
+  runtimeContextInvocations?: readonly RuntimeInvocationRecord[];
   /** Continue from an already committed RuntimeEvent boundary without adding another user turn. */
   continuation?: RuntimeContinuationMetadata;
+  /** Runtime-owned reversible gate, called only before another provider step,
+   * after the preceding provider/tool events have been durably consumed.
+   * `pause` ends this physical stream without emitting logical completion.
+   */
+  handoffBoundary?: (
+    signal: AbortSignal,
+    remainingSteps: number | null,
+  ) => Promise<'continue' | 'pause'>;
   /**
    * Steering pull — a LEASE, and the single atomic commit point of delivery.
    * Backends that support mid-turn steering call this at every step boundary;
@@ -122,6 +140,11 @@ export interface HostedUserQuestionSettlement {
   applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
 }
 
+export interface HostedFormSettlement {
+  applyAnswer(answer: InteractionFormResult): Promise<void>;
+  applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
+}
+
 export interface HostedSandboxBoundarySettlement {
   applyDecision(settlement: SandboxBoundarySettlement): Promise<void>;
   applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
@@ -140,6 +163,12 @@ export interface HostedInteractionBridge {
     request: UserQuestionRequestEvent;
     settlement: HostedUserQuestionSettlement;
   }): Promise<void>;
+  admitFormRequest(input: {
+    request: FormRequestEvent;
+    settlement: HostedFormSettlement;
+  }): Promise<void>;
+  /** Withdraw one exact producer-owned form without closing the surrounding Run. */
+  withdrawFormRequest(requestId: string): Promise<void>;
   admitSandboxBoundaryRequest(input: {
     request: SandboxBoundaryRequestEvent;
     settlement: HostedSandboxBoundarySettlement;
@@ -167,6 +196,8 @@ export interface BackendCompactHistoryInput {
    */
   runId: string;
   runtimeContext: readonly RuntimeEvent[];
+  /** Source-invocation route authority for provider-owned history projected into the compaction call. */
+  runtimeContextInvocations?: readonly RuntimeInvocationRecord[];
 }
 
 export interface BackendCompactHistoryResult {
@@ -178,11 +209,12 @@ export type BackendStopMode = 'immediate' | 'after_step';
 
 /**
  * The live session-event vocabulary accepted from a backend. `queue_update`
- * belongs to the runtime kernel, while legacy permission requests and
+ * belongs to the runtime kernel, Client Capability approval events belong to
+ * the Host-owned Interaction projection, and legacy permission requests and
  * acknowledgements were replaced by sandbox-boundary events. `send` stays
  * typed as `SessionEvent` for implementation ergonomics; the flow drops these
- * retired variants at ingress so they are never mapped, observed, or persisted
- * by a new run.
+ * non-backend variants at ingress so they are never mapped or persisted by a
+ * new run.
  */
 export type BackendSessionEvent = Exclude<
   SessionEvent,
@@ -192,6 +224,9 @@ export type BackendSessionEvent = Exclude<
       type:
         | 'queue_update'
         | 'message_admission'
+        | 'client_capability_request'
+        | 'client_capability_decision_ack'
+        | 'context_compaction_started'
         | 'permission_request'
         | 'permission_answer_ack'
         | 'permission_closure_ack'
@@ -203,6 +238,12 @@ export type BackendSessionEvent = Exclude<
 export interface AgentBackend {
   readonly kind: PersistedBackendKind;
   readonly sessionId: string;
+  /**
+   * Resolve the same composition used by send and commit it through the Run
+   * recorder, without dispatching provider or tool work. Required for handoff;
+   * backends without this capability must not resume a cooperative pause.
+   */
+  prepareRunComposition?(input: { runId: string; turnId: string }): Promise<void>;
   send(input: BackendSendInput): AsyncIterable<SessionEvent>;
   compactHistory?(input: BackendCompactHistoryInput): Promise<BackendCompactHistoryResult>;
   stop(reason: 'user_stop' | 'redirect', mode?: BackendStopMode): Promise<void>;

@@ -108,6 +108,69 @@ describe('Session retirement protocol', () => {
       },
     );
   });
+
+  test('carries the archived-subtask count on a removed result and rejects a malformed one', () => {
+    const withCount = {
+      requestId: 'request-remove',
+      operation: 'session.remove' as const,
+      ok: true as const,
+      result: { kind: 'removed' as const, sessionId: 'session-1', archivedSubtaskCount: 3 },
+    };
+    assert.deepEqual(decodeHostFrame(withCount), withCount);
+    // Absent when nothing was archived — the common delete keeps its old shape.
+    const withoutCount = {
+      requestId: 'request-remove',
+      operation: 'session.remove' as const,
+      ok: true as const,
+      result: { kind: 'removed' as const, sessionId: 'session-1' },
+    };
+    assert.deepEqual(decodeHostFrame(withoutCount), withoutCount);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          requestId: 'request-remove',
+          operation: 'session.remove',
+          ok: true,
+          result: { kind: 'removed', sessionId: 'session-1', archivedSubtaskCount: -1 },
+        }),
+      isInvalidFrame,
+    );
+  });
+
+  test('round-trips the removal preview query and rejects a malformed count', () => {
+    const request = {
+      requestId: 'request-preview',
+      operation: 'session.remove.preview' as const,
+      input: { sessionId: 'session-1' },
+    };
+    assert.deepEqual(decodeClientFrame(request), request);
+    const response = {
+      requestId: 'request-preview',
+      operation: 'session.remove.preview' as const,
+      ok: true as const,
+      result: { archivableSubtaskCount: 4 },
+    };
+    assert.deepEqual(decodeHostFrame(response), response);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          requestId: 'request-preview',
+          operation: 'session.remove.preview',
+          ok: true,
+          result: { archivableSubtaskCount: -1 },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'request-preview',
+          operation: 'session.remove.preview',
+          input: { sessionId: 'session-1', expectedRevision: 2 },
+        }),
+      isInvalidFrame,
+    );
+  });
 });
 
 function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionCatalogProjection {

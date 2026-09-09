@@ -109,6 +109,30 @@ test('development setup lazily caches CLI archives by peer target unless overrid
   assert.equal(closes, 2);
 });
 
+test('a packaged desktop resolves its own setup package without a development peer target', async (t) => {
+  const appPath = await mkdtemp(join(tmpdir(), 'maka-runtime-host-setup-packaged-'));
+  t.after(() => rm(appPath, { recursive: true, force: true }));
+  await writeFile(
+    join(appPath, 'package.json'),
+    JSON.stringify({ runtimeHostSetupPackage: 'maka-agent@1.2.3' }),
+  );
+  // Packaged builds ship on tuples that have no npm prebuild — macOS x64 — so
+  // reading the development peer target here would fail the local Runtime Host.
+  const resolver = createRuntimeHostSetupPackageResolver({
+    isPackaged: true,
+    appPath,
+    environment: {},
+    startDevelopmentArchiveBuild: () => assert.fail('a packaged desktop must not build the CLI'),
+  });
+  t.after(() => resolver.close());
+
+  assert.equal(resolver.mode, 'published');
+  assert.deepEqual(await resolver.resolveForThisDesktop(), {
+    kind: 'npm',
+    specifier: 'maka-agent@1.2.3',
+  });
+});
+
 test('cancelling the last waiter closes its build before a new setup starts', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-runtime-host-setup-package-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

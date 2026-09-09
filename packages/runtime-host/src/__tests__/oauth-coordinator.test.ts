@@ -17,13 +17,18 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import { OAuthDeviceAuthorizationExpiredError } from '@maka/runtime/oauth-provider-contracts';
+import {
+  GitHubCopilotEntitlementError,
+  GitHubCopilotEntitlementUnavailableError,
+} from '@maka/runtime/github-copilot-oauth-enrollment';
 import {
   parseOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
@@ -42,7 +47,10 @@ import {
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
 import { HostOAuthCoordinator } from '../server/oauth-coordinator.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
-import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
+import {
+  clientCapabilityConnectionIdentity,
+  clientCapabilityCoordinatorTestAdmission,
+} from './fixtures/client-capability.js';
 
 const NOW = 1_800_000_000_000;
 
@@ -79,7 +87,7 @@ test('xAI enrollment keeps device polling and credential material in the Host', 
     });
 
     const started = await coordinator.handlers['oauth.login.start'](
-      { attemptId: 'attempt-xai', connectionId: fixture.connection.connectionId },
+      oauthStart('attempt-xai', fixture.connection.connectionId),
       operationContext('client-xai', fixture.acquireResidency),
     );
     assert.equal(started.ok, true);
@@ -93,7 +101,128 @@ test('xAI enrollment keeps device polling and credential material in the Host', 
   });
 });
 
-test('a new OAuth start supersedes an in-progress login instead of failing with operation_conflict', async () => {
+test('authenticated OAuth attempts reconcile by attemptId after Host restart', async () => {
+  await withFixture('openai-codex', async (fixture) => {
+    const client = await attachPresentation(fixture.capabilities, 'client-oauth-restart', []);
+    const createCoordinator = () =>
+      new HostOAuthCoordinator({
+        runtimePolicy: fixture.stores,
+        activation: fixture.activation,
+        clientCapabilities: fixture.capabilities,
+        isProviderEnabled: () => true,
+        acquireResidency: fixture.acquireResidency,
+        invalidateBackends: async () => {
+          fixture.invalidations += 1;
+        },
+        onFatal: (error) => {
+          throw error;
+        },
+        now: () => NOW,
+        startCodexAuthorization: async () => ({
+          deviceAuthId: 'deviceauth-restart',
+          userCode: 'CODE-RESTART',
+          verificationUrl: 'https://auth.openai.com/codex/device',
+          expiresAt: NOW + 60_000,
+          intervalMs: 1_000,
+        }),
+        pollCodexAuthorization: async () => ({
+          authorizationCode: 'restart-code',
+          codeVerifier: 'restart-verifier',
+        }),
+        exchangeCodexCode: async () => tokenFixture('restart-access'),
+      });
+
+    const first = createCoordinator();
+    const input = oauthStart('attempt-restart', fixture.connection.connectionId);
+    const started = await first.handlers['oauth.login.start'](
+      input,
+      operationContext('client-oauth-restart', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    const authenticated = await waitForTerminal(first, input.attemptId);
+    assert.equal(authenticated.phase, 'authenticated');
+    await first.close();
+
+    const successor = createCoordinator();
+    for (const operation of ['oauth.login.query', 'oauth.login.cancel'] as const) {
+      const outcome = await successor.handlers[operation](
+        { attemptId: input.attemptId },
+        operationContext('client-oauth-restart', fixture.acquireResidency),
+      );
+      assert.equal(outcome.ok, true);
+      if (outcome.ok) assert.deepEqual(outcome.result, authenticated);
+    }
+    const replay = await successor.handlers['oauth.login.start'](
+      input,
+      operationContext('client-oauth-restart', fixture.acquireResidency),
+    );
+    assert.equal(replay.ok, true);
+    if (replay.ok) assert.deepEqual(replay.result, authenticated);
+    const rebound = await successor.handlers['oauth.login.start'](
+      {
+        attemptId: input.attemptId,
+        target: { kind: 'create', providerType: 'openai-codex' },
+      },
+      operationContext('client-oauth-restart', fixture.acquireResidency),
+    );
+    assert.deepEqual(rebound, {
+      ok: false,
+      error: {
+        code: 'invalid_request',
+        message: 'OAuth attemptId is already bound to another connection',
+      },
+    });
+    await successor.close();
+    client.close();
+  });
+});
+
+test('durable OAuth receipt failures stay bounded on start, query, and cancel', async () => {
+  await withFixture('openai-codex', async (fixture) => {
+    await writeFile(
+      join(fixture.root, 'runtime-policy-oauth-login-receipts.json'),
+      '{"invalid":true}\n',
+      'utf8',
+    );
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => undefined,
+      onFatal: (error) => {
+        throw error;
+      },
+    });
+    const expected = {
+      ok: false as const,
+      error: {
+        code: 'persistence_failed' as const,
+        message: 'OAuth login receipt query failed',
+      },
+    };
+    assert.deepEqual(
+      await coordinator.handlers['oauth.login.start'](
+        oauthStart('attempt-receipt-failure', fixture.connection.connectionId),
+        operationContext('client-receipt-failure', fixture.acquireResidency),
+      ),
+      expected,
+    );
+    for (const operation of ['oauth.login.query', 'oauth.login.cancel'] as const) {
+      assert.deepEqual(
+        await coordinator.handlers[operation](
+          { attemptId: 'attempt-receipt-failure' },
+          operationContext('client-receipt-failure', fixture.acquireResidency),
+        ),
+        expected,
+      );
+    }
+    await coordinator.close();
+  });
+});
+
+test('a new OAuth start conflicts with an in-progress login without cancelling it', async () => {
   await withFixture('xai-oauth', async (fixture) => {
     const client = await attachPresentation(fixture.capabilities, 'client-xai-supersede', []);
     let firstPollEntered = false;
@@ -124,7 +253,7 @@ test('a new OAuth start supersedes an in-progress login instead of failing with 
       pollXaiAuthorization: async (input) => {
         if (input.authorization.deviceCode === 'device-1') {
           firstPollEntered = true;
-          // Park until supersede aborts this attempt (no external deadlock).
+          // Park until the explicit cancel below aborts this attempt.
           await new Promise<never>((_resolve, reject) => {
             if (input.signal.aborted) {
               reject(input.signal.reason ?? new DOMException('aborted', 'AbortError'));
@@ -144,7 +273,10 @@ test('a new OAuth start supersedes an in-progress login instead of failing with 
     });
 
     const first = await coordinator.handlers['oauth.login.start'](
-      { attemptId: 'attempt-first', connectionId: fixture.connection.connectionId },
+      {
+        attemptId: 'attempt-first',
+        target: { kind: 'create', providerType: 'xai-oauth' },
+      },
       operationContext('client-xai-supersede', fixture.acquireResidency),
     );
     assert.equal(first.ok, true);
@@ -155,18 +287,26 @@ test('a new OAuth start supersedes an in-progress login instead of failing with 
     assert.equal(firstPollEntered, true);
 
     const second = await coordinator.handlers['oauth.login.start'](
-      { attemptId: 'attempt-second', connectionId: fixture.connection.connectionId },
+      oauthStart('attempt-second', fixture.connection.connectionId),
       operationContext('client-xai-supersede', fixture.acquireResidency),
     );
-    assert.equal(second.ok, true, 'second start must supersede, not conflict');
-    if (second.ok) assert.equal(second.result.attemptId, 'attempt-second');
-
+    assert.deepEqual(second, {
+      ok: false,
+      error: { code: 'operation_conflict', message: 'Another OAuth login is already in progress' },
+    });
+    await coordinator.handlers['oauth.login.cancel'](
+      { attemptId: 'attempt-first' },
+      operationContext('client-xai-supersede', fixture.acquireResidency),
+    );
     assert.equal((await waitForTerminal(coordinator, 'attempt-first')).phase, 'cancelled');
-    assert.equal((await waitForTerminal(coordinator, 'attempt-second')).phase, 'authenticated');
-    assert.equal(starts, 2);
-    assert.equal(fixture.invalidations, 1);
-    assert.equal(fixture.activeResidencies, 0);
+    assert.equal((await fixture.stores.connectionCatalog.getSnapshot()).connections.length, 1);
+    assert.deepEqual(await fixture.stores.operations.queryInteractiveOAuthLogin('attempt-first'), {
+      kind: 'not_found',
+    });
     await coordinator.close();
+    assert.equal(starts, 1);
+    assert.equal(fixture.invalidations, 0);
+    assert.equal(fixture.activeResidencies, 0);
     client.close();
   });
 });
@@ -215,35 +355,35 @@ test('concurrent OAuth starts serialize and never dual-open active logins', asyn
 
     const [first, second] = await Promise.all([
       coordinator.handlers['oauth.login.start'](
-        { attemptId: 'attempt-concurrent-a', connectionId: fixture.connection.connectionId },
+        oauthStart('attempt-concurrent-a', fixture.connection.connectionId),
         operationContext('client-xai-concurrent', fixture.acquireResidency),
       ),
       coordinator.handlers['oauth.login.start'](
-        { attemptId: 'attempt-concurrent-b', connectionId: fixture.connection.connectionId },
+        oauthStart('attempt-concurrent-b', fixture.connection.connectionId),
         operationContext('client-xai-concurrent', fixture.acquireResidency),
       ),
     ]);
-    assert.equal(first.ok, true);
-    assert.equal(second.ok, true);
+    assert.notEqual(first.ok, second.ok);
+    const admitted = first.ok ? first : second;
+    const rejected = first.ok ? second : first;
+    assert.equal(admitted.ok, true);
+    assert.equal(rejected.ok, false);
+    if (!rejected.ok) assert.equal(rejected.error.code, 'operation_conflict');
     assert.equal(maxConcurrentActive, 1, 'device authorization must not run concurrently');
-    assert.equal(starts, 2);
-
-    const phases = await Promise.all([
-      waitForTerminal(coordinator, 'attempt-concurrent-a'),
-      waitForTerminal(coordinator, 'attempt-concurrent-b'),
-    ]);
-    // First is superseded while polling or still completing; second should authenticate.
-    assert.ok(phases.some((phase) => phase.phase === 'authenticated'));
-    assert.ok(
-      phases.every((phase) => phase.phase === 'authenticated' || phase.phase === 'cancelled'),
-    );
+    assert.equal(starts, 1);
+    if (admitted.ok) {
+      assert.equal(
+        (await waitForTerminal(coordinator, admitted.result.attemptId)).phase,
+        'authenticated',
+      );
+    }
     assert.equal(fixture.activeResidencies, 0);
     await coordinator.close();
     client.close();
   });
 });
 
-test('supersede waits for an admitted token poll instead of dropping the granted token', async () => {
+test('a committing OAuth attempt keeps exclusive admission until its granted token settles', async () => {
   await withFixture('xai-oauth', async (fixture) => {
     const client = await attachPresentation(
       fixture.capabilities,
@@ -294,33 +434,27 @@ test('supersede waits for an admitted token poll instead of dropping the granted
     });
 
     const first = await coordinator.handlers['oauth.login.start'](
-      { attemptId: 'attempt-deferred-first', connectionId: fixture.connection.connectionId },
+      oauthStart('attempt-deferred-first', fixture.connection.connectionId),
       operationContext('client-xai-deferred-supersede', fixture.acquireResidency),
     );
     assert.equal(first.ok, true);
     await pollAdmitted;
 
-    const secondPromise = coordinator.handlers['oauth.login.start'](
-      { attemptId: 'attempt-deferred-second', connectionId: fixture.connection.connectionId },
+    const second = await coordinator.handlers['oauth.login.start'](
+      oauthStart('attempt-deferred-second', fixture.connection.connectionId),
       operationContext('client-xai-deferred-supersede', fixture.acquireResidency),
     );
-    // Give supersede time to observe cancellationDeferred and park on settlement.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(second.ok, false);
+    if (!second.ok) assert.equal(second.error.code, 'operation_conflict');
     releasePoll();
 
     assert.equal(
       (await waitForTerminal(coordinator, 'attempt-deferred-first')).phase,
       'authenticated',
-      'admitted poll must still commit under supersede',
+      'admitted poll must still commit under a rejected competing start',
     );
-    const second = await secondPromise;
-    assert.equal(second.ok, true);
-    assert.equal(
-      (await waitForTerminal(coordinator, 'attempt-deferred-second')).phase,
-      'authenticated',
-    );
-    assert.equal(starts, 2);
-    assert.equal(fixture.invalidations, 2);
+    assert.equal(starts, 1);
+    assert.equal(fixture.invalidations, 1);
     assert.equal(fixture.activeResidencies, 0);
     await coordinator.close();
     client.close();
@@ -367,7 +501,7 @@ test('xAI cancellation waits for an admitted token poll and commits its successf
     });
 
     const started = await coordinator.handlers['oauth.login.start'](
-      { attemptId: 'attempt-xai-cut', connectionId: fixture.connection.connectionId },
+      oauthStart('attempt-xai-cut', fixture.connection.connectionId),
       operationContext('client-xai-cut', fixture.acquireResidency),
     );
     assert.equal(started.ok, true);
@@ -421,17 +555,25 @@ test('Codex device login fails when approval never arrives before expiry', async
     });
 
     const started = await coordinator.handlers['oauth.login.start'](
-      { attemptId: 'attempt-codex-timeout', connectionId: fixture.connection.connectionId },
+      {
+        attemptId: 'attempt-codex-timeout',
+        target: { kind: 'create', providerType: 'openai-codex' },
+      },
       operationContext('client-codex-timeout', fixture.acquireResidency),
     );
     assert.equal(started.ok, true);
+    if (!started.ok) return;
     assert.deepEqual(await waitForTerminal(coordinator, 'attempt-codex-timeout'), {
       attemptId: 'attempt-codex-timeout',
-      connectionId: fixture.connection.connectionId,
-      provider: 'openai-codex',
+      connection: started.result.connection,
       phase: 'failed',
       failure: 'authorization_failed',
     });
+    assert.equal((await fixture.stores.connectionCatalog.getSnapshot()).connections.length, 1);
+    assert.deepEqual(
+      await fixture.stores.operations.queryInteractiveOAuthLogin('attempt-codex-timeout'),
+      { kind: 'not_found' },
+    );
     assert.equal(fixture.activeResidencies, 0);
     await coordinator.close();
     client.close();
@@ -479,7 +621,7 @@ test('Codex device login cancels between polls but commits an admitted poll resu
     });
 
     const started = await coordinator.handlers['oauth.login.start'](
-      { attemptId: 'attempt-codex-cut', connectionId: fixture.connection.connectionId },
+      oauthStart('attempt-codex-cut', fixture.connection.connectionId),
       operationContext('client-codex-cut', fixture.acquireResidency),
     );
     assert.equal(started.ok, true);
@@ -544,7 +686,7 @@ test('Codex device login presents the one-time code and commits exchanged tokens
     });
 
     const started = await coordinator.handlers['oauth.login.start'](
-      { attemptId: 'attempt-codex-device', connectionId: fixture.connection.connectionId },
+      oauthStart('attempt-codex-device', fixture.connection.connectionId),
       operationContext('client-codex-device', fixture.acquireResidency),
     );
     assert.equal(started.ok, true);
@@ -594,7 +736,10 @@ test('OAuth login rejects a Client without presentation before creating an effec
     });
     assert.deepEqual(
       await coordinator.handlers['oauth.login.start'](
-        { attemptId: 'attempt-missing', connectionId: fixture.connection.connectionId },
+        {
+          attemptId: 'attempt-missing',
+          target: { kind: 'create', providerType: 'openai-codex' },
+        },
         operationContext('client-missing', fixture.acquireResidency),
       ),
       {
@@ -603,6 +748,13 @@ test('OAuth login rejects a Client without presentation before creating an effec
           code: 'capability_unavailable',
           message: 'Initiating Client cannot present this OAuth login',
         },
+      },
+    );
+    assert.equal((await fixture.stores.connectionCatalog.getSnapshot()).connections.length, 1);
+    assert.deepEqual(
+      await fixture.stores.operations.queryInteractiveOAuthLogin('attempt-missing'),
+      {
+        kind: 'not_found',
       },
     );
     assert.equal(fixture.activeResidencies, 0);
@@ -635,7 +787,7 @@ test('OAuth login rejects an experimentally disabled provider before presentatio
         await coordinator.handlers['oauth.login.start'](
           {
             attemptId: `attempt-disabled-${provider}`,
-            connectionId: fixture.connection.connectionId,
+            target: { kind: 'create', providerType: provider },
           },
           operationContext(`client-disabled-${provider}`, fixture.acquireResidency),
         ),
@@ -647,12 +799,217 @@ test('OAuth login rejects an experimentally disabled provider before presentatio
           },
         },
       );
+      assert.equal((await fixture.stores.connectionCatalog.getSnapshot()).connections.length, 1);
+      assert.deepEqual(
+        await fixture.stores.operations.queryInteractiveOAuthLogin(`attempt-disabled-${provider}`),
+        { kind: 'not_found' },
+      );
       assert.deepEqual(presentationCalls, []);
       assert.equal(fixture.activeResidencies, 0);
       await coordinator.close();
       client.close();
     });
   }
+});
+
+test('GitHub Copilot enrollment runs its device grant on the Host, not in a Client', async () => {
+  await withFixture('github-copilot', async (fixture) => {
+    const presentationCalls: string[] = [];
+    const client = await attachPresentation(
+      fixture.capabilities,
+      'client-copilot',
+      presentationCalls,
+    );
+    const tokens = tokenFixture('gho_account_token', {
+      base_url: 'https://api.githubcopilot.com',
+    });
+    let polls = 0;
+    const entitlementChecks: string[] = [];
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => {
+        fixture.invalidations += 1;
+      },
+      onFatal: (error) => {
+        throw error;
+      },
+      now: () => NOW,
+      startGitHubCopilotAuthorization: async () => ({
+        deviceCode: 'host-only-device-code',
+        userCode: 'ABCD-1234',
+        verificationUrl: 'https://github.com/login/device',
+        expiresAt: NOW + 900_000,
+        intervalMs: 5_000,
+      }),
+      pollGitHubCopilotAuthorization: async () => {
+        polls += 1;
+        return tokens;
+      },
+      verifyGitHubCopilotEntitlement: async (input) => {
+        entitlementChecks.push(input.tokens.access_token);
+        return [{ id: 'copilot-test-model' }];
+      },
+    });
+
+    const started = await coordinator.handlers['oauth.login.start'](
+      oauthStart('attempt-copilot', fixture.connection.connectionId),
+      operationContext('client-copilot', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    const terminal = await waitForTerminal(coordinator, 'attempt-copilot');
+    assert.equal(terminal.phase, 'authenticated');
+    assert.equal(terminal.connection.providerType, 'github-copilot');
+    // The one-time code reaches the user through the Host's presentation seam,
+    // so no Client ever holds the grant or the credential it produces.
+    assert.deepEqual(presentationCalls, ['client-copilot']);
+    assert.equal(polls, 1);
+    // The account was adopted only after the provider confirmed it reaches a model.
+    assert.deepEqual(entitlementChecks, ['gho_account_token']);
+    assert.equal(fixture.invalidations, 1);
+    await coordinator.close();
+    client.close();
+  });
+});
+
+test('GitHub Copilot enrollment refuses an account that reaches no Copilot model', async () => {
+  await withFixture('github-copilot', async (fixture) => {
+    const client = await attachPresentation(fixture.capabilities, 'client-copilot-entitlement', []);
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => {
+        fixture.invalidations += 1;
+      },
+      onFatal: (error) => {
+        throw error;
+      },
+      now: () => NOW,
+      startGitHubCopilotAuthorization: async () => ({
+        deviceCode: 'host-only-device-code',
+        userCode: 'ABCD-1234',
+        verificationUrl: 'https://github.com/login/device',
+        expiresAt: NOW + 900_000,
+        intervalMs: 5_000,
+      }),
+      pollGitHubCopilotAuthorization: async () =>
+        tokenFixture('gho_account_token', { base_url: 'https://api.githubcopilot.com' }),
+      // A GitHub account without a live Copilot subscription authorizes the
+      // grant and then reaches nothing.
+      verifyGitHubCopilotEntitlement: async () => {
+        throw new GitHubCopilotEntitlementError();
+      },
+    });
+
+    const started = await coordinator.handlers['oauth.login.start'](
+      oauthStart('attempt-copilot-entitlement', fixture.connection.connectionId),
+      operationContext('client-copilot-entitlement', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    const terminal = await waitForTerminal(coordinator, 'attempt-copilot-entitlement');
+    assert.equal(terminal.phase, 'failed');
+    // The account is what was refused, not the authorization the user completed.
+    assert.equal(terminal.failure, 'provider_rejected');
+    // Nothing was adopted: no credential, no backend invalidation, no residency.
+    const resolved = await fixture.stores.operations.resolveExecutionConnection({
+      kind: 'catalog_slug',
+      connectionSlug: fixture.connection.slug,
+    });
+    assert.equal(
+      resolved.kind === 'ready' ? resolved.secretMaterial.connection : undefined,
+      undefined,
+    );
+    assert.equal(fixture.invalidations, 0);
+    assert.equal(fixture.activeResidencies, 0);
+    await coordinator.close();
+    client.close();
+  });
+});
+
+test('GitHub Copilot enrollment reports an unanswered entitlement check as retryable', async () => {
+  await withFixture('github-copilot', async (fixture) => {
+    const client = await attachPresentation(fixture.capabilities, 'client-copilot-unavailable', []);
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => {
+        fixture.invalidations += 1;
+      },
+      onFatal: (error) => {
+        throw error;
+      },
+      now: () => NOW,
+      startGitHubCopilotAuthorization: async () => ({
+        deviceCode: 'host-only-device-code',
+        userCode: 'ABCD-1234',
+        verificationUrl: 'https://github.com/login/device',
+        expiresAt: NOW + 900_000,
+        intervalMs: 5_000,
+      }),
+      pollGitHubCopilotAuthorization: async () =>
+        tokenFixture('gho_account_token', { base_url: 'https://api.githubcopilot.com' }),
+      // The Copilot API never answered — a 429, a 5xx, or a dropped
+      // connection. Nothing was learned about the subscription.
+      verifyGitHubCopilotEntitlement: async () => {
+        throw new GitHubCopilotEntitlementUnavailableError(503);
+      },
+    });
+
+    const started = await coordinator.handlers['oauth.login.start'](
+      oauthStart('attempt-copilot-unavailable', fixture.connection.connectionId),
+      operationContext('client-copilot-unavailable', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    const terminal = await waitForTerminal(coordinator, 'attempt-copilot-unavailable');
+    assert.equal(terminal.phase, 'failed');
+    // Not provider_rejected: telling a subscribed user their account is
+    // ineligible sends them after a plan they already have.
+    assert.equal(terminal.failure, 'authorization_failed');
+    assert.equal(fixture.invalidations, 0);
+    assert.equal(fixture.activeResidencies, 0);
+    await coordinator.close();
+    client.close();
+  });
+});
+
+test('OAuth enrollment query reports the Host gate answer per provider', async () => {
+  await withFixture('github-copilot', async (fixture) => {
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: (candidate) => candidate === 'github-copilot',
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => undefined,
+      onFatal: (error) => {
+        throw error;
+      },
+    });
+    assert.deepEqual(
+      await coordinator.handlers['oauth.enrollment.query'](
+        { provider: 'github-copilot' },
+        operationContext('client-enrollment', fixture.acquireResidency),
+      ),
+      { ok: true, result: { provider: 'github-copilot', enabled: true } },
+    );
+    assert.deepEqual(
+      await coordinator.handlers['oauth.enrollment.query'](
+        { provider: 'openai-codex' },
+        operationContext('client-enrollment', fixture.acquireResidency),
+      ),
+      { ok: true, result: { provider: 'openai-codex', enabled: false } },
+    );
+    await coordinator.close();
+  });
 });
 
 test('OAuth credential commit excludes overlapping backend activations in both directions', async () => {
@@ -698,7 +1055,7 @@ test('OAuth credential commit excludes overlapping backend activations in both d
     });
 
     const started = await coordinator.handlers['oauth.login.start'](
-      { attemptId: 'attempt-activation', connectionId: fixture.connection.connectionId },
+      oauthStart('attempt-activation', fixture.connection.connectionId),
       operationContext('client-activation', fixture.acquireResidency),
     );
     assert.equal(started.ok, true);
@@ -740,6 +1097,7 @@ async function attachPresentation(
         connection.accept({
           kind: 'client.capability.accepted',
           invocationId: frame.invocationId,
+          admissionEvidence: { kind: 'none' },
         });
         return;
       }
@@ -820,15 +1178,6 @@ function tokenFixture(
     ...extra,
   };
 }
-
-function deferred(): { promise: Promise<void>; resolve(): void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
 function operationContext(connectionId: string, acquireResidency: () => { release(): void }) {
   return {
     hostEpoch: 'host-epoch',
@@ -839,8 +1188,9 @@ function operationContext(connectionId: string, acquireResidency: () => { releas
 }
 
 async function withFixture(
-  providerType: 'openai-codex' | 'xai-oauth',
+  providerType: 'openai-codex' | 'xai-oauth' | 'github-copilot',
   run: (fixture: {
+    root: string;
     stores: RuntimePolicyStoresWriter;
     connection: ConnectionCatalogEntry;
     capabilities: HostClientCapabilityCoordinator;
@@ -872,10 +1222,12 @@ async function withFixture(
   assert.ok(connection);
   const activation = new RuntimePolicyActivationGate();
   const capabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation,
     onModelToolsChanged: () => undefined,
   });
   const fixture = {
+    root,
     stores,
     connection,
     capabilities,
@@ -901,4 +1253,8 @@ async function withFixture(
     if (!owner.closed) await owner.close();
     await rm(root, { recursive: true, force: true });
   }
+}
+
+function oauthStart(attemptId: string, connectionId: string) {
+  return { attemptId, target: { kind: 'existing' as const, connectionId } };
 }

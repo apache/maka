@@ -17,7 +17,11 @@
  * under the License.
  */
 
-import type { ScheduledTask, ScheduledTaskRunOutcome } from './scheduled-task.js';
+import type {
+  ScheduledTask,
+  ScheduledTaskRunOutcome,
+  ScheduledTaskStatus,
+} from './scheduled-task.js';
 
 export const SOURCE_RECORD_TYPES = ['mcp', 'api', 'local'] as const;
 export type SourceRecordType = (typeof SOURCE_RECORD_TYPES)[number];
@@ -27,9 +31,6 @@ export type SourceAuthType = (typeof SOURCE_AUTH_TYPES)[number];
 
 export const SOURCE_RECORD_STATUSES = ['ready', 'needs_auth', 'error', 'disabled'] as const;
 export type SourceRecordStatus = (typeof SOURCE_RECORD_STATUSES)[number];
-
-export const CAPABILITY_AUDIT_PERMISSION_MODES = ['explore', 'ask'] as const;
-export type CapabilityAuditPermissionMode = (typeof CAPABILITY_AUDIT_PERMISSION_MODES)[number];
 
 export const SCHEDULED_TASK_LAST_RUN_STATUSES = ['ok', 'error', 'skipped'] as const;
 export type ScheduledTaskLastRunStatus = (typeof SCHEDULED_TASK_LAST_RUN_STATUSES)[number];
@@ -62,16 +63,16 @@ export interface SkillAuditRecord {
   name: string;
   description: string;
   declaredTools: string[];
+  hasDeclaredTools: boolean;
   enabled: boolean;
   sourceSlug: string;
-  permissionMode: CapabilityAuditPermissionMode;
 }
 
 export interface ScheduledTaskAuditRecord {
   id: string;
   name: string;
   enabled: boolean;
-  permissionMode: CapabilityAuditPermissionMode;
+  status: ScheduledTaskStatus;
   lastRunAt?: number;
   lastRunStatus?: ScheduledTaskLastRunStatus;
 }
@@ -88,7 +89,7 @@ export interface CapabilityAuditSummary {
   declaredToolKindCount: number;
   scheduledTaskCount: number;
   enabledScheduledTaskCount: number;
-  executableScheduledTaskCount: number;
+  activeScheduledTaskCount: number;
   failedScheduledTaskCount: number;
   skippedScheduledTaskCount: number;
 }
@@ -141,9 +142,9 @@ function normalizeSkillInputs(skills: readonly CapabilityAuditSkillInput[]): Ski
       name: normalizeNonEmptyString(skill.name) ?? id,
       description: normalizeNonEmptyString(skill.description) ?? '',
       declaredTools,
+      hasDeclaredTools: declaredTools.length > 0,
       enabled: skill.enabled ?? true,
       sourceSlug: normalizeNonEmptyString(skill.sourceSlug) ?? LOCAL_SKILL_SOURCE_SLUG,
-      permissionMode: declaredTools.length > 0 ? 'ask' : 'explore',
     };
   });
 }
@@ -193,17 +194,10 @@ function scheduledTaskToAuditRecord(task: ScheduledTask): ScheduledTaskAuditReco
     id: task.id,
     name: task.title,
     enabled: task.status === 'active',
-    permissionMode: scheduledTaskPermissionMode(task),
+    status: task.status,
     ...(lastRun ? { lastRunAt: lastRun.at } : {}),
     ...(lastRun ? { lastRunStatus: mapScheduledTaskRunOutcome(lastRun.outcome) } : {}),
   };
-}
-
-function scheduledTaskPermissionMode(task: ScheduledTask): CapabilityAuditPermissionMode {
-  if (task.status === 'completed' || task.status === 'expired') return 'explore';
-  // Active tasks run with `ask` approval — the retired `execute` mode folded to
-  // `ask` identically, so this preserves the historical behaviour.
-  return 'ask';
 }
 
 function mapScheduledTaskRunOutcome(outcome: ScheduledTaskRunOutcome): ScheduledTaskLastRunStatus {
@@ -229,9 +223,7 @@ function summarizeCapabilityAudit(
     declaredToolKindCount: distinctDeclaredToolKinds(skills).length,
     scheduledTaskCount: scheduledTasks.length,
     enabledScheduledTaskCount: scheduledTasks.filter((task) => task.enabled).length,
-    executableScheduledTaskCount: scheduledTasks.filter(
-      (task) => task.enabled && task.permissionMode !== 'explore',
-    ).length,
+    activeScheduledTaskCount: scheduledTasks.filter((task) => task.status === 'active').length,
     failedScheduledTaskCount: scheduledTasks.filter((task) => task.lastRunStatus === 'error')
       .length,
     skippedScheduledTaskCount: scheduledTasks.filter((task) => task.lastRunStatus === 'skipped')

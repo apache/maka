@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { AGENT_RUN_STATUSES, type AgentRunHeader } from './agent-run.js';
 import { EXECUTION_LOG_LEDGERS, type ExecutionLogCoverage } from './execution-log-coverage.js';
 import { SESSION_STATUSES, type SessionHeader } from './session.js';
 
@@ -36,20 +35,22 @@ export interface ExecutionInspectDiagnostic {
   eventId?: string;
 }
 
+const AGENT_RUN_INSPECT_STATUSES = ['running', 'completed', 'failed', 'cancelled'] as const;
+
 export interface AgentRunInspectIdentity {
   sessionId: string;
   agentRunId: string;
-  invocationId?: string;
+  invocationId: string;
   turnId: string;
   parentRunId?: string;
   resumedFromRunId?: string;
   retriedFromRunId?: string;
   parentTurnId?: string;
   agentId?: string;
-  status: AgentRunHeader['status'];
-  createdAt: number;
-  updatedAt: number;
-  completedAt?: number;
+  /** Derived from the terminal RuntimeEvent; `running` means there is none yet. */
+  status: (typeof AGENT_RUN_INSPECT_STATUSES)[number];
+  openedAt: number;
+  endedAt?: number;
   failureClass?: string;
   abortSource?: string;
 }
@@ -70,7 +71,8 @@ export interface AgentRunInspectToolSummary {
 
 export interface AgentRunInspectCompactionCheckpoint {
   eventId: string;
-  validation: 'shape_valid' | 'invalid';
+  /** `superseded`: well-formed, but minted under an older source policy. */
+  validation: 'shape_valid' | 'invalid' | 'superseded';
   checkpointId?: string;
   policyVersion?: string;
   sourceCoverage?: ExecutionLogCoverage;
@@ -79,8 +81,6 @@ export interface AgentRunInspectCompactionCheckpoint {
 export interface AgentRunInspectSourceHealth {
   runtimeLedger: 'present' | 'missing' | 'read_failed';
   runtimeTerminalPresent: boolean;
-  operationalTerminalPresent: boolean;
-  statusConsistency: 'consistent' | 'inconsistent' | 'incomplete';
 }
 
 export interface AgentRunInspectDocument {
@@ -193,28 +193,28 @@ function isAgentRunIdentity(value: unknown): value is AgentRunInspectIdentity {
   return (
     hasShape(
       value,
-      ['sessionId', 'agentRunId', 'turnId', 'status', 'createdAt', 'updatedAt'],
+      ['sessionId', 'agentRunId', 'invocationId', 'turnId', 'status', 'openedAt'],
       [
-        'invocationId',
         'parentRunId',
         'resumedFromRunId',
         'retriedFromRunId',
         'parentTurnId',
         'agentId',
-        'completedAt',
+        'endedAt',
         'failureClass',
         'abortSource',
       ],
     ) &&
     isString(value.sessionId) &&
     isString(value.agentRunId) &&
+    isString(value.invocationId) &&
     isString(value.turnId) &&
-    AGENT_RUN_STATUSES.includes(value.status as (typeof AGENT_RUN_STATUSES)[number]) &&
-    isCount(value.createdAt) &&
-    isCount(value.updatedAt) &&
-    isOptionalCount(value.completedAt) &&
+    AGENT_RUN_INSPECT_STATUSES.includes(
+      value.status as (typeof AGENT_RUN_INSPECT_STATUSES)[number],
+    ) &&
+    isCount(value.openedAt) &&
+    isOptionalCount(value.endedAt) &&
     [
-      value.invocationId,
       value.parentRunId,
       value.resumedFromRunId,
       value.retriedFromRunId,
@@ -236,24 +236,11 @@ function isAgentRunSources(value: unknown): boolean {
     isCount(value.operationalEventCount) &&
     isCount(value.runtimeEventCount) &&
     (value.runtimeCoverage === undefined || isCoverage(value.runtimeCoverage)) &&
-    hasShape(
-      value.health,
-      [
-        'runtimeLedger',
-        'runtimeTerminalPresent',
-        'operationalTerminalPresent',
-        'statusConsistency',
-      ],
-      [],
-    ) &&
+    hasShape(value.health, ['runtimeLedger', 'runtimeTerminalPresent'], []) &&
     (value.health.runtimeLedger === 'present' ||
       value.health.runtimeLedger === 'missing' ||
       value.health.runtimeLedger === 'read_failed') &&
-    typeof value.health.runtimeTerminalPresent === 'boolean' &&
-    typeof value.health.operationalTerminalPresent === 'boolean' &&
-    (value.health.statusConsistency === 'consistent' ||
-      value.health.statusConsistency === 'inconsistent' ||
-      value.health.statusConsistency === 'incomplete')
+    typeof value.health.runtimeTerminalPresent === 'boolean'
   );
 }
 
@@ -297,7 +284,9 @@ function isCompactionCheckpoint(value: unknown): boolean {
       ['checkpointId', 'policyVersion', 'sourceCoverage'],
     ) &&
     typeof value.eventId === 'string' &&
-    (value.validation === 'shape_valid' || value.validation === 'invalid') &&
+    (value.validation === 'shape_valid' ||
+      value.validation === 'invalid' ||
+      value.validation === 'superseded') &&
     isOptionalString(value.checkpointId) &&
     isOptionalString(value.policyVersion) &&
     (value.sourceCoverage === undefined || isCoverage(value.sourceCoverage))

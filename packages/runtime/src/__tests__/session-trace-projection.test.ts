@@ -20,7 +20,7 @@
 /**
  * Session Inspector trace projection (#1625).
  *
- * Run: `npm --workspace @maka/runtime run test`
+ * Run: `npm run build && npm --workspace @maka/runtime run test:dist`
  */
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -114,7 +114,7 @@ describe('session trace projection', () => {
           outputTokens: undefined,
           costBasis: 'unpriced',
           costUsd: undefined,
-          errorClass: 'RequestRejected',
+          errorClass: 'request_rejected',
           httpStatus: 400,
           providerCode: 'invalid_request_error',
           providerRequestId: 'req-compact-1',
@@ -134,7 +134,7 @@ describe('session trace projection', () => {
       startedAt: 1_000,
       completedAt: 1_500,
       latencyMs: 500,
-      errorClass: 'RequestRejected',
+      errorClass: 'request_rejected',
       httpStatus: 400,
       providerCode: 'invalid_request_error',
       providerRequestId: 'req-compact-1',

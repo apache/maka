@@ -18,12 +18,42 @@
  */
 
 import type { ClientCapabilityConnectionIdentity } from '../../server/client-capability-service.js';
+import type { HostClientCapabilityCoordinatorOptions } from '../../server/client-capability-coordinator.js';
 
 export function clientCapabilityConnectionIdentity(
   connectionId: string,
   clientInstanceId = connectionId,
   principalId = 'test-principal',
   principalKind: ClientCapabilityConnectionIdentity['principalKind'] = 'local_owner',
+  capabilityOwner?: ClientCapabilityConnectionIdentity['capabilityOwner'],
+  credentialBound = principalKind === 'remote_owner',
 ): ClientCapabilityConnectionIdentity {
-  return { connectionId, principalId, clientInstanceId, principalKind };
+  return {
+    connectionId,
+    principalId,
+    clientInstanceId,
+    ...(credentialBound ? { credentialBoundClientInstanceId: clientInstanceId } : {}),
+    principalKind,
+    ...(capabilityOwner ? { capabilityOwner } : {}),
+  };
+}
+
+export function clientCapabilityCoordinatorTestAdmission(): Pick<
+  HostClientCapabilityCoordinatorOptions,
+  'interactions' | 'grants'
+> {
+  return {
+    interactions: {
+      requestClientCapabilityApproval: async () => {
+        throw new Error('Unexpected Client Capability approval request');
+      },
+    },
+    grants: {
+      readClientCapabilitySessionGrant: async (key) => ({
+        version: 1,
+        ...key,
+        grantedAt: 0,
+      }),
+    },
+  };
 }

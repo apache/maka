@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { buildDeepResearchImplementationPrompt } from './explore-agent.js';
+import { buildDeepResearchImplementationPrompt } from './deep-research.js';
 import {
   DEEP_RESEARCH_CLIENT_IMPLEMENTATION_PROMPT_MAX_BYTES,
   DEEP_RESEARCH_CLIENT_OBJECTIVE_MAX_BYTES,

@@ -21,6 +21,7 @@ import { access, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runCommand } from './package-windows-x64.mjs';
+import { desktopReleaseTargets } from './desktop-release-targets.mjs';
 import {
   bumpedAutoupdateVersion,
   verifyDesktopUpdateArtifacts,
@@ -59,7 +60,11 @@ export async function packageWindowsAutoupdateNext({
   const manifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
   const nextVersion = bumpedAutoupdateVersion(manifest.version);
   const outputDirectory = join(desktopRoot, 'release-autoupdate-next');
-  const exeName = `Maka-${nextVersion}-win-x64.exe`;
+  // The bumped build is the same target under a different version, so its
+  // installer is named by the same descriptor the real one is.
+  const exeName = desktopReleaseTargets(nextVersion, { nightly: false })
+    .find((entry) => entry.name === 'windows-x64')
+    .payloads.find((name) => name.endsWith('.exe'));
   const exePath = join(outputDirectory, exeName);
   const latestYmlPath = join(outputDirectory, 'latest.yml');
   const blockmapPath = join(outputDirectory, `${exeName}.blockmap`);
@@ -94,7 +99,7 @@ export async function packageWindowsAutoupdateNext({
     directory: outputDirectory,
     metadataName: 'latest.yml',
     version: nextVersion,
-    artifactName: exeName,
+    artifactNames: [exeName],
   });
 
   return { version: nextVersion, exePath, latestYmlPath, blockmapPath, directory: outputDirectory };

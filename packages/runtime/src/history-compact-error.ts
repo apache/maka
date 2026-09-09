@@ -17,15 +17,18 @@
  * under the License.
  */
 
-import {
-  isContextBudgetExhaustedDetail,
-  type ContextBudgetExhaustedDetail,
-} from '@maka/core/events';
+/**
+ * Ways a summarizer's own output can be unusable. Owned here, in the
+ * history-compaction domain that produces and repairs them.
+ */
+const MALFORMED_HISTORY_COMPACT_SUMMARY_REASONS = [
+  'malformed_summary_missing_section',
+  'malformed_summary_truncated',
+  'malformed_summary_too_small_for_fold',
+] as const;
 
-export type MalformedHistoryCompactSummaryReason = Extract<
-  ContextBudgetExhaustedDetail,
-  `malformed_summary_${string}`
->;
+export type MalformedHistoryCompactSummaryReason =
+  (typeof MALFORMED_HISTORY_COMPACT_SUMMARY_REASONS)[number];
 
 export type HistoryCompactSummarizerFailureReason =
   | 'output_length'
@@ -37,7 +40,9 @@ export type HistoryCompactSummarizerFailureReason =
 export function isMalformedHistoryCompactSummaryReason(
   reason: string,
 ): reason is MalformedHistoryCompactSummaryReason {
-  return isContextBudgetExhaustedDetail(reason) && reason.startsWith('malformed_summary_');
+  return MALFORMED_HISTORY_COMPACT_SUMMARY_REASONS.includes(
+    reason as MalformedHistoryCompactSummaryReason,
+  );
 }
 
 export class HistoryCompactSummarizerError extends Error {

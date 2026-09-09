@@ -17,7 +17,7 @@
  * under the License.
  */
 
-export { GoalHost } from './ui/goal-host';
-export { GoalServicesProvider } from './services-context';
-export { useGoalController } from './controller/use-goal-controller';
-export type { GoalServices } from './ports';
+export { GoalHost } from './ui/goal-host.js';
+export { GoalProvider } from './ui/goal-provider.js';
+export { GoalServicesProvider } from './services-context.js';
+export type { GoalServices } from './ports.js';

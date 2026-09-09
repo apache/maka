@@ -104,6 +104,38 @@ describe('managed Runtime Host update reconciliation', () => {
     }
   });
 
+  it('parses the exact source-package retirement helper contract', () => {
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'local-source-retire',
+        '--root',
+        '/srv/maka',
+        '--expected-root-id',
+        TARGET.rootId,
+        '--expected-host-epoch',
+        'source-host',
+        '--allow-interrupt-active-tasks',
+      ]),
+      {
+        kind: 'runtime-host-local-source-retire',
+        rootPath: '/srv/maka',
+        expectedRootId: TARGET.rootId,
+        expectedHostEpoch: 'source-host',
+        allowInterruptActiveTasks: true,
+      },
+    );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'local-source-retire',
+        '--root',
+        '/srv/maka',
+        '--expected-root-id',
+        TARGET.rootId,
+      ]).kind,
+      'error',
+    );
+  });
+
   it('parses update policy and reconciliation commands against an optional expected target', () => {
     assert.deepEqual(
       parseRuntimeHostCommand([

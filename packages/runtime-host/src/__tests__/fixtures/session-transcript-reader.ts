@@ -18,6 +18,8 @@
  */
 
 import type { StoredMessage } from '@maka/core/session';
+import type { SessionTurnContribution, SessionTurnLandmark } from '@maka/storage/execution-stores';
+import { foldTurnContribution } from '@maka/storage/session-message-projection';
 import type { SessionTranscriptReader } from '../../server/session-transcript-reader.js';
 
 export function transcriptReader(
@@ -101,6 +103,40 @@ export function transcriptReader(
       }
       return { throughSequence, fragments, rawBytes, next };
     },
+    readDurableRecords: async (_sessionId, request) => {
+      const throughSequence =
+        request.throughSequence === undefined
+          ? durable.length === 0
+            ? null
+            : durable.length - 1
+          : request.throughSequence;
+      if (throughSequence === null) {
+        return { throughSequence: null, records: [], nextPosition: null };
+      }
+      const position = request.position ?? (request.direction === 'older' ? throughSequence : 0);
+      const candidates = durable
+        .map((message, sequence) => ({ sequence, message }))
+        .filter(
+          ({ sequence }) =>
+            sequence <= throughSequence &&
+            (request.direction === 'older' ? sequence <= position : sequence >= position),
+        )
+        .sort((left, right) =>
+          request.direction === 'older'
+            ? right.sequence - left.sequence
+            : left.sequence - right.sequence,
+        );
+      const records = candidates.slice(0, request.maxMessages);
+      const last = records.at(-1);
+      return {
+        throughSequence,
+        records,
+        nextPosition:
+          last && records.length < candidates.length
+            ? last.sequence + (request.direction === 'older' ? -1 : 1)
+            : null,
+      };
+    },
     readDurableMessagesById: async (_sessionId, request) =>
       request.throughSequence === null
         ? []
@@ -108,6 +144,48 @@ export function transcriptReader(
             (message, sequence) =>
               sequence <= request.throughSequence! && request.messageIds.includes(message.id),
           ),
+    readDurableTurnContributions: async (
+      _sessionId,
+      throughSequence,
+      position,
+      maxContributions,
+    ) => {
+      const watermark = throughSequence ?? (durable.length === 0 ? null : durable.length - 1);
+      if (watermark === null)
+        return { throughSequence: null, contributions: [], nextPosition: null };
+      const folded = new Map<string, SessionTurnContribution>();
+      for (const [sequence, message] of durable.entries()) {
+        const turnId = message.turnId;
+        if (turnId === undefined || sequence < position || sequence > watermark) continue;
+        if (!folded.has(turnId) && folded.size >= maxContributions) {
+          return {
+            throughSequence: watermark,
+            contributions: [...folded.values()],
+            nextPosition: sequence,
+          };
+        }
+        folded.set(turnId, foldTurnContribution(folded.get(turnId), turnId, sequence, message));
+      }
+      return {
+        throughSequence: watermark,
+        contributions: [...folded.values()],
+        nextPosition: null,
+      };
+    },
+    readDurableTurnLandmarks: async (_sessionId, maxLandmarks) => {
+      const watermark = durable.length === 0 ? null : durable.length - 1;
+      if (watermark === null) return { throughSequence: null, landmarks: [] };
+      const seen = new Set<string>();
+      const landmarks: SessionTurnLandmark[] = [];
+      for (const [sequence, message] of durable.entries()) {
+        if (landmarks.length >= maxLandmarks) break;
+        const turnId = message.turnId;
+        if (message.type !== 'user' || turnId === undefined || seen.has(turnId)) continue;
+        seen.add(turnId);
+        landmarks.push({ turnId, sequence, label: message.displayText ?? message.text });
+      }
+      return { throughSequence: watermark, landmarks };
+    },
     readActiveOverlay: async () => overlay,
   };
 }

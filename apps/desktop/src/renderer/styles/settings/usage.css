@@ -118,6 +118,17 @@
   white-space: nowrap;
 }
 
+/* Astryx Table no longer adds a title to truncated primitive cell values in
+   core 0.5.2. Keep the full provider/model/tool identity available at the
+   product seam while preserving the table's ellipsis layout. */
+.settingsUsageTargetCell {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Empty tab: the shared EmptyState card, nudged to the density of the
    stats surface rather than the full page hero. */
 .settingsUsageEmpty {

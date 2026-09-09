@@ -1,0 +1,16 @@
+diff --git a/node_modules/@sigstore/core/dist/crypto.js b/node_modules/@sigstore/core/dist/crypto.js
+--- a/node_modules/@sigstore/core/dist/crypto.js
++++ b/node_modules/@sigstore/core/dist/crypto.js
+@@ -51,4 +51,12 @@ function verify(data, key, signature, algorithm) {
+     // The try/catch is to work around an issue in Node 14.x where verify throws
+     // an error in some scenarios if the signature is invalid.
+     try {
++        if (algorithm === undefined) {
++            const keyObject = key instanceof crypto_1.default.KeyObject
++                ? key
++                : key?.key instanceof crypto_1.default.KeyObject
++                    ? key.key
++                    : crypto_1.default.createPublicKey(key);
++            algorithm = keyObject.asymmetricKeyType === 'ed25519' || keyObject.asymmetricKeyType === 'ed448' ? null : 'sha256';
++        }
+         return crypto_1.default.verify(algorithm, data, key, signature);

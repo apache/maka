@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { afterEach, test } from 'node:test';
-import { act } from 'react';
+import { act, StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { TurnView } from '../chat-turn.js';
@@ -39,11 +39,15 @@ const originalActEnvironment = (globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean;
 }).IS_REACT_ACT_ENVIRONMENT;
 
+const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+
 const mountedRoots: ReturnType<typeof createRoot>[] = [];
 
 afterEach(async () => {
   // Unmount before restoring globals: React's cleanup reads `document`.
   for (const root of mountedRoots.splice(0)) await act(() => root.unmount());
+  if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard);
+  else Reflect.deleteProperty(navigator, 'clipboard');
   Object.assign(globalThis, {
     ...originalGlobals,
     IS_REACT_ACT_ENVIRONMENT: originalActEnvironment,
@@ -71,7 +75,6 @@ function turnWith(timeline: TurnTimelineItem[]): TurnViewModel {
   return {
     turnId: 'turn-1',
     status: 'running',
-    partialOutputRetained: false,
     user: { id: 'ask', role: 'user', text: 'ask', ts: 1 },
     tools: [],
     notes: [],
@@ -317,6 +320,39 @@ test('uses human conversation context instead of raw ids in action names', async
   );
 });
 
+test('does not edit and resend a message with folder references', async () => {
+  const { container, root } = domRoot();
+  let editCalls = 0;
+  const turn = {
+    ...turnWith([{ ...ANSWER, live: false }]),
+    status: 'completed' as const,
+    user: {
+      id: 'ask-with-folder',
+      role: 'user' as const,
+      text: 'Inspect this folder',
+      ts: 1,
+      directoryReferences: [{ hostId: 'host-a', path: '/workspace/source' }],
+    },
+  };
+
+  await act(() => {
+    root.render(
+      <LocaleProvider locale="en">
+        <TurnView turn={turn} onEditUserMessage={() => { editCalls += 1; }} />
+      </LocaleProvider>,
+    );
+  });
+
+  const editButton = container.querySelector('[data-action="edit"]');
+  assert.ok(editButton);
+  assert.match(
+    editButton.getAttribute('aria-label') ?? '',
+    /does not yet support messages with folder references/,
+  );
+  await act(() => editButton.dispatchEvent(new window.Event('click', { bubbles: true })));
+  assert.equal(editCalls, 0, 'folder references must not be silently dropped by revision');
+});
+
 test('keeps Astryx auto formatting live for user-message timestamps', async (context) => {
   const now = Date.UTC(2026, 7, 27, 12);
   context.mock.timers.enable({ apis: ['Date', 'setInterval'], now });
@@ -370,4 +406,116 @@ test('announces settlement when a persisted answer is promoted to a completed li
     { onStreamingSettled },
   );
   assert.deepEqual(settled, ['answer-1'], 'staying settled does not re-announce');
+});
+
+async function renderCopyFooter(writeText: (text: string) => Promise<void>) {
+  const { container, root } = domRoot();
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  // A secret-shaped value distinguishes original-text copy from the hook's default redaction.
+  const text = 'Authorization: Bearer sk-test-1234567890abcdef';
+  await act(async () => root.render(
+    <StrictMode>
+      <LocaleProvider locale="en">
+        <TurnView
+          turn={{ ...turnWith([{ kind: 'text', text, messageId: 'answer-1', live: false }]), status: 'completed' }}
+          footerActions={[{ id: 'copy', label: 'Copy', enabled: true }]}
+        />
+      </LocaleProvider>
+    </StrictMode>,
+  ));
+  const button = container.querySelector<HTMLButtonElement>('[data-action="copy"]');
+  assert.ok(button, 'the completed answer exposes its real footer copy action');
+  return { root, button, text };
+}
+
+test('footer copy preserves raw text, blocks overlapping writes and resets success after 1400ms', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pending = Promise.withResolvers<void>();
+  const writeText = t.mock.fn((_text: string) => pending.promise);
+  const { button, text } = await renderCopyFooter(writeText);
+
+  await act(async () => {
+    button.click();
+    button.click();
+  });
+  assert.equal(writeText.mock.callCount(), 1);
+  assert.equal(writeText.mock.calls[0]?.arguments[0], text);
+  assert.equal(button.getAttribute('data-copy-feedback'), 'pending');
+  assert.equal(button.getAttribute('data-pending'), 'true');
+
+  await act(async () => pending.resolve());
+  assert.equal(button.getAttribute('data-copy-feedback'), 'copied');
+  assert.equal(button.hasAttribute('data-pending'), false);
+  await act(async () => t.mock.timers.tick(1399));
+  assert.equal(button.getAttribute('data-copy-feedback'), 'copied');
+  await act(async () => t.mock.timers.tick(1));
+  assert.equal(button.hasAttribute('data-copy-feedback'), false);
+});
+
+test('footer copy cancels the previous reset and restarts feedback after another copy', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pending = Promise.withResolvers<void>();
+  const writeText = t.mock.fn(async (_text: string): Promise<void> => {});
+  const { button } = await renderCopyFooter(writeText);
+  await act(async () => button.click());
+  assert.equal(button.getAttribute('data-copy-feedback'), 'copied');
+  await act(async () => t.mock.timers.tick(500));
+
+  writeText.mock.mockImplementation(() => pending.promise);
+  await act(async () => button.click());
+  assert.equal(writeText.mock.callCount(), 2);
+  await act(async () => t.mock.timers.tick(900));
+  assert.equal(button.getAttribute('data-copy-feedback'), 'pending', 'the first reset must not clear the second write');
+
+  await act(async () => pending.resolve());
+  assert.equal(button.getAttribute('data-copy-feedback'), 'copied');
+  await act(async () => t.mock.timers.tick(1399));
+  assert.equal(button.getAttribute('data-copy-feedback'), 'copied');
+  await act(async () => t.mock.timers.tick(1));
+  assert.equal(button.hasAttribute('data-copy-feedback'), false);
+});
+
+test('footer copy cancels its active reset timer on unmount', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { root, button } = await renderCopyFooter(async () => {});
+  const setTimeout = t.mock.method(window, 'setTimeout');
+  await act(async () => button.click());
+  assert.equal(button.getAttribute('data-copy-feedback'), 'copied');
+  const reset = setTimeout.mock.calls.find((call) => call.arguments[1] === 1400);
+  assert.ok(reset, 'successful copying schedules a feedback reset');
+  await act(async () => t.mock.timers.tick(500));
+
+  const clearTimeout = t.mock.method(window, 'clearTimeout');
+  await act(async () => root.unmount());
+  mountedRoots.splice(mountedRoots.indexOf(root), 1);
+  assert.ok(clearTimeout.mock.calls.some((call) => call.arguments[0] === reset.result), 'unmount cancels the scheduled reset');
+});
+
+test('footer copy reports clipboard failure and allows a successful retry', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const writeText = t.mock.fn(async (_text: string): Promise<void> => {
+    throw new Error('Clipboard unavailable');
+  });
+  const { button } = await renderCopyFooter(writeText);
+  await act(async () => button.click());
+  assert.equal(button.getAttribute('data-copy-feedback'), 'failed');
+  await act(async () => t.mock.timers.tick(1400));
+  assert.equal(button.hasAttribute('data-copy-feedback'), false);
+
+  writeText.mock.mockImplementation(async (_text: string) => {});
+  await act(async () => button.click());
+  assert.equal(writeText.mock.callCount(), 2);
+  assert.equal(button.getAttribute('data-copy-feedback'), 'copied');
+});
+
+test('footer copy does not schedule feedback after it unmounts with a write pending', async (t) => {
+  const pending = Promise.withResolvers<void>();
+  const { root, button } = await renderCopyFooter(() => pending.promise);
+  await act(async () => button.click());
+  await act(async () => root.unmount());
+  mountedRoots.splice(mountedRoots.indexOf(root), 1);
+
+  const setTimeout = t.mock.method(window, 'setTimeout');
+  await act(async () => pending.resolve());
+  assert.equal(setTimeout.mock.callCount(), 0, 'a late clipboard completion must not start a reset timer');
 });

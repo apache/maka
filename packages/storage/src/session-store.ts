@@ -82,16 +82,23 @@ import {
   type StoredMessage,
   type TurnRecord,
   type TurnStateMessage,
+  type AssistantMessage,
   type UserMessage,
   type WorkHubDelegationAssignedMessage,
+  type WorkHubDelegationReplacementAbortedMessage,
+  type WorkHubDelegationReplacementRequestedMessage,
+  type WorkHubActionClaim,
+  type WorkHubActionClaimOutcome,
+  type WorkHubDelegationStopRequestedMessage,
+  type WorkHubDelegationStopResolvedMessage,
+  type WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
-import type { MessageAdmissionStore, PendingMessageAdmission } from './message-admission-store.js';
-import {
-  isVisibleSessionMessage,
-  lastMessagePreviewForMessages,
-  latestVisibleMessageAt,
-  projectSessionCatalogMessages,
-} from './session-message-projection.js';
+import type {
+  MarkMessagesHandedOffInput,
+  MessageAdmissionStore,
+  PendingMessageAdmission,
+} from './message-admission-store.js';
+import { projectSessionCatalogMessages } from './session-message-projection.js';
 export { projectSessionCatalogMessages };
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -114,18 +121,6 @@ export class SessionNotFoundError extends Error {
 
 export function isSessionNotFoundError(error: unknown): error is SessionNotFoundError {
   return error instanceof SessionNotFoundError;
-}
-
-export class SessionReadMarkerMessageNotFoundError extends Error {
-  readonly name = 'SessionReadMarkerMessageNotFoundError';
-  readonly code = 'session_read_marker_message_not_found';
-
-  constructor(
-    readonly sessionId: string,
-    readonly messageId: string,
-  ) {
-    super(`Session read marker message does not exist: ${messageId}`);
-  }
 }
 
 export interface SessionHeaderSnapshot {
@@ -180,6 +175,8 @@ export interface CreateStableSessionRequest {
 export interface WorkHubMessageAssignmentRequest {
   readonly assignment: WorkHubDelegationAssignedMessage;
   readonly admission: PendingMessageAdmission;
+  /** Present exactly when this assignment atomically supersedes an earlier link. */
+  readonly supersession?: WorkHubDelegationSupersededMessage;
   /** Present exactly when the assignment creates its target Session. */
   readonly create?: CreateStableSessionRequest;
 }
@@ -228,6 +225,39 @@ export interface SessionTranscriptMessageLookupRequest {
   readonly maxMessages: number;
 }
 
+/**
+ * One page of a Session's legacy rows, for the converter that lifts them onto
+ * the ledger and for the WorkHub Coordination Session, whose transcript no run
+ * produces and so has no ledger to read.
+ */
+export interface SessionMessageScanRequest {
+  /** Exclusive lower bound; omit to start at the first row. */
+  readonly afterSequence?: number;
+  /**
+   * Walk towards older rows instead, from this exclusive upper bound. Records
+   * then come back newest first, so the byte budget truncates at the older end,
+   * which is the end the walk is heading for. Pass at most one bound.
+   */
+  readonly beforeSequence?: number;
+  readonly maxStoredBytes: number;
+  readonly maxMessages: number;
+}
+
+export interface SessionMessageScanRecord {
+  readonly sequence: number;
+  readonly message: StoredMessage;
+}
+
+export interface SessionMessageScanPage {
+  readonly records: readonly SessionMessageScanRecord[];
+  /**
+   * The Session's last legacy sequence. It rides along with every page so the
+   * converter can place a turn relative to the whole transcript without a read
+   * that is proportional to it.
+   */
+  readonly highWaterSequence: number | null;
+}
+
 export interface SessionTranscriptPageRequest {
   readonly direction: 'older' | 'newer';
   /** Inclusive durable high-water mark. Omit only for the first read. */
@@ -251,6 +281,20 @@ export interface SessionTranscriptStoragePage {
   } | null;
 }
 
+export interface SessionTranscriptRecordScanRequest {
+  readonly direction: 'older' | 'newer';
+  readonly throughSequence?: number | null;
+  readonly position?: number;
+  readonly maxStoredBytes: number;
+  readonly maxMessages: number;
+}
+
+export interface SessionTranscriptRecordScanPage {
+  readonly throughSequence: number | null;
+  readonly records: readonly { readonly sequence: number; readonly message: StoredMessage }[];
+  readonly nextPosition: number | null;
+}
+
 export interface SessionTurnContribution {
   readonly turnId: string;
   readonly firstSequence: number;
@@ -259,11 +303,6 @@ export interface SessionTurnContribution {
     readonly message: TurnStateMessage;
   } | null;
   readonly userPromptPreview: string | null;
-  readonly hasAssistantMessage: boolean;
-  readonly hasAssistantOutput: boolean;
-  readonly hasToolResult: boolean;
-  readonly hasFailedToolResult: boolean;
-  readonly hasAbortNote: boolean;
 }
 
 export interface SessionTurnContributionPage {
@@ -291,33 +330,23 @@ export interface SessionStore {
   listForRecovery(): Promise<SessionHeader[]>;
   /** Read only the durable header without triggering connection-lock self-healing. */
   readHeaderSnapshot(sessionId: string): Promise<SessionHeader>;
-  /** Read durable messages without triggering connection-lock self-healing. */
   readMessagesSnapshot(sessionId: string): Promise<StoredMessage[]>;
-  /** Read one byte-bounded page directly from the durable append-only ledger. */
-  readTranscriptPageSnapshot(
-    sessionId: string,
-    request: SessionTranscriptPageRequest,
-  ): Promise<SessionTranscriptStoragePage>;
   readTranscriptHighWaterSnapshot(sessionId: string): Promise<number | null>;
-  readTurnContributionsSnapshot(
-    sessionId: string,
-    throughSequence: number | null,
-    position: number,
-    maxContributions: number,
-  ): Promise<SessionTurnContributionPage>;
-  readTurnLandmarksSnapshot(
-    sessionId: string,
-    maxLandmarks: number,
-  ): Promise<SessionTurnLandmarkSnapshot>;
-  /** Read durable messages for startup recovery. */
-  readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]>;
-  /** Derive durable turns without triggering connection-lock self-healing. */
   listTurnsSnapshot(sessionId: string): Promise<TurnRecord[]>;
   readHeader(sessionId: string): Promise<SessionHeader>;
   readMessages(sessionId: string): Promise<StoredMessage[]>;
+  readMessagesAfter(
+    sessionId: string,
+    request: SessionMessageScanRequest,
+  ): Promise<SessionMessageScanPage>;
   listTurns(sessionId: string): Promise<TurnRecord[]>;
   appendMessage(sessionId: string, message: StoredMessage): Promise<void>;
   appendMessages(sessionId: string, messages: StoredMessage[]): Promise<void>;
+  /** Commit the Session-list facts a durable message carries. */
+  commitMessageCatalogProjection(
+    sessionId: string,
+    message: UserMessage | AssistantMessage,
+  ): Promise<void>;
   updateHeader(sessionId: string, patch: SessionHeaderPatch): Promise<SessionHeader>;
   setFlagged(sessionId: string, isFlagged: boolean): Promise<void>;
   rename(sessionId: string, name: string): Promise<void>;
@@ -369,6 +398,9 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]>;
   /** Requests already closed against the user because the host restarted. */
   listSandboxBoundaryRestartClosures(sessionId: string): Promise<SandboxBoundaryRequest[]>;
+  hasExplicitSandboxBoundaryDenial(
+    identities: readonly { sessionId: string; runId: string; turnId: string }[],
+  ): Promise<boolean>;
   settleSandboxBoundaryRequest(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement>;
@@ -393,6 +425,33 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     request: WorkHubMessageAssignmentRequest,
   ): Promise<WorkHubMessageAssignmentResult>;
   readWorkHubAssignment(actionId: string): Promise<WorkHubDelegationAssignedMessage | undefined>;
+  /** Newest active assignment first, across every requested target. */
+  readActiveWorkHubAssignmentsByTarget(
+    targetSessionIds: readonly string[],
+    maxAssignmentsPerTarget?: number,
+  ): Promise<readonly WorkHubDelegationAssignedMessage[]>;
+  readWorkHubReplacement(
+    delegationId: string,
+  ): Promise<WorkHubDelegationReplacementRequestedMessage | undefined>;
+  readWorkHubReplacementAbort(
+    delegationId: string,
+  ): Promise<WorkHubDelegationReplacementAbortedMessage | undefined>;
+  readWorkHubSupersession(
+    delegationId: string,
+  ): Promise<WorkHubDelegationSupersededMessage | undefined>;
+  readWorkHubStopRequest(
+    delegationId: string,
+  ): Promise<WorkHubDelegationStopRequestedMessage | undefined>;
+  readWorkHubStopResolution(
+    delegationId: string,
+  ): Promise<WorkHubDelegationStopResolvedMessage | undefined>;
+  /**
+   * Durably binds one action identity to one exact WorkHub operation before its
+   * effect. Survives removal of the target Session so a committed destructive
+   * claim can still converge afterwards.
+   */
+  claimWorkHubAction(claim: WorkHubActionClaim): Promise<WorkHubActionClaimOutcome>;
+  readWorkHubActionClaim(actionId: string): Promise<WorkHubActionClaim | undefined>;
   discardStableConversationCopy(sessionId: string, requestFingerprint: string): Promise<boolean>;
   listCatalogPage(
     filter: SessionListFilter | undefined,
@@ -410,10 +469,6 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   updateSessionConfiguration(
     sessionId: string,
     input: UpdateSessionConfigurationRequest,
-  ): Promise<SessionHeaderSnapshot>;
-  markSessionReadThroughMessage(
-    sessionId: string,
-    messageId: string,
   ): Promise<SessionHeaderSnapshot>;
   probeSessionRemoval(sessionId: string): Promise<ProbeSessionRemovalResult>;
   setSessionsArchivedVersioned(
@@ -611,6 +666,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
       assignment: request.assignment,
       admission: request.admission,
       projection: projectSessionCatalogMessages([request.assignment]),
+      ...(request.supersession ? { supersession: request.supersession } : {}),
       ...(create
         ? {
             create: {
@@ -636,22 +692,97 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async readWorkHubAssignment(
     actionId: string,
   ): Promise<WorkHubDelegationAssignedMessage | undefined> {
-    await this.ensureReady();
-    const suffix = createHash('sha256').update(actionId, 'utf8').digest('hex').slice(0, 48);
-    const throughSequence = await this.metadata.readTranscriptHighWater(
-      WORKHUB_COORDINATION_SESSION_ID,
+    const message = await this.readWorkHubCoordinationMessage(
+      `wha_${workHubIdentitySuffix(actionId)}`,
     );
-    if (throughSequence === null) return undefined;
-    const messages = await this.metadata.readTranscriptMessages(WORKHUB_COORDINATION_SESSION_ID, {
-      messageIds: [`wha_${suffix}`],
-      throughSequence,
-      maxMessages: 1,
-      maxBytes: 768 * 1024,
-    });
-    const message = messages[0];
     return message?.type === 'workhub_coordination' && message.kind === 'delegation_assigned'
       ? message
       : undefined;
+  }
+
+  async readActiveWorkHubAssignmentsByTarget(
+    targetSessionIds: readonly string[],
+    maxAssignmentsPerTarget?: number,
+  ): Promise<readonly WorkHubDelegationAssignedMessage[]> {
+    await this.ensureReady();
+    return this.metadata.readActiveWorkHubAssignmentsByTarget(
+      targetSessionIds,
+      maxAssignmentsPerTarget,
+    );
+  }
+
+  async readWorkHubReplacement(
+    delegationId: string,
+  ): Promise<WorkHubDelegationReplacementRequestedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whp_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' &&
+      message.kind === 'delegation_replacement_requested'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubReplacementAbort(
+    delegationId: string,
+  ): Promise<WorkHubDelegationReplacementAbortedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whb_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' &&
+      message.kind === 'delegation_replacement_aborted'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubSupersession(
+    delegationId: string,
+  ): Promise<WorkHubDelegationSupersededMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whx_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_superseded'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubStopRequest(
+    delegationId: string,
+  ): Promise<WorkHubDelegationStopRequestedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whq_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_stop_requested'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubStopResolution(
+    delegationId: string,
+  ): Promise<WorkHubDelegationStopResolvedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whz_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_stop_resolved'
+      ? message
+      : undefined;
+  }
+
+  async claimWorkHubAction(claim: WorkHubActionClaim): Promise<WorkHubActionClaimOutcome> {
+    await this.ensureReady();
+    return this.metadata.claimWorkHubAction(claim);
+  }
+
+  async readWorkHubActionClaim(actionId: string): Promise<WorkHubActionClaim | undefined> {
+    await this.ensureReady();
+    return this.metadata.readWorkHubActionClaim(actionId);
+  }
+
+  private async readWorkHubCoordinationMessage(
+    messageId: string,
+  ): Promise<StoredMessage | undefined> {
+    await this.ensureReady();
+    return this.metadata.readMessageById(WORKHUB_COORDINATION_SESSION_ID, messageId);
   }
 
   async discardStableConversationCopy(
@@ -742,6 +873,13 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.listSandboxBoundaryRestartClosures(sessionId);
   }
 
+  async hasExplicitSandboxBoundaryDenial(
+    identities: readonly { sessionId: string; runId: string; turnId: string }[],
+  ): Promise<boolean> {
+    await this.ensureReady();
+    return this.metadata.hasExplicitSandboxBoundaryDenial(identities);
+  }
+
   async settleSandboxBoundaryRequest(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement> {
@@ -763,41 +901,9 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async list(filter?: SessionListFilter): Promise<SessionSummary[]> {
     await this.ensureReady();
-    const records = (await this.metadata.list(filter, 'ordinary')).filter(
-      (record) => record.header.conversationCopy?.state !== 'preparing',
-    );
-    const withPreviews: Array<{
-      record: SessionMetadataRecord;
-      previewMessages: StoredMessage[];
-    }> = [];
-    for (const record of records) {
-      const previewMessages = await this.metadata.readPreviewMessages(record.header.id);
-      withPreviews.push({ record, previewMessages });
-    }
-    withPreviews.sort((a, b) => {
-      const aLastMessageAt = maxTimestamp(
-        a.record.header.lastMessageAt,
-        latestVisibleMessageAt(a.previewMessages),
-      );
-      const bLastMessageAt = maxTimestamp(
-        b.record.header.lastMessageAt,
-        latestVisibleMessageAt(b.previewMessages),
-      );
-      const tsDelta = (bLastMessageAt ?? 0) - (aLastMessageAt ?? 0);
-      return tsDelta !== 0 ? tsDelta : a.record.header.id.localeCompare(b.record.header.id);
-    });
-
-    const summaries: SessionSummary[] = [];
-    for (let index = 0; index < withPreviews.length; index += 1) {
-      const { record, previewMessages } = withPreviews[index]!;
-      const { header } = record;
-      let messages = previewMessages.slice(-10);
-      if (index < 3) {
-        messages = (await this.metadata.readMessages(header.id)).slice(-10);
-      }
-      summaries.push(toSummary(header, messages));
-    }
-    return summaries;
+    return (await this.metadata.list(filter, 'ordinary'))
+      .filter((record) => record.header.conversationCopy?.state !== 'preparing')
+      .map((record) => toCatalogSummary(record.header, record.lastMessagePreview));
   }
 
   async listCatalogPage(
@@ -830,11 +936,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
   }
 
   async listForRecovery(): Promise<SessionHeader[]> {
-    const headers = await this.listHeaders();
-    for (const header of headers) {
-      await this.metadata.readMessagesForRecovery(header.id);
-    }
-    return headers;
+    return this.listHeaders();
   }
 
   async listHeaders(): Promise<SessionHeader[]> {
@@ -871,14 +973,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.readMessages(sessionId);
   }
 
-  async readTranscriptPageSnapshot(
-    sessionId: string,
-    request: SessionTranscriptPageRequest,
-  ): Promise<SessionTranscriptStoragePage> {
-    await this.ensureReady();
-    return this.metadata.readTranscriptPage(sessionId, request);
-  }
-
   async readTranscriptMessagesSnapshot(
     sessionId: string,
     request: SessionTranscriptMessageLookupRequest,
@@ -892,34 +986,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.readTranscriptHighWater(sessionId);
   }
 
-  async readTurnContributionsSnapshot(
-    sessionId: string,
-    throughSequence: number | null,
-    position: number,
-    maxContributions: number,
-  ): Promise<SessionTurnContributionPage> {
-    await this.ensureReady();
-    return this.metadata.readTurnContributions(
-      sessionId,
-      throughSequence,
-      position,
-      maxContributions,
-    );
-  }
-
-  async readTurnLandmarksSnapshot(
-    sessionId: string,
-    maxLandmarks: number,
-  ): Promise<SessionTurnLandmarkSnapshot> {
-    await this.ensureReady();
-    return this.metadata.readTurnLandmarks(sessionId, maxLandmarks);
-  }
-
-  async readMessagesForRecovery(sessionId: string): Promise<StoredMessage[]> {
-    await this.ensureReady();
-    return this.metadata.readMessagesForRecovery(sessionId);
-  }
-
   async listTurnsSnapshot(sessionId: string): Promise<TurnRecord[]> {
     return deriveTurnRecords(await this.readMessagesSnapshot(sessionId));
   }
@@ -930,6 +996,14 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
     return this.readMessagesSnapshot(sessionId);
+  }
+
+  async readMessagesAfter(
+    sessionId: string,
+    request: SessionMessageScanRequest,
+  ): Promise<SessionMessageScanPage> {
+    await this.ensureReady();
+    return this.metadata.readMessagesAfter(sessionId, request);
   }
 
   async listTurns(sessionId: string): Promise<TurnRecord[]> {
@@ -949,6 +1023,15 @@ class SqliteSessionStore implements SessionAuthorityStore {
       projectSessionCatalogMessages(messages),
     );
     for (const listener of this.transcriptChangeListeners) listener(sessionId);
+  }
+
+  /** @see SqliteSessionMetadataStore.commitMessageCatalogProjection */
+  async commitMessageCatalogProjection(
+    sessionId: string,
+    message: UserMessage | AssistantMessage,
+  ): Promise<void> {
+    await this.ensureReady();
+    await this.metadata.commitMessageCatalogProjection(sessionId, message);
   }
 
   async commitMessageAdmission(
@@ -971,16 +1054,17 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.hasCancelledMessageAdmission(sessionId, messageId);
   }
 
+  async claimMessageAdmissionCancellation(sessionId: string, messageId: string, claimId: string) {
+    await this.ensureReady();
+    return this.metadata.claimMessageAdmissionCancellation(sessionId, messageId, claimId);
+  }
+
   async listMessageAdmissions(sessionId: string): Promise<readonly PendingMessageAdmission[]> {
     await this.ensureReady();
     return this.metadata.listMessageAdmissions(sessionId);
   }
 
-  async markMessagesHandedOff(input: {
-    sessionId: string;
-    messageIds: readonly string[];
-    turnId: string;
-  }): Promise<void> {
+  async markMessagesHandedOff(input: MarkMessagesHandedOffInput): Promise<void> {
     await this.ensureReady();
     await this.metadata.markMessagesHandedOff(input);
     for (const listener of this.transcriptChangeListeners) listener(input.sessionId);
@@ -1031,42 +1115,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
   ): Promise<SessionHeaderSnapshot> {
     await this.ensureReady();
     return projectHeaderSnapshot(await this.metadata.updateSessionConfiguration(sessionId, input));
-  }
-
-  async markSessionReadThroughMessage(
-    sessionId: string,
-    messageId: string,
-  ): Promise<SessionHeaderSnapshot> {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const record = await this.readHeaderRecordSnapshot(sessionId);
-      const messages = await this.readMessagesSnapshot(sessionId);
-      const visibleMessages = messages.filter(isVisibleSessionMessage);
-      const targetIndex = visibleMessages.findIndex((message) => message.id === messageId);
-      if (targetIndex < 0) {
-        throw new SessionReadMarkerMessageNotFoundError(sessionId, messageId);
-      }
-      const currentIndex =
-        record.header.lastReadMessageId === undefined
-          ? -1
-          : visibleMessages.findIndex((message) => message.id === record.header.lastReadMessageId);
-      const hasUnread = targetIndex < visibleMessages.length - 1;
-      if (
-        targetIndex < currentIndex ||
-        (targetIndex === currentIndex && record.header.hasUnread === hasUnread)
-      ) {
-        return record;
-      }
-      try {
-        return await this.updateHeaderVersioned(
-          sessionId,
-          { lastReadMessageId: messageId, hasUnread },
-          record.revision,
-        );
-      } catch (error) {
-        if (!(error instanceof SessionMetadataVersionConflictError) || attempt === 2) throw error;
-      }
-    }
-    throw new Error('Session read marker retry loop did not terminate');
   }
 
   async probeSessionRemoval(sessionId: string): Promise<ProbeSessionRemovalResult> {
@@ -1172,6 +1220,10 @@ class SqliteSessionStore implements SessionAuthorityStore {
   }
 }
 
+function workHubIdentitySuffix(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex').slice(0, 48);
+}
+
 /**
  * The reserved identity and the reserved role are one fact, and the invariant
  * belongs to every creator that builds a header — subagents and Agent Graph
@@ -1244,6 +1296,11 @@ function buildSessionHeader(
     collaborationMode: input.collaborationMode ?? 'agent',
     orchestrationMode: input.orchestrationMode ?? 'default',
     ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
+    // Born on the ledger: a Session created here records its execution facts as
+    // RuntimeEvents from its first turn, so there is no transcript to convert.
+    // Only an imported transcript (staged at 0) and a Session written before
+    // this field existed have anything for the converter to do.
+    transcriptLedgerVersion: 1,
     schemaVersion: 1,
   };
   assertValidSessionLineage(header);
@@ -1388,17 +1445,25 @@ function isValidConversationCopyLineage(header: SessionHeader): boolean {
     return false;
   }
   if (copy.kind === 'branch') {
-    return (
-      header.parentSessionId === copy.sourceSessionId &&
-      header.branchOfTurnId === copy.sourceTurnId &&
+    const revisionClear =
       header.revisionRootSessionId === undefined &&
       header.revisionParentSessionId === undefined &&
       header.revisionOfTurnId === undefined &&
       header.revisionIndex === undefined &&
-      header.revisionState === undefined
-    );
+      header.revisionState === undefined;
+    if (!revisionClear || header.parentSessionId !== copy.sourceSessionId) {
+      return false;
+    }
+    // An empty copy (absent `sourceTurnId`) records provenance
+    // (`parentSessionId`) but must not fabricate a `branchOfTurnId`, and is only
+    // valid for a side conversation; a through-turn copy must anchor to it.
+    return copy.sourceTurnId === undefined
+      ? header.branchOfTurnId === undefined && copy.intent === 'side_conversation'
+      : header.branchOfTurnId === copy.sourceTurnId;
   }
+  // Revision copies always carry a turn boundary (enforced at decode).
   return (
+    copy.sourceTurnId !== undefined &&
     header.revisionParentSessionId === copy.sourceSessionId &&
     header.revisionOfTurnId === copy.sourceTurnId
   );
@@ -1483,10 +1548,8 @@ function projectStableSessionCreateProbe(
     : probe;
 }
 
-function toSummary(header: SessionHeader, messages: StoredMessage[] = []): SessionSummary {
-  const preview = lastMessagePreviewForMessages(messages);
-  const derivedLastMessageAt = latestVisibleMessageAt(messages);
-  const lastMessageAt = maxTimestamp(header.lastMessageAt, derivedLastMessageAt);
+function toSummary(header: SessionHeader): SessionSummary {
+  const lastMessageAt = header.lastMessageAt;
   return {
     id: header.id,
     cwd: header.cwd,
@@ -1497,7 +1560,6 @@ function toSummary(header: SessionHeader, messages: StoredMessage[] = []): Sessi
     labels: header.labels,
     hasUnread: header.hasUnread,
     lastMessageAt,
-    ...(preview ? { lastMessagePreview: preview } : {}),
     status: header.status,
     ...(header.blockedReason ? { blockedReason: header.blockedReason } : {}),
     ...(header.statusUpdatedAt !== undefined ? { statusUpdatedAt: header.statusUpdatedAt } : {}),
@@ -1539,12 +1601,6 @@ function toCatalogSummary(
     ...toSummary(header),
     ...(lastMessagePreview === undefined ? {} : { lastMessagePreview }),
   };
-}
-
-function maxTimestamp(left: number | undefined, right: number | undefined): number | undefined {
-  if (left === undefined) return right;
-  if (right === undefined) return left;
-  return Math.max(left, right);
 }
 
 function normalizeSessionName(name: string): string {

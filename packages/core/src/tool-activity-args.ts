@@ -180,6 +180,9 @@ function isSafeProjectedInputText(text: string): boolean {
 }
 
 export function projectToolActivityArgs(toolName: string, args: unknown): unknown {
+  // A Todo replacement is only a proposal until its tool result settles. The
+  // durable transcript must not resurrect those args as committed state.
+  if (toolName === 'todo_write') return {};
   if (toolName !== 'WriteStdin') return args;
   const parsed = readWriteStdinArgs(args);
   if (!parsed) return {};

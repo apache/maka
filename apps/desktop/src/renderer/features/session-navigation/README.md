@@ -33,6 +33,8 @@ owns:
 
 - Consumers import production APIs from `features/session-navigation`.
 - Tests may additionally import `features/session-navigation/testing`.
+- Contract types the shell fulfills for this feature live in `ports.ts`;
+  controller files export only what they implement.
 - Desktop Sessions bridge calls go through `SessionNavigationServices`; only
   `platform/desktop/create-session-navigation-services.ts` reads that bridge.
 - Session Navigation may use shared renderer storage/copy, core types, and Maka

@@ -17,13 +17,11 @@
  * under the License.
  */
 
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
-import {
-  estimateRuntimeEventChars,
-  estimateRuntimeEventsTokens,
-  finitePositive,
-} from './context-budget-helpers.js';
+import { finitePositive } from './context-budget-helpers.js';
+import { estimateRuntimeEventChars, estimateRuntimeEventsTokens } from './model-history.js';
 import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
 import {
   HistoryCompactSummarizerError,
@@ -33,6 +31,7 @@ import { findCheckpointSummaryDefect } from './history-compact-summary-validatio
 import {
   buildHistoryCompactCheckpoint,
   historyCompactCheckpointToRuntimeEvent,
+  historyCompactSourceDigest,
   matchHistoryCompactCheckpointPrefix,
   midTurnHeadAnchorEvent,
   projectHistoryCompactCheckpointReplay,
@@ -49,75 +48,14 @@ import {
  * selected model's context window. This module is turn-agnostic and side-effect
  * free, and it only SHAPES: it selects the largest safe covered prefix and
  * builds the checkpoint + replacement projection, failing open when it cannot.
- * The safety-critical pass/terminate verdict is NOT issued here — the backend's
- * final-request estimate owner measures the actual outgoing (messages, tools)
- * payload after every shaping hook has run and decides `context_budget_exhausted`
- * there, so the verdict is always about the request that really goes out.
+ * Nothing here decides whether a request fits: that answer belongs to the
+ * provider, and a rejection is recovered from by compacting and retrying once.
  */
-
-export interface EstimateNextRequestTokensInput {
-  /**
-   * The last request's real INPUT tokens as reported by the provider — never
-   * input+output, because `appendedChars` is a delta against that request's
-   * payload and already carries the step's freshly generated output.
-   * Undefined on cold start or when the sample is unusable (no positive
-   * input count), which falls back to a whole-payload char estimate.
-   */
-  priorUsageTokens?: number;
-  /**
-   * SIGNED char delta of the next request's payload versus the last measured
-   * request payload. Negative after compaction/pruning shrank the projection —
-   * the estimate must credit the shrink, or a compacted request would still be
-   * judged by the pre-compaction usage sample.
-   */
-  appendedChars: number;
-  /** Estimate conversion; defaults to 4 chars/token. */
-  charsPerToken?: number;
-  /** Whole-payload chars, used only when `priorUsageTokens` is undefined. */
-  coldStartChars?: number;
-}
-
-/**
- * Estimate the token size of the next provider request. Anchors on the last
- * step's real usage plus a signed char/4 payload delta for content the provider
- * has not yet counted (or no longer carries); cold-start (no usage) is a pure
- * char/4 estimate of the whole payload. This mirrors how surveyed peers avoid
- * pure character guessing.
- */
-export function estimateNextRequestTokens(input: EstimateNextRequestTokensInput): number {
-  const charsPerToken = Math.max(1, input.charsPerToken ?? 4);
-  if (input.priorUsageTokens !== undefined && Number.isFinite(input.priorUsageTokens)) {
-    return Math.max(
-      0,
-      Math.max(0, Math.floor(input.priorUsageTokens)) +
-        estimateSignedChars(input.appendedChars, charsPerToken),
-    );
-  }
-  return Math.max(
-    0,
-    estimateSignedChars(input.coldStartChars ?? input.appendedChars, charsPerToken),
-  );
-}
-
-/** Proactive threshold: the next request would cross `contextWindow - reserve`. */
-export function exceedsHighWater(
-  estimatedTokens: number,
-  contextWindow: number,
-  reserveTokens: number,
-): boolean {
-  const highWater = Math.max(1, contextWindow - Math.max(0, reserveTokens));
-  return estimatedTokens > highWater;
-}
-
-/** Hard cap: the estimate exceeds the raw context window even before the reserve. */
-export function exceedsContextWindow(estimatedTokens: number, contextWindow: number): boolean {
-  return estimatedTokens > contextWindow;
-}
 
 export interface SafePrefixOptions {
   /** Keep at least this many trailing events uncovered as the verbatim tail. */
   reserveTailEvents?: number;
-  /** Retry a smaller prefix after a local summarizer input-fit rejection. */
+  /** Retry a smaller prefix after the summarizer provider rejects its input. */
   maxCoveredCount?: number;
   /**
    * Events that must stay in the verbatim tail: the boundary retreats to
@@ -142,8 +80,8 @@ export type SafePrefixBoundary =
  *  - it leaves at least `reserveTailEvents` trailing events as the verbatim tail.
  *
  * Returns `no_safe_completed_span` when no such cut exists (e.g. the remaining
- * pool is a single atomic call/result pair), which the caller surfaces as an
- * explicit `context_budget_exhausted` outcome rather than a provider error.
+ * pool is a single atomic call/result pair); the caller then fails open and
+ * sends the request unchanged.
  */
 export function selectSafeCompactionPrefix(
   events: readonly RuntimeEvent[],
@@ -216,13 +154,6 @@ function straddlesToolPair(spans: readonly ToolPairSpan[], cut: number): boolean
   return false;
 }
 
-function estimateSignedChars(chars: number | undefined, charsPerToken: number): number {
-  const value = Math.trunc(chars ?? 0);
-  if (!Number.isFinite(value) || value === 0) return 0;
-  const magnitude = Math.ceil(Math.abs(value) / charsPerToken);
-  return value > 0 ? magnitude : -magnitude;
-}
-
 // ============================================================================
 // Orchestration: engine + checkpoint protocol + injected summarizer → decision
 // ============================================================================
@@ -254,8 +185,25 @@ export interface PlanHistoryCompactionInput {
   highWaterName?: string;
   highWaterSeq?: number;
   previousCheckpoint?: HistoryCompactCheckpoint;
+  /**
+   * The invocations behind the ordered events, and the route this fold is
+   * dispatched on. Together they name the newest reply this route produced,
+   * which is the only span a retreat may target: a rejection of a larger one
+   * says nothing about a span another model accepted.
+   */
+  invocations?: readonly RuntimeInvocationRecord[];
+  acceptedRoute?: { modelId: string; connectionId?: string };
   /** Present only when this automatic Compaction should create a Memory task. */
   memoryExtractionBoundary?: HistoryCompactMemoryExtractionBoundary;
+  /**
+   * Projects the covered span to its effective (transition-folded) view. When
+   * present, the summary is written from that view and its digest is pinned as
+   * `coverage.effectiveSourceDigest`, so a later projection transition
+   * invalidates the checkpoint instead of being restored by it (#4845 review).
+   */
+  projectEffectiveCoverage?: (
+    coveredRuntimeEvents: readonly RuntimeEvent[],
+  ) => Promise<readonly RuntimeEvent[]>;
   summarize: HistoryCompactionSummarizer;
 }
 
@@ -282,13 +230,46 @@ export type HistoryCompactionFailReason = 'no_safe_completed_span' | 'summarizer
  * Execute a triggered compaction command by deterministically folding the
  * largest safe prefix. Trigger policy is owned by callers; once this function
  * is called it always attempts the transaction. This plan is a pure shaper:
- * when it cannot fold a safe
- * completed prefix it FAILS OPEN (keep the raw projection + diagnostic) and
- * never terminates the turn itself. The two failure tiers — fail open under
- * the window, explicit `context_budget_exhausted` over it — are applied by the
- * backend's final-request estimate owner, which re-measures the actual outgoing
- * payload after all shaping (including this fold) has been applied.
+ * when it cannot fold a safe completed prefix it FAILS OPEN (keep the raw
+ * projection + diagnostic) and the request goes out unchanged.
  */
+/**
+ * How many ordered events the last request THIS ROUTE had accepted covered.
+ *
+ * A span is only proven for the model and connection that accepted it: a token
+ * count is a number in one tokenizer, and a session's history can span runs on
+ * several routes. So the newest reply produced on the summarizer's own route
+ * ends the span, found through each run's opening rather than by role alone —
+ * everything before its first event was in a request that route accepted.
+ * A ledger with no reply from this route has nothing proven, and the caller
+ * must not invent a boundary. Nor does a run whose opening could not prove its
+ * route — a migrated header with no Connection — even when the current run has
+ * no Connection of its own: two unknowns are not a match.
+ */
+function acceptedInputBoundary(
+  events: readonly RuntimeEvent[],
+  invocations: readonly RuntimeInvocationRecord[],
+  route: { modelId: string; connectionId?: string } | undefined,
+): number | undefined {
+  if (!route) return undefined;
+  const onRoute = (event: RuntimeEvent | undefined): boolean => {
+    if (event?.role !== 'model') return false;
+    const opened = invocations.find((candidate) => candidate.runId === event.runId)?.opening.route;
+    if (opened?.provenance !== 'runtime' || opened.modelId !== route.modelId) return false;
+    return opened.llmConnectionId === route.connectionId;
+  };
+  let index = -1;
+  for (let cursor = events.length - 1; cursor >= 0; cursor -= 1) {
+    if (onRoute(events[cursor])) {
+      index = cursor;
+      break;
+    }
+  }
+  if (index < 0) return undefined;
+  while (index > 0 && onRoute(events[index - 1])) index -= 1;
+  return index;
+}
+
 export async function planHistoryCompaction(
   input: PlanHistoryCompactionInput,
 ): Promise<PlanHistoryCompactionResult> {
@@ -337,18 +318,47 @@ export async function planHistoryCompaction(
     const checkpointMatch = input.previousCheckpoint
       ? matchHistoryCompactCheckpointPrefix(input.previousCheckpoint, coveredRuntimeEvents)
       : undefined;
-    const previousCheckpoint =
+    let previousCheckpoint =
       checkpointMatch && !checkpointMatch.reason ? input.previousCheckpoint : undefined;
+    // Content-currency gate for roll-forward: the inherited summary or
+    // provider state describes the EFFECTIVE view of the previous coverage at
+    // its own creation. A projection transition committed since rewrites that
+    // view without touching the raw prefix, and reusing the stale content here
+    // would launder it into the new checkpoint under the current effective
+    // digest — later replay guards would then pass it (#4845 review). On
+    // drift, discard the checkpoint and re-summarize the whole effective span.
+    if (previousCheckpoint && checkpointMatch && input.projectEffectiveCoverage) {
+      const pinned = previousCheckpoint.coverage.effectiveSourceDigest;
+      const previousEffectiveCovered = await input.projectEffectiveCoverage(
+        checkpointMatch.coveredRuntimeEvents,
+      );
+      if (pinned === undefined || historyCompactSourceDigest(previousEffectiveCovered) !== pinned) {
+        previousCheckpoint = undefined;
+      }
+    }
     const newlyFoldedRuntimeEvents = previousCheckpoint
       ? checkpointMatch!.successorRuntimeEvents
       : coveredRuntimeEvents;
+
+    // The model-visible summary reads the effective (transition-folded) view
+    // of the covered span; the raw events keep the coverage identity.
+    const effectiveCoveredRuntimeEvents = input.projectEffectiveCoverage
+      ? [...(await input.projectEffectiveCoverage(coveredRuntimeEvents))]
+      : undefined;
+    const effectiveNewlyFoldedRuntimeEvents = effectiveCoveredRuntimeEvents
+      ? newlyFoldedRuntimeEvents.length === coveredRuntimeEvents.length
+        ? effectiveCoveredRuntimeEvents
+        : effectiveCoveredRuntimeEvents.slice(
+            effectiveCoveredRuntimeEvents.length - newlyFoldedRuntimeEvents.length,
+          )
+      : undefined;
 
     let compacted: string | HistoryCompactProviderState | undefined;
     try {
       compacted = await Promise.resolve(
         input.summarize({
-          coveredRuntimeEvents,
-          newlyFoldedRuntimeEvents,
+          coveredRuntimeEvents: effectiveCoveredRuntimeEvents ?? coveredRuntimeEvents,
+          newlyFoldedRuntimeEvents: effectiveNewlyFoldedRuntimeEvents ?? newlyFoldedRuntimeEvents,
           ...(previousCheckpoint ? { previousCheckpoint } : {}),
         }),
       );
@@ -356,7 +366,29 @@ export async function planHistoryCompaction(
     } catch (error) {
       if (error instanceof HistoryCompactSummarizerError) {
         if (error.reason === 'input_too_large') {
-          maxCoveredCount = boundary.coveredCount - 1;
+          // The summarizer's provider said this span does not fit its own
+          // window; that is the only fit signal the fold listens to. Retreat to
+          // the span the last accepted request's input covered: that span was
+          // accepted by this model on this connection, so it is provably within
+          // capacity, where halving the range is a guess that can overshoot
+          // (throwing away verbatim history for nothing) or undershoot (paying
+          // another round trip). Only one retreat is available, because there
+          // is only one proven boundary; a rejection of that span too is the
+          // provider saying this fold cannot be made, and the fold fails open
+          // (#4559).
+          const proven = acceptedInputBoundary(
+            input.orderedEvents,
+            input.invocations ?? [],
+            input.acceptedRoute,
+          );
+          if (proven === undefined || proven >= boundary.coveredCount) {
+            return {
+              decision: 'fail_open',
+              reason: 'summarizer_failed',
+              diagnosticReason: error.reason,
+            };
+          }
+          maxCoveredCount = proven;
           continue;
         }
         return {
@@ -375,10 +407,8 @@ export async function planHistoryCompaction(
     // history. The default summarizer already threw with the same reasons; any
     // other producer is validated here.
     if (typeof compacted === 'string') {
-      const defect = findCheckpointSummaryDefect(compacted, {
-        coveredRuntimeEvents,
-        charsPerToken,
-      });
+      // An external producer reports no usage; only the structural checks apply.
+      const defect = findCheckpointSummaryDefect(compacted);
       if (defect) {
         return { decision: 'fail_open', reason: 'summarizer_failed', diagnosticReason: defect };
       }
@@ -387,6 +417,7 @@ export async function planHistoryCompaction(
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: input.sessionId,
       coveredRuntimeEvents,
+      ...(effectiveCoveredRuntimeEvents ? { effectiveCoveredRuntimeEvents } : {}),
       ...(typeof compacted === 'string' ? { summary: compacted } : { providerState: compacted }),
       ...(phase === 'mid_turn'
         ? { phase: 'mid_turn' as const, headAnchor: input.headAnchor! }
@@ -432,23 +463,8 @@ export interface HistoryCompactionPolicy {
   enabled: boolean;
   checkpoint?: HistoryCompactCheckpoint;
   highWaterName?: string;
-  midTurn?: { enabled: true; reserveTokens?: number; reserveTailEvents?: number };
+  midTurn?: { enabled: true };
 }
-
-export interface HistoryCompactionReplayOptions {
-  charsPerToken?: number;
-  maxHistoryEstimatedTokens?: number;
-  sourceReplayEvents?: readonly RuntimeEvent[];
-}
-
-export type HistoryCompactionCheckpointReplayFit =
-  | { fits: true; checkpointTokens: number; replayTokens: number }
-  | {
-      fits: false;
-      checkpointTokens: number;
-      replayTokens: number;
-      reason: 'prefix_over_budget' | 'replacement_not_smaller';
-    };
 
 export interface HistoryCompactionReplayResult {
   events: RuntimeEvent[];
@@ -456,49 +472,11 @@ export interface HistoryCompactionReplayResult {
   diagnosticPatch: Partial<ContextBudgetDiagnostic>;
 }
 
-/** The single current-policy gate for every checkpoint entering model replay. */
-export function evaluateHistoryCompactCheckpointReplay(
-  checkpoint: HistoryCompactCheckpoint,
-  replayTail: readonly RuntimeEvent[],
-  charsPerToken: number | undefined,
-  maxHistoryEstimatedTokens: number | undefined = undefined,
-  options: HistoryCompactionReplayOptions = {},
-): HistoryCompactionCheckpointReplayFit {
-  const charsPerTokenResolved = options.charsPerToken ?? charsPerToken ?? 4;
-  const checkpointTokens =
-    checkpoint.version === 3
-      ? checkpoint.estimatedTokens
-      : estimateRuntimeEventsTokens(
-          [historyCompactCheckpointToRuntimeEvent(checkpoint)],
-          charsPerTokenResolved,
-        );
-  const replayTokens =
-    checkpointTokens + estimateRuntimeEventsTokens(replayTail, charsPerTokenResolved);
-  const maxHistoryTokens = finitePositive(
-    options.maxHistoryEstimatedTokens ?? maxHistoryEstimatedTokens,
-  );
-  if (maxHistoryTokens !== undefined && replayTokens > maxHistoryTokens) {
-    return { fits: false, checkpointTokens, replayTokens, reason: 'prefix_over_budget' };
-  }
-  if (options.sourceReplayEvents) {
-    const sourceReplayTokens = estimateRuntimeEventsTokens(
-      options.sourceReplayEvents,
-      charsPerTokenResolved,
-    );
-    if (replayTokens >= sourceReplayTokens) {
-      return { fits: false, checkpointTokens, replayTokens, reason: 'replacement_not_smaller' };
-    }
-  }
-  return { fits: true, checkpointTokens, replayTokens };
-}
-
 /** Replay the latest durable checkpoint when it exactly covers the ledger prefix. */
 export function applyRuntimeEventHistoryCompact(
   events: readonly RuntimeEvent[],
   policy: HistoryCompactionPolicy | undefined,
   charsPerToken = 4,
-  maxHistoryEstimatedTokens?: number,
-  options: HistoryCompactionReplayOptions = {},
 ): HistoryCompactionReplayResult {
   const checkpoint = policy?.enabled === true ? policy.checkpoint : undefined;
   if (!checkpoint) return { events: [...events], diagnosticPatch: {} };
@@ -516,32 +494,17 @@ export function applyRuntimeEventHistoryCompact(
       }),
     };
   }
-  const headAnchor =
-    checkpoint.phase === 'mid_turn'
-      ? midTurnHeadAnchorEvent(checkpoint, match.coveredRuntimeEvents)
-      : undefined;
-  const replayTail = headAnchor
-    ? [headAnchor, ...match.successorRuntimeEvents]
-    : [...match.successorRuntimeEvents];
-  const fit = evaluateHistoryCompactCheckpointReplay(
-    checkpoint,
-    replayTail,
-    charsPerToken,
-    maxHistoryEstimatedTokens,
-    { ...options, sourceReplayEvents: options.sourceReplayEvents ?? compactableEvents },
-  );
-  if (!fit.fits) {
-    return {
-      events: [...events],
-      diagnosticPatch: compactionDecisionDiagnosticPatch({
-        stage: 'priorReplay',
-        sourceKind: 'runtimeEvents',
-        decision: 'failedOpen',
-        boundaryKind: 'historyCompact',
-        failOpenReason: fit.reason,
-      }),
-    };
-  }
+  // A matching checkpoint always replays as `[block, tail]`: the fold chose
+  // the boundary structurally, and whether the result fits is the provider's
+  // answer, not a local estimate's (#4559). The token figures below are
+  // diagnostics only.
+  const checkpointTokens =
+    checkpoint.version === 3
+      ? checkpoint.estimatedTokens
+      : estimateRuntimeEventsTokens(
+          [historyCompactCheckpointToRuntimeEvent(checkpoint)],
+          charsPerToken,
+        );
   return {
     events: projectHistoryCompactCheckpointReplay(
       checkpoint,
@@ -562,7 +525,7 @@ export function applyRuntimeEventHistoryCompact(
         bodySha256: [checkpoint.coverage.sourceDigest],
       },
       estimatedTokensBefore: estimateRuntimeEventsTokens(match.coveredRuntimeEvents, charsPerToken),
-      estimatedTokensAfter: fit.checkpointTokens,
+      estimatedTokensAfter: checkpointTokens,
     }),
   };
 }

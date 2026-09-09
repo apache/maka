@@ -19,10 +19,16 @@
 
 export const DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES = 128 * 1024;
 export const DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES = 512 * 1024;
-export const DESKTOP_TRANSCRIPT_SESSION_CACHE_MAX_BYTES = 20 * 1024 * 1024;
+export const DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS = 10;
 export const DESKTOP_TRANSCRIPT_OVERLAY_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 export const DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES = 64 * 1024 * 1024;
-export const DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
+
+export interface DesktopTranscriptNavigation {
+  readonly navigationVersion: number;
+  readonly intent: 'history' | 'followTail';
+  readonly preserveRange?: boolean;
+  readonly readingTurnId?: string;
+}
 
 export interface DesktopTranscriptFragment {
   readonly source: 'durable' | 'overlay';
@@ -34,6 +40,8 @@ export interface DesktopTranscriptFragment {
 }
 
 export interface DesktopTranscriptBatchPayload {
+  /** An omitted version is zero, including cached bootstrap snapshots. */
+  readonly navigationVersion?: number;
   readonly sessionId: string;
   readonly generation: string;
   readonly hostEpoch: string;
@@ -59,6 +67,10 @@ export interface DesktopTranscriptOpenResult {
 }
 
 export interface DesktopTranscriptRangeRequest {
+  readonly navigationVersion?: number;
+  readonly intent?: DesktopTranscriptNavigation['intent'];
+  readonly preserveRange?: boolean;
+  readonly readingTurnId?: string;
   readonly consumerId: string;
   readonly sessionId: string;
   readonly hostEpoch: string;
@@ -67,8 +79,9 @@ export interface DesktopTranscriptRangeRequest {
 }
 
 export interface DesktopTranscriptHandle extends DesktopTranscriptOpenResult {
-  loadBefore(anchorSequence: number | null, maxBytes?: number): Promise<void>;
-  loadAround(sequence: number, maxBytes?: number): Promise<void>;
+  loadBefore(anchorSequence: number | null, maxBytes?: number, navigation?: DesktopTranscriptNavigation): Promise<void>;
+  loadAfter(anchorSequence: number | null, maxBytes?: number, navigation?: DesktopTranscriptNavigation): Promise<void>;
+  loadAround(sequence: number | null, maxBytes?: number, navigation?: DesktopTranscriptNavigation): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -79,6 +92,7 @@ export function assertDesktopTranscriptBatch(value: unknown): DesktopTranscriptB
   const batch = value as Record<string, unknown>;
   if (
     typeof batch.sessionId !== 'string' ||
+    (batch.navigationVersion !== undefined && !isSequence(batch.navigationVersion)) ||
     !isSequence(batch.deliverySequence) ||
     typeof batch.generation !== 'string' ||
     typeof batch.hostEpoch !== 'string' ||

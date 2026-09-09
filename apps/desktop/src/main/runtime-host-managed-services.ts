@@ -21,15 +21,25 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
-  decodeRemoteRuntimeHostProfile,
-  sameRemoteRuntimeHostProfileTarget,
+  decodePersistedRuntimeHostProfile,
+  migrateRuntimeHostProfileOperatorCommand,
+  sameEnvironmentRuntimeHostDeployment,
+  sameResolvedRuntimeHostProfileTarget,
+  type EnvironmentRuntimeHostProfile,
+  type PersistedRuntimeHostProfile,
   type RemoteRuntimeHostProfile,
+  type RuntimeHostRemoteTransport,
 } from "@maka/runtime-host/client";
 import { requireHostRootId } from "@maka/runtime-host/protocol";
+import {
+  createRuntimeHostLegacyPosixOperatorCommand,
+  decodeRuntimeHostOperatorCommand,
+  type RuntimeHostOperatorCommand,
+} from "@maka/runtime-host/operator";
 import { withFileUpdateLock } from "@maka/storage/file-update-lock";
 import { syncDirectory } from "@maka/storage/stable-storage";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const DOCUMENT_MAX_BYTES = 256 * 1024;
 const BINDING_COUNT_MAX = 32;
 const PATH_MAX_BYTES = 4 * 1024;
@@ -40,22 +50,71 @@ export interface DesktopRuntimeHostDeploymentBinding {
   readonly deploymentId?: string;
 }
 
-export interface DesktopRuntimeHostControlRoute {
+type ManagedSshRuntimeHostProfile = RemoteRuntimeHostProfile & {
+  readonly transport: Extract<RuntimeHostRemoteTransport, { readonly kind: "ssh" }>;
+};
+
+interface DesktopRuntimeHostSshControlRoute {
   readonly kind: "ssh_operator";
-  readonly operatorPath: string;
+  readonly operator: RuntimeHostOperatorCommand;
 }
 
-export interface DesktopRuntimeHostManagedServiceTarget {
+interface DesktopRuntimeHostManagedServiceTargetBase {
   readonly deployment: DesktopRuntimeHostDeploymentBinding;
-  readonly control: DesktopRuntimeHostControlRoute;
 }
 
-export interface DesktopRuntimeHostManagedServiceBinding {
-  readonly profile: RemoteRuntimeHostProfile;
-  readonly deployment: DesktopRuntimeHostDeploymentBinding;
-  readonly control: DesktopRuntimeHostControlRoute;
-  readonly state: "active" | "uninstalling" | "cleanup_pending";
+export interface DesktopRuntimeHostManagedSshServiceTarget
+  extends DesktopRuntimeHostManagedServiceTargetBase {
+  readonly control: DesktopRuntimeHostSshControlRoute;
 }
+
+export type DesktopRuntimeHostManagedWslServiceTarget =
+  DesktopRuntimeHostManagedServiceTargetBase;
+
+type DesktopRuntimeHostManagedServiceTarget =
+  | DesktopRuntimeHostManagedSshServiceTarget
+  | DesktopRuntimeHostManagedWslServiceTarget;
+
+interface DesktopRuntimeHostManagedServiceBindingBase {
+  readonly deployment: DesktopRuntimeHostDeploymentBinding;
+}
+
+export type DesktopRuntimeHostManagedSshServiceBinding =
+  DesktopRuntimeHostManagedServiceBindingBase & {
+    readonly profile: ManagedSshRuntimeHostProfile;
+    readonly control: DesktopRuntimeHostSshControlRoute;
+    readonly state: "active" | "uninstalling" | "cleanup_pending";
+  };
+
+export type DesktopRuntimeHostManagedServiceBinding =
+  | DesktopRuntimeHostManagedSshServiceBinding
+  | (DesktopRuntimeHostManagedServiceBindingBase & {
+      readonly profile: EnvironmentRuntimeHostProfile;
+      readonly state: "active";
+    });
+
+export function isDesktopRuntimeHostManagedSshProfile(
+  profile: PersistedRuntimeHostProfile,
+): profile is ManagedSshRuntimeHostProfile {
+  return profile.kind === "remote" && profile.transport.kind === "ssh";
+}
+
+export function isDesktopRuntimeHostManagedSshServiceBinding(
+  binding: DesktopRuntimeHostManagedServiceBinding,
+): binding is DesktopRuntimeHostManagedSshServiceBinding {
+  return binding.profile.kind === "remote";
+}
+
+type DesktopRuntimeHostManagedServiceBindingInput =
+  | {
+      readonly profile: ManagedSshRuntimeHostProfile;
+      readonly deployment: DesktopRuntimeHostDeploymentBinding;
+      readonly control: DesktopRuntimeHostSshControlRoute;
+    }
+  | {
+      readonly profile: EnvironmentRuntimeHostProfile;
+      readonly deployment: DesktopRuntimeHostDeploymentBinding;
+    };
 
 export interface DesktopRuntimeHostManagedServiceDocument {
   readonly schemaVersion: typeof SCHEMA_VERSION;
@@ -65,23 +124,27 @@ export interface DesktopRuntimeHostManagedServiceDocument {
 export interface DesktopRuntimeHostManagedServiceStore {
   read(): Promise<DesktopRuntimeHostManagedServiceDocument>;
   save(
-    profile: RemoteRuntimeHostProfile,
-    target: DesktopRuntimeHostManagedServiceTarget,
+    profile: ManagedSshRuntimeHostProfile,
+    target: DesktopRuntimeHostManagedSshServiceTarget,
+  ): Promise<void>;
+  save(
+    profile: EnvironmentRuntimeHostProfile,
+    target: DesktopRuntimeHostManagedWslServiceTarget,
   ): Promise<void>;
   removeIfCurrent(
     binding: DesktopRuntimeHostManagedServiceBinding,
   ): Promise<boolean>;
   removeForProfileIfCurrent(
-    profile: RemoteRuntimeHostProfile,
+    profile: PersistedRuntimeHostProfile,
   ): Promise<boolean>;
   markUninstallingIfCurrent(
-    binding: DesktopRuntimeHostManagedServiceBinding,
+    binding: DesktopRuntimeHostManagedSshServiceBinding,
   ): Promise<boolean>;
   markCleanupPendingIfCurrent(
-    binding: DesktopRuntimeHostManagedServiceBinding,
+    binding: DesktopRuntimeHostManagedSshServiceBinding,
   ): Promise<boolean>;
   removeCleanupPendingIfCurrent(
-    binding: DesktopRuntimeHostManagedServiceBinding,
+    binding: DesktopRuntimeHostManagedSshServiceBinding,
   ): Promise<boolean>;
 }
 
@@ -96,14 +159,18 @@ export function createDesktopRuntimeHostManagedServiceStore(
 
 export function findDesktopRuntimeHostManagedServiceBinding(
   document: DesktopRuntimeHostManagedServiceDocument,
-  profile: RemoteRuntimeHostProfile,
+  profile: PersistedRuntimeHostProfile,
 ): DesktopRuntimeHostManagedServiceBinding | undefined {
   const binding = document.bindings.find(
     (candidate) => candidate.profile.id === profile.id,
   );
-  return binding && sameRemoteRuntimeHostProfileTarget(binding.profile, profile)
-    ? binding
-    : undefined;
+  if (!binding || !sameManagedProfileTarget(binding.profile, profile)) return undefined;
+  // The profile catalog owns a WSL control route. The deployment binding owns only
+  // its stable environment identity, so a crash between their writes cannot hide it.
+  if (binding.profile.kind === "environment" && profile.kind === "environment") {
+    return { profile, deployment: binding.deployment, state: "active" };
+  }
+  return binding;
 }
 
 export function sameDesktopRuntimeHostManagedServiceBinding(
@@ -113,7 +180,7 @@ export function sameDesktopRuntimeHostManagedServiceBinding(
   return (
     left.state === right.state &&
     left.profile.id === right.profile.id &&
-    sameRemoteRuntimeHostProfileTarget(left.profile, right.profile) &&
+    sameManagedProfileTarget(left.profile, right.profile) &&
     sameBindingTarget(left, right)
   );
 }
@@ -140,8 +207,7 @@ class FileDesktopRuntimeHostManagedServiceStore implements DesktopRuntimeHostMan
       try {
         contents = await readFile(this.#legacyPath, "utf8");
       } catch (legacyError) {
-        if ((legacyError as NodeJS.ErrnoException).code === "ENOENT")
-          return emptyDocument();
+        if ((legacyError as NodeJS.ErrnoException).code === "ENOENT") return emptyDocument();
         throw legacyError;
       }
       const migrated = decodeLegacyDocument(JSON.parse(contents));
@@ -152,28 +218,49 @@ class FileDesktopRuntimeHostManagedServiceStore implements DesktopRuntimeHostMan
     if (Buffer.byteLength(contents, "utf8") > DOCUMENT_MAX_BYTES) {
       throw new Error("Runtime Host managed service document is too large");
     }
-    const document = decodeDocument(JSON.parse(contents));
+    const value: unknown = JSON.parse(contents);
+    const migrated = decodeDocument(value);
+    if ((value as { readonly schemaVersion?: unknown }).schemaVersion === 1) {
+      await writeDocument(this.#path, migrated);
+    }
     await removeLegacyDocument(this.#legacyPath);
-    return document;
+    return migrated;
   }
 
   save(
-    value: RemoteRuntimeHostProfile,
-    managedTarget: DesktopRuntimeHostManagedServiceTarget,
+    profile: ManagedSshRuntimeHostProfile,
+    target: DesktopRuntimeHostManagedSshServiceTarget,
+  ): Promise<void>;
+  save(
+    profile: EnvironmentRuntimeHostProfile,
+    target: DesktopRuntimeHostManagedWslServiceTarget,
+  ): Promise<void>;
+  save(
+    profile: ManagedSshRuntimeHostProfile | EnvironmentRuntimeHostProfile,
+    target: DesktopRuntimeHostManagedServiceTarget,
   ): Promise<void> {
-    const profile = decodeRemoteRuntimeHostProfile(value);
-    if (profile.transport.kind !== "ssh") {
-      return Promise.reject(
-        new Error("A managed Runtime Host service requires SSH"),
-      );
-    }
-    const deployment = decodeDeployment(managedTarget.deployment);
-    const control = decodeControlRoute(managedTarget.control);
+    const binding = decodeBinding(
+      { profile, ...target },
+      "Runtime Host managed service binding",
+    );
+    const bindingProfile = binding.profile;
     return this.#exclusive(async () => {
       const current = await this.#readUnlocked();
       const bindings = current.bindings.filter(
-        (binding) => binding.profile.id !== profile.id,
+        (binding) => binding.profile.id !== bindingProfile.id,
       );
+      if (
+        bindings.some(
+          (binding) =>
+            binding.profile.rootId === bindingProfile.rootId &&
+            (bindingProfile.kind === "environment" ||
+              binding.profile.kind === "environment"),
+        )
+      ) {
+        throw new Error(
+          "A managed Runtime Host deployment is already bound to another profile",
+        );
+      }
       if (bindings.length >= BINDING_COUNT_MAX) {
         throw new Error(
           "Too many managed Runtime Host services are configured",
@@ -184,9 +271,7 @@ class FileDesktopRuntimeHostManagedServiceStore implements DesktopRuntimeHostMan
         bindings: [
           ...bindings,
           {
-            profile,
-            deployment,
-            control,
+            ...binding,
             state: "active",
           },
         ],
@@ -195,7 +280,7 @@ class FileDesktopRuntimeHostManagedServiceStore implements DesktopRuntimeHostMan
   }
 
   markUninstallingIfCurrent(
-    binding: DesktopRuntimeHostManagedServiceBinding,
+    binding: DesktopRuntimeHostManagedSshServiceBinding,
   ): Promise<boolean> {
     return this.#setStateIfCurrent(
       binding,
@@ -205,7 +290,7 @@ class FileDesktopRuntimeHostManagedServiceStore implements DesktopRuntimeHostMan
   }
 
   markCleanupPendingIfCurrent(
-    binding: DesktopRuntimeHostManagedServiceBinding,
+    binding: DesktopRuntimeHostManagedSshServiceBinding,
   ): Promise<boolean> {
     return this.#setStateIfCurrent(
       binding,
@@ -215,7 +300,7 @@ class FileDesktopRuntimeHostManagedServiceStore implements DesktopRuntimeHostMan
   }
 
   removeCleanupPendingIfCurrent(
-    binding: DesktopRuntimeHostManagedServiceBinding,
+    binding: DesktopRuntimeHostManagedSshServiceBinding,
   ): Promise<boolean> {
     return this.#remove(binding, "cleanup_pending");
   }
@@ -224,14 +309,14 @@ class FileDesktopRuntimeHostManagedServiceStore implements DesktopRuntimeHostMan
     return this.#remove(binding);
   }
 
-  removeForProfileIfCurrent(value: RemoteRuntimeHostProfile): Promise<boolean> {
-    return this.#remove(undefined, undefined, decodeRemoteRuntimeHostProfile(value));
+  removeForProfileIfCurrent(value: PersistedRuntimeHostProfile): Promise<boolean> {
+    return this.#remove(undefined, undefined, decodePersistedRuntimeHostProfile(value));
   }
 
   #remove(
     expected?: DesktopRuntimeHostManagedServiceBinding,
     state?: DesktopRuntimeHostManagedServiceBinding["state"],
-    profileOverride?: RemoteRuntimeHostProfile,
+    profileOverride?: PersistedRuntimeHostProfile,
   ): Promise<boolean> {
     const profile = expected?.profile ?? profileOverride!;
     return this.#exclusive(async () => {
@@ -241,7 +326,7 @@ class FileDesktopRuntimeHostManagedServiceStore implements DesktopRuntimeHostMan
       );
       if (
         !binding ||
-        !sameRemoteRuntimeHostProfileTarget(binding.profile, profile) ||
+        !sameManagedProfileTarget(binding.profile, profile) ||
         (expected && !sameBindingTarget(binding, expected)) ||
         (state && binding.state !== state)
       ) {
@@ -258,9 +343,9 @@ class FileDesktopRuntimeHostManagedServiceStore implements DesktopRuntimeHostMan
   }
 
   #setStateIfCurrent(
-    expected: DesktopRuntimeHostManagedServiceBinding,
-    allowedStates: readonly DesktopRuntimeHostManagedServiceBinding["state"][],
-    state: DesktopRuntimeHostManagedServiceBinding["state"],
+    expected: DesktopRuntimeHostManagedSshServiceBinding,
+    allowedStates: readonly DesktopRuntimeHostManagedSshServiceBinding["state"][],
+    state: DesktopRuntimeHostManagedSshServiceBinding["state"],
   ): Promise<boolean> {
     const profile = expected.profile;
     return this.#exclusive(async () => {
@@ -270,7 +355,8 @@ class FileDesktopRuntimeHostManagedServiceStore implements DesktopRuntimeHostMan
       );
       if (
         !binding ||
-        !sameRemoteRuntimeHostProfileTarget(binding.profile, profile) ||
+        !isDesktopRuntimeHostManagedSshServiceBinding(binding) ||
+        !sameManagedProfileTarget(binding.profile, profile) ||
         !sameBindingTarget(binding, expected) ||
         !allowedStates.includes(binding.state)
       ) {
@@ -301,10 +387,11 @@ function decodeDocument(
     "Runtime Host managed service document",
     ["schemaVersion", "bindings"],
   );
-  if (
-    record.schemaVersion !== SCHEMA_VERSION ||
-    !Array.isArray(record.bindings)
-  ) {
+  if (!Array.isArray(record.bindings)) {
+    throw new Error("Runtime Host managed service document is invalid");
+  }
+  if (record.schemaVersion === 1) return migrateVersionOneDocument(record.bindings);
+  if (record.schemaVersion !== SCHEMA_VERSION) {
     throw new Error("Runtime Host managed service document is invalid");
   }
   if (record.bindings.length > BINDING_COUNT_MAX) {
@@ -313,15 +400,16 @@ function decodeDocument(
     );
   }
   const bindings = record.bindings.map((candidate) => {
+    const candidateProfile = decodePersistedRuntimeHostProfile(
+      (candidate as { readonly profile?: unknown } | null)?.profile,
+    );
     const binding = requireExactRecord(
       candidate,
       "Runtime Host managed service binding",
-      ["control", "deployment", "profile", "state"],
+      candidateProfile.kind === "environment"
+        ? ["deployment", "profile", "state"]
+        : ["control", "deployment", "profile", "state"],
     );
-    const profile = decodeRemoteRuntimeHostProfile(binding.profile);
-    if (profile.transport.kind !== "ssh") {
-      throw new Error("A managed Runtime Host service requires SSH");
-    }
     if (
       binding.state !== "active" &&
       binding.state !== "uninstalling" &&
@@ -329,10 +417,24 @@ function decodeDocument(
     ) {
       throw new Error("Runtime Host managed service state is invalid");
     }
+    const decoded = decodeBinding(
+      binding,
+      "Runtime Host managed service binding",
+    );
+    if (!("control" in decoded)) {
+      if (binding.state !== "active") {
+        throw new Error("Managed WSL Runtime Host binding state is invalid");
+      }
+      return Object.freeze({
+        profile: decoded.profile,
+        deployment: decoded.deployment,
+        state: "active" as const,
+      });
+    }
     return Object.freeze({
-      profile,
-      deployment: decodeDeployment(binding.deployment),
-      control: decodeControlRoute(binding.control),
+      profile: decoded.profile,
+      deployment: decoded.deployment,
+      control: decoded.control,
       state: binding.state,
     });
   });
@@ -344,36 +446,99 @@ function decodeDocument(
       "Runtime Host managed service bindings must have unique profile IDs",
     );
   }
+  const bindingCountByRootId = new Map<string, number>();
+  for (const binding of bindings) {
+    bindingCountByRootId.set(
+      binding.profile.rootId,
+      (bindingCountByRootId.get(binding.profile.rootId) ?? 0) + 1,
+    );
+  }
+  if (
+    bindings.some(
+      (binding) =>
+        binding.profile.kind === "environment" &&
+        bindingCountByRootId.get(binding.profile.rootId)! > 1,
+    )
+  ) {
+    throw new Error(
+      "Managed WSL Runtime Host State Roots cannot have another deployment binding",
+    );
+  }
   return Object.freeze({
     schemaVersion: SCHEMA_VERSION,
     bindings: Object.freeze(bindings),
   });
 }
 
-function decodeLegacyDocument(
-  value: unknown,
-): DesktopRuntimeHostManagedServiceDocument {
-  const record = requireExactRecord(
-    value,
-    "Legacy Runtime Host managed service document",
-    ["schemaVersion", "bindings"],
-  );
+function migrateVersionOneDocument(bindings: unknown[]): DesktopRuntimeHostManagedServiceDocument {
+  return decodeDocument({
+    schemaVersion: SCHEMA_VERSION,
+    bindings: bindings.map((candidate) => {
+      const profile = migrateRuntimeHostProfileOperatorCommand(
+        (candidate as { readonly profile?: unknown } | null)?.profile,
+      );
+      const decodedProfile = decodePersistedRuntimeHostProfile(profile);
+      const binding = requireExactRecord(
+        candidate,
+        "Runtime Host managed service binding",
+        decodedProfile.kind === "environment"
+          ? ["deployment", "profile", "state"]
+          : ["control", "deployment", "profile", "state"],
+      );
+      if (decodedProfile.kind === "environment") return { ...binding, profile };
+      const control = requireExactRecord(binding.control, "Managed Runtime Host control route", [
+        "kind",
+        "operatorPath",
+      ]);
+      if (control.kind !== "ssh_operator") {
+        throw new Error("Managed Runtime Host control route is invalid");
+      }
+      return {
+        ...binding,
+        profile,
+        control: {
+          kind: "ssh_operator",
+          operator: createRuntimeHostLegacyPosixOperatorCommand(
+            requirePosixOperatorPath(control.operatorPath),
+          ),
+        },
+      };
+    }),
+  });
+}
+
+function decodeLegacyDocument(value: unknown): DesktopRuntimeHostManagedServiceDocument {
+  const record = requireExactRecord(value, "Legacy Runtime Host managed service document", [
+    "schemaVersion",
+    "bindings",
+  ]);
   if (record.schemaVersion !== 1 || !Array.isArray(record.bindings)) {
     throw new Error("Legacy Runtime Host managed service document is invalid");
   }
   return decodeDocument({
     schemaVersion: SCHEMA_VERSION,
     bindings: record.bindings.map((candidate) => {
-      const binding = requireExactRecord(
-        candidate,
-        "Legacy Runtime Host service binding",
-        ["profile", "service", "state"],
-      );
-      const service = decodeLegacyService(binding.service);
+      const binding = requireExactRecord(candidate, "Legacy Runtime Host service binding", [
+        "profile",
+        "service",
+        "state",
+      ]);
+      const service = requireExactRecord(binding.service, "Managed Runtime Host service", [
+        "id",
+        "operatorPath",
+        "rootPath",
+      ]);
+      const operatorPath = requirePosixOperatorPath(service.operatorPath);
       return {
-        profile: binding.profile,
-        deployment: { id: service.id, rootPath: service.rootPath },
-        control: { kind: "ssh_operator", operatorPath: service.operatorPath },
+        profile: migrateRuntimeHostProfileOperatorCommand(binding.profile),
+        deployment: {
+          id: requireHostRootId(service.id),
+          rootPath: requirePath(service.rootPath, "Managed Runtime Host State Root"),
+        },
+        control: {
+          kind: "ssh_operator",
+          operator: createRuntimeHostLegacyPosixOperatorCommand(operatorPath),
+        },
         state: binding.state,
       };
     }),
@@ -400,51 +565,39 @@ function decodeDeployment(value: unknown): DesktopRuntimeHostDeploymentBinding {
   });
 }
 
-function decodeControlRoute(value: unknown): DesktopRuntimeHostControlRoute {
+function decodeSshControlRoute(value: unknown): DesktopRuntimeHostSshControlRoute {
   const record = requireExactRecord(
     value,
     "Managed Runtime Host control route",
-    ["kind", "operatorPath"],
+    ["kind", "operator"],
   );
   if (record.kind !== "ssh_operator") {
     throw new Error("Managed Runtime Host control route is invalid");
   }
-  const operatorPath = requirePath(
-    record.operatorPath,
-    "Managed Runtime Host operator path",
-  );
-  if (!operatorPath.startsWith("/")) {
-    throw new Error("Managed Runtime Host operator path must be absolute");
-  }
-  return Object.freeze({ kind: "ssh_operator", operatorPath });
+  return Object.freeze({
+    kind: "ssh_operator",
+    operator: decodeRuntimeHostOperatorCommand(record.operator),
+  });
 }
 
-function decodeLegacyService(value: unknown): {
-  readonly id: string;
-  readonly rootPath: string;
-  readonly operatorPath: string;
-} {
-  const record = requireExactRecord(
-    value,
-    "Managed Runtime Host service",
-    ["id", "operatorPath", "rootPath"],
-  );
-  const rootPath = requirePath(
-    record.rootPath,
-    "Managed Runtime Host State Root",
-  );
-  const operatorPath = requirePath(
-    record.operatorPath,
-    "Managed Runtime Host operator path",
-  );
-  if (!operatorPath.startsWith("/")) {
-    throw new Error("Managed Runtime Host operator path must be absolute");
+function decodeBinding(
+  value: {
+    readonly profile?: unknown;
+    readonly deployment?: unknown;
+    readonly control?: unknown;
+  },
+  label: string,
+): DesktopRuntimeHostManagedServiceBindingInput {
+  const profile = decodePersistedRuntimeHostProfile(value.profile);
+  const deployment = decodeDeployment(value.deployment);
+  if (profile.kind === "environment") {
+    return Object.freeze({ profile, deployment });
   }
-  return Object.freeze({
-    id: requireHostRootId(record.id),
-    rootPath,
-    operatorPath,
-  });
+  if (!isDesktopRuntimeHostManagedSshProfile(profile)) {
+    throw new Error(`${label} has no supported control route`);
+  }
+  const control = decodeSshControlRoute(value.control);
+  return Object.freeze({ profile, deployment, control });
 }
 
 function requireDeploymentId(value: unknown): string {
@@ -471,6 +624,14 @@ function requirePath(value: unknown, label: string): string {
   return value;
 }
 
+function requirePosixOperatorPath(value: unknown): string {
+  const path = requirePath(value, "Managed Runtime Host operator path");
+  if (!path.startsWith("/")) {
+    throw new Error("Managed Runtime Host operator path must be absolute");
+  }
+  return path;
+}
+
 function requireExactRecord(
   value: unknown,
   label: string,
@@ -495,12 +656,31 @@ function sameBindingTarget(
   left: DesktopRuntimeHostManagedServiceBinding,
   right: DesktopRuntimeHostManagedServiceBinding,
 ): boolean {
+  if (
+    left.deployment.id !== right.deployment.id ||
+    left.deployment.rootPath !== right.deployment.rootPath ||
+    left.deployment.deploymentId !== right.deployment.deploymentId
+  ) {
+    return false;
+  }
+  if (!isDesktopRuntimeHostManagedSshServiceBinding(left)) {
+    return !isDesktopRuntimeHostManagedSshServiceBinding(right);
+  }
   return (
-    left.deployment.id === right.deployment.id &&
-    left.deployment.rootPath === right.deployment.rootPath &&
-    left.deployment.deploymentId === right.deployment.deploymentId &&
-    left.control.kind === right.control.kind &&
-    left.control.operatorPath === right.control.operatorPath
+    isDesktopRuntimeHostManagedSshServiceBinding(right) &&
+    JSON.stringify(left.control.operator) === JSON.stringify(right.control.operator)
+  );
+}
+
+function sameManagedProfileTarget(
+  left: PersistedRuntimeHostProfile,
+  right: PersistedRuntimeHostProfile,
+): boolean {
+  return (
+    left.id === right.id &&
+    (left.kind === "environment" && right.kind === "environment"
+      ? sameEnvironmentRuntimeHostDeployment(left, right)
+      : sameResolvedRuntimeHostProfileTarget({ profile: left }, { profile: right }))
   );
 }
 

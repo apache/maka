@@ -1,0 +1,5 @@
+{
+  "epoch": 101,
+  "files": ["packages/runtime-host/src/protocol/connection-effects.ts"],
+  "reason": "Adds optional slug/name to the connection onboarding create target (#4605). Surfaces omit both keys unless the user names the connection, so every unchanged flow is byte-identical on any Host vintage. An older Host rejects a named target as an unknown field, which fails closed: nothing commits and the surface reports its standard typed failure. Newer Hosts never emit new fields to older clients."
+}

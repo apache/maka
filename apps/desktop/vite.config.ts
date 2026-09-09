@@ -23,6 +23,8 @@ import { dirname, resolve } from 'node:path';
 import react from '@vitejs/plugin-react';
 import { dependencyPatchesCachePlugin } from './vite-dependency-patches.js';
 import { bundledNpmPackagesPlugin } from './vite-bundled-packages.js';
+import { rendererEntryContractPlugin } from './scripts/vite-renderer-entry-contract.js';
+import { workspacePackagesPlugin } from './vite-workspace-packages.js';
 
 /**
  * PR-ICONS-FULL-REPLACE-0 (WAWQAQ msg `60064e2d` 2026-06-24): point the
@@ -42,7 +44,13 @@ export default defineConfig({
   // Vite hashes plugin names into its dependency-cache key. patch-package does
   // not change package-lock.json, so carry the patch contents in that key while
   // keeping every Astryx entry in one optimized module graph.
-  plugins: [react(), dependencyPatchesCachePlugin(REPO_ROOT), bundledNpmPackagesPlugin()],
+  plugins: [
+    react(),
+    dependencyPatchesCachePlugin(REPO_ROOT),
+    workspacePackagesPlugin(REPO_ROOT),
+    bundledNpmPackagesPlugin(),
+    rendererEntryContractPlugin(resolve(import.meta.dirname, 'src/renderer')),
+  ],
   resolve: {
     dedupe: ['react', 'react-dom'],
     alias: [

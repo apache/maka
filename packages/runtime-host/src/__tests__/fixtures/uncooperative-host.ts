@@ -92,7 +92,7 @@ const host = await RuntimeHostKernel.start({
           ok: false,
           error: { code: 'operation_unavailable', message: 'Operation unavailable in test Host' },
         }),
-        'task.ledger.query': async () => ({
+        'session.todo.query': async () => ({
           ok: false,
           error: { code: 'operation_unavailable', message: 'Operation unavailable in test Host' },
         }),

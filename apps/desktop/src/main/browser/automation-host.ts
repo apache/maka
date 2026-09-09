@@ -47,6 +47,12 @@ export function createBrowserViewHost(
   shownSessionId: () => string | null,
 ): BrowserViewHost {
   return {
+    currentUrl(sessionId) {
+      return manager.get(sessionId)?.state().url ?? '';
+    },
+    openOriginLease(sessionId, approvedUrl, kind) {
+      return manager.getOrCreate(sessionId).openOriginLease(approvedUrl, kind);
+    },
     canDrive(sessionId, kind, opts) {
       const shown = sessionId === shownSessionId();
       const controller = manager.get(sessionId);

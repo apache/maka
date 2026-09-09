@@ -17,8 +17,10 @@
  * under the License.
  */
 
+import { IntlMessageFormat } from 'intl-messageformat';
+
 /** Resolved locales supported by human-facing Maka clients. */
-export const UI_LOCALES = ['zh', 'en'] as const;
+export const UI_LOCALES = ['zh-CN', 'zh-TW', 'en'] as const;
 
 export type UiLocale = (typeof UI_LOCALES)[number];
 
@@ -30,20 +32,117 @@ export const UI_LOCALE_PREFERENCES = ['auto', ...UI_LOCALES] as const;
 /** A catalog must carry copy for every supported resolved locale. */
 export type UiCatalog<T> = Record<UiLocale, T>;
 
+type DeepPartial<T> = T extends readonly unknown[]
+  ? T
+  : T extends object
+    ? { readonly [Key in keyof T]?: DeepPartial<T[Key]> }
+    : T;
+
+export type UiMessageCatalog<T> = {
+  readonly en: T;
+} & Partial<{
+  readonly [Locale in Exclude<UiLocale, 'en'>]: DeepPartial<T>;
+}>;
+
+type ExactMessageShape<Actual, Expected> = Actual extends readonly unknown[]
+  ? NonNullable<Expected> extends readonly unknown[]
+    ? Actual
+    : never
+  : Actual extends object
+    ? Exclude<keyof Actual, keyof NonNullable<Expected>> extends never
+      ? {
+          readonly [Key in keyof Actual]: ExactMessageShape<
+            Actual[Key],
+            NonNullable<Expected>[Key & keyof NonNullable<Expected>]
+          >;
+        }
+      : never
+    : Actual;
+
+const messageFormatters = new Map<string, IntlMessageFormat>();
+
+export function defineUiMessageCatalog<Expected>() {
+  return <Catalog extends UiMessageCatalog<Expected>>(
+    catalog: Catalog & {
+      readonly en: ExactMessageShape<Catalog['en'], Expected>;
+    } & {
+      readonly [Locale in Exclude<UiLocale, 'en'>]?: ExactMessageShape<
+        NonNullable<Catalog[Locale]>,
+        DeepPartial<Expected>
+      >;
+    },
+  ): UiMessageCatalog<Expected> => catalog;
+}
+
+export function resolveUiMessageCatalog<T>(catalog: UiMessageCatalog<T>): UiCatalog<T> {
+  return Object.fromEntries(
+    UI_LOCALES.map((locale) => [
+      locale,
+      mergeUiMessages(catalog.en, catalog[locale] as DeepPartial<T> | undefined),
+    ]),
+  ) as UiCatalog<T>;
+}
+
+export function formatUiMessage(
+  template: string,
+  values: Readonly<Record<string, string | number | bigint | boolean | Date | null | undefined>>,
+  locale: UiLocale,
+): string {
+  try {
+    const intlLocale = uiLocaleToIntlLocale(locale);
+    const cacheKey = `${intlLocale}\u0000${template}`;
+    let formatter = messageFormatters.get(cacheKey);
+    if (!formatter) {
+      formatter = new IntlMessageFormat(template, intlLocale);
+      messageFormatters.set(cacheKey, formatter);
+    }
+    const safeValues = Object.assign(Object.create(null) as Record<string, unknown>, values);
+    const formatted = formatter.format(safeValues);
+    return Array.isArray(formatted) ? formatted.join('') : String(formatted);
+  } catch {
+    return template;
+  }
+}
+
+function mergeUiMessages<T>(fallback: T, translation: DeepPartial<T> | undefined): T {
+  if (translation === undefined) return fallback;
+  if (!isMessageRecord(fallback) || !isMessageRecord(translation)) return translation as T;
+  return Object.fromEntries(
+    Object.entries(fallback).map(([key, value]) => [
+      key,
+      mergeUiMessages(value, Object.hasOwn(translation, key) ? translation[key] : undefined),
+    ]),
+  ) as T;
+}
+
+function isMessageRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 export function isUiLocale(value: unknown): value is UiLocale {
-  return value === 'zh' || value === 'en';
+  return value === 'zh-CN' || value === 'zh-TW' || value === 'en';
 }
 
 export function isUiLocalePreference(value: unknown): value is UiLocalePreference {
   return value === 'auto' || isUiLocale(value);
 }
 
+/** Decode persisted or externally supplied preferences into the closed locale vocabulary. */
+export function normalizeUiLocalePreference(value: unknown): UiLocalePreference {
+  if (value === 'zh') return 'zh-CN';
+  return isUiLocalePreference(value) ? value : 'auto';
+}
+
 /** Resolve the first supported language in the operating system preference list. */
 export function resolveSystemUiLocale(languages: readonly string[] | null | undefined): UiLocale {
   for (const language of languages ?? []) {
-    const normalized = language.trim();
-    if (/^zh(?:[-_]|$)/iu.test(normalized)) return 'zh';
-    if (/^en(?:[-_]|$)/iu.test(normalized)) return 'en';
+    const normalized = language.trim().replaceAll('_', '-');
+    if (/^zh(?:[-.]|$)/iu.test(normalized)) {
+      if (/^zh-(?:tw|hk|mo)(?:[-.]|$)/iu.test(normalized)) return 'zh-TW';
+      if (/^zh-hant(?:[-.]|$)/iu.test(normalized)) return 'zh-TW';
+      return 'zh-CN';
+    }
+    if (/^en(?:[-.]|$)/iu.test(normalized)) return 'en';
   }
   return 'en';
 }
@@ -65,6 +164,14 @@ export function resolveUiLocale(
 }
 
 /** Locale identifier used by every locale-sensitive Intl formatter. */
-export function uiLocaleToIntlLocale(locale: UiLocale): 'zh-CN' | 'en' {
-  return locale === 'zh' ? 'zh-CN' : 'en';
+export function uiLocaleToIntlLocale(locale: UiLocale): UiLocale {
+  return locale;
+}
+
+/** Copy for a wire code, or undefined when a newer producer sent one this catalog does not know. */
+export function lookupCopy(
+  map: Readonly<Record<string, string>>,
+  code: string | undefined,
+): string | undefined {
+  return code !== undefined && Object.hasOwn(map, code) ? map[code] : undefined;
 }

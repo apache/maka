@@ -28,9 +28,33 @@ const CHUNK_BYTES: usize = 64 * 1024;
 
 pub struct PeerStream {
     pub peer_id: PeerId,
+    pub path: PeerConnectionPath,
     pub incoming: mpsc::Receiver<Result<Vec<u8>, PeerError>>,
     pub commands: mpsc::Sender<StreamCommand>,
     pub abort: watch::Sender<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectTransport {
+    Quic,
+    Tcp,
+    WebRtc,
+    Other,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PeerConnectionPath {
+    Direct(DirectTransport),
+    Transit { relay_peer_id: PeerId },
+}
+
+impl PeerConnectionPath {
+    pub(super) fn relay_peer_id(&self) -> Option<PeerId> {
+        match self {
+            Self::Direct(_) => None,
+            Self::Transit { relay_peer_id } => Some(*relay_peer_id),
+        }
+    }
 }
 
 pub enum StreamCommand {
@@ -45,7 +69,8 @@ pub enum StreamCommand {
 
 pub(super) fn spawn_stream(
     peer_id: PeerId,
-    stream: libp2p::swarm::Stream,
+    path: PeerConnectionPath,
+    stream: impl futures::AsyncRead + futures::AsyncWrite + Unpin + Send + 'static,
     completion: Option<(StreamCompletion, mpsc::Sender<CompletedStream>)>,
 ) -> PeerStream {
     let (incoming_tx, incoming_rx) = mpsc::channel(QUEUE_CAPACITY);
@@ -55,69 +80,63 @@ pub(super) fn spawn_stream(
     tokio::spawn(async move {
         let _abort_guard = abort_guard;
         let (mut reader, mut writer) = stream.split();
-        let mut buffer = vec![0_u8; CHUNK_BYTES];
-        let mut pending_read: Option<Result<Vec<u8>, PeerError>> = None;
-        let mut finish_after_delivery = false;
-        let mut close_result = None;
-        loop {
+        // Drive both halves independently. Awaiting a backpressured write in
+        // the read loop deadlocks when both peers send more than the window.
+        let close_result = {
+            let reading = async {
+                let mut buffer = vec![0_u8; CHUNK_BYTES];
+                loop {
+                    match reader.read(&mut buffer).await {
+                        Ok(0) => break,
+                        Ok(size) => {
+                            if incoming_tx.send(Ok(buffer[..size].to_vec())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            let _ = incoming_tx
+                                .send(Err(PeerError::new("peer_native_failed", error.to_string())))
+                                .await;
+                            break;
+                        }
+                    }
+                }
+            };
+            let writing = async {
+                while let Some(command) = command_rx.recv().await {
+                    match command {
+                        StreamCommand::Write { bytes, result } => {
+                            let outcome = async {
+                                writer.write_all(&bytes).await?;
+                                writer.flush().await
+                            }
+                            .await
+                            .map_err(|error: std::io::Error| {
+                                PeerError::new("peer_native_failed", error.to_string())
+                            });
+                            let failed = outcome.is_err();
+                            let _ = result.send(outcome);
+                            if failed {
+                                break;
+                            }
+                        }
+                        StreamCommand::Close { result } => {
+                            let outcome = writer.close().await.map_err(|error| {
+                                PeerError::new("peer_native_failed", error.to_string())
+                            });
+                            return Some((result, outcome));
+                        }
+                    }
+                }
+                None
+            };
             tokio::select! {
                 biased;
-                changed = abort_rx.changed() => {
-                    let _ = changed;
-                    break;
-                }
-                command = command_rx.recv() => match command {
-                    Some(StreamCommand::Write { bytes, result }) => {
-                        let outcome = tokio::select! {
-                            biased;
-                            _ = abort_rx.changed() => Err(PeerError::new(
-                                "peer_stream_aborted",
-                                "peer stream was aborted",
-                            )),
-                            outcome = writer.write_all(&bytes) => outcome.map_err(|error| {
-                                PeerError::new("peer_native_failed", error.to_string())
-                            }),
-                        };
-                        let failed = outcome.is_err();
-                        let _ = result.send(outcome);
-                        if failed { break; }
-                    }
-                    Some(StreamCommand::Close { result }) => {
-                        let outcome = tokio::select! {
-                            biased;
-                            _ = abort_rx.changed() => Err(PeerError::new(
-                                "peer_stream_aborted",
-                                "peer stream was aborted",
-                            )),
-                            outcome = writer.close() => outcome.map_err(|error| {
-                                PeerError::new("peer_native_failed", error.to_string())
-                            }),
-                        };
-                        close_result = Some((result, outcome));
-                        break;
-                    }
-                    None => break,
-                },
-                permit = incoming_tx.reserve(), if pending_read.is_some() => match permit {
-                    Ok(permit) => {
-                        permit.send(pending_read.take().expect("read is pending"));
-                        if finish_after_delivery { break; }
-                    }
-                    Err(_) => break,
-                },
-                read = reader.read(&mut buffer), if pending_read.is_none() => match read {
-                    Ok(0) => break,
-                    Ok(size) => pending_read = Some(Ok(buffer[..size].to_vec())),
-                    Err(error) => {
-                        pending_read = Some(Err(PeerError::new(
-                            "peer_native_failed",
-                            error.to_string(),
-                        )));
-                        finish_after_delivery = true;
-                    }
-                },
+                _ = abort_rx.changed() => None,
+                result = writing => result,
+                _ = reading => None,
             }
-        }
+        };
         if let Some((completion, completed)) = completion {
             let (acknowledged, acknowledgment) = oneshot::channel();
             if completed
@@ -137,8 +156,73 @@ pub(super) fn spawn_stream(
     });
     PeerStream {
         peer_id,
+        path,
         incoming: incoming_rx,
         commands: command_tx,
         abort: abort_tx,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio_util::compat::TokioAsyncReadCompatExt;
+
+    #[tokio::test]
+    async fn simultaneous_large_writes_keep_reading_under_backpressure() {
+        let (left, right) = tokio::io::duplex(1024);
+        let mut left = spawn_stream(
+            PeerId::random(),
+            PeerConnectionPath::Direct(DirectTransport::Tcp),
+            left.compat(),
+            None,
+        );
+        let mut right = spawn_stream(
+            PeerId::random(),
+            PeerConnectionPath::Direct(DirectTransport::Tcp),
+            right.compat(),
+            None,
+        );
+        let (left_result, left_done) = oneshot::channel();
+        let (right_result, right_done) = oneshot::channel();
+        const BYTES: usize = 512 * 1024;
+        left.commands
+            .send(StreamCommand::Write {
+                bytes: vec![1; BYTES],
+                result: left_result,
+            })
+            .await
+            .unwrap();
+        right
+            .commands
+            .send(StreamCommand::Write {
+                bytes: vec![2; BYTES],
+                result: right_result,
+            })
+            .await
+            .unwrap();
+        async fn receive(stream: &mut PeerStream, expected: u8) {
+            let mut count = 0;
+            while count < BYTES {
+                let bytes = stream.incoming.recv().await.unwrap().unwrap();
+                assert!(bytes.iter().all(|byte| *byte == expected));
+                count += bytes.len();
+            }
+            assert_eq!(count, BYTES);
+        }
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let (left_ack, right_ack, _, _) = tokio::join!(
+                left_done,
+                right_done,
+                receive(&mut left, 2),
+                receive(&mut right, 1)
+            );
+            left_ack.unwrap().unwrap();
+            right_ack.unwrap().unwrap();
+        })
+        .await;
+        left.abort.send_replace(true);
+        right.abort.send_replace(true);
+        outcome.expect("simultaneous writes must not stop either reader");
     }
 }

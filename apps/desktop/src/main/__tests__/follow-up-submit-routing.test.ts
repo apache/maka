@@ -50,6 +50,7 @@ describe('follow-up submit routing', () => {
     assert.equal(
       resolveFollowUpModeAtSubmit({
         hasActiveTurn: true,
+        slashCommand: null,
       }),
       'queue',
     );
@@ -57,6 +58,7 @@ describe('follow-up submit routing', () => {
       resolveFollowUpModeAtSubmit({
         requestedMode: 'steer',
         hasActiveTurn: true,
+        slashCommand: null,
       }),
       'steer',
     );
@@ -66,6 +68,27 @@ describe('follow-up submit routing', () => {
     assert.equal(
       resolveFollowUpModeAtSubmit({
         hasActiveTurn: false,
+        slashCommand: null,
+      }),
+      undefined,
+    );
+  });
+
+  it('dispatches a slash command mid-turn instead of steering it into the Turn', () => {
+    assert.equal(
+      resolveFollowUpModeAtSubmit({
+        hasActiveTurn: true,
+        slashCommand: { kind: 'side' },
+      }),
+      undefined,
+    );
+    // An explicit steer request loses to the command too: Shift+Enter on
+    // `/side` still opens the side chat.
+    assert.equal(
+      resolveFollowUpModeAtSubmit({
+        requestedMode: 'steer',
+        hasActiveTurn: true,
+        slashCommand: { kind: 'side' },
       }),
       undefined,
     );

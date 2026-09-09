@@ -21,6 +21,8 @@ import { randomUUID } from 'node:crypto';
 import type { IpcMain } from 'electron';
 import {
   parseRuntimeHostSetupEndpoint,
+  type RuntimeHostNodeOperatorCommand,
+  type RuntimeHostOperatorCommand,
   type RuntimeHostSetupPhase,
 } from '@maka/runtime-host/operator';
 import type {
@@ -28,7 +30,11 @@ import type {
   DesktopRuntimeHostOnboardingSnapshot,
 } from '../preload/bridge-contract.js';
 import type { DesktopRuntimeHostProfileService } from './runtime-host-profile-service.js';
-import type { DesktopRuntimeHostSshSetupInput } from './runtime-host-ssh-terminal.js';
+import {
+  runtimeHostPeerTargetFromNode,
+  type DesktopRuntimeHostSshNodeIdentity,
+  type DesktopRuntimeHostSshSetupInput,
+} from './runtime-host-ssh-terminal.js';
 import type { DesktopRuntimeHostWslSetupInput } from './runtime-host-wsl-controller.js';
 import type {
   DesktopRuntimeHostDevelopmentPeerTarget,
@@ -45,7 +51,10 @@ type OnboardingState = DesktopRuntimeHostOnboardingSnapshot extends infer Snapsh
 export function createDesktopRuntimeHostOnboarding(input: {
   readonly ipcMain: Pick<IpcMain, 'handle' | 'removeHandler'>;
   readonly clientInstanceId: string;
-  readonly profiles: Pick<DesktopRuntimeHostProfileService, 'addAndEnable' | 'addAndEnableVerified'>;
+  readonly profiles: Pick<
+    DesktopRuntimeHostProfileService,
+    'addManagedEnvironmentAndEnable' | 'addAndEnableVerified'
+  >;
   readonly runSetup: (
     input: DesktopRuntimeHostSshSetupInput,
     onProgress: (frame: { readonly phase: RuntimeHostSetupPhase }) => void,
@@ -55,7 +64,7 @@ export function createDesktopRuntimeHostOnboarding(input: {
     readonly rootPath: string;
     readonly serviceId: string;
     readonly deploymentId: string;
-    readonly operatorPath: string;
+    readonly operator: RuntimeHostOperatorCommand;
     readonly endpoint: string;
     readonly credential: string;
   }>;
@@ -63,15 +72,21 @@ export function createDesktopRuntimeHostOnboarding(input: {
     input: DesktopRuntimeHostWslSetupInput,
     onProgress: (frame: { readonly phase: RuntimeHostSetupPhase }) => void,
     onComplete: () => void,
-  ) => Promise<{ readonly rootId: string; readonly operatorPath: string }>;
+  ) => Promise<{
+    readonly rootId: string;
+    readonly rootPath: string;
+    readonly serviceId: string;
+    readonly deploymentId: string;
+    readonly operator: RuntimeHostNodeOperatorCommand<'posix'>;
+  }>;
   readonly listWslDistributions: () => Promise<readonly string[]>;
   readonly send: (snapshot: DesktopRuntimeHostOnboardingSnapshot) => void;
   readonly setupPackageMode: 'published' | 'development';
-  readonly resolveSshDevelopmentPeerTarget: (input: {
+  readonly resolveSshNodeIdentity: (input: {
     readonly destination: string;
     readonly sshPort?: number;
     readonly signal?: AbortSignal;
-  }) => Promise<Exclude<DesktopRuntimeHostDevelopmentPeerTarget, 'none'>>;
+  }) => Promise<DesktopRuntimeHostSshNodeIdentity>;
   readonly resolveSetupPackage: (
     peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
     signal?: AbortSignal,
@@ -125,10 +140,14 @@ export function createDesktopRuntimeHostOnboarding(input: {
         const setupPackage = await input.resolveSetupPackage('none', signal);
         return await runWsl(request, setupPackage, signal);
       }
+      const nodeIdentity = await resolveSshNodeIdentity(request, signal);
       const peerTarget = input.setupPackageMode === 'development'
-        ? await resolveSshDevelopmentPeerTarget(request, signal)
+        ? runtimeHostPeerTargetFromNode(nodeIdentity.platform, nodeIdentity.architecture)
         : 'none';
-      const setupPackage = await input.resolveSetupPackage(peerTarget, signal);
+      const setupPackage = await input.resolveSetupPackage(
+        peerTarget,
+        signal,
+      );
       const lifecycle = setupPackage.kind === 'npm' ? 'on_demand' : 'supervised';
       signal.throwIfAborted();
       publish({ kind: 'running', phase: 'connecting_ssh' });
@@ -147,6 +166,7 @@ export function createDesktopRuntimeHostOnboarding(input: {
           destination: request.destination,
           ...(request.sshPort === undefined ? {} : { sshPort: request.sshPort }),
           setupPackage,
+          remotePlatform: nodeIdentity.platform === 'win32' ? 'win32' : 'posix',
           lifecycle,
           principalId: `desktop:${input.clientInstanceId}`,
           ...(request.projectDirectoryRoots
@@ -182,7 +202,7 @@ export function createDesktopRuntimeHostOnboarding(input: {
               ? {
                   activation: {
                     kind: 'ssh_operator' as const,
-                    operatorPath: complete.operatorPath,
+                    operator: complete.operator,
                   },
                 }
               : {
@@ -200,7 +220,7 @@ export function createDesktopRuntimeHostOnboarding(input: {
           },
           control: {
             kind: 'ssh_operator',
-            operatorPath: complete.operatorPath,
+            operator: complete.operator,
           },
         },
       });
@@ -217,18 +237,18 @@ export function createDesktopRuntimeHostOnboarding(input: {
     }
   };
 
-  const resolveSshDevelopmentPeerTarget = async (
+  const resolveSshNodeIdentity = async (
     request: Extract<DesktopRuntimeHostOnboardingInput, { readonly kind: 'ssh' }>,
     signal: AbortSignal,
-  ): Promise<Exclude<DesktopRuntimeHostDevelopmentPeerTarget, 'none'>> => {
+  ): Promise<DesktopRuntimeHostSshNodeIdentity> => {
     publish({ kind: 'running', phase: 'connecting_ssh' });
-    const target = await input.resolveSshDevelopmentPeerTarget({
+    const identity = await input.resolveSshNodeIdentity({
       destination: request.destination,
       ...(request.sshPort === undefined ? {} : { sshPort: request.sshPort }),
       signal,
     });
     publish({ kind: 'running', phase: 'preparing_cli' });
-    return target;
+    return identity;
   };
 
   const runWsl = async (
@@ -261,18 +281,25 @@ export function createDesktopRuntimeHostOnboarding(input: {
     );
     beginCommit();
     const profileId = `environment-${randomUUID()}`;
-    const connected = await input.profiles.addAndEnable({
-      profile: {
-        id: profileId,
-        name: request.name?.trim() || request.distribution,
-        kind: 'environment',
-        provider: { kind: 'wsl', distribution: request.distribution },
-        rootId: complete.rootId,
-        operatorPath: complete.operatorPath,
+    const profile = {
+      id: profileId,
+      name: request.name?.trim() || request.distribution,
+      kind: 'environment' as const,
+      provider: { kind: 'wsl' as const, distribution: request.distribution },
+      rootId: complete.rootId,
+      operator: complete.operator,
+    };
+    const connected = await input.profiles.addManagedEnvironmentAndEnable({
+      profile,
+      managedService: {
+        deployment: {
+          id: complete.serviceId,
+          rootPath: complete.rootPath,
+          deploymentId: complete.deploymentId,
+        },
       },
     });
-    if (connected.kind === 'unavailable') throw new Error(connected.message);
-    return publish({ kind: 'complete', profileId });
+    return publish({ kind: 'complete', profileId: connected.profileId });
   };
 
   const channels = [

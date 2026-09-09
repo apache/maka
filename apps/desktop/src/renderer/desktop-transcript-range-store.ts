@@ -23,6 +23,7 @@ import type {
   DesktopTranscriptBatchPayload,
   DesktopTranscriptFragment,
   DesktopTranscriptHandle,
+  DesktopTranscriptNavigation,
 } from '../preload/transcript-contract.js';
 import { projectDesktopStoredMessage } from '../shared/desktop-session-projection.js';
 import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
@@ -31,9 +32,11 @@ export interface DesktopTranscriptRangeController {
   readonly store: DesktopTranscriptRangeStore;
   ready(): Promise<void>;
   waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean>;
-  loadBefore(maxBytes?: number): Promise<void>;
+  loadBefore(maxBytes?: number, anchorTurnId?: string): Promise<void>;
+  loadAfter(maxBytes?: number, anchorTurnId?: string): Promise<void>;
   loadAround(sequence: number): Promise<void>;
-  loadLatest(): Promise<void>;
+  setReadingAnchor(sequence: number | null, readingTurnId?: string): Promise<void>;
+  loadLatest(maxBytes?: number): Promise<void>;
   reload(): Promise<void>;
   close(): Promise<void>;
 }
@@ -45,36 +48,95 @@ export function createDesktopTranscriptRangeController(
   let closed = false;
   let openController = new AbortController();
   let handle = open(openController.signal);
+  type Navigation = DesktopTranscriptNavigation & {
+    readonly kind: 'before' | 'after' | 'around' | 'latest' | 'anchor';
+    readonly sequence: number | null;
+    readonly maxBytes?: number;
+  };
+  let navigation: Navigation = {
+    navigationVersion: 0, intent: 'followTail', kind: 'latest', sequence: null,
+  };
   const current = async () => {
     if (closed) throw new Error('Desktop transcript range is closed');
     return handle;
   };
+  const dispatch = async (command: Navigation) => {
+    const opening = handle;
+    const isCurrent = () => !closed && navigation === command && opening === handle;
+    try {
+      const value = await current();
+      if (!isCurrent()) return;
+      if (command.kind === 'before') {
+        await value.loadBefore(command.sequence, command.maxBytes, command);
+      } else if (command.kind === 'after') {
+        await value.loadAfter(command.sequence, command.maxBytes, command);
+      } else {
+        await value.loadAround(command.sequence, command.maxBytes, command);
+      }
+    } catch (error) {
+      if (isCurrent()) throw error;
+    }
+  };
+  const navigate = (command: Omit<Navigation, 'navigationVersion'>) => {
+    navigation = { ...command, navigationVersion: navigation.navigationVersion + 1 };
+    // Invalidate before awaiting an open handle or any previous page request.
+    store.expectNavigation(navigation.navigationVersion);
+    return dispatch(navigation);
+  };
   return {
     store,
-    async ready() {
-      await current();
-    },
+    async ready() { await current(); },
     async waitForDurableMessage(messageId, timeoutMs) {
       await current();
       return store.waitForDurableMessage(messageId, timeoutMs);
     },
-    async loadBefore(maxBytes) {
+    async loadBefore(maxBytes, anchorTurnId) {
       const range = store.range();
+      const anchor = anchorTurnId === undefined ? undefined : store.sequenceForTurn(anchorTurnId);
+      if (anchor === null) {
+        await navigate({ intent: 'history', kind: 'anchor', sequence: null,
+          readingTurnId: anchorTurnId, preserveRange: true });
+        return;
+      }
       if (!range.hasOlder) return;
-      await (await current()).loadBefore(range.oldestSequence, maxBytes);
+      await navigate({
+        intent: 'history', kind: 'before', maxBytes,
+        sequence: anchor ?? range.oldestSequence,
+        readingTurnId: anchorTurnId,
+      });
     },
-    async loadAround(sequence) {
-      await (await current()).loadAround(sequence);
+    loadAround(sequence) {
+      return navigate({ intent: 'history', kind: 'around', sequence });
     },
-    async loadLatest() {
+    async loadAfter(maxBytes, anchorTurnId) {
       const range = store.range();
-      if (!range.hasNewer || range.durableThrough === null) return;
-      await (await current()).loadAround(range.durableThrough);
+      const anchor = anchorTurnId === undefined ? undefined : store.sequenceForTurn(anchorTurnId, 'last');
+      if (anchor === null) {
+        await navigate({ intent: 'history', kind: 'anchor', sequence: null,
+          readingTurnId: anchorTurnId, preserveRange: true });
+        return;
+      }
+      if (!range.hasNewer) return;
+      await navigate({
+        intent: 'history', kind: 'after', maxBytes,
+        sequence: anchor ?? range.newestSequence,
+        readingTurnId: anchorTurnId,
+      });
+    },
+    setReadingAnchor(sequence, readingTurnId) {
+      if (navigation.kind === 'anchor' && navigation.sequence === sequence &&
+        navigation.readingTurnId === readingTurnId) {
+        return Promise.resolve();
+      }
+      return navigate({ intent: 'history', kind: 'anchor', sequence, readingTurnId, preserveRange: true });
+    },
+    loadLatest(maxBytes) {
+      return navigate({ intent: 'followTail', kind: 'latest', sequence: null, maxBytes });
     },
     async reload() {
       const previous = handle;
       openController.abort();
-      handle = previous
+      const replacement = previous
         .then((value) => value.close())
         .catch(() => undefined)
         .then(() => {
@@ -82,13 +144,135 @@ export function createDesktopTranscriptRangeController(
           openController = new AbortController();
           return open(openController.signal);
         });
-      await handle;
+      handle = replacement;
+      await replacement;
+      if (closed || handle !== replacement) return;
+      const command = navigation;
+      // An anchor notification needs a real range read on a replacement handle.
+      if (command.kind === 'anchor' || command.kind === 'before' || command.kind === 'after') {
+        navigation = { ...command, kind: 'around', preserveRange: false };
+      }
+      await dispatch(navigation);
     },
     async close() {
       if (closed) return;
       closed = true;
       openController.abort();
       await handle.then((value) => value.close()).catch(() => undefined);
+    },
+  };
+}
+
+export interface DesktopTranscriptReconnectRecovery {
+  transcriptFailed(error: unknown): void;
+  observationChanged(phase: 'pending' | 'ready'): void;
+  close(): void;
+}
+
+export function createDesktopTranscriptReconnectRecovery(options: {
+  reload(): Promise<void>;
+  onError(error: unknown): void;
+}): DesktopTranscriptReconnectRecovery {
+  let closed = false;
+  let observationReady = false;
+  let readinessGeneration = 0;
+  let attemptedReadinessGeneration = -1;
+  let needsRecovery = false;
+  let recoveryTask: Promise<void> | undefined;
+
+  const recover = () => {
+    if (closed || !observationReady || !needsRecovery || recoveryTask ||
+      attemptedReadinessGeneration === readinessGeneration) return;
+    const admittedReadinessGeneration = readinessGeneration;
+    attemptedReadinessGeneration = admittedReadinessGeneration;
+    needsRecovery = false;
+    const task = Promise.resolve().then(async () => {
+      try {
+        if (closed) return;
+        await options.reload();
+      } catch (error) {
+        if (closed) return;
+        needsRecovery = true;
+        options.onError(error);
+      }
+    });
+    recoveryTask = task;
+    const settle = () => {
+      if (recoveryTask !== task) return;
+      recoveryTask = undefined;
+      if (
+        needsRecovery
+        && observationReady
+        && readinessGeneration > admittedReadinessGeneration
+      ) recover();
+    };
+    void task.then(settle, settle);
+  };
+
+  return {
+    transcriptFailed(error) {
+      if (closed) return;
+      needsRecovery = true;
+      options.onError(error);
+      recover();
+    },
+    observationChanged(phase) {
+      if (closed) return;
+      if (phase === 'pending') {
+        observationReady = false;
+        return;
+      }
+      if (!observationReady) readinessGeneration += 1;
+      observationReady = true;
+      recover();
+    },
+    close() {
+      closed = true;
+      observationReady = false;
+    },
+  };
+}
+
+export interface RecoveringDesktopTranscriptRangeController
+  extends DesktopTranscriptRangeController {
+  observationChanged(phase: 'pending' | 'ready'): void;
+}
+
+export function createRecoveringDesktopTranscriptRangeController(
+  store: DesktopTranscriptRangeStore,
+  open: (signal: AbortSignal) => Promise<DesktopTranscriptHandle>,
+  options: {
+    onError(error: unknown): void;
+  },
+): RecoveringDesktopTranscriptRangeController {
+  const controller = createDesktopTranscriptRangeController(store, open);
+  const cached = () => {
+    try {
+      const range = store.range();
+      return range.ready && range.generation.startsWith('cached:');
+    } catch {
+      return false;
+    }
+  };
+  const requireLive = () => {
+    if (cached()) throw new Error('The cached transcript is waiting for Host reconnection');
+  };
+  const recovery = createDesktopTranscriptReconnectRecovery({
+    async reload() {
+      await controller.reload();
+      requireLive();
+    },
+    onError(error) {
+      if (!cached()) options.onError(error);
+    },
+  });
+  void controller.ready().then(requireLive).catch(recovery.transcriptFailed);
+  return {
+    ...controller,
+    observationChanged: recovery.observationChanged,
+    async close() {
+      recovery.close();
+      await controller.close();
     },
   };
 }
@@ -104,6 +288,7 @@ interface PendingRecord {
 
 interface StoredRecord {
   readonly message: StoredMessage;
+  readonly encoded: string;
 }
 
 interface OverlayRecord extends StoredRecord {
@@ -127,14 +312,19 @@ export interface DesktopTranscriptRangeSnapshot extends DesktopTranscriptRangeSt
 }
 
 export class DesktopTranscriptRangeStore {
-  readonly #sessionKey: string;
+  readonly sessionId: string;
   readonly #hostId: string;
   readonly #expectedSessionId: string;
   readonly #durable = new Map<number, StoredRecord>();
   readonly #overlay = new Map<string, OverlayRecord>();
+  readonly #durableOrder: number[] = [];
+  readonly #overlayOrder: string[] = [];
   readonly #pending = new Map<string, PendingRecord>();
+  #navigationVersion = 0;
+  readonly #retiredGenerations = new Set<string>();
   #sourceSessionId: string | undefined;
   #generation: string | undefined;
+  #liveGeneration: string | undefined;
   #hostEpoch: string | undefined;
   #durableThrough: number | null = null;
   #oldestSequence: number | null = null;
@@ -144,24 +334,37 @@ export class DesktopTranscriptRangeStore {
   #hasNewer = false;
   #ready = false;
   #batchChanged = false;
+  #snapshot: DesktopTranscriptRangeSnapshot | undefined;
   readonly #durableWaiters = new Set<() => void>();
 
   constructor(sessionKey: string) {
     const { hostId, sessionId } = parseDesktopSessionKey(sessionKey);
-    this.#sessionKey = sessionKey;
+    this.sessionId = sessionKey;
     this.#hostId = hostId;
     this.#expectedSessionId = sessionId;
   }
 
+  expectNavigation(navigationVersion: number): void {
+    if (navigationVersion <= this.#navigationVersion) return;
+    this.#navigationVersion = navigationVersion;
+    this.#pending.clear();
+    this.#batchChanged = false;
+  }
+
+  accepts(batch: DesktopTranscriptBatchPayload): boolean {
+    // A stale reset must be rejected before it can clear the current range.
+    if ((batch.navigationVersion ?? 0) !== this.#navigationVersion) return false;
+    if (this.#retiredGenerations.has(batch.generation)) return false;
+    return batch.reset || (
+      batch.sessionId === this.#sourceSessionId &&
+      batch.generation === this.#generation &&
+      batch.hostEpoch === this.#hostEpoch
+    );
+  }
+
   accept(batch: DesktopTranscriptBatchPayload): boolean {
+    if (!this.accepts(batch)) return false;
     if (batch.reset) this.#reset(batch);
-    if (
-      batch.sessionId !== this.#sourceSessionId ||
-      batch.generation !== this.#generation ||
-      batch.hostEpoch !== this.#hostEpoch
-    ) {
-      return false;
-    }
     let changed =
       batch.reset ||
       batch.durableThrough !== this.#durableThrough ||
@@ -172,12 +375,16 @@ export class DesktopTranscriptRangeStore {
     this.#hasNewer = batch.hasNewer;
     for (const sequence of batch.evictedDurableSequences) {
       if (this.#durable.delete(sequence)) {
+        removeOrdered(this.#durableOrder, sequence);
         this.#refreshSequenceBounds(sequence);
         changed = true;
       }
     }
     for (const messageId of batch.completedOverlayMessageIds) {
-      changed = this.#overlay.delete(messageId) || changed;
+      if (this.#overlay.delete(messageId)) {
+        removeOrdered(this.#overlayOrder, messageId);
+        changed = true;
+      }
     }
     for (const fragment of batch.fragments) {
       changed = this.#acceptFragment(fragment) || changed;
@@ -190,20 +397,23 @@ export class DesktopTranscriptRangeStore {
     if (!batch.ready) return false;
     const committed = this.#batchChanged;
     this.#batchChanged = false;
+    if (committed) this.#snapshot = this.#createSnapshot();
     for (const notify of this.#durableWaiters) notify();
     return committed;
   }
 
   snapshot(): DesktopTranscriptRangeSnapshot {
-    const range = this.range();
-    const durable = [...this.#durable.entries()].sort(([left], [right]) => left - right);
-    const overlay = [...this.#overlay.values()].sort((left, right) => left.order - right.order);
-    return {
-      ...range,
-      messages: durable
-        .map(([, record]) => structuredClone(record.message))
-        .concat(overlay.map((record) => structuredClone(record.message))),
-    };
+    this.#snapshot ??= this.#createSnapshot();
+    return this.#snapshot;
+  }
+
+  durableEntries(): ReadonlyArray<{ readonly sequence: number; readonly message: StoredMessage }> {
+    return [...this.#durable.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([sequence, record]) => ({
+        sequence,
+        message: structuredClone(record.message),
+      }));
   }
 
   range(): DesktopTranscriptRangeState {
@@ -211,7 +421,7 @@ export class DesktopTranscriptRangeStore {
       throw new Error('Desktop transcript range is not initialized');
     }
     return {
-      sessionId: this.#sessionKey,
+      sessionId: this.sessionId,
       generation: this.#generation,
       hostEpoch: this.#hostEpoch,
       durableThrough: this.#durableThrough,
@@ -232,6 +442,11 @@ export class DesktopTranscriptRangeStore {
 
   newestDurableUserSequence(): number | null {
     return this.#newestUserSequence;
+  }
+
+  sequenceForTurn(turnId: string, edge: 'first' | 'last' = 'first'): number | null {
+    const order = edge === 'first' ? this.#durableOrder : [...this.#durableOrder].reverse();
+    return order.find((sequence) => this.#durable.get(sequence)?.message.turnId === turnId) ?? null;
   }
 
   waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean> {
@@ -255,8 +470,20 @@ export class DesktopTranscriptRangeStore {
     if (batch.sessionId !== this.#expectedSessionId) {
       throw new Error('Desktop transcript belongs to a different Session');
     }
+    if (this.#generation?.startsWith('cached:') && this.#generation !== batch.generation) {
+      this.#retiredGenerations.add(this.#generation);
+    }
+    // Cached resets are provisional; only a new live replica retires the previous one.
+    if (!batch.generation.startsWith('cached:')) {
+      if (this.#liveGeneration && this.#liveGeneration !== batch.generation) {
+        this.#retiredGenerations.add(this.#liveGeneration);
+      }
+      this.#liveGeneration = batch.generation;
+    }
     this.#durable.clear();
     this.#overlay.clear();
+    this.#durableOrder.length = 0;
+    this.#overlayOrder.length = 0;
     this.#pending.clear();
     this.#sourceSessionId = batch.sessionId;
     this.#generation = batch.generation;
@@ -269,6 +496,7 @@ export class DesktopTranscriptRangeStore {
     this.#hasNewer = batch.hasNewer;
     this.#ready = false;
     this.#batchChanged = false;
+    this.#snapshot = undefined;
   }
 
   #acceptFragment(fragment: DesktopTranscriptFragment): boolean {
@@ -307,10 +535,10 @@ export class DesktopTranscriptRangeStore {
     pending.receivedBytes += bytes.byteLength;
     if (pending.receivedBytes < pending.totalBytes) return false;
     const encoded = new TextDecoder('utf-8', { fatal: true }).decode(pending.bytes);
-    const message = projectDesktopStoredMessage(
+    const message = freezeTranscriptValue(projectDesktopStoredMessage(
       { hostId: this.#hostId },
       decodeStoredMessage(markPersisted<StoredMessage>(JSON.parse(encoded))),
-    );
+    ));
     const projected = JSON.stringify(message);
     this.#pending.delete(key);
     if (pending.source === 'durable') {
@@ -319,10 +547,12 @@ export class DesktopTranscriptRangeStore {
       }
       const sequence = pending.identity as number;
       const existing = this.#durable.get(sequence);
-      if (existing && JSON.stringify(existing.message) !== projected) {
+      if (existing && existing.encoded !== projected) {
         throw new Error('Desktop transcript durable record changed');
       }
-      this.#durable.set(sequence, { message });
+      if (existing) return false;
+      this.#durable.set(sequence, { message, encoded: projected });
+      insertOrdered(this.#durableOrder, sequence, (left, right) => left - right);
       this.#oldestSequence = Math.min(this.#oldestSequence ?? sequence, sequence);
       this.#newestSequence = Math.max(this.#newestSequence ?? sequence, sequence);
       if (message.type === 'user') {
@@ -337,24 +567,70 @@ export class DesktopTranscriptRangeStore {
       throw new Error('Invalid Desktop transcript overlay order');
     }
     const existing = this.#overlay.get(pending.identity);
+    if (
+      existing
+      && existing.encoded === projected
+      && existing.order === pending.order
+    ) {
+      return false;
+    }
+    if (existing) removeOrdered(this.#overlayOrder, pending.identity);
     this.#overlay.set(pending.identity, {
       message,
+      encoded: projected,
       order: pending.order,
     });
-    return (
-      !existing ||
-      JSON.stringify(existing.message) !== projected ||
-      existing.order !== pending.order
+    insertOrdered(
+      this.#overlayOrder,
+      pending.identity,
+      (left, right) => {
+        const order = this.#overlay.get(left)!.order - this.#overlay.get(right)!.order;
+        return order === 0 ? left.localeCompare(right) : order;
+      },
     );
+    return true;
   }
 
   #refreshSequenceBounds(deletedSequence: number): void {
     if (deletedSequence !== this.#oldestSequence && deletedSequence !== this.#newestSequence) return;
-    this.#oldestSequence = null;
-    this.#newestSequence = null;
-    for (const sequence of this.#durable.keys()) {
-      this.#oldestSequence = Math.min(this.#oldestSequence ?? sequence, sequence);
-      this.#newestSequence = Math.max(this.#newestSequence ?? sequence, sequence);
-    }
+    this.#oldestSequence = this.#durableOrder[0] ?? null;
+    this.#newestSequence = this.#durableOrder.at(-1) ?? null;
   }
+
+  #createSnapshot(): DesktopTranscriptRangeSnapshot {
+    const messages = Object.freeze([
+      ...this.#durableOrder.map((sequence) => this.#durable.get(sequence)!.message),
+      ...this.#overlayOrder.map((messageId) => this.#overlay.get(messageId)!.message),
+    ]);
+    return Object.freeze({
+      ...this.range(),
+      messages,
+    });
+  }
+}
+
+function freezeTranscriptValue<T>(value: T): T {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) freezeTranscriptValue(child);
+  return Object.freeze(value);
+}
+
+function insertOrdered<T>(
+  items: T[],
+  value: T,
+  compare: (left: T, right: T) => number,
+): void {
+  let low = 0;
+  let high = items.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (compare(items[middle]!, value) <= 0) low = middle + 1;
+    else high = middle;
+  }
+  items.splice(low, 0, value);
+}
+
+function removeOrdered<T>(items: T[], value: T): void {
+  const index = items.indexOf(value);
+  if (index >= 0) items.splice(index, 1);
 }

@@ -17,9 +17,7 @@
  * under the License.
  */
 
-import type { RuntimeEvent } from '@maka/core/runtime-event';
-import type { ContextBudgetExhaustedDetail } from '@maka/core/events';
-import { estimateRuntimeEventsTokens, estimateTokens } from './context-budget-helpers.js';
+import type { MalformedHistoryCompactSummaryReason } from './history-compact-error.js';
 
 // The single authority on what a history-compact checkpoint summary must look
 // like (#3029). The summarization prompt is built from the same constants and
@@ -29,16 +27,12 @@ import { estimateRuntimeEventsTokens, estimateTokens } from './context-budget-he
 /**
  * Durable identity of the sectioned summary contract. Stamped on newly built
  * text checkpoints so record, load/repair, and copy can hold them to the
- * complete predicate, while unmarked legacy V2 free-form summaries stay
- * loadable under the truncation-only compatibility policy.
+ * complete predicate.
  */
 export const SECTIONED_SUMMARY_FORMAT = 'sections_v1' as const;
 export type SectionedSummaryFormat = typeof SECTIONED_SUMMARY_FORMAT;
 
-export type CheckpointSummaryDefect = Extract<
-  ContextBudgetExhaustedDetail,
-  `malformed_summary_${string}`
->;
+export type CheckpointSummaryDefect = MalformedHistoryCompactSummaryReason;
 
 // The exact format the prompt mandates. REQUIRED_SUMMARY_SECTIONS is the
 // ordered subsequence of its headings a completion must carry to be allowed
@@ -80,26 +74,29 @@ const TEMPLATE_PLACEHOLDER_LINES: ReadonlySet<string> = new Set(
 );
 
 // Floors for the incident's shape: folding a large span into a paragraph
-// cannot be a faithful checkpoint. Folds above ~10k estimated tokens require
-// at least ~200 estimated tokens of summary, both measured at the session's
-// chars-per-token estimate so CJK-heavy sessions are floored consistently.
-const LARGE_FOLD_ESTIMATED_TOKENS = 10_000;
+// cannot be a faithful checkpoint. Folds whose summarizer request the provider
+// counted above ~10k input tokens require at least ~200 output tokens of
+// summary. Both sides are the summarizer call's REAL usage, so the floor holds
+// in the provider's own tokenizer and needs no chars-per-token guess (#4559);
+// a producer that reports no usage is not floored.
+const LARGE_FOLD_INPUT_TOKENS = 10_000;
 const LARGE_FOLD_SUMMARY_TOKENS_FLOOR = 200;
-const DEFAULT_CHARS_PER_TOKEN = 4;
 
 // Best-effort signals that a provider stopped mid-thought. Fence state is
-// derived by the structural scanner below, so write admission and legacy-load
-// quarantine cannot disagree about Markdown fence semantics. A trailing
+// derived by the structural scanner below, so structural and truncation
+// checks cannot disagree about Markdown fence semantics. A trailing
 // backtick is deliberately absent: it can be the end of a complete fence.
 const TRUNCATED_TAIL_PATTERN = /(?:\.{3}|[:：,，、;；…(（—])\s*$/u;
 
 export interface CheckpointSummaryFoldContext {
-  /** The FULL covered span the checkpoint replaces — not the newly folded
-   * increment, so rolling roll-forward compaction cannot slip a fragment
-   * past the size floor. */
-  coveredRuntimeEvents: readonly RuntimeEvent[];
-  /** The session's estimate; defaults to the shared 4-chars/token. */
-  charsPerToken?: number;
+  /**
+   * The summarizer call's real usage for an INITIAL fold, as its provider
+   * counted it: input is the covered span, output is the summary. Absent when
+   * the producer reports none or the fold rolls a previous checkpoint
+   * forward (its input is then the increment, not the span); the size floor
+   * is not applied in either case.
+   */
+  summarizerUsage?: { inputTokens: number; outputTokens: number };
 }
 
 // #3029: a degraded provider completion — a 138-token free-form fragment
@@ -121,32 +118,15 @@ export function findCheckpointSummaryDefect(
   }
   const truncationDefect = findTruncationDefect(trimmed, scan);
   if (truncationDefect !== undefined) return truncationDefect;
-  if (foldContext !== undefined) {
-    // Clamped so a zero/negative estimate cannot zero out the floor.
-    const charsPerToken = Math.max(1, foldContext.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN);
-    // Both sides use the shared ceil-based estimator so the floor cannot
-    // disagree with the repository's estimated-token semantics at the
-    // boundary.
-    if (
-      estimateTokens(trimmed.length, charsPerToken) < LARGE_FOLD_SUMMARY_TOKENS_FLOOR &&
-      estimateRuntimeEventsTokens(foldContext.coveredRuntimeEvents, charsPerToken) >
-        LARGE_FOLD_ESTIMATED_TOKENS
-    ) {
-      return 'malformed_summary_too_small_for_fold';
-    }
+  const usage = foldContext?.summarizerUsage;
+  if (
+    usage !== undefined &&
+    usage.outputTokens < LARGE_FOLD_SUMMARY_TOKENS_FLOOR &&
+    usage.inputTokens > LARGE_FOLD_INPUT_TOKENS
+  ) {
+    return 'malformed_summary_too_small_for_fold';
   }
   return undefined;
-}
-
-// Legacy checkpoints predate the section contract, so load recovery may only
-// quarantine writer-agnostic truncation. It still uses the exact same scan and
-// tail predicate as strict write admission above.
-export function findCheckpointSummaryTruncationDefect(
-  summary: string,
-): Extract<CheckpointSummaryDefect, 'malformed_summary_truncated'> | undefined {
-  const trimmed = summary.trim();
-  if (trimmed.length === 0) return undefined;
-  return findTruncationDefect(trimmed, scanSummaryStructure(trimmed));
 }
 
 function findTruncationDefect(

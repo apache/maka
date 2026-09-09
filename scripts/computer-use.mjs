@@ -37,12 +37,7 @@ const commands = {
     },
   },
   'restart-soak': { module: 'process-restart-launcher.mjs' },
-  'function-model': { module: 'function-model.mjs' },
-  'anthropic-model': { module: 'anthropic-model.mjs' },
-  'runtime-model': { module: 'runtime-model.mjs' },
-  'cursor-accuracy': { module: 'cursor-accuracy-real.mjs' },
   'provider-matrix': { module: 'provider-matrix.mjs' },
-  'trace-analyse': { module: 'trace-analyse.mjs' },
 };
 
 const [commandName, ...commandArgs] = process.argv.slice(2);

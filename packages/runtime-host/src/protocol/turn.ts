@@ -20,9 +20,8 @@
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import {
   decodeMessageContent as decodeCanonicalMessageContent,
-  isContextBudgetExhaustedDetail,
+  DIRECTORY_REFERENCE_MAX_COUNT,
   isCanonicalAttachmentRef,
-  type ContextBudgetExhaustedDetail,
   type ContextCompactionOutcome,
   type MessageContent,
   type ProviderRetryReason,
@@ -189,6 +188,14 @@ export type TurnProviderRetry =
 export type LiveTurnSnapshot = TurnSnapshotBase & {
   status: Exclude<TurnRunStatus, 'completed' | 'failed' | 'cancelled'>;
   providerRetry?: TurnProviderRetry;
+  /**
+   * Set when this live Turn is a host-owned explicit context-compaction run, so
+   * the renderer can show a "compacting" transcript row while it is in flight.
+   * Sourced from `AgentRunHeader.rootExecutionKind`; a `context_compact` Turn
+   * emits no assistant text, and this survives a Desktop reconnect because the
+   * Host re-projects the live snapshot.
+   */
+  rootExecutionKind?: 'context_compact';
 };
 
 export type TurnSnapshot =
@@ -203,7 +210,6 @@ export type TurnSnapshot =
       terminalEventId: string;
       failureClass: string;
       failureMessage?: string;
-      contextBudgetExhaustedDetail?: ContextBudgetExhaustedDetail;
     })
   | (TurnSnapshotBase & {
       status: 'cancelled';
@@ -344,7 +350,7 @@ export const TURN_OPERATION_SPECS = {
   }),
 } as const;
 
-function decodeTurnStartInput(value: unknown): TurnStartInput {
+export function decodeTurnStartInput(value: unknown): TurnStartInput {
   const record = requireShapedRecord(
     value,
     'turn.start input',
@@ -355,7 +361,7 @@ function decodeTurnStartInput(value: unknown): TurnStartInput {
   return {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     turnId: requireEntityId(record.turnId, 'turnId'),
-    content: decodeMessageContent(record.content, skillIds.length > 0),
+    content: decodeMessageAdmissionContent(record.content, skillIds.length > 0),
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(record.turnOrchestration !== undefined
       ? { turnOrchestration: decodeTurnOrchestration(record.turnOrchestration) }
@@ -414,6 +420,9 @@ export function decodeMessageContent(value: unknown, allowEmptyText = false): Me
       true,
     );
   }
+  if ((content.directoryReferences?.length ?? 0) > DIRECTORY_REFERENCE_MAX_COUNT) {
+    throw invalidProtocolFrame('Too many directory references');
+  }
   if ((content.attachments?.length ?? 0) > MAX_ATTACHMENT_COUNT) {
     throw invalidProtocolFrame('Invalid Message attachments');
   }
@@ -431,14 +440,16 @@ export function decodeMessageContent(value: unknown, allowEmptyText = false): Me
     if (attachment.bytes > MAX_ATTACHMENT_BYTES) {
       throw invalidProtocolFrame('Invalid AttachmentRef bytes');
     }
-    if (attachment.ref.kind === 'session_file') {
+    if (attachment.ref.kind === 'session_file' || attachment.ref.kind === 'session_context') {
       requireEntityId(attachment.ref.sessionId, 'AttachmentRef sessionId');
     }
-    const path =
+    const identity =
       attachment.ref.kind === 'external_file'
         ? attachment.ref.absolutePath
-        : attachment.ref.relativePath;
-    requireUtf8String(path, 'AttachmentRef path', ATTACHMENT_PATH_MAX_BYTES, false);
+        : attachment.ref.kind === 'session_context'
+          ? attachment.ref.refId
+          : attachment.ref.relativePath;
+    requireUtf8String(identity, 'AttachmentRef identity', ATTACHMENT_PATH_MAX_BYTES, false);
   }
   if ((content.quotes?.length ?? 0) > TURN_MESSAGE_QUOTE_MAX_COUNT) {
     throw invalidProtocolFrame('Invalid Message quotes');
@@ -453,6 +464,18 @@ export function decodeMessageContent(value: unknown, allowEmptyText = false): Me
     }
   }
   requireEncodedByteLimit(content, 'Message content', TURN_MESSAGE_CONTENT_MAX_BYTES);
+  return content;
+}
+
+/** Client-authored Messages cannot claim Host-owned Session context references. */
+export function decodeMessageAdmissionContent(
+  value: unknown,
+  allowEmptyText = false,
+): MessageContent {
+  const content = decodeMessageContent(value, allowEmptyText);
+  if (content.attachments?.some((attachment) => attachment.ref.kind === 'session_context')) {
+    throw invalidProtocolFrame('Session context references are Host-owned');
+  }
   return content;
 }
 
@@ -638,6 +661,13 @@ function requirePositiveCount(value: unknown, label: string): number {
   return count;
 }
 
+function requireContextCompactRootExecutionKind(value: unknown): 'context_compact' {
+  if (value !== 'context_compact') {
+    throw invalidProtocolFrame('Invalid Turn rootExecutionKind');
+  }
+  return value;
+}
+
 export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
   const record = requireRecord(value, 'Turn snapshot');
   const base = {
@@ -671,7 +701,7 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
       record,
       'failed Turn snapshot',
       ['sessionId', 'turnId', 'runId', 'status', 'terminalEventId', 'failureClass'],
-      ['failureMessage', 'contextBudgetExhaustedDetail'],
+      ['failureMessage'],
     );
     return {
       ...base,
@@ -685,13 +715,6 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
               'failureMessage',
               TURN_FAILURE_MESSAGE_MAX_BYTES,
               false,
-            ),
-          }
-        : {}),
-      ...(record.contextBudgetExhaustedDetail !== undefined
-        ? {
-            contextBudgetExhaustedDetail: requireContextBudgetExhaustedDetail(
-              record.contextBudgetExhaustedDetail,
             ),
           }
         : {}),
@@ -717,7 +740,7 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
     record,
     'non-terminal Turn snapshot',
     ['sessionId', 'turnId', 'runId', 'status'],
-    ['providerRetry'],
+    ['providerRetry', 'rootExecutionKind'],
   );
   return {
     ...base,
@@ -725,12 +748,10 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
     ...(record.providerRetry !== undefined
       ? { providerRetry: decodeTurnProviderRetry(record.providerRetry) }
       : {}),
+    ...(record.rootExecutionKind !== undefined
+      ? { rootExecutionKind: requireContextCompactRootExecutionKind(record.rootExecutionKind) }
+      : {}),
   };
-}
-
-function requireContextBudgetExhaustedDetail(value: unknown): ContextBudgetExhaustedDetail {
-  if (isContextBudgetExhaustedDetail(value)) return value;
-  throw invalidProtocolFrame('Invalid context budget exhausted detail');
 }
 
 export function decodeContextCompactionOutcome(value: unknown): ContextCompactionOutcome {
@@ -787,6 +808,7 @@ function requireProviderRetryReason(value: unknown): ProviderRetryReason {
     value === 'network' ||
     value === 'provider_capacity' ||
     value === 'provider_unavailable' ||
+    value === 'stream_truncated' ||
     value === 'rate_limit' ||
     value === 'timeout' ||
     value === 'unknown'

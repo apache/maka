@@ -63,7 +63,6 @@ class FakeArtifactStore implements DeepResearchArtifactStore {
       source: input.source,
       summary: input.summary,
       deepResearchRole: input.deepResearchRole,
-      status: 'live',
     };
     this.records.push(record);
     this.contents.set(record.id, input.content);
@@ -83,8 +82,9 @@ class FakeArtifactStore implements DeepResearchArtifactStore {
 
   async delete(artifactId: string): Promise<void> {
     this.deleted.push(artifactId);
-    const record = this.records.find((item) => item.id === artifactId);
-    if (record) record.status = 'deleted';
+    const index = this.records.findIndex((item) => item.id === artifactId);
+    if (index >= 0) this.records.splice(index, 1);
+    this.contents.delete(artifactId);
   }
 }
 
@@ -128,6 +128,7 @@ async function withTempRoot(fn: (root: string) => Promise<void>): Promise<void> 
 
 describe('Deep Research runtime tools', () => {
   it('admits only the explicit Deep Research tool surface', () => {
+    const standardResearchNames = ['AskUserQuestion', 'Read', 'Glob', 'Grep', 'WebSearch'];
     const canonicalNames = [
       DEEP_RESEARCH_START_TOOL_NAME,
       DEEP_RESEARCH_SAVE_ARTIFACT_TOOL_NAME,
@@ -138,21 +139,19 @@ describe('Deep Research runtime tools', () => {
       DEEP_RESEARCH_STATUS_TOOL_NAME,
       DEEP_RESEARCH_COMPLETE_TOOL_NAME,
     ];
+    assert.ok(standardResearchNames.every((name) => isDeepResearchToolAllowed({ name })));
     assert.ok(canonicalNames.every((name) => isDeepResearchToolAllowed({ name })));
+    assert.equal(isDeepResearchToolAllowed({ name: 'ExploreAgent' }), false);
     assert.equal(isDeepResearchToolAllowed({ name: 'deep_research_unsafe_fixture' }), false);
   });
 
   it('runs the source-checkpoint-report lifecycle and makes artifact retries idempotent', async () => {
     await withTempRoot(async (root) => {
       const artifactStore = new FakeArtifactStore();
-      const notifications: string[] = [];
       const store = createSqliteDeepResearchStore(root);
       const tools = buildDeepResearchTools({
         store,
         artifactStore,
-        onArtifactCreated: (event) => {
-          notifications.push(event.artifactId);
-        },
       });
 
       await execute(
@@ -392,13 +391,13 @@ describe('Deep Research runtime tools', () => {
         verification_commands: ['npm test'],
       };
       const sourceRecord = artifactStore.records[0]!;
-      sourceRecord.status = 'deleted';
+      artifactStore.records.splice(0, 1);
       await assert.rejects(
         () =>
           execute(tools, DEEP_RESEARCH_COMPLETE_TOOL_NAME, completeInput, 'call-complete-deleted'),
         /missing or deleted/,
       );
-      sourceRecord.status = 'live';
+      artifactStore.records.unshift(sourceRecord);
 
       const sectionRecord = artifactStore.records[1]!;
       const sectionContent = artifactStore.contents.get(sectionRecord.id)!;
@@ -459,7 +458,6 @@ describe('Deep Research runtime tools', () => {
       const status = await execute(tools, DEEP_RESEARCH_STATUS_TOOL_NAME, {}, 'call-status');
       assert.match(status, new RegExp(`Final report: ${reportId}`));
       assert.match(status, new RegExp(`Handoff artifact: ${handoffId}`));
-      assert.equal(notifications.length, 8);
       assert.equal((await store.readEvents(SESSION_ID)).length, 16);
     });
   });

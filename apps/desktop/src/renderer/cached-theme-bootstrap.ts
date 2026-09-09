@@ -32,6 +32,11 @@ export function applyCachedThemeBeforeMount(): void {
   const shouldApplyDarkTheme =
     cachedThemePreference === 'dark' ||
     (cachedThemePreference !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  // colorScheme is set on BOTH branches on purpose: the palette resolves its
+  // light-dark() pairs against it (DESIGN.md §8), so leaving it at the
+  // stylesheet's `light dark` would paint the first frame by OS preference
+  // rather than by the user's setting — the same flash this function exists to
+  // prevent, in the case where the two disagree.
   if (shouldApplyDarkTheme) {
     document.documentElement.classList.add('dark');
     document.documentElement.style.colorScheme = 'dark';

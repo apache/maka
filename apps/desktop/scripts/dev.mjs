@@ -51,6 +51,7 @@ import {
 const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const REPO_ROOT    = resolve(DESKTOP_DIR, '..', '..');
 const TSC_CLI      = join(REPO_ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
+const MODEL_METADATA_SYNC = join(REPO_ROOT, 'scripts', 'sync-model-metadata.mjs');
 const RUNTIME_WORKER_BUILD = join(REPO_ROOT, 'packages', 'runtime', 'scripts', 'build-filesystem-worker.mjs');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -77,6 +78,12 @@ function runNodeTool(dir, script, args) {
 // ── build phases ─────────────────────────────────────────────────────────────
 
 const TIMER_START = Date.now();
+
+// A clean or ignore-scripts install has no generated model modules yet, and
+// `tsc --build` bypasses workspace prebuild hooks. Generate from the committed
+// snapshot before starting the incremental library graph.
+log('build', 'model metadata — generating from committed snapshot');
+await runNodeTool(REPO_ROOT, MODEL_METADATA_SYNC, []);
 
 // Phase 1: all library packages via `tsc --build` (single process, shared
 // .tsbuildinfo, sub-project incremental detection). The preload bundle imports
@@ -152,6 +159,20 @@ if (!devUrl) {
   await server.close();
   process.exit(1);
 }
+
+// Let Vite finish the initial dependency crawl + optimizer commit before the
+// window loads (issue #4775). `warmupRequest` on the renderer entry kicks the
+// recursive pre-transform of the static import graph (which registers every
+// reachable dep with the optimizer), and `waitForRequestsIdle` resolves at
+// crawl end — the same signal the dep optimizer waits on before committing
+// node_modules/.vite/deps. Loading Electron before that commit let the page
+// execute chunks from a previous optimizer generation alongside fresh ones —
+// two React instances, a null hook dispatcher, and a renderer crash on the
+// first lazy component. warmupRequest swallows transform errors itself, so
+// this can never abort the launch; it only reorders the startup race away.
+log('vite', 'warming renderer entry and waiting for the dep crawl to settle...');
+await server.environments.client.warmupRequest('/main.tsx');
+await server.environments.client.waitForRequestsIdle();
 
 log('electron', `launching against ${devUrl} (renderer HMR live)`);
 

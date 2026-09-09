@@ -85,6 +85,48 @@ describe('Session revision protocol', () => {
     );
   });
 
+  test('accepts an empty branch (no sourceTurnId) and rejects it for a revision', () => {
+    const emptyBranch = {
+      requestId: 'request-empty-branch',
+      operation: 'session.branch.create' as const,
+      input: {
+        sourceSessionId: 'source-session',
+        targetSessionId: 'target-session',
+        expectedSourceRevision: 1,
+        intent: 'side_conversation' as const,
+      },
+    };
+    assert.deepEqual(decodeClientFrame(emptyBranch), emptyBranch);
+    // An empty copy (absent sourceTurnId) is only valid for a side conversation.
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'request-empty-plain-branch',
+          operation: 'session.branch.create',
+          input: {
+            sourceSessionId: 'source-session',
+            targetSessionId: 'target-session',
+            expectedSourceRevision: 1,
+          },
+        }),
+      isInvalidFrame,
+    );
+    // A revision must carry a turn boundary.
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'request-empty-revision',
+          operation: 'session.revision.create',
+          input: {
+            sourceSessionId: 'source-session',
+            targetSessionId: 'target-session',
+            expectedSourceRevision: 1,
+          },
+        }),
+      isInvalidFrame,
+    );
+  });
+
   test('rejects aliasing, unknown fields, and mismatched response identities', () => {
     assert.throws(
       () =>

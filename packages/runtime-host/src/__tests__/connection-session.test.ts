@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred, type Deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -178,6 +179,8 @@ test('transcript pages are serialized per connection before their responses are 
           throughSequence: input.throughSequence,
           rawBytes: 0,
           fragments: [],
+          rangeBoundarySequence: null,
+          protectedTurnSequence: null,
           nextCursor: null,
         },
       };
@@ -301,6 +304,61 @@ test('serial outbound writer flushes accepted frames in FIFO order over a real s
     writer.close();
     await pair.close();
   }
+});
+
+test('outbound scheduling prioritizes controls, makes fair data progress, and fences closure', async () => {
+  const blocked = deferred<void>();
+  const writes: HostFrame[] = [];
+  const transport: RuntimeHostMessageTransport = {
+    closed: Promise.resolve(),
+    read: async () => {
+      throw new Error('unexpected read');
+    },
+    async write(message) {
+      writes.push(decodeHostFrame(JSON.parse(message.toString('utf8'))));
+      if (writes.length === 1) await blocked.promise;
+    },
+    closeAfterFlush() {},
+    abort() {},
+  };
+  const writer = new BoundedSerialOutboundWriter(transport, () => assert.fail('writer failed'));
+  const pty = (ptySequence: number): HostFrame => ({
+    kind: 'subscription.runtime_resource_pty_data',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sessionId: 'session-1',
+    ref: 'maka://runtime/background-tasks/shell-1',
+    ptySequence,
+    data: 'bytes',
+  });
+  const receipts = [writer.enqueue(pty(1)), writer.enqueue(pty(2))];
+  for (let index = 0; index < 20; index += 1)
+    receipts.push(writer.enqueue(statusResponse(`control-${index}`)));
+  receipts.push(
+    writer.enqueue({
+      kind: 'subscription.closed',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      reason: 'session_removed',
+    }),
+  );
+  receipts.push(writer.enqueue(statusResponse('after-fence')));
+  blocked.resolve();
+  await Promise.all(receipts.map((receipt) => receipt.flushed));
+  assert.equal('operation' in writes[1]! && writes[1].requestId, 'control-0');
+  const ptyIndex = writes.findIndex(
+    (frame) =>
+      'kind' in frame &&
+      frame.kind === 'subscription.runtime_resource_pty_data' &&
+      frame.ptySequence === 2,
+  );
+  assert.ok(ptyIndex > 1 && ptyIndex <= 9, 'PTY must neither block controls nor starve');
+  const closed = writes.at(-2)!;
+  const last = writes.at(-1)!;
+  assert.equal('kind' in closed && closed.kind, 'subscription.closed');
+  assert.equal('operation' in last && last.requestId, 'after-fence');
+  writer.close();
 });
 
 test('serial outbound writer fails once when its real transport is closed', async () => {
@@ -427,6 +485,10 @@ test('flushes concurrent subscription opens before activating their live frame s
   };
   const continuity: SessionContinuityService = {
     handlers: {
+      'subscription.pty_interest.set': async (input) => ({
+        ok: true,
+        result: { subscriptionId: input.subscriptionId },
+      }),
       'subscription.open': async (input) => {
         openCalls += 1;
         if (openCalls === 16) requestsEntered.resolve();
@@ -658,78 +720,91 @@ test('a connection accepted before composition exists resolves ready handlers wi
   }
 });
 
-test('connection reset while operation admission is pending does not execute the handler', async () => {
-  const pair = await openTransportPair();
-  const admissionEntered = deferred();
-  const releaseAdmission = deferred();
-  const teardownObserved = deferred();
-  let handlerCalls = 0;
-  let finishCalls = 0;
-  const handlers: OperationHandlerMap = {
-    'host.status': async () => ({
-      ok: true,
-      result: {
-        hostEpoch: 'host-epoch',
-        compositionId: 'maka.interactive',
-        compositionRevision: '1',
-        state: 'ready',
-        connections: 1,
-        activeOperations: 1,
-        activeResidencies: 0,
-      },
-    }),
-    ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-    ...createUnavailableHostCoreOperationHandlers(),
-    ...createHandlers(async (input) => {
-      handlerCalls += 1;
-      return {
+for (const closure of ['reset', 'eof'] as const) {
+  test(`connection ${closure} during operation admission preserves closure evidence`, async () => {
+    const pair = await openTransportPair();
+    const admissionEntered = deferred();
+    const releaseAdmission = deferred();
+    const teardownObserved = deferred();
+    let handlerCalls = 0;
+    let finishCalls = 0;
+    const handlers: OperationHandlerMap = {
+      'host.status': async () => ({
         ok: true,
-        result: runningSnapshot(input.sessionId, input.turnId),
-      };
-    }),
-  };
-  const session = new RuntimeHostConnectionSession({
-    transport: pair.serverTransport,
-    connection: acceptedConnection('pending-admission'),
-    resolveHandlers: () => handlers,
-    resolveContinuity: () => undefined,
-    beginOperation: async () => {
-      admissionEntered.resolve();
-      await releaseAdmission.promise;
-      return {
-        acquireResidency: () => ({ release() {} }),
-        seal() {},
-        finish() {
-          finishCalls += 1;
+        result: {
+          hostEpoch: 'host-epoch',
+          compositionId: 'maka.interactive',
+          compositionRevision: '1',
+          state: 'ready',
+          connections: 1,
+          activeOperations: 1,
+          activeResidencies: 0,
         },
-      };
-    },
-    onTeardown: () => teardownObserved.resolve(),
-  });
-  const run = session.run();
-  try {
-    await writeProtocolFrame(pair.clientTransport, {
-      requestId: 'pending-request',
-      operation: 'turn.query',
-      input: { sessionId: 'session', turnId: 'turn' },
+      }),
+      ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+      ...createUnavailableHostCoreOperationHandlers(),
+      ...createHandlers(async (input, context) => {
+        handlerCalls += 1;
+        assert.equal(context.inputClosedSignal?.aborted, true);
+        return {
+          ok: true,
+          result: runningSnapshot(input.sessionId, input.turnId),
+        };
+      }),
+    };
+    const session = new RuntimeHostConnectionSession({
+      transport: pair.serverTransport,
+      connection: acceptedConnection('pending-admission'),
+      resolveHandlers: () => handlers,
+      resolveContinuity: () => undefined,
+      beginOperation: async () => {
+        admissionEntered.resolve();
+        await releaseAdmission.promise;
+        return {
+          acquireResidency: () => ({ release() {} }),
+          seal() {},
+          finish() {
+            finishCalls += 1;
+          },
+        };
+      },
+      onTeardown: () => teardownObserved.resolve(),
     });
-    await withTimeout(admissionEntered.promise, 1_000, 'operation did not enter admission');
-    pair.clientTransport.socket.resetAndDestroy();
-    await withTimeout(
-      teardownObserved.promise,
-      1_000,
-      'connection did not tear down while admission was pending',
-    );
-    releaseAdmission.resolve();
-    await withTimeout(run, 1_000, 'connection did not settle after admission completed');
-    assert.equal(handlerCalls, 0);
-    assert.equal(finishCalls, 1);
-  } finally {
-    releaseAdmission.resolve();
-    pair.clientTransport.abort();
-    await Promise.allSettled([run, pair.close()]);
-  }
-});
+    const run = session.run();
+    try {
+      await writeProtocolFrame(pair.clientTransport, {
+        requestId: 'pending-request',
+        operation: 'turn.query',
+        input: { sessionId: 'session', turnId: 'turn' },
+      });
+      await withTimeout(admissionEntered.promise, 1_000, 'operation did not enter admission');
+      if (closure === 'reset') {
+        pair.clientTransport.socket.resetAndDestroy();
+        await withTimeout(
+          teardownObserved.promise,
+          1_000,
+          'connection did not tear down while admission was pending',
+        );
+      } else {
+        const readEnded = onceSocketEnd(pair.serverTransport.socket);
+        pair.clientTransport.socket.end();
+        await withTimeout(readEnded, 1_000, 'Host did not observe EOF during admission');
+      }
+      releaseAdmission.resolve();
+      if (closure === 'eof') {
+        const response = decodeHostFrame(await pair.clientTransport.read(1_000));
+        assert.ok(!('kind' in response) && response.ok);
+      }
+      await withTimeout(run, 1_000, 'connection did not settle after admission completed');
+      assert.equal(handlerCalls, closure === 'reset' ? 0 : 1);
+      assert.equal(finishCalls, 1);
+    } finally {
+      releaseAdmission.resolve();
+      pair.clientTransport.abort();
+      await Promise.allSettled([run, pair.close()]);
+    }
+  });
+}
 
 test('a ready composition attaches the authenticated Client identity once', async () => {
   const pair = await openTransportPair();
@@ -1490,7 +1565,7 @@ function createHandlers(queryTurn: TurnQueryHandler): RuntimeHostComposition['ha
       message: 'not available in this test composition',
     },
   } as const;
-  const taskLedgerUnavailable: Awaited<ReturnType<OperationHandlerMap['task.ledger.query']>> = {
+  const sessionTodoUnavailable: Awaited<ReturnType<OperationHandlerMap['session.todo.query']>> = {
     ok: false,
     error: {
       code: 'operation_unavailable',
@@ -1526,7 +1601,7 @@ function createHandlers(queryTurn: TurnQueryHandler): RuntimeHostComposition['ha
     'interaction.answer': async () => interactionUnavailable,
     'subscription.open': async () => subscriptionUnavailable,
     'subscription.close': async () => subscriptionUnavailable,
-    'task.ledger.query': async () => taskLedgerUnavailable,
+    'session.todo.query': async () => sessionTodoUnavailable,
   };
 }
 
@@ -1549,13 +1624,17 @@ function statusResponse(requestId: string): ResponseFrame {
 
 const UNUSED_HOST_DIAGNOSTICS_HANDLER: Pick<
   OperationHandlerMap,
-  'host.diagnostics.query' | 'host.upgrade.prepare'
+  'host.diagnostics.query' | 'host.resources.query' | 'host.upgrade.prepare'
 > = {
   'host.diagnostics.query': async () => ({
     ok: false,
     error: { code: 'internal_failure', message: 'not used' },
   }),
   'host.upgrade.prepare': async () => ({
+    ok: false,
+    error: { code: 'internal_failure', message: 'not used' },
+  }),
+  'host.resources.query': async () => ({
     ok: false,
     error: { code: 'internal_failure', message: 'not used' },
   }),
@@ -1650,6 +1729,8 @@ function transcriptBootstrapFor(sessionId: string) {
           data: contents.toString('base64'),
         },
       ],
+      rangeBoundarySequence: null,
+      protectedTurnSequence: null,
       nextCursor: null,
     },
     overlay: {
@@ -1660,6 +1741,8 @@ function transcriptBootstrapFor(sessionId: string) {
       throughSequence: 0,
       rawBytes: 0,
       fragments: [],
+      rangeBoundarySequence: null,
+      protectedTurnSequence: null,
       nextCursor: null,
     },
   };
@@ -1689,34 +1772,6 @@ async function waitForStatus(
   assert.equal(predicate(status), true, 'Host operation counters did not settle');
   return status;
 }
-
-interface Deferred {
-  promise: Promise<void>;
-  resolve(): void;
-}
-
-function deferred(): Deferred {
-  let resolve!: () => void;
-  const promise = new Promise<void>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
-
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }

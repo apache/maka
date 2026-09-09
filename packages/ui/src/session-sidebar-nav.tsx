@@ -19,8 +19,10 @@
 
 import { AlertCircle, Blocks, Download, Network, Settings, SquarePen, Timer } from './icons.js';
 import { useSessionRailChrome } from './session-rail-context.js';
+import { useSidebarUpdateProjection } from './sidebar-update-projection-context.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
+import { PlatformShortcutText } from './platform-shortcut-text.js';
 import { Icon } from '@astryxdesign/core/Icon';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
@@ -55,7 +57,11 @@ export function SessionSidebarNav() {
         icon={SquarePen}
         size="md"
         onClick={props.onNew}
-        endContent={<kbd className="maka-nav-kbd" aria-hidden="true">⌘ N</kbd>}
+        endContent={(
+          <kbd className="maka-nav-kbd" aria-hidden="true">
+            <PlatformShortcutText apple="⌘ N" other="Ctrl N" />
+          </kbd>
+        )}
       />
       {props.workHubEntry ? (
         <SideNavItem
@@ -92,6 +98,7 @@ export function SessionSidebarNav() {
         isSelected={automationsActive}
         onClick={() => props.onSelect({ section: 'automations', module: moduleMemory.automations })}
       />
+      {props.auxiliaryNavigation}
     </SideNavSection>
   );
 }
@@ -101,8 +108,8 @@ export function SessionSidebarNav() {
  *
  * The updater runs with `autoDownload = true` and `autoInstallOnAppQuit =
  * false` (app-update-service.ts), so discovery and download ask nothing of
- * anyone — the shell drops `available` and `downloading` before they reach
- * here rather than the footer rendering a control for them. The old chip sat
+ * anyone — the App Update projection drops `available` and `downloading`
+ * before they reach here rather than the footer rendering a control for them. The old chip sat
  * in the footer through that whole silent phase counting bytes at someone who
  * had nothing to decide.
  */
@@ -113,10 +120,11 @@ export type SidebarUpdateReminder = {
 
 export function SessionSidebarFooter() {
   const props = useSessionRailChrome();
+  const update = useSidebarUpdateProjection();
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
-  const reminder = props.updateReminder;
-  const updateAction = reminder && props.onOpenUpdate
+  const reminder = update.reminder;
+  const updateAction = reminder && update.onOpenUpdate
     ? {
         // One sentence, serving as both the tooltip and the accessible name.
         // The button carries no visible text, so a bare verb ("Restart")
@@ -137,7 +145,7 @@ export function SessionSidebarFooter() {
         // downward arrow is the convention every app store made for exactly
         // this moment.
         icon: reminder.state === 'downloaded' ? Download : AlertCircle,
-        onClick: props.onOpenUpdate,
+        onClick: update.onOpenUpdate,
       }
     : undefined;
 

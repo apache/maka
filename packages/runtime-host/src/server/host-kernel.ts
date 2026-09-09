@@ -59,13 +59,22 @@ import {
 } from './operation-dispatcher.js';
 import {
   issueAccessCredential,
+  acknowledgeCollaborationTurnRequest,
+  createCollaborationTurnRequest,
+  decideCollaborationTurnRequest,
+  withdrawCollaborationTurnRequest,
   finalizeAccessCredential,
+  prepareCollaborationInvitation,
+  queryCollaborationTurnRequests,
   prepareAccessCredential,
   prepareAccessCredentialRotation,
   replaceAccessCredential,
   revokeAccessCredential,
   revokeAccessPrincipal,
   revokeAccessCredentialRotation,
+  revokeCollaborationGrant,
+  revokeCollaborationPrincipal,
+  renameCollaborationPrincipal,
   type RuntimeHostAccessAuthority,
 } from './access-authority.js';
 import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
@@ -83,9 +92,10 @@ import {
   type RuntimeHostListenerSet,
   type RuntimeHostListenerSetFactory,
 } from './listener-set.js';
-import { HostResidencyRegistry } from './host-residency-registry.js';
+import { HostResidencyRegistry, type HostResidencyKind } from './host-residency-registry.js';
 import type { PeerMeshNode } from '../peer-mesh/node.js';
 import { createPeerMeshOperationHandlers } from './peer-mesh-authority.js';
+import { createHostResourceCollector } from './host-resource-collector.js';
 
 const DEFAULT_IDLE_GRACE_MS = 30_000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -112,10 +122,20 @@ export class RuntimeHostProcessTerminationRequiredError extends Error {
 export interface RuntimeHostCompositionContext {
   owner: InteractiveRootOwner;
   hostEpoch: string;
-  acquireResidency(label: string): RuntimeHostResidency;
+  /** Idle retention keeps schedulers alive without claiming work is in flight. */
+  acquireResidency(label: string, kind?: HostResidencyKind): RuntimeHostResidency;
   /** Irreversible fail-stop latch; normal residency still uses acquireResidency(). */
   retainUntilProcessExit(): void;
   requestDrain(): void;
+  sessionAccessAuthority?: Pick<
+    RuntimeHostAccessAuthority,
+    | 'activeSessionGrant'
+    | 'activeSessionGrantForPrincipal'
+    | 'approvedTurnAccessRequests'
+    | 'completeTurnAccessRequest'
+    | 'subscribeGrantRevocations'
+    | 'subscribeApprovedTurnAccessRequests'
+  >;
   waitForResidencies?(): Promise<void>;
   waitForResidenciesExcept?(excludedLabel: string): Promise<void>;
 }
@@ -127,9 +147,22 @@ export interface RuntimeHostComposition {
   readonly clientCapabilities?: ClientCapabilityService;
   readonly hostChanges?: HostChangeFeed;
   releaseConnection?(connectionId: string): void;
+  prepareHandoff?(
+    hostEpoch: string,
+    signal: AbortSignal,
+  ): Promise<RuntimeHostHandoffPreparation | undefined>;
   beginDrain(): void;
   recover(): Promise<void>;
+  /** Synchronously schedules optional work after Ready registration is published. */
+  startMaintenance?(): void;
   close(): Promise<void>;
+}
+
+export interface RuntimeHostHandoffPreparation {
+  seal(): Promise<boolean>;
+  residencies(): Promise<readonly RuntimeHostResidency[] | undefined>;
+  detach(): Promise<void>;
+  cancel(): void;
 }
 
 export type RuntimeHostCompositionFactory = (
@@ -144,9 +177,11 @@ interface RuntimeHostKernelCommonOptions {
   listenerSetFactory?: RuntimeHostListenerSetFactory;
   accessAuthority?: RuntimeHostAccessAuthority;
   peerMesh?: PeerMeshNode;
+  /** Ephemeral launch gate used until a supervised Candidate durably commits. */
+  initialClientAdmission?: {
+    isClientAdmitted(clientInstanceId: string): boolean;
+  };
 }
-
-export type RuntimeHostLifecycleMode = 'ephemeral' | 'service';
 
 export type RuntimeHostKernelOptions = RuntimeHostKernelCommonOptions &
   (
@@ -186,6 +221,7 @@ export class RuntimeHostKernel {
   >();
   readonly #operationDrainWaiters = new Set<() => void>();
   readonly #residencies = new HostResidencyRegistry();
+  readonly #resourceCollector = createHostResourceCollector();
   readonly #lifecycle: RuntimeHostLifecycle;
   readonly #handshakeTimeoutMs: number;
   readonly #shutdownGraceMs: number;
@@ -194,6 +230,7 @@ export class RuntimeHostKernel {
   #hasAcceptedConnection = false;
   #activeOperations = 0;
   #activeCommandOperations = 0;
+  #handoff: { abort: AbortController; commandsClosed: boolean; committing: boolean } | undefined;
   #retainedUntilProcessExit = false;
   #composition: RuntimeHostComposition | undefined;
   #compositionDrainBegun = false;
@@ -210,6 +247,7 @@ export class RuntimeHostKernel {
   #resolveClosed!: () => void;
   #rejectClosed!: (error: unknown) => void;
   readonly #unsubscribeAccessRevocations: (() => void) | undefined;
+  readonly #unsubscribeSessionGrantRevocations: (() => void) | undefined;
 
   private constructor(options: RuntimeHostKernelOptions) {
     this.#lifecycle = normalizeLifecycle(options);
@@ -225,6 +263,16 @@ export class RuntimeHostKernel {
     this.#options = options;
     this.#unsubscribeAccessRevocations = options.accessAuthority?.subscribeRevocations(
       (credentialId) => this.#revokeCredentialConnections(credentialId),
+    );
+    this.#unsubscribeSessionGrantRevocations = options.accessAuthority?.subscribeGrantRevocations(
+      (grant) => {
+        if (grant.kind === 'session_observation') {
+          this.#composition?.hostChanges?.publishSessionCatalogAndCloseScope(
+            grant.sessionId,
+            grant.principalId,
+          );
+        }
+      },
     );
     this.#operationHandlers = this.#createOperationHandlers(
       createUnavailableDomainOperationHandlers(),
@@ -299,7 +347,8 @@ export class RuntimeHostKernel {
     return this.#options.composition.descriptor;
   }
 
-  close(): Promise<void> {
+  close(input?: { readonly reason?: 'retirement' }): Promise<void> {
+    this.#shutdownReason ??= input?.reason;
     this.#requestDrain();
     return this.closed;
   }
@@ -340,9 +389,12 @@ export class RuntimeHostKernel {
         this.#composition = await this.#options.composition.create({
           owner: this.#options.owner,
           hostEpoch: this.hostEpoch,
-          acquireResidency: (label) => this.#acquireResidency(label),
+          acquireResidency: (label, kind) => this.#acquireResidency(label, kind),
           retainUntilProcessExit: () => this.#retainUntilProcessExit(),
           requestDrain: () => this.#requestDrain(),
+          ...(this.#options.accessAuthority
+            ? { sessionAccessAuthority: this.#options.accessAuthority }
+            : {}),
           waitForResidencies: () => this.#waitForResidencies(),
           waitForResidenciesExcept: (excludedLabel) =>
             this.#waitForResidenciesExcept(excludedLabel),
@@ -362,6 +414,7 @@ export class RuntimeHostKernel {
     }
     this.#state = 'ready';
     await this.#publishRegistration();
+    if (!this.#shutdownRequested) this.#composition?.startMaintenance?.();
     this.#scheduleIdleIfNeeded();
   }
 
@@ -372,6 +425,9 @@ export class RuntimeHostKernel {
     void this.#serveConnection(connection).finally(() => {
       this.#handshakingTransports.delete(transport);
       this.#transportAuthorities.delete(transport);
+      // A handshake that never completes keeps the Host visible to the idle
+      // timer while it is in flight; once it settles, idle must re-evaluate.
+      this.#scheduleIdleIfNeeded();
     });
   }
 
@@ -408,6 +464,11 @@ export class RuntimeHostKernel {
         resolveContinuity: () => this.#composition?.continuity,
         resolveClientCapabilities: () => this.#composition?.clientCapabilities,
         resolveHostChanges: () => this.#composition?.hostChanges,
+        resolveSharedSessionId: () =>
+          this.#options.accessAuthority?.activeSessionGrantForPrincipal(
+            authority.principalId,
+            'session_observation',
+          )?.sessionId,
         beginOperation: (request) => this.#beginOperation(request),
         onTeardown: releaseTransport,
       });
@@ -434,7 +495,19 @@ export class RuntimeHostKernel {
     authority: RuntimeHostConnectionAuthority,
   ): Promise<HostHandshakeResult> {
     const admittedState = await this.#readAdmissionState();
-    if (!admittedState) {
+    if (!admittedState || this.#handoff) {
+      return {
+        kind: 'draining',
+        hostEpoch: this.hostEpoch,
+        compositionId: this.compositionDescriptor.id,
+        compositionRevision: this.compositionDescriptor.revision,
+      };
+    }
+    const initialClientAdmission = this.#options.initialClientAdmission;
+    if (
+      initialClientAdmission &&
+      !initialClientAdmission.isClientAdmitted(hello.clientInstanceId)
+    ) {
       return {
         kind: 'draining',
         hostEpoch: this.hostEpoch,
@@ -445,6 +518,16 @@ export class RuntimeHostKernel {
     if (authority.clientInstanceId && authority.clientInstanceId !== hello.clientInstanceId) {
       throw new Error('Runtime Host access credential belongs to another Client');
     }
+    if (
+      authority.principalKind === 'remote_owner' &&
+      authority.clientInstanceId === undefined &&
+      this.#options.accessAuthority?.hasActiveBoundClientIdentity(
+        authority.principalId,
+        hello.clientInstanceId,
+      )
+    ) {
+      throw new Error('Runtime Host Client identity is bound to another access credential');
+    }
     const selectedProtocol = negotiateProtocol(
       { min: hello.protocolMin, max: hello.protocolMax },
       HOST_PROTOCOL,
@@ -454,7 +537,16 @@ export class RuntimeHostKernel {
       hello.generation !== undefined &&
       hello.generation !== this.#options.generation;
     if (generationMismatch && hello.takeover?.expectedHostEpoch === this.hostEpoch) {
-      if (authority.principalKind === 'local_owner' && this.#isTrueIdle()) {
+      const residencyCount =
+        hello.activitySnapshotVersion === 2
+          ? this.#residencies.drainCount
+          : this.#residencies.activeCount;
+      if (
+        authority.principalKind === 'local_owner' &&
+        residencyCount === 0 &&
+        this.#hasNoObservedWork(transport)
+      ) {
+        this.#shutdownReason = 'retirement';
         this.#requestDrain();
         return {
           kind: 'draining',
@@ -481,11 +573,12 @@ export class RuntimeHostKernel {
         ...(this.#options.generation === undefined ? {} : { generation: this.#options.generation }),
         state: admittedState,
         replacement:
-          this.#lifecycle.kind === 'ephemeral' && this.#isTrueIdle()
+          this.#lifecycle.kind === 'ephemeral' && this.#isSettledForReplacementAdvice()
             ? 'wait_for_idle_exit'
             : 'blocked_by_residency',
-        ...(generationMismatch && authority.principalKind === 'local_owner'
-          ? { activity: this.#activitySnapshot() }
+        ...(authority.principalKind === 'local_owner' &&
+        (generationMismatch || hello.activitySnapshotVersion === 2)
+          ? { activity: this.#activitySnapshot(hello.activitySnapshotVersion) }
           : {}),
       };
     }
@@ -496,6 +589,9 @@ export class RuntimeHostKernel {
     this.#cancelIdle();
     return {
       kind: 'accepted',
+      ...(hello.activitySnapshotVersion === 2 && this.#composition?.prepareHandoff
+        ? { cooperativeHandoff: true as const }
+        : {}),
       rootId: this.#options.owner.capability.rootId,
       hostEpoch: this.hostEpoch,
       connectionId: randomUUID(),
@@ -524,6 +620,12 @@ export class RuntimeHostKernel {
     frame: RequestFrame,
   ): Promise<ConnectionOperationLease | HostOperationErrorCode> {
     if (!(await this.#readAdmissionState())) return 'host_draining';
+    if (
+      this.#handoff &&
+      HOST_OPERATION_SPECS[frame.operation].mode === 'command' &&
+      (this.#handoff.commandsClosed || frame.operation !== 'turn.stop')
+    )
+      return 'host_draining';
     if (
       HOST_OPERATION_SPECS[frame.operation].availability !== 'bootstrap' &&
       this.#state !== 'ready'
@@ -594,21 +696,20 @@ export class RuntimeHostKernel {
     this.#settleLifecycleAfterWork();
   }
 
-  #acquireResidency(label: string): RuntimeHostResidency {
-    const residency = this.#residencies.acquire(label);
+  #acquireResidency(label: string, kind: HostResidencyKind = 'drain'): RuntimeHostResidency {
+    const residency = this.#residencies.acquire(label, kind, () =>
+      this.#settleLifecycleAfterWork(),
+    );
     this.#cancelIdle();
-    return {
-      release: () => {
-        residency.release();
-        this.#settleLifecycleAfterWork();
-      },
-    };
+    return residency;
   }
 
   #retainUntilProcessExit(): void {
     if (this.#retainedUntilProcessExit) return;
     this.#retainedUntilProcessExit = true;
-    this.#residencies.acquire('process-retention');
+    // Not work in flight: the marker only blocks idle exit, so it must not
+    // stall the drain it accompanies.
+    this.#residencies.acquire('process-retention', 'idle');
     this.#cancelIdle();
   }
 
@@ -623,6 +724,7 @@ export class RuntimeHostKernel {
           ok: true,
           result: {
             ...this.#statusSnapshot(),
+            upgradeBlockingActivity: this.#hasUpgradeBlockingActivity(0),
             compositionModules: this.#composition?.moduleIds ?? [],
             residencies: this.#residencies.snapshot(),
             protocolVersion: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -638,7 +740,11 @@ export class RuntimeHostKernel {
               .map((entry) => collapseHomePath(entry, homedir(), process.platform)),
           },
         }),
-        'host.upgrade.prepare': async (input) => {
+        'host.resources.query': async () => ({
+          ok: true,
+          result: await this.#resourceCollector.snapshot(this.hostEpoch),
+        }),
+        'host.upgrade.prepare': async (input, context) => {
           if (input.expectedHostEpoch !== this.hostEpoch) {
             return {
               ok: false,
@@ -648,8 +754,13 @@ export class RuntimeHostKernel {
               },
             };
           }
-          if (!input.allowInterruptActiveTasks && this.#hasUpgradeBlockingActivity()) {
-            return { ok: true, result: { kind: 'active_tasks' } };
+          if (!input.allowInterruptActiveTasks && this.#hasUpgradeBlockingActivity(1)) {
+            if (
+              !input.allowCooperativeHandoff ||
+              !(await this.#prepareCooperativeHandoff(context.inputClosedSignal))
+            ) {
+              return { ok: true, result: { kind: 'active_tasks' } };
+            }
           }
           this.#shutdownReason = 'retirement';
           this.#requestDrain();
@@ -689,7 +800,68 @@ export class RuntimeHostKernel {
               this.#options.accessAuthority,
               context.credentialId,
               context.clientInstanceId,
+              context.credentialClientInstanceId,
             ),
+          ),
+        'collaboration.invitation.prepare': async (input) =>
+          this.#settleAccessCredentialMutation(
+            prepareCollaborationInvitation(this.#options.accessAuthority, this.rootId, input),
+          ),
+        'collaboration.access.query': async (input) =>
+          this.#options.accessAuthority
+            ? {
+                ok: true,
+                result: this.#options.accessAuthority.queryCollaborationAccess(input),
+              }
+            : {
+                ok: false,
+                error: {
+                  code: 'operation_unavailable',
+                  message: 'Runtime Host collaboration authority is unavailable',
+                },
+              },
+        'collaboration.grant.revoke': async (input) =>
+          this.#settleAccessCredentialMutation(
+            revokeCollaborationGrant(this.#options.accessAuthority, input),
+          ),
+        'collaboration.principal.rename': async (input) =>
+          renameCollaborationPrincipal(this.#options.accessAuthority, input),
+        'collaboration.principal.revoke': async (input) =>
+          this.#settleAccessCredentialMutation(
+            revokeCollaborationPrincipal(this.#options.accessAuthority, input.principalId),
+          ),
+        'collaboration.turn-request.create': async (input, context) =>
+          this.#settleAccessCredentialMutation(
+            createCollaborationTurnRequest(this.#options.accessAuthority, context.principal, input),
+          ),
+        'collaboration.turn-request.query': async (input, context) =>
+          queryCollaborationTurnRequests(
+            this.#options.accessAuthority,
+            {
+              principalId: context.principal,
+              principalKind: context.principalKind,
+            },
+            input,
+          ),
+        'collaboration.turn-request.acknowledge': async (input, context) =>
+          this.#settleAccessCredentialMutation(
+            acknowledgeCollaborationTurnRequest(
+              this.#options.accessAuthority,
+              context.principal,
+              input,
+            ),
+          ),
+        'collaboration.turn-request.withdraw': async (input, context) =>
+          this.#settleAccessCredentialMutation(
+            withdrawCollaborationTurnRequest(
+              this.#options.accessAuthority,
+              context.principal,
+              input,
+            ),
+          ),
+        'collaboration.turn-request.decide': async (input, context) =>
+          this.#settleAccessCredentialMutation(
+            decideCollaborationTurnRequest(this.#options.accessAuthority, context.principal, input),
           ),
       },
       createPeerMeshOperationHandlers(this.#options.peerMesh, {
@@ -713,6 +885,7 @@ export class RuntimeHostKernel {
   }
 
   #statusSnapshot(): HostStatusResult {
+    const peer = this.peerListeners[0];
     return {
       hostEpoch: this.hostEpoch,
       compositionId: this.compositionDescriptor.id,
@@ -721,21 +894,95 @@ export class RuntimeHostKernel {
       connections: this.#acceptedTransports.size,
       activeOperations: this.#activeOperations,
       activeResidencies: this.#residencies.activeCount,
+      ...(peer
+        ? {
+            peerEndpoint: peer.reachability,
+          }
+        : {}),
     };
   }
 
-  #activitySnapshot(): HostActivitySnapshot {
+  #activitySnapshot(version?: 2): HostActivitySnapshot {
     return {
       connections: this.#acceptedTransports.size,
       activeOperations: this.#activeOperations,
       processUptimeSeconds: Math.max(0, Math.floor(process.uptime())),
       residencies: this.#residencies.snapshot(),
+      ...(version === 2
+        ? {
+            drainResidencies: this.#residencies.drainCount,
+            ...(this.#composition?.prepareHandoff ? { cooperativeHandoff: true } : {}),
+          }
+        : {}),
     };
   }
 
-  #hasUpgradeBlockingActivity(): boolean {
-    if (this.#activeCommandOperations > 1) return true;
-    return this.#residencies.snapshot().some(({ label }) => label !== 'process-retention');
+  #hasUpgradeBlockingActivity(selfCommands: 0 | 1): boolean {
+    // The request's own accepted transport is expected. Any other live
+    // connection arrived after discovery or remained attached and therefore
+    // requires explicit interruption authority before retirement. Callers
+    // pass how many of the in-flight commands are their own: the
+    // `host.upgrade.prepare` command counts itself, while the diagnostics
+    // query path runs outside the command counter.
+    if (this.#acceptedTransports.size > 1) return true;
+    if (this.#activeCommandOperations > selfCommands) return true;
+    return this.#residencies.drainCount > 0;
+  }
+
+  async #prepareCooperativeHandoff(inputClosedSignal: AbortSignal | undefined): Promise<boolean> {
+    if (
+      !inputClosedSignal ||
+      inputClosedSignal.aborted ||
+      !this.#composition?.prepareHandoff ||
+      this.#handoff ||
+      this.#acceptedTransports.size > 1 ||
+      this.#activeCommandOperations > 1
+    )
+      return false;
+    const handoff = { abort: new AbortController(), commandsClosed: false, committing: false };
+    this.#handoff = handoff;
+    const cancelOnDisconnect = () => {
+      if (!handoff.committing) handoff.abort.abort();
+    };
+    inputClosedSignal.addEventListener('abort', cancelOnDisconnect, { once: true });
+    const timer = setTimeout(() => handoff.abort.abort(), 10_000);
+    let prepared: RuntimeHostHandoffPreparation | undefined;
+    try {
+      prepared = await this.#composition.prepareHandoff(this.hostEpoch, handoff.abort.signal);
+      if (!prepared || handoff.abort.signal.aborted || this.#activeCommandOperations !== 1)
+        return false;
+      handoff.commandsClosed = true;
+      if (!(await prepared.seal())) return false;
+      const residencies = await prepared.residencies();
+      if (
+        !residencies ||
+        handoff.abort.signal.aborted ||
+        !(await this.#hasLiveOwnerOrDrain()) ||
+        handoff.abort.signal.aborted ||
+        this.#handoff !== handoff ||
+        this.#acceptedTransports.size !== 1 ||
+        this.#activeCommandOperations !== 1 ||
+        this.#residencies.hasDrainResidenciesExcept(residencies)
+      )
+        return false;
+      // No await between the final exact-handle proof and closing all command
+      // admission. After this cut cancellation must not restart the old runs.
+      handoff.committing = true;
+      clearTimeout(timer);
+      await prepared.detach();
+      return true;
+    } finally {
+      clearTimeout(timer);
+      inputClosedSignal.removeEventListener('abort', cancelOnDisconnect);
+      if (handoff.committing) {
+        this.#shutdownReason = 'retirement';
+        this.#requestDrain();
+      } else {
+        handoff.abort.abort();
+        prepared?.cancel();
+      }
+      if (this.#handoff === handoff) this.#handoff = undefined;
+    }
   }
 
   #beginCompositionDrain(): void {
@@ -762,8 +1009,9 @@ export class RuntimeHostKernel {
     if (this.#shutdownRequested) return;
     // One timer authority per lifecycle phase: until the first connection is
     // accepted, only #initialConnectionDeadline governs (it defers under an
-    // in-flight handshake, which #isTrueIdle() cannot see); afterwards the
-    // idle timer owns the idleGraceMs exit.
+    // in-flight handshake up to a bounded number of times); afterwards the
+    // idle timer owns the idleGraceMs exit, with in-flight handshakes visible
+    // to #isTrueIdle().
     if (!this.#hasAcceptedConnection) return;
     if (!this.#isTrueIdle() || this.#idleTimer) return;
     this.#idleTimer = setTimeout(() => {
@@ -774,6 +1022,30 @@ export class RuntimeHostKernel {
   }
 
   #isTrueIdle(): boolean {
+    return this.#residencies.activeCount === 0 && this.#hasNoObservedWork();
+  }
+
+  #hasNoObservedWork(exceptHandshaking?: RuntimeHostMessageTransport): boolean {
+    // A transport mid-handshake keeps the Host busy, except the one whose
+    // admission is being decided right now: counting it would make every
+    // true-idle takeover observe itself as activity.
+    const handshaking =
+      exceptHandshaking !== undefined && this.#handshakingTransports.has(exceptHandshaking)
+        ? this.#handshakingTransports.size - 1
+        : this.#handshakingTransports.size;
+    return (
+      this.#state === 'ready' &&
+      this.#acceptedTransports.size === 0 &&
+      handshaking === 0 &&
+      this.#activeOperations === 0
+    );
+  }
+
+  // The replacement advice in a rejection is what a stale Client acts on.
+  // In-flight handshakes resolve within milliseconds and must not flip that
+  // advice, so unlike the idle timer and the takeover decision it ignores
+  // the handshaking set entirely.
+  #isSettledForReplacementAdvice(): boolean {
     return (
       this.#state === 'ready' &&
       this.#acceptedTransports.size === 0 &&
@@ -883,6 +1155,7 @@ export class RuntimeHostKernel {
   async #closeResources(): Promise<void> {
     const errors: unknown[] = [];
     this.#unsubscribeAccessRevocations?.();
+    this.#unsubscribeSessionGrantRevocations?.();
     // Stop new admissions before any asynchronous shutdown bookkeeping. The
     // shutdown deadline may expire while publishing the draining registration;
     // leaving the listener open in that case strands an unreachable, ref'ed
@@ -936,6 +1209,7 @@ export class RuntimeHostKernel {
   async #abortStartup(): Promise<void> {
     this.#state = 'draining';
     this.#unsubscribeAccessRevocations?.();
+    this.#unsubscribeSessionGrantRevocations?.();
     for (const transport of this.#handshakingTransports) transport.abort();
     for (const transport of this.#acceptedTransports) transport.abort();
     await this.#listeners?.closeAdmission().catch(() => undefined);

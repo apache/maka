@@ -1,0 +1,60 @@
+---
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+// The tags a link preview on X, Slack and the like is built from; nothing
+// else on the page reaches the card. The image is a render of the homepage
+// hero in the page's language, made by scripts/readme-hero.mjs, and the
+// crawlers need its URL to be absolute.
+import type { ImageMetadata } from 'astro';
+import socialEn from '../assets/social.en.png';
+import socialZhCN from '../assets/social.zh-CN.png';
+import type { Copy, Locale } from '../copy/types';
+
+const images: Record<Locale, ImageMetadata> = { en: socialEn, 'zh-CN': socialZhCN };
+const ogLocales: Record<Locale, string> = { en: 'en_US', 'zh-CN': 'zh_CN' };
+
+interface Props {
+  copy: Copy;
+  url: URL;
+  title: string;
+  description: string;
+}
+
+const { copy, url, title, description } = Astro.props;
+const image = images[copy.locale];
+const src = new URL(image.src, Astro.site);
+// The card's alt: what the site says it is, then what the picture shows.
+const alt = `${copy.positioning} ${copy.sceneAlt}`;
+---
+
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content={copy.siteName} />
+<meta property="og:url" content={url} />
+<meta property="og:title" content={title} />
+<meta property="og:description" content={description} />
+<meta property="og:locale" content={ogLocales[copy.locale]} />
+<meta property="og:image" content={src} />
+<meta property="og:image:width" content={String(image.width)} />
+<meta property="og:image:height" content={String(image.height)} />
+<meta property="og:image:alt" content={alt} />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content={title} />
+<meta name="twitter:description" content={description} />
+<meta name="twitter:image" content={src} />
+<meta name="twitter:image:alt" content={alt} />

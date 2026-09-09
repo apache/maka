@@ -19,19 +19,26 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
 import {
   startWorkHubCoordinationLifecycle,
   type WorkHubCoordinationHostChange,
 } from '../../renderer/workhub-coordination-lifecycle.js';
 
-test('WorkHub resolves on open and ready Host changes, then stops on feature disable', () => {
+const coordinationSessionId = (hostId: string) => desktopSessionKey({
+  hostId,
+  sessionId: 'maka_workhub_coordination',
+});
+
+test('WorkHub resolves on open and when the default Host authority changes', async () => {
   let hostChange: ((event: WorkHubCoordinationHostChange) => void) | undefined;
   let availabilityChange: (() => void) | undefined;
   const calls: string[] = [];
+  let activeHostId = 'host-a';
   const stop = startWorkHubCoordinationLifecycle({
     resolve: () => {
       calls.push('resolve');
-      return Promise.resolve('coordination-session');
+      return Promise.resolve(coordinationSessionId(activeHostId));
     },
     subscribeHostChanges(handler) {
       hostChange = handler;
@@ -47,27 +54,27 @@ test('WorkHub resolves on open and ready Host changes, then stops on feature dis
   });
 
   assert.deepEqual(calls, ['resolving', 'resolve']);
+  await Promise.resolve();
   hostChange?.({ isDefault: false, readiness: 'ready' });
-  hostChange?.({ isDefault: true, readiness: 'reconnecting' });
-  assert.deepEqual(calls, ['resolving', 'resolve', 'resolving']);
-
-  availabilityChange?.();
-  assert.deepEqual(calls, ['resolving', 'resolve', 'resolving']);
-
-  hostChange?.({ isDefault: true, readiness: 'ready' });
-  assert.deepEqual(calls, ['resolving', 'resolve', 'resolving', 'resolving', 'resolve']);
-
-  stop();
+  hostChange?.({ isDefault: true, readiness: 'reconnecting', hostId: 'host-a' });
   assert.deepEqual(calls, [
     'resolving',
     'resolve',
-    'resolving',
-    'resolving',
-    'resolve',
-    'unsubscribe-hosts',
-    'unsubscribe-availability',
+    `resolved:${coordinationSessionId('host-a')}`,
   ]);
-  hostChange?.({ isDefault: true, readiness: 'ready' });
+
+  availabilityChange?.();
+  assert.equal(calls.at(-1), `resolved:${coordinationSessionId('host-a')}`);
+
+  activeHostId = 'host-b';
+  hostChange?.({ isDefault: true, readiness: 'ready', hostId: 'host-b' });
+  assert.deepEqual(calls.slice(-2), ['resolving', 'resolve']);
+  await Promise.resolve();
+  assert.equal(calls.at(-1), `resolved:${coordinationSessionId('host-b')}`);
+
+  stop();
+  assert.deepEqual(calls.slice(-2), ['unsubscribe-hosts', 'unsubscribe-availability']);
+  hostChange?.({ isDefault: true, readiness: 'ready', hostId: 'host-c' });
   availabilityChange?.();
   assert.equal(calls.at(-1), 'unsubscribe-availability');
 });
@@ -134,7 +141,7 @@ test('WorkHub exposes a retry and automatically retries when model availability 
       resolveAttempts += 1;
       return resolveAttempts < 3
         ? Promise.reject(failure)
-        : Promise.resolve('coordination-session');
+        : Promise.resolve(coordinationSessionId('host-a'));
     },
     subscribeHostChanges(handler) {
       hostChange = handler;
@@ -164,7 +171,7 @@ test('WorkHub exposes a retry and automatically retries when model availability 
   availabilityChange?.();
   await Promise.resolve();
   await Promise.resolve();
-  assert.deepEqual(failures, [failure, failure, 'coordination-session']);
+  assert.deepEqual(failures, [failure, failure, coordinationSessionId('host-a')]);
 
   availabilityChange?.();
   hostChange?.({ isDefault: false, readiness: 'ready' });
@@ -189,12 +196,12 @@ test('WorkHub ignores a stale Host resolution that settles after a newer Host', 
   });
 
   hostChange?.({ isDefault: true, readiness: 'ready' });
-  pending[1]?.('host-b-coordination');
+  pending[1]?.(coordinationSessionId('host-b'));
   await Promise.resolve();
-  pending[0]?.('host-a-coordination');
+  pending[0]?.(coordinationSessionId('host-a'));
   await Promise.resolve();
 
-  assert.deepEqual(resolved, ['host-b-coordination']);
+  assert.deepEqual(resolved, [coordinationSessionId('host-b')]);
   stop();
 });
 

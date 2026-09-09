@@ -19,7 +19,7 @@
 
 import type { ProjectRecord } from '@maka/core/project';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
-import { ICON_SIZE, AlertTriangle, Check, FolderOpen, Network, Plus, RefreshCcw, X } from './icons.js';
+import { ICON_SIZE, AlertTriangle, Check, FolderOpen, Network, Plus, RefreshCcw, Settings, X } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
@@ -32,6 +32,7 @@ export interface WorkspacePickerGroup {
   selectedProjectId?: string | null;
   onSelectProject?(projectId: string): void;
   onAdd?(): void;
+  onManage?(): void;
   onRelink?(projectId: string): void;
   onSelectNoProject?(): void;
 }
@@ -134,6 +135,14 @@ export function WorkspacePicker({ workspacePicker: picker }: {
                   label={copy.addProject}
                   isDisabled={locked || group.disabled}
                   onClick={group.onAdd}
+                />
+              ) : null}
+              {group.onManage ? (
+                <DropdownMenuItem
+                  icon={<Settings size={ICON_SIZE.meta} aria-hidden="true" />}
+                  label={copy.manageProjects}
+                  isDisabled={locked || group.disabled}
+                  onClick={group.onManage}
                 />
               ) : null}
               {group.onSelectNoProject ? (

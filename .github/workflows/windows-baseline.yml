@@ -167,7 +167,6 @@ jobs:
             'packages/storage/dist/__tests__/write-queue.test.js',
             'packages/storage/dist/__tests__/marker-file.test.js',
             'packages/storage/dist/__tests__/workspace-root.test.js',
-            'packages/storage/dist/__tests__/managed-workspace-owner.test.js',
             'packages/storage/dist/__tests__/workspace-identity.test.js'
           )
           node.exe --test --test-concurrency=2 --test-force-exit --test-timeout=60000 `

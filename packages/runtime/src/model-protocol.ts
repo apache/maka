@@ -37,6 +37,7 @@
  */
 
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
+import type { ModelFailureKind } from '@maka/core/model-failure';
 
 // ---------------------------------------------------------------------------
 // JSON value contract
@@ -328,17 +329,7 @@ export type ModelFinishReason = string;
  * error objects and AI SDK wrappers are classified inside `ModelAdapter` and
  * never cross the boundary.
  */
-export type ModelFailureKind =
-  | 'abort'
-  | 'auth'
-  | 'context_overflow'
-  | 'network'
-  | 'provider_capacity'
-  | 'provider_billing'
-  | 'provider_unavailable'
-  | 'rate_limit'
-  | 'timeout'
-  | 'unknown';
+export type { ModelFailureKind } from '@maka/core/model-failure';
 
 export interface ModelFailure {
   type: 'model_failure';
@@ -386,17 +377,35 @@ export interface ModelRequestMetadata {
  *   recovery and terminal error emission.
  */
 export type ModelStreamEvent =
-  | { kind: 'text-start' }
+  | {
+      kind: 'text-start';
+      /** Native Responses output item boundary; internal to adapter/backend replay. */
+      providerItemBoundary?: true;
+    }
   | { kind: 'text'; text: string }
-  | { kind: 'text-metadata'; providerOptions: ProviderOptions }
+  | {
+      kind: 'text-end';
+      providerOptions?: ProviderOptions;
+      /** Native Responses output item boundary; internal to adapter/backend replay. */
+      providerItemBoundary?: true;
+    }
+  | {
+      kind: 'thinking-start';
+      reasoningPartId?: string;
+      providerOptions?: ProviderOptions;
+    }
   | {
       kind: 'thinking';
       text: string;
       providerOptions?: ProviderOptions;
+      /** Bounded SDK-local identity used only while grouping one streamed reasoning part. */
+      reasoningPartId?: string;
+      /** Final provider summary, compared before only its part boundaries are persisted. */
+      reasoningSummaryText?: string;
       /** Maka-authored replay hint; absent provider metadata stays fail-closed. */
       providerOptionsOrigin?: 'maka_transport';
     }
-  | { kind: 'thinking-signature'; signature: string }
+  | { kind: 'thinking-signature'; signature: string; reasoningPartId?: string }
   /** Provider-side tool execution has begun, but no replayable call exists yet. */
   | { kind: 'provider-tool-input' }
   | { kind: 'tool-call'; toolCall: ToolCallPart }
@@ -420,7 +429,7 @@ export type ModelStepOutcome =
       continuation: 'none' | 'pending';
     }
   | {
-      kind: 'truncated' | 'retryable-failure' | 'terminal-failure' | 'aborted';
+      kind: 'truncated' | 'failed' | 'aborted';
       failure: ModelFailure;
       usage?: NormalizedUsage;
       request: ModelRequestMetadata;

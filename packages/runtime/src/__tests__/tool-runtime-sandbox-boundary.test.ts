@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred, nextId, waitFor } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -45,6 +46,53 @@ import { SandboxCommandError } from '../sandbox/errors.js';
 import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
 
 describe('ToolRuntime session sandbox boundary', () => {
+  test('inherits explicit denial without inheriting correction budgets or replacing live authority', async () => {
+    let reads = 0;
+    const create = (inheritedSandboxBoundaryDenied = false): ToolRuntime =>
+      new ToolRuntime({
+        inheritedSandboxBoundaryDenied,
+        turnId: 'turn-1',
+        sessionId: 'session-1',
+        header: header(),
+        connection: { providerType: 'openai', slug: 'test' } as never,
+        modelId: 'test',
+        readExecutionBoundary: async () => {
+          reads += 1;
+          return {
+            kind: 'managed',
+            profile: createWorkspaceWritePermissionProfile(),
+            revision: 7,
+          };
+        },
+        newId: nextId(),
+        now: () => 1,
+        getPermissionPauseTarget: () => null,
+      });
+    const continued = create(true);
+    assert.equal(continued.hasSandboxBoundaryDenial(), true);
+    assert.equal(continued.shouldFinalizeSandboxBoundary(), false);
+    await settle(
+      continued,
+      {
+        name: 'Read',
+        description: 'Read within current authority',
+        parameters: {},
+        impl: (_args, context) => {
+          assert.equal(context.executionBoundary?.revision, 7);
+          return 'read';
+        },
+      },
+      'allowed-read',
+    );
+    assert.equal(reads, 1);
+    assert.equal(continued.shouldFinalizeSandboxBoundary(), false);
+    await continued.endTurn();
+    const fresh = create();
+    assert.equal(fresh.hasSandboxBoundaryDenial(), false);
+    assert.equal(fresh.shouldFinalizeSandboxBoundary(), false);
+    await fresh.endTurn();
+  });
+
   test('rejects an embedding without explicit execution boundary authority', () => {
     assert.throws(
       () =>
@@ -54,7 +102,6 @@ describe('ToolRuntime session sandbox boundary', () => {
           header: header(),
           connection: { providerType: 'openai', slug: 'test' } as never,
           modelId: 'test',
-          appendMessage: async () => {},
           newId: nextId(),
           now: () => 1,
           getPermissionPauseTarget: () => null,
@@ -72,7 +119,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -116,7 +162,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => managed,
       createSandboxBoundaryRequest: async (input) => {
         created = {
@@ -190,7 +235,7 @@ describe('ToolRuntime session sandbox boundary', () => {
     });
     assert.match(JSON.stringify(overlapping.result), /already pending/u);
     assert.equal(events.filter((event) => event.type === 'sandbox_boundary_request').length, 1);
-    await runtime.respondToSandboxBoundaryRequest('turn-1', {
+    await runtime.respondToSandboxBoundaryResponse({
       requestId: requestEvent.requestId,
       decision: 'allow',
     });
@@ -218,6 +263,12 @@ describe('ToolRuntime session sandbox boundary', () => {
       admitUserQuestionRequest: async () => {
         throw new Error('Unexpected user question');
       },
+      admitFormRequest: async () => {
+        throw new Error('Unexpected user form');
+      },
+      withdrawFormRequest: async () => {
+        throw new Error('Unexpected user form withdrawal');
+      },
       admitSandboxBoundaryRequest: async ({ request, settlement }) => {
         admittedRequest = request;
         captured = settlement;
@@ -232,7 +283,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => managed,
       newId: nextId(),
       now: () => 1,
@@ -266,7 +316,7 @@ describe('ToolRuntime session sandbox boundary', () => {
       false,
     );
     await assert.rejects(
-      runtime.respondToSandboxBoundaryRequest('turn-1', {
+      runtime.respondToSandboxBoundaryResponse({
         requestId: admittedRequest!.requestId,
         decision: 'allow',
       }),
@@ -314,7 +364,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -372,7 +421,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(root),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -432,7 +480,7 @@ describe('ToolRuntime session sandbox boundary', () => {
       const request = await waitForBoundaryRequest(events);
       assert.equal(request.expansion.filesystem?.entries[0]?.path, canonicalFile);
       assert.equal(created?.expansion.filesystem?.entries[0]?.path, canonicalFile);
-      await runtime.respondToSandboxBoundaryRequest('turn-1', {
+      await runtime.respondToSandboxBoundaryResponse({
         requestId: request.requestId,
         decision: 'deny',
       });
@@ -451,7 +499,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(root),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -511,7 +558,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => managed,
       createSandboxBoundaryRequest: async (input) => {
         created = {
@@ -587,7 +633,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => managed,
       createSandboxBoundaryRequest: async () => {
         markCreateStarted();
@@ -652,7 +697,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -715,7 +759,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -789,7 +832,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -802,6 +844,7 @@ describe('ToolRuntime session sandbox boundary', () => {
         createdAt: 1,
       }),
       settleSandboxBoundaryRequest: async (input) => {
+        assert.equal(input.closureReason, 'turn_stopped');
         settlements.push(input.decision);
         return {
           request: {
@@ -870,7 +913,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -926,7 +968,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -995,7 +1036,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
-      appendMessage: async () => {},
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -1006,6 +1046,7 @@ describe('ToolRuntime session sandbox boundary', () => {
       getPermissionPauseTarget: () => null,
     });
 
+    const events: SessionEvent[] = [];
     const settlement = await runtime.settleToolCall({
       tool: buildRequestSandboxBoundaryTool() as unknown as MakaTool,
       turnId: 'turn-1',
@@ -1016,14 +1057,19 @@ describe('ToolRuntime session sandbox boundary', () => {
       },
       abortSignal: new AbortController().signal,
       eventSink: {
-        push: () => {},
-        pushAndWaitUntilConsumed: async () => {},
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
       },
     });
 
-    assert.deepEqual(settlement.modelOutput, {
-      type: 'error-text',
-      value: `Error: ${SANDBOX_BOUNDARY_UNAVAILABLE}`,
+    assert.equal(settlement.providerError, SANDBOX_BOUNDARY_UNAVAILABLE);
+    assert.deepEqual(events.find((event) => event.type === 'tool_result')?.modelProjection, {
+      version: 1,
+      kind: 'text',
+      text: `Error: ${SANDBOX_BOUNDARY_UNAVAILABLE}`,
+      isError: true,
     });
   });
 });
@@ -1067,30 +1113,25 @@ function header(cwd = process.cwd()): SessionHeader {
     schemaVersion: 1,
   };
 }
-
-function nextId(): () => string {
-  let value = 0;
-  return () => `id-${++value}`;
-}
-
 async function waitForBoundaryRequest(
   events: SessionEvent[],
 ): Promise<Extract<SessionEvent, { type: 'sandbox_boundary_request' }>> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const event = events.find((candidate) => candidate.type === 'sandbox_boundary_request');
-    if (event?.type === 'sandbox_boundary_request') return event;
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-  throw new Error('Sandbox boundary request was not emitted');
-}
-
-function deferred<T>(): {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T | PromiseLike<T>) => void;
-} {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
+  let event: Extract<SessionEvent, { type: 'sandbox_boundary_request' }> | undefined;
+  await waitFor(
+    () => {
+      const candidate = events.find((entry) => entry.type === 'sandbox_boundary_request');
+      if (candidate?.type === 'sandbox_boundary_request') {
+        event = candidate;
+        return true;
+      }
+      return false;
+    },
+    {
+      timeoutMs: 5_000,
+      pollMs: 10,
+      message: 'Sandbox boundary request was not emitted',
+    },
+  );
+  assert.ok(event);
+  return event;
 }

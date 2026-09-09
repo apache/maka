@@ -19,11 +19,8 @@
 
 /** Pure onboarding projection; persisted milestones are validated separately below. */
 
-import {
-  isConnectionReady,
-  isRealConnection,
-  normalizeOpenAiCodexConnection,
-} from './connection-readiness.js';
+import { isConnectionReady, isRealConnection } from './connection-readiness.js';
+import { normalizeOpenAiCodexConnection } from './model-catalog.js';
 import { connectionEnabledModelIds, type LlmConnection } from './llm-connections.js';
 import type { SessionSummary } from './session.js';
 export { hasSettledInitialOnboarding } from './onboarding-milestone.js';

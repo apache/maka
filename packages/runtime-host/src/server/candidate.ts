@@ -39,6 +39,10 @@ export interface InteractiveRuntimeHostCandidateOptions {
   handshakeTimeoutMs?: number;
   generation?: string;
   managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
+  /** Limits pre-commit admission for a launch-owner-supervised Candidate. */
+  initialClientAdmission?: {
+    isClientAdmitted(clientInstanceId: string): boolean;
+  };
 }
 
 export interface InteractiveRuntimeHostCandidateDependencies {
@@ -91,6 +95,9 @@ export async function startInteractiveRuntimeHostCandidate(
       handshakeTimeoutMs: options.handshakeTimeoutMs,
       generation: options.generation,
       composition,
+      ...(options.initialClientAdmission
+        ? { initialClientAdmission: options.initialClientAdmission }
+        : {}),
       ...(accessAuthority ? { accessAuthority } : {}),
       ...(websocket && accessAuthority
         ? {

@@ -19,7 +19,7 @@
 
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { lstat, readdir, realpath } from 'node:fs/promises';
+import { lstat, readdir, realpath, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isPathInside, readContainedRegularFile } from './path-containment.js';
 import { validateSkillMetadata } from './skills-metadata.js';
@@ -109,9 +109,10 @@ export interface ScannedSkill extends RuntimeSkillDefinition {
   contentSha256: string;
   /**
    * The containment root this skill was discovered under (e.g. workspace root,
-   * home dir). Used to compute `relativePath` in `loadSkillInstructions` so
-   * legacy callers see `skills/<id>/SKILL.md` while multi-path callers see
-   * the actual subpath.
+   * home dir). Remains the authority for later contained reads even when
+   * `path` is a mutable symlink, and is used to compute `relativePath` in
+   * `loadSkillInstructions` so legacy callers see `skills/<id>/SKILL.md`
+   * while multi-path callers see the actual subpath.
    */
   discoveryRoot: string;
 }
@@ -361,10 +362,11 @@ function normalizeSkillSource(source: SkillSource): {
  * `SKILL.md` is parsed. Metadata validation errors exclude only the malformed
  * skill and are returned as structured diagnostics.
  *
- * The directory itself must be a real directory (not a symlink) and its
- * realpath must be contained within the realpath of its parent directory.
- * This prevents ancestor-level symlinks (e.g. `repo/.agents -> /outside`)
- * from escaping the expected boundary.
+ * The discovery directory itself must be a real directory (not a symlink) and
+ * its realpath must be contained within its configured containment root. This
+ * prevents ancestor-level symlinks (e.g. `repo/.agents -> /outside`) from
+ * escaping the expected boundary. Immediate symlinked skill entries are
+ * followed only when their targets remain inside that same containment root.
  */
 async function scanSkillDir(
   discovery: SkillDiscoveryEntry,
@@ -382,26 +384,29 @@ async function scanSkillDir(
     discoveryDiagnostics,
     runtimeState,
   });
-  const sourceDiagnostic = (
+  const discoveryDiagnostic = (
+    path: string,
     reason: SkillDiscoveryDiagnostic['reason'],
   ): SkillDiscoveryDiagnostic => ({
-    path: dir,
+    path,
     scope,
     source,
     precedence,
     reason,
   });
   let entries: import('node:fs').Dirent[];
+  let rootReal: string;
   try {
     const dirStat = await lstat(dir);
     if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) {
-      return empty([sourceDiagnostic('blocked_path')]);
+      return empty([discoveryDiagnostic(dir, 'blocked_path')]);
     }
     // Verify the resolved directory has not escaped its containment root via
     // an ancestor symlink (e.g. `repo/.agents -> /outside`).
-    const [rootReal, dirReal] = await Promise.all([realpath(containmentRoot), realpath(dir)]);
+    const [resolvedRoot, dirReal] = await Promise.all([realpath(containmentRoot), realpath(dir)]);
+    rootReal = resolvedRoot;
     if (!isPathInside(rootReal, dirReal)) {
-      return empty([sourceDiagnostic('blocked_path')]);
+      return empty([discoveryDiagnostic(dir, 'blocked_path')]);
     }
     entries = await readdir(dir, { withFileTypes: true });
     entries.sort((a, b) => a.name.localeCompare(b.name));
@@ -409,18 +414,42 @@ async function scanSkillDir(
     // An absent optional discovery root is normal. A configured path that
     // exists but cannot be inspected is not: expose it to governance clients.
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return empty();
-    return empty([sourceDiagnostic('read_failed')]);
+    return empty([discoveryDiagnostic(dir, 'read_failed')]);
   }
 
   const out: ScannedSkill[] = [];
   const rejected: RejectedSkillDefinition[] = [];
   const diagnostics: SkillScanDiagnostic[] = [];
+  const discoveryDiagnostics: SkillDiscoveryDiagnostic[] = [];
   for (const dirEntry of entries) {
-    if (!dirEntry.isDirectory()) continue;
     const skillPath = join(dir, dirEntry.name);
-    const skillFile = join(skillPath, 'SKILL.md');
+    let skillReadRoot = skillPath;
+    let skillDirectory = skillPath;
+    if (!dirEntry.isDirectory()) {
+      if (!dirEntry.isSymbolicLink()) continue;
+      try {
+        const skillReal = await realpath(skillPath);
+        if (!isPathInside(rootReal, skillReal)) {
+          discoveryDiagnostics.push(discoveryDiagnostic(skillPath, 'blocked_path'));
+          continue;
+        }
+        if (!(await stat(skillReal)).isDirectory()) continue;
+        skillReadRoot = rootReal;
+        skillDirectory = skillReal;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        discoveryDiagnostics.push(
+          discoveryDiagnostic(
+            skillPath,
+            code === 'ENOENT' || code === 'ENOTDIR' ? 'blocked_path' : 'read_failed',
+          ),
+        );
+        continue;
+      }
+    }
+    const skillFile = join(skillDirectory, 'SKILL.md');
     try {
-      const read = await readContainedRegularFile(skillPath, skillFile);
+      const read = await readContainedRegularFile(skillReadRoot, skillFile);
       if (!read.ok) continue;
       const bytes = read.bytes;
       const text = bytes.toString('utf8');
@@ -485,7 +514,7 @@ async function scanSkillDir(
     inventory: out,
     rejected,
     diagnostics,
-    discoveryDiagnostics: [],
+    discoveryDiagnostics,
     runtimeState,
   };
 }

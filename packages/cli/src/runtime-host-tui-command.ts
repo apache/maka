@@ -19,24 +19,23 @@
 
 import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { createInterface } from 'node:readline/promises';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
-import { readRuntimeHostConnectionCatalog } from '@maka/runtime-host/client';
+import {
+  readRuntimeHostConnectionCatalog,
+  HostHandoffCancelledError,
+} from '@maka/runtime-host/client';
 import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import { createForeignSessionStore } from '@maka/storage/foreign-session-store';
 import { formatMakaResumeHint } from './cli-invocation.js';
-import {
-  connectRuntimeHostCli,
-  resolveRuntimeHostCliConflictDecision,
-  RuntimeHostCliConflictError,
-} from './runtime-host-cli-context.js';
-import { resolveRuntimeHostNpmGlobalInstallation } from './runtime-host-cli-installation.js';
-import { restartRuntimeHostNpmGlobalDeployment } from './runtime-host-local-handoff.js';
+import { connectRuntimeHostCli } from './runtime-host-cli-context.js';
+import { createCliHostHandoffSurface } from './runtime-host-handoff-surface.js';
 import { createRuntimeHostOnboardingSurface } from './runtime-host-onboarding.js';
 import type { MakaPiTuiTurnActivitySurface } from './pi-tui-contracts.js';
 import { runMakaPiTui } from './pi-tui-runner.js';
 import { createRuntimeHostTuiContext } from './runtime-host-tui-context.js';
+import { describeTuiHost, prepareTuiHostOwnerAction } from './runtime-host-tui-owner.js';
 import type { MakaSessionDriver } from './session-driver.js';
+import { getTuiHostOwnerCopy } from './tui-host-owner-copy.js';
 
 export interface RunRuntimeHostTuiInput {
   readonly cliCommand: string;
@@ -52,8 +51,10 @@ export interface RunRuntimeHostTuiInput {
 }
 
 export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<number> {
+  const ownerCopy = getTuiHostOwnerCopy(input.locale);
   const foreignSessions = createForeignSessionStore();
   const contextInput = {
+    ...(process.stdin.isTTY ? { handoffSurface: createCliHostHandoffSurface(input.locale) } : {}),
     clientDataRoot: input.clientDataRoot,
     rootPath: input.workspaceRoot,
     cwd: input.cwd,
@@ -63,9 +64,9 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
   };
   let context;
   try {
-    context = await createTuiContextWithHostConflictPrompt(contextInput);
-    if (!context) return 1;
+    context = await createRuntimeHostTuiContext(contextInput);
   } catch (error) {
+    if (error instanceof HostHandoffCancelledError) return 1;
     if (!isMissingDefaultConnection(error) || input.resumeSessionId) throw error;
     const configured = await runFirstRunOnboarding(
       input.clientDataRoot,
@@ -77,6 +78,8 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
     if (!configured) throw error;
     context = await createRuntimeHostTuiContext(contextInput);
   }
+  let ownerAction: (() => Promise<number>) | undefined;
+  let contextOpen = true;
   try {
     await runMakaPiTui({
       driver: context.driver,
@@ -94,10 +97,10 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
         )
         .map((choice) => choice.model),
       modelChoices: context.modelChoices,
+      subscribeModelCatalogChanges: context.subscribeModelCatalogChanges,
       connectionSlug: context.connectionSlug,
       connectionId: context.connectionId,
       connectionIdentities: context.connectionIdentities,
-      providerType: context.providerType,
       modelContextWindow: context.modelContextWindow,
       permissionMode: context.prospectivePermissionMode,
       turnActivity: context.turnActivity,
@@ -106,6 +109,24 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       onboarding: context.onboarding,
       ...(context.mcp ? { mcp: context.mcp } : {}),
       recap: context.recap,
+      hostControl: {
+        status: () => describeTuiHost({ ...context, locale: input.locale }),
+        prepare: async (action, confirm) => {
+          if (ownerAction || !contextOpen) throw new Error(ownerCopy.pending);
+          const execute = await prepareTuiHostOwnerAction({
+            profile: context.profile,
+            connection: context.connection,
+            rootPath: input.workspaceRoot,
+            locale: input.locale,
+            action,
+            confirm,
+          });
+          if (!execute) return false;
+          if (!contextOpen || ownerAction) throw new Error(ownerCopy.disconnected);
+          ownerAction = execute;
+          return true;
+        },
+      },
       ...(runtimeHostProfileUsesHostWorkspace(context.profile.kind)
         ? {
             sessionListScope: 'all' as const,
@@ -129,78 +150,14 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
         : {}),
     });
     if (hint) process.stdout.write(`${hint}\n`);
-    return 0;
   } finally {
+    contextOpen = false;
     await context.driver.cleanupOwnedSideConversations().catch(() => undefined);
     await context.close();
   }
-}
-
-async function createTuiContextWithHostConflictPrompt(
-  input: Parameters<typeof createRuntimeHostTuiContext>[0],
-): Promise<Awaited<ReturnType<typeof createRuntimeHostTuiContext>> | null> {
-  const blockedRestartEpochs = new Set<string>();
-  while (true) {
-    try {
-      return await createRuntimeHostTuiContext(input);
-    } catch (error) {
-      if (!(error instanceof RuntimeHostCliConflictError) || !process.stdin.isTTY) throw error;
-      process.stderr.write(`${error.message}\n`);
-      const canRestart =
-        error.registration.lifecycleMode === 'ephemeral' &&
-        !blockedRestartEpochs.has(error.registration.hostEpoch) &&
-        (await isPersistentNpmGlobalCli());
-      const readline = createInterface({ input: process.stdin, output: process.stderr });
-      let decision;
-      try {
-        const answer = await readline.question(
-          canRestart
-            ? 'Restart this local Host if it is idle, wait for it to exit, or cancel? [r/w/C] '
-            : 'Wait only if the existing Host is expected to exit, or cancel? [w/C] ',
-        );
-        decision = resolveRuntimeHostCliConflictDecision(answer, canRestart);
-      } finally {
-        readline.close();
-      }
-      if (decision === 'cancel') return null;
-      if (decision === 'restart') {
-        const result = await restartRuntimeHostNpmGlobalDeployment({
-          rootPath: input.rootPath,
-          registration: error.registration,
-        });
-        if (result.kind === 'completed') continue;
-        if (result.kind === 'active_work') {
-          blockedRestartEpochs.add(error.registration.hostEpoch);
-          process.stderr.write(
-            'The existing Runtime Host still owns active or durable work and was not interrupted.\n',
-          );
-          continue;
-        }
-        if (result.kind === 'operator_required') {
-          blockedRestartEpochs.add(error.registration.hostEpoch);
-          continue;
-        }
-        if (result.kind === 'rejected') continue;
-        throw new Error(`Local Runtime Host restart requires recovery at ${result.phase}`, {
-          cause: result.cause,
-        });
-      }
-      await waitForHostRetry();
-    }
-  }
-}
-
-async function isPersistentNpmGlobalCli(): Promise<boolean> {
-  try {
-    await resolveRuntimeHostNpmGlobalInstallation();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function waitForHostRetry(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 2_000));
+  // No reconnecting client remains to respawn a stopped Host, and an updater
+  // can use the restored terminal without competing with the TUI renderer.
+  return ownerAction ? ownerAction() : 0;
 }
 
 async function runFirstRunOnboarding(
@@ -214,6 +171,7 @@ async function runFirstRunOnboarding(
     clientDataRoot,
     rootPath,
     interactiveSsh: true,
+    ...(process.stdin.isTTY ? { handoffSurface: createCliHostHandoffSurface(locale) } : {}),
     ...(hostProfileId ? { profileId: hostProfileId } : {}),
   });
   try {

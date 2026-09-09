@@ -32,18 +32,28 @@ export { SessionRailProvider } from './session-rail-context.js';
 export type {
   SessionRailChrome,
   SessionRailData,
+  SessionRailSelection,
+  SessionRailSelectionCommands,
+  SessionRowPick,
   SessionViewMode,
 } from './session-rail-context.js';
 export type { SidebarUpdateReminder } from './session-sidebar-nav.js';
+export {
+  SidebarUpdateProjectionProvider,
+  useSidebarUpdateProjection,
+  type SidebarUpdateProjection,
+} from './sidebar-update-projection-context.js';
 export type { BundledSkillCatalogEntry, DailyReviewMarkdownActionInput, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from './module-panel-types.js';
 export { describeLoadToolResult, formatRedactedJson, formatToolIntent, loadToolDisplayName } from './tool-format.js';
 export { formatBytes, ToolCallDetail, ToolTrow } from './tool-activity.js';
 export { ToolResultPreview } from './tool-activity/tool-result-preview.js';
 export { SandboxBoundaryPrompt } from './sandbox-boundary-prompt.js';
+export { ClientCapabilityPrompt } from './client-capability-prompt.js';
 export { ChatSurfaceLayout } from './chat-surface-layout.js';
 export type { ChatSurfaceLayoutProps } from './chat-surface-layout.js';
 export {
   ChatView,
+  type ChatViewGoalIndicatorProps,
   type LiveContentActivationSnapshot,
   type TransientUserMessageProjection,
 } from './chat-view.js';
@@ -66,11 +76,22 @@ export type {
 export { ScheduledTasksPage, DailyReviewPage, SkillsPage } from './module-pages.js';
 export { Composer } from './composer.js';
 export type {
+  ComposerGoalProps,
   ComposerProps,
   ComposerHandle,
   ComposerSendMetadata,
   ComposerSlashCommandOption,
 } from './composer.js';
+export {
+  ChatViewGoalProjectionConsumer,
+  ChatViewGoalProjectionProvider,
+  ComposerGoalProjectionConsumer,
+  ComposerGoalProjectionProvider,
+  useChatViewGoalProjection,
+  useComposerGoalProjection,
+  type ChatViewGoalProjection,
+  type ComposerGoalProjection,
+} from './goal-projection-context.js';
 export {
   getPermissionModeMeta,
   PERMISSION_MODE_ORDER,

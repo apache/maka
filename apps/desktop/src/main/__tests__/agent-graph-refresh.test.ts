@@ -17,18 +17,10 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { createAgentGraphRefreshScheduler } from '../../renderer/agent-graph-refresh.js';
-
-function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => {
-    resolve = res;
-  });
-  return { promise, resolve };
-}
-
 async function tick(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
 }

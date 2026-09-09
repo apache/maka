@@ -28,10 +28,21 @@ import {
   toolAvailabilityHash,
   type ToolSearchResult,
 } from '../tool-availability.js';
+import { bindToolActivationIdentity, toolActivationKey } from '../tool-activation-identity.js';
 import type { MakaTool, MakaToolContext } from '../tool-runtime.js';
 
 function tool(name: string, description = name): MakaTool {
   return { name, description, parameters: z.object({}), impl: () => ({ ok: true }) };
+}
+
+function withCategory(name: string, categoryHint: MakaTool['categoryHint']): MakaTool {
+  return {
+    name,
+    description: name,
+    parameters: z.object({}),
+    impl: () => ({ ok: true }),
+    categoryHint,
+  };
 }
 
 const invalid: MakaTool = {
@@ -160,7 +171,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
   });
 
   test('a successful search activates bounded matches for the next projection', async () => {
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const traces: Record<string, unknown>[] = [];
     const plan = runtime().prepare(active);
     const connector = searchTool(plan);
@@ -187,6 +198,64 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.deepEqual(traces[0]?.activated, ['docs_edit']);
   });
 
+  test('a same-name replacement does not inherit the retired contribution activation', async () => {
+    const first = bindToolActivationIdentity(tool('plugin_weather', 'weather'), {
+      kind: 'plugin',
+      scopeId: 'profile',
+      entryId: 'weather-entry',
+      extensionId: 'weather-plugin',
+      generation: 1,
+      toolName: 'plugin_weather',
+    });
+    const active = new Map<string, string>();
+    const initial = new ToolAvailabilityRuntime(
+      [first],
+      { groups: [{ id: 'plugins', toolNames: ['plugin_weather'] }] },
+      invalid,
+    ).prepare(active);
+    await searchTool(initial).impl({ query: 'weather' }, ctx);
+    assert.equal(active.get('plugin_weather'), toolActivationKey(first));
+
+    const replacement = bindToolActivationIdentity(tool('plugin_weather', 'weather'), {
+      kind: 'plugin',
+      scopeId: 'profile',
+      entryId: 'weather-entry',
+      extensionId: 'weather-plugin',
+      generation: 2,
+      toolName: 'plugin_weather',
+    });
+    const next = new ToolAvailabilityRuntime(
+      [replacement],
+      { groups: [{ id: 'plugins', toolNames: ['plugin_weather'] }] },
+      invalid,
+    ).prepare(active);
+
+    assert.equal(active.has('plugin_weather'), false);
+    assert.equal(next.activeTools.includes('plugin_weather'), false);
+  });
+
+  test('an equivalent rebuilt Host wrapper keeps its activation', async () => {
+    const active = new Map<string, string>();
+    const first = tool('todo_read', 'read the session todo');
+    const initial = new ToolAvailabilityRuntime(
+      [first],
+      { groups: [{ id: 'todo', toolNames: ['todo_read'] }] },
+      invalid,
+    ).prepare(active);
+    await searchTool(initial).impl({ query: 'read todo' }, ctx);
+
+    const rebuilt = tool('todo_read', 'read the session todo');
+    assert.notEqual(rebuilt, first);
+    const next = new ToolAvailabilityRuntime(
+      [rebuilt],
+      { groups: [{ id: 'todo', toolNames: ['todo_read'] }] },
+      invalid,
+    ).prepare(active);
+
+    assert.equal(active.get('todo_read'), toolActivationKey(rebuilt));
+    assert.equal(next.activeTools.includes('todo_read'), true);
+  });
+
   test('ordinary result is thin and contains no complete schemas', async () => {
     const connector = searchTool(runtime().prepare(new Map()));
     const output = await connector.impl({ query: 'browser click' }, ctx);
@@ -198,7 +267,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
   });
 
   test('repeated and parallel searches union and deduplicate turn activation', async () => {
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const plan = runtime().prepare(active);
     const connector = searchTool(plan);
     await Promise.all([
@@ -210,7 +279,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
   });
 
   test('already-active matches do not consume a later search limit or schema budget', async () => {
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const largeDescription = `Perform a calendar action ${'x'.repeat(40 * 1024)}`;
     const plan = new ToolAvailabilityRuntime(
       [tool('calendar_primary', largeDescription), tool('calendar_secondary', largeDescription)],
@@ -242,7 +311,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
   });
 
   test('reports and skips an oversized tool without hiding a smaller later match', async () => {
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const plan = new ToolAvailabilityRuntime(
       [
         tool('oversized_target', `Oversized target ${'x'.repeat(TOOL_SEARCH_MAX_SCHEMA_CHARS)}`),
@@ -278,7 +347,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
 
   test('stops at the schema ceiling instead of silently changing relevance order', async () => {
     const largeDescription = `Budget branch ${'x'.repeat(40 * 1024)}`;
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const plan = new ToolAvailabilityRuntime(
       [
         tool('budget_branch_primary', largeDescription),
@@ -308,7 +377,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
   });
 
   test('required orchestration tools are visible without changing activation state', () => {
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const plan = runtime().prepare(active, new Set(['docs_read']));
     assert.ok(plan.activeTools.includes('docs_read'));
     assert.equal(active.size, 0);
@@ -316,7 +385,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
   });
 
   test('activation maps isolate overlapping and subsequent turns', async () => {
-    const first = new Map<string, MakaTool>();
+    const first = new Map<string, string>();
     const firstPlan = runtime().prepare(first);
     await searchTool(firstPlan).impl({ query: 'browser click' }, ctx);
     assert.ok(firstPlan.projectActiveTools!().activeTools.includes('browser_click'));
@@ -345,5 +414,49 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.deepEqual(plan.activeTools, ['custom', 'Read']);
     assert.ok(!plan.providerTools.some((candidate) => candidate.name === TOOL_SEARCH_NAME));
     assert.equal(plan.gating, undefined);
+  });
+
+  test('buckets ungrouped native tools into capability families by categoryHint', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [
+        withCategory('agent_spawn', 'subagent'),
+        withCategory('web_search', 'web_read'),
+        withCategory('screen_click', 'computer_use'),
+        withCategory('session_tool', 'custom_tool'), // no family mapping -> other
+        tool('legacy_tool'), // no categoryHint -> other
+      ],
+      { groups: [] },
+      invalid,
+    ).prepare(new Map());
+
+    const bySource = plan.diagnostics([], 0)!.visibleToolNamesBySource!;
+    // Distinct permission hints land in distinct browsing families, not one `other`.
+    assert.deepEqual(bySource.agents, ['agent_spawn']);
+    assert.deepEqual(bySource.web, ['web_search']);
+    assert.deepEqual(bySource.computer_use, ['screen_click']);
+    // Only hint-less / custom_tool tools fall back to `other`.
+    assert.deepEqual(bySource.other, ['legacy_tool', 'session_tool']);
+    // A hint present in the exhaustive family map but mapped to `null`
+    // (custom_tool) still resolves to `other`, not a family of its own.
+    assert.equal(bySource.custom_tool, undefined);
+
+    // Family ids surface in the searchable inventory the model sees.
+    const description = searchTool(plan).description;
+    assert.match(description, /agents:\n- agent_spawn/);
+    assert.match(description, /web:\n- web_search/);
+    assert.match(description, /computer_use:\n- screen_click/);
+  });
+
+  test('a caller-supplied group keeps precedence over a categoryHint family', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [withCategory('agent_spawn', 'subagent'), withCategory('agent_list', 'subagent')],
+      { groups: [{ id: 'orchestration', label: 'Orchestration', toolNames: ['agent_spawn'] }] },
+      invalid,
+    ).prepare(new Map());
+
+    const bySource = plan.diagnostics([], 0)!.visibleToolNamesBySource!;
+    // The explicit group claims agent_spawn; only the remaining hinted tool is family-bucketed.
+    assert.deepEqual(bySource.orchestration, ['agent_spawn']);
+    assert.deepEqual(bySource.agents, ['agent_list']);
   });
 });

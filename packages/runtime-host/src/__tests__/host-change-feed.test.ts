@@ -25,6 +25,8 @@ test('routes each change kind only to subscribed connections', () => {
   const feed = new HostChangeFeed();
   const configuration: unknown[] = [];
   const project: unknown[] = [];
+  const scopedSession: unknown[] = [];
+  const otherGuest: unknown[] = [];
   const all: unknown[] = [];
   feed.attachConnection(
     'configuration',
@@ -38,24 +40,50 @@ test('routes each change kind only to subscribed connections', () => {
   );
   feed.attachConnection(
     'all',
-    { configuration: true, projectCatalog: true, sessionCatalog: true, scheduledTask: true },
+    {
+      configuration: true,
+      connectionCatalog: true,
+      projectCatalog: true,
+      sessionCatalog: true,
+      scheduledTask: true,
+    },
     { send: async (frame) => void all.push(frame) },
+  );
+  feed.attachConnection(
+    'scoped-session',
+    { sessionCatalog: { sessionId: 'session-1', principalId: 'guest-1' } },
+    { send: async (frame) => void scopedSession.push(frame) },
+  );
+  feed.attachConnection(
+    'other-guest',
+    { sessionCatalog: { sessionId: 'session-1', principalId: 'guest-2' } },
+    { send: async (frame) => void otherGuest.push(frame) },
   );
 
   feed.publishConfiguration();
+  feed.publishConnectionCatalog();
   feed.publishProjectCatalog();
+  feed.publishSessionCatalog('session-1');
+  feed.publishSessionCatalog('session-2');
+  feed.publishSessionCatalogAndCloseScope('session-1', 'guest-1');
   feed.publishSessionCatalog('session-1');
   feed.publishScheduledTask(7, 'updated', 'task-1');
 
   assert.deepEqual(
     configuration.map((frame) => (frame as { kind: string }).kind),
     ['configuration.changed'],
+    'a connection catalog refresh is not a settings mutation',
   );
   assert.deepEqual(
     project.map((frame) => (frame as { kind: string }).kind),
     ['project.catalog.changed'],
   );
-  assert.equal(all.length, 4);
+  assert.equal(all.length, 8);
+  assert.deepEqual(scopedSession, [
+    { kind: 'session.catalog.changed', revision: 1, sessionId: 'session-1' },
+    { kind: 'session.catalog.changed', revision: 3, sessionId: 'session-1' },
+  ]);
+  assert.equal(otherGuest.length, 3);
 });
 
 test('keeps catalog revisions independent and removes failed subscriptions', async () => {

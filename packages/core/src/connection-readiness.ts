@@ -42,8 +42,6 @@
  */
 
 import {
-  CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
-  PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
   providerAuthRequiresSecret,
   providerDefaultsOf,
@@ -121,7 +119,7 @@ export interface IsConnectionReadyInput {
 export function isConnectionReady(input: IsConnectionReadyInput): IsConnectionReadyResult {
   const { connection, hasSecret, requestedModel } = input;
 
-  if (!isKnownProvider(connection)) {
+  if (!isRealConnection(connection)) {
     return { ready: false, reason: 'fake_backend' };
   }
   // Ahead of every other check: a retired provider has no Runtime adapter, so
@@ -158,39 +156,12 @@ export function isConnectionReady(input: IsConnectionReadyInput): IsConnectionRe
 }
 
 /**
- * Pre-readiness normalization for ChatGPT-subscription (Codex)
- * connections: models the subscription cannot serve are filtered out of
- * the enabled list and the default falls back to the first servable
- * model, so the readiness gate below judges the models that would
- * actually be used. Pure; returns the input unchanged for non-Codex
- * providers. Moved from the former desktop send gate (#1038) so onboarding
- * and the session compatibility projection share one normalization.
- */
-export function normalizeOpenAiCodexConnection(connection: LlmConnection): LlmConnection {
-  if (connection.providerType !== 'openai-codex') return connection;
-  const fallbackModels = PROVIDER_DEFAULTS['openai-codex'].fallbackModels;
-  const safeModels = (connection.models ?? []).filter(
-    (entry) => entry.id && !CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS.has(entry.id),
-  );
-  const models = safeModels.length ? safeModels : fallbackModels.map((id) => ({ id }));
-  const enabledModelIds = new Set(models.map((entry) => entry.id));
-  const defaultModel =
-    connection.defaultModel &&
-    !CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS.has(connection.defaultModel) &&
-    enabledModelIds.has(connection.defaultModel)
-      ? connection.defaultModel
-      : (models[0]?.id ?? fallbackModels[0] ?? connection.defaultModel);
-  if (models === connection.models && defaultModel === connection.defaultModel) return connection;
-  return { ...connection, defaultModel, models };
-}
-
-/**
  * Whether a connection is backed by a real LLM provider.
  *
  * Since the in-process `fake` backend was retired (#3211) every registered
  * provider runs on `ai-sdk`, so this is exactly "is this `providerType` one
  * the build knows". An unknown one (legacy seed, future provider not yet in
- * PROVIDER_DEFAULTS) is treated as non-real — onboarding then routes the user
+ * PROVIDER_REGISTRY) is treated as non-real — onboarding then routes the user
  * to the add-provider flow which will rebuild a real connection.
  *
  * @kenji PR110a review gate: telemetry / lastTestStatus must NOT
@@ -198,9 +169,5 @@ export function normalizeOpenAiCodexConnection(connection: LlmConnection): LlmCo
  * still unusable when it happens to carry `lastTestStatus: 'verified'`.
  */
 export function isRealConnection(connection: Pick<LlmConnection, 'providerType'>): boolean {
-  return isKnownProvider(connection);
-}
-
-function isKnownProvider(connection: Pick<LlmConnection, 'providerType'>): boolean {
   return providerDefaultsOf(connection.providerType) !== undefined;
 }

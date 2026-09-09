@@ -24,6 +24,7 @@
  * view Host and a fake CDP bridge), so no Electron or live CDP endpoint.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import type { IPage } from '@jackwener/opencli/types';
@@ -40,17 +41,6 @@ import {
   withBrowserPage,
 } from '../browser/session.js';
 import { type BrowserViewHost, provideBrowserViewHost } from '../browser/browser-host.js';
-
-function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
-  let resolve!: (v: T) => void;
-  let reject!: (e: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 function makeFakePage(url: string | null = null): IPage {
@@ -102,6 +92,13 @@ type HostSpy = {
 function installHost(overrides: Partial<BrowserViewHost> = {}): HostSpy {
   const spy: HostSpy = { resolved: [], released: [], disposed: [], host: null as never };
   const host: BrowserViewHost = {
+    currentUrl: () => "https://example.com/",
+    openOriginLease: () => ({
+      approvedOrigin: 'https://example.com',
+      startNavigation: () => {},
+      snapshot: () => ({ epoch: 0, url: 'https://example.com/' }),
+      release: () => {},
+    }),
     canDrive: () => true,
     resolveEndpoint: async (id) => {
       spy.resolved.push(id);

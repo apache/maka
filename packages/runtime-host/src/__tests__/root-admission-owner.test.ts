@@ -45,6 +45,8 @@ test('poisons a Session after an ambiguous durable admission failure', async () 
       },
       readRootTurnAdmission: (sessionId, turnId) =>
         durableStore.readRootTurnAdmission(sessionId, turnId),
+      readRootTurnContinuationAdmission: (sessionId, sourceTurnId, sourceRunId) =>
+        durableStore.readRootTurnContinuationAdmission(sessionId, sourceTurnId, sourceRunId),
       readRootTurnSourceMessageReceipt: (sessionId, sourceMessageId) =>
         durableStore.readRootTurnSourceMessageReceipt(sessionId, sourceMessageId),
       listRootTurnAdmissionsForRecovery: (sessionId) =>
@@ -98,6 +100,75 @@ test('recovery installs the validated tip and the successor extends it', async (
   });
 });
 
+test('a competing continuation is a classified conflict and does not poison the Session', async () => {
+  await withStore(async (store) => {
+    const owner = new RootAdmissionOwner(store);
+    await owner.recoverSession('session');
+    const source = await owner.admitRootTurn(admitInput('session', 'source-turn', 10));
+    const continuation = await owner.admitRootTurn(
+      continuationAdmitInput('session', 'continuation-turn', source.admission, 20),
+    );
+
+    const competing = await owner.admitRootTurn(
+      continuationAdmitInput('session', 'competing-turn', source.admission, 30),
+    );
+    assert.deepEqual(competing, { kind: 'conflict', admission: continuation.admission });
+
+    const successor = await owner.admitRootTurn(admitInput('session', 'successor-turn', 40));
+    assert.equal(successor.kind, 'admitted');
+    assert.equal(successor.admission.previousRootTurnId, continuation.admission.turnId);
+  });
+});
+
+test('recovers the original submitted placement for a promoted source after SQLite reopen', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-root-admission-placement-'));
+  try {
+    const store = createSqliteAgentRunStore(root);
+    let admitted: RootTurnAdmission;
+    try {
+      const owner = new RootAdmissionOwner(store);
+      await owner.recoverSession('session');
+      const content = { text: 'promoted follow-up' };
+      admitted = (
+        await owner.admitRootTurn({
+          sessionId: 'session',
+          turnId: 'turn-promoted',
+          proposedRunId: 'run-promoted',
+          proposedUserMessageId: 'message-promoted',
+          execution: { kind: 'external_message' },
+          normalizedInput: content,
+          sourceMessages: [
+            {
+              messageId: 'message-promoted',
+              content,
+              submittedPlacement: 'next_turn',
+              placement: 'current_turn',
+              disposition: 'steering',
+            },
+          ],
+          admittedAt: 10,
+        })
+      ).admission;
+    } finally {
+      store.close?.();
+    }
+
+    const reopenedStore = createSqliteAgentRunStore(root);
+    try {
+      const reopenedOwner = new RootAdmissionOwner(reopenedStore);
+      const [recovered] = await reopenedOwner.recoverSession('session');
+      assert.ok(recovered);
+      assert.equal(recovered.sourceMessages[0]?.submittedPlacement, 'next_turn');
+      assert.equal(recovered.sourceMessages[0]?.placement, 'current_turn');
+      assert.doesNotThrow(() => reopenedOwner.assertKnownAdmission(admitted));
+    } finally {
+      reopenedStore.close?.();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('fails closed when a known durable admission identity drifts', async () => {
   await withStore(async (store) => {
     const first = await store.admitRootTurn({
@@ -149,6 +220,15 @@ test('fails closed when a known durable admission identity drifts', async () => 
     );
     const [firstSource] = first.admission.sourceMessages;
     assert.ok(firstSource);
+    assert.doesNotThrow(() =>
+      owner.assertKnownAdmission({
+        ...first.admission,
+        sourceMessages: [
+          { ...firstSource, submittedPlacement: firstSource.placement },
+          ...first.admission.sourceMessages.slice(1),
+        ],
+      }),
+    );
     const sourceDrifts: RootTurnAdmission[] = [
       {
         ...first.admission,
@@ -182,6 +262,37 @@ test('fails closed when a known durable admission identity drifts', async () => 
           ...first.admission.sourceMessages.slice(1),
         ],
       },
+      {
+        ...first.admission,
+        sourceMessages: [
+          { ...firstSource, submittedPlacement: 'next_turn' },
+          ...first.admission.sourceMessages.slice(1),
+        ],
+      },
+      {
+        ...first.admission,
+        sourceMessages: [
+          {
+            ...firstSource,
+            submittedIntent: { skillIds: ['writer'] },
+          },
+          ...first.admission.sourceMessages.slice(1),
+        ],
+      },
+      {
+        ...first.admission,
+        sourceMessages: [
+          {
+            ...firstSource,
+            skillInvocation: {
+              loaded: [{ id: 'writer', name: 'Writer' }],
+              failed: [],
+              receipts: [],
+            },
+          },
+          ...first.admission.sourceMessages.slice(1),
+        ],
+      },
     ];
     for (const drifted of sourceDrifts) {
       assert.throws(() => owner.assertKnownAdmission(drifted), /identity changed/);
@@ -195,6 +306,7 @@ test('snapshots recovered admissions without retaining mutable caller references
   const store: RootTurnAdmissionStore = {
     admitRootTurn: async () => ({ kind: 'admitted', admission }),
     readRootTurnAdmission: async () => admission,
+    readRootTurnContinuationAdmission: async () => undefined,
     readRootTurnSourceMessageReceipt: async () => undefined,
     listRootTurnAdmissionsForRecovery: async () => [admission],
   };
@@ -277,6 +389,7 @@ test('returns an owned admission instead of retaining the mutable store result',
   const store: RootTurnAdmissionStore = {
     admitRootTurn: async () => ({ kind: 'admitted', admission: durableAdmission }),
     readRootTurnAdmission: async () => durableAdmission,
+    readRootTurnContinuationAdmission: async () => undefined,
     readRootTurnSourceMessageReceipt: async () => undefined,
     listRootTurnAdmissionsForRecovery: async () => [],
   };
@@ -308,6 +421,35 @@ function admitInput(sessionId: string, turnId: string, admittedAt: number) {
     proposedUserMessageId: `message-${turnId}`,
     execution: { kind: 'external_message' as const },
     normalizedInput: { text: `text-${turnId}` },
+    sourceMessages: [],
+    admittedAt,
+  };
+}
+
+function continuationAdmitInput(
+  sessionId: string,
+  turnId: string,
+  source: RootTurnAdmission,
+  admittedAt: number,
+) {
+  return {
+    sessionId,
+    turnId,
+    proposedRunId: `run-${turnId}`,
+    proposedUserMessageId: null,
+    execution: {
+      kind: 'safe_boundary_continuation' as const,
+      sourceInvocationId: `invocation-${source.turnId}`,
+      sourceRunId: source.runId,
+      sourceTurnId: source.turnId,
+      sourceRuntimeEventHighWater: 7,
+      claimId: `claim-${turnId}`,
+      boundaryDigest: `sha256:${'a'.repeat(64)}` as const,
+      providerReplayDigest: `sha256:${'b'.repeat(64)}` as const,
+      safetyDigest: `sha256:${'c'.repeat(64)}` as const,
+      targetInvocationId: `invocation-${turnId}`,
+    },
+    normalizedInput: null,
     sourceMessages: [],
     admittedAt,
   };

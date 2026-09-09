@@ -17,20 +17,19 @@
  * under the License.
  */
 
-import type { AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import { deriveTurnRecords } from '@maka/core/session';
-import { isSessionInlineRun } from '@maka/core/agent-run';
-import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
+import { isSessionInlineInvocation } from '@maka/core/runtime-invocation';
 import type {
   CanonicalPermissionOutcomeReader,
   CanonicalPermissionOutcomeRecord,
 } from './interaction-authority.js';
 import {
+  activePresentationRuntimeEvents,
   classifyRuntimeEventTerminalFact,
-  compareRuntimeReadModelMessages,
   isHardRuntimeEventReadModelDiagnostic,
   projectRuntimeEventsToStoredMessages,
   type RuntimeEventReadModelDiagnostic,
@@ -40,22 +39,11 @@ import {
   buildRuntimeEventModelReplayPlan,
   type RuntimeEventModelReplayPlan,
 } from './model-history.js';
-import { backfillRuntimeEventsFromStoredMessages } from './runtime-event-backfill.js';
-import {
-  effectiveRunHeaderFromTerminalFact,
-  terminalRunHeaderMatchesFact,
-} from './terminal-run-commit.js';
 
 const CANONICAL_PERMISSION_READ_CONCURRENCY = 8;
 
-export interface RuntimeReadModelProjectionCache {
-  readMessages(sessionId: string): Promise<StoredMessage[]>;
-}
-
 export interface RuntimeReadModelDeps {
-  runStore: AgentRunStore;
   runtimeEventStore: RuntimeEventStore;
-  projectionCache?: RuntimeReadModelProjectionCache;
   canonicalPermissionOutcomes?: CanonicalPermissionOutcomeReader;
 }
 
@@ -64,7 +52,7 @@ export interface RuntimeReadModelSessionView {
   messages: StoredMessage[];
   turns: TurnRecord[];
   events: RuntimeEvent[];
-  runs: AgentRunHeader[];
+  invocations: RuntimeInvocationRecord[];
   diagnostics: RuntimeEventReadModelDiagnostic[];
   terminalFacts: RuntimeEventTerminalFact[];
   replayPlan: RuntimeEventModelReplayPlan;
@@ -94,121 +82,61 @@ export class RuntimeReadModel {
   async getSessionView(sessionId: string): Promise<RuntimeReadModelSessionView> {
     const diagnostics: RuntimeEventReadModelDiagnostic[] = [];
     const inFlightTurnIds = new Set<string>();
-    let runs: AgentRunHeader[];
+    let invocations: RuntimeInvocationRecord[];
     try {
-      runs = await this.deps.runStore.listSessionRuns(sessionId);
+      invocations = (await this.deps.runtimeEventStore.listSessionInvocations(sessionId)).filter(
+        (invocation) => isSessionInlineInvocation(invocation.opening),
+      );
     } catch (error) {
-      throw new RuntimeReadModelError('RuntimeReadModel could not list AgentRun headers', [
-        readModelDiagnostic('unsupported_event', 'AgentRunStore.listSessionRuns failed', {
-          error: errorMessage(error),
-        }),
+      throw new RuntimeReadModelError('RuntimeReadModel could not list Session invocations', [
+        readModelDiagnostic(
+          'unsupported_event',
+          'RuntimeEventStore.listSessionInvocations failed',
+          {
+            error: errorMessage(error),
+          },
+        ),
       ]);
     }
 
-    const inlineRuns = runs.filter(isSessionInlineRun);
-
-    if (inlineRuns.length === 0) {
-      return this.buildView({ runs: inlineRuns, events: [], diagnostics });
+    if (invocations.length === 0) {
+      return this.buildView({ invocations, events: [], diagnostics });
     }
 
-    const ordered: Array<{ event: RuntimeEvent; runIndex: number; eventIndex: number }> = [];
+    const durableEventOrdinals = await this.readSessionRuntimeEventOrdinals(sessionId);
+    const durableEventOrdinalById = new Map(
+      durableEventOrdinals.map(({ event, ordinal }) => [event.id, ordinal]),
+    );
+    const ordered: OrderedRuntimeEvent[] = [];
     const terminalFacts: RuntimeEventTerminalFact[] = [];
-    for (let runIndex = 0; runIndex < inlineRuns.length; runIndex += 1) {
-      const run = inlineRuns[runIndex]!;
-      if (!isTerminalRunStatus(run.status)) {
-        const activeRunContext = await this.readNonTerminalRunContext(sessionId, run);
-        if (activeRunContext?.fact) {
-          inlineRuns[runIndex] = effectiveRunHeaderFromTerminalFact(run, activeRunContext.fact);
-          terminalFacts.push(activeRunContext.fact);
-          diagnostics.push(...activeRunContext.fact.diagnostics);
-          for (let eventIndex = 0; eventIndex < activeRunContext.events.length; eventIndex += 1) {
-            ordered.push({ event: activeRunContext.events[eventIndex]!, runIndex, eventIndex });
-          }
-          continue;
-        }
-
-        const diagnostic = readModelDiagnostic(
-          'incomplete_event',
-          'active run is using the in-flight projection cache',
-          {
-            runId: run.runId,
-            turnId: run.turnId,
-            status: run.status,
-          },
-        );
-        diagnostics.push(diagnostic);
-        inFlightTurnIds.add(run.turnId);
-        if (!this.deps.projectionCache) {
-          throw new RuntimeReadModelError('RuntimeEvent ledger is incomplete for an active run', [
-            readModelDiagnostic(
-              'incomplete_event',
-              'active run has no stable RuntimeEvent read projection',
-              {
-                runId: run.runId,
-                turnId: run.turnId,
-                status: run.status,
-              },
-            ),
-          ]);
-        }
-        const overlayEvents = activeRunContext?.events.flatMap(activeInteractionOverlayEvent) ?? [];
-        for (let eventIndex = 0; eventIndex < overlayEvents.length; eventIndex += 1) {
-          ordered.push({ event: overlayEvents[eventIndex]!, runIndex, eventIndex });
-        }
-        continue;
-      }
-
+    for (let runIndex = 0; runIndex < invocations.length; runIndex += 1) {
+      const invocation = invocations[runIndex]!;
       let runEvents: RuntimeEvent[];
       try {
-        runEvents = await this.deps.runtimeEventStore.readRuntimeEvents(sessionId, run.runId);
+        runEvents = await this.deps.runtimeEventStore.readRuntimeEvents(
+          sessionId,
+          invocation.runId,
+        );
       } catch (error) {
         throw new RuntimeReadModelError('RuntimeEvent ledger read failed', [
           readModelDiagnostic('unsupported_event', 'RuntimeEventStore.readRuntimeEvents failed', {
-            runId: run.runId,
+            runId: invocation.runId,
             error: errorMessage(error),
           }),
         ]);
       }
 
-      if (runEvents.length === 0) {
-        const recovered = await this.backfillMissingRuntimeEvents(sessionId, run);
-        if (recovered.length === 0 || !recovered.some(isTerminalRuntimeEvent)) {
-          throw new RuntimeReadModelError('RuntimeEvent ledger is missing for a terminal run', [
-            readModelDiagnostic(
-              'incomplete_event',
-              'terminal run has no readable RuntimeEvent ledger',
-              {
-                runId: run.runId,
-                turnId: run.turnId,
-              },
-            ),
-          ]);
-        }
-        diagnostics.push(
-          readModelDiagnostic(
-            'incomplete_event',
-            'terminal run recovered from legacy projection cache',
-            {
-              runId: run.runId,
-              turnId: run.turnId,
-            },
-          ),
-        );
-        runEvents = recovered;
-      }
-      if (!runEvents.some(isTerminalRuntimeEvent)) {
-        throw new RuntimeReadModelError(
-          'RuntimeEvent ledger has no terminal fact for a terminal run',
-          [
-            readModelDiagnostic('incomplete_event', 'terminal run has no terminal RuntimeEvent', {
-              runId: run.runId,
-              turnId: run.turnId,
-            }),
-          ],
-        );
+      // No terminal event yet: the invocation is still open, or the process died
+      // holding it. Either way its own events are the whole truth about it, read
+      // as a running turn reads — the arriving text presented as settled. No
+      // durable ordinals exist for them yet, so they keep ledger order.
+      if (!invocation.terminalEvent) {
+        inFlightTurnIds.add(invocation.turnId);
+        appendOrderedEvents(ordered, activePresentationRuntimeEvents(runEvents), runIndex);
+        continue;
       }
 
-      const terminalFact = classifyRuntimeEventTerminalFact(run, runEvents);
+      const terminalFact = classifyRuntimeEventTerminalFact(invocation, runEvents);
       diagnostics.push(...terminalFact.diagnostics);
       if (!terminalFact.fact) {
         throw new RuntimeReadModelError(
@@ -216,42 +144,15 @@ export class RuntimeReadModel {
           diagnostics,
         );
       }
-      if (!terminalRunHeaderMatchesFact(run, terminalFact.fact)) {
-        diagnostics.push(
-          readModelDiagnostic(
-            'incomplete_event',
-            'terminal run header does not match RuntimeEvent terminal fact',
-            {
-              runId: run.runId,
-              turnId: run.turnId,
-              headerStatus: run.status,
-              factStatus: terminalFact.fact.runStatus,
-              headerFailureClass: run.failureClass,
-              factFailureClass: terminalFact.fact.failureClass,
-              headerAbortSource: run.abortSource,
-              factAbortSource: terminalFact.fact.abortSource,
-            },
-          ),
-        );
-      }
-      inlineRuns[runIndex] = effectiveRunHeaderFromTerminalFact(run, terminalFact.fact);
       terminalFacts.push(terminalFact.fact);
 
-      for (let eventIndex = 0; eventIndex < runEvents.length; eventIndex += 1) {
-        ordered.push({ event: runEvents[eventIndex]!, runIndex, eventIndex });
-      }
+      appendOrderedEvents(ordered, runEvents, runIndex, durableEventOrdinalById);
     }
 
-    ordered.sort(
-      (a, b) =>
-        a.event.ts - b.event.ts ||
-        a.runIndex - b.runIndex ||
-        a.eventIndex - b.eventIndex ||
-        a.event.id.localeCompare(b.event.id),
-    );
+    ordered.sort(compareOrderedRuntimeEvents);
 
     return this.buildView({
-      runs: inlineRuns,
+      invocations,
       events: ordered.map((item) => item.event),
       diagnostics,
       terminalFacts,
@@ -259,39 +160,24 @@ export class RuntimeReadModel {
     });
   }
 
-  private async readNonTerminalRunContext(
+  private async readSessionRuntimeEventOrdinals(
     sessionId: string,
-    run: AgentRunHeader,
-  ): Promise<{ events: RuntimeEvent[]; fact?: RuntimeEventTerminalFact } | undefined> {
-    let runEvents: RuntimeEvent[];
+  ): Promise<ReadonlyArray<{ ordinal: number; event: RuntimeEvent }>> {
     try {
-      runEvents = await this.deps.runtimeEventStore.readRuntimeEvents(sessionId, run.runId);
-    } catch {
-      return undefined;
+      return await this.deps.runtimeEventStore.readSessionRuntimeEventEntries(sessionId);
+    } catch (error) {
+      throw new RuntimeReadModelError('RuntimeEvent session order read failed', [
+        readModelDiagnostic(
+          'unsupported_event',
+          'RuntimeEventStore.readSessionRuntimeEventEntries failed',
+          { error: errorMessage(error) },
+        ),
+      ]);
     }
-    const fact = classifyRuntimeEventTerminalFact(run, runEvents).fact;
-    return {
-      events: runEvents,
-      ...(fact ? { fact } : {}),
-    };
-  }
-
-  private async backfillMissingRuntimeEvents(
-    sessionId: string,
-    run: AgentRunHeader,
-  ): Promise<RuntimeEvent[]> {
-    if (!this.deps.projectionCache) return [];
-    let messages: StoredMessage[];
-    try {
-      messages = await this.deps.projectionCache.readMessages(sessionId);
-    } catch {
-      return [];
-    }
-    return backfillRuntimeEventsFromStoredMessages({ run, messages }).events;
   }
 
   private async buildView(input: {
-    runs: AgentRunHeader[];
+    invocations: RuntimeInvocationRecord[];
     events: RuntimeEvent[];
     diagnostics: RuntimeEventReadModelDiagnostic[];
     terminalFacts?: RuntimeEventTerminalFact[];
@@ -299,7 +185,7 @@ export class RuntimeReadModel {
   }): Promise<RuntimeReadModelSessionView> {
     const canonicalPermissionRead = await this.readCanonicalPermissionOutcomes(input.events);
     const projected = projectRuntimeEventsToStoredMessages(input.events, {
-      runHeaders: input.runs,
+      invocations: input.invocations,
       canonicalPermissionOutcomes: canonicalPermissionRead.outcomes,
     });
     const diagnostics = [
@@ -314,48 +200,14 @@ export class RuntimeReadModel {
       throw new RuntimeReadModelError('RuntimeEvent read projection is incomplete', diagnostics);
     }
 
-    const sessionId = input.runs[0]?.sessionId;
-    let cachedMessages: StoredMessage[] | undefined;
-    if (sessionId && this.deps.projectionCache) {
-      try {
-        cachedMessages = await this.deps.projectionCache.readMessages(sessionId);
-      } catch (error) {
-        const diagnostic = readModelDiagnostic(
-          'unsupported_event',
-          'SessionProjectionCache.readMessages failed',
-          {
-            error: errorMessage(error),
-          },
-        );
-        diagnostics.push(diagnostic);
-        if (input.inFlightTurnIds && input.inFlightTurnIds.size > 0) {
-          throw new RuntimeReadModelError(
-            'RuntimeEvent active projection cache read failed',
-            diagnostics,
-          );
-        }
-      }
-    }
-
-    const messages =
-      input.inFlightTurnIds && input.inFlightTurnIds.size > 0
-        ? mergeInFlightProjectionCache(
-            projected.messages,
-            cachedMessages ?? [],
-            input.inFlightTurnIds,
-          )
-        : projected.messages;
-
-    diagnostics.push(
-      ...this.compareProjectionCache(messages, cachedMessages, canonicalPermissionRead.outcomes),
-    );
+    const messages = projected.messages;
 
     return {
       source: 'runtime_events',
       messages,
-      turns: deriveTurnRecords(messages),
+      turns: runningTurnRecords(deriveTurnRecords(messages), input.inFlightTurnIds),
       events: input.events,
-      runs: input.runs,
+      invocations: input.invocations,
       diagnostics,
       terminalFacts: input.terminalFacts ?? [],
       replayPlan: buildRuntimeEventModelReplayPlan(input.events),
@@ -407,82 +259,35 @@ export class RuntimeReadModel {
     );
     return { outcomes, diagnostics };
   }
-
-  private compareProjectionCache(
-    messages: readonly StoredMessage[],
-    cached: readonly StoredMessage[] | undefined,
-    canonicalPermissionOutcomes: ReadonlyMap<string, CanonicalPermissionOutcomeRecord>,
-  ): RuntimeEventReadModelDiagnostic[] {
-    if (!cached) return [];
-    const canonicalRequestIds = new Set(canonicalPermissionOutcomes.keys());
-    const excludesCanonicalPermission = (message: StoredMessage): boolean =>
-      message.type === 'permission_decision' && canonicalRequestIds.has(message.id);
-    return compareRuntimeReadModelMessages(
-      messages.filter((message) => !excludesCanonicalPermission(message)),
-      cached.filter((message) => !excludesCanonicalPermission(message)),
-    ).diagnostics;
-  }
 }
 
 /**
- * The interaction facts an active run must keep even while its messages come
- * from the in-flight projection cache. Permission prompts were always carried
- * here; sandbox boundary requests and decisions belong for the same reason
- * (#1612): they are the only durable record that a prompt was raised and how
- * it settled, so dropping them makes a pending request invisible to anything
- * reading the view instead of the live backend.
+ * A turn whose invocation has not ended is running.
+ *
+ * The transcript has no row that says so, and it should not: "still running" is
+ * the absence of the terminal event, read off the invocation itself. Rows are
+ * what the turn produced, and a turn that has produced an answer but not ended
+ * would otherwise read as finished.
  */
-function activeInteractionOverlayEvent(event: RuntimeEvent): RuntimeEvent[] {
-  const permissionRequest = event.actions?.permissionRequest;
-  const permissionAnswerAccepted = event.actions?.permissionAnswerAccepted;
-  const permissionClosureAccepted = event.actions?.permissionClosureAccepted;
-  const sandboxBoundaryRequest = event.actions?.stateDelta?.sandboxBoundaryRequest;
-  const sandboxBoundaryDecision = event.actions?.stateDelta?.sandboxBoundaryDecision;
-  if (
-    !permissionRequest &&
-    !permissionAnswerAccepted &&
-    !permissionClosureAccepted &&
-    sandboxBoundaryRequest === undefined &&
-    sandboxBoundaryDecision === undefined
-  ) {
-    return [];
+function runningTurnRecords(
+  turns: readonly TurnRecord[],
+  inFlightTurnIds: ReadonlySet<string> | undefined,
+): TurnRecord[] {
+  if (!inFlightTurnIds || inFlightTurnIds.size === 0) return [...turns];
+  const running = new Set(inFlightTurnIds);
+  const marked = turns.map((turn) => {
+    if (!running.delete(turn.turnId)) return turn;
+    return { ...turn, status: 'running' as const, statusSource: 'recorded' as const };
+  });
+  // An invocation that has opened but produced nothing yet still has a turn.
+  for (const turnId of running) {
+    marked.push({
+      turnId,
+      status: 'running',
+      statusSource: 'recorded',
+    });
   }
-  const overlay = { ...event };
-  delete overlay.content;
-  delete overlay.status;
-  const stateDelta = {
-    ...(sandboxBoundaryRequest !== undefined ? { sandboxBoundaryRequest } : {}),
-    ...(sandboxBoundaryDecision !== undefined ? { sandboxBoundaryDecision } : {}),
-  };
-  overlay.actions = {
-    ...(permissionRequest ? { permissionRequest } : {}),
-    ...(permissionAnswerAccepted ? { permissionAnswerAccepted } : {}),
-    ...(permissionClosureAccepted ? { permissionClosureAccepted } : {}),
-    ...(Object.keys(stateDelta).length > 0 ? { stateDelta } : {}),
-  };
-  return [overlay];
-}
-
-function mergeInFlightProjectionCache(
-  runtimeMessages: readonly StoredMessage[],
-  cachedMessages: readonly StoredMessage[],
-  inFlightTurnIds: ReadonlySet<string>,
-): StoredMessage[] {
-  const merged = runtimeMessages.map((message, index) => ({ message, index }));
-  const seenIds = new Set(runtimeMessages.map((message) => message.id));
-  for (const cached of cachedMessages) {
-    const turnId = messageTurnId(cached);
-    if (!turnId || !inFlightTurnIds.has(turnId) || seenIds.has(cached.id)) continue;
-    seenIds.add(cached.id);
-    merged.push({ message: cached, index: merged.length });
-  }
-  return merged
-    .sort((a, b) => a.message.ts - b.message.ts || a.index - b.index)
-    .map((entry) => entry.message);
-}
-
-function messageTurnId(message: StoredMessage): string | undefined {
-  return 'turnId' in message && typeof message.turnId === 'string' ? message.turnId : undefined;
+  return marked;
 }
 
 function readModelDiagnostic(
@@ -497,10 +302,56 @@ function readModelDiagnostic(
   };
 }
 
-function isTerminalRunStatus(status: AgentRunHeader['status']): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled';
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+interface OrderedRuntimeEvent {
+  event: RuntimeEvent;
+  runIndex: number;
+  eventIndex: number;
+  ordinal?: number;
+}
+
+function appendOrderedEvents(
+  ordered: OrderedRuntimeEvent[],
+  events: readonly RuntimeEvent[],
+  runIndex: number,
+  ordinals?: ReadonlyMap<string, number>,
+): void {
+  const nextOrdinals: Array<number | undefined> = new Array(events.length);
+  let nextOrdinal: number | undefined;
+  for (let eventIndex = events.length - 1; eventIndex >= 0; eventIndex -= 1) {
+    nextOrdinal = ordinals?.get(events[eventIndex]!.id) ?? nextOrdinal;
+    nextOrdinals[eventIndex] = nextOrdinal;
+  }
+  let previousOrdinal: number | undefined;
+  for (let eventIndex = 0; eventIndex < events.length; eventIndex += 1) {
+    const event = events[eventIndex]!;
+    const durableOrdinal = ordinals?.get(event.id);
+    if (durableOrdinal !== undefined) previousOrdinal = durableOrdinal;
+    const ordinal = durableOrdinal ?? previousOrdinal ?? nextOrdinals[eventIndex];
+    ordered.push({
+      event,
+      runIndex,
+      eventIndex,
+      ...(ordinal !== undefined ? { ordinal } : {}),
+    });
+  }
+}
+
+function compareOrderedRuntimeEvents(a: OrderedRuntimeEvent, b: OrderedRuntimeEvent): number {
+  if (a.ordinal !== undefined || b.ordinal !== undefined) {
+    if (a.ordinal === undefined) return 1;
+    if (b.ordinal === undefined) return -1;
+    return (
+      a.ordinal - b.ordinal || a.eventIndex - b.eventIndex || a.event.id.localeCompare(b.event.id)
+    );
+  }
+  return (
+    a.event.ts - b.event.ts ||
+    a.runIndex - b.runIndex ||
+    a.eventIndex - b.eventIndex ||
+    a.event.id.localeCompare(b.event.id)
+  );
 }

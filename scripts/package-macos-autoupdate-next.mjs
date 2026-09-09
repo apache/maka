@@ -17,9 +17,11 @@
  * under the License.
  */
 
-import { access, readFile, rm } from 'node:fs/promises';
+import { access, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolveDesktopReleaseTarget } from './desktop-nightly.mjs';
+import { desktopReleaseTargets } from './desktop-release-targets.mjs';
 import {
   bumpedAutoupdateVersion,
   verifyDesktopUpdateArtifacts,
@@ -39,13 +41,17 @@ export async function packageMacosAutoupdateNext({
   if (platform !== 'darwin' || arch !== 'arm64') {
     throw new Error('The macOS auto-update build requires an Apple Silicon macOS host.');
   }
-  const manifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
-  const nextVersion = bumpedAutoupdateVersion(manifest.version);
+  const candidate = await resolveDesktopReleaseTarget('macos-arm64', { environment: env });
+  const nextVersion = bumpedAutoupdateVersion(candidate.version);
   const outputDirectory = join(desktopRoot, 'release-autoupdate-next');
-  const zipName = `Maka-${nextVersion}-mac-arm64.zip`;
+  // The bumped build is the same target under a different version, so its ZIP is
+  // named by the same descriptor the candidate's is.
+  const zipName = desktopReleaseTargets(nextVersion, { nightly: false })
+    .find((entry) => entry.name === 'macos-arm64')
+    .payloads.find((name) => name.endsWith('.zip'));
 
   await access(join(desktopRoot, 'dist'));
-  await access(join(desktopRoot, 'release', `Maka-${manifest.version}-mac-arm64.zip`));
+  await access(candidate.payloadPath('.zip'));
   await rm(outputDirectory, { recursive: true, force: true });
 
   const args = [
@@ -77,7 +83,7 @@ export async function packageMacosAutoupdateNext({
     directory: outputDirectory,
     metadataName: 'latest-mac.yml',
     version: nextVersion,
-    artifactName: zipName,
+    artifactNames: [zipName],
   });
   await rm(join(outputDirectory, 'mac-arm64'), { recursive: true, force: true });
   return {

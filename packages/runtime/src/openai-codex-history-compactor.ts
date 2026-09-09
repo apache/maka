@@ -17,28 +17,36 @@
  * under the License.
  */
 
-import type { HistoryCompactSummaryInput } from './ai-sdk-compaction-contract.js';
+import type {
+  HistoryCompactSummarizer,
+  HistoryCompactSummaryInput,
+} from './ai-sdk-compaction-contract.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
 import {
+  canContinueHistoryCompactCheckpointForModel,
   historyCompactCheckpointToModelMessage,
   isProviderHistoryCompactCheckpoint,
   type HistoryCompactProviderState,
 } from './history-compact-checkpoint.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ModelMessage } from './model-protocol.js';
-import { fitHistoryCompactMessages } from './history-compact-input-fit.js';
 import {
+  admitProviderReasoningReplayItems,
   buildRuntimeEventModelReplayPlan,
-  type RuntimeEventModelReplayItem,
+  buildRuntimeEventReplayTimeline,
+  compatibleProviderReasoningReplayEventIds,
+  type RuntimeEventReplayTimelineEntry,
+  type RuntimeEventReplayToolCallItem,
+  type RuntimeEventReplayToolResultItem,
 } from './model-history.js';
 import { withProviderStreamTracking } from './provider-request-telemetry.js';
-import { toolResultOutput } from './tool-result-output.js';
-
-export { fitHistoryCompactMessages as fitOpenAiCodexCompactionMessages } from './history-compact-input-fit.js';
+import { effectiveReplayToolResultOutput } from './durable-tool-result-projection.js';
+import { classifyError, providerFailureDiagnostic } from './provider-error-classification.js';
 
 export interface BuildOpenAiCodexHistoryCompactorOptions {
   resolveModel: () => unknown;
-  connectionSlug: string;
+  connectionId: string;
+  providerStateIdentity?: `sha256:${string}`;
   modelId: string;
   providerOptions?: Record<string, unknown>;
 }
@@ -62,20 +70,32 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
       const canContinuePrevious =
         previous &&
         isProviderHistoryCompactCheckpoint(previous) &&
-        previous.providerState.kind === 'openai_codex_remote_v2' &&
-        previous.providerState.connectionSlug === options.connectionSlug &&
-        previous.providerState.modelId === options.modelId;
+        canContinueHistoryCompactCheckpointForModel(
+          previous,
+          { providerType: 'openai-codex' },
+          options.connectionId,
+          options.modelId,
+        );
       const events = canContinuePrevious
         ? (input.newlyFoldedRuntimeEvents ?? [])
         : input.source.foldedRuntimeEvents;
-      const projectedMessages = openAiCodexCompactionMessages(events);
+      const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
+        events,
+        input.source.invocations,
+        options.providerStateIdentity,
+        options.modelId,
+        input.runId,
+      );
+      const projectedMessages = openAiCodexCompactionMessages(
+        events,
+        providerReasoningReplayEventIds,
+      );
       if (canContinuePrevious) {
         projectedMessages.unshift(historyCompactCheckpointToModelMessage(previous));
       }
-      const messages = fitHistoryCompactMessages(projectedMessages, {
-        maxInputEstimatedTokens: input.inputBudget?.maxEstimatedTokens,
-        charsPerToken: input.inputBudget?.charsPerToken,
-      });
+      // Whether this input fits the compaction endpoint is its own answer;
+      // nothing is trimmed on a local estimate beforehand (#4559).
+      const messages = projectedMessages;
 
       const providerRequestTracker = input.providerRequestTracker;
       const ai = await loadAiSdkModule();
@@ -84,6 +104,7 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
             model: options.resolveModel(),
             wrapLanguageModel: ai.wrapLanguageModel,
             tracker: providerRequestTracker,
+            historyCompactRoute: 'provider_native',
             ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
           })
         : options.resolveModel();
@@ -106,16 +127,65 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
       if (streamError) throw streamError;
       const state = extractOpenAiCodexCompactionState(
         content,
-        options.connectionSlug,
+        options.connectionId,
         options.modelId,
       );
       if (!state) throw new HistoryCompactSummarizerError('invalid_provider_state');
       return state;
     } catch (error) {
       if (error instanceof HistoryCompactSummarizerError) throw error;
+      if (classifyError(error) === 'context_overflow') {
+        throw new HistoryCompactSummarizerError('input_too_large', { cause: error });
+      }
       throw new HistoryCompactSummarizerError('provider_error', { cause: error });
     }
   };
+}
+
+/**
+ * Prefer the Codex-native checkpoint, but retain a portable liveness path when
+ * the native protocol is unavailable for this request. The fallback is narrow:
+ * provider capacity/auth/transient failures keep their original outcome rather
+ * than doubling traffic through the same unhealthy connection.
+ */
+export function withOpenAiCodexHistoryCompactionFallback(
+  preferred: HistoryCompactSummarizer,
+  fallback: HistoryCompactSummarizer,
+): HistoryCompactSummarizer {
+  return async (input) => {
+    try {
+      return await preferred(input);
+    } catch (error) {
+      if (!shouldFallbackFromOpenAiCodexHistoryCompaction(error, input.abortSignal)) throw error;
+      return await fallback(input);
+    }
+  };
+}
+
+export function shouldFallbackFromOpenAiCodexHistoryCompaction(
+  error: unknown,
+  abortSignal?: AbortSignal,
+): boolean {
+  if (abortSignal?.aborted || hasAbortCause(error)) return false;
+  if (!(error instanceof HistoryCompactSummarizerError)) return false;
+  if (error.reason === 'input_too_large' || error.reason === 'invalid_provider_state') return true;
+  if (error.reason !== 'provider_error') return false;
+  const diagnostic = providerFailureDiagnostic(error);
+  return diagnostic.errorClass === 'request_rejected' && !diagnostic.retryable;
+}
+
+function hasAbortCause(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current = error;
+  for (let depth = 0; depth < 6 && current !== undefined && !seen.has(current); depth += 1) {
+    seen.add(current);
+    if (current instanceof Error && current.name === 'AbortError') return true;
+    current =
+      typeof current === 'object' && current !== null && 'cause' in current
+        ? (current as { cause?: unknown }).cause
+        : undefined;
+  }
+  return false;
 }
 
 /**
@@ -123,57 +193,18 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
  * Runtime persists tool calls/results before a step's reasoning/text closer;
  * grouping lets the compactor keep settled tool evidence before grounded text.
  */
-export function openAiCodexCompactionMessages(events: readonly RuntimeEvent[]): ModelMessage[] {
-  type ToolCall = Extract<RuntimeEventModelReplayItem, { kind: 'tool_call' }>;
-  type ToolResult = Extract<RuntimeEventModelReplayItem, { kind: 'tool_result' }>;
-  type Thinking = Extract<RuntimeEventModelReplayItem, { kind: 'thinking' }>;
-  type Text = Extract<RuntimeEventModelReplayItem, { kind: 'text' }>;
-  type Step = {
-    calls: ToolCall[];
-    reasoning: Thinking[];
-    text?: Text;
-  };
-  type TimelineEntry =
-    | { kind: 'step'; stepId: string }
-    | { kind: 'legacy_call'; call: ToolCall }
-    | { kind: 'text'; item: Text }
-    | { kind: 'thinking'; item: Thinking };
-
-  const items = buildRuntimeEventModelReplayPlan(events).items;
-  const results = new Map<string, ToolResult>();
-  for (const item of items) {
-    if (item.kind === 'tool_result') results.set(item.toolCallId, item);
-  }
-
-  const steps = new Map<string, Step>();
-  const timeline: TimelineEntry[] = [];
-  const step = (stepId: string): Step => {
-    let value = steps.get(stepId);
-    if (!value) {
-      value = { calls: [], reasoning: [] };
-      steps.set(stepId, value);
-      timeline.push({ kind: 'step', stepId });
-    }
-    return value;
-  };
-  for (const item of items) {
-    if (item.kind === 'tool_result') continue;
-    if (item.kind === 'tool_call') {
-      if (item.stepId) step(item.stepId).calls.push(item);
-      else timeline.push({ kind: 'legacy_call', call: item });
-      continue;
-    }
-    if (item.kind === 'thinking') {
-      if (item.stepId) step(item.stepId).reasoning.push(item);
-      else timeline.push({ kind: 'thinking', item });
-      continue;
-    }
-    if (item.role === 'assistant' && item.stepId) step(item.stepId).text = item;
-    else timeline.push({ kind: 'text', item });
-  }
+function openAiCodexCompactionMessages(
+  events: readonly RuntimeEvent[],
+  providerReasoningReplayEventIds: ReadonlySet<string>,
+): ModelMessage[] {
+  const items = admitProviderReasoningReplayItems(
+    buildRuntimeEventModelReplayPlan(events).items,
+    providerReasoningReplayEventIds,
+  );
+  const timeline = buildRuntimeEventReplayTimeline(items);
 
   const messages: ModelMessage[] = [];
-  const pushToolResult = (result: ToolResult) => {
+  const pushToolResult = (result: RuntimeEventReplayToolResultItem) => {
     messages.push({
       role: 'tool',
       content: [
@@ -181,12 +212,15 @@ export function openAiCodexCompactionMessages(events: readonly RuntimeEvent[]): 
           type: 'tool-result',
           toolCallId: result.toolCallId,
           toolName: result.toolName,
-          output: toolResultOutput(result.output, result.isError),
+          output: effectiveReplayToolResultOutput(result),
         },
       ],
     });
   };
-  const toolCallPart = (call: ToolCall, providerExecuted = call.providerExecuted) => ({
+  const toolCallPart = (
+    call: RuntimeEventReplayToolCallItem,
+    providerExecuted = call.providerExecuted,
+  ) => ({
     type: 'tool-call' as const,
     toolCallId: call.toolCallId,
     toolName: call.toolName,
@@ -194,7 +228,9 @@ export function openAiCodexCompactionMessages(events: readonly RuntimeEvent[]): 
     ...(call.providerOptions ? { providerOptions: call.providerOptions } : {}),
     ...(providerExecuted !== undefined ? { providerExecuted } : {}),
   });
-  const pushStep = (value: Step) => {
+  const pushStep = (
+    value: Extract<RuntimeEventReplayTimelineEntry, { kind: 'assistant_step' }>,
+  ) => {
     const earlyContent: Array<Record<string, unknown>> = [];
     for (const reasoning of value.reasoning) {
       earlyContent.push({
@@ -204,24 +240,21 @@ export function openAiCodexCompactionMessages(events: readonly RuntimeEvent[]): 
       });
     }
     const providerCalls = value.calls.filter(
-      (call) =>
-        call.providerExecuted === true && results.get(call.toolCallId)?.providerExecuted === true,
+      ({ call, result }) => call.providerExecuted === true && result?.providerExecuted === true,
     );
     // OpenAI's Responses converter omits hosted calls and results when
     // `store:false`. For a compaction request they are historical evidence,
     // so lower each settled pair to an ordinary function call/result instead.
     // This preserves the provider step order without creating a dangling
     // function_call_output or silently dropping the available tool evidence.
-    for (const call of providerCalls) {
+    for (const { call } of providerCalls) {
       earlyContent.push(toolCallPart(call, false));
     }
     if (providerCalls.length > 0 && earlyContent.length > 0) {
       messages.push({ role: 'assistant', content: earlyContent } as ModelMessage);
     }
-    for (const call of providerCalls) {
-      const result = results.get(call.toolCallId)!;
-      results.delete(call.toolCallId);
-      pushToolResult(result);
+    for (const { result } of providerCalls) {
+      pushToolResult(result!);
     }
     const lateContent: Array<Record<string, unknown>> =
       providerCalls.length === 0 ? earlyContent : [];
@@ -232,26 +265,22 @@ export function openAiCodexCompactionMessages(events: readonly RuntimeEvent[]): 
         ...(value.text.providerOptions ? { providerOptions: value.text.providerOptions } : {}),
       });
     }
-    for (const call of value.calls) {
+    for (const { call } of value.calls) {
       if (call.providerExecuted !== true) lateContent.push(toolCallPart(call));
     }
     if (lateContent.length > 0) {
       messages.push({ role: 'assistant', content: lateContent } as ModelMessage);
     }
-    for (const call of value.calls) {
+    for (const { call, result } of value.calls) {
       if (call.providerExecuted === true) continue;
-      const result = results.get(call.toolCallId);
       if (!result || result.providerExecuted === true) continue;
-      results.delete(call.toolCallId);
       pushToolResult(result);
     }
   };
 
   for (const entry of timeline) {
-    if (entry.kind === 'step') {
-      pushStep(steps.get(entry.stepId)!);
-    } else if (entry.kind === 'legacy_call') {
-      pushStep({ calls: [entry.call], reasoning: [] });
+    if (entry.kind === 'assistant_step') {
+      pushStep(entry);
     } else if (entry.kind === 'thinking') {
       messages.push({
         role: 'assistant',
@@ -277,7 +306,7 @@ export function openAiCodexCompactionMessages(events: readonly RuntimeEvent[]): 
 
 export function extractOpenAiCodexCompactionState(
   content: readonly unknown[] | undefined,
-  connectionSlug: string,
+  connectionId: string,
   modelId: string,
 ): HistoryCompactProviderState | undefined {
   const parts = (content ?? []).filter(isOpenAiCompactionPart);
@@ -286,7 +315,7 @@ export function extractOpenAiCodexCompactionState(
   if (!nonEmpty(metadata.itemId) || !nonEmpty(metadata.encryptedContent)) return undefined;
   return {
     kind: 'openai_codex_remote_v2',
-    connectionSlug,
+    connectionId,
     modelId,
     itemId: metadata.itemId,
     encryptedContent: metadata.encryptedContent,

@@ -113,7 +113,8 @@ and [`host events contract`](../../docs/computer-use-host-events-contract.md).
 Install dependencies once at the repository root, then run:
 
 ```sh
-npm --workspace @maka/computer-use test
+npm run build
+npm --workspace @maka/computer-use run test:dist
 npm --workspace @maka/computer-use run typecheck
 ```
 

@@ -23,7 +23,10 @@ import {
   type StoredMessage,
   type TurnStatus,
 } from '@maka/core/session';
-import { DesktopTranscriptRangeStore } from './desktop-transcript-range-store.js';
+import {
+  createDesktopTranscriptRangeController,
+  DesktopTranscriptRangeStore,
+} from './desktop-transcript-range-store.js';
 import type {
   WorkHubCoordinationPort,
   WorkHubCoordinationTurn,
@@ -36,25 +39,17 @@ import type {
   OperationOutcome,
   OperationError,
 } from '@maka/runtime-host/protocol';
-import { boundedWorkHubTimelineText } from './workhub-controller.js';
+import { boundedWorkHubTimelineText, WorkHubCoordinationFailure } from './workhub-controller.js';
+
+export { WorkHubCoordinationFailure };
 import type { WorkHubDesktopTranscriptBridge } from './workhub-session-port.js';
 
 const WORKHUB_COORDINATION_TURN_LIMIT = 40;
-
-export class WorkHubCoordinationFailure extends Error {
-  constructor(
-    readonly code: OperationError<'workhub.coordination.act'>['code'],
-    message: string,
-  ) {
-    super(message);
-    this.name = 'WorkHubCoordinationFailure';
-  }
-}
+const WORKHUB_COORDINATION_LATEST_RECORD_MAX_BYTES = 512 * 1024;
 
 export function createDesktopWorkHubCoordinationPort(deps: {
   sessionId: string;
   transcripts: WorkHubDesktopTranscriptBridge;
-  answer(input: { turnId: string; text: string }): Promise<{ turnId: string }>;
   record(input: {
     turnId: string;
     userText: string;
@@ -66,7 +61,6 @@ export function createDesktopWorkHubCoordinationPort(deps: {
   ): Promise<OperationOutcome<'workhub.coordination.act'>>;
 }): WorkHubCoordinationPort {
   return {
-    answer: deps.answer,
     record: deps.record,
     candidates: deps.candidates,
     async act(input) {
@@ -80,31 +74,84 @@ export function createDesktopWorkHubCoordinationPort(deps: {
       const store = new DesktopTranscriptRangeStore(deps.sessionId);
       let disposed = false;
       let ready = false;
-      const handle = await deps.transcripts.open(
+      let completedLatestGeneration: string | undefined;
+      let loadingLatestGeneration: string | undefined;
+      let latestLoadRevision = 0;
+      let opened = false;
+      const emit = () => {
+        handler(projectWorkHubCoordinationTurns(store.snapshot().messages));
+      };
+      const emitOrCompleteLatest = () => {
+        if (!opened || !ready) return;
+        const snapshot = store.snapshot();
+        const latestRecordIsIncomplete =
+          snapshot.durableThrough !== null &&
+          (snapshot.newestSequence === null || snapshot.newestSequence < snapshot.durableThrough);
+        if (
+          latestRecordIsIncomplete &&
+          completedLatestGeneration !== snapshot.generation &&
+          loadingLatestGeneration !== snapshot.generation
+        ) {
+          const generation = snapshot.generation;
+          const revision = latestLoadRevision;
+          loadingLatestGeneration = generation;
+          void controller
+            .loadLatest(WORKHUB_COORDINATION_LATEST_RECORD_MAX_BYTES)
+            .then(() => {
+              if (disposed || latestLoadRevision !== revision) return;
+              completedLatestGeneration = generation;
+              if (loadingLatestGeneration === generation) loadingLatestGeneration = undefined;
+            })
+            .catch((error) => {
+              if (disposed || latestLoadRevision !== revision) return;
+              if (loadingLatestGeneration === generation) {
+                loadingLatestGeneration = undefined;
+              }
+              onError(error);
+            });
+          return;
+        }
+        emit();
+      };
+      const controller = createDesktopTranscriptRangeController(store, (signal) => deps.transcripts.open(
         deps.sessionId,
         (batch) => {
           if (disposed) return;
           try {
+            if (!store.accepts(batch)) return;
             const changed = store.accept(batch);
-            ready ||= batch.ready;
-            if (ready && (changed || batch.ready)) {
-              handler(projectWorkHubCoordinationTurns(store.snapshot().messages));
+            if (batch.reset) {
+              ready = false;
+              // Navigation replies reset the range too. Keep their in-flight
+              // guard until the read settles, including sparse durable tails.
+              if (loadingLatestGeneration !== batch.generation) {
+                latestLoadRevision += 1;
+                completedLatestGeneration = undefined;
+                loadingLatestGeneration = undefined;
+              }
             }
+            ready ||= batch.ready;
+            if (changed || batch.ready) emitOrCompleteLatest();
           } catch (error) {
             onError(error);
           }
         },
         (cancel) => {
-          if (disposed) cancel();
+          if (signal.aborted) cancel();
+          else signal.addEventListener('abort', cancel, { once: true });
         },
-      ).catch((error) => {
+      ));
+      await controller.ready().catch((error) => {
         onError(error);
         throw error;
       });
+      opened = true;
+
+      emitOrCompleteLatest();
       return {
         async close() {
           disposed = true;
-          await handle.close();
+          await controller.close();
         },
       };
     },
@@ -119,17 +166,53 @@ export function projectWorkHubCoordinationTurns(
   );
   const turns: WorkHubCoordinationTurn[] = [];
   const latestUserIndexByTurnId = new Map<string, number>();
+  const terminalLinkState = new Map<string, 'superseded' | 'aborted' | 'stopped'>();
+  const stopResolutionByDelegationId = new Map(
+    messages.flatMap((message) =>
+      message.type === 'workhub_coordination' && message.kind === 'delegation_stop_resolved'
+        ? [[message.stopsDelegationId, message] as const]
+        : [],
+    ),
+  );
+  for (const message of messages) {
+    const terminal = terminalDelegationLink(message);
+    if (terminal) terminalLinkState.set(terminal.delegationId, terminal.state);
+  }
 
   for (const message of messages) {
+    if (message.type === 'workhub_coordination' && message.kind === 'delegation_stop_requested') {
+      const resolution = stopResolutionByDelegationId.get(message.stopsDelegationId);
+      turns.push({
+        messageId: message.id,
+        turnId: message.coordinationTurnId,
+        text: boundedWorkHubTimelineText(message.userText),
+        state: resolution ? 'completed' : 'running',
+        stop: {
+          targetSessionId: message.targetSessionId,
+          targetSessionName: message.targetSessionName,
+          ...(resolution ? { outcome: resolution.outcome } : {}),
+        },
+        updatedAt: resolution ? Math.max(message.ts, resolution.ts) : message.ts,
+      });
+      continue;
+    }
     if (message.type === 'workhub_coordination' && message.kind === 'delegation_assigned') {
       turns.push({
         messageId: message.id,
         turnId: message.coordinationTurnId,
         text: boundedWorkHubTimelineText(message.userText),
+        ...(message.attachments ? { attachments: message.attachments } : {}),
         state: 'completed',
         assignment: {
+          actionId: message.actionId,
+          delegationId: message.delegationId,
           targetSessionId: message.targetSessionId,
           targetSessionName: message.targetSessionName,
+          targetMessageId: message.targetMessageId,
+          targetTurnId: message.targetTurnId,
+          feedbackState: 'accepted',
+          linkState: terminalLinkState.get(message.delegationId) ?? 'active',
+          ...(message.disposition === 'create_new' ? { createdNew: true as const } : {}),
         },
         updatedAt: message.ts,
       });
@@ -142,6 +225,7 @@ export function projectWorkHubCoordinationTurns(
         messageId: message.id,
         turnId: message.turnId,
         text,
+        ...(message.attachments ? { attachments: message.attachments } : {}),
         state: stateByTurnId.get(message.turnId) ?? 'running',
         updatedAt: message.ts,
       });
@@ -164,6 +248,22 @@ export function projectWorkHubCoordinationTurns(
       left.updatedAt - right.updatedAt || left.messageId.localeCompare(right.messageId),
     )
     .slice(-WORKHUB_COORDINATION_TURN_LIMIT);
+}
+
+function terminalDelegationLink(
+  message: StoredMessage,
+): { readonly delegationId: string; readonly state: 'superseded' | 'aborted' | 'stopped' } | undefined {
+  if (message.type !== 'workhub_coordination') return undefined;
+  if (message.kind === 'delegation_superseded') {
+    return { delegationId: message.supersededDelegationId, state: 'superseded' };
+  }
+  if (message.kind === 'delegation_replacement_aborted') {
+    return { delegationId: message.abortedDelegationId, state: 'aborted' };
+  }
+  if (message.kind === 'delegation_stop_resolved' && message.outcome !== 'not_owned') {
+    return { delegationId: message.stopsDelegationId, state: 'stopped' };
+  }
+  return undefined;
 }
 
 function projectState(status: TurnStatus): WorkHubProjectedTurnState {

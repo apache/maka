@@ -26,6 +26,8 @@ base: upstream/main@08bcf324b
 
 # Managed Dependency Storage Authority v1
 
+跟踪：[Managed dependencies #4326](https://github.com/apache/maka/issues/4326)
+
 ## 1. 本 PR 只证明一个不变量
 
 > 同一个 canonical dependency environment identity 最多对应一棵由 Maka 发布、由 artifact 权限域之外的 durable receipt 证明、可在崩溃后收敛重开的依赖树；任何身份、路径、内容或平台证据不可证明时 fail closed。
@@ -38,7 +40,7 @@ base: upstream/main@08bcf324b
 
 - bundled npm 的实现与网络策略；
 - `node_modules/.bin` symlink 的 producer 配额扫描；
-- ManagedWorkspaceOwner/worker logical binding；
+- workspace execution owner/worker logical binding；
 - Desktop/CLI/Runtime Host 接线；
 - release packaging、audit 或 SBOM。
 

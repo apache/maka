@@ -48,6 +48,8 @@ describe('tier boundaries', () => {
     assert.equal(tier([file('a.ts', 501)]), 'effort/L');
     assert.equal(tier([file('a.ts', 1000)]), 'effort/L');
     assert.equal(tier([file('a.ts', 1001)]), 'effort/XL');
+    assert.equal(tier([file('a.ts', 2500)]), 'effort/XL');
+    assert.equal(tier([file('a.ts', 2501)]), 'effort/XXL');
   });
 
   it('counts additions and deletions together', () => {
@@ -79,7 +81,10 @@ describe('unread paths', () => {
   });
 
   it('excludes generated sources, snapshots and binaries', () => {
-    assert.equal(readable([file('packages/core/src/model-metadata.generated.ts', 5000)]), 0);
+    assert.equal(
+      readable([file('packages/runtime/src/bundled-skill-catalog.generated.ts', 5000)]),
+      0,
+    );
     assert.equal(readable([file('scripts/model-metadata/models-dev-api.snapshot.json', 4000)]), 0);
     assert.equal(readable([file('packages/storage/test-fixtures/v0.1.6/runtime.sqlite', 1)]), 0);
     assert.equal(readable([file('apps/desktop/build/background@2x.png', 1)]), 0);

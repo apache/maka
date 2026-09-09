@@ -30,6 +30,7 @@ import {
   type DailyReviewArchiveSectionContent,
   type DailyReviewRange,
   type DailyReviewSummary,
+  type DayRangeMs,
 } from '@maka/core/daily-review';
 import { collapseSessionRevisions } from '@maka/core/session-revisions';
 import { mergeUsageBuckets, mergeUsageSummary } from '@maka/core/usage-ledger-merge';
@@ -51,9 +52,11 @@ import {
 import type { DailyReviewOperationHandlerMap } from './operation-dispatcher.js';
 import type { HostDailyReviewModel } from './execution-model-authority.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
+import type { HostResidencyKind } from './host-residency-registry.js';
 import {
   CanonicalUsageProjectionIncompleteError,
-  readCompleteCanonicalUsage,
+  readCanonicalUsageBuckets,
+  readCompleteCanonicalUsageSummary,
 } from './canonical-usage-reader.js';
 
 const ARCHIVE_LIMIT = 180;
@@ -64,7 +67,7 @@ export interface HostDailyReviewCoordinatorInput {
   readonly usage: InteractiveUsageStoresWriter;
   readonly sessions: Pick<ExecutionSessionWriter, 'list'>;
   readonly model: HostDailyReviewModel;
-  readonly acquireResidency: () => RuntimeHostResidency;
+  readonly acquireResidency: (kind?: HostResidencyKind) => RuntimeHostResidency;
   readonly requestDrain: () => void;
   readonly now?: () => number;
   readonly setInterval?: (callback: () => void, delayMs: number) => unknown;
@@ -82,7 +85,7 @@ export class HostDailyReviewCoordinator {
   readonly #usage: InteractiveUsageStoresWriter;
   readonly #sessions: HostDailyReviewCoordinatorInput['sessions'];
   readonly #model: HostDailyReviewModel;
-  readonly #acquireResidency: () => RuntimeHostResidency;
+  readonly #acquireResidency: HostDailyReviewCoordinatorInput['acquireResidency'];
   readonly #requestDrain: () => void;
   readonly #now: () => number;
   readonly #setInterval: (callback: () => void, delayMs: number) => unknown;
@@ -90,8 +93,9 @@ export class HostDailyReviewCoordinator {
   readonly #inFlight = new Map<
     string,
     {
-      readonly modelKey: string;
+      readonly modelKeyOverride: string;
       readonly trigger: 'cron' | 'manual';
+      readonly replaceExisting: boolean;
       readonly promise: Promise<DailyReviewArchive>;
     }
   >();
@@ -100,6 +104,8 @@ export class HostDailyReviewCoordinator {
   #prepared = false;
   #started = false;
   #schedulerEnabled = false;
+  #handoffHeld = false;
+  #schedulerTask: Promise<void> | undefined;
   #draining = false;
   #timer: unknown;
   #residency: RuntimeHostResidency | undefined;
@@ -153,10 +159,51 @@ export class HostDailyReviewCoordinator {
     }
   }
 
+  holdForHandoff():
+    | {
+        settled(): Promise<void>;
+        residencies(): readonly RuntimeHostResidency[] | undefined;
+        release(): void;
+      }
+    | undefined {
+    if (this.#draining || this.#handoffHeld) return undefined;
+    this.#handoffHeld = true;
+    this.#stopTimer();
+    let released = false;
+    return {
+      settled: async () => {
+        // Include scheduler reads as well as generation: a tick may still be
+        // checking configuration or an archive when the hold is acquired.
+        while (this.#schedulerTask || this.#inFlight.size > 0) {
+          await Promise.allSettled([
+            this.#schedulerTask,
+            ...[...this.#inFlight.values()].map((entry) => entry.promise),
+          ]);
+        }
+      },
+      residencies: () => {
+        if (released || this.#draining || this.#schedulerTask || this.#inFlight.size > 0)
+          return undefined;
+        return this.#residency ? [this.#residency] : [];
+      },
+      release: () => {
+        if (released) return;
+        released = true;
+        this.#handoffHeld = false;
+        if (this.#draining) return;
+        this.#reconcileScheduler(this.#schedulerEnabled);
+        void this.#tickScheduler().catch((error: unknown) => this.#handleSchedulerError(error));
+      },
+    };
+  }
+
   close(): Promise<void> {
     this.#closeTask ??= (async () => {
       this.beginDrain();
-      await Promise.allSettled([...this.#inFlight.values()].map((entry) => entry.promise));
+      await Promise.allSettled([
+        this.#schedulerTask,
+        ...[...this.#inFlight.values()].map((entry) => entry.promise),
+      ]);
     })();
     return this.#closeTask;
   }
@@ -170,11 +217,13 @@ export class HostDailyReviewCoordinator {
           const snapshot = await this.#store.readConfig();
           return querySuccess({ kind: 'config', ...snapshot });
         }
-        case 'summary':
+        case 'summary': {
+          const now = this.#now();
           return querySuccess({
             kind: 'summary',
-            summary: await this.#buildSummary(input.offsetDays, input.daySpan),
+            summary: await this.#buildSummary(dayRange(now, input.offsetDays, input.daySpan), now),
           });
+        }
         case 'archives': {
           const beforeArchiveId = input.beforeArchiveId;
           const page = await this.#store.listArchivePage(beforeArchiveId, input.limit);
@@ -247,15 +296,18 @@ export class HostDailyReviewCoordinator {
     }
   }
 
-  async #buildSummary(offsetDays: number, daySpan: number): Promise<DailyReviewSummary> {
-    const offset = Math.trunc(offsetDays);
-    const span = Math.max(1, Math.min(30, Math.trunc(daySpan)));
-    const now = this.#now();
-    const endDay = offset === 0 ? localDayBoundsForInstant(now) : localDayBoundsAt(now, offset);
-    const startDay = localDayBoundsAt(endDay.fromMs, -(span - 1));
-    const range = { fromMs: startDay.fromMs, toMs: endDay.toMs };
+  async #buildSummary(range: DayRangeMs, now: number): Promise<DailyReviewSummary> {
     const query = dailyUsageQuery(range);
-    const canonical = await readCompleteCanonicalUsage(this.#usage, query, now);
+    // The summary read repairs the projection and refuses an incomplete one; the
+    // bucket read that follows reuses that pass rather than repairing again.
+    const canonical = await readCompleteCanonicalUsageSummary(this.#usage, query, now);
+    const canonicalModels = await readCanonicalUsageBuckets(
+      this.#usage,
+      query,
+      'model',
+      now,
+      false,
+    );
     const [usageSummary, toolBuckets, modelBuckets, sessions] = await Promise.all([
       this.#usage.telemetry.summary(query),
       this.#usage.telemetry.buckets(query, 'tool'),
@@ -264,7 +316,7 @@ export class HostDailyReviewCoordinator {
     ]);
     return buildDailyReviewSummary({
       day: range,
-      usageSummary: mergeUsageSummary(usageSummary, canonical, query, now),
+      usageSummary: mergeUsageSummary(usageSummary, canonical),
       sessions: pickDailyReviewSessions(
         collapseSessionRevisions(sessions),
         range,
@@ -272,7 +324,7 @@ export class HostDailyReviewCoordinator {
       ),
       topTools: pickDailyReviewTopEntries(toolBuckets, DAILY_REVIEW_LIST_LIMIT),
       topModels: pickDailyReviewTopEntries(
-        mergeUsageBuckets(modelBuckets, canonical, query, 'model', now).buckets,
+        mergeUsageBuckets(modelBuckets, canonicalModels).buckets,
         DAILY_REVIEW_LIST_LIMIT,
       ),
     });
@@ -285,38 +337,64 @@ export class HostDailyReviewCoordinator {
     readonly trigger: 'cron' | 'manual';
     readonly replaceExisting: boolean;
   }): Promise<DailyReviewArchive> {
-    const summary = await this.#buildSummary(input.offsetDays, input.range);
-    const archiveId = dailyReviewArchiveId(summary.day, input.range);
-    const existing = await this.#store.getArchive(archiveId);
-    if (existing && !input.replaceExisting) return existing;
-    const config = await this.#store.readConfig();
-    const modelKey = input.modelKeyOverride.trim() || config.config.modelKey;
+    const now = this.#now();
+    const day = dayRange(now, input.offsetDays, input.range);
+    const archiveId = dailyReviewArchiveId(day, input.range);
+    const modelKeyOverride = input.modelKeyOverride.trim();
+    // Claim the archive before the first await. Two Clients asking for the
+    // same archive at once share one generation; a claim taken only after the
+    // reads let the second request slip past a first that had already
+    // published, and each Client then saw its own archive. Requests match on
+    // the override they asked for, not the resolved model key: resolving it
+    // needs the config read, which would put the claim back after an await.
     const inFlight = this.#inFlight.get(archiveId);
     if (inFlight) {
-      if (inFlight.modelKey === modelKey && inFlight.trigger === input.trigger) {
-        return inFlight.promise;
+      if (inFlight.modelKeyOverride !== modelKeyOverride || inFlight.trigger !== input.trigger) {
+        throw new DailyReviewRunConflictError(archiveId);
       }
-      throw new DailyReviewRunConflictError(archiveId);
+      if (!input.replaceExisting || inFlight.replaceExisting) return inFlight.promise;
+      // A non-replacing leader may hand back an archive it merely found. A
+      // replace must not inherit that, so it waits its turn and claims for
+      // itself.
+      await inFlight.promise.catch(() => undefined);
+      return this.#run(input);
     }
-    const pending = this.#generateArchive(archiveId, summary, modelKey, input);
-    const entry = { modelKey, trigger: input.trigger, promise: pending };
+    // Keep actual generation distinct from the idle scheduler hold. Besides
+    // protecting a run when scheduling is disabled, its release tells handoff
+    // observers that work finished after a bounded safe-pause attempt timed out.
+    const residency = this.#acquireResidency();
+    const pending = this.#generateArchive(archiveId, day, now, modelKeyOverride, input);
+    const entry = {
+      modelKeyOverride,
+      trigger: input.trigger,
+      replaceExisting: input.replaceExisting,
+      promise: pending,
+    };
     this.#inFlight.set(archiveId, entry);
     try {
       return await pending;
     } finally {
       if (this.#inFlight.get(archiveId) === entry) this.#inFlight.delete(archiveId);
+      residency.release();
     }
   }
 
   async #generateArchive(
     archiveId: string,
-    summary: DailyReviewSummary,
-    modelKey: string,
+    day: DayRangeMs,
+    now: number,
+    modelKeyOverride: string,
     input: {
       readonly range: DailyReviewRange;
       readonly trigger: 'cron' | 'manual';
+      readonly replaceExisting: boolean;
     },
   ): Promise<DailyReviewArchive> {
+    const summary = await this.#buildSummary(day, now);
+    const existing = await this.#store.getArchive(archiveId);
+    if (existing && !input.replaceExisting) return existing;
+    const config = await this.#store.readConfig();
+    const modelKey = modelKeyOverride || config.config.modelKey;
     const base = {
       id: archiveId,
       day: summary.day,
@@ -397,28 +475,42 @@ export class HostDailyReviewCoordinator {
   }
 
   #reconcileScheduler(enabled: boolean): void {
+    this.#schedulerEnabled = enabled;
     if (!enabled || this.#draining) {
       this.#stopScheduler();
       return;
     }
-    this.#residency ??= this.#acquireResidency();
+    if (this.#handoffHeld) return;
+    this.#residency ??= this.#acquireResidency('idle');
     this.#timer ??= this.#setInterval(() => {
       void this.#tickScheduler().catch((error: unknown) => this.#handleSchedulerError(error));
     }, SCHEDULER_INTERVAL_MS);
   }
 
   #stopScheduler(): void {
-    if (this.#timer !== undefined) {
-      this.#clearInterval(this.#timer);
-      this.#timer = undefined;
-    }
+    this.#stopTimer();
     this.#residency?.release();
     this.#residency = undefined;
   }
 
-  async #tickScheduler(): Promise<void> {
-    if (!this.#prepared || this.#draining) return;
+  #stopTimer(): void {
+    if (this.#timer !== undefined) {
+      this.#clearInterval(this.#timer);
+      this.#timer = undefined;
+    }
+  }
+
+  #tickScheduler(): Promise<void> {
+    if (!this.#prepared || this.#draining || this.#handoffHeld) return Promise.resolve();
+    this.#schedulerTask ??= this.#runScheduler().finally(() => {
+      this.#schedulerTask = undefined;
+    });
+    return this.#schedulerTask;
+  }
+
+  async #runScheduler(): Promise<void> {
     const { config } = await this.#store.readConfig();
+    if (this.#draining || this.#handoffHeld) return;
     this.#reconcileScheduler(config.enabled);
     const now = this.#now();
     if (!config.enabled || !scheduledTimeHasPassed(now, config.executeTime)) return;
@@ -427,6 +519,7 @@ export class HostDailyReviewCoordinator {
     const day = localDayBoundsAt(now, -1);
     const archiveId = dailyReviewArchiveId(day, 1);
     if (await this.#store.getArchive(archiveId)) return;
+    if (this.#draining || this.#handoffHeld) return;
     await this.#run({
       range: 1,
       offsetDays: -1,
@@ -455,6 +548,14 @@ export class HostDailyReviewCoordinator {
     if (this.#draining || isAbort(error) || isRetryableSchedulerError(error)) return;
     this.#requestDrain();
   }
+}
+
+function dayRange(nowMs: number, offsetDays: number, daySpan: number): DayRangeMs {
+  const offset = Math.trunc(offsetDays);
+  const span = Math.max(1, Math.min(30, Math.trunc(daySpan)));
+  const endDay = offset === 0 ? localDayBoundsForInstant(nowMs) : localDayBoundsAt(nowMs, offset);
+  const startDay = localDayBoundsAt(endDay.fromMs, -(span - 1));
+  return { fromMs: startDay.fromMs, toMs: endDay.toMs };
 }
 
 function scheduledTimeHasPassed(nowMs: number, executeTime: string): boolean {

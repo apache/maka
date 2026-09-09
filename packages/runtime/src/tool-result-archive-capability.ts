@@ -34,33 +34,56 @@
  */
 
 import { ARCHIVE_READ_TOOL_NAME, buildArchiveReadTool } from './archive-read-tool.js';
-import type { ActiveToolResultArchiveCandidate } from './active-tool-result-prune.js';
-import type { StaleToolResultArchiveCandidate } from './context-budget.js';
+import type { ArchivedToolResultReason } from './tool-result-archive.js';
 import type { ToolResultArchiveReader } from './tool-result-archive.js';
 import type { ToolResultArchiveResourceReader } from './tool-result-archive-resource.js';
 import type { MakaTool } from './tool-runtime.js';
+import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 
 export { ARCHIVE_READ_TOOL_NAME };
 
 /**
- * What the writer is handed for one pruned body. The union spans both prune
- * paths — a stale prior-turn result and an active current-turn one — because
- * the archive is one authority over both.
+ * What the writer is handed for one pruned body.
+ *
+ * One shape, not a union over the two prune paths: since both now commit the
+ * same durable projection transition (#4283), both address the same
+ * `function_response` RuntimeEvent and hand over the same serialized body, and
+ * a union would only preserve the shape of the authorities they replaced.
  */
-export type ToolResultArchiveRecorderInput = (
-  | StaleToolResultArchiveCandidate
-  | (ActiveToolResultArchiveCandidate & { runtimeEventId: string })
-) & {
+export interface ToolResultArchiveRecorderInput {
   sessionId: string;
+  runtimeEventId: string;
+  turnId: string;
+  toolCallId: string;
+  toolName: string;
+  /** The raw execution fact, for writers that name the artifact after it. */
+  result?: unknown;
+  serializedResult: string;
   bodySha256: string;
-};
+  originalBytes: number;
+  originalEstimatedTokens: number;
+  rewriteVersion: number;
+  reason: ArchivedToolResultReason;
+  sourceProjectionDigest?: `sha256:${string}`;
+  previousTransitionId?: string;
+}
+export type ToolResultArchiveLocation =
+  | { artifactId: string; ledger?: never }
+  | {
+      ledger: true;
+      artifactId?: never;
+      commitTransition?: (
+        transition: ModelProjectionTransition,
+        persist: (transition: ModelProjectionTransition) => Promise<void>,
+      ) => Promise<boolean>;
+    };
 export type ToolResultArchiveRecorder = (
   input: ToolResultArchiveRecorderInput,
-) => Promise<{ artifactId: string } | void> | { artifactId: string } | void;
+) => Promise<ToolResultArchiveLocation | void> | ToolResultArchiveLocation | void;
 
 /** Host-owned storage for one archive authority. */
 export interface ToolResultArchiveServices {
-  /** Durably archives a pruned tool result body. */
+  /** Persists legacy bytes or verifies ledger reconstruction before the transition commit. */
   archiveToolResult: ToolResultArchiveRecorder;
   /** Replay hydration, addressed by the originating runtime event. */
   readToolResultArchive: ToolResultArchiveReader;

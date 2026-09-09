@@ -10,6 +10,8 @@ storybook-static
 # `link-workspace-packages` setting.
 pnpm-lock.yaml
 *.tsbuildinfo
+/packages/core/src/model-metadata.generated.ts
+/packages/runtime/src/telemetry/model-pricing.generated.ts
 __pycache__/
 *.pyc
 .agents-workspace-data
@@ -27,6 +29,7 @@ deepseek.key
 # Built only by the dedicated Gitoxide helper lane; normal workspace tests do not use Cargo.
 /native/gitoxide-helper/target/
 /native/runtime-host-peer/target/
+/native/runtime-host-windows-task-launcher/target/
 
 # Generated Computer Use executor binary; provenance metadata stays tracked.
 apps/desktop/resources/bin/
@@ -42,3 +45,7 @@ apps/desktop/release-sources/
 packages/cli/release/
 packages/cli/.development/
 release/asf/
+
+# Astro type generation
+.astro
+perf-results/

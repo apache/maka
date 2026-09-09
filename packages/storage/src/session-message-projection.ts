@@ -18,6 +18,7 @@
  */
 
 import type { StoredMessage, UserMessage } from '@maka/core/session';
+import type { SessionTurnContribution } from './session-store.js';
 
 export function projectSessionCatalogMessages(messages: readonly StoredMessage[]): {
   readonly lastMessageAt?: number;
@@ -71,7 +72,7 @@ export function lastMessagePreviewForMessages(
       if (text) return truncatePreview(text);
     }
     if (message.type === 'workhub_coordination') {
-      const text = normalizePreviewText(message.userText);
+      const text = 'userText' in message ? normalizePreviewText(message.userText) : '';
       if (text) return truncatePreview(text);
     }
   }
@@ -86,4 +87,25 @@ function truncatePreview(text: string, maxLength = 96): string {
   const chars = Array.from(text);
   if (chars.length <= maxLength) return text;
   return `${chars.slice(0, maxLength - 1).join('')}…`;
+}
+
+/** One Turn's summary, folded message by message in transcript order. */
+export function foldTurnContribution(
+  current: SessionTurnContribution | undefined,
+  turnId: string,
+  sequence: number,
+  message: StoredMessage,
+): SessionTurnContribution {
+  const contribution = current ?? {
+    turnId,
+    firstSequence: sequence,
+    latestState: null,
+    userPromptPreview: null,
+  };
+  const userPrompt = message.type === 'user' ? (message.displayText ?? message.text).trim() : '';
+  return {
+    ...contribution,
+    latestState: message.type === 'turn_state' ? { sequence, message } : contribution.latestState,
+    userPromptPreview: contribution.userPromptPreview ?? (userPrompt || null),
+  };
 }

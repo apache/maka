@@ -45,6 +45,12 @@ export interface TelemetryRepo {
   insertLlmCall(record: PersistedLlmCallRecord): Promise<void>;
   insertToolInvocation(record: PersistedToolInvocationRecord): Promise<void>;
   summary(query: UsageQuery): UsageSummaryV2;
+  /**
+   * Session- and range-scoped totals over the tool-invocation ledger — the one
+   * aggregate the LLM summary cannot answer, because tool executions live in
+   * their own table with no canonical counterpart to merge.
+   */
+  toolSummary(query: UsageQuery): { requests: number; durationMs: number };
   buckets(query: UsageQuery, groupBy: UsageGroupBy): UsageBucket[];
   logs(query: UsageQuery, offset?: number, limit?: number): { rows: UsageLogRow[]; total: number };
   toolLogs(

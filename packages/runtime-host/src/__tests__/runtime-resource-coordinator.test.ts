@@ -161,6 +161,72 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(harness.listReadCount, 0);
   });
 
+  test('fences Guest reads to the exact active observation grant', async () => {
+    let active = true;
+    let releaseRead!: () => void;
+    let markReadStarted!: () => void;
+    const readBarrier = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const readStarted = new Promise<void>((resolve) => {
+      markReadStarted = resolve;
+    });
+    const harness = createHarness({
+      sessionAccessAuthority: {
+        activeSessionGrant(principalId, sessionId, kind) {
+          return active &&
+            principalId === 'guest-1' &&
+            sessionId === SESSION_ID &&
+            kind === 'session_observation'
+            ? {
+                kind,
+                grantId: 'grant-1',
+                principalId,
+                sessionId,
+                createdAt: '2026-01-01T00:00:00.000Z',
+              }
+            : undefined;
+        },
+      },
+    });
+    harness.pointReadBarrier = readBarrier;
+    harness.pointReadStarted = markReadStarted;
+    const guest = guestConnection('guest-1');
+
+    const outsideGrant = await harness.coordinator.handlers['runtime.resource.query'](
+      { kind: 'list_start', sessionId: 'session-2' },
+      guest,
+    );
+    assert.equal(outsideGrant.ok, false);
+    assert.equal(!outsideGrant.ok && outsideGrant.error.code, 'not_found');
+    assert.equal(harness.listReadCount, 0);
+
+    harness.updates = [resourceUpdate(0), resourceUpdate(1, { sessionId: 'parent-session' })];
+    const visible = await harness.coordinator.handlers['runtime.resource.query'](
+      { kind: 'list_start', sessionId: SESSION_ID },
+      guest,
+    );
+    assert.equal(visible.ok, true);
+    assert.deepEqual(
+      visible.ok && visible.result.kind === 'page'
+        ? visible.result.resources.map((resource) => resource.result.ref)
+        : [],
+      [shellRef(0)],
+    );
+
+    const pending = harness.coordinator.handlers['runtime.resource.query'](
+      { kind: 'get', sessionId: SESSION_ID, ref: shellRef(0) },
+      guest,
+    );
+    await readStarted;
+    assert.equal(harness.pointReadCount, 1);
+    active = false;
+    releaseRead();
+    const revoked = await pending;
+    assert.equal(revoked.ok, false);
+    assert.equal(!revoked.ok && revoked.error.code, 'not_found');
+  });
+
   test('drains for canonical state failure but keeps projection failure scoped to its query', async () => {
     const harness = createHarness();
     harness.updates = [
@@ -638,7 +704,12 @@ describe('Host Runtime Resource coordinator', () => {
   });
 });
 
-function createHarness(options: Pick<HostRuntimeResourceCoordinatorInput, 'resolveShell'> = {}) {
+function createHarness(
+  options: Pick<
+    HostRuntimeResourceCoordinatorInput,
+    'resolveShell' | 'sessionAccessAuthority'
+  > = {},
+) {
   let backgroundCompletion: ShellRunBashInput['onCompletion'];
   let currentSnapshot = ptySnapshot();
   let lastStartedSnapshot: ShellRunSnapshotResult | undefined;
@@ -651,6 +722,8 @@ function createHarness(options: Pick<HostRuntimeResourceCoordinatorInput, 'resol
     drainCount: 0,
     listReadCount: 0,
     pointReadCount: 0,
+    pointReadBarrier: undefined as Promise<void> | undefined,
+    pointReadStarted: undefined as (() => void) | undefined,
     stateReadFailure: undefined as Error | undefined,
     inspectFailure: undefined as Error | undefined,
     activeResidencies: 0,
@@ -748,6 +821,8 @@ function createHarness(options: Pick<HostRuntimeResourceCoordinatorInput, 'resol
       },
       getShellRunUpdate: async (_sessionId, ref) => {
         state.pointReadCount += 1;
+        state.pointReadStarted?.();
+        await state.pointReadBarrier;
         if (state.stateReadFailure) throw state.stateReadFailure;
         return structuredClone(state.updates.find((update) => update.result.ref === ref) ?? null);
       },
@@ -802,6 +877,14 @@ function connection(connectionId: string): ConnectionContext {
     connectionId,
     principal: 'local_os_user',
     acquireResidency: () => ({ release: () => {} }),
+  };
+}
+
+function guestConnection(principal: string): ConnectionContext {
+  return {
+    ...connection('guest-connection'),
+    principal,
+    principalKind: 'session_guest',
   };
 }
 

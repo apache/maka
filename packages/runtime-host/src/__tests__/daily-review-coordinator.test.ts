@@ -22,13 +22,20 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { localDayBoundsAt, type DailyReviewArchive } from '@maka/core/daily-review';
+import { deferred, waitFor } from '@maka/core/test-only/async-primitives';
+import {
+  dailyReviewArchiveId,
+  localDayBoundsAt,
+  localDayBoundsForInstant,
+  type DailyReviewArchive,
+} from '@maka/core/daily-review';
 import { openInteractiveDailyReviewAuthorityForWrite } from '@maka/storage/daily-review-authority';
 import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostDailyReviewCoordinator } from '../server/daily-review-coordinator.js';
+import { HostResidencyRegistry } from '../server/host-residency-registry.js';
 
 const CONTEXT: ConnectionContext = {
   hostEpoch: 'host-epoch',
@@ -36,6 +43,123 @@ const CONTEXT: ConnectionContext = {
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };
+
+test('Daily Review handoff fences an admitted timer tick and cancellation resumes a due review', async () => {
+  let now = new Date(2026, 8, 9, 12).getTime();
+  const timers = new Set<() => void>();
+  const residencies = new HostResidencyRegistry();
+  await withCoordinator(
+    async ({ coordinator, store }) => {
+      const snapshot = await store.readConfig();
+      await store.updateConfig(snapshot.revision, {
+        enabled: true,
+        executeTime: '13:00',
+        modelKey: '',
+      });
+      await coordinator.recover();
+      assert.equal(timers.size, 1);
+      assert.equal(residencies.activeCount, 1);
+      assert.equal(residencies.drainCount, 0);
+      const tick = [...timers][0]!;
+      now = new Date(2026, 8, 9, 13).getTime();
+      tick(); // The config read has started, but has not returned yet.
+      const hold = coordinator.holdForHandoff();
+      assert.ok(hold);
+      assert.equal(coordinator.holdForHandoff(), undefined);
+      assert.equal(timers.size, 0);
+      tick(); // A callback already queued before clearInterval must also be fenced.
+      await hold.settled();
+      const archiveId = dailyReviewArchiveId(localDayBoundsAt(now, -1), 1);
+      assert.equal(await store.getArchive(archiveId), null);
+      const proof = hold.residencies();
+      assert.ok(proof);
+      assert.equal(residencies.hasDrainResidenciesExcept(proof), false);
+      hold.release();
+      hold.release();
+      assert.equal(timers.size, 1);
+      await waitFor(async () => (await store.getArchive(archiveId)) !== null);
+      assert.equal((await store.getArchive(archiveId))?.trigger, 'cron');
+      assert.equal((await store.readConfig()).config.enabled, true);
+      const next = coordinator.holdForHandoff();
+      assert.ok(next);
+      await next.settled();
+      coordinator.beginDrain();
+      next.release();
+      assert.equal(timers.size, 0);
+      assert.equal(residencies.drainCount, 0);
+    },
+    undefined,
+    false,
+    undefined,
+    {
+      now: () => now,
+      acquireResidency: (kind) => residencies.acquire('daily-review', kind),
+      setInterval: (callback) => {
+        timers.add(callback);
+        return callback;
+      },
+      clearInterval: (timer) => {
+        timers.delete(timer as () => void);
+      },
+    },
+  );
+});
+
+test('Daily Review handoff waits for an active analysis to publish without interrupting it', async () => {
+  const entered = deferred<void>();
+  const finish = deferred<void>();
+  const residencies = new HostResidencyRegistry();
+  await withCoordinator(
+    async ({ coordinator, store }) => {
+      const running = coordinator.handlers['daily-review.mutate'](
+        {
+          kind: 'run',
+          range: 1,
+          offsetDays: 0,
+          modelKeyOverride: '',
+          replaceExisting: false,
+        },
+        CONTEXT,
+      );
+      await entered.promise;
+      assert.equal(residencies.drainCount, 1);
+      const hold = coordinator.holdForHandoff();
+      assert.ok(hold);
+      try {
+        assert.equal(hold.residencies(), undefined);
+        let settled = false;
+        const waiting = hold.settled().then(() => {
+          settled = true;
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(settled, false);
+        finish.resolve();
+        const result = await running;
+        await waiting;
+        assert.equal(result.ok, true);
+        assert.ok(hold.residencies());
+        assert.equal(residencies.drainCount, 0);
+        assert.equal((await store.listArchivePage(null, 1)).archives.length, 1);
+      } finally {
+        finish.resolve();
+        hold.release();
+        await running;
+      }
+    },
+    undefined,
+    true,
+    {
+      list: async () => {
+        entered.resolve();
+        await finish.promise;
+        return [];
+      },
+    },
+    {
+      acquireResidency: (kind) => residencies.acquire('daily-review', kind),
+    },
+  );
+});
 
 test('Daily Review refuses to archive an incomplete canonical Usage projection', async () => {
   await withCoordinator(async ({ coordinator, store, root, drainCount }) => {
@@ -151,6 +275,124 @@ test('Daily Review conflicts rather than coalescing different generation options
       },
     },
   );
+});
+
+test('Daily Review joins an in-flight generation even when its own reads land later', async () => {
+  let releaseLaggingRead: (() => void) | undefined;
+  const laggingRead = new Promise<void>((resolve) => {
+    releaseLaggingRead = resolve;
+  });
+  let listCalls = 0;
+  let modelCalls = 0;
+
+  await withCoordinator(
+    async ({ coordinator, usage }) => {
+      const now = Date.now();
+      await usage.telemetry.recordLlmCall({
+        id: 'daily-review-join-source',
+        callKind: 'main',
+        callId: 'daily-review-join-source',
+        connectionSlug: 'test',
+        providerId: 'test',
+        modelId: 'test',
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheHitInputTokens: 0,
+        cacheMissInputTokens: 1,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 2,
+        costUsd: 0,
+        latencyMs: 1,
+        status: 'success',
+        startedAt: now,
+        date: new Date(now).toISOString().slice(0, 10),
+        ts: now,
+      });
+      const run = {
+        kind: 'run' as const,
+        range: 1 as const,
+        offsetDays: 0,
+        modelKeyOverride: 'provider::model-a',
+        replaceExisting: true,
+      };
+      // Two Clients ask for the same archive at once. Whichever settles first
+      // releases the other's lagging read, so the laggard only reaches its own
+      // bookkeeping after the leader has already published. A rejected leader
+      // releases it too; otherwise close() would wait on the laggard forever.
+      const first = coordinator.handlers['daily-review.mutate'](run, CONTEXT);
+      const second = coordinator.handlers['daily-review.mutate'](run, CONTEXT);
+      const release = () => releaseLaggingRead?.();
+      void Promise.race([first, second]).then(release, release);
+      const [firstResult, secondResult] = await Promise.all([first, second]);
+      assert.equal(modelCalls, 1);
+      assert.deepEqual(secondResult, firstResult);
+    },
+    {
+      generate: async () => {
+        modelCalls += 1;
+        return { ok: false, errorClass: 'configuration' };
+      },
+    },
+    true,
+    {
+      list: async () => {
+        listCalls += 1;
+        if (listCalls === 2) await laggingRead;
+        return [];
+      },
+    },
+  );
+});
+
+test('Daily Review regenerates for a replace that arrives during a non-replacing run', async () => {
+  await withCoordinator(async ({ coordinator, store }) => {
+    const archiveId = dailyReviewArchiveId(localDayBoundsForInstant(Date.now()), 1);
+    const existing = await store.publishArchive(archive(archiveId), 180);
+    const run = {
+      kind: 'run' as const,
+      range: 1 as const,
+      offsetDays: 0,
+      modelKeyOverride: '',
+      replaceExisting: false,
+    };
+    const keep = coordinator.handlers['daily-review.mutate'](run, CONTEXT);
+    const replace = coordinator.handlers['daily-review.mutate'](
+      { ...run, replaceExisting: true },
+      CONTEXT,
+    );
+    const [kept, replaced] = await Promise.all([keep, replace]);
+    assert.deepEqual(kept, { ok: true, result: { kind: 'archive', archive: existing } });
+    assert.equal(replaced.ok, true);
+    if (!replaced.ok || replaced.result.kind !== 'archive') return;
+    assert.equal(replaced.result.archive.status, 'no_data');
+    assert.deepEqual(await store.getArchive(archiveId), replaced.result.archive);
+  });
+});
+
+test('Daily Review lets a non-replacing run join a replace already in flight', async () => {
+  await withCoordinator(async ({ coordinator, store }) => {
+    const archiveId = dailyReviewArchiveId(localDayBoundsForInstant(Date.now()), 1);
+    await store.publishArchive(archive(archiveId), 180);
+    const run = {
+      kind: 'run' as const,
+      range: 1 as const,
+      offsetDays: 0,
+      modelKeyOverride: '',
+      replaceExisting: true,
+    };
+    const replace = coordinator.handlers['daily-review.mutate'](run, CONTEXT);
+    const keep = coordinator.handlers['daily-review.mutate'](
+      { ...run, replaceExisting: false },
+      CONTEXT,
+    );
+    const [replaced, kept] = await Promise.all([replace, keep]);
+    assert.equal(replaced.ok, true);
+    if (!replaced.ok || replaced.result.kind !== 'archive') return;
+    assert.equal(replaced.result.archive.status, 'no_data');
+    assert.deepEqual(kept, replaced);
+  });
 });
 
 test('Daily Review does not coalesce cron and manual archive provenance', async () => {
@@ -275,6 +517,15 @@ async function withCoordinator(
     generate: async () => ({ ok: false, errorClass: 'configuration' }),
   },
   recoverBeforeRun = true,
+  sessions: ConstructorParameters<typeof HostDailyReviewCoordinator>[0]['sessions'] = {
+    list: async () => [],
+  },
+  lifecycle: Partial<
+    Pick<
+      ConstructorParameters<typeof HostDailyReviewCoordinator>[0],
+      'now' | 'acquireResidency' | 'setInterval' | 'clearInterval'
+    >
+  > = {},
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-daily-review-coordinator-'));
   const root = join(base, 'interactive');
@@ -291,12 +542,13 @@ async function withCoordinator(
   const coordinator = new HostDailyReviewCoordinator({
     store,
     usage,
-    sessions: { list: async () => [] },
+    sessions,
     model,
     acquireResidency: () => ({ release: () => undefined }),
     requestDrain: () => {
       drains += 1;
     },
+    ...lifecycle,
   });
   try {
     if (recoverBeforeRun) await coordinator.recover();
@@ -321,8 +573,8 @@ function appendCorruptAuthorityEvent(root: string, sessionId: string, runId: str
     lease.transaction('write', () => {
       lease.database
         .prepare(`
-          INSERT INTO core_agent_runs(session_id, run_id, created_at, record_json)
-          VALUES (?, ?, 0, '{}')
+          INSERT INTO core_agent_runs(session_id, run_id, created_at)
+          VALUES (?, ?, 0)
         `)
         .run(sessionId, runId);
       lease.database

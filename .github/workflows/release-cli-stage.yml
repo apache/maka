@@ -175,11 +175,19 @@ jobs:
       - name: Submit the candidate to npm staging
         env:
           GH_TOKEN: ${{ github.token }}
+          PREDECESSOR_VERSION: ${{ needs.validate.outputs.release_predecessor_version }}
+          PREDECESSOR_TARBALL_URL: ${{ needs.validate.outputs.release_predecessor_tarball_url }}
+          PREDECESSOR_INTEGRITY: ${{ needs.validate.outputs.release_predecessor_integrity }}
           PRODUCT_SOURCE_COMMIT: ${{ needs.authorize.outputs.source_commit }}
           PRODUCT_TAG: ${{ needs.authorize.outputs.product_tag }}
           RELEASE_DIST_TAG: ${{ steps.release.outputs.dist_tag }}
           RELEASE_TARBALL: ${{ steps.release.outputs.tarball }}
         run: |
+          node scripts/release-cli-publication.mjs assert-nightly-predecessor \
+            "$PREDECESSOR_VERSION" \
+            "$PREDECESSOR_TARBALL_URL" \
+            "$PREDECESSOR_INTEGRITY"
+
           node scripts/product-release-authority.mjs verify-draft \
             "$PRODUCT_TAG" "$PRODUCT_SOURCE_COMMIT" "$GITHUB_REPOSITORY"
 

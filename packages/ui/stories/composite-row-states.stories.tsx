@@ -75,7 +75,7 @@ function StoryFrame(props: { children: React.ReactNode; description: string; tit
     <section style={{ display: 'grid', gap: 16, maxWidth: 900 }}>
       <div>
         <h2 style={{ fontSize: 16, margin: 0 }}>{props.title}</h2>
-        <p style={{ color: 'var(--foreground-secondary)', fontSize: 12, margin: '4px 0 0' }}>
+        <p style={{ color: 'var(--muted-foreground)', fontSize: 12, margin: '4px 0 0' }}>
           {props.description}
         </p>
       </div>

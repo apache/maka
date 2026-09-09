@@ -94,6 +94,7 @@ export function createTransientState() {
 export function createActionsDeps() {
   const activeIdRef = { current: undefined as string | undefined };
   return {
+    onFollowLatest: async (_sessionId: string) => true,
     uiLocale: 'en' as const,
     activeIdRef,
     captureComposerImportOwner: () => ({
@@ -118,6 +119,7 @@ export function createActionsDeps() {
     transcriptRangeRef: { current: undefined },
     setLiveTurnBySession: () => undefined,
     setInteractionBySession: () => undefined,
+    respondToUserForm: async () => undefined,
     showModelSetupToast: () => undefined,
     toastApi: { error: () => undefined, info: () => undefined },
     newChatModel: null,

@@ -89,6 +89,8 @@ export interface ConnectOrSpawnRuntimeHostInput {
   signal?: AbortSignal;
   /** Existing authority lease inherited by a launch-owner-supervised Candidate. */
   inheritableAuthorityLeaseFd?: number;
+  /** Close a newly spawned ephemeral Candidate if this launcher exits. */
+  closeOnLauncherExit?: boolean;
   /** Candidate-exit sink forwarded to the launcher; the embedder owns the sink. */
   onExit?: (details: CandidateExitDetails) => void;
 }
@@ -447,7 +449,16 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
           'on_demand',
         );
         if (managedLaunchRejection !== undefined) {
-          return { kind: 'failed', reason: managedLaunchRejection };
+          // A managed endpoint that accepted a connection but did not answer
+          // is temporarily unavailable, not evidence that the client needs a
+          // new operator. Keep reconnecting without ever launching a replacement.
+          return {
+            kind: 'failed',
+            reason:
+              managedLaunchRejection === 'managed_root_requires_operator' && sawUnresponsiveEndpoint
+                ? 'host_unresponsive'
+                : managedLaunchRejection,
+          };
         }
         try {
           const remaining = deadline - performance.now();
@@ -465,7 +476,13 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
             ...(input.onExit === undefined ? {} : { onExit: input.onExit }),
             ...(input.inheritableAuthorityLeaseFd === undefined
               ? {}
-              : { inheritableAuthorityLeaseFd: input.inheritableAuthorityLeaseFd }),
+              : {
+                  inheritableAuthorityLeaseFd: input.inheritableAuthorityLeaseFd,
+                  launchOwnerClientInstanceId: clientInstanceId,
+                }),
+            ...(input.closeOnLauncherExit === undefined
+              ? {}
+              : { closeOnLauncherExit: input.closeOnLauncherExit }),
           });
           candidateLaunches.add(launch);
           const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);

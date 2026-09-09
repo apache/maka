@@ -161,9 +161,9 @@ export function resolveWorkspaceReleaseFiles(directory, manifest) {
           `${manifest.name ?? 'Workspace package'} release dist must be a directory.`,
         );
       }
-    } else if (!entry.isFile()) {
+    } else if (!entry.isFile() && !entry.isDirectory()) {
       throw new Error(
-        `${manifest.name ?? 'Workspace package'} release asset must be a regular file: ${releaseFile}`,
+        `${manifest.name ?? 'Workspace package'} release asset must be a regular file or directory: ${releaseFile}`,
       );
     }
   }
@@ -243,6 +243,55 @@ export function isMakaDevelopmentArtifact(relativePath) {
     /\.d\.ts(?:\.map)?$/.test(file) ||
     /\.js\.map$/.test(file)
   );
+}
+
+function releaseExportTarget(target) {
+  if (typeof target === 'string') {
+    return isMakaDevelopmentArtifact(target) ? undefined : target;
+  }
+  if (Array.isArray(target)) {
+    const projected = target.map(releaseExportTarget).filter((entry) => entry !== undefined);
+    return projected.length === 0 ? undefined : projected;
+  }
+  if (target && typeof target === 'object') {
+    const projected = Object.fromEntries(
+      Object.entries(target)
+        .map(([condition, value]) => [condition, releaseExportTarget(value)])
+        .filter(([, value]) => value !== undefined),
+    );
+    return Object.keys(projected).length === 0 ? undefined : projected;
+  }
+  return target;
+}
+
+const WORKSPACE_RELEASE_MANIFEST_FIELDS = [
+  'name',
+  'version',
+  'description',
+  'license',
+  'type',
+  'sideEffects',
+  'main',
+  'exports',
+  'bin',
+  'engines',
+  'dependencies',
+  'optionalDependencies',
+  'peerDependencies',
+  'peerDependenciesMeta',
+];
+
+export function workspaceReleaseManifest(manifest) {
+  const releaseManifest = Object.fromEntries(
+    WORKSPACE_RELEASE_MANIFEST_FIELDS.filter((field) => manifest[field] !== undefined).map(
+      (field) => [field, manifest[field]],
+    ),
+  );
+  if (releaseManifest.exports !== undefined) {
+    const projected = releaseExportTarget(releaseManifest.exports);
+    releaseManifest.exports = projected === undefined ? {} : projected;
+  }
+  return releaseManifest;
 }
 
 export function isCurrentDevelopmentJavaScript(

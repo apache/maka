@@ -112,7 +112,7 @@ type CodexThreadSeed = {
   title?: string;
   updatedAtMs?: number;
   archived?: number;
-  source?: string;
+  source?: string | null;
   rolloutRelPath?: string;
 };
 
@@ -179,7 +179,7 @@ async function seedCodexSqliteGen(
       t.title ?? null,
       t.updatedAtMs ?? NOW - 60_000,
       t.archived ?? 0,
-      t.source ?? 'cli',
+      t.source === undefined ? 'cli' : t.source,
     );
   }
   db.close();
@@ -349,6 +349,28 @@ describe('foreign session store — Codex scan', () => {
     ]);
     const store = createForeignSessionStore({ homeDir: home, env: {} });
     assert.deepEqual((await store.listSessions()).map((s) => s.id).sort(), ['atl', 'gpt']);
+  });
+
+  it('routes every supported sqlite source shape through the shared gate', async () => {
+    const home = await tempHome();
+    await seedCodexSqlite(home, [
+      { id: 'bare-exec', cwd: '/repo', source: 'exec' },
+      { id: 'bare-atlas', cwd: '/repo', source: 'atlas' },
+      { id: 'bare-chatgpt', cwd: '/repo', source: 'chatgpt' },
+      { id: 'wrapped-cli', cwd: '/repo', source: '{ "custom": "cli" }' },
+      { id: 'wrapped-vscode', cwd: '/repo', source: '{"custom":"vscode"}' },
+      { id: 'legacy-null', cwd: '/repo', source: null },
+      { id: 'unsupported', cwd: '/repo', source: '{"custom":"other"}' },
+    ]);
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    assert.deepEqual((await store.listSessions()).map((session) => session.id).sort(), [
+      'bare-atlas',
+      'bare-chatgpt',
+      'bare-exec',
+      'legacy-null',
+      'wrapped-cli',
+      'wrapped-vscode',
+    ]);
   });
 
   it('rejects rollout paths that escape ~/.codex', async () => {

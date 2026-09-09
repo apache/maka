@@ -31,6 +31,7 @@ import {
   type McpToolBinding,
 } from '@maka/core/mcp';
 import { buildStdioEnvironment, McpClientManager, McpToolCallError } from '../index.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const fixturePath = fileURLToPath(new URL('../__fixtures__/stdio-server.js', import.meta.url));
 const managers: McpClientManager[] = [];
@@ -970,6 +971,133 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       );
     });
 
+    test('accepts the content block limit and rejects the next block', async () => {
+      const fixture = await createRemoteFixture('streamable-http', {
+        advertiseTools: false,
+        legacyToolCallResult: {
+          content: Array.from({ length: 256 }, () => ({ type: 'text', text: 'x' })),
+        },
+      });
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+
+      const accepted = await manager.callTool(bindingFor(manager, 'remote', 'echo'), {});
+      assert.equal(accepted.content.length, 256);
+
+      await assert.rejects(
+        callToolResultFixture({
+          content: Array.from({ length: 257 }, () => ({ type: 'text', text: 'x' })),
+        }),
+        /exceeds the content block limit/u,
+      );
+    });
+
+    test('accepts JSON depth 32 and rejects depth 33', async () => {
+      const fixture = await createRemoteFixture('streamable-http', {
+        advertiseTools: false,
+        legacyToolCallResult: {
+          content: [{ type: 'text', text: 'deep' }],
+          structuredContent: nestedStructuredContent(30),
+        },
+      });
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+
+      const accepted = await manager.callTool(bindingFor(manager, 'remote', 'echo'), {});
+      assert.deepEqual(accepted.structuredContent, nestedStructuredContent(30));
+
+      await assert.rejects(
+        callToolResultFixture({
+          content: [{ type: 'text', text: 'deep' }],
+          structuredContent: nestedStructuredContent(31),
+        }),
+        /exceeds the JSON depth limit/u,
+      );
+    });
+
+    test('accepts 8192 JSON nodes and rejects node 8193', async () => {
+      const fixture = await createRemoteFixture('streamable-http', {
+        advertiseTools: false,
+        legacyToolCallResult: nodeBoundaryToolResult(8_192),
+      });
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+
+      const accepted = await manager.callTool(bindingFor(manager, 'remote', 'echo'), {});
+      assert.equal((accepted.structuredContent as { items: unknown[] }).items.length, 8_185);
+
+      await assert.rejects(
+        callToolResultFixture(nodeBoundaryToolResult(8_193)),
+        /exceeds the JSON node limit/u,
+      );
+    });
+
+    test('counts exact serialized UTF-8 bytes and rejects the next byte', async () => {
+      const fixture = await createRemoteFixture('streamable-http', {
+        advertiseTools: false,
+        legacyToolCallResult: exactByteToolResult(24 * 1024 * 1024, '😀'),
+      });
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+
+      const accepted = await manager.callTool(bindingFor(manager, 'remote', 'echo'), {});
+      assert.equal(accepted.content[0]?.type, 'text');
+
+      const oversized = exactByteToolResult(24 * 1024 * 1024 + 1, '\0');
+      assert.equal(Buffer.byteLength(JSON.stringify(oversized), 'utf8'), 24 * 1024 * 1024 + 1);
+      await assert.rejects(callToolResultFixture(oversized), /exceeds the byte limit/u);
+    });
+
+    test('applies the JSON budget to metadata on known content blocks', async () => {
+      const result = {
+        content: [
+          {
+            type: 'text',
+            text: 'safe',
+            _meta: nestedStructuredContent(31),
+          },
+        ],
+      };
+
+      await assert.rejects(callToolResultFixture(result), /exceeds the JSON depth limit/u);
+    });
+
+    test('rechecks the budget after credential scrubbing expands a result', async () => {
+      const fixture = await createRemoteFixture('streamable-http', {
+        advertiseTools: false,
+        legacyToolCallResult: exactByteToolResult(24 * 1024 * 1024, 'abcd'),
+      });
+      const manager = createManager();
+      await manager.sync({
+        version: MCP_CONFIG_VERSION,
+        mcpServers: {
+          remote: {
+            url: fixture.url,
+            transport: 'streamable-http',
+            headers: { Authorization: 'abcd' },
+          },
+        },
+      });
+
+      await assert.rejects(
+        manager.callTool(bindingFor(manager, 'remote', 'echo'), {}),
+        /exceeds the byte limit/u,
+      );
+    });
+
+    test('checks the success budget before output-schema validation', async () => {
+      const fixture = await createRemoteFixture('streamable-http');
+      const manager = createManager();
+      await manager.sync(remoteConfig(fixture.url));
+
+      await assert.rejects(
+        manager.callTool(bindingFor(manager, 'remote', 'invalid-output'), {
+          mode: 'oversized-success',
+        }),
+        /exceeds the byte limit/u,
+      );
+    });
+
     test('rejects an invalid binding before the wire', async () => {
       const fixture = await createRemoteFixture('streamable-http');
       const manager = createManager();
@@ -1395,11 +1523,7 @@ function remoteConfig(
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('condition was not reached');
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
+  await pollFor(predicate, { timeoutMs, pollMs: 5, message: 'condition was not reached' });
 }
 
 async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
@@ -1725,6 +1849,12 @@ function createProtocolServer(options: {
           content: Array.from({ length: 101 }, () => ({ type: 'text' as const, text: 'x' })),
         };
       }
+      if (args.mode === 'oversized-success') {
+        return {
+          content: [{ type: 'text', text: 'x'.repeat(24 * 1024 * 1024) }],
+          structuredContent: { wrong: true },
+        };
+      }
       return {
         content: [{ type: 'text', text: 'invalid' }],
         structuredContent: { wrong: true },
@@ -1775,6 +1905,40 @@ function remoteToolDefinition(
           }
         : {}),
   };
+}
+
+function nestedStructuredContent(depth: number): Record<string, unknown> {
+  let value: Record<string, unknown> = { value: 'done' };
+  for (let index = 0; index < depth; index += 1) value = { child: value };
+  return value;
+}
+
+function nodeBoundaryToolResult(nodes: number): Record<string, unknown> {
+  // result + content + block + block.type + block.text + structuredContent + items = 7 nodes.
+  return {
+    content: [{ type: 'text', text: 'many' }],
+    structuredContent: { items: Array.from({ length: nodes - 7 }, (_, index) => index) },
+  };
+}
+
+function exactByteToolResult(bytes: number, suffix: string): Record<string, unknown> {
+  const result = { content: [{ type: 'text', text: suffix }] };
+  const overhead = Buffer.byteLength(JSON.stringify(result), 'utf8') - Buffer.byteLength(suffix);
+  const fillBytes = bytes - overhead - Buffer.byteLength(suffix);
+  assert.ok(fillBytes >= 0);
+  result.content[0]!.text = `${'x'.repeat(fillBytes)}${suffix}`;
+  assert.equal(Buffer.byteLength(JSON.stringify(result), 'utf8'), bytes);
+  return result;
+}
+
+async function callToolResultFixture(result: unknown) {
+  const fixture = await createRemoteFixture('streamable-http', {
+    advertiseTools: false,
+    legacyToolCallResult: result,
+  });
+  const manager = createManager();
+  await manager.sync(remoteConfig(fixture.url));
+  return manager.callTool(bindingFor(manager, 'remote', 'echo'), {});
 }
 
 function reorderedRemoteEchoDefinition() {

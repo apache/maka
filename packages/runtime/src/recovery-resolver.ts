@@ -30,6 +30,7 @@ import {
 import { interpretScannedToolRecovery } from '@maka/core/tool-recovery-bundle';
 import type { ToolOutcomeCommit } from './runtime-commit-sink.js';
 import type { ToolMode } from '@maka/core/tool-mode';
+import { compatibilityToolResultProjection } from './durable-tool-result-projection.js';
 
 export type ToolRecoveryDecisionStatus =
   | 'completed'
@@ -151,6 +152,22 @@ export function buildInterruptedCodeModeOutcomeCommits(
     ) {
       return [];
     }
+    const result = {
+      kind: 'json' as const,
+      value: {
+        kind: 'code_mode' as const,
+        status: 'interrupted' as const,
+        message: 'Code Mode execution was interrupted by runtime recovery.',
+      },
+    };
+    const responseContent = {
+      kind: 'function_response' as const,
+      id: call.id,
+      name: call.name,
+      result,
+      isError: true as const,
+    };
+    const modelProjection = compatibilityToolResultProjection(responseContent, callEvent.sessionId);
     const runtimeEvent: RuntimeEvent = {
       id: `${decision.operationId}_response`,
       invocationId: callEvent.invocationId,
@@ -163,20 +180,7 @@ export function buildInterruptedCodeModeOutcomeCommits(
       author: 'tool',
       origin: 'provider',
       modelVisibility: 'visible',
-      content: {
-        kind: 'function_response',
-        id: call.id,
-        name: call.name,
-        result: {
-          kind: 'json',
-          value: {
-            kind: 'code_mode',
-            status: 'interrupted',
-            message: 'Code Mode execution was interrupted by runtime recovery.',
-          },
-        },
-        isError: true,
-      },
+      content: { ...responseContent, ...(modelProjection ? { modelProjection } : {}) },
       refs: { operationId: decision.operationId, toolCallId: call.id },
     };
     return [

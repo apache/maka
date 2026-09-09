@@ -35,7 +35,12 @@ export function hasActiveTurnAtSubmit(input: {
 export function resolveFollowUpModeAtSubmit(input: {
   requestedMode?: FollowUpMode;
   hasActiveTurn: boolean;
+  /** The parsed command, if the text was one. Only its presence matters here. */
+  slashCommand: object | null;
 }): FollowUpMode | undefined {
+  // A slash command tells the app to do something; it is not text for the
+  // Turn that happens to be running. Dispatch it instead of queueing it.
+  if (input.slashCommand) return undefined;
   if (input.requestedMode) return input.requestedMode;
   // Mid-turn submits always queue; Shift+Enter carries the one-shot steer as
   // the requested mode.
@@ -63,4 +68,20 @@ export function mergeWorkspaceReferences(
     merged.set(`${start}:${reference.value}`, { value: reference.value, start });
   }
   return [...merged.values()].sort((left, right) => left.start - right.start);
+}
+
+export function rebaseWorkspaceFileReferences(
+  sourceText: string,
+  projectedText: string,
+  references: readonly WorkspaceFileReferencePosition[],
+): WorkspaceFileReferencePosition[] {
+  const offset = sourceText.lastIndexOf(projectedText);
+  if (offset < 0) return [];
+  return references
+    .filter(
+      (reference) =>
+        reference.start >= offset &&
+        reference.start + reference.value.length <= offset + projectedText.length,
+    )
+    .map((reference) => ({ ...reference, start: reference.start - offset }));
 }

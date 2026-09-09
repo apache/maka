@@ -19,7 +19,7 @@
 
 import {
   CATALOG_PROVIDER_TYPES,
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerAuthSupportsApiKey,
 } from '@maka/core/llm-connections';
 import type { OnboardableProvider } from './pi-tui-contracts.js';
@@ -34,16 +34,14 @@ export function listApiKeyOnboardableProviders(): OnboardableProvider[] {
   // plain base-URL prompt cannot onboard them.
   return CATALOG_PROVIDER_TYPES.filter((providerType) => {
     if (!providerAuthSupportsApiKey(providerType)) return false;
-    const definition = PROVIDER_DEFAULTS[providerType];
+    const definition = PROVIDER_REGISTRY[providerType];
     return Boolean(definition.baseUrl) || definition.category === 'custom';
   }).map((providerType) => {
-    const definition = PROVIDER_DEFAULTS[providerType];
+    const definition = PROVIDER_REGISTRY[providerType];
     return {
       providerType,
       label: definition.label,
-      authKind: definition.authKind as 'api_key' | 'optional_api_key',
       requiresBaseUrl: !definition.baseUrl,
-      fallbackModels: definition.fallbackModels,
     };
   });
 }

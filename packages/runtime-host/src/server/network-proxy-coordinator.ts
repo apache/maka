@@ -40,7 +40,6 @@ export class HostNetworkProxyCoordinator {
     try {
       const resolved = await this.policy.resolveNetworkProxyExecution({
         ...(input.networkProxy ? { networkProxy: input.networkProxy } : {}),
-        ...(input.password ? { secretOverride: input.password } : {}),
       });
       if (resolved.kind === 'credential_not_configured') {
         return {

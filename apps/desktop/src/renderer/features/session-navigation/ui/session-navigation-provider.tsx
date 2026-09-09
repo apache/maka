@@ -17,7 +17,13 @@
  * under the License.
  */
 
-import { useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
+import {
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  type ComponentType,
+  type ReactNode,
+} from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import {
@@ -28,12 +34,8 @@ import {
   type SessionRailChrome,
   type SessionRailData,
   type SessionRowActions,
-  type SidebarUpdateReminder,
 } from '@maka/ui';
-import {
-  useSessionNavigationController,
-  type SessionNavigationPorts,
-} from '../controller/use-session-navigation-controller.js';
+import { useSessionNavigationController } from '../controller/use-session-navigation-controller.js';
 import type { SessionNavigationRowActions } from '../controller/session-row-actions.js';
 import {
   SESSION_LIST_EXPANDED_MAX_WIDTH,
@@ -41,20 +43,19 @@ import {
 } from '../model/session-list-layout.js';
 import type { SessionRailProjection } from '../model/session-rail.js';
 import { sessionRailLayoutStore } from '../model/session-rail-layout-store.js';
-import type { SessionNavigationSession } from '../ports.js';
+import type { SessionNavigationPorts, SessionNavigationSession } from '../ports.js';
 
 /** The chrome the shell owns and the rail only displays. */
 export interface SessionNavigationChromeInput {
+  NavigationExtras?: ComponentType<{ readonly onOpenSession: (sessionId: string) => void }>;
   selection: NavSelection;
   scheduledTasks?: readonly ScheduledTask[];
   moduleMemory?: NavModuleMemory;
-  updateReminder?: SidebarUpdateReminder;
   workHubActive: boolean;
   workHubEntry?: { active: boolean; label: string; onSelect(): void };
   projectActions?: ProjectRowActions;
   onSelect(selection: NavSelection): void;
   onOpenSettings(): void;
-  onOpenUpdate?(): void;
   onNew(): void;
   onExitWorkHub(): void;
   onSelectSession(sessionId: string): void;
@@ -65,6 +66,7 @@ export interface SessionNavigationProviderProps extends SessionNavigationChromeI
   projects: readonly ProjectRecord[];
   streamingSessionIds: ReadonlySet<string>;
   staleSessionIds: ReadonlySet<string>;
+  SessionBadge?: ComponentType<{ readonly sessionId: string }>;
   ports: SessionNavigationPorts;
   /**
    * Where the shell reads the row mutations it issues from elsewhere — the
@@ -111,9 +113,9 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       onRename: (sessionId, name) => {
         void controller.commands.renameSession(sessionId, name);
       },
-      onDelete: (sessionId) => {
-        void controller.commands.deleteSession(sessionId);
-      },
+      // No `onDelete`: the rail cannot delete. `deleteSession` is still a
+      // command, reached from Settings › 已归档任务, where the task has already
+      // been archived once.
     }),
     [controller.commands],
   );
@@ -149,6 +151,11 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     [hasProjectActions, hasRelink],
   );
 
+  const sessionBadge = useMemo<SessionRailData['sessionBadge']>(() => {
+    const SessionBadge = props.SessionBadge;
+    return SessionBadge ? (session) => <SessionBadge sessionId={session.id} /> : undefined;
+  }, [props.SessionBadge]);
+
   const data = useMemo<SessionRailData>(
     () => ({
       sessions: props.rail.sessions,
@@ -158,7 +165,9 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       worktreeSessionIds: controller.selectors.worktreeSessionIds,
       groups: controller.layout.viewMode === 'project' ? controller.selectors.groups : undefined,
       groupVariant: controller.layout.viewMode,
+      sessionProjectName: controller.selectors.sessionProjectName,
       sessionMeta: controller.selectors.sessionMeta,
+      sessionBadge,
       onSelectSession: props.onSelectSession,
       rowActions,
       projectActions,
@@ -167,6 +176,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       controller.layout.viewMode,
       controller.selectors.groups,
       controller.selectors.sessionMeta,
+      controller.selectors.sessionProjectName,
       controller.selectors.worktreeSessionIds,
       props.onSelectSession,
       projectActions,
@@ -175,6 +185,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       props.streamingSessionIds,
       props.workHubActive,
       rowActions,
+      sessionBadge,
     ],
   );
 
@@ -182,6 +193,8 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
   // a few dozen fibers — and every field on it follows the shell, so a
   // comparator here would run more often than it would save.
   const chrome: SessionRailChrome = {
+    auxiliaryNavigation: props.NavigationExtras
+      ? <props.NavigationExtras onOpenSession={props.onSelectSession} /> : undefined,
     collapsed: controller.layout.collapsed,
     onCollapsedChange: sessionRailLayoutStore.setCollapsed,
     collapseHandleRef: sessionRailLayoutStore.collapseHandleRef,
@@ -203,13 +216,15 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       props.onNew();
     },
     onOpenSettings: props.onOpenSettings,
-    updateReminder: props.updateReminder,
-    onOpenUpdate: props.onOpenUpdate,
     workHubEntry: props.workHubEntry,
   };
 
   return (
-    <SessionRailProvider data={data} chrome={chrome}>
+    <SessionRailProvider
+      data={data}
+      chrome={chrome}
+      selection={controller.selection}
+    >
       {props.children}
     </SessionRailProvider>
   );

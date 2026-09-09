@@ -7,7 +7,7 @@ counterpart: ./runtime-resume-architecture.zh-CN.md
 implementation_status: phase_0_2_and_phase_3a_authority_current
 document_status: current
 translation_status: synced
-last_verified: 2026-07-28
+last_verified: 2026-09-02
 owners:
   - maka-backend
 ---
@@ -31,6 +31,8 @@ owners:
 -->
 
 # Chapter 8: Resume Is Not Retry—How Maka Continues Safely from Crash Facts
+
+Tracking: [Production Write/Edit recovery #4319](https://github.com/apache/maka/issues/4319), [safe-boundary continuation hardening #4324](https://github.com/apache/maka/issues/4324), [sandbox boundary negotiation #3731](https://github.com/apache/maka/issues/3731)
 
 > This chapter answers a deceptively dangerous question: when Maka crashes while a model is calling a tool, how can a restart tell what happened, what may continue, and what must stop for human attention? The answer is: **recover facts from immutable RuntimeEvents, let one RecoveryResolver classify tool state, and create a new Run only when history, execution, and workspace boundaries are all provably safe. Resume never resurrects the old process or disguises “try again” as recovery.**
 
@@ -131,7 +133,7 @@ These three words are easy to mix up:
 
 | Term | Subject | Result |
 |---|---|---|
-| Repair | Durable state of an old Run | Align terminal RuntimeEvent, Run header, and Turn state |
+| Repair | Durable state of an old Run | Give an interrupted Run its terminal RuntimeEvent and align Turn state |
 | Resume / Continuation | A history boundary already proved safe | Create fresh identities and continue the provider loop |
 | Reconcile | A tool operation with T1 but no T2 outcome | Observe the external world and commit either completed or parked |
 
@@ -202,7 +204,8 @@ Safety does not come merely from putting everything in SQLite. It comes from ass
 | Data | Nature | Purpose |
 |---|---|---|
 | Immutable `RuntimeEvent` | Canonical semantic fact | Model history, tool call/dispatch/outcome, recovery observation/decision, terminal fact |
-| `AgentRunHeader` and AgentRun events | Durable operational envelope | Attempt identity, status, lineage, and diagnostics |
+| Invocation opening fact | Immutable statement of one attempt | Identity, route, configuration, root authority, lineage |
+| AgentRun events | Durable operational record | What the runtime did, stage by stage, and its diagnostics |
 | `tool_operations` | SQLite projection | Fast current-state lookup for an operation |
 | `tool_journal_events` | SQLite projection | Fast prepared/outcome/recovery transition lookup |
 | Session messages / Turn state | Product and UI projection | Conversation and Turn display, not recovery judgment |
@@ -399,14 +402,11 @@ sequenceDiagram
   participant UI as Renderer
 
   App->>SM: recoverInterruptedSessions()
-  SM->>RS: list non-terminal / suspicious AgentRuns
+  SM->>ES: list invocations with no terminal event
   SM->>ES: read immutable RuntimeEvents
-  SM->>SM: compare terminal ledger and Run header
-  alt terminal RuntimeEvent exists, header lags
-    SM->>RS: repair the matching Run header
-  else no terminal RuntimeEvent
-    SM->>ES: commit recovered terminal RuntimeEvent first
-    SM->>RS: then commit matching failed/cancelled header
+  SM->>RS: read the operational events for the Run
+  alt no terminal RuntimeEvent
+    SM->>ES: commit a recovered terminal RuntimeEvent
   else ledger is ambiguous / unreadable
     SM-->>UI: preserve inspectable state and fail closed
   end
@@ -416,9 +416,9 @@ sequenceDiagram
 
 The invariant is:
 
-> The terminal RuntimeEvent commits before the terminal Run header. A header cannot declare completion without its semantic fact.
+> A Run has ended exactly when its terminal RuntimeEvent is durable, and nothing else records that it ended.
 
-A second crash between those commits remains repairable from the terminal event. Desktop also recovers Graph coordination. Automatic continuation is considered only after those repairs and only when the feature flag is enabled.
+There is no second commit for a crash to land between. Desktop also recovers Graph coordination. Automatic continuation is considered only after those repairs and only when the feature flag is enabled.
 
 ## Phase 1: create a new execution at a safe boundary
 
@@ -427,7 +427,7 @@ Phase 1 does not resolve unknown side effects. It continues only when every acce
 Planner gates include:
 
 - readable source Run and RuntimeEvent ledger;
-- exactly one terminal event matching the Run header;
+- exactly one terminal event for the source invocation;
 - one source execution identity across events;
 - Phase 0 `safe_replay`;
 - no pending permission;
@@ -608,7 +608,7 @@ Write/Edit recovery first needs durable evidence bound to:
 | Observation | Action |
 |---|---|
 | `matches_expected_state` | Cleanup/finalize only; synthesize outcome and commit completed bundle |
-| `matches_prior_state` | Park with `redo_disabled_pending_cas` |
+| `matches_prior_state` | Park with `reconcile_matches_prior_state` |
 | `diverged` | Park; do not overwrite outside changes |
 | `unreadable` | Park; do not guess |
 
@@ -619,7 +619,7 @@ flowchart TD
   Expected -->|"Yes"| Finalize["Finalize only<br/>do not write the file again"]
   Finalize --> Completed["Commit recovered outcome<br/>+ completed decision"]
   Expected -->|"No"| Prior{"current == before?"}
-  Prior -->|"Yes"| ParkPrior["Park<br/>redo_disabled_pending_cas"]
+  Prior -->|"Yes"| ParkPrior["Park<br/>reconcile_matches_prior_state"]
   Prior -->|"No, content diverged"| ParkDiverged["Park<br/>protect outside writes"]
   Prior -->|"Unreadable"| ParkUnreadable["Park<br/>do not guess"]
 ```
@@ -777,18 +777,6 @@ Layer responsibilities:
 
 The Runtime host uses strict recovery stores. It does not silently turn an unreadable ledger into best-effort fallback before admitting new writes.
 
-### Managed workspace execution admission and read bridge (M1.1–M1.2)
-
-The workspace plane now has storage-owned execution admission and an owner-bound, read-only Runtime Host bridge:
-
-- baseline open returns an opaque handle bound to its `ManagedWorkspaceOwner`, never a raw cwd;
-- every admission reproves storage-root identity, the exact Git receipt/binding/HEAD/tree/ownership, and the exact SQLite canonical head; the ordinary path performs its slow Git verification first, then makes the immutable SQLite head the final durable reread before the DB identity guard and pure in-memory comparisons;
-- one admission issues one callback-scoped opaque scope with `workspaceEffect: none`; the same handle may have multiple concurrent read-only scopes;
-- `close()` rejects new admissions and drains every active scope; a scope expires when its callback exits, with typed `managed_workspace_execution_scope_invalid` and `managed_workspace_execution_scope_expired` codes for forged and retained scopes;
-- the crash harness may enable a preliminary-verification failpoint, but that test path must still pass the final verification before any scope is issued.
-
-M1.2 wires that authority into the owner-bound storage worker bridge and Runtime Host lifecycle composition. It limits managed execution to Read/Glob/Grep, demotes unchecked scope inspection to explicit test support, rejects reentrant owner close, keeps attached and managed profiles structurally distinct, and orders shutdown as tool operations → managed owner → root owner. Desktop and CLI do not enable it by default; Write/Edit/Format/Bash/unknown tools fail closed, and managed mode never silently falls back to the attached checkout. See [Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md) for the detailed contract.
-
 ### Eval
 
 Eval does not resume or reconstruct Runtime execution. It asks Runtime Host to execute a Maka subject. Infrastructure replacement appends a new attempt to the same experiment cell; Runtime continuation stays inside that subject and is not observable as a repetition or retry.
@@ -801,7 +789,7 @@ Eval does not resume or reconstruct Runtime execution. It asks Runtime Host to e
 4. Atomically commit call, dispatch, and projection at T1.
 5. Execute the external effect without a long database transaction.
 6. Atomically commit T2 before publishing the result.
-7. Commit terminal RuntimeEvent before terminal Run header.
+7. End a Run by committing exactly one terminal RuntimeEvent.
 8. On restart, repair the old Run first.
 9. Resolve immutable facts into completed / not-dispatched / indeterminate / parked / corruption.
 10. If a production reconciler exists, commit one atomic recovery bundle; otherwise park.

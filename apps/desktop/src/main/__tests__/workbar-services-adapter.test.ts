@@ -33,12 +33,10 @@ function createBridgeRecorder(): {
     'sessions.subscribeEvents',
     'shellRuns.subscribePtyData',
     'shellRuns.subscribeResync',
-    'tasks.subscribeChanges',
     'browser.setActiveSession',
     'browser.setViewport',
     'browser.onState',
     'browser.onLive',
-    'artifacts.subscribeChanges',
     'inspector.subscribeUsageChanges',
   ]);
   // Adapters that reshape a bridge answer need one to reshape.
@@ -70,7 +68,6 @@ function createBridgeRecorder(): {
       gitReview: domain('gitReview'),
       sessions: domain('sessions'),
       shellRuns: domain('shellRuns'),
-      tasks: domain('tasks'),
       browser: domain('browser'),
       artifacts: domain('artifacts'),
       app: domain('app'),
@@ -122,9 +119,6 @@ describe('createDesktopWorkbarServices', () => {
     services.terminal.subscribePtyData(eventHandler)();
     services.terminal.subscribeResync(eventHandler)();
 
-    await services.tasks.list('s');
-    services.tasks.subscribeChanges(eventHandler)();
-
     services.browser.setActiveSession('s');
     services.browser.setViewport({ sessionId: 's', rect: null });
     await services.browser.navigate('s', 'https://example.com');
@@ -137,11 +131,10 @@ describe('createDesktopWorkbarServices', () => {
     services.browser.subscribeState(eventHandler)();
     services.browser.subscribeLive(eventHandler)();
 
-    await services.artifacts.list('s', { includeDeleted: true });
+    await services.artifacts.list('s');
     await services.artifacts.readText('s', 'a');
     await services.artifacts.readBinary('s', 'a');
     await services.artifacts.delete('s', 'a');
-    services.artifacts.subscribeChanges(eventHandler)();
     await services.artifacts.openPath('s', 'a');
     await services.artifacts.saveAs('s', 'a');
 
@@ -166,6 +159,7 @@ describe('createDesktopWorkbarServices', () => {
     });
     await services.sideChat.cleanupSessionCopy('fork');
     await services.sideChat.abandonSessionCopy('s', 'copy');
+    await services.sideChat.compact('fork');
     await services.sideChat.send('fork', {
       type: 'send',
       turnId: 'turn-2',
@@ -179,7 +173,9 @@ describe('createDesktopWorkbarServices', () => {
       turnId: 'turn-3',
     });
     await services.sideChat.respondToSandboxBoundary('fork', {} as never);
+    await services.sideChat.respondToClientCapability('fork', {} as never);
     await services.sideChat.respondToUserQuestion('fork', {} as never);
+    await services.sideChat.respondToUserForm('fork', {} as never);
     services.sideChat.subscribeEvents('fork', eventHandler)();
 
     assert.deepEqual(
@@ -194,8 +190,6 @@ describe('createDesktopWorkbarServices', () => {
         'shellRuns.write',
         'shellRuns.subscribePtyData',
         'shellRuns.subscribeResync',
-        'tasks.list',
-        'tasks.subscribeChanges',
         'browser.setActiveSession',
         'browser.setViewport',
         'browser.navigate',
@@ -211,7 +205,6 @@ describe('createDesktopWorkbarServices', () => {
         'artifacts.readText',
         'artifacts.readBinary',
         'artifacts.delete',
-        'artifacts.subscribeChanges',
         'app.openArtifactPath',
         'app.saveArtifactAs',
         'inspector.trace',
@@ -226,13 +219,16 @@ describe('createDesktopWorkbarServices', () => {
         'sessions.branchFromTurn',
         'sessions.cleanupSessionCopy',
         'sessions.abandonSessionCopy',
+        'sessions.compact',
         'sessions.send',
         'sessions.stop',
         'sessions.submitMessage',
         'sessions.setPermissionMode',
         'sessions.regenerateTurn',
         'sessions.respondToSandboxBoundary',
+        'sessions.respondToClientCapability',
         'sessions.respondToUserQuestion',
+        'sessions.respondToUserForm',
         'sessions.subscribeEvents',
       ],
     );

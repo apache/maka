@@ -64,7 +64,7 @@ export function useShellResume(options: {
     try {
       const result = await window.maka.sessions.resumeLatest(sessionId);
       if (result.disposition === 'park') {
-        const parkCopy = resumeParkToastCopy(result.rejectionReasons);
+        const parkCopy = resumeParkToastCopy(result.rejectionReasons, uiLocale);
         setResumeParkDescriptionBySession((current) => ({
           ...current,
           [sessionId]: parkCopy.description,

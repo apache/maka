@@ -208,6 +208,28 @@ describe('Usage/Pricing protocol', () => {
         nextOffset: null,
       }),
     );
+    // The Host-resolved session title rides on both log kinds as bounded text.
+    assert.doesNotThrow(() =>
+      usageResponse({
+        kind: 'logs',
+        source: 'llm',
+        rows: [{ ...validLog(), sessionId: 'session-1', sessionTitle: '重构任务列' }],
+        offset: 0,
+        total: 1,
+        nextOffset: null,
+        provenance: validProvenance(),
+      }),
+    );
+    assert.doesNotThrow(() =>
+      usageResponse({
+        kind: 'logs',
+        source: 'tool',
+        rows: [{ ...validToolLog(), sessionId: 'session-1', sessionTitle: '重构任务列' }],
+        offset: 0,
+        total: 1,
+        nextOffset: null,
+      }),
+    );
 
     const tooMany = Array.from({ length: USAGE_PAGE_MAX_ITEMS + 1 }, () => validBucket());
     const byteHeavy = Array.from({ length: 50 }, (_, index) => ({
@@ -239,6 +261,15 @@ describe('Usage/Pricing protocol', () => {
         kind: 'logs',
         source: 'llm',
         rows: [{ ...validLog(), errorClass: 'x'.repeat(USAGE_PROJECTION_TEXT_MAX_BYTES + 1) }],
+        offset: 0,
+        total: 1,
+        nextOffset: null,
+        provenance: validProvenance(),
+      },
+      {
+        kind: 'logs',
+        source: 'llm',
+        rows: [{ ...validLog(), sessionTitle: 'x'.repeat(USAGE_PROJECTION_TEXT_MAX_BYTES + 1) }],
         offset: 0,
         total: 1,
         nextOffset: null,
@@ -297,6 +328,66 @@ describe('Usage/Pricing protocol', () => {
     ]) {
       assert.throws(() => usageResponse(result), invalidFrame);
     }
+  });
+
+  test('a summary always carries its recorded time; only the tool split is optional', () => {
+    // The epoch bump makes the duration basis a handshake requirement, so a
+    // summary without one is not an older host — it is a malformed frame.
+    assert.doesNotThrow(() =>
+      usageResponse({
+        kind: 'summary',
+        summary: {
+          ...validSummary(),
+          totalDurationMs: 1_500,
+          toolUsage: { requests: 3, durationMs: 450 },
+        },
+        provenance: validProvenance(),
+      }),
+    );
+    assert.doesNotThrow(() =>
+      usageResponse({
+        kind: 'summary',
+        summary: validSummary(),
+        provenance: validProvenance(),
+      }),
+    );
+    assert.throws(
+      () =>
+        usageResponse({
+          kind: 'summary',
+          summary: { ...validSummary(), totalDurationMs: undefined },
+          provenance: validProvenance(),
+        }),
+      invalidFrame,
+    );
+    assert.throws(
+      () =>
+        usageResponse({
+          kind: 'summary',
+          summary: { ...validSummary(), toolUsage: { requests: 3 } },
+          provenance: validProvenance(),
+        }),
+      invalidFrame,
+    );
+    assert.throws(
+      () =>
+        usageResponse({
+          kind: 'summary',
+          summary: { ...validSummary(), totalDurationMs: -1 },
+          provenance: validProvenance(),
+        }),
+      invalidFrame,
+    );
+    // An unknown key is still an unknown key, optional or not.
+    assert.throws(
+      () =>
+        usageResponse({
+          kind: 'summary',
+          summary: { ...validSummary(), totalWallClockMs: 1 },
+          provenance: validProvenance(),
+        }),
+      invalidFrame,
+    );
   });
 
   test('keeps long usage identities distinct through the real coordinator and protocol', async () => {
@@ -388,8 +479,8 @@ describe('Usage/Pricing protocol', () => {
         lease.transaction('write', () => {
           lease.database
             .prepare(`
-              INSERT INTO core_agent_runs(session_id, run_id, created_at, record_json)
-              VALUES ('session-b', 'run-b', 0, '{}')
+              INSERT INTO core_agent_runs(session_id, run_id, created_at)
+              VALUES ('session-b', 'run-b', 0)
             `)
             .run();
           lease.database
@@ -702,6 +793,7 @@ function validSummary() {
     cacheHitRequests: 0,
     cacheCreateRequests: 0,
     errorRequests: 0,
+    totalDurationMs: 1_200,
   };
 }
 

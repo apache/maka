@@ -218,6 +218,29 @@ test('normalizes catalog inputs while canonical entries reject noncanonical endp
   );
 });
 
+for (const [slug, detail] of [
+  ['', 'Slug is required'],
+  ['Not A Slug', 'Slug must be lowercase letters, digits, and hyphens'],
+  ['a'.repeat(65), 'Slug must be 64 characters or fewer'],
+]) {
+  test(`catalog decoding preserves the diagnostic: ${detail}`, () => {
+    assert.throws(
+      () =>
+        decodeCanonicalConnectionCatalogEntry({
+          connectionId: '123e4567-e89b-42d3-a456-426614174000',
+          revision: 1,
+          slug,
+          name: 'OpenAI',
+          providerType: 'openai',
+          enabled: true,
+          enabledModelIds: [],
+          models: [],
+        }),
+      { name: 'RuntimePolicyDomainDecodeError', message: `connection slug: ${detail}` },
+    );
+  });
+}
+
 test('rejects new connections for the retired Gemini CLI account provider', () => {
   assert.throws(
     () =>
@@ -482,6 +505,63 @@ test('normalizes exact bounded model discovery results', () => {
       RuntimePolicyDomainDecodeError,
     );
   }
+});
+
+test('normalizes extended model facts used by the runtime host catalog', () => {
+  const result = normalizeConnectionModelDiscoveryResult({
+    models: [
+      {
+        id: 'custom-model',
+        description: 'A custom model',
+        inputLimit: 120_000,
+        knowledgeCutoff: '2025-01',
+        structuredOutput: true,
+        lastUpdated: '2026-01-01',
+        modalities: { input: ['text', 'image'], output: ['text'] },
+      },
+    ],
+    source: 'fetched',
+    fetchedAt: 42,
+  });
+  assert.deepEqual(result.models[0], {
+    id: 'custom-model',
+    description: 'A custom model',
+    inputLimit: 120_000,
+    knowledgeCutoff: '2025-01',
+    structuredOutput: true,
+    lastUpdated: '2026-01-01',
+    modalities: { input: ['text', 'image'], output: ['text'] },
+  });
+});
+
+test('carries the video and pdf modalities models.dev declares', () => {
+  const modalities = {
+    input: ['text', 'image', 'video'],
+    output: ['text', 'pdf', 'video'],
+  };
+  const result = normalizeConnectionModelDiscoveryResult({
+    models: [{ id: 'custom-model', modalities }],
+    source: 'fetched',
+    fetchedAt: 42,
+  });
+  assert.deepEqual(result.models[0], { id: 'custom-model', modalities });
+});
+
+test('rejects sparse model modality arrays', () => {
+  assert.throws(
+    () =>
+      normalizeConnectionModelDiscoveryResult({
+        models: [
+          {
+            id: 'custom-model',
+            modalities: { input: Array(1), output: ['text'] },
+          },
+        ],
+        source: 'fetched',
+        fetchedAt: 42,
+      }),
+    RuntimePolicyDomainDecodeError,
+  );
 });
 
 test('credential domain validation requires material but leaves capacity to callers', () => {

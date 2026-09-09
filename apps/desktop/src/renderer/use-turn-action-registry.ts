@@ -47,6 +47,8 @@ export interface TurnActionRegistry {
   keys: Set<string>;
   /** Stable mirror of the pending keys for synchronous reads. */
   keysRef: RefBox<Set<string>>;
+  /** Builds the namespaced identity consumed by every registry operation. */
+  keyOf(sessionId: string, turnId: string, actionId: string): string;
   /**
    * Marks `key` pending and arms its auto-clear timer. Returns false (a no-op)
    * if it was already pending, so callers can bail on a duplicate action.
@@ -67,6 +69,8 @@ export function useTurnActionRegistry(): TurnActionRegistry {
   const controllerRef = useRef<Omit<TurnActionRegistry, 'keys'> | null>(null);
 
   if (!controllerRef.current) {
+    const keyOf = (sessionId: string, turnId: string, actionId: string): string =>
+      `${sessionId}:${turnId}:${actionId}`;
     const syncState = (): void => {
       setKeys(new Set(keysRef.current));
     };
@@ -99,7 +103,7 @@ export function useTurnActionRegistry(): TurnActionRegistry {
       keysRef.current.clear();
       syncState();
     };
-    controllerRef.current = { keysRef, addKey, clearKey, clearForSession, clearAll };
+    controllerRef.current = { keysRef, keyOf, addKey, clearKey, clearForSession, clearAll };
   }
 
   return { keys, ...controllerRef.current };

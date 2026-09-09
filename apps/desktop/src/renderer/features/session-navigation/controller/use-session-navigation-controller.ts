@@ -21,7 +21,12 @@ import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary } from '@maka/core/session';
 import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
-import { useUiLocale, type SessionHistoryGroup } from '@maka/ui';
+import {
+  deriveTitlebarProjectName,
+  useUiLocale,
+  type SessionHistoryGroup,
+  type SessionRailSelection,
+} from '@maka/ui';
 import { useExternalStoreSelector } from '../../../use-external-store-selector.js';
 import { deriveSessionNavigationGroups } from '../model/session-navigation-groups.js';
 import { deriveWorktreeSessionIds } from '../model/session-project-grouping.js';
@@ -31,52 +36,13 @@ import {
   sessionRailLayoutStore,
   type SessionRailLayoutState,
 } from '../model/session-rail-layout-store.js';
-import type { SessionNavigationSession } from '../ports.js';
+import type { SessionNavigationPorts, SessionNavigationSession } from '../ports.js';
 import { useSessionNavigationServices } from '../services-context.js';
 import {
   createSessionNavigationRowActions,
   type SessionNavigationRowActions,
 } from './session-row-actions.js';
-
-export type SessionNavigationToastApi = {
-  success(title: string, description?: string): void;
-  error(
-    title: string,
-    description?: string,
-    diagnosticDetails?: string,
-    diagnosticTarget?: { sessionId: string },
-  ): void;
-  confirm(options: {
-    title: string;
-    description: string;
-    confirmLabel: string;
-    cancelLabel: string;
-    destructive?: boolean;
-  }): Promise<boolean>;
-};
-
-type RefBox<T> = { current: T };
-
-/**
- * What the rail asks of the rest of the shell, named one by one.
- *
- * Switching a session also clears the active messages and leaves the Work Hub.
- * Those are commands the shell issues, and they stay commands: the rail calls
- * them, it does not subscribe to them. Nothing here has to be identity-stable —
- * the controller reads them through a ref published on commit — so the shell
- * may build this object inline, and no ordinary `function` declaration upstream
- * can quietly put the rail back on every AppShell render (#4109).
- */
-export interface SessionNavigationPorts {
-  activeIdRef: RefBox<string | undefined>;
-  sessionsRef: RefBox<ReadonlyArray<SessionSummary>>;
-  pendingSessionRowActionsRef: RefBox<Set<string>>;
-  activateSession(sessionId: string | undefined): void;
-  clearActiveMessages(): void;
-  clearSessionRendererState(sessionId: string): void;
-  refreshSessions(): Promise<ReadonlyArray<SessionSummary>>;
-  toastApi: SessionNavigationToastApi;
-}
+import { useSessionSelection } from './use-session-selection.js';
 
 export interface UseSessionNavigationControllerInput {
   /**
@@ -92,6 +58,7 @@ export interface UseSessionNavigationControllerInput {
 export interface SessionNavigationSelectors {
   groups: SessionHistoryGroup[];
   worktreeSessionIds: ReadonlySet<string>;
+  sessionProjectName(session: SessionSummary): string | undefined;
   sessionMeta(session: SessionSummary): string | undefined;
 }
 
@@ -99,6 +66,7 @@ export interface SessionNavigationController {
   layout: SessionRailLayoutState;
   selectors: SessionNavigationSelectors;
   commands: SessionNavigationRowActions;
+  selection: SessionRailSelection;
 }
 
 /**
@@ -175,6 +143,24 @@ export function useSessionNavigationController(
     () => new Map(rail.sessions.map((session) => [session.id, session])),
     [rail.sessions],
   );
+  const projectNameByIdentity = useMemo(() => {
+    const names = new Map<string, string>();
+    for (const project of input.projects) {
+      names.set(project.id, project.name);
+      for (const alias of project.aliases ?? []) names.set(alias, project.name);
+    }
+    return names;
+  }, [input.projects]);
+  const sessionProjectName = useCallback(
+    (session: SessionSummary): string | undefined =>
+      deriveTitlebarProjectName({
+        projectName: session.projectId
+          ? projectNameByIdentity.get(session.projectId)
+          : undefined,
+        projectPath: session.cwd,
+      }),
+    [projectNameByIdentity],
+  );
   const sessionMeta = useCallback(
     (session: SessionSummary): string | undefined => {
       const projected: SessionNavigationSession | undefined = sessionById.get(session.id);
@@ -186,12 +172,18 @@ export function useSessionNavigationController(
   );
 
   const selectors = useMemo<SessionNavigationSelectors>(
-    () => ({ groups, worktreeSessionIds, sessionMeta }),
-    [groups, sessionMeta, worktreeSessionIds],
+    () => ({ groups, worktreeSessionIds, sessionProjectName, sessionMeta }),
+    [groups, sessionMeta, sessionProjectName, worktreeSessionIds],
   );
 
+  const selection = useSessionSelection({
+    sessions: rail.sessions,
+    commands,
+    activeId: rail.activeRowId,
+  });
+
   return useMemo(
-    () => ({ layout, selectors, commands }),
-    [commands, layout, selectors],
+    () => ({ layout, selectors, commands, selection }),
+    [commands, layout, selection, selectors],
   );
 }

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -37,14 +38,16 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import {
+  runtimeInvocationOutcome,
+  type RuntimeInvocationRecord,
+} from '@maka/core/runtime-invocation';
+import { runtimeInvocationFailureClass } from '@maka/runtime/runtime-event-read-model';
 import type { MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import type { StoredMessage } from '@maka/core/session';
-import type { Task } from '@maka/core/task-ledger';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
-import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { buildTaskLedgerTools } from '@maka/runtime/task-ledger-tools';
+import type { RuntimeEvent, RuntimeInvocationLineage } from '@maka/core/runtime-event';
 import {
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
@@ -68,7 +71,6 @@ import {
   tryAcquireInteractiveRootReader,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import {
   connectRuntimeHost,
   RuntimeHostOperationError,
@@ -79,19 +81,16 @@ import {
 import {
   decodeHostFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  TASK_LEDGER_PAGE_MAX_ITEMS,
   type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
-  type TaskLedgerQueryResult,
-  type TaskLedgerRevision,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
   type TurnStartResult,
 } from '../protocol/index.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
-import { HostTaskLedgerCoordinator } from '../server/task-ledger-coordinator.js';
 import { FramedTransport } from '../transport/framed-transport.js';
+import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 
 import {
   CONNECTION_EFFECT_MODEL_IDS,
@@ -112,7 +111,6 @@ import {
   waitForTerminalTurn,
   waitForTurn,
   withExecutionRoot,
-  withTimeout,
 } from './fixtures/execution-host-suite.js';
 
 test('subscribed Clients share one canonical queue and ordered root handoff', async () => {
@@ -218,17 +216,18 @@ test('subscribed Clients share one canonical queue and ordered root handoff', as
     await tui.close();
     await fixture.stopHost(host);
     const chain = await fixture.readAdmissionChain();
+    assert.equal(chain.length, 3);
     assert.deepEqual(
-      chain.map((admission) => admission.turnId),
+      chain.slice(0, 2).map((admission) => admission.turnId),
       [firstTurnId, successor.snapshot.rootTurn.turnId],
     );
+    assert.equal(chain[2]?.previousRootTurnId, successor.snapshot.rootTurn.turnId);
     assert.deepEqual(
-      chain[1]?.sourceMessages.map((source) => source.messageId),
-      [desktopFollowupId, tuiFollowupId],
+      chain.slice(1).map((admission) => admission.sourceMessages.map((source) => source.messageId)),
+      [[desktopFollowupId], [tuiFollowupId]],
     );
-    assert.deepEqual(chain[1]?.normalizedInput, {
-      text: `${desktopFollowupContent.text}\n\n${tuiFollowupContent.text}`,
-    });
+    assert.deepEqual(chain[1]?.normalizedInput, desktopFollowupContent);
+    assert.deepEqual(chain[2]?.normalizedInput, tuiFollowupContent);
   });
 });
 
@@ -532,6 +531,11 @@ test('graceful Host shutdown stops and drains an active Turn before releasing ow
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
     const client = await connectClient(fixture.root);
+    const subscription = await client.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
+    const probe = new SubscriptionProbe(subscription);
     const turnId = randomUUID();
     const started = requireStartedTurn(
       await client.request('turn.start', {
@@ -540,10 +544,16 @@ test('graceful Host shutdown stops and drains an active Turn before releasing ow
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
       }),
     );
+    // What this pins is the drain of an ACTIVE Turn, and `turn.start`
+    // returning only says the Turn was admitted. Waiting for the question it
+    // is about to ask is what makes it active, so stopping before that would
+    // leave which state the Host drains up to how fast the machine is.
+    await waitForPendingInteraction(subscription, probe, started.runId);
 
     const exit = await fixture.stopHost(host);
     assert.deepEqual(exit, { code: 0, signal: null });
     await client.closed;
+    await probe.waitForFailure('connection_closed');
 
     const successor = await fixture.startHost();
     const observer = await connectClient(fixture.root);
@@ -733,21 +743,25 @@ test('startup recovery canonically closes pending linked child admissions withou
     try {
       stores = await openInteractiveExecutionStoresForRead(reader.lease);
       for (const recovered of [initial, resume, retry, graph]) {
-        const run = await stores.agentRunStore.readRun(recovered.sessionId, recovered.runId);
-        assert.equal(run.status, 'failed');
-        assert.equal(run.failureClass, 'app_restarted');
-        assert.equal(run.agentId, recovered.agentId);
-        assert.equal(run.agentName, recovered.agentName);
-        assert.equal(run.workspaceIdentity, undefined);
+        const run: RuntimeInvocationRecord | undefined = (
+          await stores.runtimeEventStore.listSessionInvocations(recovered.sessionId)
+        ).find((candidate) => candidate.runId === recovered.runId);
+        assert.ok(run);
+        assert.equal(runtimeInvocationOutcome(run), 'failed');
+        assert.equal(runtimeInvocationFailureClass(run), 'app_restarted');
+        const lineage: RuntimeInvocationLineage | undefined = run.opening.lineage;
+        assert.equal(lineage?.agentId, recovered.agentId);
+        assert.equal(lineage?.agentName, recovered.agentName);
+        assert.equal(run.opening.configuration.workspaceIdentity, undefined);
         if (recovered.kind === 'linked_child_resume') {
-          assert.equal(run.resumedFromRunId, recovered.sourceRunId);
-          assert.equal(run.retriedFromRunId, undefined);
+          assert.equal(lineage?.resumedFromRunId, recovered.sourceRunId);
+          assert.equal(lineage?.retriedFromRunId, undefined);
         } else if (recovered.kind === 'linked_child_provider_retry') {
-          assert.equal(run.retriedFromRunId, recovered.sourceRunId);
-          assert.equal(run.resumedFromRunId, undefined);
+          assert.equal(lineage?.retriedFromRunId, recovered.sourceRunId);
+          assert.equal(lineage?.resumedFromRunId, undefined);
         } else {
-          assert.equal(run.resumedFromRunId, undefined);
-          assert.equal(run.retriedFromRunId, undefined);
+          assert.equal(lineage?.resumedFromRunId, undefined);
+          assert.equal(lineage?.retriedFromRunId, undefined);
         }
         const runtimeEvents = await stores.runtimeEventStore.readImmutableRuntimeEvents(
           recovered.sessionId,
@@ -760,7 +774,7 @@ test('startup recovery canonically closes pending linked child admissions withou
           assert.equal(terminal.fact.failureClass, 'app_restarted');
         }
         const userMessages: StoredMessage[] = (
-          await stores.sessionStore.readMessages(recovered.sessionId)
+          await readLedgerMessages(stores.runtimeEventStore, recovered.sessionId)
         ).filter((message) => message.type === 'user' && message.turnId === recovered.turnId);
         assert.equal(userMessages.length, recovered.kind === 'linked_child_provider_retry' ? 0 : 1);
         if (recovered.kind !== 'linked_child_provider_retry') {

@@ -19,12 +19,12 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { CuAction } from '@maka/core/computer-use';
 import { buildComputerUseTools } from '@maka/runtime/computer-use-tools';
 import {
   type CuDispatchBackend,
   type CuObservation,
   type CuRunContext,
+  type CuSemanticAction,
 } from '@maka/runtime/computer-use-types';
 import { parseObservationText } from '@maka/runtime/test-only/observation-text-reader';
 import {
@@ -73,6 +73,7 @@ function fixtureObservation(overrides: Partial<CuObservation> = {}): CuObservati
         elementId: '5',
         role: 'AXButton',
         label: 'Commit target',
+        frame: { x: 280, y: 185, width: 40, height: 30 },
         identity: {
           token: 'target-button-token',
           role: 'AXButton',
@@ -136,7 +137,7 @@ function overlayRecorder() {
 describe('Computer Use cross-layer deterministic contract', () => {
   test('bound target propagation, presentation order, fresh state, and duplicate rejection', async () => {
     const overlay = overlayRecorder();
-    const dispatches: Array<{ action: CuAction; context: CuRunContext }> = [];
+    const dispatches: Array<{ action: CuSemanticAction; context: CuRunContext }> = [];
     let revision = 0;
     const backend: CuDispatchBackend = {
       async preflight() {
@@ -146,7 +147,10 @@ describe('Computer Use cross-layer deterministic contract', () => {
         assert.equal(input.windowId, 10);
         return fixtureObservation();
       },
-      async run(action, _signal, runContext) {
+      async run() {
+        throw new Error('non-semantic dispatch is not expected');
+      },
+      async runSemantic(action, _signal, runContext) {
         dispatches.push({ action, context: runContext });
         assert.equal(runContext.boundAction?.target.pid, 100);
         assert.equal(runContext.boundAction?.target.windowId, 10);
@@ -158,7 +162,6 @@ describe('Computer Use cross-layer deterministic contract', () => {
             verified: true,
             evidence: { effect: 'confirmed' },
           },
-          resolvedScreenPoint: { x: 300, y: 200 },
           observation: fixtureObservation({
             observationId: `backend-observation-${revision + 1}`,
             contentFingerprint: `fixture-structure-${revision + 1}`,
@@ -182,9 +185,9 @@ describe('Computer Use cross-layer deterministic contract', () => {
     const observationId = observationIdOf(observed.modelText);
     const result = (await tool.impl(
       {
-        action: 'left_click',
+        action: 'click_element',
         observation_id: observationId,
-        coordinate: [400, 200],
+        element_id: '5',
       } as never,
       context({ toolCallId: 'click-target' }),
     )) as {
@@ -213,9 +216,9 @@ describe('Computer Use cross-layer deterministic contract', () => {
 
     const replay = (await tool.impl(
       {
-        action: 'left_click',
+        action: 'click_element',
         observation_id: observationId,
-        coordinate: [400, 200],
+        element_id: '5',
       } as never,
       context({ toolCallId: 'duplicate' }),
     )) as { text: string };
@@ -234,6 +237,9 @@ describe('Computer Use cross-layer deterministic contract', () => {
         return fixtureObservation();
       },
       async run() {
+        throw new Error('non-semantic dispatch is not expected');
+      },
+      async runSemantic() {
         return mode === 'target_change'
           ? {
               outcome: {
@@ -267,9 +273,9 @@ describe('Computer Use cross-layer deterministic contract', () => {
     )) as { modelText?: string };
     await tool.impl(
       {
-        action: 'left_click',
+        action: 'click_element',
         observation_id: observationIdOf(firstObservation.modelText),
-        coordinate: [400, 200],
+        element_id: '5',
       } as never,
       context({ toolCallId: 'target-change' }),
     );
@@ -287,9 +293,9 @@ describe('Computer Use cross-layer deterministic contract', () => {
     mode = 'unknown';
     await tool.impl(
       {
-        action: 'left_click',
+        action: 'click_element',
         observation_id: observationIdOf(secondObservation.modelText),
-        coordinate: [400, 200],
+        element_id: '5',
       } as never,
       context({ turnId: 'turn-2', toolCallId: 'unknown' }),
     );
@@ -315,6 +321,9 @@ describe('Computer Use cross-layer deterministic contract', () => {
         });
       },
       async run() {
+        throw new Error('non-semantic dispatch is not expected');
+      },
+      async runSemantic() {
         return {
           outcome: { ok: true, tier: 'ax', verified: true },
           observation: fixtureObservation({
@@ -340,9 +349,9 @@ describe('Computer Use cross-layer deterministic contract', () => {
     assert.equal(tools.sessionEvents.snapshot('session-1').status, 'user_stopped');
     const afterTurn = (await tool.impl(
       {
-        action: 'left_click',
+        action: 'click_element',
         observation_id: observationIdOf(observed.modelText),
-        coordinate: [400, 200],
+        element_id: '5',
       } as never,
       context({ toolCallId: 'late-action' }),
     )) as { text: string };

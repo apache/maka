@@ -20,9 +20,11 @@
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { HistoryCompactRoute } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
+import type { LoadedModelProjectionTransitions } from './model-projection-transition-ledger.js';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
-import type { ActiveToolResultArchiveCandidate } from './active-tool-result-prune.js';
 import type { ContextBudgetPolicy } from './context-budget.js';
 import type {
   HistoryCompactCheckpoint,
@@ -31,21 +33,33 @@ import type {
 import type { ModelFactory } from './model-adapter.js';
 import type { ToolResultArchiveCapability } from './tool-result-archive-capability.js';
 
+/**
+ * Default output cap for a compaction summary. Measured summaries land around
+ * 1K tokens; the cap exists so a runaway summarizer cannot occupy the context
+ * it was asked to free, not to shape the summary (#4559).
+ */
+export const DEFAULT_HISTORY_COMPACT_MAX_OUTPUT_TOKENS = 8_000;
+
 export interface HistoryCompactSummaryInput {
   sessionId: string;
   turnId: string;
-  source: { foldedRuntimeEvents: RuntimeEvent[] };
+  /** Run issuing this compaction; its events are same-route by construction. */
+  runId?: string;
+  source: {
+    foldedRuntimeEvents: RuntimeEvent[];
+    invocations?: readonly RuntimeInvocationRecord[];
+  };
   previousCheckpoint?: HistoryCompactCheckpoint;
   newlyFoldedRuntimeEvents?: RuntimeEvent[];
   /**
-   * Estimated provider-input ceiling for this compaction call. A compactor
-   * should fail before dispatch when its projection cannot fit this budget.
+   * Output cap for the summary call. A summary is re-sent on every later
+   * request, so it is bounded outright rather than estimated: the summarizer's
+   * provider truncates at this cap (`finishReason: length`), and the compactor
+   * then asks once for a shorter one. Whether the compaction INPUT fits the
+   * summarizer's window is that provider's answer (`input_too_large`), never a
+   * local estimate's (#4559).
    */
-  inputBudget?: {
-    maxEstimatedTokens: number;
-    charsPerToken: number;
-  };
-  requestShapeHashBefore?: string;
+  maxOutputTokens?: number;
   abortSignal?: AbortSignal;
   /**
    * Physical-call tracking for this summarization, built by the backend (#1679).
@@ -83,6 +97,11 @@ export type HistoryCompactCheckpointRecorder = (
   checkpoint: HistoryCompactCheckpoint,
   turnId: string,
 ) => void | Promise<void>;
+export type ModelProjectionTransitionLoader = () => Promise<LoadedModelProjectionTransitions>;
+export type ModelProjectionTransitionLedgerRecorder = (
+  transition: ModelProjectionTransition,
+  turnId: string,
+) => Promise<void>;
 /** Provider and persistence capabilities used by the compaction collaborator. */
 export interface AiSdkCompactionCapabilities {
   connection: RuntimeExecutionConnection;
@@ -107,6 +126,14 @@ export interface AiSdkCompactionCapabilities {
   historyCompactRoute?: HistoryCompactRoute;
   /** Durable recorder for accepted checkpoints; persistence precedes projection. */
   recordHistoryCompactCheckpoint?: HistoryCompactCheckpointRecorder;
+  /**
+   * Session-scoped read of every committed model-projection transition (#4283).
+   * Absent means this session cannot make a lossy model-history change durable,
+   * and therefore must not make one at all.
+   */
+  loadModelProjectionTransitions?: ModelProjectionTransitionLoader;
+  /** Durable append for one transition; persistence precedes model-visible loss. */
+  recordModelProjectionTransition?: ModelProjectionTransitionLedgerRecorder;
   /**
    * Durable read of the given turn's persisted RuntimeEvents from the
    * authoritative run ledger. Mid-turn capacity compaction derives its

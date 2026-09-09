@@ -22,12 +22,26 @@ import {
   SessionRailProvider,
   type SessionRailChrome,
   type SessionRailData,
+  type SessionRailSelection,
 } from '../src/session-rail-context.js';
+import {
+  SidebarUpdateProjectionProvider,
+  type SidebarUpdateProjection,
+} from '../src/sidebar-update-projection-context.js';
 
 export type SessionRailStoryProps = Partial<SessionRailData> &
   Partial<SessionRailChrome> &
   Pick<SessionRailData, 'sessions'> &
-  Pick<SessionRailChrome, 'selection'>;
+  Pick<SessionRailChrome, 'selection'> & {
+    /**
+     * The multi-select context, which the app supplies from
+     * `useSessionSelection`. Named apart from `selection` because that one is
+     * already the shell's NavSelection.
+     */
+    railSelection?: SessionRailSelection;
+    updateReminder?: SidebarUpdateProjection['reminder'];
+    onOpenUpdate?: SidebarUpdateProjection['onOpenUpdate'];
+  };
 
 /**
  * The rail, described as one flat bag of state.
@@ -45,6 +59,7 @@ export function SessionRail(props: SessionRailStoryProps) {
     worktreeSessionIds: props.worktreeSessionIds,
     groups: props.groups,
     groupVariant: props.groupVariant ?? props.viewMode ?? 'conversation',
+    sessionProjectName: props.sessionProjectName,
     sessionMeta: props.sessionMeta,
     onSelectSession: props.onSelectSession ?? (() => undefined),
     rowActions: props.rowActions,
@@ -66,13 +81,19 @@ export function SessionRail(props: SessionRailStoryProps) {
     onSelect: props.onSelect ?? (() => undefined),
     onNew: props.onNew ?? (() => undefined),
     onOpenSettings: props.onOpenSettings ?? (() => undefined),
-    updateReminder: props.updateReminder,
-    onOpenUpdate: props.onOpenUpdate,
     workHubEntry: props.workHubEntry,
   };
   return (
-    <SessionRailProvider data={data} chrome={chrome}>
-      <SessionListPanel />
-    </SessionRailProvider>
+    <SidebarUpdateProjectionProvider
+      value={{ reminder: props.updateReminder, onOpenUpdate: props.onOpenUpdate }}
+    >
+      <SessionRailProvider
+        data={data}
+        chrome={chrome}
+        {...(props.railSelection ? { selection: props.railSelection } : {})}
+      >
+        <SessionListPanel />
+      </SessionRailProvider>
+    </SidebarUpdateProjectionProvider>
   );
 }

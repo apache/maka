@@ -46,7 +46,7 @@ export interface MakaCompositionEntry {
   readonly children?: readonly MakaCompositionEntry[];
 }
 
-export interface MakaCompositionSnapshot {
+export interface MakaCompositionState {
   readonly schemaVersion: 1;
   readonly generation: number;
   readonly roots: {
@@ -80,6 +80,210 @@ export type MakaCompositionOperation =
 export interface MakaCompositionApplyInput {
   readonly baseGeneration?: number;
   readonly operations: readonly MakaCompositionOperation[];
+}
+
+/**
+ * Applies Entry Tree operations to the desired-state value without activating
+ * Plugin code. Runtime Host uses this reducer to durably commit desired state
+ * before asking the live Composition Loader to converge.
+ */
+export function applyCompositionState(
+  state: MakaCompositionState,
+  input: MakaCompositionApplyInput,
+): MakaCompositionState {
+  if (state.schemaVersion !== 1) {
+    throw new MakaPluginRuntimeError('invalid_entry', 'Unsupported composition state');
+  }
+  if (input.baseGeneration !== undefined && input.baseGeneration !== state.generation) {
+    throw new MakaPluginRuntimeError(
+      'invalid_entry',
+      `Composition generation changed from ${input.baseGeneration} to ${state.generation}`,
+    );
+  }
+  if (input.operations.length === 0) return state;
+  if (state.generation >= Number.MAX_SAFE_INTEGER) {
+    throw new MakaPluginRuntimeError('invalid_entry', 'Composition generation is exhausted');
+  }
+
+  interface MutableLocation {
+    entry: MakaCompositionEntry;
+    parent?: MutableLocation;
+    readonly rootId: MakaPluginRootId;
+    siblings: MakaCompositionEntry[];
+  }
+
+  const profile = state.roots.profile.map(cloneCompositionEntry);
+  const desktopUi = state.roots.desktopUi.map(cloneCompositionEntry);
+  const sessions = Object.fromEntries(
+    Object.entries(state.roots.sessions).map(([scopeId, entries]) => [
+      scopeId,
+      entries.map(cloneCompositionEntry),
+    ]),
+  ) as Record<string, MakaCompositionEntry[]>;
+  const locations = new Map<string, MutableLocation>();
+
+  const index = (
+    entries: MakaCompositionEntry[],
+    rootId: MakaPluginRootId,
+    parent?: MutableLocation,
+  ): void => {
+    validatePluginRootId(rootId);
+    for (const entry of entries) {
+      validateCompositionEntry(entry);
+      if (locations.has(entry.id)) {
+        throw new MakaPluginRuntimeError(
+          'entry_exists',
+          `Composition entry already exists: ${entry.id}`,
+        );
+      }
+      const location: MutableLocation = { entry, parent, rootId, siblings: entries };
+      locations.set(entry.id, location);
+      index(entry.children as MakaCompositionEntry[], rootId, location);
+    }
+  };
+  index(profile, 'profile');
+  index(desktopUi, 'desktop-ui');
+  for (const [scopeId, entries] of Object.entries(sessions)) {
+    index(entries, `session:${scopeId}`);
+  }
+
+  const requireLocation = (entryId: string): MutableLocation => {
+    const location = locations.get(entryId);
+    if (!location) {
+      throw new MakaPluginRuntimeError(
+        'entry_not_found',
+        `Composition entry not found: ${entryId}`,
+      );
+    }
+    return location;
+  };
+  const rootEntries = (rootId: MakaPluginRootId): MakaCompositionEntry[] => {
+    validatePluginRootId(rootId);
+    if (rootId === 'profile') return profile;
+    if (rootId === 'desktop-ui') return desktopUi;
+    const scopeId = rootId.slice('session:'.length);
+    if (!Object.hasOwn(sessions, scopeId)) {
+      Object.defineProperty(sessions, scopeId, {
+        value: [],
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+    return sessions[scopeId]!;
+  };
+  const unindex = (entry: MakaCompositionEntry): void => {
+    locations.delete(entry.id);
+    for (const child of entry.children ?? []) unindex(child);
+  };
+  const indexInserted = (
+    entry: MakaCompositionEntry,
+    rootId: MakaPluginRootId,
+    siblings: MakaCompositionEntry[],
+    parent?: MutableLocation,
+  ): void => {
+    if (locations.has(entry.id)) {
+      throw new MakaPluginRuntimeError(
+        'entry_exists',
+        `Composition entry already exists: ${entry.id}`,
+      );
+    }
+    const location: MutableLocation = { entry, parent, rootId, siblings };
+    locations.set(entry.id, location);
+    for (const child of entry.children ?? []) {
+      indexInserted(child, rootId, entry.children as MakaCompositionEntry[], location);
+    }
+  };
+
+  for (const operation of input.operations) {
+    switch (operation.type) {
+      case 'insert': {
+        const parent = operation.parentId ? requireLocation(operation.parentId) : undefined;
+        const rootId = operation.rootId ?? parent?.rootId ?? 'profile';
+        validatePluginRootId(rootId);
+        if (parent && parent.rootId !== rootId) {
+          throw new MakaPluginRuntimeError(
+            'invalid_entry',
+            'Composition entries cannot move between roots',
+          );
+        }
+        const entry = cloneCompositionEntry(operation.entry);
+        validateCompositionEntry(entry);
+        const subtreeIds = new Set<string>();
+        for (const item of walkCompositionEntry(entry)) {
+          if (subtreeIds.has(item.id) || locations.has(item.id)) {
+            throw new MakaPluginRuntimeError(
+              'entry_exists',
+              `Composition entry already exists: ${item.id}`,
+            );
+          }
+          subtreeIds.add(item.id);
+        }
+        const siblings = parent
+          ? (parent.entry.children as MakaCompositionEntry[])
+          : rootEntries(rootId);
+        siblings.splice(Math.min(operation.position ?? Infinity, siblings.length), 0, entry);
+        indexInserted(entry, rootId, siblings, parent);
+        break;
+      }
+      case 'update': {
+        const location = requireLocation(operation.entryId);
+        const next: MakaCompositionEntry = {
+          ...location.entry,
+          ...operation.patch,
+          id: location.entry.id,
+          children: location.entry.children,
+        };
+        validateCompositionEntry(next);
+        const position = location.siblings.indexOf(location.entry);
+        location.siblings[position] = next;
+        location.entry = next;
+        break;
+      }
+      case 'move': {
+        const location = requireLocation(operation.entryId);
+        const parent = operation.parentId ? requireLocation(operation.parentId) : undefined;
+        if (parent && parent.rootId !== location.rootId) {
+          throw new MakaPluginRuntimeError(
+            'invalid_entry',
+            'Composition entries cannot move between roots',
+          );
+        }
+        for (let ancestor = parent; ancestor; ancestor = ancestor.parent) {
+          if (ancestor === location) {
+            throw new MakaPluginRuntimeError(
+              'dependency_cycle',
+              `Entry ${operation.entryId} cannot contain itself`,
+            );
+          }
+        }
+        location.siblings.splice(location.siblings.indexOf(location.entry), 1);
+        const siblings = parent
+          ? (parent.entry.children as MakaCompositionEntry[])
+          : rootEntries(location.rootId);
+        siblings.splice(
+          Math.min(operation.position ?? Infinity, siblings.length),
+          0,
+          location.entry,
+        );
+        location.parent = parent;
+        location.siblings = siblings;
+        break;
+      }
+      case 'remove': {
+        const location = requireLocation(operation.entryId);
+        location.siblings.splice(location.siblings.indexOf(location.entry), 1);
+        unindex(location.entry);
+        break;
+      }
+    }
+  }
+
+  return freezeCompositionState({
+    schemaVersion: 1,
+    generation: state.generation + 1,
+    roots: { profile, desktopUi, sessions },
+  });
 }
 
 export type MakaCompositionEntryStatus =
@@ -125,20 +329,6 @@ export interface MakaPluginMountInspection {
   readonly diagnostic?: { readonly message: string };
 }
 
-export interface MakaRuntimeCompositionEntry {
-  readonly entryId: string;
-  readonly packageId: string;
-  readonly generation: number;
-  readonly contributions: readonly MakaPluginContribution[];
-}
-
-export interface MakaRuntimeCompositionSnapshot {
-  readonly schemaVersion: 1;
-  readonly rootId: string;
-  readonly digest: `sha256:${string}`;
-  readonly entries: readonly MakaRuntimeCompositionEntry[];
-}
-
 export interface MakaPluginMetadata {
   readonly rootId: MakaPluginRootId;
   readonly entryId: string;
@@ -161,7 +351,11 @@ export interface MakaContributionContext extends MakaContributionIdentity {
 }
 
 export interface MakaPluginTransaction {
-  stage(label: string, register: () => () => void | Promise<void>, owner?: Context): void;
+  stage(
+    label: string,
+    register: () => () => void | Promise<void>,
+    owner?: Context,
+  ): () => Promise<void>;
   commit(): void | Promise<void>;
   rollback(): void | Promise<void>;
 }
@@ -201,6 +395,40 @@ export function validatePluginPackage(pkg: MakaPluginPackage): void {
       'invalid_package',
       `Plugin package ${pkg.packageId} has no host or client plugin`,
     );
+  }
+  if (!Array.isArray(pkg.contributions ?? []) || (pkg.contributions?.length ?? 0) > 1024) {
+    throw new MakaPluginRuntimeError(
+      'invalid_package',
+      `Plugin package ${pkg.packageId} has invalid contributions`,
+    );
+  }
+  const contributions = new Set<string>();
+  for (const contribution of pkg.contributions ?? []) {
+    if (
+      !contribution ||
+      typeof contribution !== 'object' ||
+      typeof contribution.id !== 'string' ||
+      contribution.id.length === 0 ||
+      contribution.id.length > 128 ||
+      /[\u0000-\u001f\u007f]/u.test(contribution.id) ||
+      typeof contribution.kind !== 'string' ||
+      contribution.kind.length === 0 ||
+      contribution.kind.length > 128 ||
+      /[\u0000-\u001f\u007f]/u.test(contribution.kind)
+    ) {
+      throw new MakaPluginRuntimeError(
+        'invalid_package',
+        `Plugin package ${pkg.packageId} has an invalid contribution`,
+      );
+    }
+    const identity = `${contribution.kind}\0${contribution.id}`;
+    if (contributions.has(identity)) {
+      throw new MakaPluginRuntimeError(
+        'invalid_package',
+        `Plugin package ${pkg.packageId} repeats contribution ${contribution.kind}:${contribution.id}`,
+      );
+    }
+    contributions.add(identity);
   }
 }
 
@@ -291,12 +519,11 @@ export function registerPluginContribution(
   ctx: Context,
   label: string,
   register: () => () => void | Promise<void>,
-): void {
+): () => Promise<void> {
   if (ctx.makaTransaction) {
-    ctx.makaTransaction.stage(label, register, ctx);
-    return;
+    return ctx.makaTransaction.stage(label, register, ctx);
   }
-  registerPluginEffect(ctx, label, register);
+  return registerPluginEffect(ctx, label, register);
 }
 
 export class MakaPluginTransactionBuffer implements MakaPluginTransaction {
@@ -304,15 +531,20 @@ export class MakaPluginTransactionBuffer implements MakaPluginTransaction {
     readonly label: string;
     readonly register: () => () => void | Promise<void>;
     readonly owner: Context;
+    cancelled: boolean;
+    release?: () => Promise<void>;
   }> = [];
   #state: 'staging' | 'committed' | 'rolled_back' = 'staging';
 
   constructor(private readonly context: Context) {}
 
-  stage(label: string, register: () => () => void | Promise<void>, owner = this.context): void {
+  stage(
+    label: string,
+    register: () => () => void | Promise<void>,
+    owner = this.context,
+  ): () => Promise<void> {
     if (this.#state === 'committed') {
-      registerPluginEffect(owner, label, register);
-      return;
+      return registerPluginEffect(owner, label, register);
     }
     if (this.#state === 'rolled_back') {
       throw new MakaPluginRuntimeError(
@@ -320,7 +552,23 @@ export class MakaPluginTransactionBuffer implements MakaPluginTransaction {
         `Cannot stage contribution after transaction is ${this.#state}`,
       );
     }
-    this.#registrations.push({ label, register, owner });
+    const item: {
+      readonly label: string;
+      readonly register: () => () => void | Promise<void>;
+      readonly owner: Context;
+      cancelled: boolean;
+      release?: () => Promise<void>;
+    } = {
+      label,
+      register,
+      owner,
+      cancelled: false,
+    };
+    this.#registrations.push(item);
+    return async () => {
+      item.cancelled = true;
+      await item.release?.();
+    };
   }
 
   async commit(): Promise<void> {
@@ -334,7 +582,9 @@ export class MakaPluginTransactionBuffer implements MakaPluginTransaction {
     const registered: Array<() => Promise<void>> = [];
     try {
       for (const item of this.#registrations) {
-        registered.push(registerPluginEffect(item.owner, item.label, item.register));
+        if (item.cancelled) continue;
+        item.release = registerPluginEffect(item.owner, item.label, item.register);
+        registered.push(item.release);
       }
       this.#state = 'committed';
       this.#registrations.length = 0;
@@ -372,11 +622,59 @@ export function fiberStateName(state: FiberState): MakaCompositionEntryStatus {
   ] as MakaCompositionEntryStatus;
 }
 
-export function isCanonicalPluginId(value: unknown): value is string {
+export function isCanonicalExtensionId(value: unknown): value is string {
   return typeof value === 'string' && value.length <= 128 && ID_PATTERN.test(value);
 }
 
-export const isCanonicalExtensionId = isCanonicalPluginId;
+function cloneCompositionEntry(entry: MakaCompositionEntry): MakaCompositionEntry {
+  return {
+    ...entry,
+    ...(entry.inject && !Array.isArray(entry.inject)
+      ? { inject: { ...entry.inject } }
+      : entry.inject
+        ? { inject: [...entry.inject] }
+        : {}),
+    ...(entry.isolate ? { isolate: { ...entry.isolate } } : {}),
+    ...(entry.intercept ? { intercept: { ...entry.intercept } } : {}),
+    children: (entry.children ?? []).map(cloneCompositionEntry),
+  };
+}
+
+function* walkCompositionEntry(entry: MakaCompositionEntry): Generator<MakaCompositionEntry> {
+  yield entry;
+  for (const child of entry.children ?? []) yield* walkCompositionEntry(child);
+}
+
+function freezeCompositionState(state: MakaCompositionState): MakaCompositionState {
+  const freezeEntry = (entry: MakaCompositionEntry): MakaCompositionEntry =>
+    Object.freeze({
+      ...entry,
+      ...(entry.inject && !Array.isArray(entry.inject)
+        ? { inject: Object.freeze({ ...entry.inject }) }
+        : entry.inject
+          ? { inject: Object.freeze([...entry.inject]) }
+          : {}),
+      ...(entry.isolate ? { isolate: Object.freeze({ ...entry.isolate }) } : {}),
+      ...(entry.intercept ? { intercept: Object.freeze({ ...entry.intercept }) } : {}),
+      children: Object.freeze((entry.children ?? []).map(freezeEntry)),
+    });
+  return Object.freeze({
+    schemaVersion: 1,
+    generation: state.generation,
+    roots: Object.freeze({
+      profile: Object.freeze(state.roots.profile.map(freezeEntry)),
+      desktopUi: Object.freeze(state.roots.desktopUi.map(freezeEntry)),
+      sessions: Object.freeze(
+        Object.fromEntries(
+          Object.entries(state.roots.sessions).map(([scopeId, entries]) => [
+            scopeId,
+            Object.freeze(entries.map(freezeEntry)),
+          ]),
+        ),
+      ),
+    }),
+  });
+}
 
 export function isCanonicalExtensionScopeId(value: unknown): value is string {
   return (
@@ -385,7 +683,7 @@ export function isCanonicalExtensionScopeId(value: unknown): value is string {
 }
 
 function validatePluginId(value: unknown, label: string): asserts value is string {
-  if (!isCanonicalPluginId(value)) {
+  if (!isCanonicalExtensionId(value)) {
     throw new MakaPluginRuntimeError('invalid_entry', `Invalid ${label}`);
   }
 }

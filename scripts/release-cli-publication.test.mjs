@@ -26,12 +26,14 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { CLI_RELEASE_ARTIFACT_LIMITS } from './release-cli-artifact-policy.mjs';
 import {
+  assertRegistryNightlyPredecessor,
   fetchRegistryRelease,
   parseCliNightlyVersion,
   parseCliReleaseVersion,
   prepareNightlyRelease,
   prepareSignatureAuditTree,
   prepareStageRelease,
+  resolveRegistryNightlyPredecessor,
   validateRegistryChannels,
   validateSignatureAudit,
   validateStageRun,
@@ -284,6 +286,50 @@ test('registry downloads stop reading as soon as the tarball exceeds its bound',
     /exceeds the reviewed compressed size limit/u,
   );
   assert.ok(pulls < offeredChunks, `expected an early bounded read, consumed ${pulls} chunks`);
+});
+
+test('release qualification binds the current Nightly tag to immutable registry bytes', async () => {
+  const fixture = createCandidate('0.2.0-dev.42.20260829', '0.2.0');
+  const predecessor = await resolveRegistryNightlyPredecessor({
+    fetchImpl: registryFetch({ fixture }),
+  });
+
+  assert.deepEqual(predecessor, {
+    version: fixture.version,
+    tarballUrl: `https://registry.npmjs.org/maka-agent/-/${fixture.tarball}`,
+    integrity: `sha512-${digest('sha512', fixture.bytes, 'base64')}`,
+  });
+  await assert.doesNotReject(
+    assertRegistryNightlyPredecessor({
+      expectedVersion: predecessor.version,
+      expectedTarballUrl: predecessor.tarballUrl,
+      expectedIntegrity: predecessor.integrity,
+      fetchImpl: registryFetch({ fixture }),
+    }),
+  );
+});
+
+test('the release predecessor may come from the previous product version', async () => {
+  const fixture = createCandidate('0.1.0-dev.41.20260828', '0.1.0');
+  const predecessor = await resolveRegistryNightlyPredecessor({
+    fetchImpl: registryFetch({ fixture }),
+  });
+  assert.equal(predecessor.version, fixture.version);
+});
+
+test('a newer Nightly invalidates previously qualified predecessor evidence', async () => {
+  const previous = createCandidate('0.2.0-dev.42.20260829', '0.2.0');
+  const current = createCandidate('0.2.0-dev.43.20260830', '0.2.0');
+
+  await assert.rejects(
+    assertRegistryNightlyPredecessor({
+      expectedVersion: previous.version,
+      expectedTarballUrl: `https://registry.npmjs.org/maka-agent/-/${previous.tarball}`,
+      expectedIntegrity: `sha512-${digest('sha512', previous.bytes, 'base64')}`,
+      fetchImpl: registryFetch({ fixture: current }),
+    }),
+    /is no longer current; found 0\.2\.0-dev\.43\.20260830/u,
+  );
 });
 
 test('signature audit must contain Maka provenance for the finalized version', () => {
@@ -574,7 +620,7 @@ function registryFetch({ fixture, bytes = fixture.bytes }) {
     }
     if (url === 'https://registry.npmjs.org/maka-agent') {
       assert.equal(options.headers?.accept, 'application/vnd.npm.install-v1+json');
-      return Response.json({ 'dist-tags': { latest: fixture.version } });
+      return Response.json({ 'dist-tags': { latest: fixture.version, nightly: fixture.version } });
     }
     if (url === tarballUrl) return new Response(bytes);
     return new Response('not found', { status: 404 });

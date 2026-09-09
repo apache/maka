@@ -453,7 +453,11 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       const next = await this.#interactions.race(events.next());
       if (next.done) break;
       const event = next.value;
-      if (event.type === 'user_question_request' || event.type === 'sandbox_boundary_request') {
+      if (
+        event.type === 'user_question_request' ||
+        event.type === 'form_request' ||
+        event.type === 'sandbox_boundary_request'
+      ) {
         continue;
       }
       active.outcome.accept(observationFromSessionEvent(event));
@@ -464,7 +468,11 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   }
 
   async #stopTurn(turn: { sessionId: string; turnId: string; runId: string }): Promise<void> {
-    await this.#connection.request('turn.stop', turn);
+    await this.#connection.request('turn.stop', {
+      sessionId: turn.sessionId,
+      turnId: turn.turnId,
+      runId: turn.runId,
+    });
   }
 
   async #stopGraph(sessionId: string): Promise<void> {
@@ -567,12 +575,6 @@ type TurnOutcomeObservation =
       readonly failure: NonNullable<MakaRunOutcome['failure']>;
     }
   | {
-      readonly kind: 'tool_call';
-      readonly toolUseId: string;
-      readonly stepId: string | undefined;
-      readonly toolName: string;
-    }
-  | {
       readonly kind: 'tool_result';
       readonly toolUseId: string;
       readonly outcome: 'sandbox_failure' | 'success';
@@ -582,17 +584,9 @@ type TerminalOutcomeObservation = Extract<TurnOutcomeObservation, { kind: 'termi
 
 class TurnOutcomeClassifier {
   readonly #outcomeId: string;
-  readonly #callByToolUseId = new Map<
-    string,
-    { readonly stepId: string | undefined; readonly toolName: string }
-  >();
-  readonly #unresolvedSandboxFailures = new Map<
-    string,
-    { readonly failedStepId: string | undefined }
-  >();
+  readonly #unresolvedSandboxFailures = new Set<string>();
   #finalOutput: string | undefined;
   #terminal: TerminalOutcomeObservation | undefined;
-  #sandboxBoundaryRecovered = false;
 
   constructor(outcomeId: string) {
     this.#outcomeId = outcomeId;
@@ -610,34 +604,13 @@ class TurnOutcomeClassifier {
           this.#terminal = observation;
         }
         return;
-      case 'tool_call':
-        this.#callByToolUseId.set(observation.toolUseId, {
-          stepId: observation.stepId,
-          toolName: observation.toolName,
-        });
-        return;
       case 'tool_result': {
-        const call = this.#callByToolUseId.get(observation.toolUseId);
         if (observation.outcome === 'sandbox_failure') {
-          this.#unresolvedSandboxFailures.set(observation.toolUseId, {
-            failedStepId: call?.stepId,
-          });
-          return;
+          this.#unresolvedSandboxFailures.add(observation.toolUseId);
         }
-        const unresolved = [...this.#unresolvedSandboxFailures.values()];
-        // The wire has no retry identity. A later success can only prove recovery
-        // when there is exactly one unresolved candidate.
-        if (
-          observation.outcome === 'success' &&
-          call?.toolName !== 'request_sandbox_boundary' &&
-          unresolved.length === 1 &&
-          call?.stepId !== undefined &&
-          unresolved[0]?.failedStepId !== undefined &&
-          call.stepId !== unresolved[0].failedStepId
-        ) {
-          this.#unresolvedSandboxFailures.clear();
-          this.#sandboxBoundaryRecovered = true;
-        }
+        // No clearing path: `maka run` denies every widening request, so the
+        // boundary cannot move mid-Turn and a later success cannot prove that
+        // a blocked call recovered. The failure stays unresolved to the end.
         return;
       }
     }
@@ -649,12 +622,7 @@ class TurnOutcomeClassifier {
     const terminal = this.#terminal;
     if (!terminal && incomplete === 'pending') return undefined;
     const completed = terminal?.status === 'completed';
-    const sandboxBoundary =
-      this.#unresolvedSandboxFailures.size > 0
-        ? 'unresolved'
-        : this.#sandboxBoundaryRecovered
-          ? 'recovered'
-          : 'none';
+    const sandboxBoundary = this.#unresolvedSandboxFailures.size > 0 ? 'unresolved' : 'none';
     const failure =
       terminal?.status === 'failed'
         ? terminal.failure
@@ -695,14 +663,6 @@ function observationFromSessionEvent(event: SessionEvent): TurnOutcomeObservatio
   if (event.type === 'complete') {
     return observationFromCompleteEvent(event);
   }
-  if (event.type === 'tool_start') {
-    return {
-      kind: 'tool_call',
-      toolUseId: event.toolUseId,
-      stepId: event.stepId,
-      toolName: event.toolName,
-    };
-  }
   return event.type === 'tool_result' ? observationFromToolResult(event) : undefined;
 }
 
@@ -730,14 +690,6 @@ function observationFromStoredMessage(message: StoredMessage): TurnOutcomeObserv
         class: message.errorClass ?? 'runtime_error',
         message: 'Agent Graph final Turn failed',
       },
-    };
-  }
-  if (message.type === 'tool_call') {
-    return {
-      kind: 'tool_call',
-      toolUseId: message.id,
-      stepId: message.stepId,
-      toolName: message.toolName,
     };
   }
   return message.type === 'tool_result' ? observationFromToolResult(message) : undefined;
@@ -883,7 +835,9 @@ class NonInteractiveInteractionController {
     throw new Error(
       pending.request.kind === 'question'
         ? 'interactive user questions are unavailable in non-interactive mode'
-        : 'interactive permission requests are unavailable in non-interactive mode',
+        : pending.request.kind === 'form'
+          ? 'interactive user forms are unavailable in non-interactive mode'
+          : 'interactive permission requests are unavailable in non-interactive mode',
     );
   }
 

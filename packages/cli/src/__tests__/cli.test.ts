@@ -54,7 +54,7 @@ describe('Maka CLI args', () => {
     assert.match(help.text, /^  maka update --target /m);
     assert.match(
       help.text,
-      /^  maka --acp      Serve ACP v1 over stdio \(initialize only; session support in progress\)$/m,
+      /^  maka --acp      Serve ACP v1 over stdio \(initialize, session\/new, session\/list\)$/m,
     );
     assert.match(help.text, /^  maka runtime-host serve /m);
     assert.doesNotMatch(help.text, /cli:dev/);
@@ -142,7 +142,7 @@ describe('Maka CLI args', () => {
   });
 
   test('does not add a discoverable global locale flag', () => {
-    assert.deepEqual(parseMakaCliArgs(['--locale', 'zh'], '0.1.0'), {
+    assert.deepEqual(parseMakaCliArgs(['--locale', 'zh-CN'], '0.1.0'), {
       kind: 'error',
       message: 'Unexpected argument: --locale',
       exitCode: 2,

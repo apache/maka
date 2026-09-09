@@ -27,6 +27,7 @@ import type { BotRegistry } from '@maka/runtime/bots';
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { connectRuntimeHost } from '@maka/runtime-host/client';
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import {
   RUNTIME_HOST_PROTOCOL_VERSION,
   type SessionCatalogProjection,
@@ -76,7 +77,14 @@ test('drives Desktop Session operations through a real Runtime Host connection',
                 },
           'turn.message.submit': async (input) => {
             assert.equal(input.originHostEpoch, hostEpoch);
-            return { ok: true, result: { disposition: 'steering', queueRevision: 1 } };
+            return {
+              ok: true,
+              result: {
+                disposition: 'steering',
+                queueRevision: 1,
+                skillInvocation: { loaded: [], failed: [], receipts: [] },
+              },
+            };
           },
         }),
         beginDrain() {},
@@ -107,7 +115,11 @@ test('drives Desktop Session operations through a real Runtime Host connection',
         content: { text: 'Continue with the new constraints.' },
         placement: 'current_turn',
       }),
-      { disposition: 'steering', queueRevision: 1 },
+      {
+        disposition: 'steering',
+        queueRevision: 1,
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+      },
     );
 
     await client.close();
@@ -239,6 +251,9 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
     });
     const ipc = ipcHarness();
     const changes: Array<{ reason: string; sessionId?: string }> = [];
+    // This fixture replaces the real execution composition; initialize its
+    // owned storage before Desktop admits the local candidate.
+    acquireOperationalStateDatabase(base).close();
     const started = await startDesktopRuntimeHostCandidate({
       rootPath: base,
       candidateEntrypoint: new URL('file:///unused-runtime-host-candidate.js'),
@@ -249,6 +264,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
       resizeImage: async (bytes) => bytes,
       nativeCapabilities: {
         browserTools: [nativeTool()],
+        resolveBrowserUrl: () => 'https://example.com/',
         releaseBrowserSession() {},
         computerUseTools: Object.assign([], {
           clearSession() {},
@@ -300,13 +316,16 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
     // A purge sweep asks for the task it saw archived. Restored under it, the
     // deletion is called off rather than replayed at the fresh revision (#3050).
     restoreUnderNextRemove = true;
-    assert.equal(
+    assert.deepEqual(
       await ipc.invoke('sessions:remove', 'session-ipc', { revisionFamily: true, requireArchived: true }),
-      'restored',
+      { disposition: 'restored', archivedSubtaskCount: 0 },
     );
     assert.equal((await ipc.invoke('sessions:list') as Array<{ isArchived: boolean }>)[0]?.isArchived, false);
     await ipc.invoke('sessions:archive', 'session-ipc');
-    assert.equal(await ipc.invoke('sessions:remove', 'session-ipc'), 'removed');
+    assert.deepEqual(await ipc.invoke('sessions:remove', 'session-ipc'), {
+      disposition: 'removed',
+      archivedSubtaskCount: 0,
+    });
     assert.deepEqual(await ipc.invoke('sessions:list'), []);
     // Nothing was retired for the restored task: no `deleted` between the two
     // archives, and the renderer keeps everything it holds for it.
@@ -388,7 +407,6 @@ test('drives the renderer Session execution facade through real UDS framing', as
       {
         client,
         observer,
-        observations: observer,
         attachmentApprovals: createAttachmentApprovalRegistry(),
         emitSessionsChanged() {},
         stat: async () => ({ size: 0 }),
@@ -441,23 +459,13 @@ test('drives bounded Session domain projections through real UDS framing', async
       idleGraceMs: 10_000,
       composition: defineInteractiveRuntimeHostComposition(async () => ({
         handlers: handlers({
-          'task.ledger.query': async (input) => ({
+          'session.todo.query': async (input) => ({
             ok: true,
             result: {
-              kind: 'page',
               sessionId: input.sessionId,
-              revision: catalogRevision('6'),
-              tasks: [
-                {
-                  id: 'task-1',
-                  key: 'T1',
-                  subject: 'Verify the Desktop adapter',
-                  status: 'in_progress',
-                  createdAt: 1,
-                  updatedAt: 2,
-                },
+              items: [
+                { content: 'Verify the Desktop adapter', status: 'in_progress' },
               ],
-              nextCursor: null,
             },
           }),
           'plan.query': async (input) => ({
@@ -513,8 +521,8 @@ test('drives bounded Session domain projections through real UDS framing', async
     );
 
     assert.equal(
-      ((await ipc.invoke('tasks:list', 'session-1')) as Array<{ id: string }>)[0]?.id,
-      'task-1',
+      ((await ipc.invoke('todo:read', 'session-1')) as Array<{ content: string }>)[0]?.content,
+      'Verify the Desktop adapter',
     );
     assert.deepEqual(await ipc.invoke('plan-mode:getState', 'session-1'), {
       schemaVersion: 1,
@@ -588,7 +596,7 @@ function unusedSessionCopyCleanup() {
 
 function unusedSessionObserver() {
   return {
-    async observe() {},
+    async observe() { return []; },
     async unobserve() {},
   };
 }

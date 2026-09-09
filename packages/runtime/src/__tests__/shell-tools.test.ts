@@ -19,10 +19,14 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { TERMINAL_MOUSE_EVENTS } from '@maka/core/terminal-input';
 import {
   buildLocalForegroundBashTool,
   buildManagedBashTool,
+  createWriteStdinSchemas,
   shapeTerminalResult,
+  WRITE_STDIN_EXAMPLE_REF,
+  WRITE_STDIN_MINIMAL_EXAMPLES,
   type ShellRunLauncher,
 } from '../shell-tools.js';
 import type { ShellPlan } from '../shell-detect.js';
@@ -273,6 +277,130 @@ describe('shapeTerminalResult sandbox denial projection', () => {
       },
     });
     assert.equal(result.sandboxDenial, undefined);
+  });
+});
+
+describe('WriteStdin provider/strict contract conformance', () => {
+  const { providerParameters, strictParameters } = createWriteStdinSchemas();
+
+  // Each example's first action, or undefined for a resize-only (action-less) example.
+  const firstActionOf = (payload: Readonly<Record<string, unknown>>) => {
+    const actions = payload.actions;
+    return Array.isArray(actions) ? (actions[0] as Record<string, unknown> | undefined) : undefined;
+  };
+
+  const acceptedByBothLayers = (
+    label: string,
+    payload: Readonly<Record<string, unknown>>,
+  ): boolean => {
+    const provider = providerParameters.safeParse(payload);
+    assert.ok(
+      provider.success,
+      `provider schema rejected the documented "${label}" example: ${
+        provider.success ? '' : provider.error.message
+      }`,
+    );
+    const strict = strictParameters.safeParse(payload);
+    assert.ok(
+      strict.success,
+      `strict validator rejected the documented "${label}" example: ${
+        strict.success ? '' : strict.error.message
+      }`,
+    );
+    return provider.success && strict.success;
+  };
+
+  test('every documented minimal example is accepted by BOTH the provider and strict layers', () => {
+    for (const { label, payload } of WRITE_STDIN_MINIMAL_EXAMPLES) {
+      acceptedByBothLayers(label, payload);
+    }
+  });
+
+  test('every mouse event has a covering example that passes both layers', () => {
+    // Derives coverage from the source of truth: adding a new mouse event to
+    // TERMINAL_MOUSE_EVENTS fails here until a minimal example is pinned for it.
+    for (const event of TERMINAL_MOUSE_EVENTS) {
+      const covering = WRITE_STDIN_MINIMAL_EXAMPLES.filter(({ payload }) => {
+        const action = firstActionOf(payload);
+        return action?.type === 'mouse' && action?.event === event;
+      });
+      assert.ok(
+        covering.length >= 1,
+        `no minimal WriteStdin example covers the '${event}' mouse event`,
+      );
+      for (const { label, payload } of covering) {
+        acceptedByBothLayers(label, payload);
+      }
+    }
+  });
+
+  test('every action type has a covering example', () => {
+    // Same drift-proofing for the action `type` enum itself.
+    const actionTypes = ['text', 'key', 'mouse'] as const;
+    for (const type of actionTypes) {
+      const covered = WRITE_STDIN_MINIMAL_EXAMPLES.some(
+        ({ payload }) => firstActionOf(payload)?.type === type,
+      );
+      assert.ok(covered, `no minimal WriteStdin example covers the '${type}' action type`);
+    }
+  });
+
+  test('provider null/0/empty placeholders are tolerated and normalized away by the strict layer', () => {
+    // A provider that fills every optional field with a null/0/'' placeholder
+    // rather than omitting it must still round-trip to the minimal legal action.
+    const withPlaceholders = {
+      ref: WRITE_STDIN_EXAMPLE_REF,
+      actions: [
+        {
+          type: 'key',
+          key: 'enter',
+          text: '',
+          event: null,
+          x: 0,
+          y: 0,
+          button: null,
+          direction: null,
+          modifiers: [],
+        },
+      ],
+      size: null,
+    };
+    const strict = strictParameters.safeParse(withPlaceholders);
+    assert.ok(
+      strict.success,
+      `strict validator should normalize provider placeholders, got: ${
+        strict.success ? '' : strict.error.message
+      }`,
+    );
+    assert.deepEqual(strict.data.actions, [{ type: 'key', key: 'enter' }]);
+  });
+
+  test('strict validation is not vacuous: contract violations are rejected', () => {
+    // Mouse click without a button is structurally invalid.
+    assert.equal(
+      strictParameters.safeParse({
+        ref: WRITE_STDIN_EXAMPLE_REF,
+        actions: [{ type: 'mouse', event: 'click', x: 0, y: 0 }],
+      }).success,
+      false,
+    );
+    // A non-canonical ref must be refused even when the actions are legal.
+    assert.equal(
+      strictParameters.safeParse({
+        ref: 'not-a-runtime-ref',
+        actions: [{ type: 'key', key: 'enter' }],
+      }).success,
+      false,
+    );
+    // input and actions are mutually exclusive.
+    assert.equal(
+      strictParameters.safeParse({
+        ref: WRITE_STDIN_EXAMPLE_REF,
+        input: 'x',
+        actions: [{ type: 'key', key: 'enter' }],
+      }).success,
+      false,
+    );
   });
 });
 

@@ -39,9 +39,7 @@ const SettingsModal = lazy(async () => {
     }
   ).makaE2eLatch;
   await e2eLatch?.wait('settings.chunk');
-  return import('./settings/settings-modal').then((module) => ({
-    default: module.SettingsModal,
-  }));
+  return import('./settings/settings-modal');
 });
 
 type SearchModalProps = Parameters<typeof SearchModal>[0];
@@ -80,7 +78,7 @@ export function AppShellOverlays(props: {
    * can disagree the moment anything else writes the setting.
    */
   refreshChatDefaults(): void;
-  settingsRequestedSection: SettingsSection | undefined;
+  settingsRequest: { readonly section?: SettingsSection; readonly profileId?: string };
   settingsProviderCatalogOpen: boolean;
   settingsConnectionDetailSlug: string | undefined;
   settingsCreateProviderType: ProviderType | undefined;
@@ -113,7 +111,7 @@ export function AppShellOverlays(props: {
     searchModalOnNavigate,
     searchModalOpen,
     settingsOpen,
-    settingsRequestedSection,
+    settingsRequest,
     settingsProviderCatalogOpen,
     settingsConnectionDetailSlug,
     settingsCreateProviderType,
@@ -161,12 +159,11 @@ export function AppShellOverlays(props: {
   // #1045: base commands freeze per open/close; session rows stay live on
   // visibleSessions/activeId. run() closures read latest options via ref.
   const commands = useAppShellCommands(paletteOpen, commandOptions);
-  const copyDiagnosticsCommand = commands.find((command) => command.id === 'diag:copy-diagnostics');
   useHotkeys([
     {
       keys: 'mod+shift+d',
       allowInInputs: true,
-      onPress: () => void copyDiagnosticsCommand?.run(),
+      onPress: () => void commands.find((command) => command.id === 'diag:copy-diagnostics')?.run(),
     },
   ]);
   return (
@@ -183,7 +180,7 @@ export function AppShellOverlays(props: {
             uiLocaleUpdateGate={uiLocaleUpdateGate}
             onUserLabelChange={setUserLabel}
             onDefaultPermissionModeChange={() => refreshChatDefaults()}
-            requestedSection={settingsRequestedSection}
+            request={settingsRequest}
             openProviderCatalog={settingsProviderCatalogOpen}
             initialConnectionSlug={settingsConnectionDetailSlug}
             initialCreateProviderType={settingsCreateProviderType}

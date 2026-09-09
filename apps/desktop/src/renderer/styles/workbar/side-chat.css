@@ -18,12 +18,11 @@
  */
 
 /* The quote lives as a transient tab inside the session workbar (not a second
-   right column, which was too crowded). The tab panel is a flex column so the
-   companion's ChatView transcript fills the height and the Composer pins to the
-   bottom — the same vertical rhythm as the main conversation. */
+   right column, which was too crowded). The panel's single grid track
+   (workbar/shell.css) stretches the companion to the full height, so its
+   ChatView transcript fills it and the Composer pins to the bottom — the same
+   vertical rhythm as the main conversation. */
 .maka-quote-workbar-panel {
-  display: flex;
-  flex-direction: column;
   min-height: 0;
   padding: 0;
   overflow: hidden;
@@ -53,11 +52,6 @@
   min-height: 1px;
 }
 
-.maka-quote-companion-preparing {
-  justify-content: center;
-  min-height: 32px;
-}
-
 .maka-session-workbar-panel[data-placement="right"] .maka-quote-companion .composer {
   padding-inline: var(--space-2);
   padding-bottom: var(--space-2);
@@ -69,7 +63,7 @@
    bubble; a side-only radius token forked the pair the moment the bubbles moved
    to the primitive's default. The wrapper is also left unclipped — `overflow:
    hidden` here would hide the body's hover/focus shadow against the white side
-   panel, and `session-workbar.spec.ts` asserts `overflow: visible`. */
+   panel, and `session-workbar.stories.tsx` asserts `overflow: visible`. */
 
 .maka-session-workbar-panel[data-placement="right"]
   .maka-quote-companion

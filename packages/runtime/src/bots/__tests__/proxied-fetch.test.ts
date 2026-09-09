@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
@@ -25,17 +26,6 @@ import net from 'node:net';
 import { PROXY_DEFAULTS } from '@maka/core/settings/network-settings';
 import { setActiveProxy } from '../../network/active-proxy-state.js';
 import { proxiedFetch } from '../proxied-fetch.js';
-
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<never>((_resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(label)), ms);
-      timer.unref();
-    }),
-  ]);
-}
-
 // A minimal HTTP proxy that is also the fake upstream. It accepts either
 // proxy request form (CONNECT tunneling, or the absolute-form forwarding
 // undici's ProxyAgent uses for plain-http targets), sends the response

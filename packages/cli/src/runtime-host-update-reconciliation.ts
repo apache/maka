@@ -26,6 +26,7 @@ import {
   RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
+  resolveRuntimeHostManagedDeployment,
   type RuntimeHostManagedUpdatePolicy,
   type RuntimeHostManagedDeploymentConfig,
   type RuntimeHostServiceManagementFrame,
@@ -428,14 +429,16 @@ async function inspectUpdateScheduler(
   const config = status.service.config;
   if (!status.service.installed || !config?.managedDeploymentRoot) return 'needs_repair';
   if (options.managedRootId) {
-    if (status.service.reconciliation?.trigger === 'activation') return 'ready';
-    if (status.service.reconciliation?.trigger !== 'scheduled') return 'needs_repair';
-    const provider = status.service.lifecycle?.provider;
-    if (status.service.lifecycle?.mode !== 'supervised' || !provider) return 'needs_repair';
-    const trigger = await resolveRuntimeHostLifecycleProvider(
-      options.managedRootId,
-      provider,
-    ).reconciliationTrigger.status();
+    const { config: deployment } = await resolveRuntimeHostManagedDeployment(options.managedRootId);
+    if (deployment.reconciliation.trigger === 'activation') return 'ready';
+    if (
+      deployment.lifecycle.mode !== 'supervised' ||
+      deployment.reconciliation.trigger !== 'scheduled'
+    ) {
+      return 'needs_repair';
+    }
+    const trigger =
+      await resolveRuntimeHostLifecycleProvider(deployment).reconciliationTrigger.status();
     return trigger.installed ? (trigger.active ? 'ready' : 'inactive') : 'needs_repair';
   }
   const backend = deps.createBackend(

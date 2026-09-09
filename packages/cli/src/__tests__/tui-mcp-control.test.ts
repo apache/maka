@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -29,7 +30,7 @@ import type {
   RuntimeHostConnectionAvailability,
 } from '@maka/runtime-host/client';
 import { createMcpConfigStore } from '@maka/storage/mcp-config-store';
-import { createTuiMcpController } from '../tui-mcp-control.js';
+import { createTuiMcpController, type TuiMcpPublicationAvailability } from '../tui-mcp-control.js';
 import { waitFor } from './tui-terminal-mock.js';
 
 test('TUI MCP startup stays backgrounded and publishes the discovered snapshot', async () => {
@@ -69,6 +70,77 @@ test('TUI MCP startup stays backgrounded and publishes the discovered snapshot',
   await controller.close();
   assert.equal(connection.unregisters, 1);
   assert.equal(manager.closed, 1);
+});
+
+test('TUI MCP serializes remote provider credential changes through its publication lane', async () => {
+  let availability: TuiMcpPublicationAvailability = {
+    kind: 'unavailable',
+    reason: 'credential_required',
+  };
+  let listener: ((value: TuiMcpPublicationAvailability) => void) | undefined;
+  const credentials: string[] = [];
+  let removed = 0;
+  let closed = 0;
+  const connection = {
+    replaceClientCapabilities: async () => ({ registrationId: 'registration', revision: 1 }),
+    unregisterClientCapabilities: async () => ({ registrationId: 'registration', revision: 1 }),
+    subscribeConnectionAvailability: (next: (value: TuiMcpPublicationAvailability) => void) => {
+      listener = next;
+      next(availability);
+      return () => {
+        if (listener === next) listener = undefined;
+      };
+    },
+    setCredential: async (credential: string) => {
+      credentials.push(credential);
+      availability = { kind: 'connected', hostEpoch: 'host-1', connectionId: 'provider-1' };
+      listener?.(availability);
+    },
+    removeCredential: async () => {
+      removed += 1;
+      availability = { kind: 'unavailable', reason: 'credential_required' };
+      listener?.(availability);
+    },
+    closePublication: async () => {
+      closed += 1;
+    },
+  };
+  const manager = managerHarness(0, []);
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection },
+    {
+      configStore: configStoreHarness(async () => emptyConfig()),
+      manager: manager.manager,
+      createProvider: () => undefined,
+    },
+  );
+  await waitFor(
+    () => controller.snapshot().initialization === 'ready',
+    'remote MCP controller initialization',
+  );
+  assert.equal(controller.snapshot().publication, 'credential_required');
+  assert.equal(controller.snapshot().canManagePublicationCredential, true);
+
+  assert.deepEqual(
+    await controller.execute({
+      kind: 'set_publication_credential',
+      credential: 'provider-secret',
+    }),
+    { status: 'applied', effect: 'published' },
+  );
+  assert.deepEqual(credentials, ['provider-secret']);
+  assert.deepEqual(await controller.execute({ kind: 'remove_publication_credential' }), {
+    status: 'applied',
+    effect: 'pending_host',
+  });
+  assert.equal(removed, 1);
+  assert.equal(controller.snapshot().publication, 'credential_required');
+  availability = { kind: 'unavailable', reason: 'provider_conflict' };
+  listener?.(availability);
+  assert.equal(controller.snapshot().publication, 'provider_conflict');
+  assert.equal(controller.snapshot().canManagePublicationCredential, false);
+  await controller.close();
+  assert.equal(closed, 1);
 });
 
 test('TUI MCP publication coalesces a discovery change behind the in-flight revision', async () => {
@@ -969,15 +1041,6 @@ function configStoreHarness(get: () => Promise<McpConfigFile>) {
       apply(await get()),
   };
 }
-
-function deferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
 function deferredValue<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((settle) => {

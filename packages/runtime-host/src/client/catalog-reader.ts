@@ -23,9 +23,11 @@ import {
   type ConnectionCatalogCursor,
   type ConnectionCatalogPageItem,
   type ConnectionCatalogQueryResult,
+  type ModelCatalogEntry,
   type RelayModelProfile,
   type RelayModelProfiles,
   type SessionCatalogItem,
+  type SessionCatalogRevision,
   type SkillCatalogWorkspaceContext,
   type SkillCatalogInvocableItem,
   type SkillCatalogInvocableTarget,
@@ -56,10 +58,12 @@ export interface RuntimeHostSkillCatalogSnapshot {
 
 export type RuntimeHostConnectionCatalogEntry = Omit<
   Extract<ConnectionCatalogPageItem, { kind: 'connection' }>,
-  'kind' | 'connectionIndex' | 'enabledModelIdCount' | 'modelCount'
+  'kind' | 'connectionIndex' | 'enabledModelIdCount' | 'modelCount' | 'catalogEntryCount'
 > & {
   readonly enabledModelIds: readonly string[];
   readonly models: readonly Extract<ConnectionCatalogPageItem, { kind: 'model' }>['model'][];
+  /** The connection's models as the Host resolved them, in catalog order. */
+  readonly catalogEntries: readonly ModelCatalogEntry[];
   readonly relayModelProfiles?: RelayModelProfiles;
 };
 
@@ -76,6 +80,27 @@ export class RuntimeHostCatalogReadError extends Error {
   ) {
     super(`Runtime Host ${catalog} catalog read failed: ${reason}`);
     this.name = 'RuntimeHostCatalogReadError';
+  }
+}
+
+export interface RuntimeHostSessionCatalogPageCursor {
+  readonly revision: SessionCatalogRevision;
+  readonly cursor: string;
+}
+
+export interface RuntimeHostSessionCatalogPage {
+  readonly revision: SessionCatalogRevision;
+  readonly sessions: readonly SessionCatalogItem[];
+  readonly nextCursor: RuntimeHostSessionCatalogPageCursor | null;
+}
+
+export class RuntimeHostSessionCatalogRevisionChangedError extends Error {
+  constructor(
+    readonly expectedRevision: SessionCatalogRevision,
+    readonly actualRevision: SessionCatalogRevision,
+  ) {
+    super('Runtime Host Session catalog revision changed');
+    this.name = 'RuntimeHostSessionCatalogRevisionChangedError';
   }
 }
 
@@ -184,24 +209,52 @@ export async function readRuntimeHostInvocableSkills(
 export async function readRuntimeHostSessions(
   connection: RuntimeHostCatalogConnection,
 ): Promise<SessionCatalogItem[]> {
+  const readPageOrRestart = async (
+    cursor?: RuntimeHostSessionCatalogPageCursor,
+  ): Promise<RuntimeHostSessionCatalogPage | null> => {
+    try {
+      return await readRuntimeHostSessionCatalogPage(connection, cursor);
+    } catch (error) {
+      if (error instanceof RuntimeHostSessionCatalogRevisionChangedError) return null;
+      throw error;
+    }
+  };
   const { pages } = await collectStablePages(
     'session',
-    async () => {
-      const result = await connection.request('session.catalog.query', {
-        kind: 'list_start',
-      });
-      return result.kind === 'page' ? result : null;
-    },
-    async (revision, cursor) => {
-      const result = await connection.request('session.catalog.query', {
-        kind: 'list_continue',
-        revision,
-        cursor,
-      });
-      return result.kind === 'page' ? result : null;
-    },
+    () => readPageOrRestart(),
+    (_revision, cursor) => readPageOrRestart(cursor),
   );
   return pages.flatMap((page) => page.sessions);
+}
+
+export async function readRuntimeHostSessionCatalogPage(
+  connection: RuntimeHostCatalogConnection,
+  cursor?: RuntimeHostSessionCatalogPageCursor,
+): Promise<RuntimeHostSessionCatalogPage> {
+  const result = await connection.request(
+    'session.catalog.query',
+    cursor
+      ? { kind: 'list_continue', revision: cursor.revision, cursor: cursor.cursor }
+      : { kind: 'list_start' },
+  );
+  if (result.kind === 'revision_changed') {
+    throw new RuntimeHostSessionCatalogRevisionChangedError(
+      result.expectedRevision,
+      result.actualRevision,
+    );
+  }
+  if (result.kind !== 'page' || (cursor && result.revision !== cursor.revision)) {
+    throw new RuntimeHostCatalogReadError('session', 'invalid_projection');
+  }
+  if (cursor && result.nextCursor === cursor.cursor) {
+    throw new RuntimeHostCatalogReadError('session', 'repeated_cursor');
+  }
+  return {
+    revision: result.revision,
+    sessions: result.sessions,
+    nextCursor:
+      result.nextCursor === null ? null : { revision: result.revision, cursor: result.nextCursor },
+  };
 }
 
 export async function readRuntimeHostProjects(
@@ -283,7 +336,11 @@ export async function readRuntimeHostResources(
 
 interface StableCatalogPage {
   readonly revision: string | number;
-  readonly nextCursor: string | ConnectionCatalogCursor | null;
+  readonly nextCursor:
+    | string
+    | ConnectionCatalogCursor
+    | RuntimeHostSessionCatalogPageCursor
+    | null;
 }
 
 async function collectStablePages<Page extends StableCatalogPage>(
@@ -424,6 +481,7 @@ function assembleConnectionCatalog(
       header: Extract<ConnectionCatalogPageItem, { kind: 'connection' }>;
       enabledModelIds: Map<number, string>;
       models: Map<number, RuntimeHostConnectionCatalogEntry['models'][number]>;
+      catalogEntries: Map<number, ModelCatalogEntry>;
       relayProfiles: Map<string, RelayModelProfile>;
     }
   >();
@@ -436,6 +494,7 @@ function assembleConnectionCatalog(
       header: item,
       enabledModelIds: new Map(),
       models: new Map(),
+      catalogEntries: new Map(),
       relayProfiles: new Map(),
     });
   }
@@ -443,9 +502,18 @@ function assembleConnectionCatalog(
     if (item.kind === 'connection') continue;
     const entry = entries.get(item.connectionIndex);
     if (!entry) throw new RuntimeHostCatalogReadError('connection', 'invalid_projection');
-    const values = item.kind === 'enabled_model_id' ? entry.enabledModelIds : entry.models;
+    const values =
+      item.kind === 'enabled_model_id'
+        ? entry.enabledModelIds
+        : item.kind === 'model'
+          ? entry.models
+          : entry.catalogEntries;
     const expectedCount =
-      item.kind === 'enabled_model_id' ? entry.header.enabledModelIdCount : entry.header.modelCount;
+      item.kind === 'enabled_model_id'
+        ? entry.header.enabledModelIdCount
+        : item.kind === 'model'
+          ? entry.header.modelCount
+          : entry.header.catalogEntryCount;
     if (item.itemIndex >= expectedCount || values.has(item.itemIndex)) {
       throw new RuntimeHostCatalogReadError('connection', 'invalid_projection');
     }
@@ -454,8 +522,10 @@ function assembleConnectionCatalog(
       // Reassemble the profile table the projector spread across items; the
       // downstream type is the per-model map, not the wire's per-item shape.
       if (item.relayProfile !== undefined) entry.relayProfiles.set(item.modelId, item.relayProfile);
-    } else {
+    } else if (item.kind === 'model') {
       entry.models.set(item.itemIndex, item.model);
+    } else {
+      entry.catalogEntries.set(item.itemIndex, item.entry);
     }
   }
   if (entries.size !== first.connectionCount) {
@@ -466,7 +536,8 @@ function assembleConnectionCatalog(
     .map(([, entry]): RuntimeHostConnectionCatalogEntry => {
       if (
         entry.enabledModelIds.size !== entry.header.enabledModelIdCount ||
-        entry.models.size !== entry.header.modelCount
+        entry.models.size !== entry.header.modelCount ||
+        entry.catalogEntries.size !== entry.header.catalogEntryCount
       ) {
         throw new RuntimeHostCatalogReadError('connection', 'invalid_projection');
       }
@@ -475,12 +546,14 @@ function assembleConnectionCatalog(
         connectionIndex: _index,
         enabledModelIdCount: _enabledCount,
         modelCount: _modelCount,
+        catalogEntryCount: _catalogEntryCount,
         ...header
       } = entry.header;
       return {
         ...header,
         enabledModelIds: orderedValues(entry.enabledModelIds),
         models: orderedValues(entry.models),
+        catalogEntries: orderedValues(entry.catalogEntries),
         ...(entry.relayProfiles.size === 0
           ? {}
           : { relayModelProfiles: Object.fromEntries(entry.relayProfiles) }),

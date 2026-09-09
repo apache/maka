@@ -193,6 +193,125 @@ describe('retired permission modes in stored subagent results', () => {
   });
 });
 
+describe('retired ExploreAgent results in stored transcripts', () => {
+  const stored = {
+    kind: 'explore_agent',
+    ok: true,
+    mode: 'read_only',
+    objective: 'Trace the session lifecycle.',
+    roots: ['packages/runtime'],
+    queries: ['SessionManager'],
+    filesInspected: 3,
+    filesSkipped: 1,
+    bytesRead: 512,
+    progress: ['Inspected the runtime entry point.'],
+    candidateFiles: [],
+    matches: [],
+    notes: [],
+    report: 'SessionManager owns the lifecycle.',
+  } as const;
+
+  test('folds the legacy result to ordinary historical text at every persisted read boundary', () => {
+    const expected = { kind: 'text', text: 'SessionManager owns the lifecycle.' };
+
+    assert.deepEqual(
+      decodePersistedToolResultContent(
+        markPersisted<ToolResultContent>(stored as unknown as ToolResultContent),
+      ),
+      expected,
+    );
+    assert.deepEqual(toolResultContent(decodePersistedMessage(storedToolResult(stored))), expected);
+  });
+
+  test('accepts the earliest persisted shape before progress was added', () => {
+    const earliest = {
+      kind: 'explore_agent',
+      ok: true,
+      mode: 'read_only',
+      objective: 'Trace the session lifecycle.',
+      roots: ['packages/runtime'],
+      queries: ['SessionManager'],
+      filesInspected: 3,
+      filesSkipped: 1,
+      bytesRead: 512,
+      candidateFiles: [],
+      matches: [],
+      notes: [],
+    } as const;
+    const expected = { kind: 'text', text: 'Inspected 3 files' };
+
+    assert.deepEqual(
+      decodePersistedToolResultContent(
+        markPersisted<ToolResultContent>(earliest as unknown as ToolResultContent),
+      ),
+      expected,
+    );
+    assert.deepEqual(
+      toolResultContent(decodePersistedMessage(storedToolResult(earliest))),
+      expected,
+    );
+  });
+
+  test('uses a non-empty failure summary when the legacy report is empty', () => {
+    const failed = {
+      ...stored,
+      ok: false,
+      terminalStatus: 'failed',
+      report: '',
+      summary: '未完成：目标无效。',
+      reason: 'invalid_objective',
+      message: '目标无效。',
+    } as const;
+
+    assert.deepEqual(
+      decodePersistedToolResultContent(
+        markPersisted<ToolResultContent>(failed as unknown as ToolResultContent),
+      ),
+      { kind: 'text', text: '未完成：目标无效。' },
+    );
+  });
+
+  test('ignores retired structured detail after establishing legacy provenance', () => {
+    const malformedDetails = {
+      ...stored,
+      report: undefined,
+      progress: { invalid: true },
+      matches: 'not an array',
+      filesInspected: undefined,
+      removedInLaterVersions: true,
+    };
+
+    assert.deepEqual(
+      decodePersistedToolResultContent(
+        markPersisted<ToolResultContent>(malformedDetails as unknown as ToolResultContent),
+      ),
+      { kind: 'text', text: 'Historical repository scan result' },
+    );
+  });
+
+  test('requires stable legacy provenance at persisted read boundaries', () => {
+    assert.throws(
+      () =>
+        decodePersistedToolResultContent(
+          markPersisted<ToolResultContent>({
+            kind: 'explore_agent',
+            ok: true,
+            mode: 'write_enabled',
+          } as unknown as ToolResultContent),
+        ),
+      /Invalid tool result content/,
+    );
+  });
+
+  test('rejects the retired result kind at canonical live boundaries', () => {
+    assert.throws(() => decodeCanonicalToolResultContent(stored), /Invalid tool result content/);
+    assert.throws(
+      () => decodeCanonicalMessage(storedToolResult(stored)),
+      /Invalid tool result content/,
+    );
+  });
+});
+
 function storedToolResult(content: unknown) {
   return {
     type: 'tool_result',

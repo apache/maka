@@ -102,7 +102,6 @@ export function Marker({
  * Retires the bespoke `OverlayPreview` family shell CSS — the shared
  * height-bounded `.maka-overlay-preview` base + `.maka-overlay-close`, the
  * structured cards (`.maka-tool-diff*`, `.maka-tool-terminal*`,
- * `.maka-explore-agent-*` / `.maka-subagent-preview`,
  * `.maka-web-search-*`), and the separate `.maka-load-tool-*` result card —
  * represented by package-owned semantic classes in `styles.css`.
  *
@@ -113,7 +112,7 @@ export function Marker({
  *      The kind class follows the shared base and may refine it by normal CSS
  *      source order.
  *   2. Leaf rules authored as descendant selectors on bare tags (e.g.
- *      `.maka-explore-agent-section li`, `.maka-web-search-preview > header strong`)
+ *      `.maka-web-search-preview > header strong`)
  *      remain descendants of the stable semantic container class.
  *
  * Unlike the other tables, `previewVariants` IS exported on the `@maka/ui` barrel
@@ -178,39 +177,6 @@ const PREVIEW_PART_CLASSES = {
       // `.maka-tool-terminal-copy` (UiButton) + the shared copy-state tints.
       "terminal-copy":
         "maka-tool-terminal-copy",
-
-      // ── explore agent / subagent (shared shell) ───────────────────────────
-      // `.maka-explore-agent-preview, .maka-subagent-preview` (+ the fault
-      // border, keyed on explore's `[data-ok=false]` or subagent's failed /
-      // cancelled `[data-status]`).
-      agent:
-        "maka-agent-preview",
-      // `.maka-explore-agent-head` (+ its `strong` title and `small` caption,
-      // the latter shared with the nested summary-line small).
-      "agent-head":
-        "maka-agent-preview-head",
-      // `.maka-explore-agent-summary-line` (+ its `small` ellipsis, layered over
-      // the head's caption styling above).
-      "agent-summary-line":
-        "maka-agent-preview-summary-line",
-      // `.maka-explore-agent-actions`
-      "agent-actions": "maka-agent-preview-actions",
-      // `.maka-explore-agent-message`
-      "agent-message":
-        "maka-agent-preview-message",
-      // `.maka-explore-agent-meta` (+ its `div` cells, `dt` labels, `dd` values).
-      "agent-meta":
-        "maka-agent-preview-meta",
-      // `.maka-explore-agent-section` (+ its direct `> strong`, list `ul`/`li`
-      // rows, leading `li` reset, `code` / `small` / `p` / `span` leaves).
-      "agent-section":
-        "maka-agent-preview-section",
-      // `.maka-explore-agent-section-head` (+ its `> strong`).
-      "agent-section-head":
-        "maka-agent-preview-section-head",
-      // `.maka-explore-agent-copy` (UiButton) + the copied / shared copy-state tints.
-      "agent-copy":
-        "maka-agent-preview-copy",
 
       // ── web search ────────────────────────────────────────────────────────
       // `.maka-web-search-preview` (+ its bare `> header` / list leaves; the

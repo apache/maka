@@ -19,57 +19,56 @@
 
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { MessageBoxOptions } from 'electron';
-import { DesktopLocalHostRetirementError } from './runtime-host-desktop-manager.js';
 
-export function buildRuntimeHostQuitFailureDialog(
-  error: unknown,
+export interface RuntimeHostQuitDialog<Decision extends string> {
+  readonly options: MessageBoxOptions;
+  readonly decisions: readonly Decision[];
+}
+
+export type RuntimeHostActiveQuitDecision = 'quit' | 'cancel';
+
+export function buildRuntimeHostActiveQuitDialog(
   locale: UiLocale,
-): MessageBoxOptions {
-  const retirement = error instanceof DesktopLocalHostRetirementError ? error : undefined;
+): RuntimeHostQuitDialog<RuntimeHostActiveQuitDecision> {
   const copy = COPY[locale];
-  const details: string[] = [copy.detail];
-  if (retirement) {
-    details.push(`State Root: ${retirement.facts.rootPath}`);
-    details.push(`Host epoch: ${retirement.facts.hostEpoch}`);
-    if (retirement.facts.pid !== undefined) {
-      details.push(copy.process(retirement.facts.pid), copy.manual);
-    }
-  }
-  const cause = error instanceof Error && error.cause instanceof Error
-    ? error.cause.message
-    : error instanceof Error
-      ? error.message
-      : String(error);
-  details.push(`${copy.cause}: ${cause}`);
   return {
-    type: 'error',
-    title: copy.title,
-    message: copy.message,
-    detail: details.join('\n'),
-    buttons: [copy.button],
-    defaultId: 0,
-    noLink: true,
+    options: {
+      type: 'warning',
+      title: copy.activeTitle,
+      message: copy.activeMessage,
+      detail: copy.activeDetail,
+      buttons: [copy.stopAndQuit, copy.keepRunning],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    },
+    decisions: ['quit', 'cancel'],
   };
 }
 
 const COPY = {
   en: {
-    title: 'Unable to quit Maka safely',
-    message: 'The local Runtime Host could not stop safely. Maka is still running.',
-    detail: 'Quit was cancelled. Try again, or inspect diagnostics if the problem persists.',
-    process: (pid: number) => `Runtime Host process PID: ${pid}`,
-    manual:
-      "If retry still fails, confirm that no execution must be preserved before stopping this PID with the operating system's process-management tool.",
-    cause: 'Cause',
-    button: 'OK',
+    activeTitle: 'Maka is still working',
+    activeMessage: 'Background work is still running.',
+    activeDetail:
+      'Quitting now stops the Runtime Host and may interrupt active executions or scheduled background work. It resumes from its durable state the next time a Runtime Host runs.',
+    stopAndQuit: 'Stop Work and Quit',
+    keepRunning: 'Keep Maka Running',
   },
-  zh: {
-    title: '无法安全退出 Maka',
-    message: '本地 Runtime Host 未能安全停止，Maka 仍在运行。',
-    detail: '退出已取消。请重试；如果问题持续存在，请查看诊断信息。',
-    process: (pid: number) => `Runtime Host 进程 PID：${pid}`,
-    manual: '如果重试仍然失败，请先确认没有需要保留的执行，再通过操作系统的进程管理工具停止该 PID。',
-    cause: '原因',
-    button: '好',
+  'zh-CN': {
+    activeTitle: 'Maka 正在后台工作',
+    activeMessage: '仍有后台工作正在运行。',
+    activeDetail:
+      '现在退出会停止 Runtime Host，并可能中断正在执行或等待运行的后台任务。任务会在下次 Runtime Host 运行时从持久状态恢复。',
+    stopAndQuit: '停止任务并退出',
+    keepRunning: '继续运行 Maka',
+  },
+  'zh-TW': {
+    activeTitle: 'Maka 正在背景工作',
+    activeMessage: '仍有背景工作正在執行。',
+    activeDetail:
+      '現在結束會停止 Runtime Host，並可能中斷正在執行或等待執行的背景工作。工作會在下次 Runtime Host 執行時從持久狀態恢復。',
+    stopAndQuit: '停止工作並結束',
+    keepRunning: '繼續執行 Maka',
   },
 } as const;

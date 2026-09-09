@@ -19,6 +19,7 @@
 
 import {
   decodeRemoteRuntimeHostProfile,
+  migrateRuntimeHostProfileOperatorCommand,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
   sameResolvedRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,
@@ -99,16 +100,31 @@ export async function writeDesktopRuntimeHostPairingIntents(
     throw new Error('Runtime Host pairing recovery journal has too many entries');
   }
   if (intents.length === 0) {
-    await credentials.deleteSecret(
-      PAIRING_JOURNAL_CREDENTIAL_SLOT,
-      'runtime_host_access',
-    );
+    try {
+      await credentials.deleteSecret(
+        PAIRING_JOURNAL_CREDENTIAL_SLOT,
+        'runtime_host_access',
+      );
+    } catch (deleteError) {
+      // Some credential backends can update an existing item while deletion is
+      // temporarily unavailable. Persisting an empty, valid journal is the
+      // terminal record; physical deletion is only garbage collection.
+      try {
+        await credentials.setSecret(
+          PAIRING_JOURNAL_CREDENTIAL_SLOT,
+          'runtime_host_access',
+          encodePairingJournal([]),
+        );
+      } catch (writeError) {
+        throw new AggregateError(
+          [deleteError, writeError],
+          'Runtime Host pairing recovery journal could not be cleared',
+        );
+      }
+    }
     return;
   }
-  const contents = JSON.stringify({
-    schemaVersion: PAIRING_JOURNAL_SCHEMA_VERSION,
-    intents,
-  });
+  const contents = encodePairingJournal(intents);
   if (Buffer.byteLength(contents) > PAIRING_JOURNAL_MAX_BYTES) {
     throw new Error('Runtime Host pairing recovery journal exceeds its size limit');
   }
@@ -117,6 +133,13 @@ export async function writeDesktopRuntimeHostPairingIntents(
     'runtime_host_access',
     contents,
   );
+}
+
+function encodePairingJournal(intents: readonly DesktopRuntimeHostPairingIntent[]): string {
+  return JSON.stringify({
+    schemaVersion: PAIRING_JOURNAL_SCHEMA_VERSION,
+    intents,
+  });
 }
 
 function decodePairingJournal(value: unknown): readonly DesktopRuntimeHostPairingIntent[] {
@@ -164,7 +187,9 @@ function decodePairingTarget(
 ): DesktopRuntimeHostPairingIntent['target'] {
   const record = requireExactRecord(value, ['profile', 'credential']);
   return {
-    profile: decodeRemoteRuntimeHostProfile(record.profile),
+    profile: decodeRemoteRuntimeHostProfile(
+      migrateRuntimeHostProfileOperatorCommand(record.profile),
+    ),
     credential: requireCredential(record.credential),
   };
 }

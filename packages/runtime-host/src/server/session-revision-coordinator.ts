@@ -18,7 +18,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { isDeepResearchSession } from '@maka/core/explore-agent';
+import { isDeepResearchSession } from '@maka/core/deep-research';
 import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
@@ -35,11 +35,20 @@ import {
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
   collectConversationCopyLinkedChildReferences,
+  collectConversationCopySessionContextRefIds,
+  collectConversationCopySessionFileRefs,
   createConversationCopySlice,
   prepareConversationRuntimeLedgerCopy,
+  type ConversationCopySlice,
   type ConversationRuntimeLedgerCopyPlan,
 } from '@maka/runtime/conversation-copy';
 import { isArchivedToolResultPlaceholder } from '@maka/runtime/context-budget';
+import type { AgentRunEvent } from '@maka/core/agent-run';
+import {
+  decodeModelProjectionTransition,
+  MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
+  type ModelProjectionTransition,
+} from '@maka/core/model-projection-transition';
 import { type SessionManager } from '@maka/runtime/session-manager';
 import {
   authenticateInteractiveArtifactStoreWriter,
@@ -51,9 +60,10 @@ import {
   type ExecutionStoresWriter,
 } from '@maka/storage/execution-stores';
 import {
-  authenticateInteractiveTaskLedgerWriter,
-  type InteractiveTaskLedgerWriter,
-} from '@maka/storage/task-ledger-authority';
+  authenticateInteractiveSessionTodoWriter,
+  type InteractiveSessionTodoWriter,
+} from '@maka/storage/session-todo-authority';
+import type { InteractiveContextOffloadWriter } from '@maka/storage/context-offload-store';
 import type {
   OperationOutcome,
   SessionConversationCopyInput,
@@ -98,7 +108,11 @@ type ConversationCopyCreateInput = CreateSessionInput & {
 export interface HostSessionRevisionCoordinatorOptions {
   readonly stores: ExecutionStoresWriter<'interactive'>;
   readonly artifacts: InteractiveArtifactStoreWriter;
-  readonly taskLedger: InteractiveTaskLedgerWriter;
+  readonly sessionTodo: InteractiveSessionTodoWriter;
+  readonly contextOffload?: Pick<
+    InteractiveContextOffloadWriter,
+    'copyReferences' | 'retireSession'
+  >;
   readonly manager: SessionManager;
   readonly admission: SessionAdmissionGate;
   readonly continuity: SessionContinuityCoordinator;
@@ -120,12 +134,12 @@ export class HostSessionRevisionCoordinator {
 
   readonly #stores: ExecutionStoresWriter<'interactive'>;
   readonly #artifacts: InteractiveArtifactStoreWriter;
-  readonly #taskLedger: InteractiveTaskLedgerWriter;
+  readonly #sessionTodo: InteractiveSessionTodoWriter;
 
   constructor(private readonly options: HostSessionRevisionCoordinatorOptions) {
     this.#stores = authenticateExecutionStoresWriter(options.stores, 'interactive');
     this.#artifacts = authenticateInteractiveArtifactStoreWriter(options.artifacts);
-    this.#taskLedger = authenticateInteractiveTaskLedgerWriter(options.taskLedger);
+    this.#sessionTodo = authenticateInteractiveSessionTodoWriter(options.sessionTodo);
   }
 
   async recover(): Promise<void> {
@@ -133,7 +147,7 @@ export class HostSessionRevisionCoordinator {
       (header) => header.conversationCopy !== undefined,
     );
     for (const header of copies) {
-      if (header.conversationCopy!.state === 'preparing') await this.#discard(header);
+      if (header.conversationCopy!.state === 'preparing') await this.#discardDuringRecovery(header);
     }
 
     const committed = copies.filter((header) => header.conversationCopy!.state === 'committed');
@@ -172,8 +186,18 @@ export class HostSessionRevisionCoordinator {
       if (retained.has(header.id)) {
         await this.options.manager.commitRevisionVersion(header.id);
       } else {
-        await this.#discard(header);
+        await this.#discardDuringRecovery(header);
       }
+    }
+  }
+
+  async #discardDuringRecovery(header: SessionHeader): Promise<void> {
+    try {
+      await this.#discard(header);
+    } catch (error) {
+      console.error(
+        `[runtime-host] conversation copy cleanup deferred during recovery (${header.id}): ${conversationCopyCommitFailureDiagnostic(error)}`,
+      );
     }
   }
 
@@ -331,13 +355,21 @@ export class HostSessionRevisionCoordinator {
     } catch {
       return copyFailure('persistence_failed', 'Source conversation ledger is unavailable');
     }
-    const slice = createConversationCopySlice(
-      source.messages,
-      input.sourceTurnId,
-      kind === 'revision' ? 'before' : 'through',
-    );
-    if (!slice) {
-      return copyFailure('invalid_request', 'Source turn does not exist');
+    // An empty copy carries no source transcript: skip the slice so a side
+    // conversation can fork before the source has any settled turn.
+    let slice: ConversationCopySlice;
+    if (input.sourceTurnId === undefined) {
+      slice = { messages: [], turnIds: [] };
+    } else {
+      const throughSlice = createConversationCopySlice(
+        source.messages,
+        input.sourceTurnId,
+        kind === 'revision' ? 'before' : 'through',
+      );
+      if (!throughSlice) {
+        return copyFailure('invalid_request', 'Source turn does not exist');
+      }
+      slice = throughSlice;
     }
     let plan: ConversationRuntimeLedgerCopyPlan;
     let sessionHeaders: SessionHeader[];
@@ -380,9 +412,16 @@ export class HostSessionRevisionCoordinator {
       plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
       slice.messages,
       copyTurnIds,
+      plan.runs.flatMap(({ operationalEvents }) => operationalEvents),
     );
     if (!archivePreflight.ok) return archivePreflight.outcome;
     const linkedChildRequests = collectConversationCopyLinkedChildReferences({
+      messages: slice.messages,
+      runtimeEvents: plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
+      archivedResults: archivePreflight.serializedResults,
+    });
+    const referencedSessionFileIds = collectConversationCopySessionFileRefs({
+      sourceSessionId: input.sourceSessionId,
       messages: slice.messages,
       runtimeEvents: plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
       archivedResults: archivePreflight.serializedResults,
@@ -406,7 +445,7 @@ export class HostSessionRevisionCoordinator {
         requests: linkedChildRequests,
       },
       {
-        agentRunStore: this.#stores.agentRunStore,
+        runtimeEventStore: this.#stores.runtimeEventStore,
         artifacts: this.#artifacts,
         graph: this.options.graph,
         isSessionActive: this.options.isSessionActive,
@@ -489,10 +528,36 @@ export class HostSessionRevisionCoordinator {
           )
           .map(({ descriptor, serializedResult }) => [descriptor.artifactId, serializedResult]),
       );
+      const sourceContextRefIds = collectConversationCopySessionContextRefIds({
+        sourceSessionId: input.sourceSessionId,
+        messages: slice.messages,
+        runtimeEvents: plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
+        archivedResults: archivePreflight.serializedResults,
+      });
+      if (sourceContextRefIds.length > 0 && !this.options.contextOffload) {
+        throw new Error('Session context copy authority is unavailable');
+      }
+      const contextCopy =
+        sourceContextRefIds.length === 0
+          ? { ok: true as const, copied: [] }
+          : await this.options.contextOffload!.copyReferences({
+              sourceSessionId: input.sourceSessionId,
+              targetSessionId: input.targetSessionId,
+              references: sourceContextRefIds.map((sourceRefId) => ({
+                sourceRefId,
+                targetOwner: { kind: 'read_image_snapshot', ownerId: sourceRefId },
+              })),
+            });
+      if (!contextCopy.ok) {
+        throw new Error(`Session context references could not be copied: ${contextCopy.reason}`);
+      }
       const artifactCopy = await this.#artifacts.copyConversationArtifacts({
         sourceSessionId: input.sourceSessionId,
         targetSessionId: input.targetSessionId,
         turnIds: copyTurnIds,
+        ...(referencedSessionFileIds.size > 0
+          ? { includeArtifactIds: [...referencedSessionFileIds] }
+          : {}),
         ...(kind === 'side_conversation' && archivedSnapshotResults.size > 0
           ? { excludeArtifactIds: [...archivedSnapshotResults.keys()] }
           : {}),
@@ -511,6 +576,9 @@ export class HostSessionRevisionCoordinator {
         targetSessionId: input.targetSessionId,
         artifactIds: artifactCopy.artifactIds,
         relativePaths: artifactCopy.relativePaths,
+        contextRefs: new Map(
+          contextCopy.copied.map(({ sourceRefId, targetRefId }) => [sourceRefId, targetRefId]),
+        ),
         linkedChildren:
           kind === 'side_conversation'
             ? {
@@ -533,21 +601,15 @@ export class HostSessionRevisionCoordinator {
         newId: randomUUID,
       });
       const copiedMessages = runtimeCopy.copiedMessages;
-      await this.#taskLedger.copyConversationTaskLedger({
+      await this.#sessionTodo.initializeCopy({
         sourceSessionId: input.sourceSessionId,
         targetSessionId: input.targetSessionId,
-        turnIds: copyTurnIds,
-        ...(slice.beforeTs === undefined ? {} : { beforeTs: slice.beforeTs }),
-        runIdMap: runtimeCopy.runIdMap,
-        ...(kind === 'side_conversation' ? { linkedChildren: 'snapshot' as const } : {}),
+        // An empty copy carries no source state, including no in-progress Todo.
+        copyCurrent:
+          kind === 'branch' && slice.beforeTs === undefined && input.sourceTurnId !== undefined,
       });
-      if (copiedMessages.length > 0) {
-        await this.#stores.sessionStore.appendMessages(input.targetSessionId, [...copiedMessages]);
-      }
-      await this.#stores.sessionStore.appendMessage(
-        input.targetSessionId,
-        conversationCopyStartNote(kind, input, createInput),
-      );
+      // `cloneConversationRuntimeLedger` already wrote the copy's own spine, and
+      // the copy reads back off that: nothing here writes a second transcript.
       await this.#stores.sessionStore.updateHeader(input.targetSessionId, {
         conversationCopy: {
           ...createInput.conversationCopy!,
@@ -584,6 +646,7 @@ export class HostSessionRevisionCoordinator {
     sourceEvents: readonly RuntimeEvent[],
     copiedMessages: readonly StoredMessage[],
     copyTurnIds: readonly string[],
+    operationalEvents: readonly AgentRunEvent[],
   ): Promise<
     | {
         readonly ok: true;
@@ -599,6 +662,7 @@ export class HostSessionRevisionCoordinator {
       sourceEvents,
       copiedMessages,
       copyTurnIds,
+      operationalEvents,
     );
     if (!archives) {
       return {
@@ -662,7 +726,7 @@ export class HostSessionRevisionCoordinator {
       conversationCopy: {
         kind: persistedConversationCopyKind(kind),
         sourceSessionId: input.sourceSessionId,
-        sourceTurnId: input.sourceTurnId,
+        ...(input.sourceTurnId === undefined ? {} : { sourceTurnId: input.sourceTurnId }),
         requestFingerprint,
         state: 'preparing',
         ...(kind === 'side_conversation' ? { intent: kind } : {}),
@@ -670,12 +734,18 @@ export class HostSessionRevisionCoordinator {
       status: 'active',
     };
     if (kind !== 'revision') {
+      // An empty copy records provenance but fabricates no branch turn.
       return {
         ...common,
         parentSessionId: input.sourceSessionId,
-        branchOfTurnId: input.sourceTurnId,
+        ...(input.sourceTurnId === undefined ? {} : { branchOfTurnId: input.sourceTurnId }),
       };
     }
+    // Revision copies always carry a turn boundary (enforced at decode).
+    if (input.sourceTurnId === undefined) {
+      throw new Error('Session revision copy requires a turn boundary');
+    }
+    const revisionOfTurnId = input.sourceTurnId;
     const revisionRootSessionId = source.revisionRootSessionId ?? input.sourceSessionId;
     const family = (await this.#stores.sessionStore.listHeaders()).filter(
       (candidate) =>
@@ -691,7 +761,7 @@ export class HostSessionRevisionCoordinator {
       ...(source.branchOfTurnId ? { branchOfTurnId: source.branchOfTurnId } : {}),
       revisionRootSessionId,
       revisionParentSessionId: input.sourceSessionId,
-      revisionOfTurnId: input.sourceTurnId,
+      revisionOfTurnId,
       revisionIndex,
       revisionState: 'preparing',
     };
@@ -802,7 +872,8 @@ export class HostSessionRevisionCoordinator {
     await purgeSessionSidecars(
       {
         artifacts: this.#artifacts,
-        taskLedger: this.#taskLedger,
+        sessionTodo: this.#sessionTodo,
+        ...(this.options.contextOffload ? { contextOffload: this.options.contextOffload } : {}),
         purgeOperationalState: (sessionId) =>
           this.#stores.purgeConversationOperationalState(sessionId),
       },
@@ -814,25 +885,15 @@ export class HostSessionRevisionCoordinator {
     );
   }
 
+  /**
+   * A revision copy that admitted a turn of its own. The admission ledger is
+   * the whole answer: a copy clones the source's history but never its
+   * admissions, so every row it holds was admitted on this session.
+   */
   async #hasAdmittedRevisionTurn(sessionId: string): Promise<boolean> {
-    if (
+    return (
       (await this.#stores.agentRunStore.listRootTurnAdmissionsForRecovery(sessionId)).length > 0
-    ) {
-      return true;
-    }
-    const messages = await this.#stores.sessionStore.readMessagesForRecovery(sessionId);
-    let boundary = -1;
-    for (let index = 0; index < messages.length; index += 1) {
-      const message = messages[index]!;
-      if (
-        message.type === 'system_note' &&
-        message.kind === 'session_start' &&
-        isRevisionStartData(message.data)
-      ) {
-        boundary = index;
-      }
-    }
-    return boundary >= 0 && messages.slice(boundary + 1).some((message) => message.type === 'user');
+    );
   }
 
   async #hasCommittedConversationCopyDependent(sessionId: string): Promise<boolean> {
@@ -864,35 +925,12 @@ function conversationCopyFingerprint(
     kind,
     input.sourceSessionId,
     input.targetSessionId,
+    // Absent for an empty copy. JSON.stringify renders the missing element as
+    // null, so an empty copy gets a distinct identity while through_turn and
+    // revision hashes stay byte-identical to a required sourceTurnId.
     input.sourceTurnId,
   ];
   return `sha256:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`;
-}
-
-function conversationCopyStartNote(
-  kind: ConversationCopySemanticKind,
-  input: SessionConversationCopyInput,
-  createInput: ConversationCopyCreateInput,
-): StoredMessage {
-  return {
-    type: 'system_note',
-    id: randomUUID(),
-    ts: Date.now(),
-    kind: 'session_start',
-    data:
-      kind !== 'revision'
-        ? {
-            parentSessionId: input.sourceSessionId,
-            branchOfTurnId: input.sourceTurnId,
-          }
-        : {
-            revisionRootSessionId: createInput.revisionRootSessionId,
-            revisionParentSessionId: input.sourceSessionId,
-            revisionOfTurnId: input.sourceTurnId,
-            revisionIndex: createInput.revisionIndex,
-            revisionState: 'preparing',
-          },
-  };
 }
 
 function conversationCopySemanticKind(
@@ -906,25 +944,18 @@ function persistedConversationCopyKind(kind: ConversationCopySemanticKind): Conv
   return kind === 'revision' ? 'revision' : 'branch';
 }
 
-function isRevisionStartData(value: unknown): boolean {
-  return (
-    !!value &&
-    typeof value === 'object' &&
-    !Array.isArray(value) &&
-    'revisionRootSessionId' in value
-  );
-}
-
 function collectArchivedToolResultPlaceholders(
   events: readonly RuntimeEvent[],
   messages: readonly StoredMessage[],
   copyTurnIds: readonly string[],
+  operationalEvents: readonly AgentRunEvent[],
 ): ArchivedToolResultCopyDescriptor[] | null {
   const retainedTurnIds = new Set(copyTurnIds);
   const archives = new Map<string, ArchivedToolResultCopyDescriptor>();
   const add = (value: unknown): boolean => {
     if (!isRecord(value) || value.kind !== 'maka.archived_tool_result') return true;
     if (!isArchivedToolResultPlaceholder(value)) return false;
+    if (value.rewriteVersion === 2) return true;
     addDescriptor(value);
     return true;
   };
@@ -938,6 +969,21 @@ function collectArchivedToolResultPlaceholders(
       if (!add(event.content.result)) return null;
     }
   }
+  // A pruned result's body is now named by its durable transition rather than
+  // by the RuntimeEvent, so the copy must reach the ledger to find it. Missing
+  // this is not a cosmetic gap: the target Session would carry a placeholder
+  // pointing at an artifact that was never copied.
+  for (const event of operationalEvents) {
+    if (event.type !== MODEL_PROJECTION_TRANSITION_EVENT_TYPE) continue;
+    let transition: ModelProjectionTransition;
+    try {
+      transition = decodeModelProjectionTransition(event.data?.transition, event.sessionId);
+    } catch {
+      return null;
+    }
+    if (transition.replacement.kind !== 'json') return null;
+    if (!add(transition.replacement.value)) return null;
+  }
   for (const message of messages) {
     if (message.type !== 'tool_result') continue;
     if (message.content.kind === 'json') {
@@ -945,6 +991,7 @@ function collectArchivedToolResultPlaceholders(
       continue;
     }
     if (message.content.kind === 'archived_tool_result') {
+      if (message.content.rewriteVersion === 2 && message.content.resourceRef) continue;
       if (!message.content.artifactId && !message.content.bodySha256) continue;
       if (!message.content.artifactId || !message.content.bodySha256) return null;
       addDescriptor({
