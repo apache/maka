@@ -46,11 +46,11 @@ export interface AboutUpdateRow {
   /** Where to act or why it failed; null when the label says it all. */
   readonly description: string | null;
   /**
-   * Whether the row offers 检查更新: `check` resting, `checking` while one runs,
-   * `none` while the updater is working on its own or waiting for the restart
-   * that the sidebar footer offers.
+   * The row's control: 检查更新 (`check` resting, `checking` while one runs),
+   * the restart once an update is downloaded (`install`), or nothing while the
+   * updater is working on its own.
    */
-  readonly action: 'check' | 'checking' | 'none';
+  readonly action: 'check' | 'checking' | 'install' | 'none';
 }
 
 /**
@@ -59,10 +59,9 @@ export interface AboutUpdateRow {
  * The control follows the state instead of always reading 检查更新: the service
  * refuses a check while a download is in flight or an update sits downloaded
  * (app-update-service.ts), so a check button in those states was a control that
- * did nothing when pressed — which is exactly what a nightly user, whose steady
- * state is `downloaded`, met every time. A failed download is re-fetched by the
- * same check (the updater downloads on its own once it sees a release), so the
- * page needs no second retry control next to the sidebar's.
+ * did nothing when pressed. A failed download is re-fetched by the same check
+ * (the updater downloads on its own once it sees a release), so the page needs
+ * no second retry control next to the sidebar's.
  */
 export function aboutUpdateRow(
   status: AppUpdateStatus | null,
@@ -88,11 +87,7 @@ export function aboutUpdateRow(
     case 'verifying':
       return { label: copy.updateVerifying(status.latestVersion), description: null, action: 'none' };
     case 'downloaded':
-      return {
-        label: copy.updateDownloaded(status.latestVersion),
-        description: copy.updateDownloadedHint,
-        action: 'none',
-      };
+      return { label: copy.updateDownloaded(status.latestVersion), description: null, action: 'install' };
     case 'installing':
       return { label: copy.updateInstalling(status.latestVersion), description: null, action: 'none' };
     case 'error':

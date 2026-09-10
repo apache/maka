@@ -130,13 +130,20 @@ export function AppUpdateProvider(props: { readonly children?: ReactNode }) {
     () => ({ reminder, onOpenUpdate: reminder ? openUpdate : undefined }),
     [openUpdate, reminder],
   );
+  const installDownloadedUpdate = reminder?.state === 'downloaded' ? openUpdate : undefined;
   const about = useMemo<AppUpdateAboutProjection>(
     () => ({
       status: controller.status,
       checking: controller.checking,
       checkForUpdates: controller.commands.checkForUpdates,
+      installDownloadedUpdate,
     }),
-    [controller.checking, controller.commands.checkForUpdates, controller.status],
+    [
+      controller.checking,
+      controller.commands.checkForUpdates,
+      controller.status,
+      installDownloadedUpdate,
+    ],
   );
 
   return (

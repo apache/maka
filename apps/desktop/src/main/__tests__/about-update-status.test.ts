@@ -61,7 +61,7 @@ test('the row only offers a check where the service would honour one', () => {
   );
   // The service returns the current status untouched for these, so a check
   // button here was a control that did nothing when pressed.
-  for (const state of ['available', 'verifying', 'downloaded', 'installing'] as const) {
+  for (const state of ['available', 'verifying', 'installing'] as const) {
     assert.equal(
       aboutUpdateRow({ state, currentVersion: current, latestVersion: latest }, copy).action,
       'none',
@@ -86,16 +86,16 @@ test('the nightly steady states each read as themselves', () => {
     action: 'none',
   });
 
-  // The restart lives in the sidebar footer; the row says so instead of
-  // growing a second install handshake.
+  // A downloaded update offers the restart right here, not only in the
+  // sidebar footer.
   const downloaded = aboutUpdateRow(
     { state: 'downloaded', currentVersion: current, latestVersion: latest },
     copy,
   );
   assert.deepEqual(downloaded, {
     label: 'v0.2.0-dev.12.20260901 已下载',
-    description: '在侧栏底部重启即可安装。',
-    action: 'none',
+    description: null,
+    action: 'install',
   });
 });
 
