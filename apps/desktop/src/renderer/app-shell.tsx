@@ -341,10 +341,11 @@ function AppShellContent({
   const activeHostSession = activeCatalogSession?.localState !== 'pending' ? activeCatalogSession : undefined;
   const sharedSessionActive = activeCatalogSession?.shared === true;
   const ownerActiveId = sharedSessionActive ? undefined : activeHostSession?.id;
-  const interactionHydrationEpochRef = useRef(new Map<string, number>());
+  // Only the outstanding read needs a fence; past Sessions leave no hydration metadata.
+  const interactionHydrationRef = useRef<{ sessionId: string } | null>(null);
   const markInteractionChanged = useCallback((sessionId: string) => {
-    const epochs = interactionHydrationEpochRef.current;
-    epochs.set(sessionId, (epochs.get(sessionId) ?? 0) + 1);
+    const pending = interactionHydrationRef.current;
+    if (pending?.sessionId === sessionId) interactionHydrationRef.current = null;
   }, []);
 
   const {
@@ -1028,23 +1029,20 @@ function AppShellContent({
   // active session changes (#2072).
   useEffect(() => {
     if (!ownerActiveId) return;
-    let cancelled = false;
-    const hydrationEpoch = interactionHydrationEpochRef.current.get(ownerActiveId) ?? 0;
+    const pending = { sessionId: ownerActiveId };
+    interactionHydrationRef.current = pending;
+    const release = () => {
+      if (interactionHydrationRef.current === pending) interactionHydrationRef.current = null;
+    };
     void window.maka.sessions
       .listActiveInteractions(ownerActiveId)
       .then((requests) => {
-        if (
-          cancelled ||
-          (interactionHydrationEpochRef.current.get(ownerActiveId) ?? 0) !== hydrationEpoch
-        ) {
-          return;
-        }
+        if (interactionHydrationRef.current !== pending) return;
         sessionUiController.setInteractionBySession((current) => reconcileInteractions(current, ownerActiveId, requests));
       })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
+      .catch(() => {})
+      .finally(release);
+    return release;
   }, [ownerActiveId, sessionUiController.setInteractionBySession]);
   useEffect(
     () =>
