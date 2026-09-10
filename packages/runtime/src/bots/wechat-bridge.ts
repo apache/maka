@@ -181,11 +181,12 @@ export class WechatBridge extends BaseBotAdapter implements SendCapable {
   private async streamLiveMessages(sinceEpochSeconds: number): Promise<void> {
     const baseUrl = normalizeWechatBridgeUrl(this.settings.webhookUrl);
     if (!baseUrl) return;
+    const cursor = { sinceEpochSeconds };
     while (this.running) {
       this.abortController = new AbortController();
       try {
         const response = await proxiedFetch(
-          `${baseUrl}/messages/stream?since=${sinceEpochSeconds}`,
+          `${baseUrl}/messages/stream?since=${cursor.sinceEpochSeconds}`,
           {
             method: 'GET',
             headers: wechatBridgeHeaders(this.settings),
@@ -195,18 +196,8 @@ export class WechatBridge extends BaseBotAdapter implements SendCapable {
         );
         if (!response.ok || !response.body)
           throw new Error(`WeChat stream HTTP ${response.status}`);
-        for await (const raw of readSseJsonObjects(response.body)) {
-          const messages = Array.isArray(raw) ? raw : [raw];
-          for (const message of messages) {
-            const event = mapWechatBridgeMessage(message);
-            if (!event) continue;
-            sinceEpochSeconds = Math.max(sinceEpochSeconds, Math.floor(event.receivedAt / 1000));
-            this.readiness = 'operational';
-            this.reason = undefined;
-            this.emitIncomingMessage(event);
-            this.emitStatusChange();
-          }
-        }
+        const messages = readSseJsonObjects(response.body);
+        while (await this.processNextLiveMessages(messages, cursor)) {}
         if (this.running) await sleep(1_000);
       } catch (error) {
         if (!this.running) return;
@@ -217,6 +208,35 @@ export class WechatBridge extends BaseBotAdapter implements SendCapable {
         this.emitStatusChange();
         await sleep(3_000);
       }
+    }
+  }
+
+  private async processNextLiveMessages(
+    stream: AsyncGenerator<unknown>,
+    cursor: { sinceEpochSeconds: number },
+  ): Promise<boolean> {
+    // Keep the iterator result and mapped events out of the next idle read's frame.
+    const next = await stream.next();
+    if (next.done) return false;
+    try {
+      const messages = Array.isArray(next.value) ? next.value : [next.value];
+      for (const message of messages) {
+        const event = mapWechatBridgeMessage(message);
+        if (!event) continue;
+        cursor.sinceEpochSeconds = Math.max(
+          cursor.sinceEpochSeconds,
+          Math.floor(event.receivedAt / 1000),
+        );
+        this.readiness = 'operational';
+        this.reason = undefined;
+        this.emitIncomingMessage(event);
+        this.emitStatusChange();
+      }
+      return true;
+    } catch (error) {
+      // Match for-await: close after processing failures, preserving the original error.
+      await stream.return(undefined).catch(() => {});
+      throw error;
     }
   }
 
@@ -425,23 +445,63 @@ export async function* readSseJsonObjects(
   body: AsyncIterable<Uint8Array>,
 ): AsyncGenerator<unknown> {
   const decoder = new TextDecoder();
+  const iterator = body[Symbol.asyncIterator]();
   let buffer = '';
-  for await (const chunk of body) {
-    buffer += decoder.decode(chunk, { stream: true });
-    let boundary = findSseBoundary(buffer);
-    while (boundary) {
-      const event = buffer.slice(0, boundary.index);
-      buffer = buffer.slice(boundary.index + boundary.length);
-      const data = event
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.slice(5).trimStart())
-        .join('\n')
-        .trim();
-      if (data) yield JSON.parse(data);
-      boundary = findSseBoundary(buffer);
+  let closeIterator = false;
+  try {
+    while (true) {
+      // A rejected next() does not close its iterator under for-await semantics.
+      closeIterator = false;
+      let text = await readSseTextChunk(iterator, decoder);
+      if (text === undefined) return;
+      closeIterator = true;
+      buffer += text;
+      text = undefined;
+      let boundary = findSseBoundary(buffer);
+      while (boundary) {
+        let data = sseEventData(buffer.slice(0, boundary.index));
+        buffer = buffer.slice(boundary.index + boundary.length);
+        if (data) yield JSON.parse(data);
+        data = '';
+        boundary = findSseBoundary(buffer);
+      }
     }
+  } catch (error) {
+    if (closeIterator) {
+      closeIterator = false;
+      try {
+        await iterator.return?.();
+      } catch {}
+    }
+    throw error;
+  } finally {
+    if (closeIterator) await iterator.return?.();
   }
+}
+
+async function readSseTextChunk(
+  iterator: AsyncIterator<Uint8Array>,
+  decoder: TextDecoder,
+): Promise<string | undefined> {
+  const next = await iterator.next();
+  if (next.done) return;
+  try {
+    return decoder.decode(next.value, { stream: true });
+  } catch (error) {
+    try {
+      await iterator.return?.();
+    } catch {}
+    throw error;
+  }
+}
+
+function sseEventData(event: string): string {
+  return event
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trimStart())
+    .join('\n')
+    .trim();
 }
 
 export async function testWechatBridge(channel: BotChannelSettings): Promise<BotTestResult> {
