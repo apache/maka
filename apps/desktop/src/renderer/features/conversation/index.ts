@@ -18,24 +18,23 @@
  */
 
 import {
-  captureTranscriptReadingAnchor,
   currentTranscriptRange,
-  loadTranscriptHistory,
-  newestDurablePromptSequence,
-  refreshTranscriptTurnLandmarks,
-  restoreSessionTranscriptRange,
+  transcriptRestoreTarget,
 } from './controller/transcript-reading-position.js';
 
 export const transcriptReadingPosition = {
-  captureAnchor: captureTranscriptReadingAnchor,
   currentRange: currentTranscriptRange,
-  loadHistory: loadTranscriptHistory,
-  newestDurablePromptSequence,
-  refreshLandmarks: refreshTranscriptTurnLandmarks,
-  restoreRange: restoreSessionTranscriptRange,
+  restoreTarget: transcriptRestoreTarget,
 };
 
-export type { TranscriptHistoryGates } from './controller/transcript-reading-position.js';
+export type {
+  TranscriptHistoryPending,
+} from './controller/transcript-reading-position.js';
+export {
+  TranscriptReadingPositionController,
+  type TranscriptReadingPositionCommands,
+} from './controller/transcript-reading-position-controller.js';
+
 export {
   deriveTaskReadinessNotice,
   isTaskSubmissionHardBlocked,
@@ -43,3 +42,19 @@ export {
   type TaskReadinessNotice,
 } from './model/task-readiness-notice.js';
 export * from './model/session-ui-state.js';
+export type { ConversationServices } from './ports.js';
+export { ConversationServicesProvider } from './services.js';
+export { SessionLocalMessages } from './controller/session-local-messages.js';
+
+export { useComposerAttachments, type ComposerAttachmentService } from './controller/use-composer-attachments.js';
+export { type PendingAttachment, toComposerIngestItems, retainedAttachmentRefs } from '@maka/ui/composer-attachments';
+export {
+  type PendingByKey,
+  NEW_TASK_PENDING_KEY,
+  selectPending,
+  appendPending,
+  removePending,
+  removePendingItems,
+  clearPending,
+} from '@maka/ui/pending-items';
+export { desktopSlashCommandPresentation } from './model/slash-command-presentation.js';

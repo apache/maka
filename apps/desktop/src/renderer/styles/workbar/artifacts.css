@@ -372,6 +372,10 @@
 
 /* Narrow windows place the single workbar below the conversation. */
 @media (max-width: 990px) {
+  .maka-window-titlebar {
+    --maka-titlebar-workbar-reserve: 0px;
+  }
+
   .maka-detail-with-artifacts {
     grid-template-areas:
       "main"
@@ -387,7 +391,6 @@
   .maka-session-workbar-panel[data-overlay][data-placement] {
     width: 100%;
     min-width: 0;
-    max-width: none;
     min-height: min(220px, 42dvh);
     max-height: min(42dvh, 360px);
     height: min(42dvh, 360px);

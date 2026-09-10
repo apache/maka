@@ -45,11 +45,8 @@ import {
   isSessionWorkspaceUnavailableError,
   showSessionWorkspaceUnavailableToast,
 } from './session-workspace-errors.js';
-import {
-  showSkillInvocationFeedback,
-  skillInvocationDisplayText,
-} from './skill-invocation-feedback.js';
-import type { DesktopTranscriptRangeController } from './desktop-transcript-range-store.js';
+import * as skillFeedback from './skill-invocation-feedback.js';
+import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
 import type { SessionPendingClaim } from './app-shell-session-ui-state.js';
 import {
   retainedAttachmentRefs,
@@ -114,6 +111,7 @@ type MessageContextOptions = {
   workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
 };
 type SendOptions = MessageContextOptions & {
+  waitForHostAdmission?: boolean;
   turnOrchestration?: TurnOrchestration;
   displayText?: string;
   onSessionResolved?: (sessionId: string) => void;
@@ -177,6 +175,7 @@ export function createAppShellChatActions(deps: {
   ) => void;
   removeTransientMessage: (sessionId: string, messageId: string) => void;
   transcriptRangeRef: RefBox<DesktopTranscriptRangeController | undefined>;
+  onFollowLatest: (sessionId: string) => Promise<boolean>;
   /** #646: arm the "正在处理…" indicator locally at send() — the model-wait
    * window opens before any SessionEvent arrives (turn_started is not one). */
   setLiveTurnBySession: LiveTurnRecordUpdater;
@@ -226,6 +225,7 @@ export function createAppShellChatActions(deps: {
     updateTransientMessage,
     removeTransientMessage,
     transcriptRangeRef,
+    onFollowLatest,
     setLiveTurnBySession,
     setInteractionBySession,
     onInteractionChanged,
@@ -352,6 +352,7 @@ export function createAppShellChatActions(deps: {
     displayText?: string;
     quotes?: readonly QuoteRef[];
     exactTurn?: boolean;
+    waitForHostAdmission?: boolean;
     /** Whether this Session's surface is on screen to receive Skill feedback. */
     isSurfaceVisible?: () => boolean;
   }): Promise<SubmittedMessage> {
@@ -361,7 +362,7 @@ export function createAppShellChatActions(deps: {
     const result = await window.maka.sessions.submitMessage(sessionId, placement, {
       ...input.command,
       messageId,
-    });
+    }, { waitForHostAdmission: input.waitForHostAdmission });
     const surfaceVisible = input.isSurfaceVisible?.() ?? true;
     if (!result.ok) {
       if (result.reason === 'outcome_unknown') {
@@ -375,9 +376,13 @@ export function createAppShellChatActions(deps: {
       removeOptimisticUserMessage(sessionId, messageId);
       if (input.exactTurn) disarmTurnActive(sessionId, messageId);
       if (surfaceVisible) {
-        showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
+        skillFeedback.showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
       }
       return { kind: 'refused', skillInvocation: result.skillInvocation };
+    }
+    if (result.disposition === 'locally_saved') {
+      if (input.exactTurn) disarmTurnActive(sessionId, messageId);
+      return { kind: 'projected', skillInvocation: result.skillInvocation };
     }
     if (input.exactTurn) {
       if (result.disposition === 'turn_started' && result.turnId) {
@@ -389,7 +394,7 @@ export function createAppShellChatActions(deps: {
       }
     }
     if (surfaceVisible) {
-      showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
+      skillFeedback.showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
     }
     // The row is updated whether or not the surface is on screen: attachments,
     // inline references and the Host Turn grouping are what the user finds when
@@ -398,7 +403,7 @@ export function createAppShellChatActions(deps: {
       sessionId,
       messageId,
       input.displayText ??
-        skillInvocationDisplayText(input.command.text, result.skillInvocation),
+        skillFeedback.skillInvocationDisplayText(input.command.text, result.skillInvocation),
       result.attachments,
       {
         updateOnly: true,
@@ -464,20 +469,18 @@ export function createAppShellChatActions(deps: {
       async function submitIntoSession(sessionId: string, messageId: string) {
         if (exactTurn) armTurnActive(sessionId, messageId);
         const attachmentItems =
-          pending && pending.length > 0
+          pending?.length
             ? toComposerIngestItems(pending)
             : undefined;
         const retainedAttachments =
-          pending && pending.length > 0
+          pending?.length
             ? retainedAttachmentRefs(pending)
             : undefined;
         const sendCommand = {
           text,
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...copiedArray('attachmentItems', attachmentItems),
-          ...(retainedAttachments && retainedAttachments.length > 0
-            ? { retainedAttachments }
-            : {}),
+          ...copiedArray('retainedAttachments', retainedAttachments),
           ...copiedArray('directoryReferences', directoryReferences),
           ...copiedArray('quotes', quotes),
           ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
@@ -493,12 +496,13 @@ export function createAppShellChatActions(deps: {
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...copiedArray('quotes', quotes),
           exactTurn,
+          waitForHostAdmission: options.waitForHostAdmission,
           isSurfaceVisible: () => activeIdRef.current === sessionId,
         });
       }
       if (!initialSessionId) {
         if (!initialNewTaskTarget) return false;
-        if (pending && pending.length > 0) preflightAttachmentItems(pending, uiLocale);
+        if (pending?.length) preflightAttachmentItems(pending);
         const session = await window.maka.newTasks.create(initialNewTaskTarget, {
           name: DEFAULT_SESSION_NAME,
           ...(newChatModel
@@ -534,10 +538,8 @@ export function createAppShellChatActions(deps: {
         // Consumed: the choice is now the created Session's, not the next
         // draft's. A failed create leaves it in place so a retry keeps it.
         if (newChatPermissionChoice) clearNewChatPermissionChoice();
-        // Active-stream snapshots can only restore assistant segments that
-        // are still streaming. Wait until the observer is ready before the
-        // first admission so a completed segment in a still-running Turn
-        // cannot become durable text without live identity.
+        // Main owns observation-before-dispatch. This only selects the local
+        // surface; saving a draft never waits for the Host's event stream.
         await activateSessionForFirstSend(session.id);
         if (activeIdRef.current !== session.id) {
           removeOptimisticUserMessage(session.id, messageId);
@@ -553,27 +555,11 @@ export function createAppShellChatActions(deps: {
         // The callback fires only when this send's first message projected;
         // an unreconciled first message stays unreported.
         if (submitted.kind === 'projected') options.onSessionResolved?.(session.id);
-        await refreshSessions();
+        void refreshSessions().catch(() => undefined);
         return true;
       }
       const sessionId = initialSessionId;
-      const transcript = transcriptRangeRef.current;
-      if (transcript) {
-        let hasNewer = false;
-        try {
-          const range = transcript.store.range();
-          hasNewer = range.sessionId === sessionId && range.hasNewer;
-        } catch {
-          // An unopened transcript is not a sparse historical view.
-        }
-        if (hasNewer) {
-          await transcript.loadLatest();
-          if (activeIdRef.current !== sessionId || transcriptRangeRef.current !== transcript) {
-            return false;
-          }
-          setMessages([...transcript.store.snapshot().messages]);
-        }
-      }
+      if (!await onFollowLatest(sessionId)) return false;
       optimisticSessionId = sessionId;
       optimisticMessageId = messageId;
       showTransientUserMessage(
@@ -588,9 +574,8 @@ export function createAppShellChatActions(deps: {
         },
       );
       const submitted = await submitIntoSession(sessionId, messageId);
-      if (submitted.kind === 'refused') return false;
       // An existing-Session send never reports a resolved Session.
-      return true;
+      return submitted.kind !== 'refused';
     } catch (error) {
       // Capture ownership before cleanup clears the optimistic Session. A
       // barrier timeout belongs to the surface that was waiting for it, while

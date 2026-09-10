@@ -228,7 +228,7 @@ export function isSessionInlineInvocation(opening: RuntimeEventInvocationOpenedC
   const lineage = opening.lineage;
   return (
     lineage?.parentRunId === undefined ||
-    (opening.source.kind === 'continuation' && lineage.agentId === undefined)
+    (opening.source.kind !== 'fresh' && lineage.agentId === undefined)
   );
 }
 
@@ -241,6 +241,9 @@ export type RootExecutionDescriptor =
   | {
       /** Tool-free conversational execution admitted only by WorkHub authority. */
       kind: 'workhub_coordination';
+      operation?: 'action';
+      /** Stable request identity shared by physical action retries. */
+      actionId?: string;
       inputDigest: `sha256:${string}`;
     }
   | { kind: 'regenerate'; sourceTurnId: string }

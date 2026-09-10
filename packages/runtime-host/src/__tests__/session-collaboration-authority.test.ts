@@ -52,6 +52,52 @@ async function unexpectedRegenerateTurn(): Promise<never> {
   throw new Error('Unexpected regeneration request');
 }
 
+test('owner aliases survive Guest activation and restart without changing grants', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-session-alias-'));
+  const authority = await openRuntimeHostAccessAuthority(directory);
+  try {
+    const prepared = await authority.prepareCollaborationInvitation('root-1', {
+      sessionId: 'session-1',
+      grantKinds: ['session_observation'],
+    });
+    const invitation = decodeCollaborationInvitationCode(prepared.invitationCode);
+    const credentialId = authority.authenticate(invitation.credential)?.credentialId;
+    assert.ok(credentialId);
+    const input = { principalId: prepared.principalId, displayName: '  Windows review  ' };
+    assert.deepEqual(await authority.renameCollaborationPrincipal(input), { renamed: true });
+    await authority.finalize(credentialId, 'guest-client', false);
+    const restarted = await openRuntimeHostAccessAuthority(directory);
+    const access = restarted.queryCollaborationAccess({ sessionId: 'session-1' });
+    assert.equal(access.principals[0]?.displayName, 'Windows review');
+    assert.deepEqual(access.grants, prepared.grants);
+    assert.equal(
+      authorizeRuntimeHostOperation(restarted.authenticate(invitation.credential)!, {
+        requestId: 'alias-guest',
+        operation: 'collaboration.principal.rename',
+        input,
+      }),
+      false,
+    );
+    assert.throws(() =>
+      HOST_OPERATION_SPECS['collaboration.principal.rename'].decodeInput({
+        ...input,
+        displayName: '  ',
+      }),
+    );
+    assert.throws(() =>
+      HOST_OPERATION_SPECS['collaboration.principal.rename'].decodeInput({
+        ...input,
+        displayName: '名'.repeat(86),
+      }),
+    );
+    await restarted.revokeCollaborationPrincipal(prepared.principalId);
+    assert.deepEqual(await restarted.renameCollaborationPrincipal(input), { renamed: false });
+    assert.equal(restarted.authenticate(invitation.credential), undefined);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('Session Guest invitation, grants, and revocation form one durable authority lifecycle', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-session-collaboration-'));
   const authority = await openRuntimeHostAccessAuthority(directory);
@@ -81,6 +127,7 @@ test('Session Guest invitation, grants, and revocation form one durable authorit
       'session.shared.query',
       'subscription.open',
       'subscription.close',
+      'subscription.pty_interest.set',
       'session.transcript.page',
       'session.transcript.overlay.release',
       'access.credential.finalize',

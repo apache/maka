@@ -54,16 +54,37 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - id: comparison
+        name: Resolve checked-out comparison
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Every diff-based gate must compare the same checked-out tree.
+          # PR event bases can predate the main parent of the actual merge.
+          BASE_SHA=""
+          HEAD_SHA="$(git rev-parse --verify HEAD)"
+          if [[ "$CI_EVENT_NAME" == "pull_request" ]]; then
+            MERGED_HEAD_SHA="$(git rev-parse --verify 'HEAD^2')"
+            if [[ -z "$PR_HEAD_SHA" || "$MERGED_HEAD_SHA" != "$PR_HEAD_SHA" ]]; then
+              echo "CI comparison requires the merge of the requested PR head" >&2
+              exit 1
+            fi
+            BASE_SHA="$(git rev-parse --verify 'HEAD^1')"
+          elif [[ "$CI_EVENT_NAME" == "push" && ! "$PUSH_BASE_SHA" =~ ^0+$ ]]; then
+            BASE_SHA="$PUSH_BASE_SHA"
+          fi
+          printf 'base=%s\nhead=%s\n' "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
       - id: plan
         name: Select affected test surfaces
         env:
-          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event_name == 'push' && github.sha || github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ steps.comparison.outputs.base }}
+          HEAD_SHA: ${{ steps.comparison.outputs.head }}
         run: |
-          # PR checks may predate later main changes, so the planning lane also
-          # validates the exact merged delta. Dispatches and unavailable history
-          # fail safe to every surface.
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
+          # Dispatches, initial pushes and unavailable history select every surface.
+          if [[ -z "$BASE_SHA" ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
             node scripts/ci-test-plan.mjs --full >> "$GITHUB_OUTPUT"
           else
             node scripts/ci-test-plan.mjs --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
@@ -73,6 +94,7 @@ jobs:
         run: >-
           node --test --test-concurrency=1 scripts/ci-test-plan.test.mjs
           scripts/ci-workflow-policy.test.mjs scripts/verify-windows-harness.test.mjs
+          scripts/run-workspace-tests-parallel.test.mjs
 
       # Pure Node like the planner test, and the labelling workflow imports this
       # module directly, so a tier or exclusion change is caught here rather
@@ -103,7 +125,9 @@ jobs:
       # incompatible protocols under one number (#3313).
       - name: Guard the protocol compatibility epoch
         if: github.event_name == 'pull_request'
-        run: node scripts/protocol-epoch-check.mjs --base 'HEAD^1'
+        env:
+          BASE_SHA: ${{ steps.comparison.outputs.base }}
+        run: node scripts/protocol-epoch-check.mjs --base "$BASE_SHA"
 
       - name: Test the epoch guard
         run: node --test --test-concurrency=1 scripts/protocol-epoch-check.test.mjs
@@ -111,7 +135,7 @@ jobs:
       - name: Test Storybook audit contracts
         run: node --test scripts/ax-tree-audit.test.mjs scripts/storybook-visual-smoke.test.mjs
       - name: Test Computer Use script contracts
-        run: node --test scripts/ax-tree-audit.test.mjs scripts/computer-use/lab-root.test.mjs
+        run: node --test scripts/computer-use/lab-root.test.mjs
 
       - name: Test script entrypoint contracts
         run: node --test scripts/script-entrypoints.test.mjs
@@ -146,10 +170,10 @@ jobs:
       - name: Check locale hygiene
         if: steps.plan.outputs.code == 'true'
         env:
-          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.comparison.outputs.base }}
         run: |
           node --test scripts/check-locale-hygiene.test.mjs
-          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
+          if [[ -n "$BASE_SHA" ]]; then
             npm run check:locale-hygiene -- --base "$BASE_SHA"
           else
             npm run check:locale-hygiene
@@ -214,20 +238,6 @@ jobs:
         if: steps.plan.outputs.asf_source == 'true'
         run: npm run check:asf-source
 
-      # Parsed dependency rules and an exact legacy-debt ledger keep the
-      # renderer root from absorbing new feature or Desktop ownership while
-      # the existing AppShell is migrated behind stable boundaries.
-      - name: Check renderer architecture
-        if: steps.plan.outputs.code == 'true'
-        env:
-          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
-        run: |
-          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
-            npm run check:renderer-architecture -- --base "$BASE_SHA"
-          else
-            npm run check:renderer-architecture
-          fi
-
       - name: Lint
         if: steps.plan.outputs.code == 'true'
         run: npm run lint
@@ -235,6 +245,20 @@ jobs:
       - name: Check formatting
         if: steps.plan.outputs.code == 'true'
         run: npm run format:check
+
+      # Parsed dependency rules and an exact legacy-debt ledger keep the
+      # renderer root from absorbing new feature or Desktop ownership while
+      # the existing AppShell is migrated behind stable boundaries.
+      - name: Check renderer architecture
+        if: steps.plan.outputs.code == 'true'
+        env:
+          BASE_SHA: ${{ steps.comparison.outputs.base }}
+        run: |
+          if [[ -n "$BASE_SHA" ]]; then
+            npm run check:renderer-architecture -- --base "$BASE_SHA"
+          else
+            npm run check:renderer-architecture
+          fi
 
       # This generated artifact describes the whole renderer/UI tree, so every
       # code-validation run checks it even when the triggering diff is outside
@@ -249,6 +273,19 @@ jobs:
       - name: Build
         if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm run build
+
+      # The DeepSeek Harness toolchain is built outside the npm workspace, then
+      # admitted solely by this digest. Rebuild its pinned linux/amd64 tree in
+      # hosted CI whenever an input or its identity changes, so a typo or a
+      # machine-specific tree cannot be committed as an accepted fingerprint.
+      - name: Verify DeepSeek Harness toolchain fingerprint
+        if: steps.plan.outputs.deepseek_harness_toolchain == 'true'
+        run: |
+          toolchain_root="$RUNNER_TEMP/maka-deepseek-harness-toolchain"
+          actual="$(node scripts/prepare-deepseek-harness-toolchain.mjs --out "$toolchain_root" | tail -n 1)"
+          expected="$(node --input-type=module -e 'import { TOOLCHAIN_IDENTITIES } from "./packages/eval/dist/toolchain-verification.js"; console.log(TOOLCHAIN_IDENTITIES["deepseek-harness"].fingerprint);')"
+          test "$actual" = "$expected"
+          (cd "$toolchain_root" && sha256sum --check --quiet checksums.sha256)
 
       - name: Release contracts
         if: steps.plan.outputs.release_contract == 'true'
@@ -445,7 +482,9 @@ jobs:
       - name: Report CLI Rust build cache
         if: steps.plan.outputs.cli_package == 'true'
         shell: bash
-        run: kache report --format github >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          set -o pipefail
+          kache report --format github | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Save CLI Rust build cache
         if: steps.plan.outputs.cli_package == 'true' && github.ref_name == github.event.repository.default_branch

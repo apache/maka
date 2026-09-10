@@ -102,6 +102,7 @@ function WorkbarPanelLoading(props: { label: string }) {
 function WorkbarPanel(props: {
   id?: string;
   active: boolean;
+  collapsed?: boolean;
   placement: SessionWorkbarPlacement;
   overlay?: boolean;
   className?: string;
@@ -115,6 +116,7 @@ function WorkbarPanel(props: {
       hidden={!props.active}
       data-placement={props.placement}
       data-overlay={props.overlay || undefined}
+      data-collapsed={props.collapsed || undefined}
       className={
         props.className
           ? `maka-session-workbar-panel ${props.className}`
@@ -242,6 +244,7 @@ function WorkbarFaceMenu(props: {
         return (
           <DropdownMenuItem
             key={definition.kind}
+            data-maka-assistant-exclude={definition.kind === 'browser' || definition.kind === 'terminal' ? definition.kind : undefined}
             label={faceLabel(definition.kind, copy)}
             icon={<FaceIcon size={ICON_SIZE.control} aria-hidden />}
             endContent={isOpen ? <Check size={ICON_SIZE.control} aria-hidden /> : undefined}
@@ -299,6 +302,7 @@ function WorkbarTabStrip(props: {
               return (
                 <Tab
                   key={tab.id}
+                  data-maka-assistant-exclude={tab.kind === 'browser' || tab.kind === 'terminal' ? tab.kind : undefined}
                   value={tab.id}
                   label={tabLabel(tab, props.tabs, copy)}
                   panelId={`maka-workbar-panel-${tab.id}`}
@@ -347,6 +351,7 @@ function WorkbarLauncher(props: {
           {WORKBAR_TOOL_DEFINITIONS.map((definition) => (
             <ListItem
               key={definition.kind}
+              data-maka-assistant-exclude={definition.kind === 'browser' || definition.kind === 'terminal' ? definition.kind : undefined}
               startContent={
                 <Icon icon={FACE_ICON[definition.icon]} size="sm" color="secondary" />
               }
@@ -422,9 +427,8 @@ export function WorkbarSurface(props: {
         const panel = props.panelsState[placement];
         const activeTab = panel.tabs.find((tab) => tab.id === panel.activeTabId);
         const showingLauncher = panel.launcherOpen || !activeTab;
-        const visible =
-          !props.hidden &&
-          (placement === 'right' ? !props.rightCollapsed : props.bottomOpen);
+        const collapsed =
+          placement === 'right' ? props.rightCollapsed : !props.bottomOpen;
         return (
           <Card
             key={placement}
@@ -433,7 +437,8 @@ export function WorkbarSurface(props: {
             height="100%"
             className="maka-session-workbar maka-session-workbar-frame"
             data-placement={placement}
-            data-collapsed={!visible || undefined}
+            data-collapsed={collapsed || undefined}
+            hidden={props.hidden}
             data-maka-contract={`session-workbar-${placement}`}
             role="complementary"
             aria-label={copy.ariaLabel}
@@ -465,7 +470,7 @@ export function WorkbarSurface(props: {
                 }
               />
             </div>
-            <WorkbarPanel active={visible && showingLauncher} placement={placement}>
+            <WorkbarPanel active={showingLauncher} placement={placement}>
               <WorkbarLauncher
                 onOpen={(kind) => props.onRequestOpenTab(placement, kind)}
                 sideChatAvailable={props.sourceSession !== undefined}
@@ -480,8 +485,8 @@ export function WorkbarSurface(props: {
         const showingLauncher = panel.launcherOpen || !activeTab;
         const panelVisible =
           placement === 'right' ? !props.rightCollapsed : props.bottomOpen;
-        const active =
-          panelVisible && !showingLauncher && activeTab?.id === tab.id;
+        const selected = !showingLauncher && activeTab?.id === tab.id;
+        const active = panelVisible && selected;
         let content: ReactNode = null;
         if (tab.kind === 'review') {
           content = (
@@ -567,7 +572,8 @@ export function WorkbarSurface(props: {
           <WorkbarPanel
             key={tab.id}
             id={`maka-workbar-panel-${tab.id}`}
-            active={active}
+            active={selected && !props.hidden}
+            collapsed={!panelVisible}
             placement={placement}
             overlay
             className={

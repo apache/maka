@@ -19,6 +19,20 @@
 
 @import 'katex/dist/katex.min.css';
 
+.maka-model-wheel { position: relative; width: min(264px, 55vw); }
+.maka-model-wheel::before { content: ''; position: absolute; inset: 44px 0; border-radius: 10px; background: color-mix(in oklch, var(--foreground) 6%, transparent); pointer-events: none; }
+.maka-model-wheel-viewport { position: relative; box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; scroll-snap-type: y mandatory; scrollbar-width: none; mask-image: linear-gradient(transparent, black 32%, black 68%, transparent); outline: none; }
+.maka-model-wheel-viewport:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: calc(-1 * var(--focus-ring-width)); }
+.maka-model-wheel-viewport[data-dragging='true'] { scroll-snap-type: none; cursor: grabbing; }
+.maka-model-wheel-viewport[data-dragging='true'] .maka-model-wheel-option { cursor: grabbing; }
+.maka-model-wheel-option { position: relative; display: flex; flex-direction: column; justify-content: center; padding: 0 28px 0 12px; scroll-snap-align: center; scroll-snap-stop: always; cursor: pointer; user-select: none; }
+.maka-model-wheel-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--muted-foreground); transform: scale(0.96); transform-origin: left center; transition: transform 180ms ease-out, color 180ms ease-out; }
+.maka-model-wheel-option[data-active='true'] .maka-model-wheel-label { font-weight: 600; color: var(--foreground); transform: scale(1); }
+.maka-model-wheel-viewport[aria-disabled='true'] { opacity: 0.5; }
+@media (prefers-reduced-motion: reduce) { .maka-model-wheel-label { transition: none; } }
+.maka-model-wheel-provider { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--muted-foreground); }
+.maka-model-wheel-check { position: absolute; right: 8px; top: 50%; translate: 0 -50%; color: var(--muted-foreground); }
+
 /* Maka product compositions shared across desktop renderer surfaces. Astryx
    owns generic component chrome; these selectors own only product semantics. */
 
@@ -175,6 +189,14 @@
   margin: 0;
 }
 
+.maka-message-delivery {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+
 /* The meta row holds two different kinds of thing, so it gets two different
    rules. The time is content — a fact about the message — and stays put; gating
    it on hover is what hid it from touch and from assistive tech. The actions are
@@ -219,7 +241,6 @@
 .maka-subagent-session-label { width: 100%; min-width: 0; }
 .maka-subagent-session-summary { min-width: 0; flex: 1 1 auto; }
 .maka-subagent-session-end { color: var(--muted-foreground); }
-.maka-live-turn-footer-placeholder { height: 32px; margin-top: 2px; }
 .maka-turn-processing,
 .maka-turn-status {
   font: var(--maka-text-body);
@@ -234,7 +255,9 @@
 .maka-turn-status-label { font-weight: var(--font-weight-medium); }
 .maka-turn-status-separator { color: var(--foreground-alpha-16); }
 /* Tabular figures so a ticking clock changes glyphs without changing width. */
-.maka-turn-elapsed { font-variant-numeric: tabular-nums; }
+.maka-turn-elapsed { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.maka-turn-elapsed:empty { display: none; }
+.maka-compaction-status { display: inline-flex; align-items: center; gap: 8px; font: var(--maka-text-body); vertical-align: top; }
 /* #1879: an Astryx `Badge variant="yellow"` now — the warning tone it used to
    draw by hand (hairline + 5% wash) is a variant, and the box comes with it.
    Product CSS keeps only what is layout: it is a block-level note under the
@@ -804,6 +827,26 @@
 
 /* Astryx `Banner` paints the failed-turn surface; this only sets the block
    rhythm between it and the timeline entry above it. */
+.maka-turn-failure-unavailable { display: block; }
+/* Keep Banner's immediate height change and built-in chevron rotation.
+   Animating height repeatedly lays out the transcript and triggers its
+   ResizeObserver-driven scroll following; that cost grows with history.
+   Only fade the newly mounted detail, without delaying layout or removal. */
+.maka-turn-failure-detail {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  color: var(--foreground);
+  animation: maka-turn-failure-enter var(--duration-fast) var(--ease-standard);
+}
+@keyframes maka-turn-failure-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .maka-turn-failure-detail { animation: none; }
+}
 .maka-turn-failed-banner { margin-block: var(--space-1) var(--space-0-5); }
 
 .maka-turn-lineage-row,
@@ -842,6 +885,7 @@
 }
 
 .maka-turn-footer {
+  min-height: var(--size-element-sm, 28px);
   margin-top: var(--space-0-5);
   padding: 0;
   opacity: 0;
@@ -849,7 +893,11 @@
 }
 
 .maka-assistant-answer:hover .maka-turn-footer,
+.maka-turn-footer[data-live-streaming="true"],
 .maka-turn-footer:focus-within { opacity: 1; }
+
+.maka-turn-footer .maka-turn-processing,
+.maka-turn-footer .maka-turn-provider-retry { margin-top: 0; }
 
 .maka-turn-footer-action {
   border: 0;

@@ -63,6 +63,7 @@ import {
 } from '../protocol/index.js';
 import type { ScheduledTaskOperationHandlerMap } from './operation-dispatcher.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
+import type { HostResidencyKind } from './host-residency-registry.js';
 import type { HostedExecutionAuthority } from './hosted-execution-authority.js';
 import type { SessionCreateInput } from '../protocol/session-catalog.js';
 
@@ -97,7 +98,7 @@ export interface HostScheduledTaskCoordinatorInput {
   readonly changes: {
     publish(revision: number, reason: ScheduledTaskChangedReason, taskId: string): void;
   };
-  readonly acquireResidency: () => RuntimeHostResidency;
+  readonly acquireResidency: (kind?: HostResidencyKind) => RuntimeHostResidency;
   readonly requestDrain: () => void;
   readonly now?: () => number;
   readonly newId?: () => string;
@@ -143,7 +144,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
   readonly #nativeEffects: ScheduledTaskNativeEffects;
   readonly #createSession: HostScheduledTaskCoordinatorInput['createSession'];
   readonly #changes: HostScheduledTaskChangeServiceLike;
-  readonly #acquireResidency: () => RuntimeHostResidency;
+  readonly #acquireResidency: HostScheduledTaskCoordinatorInput['acquireResidency'];
   readonly #requestDrain: () => void;
   readonly #now: () => number;
   readonly #newId: () => string;
@@ -157,6 +158,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
   #prepared = false;
   #started = false;
   #draining = false;
+  #handoffHeld = false;
   #closed = false;
   readonly #retiringSessions = new Set<string>();
 
@@ -253,6 +255,37 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     if (this.#draining || this.#started) return;
     this.#started = true;
     void this.#refresh().catch((error: unknown) => this.#fatal(error));
+  }
+
+  holdForHandoff():
+    | {
+        settled(): Promise<void>;
+        residencies(): readonly RuntimeHostResidency[];
+        release(): void;
+      }
+    | undefined {
+    if (this.#draining || this.#handoffHeld) return undefined;
+    this.#handoffHeld = true;
+    this.#stopTimer();
+    let released = false;
+    return {
+      settled: async () => {
+        // An admitted native effect or Agent fire finishes normally. No new
+        // fire may start while the handoff waits for this lane.
+        for (;;) {
+          const lane = this.#lane;
+          await lane;
+          if (lane === this.#lane) return;
+        }
+      },
+      residencies: () => (this.#residency ? [this.#residency] : []),
+      release: () => {
+        if (released) return;
+        released = true;
+        this.#handoffHeld = false;
+        if (!this.#draining) void this.#refresh().catch((error: unknown) => this.#fatal(error));
+      },
+    };
   }
 
   beginDrain(): void {
@@ -529,22 +562,32 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
   }
 
   async #refresh(): Promise<void> {
-    await this.#exclusive(async () => {
-      for (const claim of await this.#store.listPendingFires()) {
-        if (claim.nativeState === 'waiting_for_provider') {
-          await this.#fulfill(claim, true);
+    if (this.#handoffHeld || this.#draining) return;
+    // Cover claim admission, native delivery, and persistence, while an idle
+    // schedule or a read-only catalog query does not claim active work.
+    const residency = this.#acquireResidency();
+    try {
+      await this.#exclusive(async () => {
+        if (this.#handoffHeld || this.#draining) return;
+        for (const claim of await this.#store.listPendingFires()) {
+          if (this.#handoffHeld || this.#draining) break;
+          if (claim.nativeState === 'waiting_for_provider') {
+            await this.#fulfill(claim, true);
+          }
         }
-      }
-      while (!this.#draining) {
-        const scan = await this.#store.claimNextDue(this.#now());
-        for (const expired of scan.expired) this.#publish('updated', expired.id);
-        const claim = scan.claim;
-        if (!claim) break;
-        await this.#refreshResidency();
-        await this.#fulfill(claim, false);
-      }
-      await this.#refreshSchedule();
-    });
+        while (!this.#draining && !this.#handoffHeld) {
+          const scan = await this.#store.claimNextDue(this.#now());
+          for (const expired of scan.expired) this.#publish('updated', expired.id);
+          const claim = scan.claim;
+          if (!claim) break;
+          await this.#refreshResidency();
+          await this.#fulfill(claim, false);
+        }
+        await this.#refreshSchedule();
+      });
+    } finally {
+      residency.release();
+    }
   }
 
   async #fulfill(
@@ -812,7 +855,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
   async #refreshSchedule(): Promise<void> {
     this.#stopTimer();
     await this.#refreshResidency();
-    if (!this.#started || this.#draining) return;
+    if (!this.#started || this.#draining || this.#handoffHeld) return;
     const [tasks, claims] = await Promise.all([this.#store.list(), this.#store.listPendingFires()]);
     const next = tasks
       .filter((task) => task.status === 'active' && task.nextFireAt !== null)
@@ -821,6 +864,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
         return earliest === null || deadline < earliest ? deadline : earliest;
       }, null);
     const waitingForProvider = claims.some((claim) => claim.nativeState === 'waiting_for_provider');
+    if (this.#draining || this.#handoffHeld) return;
     if (next === null && !waitingForProvider) return;
     const nextTaskDelay =
       next === null
@@ -841,7 +885,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       !this.#draining &&
       (claims.length > 0 ||
         tasks.some((task) => task.status === 'active' && task.nextFireAt !== null));
-    if (shouldHold && !this.#residency) this.#residency = this.#acquireResidency();
+    if (shouldHold && !this.#residency) this.#residency = this.#acquireResidency('idle');
     if (!shouldHold) this.#releaseResidency();
   }
 

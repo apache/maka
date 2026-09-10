@@ -35,6 +35,7 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
+import type { TranscriptViewportNavigation } from './transcript-viewport-navigation.js';
 
 export function useChatScroll(input: {
   scrollRef: RefObject<HTMLElement | null>;
@@ -48,6 +49,8 @@ export function useChatScroll(input: {
    */
   target?: { turnId: string; nonce: number; align?: 'start' | 'center' };
   restoreTarget?: { turnId: string; unavailable?: boolean };
+  onTargetHandled?(nonce: number): void;
+  viewportNavigation?: TranscriptViewportNavigation;
   onReadingAnchorChange?(turnId?: string): void;
   behavior: ScrollBehavior;
   hasOlderHistory?: boolean;
@@ -66,6 +69,8 @@ export function useChatScroll(input: {
   const handledTarget = useRef<string | null>(null);
   const anchorChangeRef = useRef(input.onReadingAnchorChange);
   anchorChangeRef.current = input.onReadingAnchorChange;
+  const targetHandledRef = useRef(input.onTargetHandled);
+  targetHandledRef.current = input.onTargetHandled;
   const reportReadingAnchor = useRef<(() => void) | undefined>(undefined);
   const reportedAnchor = useRef<{ sessionId?: string; turnId?: string } | undefined>(undefined);
   const activation = useRef<{ sessionId?: string; restoreTurnId?: string } | undefined>(undefined);
@@ -75,6 +80,12 @@ export function useChatScroll(input: {
       sessionId: input.sessionId,
       restoreTurnId: input.restoreTarget?.turnId,
     };
+  }
+  if (activation.current?.restoreTurnId
+    && activation.current.restoreTurnId !== input.restoreTarget?.turnId) {
+    // Clearing or replacing a bookmark cancels the captured command. A new
+    // bookmark within the same activation records reading, not navigation.
+    activation.current = { sessionId: input.sessionId };
   }
   const restoreUnavailable =
     input.restoreTarget?.turnId === activation.current?.restoreTurnId
@@ -105,6 +116,16 @@ export function useChatScroll(input: {
     else authority.pinToTail();
   }, [input.sessionId]);
 
+  useEffect(() => input.viewportNavigation?.subscribe((sessionId) => {
+    if (activation.current?.sessionId !== sessionId) return;
+    // A send supersedes both a captured bookmark and a search frame that has
+    // not landed yet. Consume that frame before the authority reports the pin.
+    handledTarget.current = commandTarget.current;
+    activation.current = { sessionId };
+    commandTarget.current = null;
+    authority.pinToTail();
+  }), [authority, input.viewportNavigation]);
+
   useEffect(() => {
     const report = (): void => {
       const snapshot = authority.getSnapshot();
@@ -130,8 +151,19 @@ export function useChatScroll(input: {
     };
     reportReadingAnchor.current = report;
     report();
-    const stopWatchingPolicy = authority.subscribe(report);
-    const stopWatchingReader = authority.subscribeToReaderScroll(report);
+    let previousPin = authority.getSnapshot().pinned;
+    const stopWatchingPolicy = authority.subscribe(() => {
+      const pinned = authority.getSnapshot().pinned;
+      // Geometry can change the return-to-tail affordance without changing
+      // reading intent. Reporting its visible Turn would turn an arriving
+      // range into a new history command and cancel the range's own sender.
+      if (pinned === previousPin) return;
+      previousPin = pinned;
+      report();
+    });
+    const stopWatchingReader = authority.subscribeToReaderScroll((_direction, phase) => {
+      if (phase === 'scroll') report();
+    });
     return () => {
       if (reportReadingAnchor.current === report) reportReadingAnchor.current = undefined;
       stopWatchingPolicy();
@@ -149,7 +181,14 @@ export function useChatScroll(input: {
     // request while one is in flight, and asking for history the reader
     // already has is idempotent anyway.
     const requestHistory = (direction: 'up' | 'down'): void => {
-      authority.releasePin();
+      activation.current = { sessionId: input.sessionId };
+      commandTarget.current = null;
+      // Moving input already released following. Only an immovable edge can
+      // still be pinned; do not cancel the input operation that requested data.
+      if (authority.getSnapshot().pinned) authority.releasePin();
+      // A wheel at either edge moves nothing, so no scroll event refreshes the
+      // anchor and the restore effect would load around an evicted Turn.
+      reportReadingAnchor.current?.();
       const anchorTurnId = direction === 'up'
         ? firstVisibleTurnId(root)
         : lastVisibleTurnId(root);
@@ -177,30 +216,7 @@ export function useChatScroll(input: {
     const stopWatchingReader = authority.subscribeToReaderScroll((direction) => {
       if (canLoad(direction) && nearEdge(direction)) requestHistory(direction);
     });
-    // At either bounded edge a wheel cannot move the scroller, so no scroll
-    // event follows. The gesture still asks for the adjacent page. Do not steal
-    // a wheel from a nested tool output that can consume it itself.
-    const onWheel = (event: WheelEvent): void => {
-      if (event.deltaY === 0) return;
-      const direction = event.deltaY < 0 ? 'up' : 'down';
-      if (!canLoad(direction) || !nearEdge(direction)) return;
-      for (const target of event.composedPath()) {
-        if (target === root) break;
-        if (!(target instanceof HTMLElement)) continue;
-        const overflowY = getComputedStyle(target).overflowY;
-        if (!['auto', 'scroll', 'overlay'].includes(overflowY)) continue;
-        const remaining = direction === 'up'
-          ? target.scrollTop
-          : target.scrollHeight - target.clientHeight - target.scrollTop;
-        if (target.scrollHeight > target.clientHeight && remaining > 0) return;
-      }
-      requestHistory(direction);
-    };
-    root.addEventListener('wheel', onWheel, { passive: true });
-    return () => {
-      stopWatchingReader();
-      root.removeEventListener('wheel', onWheel);
-    };
+    return stopWatchingReader;
   }, [authority, input.hasOlderHistory, input.hasNewerHistory, canLoadEarlier, canLoadLater,
     input.scrollRef, input.sessionId]);
 
@@ -233,6 +249,7 @@ export function useChatScroll(input: {
     if (handledTarget.current === chosen) return;
     authority.releasePin();
     const frame = window.requestAnimationFrame(() => {
+      if (commandTarget.current !== chosen) return;
       const root = input.scrollRef.current;
       if (!root) return;
       const element = root.querySelector(`[data-turn-id="${CSS.escape(target.turnId)}"]`);
@@ -262,6 +279,7 @@ export function useChatScroll(input: {
       targetElement.setAttribute('tabindex', '-1');
       targetElement.focus({ preventScroll: true });
       setHighlightedTurnId(target.turnId);
+      targetHandledRef.current?.(target.nonce);
     });
     const clear = target.kind === 'search'
       ? window.setTimeout(() => {

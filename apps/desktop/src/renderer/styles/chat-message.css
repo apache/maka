@@ -112,8 +112,13 @@
   white-space: pre-wrap;
 }
 
+/* The ghost bubble has no fill or border, so its inherited 28px radius paints
+   nothing. It is also a transcript boundary below, and paint containment clips
+   to the rounded padding box, so the invisible corners became clip arcs that
+   shaved the first glyph of the first line and the last. Square it. */
 .maka-chat-message-bubble-assistant {
   padding: var(--space-0-5) 0 0;
+  border-radius: 0;
 }
 
 .maka-processing-sequence {
@@ -141,6 +146,13 @@
      paint. 96px is the single-line answer baseline; tall multi-line blocks
      override it below. */
   contain-intrinsic-block-size: auto 96px;
+}
+
+/* A long prompt can put even the first answer beyond the relevance margin.
+   The streaming frontier must contribute its real height before following;
+   completed blocks in the same active Turn still retain lazy layout. */
+.maka-chat-message-list [data-maka-transcript-boundary][data-live-streaming='true'] {
+  content-visibility: visible;
 }
 
 /* Container blocks — a Processing sequence, a linked-agent list — hold many
@@ -366,7 +378,8 @@
   color: var(--foreground);
   padding: var(--space-0-5) var(--space-1-5);
 }
-.maka-transcript-history-controls {
-  width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-6))));
-  margin: var(--space-2) auto 0;
+.maka-transcript-gap-row {
+  width: min(var(--maka-reading-measure), 100%);
+  margin: var(--space-2) auto;
+  padding-block: var(--space-1);
 }

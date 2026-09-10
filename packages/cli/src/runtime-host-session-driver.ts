@@ -28,6 +28,7 @@ import {
   type SessionSummary,
   type StoredMessage,
 } from '@maka/core/session';
+import { projectSessionTodoItemsForDisplay, type SessionTodoItem } from '@maka/core/session-todo';
 import { markPersisted } from '@maka/core/persisted-value';
 import {
   type ActiveInteractionRequestEvent,
@@ -69,16 +70,21 @@ import {
   OperationOutput,
   SessionCatalogItem,
   SessionCatalogProjection,
-  SessionUpdateResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   WorkspaceTarget,
   type GoalControlAction,
   type GoalProjection,
   type SessionContinuitySnapshot,
+  type SessionDomainChangedFrame,
   type TurnResumeParkReason,
 } from '@maka/runtime-host/protocol';
 import { RuntimeHostSessionChannel } from './runtime-host-session-channel.js';
 import type { RuntimeHostSessionChannelOpenResult } from './runtime-host-session-channel.js';
+import {
+  getRuntimeHostSession,
+  requireRuntimeHostSessionProjection as requireSession,
+  updateRuntimeHostSession,
+} from './runtime-host-session-update.js';
 import type {
   InspectCwdChanges,
   MakaAttachedSessionTurn,
@@ -226,6 +232,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   #transcriptRefreshSequence = 0;
   readonly #startedTurnListeners = new Set<(turn: MakaAttachedSessionTurn) => void>();
   readonly #goalListeners = new Set<(goal: GoalProjection | null) => void>();
+  readonly #todoChangeListeners = new Set<(sessionId: string) => void>();
   readonly #pendingInteractionListeners = new Set<(pending: InteractionPendingSnapshot) => void>();
   readonly #claimedTurnIds = new Set<string>();
   readonly #shellRunListeners = new Set<(update: ShellRunUpdate) => void>();
@@ -558,6 +565,23 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return this.#request('turn.message.query', { sessionId, messageIds });
   }
 
+  async queryTodo(sessionId: string): Promise<{ sessionId: string; items: SessionTodoItem[] }> {
+    const currentSessionId = this.#requireSession('query Todo');
+    if (sessionId !== currentSessionId) {
+      throw new Error(`Cannot query Todo for a non-current Session: ${sessionId}`);
+    }
+    const sessionGeneration = this.#sessionGeneration;
+    const result = await this.#request('session.todo.query', { sessionId });
+    this.#assertCurrentSession(sessionId, sessionGeneration);
+    if (result.sessionId !== sessionId) {
+      throw new Error(`Runtime Host returned Todo for an unexpected Session: ${result.sessionId}`);
+    }
+    return {
+      sessionId,
+      items: projectSessionTodoItemsForDisplay(result.items),
+    };
+  }
+
   async retractQueued(): Promise<MakaRetractedMessages> {
     if (!this.#sessionId) return { text: '', messageIds: [] };
     const result = await this.#request('queue.retract', {
@@ -689,12 +713,16 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   async renameSession(name: string): Promise<string> {
     const sessionId = this.#requireSession('rename');
-    const session = await updateRuntimeHostSession(this.#connection, sessionId, (current) =>
-      this.#request('session.metadata.update', {
-        sessionId,
-        expectedRevision: current.revision,
-        patch: { name },
-      }),
+    const session = await updateRuntimeHostSession(
+      this.#connection,
+      sessionId,
+      (current) =>
+        this.#request('session.metadata.update', {
+          sessionId,
+          expectedRevision: current.revision,
+          patch: { name },
+        }),
+      { operation: 'session.metadata.update' },
     );
     return session.name;
   }
@@ -797,12 +825,16 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   }
 
   #commitCwdRelocation(sessionId: string, cwd: string): Promise<SessionCatalogProjection> {
-    return updateRuntimeHostSession(this.#connection, sessionId, (current) =>
-      this.#request('session.workspace.relocate', {
-        sessionId,
-        expectedRevision: current.revision,
-        workspace: { kind: 'host_path', path: cwd },
-      }),
+    return updateRuntimeHostSession(
+      this.#connection,
+      sessionId,
+      (current) =>
+        this.#request('session.workspace.relocate', {
+          sessionId,
+          expectedRevision: current.revision,
+          workspace: { kind: 'host_path', path: cwd },
+        }),
+      { operation: 'session.workspace.relocate' },
     );
   }
 
@@ -1091,6 +1123,11 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return () => this.#goalListeners.delete(listener);
   }
 
+  subscribeTodoChanges(listener: (sessionId: string) => void): () => void {
+    this.#todoChangeListeners.add(listener);
+    return () => this.#todoChangeListeners.delete(listener);
+  }
+
   async controlGoal(action: GoalControlAction): Promise<GoalProjection | null> {
     const sessionId = this.#sessionId;
     if (!sessionId) return null;
@@ -1323,12 +1360,16 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       orchestrationMode?: OrchestrationMode;
     },
   ): Promise<SessionCatalogProjection> {
-    return updateRuntimeHostSession(this.#connection, sessionId, (current) =>
-      this.#request('session.configuration.update', {
-        sessionId,
-        expectedRevision: current.revision,
-        patch,
-      }),
+    return updateRuntimeHostSession(
+      this.#connection,
+      sessionId,
+      (current) =>
+        this.#request('session.configuration.update', {
+          sessionId,
+          expectedRevision: current.revision,
+          patch,
+        }),
+      { operation: 'session.configuration.update' },
     );
   }
 
@@ -1522,6 +1563,8 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       onTurnStarted: (turn) => this.#publishStartedTurn(turn, sessionGeneration),
       onRuntimeResourceChanged: (sourceSessionId, ref) =>
         this.#publishRuntimeResource(sourceSessionId, ref),
+      onSessionDomainChanged: (frame) =>
+        this.#publishSessionDomainChanged(frame, sessionId, sessionGeneration),
       onInteractionPending: (pending) => {
         for (const listener of this.#pendingInteractionListeners) listener(pending);
       },
@@ -1542,8 +1585,32 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         if (this.#sessionId !== sessionId || this.#sessionGeneration !== sessionGeneration) return;
         for (const listener of this.#goalListeners) listener(goal);
       },
-      onRecovered: () => this.#refreshRuntimeResources(sessionId),
+      onRecovered: () => {
+        this.#refreshRuntimeResources(sessionId);
+        this.#publishTodoChanged(sessionId, sessionGeneration);
+      },
     });
+  }
+
+  #publishSessionDomainChanged(
+    frame: SessionDomainChangedFrame,
+    sessionId: string,
+    sessionGeneration: number,
+  ): void {
+    if (
+      frame.domain !== 'todo' ||
+      frame.sessionId !== sessionId ||
+      this.#sessionId !== sessionId ||
+      this.#sessionGeneration !== sessionGeneration
+    ) {
+      return;
+    }
+    this.#publishTodoChanged(sessionId, sessionGeneration);
+  }
+
+  #publishTodoChanged(sessionId: string, sessionGeneration: number): void {
+    if (this.#sessionId !== sessionId || this.#sessionGeneration !== sessionGeneration) return;
+    for (const listener of this.#todoChangeListeners) listener(sessionId);
   }
 
   #publishRuntimeResource(sourceSessionId: string, ref: string): void {
@@ -1685,15 +1752,6 @@ interface LoadedSessionConfiguration {
   boundaryDisplayMode: PermissionMode | undefined;
 }
 
-async function getRuntimeHostSession(
-  connection: RuntimeHostSessionDriverConnection,
-  sessionId: string,
-): Promise<SessionCatalogProjection | null> {
-  const result = await connection.request('session.catalog.query', { kind: 'get', sessionId });
-  if (result.kind !== 'session') throw new Error('Runtime Host returned an invalid Session lookup');
-  return result.session === null ? null : requireSession(result.session);
-}
-
 function representableSession(item: SessionCatalogItem): SessionCatalogProjection[] {
   return 'kind' in item ? [] : [item];
 }
@@ -1753,11 +1811,6 @@ function visibleTranscriptMessages(
   return boundary < 0 ? messages : messages.slice(boundary + 1);
 }
 
-function requireSession(item: SessionCatalogItem): SessionCatalogProjection {
-  if (!('kind' in item)) return item;
-  throw new Error(`Runtime Host Session is not representable by this CLI: ${item.id}`);
-}
-
 function inspectRuntimeHostSessionResumeAvailability(
   summary: SessionSummary,
   location: NonNullable<RuntimeHostMakaSessionDriverInput['executionLocation']>,
@@ -1780,20 +1833,6 @@ async function assertSessionResumeAvailable(
       summary.cwd ? `Session cwd no longer exists: ${summary.cwd}` : availability.reason,
     );
   }
-}
-
-async function updateRuntimeHostSession(
-  connection: RuntimeHostSessionDriverConnection,
-  sessionId: string,
-  update: (current: SessionCatalogProjection) => Promise<SessionUpdateResult>,
-): Promise<SessionCatalogProjection> {
-  for (let attempt = 0; attempt < MAX_CATALOG_ATTEMPTS; attempt += 1) {
-    const current = await getRuntimeHostSession(connection, sessionId);
-    if (!current) throw new Error(`Session not found: ${sessionId}`);
-    const result = await update(current);
-    if (result.kind === 'committed') return requireSession(result.session);
-  }
-  throw new Error(`Session kept changing while updating: ${sessionId}`);
 }
 
 async function loadCurrentMessages(

@@ -18,9 +18,17 @@
  */
 
 import type { PlanExecutionStep, PlanProposal } from '@maka/core/plan';
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { lookupCopy, type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
+import type { PlanControlErrorCode } from '@maka/runtime-host/protocol';
+import type { PlanControlIpcResult } from '../../shared/plan-mode-ipc.js';
+
+export type { PlanControlErrorCode, PlanControlIpcResult };
 
 export interface PlanModeCopy {
+  readonly operationFailed: string;
+  /** Actionable copy for the structured `plan.control` / `plan.turn.start`
+   * rejection codes; anything else keeps `operationFailed`. */
+  readonly controlFailure: Record<PlanControlErrorCode, string>;
   readonly abandonConfirmation: {
     readonly title: string;
     description(title: string): string;
@@ -51,6 +59,20 @@ export interface PlanModeCopy {
 
 const COPY = {
   'zh-CN': {
+    operationFailed: '计划操作失败，请稍后重试。',
+    controlFailure: {
+      not_found: '计划方案已不存在，请刷新后重试',
+      session_busy: '当前任务正在运行，等结束后再切换计划',
+      operation_conflict: '计划已发生变化，请刷新后重试',
+      persistence_failed: '计划状态暂时无法保存，请稍后重试',
+      host_not_ready: '模型服务尚未就绪，请稍后重试',
+      unauthorized: '没有操作这个计划的权限',
+      host_draining: '模型服务正在维护，请稍后重试',
+      operation_unavailable: '计划服务暂时不可用，请稍后重试',
+      session_archived: '会话已归档，不能修改计划',
+      invalid_request: '计划操作无效，请刷新后重试',
+      internal_failure: '计划操作失败，请稍后重试',
+    },
     abandonConfirmation: {
       title: '放弃这个计划？',
       description: (title) => `“${title}”的执行记录会保留，但之后不能继续恢复。`,
@@ -70,6 +92,20 @@ const COPY = {
     },
   },
   'zh-TW': {
+    operationFailed: '計劃操作失敗，請稍後重試。',
+    controlFailure: {
+      not_found: '計劃方案已不存在，請重新整理後重試',
+      session_busy: '目前任務正在執行，等結束後再切換計劃',
+      operation_conflict: '計劃已發生變化，請重新整理後重試',
+      persistence_failed: '計劃狀態暫時無法儲存，請稍後重試',
+      host_not_ready: '模型服務尚未就緒，請稍後重試',
+      host_draining: '模型服務正在維護，請稍後重試',
+      unauthorized: '沒有操作這個計劃的權限',
+      operation_unavailable: '計劃服務暫時無法使用，請稍後重試',
+      session_archived: '會話已封存，不能修改計劃',
+      invalid_request: '計劃操作無效，請重新整理後重試',
+      internal_failure: '計劃操作失敗，請稍後重試',
+    },
     abandonConfirmation: {
       title: '放棄這個計劃？',
       description: (title) => `“${title}”的執行記錄會保留，但之後不能繼續恢復。`,
@@ -89,6 +125,20 @@ const COPY = {
     },
   },
   en: {
+    operationFailed: 'The plan action failed. Try again later.',
+    controlFailure: {
+      not_found: 'This plan proposal no longer exists. Refresh and try again.',
+      session_busy: 'A task is running in this Session. Wait for it to finish before changing the plan.',
+      operation_conflict: 'The plan changed. Refresh and try again.',
+      persistence_failed: 'The plan state could not be saved. Try again later.',
+      host_not_ready: 'The model service is not ready yet. Try again later.',
+      host_draining: 'The model service is under maintenance. Try again later.',
+      operation_unavailable: 'The plan service is temporarily unavailable. Try again later.',
+      unauthorized: 'This connection is not authorized to change the plan.',
+      session_archived: 'This Session is archived; its plan cannot change.',
+      invalid_request: 'This plan action is invalid. Refresh and try again.',
+      internal_failure: 'The plan action failed. Try again later.',
+    },
     abandonConfirmation: {
       title: 'Abandon this plan?',
       description: (title) => `The execution record for “${title}” will remain, but it cannot be resumed.`,
@@ -112,4 +162,13 @@ const COPY = {
 
 export function getPlanModeCopy(locale: UiLocale): PlanModeCopy {
   return COPY[locale];
+}
+
+/** Lives in the copy catalog because a validated catalog's bare package
+ * imports are exempt from the dependency-debt ratchet. */
+export function planControlFailureCopy(
+  error: Extract<PlanControlIpcResult<unknown>, { ok: false }>['error'],
+  copy: PlanModeCopy,
+): string {
+  return lookupCopy(copy.controlFailure, error.code) ?? copy.operationFailed;
 }

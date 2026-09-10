@@ -670,6 +670,7 @@ test('fences transcript range failures across same-source replica recovery', asy
   };
   let opens = 0;
   let staleRangeStarted = false;
+  let currentRangeStarted = false;
   const observer = new RuntimeHostSessionObserver({
     client: {
       openSession: async () => {
@@ -694,7 +695,6 @@ test('fences transcript range failures across same-source replica recovery', asy
           events,
           transcriptBootstrap: {
             throughSequence: 1,
-            durableCoverage: 'complete',
             overlayMessageCount: 0,
             durable: bootstrap,
             overlay: { ...bootstrap, source: 'overlay', nextCursor: null },
@@ -709,6 +709,7 @@ test('fences transcript range failures across same-source replica recovery', asy
                 return staleRange.promise;
               }
             : async () => {
+                currentRangeStarted = true;
                 throw currentFailure;
               },
           async close() {
@@ -757,7 +758,12 @@ test('fences transcript range failures across same-source replica recovery', asy
     sequence: 1,
     reason: 'slow_consumer',
   });
-  await waitFor(() => batches.at(-1)?.generation !== opened.generation);
+  await waitFor(() => currentRangeStarted);
+  assert.equal(
+    batches.at(-1)?.generation,
+    opened.generation,
+    'a failed recovery range does not replace the visible snapshot with an unrelated bootstrap',
+  );
   staleRange.reject(new Error('stale replica rejected its range'));
   await assert.doesNotReject(staleLoad);
 
@@ -990,7 +996,6 @@ test('finishes transcript open and replays a stale range request after replaceme
           events,
           transcriptBootstrap: {
             throughSequence: 0,
-            durableCoverage: 'complete',
             overlayMessageCount: 0,
             durable: {
               kind: 'page',
@@ -2166,7 +2171,6 @@ test("finishes a watched predecessor after initial catch-up recovery", async () 
               turnId: "turn-1",
               ts: 20,
               status: "completed" as const,
-              partialOutputRetained: true,
             },
           ]),
           events: secondEvents,
@@ -2322,7 +2326,6 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
         turnId: 'turn-1',
         status: 'completed' as const,
         statusSource: 'recorded' as const,
-        partialOutputRetained: true,
       }],
       openSession: async () => {
         openCount += 1;
@@ -2794,7 +2797,6 @@ test("publishes Host sidecar and graph invalidations without inventing Session s
     kind: "subscription.runtime_resource_pty_data",
     hostEpoch: "host-1",
     subscriptionId: "subscription-1",
-    sequence: 3,
     sessionId: "session-1",
     ref: "maka://runtime/background-tasks/shell-1",
     ptySequence: 7,
@@ -2986,3 +2988,33 @@ class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
 async function waitFor(predicate: () => boolean): Promise<void> {
   await pollFor(predicate, { attempts: 100, message: 'Timed out waiting for observer state' });
 }
+
+test('a later observer in the same renderer receives the accumulated active stream', async () => {
+  const events = new AsyncFrameQueue();
+  let opens = 0;
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    activeAssistantStreams: [activeText('message-1')],
+    transcript: Promise.resolve([{ type: 'assistant', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'Hello', modelId: 'test-model' }]),
+    events,
+    async close() { events.end(); },
+  });
+  const observer = new RuntimeHostSessionObserver({
+    client: { openSession: async () => { opens += 1; return handle; } },
+    emitSessionsChanged() {},
+  });
+  const target = eventTarget(1);
+  await observer.observe('session-1', 'feature-first', target);
+  events.push(deltaFrame(1, 5, ' world'));
+  await waitFor(() => target.events.some((event) => 'text' in event && event.text === ' world'));
+  const before = target.events.length;
+  const seed = await observer.observe('session-1', 'conversation-later', target);
+  assert.equal(opens, 1);
+  assert.equal(target.events.length, before, 'private seeding does not replay to other listeners');
+  assert.ok(seed.some((event) =>
+    event.type === 'text_delta' && event.startOffset === 0 && event.text === 'Hello world'));
+  const after = target.events.length;
+  await observer.observe('session-1', 'conversation-later', target);
+  assert.equal(target.events.length, after, 'the same registration is still idempotent');
+  await observer.close();
+});

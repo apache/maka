@@ -118,7 +118,7 @@ export const ALLOWED = {
     useAppShellTurnPresentation: 1,
     useCommandPalette: 1,
     useComposerAttachments: 1,
-    useEffect: 14,
+    useEffect: 7,
     useKeyboardHelp: 1,
     useLayoutEffect: 2,
     useNewTaskChoice: 1,
@@ -147,8 +147,7 @@ export const ALLOWED = {
     useShellRunUpdates: 1,
     useShellSearch: 1,
     useStableActions: 6,
-    useState: 15,
-    useTaskEntryController: 1,
+    useState: 12,
     useTaskSubmissionReadiness: 1,
     useToast: 1,
     // The last of the three `useKeyedPendingRegistry` call sites this entry

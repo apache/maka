@@ -26,6 +26,7 @@ import {
   type AttachmentSnapshotInput,
   resolveAttachmentRefs,
   resolveIngestItems,
+  prepareIngestItems,
   resolvePickedAttachments,
   sniffPickedAttachmentMimeType,
 } from '../attachment-ingest.js';
@@ -44,7 +45,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => (statCalls++, { size: 1 }),
         }),
-      /最多/,
+      /attachment_ingest:count_limit/,
     );
     assert.equal(statCalls, 0);
   });
@@ -60,7 +61,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => (statCalls++, { size: 1 }),
         }),
-      /过期|无效/,
+      /attachment_ingest:(source_expired|items_invalid)/,
     );
     assert.equal(statCalls, 0);
   });
@@ -77,7 +78,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => (statCalls++, { size: 1 }),
         }),
-      /过期|无效/,
+      /attachment_ingest:(source_expired|items_invalid)/,
     );
     assert.equal(statCalls, 0);
   });
@@ -95,7 +96,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           stat: async () => (statCalls++, { size: 200 }),
           maxBytes: 100,
         }),
-      /超出大小限制/,
+      /attachment_ingest:item_too_large/,
     );
     assert.equal(statCalls, 1);
   });
@@ -120,7 +121,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
             stat: async () => (statCalls++, { size: 1 }),
             maxBytes: 100,
           }),
-        /超出大小限制/,
+        /attachment_ingest:item_too_large/,
       );
       assert.equal(statCalls, 0);
       assert.equal(decodeCalls, 0, 'must reject by base64 string length before Buffer.from');
@@ -148,8 +149,27 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => ({ size: 10 }),
         }),
-      /过期|无效/,
+      /attachment_ingest:(source_expired|items_invalid)/,
     );
+  });
+
+  test('prepared approvals commit as one set and survive failed admission', async () => {
+    const approvals = createAttachmentApprovalRegistry();
+    const items = approvals.issueApprovals(1, [
+      { path: '/tmp/a.txt', name: 'a.txt', size: 1 },
+      { path: '/tmp/b.txt', name: 'b.txt', size: 1 },
+    ]);
+    const input = { senderId: 1, items, approvals, stat: async () => ({ size: 1 }) };
+    const plan = await prepareIngestItems(input);
+    assert.throws(() => plan.commit(() => { throw new Error('storage full'); }), /storage full/);
+    for (const item of items) assert.ok(approvals.peekApproval(1, item.approvalId));
+    const competing = await prepareIngestItems({ ...input, items: [items[1]] });
+    assert.equal(competing.commit(() => 'admitted'), 'admitted');
+    assert.throws(() => plan.commit(() => assert.fail('must not admit an invalid plan')), /attachment_ingest:source_expired/);
+    assert.ok(approvals.peekApproval(1, items[0]!.approvalId), 'a lost race must not burn the other approval');
+    const remaining = await prepareIngestItems({ ...input, items: [items[0]] });
+    approvals.clearSender(1);
+    assert.throws(() => remaining.commit(() => assert.fail('must not admit after sender teardown')), /attachment_ingest:source_expired/);
   });
 
   test('resolves a mix of approved paths and blobs into ingest files', async () => {
@@ -184,7 +204,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
         approvals,
         stat: async () => (statCalls++, { size: 10 }),
       }),
-      /无效/,
+      /attachment_ingest:items_invalid/,
     );
     assert.notEqual(
       approvals.consumeApproval(1, issued.approvalId),
@@ -207,7 +227,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
         approvals,
         stat: async () => (statCalls++, { size: 10 }),
       }),
-      /重复/,
+      /attachment_ingest:duplicate_source/,
     );
     assert.notEqual(
       approvals.consumeApproval(1, issued.approvalId),
@@ -226,7 +246,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => ({ size: 1 }),
         }),
-      /无效/,
+      /attachment_ingest:items_invalid/,
     );
     await assert.rejects(
       () =>
@@ -236,7 +256,7 @@ describe('resolveIngestItems (pre-read validation)', () => {
           approvals,
           stat: async () => ({ size: 1 }),
         }),
-      /无效/,
+      /attachment_ingest:items_invalid/,
     );
   });
 });
@@ -420,7 +440,7 @@ describe('resolveAttachmentRefs', () => {
             throw new Error('snapshot must not run');
           },
         }),
-        /超出大小限制/,
+        /attachment_ingest:item_too_large/,
       );
       assert.equal(snapshots, 0);
     } finally {

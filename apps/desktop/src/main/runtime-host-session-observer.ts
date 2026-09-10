@@ -54,6 +54,7 @@ import {
   type DesktopSequencedTranscriptMessage,
   type DesktopTranscriptReplica,
   type DesktopTranscriptReplicaChange,
+  type DesktopTranscriptReplicaSnapshot,
 } from './desktop-transcript-replica.js';
 import {
   encodeDesktopTranscriptChange,
@@ -77,6 +78,7 @@ export type RuntimeHostSessionObserverTarget = RuntimeHostRendererTarget<Session
 export type RuntimeHostTranscriptTarget = RuntimeHostRendererTarget<DesktopTranscriptBatch>;
 
 export interface RuntimeHostSessionObserverDeps {
+  cacheTranscript?: (snapshot: DesktopTranscriptReplicaSnapshot) => void;
   client: SessionObserverClient;
   emitSessionsChanged: (
     reason: SessionChangedReason,
@@ -85,6 +87,7 @@ export interface RuntimeHostSessionObserverDeps {
   ) => void;
   emitSessionDomainChanged?: (change: SessionDomainChange) => void;
   emitRuntimeResourcePtyData?: (event: ShellRunPtyDataEvent) => void;
+  emitRuntimeResourcePtyReset?: (sessionId: string) => void;
   emitAgentGraphChanged?: (event: AgentGraphClientChangedEvent) => void;
   onWatchedTurnFinished?: (
     sessionId: string,
@@ -126,6 +129,9 @@ interface TranscriptConsumer {
   readonly consumerId: string;
   readonly target: RuntimeHostTranscriptTarget;
   generation: string;
+  navigationVersion: number;
+  navigationPending: boolean;
+  navigationRequest?: DesktopTranscriptRangeRequest;
   deliverySequence: number;
   deliveryBytes: number;
   deliveryTask?: Promise<void>;
@@ -163,6 +169,7 @@ interface PendingTranscriptConsumer {
 interface ObserverRegistration {
   readonly state: ObservedSessionState;
   readonly group: ObserverTargetGroup;
+  readonly ptyRef?: string;
 }
 
 interface SubscriptionFailureIdentity {
@@ -188,6 +195,8 @@ export class RuntimeHostSessionObserver {
   readonly #emitSessionsChanged: RuntimeHostSessionObserverDeps["emitSessionsChanged"];
   readonly #emitSessionDomainChanged: (change: SessionDomainChange) => void;
   readonly #emitRuntimeResourcePtyData: (event: ShellRunPtyDataEvent) => void;
+  readonly #emitRuntimeResourcePtyReset: (sessionId: string) => void;
+  readonly #cacheTranscript: (snapshot: DesktopTranscriptReplicaSnapshot) => void;
   readonly #emitAgentGraphChanged: (
     event: AgentGraphClientChangedEvent,
   ) => void;
@@ -217,6 +226,8 @@ export class RuntimeHostSessionObserver {
       deps.emitSessionDomainChanged ?? (() => undefined);
     this.#emitRuntimeResourcePtyData =
       deps.emitRuntimeResourcePtyData ?? (() => undefined);
+    this.#emitRuntimeResourcePtyReset = deps.emitRuntimeResourcePtyReset ?? (() => undefined);
+    this.#cacheTranscript = deps.cacheTranscript ?? (() => undefined);
     this.#emitAgentGraphChanged =
       deps.emitAgentGraphChanged ?? (() => undefined);
     this.#onWatchedTurnFinished =
@@ -285,6 +296,8 @@ export class RuntimeHostSessionObserver {
       consumerId,
       target,
       generation: replica.generation,
+      navigationVersion: 0,
+      navigationPending: false,
       deliverySequence: 0,
       deliveryBytes: 0,
       resetRequested: false,
@@ -324,10 +337,11 @@ export class RuntimeHostSessionObserver {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    await this.#runTranscriptRangeOperation(request, targetId, (replica) =>
+    await this.#runTranscriptRangeOperation(request, targetId, (replica, token) =>
       replica.loadBefore(
         request.anchorSequence,
         requireTranscriptRangeBytes(request.maxBytes),
+        token,
       ),
     );
   }
@@ -336,13 +350,21 @@ export class RuntimeHostSessionObserver {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    await this.#runTranscriptRangeOperation(request, targetId, (replica) => {
+    await this.#runTranscriptRangeOperation(request, targetId, (replica, token) => {
+      if (request.intent === 'followTail') {
+        return replica.followLatest(requireTranscriptRangeBytes(request.maxBytes), token);
+      }
+      if (request.readingTurnId !== undefined) {
+        return replica.readAt(request.anchorSequence, token, request.readingTurnId);
+      }
       if (request.anchorSequence === null) {
         throw new Error('Desktop transcript around request requires an anchor');
       }
+      if (request.preserveRange) return replica.readAt(request.anchorSequence, token);
       return replica.loadAround(
         request.anchorSequence,
         requireTranscriptRangeBytes(request.maxBytes),
+        token,
       );
     });
   }
@@ -351,10 +373,11 @@ export class RuntimeHostSessionObserver {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    await this.#runTranscriptRangeOperation(request, targetId, (replica) =>
+    await this.#runTranscriptRangeOperation(request, targetId, (replica, token) =>
       replica.loadAfter(
         request.anchorSequence,
         requireTranscriptRangeBytes(request.maxBytes),
+        token,
       ),
     );
   }
@@ -362,18 +385,40 @@ export class RuntimeHostSessionObserver {
   async #runTranscriptRangeOperation(
     request: DesktopTranscriptRangeRequest,
     targetId: number | undefined,
-    operation: (replica: DesktopTranscriptReplica) => Promise<void>,
+    operation: (replica: DesktopTranscriptReplica, token: number) => Promise<void>,
   ): Promise<void> {
     const { state, replica, consumer } = this.#requireTranscriptConsumer(request, targetId);
+    const version = request.navigationVersion ?? consumer.navigationVersion;
+    if (!Number.isSafeInteger(version) || version < 0) throw new Error('Invalid transcript navigation version');
+    if (version < consumer.navigationVersion) return;
+    if (request.intent !== undefined && request.intent !== 'history' && request.intent !== 'followTail') {
+      throw new Error('Invalid transcript navigation intent');
+    }
+    consumer.navigationVersion = version;
+    consumer.navigationRequest = request;
+    consumer.navigationPending = true;
+    consumer.resetRequested = true;
+    this.#clearPendingTranscriptChange(consumer);
+    // Admission invalidates in-flight pages immediately, before the replica's
+    // operation queue can run the newer command.
+    const token = replica.setNavigation(request.intent ?? 'history');
     const isCurrent = () =>
       state.replica === replica &&
-      state.transcriptConsumers.get(request.consumerId) === consumer;
-    const task = operation(replica);
+      state.transcriptConsumers.get(request.consumerId) === consumer &&
+      consumer.navigationRequest === request;
     try {
-      await task;
+      await operation(replica, token);
+      if (!isCurrent()) return;
+      consumer.navigationPending = false;
+      // Already dispatched batches remain ACKable; finish draining them before
+      // issuing the authoritative snapshot for this navigation.
       await consumer.deliveryTask;
+      if (!isCurrent()) return;
+      consumer.resetRequested = true;
+      await this.#scheduleTranscriptDelivery(state, consumer);
     } catch (error) {
       if (!isCurrent()) return;
+      consumer.navigationPending = false;
       throw error;
     }
     if (isCurrent()) this.#touchReplica(state);
@@ -438,7 +483,8 @@ export class RuntimeHostSessionObserver {
     observerId: string,
     target: RuntimeHostSessionObserverTarget,
     messageAdmissions = false,
-  ): Promise<void> {
+    ptyRef?: string,
+  ): Promise<readonly SessionEvent[]> {
     this.#assertOpen();
     const previous = this.#observers.get(observerId);
     if (previous) {
@@ -448,7 +494,7 @@ export class RuntimeHostSessionObserver {
       ) {
         throw new Error("Runtime Host Session observer identity was reused");
       }
-      return;
+      return previous.state.projector?.seedActive(true) ?? [];
     }
     const state = this.#state(sessionId);
     if (messageAdmissions && !state.messageAdmissions) {
@@ -470,10 +516,12 @@ export class RuntimeHostSessionObserver {
       target.once("destroyed", destroyedListener);
     }
     group.observerIds.add(observerId);
-    this.#observers.set(observerId, { state, group });
+    this.#observers.set(observerId, { state, group, ptyRef });
     try {
       await state.subscriptionOwner.waitUntilReady();
+      if (ptyRef) await this.#syncPtyInterests(state);
       this.#seedTarget(state, group);
+      return state.projector?.seedActive(true) ?? [];
     } catch (error) {
       this.#detachObserver(observerId);
       throw error;
@@ -482,7 +530,10 @@ export class RuntimeHostSessionObserver {
 
   async unobserve(observerId: string): Promise<void> {
     const state = this.#detachObserver(observerId);
-    if (state) await this.#closeIfIdle(state);
+    if (state) {
+      await this.#syncPtyInterests(state);
+      await this.#closeIfIdle(state);
+    }
   }
 
   async watchTurn(sessionId: string, turnId: string): Promise<void> {
@@ -611,8 +662,10 @@ export class RuntimeHostSessionObserver {
       transcriptReplicaOptions: {
         accountPreparationBytes: (deltaBytes) =>
           this.#accountTranscriptPreparation(state, deltaBytes),
-        onChange: (replica, change) =>
-          this.#broadcastTranscriptChange(state, replica, change),
+        onChange: (replica, change) => {
+          this.#broadcastTranscriptChange(state, replica, change);
+          this.#cacheTranscript(replica.snapshot());
+        },
       },
       prepareActivation: (subscription, recovered) =>
         this.#prepareSubscriptionActivation(state, subscription, recovered),
@@ -672,6 +725,10 @@ export class RuntimeHostSessionObserver {
       return;
     }
     if (frame.kind === "subscription.runtime_resource_pty_data") {
+      if (frame.reset) {
+        this.#emitRuntimeResourcePtyReset(frame.sessionId);
+        return;
+      }
       this.#emitRuntimeResourcePtyData({
         sessionId: frame.sessionId,
         ref: frame.ref,
@@ -874,6 +931,7 @@ export class RuntimeHostSessionObserver {
       }
       state.snapshot = structuredClone(subscription.snapshot);
       state.replica = subscription.replica;
+      this.#cacheTranscript(subscription.replica.snapshot());
       subscription.replica.adoptResidentAccounting();
       state.projector = projector;
       previousReplica?.close();
@@ -1051,7 +1109,16 @@ export class RuntimeHostSessionObserver {
     const group = state.targets.get(targetId);
     if (!group) return;
     this.#detachTarget(state, group);
+    await this.#syncPtyInterests(state).catch(() => undefined);
     await this.#closeIfIdle(state);
+  }
+
+  #syncPtyInterests(state: ObservedSessionState): Promise<void> {
+    const refs = new Set<string>();
+    for (const observer of this.#observers.values()) {
+      if (observer.state === state && observer.ptyRef) refs.add(observer.ptyRef);
+    }
+    return state.subscriptionOwner.setPtyInterests([...refs]);
   }
 
   #detachTarget(state: ObservedSessionState, group: ObserverTargetGroup): void {
@@ -1117,7 +1184,14 @@ export class RuntimeHostSessionObserver {
 
   #resetTranscriptConsumers(state: ObservedSessionState): void {
     for (const consumer of [...state.transcriptConsumers.values()]) {
-      this.#requestTranscriptReset(state, consumer);
+      const request = consumer.navigationRequest;
+      if (request && request.hostEpoch === state.replica?.hostEpoch) {
+        const recoveryRequest = { ...request, preserveRange: false };
+        void this.loadTranscriptAround(recoveryRequest, consumer.target.id).catch(() => undefined);
+      } else {
+        consumer.navigationPending = false;
+        this.#requestTranscriptReset(state, consumer);
+      }
     }
   }
 
@@ -1130,6 +1204,7 @@ export class RuntimeHostSessionObserver {
     task = (async () => {
       try {
         while (state.transcriptConsumers.get(consumer.consumerId) === consumer) {
+          if (consumer.navigationPending) return;
           if (consumer.resetRequested) {
             consumer.resetRequested = false;
             this.#clearPendingTranscriptChange(consumer);
@@ -1143,7 +1218,10 @@ export class RuntimeHostSessionObserver {
             try {
               await this.#sendTranscriptBatches(
                 consumer,
-                encodeDesktopTranscriptSnapshot(replica.snapshot()),
+                encodeDesktopTranscriptSnapshot({
+                  ...replica.snapshot(),
+                  navigationVersion: consumer.navigationVersion,
+                }),
               );
             } finally {
               this.#adjustTranscriptDeliveryBytes(consumer, -deliveryBytes);
@@ -1166,6 +1244,7 @@ export class RuntimeHostSessionObserver {
                   sessionId: replica.sessionId,
                   generation: replica.generation,
                   hostEpoch: replica.hostEpoch,
+                  navigationVersion: consumer.navigationVersion,
                 },
                 {
                   durableThrough: pending.durableThrough,
@@ -1340,6 +1419,7 @@ export class RuntimeHostSessionObserver {
   ): Promise<void> {
     const deliveries = new Set<Promise<void>>();
     for (const batch of batches) {
+      if ((batch.navigationVersion ?? 0) !== consumer.navigationVersion || consumer.navigationPending) break;
       let delivery!: Promise<void>;
       delivery = this.#deliverTranscriptBatch(consumer, batch).finally(() => {
         deliveries.delete(delivery);

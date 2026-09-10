@@ -881,16 +881,16 @@
      everything already standing between it and that edge. Two literals would be
      two chances to change one of them. */
   --maka-titlebar-gutter-left: max(var(--space-6), var(--maka-titlebar-area-x));
+  /* Shared by the titlebar strip and the workbar's bar, which hold one collapse
+     toggle to the same x. Deliberately not the left gutter's `--space-6`
+     floor: the left is a safe area under the traffic lights, the right is the
+     bar's own inset. */
+  --maka-titlebar-gutter-right: calc(
+    var(--space-2) + var(--maka-titlebar-overlay-right-width)
+  );
   --maka-titlebar-gap: var(--space-2);
-  /* What the strip keeps for itself. This window has no OS title bar, so the
-     strip IS the drag handle, and the session breadcrumb is a grid item that
-     grows to its content: with a maximal name it took the whole middle column
-     and left an 8px band between it and the actions cluster (measured, 1000px
-     window: draggable width across the strip fell from ~730px to 216px, almost
-     all of it left of the breadcrumb). A name is worth reading, but not at the
-     price of being unable to move the window — so the trail truncates a little
-     sooner and this much stays draggable. */
-  --maka-titlebar-drag-reserve: 25%;
+  /* Keep a drag target beside the title without reserving a quarter of wide windows. */
+  --maka-titlebar-drag-reserve: min(25%, var(--space-12));
 
   /* session list geometry */
 

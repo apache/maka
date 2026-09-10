@@ -92,11 +92,34 @@ class SqliteArtifactMetadataRepository {
     });
   }
 
-  readUpgradeOrphanPaths(): string[] {
+  readUpgradeOrphanPaths(after: string, limit: number): string[] {
     this.assertOpen();
     const rows = this.#lease.database
-      .prepare('SELECT relative_path FROM artifact_upgrade_orphan_paths ORDER BY relative_path')
-      .all() as Array<{ relative_path: string }>;
+      .prepare(`SELECT relative_path FROM artifact_upgrade_orphan_paths
+        WHERE relative_path > ? ORDER BY relative_path LIMIT ?`)
+      .all(after, limit) as Array<{ relative_path: string }>;
+    return rows.map((row) => row.relative_path);
+  }
+
+  hasRelativePath(relativePath: string): boolean {
+    this.assertOpen();
+    return Boolean(
+      this.#lease.database
+        .prepare('SELECT 1 FROM artifact_records WHERE relative_path = ?')
+        .get(relativePath),
+    );
+  }
+
+  readRelativePathsByCaseFoldedArtifactIds(artifactIds: readonly string[]): string[] {
+    this.assertOpen();
+    if (artifactIds.length === 0) return [];
+    const placeholders = artifactIds.map(() => '?').join(', ');
+    const rows = this.#lease.database
+      .prepare(
+        `SELECT relative_path FROM artifact_records
+          WHERE artifact_id COLLATE NOCASE IN (${placeholders})`,
+      )
+      .all(...artifactIds) as Array<{ relative_path: string }>;
     return rows.map((row) => row.relative_path);
   }
 

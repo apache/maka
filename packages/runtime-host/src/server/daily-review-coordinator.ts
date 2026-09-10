@@ -52,9 +52,11 @@ import {
 import type { DailyReviewOperationHandlerMap } from './operation-dispatcher.js';
 import type { HostDailyReviewModel } from './execution-model-authority.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
+import type { HostResidencyKind } from './host-residency-registry.js';
 import {
   CanonicalUsageProjectionIncompleteError,
-  readCompleteCanonicalUsage,
+  readCanonicalUsageBuckets,
+  readCompleteCanonicalUsageSummary,
 } from './canonical-usage-reader.js';
 
 const ARCHIVE_LIMIT = 180;
@@ -65,7 +67,7 @@ export interface HostDailyReviewCoordinatorInput {
   readonly usage: InteractiveUsageStoresWriter;
   readonly sessions: Pick<ExecutionSessionWriter, 'list'>;
   readonly model: HostDailyReviewModel;
-  readonly acquireResidency: () => RuntimeHostResidency;
+  readonly acquireResidency: (kind?: HostResidencyKind) => RuntimeHostResidency;
   readonly requestDrain: () => void;
   readonly now?: () => number;
   readonly setInterval?: (callback: () => void, delayMs: number) => unknown;
@@ -83,7 +85,7 @@ export class HostDailyReviewCoordinator {
   readonly #usage: InteractiveUsageStoresWriter;
   readonly #sessions: HostDailyReviewCoordinatorInput['sessions'];
   readonly #model: HostDailyReviewModel;
-  readonly #acquireResidency: () => RuntimeHostResidency;
+  readonly #acquireResidency: HostDailyReviewCoordinatorInput['acquireResidency'];
   readonly #requestDrain: () => void;
   readonly #now: () => number;
   readonly #setInterval: (callback: () => void, delayMs: number) => unknown;
@@ -97,12 +99,16 @@ export class HostDailyReviewCoordinator {
       readonly promise: Promise<DailyReviewArchive>;
     }
   >();
-  readonly #abortControllers = new Set<AbortController>();
+  readonly #shutdown = new AbortController();
 
   #prepared = false;
   #started = false;
   #schedulerEnabled = false;
-  #draining = false;
+  #handoffHeld = false;
+  #schedulerTask: Promise<void> | undefined;
+  get #draining(): boolean {
+    return this.#shutdown.signal.aborted;
+  }
   #timer: unknown;
   #residency: RuntimeHostResidency | undefined;
   #closeTask: Promise<void> | undefined;
@@ -148,17 +154,55 @@ export class HostDailyReviewCoordinator {
 
   beginDrain(): void {
     if (this.#draining) return;
-    this.#draining = true;
+    this.#shutdown.abort(new DOMException('Runtime Host is draining', 'AbortError'));
     this.#stopScheduler();
-    for (const controller of this.#abortControllers) {
-      controller.abort(new DOMException('Runtime Host is draining', 'AbortError'));
-    }
+  }
+
+  holdForHandoff():
+    | {
+        settled(): Promise<void>;
+        residencies(): readonly RuntimeHostResidency[] | undefined;
+        release(): void;
+      }
+    | undefined {
+    if (this.#draining || this.#handoffHeld) return undefined;
+    this.#handoffHeld = true;
+    this.#stopTimer();
+    let released = false;
+    return {
+      settled: async () => {
+        // Include scheduler reads as well as generation: a tick may still be
+        // checking configuration or an archive when the hold is acquired.
+        while (this.#schedulerTask || this.#inFlight.size > 0) {
+          await Promise.allSettled([
+            this.#schedulerTask,
+            ...[...this.#inFlight.values()].map((entry) => entry.promise),
+          ]);
+        }
+      },
+      residencies: () => {
+        if (released || this.#draining || this.#schedulerTask || this.#inFlight.size > 0)
+          return undefined;
+        return this.#residency ? [this.#residency] : [];
+      },
+      release: () => {
+        if (released) return;
+        released = true;
+        this.#handoffHeld = false;
+        if (this.#draining) return;
+        this.#reconcileScheduler(this.#schedulerEnabled);
+        void this.#tickScheduler().catch((error: unknown) => this.#handleSchedulerError(error));
+      },
+    };
   }
 
   close(): Promise<void> {
     this.#closeTask ??= (async () => {
       this.beginDrain();
-      await Promise.allSettled([...this.#inFlight.values()].map((entry) => entry.promise));
+      await Promise.allSettled([
+        this.#schedulerTask,
+        ...[...this.#inFlight.values()].map((entry) => entry.promise),
+      ]);
     })();
     return this.#closeTask;
   }
@@ -253,7 +297,16 @@ export class HostDailyReviewCoordinator {
 
   async #buildSummary(range: DayRangeMs, now: number): Promise<DailyReviewSummary> {
     const query = dailyUsageQuery(range);
-    const canonical = await readCompleteCanonicalUsage(this.#usage, query, now);
+    // The summary read repairs the projection and refuses an incomplete one; the
+    // bucket read that follows reuses that pass rather than repairing again.
+    const canonical = await readCompleteCanonicalUsageSummary(this.#usage, query, now);
+    const canonicalModels = await readCanonicalUsageBuckets(
+      this.#usage,
+      query,
+      'model',
+      now,
+      false,
+    );
     const [usageSummary, toolBuckets, modelBuckets, sessions] = await Promise.all([
       this.#usage.telemetry.summary(query),
       this.#usage.telemetry.buckets(query, 'tool'),
@@ -262,7 +315,7 @@ export class HostDailyReviewCoordinator {
     ]);
     return buildDailyReviewSummary({
       day: range,
-      usageSummary: mergeUsageSummary(usageSummary, canonical, query, now),
+      usageSummary: mergeUsageSummary(usageSummary, canonical),
       sessions: pickDailyReviewSessions(
         collapseSessionRevisions(sessions),
         range,
@@ -270,7 +323,7 @@ export class HostDailyReviewCoordinator {
       ),
       topTools: pickDailyReviewTopEntries(toolBuckets, DAILY_REVIEW_LIST_LIMIT),
       topModels: pickDailyReviewTopEntries(
-        mergeUsageBuckets(modelBuckets, canonical, query, 'model', now).buckets,
+        mergeUsageBuckets(modelBuckets, canonicalModels).buckets,
         DAILY_REVIEW_LIST_LIMIT,
       ),
     });
@@ -305,6 +358,10 @@ export class HostDailyReviewCoordinator {
       await inFlight.promise.catch(() => undefined);
       return this.#run(input);
     }
+    // Keep actual generation distinct from the idle scheduler hold. Besides
+    // protecting a run when scheduling is disabled, its release tells handoff
+    // observers that work finished after a bounded safe-pause attempt timed out.
+    const residency = this.#acquireResidency();
     const pending = this.#generateArchive(archiveId, day, now, modelKeyOverride, input);
     const entry = {
       modelKeyOverride,
@@ -317,6 +374,7 @@ export class HostDailyReviewCoordinator {
       return await pending;
     } finally {
       if (this.#inFlight.get(archiveId) === entry) this.#inFlight.delete(archiveId);
+      residency.release();
     }
   }
 
@@ -331,10 +389,13 @@ export class HostDailyReviewCoordinator {
       readonly replaceExisting: boolean;
     },
   ): Promise<DailyReviewArchive> {
+    const signal = this.#shutdown.signal;
+    signal.throwIfAborted();
     const summary = await this.#buildSummary(day, now);
     const existing = await this.#store.getArchive(archiveId);
     if (existing && !input.replaceExisting) return existing;
     const config = await this.#store.readConfig();
+    signal.throwIfAborted();
     const modelKey = modelKeyOverride || config.config.modelKey;
     const base = {
       id: archiveId,
@@ -354,57 +415,50 @@ export class HostDailyReviewCoordinator {
       });
     }
 
-    const controller = new AbortController();
-    this.#abortControllers.add(controller);
-    try {
-      const result = await this.#model.generate({
-        modelKey,
-        prompt: buildModelPrompt(summary, input.range),
-        abortSignal: controller.signal,
-      });
-      if (!result.ok) {
-        if (result.errorClass === 'aborted') {
-          throw (
-            controller.signal.reason ?? new DOMException('Daily Review was aborted', 'AbortError')
-          );
-        }
-        if (result.errorClass === 'persistence') {
-          this.#requestDrain();
-          throw new Error('Daily Review model accounting failed');
-        }
-        return this.#publish({
-          ...base,
-          status: result.errorClass === 'configuration' ? 'no_model' : 'failed',
-          sections: buildRuleBasedSections(summary, input.range),
-          errorMessage:
-            result.errorClass === 'configuration'
-              ? 'No executable analysis model is configured.'
-              : result.errorClass === 'timeout'
-                ? 'The analysis model timed out while generating this review.'
-                : 'The analysis model failed to generate this review.',
-        });
+    const result = await this.#model.generate({
+      modelKey,
+      prompt: buildModelPrompt(summary, input.range),
+      abortSignal: signal,
+    });
+    signal.throwIfAborted();
+    if (!result.ok) {
+      if (result.errorClass === 'aborted') {
+        throw signal.reason ?? new DOMException('Daily Review was aborted', 'AbortError');
       }
-      let sections: DailyReviewArchiveSectionContent;
-      try {
-        sections = parseSections(result.text);
-      } catch {
-        return this.#publish({
-          ...base,
-          modelKey: result.modelKey,
-          status: 'failed',
-          sections: buildRuleBasedSections(summary, input.range),
-          errorMessage: 'The analysis model returned an invalid review.',
-        });
+      if (result.errorClass === 'persistence') {
+        this.#requestDrain();
+        throw new Error('Daily Review model accounting failed');
       }
       return this.#publish({
         ...base,
-        modelKey: result.modelKey,
-        status: 'ok',
-        sections,
+        status: result.errorClass === 'configuration' ? 'no_model' : 'failed',
+        sections: buildRuleBasedSections(summary, input.range),
+        errorMessage:
+          result.errorClass === 'configuration'
+            ? 'No executable analysis model is configured.'
+            : result.errorClass === 'timeout'
+              ? 'The analysis model timed out while generating this review.'
+              : 'The analysis model failed to generate this review.',
       });
-    } finally {
-      this.#abortControllers.delete(controller);
     }
+    let sections: DailyReviewArchiveSectionContent;
+    try {
+      sections = parseSections(result.text);
+    } catch {
+      return this.#publish({
+        ...base,
+        modelKey: result.modelKey,
+        status: 'failed',
+        sections: buildRuleBasedSections(summary, input.range),
+        errorMessage: 'The analysis model returned an invalid review.',
+      });
+    }
+    return this.#publish({
+      ...base,
+      modelKey: result.modelKey,
+      status: 'ok',
+      sections,
+    });
   }
 
   async #publish(archive: DailyReviewArchive): Promise<DailyReviewArchive> {
@@ -416,28 +470,42 @@ export class HostDailyReviewCoordinator {
   }
 
   #reconcileScheduler(enabled: boolean): void {
+    this.#schedulerEnabled = enabled;
     if (!enabled || this.#draining) {
       this.#stopScheduler();
       return;
     }
-    this.#residency ??= this.#acquireResidency();
+    if (this.#handoffHeld) return;
+    this.#residency ??= this.#acquireResidency('idle');
     this.#timer ??= this.#setInterval(() => {
       void this.#tickScheduler().catch((error: unknown) => this.#handleSchedulerError(error));
     }, SCHEDULER_INTERVAL_MS);
   }
 
   #stopScheduler(): void {
-    if (this.#timer !== undefined) {
-      this.#clearInterval(this.#timer);
-      this.#timer = undefined;
-    }
+    this.#stopTimer();
     this.#residency?.release();
     this.#residency = undefined;
   }
 
-  async #tickScheduler(): Promise<void> {
-    if (!this.#prepared || this.#draining) return;
+  #stopTimer(): void {
+    if (this.#timer !== undefined) {
+      this.#clearInterval(this.#timer);
+      this.#timer = undefined;
+    }
+  }
+
+  #tickScheduler(): Promise<void> {
+    if (!this.#prepared || this.#draining || this.#handoffHeld) return Promise.resolve();
+    this.#schedulerTask ??= this.#runScheduler().finally(() => {
+      this.#schedulerTask = undefined;
+    });
+    return this.#schedulerTask;
+  }
+
+  async #runScheduler(): Promise<void> {
     const { config } = await this.#store.readConfig();
+    if (this.#draining || this.#handoffHeld) return;
     this.#reconcileScheduler(config.enabled);
     const now = this.#now();
     if (!config.enabled || !scheduledTimeHasPassed(now, config.executeTime)) return;
@@ -446,6 +514,7 @@ export class HostDailyReviewCoordinator {
     const day = localDayBoundsAt(now, -1);
     const archiveId = dailyReviewArchiveId(day, 1);
     if (await this.#store.getArchive(archiveId)) return;
+    if (this.#draining || this.#handoffHeld) return;
     await this.#run({
       range: 1,
       offsetDays: -1,

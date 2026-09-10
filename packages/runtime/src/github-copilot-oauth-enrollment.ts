@@ -23,7 +23,7 @@ import {
   isSupportedGitHubCopilotAccountToken,
   type OAuthSubscriptionTokens,
 } from './subscription-credentials.js';
-import { fetchGitHubCopilotModels } from './model-fetcher.js';
+import { fetchGitHubCopilotModels, GitHubCopilotModelPolicyError } from './model-fetcher.js';
 import { ConnectionEffectHttpError } from './connection-effect-outcome.js';
 import {
   OAUTH_LOGIN_MAX_TOKEN_CHARS,
@@ -250,8 +250,8 @@ export async function verifyGitHubCopilotModelEntitlement(input: {
     // ineligibility would send a paying user back through a device login that
     // was never the problem.
     if (
-      error instanceof ConnectionEffectHttpError &&
-      (error.status === 401 || error.status === 403)
+      error instanceof GitHubCopilotModelPolicyError ||
+      (error instanceof ConnectionEffectHttpError && (error.status === 401 || error.status === 403))
     ) {
       throw new GitHubCopilotEntitlementError({ cause: error });
     }

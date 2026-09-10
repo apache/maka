@@ -36,7 +36,6 @@ import { ChatSurfaceLayout } from '../chat-surface-layout.js';
 import { ChatView } from '../chat-view.js';
 import { LocaleProvider } from '../locale-context.js';
 import {
-  TranscriptScrollAuthorityProvider,
   useTranscriptScrollAuthority,
   type TranscriptScrollAuthority,
 } from '../transcript-scroll-authority.js';
@@ -131,6 +130,7 @@ interface ReturnToLatestHarness {
   readonly scrollButton: HTMLElement;
   readonly clickEvent: Event;
   readerScroll(): void;
+  geometryScroll(): void;
 }
 
 /**
@@ -189,9 +189,6 @@ function harness(options: { readonly onClick: () => Promise<void> | void }): Ret
     authority = useTranscriptScrollAuthority();
     return createElement(Fragment, null);
   };
-  const probe = createElement(TranscriptScrollAuthorityProvider, {
-    children: createElement(AuthorityProbe),
-  });
   const view = (): ReactElement => {
     const chat = createElement(ChatView, {
       messages: turnMessages(),
@@ -199,26 +196,23 @@ function harness(options: { readonly onClick: () => Promise<void> | void }): Ret
       onNew: () => {},
       scrollBehavior: 'auto' as const,
       hasOlderHistory: true,
+      hasNewerHistory: true,
       onLoadEarlierHistory: () => undefined,
+      onLoadLaterHistory: () => undefined,
       onReadingAnchorChange: (turnId?: string) => {
         anchors.push(turnId);
       },
-      returnToLatest: {
-        title: '查看较早的消息',
-        label: '回到最新',
-        isPending: false,
-        onClick: options.onClick,
-      },
     } as never);
     const layout = createElement(ChatSurfaceLayout, {
-      scrollOwner: 'host',
+      scrollToBottomLabel: '回到最新',
+      onReturnToTail: options.onClick,
       composer: null,
-      children: chat,
+      children: createElement(Fragment, null, chat, createElement(AuthorityProbe)),
     });
     const astryx = createElement(AstryxLocaleProvider, { children: layout });
     return createElement(LocaleProvider, {
       locale: 'zh-CN',
-      children: createElement(Fragment, null, astryx, probe),
+      children: astryx,
     });
   };
   const mount = document.querySelector<HTMLElement>('#mount');
@@ -230,19 +224,12 @@ function harness(options: { readonly onClick: () => Promise<void> | void }): Ret
   });
   const scrollRoot = mount.querySelector<HTMLElement>('[data-chat-scroll-container]');
   assert.ok(scrollRoot, 'the layout mounts a scroll container');
-  const scrollButton = [...mount.querySelectorAll('button')]
-    .find((button) => button.textContent?.includes('回到最新'));
+  const scrollButton = mount.querySelector<HTMLElement>('button[aria-label="回到最新"]');
   assert.ok(scrollButton, 'the return-to-latest affordance is rendered');
-  // The authority attached itself to the scroller on mount and wrote the tail
-  // into a zero-sized box, so its classification state says scrollTop=0 over a
-  // zero-height scroller. Give the box real geometry, then deliver one scroll
-  // event at that same offset so the echo branch refreshes the recorded
-  // geometry without being taken for the reader. Park the reader at 600 — the
-  // way paging back leaves them — and let `readerScroll()` announce it.
+  // LinkeDOM has no layout. Start at the tail; readerScroll supplies input and
+  // its resulting offset, whereas geometryScroll supplies no reading intent.
   Object.assign(scrollRoot, { scrollHeight: 2_400, clientHeight: 600 });
-  scrollRoot.scrollTop = 0;
-  scrollRoot.dispatchEvent(new window.Event('scroll'));
-  scrollRoot.scrollTop = 600;
+  scrollRoot.scrollTop = 1_800;
   // linkedom ships Event but not MouseEvent; a bubbling Event still reaches
   // React's root listener, which reads only the type for onClick.
   const clickEvent = new window.Event('click', { bubbles: true });
@@ -256,6 +243,13 @@ function harness(options: { readonly onClick: () => Promise<void> | void }): Ret
     scrollButton,
     clickEvent,
     readerScroll() {
+      const event = new window.Event('wheel', { bubbles: true });
+      Object.defineProperty(event, 'deltaY', { value: -120 });
+      scrollRoot.dispatchEvent(event);
+      scrollRoot.scrollTop = 600;
+      scrollRoot.dispatchEvent(new window.Event('scroll'));
+    },
+    geometryScroll() {
       scrollRoot.dispatchEvent(new window.Event('scroll'));
     },
   };
@@ -296,7 +290,7 @@ test('the anchor stays cleared while the range is still loading', async () => {
 
   // The arriving range is what used to re-report the anchor; whatever moves
   // the scroller while the load is pending must not hand the shell a Turn.
-  view.readerScroll();
+  view.geometryScroll();
   assert.deepEqual(view.anchors, [undefined, 'turn-0', undefined]);
 
   click.release();

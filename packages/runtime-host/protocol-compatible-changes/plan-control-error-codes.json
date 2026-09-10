@@ -1,0 +1,5 @@
+{
+  "epoch": 133,
+  "files": ["packages/runtime-host/src/protocol/plan.ts"],
+  "reason": "plan.ts: declares the pre-existing 'unauthorized' code on the plan.control / plan.turn.start error specs (the dispatcher already admitted it unconditionally; now the spec matches) and adds the exported PlanControlErrorCode alias over the file-private CONTROL_ERRORS list. No wire codec, frame, or error-code shape changes"
+}

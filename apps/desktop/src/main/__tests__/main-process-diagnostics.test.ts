@@ -61,6 +61,7 @@ const runtimeHostDiagnostics = {
   connections: 1,
   activeOperations: 1,
   activeResidencies: 0,
+  upgradeBlockingActivity: true,
   residencies: [],
   protocolVersion: 0,
   compatibilityEpoch: 16,
@@ -269,6 +270,26 @@ test('copies Desktop diagnostics while Runtime Host is unavailable', async () =>
     runtimeHostProcessLogs: () => [
       '[2026-08-20T00:00:00.000Z] ERROR [runtime-host] local Host child exited: pid=42 code=23 signal=none',
     ],
+    runtimeHostConnections: () => [{
+      epoch: 'guest-target',
+      target: {
+        profile: {
+          id: 'offline-guest', name: 'Shared Session', kind: 'remote',
+          access: 'session_guest', rootId: 'a'.repeat(64),
+          transport: { kind: 'tls', url: 'wss://example.com' },
+        },
+        credential: 'private-guest-credential',
+      },
+      readiness: 'reconnecting',
+      reconnect: {
+        failures: 27,
+        firstFailureAt: Date.parse('2026-09-09T00:00:00Z'),
+        lastFailureAt: Date.parse('2026-09-09T01:00:00Z'),
+      },
+      error: Object.assign(new Error('route unavailable api_key=sk-secretvalue123'), {
+        code: 'peer_reachability_needs_repair',
+      }),
+    }],
     resolveActiveRuntimeHost: () => undefined,
     resolveRuntimeHost: () => ({
       getDiagnostics: async () => {
@@ -295,6 +316,12 @@ test('copies Desktop diagnostics while Runtime Host is unavailable', async () =>
     /Recent local Runtime Host process exits \(1\)[\s\S]*pid=42 code=23 signal=none/,
   );
   assert.match(clipboard, /Diagnostics unavailable: Runtime Host disconnected/);
+  assert.match(clipboard, /Runtime Host connections \(1\)\n"offline-guest": reconnecting/);
+  assert.match(clipboard, /Failed attempts: 27/);
+  assert.match(clipboard, /First failure: 2026-09-09T00:00:00.000Z/);
+  assert.match(clipboard, /Last failure: 2026-09-09T01:00:00.000Z/);
+  assert.match(clipboard, /Latest error \[peer_reachability_needs_repair\]: route unavailable/);
+  assert.doesNotMatch(clipboard, /private-guest-credential|sk-secretvalue123/);
 });
 
 test('acknowledges one previous-run notice while keeping its diagnostics copyable', async () => {

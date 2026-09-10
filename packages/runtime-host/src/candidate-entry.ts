@@ -102,7 +102,10 @@ export async function runExecutionCandidateEntry(
     process.exit(2);
   }
 
-  launchOwnerGuard?.bind(() => result.host.close());
+  // A launcher that disappears without releasing this Host (Desktop quit,
+  // launcher crash) is an intentional retirement of an owned ephemeral Host,
+  // not a crash — closing with the retirement reason keeps the exit truthful.
+  launchOwnerGuard?.bind(() => result.host.close({ reason: 'retirement' }));
   const stopWatch = hooks.onWon?.(result.host);
   try {
     await runRuntimeHostProcessLifecycle(result.host);

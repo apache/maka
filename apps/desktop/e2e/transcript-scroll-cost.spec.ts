@@ -165,7 +165,7 @@ async function moveToTail(page: Page): Promise<void> {
  */
 async function returnToLatest(page: Page): Promise<void> {
   const returnLatest = page.getByRole('button', {
-    name: /^(?:返回最新消息|Return to latest)$/,
+    name: /^(?:滚动主对话到底部|Scroll main conversation to bottom)$/,
   });
   await expect(returnLatest).toBeVisible();
   await returnLatest.click();
@@ -252,10 +252,14 @@ test('paging back through the whole history keeps the mounted range bounded', as
     const firstBefore = await turns.first().getAttribute('data-turn-id');
     if (firstBefore === 'turn-prompt-rail-1') break;
     // The product asks for history on an upward wheel near the start, so the
-    // gesture that pages is the gesture a reader makes.
-    await wheel(page, cdp, { ticks: 12, deltaY: -120 });
+    // gesture that pages is the gesture a reader makes. How many gestures it
+    // takes is how tall the resident range happens to be, which is not what
+    // this test is about — keep scrolling until the range moves.
     await expect
-      .poll(async () => turns.first().getAttribute('data-turn-id'))
+      .poll(async () => {
+        await wheel(page, cdp, { ticks: 12, deltaY: -120 });
+        return turns.first().getAttribute('data-turn-id');
+      })
       .not.toBe(firstBefore);
     pages += 1;
     mountedMax = Math.max(mountedMax, await turns.count());

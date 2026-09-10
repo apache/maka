@@ -248,6 +248,7 @@ interface ConnectResolvedRuntimeHostInput
 }
 
 export interface RuntimeHostConnection {
+  readonly cooperativeHandoff?: true;
   readonly rootId: string;
   readonly hostEpoch: string;
   readonly connectionId: string;
@@ -347,7 +348,15 @@ interface QueuedDomainFrame {
 
 type RequestTimeoutScope = 'request' | 'connection';
 
+// A Host response can reach the Client before the Host's transport write
+// promise resumes and retires that request. Leave one slot free so replacing
+// the observed response cannot transiently cross the Host's hard limit. The
+// Host serializes outbound writes, so at most one response occupies this
+// acknowledgement window.
+const CLIENT_MAX_IN_FLIGHT_DOMAIN_REQUESTS = RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS - 1;
+
 class RuntimeHostConnectionImpl implements RuntimeHostConnection {
+  readonly cooperativeHandoff?: true;
   readonly rootId: string;
   readonly hostEpoch: string;
   readonly connectionId: string;
@@ -389,6 +398,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       selectedProtocol: number;
       compositionId: string;
       compositionRevision: string;
+      cooperativeHandoff?: true;
     },
     // livenessIntervalMs is validated by connectResolvedRuntimeHost alongside
     // the other connect timeouts, before any transport work happens.
@@ -409,6 +419,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.hostEpoch = accepted.hostEpoch;
     this.connectionId = accepted.connectionId;
     this.selectedProtocol = accepted.selectedProtocol;
+    this.cooperativeHandoff = accepted.cooperativeHandoff;
     this.compositionId = accepted.compositionId;
     this.compositionRevision = accepted.compositionRevision;
     this.#getPeerPath = options?.getPeerPath ?? (() => options?.peerPath);
@@ -543,7 +554,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   #drainDomainRequests(): void {
     while (
       !this.#terminalError &&
-      this.#inFlightDomainRequests < RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS
+      this.#inFlightDomainRequests < CLIENT_MAX_IN_FLIGHT_DOMAIN_REQUESTS
     ) {
       const queued = this.#queuedDomainFrames.shift();
       if (!queued) return;
@@ -585,15 +596,45 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return status;
   }
 
-  openSessionSubscription(
+  async openSessionSubscription(
     input: SubscriptionOpenInput,
     timeoutMs?: number,
+  ): Promise<RuntimeHostSessionSubscription> {
+    const deadline =
+      Date.now() + (timeoutMs === undefined ? 30_000 : requireTimeout(timeoutMs, 'timeoutMs'));
+    for (;;) {
+      try {
+        return await this.#openSessionSubscription(
+          input,
+          Math.max(1, deadline - Date.now()),
+          timeoutMs,
+        );
+      } catch (error) {
+        if (
+          !(error instanceof RuntimeHostOperationError) ||
+          error.code !== 'transcript_preparing' ||
+          input.transcript.kind !== 'tail' ||
+          this.#terminalError ||
+          Date.now() >= deadline
+        )
+          throw error;
+        // Each refusal committed a bounded, resumable index batch. Keep the
+        // caller in its loading state and yield before requesting more work.
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      }
+    }
+  }
+
+  #openSessionSubscription(
+    input: SubscriptionOpenInput,
+    openTimeoutMs: number,
+    requestTimeoutMs?: number,
   ): Promise<RuntimeHostSessionSubscription> {
     const expectedSessionId = input.sessionId;
     return this.#requestOperation(
       'subscription.open',
       input,
-      timeoutMs,
+      openTimeoutMs,
       (result) => {
         if (result.hostEpoch !== this.hostEpoch) {
           throw new RuntimeHostSubscriptionError(
@@ -616,13 +657,13 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
         const subscription = new ClientSessionSubscription(
           result,
           () => this.#closeSessionSubscription(result.subscriptionId),
-          (query) => this.request('session.transcript.page', query, timeoutMs),
+          (query) => this.request('session.transcript.page', query, requestTimeoutMs),
           async () => {
             try {
               await this.request(
                 'session.transcript.overlay.release',
                 { subscriptionId: result.subscriptionId },
-                timeoutMs,
+                requestTimeoutMs,
               );
             } catch (error) {
               this.#fail(asError(error));
@@ -1468,6 +1509,7 @@ async function exchangeRuntimeHostHandshake(
   const helloProtocol = input.helloProtocol ?? input.protocol;
   const hello: LegacySurfaceClientHello = {
     kind: 'hello',
+    activitySnapshotVersion: 2,
     clientInstanceId: input.clientInstanceId,
     surface: 'desktop',
     protocolMin: helloProtocol.min,

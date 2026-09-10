@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Button, HStack, TextInput } from '@astryxdesign/core';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
@@ -62,6 +62,26 @@ export function SessionRenameDialog(props: {
   // `key` at the call site), so the seed is the name as it was when the menu
   // item was chosen, and nothing has to be synchronised while it is open.
   const [name, setName] = useState(target.name);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+
+    const focusAndSelect = () => {
+      input.focus({ preventScroll: true });
+      input.select();
+    };
+
+    focusAndSelect();
+    const frame = window.requestAnimationFrame(() => {
+      // Closing a menu and opening a native dialog both manage focus. If
+      // either handoff wins after this effect, take ownership back once the
+      // dialog has settled.
+      if (document.activeElement !== input) focusAndSelect();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
 
   const trimmed = name.trim();
   // The row's own vocabulary: a session is 任务 everywhere the user can see
@@ -104,6 +124,7 @@ export function SessionRenameDialog(props: {
           <LayoutContent>
             <form id="maka-session-rename-form" onSubmit={submit}>
               <TextInput
+                ref={inputRef}
                 label={title}
                 // Hidden: the dialog's own header already says what is being
                 // renamed, and Astryx clips the whole label block — a

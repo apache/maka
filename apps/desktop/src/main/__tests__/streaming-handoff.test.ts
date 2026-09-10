@@ -21,6 +21,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { parseHTML } from 'linkedom';
 import type { SessionEvent } from '@maka/core/events';
 import {
   armLiveTurn,
@@ -87,6 +88,31 @@ function renderLiveTurn(liveTurn: LiveTurnProjection): string {
 }
 
 describe('single live-turn handoff', () => {
+  it('keeps activity in the answer footer before the session or Turn arrives', () => {
+    const session: NonNullable<Parameters<typeof ChatView>[0]['activeSession']> = {
+      id: 'session-1', name: 'pending', status: 'running' as const, backend: 'ai-sdk',
+      labels: [], isFlagged: false, isArchived: false, hasUnread: false,
+      llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask' as const,
+    };
+    for (const activeSession of [undefined, session]) {
+      const markup = renderWithLocale(createElement(ChatView, {
+        activeSession,
+        messages: [],
+        transientMessages: [{
+          id: 'message-pending', ts: 1, text: 'send now',
+          transientPlacement: 'current_turn',
+        }],
+        runningStatus: true,
+        scrollBehavior: 'smooth',
+        onNew() {},
+      } satisfies Parameters<typeof ChatView>[0]));
+      const { document } = parseHTML(markup);
+      const status = document.querySelector('.maka-assistant-answer [role="status"]');
+      assert.ok(status?.closest('.maka-turn-footer'), 'activity must occupy the shared footer');
+      assert.equal(document.querySelector('.maka-assistant-answer [role="toolbar"]'), null);
+    }
+  });
+
   it('renders a transient user message without manufacturing a Turn', () => {
     const markup = renderWithLocale(createElement(ChatView, {
       activeSession: {
@@ -164,7 +190,9 @@ describe('single live-turn handoff', () => {
     } satisfies Parameters<typeof ChatView>[0]));
 
     assert.doesNotMatch(markup, /maka-chat-message-loading/);
-    assert.ok(markup.indexOf('send now') < markup.indexOf('data-turn-id="turn-1"'));
+    const answerIndex = markup.indexOf('maka-assistant-answer');
+    assert.ok(answerIndex >= 0);
+    assert.ok(markup.indexOf('send now') < answerIndex);
     assert.equal((markup.match(/data-transient-message-id="turn-1"/g) ?? []).length, 1);
     assert.equal((markup.match(/data-transcript-turn-id="turn-1"/g) ?? []).length, 1);
   });
@@ -200,8 +228,10 @@ describe('single live-turn handoff', () => {
       onNew() {},
     } satisfies Parameters<typeof ChatView>[0]));
 
-    assert.ok(markup.indexOf('send now') < markup.indexOf('data-turn-id="host-turn"'));
-    assert.ok(markup.indexOf('do this next') > markup.indexOf('data-turn-id="host-turn"'));
+    const answerIndex = markup.indexOf('maka-assistant-answer');
+    assert.ok(answerIndex >= 0);
+    assert.ok(markup.indexOf('send now') < answerIndex);
+    assert.ok(markup.indexOf('do this next') > answerIndex);
     assert.equal((markup.match(/data-transient-message-id=/g) ?? []).length, 2);
   });
 
@@ -911,6 +941,55 @@ describe('single live-turn handoff', () => {
       { type: 'tool_call', id: 'tool-1', turnId: 'turn-1', stepId: 'tool:tool-1', ts: 2, toolName: 'Bash', args: {} },
       { type: 'tool_result', id: 'result-1', turnId: 'turn-1', ts: 3, toolUseId: 'tool-1', isError: false, content: { kind: 'text', text: 'ok' } },
     ]);
+    assert.equal(liveTurns.get()['session-1'], undefined);
+  });
+
+  it('retires a re-seeded compaction row when the refreshed transcript is terminal', () => {
+    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({});
+    const ref = { current: liveTurns.get() };
+    const interactions = createStateSetter<InteractionQueues>({});
+    const handlers = createAppShellSessionEventHandlers({
+      uiLocale: 'en',
+      activeIdRef: { current: 'session-1' },
+      liveTurnBySessionRef: ref,
+      refreshMessages: async () => true,
+      refreshSessions: async () => [],
+      setLiveTurnBySession: (updater) => {
+        liveTurns.set(updater);
+        ref.current = liveTurns.get();
+      },
+      setInteractionBySession: interactions.set,
+      showModelSetupToast: () => {},
+      toastApi: { error: () => {} },
+    });
+
+    // A newly attached observer can only seed the still-running identity; it
+    // has no prior snapshot from which to synthesize the missed terminal event.
+    handlers.handleEvent('session-1', {
+      type: 'context_compaction_started',
+      id: 'compaction-started-1',
+      turnId: 'turn-compact',
+      ts: 1,
+    });
+    assert.equal(liveTurns.get()['session-1']?.rootExecutionKind, 'context_compact');
+
+    handlers.reconcilePersistedMessages('session-1', [
+      {
+        type: 'system_note',
+        id: 'compaction-settled-1',
+        turnId: 'turn-compact',
+        ts: 2,
+        kind: 'context_compacted',
+      },
+      {
+        type: 'turn_state',
+        id: 'turn-terminal-1',
+        turnId: 'turn-compact',
+        ts: 3,
+        status: 'completed',
+      },
+    ]);
+
     assert.equal(liveTurns.get()['session-1'], undefined);
   });
 });

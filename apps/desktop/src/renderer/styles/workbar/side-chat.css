@@ -18,12 +18,11 @@
  */
 
 /* The quote lives as a transient tab inside the session workbar (not a second
-   right column, which was too crowded). The tab panel is a flex column so the
-   companion's ChatView transcript fills the height and the Composer pins to the
-   bottom — the same vertical rhythm as the main conversation. */
+   right column, which was too crowded). The panel's single grid track
+   (workbar/shell.css) stretches the companion to the full height, so its
+   ChatView transcript fills it and the Composer pins to the bottom — the same
+   vertical rhythm as the main conversation. */
 .maka-quote-workbar-panel {
-  display: flex;
-  flex-direction: column;
   min-height: 0;
   padding: 0;
   overflow: hidden;

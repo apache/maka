@@ -17,85 +17,23 @@
  * under the License.
  */
 
-import {
-  DesktopLocalHostRetirementError,
-  type RuntimeHostDesktopManager,
-} from './runtime-host-desktop-manager.js';
+import type { RuntimeHostDesktopManager } from './runtime-host-desktop-manager.js';
 
-type RetirementOwner = Pick<
-  RuntimeHostDesktopManager,
-  'retireOwnedLocalHost' | 'forceTerminateOwnedLocalHost'
->;
-
-export type RuntimeHostQuitFailureDecision = 'retry' | 'force' | 'cancel';
+type QuitOwner = Pick<RuntimeHostDesktopManager, 'prepareOwnedLocalHostQuit'>;
 
 export interface RuntimeHostQuitPrompts {
   confirmInterrupt(): Promise<boolean>;
-  recoverFailure(error: unknown): Promise<RuntimeHostQuitFailureDecision>;
 }
 
+/** Stop Host admission before Desktop cleanup can race a new background job. */
 export async function prepareRuntimeHostQuit(
-  owner: RetirementOwner | undefined,
+  owner: QuitOwner | undefined,
   prompts: RuntimeHostQuitPrompts,
 ): Promise<'ready' | 'cancelled'> {
   if (!owner) return 'ready';
-  for (;;) {
-    try {
-      const guarded = await owner.retireOwnedLocalHost('refuse_active_work');
-      if (guarded.kind !== 'active_tasks') return 'ready';
-      if (!(await prompts.confirmInterrupt())) return 'cancelled';
-      const authorized = await owner.retireOwnedLocalHost('interrupt_active_work');
-      if (authorized.kind === 'active_tasks') {
-        throw new Error('Runtime Host refused authorized quit retirement');
-      }
-      return 'ready';
-    } catch (error) {
-      const recovery = await recoverRuntimeHostQuit(owner, prompts, error);
-      if (recovery !== 'retry') return recovery;
-    }
-  }
-}
-
-async function recoverRuntimeHostQuit(
-  owner: RetirementOwner,
-  prompts: RuntimeHostQuitPrompts,
-  error: unknown,
-): Promise<'ready' | 'retry' | 'cancelled'> {
-  let currentError = error;
-  for (;;) {
-    const retirement = forceTerminableRetirement(currentError);
-    const decision = await prompts.recoverFailure(currentError);
-    if (decision === 'cancel') return 'cancelled';
-    if (decision === 'retry') return 'retry';
-    if (!retirement) throw new Error('Force termination was selected without Host authority');
-    try {
-      if (await owner.forceTerminateOwnedLocalHost(retirement.facts)) return 'ready';
-      currentError = forceTerminationError(
-        retirement,
-        new Error('The Runtime Host identity changed or forced termination failed'),
-      );
-    } catch (cause) {
-      currentError = forceTerminationError(retirement, cause);
-    }
-  }
-}
-
-function forceTerminableRetirement(
-  error: unknown,
-): DesktopLocalHostRetirementError | undefined {
-  return error instanceof DesktopLocalHostRetirementError &&
-    error.facts.pid !== undefined &&
-    error.facts.forceTerminationAvailable
-    ? error
-    : undefined;
-}
-
-function forceTerminationError(
-  retirement: DesktopLocalHostRetirementError,
-  cause: unknown,
-): DesktopLocalHostRetirementError {
-  return new DesktopLocalHostRetirementError(
-    { ...retirement.facts, forceTerminationAvailable: false },
-    { cause: cause instanceof Error ? cause : new Error(String(cause)) },
-  );
+  const result = await owner.prepareOwnedLocalHostQuit('refuse_active_work');
+  if (result === 'ready') return 'ready';
+  if (!await prompts.confirmInterrupt()) return 'cancelled';
+  await owner.prepareOwnedLocalHostQuit('interrupt_active_work');
+  return 'ready';
 }

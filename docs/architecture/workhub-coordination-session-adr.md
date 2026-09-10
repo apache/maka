@@ -25,6 +25,11 @@
 - Decision source: [Discussion #3286](https://github.com/apache/maka/discussions/3286#discussioncomment-18135855)
 - Delivery tracker: [Issue #3492](https://github.com/apache/maka/issues/3492)
 
+The one-Session ownership decision remains in force. The deterministic routing
+experiments described below are historical: the current coordination model uses
+active-Turn task actions and restricted Desktop capabilities. See the
+[current domain language](../workhub-domain-language.md) for the implemented flow.
+
 ## Context
 
 WorkHub is intended to be one persistent conversational place where a user can ask
@@ -48,7 +53,7 @@ durable conversation and execution substrate.
 The role is provisioned lazily when WorkHub first needs it and resolves to the same
 Session after Runtime Host or application restarts. The Session role representation,
 lookup, recovery, and per-Host UI resolution enforce this lifecycle contract. The
-coordination transcript and disposition semantics remain separate later work.
+coordination transcript and typed dispositions use that same Session substrate.
 
 The per-Host boundary is intentional. A Coordination Session coordinates only the
 ordinary Sessions belonging to the same Runtime Host. Switching Runtime Hosts
@@ -94,6 +99,24 @@ replacement, the gate additionally requires explicit correction evidence in the
 trusted user text, claims the source delegation in Coordination transcript order,
 and rejects any later competing replacement intent. Neither a model nor a routing
 policy can directly authorize a write, Stop, or expansion of execution authority.
+
+Routing experiments replace Action Intent classification and/or Session Resolver
+recall behind the fixed Action Policy and unchanged Action Gate. A strategy names
+one Intent component and one Resolver component; it has no proposal-producing
+`resolve()` method and owns no visit focus. R2.4 pairs deterministic components;
+R3-A pairs model-assisted intent with model-ranked recall; R3-B pairs model-assisted
+intent with deterministic recall. These are experiment configurations, not separate
+policy implementations or a production model rollout.
+
+Intent output contains no target. Resolver output contains only ranked or ambiguous
+opaque candidate references, or no match; it cannot return creation or a disposition.
+The controller shares one bounded candidate context across arms; deterministic
+components retain full request text, while model adapters bound text at the model
+call boundary. The controller passes validated evidence through the same Policy with the same trusted Session snapshot.
+A model recall budget does not hide known Sessions from exact-name or correction
+rules in that fixed Policy. Policy retains trusted-text creation,
+ambiguity, correction and focus constraints. Model ranking alone cannot authorize
+work, and every resulting proposal still goes through the Host-owned Gate.
 
 ## Delegation links rather than copies transcripts
 
@@ -259,8 +282,8 @@ lets the stop reach a terminal resolution.
   replacement. Its target comes from the shared Session Resolver port, whose
   first implementation is a temporary exact-name baseline; replacing it changes
   recall only, because admission revalidates opaque identity and expected state
-  rather than any display name. Pause, resume, and pronoun-based stop controls
-  remain later work.
+  rather than any display name. Named resume uses ordinary Session continuation admission. Pause and
+  pronoun-based stop controls remain later work.
 
 Reevaluate the per-Host decision if supported workflows require one WorkHub
 conversation to coordinate ordinary Sessions on multiple Runtime Hosts, or if Host

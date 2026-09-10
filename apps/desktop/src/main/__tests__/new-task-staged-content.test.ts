@@ -29,7 +29,7 @@ import { getDesktopConversationCopy } from '../../renderer/locales/conversation-
 import {
   useComposerAttachments,
   type ComposerAttachmentService,
-} from '../../renderer/use-composer-attachments.js';
+} from '../../renderer/features/conversation/index.js';
 import { useAppShellComposerQuotes } from '../../renderer/use-app-shell-composer-quotes.js';
 import {
   composerModelSupportsVision,

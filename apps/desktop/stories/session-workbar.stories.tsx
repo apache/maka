@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { CSSProperties } from 'react';
+import { useState, type CSSProperties } from 'react';
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
@@ -27,7 +27,7 @@ import type { SessionSummary } from '@maka/core/session';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ToastProvider } from '@maka/ui';
-import { WorkbarServicesProvider } from '../src/renderer/features/workbar';
+import { WorkbarServicesProvider, WorkbarTitlebarActions } from '../src/renderer/features/workbar';
 import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
@@ -301,7 +301,7 @@ const fileLineCapGitReviewSnapshot: GitReviewSnapshot = {
 // Source-level truncation: a large changeset whose file list the source capped,
 // so `truncated` is set and the panel shows its 变化过多 banner. Each file is
 // ordinary — no single file trips the per-file cap here.
-const sourceTruncatedFiles: GitReviewSnapshot['files'] = Array.from({ length: 24 }, (_, index) => {
+const sourceTruncatedFiles: GitReviewSnapshot['files'] = Array.from({ length: 40 }, (_, index) => {
   const path = `src/feature-${String(index).padStart(2, '0')}.ts`;
   return {
     path,
@@ -868,7 +868,6 @@ function bridge(options: {
         {
           turnId: 'source-turn',
           status: 'completed',
-          partialOutputRetained: false,
         },
       ],
       readSettledMessages: async () => ({ messages: [], settled: true }),
@@ -927,7 +926,13 @@ function Workbar(props: {
   sourceSession?: SessionSummary;
   /** Overrides the restored column width, the way the resize handle does. */
   width?: number;
+  /**
+   * Lets the column's own collapse toggle and the titlebar's restore
+   * affordance drive `rightCollapsed`, the way the app's reducer does.
+   */
+  collapsible?: boolean;
 }) {
+  const [collapsed, setCollapsed] = useState(false);
   const emptyTabsState = createSessionWorkbarTabsState();
   let tab: SessionWorkbarTab | undefined;
   let quotes: QuoteCompanionPanelState[] | undefined;
@@ -985,13 +990,21 @@ function Workbar(props: {
           ...(props.width ? { '--maka-session-workbar-width': `${props.width}px` } : {}),
         } as CSSProperties}
       >
-        <div className="mainColumn" />
+        <div className="mainColumn">
+          {props.collapsible && (
+            <WorkbarTitlebarActions
+              available
+              collapsed={collapsed}
+              onToggle={() => setCollapsed(false)}
+            />
+          )}
+        </div>
         <WorkbarSurface
           sessionId={SESSION_ID}
           hidden={false}
-          onDismissPanel={noop}
+          onDismissPanel={props.collapsible ? () => setCollapsed(true) : noop}
           panelsState={createSessionWorkbarPanelsState(tabsState)}
-          rightCollapsed={false}
+          rightCollapsed={collapsed}
           bottomOpen={false}
           onActivateTab={noop}
           onCloseTab={noop}
@@ -1076,6 +1089,37 @@ export const SeveralFacesAtColumnFloor: Story = {
   ),
 };
 
+// Below 991px the column stacks under the conversation at full width. The
+// wide-window ease (app-shell.stories.tsx holds that contract) must not reach
+// it: the face spans the row, and collapsing removes the row instead of
+// leaving an empty band. The smoke lane sizes stories named `narrow` to 720px.
+export const CollapseNarrowStack: Story = {
+  parameters: { viewport: { options: STACKED_WINDOW_VIEWPORT } },
+  globals: { viewport: { value: 'makaStackedWindow', isRotated: false } },
+  decorators: [bridge()],
+  render: () => <Workbar tab="review" collapsible />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const frame = canvasElement.querySelector<HTMLElement>(
+      '.maka-session-workbar[data-placement="right"]',
+    )!;
+    const panel = canvasElement.querySelector<HTMLElement>(
+      '.maka-session-workbar-panel[data-overlay][data-placement="right"]',
+    )!;
+    const toolbar = frame.querySelector<HTMLElement>('.maka-session-workbar-toolbar')!;
+    await canvas.findByRole('region', { name: 'Git 变更' });
+    expect(window.innerWidth).toBeLessThanOrEqual(990);
+    expect(toolbar.getBoundingClientRect().width).toBe(frame.getBoundingClientRect().width);
+    expect(panel.firstElementChild!.getBoundingClientRect().width).toBe(
+      panel.getBoundingClientRect().width,
+    );
+
+    await userEvent.click(canvas.getByRole('button', { name: '收起任务工作栏' }));
+    await waitFor(() => expect(getComputedStyle(frame).display).toBe('none'));
+    expect(getComputedStyle(panel).display).toBe('none');
+  },
+};
+
 // Real path: 任务工作栏 → 变更 on a session whose branch matches its base. The
 // panel's own empty state (icon + help), not a spinner and not an error.
 export const ChangesEmpty: Story = {
@@ -1118,7 +1162,22 @@ export const ChangesTruncated: Story = {
   decorators: [bridge({ review: { ok: true, snapshot: sourceTruncatedGitReviewSnapshot } })],
   render: () => <Workbar tab="review" />,
   play: async ({ canvasElement }) => {
-    await within(canvasElement).findByText('变化过多，仅显示前一部分文件');
+    const canvas = within(canvasElement);
+    await canvas.findByText('变化过多，仅显示前一部分文件');
+    await userEvent.click(await canvas.findByRole('button', { name: '再显示 20 个文件' }));
+
+    const panel = canvasElement.querySelector<HTMLElement>('.maka-session-review-panel');
+    if (!panel) throw new Error('the changes panel is missing');
+    await waitFor(() => {
+      expect(
+        canvasElement.querySelectorAll('.maka-session-review-file').length,
+      ).toBe(40);
+      expect(panel.scrollHeight).toBeGreaterThan(panel.clientHeight);
+    });
+
+    panel.scrollTop = panel.scrollHeight;
+    await waitFor(() => expect(panel.scrollTop).toBeGreaterThan(0));
+    panel.scrollTop = 0;
   },
 };
 

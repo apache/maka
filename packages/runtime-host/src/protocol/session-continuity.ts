@@ -274,12 +274,14 @@ export type SessionDomainChangedFrame = SubscriptionEnvelope &
     kind: 'subscription.session_domain_changed';
   };
 
-export interface SessionRuntimeResourcePtyDataFrame extends SubscriptionEnvelope {
+export interface SessionRuntimeResourcePtyDataFrame extends Omit<SubscriptionEnvelope, 'sequence'> {
   kind: 'subscription.runtime_resource_pty_data';
   sessionId: string;
   ref: string;
   ptySequence: number;
   data: string;
+  /** Bytes were omitted; reacquire the terminal snapshot before displaying more. */
+  reset?: true;
 }
 
 export type AgentGraphChangedReason = 'observation' | 'runtime_activity' | 'reconciled' | 'stopped';
@@ -306,7 +308,13 @@ export type SubscriptionFrame =
   | AgentGraphChangedFrame
   | SubscriptionClosedFrame;
 
+export type OrderedSubscriptionFrame = Exclude<
+  SubscriptionFrame,
+  SessionRuntimeResourcePtyDataFrame
+>;
+
 const SUBSCRIPTION_OPEN_ERRORS = [
+  'transcript_preparing',
   'host_not_ready',
   'host_draining',
   'operation_unavailable',
@@ -325,6 +333,20 @@ const SUBSCRIPTION_CLOSE_ERRORS = [
 ] as const;
 
 export const SESSION_CONTINUITY_OPERATION_SPECS = {
+  'subscription.pty_interest.set': defineOperation({
+    mode: 'control',
+    availability: 'ready',
+    errors: SUBSCRIPTION_CLOSE_ERRORS,
+    decodeInput: (value: unknown) => {
+      const record = requireExactRecord(value, 'PTY interest input', ['subscriptionId', 'refs']);
+      if (!Array.isArray(record.refs) || record.refs.length > 16)
+        throw invalidProtocolFrame('PTY interest must contain at most 16 refs');
+      const refs = record.refs.map(decodeRuntimeResourceRef);
+      if (new Set(refs).size !== refs.length) throw invalidProtocolFrame('Duplicate PTY interest');
+      return { subscriptionId: requireId(record.subscriptionId, 'subscriptionId'), refs };
+    },
+    decodeOutput: decodeSubscriptionCloseResult,
+  }),
   'subscription.open': defineOperation({
     mode: 'control',
     availability: 'ready',
@@ -362,6 +384,35 @@ export const SESSION_CONTINUITY_OPERATION_SPECS = {
 export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
   requireEncodedByteLimit(value, 'subscription frame', SESSION_SUBSCRIPTION_FRAME_MAX_BYTES);
   const record = requireRecord(value, 'subscription frame');
+  if (record.kind === 'subscription.runtime_resource_pty_data') {
+    assertExactKeys(record, 'Runtime Resource PTY data frame', [
+      'kind',
+      'hostEpoch',
+      'subscriptionId',
+      'sessionId',
+      'ref',
+      'ptySequence',
+      'data',
+      ...(Object.hasOwn(record, 'reset') ? ['reset'] : []),
+    ]);
+    if (record.reset !== undefined && record.reset !== true) {
+      throw invalidProtocolFrame('PTY reset must be true when present');
+    }
+    return {
+      kind: record.kind,
+      hostEpoch: requireId(record.hostEpoch, 'hostEpoch'),
+      subscriptionId: requireId(record.subscriptionId, 'subscriptionId'),
+      sessionId: requireEntityId(record.sessionId, 'sessionId'),
+      ref: decodeRuntimeResourceRef(record.ref),
+      ptySequence: requirePositiveCount(record.ptySequence, 'PTY sequence'),
+      data: requireUtf8BoundedString(
+        record.data,
+        'Runtime Resource PTY data',
+        SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES,
+      ),
+      ...(record.reset === true ? { reset: true } : {}),
+    };
+  }
   const envelope = decodeEnvelope(record);
   let frame: SubscriptionFrame;
   if (record.kind === 'subscription.session_projection') {
@@ -461,29 +512,6 @@ export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
             resources: decodeSessionRuntimeResourceChanges(record.resources),
           }
         : { kind: record.kind, ...envelope, sessionId, domain };
-  } else if (record.kind === 'subscription.runtime_resource_pty_data') {
-    assertExactKeys(record, 'Runtime Resource PTY data frame', [
-      'kind',
-      'hostEpoch',
-      'subscriptionId',
-      'sequence',
-      'sessionId',
-      'ref',
-      'ptySequence',
-      'data',
-    ]);
-    frame = {
-      kind: record.kind,
-      ...envelope,
-      sessionId: requireEntityId(record.sessionId, 'sessionId'),
-      ref: decodeRuntimeResourceRef(record.ref),
-      ptySequence: requirePositiveCount(record.ptySequence, 'PTY sequence'),
-      data: requireUtf8BoundedString(
-        record.data,
-        'Runtime Resource PTY data',
-        SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES,
-      ),
-    };
   } else if (record.kind === 'subscription.closed') {
     assertExactKeys(record, 'subscription closed frame', [
       'kind',

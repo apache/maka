@@ -18,12 +18,8 @@
  */
 
 /**
- * The one thing that answers "where should the transcript be looking".
- *
- * Three writers used to move `scrollTop` — Astryx's lock/spring, Maka's
- * compensation and `scrollIntoView`, and the browser's own anchoring — and none
- * of them held the answer, so they avoided each other through flags and effect
- * ordering. This file is the answer, and it is one boolean:
+ * Owns automatic transcript following. Astryx auto-follow is disabled by the
+ * host; explicit navigation releases this authority before moving the viewport.
  *
  *   pinned  → content that grows writes `scrollTop = scrollHeight`
  *   !pinned → nothing here writes `scrollTop`, ever
@@ -32,9 +28,9 @@
  * behind this authority's own write. Once released, restore native anchoring
  * to keep the reader on the same content without application writes.
  *
- * The last written offset identifies our asynchronous scroll echoes. When
- * released, geometry also accounts for native anchoring and browser clamping
- * before an unexplained movement is reported as reader input.
+ * Input establishes reading intent; scroll and resize only report geometry.
+ * Layout can shrink, clamp the offset, then grow before scroll is delivered.
+ * Geometry alone therefore cannot establish that the reader chose to move.
  */
 
 import {
@@ -49,26 +45,6 @@ import { ChatLayoutScrollButton } from '@astryxdesign/core/Chat';
 /** Astryx's own thresholds, so the affordance keeps the feel readers learnt. */
 const PIN_THRESHOLD_PX = 10;
 const BUTTON_THRESHOLD_PX = 100;
-/**
- * How far an offset may miss what the content accounts for and still be the
- * content.
- *
- * The band below holds an exact `scrollTop` against a range built from two
- * rounded integers, and native anchoring rounds the anchor's own positions
- * separately again, so a step that is entirely the content still lands a pixel
- * or two outside its own band. A story in `packages/ui/stories` measures that
- * against a real layout engine and goes red if a browser starts missing by
- * more.
- *
- * It is spent only where that arithmetic happened. An event that finds the
- * content unchanged has nothing rounded in it: the band is a point, the offset
- * either moved or did not, and a reader inching down a settled transcript is
- * heard exactly. Spending it on those events instead is what would make a slow
- * reader unhearable, and no accumulator can buy that back — the error is
- * bounded per event but one-directional across a stream, so a running total
- * turns a pixel of arithmetic into a drift that crosses any threshold.
- */
-const GEOMETRY_ROUNDING_PX = 2;
 
 export interface TranscriptScrollSnapshot {
   /** Following the tail: growth writes `scrollTop`. */
@@ -89,72 +65,55 @@ export interface TranscriptScrollAuthority {
    */
   releasePin(): void;
   /**
-   * Called when the reader moved the scroller, and only then. Growth, native
-   * anchoring and this authority's own writes all move `scrollTop` without
-   * saying anything about what the reader wants, and none of them reach here.
-   *
-   * It exists so nothing else keeps a second reading of the raw `scroll` event:
-   * whoever needs "the reader is near the start" asks the position, and this
-   * says when asking means anything.
+   * Input can request history at an edge before any movement. Scroll reports
+   * the resulting reading position. Neither phase is emitted for layout alone;
+   * consumers do not interpret raw wheel or scroll events themselves.
    */
-  subscribeToReaderScroll(listener: (direction: 'up' | 'down') => void): () => void;
+  subscribeToReaderScroll(listener: (direction: 'up' | 'down', phase: 'input' | 'scroll') => void): () => void;
   subscribe(listener: () => void): () => void;
   getSnapshot(): TranscriptScrollSnapshot;
+}
+
+/** Whether the browser can route vertical input through the nested scroll chain. */
+function reachesTranscript(event: Event, root: HTMLElement, direction: 'up' | 'down'): boolean {
+  for (const node of event.composedPath()) {
+    if (node === root) return true;
+    if (!(node instanceof HTMLElement)) continue;
+    const style = getComputedStyle(node);
+    if (!['auto', 'scroll', 'overlay'].includes(style.overflowY)) continue;
+    const remaining = direction === 'up'
+      ? node.scrollTop : node.scrollHeight - node.clientHeight - node.scrollTop;
+    if (remaining > 0 || ['contain', 'none'].includes(style.overscrollBehaviorY)) return false;
+  }
+  return false;
 }
 
 export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   let root: HTMLElement | null = null;
   let pinned = true;
   let awayFromTail = false;
-  /**
-   * The offset this authority last wrote, as the browser clamped it.
-   *
-   * A scroll event arrives asynchronously, and on a loaded machine that can be
-   * more than a frame after the write that caused it. Timing cannot tell the
-   * two apart — the position can: our own write is still sitting in `scrollTop`
-   * when its event lands, and a reader's gesture has already moved it somewhere
-   * else.
-   */
-  let lastWrittenTop: number | undefined;
-  /**
-   * The scroll geometry the last event saw.
-   *
-   * Both numbers move `scrollTop` without the reader touching anything: content
-   * lands and native anchoring compensates, or the viewport changes size and
-   * the browser clamps the offset to the new end. Comparing them is how a
-   * gesture is told from everything else that writes.
-   */
-  let lastScrollHeight = 0;
-  let lastClientHeight = 0;
-  /** The offset the last event saw, to measure the next one's move against. */
-  let lastScrollTop = 0;
+  // Geometry belongs to a known input operation, never the other way around.
+  // scrollend also covers smooth keyboard scrolling and touchpad inertia.
+  let gesture: { top: number; direction?: 'up' | 'down' } | undefined;
   let snapshot: TranscriptScrollSnapshot = { pinned, awayFromTail };
   const listeners = new Set<() => void>();
-  const readerListeners = new Set<(direction: 'up' | 'down') => void>();
-
+  const readerListeners = new Set<(direction: 'up' | 'down', phase: 'input' | 'scroll') => void>();
+  const distanceToTail = (): number =>
+    root ? root.scrollHeight - root.scrollTop - root.clientHeight : 0;
   const publish = (): void => {
-    // Net height cannot explain anchoring when content shrinks above the
-    // viewport while growing below it. Give each mode just one scroll writer.
     if (root) root.style.overflowAnchor = pinned ? 'none' : 'auto';
     if (snapshot.pinned === pinned && snapshot.awayFromTail === awayFromTail) return;
     snapshot = { pinned, awayFromTail };
     for (const listener of listeners) listener();
   };
-
-  const distanceToTail = (): number =>
-    root ? root.scrollHeight - root.scrollTop - root.clientHeight : 0;
-
   const writeToTail = (): void => {
     if (!root) return;
     root.scrollTop = root.scrollHeight;
-    // Read them back: the browser clamps the write to the end of the scroller,
-    // and the clamped offset is what the event will carry.
-    lastWrittenTop = root.scrollTop;
-    lastScrollHeight = root.scrollHeight;
-    lastClientHeight = root.clientHeight;
-    lastScrollTop = root.scrollTop;
     awayFromTail = false;
     publish();
+  };
+  const reportReader = (direction: 'up' | 'down', phase: 'input' | 'scroll'): void => {
+    for (const listener of [...readerListeners]) listener(direction, phase);
   };
 
   return {
@@ -164,92 +123,140 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       if (!target) return () => undefined;
       const previousOverflowAnchor = target.style.overflowAnchor;
       publish();
-      const onScroll = (): void => {
-        // An event that finds the scroller still on the offset this authority
-        // put it on is the echo of that write, however late it arrives; any
-        // other offset is the reader, exactly, and not by inference. Nested
-        // scrollers (a tool output box, a terminal) never reach here at all:
-        // `scroll` does not bubble, and there is no `wheel` listener to catch
-        // instead.
-        if (lastWrittenTop !== undefined && Math.abs(target.scrollTop - lastWrittenTop) < 1) {
-          lastScrollHeight = target.scrollHeight;
-          lastClientHeight = target.clientHeight;
-          lastScrollTop = target.scrollTop;
+      const begin = (event: Event, direction: 'up' | 'down'): void => {
+        if (event.defaultPrevented || !reachesTranscript(event, target, direction)) return;
+        const remaining = direction === 'up' ? target.scrollTop : distanceToTail();
+        if (remaining <= 0) {
+          // An edge gesture can ask for an adjacent history page even though
+          // it produces no scroll (and therefore no scrollend).
+          reportReader(direction, 'input');
           return;
         }
-        // Once the viewport leaves our write, returning to that same pixel is
-        // a new movement, not an echo (bounded windows often have equal heights).
-        lastWrittenTop = undefined;
-        // Content moves the offset too, and only ever by how much the end of
-        // the transcript moved. Native anchoring answers content landing above
-        // the reader by pushing the offset down by exactly what was inserted,
-        // content leaving from above by pulling it up by exactly what went,
-        // and a transcript that ends before the offset by clamping it to the
-        // new end — every one of them somewhere between nothing and that whole
-        // amount. Inside that band their offset changed and their intent did
-        // not, so the pin must not be re-derived from where they now are, and
-        // nobody may be told the reader asked for anything. The affordance
-        // still follows the new distance, because that is a fact about the
-        // viewport rather than about them.
-        //
-        // Outside it, the move is the reader's, and this may not be decided
-        // from the geometry merely having changed. During growth it always
-        // has, so a reader who scrolled while an answer streamed arrived
-        // carrying a changed `scrollHeight` and was discarded along with it —
-        // the pin stayed, and the next growth wrote the view back to the tail.
-        // Scrolling away from a streaming answer is the one moment a reader
-        // most needs to be believed.
-        const maxScroll = target.scrollHeight - target.clientHeight;
-        const contentDelta = maxScroll - (lastScrollHeight - lastClientHeight);
-        const explainedLow = Math.min(0, contentDelta);
-        const explainedHigh = Math.max(0, contentDelta);
-        const topDelta = target.scrollTop - lastScrollTop;
-        const unexplained = topDelta - Math.min(explainedHigh, Math.max(explainedLow, topDelta));
-        const slack = contentDelta === 0 ? 0 : GEOMETRY_ROUNDING_PX;
-        const readerMoved = Math.abs(unexplained) > slack;
-        lastScrollHeight = target.scrollHeight;
-        lastClientHeight = target.clientHeight;
-        lastScrollTop = target.scrollTop;
-        const distance = distanceToTail();
-        awayFromTail = distance > BUTTON_THRESHOLD_PX;
-        if (!readerMoved) {
-          publish();
-          return;
-        }
-        pinned = distance <= PIN_THRESHOLD_PX;
+        gesture = { top: gesture?.top ?? target.scrollTop, direction };
+        pinned = false;
         publish();
-        for (const listener of [...readerListeners]) listener(unexplained < 0 ? 'up' : 'down');
+        reportReader(direction, 'input');
       };
-      lastScrollHeight = target.scrollHeight;
-      lastClientHeight = target.clientHeight;
-      lastScrollTop = target.scrollTop;
-      target.addEventListener('scroll', onScroll, { passive: true });
-      // Everything that moves the tail without the reader asking, watched in
-      // one place: the scroller's own box, because the tail also moves when the
-      // viewport shrinks (a window resize, a composer that gains a line), and
-      // its children's boxes, because that is what `scrollHeight` is made of.
-      //
-      // Children rather than the scroller: a ResizeObserver on a scroll
-      // container reports the viewport, never the overflow. And children rather
-      // than the transcript's own idea of what grew — a turn, a streaming
-      // message — because the transcript renders content outside turns too, and
-      // an observer that knows which nodes matter is an observer that can be
-      // wrong about it.
-      const box = new ResizeObserver(() => {
-        if (pinned) {
-          writeToTail();
-          return;
+      const onWheel = (event: WheelEvent): void => {
+        if (event.ctrlKey || event.metaKey || event.deltaY === 0) return;
+        begin(event, event.deltaY < 0 ? 'up' : 'down');
+      };
+      const onKeyDown = (event: KeyboardEvent): void => {
+        const element = event.target;
+        if (!(element instanceof HTMLElement) || element.isContentEditable
+          || element.closest('input, textarea, select') || event.altKey || event.metaKey) return;
+        if (event.key === ' ' && element.closest('button, summary, [role="button"]')) return;
+        if (event.ctrlKey && !['Home', 'End'].includes(event.key)) return;
+        const direction = ['ArrowUp', 'PageUp', 'Home'].includes(event.key)
+          || (event.key === ' ' && event.shiftKey) ? 'up'
+          : ['ArrowDown', 'PageDown', 'End', ' '].includes(event.key) ? 'down' : undefined;
+        if (direction) begin(event, direction);
+      };
+      let pointer: number | undefined;
+      const onPointerDown = (event: PointerEvent): void => {
+        if (event.defaultPrevented || event.button !== 0 || event.pointerType === 'touch'
+          || event.target !== target) return;
+        pointer = event.pointerId;
+        gesture = { top: target.scrollTop };
+      };
+      const onPointerMove = (event: PointerEvent): void => {
+        if (pointer === event.pointerId) gesture ??= { top: target.scrollTop };
+      };
+      const onPointerUp = (): void => {
+        pointer = undefined;
+        const pending = gesture;
+        if (!pending || pending.direction !== undefined) return;
+        // Native track clicks can start their smooth scroll after pointerup.
+        // Scroll steps precede rAF; retire a click that still has not moved
+        // there, rather than leaving a non-scrolling click armed indefinitely.
+        requestAnimationFrame(() => {
+          if (gesture !== pending || pending.direction !== undefined) return;
+          gesture = undefined;
+          if (pinned) writeToTail();
+        });
+      };
+      let touchY: number | undefined;
+      const onTouchStart = (event: TouchEvent): void => {
+        touchY = event.touches.length === 1 ? event.touches[0]!.clientY : undefined;
+      };
+      const onTouchMove = (event: TouchEvent): void => {
+        const nextY = event.touches.length === 1 ? event.touches[0]!.clientY : undefined;
+        if (touchY !== undefined && nextY !== undefined && touchY !== nextY) {
+          begin(event, nextY < touchY ? 'down' : 'up');
         }
+        touchY = nextY;
+      };
+      const onTouchEnd = (): void => { touchY = undefined; };
+      const onScroll = (): void => {
         awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
+        if (gesture) {
+          const delta = target.scrollTop - gesture.top;
+          gesture.top = target.scrollTop;
+          if (delta !== 0) {
+            const direction = pointer !== undefined
+              ? (delta < 0 ? 'up' : 'down')
+              : gesture.direction ?? (delta < 0 ? 'up' : 'down');
+            // A reversed input may arrive while the previous smooth scroll
+            // still moves in the opposite direction. Its end is not the end
+            // of the new input's default action.
+            if ((delta < 0 ? 'up' : 'down') !== direction) {
+              publish();
+              return;
+            }
+            gesture.direction = direction;
+            pinned = false;
+            publish();
+            reportReader(direction, 'scroll');
+            return;
+          }
+        }
         publish();
+      };
+      const onScrollEnd = (): void => {
+        const ended = gesture;
+        if (!ended) return;
+        const top = ended.top;
+        // Chromium can end a scrollbar animation while a subsequent keyboard
+        // animation is still moving the same scroller. Let the next rendering
+        // step report any continuation before retiring its input provenance.
+        // This schedules no scroll and uses no time-based ignore window.
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (gesture !== ended || ended.top !== top) return;
+          pinned = ended.direction === 'down' && distanceToTail() <= PIN_THRESHOLD_PX;
+          gesture = undefined;
+          publish();
+          if (pinned) writeToTail();
+        }));
+      };
+      target.addEventListener('wheel', onWheel, { passive: true });
+      // React's delegated widget handlers run above the scroller. Observe
+      // keyboard input after they can prevent its native scrolling default.
+      target.ownerDocument.addEventListener('keydown', onKeyDown);
+      target.addEventListener('pointerdown', onPointerDown);
+      target.addEventListener('pointermove', onPointerMove, { passive: true });
+      target.addEventListener('touchstart', onTouchStart, { passive: true });
+      target.addEventListener('touchmove', onTouchMove, { passive: true });
+      target.addEventListener('touchend', onTouchEnd);
+      target.addEventListener('touchcancel', onTouchEnd);
+      target.ownerDocument.addEventListener('pointerup', onPointerUp);
+      target.ownerDocument.addEventListener('pointercancel', onPointerUp);
+      target.addEventListener('scroll', onScroll, { passive: true });
+      target.addEventListener('scrollend', onScrollEnd);
+
+      // Observe the viewport and its direct content boxes, including content
+      // outside Turns. Resize changes position only; it never changes intent.
+      const box = new ResizeObserver(() => {
+        if (pinned && !gesture) writeToTail();
+        else {
+          awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
+          publish();
+        }
       });
       const observeBox = (): void => {
         box.disconnect();
         box.observe(target);
         for (const child of target.children) box.observe(child);
       };
-      // Only the direct children: anything deeper grows one of them on its way
-      // to growing `scrollHeight`, or is out of flow and does not grow it.
       const childList = new MutationObserver(observeBox);
       childList.observe(target, { childList: true });
       observeBox();
@@ -257,31 +264,42 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       return () => {
         childList.disconnect();
         box.disconnect();
+        target.removeEventListener('wheel', onWheel);
+        target.ownerDocument.removeEventListener('keydown', onKeyDown);
+        target.removeEventListener('pointerdown', onPointerDown);
+        target.removeEventListener('pointermove', onPointerMove);
+        target.removeEventListener('touchstart', onTouchStart);
+        target.removeEventListener('touchmove', onTouchMove);
+        target.removeEventListener('touchend', onTouchEnd);
+        target.removeEventListener('touchcancel', onTouchEnd);
+        target.ownerDocument.removeEventListener('pointerup', onPointerUp);
+        target.ownerDocument.removeEventListener('pointercancel', onPointerUp);
         target.removeEventListener('scroll', onScroll);
+        target.removeEventListener('scrollend', onScrollEnd);
         target.style.overflowAnchor = previousOverflowAnchor;
-        lastWrittenTop = undefined;
+        gesture = undefined;
         if (root === target) root = null;
       };
     },
     pinToTail() {
+      gesture = undefined;
       pinned = true;
       writeToTail();
       publish();
     },
     releasePin() {
+      gesture = undefined;
       pinned = false;
       awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
       publish();
     },
     subscribeToReaderScroll(listener) {
       readerListeners.add(listener);
-      return () => {
-        readerListeners.delete(listener);
-      };
+      return () => { readerListeners.delete(listener); };
     },
     subscribe(listener) {
       listeners.add(listener);
-      return () => listeners.delete(listener);
+      return () => { listeners.delete(listener); };
     },
     getSnapshot() {
       return snapshot;
@@ -325,7 +343,11 @@ export function useTranscriptScrollAuthority(): TranscriptScrollAuthority {
  * The label stays unset on purpose: `ChatSurfaceLayout` overrides Astryx's
  * `scrollToBottom` string through the locale provider that wraps this.
  */
-export function TranscriptScrollButton() {
+export function TranscriptScrollButton({
+  onActivate,
+}: {
+  onActivate?: () => Promise<void> | void;
+}) {
   const authority = useTranscriptScrollAuthority();
   const snapshot = useSyncExternalStore(
     authority.subscribe,
@@ -334,8 +356,12 @@ export function TranscriptScrollButton() {
   );
   return (
     <ChatLayoutScrollButton
-      isVisible={snapshot.awayFromTail}
-      onClick={() => authority.pinToTail()}
+      isVisible={snapshot.awayFromTail || onActivate !== undefined}
+      onClick={() => {
+        authority.pinToTail();
+        const activation = onActivate?.();
+        if (activation) void activation.catch(() => undefined);
+      }}
     />
   );
 }
