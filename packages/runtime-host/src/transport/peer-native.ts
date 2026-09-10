@@ -430,7 +430,6 @@ export class RuntimeHostPeerByteStream implements RuntimeHostByteStream {
   readonly #endListeners = new Set<() => void>();
   readonly #errorListeners = new Set<(error: Error) => void>();
   readonly #stream: RuntimeHostPeerNativeStream;
-  readonly #initialData: Buffer;
   #resolveClosed!: () => void;
   #resume: (() => void) | undefined;
   #paused = false;
@@ -438,11 +437,10 @@ export class RuntimeHostPeerByteStream implements RuntimeHostByteStream {
 
   constructor(stream: RuntimeHostPeerNativeStream, initialData: Buffer = Buffer.alloc(0)) {
     this.#stream = stream;
-    this.#initialData = initialData;
     this.closed = new Promise((resolve) => {
       this.#resolveClosed = resolve;
     });
-    queueMicrotask(() => void this.#pump());
+    queueMicrotask(() => void this.#pump(initialData));
   }
 
   onData(listener: (chunk: Buffer) => void): void {
@@ -484,9 +482,10 @@ export class RuntimeHostPeerByteStream implements RuntimeHostByteStream {
     this.#resume = undefined;
   }
 
-  async #pump(): Promise<void> {
+  async #pump(initialData: Buffer): Promise<void> {
     try {
-      if (this.#initialData.byteLength > 0) this.#emitData(this.#initialData);
+      if (initialData.byteLength > 0) this.#emitData(initialData);
+      initialData = Buffer.alloc(0);
       while (!this.#closed) {
         if (this.#paused) {
           await new Promise<void>((resolve) => {
@@ -494,12 +493,14 @@ export class RuntimeHostPeerByteStream implements RuntimeHostByteStream {
           });
           if (this.#closed) return;
         }
-        const chunk = await this.#stream.read();
+        let chunk = await this.#stream.read();
         if (!chunk) {
           for (const listener of this.#endListeners) listener();
           return;
         }
         this.#emitData(chunk);
+        // Listeners own any data they retain; the read loop no longer needs it.
+        chunk = null;
       }
     } catch (error) {
       this.#emitError(normalizePeerError(error));
