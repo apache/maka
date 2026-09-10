@@ -76,8 +76,17 @@ function utf8Len(text: string): number {
  * multi-byte sequence at the boundary with U+FFFD, which we strip.
  */
 function sliceLineByBytes(line: string, maxBytes: number, keep: 'head' | 'tail'): string {
-  const buf = Buffer.from(line, 'utf8');
-  if (buf.length <= maxBytes) return line;
+  if (utf8Len(line) <= maxBytes) return line;
+  // One UTF-16 unit needs at least one UTF-8 byte. The extra unit keeps a
+  // surrogate pair crossing the window boundary outside the retained bytes.
+  // Preserve Buffer.subarray's original behavior for unusual numeric budgets.
+  const window =
+    Number.isInteger(maxBytes) && maxBytes >= 0
+      ? keep === 'head'
+        ? line.slice(0, maxBytes + 1)
+        : line.slice(-(maxBytes + 1))
+      : line;
+  const buf = Buffer.from(window, 'utf8');
   const slice = keep === 'head' ? buf.subarray(0, maxBytes) : buf.subarray(buf.length - maxBytes);
   const decoded = slice.toString('utf8');
   return keep === 'head' ? decoded.replace(/�+$/, '') : decoded.replace(/^�+/, '');
