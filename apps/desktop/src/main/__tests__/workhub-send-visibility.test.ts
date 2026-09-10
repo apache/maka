@@ -371,7 +371,8 @@ test('WorkHub steering keeps the current Turn and Stop authority and reconciles 
   const messageId = h.steers[0]![1];
   const original: StoredMessage = { type: 'user', id: 'original-canonical-id', turnId, text: 'original request', ts: 1 };
   await act(() => h.publish([original]));
-  assert.deepEqual(h.controller.transientMessages, [], 'a confirmed queue receipt retires the local placeholder');
+  assert.deepEqual(h.controller.transientMessages.map((message) => message.id), [messageId],
+    'an admitted response and unrelated transcript evidence must keep the submission visible');
   await act(() => h.emit({ type: 'steering_message', id: 'steer-observation', turnId, messageId, ts: 2, content: { text: 'change direction', attachments } }));
   assert.deepEqual(h.controller.transientMessages, [], 'live steering must not duplicate its admission placeholder while the transcript lags');
   await act(() => h.publish([original, { type: 'user', id: messageId, turnId, text: 'change direction', attachments, ts: 2 }]));
@@ -388,13 +389,22 @@ test('uncertain steering retains its identity across Turn completion and rejecti
   await act(async () => { assert.equal(await h.controller.send('change direction', [], 'steer'), false); });
   assert.equal(h.controller.liveTurn?.turnId, 'active-turn');
   assert.equal(h.controller.busy, true);
-  assert.deepEqual(h.controller.transientMessages, []);
+  assert.equal(h.controller.transientMessages.length, 0);
   h.setSteerResult('unknown');
   await act(async () => { assert.equal(await h.controller.send('change direction', [], 'steer'), false); });
   const messageId = h.steers[1]![1];
   await act(async () => { assert.equal(await h.controller.send('change direction', []), false); });
   assert.match(h.controller.error!, /Shift\+Enter/);
   assert.equal(h.steers.length, 2, 'Enter cannot silently replay uncertain steering or duplicate it');
+  for (const [text, attachments] of [
+    ['edited direction', []],
+    ['change direction', [{ kind: 'doc', name: 'new.txt', mimeType: 'text/plain', bytes: 1,
+      ref: { kind: 'workspace_file', relativePath: 'new.txt' } }]],
+  ] as [string, AttachmentRef[]][]) {
+    await act(async () => { assert.equal(await h.controller.send(text, attachments, 'steer'), false); });
+  }
+  assert.equal(h.steers.length, 2, 'edited text or attachments cannot overwrite an unknown attempt');
+  assert.deepEqual(h.controller.transientMessages.map((message) => message.id), [messageId]);
   await act(() => h.emit({ type: 'complete', id: 'done', turnId: 'active-turn', ts: 2, stopReason: 'end_turn' }));
   h.setSteerResult('admitted');
   await act(async () => { assert.equal(await h.controller.send('change direction', [], 'steer'), true); });
@@ -403,6 +413,20 @@ test('uncertain steering retains its identity across Turn completion and rejecti
   h.latestRead.resolve();
 });
 
+
+test('Host retraction resolves an uncertain WorkHub attempt before the next draft is sent', async () => {
+  const h = await mountController();
+  await act(() => h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }));
+  h.setSteerResult('unknown');
+  await act(async () => { assert.equal(await h.controller.send('old direction', [], 'steer'), false); });
+  const messageId = h.steers[0]![1];
+  await act(() => h.emit({ type: 'message_admission', id: 'retracted', turnId: 'active-turn', messageId, ts: 2, outcome: 'retracted' }));
+  assert.equal(h.controller.transientMessages.length, 0);
+  h.setSteerResult('admitted');
+  await act(async () => { assert.equal(await h.controller.send('new direction', [], 'steer'), true); });
+  assert.notEqual(h.steers[1]![1], messageId);
+  h.latestRead.resolve();
+});
 
 test('steering observed before its admission response renders once and outranks an uncertain receipt', async () => {
   const h = await mountController();
@@ -480,7 +504,10 @@ test('WorkHub defaults to follow-up and moves each message into its admitted suc
   assert.equal(h.controller.liveTurn?.turnId, 'active-turn');
   const first = h.steers[0]![1];
   const second = h.steers[1]![1];
-  assert.deepEqual(h.controller.transientMessages, []);
+  assert.deepEqual(h.controller.transientMessages.map((message) => message.id), [first, second]);
+  await act(() => h.reconnect());
+  assert.deepEqual(h.controller.transientMessages.map((message) => message.id), [first, second],
+    'disconnecting before canonical evidence cannot hide accepted messages');
   const entries = h.steers.map(([, messageId, text, attachments]) => ({
     entryId: messageId, messageId, content: { text, attachments }, placement: 'next_turn' as const, state: 'queued' as const,
   }));

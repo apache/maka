@@ -120,6 +120,7 @@ import type {
   HostClientCapabilityCoordinator,
   SessionBindingPreview,
 } from './client-capability-coordinator.js';
+import { hostedExecutionRunProfile } from './hosted-execution-tool-profile.js';
 import {
   runtimeHostExecutionUnavailableReason,
   runtimeHostExternalTurnUnavailableReason,
@@ -396,95 +397,123 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
 
   async recover(): Promise<void> {
     for (const [sessionId, plan] of this.#recoveryPlansBySession) {
-      for (const admission of plan.admissions) {
-        const run = await this.readRunIfPresent(sessionId, admission.runId);
-        if (!run) continue;
-        await this.assertRunMatchesDurableExecution(run, admission.turnId, admission.execution);
-        const snapshot = await this.readCanonicalSnapshot(
-          sessionId,
-          admission.turnId,
-          admission.runId,
-          run,
-        );
-        if (isTerminalSnapshot(snapshot)) {
-          if (admission.sourceMessages.length > 0) {
-            await this.messages.materializeMessageHandoffsForRun({
-              sessionId,
-              turnId: admission.turnId,
-              runId: admission.runId,
-              messageIds: admission.sourceMessages.map((source) => source.messageId),
-            });
-          }
-        } else {
-          if (plan.rootReplayAdmission === admission) continue;
-          if (admission.execution.kind !== 'safe_boundary_continuation') {
-            throw new Error(`Startup recovery left Turn ${admission.turnId} non-terminal`);
-          }
-          this.parkContinuationAdmission(admission);
-        }
-      }
-      const admission = plan.rootReplayAdmission;
-      if (!admission) continue;
-      // Session recovery may have materialized this Run after the replay plan was prepared.
-      const existingRun = await this.readRunIfPresent(sessionId, admission.runId);
-      const pendingHandoff =
-        existingRun &&
-        (await readLogicalRuntimeExecution(this.stores.runtimeEventStore, admission, existingRun))
-          ?.pendingHandoff;
-      if (existingRun && !pendingHandoff) continue;
-      const input = activationInputForAdmission(admission);
-      const disposition = await this.sessionAdmission.run(sessionId, async (lease) => {
-        if (admission.execution.kind === 'safe_boundary_continuation') {
-          const header = await this.stores.sessionStore.readHeaderSnapshot(sessionId);
-          if (runtimeHostSafeBoundaryContinuationUnavailableReason(header)) {
+      if (plan.rootReplayAdmission && !(await this.bindRecoveryCapabilities(sessionId))) continue;
+      try {
+        for (const admission of plan.admissions) {
+          const run = await this.readRunIfPresent(sessionId, admission.runId);
+          if (!run) continue;
+          await this.assertRunMatchesDurableExecution(run, admission.turnId, admission.execution);
+          const snapshot = await this.readCanonicalSnapshot(
+            sessionId,
+            admission.turnId,
+            admission.runId,
+            run,
+          );
+          if (isTerminalSnapshot(snapshot)) {
+            if (admission.sourceMessages.length > 0) {
+              await this.messages.materializeMessageHandoffsForRun({
+                sessionId,
+                turnId: admission.turnId,
+                runId: admission.runId,
+                messageIds: admission.sourceMessages.map((source) => source.messageId),
+              });
+            }
+          } else {
+            if (plan.rootReplayAdmission === admission) continue;
+            if (admission.execution.kind !== 'safe_boundary_continuation') {
+              throw new Error(`Startup recovery left Turn ${admission.turnId} non-terminal`);
+            }
             this.parkContinuationAdmission(admission);
-            return undefined;
           }
         }
-        const continuation =
-          admission.execution.kind === 'safe_boundary_continuation' && !pendingHandoff
-            ? await this.reconstructAdmittedContinuation(admission)
-            : undefined;
-        if (continuation?.disposition === 'parked') {
-          if (
-            continuation.plan.reason === 'safety_check_failed' ||
-            continuation.plan.reason === 'resume_feature_disabled' ||
-            continuation.plan.reason === 'continuation_authority_unavailable' ||
-            continuation.plan.reason === 'safety_observation_unavailable'
-          ) {
-            this.parkContinuationAdmission(admission);
-            return undefined;
+        const admission = plan.rootReplayAdmission;
+        if (!admission) continue;
+        // Session recovery may have materialized this Run after the replay plan was prepared.
+        const existingRun = await this.readRunIfPresent(sessionId, admission.runId);
+        const pendingHandoff =
+          existingRun &&
+          (await readLogicalRuntimeExecution(this.stores.runtimeEventStore, admission, existingRun))
+            ?.pendingHandoff;
+        if (existingRun && !pendingHandoff) continue;
+        const input = activationInputForAdmission(admission);
+        const disposition = await this.sessionAdmission.run(sessionId, async (lease) => {
+          if (admission.execution.kind === 'safe_boundary_continuation') {
+            const header = await this.stores.sessionStore.readHeaderSnapshot(sessionId);
+            if (runtimeHostSafeBoundaryContinuationUnavailableReason(header)) {
+              this.parkContinuationAdmission(admission);
+              return undefined;
+            }
           }
+          const continuation =
+            admission.execution.kind === 'safe_boundary_continuation' && !pendingHandoff
+              ? await this.reconstructAdmittedContinuation(admission)
+              : undefined;
+          if (continuation?.disposition === 'parked') {
+            if (
+              continuation.plan.reason === 'safety_check_failed' ||
+              continuation.plan.reason === 'resume_feature_disabled' ||
+              continuation.plan.reason === 'continuation_authority_unavailable' ||
+              continuation.plan.reason === 'safety_observation_unavailable'
+            ) {
+              this.parkContinuationAdmission(admission);
+              return undefined;
+            }
+            throw new Error(
+              `Unable to recover admitted Turn ${admission.turnId}: ${continuation.plan.reason}`,
+            );
+          }
+          await this.messages.handoffRootSources({
+            sessionId,
+            turnId: admission.turnId,
+            runId: admission.runId,
+            messageIds: admission.sourceMessages.map((source) => source.messageId),
+          });
+          return this.prepareAdmittedTurn(
+            input,
+            admission,
+            this.acquireRecoveryResidency,
+            lease,
+            undefined,
+            undefined,
+            undefined,
+            continuation?.continuation,
+          );
+        });
+        if (!disposition) continue;
+        const outcome = await this.resolveStartDisposition(input, disposition);
+        if (!outcome.ok) {
           throw new Error(
-            `Unable to recover admitted Turn ${admission.turnId}: ${continuation.plan.reason}`,
+            `Unable to recover admitted Turn ${admission.turnId}: ${outcome.error.code}`,
           );
         }
-        await this.messages.handoffRootSources({
-          sessionId,
-          turnId: admission.turnId,
-          runId: admission.runId,
-          messageIds: admission.sourceMessages.map((source) => source.messageId),
-        });
-        return this.prepareAdmittedTurn(
-          input,
-          admission,
-          this.acquireRecoveryResidency,
-          lease,
-          undefined,
-          undefined,
-          undefined,
-          continuation?.continuation,
-        );
-      });
-      if (!disposition) continue;
-      const outcome = await this.resolveStartDisposition(input, disposition);
-      if (!outcome.ok) {
-        throw new Error(
-          `Unable to recover admitted Turn ${admission.turnId}: ${outcome.error.code}`,
-        );
+      } finally {
+        this.#recoveryPlansBySession.delete(sessionId);
       }
     }
-    this.#recoveryPlansBySession.clear();
+  }
+
+  private async bindRecoveryCapabilities(sessionId: string): Promise<boolean> {
+    const header = await this.stores.sessionStore.readHeaderSnapshot(sessionId);
+    if (header.toolProfile !== 'workhub-coordination-v2') return true;
+    if (!this.clientCapabilities) return false;
+    // Recovery has no initiating Desktop connection. Select through the same
+    // authority as a live admission, and commit only a complete tool binding.
+    const required = hostedExecutionRunProfile(header.toolProfile)!.toolNames.filter((name) =>
+      name.startsWith('mcp__'),
+    );
+    const preview = await this.clientCapabilities.runWithSessionBindingPreview(
+      sessionId,
+      '',
+      async () => {
+        const snapshot = this.clientCapabilities!.snapshotForSession(sessionId);
+        try {
+          return required.every((name) => snapshot?.tools.some((tool) => tool.name === name));
+        } finally {
+          snapshot?.release();
+        }
+      },
+    );
+    return preview.ok && preview.value && (await preview.commit()).ok;
   }
 
   async close(): Promise<void> {
@@ -564,7 +593,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         runId: active.runId,
       };
     }
-    return this.#handoffHold || this.#admissions.has(sessionId)
+    return this.#handoffHold ||
+      this.#admissions.has(sessionId) ||
+      this.#recoveryPlansBySession.get(sessionId)?.rootReplayAdmission
       ? { kind: 'reserved' }
       : { kind: 'idle' };
   }
@@ -616,7 +647,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   }
 
   private reserveRootTurn(sessionId: string): RootTurnReservation | undefined {
-    if (this.#handoffHold) return undefined;
+    if (this.#handoffHold || this.#recoveryPlansBySession.get(sessionId)?.rootReplayAdmission)
+      return undefined;
     return this.#admissions.reserve(sessionId);
   }
 
@@ -1442,12 +1474,15 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   startRecoveredMessages(
     input: HostMessageRecoveryBatch,
     admissionLease: SessionAdmissionLease,
-  ): Promise<{ readonly turnId: string } | { readonly error: string }> {
+  ): Promise<
+    { readonly turnId: string } | { readonly error: string } | { readonly deferred: true }
+  > {
     return this.runCommand(async () => {
       if (this.#executions.has(input.sessionId)) {
         return { error: 'A root Turn is still active' };
       }
       const header = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
+      if (!(await this.bindRecoveryCapabilities(input.sessionId))) return { deferred: true };
       const execution = {
         kind: isWorkHubCoordinationSessionId(header.id)
           ? ('workhub_coordination' as const)

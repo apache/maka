@@ -2365,6 +2365,47 @@ test('entries reorder permutes the follow-up queue and rejects stale orders', as
   await fixture.coordinator.close();
 });
 
+test('one provider boundary waits for a steering submit whose durable commit is pending', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  const storing = deferred<void>();
+  const stored = deferred<void>();
+  const commit = fixture.admissions.commitMessageAdmission;
+  fixture.admissions.commitMessageAdmission = async (admission) => {
+    storing.resolve();
+    await stored.promise;
+    return commit(admission);
+  };
+  const submitting = submit(fixture, 'delayed-steer', 'change direction', 'current_turn');
+  await storing.promise;
+  let pulled = false;
+  const pulling = owner.pull().then((batch) => {
+    pulled = true;
+    return batch;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(
+    pulled,
+    false,
+    'the final boundary cannot treat an unfinished admission as an empty queue',
+  );
+  stored.resolve();
+  assert.equal((await submitting).ok, true);
+  const batch = await pulling;
+  assert.deepEqual(
+    batch.map((lease) => lease.messageId),
+    ['delayed-steer'],
+  );
+  assert.equal(batch[0]?.content.text, 'change direction');
+  owner.ack(batch.map((lease) => lease.id));
+  owner.release();
+  const terminal = fixture.coordinator.beginTerminalTransition(ROOT);
+  assert.deepEqual(terminal.sources, [], 'the admitted steering was consumed by the original Turn');
+  fixture.coordinator.completeIdle(terminal);
+  await fixture.coordinator.close();
+});
+
 test('steering edits and reorders settle before one complete batch is pulled; follow-ups advance one per Turn', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);

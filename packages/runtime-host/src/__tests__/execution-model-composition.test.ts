@@ -44,6 +44,8 @@ import {
   decodeRunCompositionSnapshot,
 } from '@maka/core/run-composition';
 import { readInvocation, testInvocationRecord } from '@maka/runtime/test-only/invocation-fixture';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import { messageContentDigest } from '@maka/core/events';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
 import type { BackendCompactHistoryInput } from '@maka/core/backend-types';
@@ -1784,6 +1786,223 @@ test('production backend preserves coordinator Client Capability semantics acros
     await coordinator.close();
     store.close();
     await provider.close();
+  }
+});
+
+test('cold WorkHub recovery waits for Desktop tools across pending-message and admitted-root crash cuts', {
+  timeout: 30_000,
+}, async () => {
+  for (const crashCut of ['pending-message', 'admitted-root'] as const) {
+    const base = await mkdtemp(join(tmpdir(), 'maka-workhub-cold-recovery-'));
+    const root = join(base, 'interactive');
+    const provider = await startProvider();
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    let owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    const residencies = new HostResidencyRegistry();
+    const sessionId = WORKHUB_COORDINATION_SESSION_ID;
+    const context: ConnectionContext = {
+      hostEpoch: 'workhub-recovery-epoch',
+      connectionId: 'desktop',
+      principal: 'local_os_user',
+      acquireResidency: () => residencies.acquire('operation'),
+    };
+    let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
+    let drained = false;
+    const createComposition = () =>
+      createExecutionRuntimeHostComposition(
+        {
+          owner: owner!,
+          hostEpoch: context.hostEpoch,
+          acquireResidency: (label) => residencies.acquire(label),
+          retainUntilProcessExit: () => undefined,
+          requestDrain: () => {
+            drained = true;
+            composition?.beginDrain();
+          },
+          waitForResidencies: () => residencies.waitForEmpty(),
+          waitForResidenciesExcept: (label) => residencies.waitForEmptyExcept(label),
+        },
+        { bootstrapRuntimePolicy: false },
+      );
+    const registerDesktop = async (registrationId: string, names: string[]) => {
+      const result = await composition!.handlers['client.capability.replace'](
+        {
+          registrationId,
+          offers: [
+            {
+              offerId: 'desktop-workhub',
+              version: '0',
+              affinity: 'session',
+              hostPathAccess: 'none',
+              label: 'Desktop WorkHub',
+              tools: names.map((name) => ({
+                serverId: 'desktop_workhub',
+                name,
+                inputSchema: { type: 'object', additionalProperties: false },
+              })),
+            },
+          ],
+        },
+        context,
+      );
+      assert.ok(result.ok, JSON.stringify(result));
+    };
+    try {
+      const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+      const created = await policy.connectionCatalog.create({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'recovery-deepseek',
+          name: 'Recovery DeepSeek',
+          providerType: 'deepseek',
+          baseUrl: provider.baseUrl,
+          enabled: true,
+          enabledModelIds: ['deepseek-v4-flash'],
+        },
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') throw new Error('Connection creation failed');
+      const connectionId = created.snapshot.connections[0]!.connectionId;
+      await policy.credentialVault.set({
+        locator: { scope: 'connection', connectionId, kind: 'api_key' },
+        expected: null,
+        secret: API_KEY,
+      });
+      await publishConnectionModel(policy, connectionId, 'deepseek-v4-flash');
+      const catalog = await policy.connectionCatalog.getSnapshot();
+      const selected = await policy.connectionCatalog.setDefaultTarget({
+        expectedCatalogRevision: catalog.revision,
+        target: { connectionId, modelId: 'deepseek-v4-flash' },
+      });
+      assert.equal(selected.kind, 'committed');
+      composition = await createComposition();
+      await composition.recover();
+      composition.clientCapabilities!.attachConnection(
+        clientCapabilityConnectionIdentity('desktop'),
+        { send: async () => {} },
+      );
+      await registerDesktop('before-crash', ['control', 'tasks']);
+      const resolved = await composition.handlers['workhub.coordination.resolve']({}, context);
+      assert.ok(resolved.ok, JSON.stringify(resolved));
+      const initialTurnId = randomUUID();
+      const started = await composition.handlers['workhub.coordination.answer'](
+        { turnId: initialTurnId, text: 'Initial request' },
+        context,
+      );
+      assert.ok(started.ok, JSON.stringify(started));
+      const initial = await composition.handlers['turn.query'](
+        { sessionId, turnId: initialTurnId },
+        context,
+      );
+      assert.ok(initial.ok, JSON.stringify(initial));
+      const terminal = await waitForTerminal(
+        composition,
+        sessionId,
+        initialTurnId,
+        initial.result,
+        context,
+      );
+      assert.equal(terminal.status, 'completed');
+      await composition.close();
+      composition = undefined;
+      await owner.close();
+      owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+
+      // The terminal root is durable; the successor may or may not have
+      // committed its root admission when the process stops.
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const content = { text: 'Recovered follow-up' };
+      const messageId = randomUUID();
+      const digest = messageContentDigest(content);
+      await stores.sessionStore.commitMessageAdmission({
+        sessionId,
+        turnId: initialTurnId,
+        runId: terminal.runId,
+        messageId,
+        content,
+        submittedContentDigest: digest,
+        placement: 'next_turn',
+        submittedPlacement: 'next_turn',
+        disposition: 'followup',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt: Date.now(),
+      });
+      if (crashCut === 'admitted-root') {
+        await stores.agentRunStore.admitRootTurn({
+          sessionId,
+          turnId: randomUUID(),
+          proposedRunId: randomUUID(),
+          previousRootTurnId: initialTurnId,
+          proposedUserMessageId: messageId,
+          execution: { kind: 'workhub_coordination', inputDigest: digest },
+          normalizedInput: content,
+          sourceMessages: [
+            {
+              messageId,
+              content,
+              submittedContentDigest: digest,
+              submittedPlacement: 'next_turn',
+              placement: 'next_turn',
+              disposition: 'followup',
+            },
+          ],
+          admittedAt: Date.now(),
+        });
+      }
+      const requestsBeforeRecovery = provider.requests.length;
+      composition = await createComposition();
+      await composition.recover();
+      assert.equal(drained, false, 'Host recovery reaches ready without a Desktop');
+      assert.equal(provider.requests.length, requestsBeforeRecovery);
+      composition.clientCapabilities!.attachConnection(
+        clientCapabilityConnectionIdentity('desktop'),
+        { send: async () => {} },
+      );
+      await registerDesktop('incomplete-desktop', ['control']);
+      assert.equal(
+        provider.requests.length,
+        requestsBeforeRecovery,
+        'one missing required tool keeps the successor durable and pending',
+      );
+      await registerDesktop('capable-desktop', ['control', 'tasks']);
+      const recoveredStores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      await waitFor(
+        async () => {
+          const admissions =
+            await recoveredStores.agentRunStore.listRootTurnAdmissionsForRecovery(sessionId);
+          const successor = admissions.at(-1);
+          if (!successor || successor.turnId === initialTurnId) return false;
+          const query = await composition!.handlers['turn.query'](
+            { sessionId, turnId: successor.turnId },
+            context,
+          );
+          return query.ok && query.result.status === 'completed';
+        },
+        { timeoutMs: 5_000, pollMs: 10 },
+      );
+      const requests = provider.requests
+        .slice(requestsBeforeRecovery)
+        .filter((request) => Array.isArray(request.body.tools));
+      assert.equal(requests.length, 1, 'the recovered successor executes exactly once');
+      for (const name of ['mcp__desktop_workhub__control', 'mcp__desktop_workhub__tasks']) {
+        assert.ok(responsesToolNames(requests[0]?.body).includes(name));
+      }
+      const users = (await readLedgerMessages(recoveredStores.runtimeEventStore, sessionId)).filter(
+        (message) => message.type === 'user',
+      );
+      assert.deepEqual(
+        users.map((message) => message.text),
+        ['Initial request', 'Recovered follow-up'],
+      );
+      assert.equal(drained, false);
+    } finally {
+      await composition?.close();
+      await owner?.close();
+      await provider.close();
+      await rm(base, { recursive: true, force: true });
+    }
   }
 });
 

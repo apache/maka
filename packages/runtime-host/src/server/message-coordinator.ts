@@ -220,7 +220,9 @@ export interface HostMessageRootPort {
   startRecoveredMessages?(
     input: HostMessageRecoveryBatch,
     admission: SessionAdmissionLease,
-  ): Promise<{ readonly turnId: string } | { readonly error: string }>;
+  ): Promise<
+    { readonly turnId: string } | { readonly error: string } | { readonly deferred: true }
+  >;
   prepareMessage(input: HostMessagePreparationInput): Promise<HostMessagePreparationOutcome>;
   claimStop(
     input: Omit<TurnInterruptInput, 'originHostEpoch' | 'interruptId'>,
@@ -1090,6 +1092,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         },
         admissionLease,
       );
+      if ('deferred' in started) return;
       if ('error' in started) {
         throw new RuntimeMessageAuthorityInvariantError(
           `Durable Message recovery failed: ${started.error}`,
@@ -2327,12 +2330,18 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   }
 
   async #pull(run: BoundRun): Promise<readonly SteeringLease[]> {
-    // A provider boundary must observe committed edits, not mistake a pending
-    // write for an empty queue. Recheck for mutations admitted while waiting.
+    // A provider boundary must observe steering admission and queue mutations,
+    // not mistake an unfinished durable write for an empty queue.
     for (;;) {
-      const pending = [...this.#pendingQueuedMutations.values()].filter(
-        ({ payload }) => payload.sessionId === run.sessionId,
-      );
+      const pending = [
+        ...[...this.#pendingSubmits.values()].filter(
+          ({ payload }) =>
+            payload.sessionId === run.sessionId && payload.placement === 'current_turn',
+        ),
+        ...[...this.#pendingQueuedMutations.values()].filter(
+          ({ payload }) => payload.sessionId === run.sessionId,
+        ),
+      ];
       if (pending.length === 0) break;
       await Promise.all(pending.map(({ result }) => result));
     }
