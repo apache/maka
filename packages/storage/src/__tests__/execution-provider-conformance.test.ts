@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { RunSealedError } from '@maka/core/runtime-event-store';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { AgentGraphScheduleRevisionConflictError } from '@maka/core/agent-graph-schedule';
 import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
@@ -56,6 +57,7 @@ import {
 } from '../root-authority.js';
 import {
   SessionMetadataConflictError,
+  SessionNotFoundError,
   SessionMetadataVersionConflictError,
   type WorkHubMessageAssignmentRequest,
   type UpdateSessionConfigurationRequest,
@@ -73,6 +75,104 @@ for (const backend of ['Local', 'Memory'] as const) {
     backend === 'Local'
       ? localExecutionPersistenceProvider
       : createMemoryExecutionPersistenceProvider();
+  test(
+    backend + ': catalog reads explicitly opt into the recoverable coordination role',
+    async () => {
+      await withProvider(make(), async ({ sessionStore: s }, root) => {
+        const ordinary = await s.create(sessionInput(root));
+        await createCoordinationSession(s, root);
+        for (const scope of [undefined, 'ordinary', 'recoverable'] as const) {
+          assert.equal((await s.readCatalogRecord(ordinary.id, scope)).header.id, ordinary.id);
+          await assert.rejects(s.readCatalogRecord('missing', scope), SessionNotFoundError);
+        }
+        await assert.rejects(s.readCatalogRecord(HUB), SessionNotFoundError);
+        await assert.rejects(s.readCatalogRecord(HUB, 'ordinary'), SessionNotFoundError);
+        assert.equal((await s.readCatalogRecord(HUB, 'recoverable')).header.id, HUB);
+      });
+    },
+  );
+  test(
+    backend + ': WorkHub binds delegated text and copied attachments to admission and replay',
+    async () => {
+      await withProvider(make(), async ({ sessionStore: s }, root) => {
+        await createCoordinationSession(s, root);
+        const target = await s.create(sessionInput(root));
+        const base = assignmentRequest('bound-input', target.id, target.name, 'target-turn');
+        const source = {
+          kind: 'other' as const,
+          name: 'requirements.txt',
+          mimeType: 'text/plain',
+          bytes: 12,
+          ref: { kind: 'session_file' as const, sessionId: HUB, relativePath: 'source.txt' },
+        };
+        const copied = {
+          ...source,
+          ref: { ...source.ref, sessionId: target.id, relativePath: 'copy.txt' },
+        };
+        const delegationText = 'Inspect the payment retry invariants';
+        const content = normalizeMessageContent({ text: delegationText, attachments: [copied] });
+        const request: WorkHubMessageAssignmentRequest = {
+          assignment: {
+            ...base.assignment,
+            delegationText,
+            attachments: [source],
+            targetAttachments: [copied],
+          },
+          admission: {
+            ...base.admission,
+            content,
+            submittedContentDigest: messageContentDigest(content),
+          },
+        };
+        for (const targetAttachments of [undefined, [source], [{ ...copied, bytes: 13 }]]) {
+          await assert.rejects(
+            s.assignWorkHubMessage({
+              ...request,
+              assignment: { ...request.assignment, targetAttachments },
+            }),
+            SessionMetadataConflictError,
+          );
+          assert.equal(await s.readWorkHubAssignment(base.assignment.actionId), undefined);
+          assert.deepEqual(await s.listMessageAdmissions(target.id), []);
+        }
+        const originalText = normalizeMessageContent({
+          text: base.assignment.userText,
+          attachments: [copied],
+        });
+        await assert.rejects(
+          s.assignWorkHubMessage({
+            ...request,
+            admission: {
+              ...request.admission,
+              content: originalText,
+              submittedContentDigest: messageContentDigest(originalText),
+            },
+          }),
+          SessionMetadataConflictError,
+        );
+        assert.equal((await s.assignWorkHubMessage(request)).kind, 'assigned');
+        assert.equal((await s.assignWorkHubMessage(request)).kind, 'existing');
+        const changed = normalizeMessageContent({ text: 'Different task', attachments: [copied] });
+        await assert.rejects(
+          s.assignWorkHubMessage({
+            ...request,
+            assignment: { ...request.assignment, delegationText: changed.text },
+            admission: {
+              ...request.admission,
+              content: changed,
+              submittedContentDigest: messageContentDigest(changed),
+            },
+          }),
+          SessionMetadataConflictError,
+        );
+        assert.deepEqual(
+          await s.readWorkHubAssignment(base.assignment.actionId),
+          request.assignment,
+        );
+        assert.deepEqual(await s.listMessageAdmissions(target.id), [request.admission]);
+      });
+    },
+  );
   test(backend + ': closed children cannot escape the execution group authority', async () => {
     const provider = make();
     await withProvider(provider, async (stores, root, owner) => {

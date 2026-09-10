@@ -490,7 +490,15 @@ export function createMemorySessionStore(
     readHeader: async (id) => read((s) => requireHeader(s, id).header),
     readHeaderSnapshot: async (id) => read((s) => requireHeader(s, id).header),
     readHeaderRecordSnapshot: async (id) => read((s) => requireHeader(s, id)),
-    readCatalogRecord: async (id) => read((s) => catalog(s, id)),
+    readCatalogRecord: async (id, roleScope = 'ordinary') =>
+      read((s) => {
+        const { header } = requireHeader(s, id);
+        const ordinary = id !== HUB && header.role === undefined;
+        const coordination = id === HUB && header.role === WORKHUB_COORDINATION_SESSION_ROLE;
+        if (!ordinary && !(roleScope === 'recoverable' && coordination))
+          throw new SessionNotFoundError(id);
+        return catalog(s, id);
+      }),
     listHeaders: async () =>
       read((s) =>
         [...headers(s).values()].map((h) => h.header).sort((x, y) => x.id.localeCompare(y.id)),
@@ -928,17 +936,21 @@ export function createMemorySessionStore(
         const v = assignment as WorkHubDelegationAssignedMessage,
           admission = normalizePendingMessageAdmission(copy(request.admission));
         const source = v.attachments ?? [],
-          target = admission.content.attachments ?? [],
+          target = v.targetAttachments ?? [],
           hash = suffix(v.actionId);
         if (
           source.length !== target.length ||
-          source.some(
-            (x, i) =>
-              x.ref.kind !== 'session_file' ||
-              x.ref.sessionId !== HUB ||
-              target[i]!.ref.kind !== 'session_file' ||
-              target[i]!.ref.sessionId !== v.targetSessionId,
-          )
+          source.some((x, i) => {
+            const { ref: sourceRef, ...sourceMetadata } = x;
+            const { ref: targetRef, ...targetMetadata } = target[i]!;
+            return (
+              sourceRef.kind !== 'session_file' ||
+              sourceRef.sessionId !== HUB ||
+              targetRef.kind !== 'session_file' ||
+              targetRef.sessionId !== v.targetSessionId ||
+              !equal(sourceMetadata, targetMetadata)
+            );
+          })
         )
           conflict('Attachment ownership mismatch');
         if (
@@ -952,8 +964,8 @@ export function createMemorySessionStore(
           !messageContentsEqual(
             admission.content,
             normalizeMessageContent({
-              text: v.userText,
-              attachments: source.map((x, i) => ({ ...x, ref: target[i]!.ref })),
+              text: v.delegationText ?? v.userText,
+              attachments: target,
             }),
           ) ||
           admission.submittedContentDigest !== messageContentDigest(admission.content) ||
@@ -1196,6 +1208,7 @@ function assignmentIdentity(v: WorkHubDelegationAssignedMessage) {
     targetSessionId: v.targetSessionId,
     disposition: v.disposition,
     userText: v.userText,
+    delegationText: v.delegationText,
     attachments: v.attachments ?? [],
     create: v.create,
     replacesActionId: v.replacesActionId,

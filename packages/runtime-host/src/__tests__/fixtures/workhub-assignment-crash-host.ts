@@ -19,7 +19,8 @@
 
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
-import { FakeBackend } from '@maka/runtime/test-only/fake-backend';
+import { FakeBackend, FAKE_HOLD_OPEN_PROMPT } from '@maka/runtime/test-only/fake-backend';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import { SqliteSessionMetadataStore } from '@maka/storage/sqlite-session-metadata-store';
 import { createMemoryExecutionPersistenceProvider } from '@maka/storage/test-only/memory-execution-persistence';
 import { startExecutionRuntimeHostCandidate } from '../../server/execution-candidate.js';
@@ -72,6 +73,10 @@ if (mode === 'fail-assignment-once') {
 
 class ObservedBackend extends FakeBackend {
   override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    if (this.sessionId === WORKHUB_COORDINATION_SESSION_ID) {
+      yield* super.send({ ...input, text: FAKE_HOLD_OPEN_PROMPT });
+      return;
+    }
     process.send?.({
       type: 'dispatch',
       sessionId: this.sessionId,
