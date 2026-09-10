@@ -396,6 +396,8 @@ const ZH_CALL_KIND: CallKindCopy = {
   session_title: '生成任务标题',
   session_recap: '任务回顾',
   daily_review: '每日回顾',
+  workhub_intent: 'WorkHub 意图识别',
+  workhub_recall: 'WorkHub 任务召回',
 };
 
 const EN_CALL_KIND: CallKindCopy = {
@@ -406,6 +408,8 @@ const EN_CALL_KIND: CallKindCopy = {
   session_title: 'Task title',
   session_recap: 'Task recap',
   daily_review: 'Daily review',
+  workhub_intent: 'WorkHub intent',
+  workhub_recall: 'WorkHub recall',
 };
 
 const ZH_PERMISSION_DECISION: Record<string, string> = { allow: '已允许', deny: '已拒绝' };
