@@ -53,7 +53,10 @@ import type {
   ConnectionContext,
   WorkHubCoordinationOperationHandlerMap,
 } from './operation-dispatcher.js';
-import type { RootTurnCoordinator } from './root-turn-coordinator.js';
+import type {
+  HostWorkHubRoutingDecisionPreparation,
+  RootTurnCoordinator,
+} from './root-turn-coordinator.js';
 import type { HostWorkHubRoutingModel } from './execution-model-authority.js';
 import { SessionAdmissionGate, type SessionAdmissionLease } from './session-admission-gate.js';
 import {
@@ -85,6 +88,8 @@ const COORDINATION_SUMMARY_READ_MAX_BYTES =
   JSON_ESCAPE_MAX_BYTES_PER_INPUT_BYTE * (WORKHUB_COORDINATION_TEXT_MAX_BYTES + 8 * 1024) +
   16 * 1024;
 const WORKHUB_ROUTING_TIMEOUT_MS = 15_000;
+export const WORKHUB_ROUTING_HISTORY_MAX_MESSAGES = 32;
+export const WORKHUB_ROUTING_HISTORY_MAX_STORED_BYTES = 64 * 1024;
 
 type CoordinationStores = Pick<
   SessionAuthorityStore,
@@ -106,7 +111,7 @@ type CoordinationStores = Pick<
   | 'readWorkHubStopResolution'
   | 'readTranscriptHighWaterSnapshot'
   | 'readTranscriptMessagesSnapshot'
-  | 'readMessagesSnapshot'
+  | 'readMessagesAfter'
   | 'updateHeaderVersioned'
 >;
 
@@ -151,7 +156,7 @@ export interface HostWorkHubCoordinationCoordinatorOptions {
   readonly configureModel: (
     input: WorkHubCoordinationConfigureModelInput,
   ) => Promise<OperationOutcome<'workhub.coordination.configureModel'>>;
-  readonly routingModel: HostWorkHubRoutingModel;
+  readonly routingModel?: HostWorkHubRoutingModel;
 }
 
 /** Resolves the one durable Coordination Session owned by this Runtime Host. */
@@ -177,7 +182,7 @@ export class HostWorkHubCoordinationCoordinator {
   readonly #resolveCreateTarget: () => Promise<CoordinationCreateTarget>;
   readonly #requestDrain: () => void;
   readonly #actionGate: WorkHubCoordinationActionGate;
-  readonly #routingModel: HostWorkHubRoutingModel;
+  readonly #routingModel: HostWorkHubRoutingModel | undefined;
   readonly #readDelegationRetirement: HostWorkHubCoordinationCoordinatorOptions['sessionActions']['readDelegationRetirement'];
 
   constructor(options: HostWorkHubCoordinationCoordinatorOptions) {
@@ -729,8 +734,6 @@ export class HostWorkHubCoordinationCoordinator {
             ...(input.attachments ? { attachments: input.attachments } : {}),
           }),
         },
-        prepareRoutingDecision: (header) =>
-          this.#prepareRoutingDecision(header, input, context.inputClosedSignal),
         archivedMessage: 'WorkHub Coordination Session is unavailable',
         // Historical v1 summaries still own their Turn identities. Reject a
         // fresh answer that would reuse one, even though new summaries are no longer written.
@@ -762,15 +765,19 @@ export class HostWorkHubCoordinationCoordinator {
     return outcome.ok ? { ok: true, result: { turnId: input.turnId } } : outcome;
   }
 
-  async #prepareRoutingDecision(
-    header: SessionHeader,
-    input: WorkHubCoordinationAnswerInput,
-    inputClosedSignal: AbortSignal | undefined,
+  async prepareRoutingDecision(
+    input: HostWorkHubRoutingDecisionPreparation,
   ): Promise<WorkHubRoutingDecision> {
     try {
-      const messages = await this.#stores.readMessagesSnapshot(WORKHUB_COORDINATION_SESSION_ID);
-      const transcript = messages
-        .flatMap((message) =>
+      if (!this.#routingModel) throw new Error('WorkHub routing model is unavailable');
+      const page = await this.#stores.readMessagesAfter(WORKHUB_COORDINATION_SESSION_ID, {
+        beforeSequence: Number.MAX_SAFE_INTEGER,
+        maxMessages: WORKHUB_ROUTING_HISTORY_MAX_MESSAGES,
+        maxStoredBytes: WORKHUB_ROUTING_HISTORY_MAX_STORED_BYTES,
+      });
+      const transcript = [...page.records]
+        .reverse()
+        .flatMap(({ message }) =>
           message.type === 'user' || message.type === 'assistant'
             ? [{ role: message.type, text: message.text } as const]
             : [],
@@ -778,8 +785,8 @@ export class HostWorkHubCoordinationCoordinator {
         .slice(-8);
       return await this.#routingModel.decide({
         turnId: input.turnId,
-        header,
-        userText: input.text,
+        header: input.header,
+        userText: input.content.text,
         transcript,
         resolveCandidates: async () => {
           const outcome = await this.#candidates();
@@ -801,8 +808,11 @@ export class HostWorkHubCoordinationCoordinator {
             })),
           };
         },
-        abortSignal: inputClosedSignal
-          ? AbortSignal.any([inputClosedSignal, AbortSignal.timeout(WORKHUB_ROUTING_TIMEOUT_MS)])
+        abortSignal: input.inputClosedSignal
+          ? AbortSignal.any([
+              input.inputClosedSignal,
+              AbortSignal.timeout(WORKHUB_ROUTING_TIMEOUT_MS),
+            ])
           : AbortSignal.timeout(WORKHUB_ROUTING_TIMEOUT_MS),
       });
     } catch {

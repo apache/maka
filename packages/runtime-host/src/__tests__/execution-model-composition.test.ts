@@ -1810,6 +1810,7 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
     };
     let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
     let drained = false;
+    const routingInputs: Array<{ turnId: string; userText: string }> = [];
     const createComposition = () =>
       createExecutionRuntimeHostComposition(
         {
@@ -1825,6 +1826,14 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
           waitForResidenciesExcept: (label) => residencies.waitForEmptyExcept(label),
         },
         { bootstrapRuntimePolicy: false },
+        {
+          workHubRoutingModel: {
+            decide: async ({ turnId, userText }) => {
+              routingInputs.push({ turnId, userText });
+              return { kind: 'routing', disposition: 'answer_here' };
+            },
+          },
+        },
       );
     const registerDesktop = async (
       registrationId: string,
@@ -1985,7 +1994,12 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
           proposedRunId: randomUUID(),
           previousRootTurnId: initialTurnId,
           proposedUserMessageId: messageId,
-          execution: { kind: 'workhub_coordination', inputDigest: digest, capabilityBinding },
+          execution: {
+            kind: 'workhub_coordination',
+            inputDigest: digest,
+            capabilityBinding,
+            routingDecision: { kind: 'routing', disposition: 'answer_here' },
+          },
           normalizedInput: content,
           sourceMessages: [
             {
@@ -2000,6 +2014,7 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
           admittedAt: Date.now(),
         });
       }
+      routingInputs.length = 0;
       const requestsBeforeRecovery = provider.requests.length;
       composition = await createComposition();
       await composition.recover();
@@ -2082,6 +2097,15 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
       const successor = admissions.at(-1)!;
       assert.ok(successor.execution.kind === 'workhub_coordination');
       assert.equal(successor.execution.capabilityBinding, capabilityBinding);
+      assert.deepEqual(
+        routingInputs.map(({ userText }) => userText),
+        crashCut === 'pending-message' ? ['Recovered follow-up'] : [],
+        'only a not-yet-admitted recovered Message receives a fresh routing decision',
+      );
+      assert.deepEqual(successor.execution.routingDecision, {
+        kind: 'routing',
+        disposition: 'answer_here',
+      });
       assert.equal(drained, false);
     } finally {
       await composition?.close();

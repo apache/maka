@@ -41,6 +41,7 @@ import { createSessionStore, type SessionAuthorityStore } from '@maka/storage/se
 import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import type { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
+import type { HostWorkHubRoutingModel } from '../server/execution-model-authority.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { SessionOperationFailure } from '../server/session-catalog-coordinator.js';
 import {
@@ -50,6 +51,8 @@ import {
 } from '../server/workhub-coordination-action-gate.js';
 import {
   HostWorkHubCoordinationCoordinator,
+  WORKHUB_ROUTING_HISTORY_MAX_MESSAGES,
+  WORKHUB_ROUTING_HISTORY_MAX_STORED_BYTES,
   type CoordinationCreateTarget,
   type HostWorkHubCoordinationCoordinatorOptions,
 } from '../server/workhub-coordination-coordinator.js';
@@ -62,6 +65,75 @@ const CONTEXT: ConnectionContext = {
 };
 
 describe('Host WorkHub Coordination coordinator', () => {
+  test('reads bounded recent history when preparing a routing decision', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-routing-history-'));
+    const store = createSessionStore(root);
+    let scanRequest: Parameters<SessionAuthorityStore['readMessagesAfter']>[1] | undefined;
+    let receivedTranscript: Parameters<HostWorkHubRoutingModel['decide']>[0]['transcript'] = [];
+    const stores = new Proxy(store, {
+      get(authority, property, receiver) {
+        if (property === 'readMessagesAfter') {
+          return async (...args: Parameters<SessionAuthorityStore['readMessagesAfter']>) => {
+            scanRequest = args[1];
+            return authority.readMessagesAfter(...args);
+          };
+        }
+        const value = Reflect.get(authority, property, receiver) as unknown;
+        return typeof value === 'function' ? value.bind(authority) : value;
+      },
+    }) as SessionAuthorityStore;
+    const workhub = coordinator(
+      root,
+      stores,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        decide: async (input) => {
+          receivedTranscript = input.transcript;
+          return { kind: 'routing', disposition: 'answer_here' };
+        },
+      },
+    );
+    try {
+      assert.equal((await workhub.handlers['workhub.coordination.resolve']({}, CONTEXT)).ok, true);
+      await store.appendMessages(
+        WORKHUB_COORDINATION_SESSION_ID,
+        Array.from({ length: 48 }, (_, index) => ({
+          type: 'user' as const,
+          id: `routing-history-${index}`,
+          turnId: `routing-history-turn-${index}`,
+          ts: index,
+          text: `message-${index}`,
+        })),
+      );
+      const header = await store.readHeaderSnapshot(WORKHUB_COORDINATION_SESSION_ID);
+      assert.deepEqual(
+        await workhub.prepareRoutingDecision({
+          header,
+          turnId: 'fresh-turn',
+          content: { text: 'Continue Payments' },
+        }),
+        { kind: 'routing', disposition: 'answer_here' },
+      );
+      assert.deepEqual(scanRequest, {
+        beforeSequence: Number.MAX_SAFE_INTEGER,
+        maxMessages: WORKHUB_ROUTING_HISTORY_MAX_MESSAGES,
+        maxStoredBytes: WORKHUB_ROUTING_HISTORY_MAX_STORED_BYTES,
+      });
+      assert.equal(receivedTranscript.length, 8);
+      assert.deepEqual(
+        receivedTranscript.map(({ text }) => text),
+        Array.from({ length: 8 }, (_, index) => `message-${index + 40}`),
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('rejects a model action that disagrees with the Turn-bound routing decision', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-routing-bind-'));
     const store = createSessionStore(root);
@@ -2203,6 +2275,9 @@ function coordinator(
   },
   admission: SessionAdmissionGate = new SessionAdmissionGate(),
   sessionActions: Partial<HostWorkHubCoordinationCoordinatorOptions['sessionActions']> = {},
+  routingModel: HostWorkHubRoutingModel = {
+    decide: async () => ({ kind: 'routing', disposition: 'answer_here' }),
+  },
 ) {
   const assign =
     sessionActions.assign ??
@@ -2228,9 +2303,7 @@ function coordinator(
         message: 'Not configured in this fixture',
       },
     }),
-    routingModel: {
-      decide: async () => ({ kind: 'routing', disposition: 'answer_here' }),
-    },
+    routingModel,
     stateRoot: root,
     stores: store,
     admission,
@@ -2266,6 +2339,7 @@ function coordinator(
   });
   return {
     handlers: host.handlers,
+    prepareRoutingDecision: host.prepareRoutingDecision.bind(host),
     async act(input: WorkHubAdmittedAction, context: ConnectionContext) {
       const turnId = randomUUID();
       const { userText, attachments, ...action } = input;

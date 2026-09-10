@@ -25,10 +25,11 @@
 - Decision source: [Discussion #3286](https://github.com/apache/maka/discussions/3286#discussioncomment-18135855)
 - Delivery tracker: [Issue #3492](https://github.com/apache/maka/issues/3492)
 
-The one-Session ownership decision remains in force. Production routing now uses
-split model Intent and Recall followed by deterministic Policy, while execution
-still uses active-Turn task actions and restricted Desktop capabilities. See the
-[current domain language](../workhub-domain-language.md) for the implemented flow.
+The one-Session ownership decision remains in force. This change establishes the
+shared Intent, Recall, and deterministic Policy contracts plus a production-model
+adapter, but it does not change the default routing strategy. The default can move
+only after production-path comparative evidence required by the delivery tracker.
+See the [current domain language](../workhub-domain-language.md).
 
 ## Context
 
@@ -122,32 +123,32 @@ trusted user text, claims the source delegation in Coordination transcript order
 and rejects any later competing replacement intent. Neither a model nor a routing
 policy can directly authorize a write, Stop, or expansion of execution authority.
 
-The production Host first calls a tool-free Intent model using the Coordination
-Session's saved connection, model, and thinking setting. Only `execute` and ordinary
-`continue` invoke a second tool-free Recall call. Recall sees at most 32 candidates
-containing a request-scoped opaque reference, bounded Session/workspace names,
-state, and recency bucket; it does not receive stable Session identity, paths, file
-contents, tools, or capabilities. Intent sees the current request and at most eight
-bounded user/assistant messages, but no candidates.
+The optional model-routing adapter first calls a tool-free Intent model using the
+Coordination Session's saved connection, model, and thinking setting. Only
+`execute` and ordinary `continue` invoke a second tool-free Recall call. Recall sees
+at most 32 candidates containing a request-scoped opaque reference, bounded
+Session/workspace names, state, and recency bucket; it does not receive stable
+Session identity, paths, file contents, tools, or capabilities. Intent sees the
+current request and at most eight bounded user/assistant messages, but no candidates.
 
 The deterministic Coordination Policy maps those assessments to one disposition or
 linked operation. Invalid model output, provider failure, unavailable candidates,
 empty recall, and ambiguity all fail closed to `clarify`; none implies `create_new`.
-The result is stored on the root-Turn admission and reused by recovery. The main
+When that adapter is explicitly installed at composition, the result is stored on
+the root-Turn admission and reused by recovery. Every fresh root, including queued
+follow-ups and pending-message recovery, receives its own decision. The main
 Coordination model receives that bound result in its Turn prompt. A side-effecting
 proposal that changes its operation, candidate set, or candidate reference is
 rejected before the existing Action Gate. `answer_here` and `clarify` remain normal
 transcript outcomes.
 
-Model changes to Intent and Session Recall are compared in a side-effect-free
-evaluation module before any production default changes. Every arm receives the
-same versioned request set and frozen, privacy-filtered candidate snapshot. Intent
-sees no candidates; Recall sees only bounded summaries with request-scoped opaque
-references. All arms use the same deterministic Coordination policy, never invoke
-WorkHub tools, and report Intent accuracy, recall-kind accuracy, Recall@K, MRR,
-outcome accuracy, unsafe binds, implicit creation, unnecessary clarification,
-latency, token usage, and cost separately. Evaluation imports the same pure Policy
-used in production but cannot admit a Turn or cross the Host-owned Action Gate.
+Before any production default changes, model strategies must be compared through
+the repository's existing `maka eval` Experiment/Cell/Attempt/Result path while
+exercising the production projection and admission seams. A separate WorkHub-only
+evaluation framework is deliberately not introduced here. The required evidence
+must report Intent accuracy, recall-kind accuracy, Recall@K, MRR, outcome accuracy,
+unsafe binds, implicit creation, unnecessary clarification, latency, token usage,
+and cost separately.
 
 Intent output contains no target. Session Resolver output contains only bounded
 opaque candidate references; it cannot return creation or a disposition. Linked

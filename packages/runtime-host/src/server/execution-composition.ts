@@ -151,7 +151,6 @@ import {
   createHostMemoryExtractionModel,
   createHostPluginModel,
   createHostSessionEffectModel,
-  createHostWorkHubRoutingModel,
   type HostWorkHubRoutingModel,
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
@@ -745,6 +744,7 @@ export async function createExecutionRuntimeHostComposition(
       new HostProjectDirectoryAuthority(options.projectDirectoryRoots),
     );
     let rootCoordinator: RootTurnCoordinator | undefined;
+    let workHubCoordination: HostWorkHubCoordinationCoordinator;
     let canonicalProjection: CanonicalSessionProjectionReader | undefined;
     let memory: HostMemoryCoordinator | undefined;
     let clientCapabilities: HostClientCapabilityCoordinator | undefined;
@@ -1451,6 +1451,9 @@ export async function createExecutionRuntimeHostComposition(
       },
       (input) => sessionEffectCoordinator.nameSessionFromRootMessage(input),
       context.owner.capability.rootId,
+      dependencies.workHubRoutingModel
+        ? (input) => workHubCoordination.prepareRoutingDecision(input)
+        : undefined,
     );
     const coordinator = rootCoordinator;
     const pluginModel = createHostPluginModel({
@@ -1864,15 +1867,8 @@ export async function createExecutionRuntimeHostComposition(
         ? { sessionAccessAuthority: context.sessionAccessAuthority }
         : {}),
     });
-    const workHubCoordination = new HostWorkHubCoordinationCoordinator({
-      routingModel:
-        dependencies.workHubRoutingModel ??
-        createHostWorkHubRoutingModel({
-          runtimePolicy: runtimePolicyStores,
-          oauthCredentials,
-          usage: openedUsageStores,
-          requestDrain: context.requestDrain,
-        }),
+    workHubCoordination = new HostWorkHubCoordinationCoordinator({
+      routingModel: dependencies.workHubRoutingModel,
       configureModel: (input) => sessionCatalog.configureWorkHubModel(input),
       transitionConfiguration: (input) =>
         requireSessionManager(manager).transitionSessionConfiguration(
