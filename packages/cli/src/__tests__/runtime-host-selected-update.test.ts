@@ -478,6 +478,7 @@ describe('canonical WSL update fences', () => {
 
   for (const selection of [
     { version: '1.0.0' },
+    { version: '3.0.0', expectedSourceVersion: '1.9.0' },
     { version: '3.0.0', expectedConfigFingerprint: `sha256:${'f'.repeat(64)}` },
   ])
     it(`rejects a downgrade or stale consent before staging: ${selection.version}`, async () => {

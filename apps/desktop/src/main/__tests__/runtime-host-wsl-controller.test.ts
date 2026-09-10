@@ -229,6 +229,7 @@ test('WSL update cancellation closes retirement input without killing the transa
     expectedTarget: { serviceId: 'a'.repeat(64), rootId: 'a'.repeat(64), rootPath: '/state', deploymentId: '00000000-0000-4000-8000-000000000001' },
     expectedConfigFingerprint: `sha256:${'b'.repeat(64)}`,
     expectedHost: { hostEpoch: 'old-host', pid: 42 },
+    expectedSourceVersion: '0.2.0',
     allowInterruptActiveTasks: false, signal: abort.signal,
   }, () => {}, {
     wslExecutable: 'wsl.exe',

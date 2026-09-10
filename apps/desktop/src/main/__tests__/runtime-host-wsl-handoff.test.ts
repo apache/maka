@@ -90,3 +90,22 @@ test('WSL handoff carries exact source identity and separately forwards interrup
   assert.deepEqual(await blocker.replacement!.execute('interrupt_active_work', () => {}, 'explicit'), { kind: 'changed' });
   assert.deepEqual(policies, [false, true]);
 });
+
+
+test('legacy operator without a configuration fingerprint remains fenced by source version and Host identity', async () => {
+  const { configurationFingerprint: _fingerprint, ...legacyService } = service;
+  const blocker = await resolveDesktopWslHostHandoff(profile, incompatible(), new AbortController().signal, {
+    resolveBinding: async () => binding,
+    resolvePackage: async () => ({ kind: 'development_archive', path: '/selected.tgz', integrity: 'sha512-selected' }),
+    status: async () => ({ schemaVersion: 1, kind: 'result', action: 'status', service: legacyService }),
+    update: async (input) => {
+      assert.equal(input.expectedConfigFingerprint, undefined);
+      assert.equal(input.expectedSourceVersion, legacyService.installedVersion);
+      assert.deepEqual(input.expectedHost, { hostEpoch: 'old-host', pid: 42 });
+      assert.equal(input.expectedTarget.deploymentId, binding.deployment.deploymentId);
+      return { schemaVersion: 1, kind: 'error', action: 'update', error: { code: 'target_mismatch', message: 'Source changed under deployment lock' } };
+    },
+  });
+  assert.ok(blocker.replacement);
+  assert.deepEqual(await blocker.replacement.execute('refuse_active_work', () => {}, 'explicit'), { kind: 'changed' });
+});

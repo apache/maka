@@ -107,6 +107,7 @@ export interface RuntimeHostUpdateCliOptions {
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
   readonly expectedHost?: RuntimeHostExpectedHost;
   readonly expectedConfigFingerprint?: string;
+  readonly expectedSourceVersion?: string;
   readonly managedRootId?: string;
   readonly operatorDeploymentId?: string;
   readonly registrySelection?: {
@@ -660,6 +661,15 @@ async function runCanonicalRuntimeHostUpdate(
           );
         }
         const current = recovered.config;
+        if (
+          options.expectedSourceVersion &&
+          current.launch.package.version !== options.expectedSourceVersion
+        ) {
+          throw new RuntimeHostServiceManagerError(
+            'target_mismatch',
+            'The installed Runtime Host package changed; check it again before updating',
+          );
+        }
         await deps.canonical.convergeControlProjection(current, lifecycleDeps);
         await deps.canonical.verifyProjection(current, lifecycleDeps);
         deps.canonical.assertOperatorConfig(

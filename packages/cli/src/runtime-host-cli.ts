@@ -241,6 +241,7 @@ export type RuntimeHostCliCommand =
       expectedTarget: RuntimeHostManagedServiceTarget;
       expectedHost?: RuntimeHostExpectedHost;
       expectedConfigFingerprint?: string;
+      expectedSourceVersion?: string;
       selector?: RuntimeHostUpdateSelector;
       allowManualUpdate?: true;
       allowInterruptActiveTasks?: true;
@@ -881,6 +882,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   let updateTarget: string | undefined;
   let expectedHost: RuntimeHostExpectedHost | undefined;
   let expectedConfigFingerprint: string | undefined;
+  let expectedSourceVersion: string | undefined;
   const flagOptions: Readonly<Record<string, () => void | RuntimeHostCliError>> =
     action === 'uninstall'
       ? {
@@ -932,6 +934,17 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
             '--target': (value: string) => {
               if (updateTarget !== undefined) return error('Duplicate --target');
               updateTarget = value;
+            },
+          }
+        : {}),
+      ...(action === 'update'
+        ? {
+            '--expected-source-version': (value: string) => {
+              if (expectedSourceVersion !== undefined)
+                return error('Duplicate --expected-source-version');
+              if (!isProductReleaseVersion(value))
+                return error('--expected-source-version must be an exact package version');
+              expectedSourceVersion = value;
             },
           }
         : {}),
@@ -1028,8 +1041,11 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     };
   }
   if (action === 'update') {
-    if (expectedHost && !options.managedRootId) {
-      return error('--expected-host-json requires --managed-root-id');
+    if (
+      (expectedHost || expectedSourceVersion || expectedConfigFingerprint) &&
+      !options.managedRootId
+    ) {
+      return error('Observed Host and deployment fences require --managed-root-id');
     }
     const selector =
       updateTarget === undefined ? undefined : parseUpdateSelector(updateTarget, 'update');
@@ -1056,6 +1072,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
       expectedTarget: options.expectedTarget!,
       ...(expectedHost ? { expectedHost } : {}),
       ...(expectedConfigFingerprint ? { expectedConfigFingerprint } : {}),
+      ...(expectedSourceVersion ? { expectedSourceVersion } : {}),
       ...(selector ? { selector } : {}),
       ...(allowManualUpdate ? { allowManualUpdate: true } : {}),
       ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),

@@ -219,7 +219,8 @@ export async function runDesktopRuntimeHostWslUpdate(
     readonly distribution: string;
     readonly setupPackage: DesktopRuntimeHostSetupPackage;
     readonly expectedTarget: DesktopRuntimeHostWslManagementInput['expectedTarget'];
-    readonly expectedConfigFingerprint: string;
+    readonly expectedConfigFingerprint?: string;
+    readonly expectedSourceVersion: string;
     readonly expectedHost: { readonly hostEpoch: string; readonly pid: number };
     readonly allowInterruptActiveTasks: boolean;
     readonly signal?: AbortSignal;
@@ -246,7 +247,8 @@ export async function runDesktopRuntimeHostWslUpdate(
     '--expected-root-id', target.rootId,
     '--expected-root-path', target.rootPath,
     '--expected-deployment-id', target.deploymentId,
-    '--expected-config-fingerprint', input.expectedConfigFingerprint,
+    '--expected-source-version', input.expectedSourceVersion,
+    ...(input.expectedConfigFingerprint ? ['--expected-config-fingerprint', input.expectedConfigFingerprint] : []),
     '--expected-host-json', JSON.stringify(input.expectedHost),
     ...(input.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
   ];
