@@ -82,13 +82,25 @@ export function useWorkHubController() {
   const report = (reason: unknown) =>
     setError(reason instanceof Error ? reason.message : String(reason));
 
+  async function stopTurn(target: string, turnId: string): Promise<boolean> {
+    const retracted = await services.stop(target, turnId);
+    if (!retracted) return false;
+    if (currentSessionId.current === target && retracted.length > 0) {
+      const ids = new Set(retracted);
+      setTransientMessages((messages) => messages.filter((message) => !ids.has(message.id)));
+      setMessageQueue((queue) => ({ ...queue, entries: queue.entries.filter((entry) => !ids.has(entry.messageId)) }));
+      if (pendingQueued.current?.sessionId === target && ids.has(pendingQueued.current.messageId)) pendingQueued.current = undefined;
+    }
+    return true;
+  }
+
   async function deliverStop(attempt: SendAttempt): Promise<void> {
     if (!attempt.stop || pendingSend.current !== attempt || currentSessionId.current !== attempt.sessionId) return;
     if (attempt.stop !== 'requested') { attempt.stop = 'resend'; return; }
     attempt.stop = 'sending';
     let failed = false;
     try {
-      const result = await services.stop(attempt.sessionId, attempt.input.turnId);
+      const result = await stopTurn(attempt.sessionId, attempt.input.turnId);
       if (result) attempt.stop = undefined;
     } catch (reason) {
       failed = true;
@@ -432,7 +444,7 @@ export function useWorkHubController() {
       return;
     }
     try {
-      await services.stop(sessionId, runningTurnId);
+      await stopTurn(sessionId, runningTurnId);
     } catch (reason) {
       report(reason);
     } finally {

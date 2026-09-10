@@ -93,11 +93,14 @@ export function createDesktopWorkHubServices(
     configureModel: (sessionId, input) => bridge.workHub.configureModel(sessionId, input),
     observe: (sessionId, handler, onError, onPhase) =>
       bridge.sessions.subscribeEvents(sessionId, handler, () => onPhase('ready'), onPhase, onError),
-    stop: (sessionId, turnId) =>
-      bridge.sessions.stop(sessionId, {
+    stop: async (sessionId, turnId) => {
+      const result = await bridge.sessions.stop(sessionId, {
         source: 'stop_button',
         expectedTurnId: turnId,
-      }),
+      });
+      return result?.kind === 'interrupted' ? result.retractedMessageIds
+        : result?.kind === 'retracted' ? [result.messageId] : undefined;
+    },
     async openTranscript(sessionId, handler, cancellation, onError) {
       const store = new DesktopTranscriptRangeStore(sessionId);
       const controller = createRecoveringDesktopTranscriptRangeController(store, (signal) =>

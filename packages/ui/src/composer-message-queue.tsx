@@ -20,10 +20,10 @@
 import { memo, useRef, useState } from 'react';
 import type { TransientUserMessageProjection } from './chat-view.js';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
-import { Button, IconButton } from '@astryxdesign/core';
+import { Button, IconButton, Tooltip } from '@astryxdesign/core';
 import { List, ListItem } from '@astryxdesign/core/List';
 import type { ConversationCopy } from './conversation-copy.js';
-import { Check, GripVertical, ICON_SIZE, Trash2, X } from './icons.js';
+import { Check, GripVertical, HelpCircle, ICON_SIZE, Trash2, X } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
 
 type ComposerQueueEntry = Omit<MessageQueueEntryProjection, 'state'> & {
@@ -147,8 +147,14 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
       role="region"
       aria-label={copy.queuedMessagesAriaLabel(entries.length)}
     >
-      {groups.map((group) => <section key={group.placement} data-queue-placement={group.placement}>
-        <div className="maka-composer-queue-status">{group.placement === 'current_turn' ? copy.steeringPending : copy.followupPending}</div>
+      {groups.map((group, index) => <section key={group.placement} data-queue-placement={group.placement}>
+        <div className="maka-composer-queue-status">
+          <span>{group.placement === 'current_turn' ? copy.steeringPending : copy.followupPending}</span>
+          {index === 0 && <Tooltip alignment="end" content={<span style={{ whiteSpace: 'pre-line' }}>{copy.queueShortcuts}</span>}>
+            <IconButton variant="ghost" size="sm" type="button" label={copy.queueShortcutsLabel}
+              icon={<HelpCircle size={ICON_SIZE.control} aria-hidden="true" />} />
+          </Tooltip>}
+        </div>
         <List className="maka-composer-queue-list" density="compact">
         {group.entries.map((entry) => {
           const editing = editingEntryId === entry.entryId;

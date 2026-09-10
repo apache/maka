@@ -26,6 +26,7 @@ import { RuntimeHostRequestInterruptedError, RuntimeHostOperationError } from '@
 import { registerRuntimeHostSessionExecutionIpc, type RuntimeHostSessionExecutionIpcDeps } from '../runtime-host-session-execution-ipc-main.js';
 import { registerRuntimeHostWorkHubIpc } from '../runtime-host-workhub-ipc-main.js';
 import type { IpcHandler } from '../ipc-reconnect-policy.js';
+import type { DesktopSessionStopResult } from '../../preload/bridge-contract.js';
 import type { AttachmentRef } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import { WorkHubServicesProvider, type WorkHubServices, type WorkHubTranscriptSnapshot } from '../../renderer/features/workhub/index.js';
@@ -52,6 +53,7 @@ async function mountController(failFirstRead = false) {
   let steerResult: Awaited<ReturnType<WorkHubServices['enqueueMessage']>> = 'admitted';
   let onSteer: ((input: Parameters<WorkHubServices['enqueueMessage']>) => void) | undefined;
   const interrupts: Array<{ sessionId: string; turnId: string; runId: string }> = [];
+  let stopRetractions: string[] = [];
   const handlers = new Map<string, IpcHandler>();
   const ipc = { handle: (channel: string, handler: IpcHandler) => { handlers.set(channel, handler); } };
   registerRuntimeHostSessionExecutionIpc({
@@ -61,7 +63,7 @@ async function mountController(failFirstRead = false) {
     client: { interruptTurn: async (input: typeof interrupts[number]) => {
       interrupts.push({ sessionId: input.sessionId, turnId: input.turnId, runId: input.runId });
       rootTurn!.status = 'cancelled';
-      return { retracted: [] };
+      return { retracted: stopRetractions.map((messageId) => ({ messageId })) };
     } },
   } as unknown as RuntimeHostSessionExecutionIpcDeps, ipc);
   registerRuntimeHostWorkHubIpc({
@@ -100,7 +102,10 @@ async function mountController(failFirstRead = false) {
     reorderQueueEntries: async (...input: Parameters<WorkHubServices['reorderQueueEntries']>) => { queueMutations.push(['reorder', ...input]); },
     enqueueMessage: async (...input: Parameters<WorkHubServices['enqueueMessage']>) => { steers.push(input); onSteer?.(input); return steerResult; },
     answer: (_id: string, input: Parameters<WorkHubServices['answer']>[1]) => invoke('workhub:answer', input),
-    stop: (target: string, turnId: string) => invoke('sessions:stop', target, { source: 'stop_button', expectedTurnId: turnId }),
+    stop: async (target: string, turnId: string) => {
+      const result = await invoke('sessions:stop', target, { source: 'stop_button', expectedTurnId: turnId }) as DesktopSessionStopResult;
+      return result?.kind === 'interrupted' ? result.retractedMessageIds : undefined;
+    },
   } as unknown as WorkHubServices;
   function Probe() { controller = useWorkHubController(); return null; }
   await act(async () => {
@@ -115,6 +120,7 @@ async function mountController(failFirstRead = false) {
     complete(turnId: string) { rootTurn = { turnId, runId: `run:${turnId}`, status: 'completed' }; },
     onSteer(handler: typeof onSteer) { onSteer = handler; },
     queueMutations, steers, setSteerResult(value: typeof steerResult) { steerResult = value; },
+    setStopRetractions(ids: string[]) { stopRetractions = ids; },
     sessionId, requests, get admission() { return admission; }, latestRead, interrupts,
     resetAdmission() { admission = deferred<{ turnId: string }>(); },
     admit(turnId: string) { rootTurn = { turnId, runId: `run:${turnId}`, status: 'running' }; },
@@ -490,4 +496,37 @@ test('follow-up admission before an uncertain response keeps its successor place
   assert.equal(h.controller.transientMessages[0]?.hostTurnId, 'successor');
   assert.equal(h.controller.error, undefined);
   h.latestRead.resolve();
+});
+
+
+test('Stop retires only Host-confirmed queued messages even without retraction events', async () => {
+  for (const origin of ['local', 'restored'] as const) {
+    const h = await mountController();
+    let turnId = 'active-turn';
+    if (origin === 'local') {
+      let sent!: Promise<boolean>;
+      await act(async () => { sent = h.controller.send('original request', []); });
+      turnId = h.requests[0]!.turnId;
+      h.admit(turnId);
+      await act(async () => { h.admission.resolve({ turnId }); await sent; });
+    } else {
+      h.admit(turnId);
+      await act(() => h.emit({ type: 'text_delta', id: 'live', turnId, messageId: 'answer', ts: 1, text: 'Working' }));
+    }
+    const entries = ['steering', 'followup', 'retained'].map((messageId) => ({
+      messageId, entryId: messageId, content: { text: messageId }, state: 'queued' as const,
+      placement: messageId === 'steering' ? 'current_turn' as const : 'next_turn' as const,
+    }));
+    await act(() => h.emit({ type: 'queue_update', id: 'queued', turnId, ts: 2,
+      steering: ['steering'], followup: ['followup', 'retained'],
+      steeringEntries: entries.slice(0, 1), followupEntries: entries.slice(1),
+    }));
+    h.setStopRetractions(['steering', 'followup']);
+    await act(async () => { await h.controller.stop(); });
+    assert.deepEqual(h.controller.messageQueue.entries.map((entry) => entry.messageId), ['retained']);
+    assert.deepEqual(h.controller.transientMessages.filter((message) => message.id !== turnId).map((message) => message.id), ['retained']);
+    assert.equal(h.controller.stopPending, false);
+    h.latestRead.resolve();
+    cleanupFakeDom();
+  }
 });

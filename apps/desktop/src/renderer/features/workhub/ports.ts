@@ -79,5 +79,6 @@ export interface WorkHubServices {
     signal: AbortSignal,
     onError: (error: unknown) => void,
   ): Promise<WorkHubTranscript>;
-  stop(sessionId: string, turnId: string): Promise<unknown>;
+  /** Retracted message IDs, or undefined when the requested Turn was no longer active. */
+  stop(sessionId: string, turnId: string): Promise<readonly string[] | undefined>;
 }

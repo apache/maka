@@ -74,7 +74,7 @@ function makeServices(failFirst: boolean, withHistory: boolean): WorkHubServices
     },
     observe: () => () => {},
     openTranscript: async (_id, handler) => { updateTranscript = handler; publish(); return { observationChanged: () => {}, loadOlder: async () => {}, loadLatest: async () => {}, close: async () => { updateTranscript = undefined; } }; },
-    stop: async () => {},
+    stop: async () => [],
   };
 }
 function Surface({ failFirst = false, history = false }: { failFirst?: boolean; history?: boolean }) {
