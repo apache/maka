@@ -41,7 +41,11 @@ import type {
 } from '@maka/core/capabilities';
 import type { HealthSignal, HealthSnapshot } from '@maka/core/health';
 import type { DesktopExternalSessionCatalogItem } from '../../src/preload/external-session-catalog';
-import type { AppUpdateStatus } from '../../src/preload/bridge-contract';
+import type {
+  AppUpdateInstallRequest,
+  AppUpdateInstallResult,
+  AppUpdateStatus,
+} from '../../src/preload/bridge-contract';
 import {
   AppUpdateProvider,
   AppUpdateServicesProvider,
@@ -985,6 +989,7 @@ function withPackagedChannelBridge(channel: {
   updateChannel: 'nightly' | 'release';
   appVersion: string;
   updateStatus: AppUpdateStatus;
+  installUpdate?: (input: AppUpdateInstallRequest) => Promise<AppUpdateInstallResult>;
 }) {
   return withScopedMakaBridge({
     ...makaBridge,
@@ -997,6 +1002,7 @@ function withPackagedChannelBridge(channel: {
         appVersion: channel.appVersion,
       }),
       updateStatus: async () => channel.updateStatus,
+      ...(channel.installUpdate ? { installUpdate: channel.installUpdate } : {}),
     },
   } satisfies Record<string, unknown>);
 }
@@ -2967,10 +2973,12 @@ export const About: Story = {
   render: () => <SettingsStory section="about" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    // The lead row is the version with the channel sentence under it; a dev
-    // checkout says it does not update and gets no update row at all.
-    await expect(canvas.findByText(/^Maka v\d/)).resolves.toBeTruthy();
+    // The lead is the wordmark over the version and the channel sentence; a
+    // dev checkout says it does not update and gets no 更新 group at all.
+    await expect(canvas.findByRole('img', { name: 'Maka' })).resolves.toBeTruthy();
+    await expect(canvas.findByText(/^v\d/)).resolves.toBeTruthy();
     await expect(canvas.findByText('本地开发构建，不检查更新。')).resolves.toBeTruthy();
+    await expect(canvas.queryByRole('heading', { name: '更新' })).not.toBeInTheDocument();
     await expect(canvas.queryByRole('button', { name: '检查更新' })).not.toBeInTheDocument();
     // Support lives outside the info conditional; each control is named by its
     // row, not by the verb on its face. Actions are buttons, navigation a link.
@@ -2995,7 +3003,12 @@ export const About: Story = {
 // Real path: the same page inside a packaged Nightly. Nightly publishes daily
 // and auto-downloads, so `downloaded` — not `not-available` — is what a nightly
 // user actually opens this page to. The version string is the shipped shape:
-// <product>-dev.<run>.<UTC day>.
+// <product>-dev.<run>.<UTC day>. 重启安装 here is the sidebar footer's restart
+// offered on the page itself. The fake refuses the first, guarded request
+// because tasks are running, so the play walks the confirmation the sidebar
+// walks: an About wired to its own install call would never show the dialog.
+const nightlyInstallUpdate = fn(async (input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult> =>
+  input.allowInterruptActiveTasks ? { ok: true } : { ok: false, reason: 'active_tasks' });
 export const AboutNightly: Story = {
   decorators: [
     withPackagedChannelBridge({
@@ -3006,9 +3019,26 @@ export const AboutNightly: Story = {
         currentVersion: '0.2.0-dev.12.20260901',
         latestVersion: '0.2.0-dev.13.20260902',
       },
+      installUpdate: nightlyInstallUpdate,
     }),
   ],
   render: () => <SettingsStory section="about" />,
+  play: async ({ canvasElement }) => {
+    nightlyInstallUpdate.mockClear();
+    const canvas = within(canvasElement);
+    await expect(canvas.findByRole('heading', { name: '更新' })).resolves.toBeTruthy();
+    await expect(canvas.queryByRole('button', { name: '检查更新' })).not.toBeInTheDocument();
+    const install = await canvas.findByRole('button', { name: '重启安装' });
+    await userEvent.click(install);
+    await waitFor(() => {
+      expect(nightlyInstallUpdate).toHaveBeenCalledWith({ allowInterruptActiveTasks: false });
+    });
+    const screen = within(document.body);
+    await userEvent.click(await screen.findByRole('button', { name: '仍然更新' }));
+    await waitFor(() => {
+      expect(nightlyInstallUpdate).toHaveBeenCalledWith({ allowInterruptActiveTasks: true });
+    });
+  },
 };
 
 // Real path: the same page inside a packaged release — the default state, which
@@ -3022,6 +3052,29 @@ export const AboutRelease: Story = {
     }),
   ],
   render: () => <SettingsStory section="about" />,
+};
+
+// Real path: the same page mid-download. The row keeps the shape of every
+// other state — label, one line, the check button (disabled) — so the page
+// does not jump as the updater moves from checking to downloaded.
+export const AboutDownloading: Story = {
+  decorators: [
+    withPackagedChannelBridge({
+      updateChannel: 'release',
+      appVersion: '0.2.0',
+      updateStatus: {
+        state: 'downloading',
+        currentVersion: '0.2.0',
+        latestVersion: '0.2.1',
+        progress: { percent: 42.4, bytesPerSecond: 1_048_576, transferred: 21_000_000, total: 50_000_000 },
+      },
+    }),
+  ],
+  render: () => <SettingsStory section="about" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByRole('button', { name: '检查更新' })).resolves.toBeDisabled();
+  },
 };
 
 // Real path: a packaged install whose auto-download failed. The row names the

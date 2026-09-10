@@ -63,12 +63,15 @@ export function createWorkHubRuntime(deps: WorkHubRuntimeDeps) {
       switch (input.operation) {
         case 'delegate_existing': proposal = { disposition: 'delegate_existing', candidateRef: input.candidateRef }; break;
         case 'create_new': proposal = { disposition: 'create_new', title: input.title }; break;
-        case 'replace': proposal = { disposition: 'replace', replacesActionId: input.replacesActionId, target: input.target }; break;
-        case 'stop': proposal = { disposition: 'stop_work', expects: { targetSessionId: input.targetSessionId } }; break;
-        case 'resume': proposal = { disposition: 'resume_work', resumesActionId: input.resumesActionId, expects: { targetSessionId: input.targetSessionId } }; break;
+        case 'correct': proposal = { operation: 'correct', replacesActionId: input.replacesActionId, target: input.target }; break;
+        case 'stop': proposal = { operation: 'stop', expects: { targetSessionId: input.targetSessionId } }; break;
+        case 'resume': proposal = { operation: 'resume', resumesActionId: input.resumesActionId, expects: { targetSessionId: input.targetSessionId } }; break;
       }
-      const createsTarget = proposal.disposition === 'create_new' ||
-        (proposal.disposition === 'replace' && proposal.target.disposition === 'create_new');
+      const createsTarget =
+        ('disposition' in proposal && proposal.disposition === 'create_new') ||
+        ('operation' in proposal &&
+          proposal.operation === 'correct' &&
+          proposal.target.disposition === 'create_new');
       const context = createsTarget ? await deps.createContext(scope) : undefined;
       requireCurrent(scope);
       const result = await client.actWorkHubCoordinationFromTurn({

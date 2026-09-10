@@ -41,28 +41,27 @@ export function aboutChannelSummary(
 }
 
 export interface AboutUpdateRow {
-  /** What the updater is doing or has found, as the row's label. */
+  /** The phase, a few words: the label never truncates against the button. */
   readonly label: string;
-  /** Where to act or why it failed; null when the label says it all. */
-  readonly description: string | null;
+  /** The version and what happens next, or why it failed. Always present, so the row keeps its height across states. */
+  readonly description: string;
   /**
-   * Whether the row offers 检查更新: `check` resting, `checking` while one runs,
-   * `none` while the updater is working on its own or waiting for the restart
-   * that the sidebar footer offers.
+   * The row's one control, always present so the row keeps its shape:
+   * 检查更新 (`check` resting, `checking` while one runs, `busy` disabled while
+   * the updater is working on its own) or the restart once an update is
+   * downloaded (`install`).
    */
-  readonly action: 'check' | 'checking' | 'none';
+  readonly action: 'check' | 'checking' | 'busy' | 'install';
 }
 
 /**
  * Map updater state to the About page's update row, pure for unit tests.
  *
- * The control follows the state instead of always reading 检查更新: the service
- * refuses a check while a download is in flight or an update sits downloaded
- * (app-update-service.ts), so a check button in those states was a control that
- * did nothing when pressed — which is exactly what a nightly user, whose steady
- * state is `downloaded`, met every time. A failed download is re-fetched by the
- * same check (the updater downloads on its own once it sees a release), so the
- * page needs no second retry control next to the sidebar's.
+ * The service refuses a check while a download is in flight or an update sits
+ * downloaded (app-update-service.ts), so 检查更新 is disabled rather than
+ * offered there. A failed download is re-fetched by the same check (the updater
+ * downloads on its own once it sees a release), so the page needs no second
+ * retry control next to the sidebar's.
  */
 export function aboutUpdateRow(
   status: AppUpdateStatus | null,
@@ -70,31 +69,43 @@ export function aboutUpdateRow(
   options: { readonly errorDetail?: (message: string) => string } = {},
 ): AboutUpdateRow {
   if (!status || status.state === 'idle') {
-    return { label: copy.updateIdle, description: null, action: 'check' };
+    return { label: copy.updateIdle, description: copy.updateScheduleHint, action: 'check' };
   }
   switch (status.state) {
     case 'checking':
-      return { label: copy.checkingForUpdates, description: null, action: 'checking' };
+      return { label: copy.checkingForUpdates, description: copy.updateScheduleHint, action: 'checking' };
     case 'not-available':
-      return { label: copy.updateNotAvailable, description: null, action: 'check' };
+      return { label: copy.updateNotAvailable, description: copy.updateScheduleHint, action: 'check' };
     case 'available':
-      return { label: copy.updateAvailable(status.latestVersion), description: null, action: 'none' };
+      return {
+        label: copy.updateAvailable,
+        description: copy.updateFetchingHint(status.latestVersion),
+        action: 'busy',
+      };
     case 'downloading':
       return {
-        label: copy.updateDownloading(status.latestVersion, Math.round(status.progress.percent)),
-        description: null,
-        action: 'none',
+        label: copy.updateDownloading(Math.round(status.progress.percent)),
+        description: copy.updateFetchingHint(status.latestVersion),
+        action: 'busy',
       };
     case 'verifying':
-      return { label: copy.updateVerifying(status.latestVersion), description: null, action: 'none' };
+      return {
+        label: copy.updateVerifying,
+        description: copy.updateFetchingHint(status.latestVersion),
+        action: 'busy',
+      };
     case 'downloaded':
       return {
-        label: copy.updateDownloaded(status.latestVersion),
-        description: copy.updateDownloadedHint,
-        action: 'none',
+        label: copy.updateDownloaded,
+        description: copy.updateDownloadedHint(status.latestVersion),
+        action: 'install',
       };
     case 'installing':
-      return { label: copy.updateInstalling(status.latestVersion), description: null, action: 'none' };
+      return {
+        label: copy.updateInstalling,
+        description: copy.updateInstallingHint(status.latestVersion),
+        action: 'busy',
+      };
     case 'error':
       return {
         label: copy.updateFailed[status.operation],

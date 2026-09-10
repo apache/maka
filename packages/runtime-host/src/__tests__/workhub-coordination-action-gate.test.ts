@@ -109,7 +109,7 @@ describe('WorkHub Coordination Action Gate', () => {
       candidateSetId: candidates.candidateSetId,
 
       proposal: {
-        disposition: 'replace' as const,
+        operation: 'correct' as const,
         replacesActionId: 'source-action',
         target: {
           disposition: 'delegate_existing' as const,
@@ -227,17 +227,17 @@ describe('WorkHub Coordination Action Gate', () => {
   });
 
   /**
-   * A stop proposal as the Action Policy produces it: opaque identities plus
+   * A stop proposal as Coordination policy produces it: opaque identities plus
    * the active-delegation state it resolved against, never a display name.
    */
   const stopProposal = (targetSessionId: string) => ({
-    disposition: 'stop_work' as const,
+    operation: 'stop' as const,
     expects: { targetSessionId },
   });
 
   const resumeProposal = (targetSessionId: string, resumesActionId = 'source-action') => ({
     resumesActionId,
-    disposition: 'resume_work' as const,
+    operation: 'resume' as const,
     expects: { targetSessionId },
   });
 
@@ -1119,7 +1119,7 @@ describe('WorkHub Coordination Action Gate', () => {
       userText: 'No, create a new Session for Payments instead',
 
       proposal: {
-        disposition: 'replace' as const,
+        operation: 'correct' as const,
         replacesActionId: 'source-action',
         target: { disposition: 'create_new' as const, title: 'Payments' },
       },
@@ -1274,7 +1274,7 @@ describe('WorkHub Coordination Action Gate', () => {
       userText: 'No, send this to destination',
       candidateSetId: snapshot.candidateSetId,
       proposal: {
-        disposition: 'replace' as const,
+        operation: 'correct' as const,
         replacesActionId: 'source-action',
         target: {
           disposition: 'delegate_existing' as const,
@@ -1323,7 +1323,7 @@ describe('WorkHub Coordination Action Gate', () => {
       candidateSetId: snapshot.candidateSetId,
 
       proposal: {
-        disposition: 'replace' as const,
+        operation: 'correct' as const,
         replacesActionId: 'source-action',
         target: {
           disposition: 'delegate_existing' as const,
@@ -1415,7 +1415,7 @@ describe('WorkHub Coordination Action Gate', () => {
       candidateSetId: snapshot.candidateSetId,
 
       proposal: {
-        disposition: 'replace' as const,
+        operation: 'correct' as const,
         replacesActionId: 'source-action',
         target: {
           disposition: 'delegate_existing' as const,
@@ -1502,7 +1502,7 @@ describe('WorkHub Coordination Action Gate', () => {
         candidateSetId: snapshot.candidateSetId,
 
         proposal: {
-          disposition: 'replace',
+          operation: 'correct',
           replacesActionId: 'source-action',
           target: {
             disposition: 'delegate_existing',
@@ -1557,7 +1557,7 @@ describe('WorkHub Coordination Action Gate', () => {
         candidateSetId: snapshot.candidateSetId,
 
         proposal: {
-          disposition: 'replace' as const,
+          operation: 'correct' as const,
           replacesActionId: 'source-action',
           target: {
             disposition: 'delegate_existing' as const,
@@ -1619,7 +1619,7 @@ describe('WorkHub Coordination Action Gate', () => {
       candidateSetId: snapshot.candidateSetId,
 
       proposal: {
-        disposition: 'replace' as const,
+        operation: 'correct' as const,
         replacesActionId: 'source-action',
         target: {
           disposition: 'delegate_existing' as const,
@@ -1673,7 +1673,7 @@ describe('WorkHub Coordination Action Gate', () => {
       candidateSetId: snapshot.candidateSetId,
 
       proposal: {
-        disposition: 'replace' as const,
+        operation: 'correct' as const,
         replacesActionId: 'source-action',
         target: {
           disposition: 'delegate_existing' as const,

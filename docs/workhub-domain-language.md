@@ -36,9 +36,32 @@ its state without copying its execution transcript or acquiring ownership of
 unrelated user work.
 
 **Coordination model** interprets the admitted user request. Local answers and
-clarifications are normal model output. Task tools can propose `delegate_existing`,
-`create_new`, `replace`, `stop_work`, or `resume_work`; there is no parallel
-renderer classifier, exact-name resolver, or synthetic-summary writer.
+clarifications are normal model output. Its task actions produce advisory routing
+or linked-operation proposals; there is no parallel renderer classifier,
+exact-name resolver, or synthetic-summary writer.
+
+**Routing intent** begins a new coordination decision, such as discussing,
+executing, creating, or continuing work. _Avoid_: linked intent, disposition.
+
+**Linked intent** refers to a delegation WorkHub already owns and asks to correct,
+stop, or resume it. _Avoid_: routing intent, disposition.
+
+**Routing disposition** is the closed outcome of a new routing decision:
+`answer_here`, `delegate_existing`, `create_new`, or `clarify`. _Avoid_: stop,
+resume, correction.
+
+**Linked operation** changes an existing delegation relationship: `correct`,
+`stop`, or `resume`. It is not a routing disposition.
+
+**Session Resolver** recalls and ranks bounded existing ordinary Sessions for a
+routing intent. It returns target evidence, never creation or execution authority.
+
+**Linked-target resolution** starts from a bounded WorkHub-owned delegation and
+follows its Session, Message, Turn, and continuation lineage. It does not infer an
+operation target from a similar display name.
+
+**Coordination policy** combines intent and resolved evidence into either a routing
+disposition or a linked-operation proposal. Its output remains advisory.
 
 **Active-Turn action** names the currently executing coordination Turn. The Host
 checks its live execution, durable admission and coordination tool profile, then
@@ -48,9 +71,9 @@ supply its own user-originated authority or attachment locators. Model-prepared
 
 **Action Gate** validates the resulting operation against durable ownership,
 candidate freshness, Session identity, archive/waiting state and existing claims.
-The model selects an operation; the gate determines whether that exact operation
-can be admitted. Creation workspace context comes from Desktop main, outside the
-model proposal. Each target still executes under its own permission boundary.
+The policy proposes an action; the gate determines whether that exact action can
+be admitted. Creation workspace context comes from Desktop main, outside the model
+proposal. Each target still executes under its own permission boundary.
 
 ## Delegation and recovery
 
