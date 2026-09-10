@@ -944,15 +944,23 @@ export async function importSessionBundleState(
           // and context nothing points at, which the store reclaims, rather than
           // a Session already visible whose bytes never arrived -- and which a
           // retry could not fix, because the ids are now taken.
-          const artifactFiles = await copyBundleArtifacts(bundleStateRoot, stateRoot);
-          const contextRefs = await mergeBundleContext(
-            bundleStateRoot,
-            stateRoot,
-            contextLocked,
-            sessionIds,
-          );
-          const inserted = mergeBundleDatabase(lease, bundleDatabasePath);
-          return { sessionIds: inserted, artifactFiles, contextRefs };
+          const artifacts = await copyBundleArtifacts(bundleStateRoot, stateRoot);
+          try {
+            const contextRefs = await mergeBundleContext(
+              bundleStateRoot,
+              stateRoot,
+              contextLocked,
+              sessionIds,
+            );
+            const inserted = mergeBundleDatabase(lease, bundleDatabasePath);
+            return { sessionIds: inserted, artifactFiles: artifacts.copied, contextRefs };
+          } catch (error) {
+            // Take back only what this attempt created. Anything already there
+            // belongs to someone else, or to an earlier attempt that the next
+            // one will recognise.
+            for (const path of artifacts.created) await rm(path, { force: true }).catch(() => {});
+            throw error;
+          }
         } finally {
           lease.close();
         }
@@ -1065,10 +1073,26 @@ function assertImportableInto(target: DatabaseSync, sessionIds: readonly string[
   }
 }
 
-/** Bytes first: a file nothing points at is reclaimable, a row pointing at nothing is not. */
-async function copyBundleArtifacts(bundleStateRoot: string, stateRoot: string): Promise<number> {
+/**
+ * Stage the bundle's artifact bytes, and be able to take them back.
+ *
+ * Publishing the Session last stops a broken Session from becoming visible, but
+ * it does not by itself make the import retryable: bytes written before a later
+ * failure stay behind, and a second attempt then trips over its own leftovers.
+ *
+ * Two rules make a retry work without overwriting anything. A destination that
+ * is byte-identical to what the bundle carries is this import's own leftover,
+ * or the same content by another route, and is accepted. A destination holding
+ * something else is a real conflict. Files this attempt actually created are
+ * remembered, so a failure can remove exactly those and nothing else.
+ */
+async function copyBundleArtifacts(
+  bundleStateRoot: string,
+  stateRoot: string,
+): Promise<{ copied: number; created: string[] }> {
   const source = resolveInside(bundleStateRoot, 'artifacts');
-  if (!(await pathExists(source))) return 0;
+  const created: string[] = [];
+  if (!(await pathExists(source))) return { copied: 0, created };
   let copied = 0;
   const walk = async (relative: string): Promise<void> => {
     const absolute = relative ? resolveInside(source, relative) : source;
@@ -1084,24 +1108,28 @@ async function copyBundleArtifacts(bundleStateRoot: string, stateRoot: string): 
           `Bundle artifact is not a regular file: ${next}`,
         );
       }
+      const from = resolveInside(source, next);
       const destination = resolveInside(resolveInside(stateRoot, 'artifacts'), next);
       await mkdir(dirname(destination), { recursive: true });
-      // Never overwrite: an existing path means this artifact is already here,
-      // which the Session precheck should have caught. Failing is the honest
-      // answer to being wrong about that.
-      await copyFile(resolveInside(source, next), destination, constants.COPYFILE_EXCL).catch(
-        (error: unknown) => {
-          if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-            throw new SessionBundleImportError('conflict', `Artifact already present: ${next}`);
-          }
-          throw error;
-        },
-      );
+      try {
+        await copyFile(from, destination, constants.COPYFILE_EXCL);
+        created.push(destination);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        if (!(await sameFileContent(from, destination))) {
+          throw new SessionBundleImportError('conflict', `Artifact already present: ${next}`);
+        }
+      }
       copied += 1;
     }
   };
   await walk('');
-  return copied;
+  return { copied, created };
+}
+
+async function sameFileContent(left: string, right: string): Promise<boolean> {
+  const [a, b] = await Promise.all([readFile(left), readFile(right)]);
+  return a.equals(b);
 }
 
 /**
@@ -1240,7 +1268,23 @@ async function mergeBundleContext(
         database.exec(
           'INSERT OR IGNORE INTO main.context_blobs SELECT * FROM bundle.context_blobs',
         );
-        database.exec('INSERT INTO main.context_refs SELECT * FROM bundle.context_refs');
+        // A retry re-inserts the same rows. Skipping an identical one is what
+        // makes the second attempt work; skipping a DIFFERENT row that happens
+        // to share an id would hide a real collision, so the two are separated.
+        const colliding = database
+          .prepare(`
+            SELECT b.ref_id FROM bundle.context_refs b
+            JOIN main.context_refs m USING(ref_id)
+            WHERE m.session_id <> b.session_id OR m.blob_id <> b.blob_id
+          `)
+          .all() as Array<{ ref_id?: unknown }>;
+        if (colliding.length > 0) {
+          throw new SessionBundleImportError(
+            'conflict',
+            `Context reference already names different content: ${String(colliding[0]?.ref_id)}`,
+          );
+        }
+        database.exec('INSERT OR IGNORE INTO main.context_refs SELECT * FROM bundle.context_refs');
         // The context store maintains its usage tables explicitly -- no trigger
         // does it. Inserting blobs and refs without them leaves quotas and the
         // cleanup consistency checks reading numbers that describe a store that
@@ -1253,7 +1297,15 @@ async function mergeBundleContext(
             FROM context_refs r JOIN context_blobs b USING(blob_id) GROUP BY r.session_id;
           UPDATE context_store_usage SET
             blob_count = (SELECT count(*) FROM context_blobs),
-            physical_bytes = (SELECT coalesce(sum(size_bytes), 0) FROM context_blobs)
+            -- Bytes queued for deletion are still on disk and still charged:
+            -- the store drops a blob row before draining its file and subtracts
+            -- them when the drain completes. Recomputing from live blobs alone
+            -- makes that later subtraction underflow. The export can use the
+            -- simpler sum because it empties the queue on its private copy;
+            -- a live target keeps it.
+            physical_bytes =
+              (SELECT coalesce(sum(size_bytes), 0) FROM context_blobs) +
+              (SELECT coalesce(sum(size_bytes), 0) FROM context_file_deletions)
           WHERE singleton = 1;
         `);
         database.exec('COMMIT');

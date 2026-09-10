@@ -439,41 +439,78 @@ async function seedContext(
 
   const db = new DatabaseSync(join(workspaceRoot, 'context-offload.sqlite'));
   try {
+    // The real v3 shape, not an approximation: `reference_count`, an owner kind
+    // the CHECK accepts, and the columns the store actually writes. A fixture
+    // that only resembles it proves the SQL runs, not that the imported store
+    // is usable by the store that has to read it.
     db.exec(`
       PRAGMA user_version = 3;
       CREATE TABLE context_blobs (
         blob_id BLOB PRIMARY KEY CHECK(length(blob_id) = 32),
         storage_kind TEXT NOT NULL CHECK(storage_kind IN ('inline', 'managed_file')),
         payload BLOB NOT NULL,
-        size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0)
+        size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+        created_at INTEGER NOT NULL CHECK(created_at >= 0),
+        CHECK(
+          (storage_kind = 'inline' AND length(payload) = size_bytes) OR
+          (storage_kind = 'managed_file' AND length(payload) BETWEEN 1 AND 512)
+        )
       );
       CREATE TABLE context_refs (
         ref_id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
-        owner_kind TEXT NOT NULL,
-        blob_id BLOB NOT NULL REFERENCES context_blobs(blob_id)
+        owner_kind TEXT NOT NULL CHECK(
+          owner_kind IN ('read_image_snapshot', 'tool_result_archive')
+        ),
+        owner_id TEXT NOT NULL,
+        blob_id BLOB NOT NULL REFERENCES context_blobs(blob_id) ON DELETE RESTRICT,
+        media_type TEXT NOT NULL,
+        created_at INTEGER NOT NULL CHECK(created_at >= 0),
+        UNIQUE(session_id, owner_kind, owner_id)
       );
-      CREATE TABLE context_gc_candidates (blob_id BLOB PRIMARY KEY, unreferenced_at INTEGER NOT NULL);
-      CREATE TABLE context_file_deletions (locator BLOB PRIMARY KEY, size_bytes INTEGER NOT NULL, enqueued_at INTEGER NOT NULL);
-      CREATE TABLE context_session_usage (session_id TEXT PRIMARY KEY, ref_count INTEGER NOT NULL, logical_bytes INTEGER NOT NULL);
-      CREATE TABLE context_store_usage (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), blob_count INTEGER NOT NULL, physical_bytes INTEGER NOT NULL);
+      CREATE TABLE context_gc_candidates (
+        blob_id BLOB PRIMARY KEY REFERENCES context_blobs(blob_id) ON DELETE CASCADE,
+        unreferenced_at INTEGER NOT NULL CHECK(unreferenced_at >= 0)
+      );
+      CREATE TABLE context_file_deletions (
+        locator BLOB PRIMARY KEY CHECK(length(locator) BETWEEN 1 AND 512),
+        size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+        enqueued_at INTEGER NOT NULL CHECK(enqueued_at >= 0)
+      );
+      CREATE TABLE context_session_usage (
+        session_id TEXT PRIMARY KEY,
+        reference_count INTEGER NOT NULL CHECK(reference_count >= 0),
+        logical_bytes INTEGER NOT NULL CHECK(logical_bytes >= 0)
+      );
+      CREATE TABLE context_store_usage (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+        blob_count INTEGER NOT NULL CHECK(blob_count >= 0),
+        physical_bytes INTEGER NOT NULL CHECK(physical_bytes >= 0)
+      );
       INSERT INTO context_store_usage VALUES (1, 0, 0);
     `);
-    db.prepare("INSERT INTO context_blobs VALUES (?, 'managed_file', ?, ?)").run(
+    db.prepare('INSERT INTO context_blobs VALUES (?, ?, ?, ?, 0)').run(
       digest,
+      'managed_file',
       Buffer.from(relativePath, 'utf8'),
       bytes.length,
     );
-    db.prepare("INSERT INTO context_refs VALUES (?, ?, 'message', ?)").run(
+    db.prepare('INSERT INTO context_refs VALUES (?, ?, ?, ?, ?, ?, 0)').run(
       `ref-${sessionId}`,
       sessionId,
+      'read_image_snapshot',
+      `owner-${sessionId}`,
       digest,
+      'image/png',
     );
     db.exec(`
       INSERT INTO context_session_usage
         SELECT r.session_id, count(*), sum(b.size_bytes)
         FROM context_refs r JOIN context_blobs b USING(blob_id) GROUP BY r.session_id;
-      UPDATE context_store_usage SET blob_count = 1, physical_bytes = ${bytes.length} WHERE singleton = 1;
+      UPDATE context_store_usage SET
+        blob_count = (SELECT count(*) FROM context_blobs),
+        physical_bytes = (SELECT coalesce(sum(size_bytes), 0) FROM context_blobs)
+      WHERE singleton = 1;
     `);
   } finally {
     db.close();
@@ -551,16 +588,61 @@ test('carries managed context payloads and keeps usage accounting true', async (
   }
 });
 
-test('publishes nothing when the context merge fails, so a retry is still possible', async () => {
+async function seedArtifact(
+  workspaceRoot: string,
+  sessionId: string,
+  artifactId: string,
+  bytes: string,
+): Promise<string> {
+  const relativePath = `${sessionId}/${artifactId}-file.txt`;
+  await mkdir(join(workspaceRoot, 'artifacts', sessionId), { recursive: true });
+  await writeFile(join(workspaceRoot, 'artifacts', relativePath), bytes);
+  const db = openDatabase(workspaceRoot);
+  try {
+    db.prepare(`
+      INSERT INTO artifact_records(artifact_id, session_id, created_at, relative_path, record_json)
+      VALUES (?, ?, 0, ?, ?)
+    `).run(
+      artifactId,
+      sessionId,
+      relativePath,
+      JSON.stringify({
+        id: artifactId,
+        sessionId,
+        turnId: 'turn-1',
+        createdAt: 0,
+        name: 'file.txt',
+        kind: 'file',
+        relativePath,
+        sizeBytes: bytes.length,
+        source: 'tool_result',
+      }),
+    );
+  } finally {
+    db.close();
+  }
+  return relativePath;
+}
+
+async function importState(
+  target: string,
+  bundle: string,
+): Promise<{ sessionIds: readonly string[]; artifactFiles: number; contextRefs: number }> {
+  const { importSessionBundleState } = await import('@maka/storage/session-bundle-policy');
+  return importSessionBundleState({ stateRoot: target, bundleStateRoot: bundle });
+}
+
+test('a failed context merge leaves nothing published and the retry then succeeds', async () => {
   const source = await makeWorkspace('maka-import-retry-source');
   const target = await makeWorkspace('maka-import-retry-target');
   try {
     const sessionId = await createSession(source.workspaceRoot);
     await seedHistory(source.workspaceRoot, sessionId);
-    await seedContext(source.workspaceRoot, sessionId, 'ABC');
+    const seeded = await seedContext(source.workspaceRoot, sessionId, 'ABC');
+    const artifactPath = await seedArtifact(source.workspaceRoot, sessionId, 'a1', 'BYTES');
 
     const targetSession = await createSession(target.workspaceRoot, 'Unrelated');
-    await seedContext(target.workspaceRoot, targetSession, 'ZZ');
+    const kept = await seedContext(target.workspaceRoot, targetSession, 'ZZ');
     // Collide the reference ids so the context merge fails partway. Any context
     // failure would do; this one needs no injection point in the code.
     const collide = new DatabaseSync(join(target.workspaceRoot, 'context-offload.sqlite'));
@@ -570,13 +652,7 @@ test('publishes nothing when the context merge fails, so a retry is still possib
       collide.close();
     }
 
-    const { importSessionBundleState } = await import('@maka/storage/session-bundle-policy');
-    await assert.rejects(() =>
-      importSessionBundleState({
-        stateRoot: target.workspaceRoot,
-        bundleStateRoot: source.workspaceRoot,
-      }),
-    );
+    await assert.rejects(() => importState(target.workspaceRoot, source.workspaceRoot));
 
     // The Session rows are the last thing written, so a failure reaching them
     // leaves nothing published. Had they gone first, the ids would now be taken
@@ -590,6 +666,170 @@ test('publishes nothing when the context merge fails, so a retry is still possib
     } finally {
       after.close();
     }
+
+    // The artifact staged by the failed attempt is the part that used to make
+    // the retry impossible: `COPYFILE_EXCL` refused its own leftover and the
+    // import reported a conflict against itself, forever.
+    const repair = new DatabaseSync(join(target.workspaceRoot, 'context-offload.sqlite'));
+    try {
+      repair.prepare('UPDATE context_refs SET ref_id = ?').run(`ref-${targetSession}`);
+    } finally {
+      repair.close();
+    }
+    const retried = await importState(target.workspaceRoot, source.workspaceRoot);
+    assert.deepEqual([...retried.sessionIds], [sessionId]);
+    assert.equal(retried.artifactFiles, 1);
+    assert.equal(retried.contextRefs, 1);
+
+    // Both payloads, not just the count: the retry must neither lose the bytes
+    // it staged nor overwrite what was already in the target.
+    const { readFile } = await import('node:fs/promises');
+    const values = join(target.workspaceRoot, 'context-offload-values');
+    assert.equal(
+      await readFile(join(target.workspaceRoot, 'artifacts', artifactPath), 'utf8'),
+      'BYTES',
+    );
+    assert.equal(await readFile(join(values, seeded.relativePath), 'utf8'), 'ABC');
+    assert.equal(await readFile(join(values, kept.relativePath), 'utf8'), 'ZZ');
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+test('a failure after the context commit is still retryable', async () => {
+  const source = await makeWorkspace('maka-import-late-source');
+  const target = await makeWorkspace('maka-import-late-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    const seeded = await seedContext(source.workspaceRoot, sessionId, 'ABC');
+    await seedArtifact(source.workspaceRoot, sessionId, 'shared', 'BYTES');
+
+    const targetSession = await createSession(target.workspaceRoot, 'Unrelated');
+    await seedContext(target.workspaceRoot, targetSession, 'ZZ');
+    // An artifact id already taken by a Session the bundle knows nothing about.
+    // The importability check reads Session ids, so this passes it and fails in
+    // the operational merge -- after the context transaction has committed.
+    await seedArtifact(target.workspaceRoot, targetSession, 'shared', 'OTHER');
+
+    await assert.rejects(() => importState(target.workspaceRoot, source.workspaceRoot));
+
+    const clear = openDatabase(target.workspaceRoot);
+    try {
+      clear.prepare('DELETE FROM artifact_records WHERE artifact_id = ?').run('shared');
+    } finally {
+      clear.close();
+    }
+
+    // Context rows survived the failure, so the retry re-inserts rows that are
+    // already there. A plain INSERT makes that second attempt fail on its own
+    // predecessor.
+    const retried = await importState(target.workspaceRoot, source.workspaceRoot);
+    assert.deepEqual([...retried.sessionIds], [sessionId]);
+    const { readFile } = await import('node:fs/promises');
+    assert.equal(
+      await readFile(
+        join(target.workspaceRoot, 'context-offload-values', seeded.relativePath),
+        'utf8',
+      ),
+      'ABC',
+    );
+    assert.equal(readContextUsage(target.workspaceRoot).blobCount, 2);
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+test('keeps bytes queued for deletion in the physical total', async () => {
+  const source = await makeWorkspace('maka-import-pending-source');
+  const target = await makeWorkspace('maka-import-pending-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    await seedContext(source.workspaceRoot, sessionId, 'ABC');
+
+    const targetSession = await createSession(target.workspaceRoot, 'Unrelated');
+    await seedContext(target.workspaceRoot, targetSession, 'ZZ');
+    // A blob already dropped from the table whose file has not been drained
+    // yet. Its bytes are on disk and still charged; the drain will subtract
+    // them, so a total recomputed from live blobs alone underflows.
+    const pending = new DatabaseSync(join(target.workspaceRoot, 'context-offload.sqlite'));
+    try {
+      pending
+        .prepare('INSERT INTO context_file_deletions VALUES (?, 7, 0)')
+        .run(Buffer.from('sha256/aa/pending', 'utf8'));
+      pending.exec('UPDATE context_store_usage SET physical_bytes = physical_bytes + 7');
+    } finally {
+      pending.close();
+    }
+
+    await importState(target.workspaceRoot, source.workspaceRoot);
+
+    // 3 imported + 2 already there + 7 queued.
+    assert.equal(readContextUsage(target.workspaceRoot).physicalBytes, 12);
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+test('imports context into a workspace that has never held a Session', async () => {
+  const source = await makeWorkspace('maka-import-fresh-source');
+  const target = await makeWorkspace('maka-import-fresh-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    const seeded = await seedContext(source.workspaceRoot, sessionId, 'ABC');
+
+    // Nothing has run here: no Storage Root marker, no context database. The
+    // snapshot lock used to only *discover* a marked root, so the first import
+    // into a new workspace failed `root_unmarked` -- exactly the case a user
+    // hits when they receive a bundle before starting any Session.
+    const imported = await importState(target.workspaceRoot, source.workspaceRoot);
+    assert.deepEqual([...imported.sessionIds], [sessionId]);
+    assert.equal(imported.contextRefs, 1);
+
+    const { readFile } = await import('node:fs/promises');
+    assert.equal(
+      await readFile(
+        join(target.workspaceRoot, 'context-offload-values', seeded.relativePath),
+        'utf8',
+      ),
+      'ABC',
+    );
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+test('accepts an identical artifact left by a crashed attempt, and only an identical one', async () => {
+  const source = await makeWorkspace('maka-import-leftover-source');
+  const target = await makeWorkspace('maka-import-leftover-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    const relativePath = await seedArtifact(source.workspaceRoot, sessionId, 'a1', 'BYTES');
+
+    // A crash between staging the artifact and the rollback leaves the file
+    // behind with no row to explain it. `COPYFILE_EXCL` refuses it, so without
+    // this the workspace can never import that bundle again.
+    const staged = join(target.workspaceRoot, 'artifacts', relativePath);
+    await mkdir(join(target.workspaceRoot, 'artifacts', sessionId), { recursive: true });
+    await writeFile(staged, 'DIFFERENT');
+    await assert.rejects(
+      () => importState(target.workspaceRoot, source.workspaceRoot),
+      /Artifact already present/,
+      'a leftover naming different bytes is a real collision, not a retry',
+    );
+
+    await writeFile(staged, 'BYTES');
+    const imported = await importState(target.workspaceRoot, source.workspaceRoot);
+    assert.deepEqual([...imported.sessionIds], [sessionId]);
+    const { readFile } = await import('node:fs/promises');
+    assert.equal(await readFile(staged, 'utf8'), 'BYTES');
   } finally {
     await rm(source.root, { recursive: true, force: true });
     await rm(target.root, { recursive: true, force: true });

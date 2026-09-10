@@ -25,6 +25,7 @@ import { backup, DatabaseSync } from 'node:sqlite';
 import { isCanonicalStorageRef } from '@maka/core/events';
 import {
   discoverMarkedStorageRoot,
+  resolveStorageRoot,
   runWithStorageRootLease,
   tryAcquireInteractiveRootOwner,
 } from './root-authority.js';
@@ -65,7 +66,14 @@ export async function withOfflineContextSnapshot<T>(
   ) {
     return operation(false);
   }
-  const capability = await discoverMarkedStorageRoot({ path: root });
+  // Discovery finds a marked root; it does not make one. A workspace that has
+  // never been opened is exactly the target an import writes to first, so when
+  // the caller says it is about to write, the root is resolved -- which
+  // initialises it -- rather than merely looked for.
+  const capability =
+    options.requireAuthority === true
+      ? await resolveStorageRoot({ path: root, kind: 'interactive' })
+      : await discoverMarkedStorageRoot({ path: root });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   if (!owner)
     throw new Error(
