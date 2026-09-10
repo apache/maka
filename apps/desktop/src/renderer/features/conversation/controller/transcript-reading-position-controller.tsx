@@ -35,6 +35,7 @@ import {
 type RangeController = NonNullable<Parameters<typeof restoreSessionTranscriptRange<StoredMessage>>[0]['controller']> & {
   readonly store: {
     retain(oldestSequence: number | null, newestSequence: number | null): boolean;
+    snapshot(): object;
   };
   loadBefore(maxBytes?: number): Promise<void>;
   loadAfter(maxBytes?: number): Promise<void>;
@@ -51,6 +52,7 @@ export interface TranscriptReadingPositionCommands {
   prepareSend(sessionId: string): Promise<boolean>;
   captureAnchor(turnId?: string): void;
   loadHistory(target: TranscriptHistoryTarget): Promise<void>;
+  prefetchHistory(edge: 'older' | 'newer'): Promise<boolean>;
   retainWindow(window: { firstTurnId: string; lastTurnId: string }): void;
 }
 
@@ -122,6 +124,24 @@ export function TranscriptReadingPositionController(props: {
       } catch {
         // A stale range has no window to trim.
       }
+    },
+    /**
+     * Fills the window at an edge the reader is approaching. Deliberately not
+     * `loadHistory`: that one cancels restoration and clears the search target,
+     * because a reader who asks for history has decided where to be. Filling
+     * decides nothing, so it must leave an outstanding jump alone — the page it
+     * is waiting for can still be in flight — and it answers whether the window
+     * moved, so its caller can tell a filled window from a read that failed or
+     * was refused as stale and would fail again unchanged.
+     */
+    async prefetchHistory(edge) {
+      const controller = props.rangeController.current;
+      const { sessionId } = props;
+      if (!controller || !sessionId || !isCurrent(sessionId, controller)) return false;
+      const before = controller.store.snapshot();
+      if (edge === 'older') await controller.loadBefore();
+      else await controller.loadAfter();
+      return controller.store.snapshot() !== before;
     },
     async loadHistory(target) {
       const controller = props.rangeController.current;

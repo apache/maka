@@ -2690,6 +2690,8 @@ function AppShellContent({
                 hasNewerHistory={activeTranscriptRange?.hasNewer}
                 historyLoadPending={historyLoadPending}
                 onLoadHistory={(target) => transcriptReadingCommands.current?.loadHistory(target)}
+                onPrefetchHistory={(edge) =>
+                  transcriptReadingCommands.current?.prefetchHistory(edge) ?? Promise.resolve()}
                 onRetainWindow={(window) => transcriptReadingCommands.current?.retainWindow(window)}
                 liveContentSeedRevision={liveContent.liveContentSeedRevision(activeEventSeed, activeId)}
                 messages={messages}

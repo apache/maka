@@ -319,6 +319,8 @@ export function ChatView(props: {
   historyLoadPending?: TranscriptHistoryLoadDirection;
   onLoadEarlierHistory?(): Promise<void> | void;
   onLoadLaterHistory?(): Promise<void> | void;
+  /** Automatic window filling, kept apart from the two explicit gap actions. */
+  onPrefetchHistory?(edge: 'older' | 'newer'): Promise<boolean | void>;
   onRetainWindow?(window: { firstTurnId: string; lastTurnId: string }): void;
   transcriptTurnIndex?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>;
   /** Optional identity decorations shared with a host's work navigation. */
@@ -637,9 +639,8 @@ export function ChatView(props: {
     onReadingAnchorChange: props.onReadingAnchorChange,
     behavior: props.scrollBehavior,
     hasOlderHistory: props.hasOlderHistory,
-    onLoadEarlierHistory: props.onLoadEarlierHistory,
     hasNewerHistory: props.hasNewerHistory,
-    onLoadLaterHistory: props.onLoadLaterHistory,
+    onPrefetchHistory: props.onPrefetchHistory,
     onRetainWindow: props.onRetainWindow,
   });
   const { quote: selectionQuote, clear: clearSelectionQuote } = useMessageSelectionQuote(

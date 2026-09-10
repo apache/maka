@@ -130,11 +130,18 @@ interface TranscriptConsumer {
   readonly consumerId: string;
   readonly target: RuntimeHostTranscriptTarget;
   generation: string;
-  navigationVersion: number;
+  windowEpoch: number;
   deliverySequence: number;
   deliveryBytes: number;
   deliveryTask?: Promise<void>;
   resetRequested: boolean;
+  /**
+   * Set only when the reset answers a navigation command, and stamped on that
+   * snapshot so the window can tell its own answer from a replacement it did
+   * not ask for. A reset from recovery or from an error carries no version:
+   * the window applies it to whatever it holds, under any navigation.
+   */
+  resetWindowEpoch?: number;
   /** Page answers queued behind the delivery loop so they never interleave with a change. */
   readonly pendingPages: PendingTranscriptPage[];
   pendingChange?: PendingTranscriptChange;
@@ -153,7 +160,7 @@ interface PendingTranscriptChange {
 }
 
 interface PendingTranscriptPage {
-  readonly navigationVersion: number;
+  readonly windowEpoch: number;
   readonly generation: string;
   readonly batches: Iterable<DesktopTranscriptBatchPayload>;
   readonly encodedBytes: number;
@@ -300,7 +307,7 @@ export class RuntimeHostSessionObserver {
       consumerId,
       target,
       generation: replica.generation,
-      navigationVersion: 0,
+      windowEpoch: 0,
       deliverySequence: 0,
       deliveryBytes: 0,
       resetRequested: false,
@@ -380,7 +387,7 @@ export class RuntimeHostSessionObserver {
         isCurrent,
       );
       return snapshot && {
-        batches: encodeDesktopTranscriptSnapshot({ ...snapshot, navigationVersion: request.navigationVersion }),
+        batches: encodeDesktopTranscriptSnapshot({ ...snapshot, windowEpoch: request.windowEpoch }),
         bytes: [...snapshot.durable, ...snapshot.overlay.map((message) => ({ message }))],
       };
     });
@@ -393,6 +400,7 @@ export class RuntimeHostSessionObserver {
     const { state, consumer } = this.#admitTranscriptNavigation(request, targetId);
     if (!consumer) return;
     consumer.resetRequested = true;
+    consumer.resetWindowEpoch = request.windowEpoch;
     await this.#scheduleTranscriptDelivery(state, consumer);
     this.#touchReplica(state);
   }
@@ -402,7 +410,7 @@ export class RuntimeHostSessionObserver {
       sessionId: replica.sessionId,
       generation: replica.generation,
       hostEpoch: replica.hostEpoch,
-      navigationVersion: request.navigationVersion,
+      windowEpoch: request.windowEpoch,
     };
   }
 
@@ -411,14 +419,14 @@ export class RuntimeHostSessionObserver {
     targetId: number | undefined,
   ): { state: ObservedSessionState; replica: DesktopTranscriptReplica; consumer?: TranscriptConsumer } {
     const { state, replica, consumer } = this.#requireTranscriptConsumer(request, targetId);
-    const version = request.navigationVersion;
+    const version = request.windowEpoch;
     if (!Number.isSafeInteger(version) || version < 0) throw new Error('Invalid transcript navigation version');
     // A window-replacing command mints a new version; a page that extends the
     // current window reuses it. Anything older belongs to a window the
     // Renderer already abandoned.
-    if (version < consumer.navigationVersion) return { state, replica };
-    if (version > consumer.navigationVersion) {
-      consumer.navigationVersion = version;
+    if (version < consumer.windowEpoch) return { state, replica };
+    if (version > consumer.windowEpoch) {
+      consumer.windowEpoch = version;
       consumer.pendingPages.splice(0).forEach((page) =>
         this.#adjustTranscriptDeliveryBytes(consumer, -page.encodedBytes),
       );
@@ -442,7 +450,7 @@ export class RuntimeHostSessionObserver {
     const isCurrent = () =>
       state.replica === replica &&
       state.transcriptConsumers.get(request.consumerId) === consumer &&
-      consumer.navigationVersion === request.navigationVersion;
+      consumer.windowEpoch === request.windowEpoch;
     let answer: Awaited<ReturnType<typeof operation>>;
     try {
       answer = await operation(replica, isCurrent);
@@ -460,7 +468,7 @@ export class RuntimeHostSessionObserver {
       throw new Error('Desktop transcript delivery capacity was reached');
     }
     consumer.pendingPages.push({
-      navigationVersion: request.navigationVersion,
+      windowEpoch: request.windowEpoch,
       generation: replica.generation,
       batches: answer.batches,
       encodedBytes,
@@ -1244,6 +1252,8 @@ export class RuntimeHostSessionObserver {
         while (state.transcriptConsumers.get(consumer.consumerId) === consumer) {
           if (consumer.resetRequested) {
             consumer.resetRequested = false;
+            const resetWindowEpoch = consumer.resetWindowEpoch;
+            consumer.resetWindowEpoch = undefined;
             this.#clearPendingTranscriptChange(consumer);
             const replica = state.replica;
             if (!replica?.resident || state.closing) return;
@@ -1257,7 +1267,7 @@ export class RuntimeHostSessionObserver {
                 consumer,
                 encodeDesktopTranscriptSnapshot({
                   ...replica.snapshot(),
-                  navigationVersion: consumer.navigationVersion,
+                  windowEpoch: resetWindowEpoch,
                 }),
               );
             } finally {
@@ -1269,7 +1279,7 @@ export class RuntimeHostSessionObserver {
           if (page) {
             try {
               if (
-                page.navigationVersion === consumer.navigationVersion &&
+                page.windowEpoch === consumer.windowEpoch &&
                 page.generation === consumer.generation &&
                 state.replica?.generation === consumer.generation
               ) {
@@ -1440,7 +1450,7 @@ export class RuntimeHostSessionObserver {
   ): Promise<void> {
     const deliveries = new Set<Promise<void>>();
     for (const batch of batches) {
-      if (batch.navigationVersion !== undefined && batch.navigationVersion !== consumer.navigationVersion) break;
+      if (batch.windowEpoch !== undefined && batch.windowEpoch !== consumer.windowEpoch) break;
       let delivery!: Promise<void>;
       delivery = this.#deliverTranscriptBatch(consumer, batch).finally(() => {
         deliveries.delete(delivery);

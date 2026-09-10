@@ -24,7 +24,7 @@ import {
   type DesktopTranscriptBatchPayload,
   type DesktopTranscriptFragment,
   type DesktopTranscriptHandle,
-  type DesktopTranscriptNavigation,
+  type DesktopTranscriptWindowRead,
 } from '../../../preload/transcript-contract.js';
 import { projectDesktopStoredMessage } from '../../../shared/desktop-session-projection.js';
 import { parseDesktopSessionKey } from '../../../shared/runtime-host-identity.js';
@@ -54,51 +54,54 @@ export function createDesktopTranscriptRangeController(
   let closed = false;
   let openController = new AbortController();
   let handle = open(openController.signal);
-  let navigationVersion = 0;
-  const extending: { older?: Promise<void>; newer?: Promise<void> } = {};
+  const extending: {
+    older?: { epoch: number; task: Promise<void> };
+    newer?: { epoch: number; task: Promise<void> };
+  } = {};
   const current = async () => {
     if (closed) throw new Error('Desktop transcript range is closed');
     return handle;
   };
   const command = async (
     replace: boolean,
-    run: (value: DesktopTranscriptHandle, navigation: DesktopTranscriptNavigation) => Promise<void>,
+    run: (value: DesktopTranscriptHandle, navigation: DesktopTranscriptWindowRead) => Promise<void>,
   ) => {
-    if (replace) {
-      navigationVersion += 1;
-      // Invalidate before awaiting an open handle or any in-flight page.
-      store.expectNavigation(navigationVersion);
-    }
-    const version = navigationVersion;
+    // Mint before awaiting an open handle or any in-flight page.
+    const windowEpoch = replace ? store.replaceWindow() : store.windowEpoch();
     const opening = handle;
-    const isCurrent = () => !closed && version === navigationVersion && opening === handle;
+    // A navigation outlives the band trimming the window under it; it is only
+    // the next navigation that makes this one obsolete.
+    const epoch = replace ? () => store.navigationEpoch() : () => store.windowEpoch();
+    const isCurrent = () => !closed && epoch() === windowEpoch && opening === handle;
     try {
       const value = await current();
       if (!isCurrent()) return;
-      await run(value, { navigationVersion: version });
+      await run(value, { windowEpoch });
     } catch (error) {
       if (isCurrent()) throw error;
     }
   };
   const extend = (edge: 'older' | 'newer', maxBytes: number): Promise<void> => {
-    const pending = extending[edge];
-    if (pending) return pending;
     let range: DesktopTranscriptRangeState;
     try {
       range = store.range();
     } catch {
       return Promise.resolve();
     }
+    // Sharing a read only holds while the window it was anchored on does.
+    const pending = extending[edge];
+    if (pending && pending.epoch === store.windowEpoch()) return pending.task;
     if (edge === 'older' ? !range.hasOlder : !range.hasNewer) return Promise.resolve();
     const anchor = edge === 'older' ? range.oldestSequence : range.newestSequence;
+    const epoch = store.windowEpoch();
     const task = command(false, (value, navigation) =>
       edge === 'older'
         ? value.loadBefore(anchor, maxBytes, navigation)
         : value.loadAfter(anchor, maxBytes, navigation),
     ).finally(() => {
-      if (extending[edge] === task) extending[edge] = undefined;
+      if (extending[edge]?.task === task) extending[edge] = undefined;
     });
-    extending[edge] = task;
+    extending[edge] = { epoch, task };
     return task;
   };
   return {
@@ -300,7 +303,8 @@ export class DesktopTranscriptRangeStore {
   readonly #durableOrder: number[] = [];
   readonly #overlayOrder: string[] = [];
   readonly #pending = new Map<string, PendingRecord>();
-  #navigationVersion = 0;
+  #windowEpoch = 0;
+  #navigationEpoch = 0;
   readonly #retiredGenerations = new Set<string>();
   #sourceSessionId: string | undefined;
   #generation: string | undefined;
@@ -325,28 +329,50 @@ export class DesktopTranscriptRangeStore {
     this.#expectedSessionId = sessionId;
   }
 
-  expectNavigation(navigationVersion: number): void {
-    if (navigationVersion <= this.#navigationVersion) return;
-    this.#navigationVersion = navigationVersion;
-    this.#pending.clear();
-    this.#batchChanged = false;
+  windowEpoch(): number {
+    return this.#windowEpoch;
+  }
+
+  navigationEpoch(): number {
+    return this.#navigationEpoch;
   }
 
   /**
-   * A batch answering a command is current only under the version that issued
-   * it. A reset for a new replica generation is always current: Main replaced
-   * the transcript underneath every window. Broadcasts carry no version.
+   * Mints the epoch for a window about to be replaced wholesale by a navigation,
+   * and drops the partially received records of the window being left behind.
+   */
+  replaceWindow(): number {
+    this.#navigationEpoch = this.#mintWindow();
+    return this.#navigationEpoch;
+  }
+
+  #mintWindow(): number {
+    this.#windowEpoch += 1;
+    this.#pending.clear();
+    this.#batchChanged = false;
+    return this.#windowEpoch;
+  }
+
+  /**
+   * A read is answerable only while what it assumed still holds, and the two
+   * kinds of read assume different things.
+   *
+   * An extension splices rows onto one edge, so it assumes that edge: any
+   * replacement of the window — navigating away, or the band trimming the edge
+   * out — leaves its answer unable to reach what is left, and no edge cursor
+   * can name the hole it would open. A replacement assumes nothing about the
+   * edges, because it discards them; only a newer navigation makes it stale.
+   *
+   * Batches that name no epoch answer nothing: tail broadcasts apply to
+   * whatever the window holds, and a snapshot replacing the transcript
+   * underneath every window is not this window's answer to refuse.
    */
   accepts(batch: DesktopTranscriptBatchPayload): boolean {
     if (this.#retiredGenerations.has(batch.generation)) return false;
     if (batch.reset) {
-      return batch.navigationVersion === undefined ||
-        batch.navigationVersion === this.#navigationVersion ||
-        batch.generation !== this.#liveGeneration;
+      return batch.windowEpoch === undefined || batch.windowEpoch === this.#navigationEpoch;
     }
-    if (batch.navigationVersion !== undefined && batch.navigationVersion !== this.#navigationVersion) {
-      return false;
-    }
+    if (batch.windowEpoch !== undefined && batch.windowEpoch !== this.#windowEpoch) return false;
     return batch.sessionId === this.#sourceSessionId &&
       batch.generation === this.#generation &&
       batch.hostEpoch === this.#hostEpoch;
@@ -356,7 +382,7 @@ export class DesktopTranscriptRangeStore {
     if (!this.accepts(batch)) return false;
     if (batch.reset) this.#reset(batch);
     let changed = batch.reset;
-    const answersCommand = batch.navigationVersion !== undefined;
+    const answersCommand = batch.windowEpoch !== undefined;
     if (batch.hasOlder !== undefined && batch.hasOlder !== this.#hasOlder) {
       this.#hasOlder = batch.hasOlder;
       changed = true;
@@ -404,6 +430,11 @@ export class DesktopTranscriptRangeStore {
   /**
    * Drops durable rows outside `[oldestSequence, newestSequence]`. Either edge
    * that lost rows becomes a history edge again.
+   *
+   * Dropping an edge mints a window epoch: an extension still in flight was
+   * anchored on that edge, and installing its answer would leave rows missing
+   * between the answer and what is left — a hole no edge cursor names and no
+   * later page can fill.
    */
   retain(oldestSequence: number | null, newestSequence: number | null): boolean {
     let changed = false;
@@ -418,6 +449,7 @@ export class DesktopTranscriptRangeStore {
       changed = true;
     }
     if (!changed) return false;
+    this.#mintWindow();
     this.#oldestSequence = this.#durableOrder[0] ?? null;
     this.#newestSequence = this.#durableOrder.at(-1) ?? null;
     this.#newestUserSequence = null;

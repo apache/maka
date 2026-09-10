@@ -31,7 +31,7 @@ import type {
 } from './desktop-transcript-replica.js';
 
 interface TranscriptBatchIdentity {
-  readonly navigationVersion?: number;
+  readonly windowEpoch?: number;
   readonly sessionId: string;
   readonly generation: string;
   readonly hostEpoch: string;
@@ -105,9 +105,9 @@ function* encodeDesktopTranscriptBatches(
       fragment = fragments.next();
     }
     yield {
-      ...(identity.navigationVersion === undefined
+      ...(identity.windowEpoch === undefined
         ? {}
-        : { navigationVersion: identity.navigationVersion }),
+        : { windowEpoch: identity.windowEpoch }),
       sessionId: identity.sessionId,
       generation: identity.generation,
       hostEpoch: identity.hostEpoch,

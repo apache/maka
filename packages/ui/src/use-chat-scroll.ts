@@ -54,20 +54,23 @@ export function useChatScroll(input: {
   onReadingAnchorChange?(turnId?: string): void;
   behavior: ScrollBehavior;
   hasOlderHistory?: boolean;
-  onLoadEarlierHistory?(): Promise<void> | void;
   hasNewerHistory?: boolean;
-  onLoadLaterHistory?(): Promise<void> | void;
+  /**
+   * Fills the window because the reader is running out of it — never because
+   * they asked to go somewhere. It must not consume an outstanding navigation
+   * intent, and it must reject when the read fails so this hook can tell a
+   * filled window from a failed one.
+   */
+  /** Fills an edge the reader is approaching; resolves false when it moved nothing. */
+  onPrefetchHistory?(edge: 'older' | 'newer'): Promise<boolean | void>;
   /** The turns the reader can still reach within the retained band; the rest may go. */
   onRetainWindow?(window: { firstTurnId: string; lastTurnId: string }): void;
 }) {
   const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
   const authority = useTranscriptScrollAuthority();
-  const loadEarlierRef = useRef(input.onLoadEarlierHistory);
-  loadEarlierRef.current = input.onLoadEarlierHistory;
-  const canLoadEarlier = input.onLoadEarlierHistory !== undefined;
-  const loadLaterRef = useRef(input.onLoadLaterHistory);
-  loadLaterRef.current = input.onLoadLaterHistory;
-  const canLoadLater = input.onLoadLaterHistory !== undefined;
+  const prefetchRef = useRef(input.onPrefetchHistory);
+  prefetchRef.current = input.onPrefetchHistory;
+  const canPrefetch = input.onPrefetchHistory !== undefined;
   const retainRef = useRef(input.onRetainWindow);
   retainRef.current = input.onRetainWindow;
   const handledTarget = useRef<string | null>(null);
@@ -186,8 +189,8 @@ export function useChatScroll(input: {
     if (!root) return;
     const inFlight = { up: false, down: false };
     const canLoad = (direction: 'up' | 'down'): boolean => direction === 'up'
-      ? input.hasOlderHistory === true && canLoadEarlier
-      : input.hasNewerHistory === true && canLoadLater;
+      ? input.hasOlderHistory === true && canPrefetch
+      : input.hasNewerHistory === true && canPrefetch;
     const requestHistory = (direction: 'up' | 'down'): void => {
       if (inFlight[direction]) return;
       // The browser anchors the reader against everything that lands above
@@ -198,12 +201,21 @@ export function useChatScroll(input: {
       if (direction === 'up' && !authority.getSnapshot().pinned && root.scrollTop < 1) {
         root.scrollTop = 1;
       }
-      const load = direction === 'up' ? loadEarlierRef.current : loadLaterRef.current;
       inFlight[direction] = true;
-      void Promise.resolve(load?.()).catch(() => undefined).finally(() => {
-        inFlight[direction] = false;
-        check();
-      });
+      void Promise.resolve(prefetchRef.current?.(direction === 'up' ? 'older' : 'newer'))
+        .then(
+          // Chaining pages needs a re-check here, because the render that the
+          // landed rows caused ran while this direction still counted as in
+          // flight. A read that moved nothing — refused as stale, or failed —
+          // leaves the geometry and the history flags exactly as they were, so
+          // re-checking would issue the identical request forever. The reader's
+          // next movement, or the next range change, asks again.
+          (moved) => {
+            inFlight[direction] = false;
+            if (moved !== false) check();
+          },
+          () => { inFlight[direction] = false; },
+        );
     };
     const check = (): void => {
       if (!root.isConnected || bandCheck.current !== check) return;
@@ -244,7 +256,7 @@ export function useChatScroll(input: {
       if (bandCheck.current === check) bandCheck.current = undefined;
       stopWatchingReader();
     };
-  }, [authority, input.hasOlderHistory, input.hasNewerHistory, canLoadEarlier, canLoadLater,
+  }, [authority, input.hasOlderHistory, input.hasNewerHistory, canPrefetch,
     input.scrollRef, input.sessionId]);
 
   useEffect(() => {

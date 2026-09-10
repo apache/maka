@@ -23,7 +23,7 @@ import type { StoredMessage } from '@maka/core/session';
 import { SESSION_CONTINUITY_SCHEMA_VERSION, type SessionTranscriptPage } from '@maka/runtime-host/protocol';
 import type { DesktopTranscriptBatch, DesktopTranscriptHandle, DesktopTranscriptRangeRequest } from '../../preload/transcript-contract.js';
 import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
-import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
+import { encodeDesktopTranscriptPage, encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 import { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
 import { RuntimeHostSessionObserver } from '../runtime-host-session-observer.js';
 import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
@@ -117,14 +117,14 @@ test('a global cache trim empties the tail without publishing or reading history
 test('a superseded fragmented reset cannot clear or complete the next navigation', () => {
   const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
   acceptSnapshot(store, 0, 'generation-1', [record(1)]);
-  store.expectNavigation(1);
+  store.replaceWindow();
   const stale = [...encodeDesktopTranscriptSnapshot({
-    ...identity, navigationVersion: 1, durableThrough: 1,
+    ...identity, windowEpoch: 1, durableThrough: 1,
     durable: [{ sequence: 0, message: { ...record(0).message, text: 'A'.repeat(300 * 1024) } as StoredMessage }],
     overlay: [], hasOlder: false, hasNewer: true,
   })];
   assert.equal(store.accept(stale[0]!), false);
-  store.expectNavigation(2);
+  store.replaceWindow();
   acceptSnapshot(store, 2, 'generation-2', [record(1)]);
   const committed = store.snapshot();
   for (const batch of stale) assert.equal(store.accept(batch), false);
@@ -135,21 +135,55 @@ test('a superseded fragmented reset cannot clear or complete the next navigation
   assert.strictEqual(store.snapshot(), committed);
 });
 
+test('a replica replacement is admitted whole, however far the window has navigated', () => {
+  const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
+  acceptSnapshot(store, 0, 'generation-1', [record(1)]);
+  store.replaceWindow();
+  const replacement = [...encodeDesktopTranscriptSnapshot({
+    ...identity, generation: 'generation-2', durableThrough: 1,
+    durable: [
+      { sequence: 0, message: { ...record(0).message, text: 'A'.repeat(300 * 1024) } as StoredMessage },
+      { sequence: 1, message: record(1).message },
+    ],
+    overlay: [], hasOlder: false, hasNewer: false,
+  })];
+  assert.ok(replacement.length > 1, 'the replacement has to span more than its reset batch');
+  for (const batch of replacement) store.accept(batch);
+  assert.equal(store.range().ready, true);
+  assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-0', 'message-1']);
+});
+
+test('a page anchored on an edge the band has since dropped is refused', () => {
+  const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
+  acceptSnapshot(store, 0, 'generation-1', [record(1), record(2), record(3)]);
+  const anchored = store.windowEpoch();
+  assert.equal(store.retain(3, 3), true);
+  const answer = [...encodeDesktopTranscriptPage({ ...identity, windowEpoch: anchored }, {
+    durableThrough: 3, durable: [{ sequence: 0, message: record(0).message }],
+    hasOlder: false,
+  })];
+  for (const batch of answer) assert.equal(store.accept(batch), false);
+  // Installing it would leave 1..2 missing between the answer and the window,
+  // and no edge cursor can name a hole in the middle.
+  assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-3']);
+  assert.equal(store.range().hasOlder, true);
+});
+
 test('follow latest invalidates an in-flight history navigation before open resolves', async () => {
   const store = new DesktopTranscriptRangeStore(JSON.stringify(['host-1', 'session-1']));
   const opening = deferred<DesktopTranscriptHandle>();
-  const requests: Array<{ command: 'around' | 'latest'; anchor: number | null; navigationVersion: number }> = [];
+  const requests: Array<{ command: 'around' | 'latest'; anchor: number | null; windowEpoch: number }> = [];
   const handle = (generation: string): DesktopTranscriptHandle => ({
     ...identity, generation, readThroughMessageId: null,
     async loadBefore() { assert.fail('an obsolete history request was replayed'); },
     async loadAfter() { assert.fail('an obsolete newer request was replayed'); },
     async loadAround(anchor, _bytes, navigation) {
-      requests.push({ command: 'around', anchor, navigationVersion: navigation.navigationVersion });
-      acceptSnapshot(store, navigation.navigationVersion, generation, [record(0)]);
+      requests.push({ command: 'around', anchor, windowEpoch: navigation.windowEpoch });
+      acceptSnapshot(store, navigation.windowEpoch, generation, [record(0)]);
     },
     async loadLatest(navigation) {
-      requests.push({ command: 'latest', anchor: null, navigationVersion: navigation.navigationVersion });
-      acceptSnapshot(store, navigation.navigationVersion, generation, [record(1)]);
+      requests.push({ command: 'latest', anchor: null, windowEpoch: navigation.windowEpoch });
+      acceptSnapshot(store, navigation.windowEpoch, generation, [record(1)]);
     },
     async close() {},
   });
@@ -158,7 +192,7 @@ test('follow latest invalidates an in-flight history navigation before open reso
   const latest = controller.loadLatest();
   opening.resolve(handle('generation-1'));
   await Promise.all([history, latest]);
-  assert.deepEqual(requests, [{ command: 'latest', anchor: null, navigationVersion: 2 }]);
+  assert.deepEqual(requests, [{ command: 'latest', anchor: null, windowEpoch: 2 }]);
   assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['message-1']);
   await controller.close();
 });
@@ -177,7 +211,7 @@ test('a rejected older navigation cannot fail the newer latest command', async (
       await historyResult;
     },
     async loadLatest(navigation) {
-      acceptSnapshot(store, navigation.navigationVersion, identity.generation, [record(1)]);
+      acceptSnapshot(store, navigation.windowEpoch, identity.generation, [record(1)]);
     },
     async close() {},
   }));
@@ -225,7 +259,7 @@ test('superseded batches remain ACKable and cannot reset the latest window while
     id: 1, once() {}, off() {},
     send(_channel, batch) {
       store.accept(batch);
-      if (batch.navigationVersion === 1 && !releaseAcks) {
+      if (batch.windowEpoch === 1 && !releaseAcks) {
         blocked.push(batch);
         firstOldBatch.resolve();
       } else queueMicrotask(() => ack(batch));
@@ -233,13 +267,13 @@ test('superseded batches remain ACKable and cannot reset the latest window while
   });
   const request: DesktopTranscriptRangeRequest = {
     consumerId: 'consumer-1', sessionId: 'session-1', hostEpoch: 'host-1',
-    anchorSequence: 0, maxBytes: PAGE_BYTES, navigationVersion: 1,
+    anchorSequence: 0, maxBytes: PAGE_BYTES, windowEpoch: 1,
   };
-  store.expectNavigation(1);
+  store.replaceWindow();
   const history = observer.loadTranscriptAround(request, 1);
   await firstOldBatch.promise;
-  store.expectNavigation(2);
-  const following = observer.loadTranscriptLatest({ ...request, navigationVersion: 2, anchorSequence: null }, 1);
+  store.replaceWindow();
+  const following = observer.loadTranscriptLatest({ ...request, windowEpoch: 2, anchorSequence: null }, 1);
   releaseAcks = true;
   for (const batch of blocked) ack(batch);
   await Promise.all([history, following]);
@@ -251,9 +285,9 @@ test('superseded batches remain ACKable and cannot reset the latest window while
 });
 
 const identity = { sessionId: 'session-1', hostEpoch: 'host-1', generation: 'generation-1' };
-function acceptSnapshot(store: DesktopTranscriptRangeStore, navigationVersion: number, generation: string, records: Array<ReturnType<typeof record>>) {
+function acceptSnapshot(store: DesktopTranscriptRangeStore, windowEpoch: number, generation: string, records: Array<ReturnType<typeof record>>) {
   for (const batch of encodeDesktopTranscriptSnapshot({
-    ...identity, navigationVersion, generation, durableThrough: 1,
+    ...identity, windowEpoch, generation, durableThrough: 1,
     durable: records.map(({ identity: sequence, message }) => ({ sequence, message })),
     overlay: [], hasOlder: true, hasNewer: false,
   })) store.accept(batch);

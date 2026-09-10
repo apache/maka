@@ -142,7 +142,7 @@ test('WorkHub projects the exact delegated Turn status and bounded assistant res
           durableThrough: 1, overlay: [], hasOlder: false, hasNewer: false,
         };
         for (const batch of encodeDesktopTranscriptSnapshot({
-          ...snapshot, navigationVersion: 0, durable: [{ sequence: 1, message: result }],
+          ...snapshot, windowEpoch: 0, durable: [{ sequence: 1, message: result }],
         })) onBatch({ ...batch, deliverySequence: 1 });
         return {
           ...snapshot, readThroughMessageId: result.id,
@@ -204,14 +204,14 @@ test('WorkHub proves a long historical Turn tail before caching its final result
       async open(_sessionId: string, onBatch: (batch: DesktopTranscriptBatch) => void) {
         opens += 1;
         const emit = (
-          navigationVersion: number,
+          windowEpoch: number,
           durable: Array<{ sequence: number; message: StoredMessage }>,
           hasOlder: boolean,
           hasNewer: boolean,
         ) => {
           for (const batch of encodeDesktopTranscriptSnapshot({
             sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
-            durableThrough: 4, overlay: [], hasOlder, hasNewer, navigationVersion, durable,
+            durableThrough: 4, overlay: [], hasOlder, hasNewer, windowEpoch, durable,
           })) onBatch({ ...batch, deliverySequence: ++deliverySequence });
         };
         emit(0, [{ sequence: 4, message: { ...next, id: 'tail', ts: 4 } }], true, false);
@@ -219,13 +219,13 @@ test('WorkHub proves a long historical Turn tail before caching its final result
           sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
           durableThrough: 4, hasOlder: true, hasNewer: false, readThroughMessageId: 'tail',
           loadBefore: async () => undefined,
-          async loadAround(_sequence: number | null, _maxBytes: number | undefined, navigation: { navigationVersion: number }) {
-            emit(navigation.navigationVersion, [{ sequence: 1, message: intermediate }], false, true);
+          async loadAround(_sequence: number | null, _maxBytes: number | undefined, navigation: { windowEpoch: number }) {
+            emit(navigation.windowEpoch, [{ sequence: 1, message: intermediate }], false, true);
           },
-          async loadAfter(anchor: number | null, _maxBytes: number | undefined, navigation: { navigationVersion: number }) {
+          async loadAfter(anchor: number | null, _maxBytes: number | undefined, navigation: { windowEpoch: number }) {
             loadAfters += 1;
             assert.equal(anchor, 1);
-            emit(navigation.navigationVersion, [
+            emit(navigation.windowEpoch, [
               { sequence: 2, message: final },
               { sequence: 3, message: next },
             ], false, true);
@@ -350,7 +350,7 @@ test('WorkHub tail navigation converges through the preload with a fragmented sp
       if (channel === 'session-local:transcript') return null;
       if (channel === 'sessions:transcript:open') {
         consumerId = args[2] as string;
-        for (const batch of encodeDesktopTranscriptSnapshot({ ...snapshot, navigationVersion: 0, durable: [] })) {
+        for (const batch of encodeDesktopTranscriptSnapshot({ ...snapshot, windowEpoch: 0, durable: [] })) {
           deliver(batch);
         }
         return { ...snapshot, readThroughMessageId: null };
@@ -363,7 +363,7 @@ test('WorkHub tail navigation converges through the preload with a fragmented sp
         await new Promise<void>((resolve) => setImmediate(resolve));
         try {
           for (const batch of encodeDesktopTranscriptSnapshot({
-            ...snapshot, navigationVersion: request.navigationVersion,
+            ...snapshot, windowEpoch: request.windowEpoch,
             durable: [{ sequence: 7, message }],
           })) {
             deliver(batch);
@@ -431,7 +431,7 @@ test('WorkHub tail navigation converges through the preload with a fragmented sp
     await responseDelivered;
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(requests.length, 1);
-    assert.equal(requests[0]!.navigationVersion, 1);
+    assert.equal(requests[0]!.windowEpoch, 1);
     assert.equal(requests[0]!.anchorSequence, null);
     assert.deepEqual(partialProjectionCounts, [1, 1]);
     assert.deepEqual(projections, [[], ['latest-message']]);
@@ -480,9 +480,9 @@ for (const initial of ['failure-before-ready', 'failure-after-ready', 'cached'] 
             sessionId: 'coordination', generation: cached ? 'cached:epoch-1' : `live-${attempt}`,
             hostEpoch: 'epoch-1', durableThrough: 1, overlay: [], hasOlder: false, hasNewer: false,
           };
-          const deliver = (navigationVersion = 0) => {
+          const deliver = (windowEpoch = 0) => {
             for (const batch of encodeDesktopTranscriptSnapshot({
-              ...snapshot, navigationVersion,
+              ...snapshot, windowEpoch,
               durable: [{ sequence: 1, message: { type: 'user', id: cached ? 'cached-message' : 'live-message', turnId: 'turn-1', ts: 1, text: cached ? 'Cached history' : 'Live history' } }],
             })) onBatch({ ...batch, deliverySequence: 1 });
           };
@@ -491,7 +491,7 @@ for (const initial of ['failure-before-ready', 'failure-after-ready', 'cached'] 
           return {
             ...snapshot, readThroughMessageId: null,
             loadBefore: unavailable, loadAfter: unavailable, loadLatest: unavailable,
-            loadAround: cached ? unavailable : async (_sequence, _maxBytes, navigation) => deliver(navigation?.navigationVersion),
+            loadAround: cached ? unavailable : async (_sequence, _maxBytes, navigation) => deliver(navigation?.windowEpoch),
             close: async () => { closedCount++; },
           };
         },

@@ -22,7 +22,7 @@ import { afterEach, test } from 'node:test';
 import { act, createElement, createRef, type ComponentProps } from 'react';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import type { StoredMessage } from '@maka/core/session';
-import type { DesktopTranscriptHandle, DesktopTranscriptNavigation } from '../../preload/transcript-contract.js';
+import type { DesktopTranscriptHandle, DesktopTranscriptWindowRead } from '../../preload/transcript-contract.js';
 import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import {
@@ -46,13 +46,13 @@ test('sending before transcript open completes supersedes the queued bookmark wi
   const opening = deferred<DesktopTranscriptHandle>();
   const controller = createDesktopTranscriptRangeController(store, () => opening.promise);
   const lifecycle = createTranscriptRestoreLifecycle();
-  const requests: Array<{ sequence: number | null; navigation?: DesktopTranscriptNavigation }> = [];
-  const publish = (sequence: number | null, navigation: DesktopTranscriptNavigation) => {
+  const requests: Array<{ sequence: number | null; navigation?: DesktopTranscriptWindowRead }> = [];
+  const publish = (sequence: number | null, navigation: DesktopTranscriptWindowRead) => {
     requests.push({ sequence, navigation });
     const turnId = sequence === null ? 'b' : 'a';
     for (const batch of encodeDesktopTranscriptSnapshot({
       sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1',
-      navigationVersion: navigation.navigationVersion, durableThrough: 20,
+      windowEpoch: navigation.windowEpoch, durableThrough: 20,
       durable: [{ sequence: sequence ?? 20, message: {
         type: 'assistant', id: `answer-${turnId}`, turnId, text: turnId, ts: 1, modelId: 'fixture',
       } }], overlay: [], hasOlder: true, hasNewer: sequence !== null,
@@ -85,12 +85,12 @@ test('sending before transcript open completes supersedes the queued bookmark wi
     restore();
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(requests.map(({ sequence, navigation }) =>
-      [sequence, navigation?.navigationVersion]), [[null, 2]]);
+      [sequence, navigation?.windowEpoch]), [[null, 2]]);
     assert.deepEqual(store.snapshot().messages.map(({ id }) => id), ['answer-b']);
     const latest = store.snapshot();
     for (const batch of encodeDesktopTranscriptSnapshot({
       sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1',
-      navigationVersion: 1, durableThrough: 20,
+      windowEpoch: 1, durableThrough: 20,
       durable: [{ sequence: 10, message: {
         type: 'assistant', id: 'answer-a', turnId: 'a', text: 'a', ts: 1, modelId: 'fixture',
       } }], overlay: [], hasOlder: false, hasNewer: true,
@@ -109,7 +109,7 @@ test('an overlay-only bookmark stays available without loading another range', a
     type: 'assistant', id: 'answer-b', turnId: 'b', text: 'partial B', ts: 1, modelId: 'fixture',
   };
   for (const batch of encodeDesktopTranscriptSnapshot({
-    sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1', navigationVersion: 0,
+    sessionId: 'session-1', generation: 'generation-1', hostEpoch: 'host-1', windowEpoch: 0,
     durableThrough: null, durable: [], overlay: [overlay], hasOlder: false, hasNewer: false,
   })) store.accept(batch);
   const controller = createDesktopTranscriptRangeController(store, async () => ({
@@ -189,6 +189,22 @@ test('an old Session history load cannot report or clear the new Session state',
 
   first.reject(new Error('superseded history request failed'));
   await loadingFirst;
+  assert.equal(fixture.pending(), undefined);
+});
+
+test('filling an edge leaves an outstanding jump and its pending state alone', async () => {
+  const fixture = controllerFixture();
+  let cleared = 0;
+  fixture.props.searchTarget = { sessionId: 'session-1', nonce: 1, turnId: 'turn-1' } as never;
+  fixture.props.clearSearchTarget = () => { cleared += 1; };
+  const failure = new Error('the older read failed');
+  fixture.controller.loadBefore = async () => { throw failure; };
+  await fixture.render();
+
+  // The jump is still in flight; the band asking for the edge it is scrolling
+  // towards decides nothing, so it must not answer for the reader.
+  await assert.rejects(fixture.commands.current!.prefetchHistory('older'), failure);
+  assert.equal(cleared, 0);
   assert.equal(fixture.pending(), undefined);
 });
 

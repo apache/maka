@@ -209,9 +209,9 @@ test('cached reload snapshots allow the same live transcript generation to resum
   };
   let opens = 0;
   const deliveries: Array<{ generation: string; accepted: boolean }> = [];
-  const publish = (generation: string, text: string, navigationVersion = 0) => {
+  const publish = (generation: string, text: string, windowEpoch = 0) => {
     for (const batch of encodeDesktopTranscriptSnapshot({
-      ...identity, generation, navigationVersion, durableThrough: 1,
+      ...identity, generation, windowEpoch, durableThrough: 1,
       durable: [{ sequence: 1, message: assistantMessage(text) }],
       overlay: [], hasOlder: false, hasNewer: false,
     })) deliveries.push({ generation, accepted: store.accept(batch) });
@@ -229,10 +229,10 @@ test('cached reload snapshots allow the same live transcript generation to resum
       async loadBefore() {},
       async loadAfter() {},
       async loadAround(_sequence, _maxBytes, navigation) {
-        publish(identity.generation, `live-${opens}`, navigation?.navigationVersion);
+        publish(identity.generation, `live-${opens}`, navigation?.windowEpoch);
       },
       async loadLatest(navigation) {
-        publish(identity.generation, `live-${opens}`, navigation?.navigationVersion);
+        publish(identity.generation, `live-${opens}`, navigation?.windowEpoch);
       },
       async close() {},
     };
@@ -913,7 +913,7 @@ test('forwards a larger logical history range without changing batch size', asyn
     sessionId: 'session-1',
     generation: 'generation-1',
     hostEpoch: 'host-1',
-    navigationVersion: 0,
+    windowEpoch: 0,
     durableThrough: 4,
     durable: [
       { sequence: 1, message: assistantMessage('earlier') },

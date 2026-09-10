@@ -95,6 +95,7 @@ interface ChatMessageSurfaceProps extends Omit<
   hasNewerHistory?: boolean;
   historyLoadPending?: TranscriptHistoryPending;
   onLoadHistory: (target: 'earlier' | 'later' | 'latest') => Promise<void> | void;
+  onPrefetchHistory: (edge: 'older' | 'newer') => Promise<boolean | void>;
   onRetainWindow: (window: { firstTurnId: string; lastTurnId: string }) => void;
 }
 
@@ -132,6 +133,7 @@ export function ChatMessageSurface({
   hasNewerHistory,
   historyLoadPending,
   onLoadHistory,
+  onPrefetchHistory,
   onRetainWindow,
   ...chatViewRest
 }: ChatMessageSurfaceProps) {
@@ -256,6 +258,7 @@ export function ChatMessageSurface({
               : undefined}
             onLoadEarlierHistory={() => onLoadHistory('earlier')}
             onLoadLaterHistory={() => onLoadHistory('later')}
+            onPrefetchHistory={onPrefetchHistory}
             onRetainWindow={onRetainWindow}
           />
         )}

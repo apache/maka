@@ -565,7 +565,7 @@ test('does not hold Host observation recovery on transcript replay', async () =>
       hostEpoch: 'host-second',
       anchorSequence: null,
       maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
-      navigationVersion: 1,
+      windowEpoch: 1,
     },
     transcriptTarget.id,
   );
@@ -615,7 +615,7 @@ test('fences transcript range failures to the current registration and Host sour
     hostEpoch: `host-${generation}`,
     anchorSequence: null,
     maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
-    navigationVersion: 1,
+    windowEpoch: 1,
   });
 
   const closedFailure = deferred<void>();
@@ -732,7 +732,7 @@ test('fences transcript range failures across same-source replica recovery', asy
     hostEpoch,
     anchorSequence: 1,
     maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
-    navigationVersion: 1,
+    windowEpoch: 1,
   });
   const target: RuntimeHostTranscriptTarget = {
     id: 20,
@@ -1128,7 +1128,7 @@ test('finishes transcript open and replays a stale range request after replaceme
         hostEpoch: 'host-1',
         anchorSequence: 0,
         maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
-        navigationVersion: 1,
+        windowEpoch: 1,
       },
       22,
     ),
@@ -1147,7 +1147,7 @@ test('finishes transcript open and replays a stale range request after replaceme
           hostEpoch: 'other-host',
           anchorSequence: 0,
           maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
-          navigationVersion: 1,
+          windowEpoch: 1,
         },
         22,
       ),
@@ -1162,7 +1162,7 @@ test('finishes transcript open and replays a stale range request after replaceme
           hostEpoch: 'host-1',
           anchorSequence: 0,
           maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
-          navigationVersion: 1,
+          windowEpoch: 1,
         },
         22,
       ),
@@ -1264,7 +1264,7 @@ test('coalesces transcript changes into one bounded delta while renderer deliver
   assert.equal(batches[1]!.reset, false);
   assert.equal(batches[1]!.durableThrough, 4);
   assert.equal(batches[1]!.fragments.length, 4);
-  assert.equal(batches[1]!.navigationVersion, undefined, 'tail growth is a broadcast, not an answer');
+  assert.equal(batches[1]!.windowEpoch, undefined, 'tail growth is a broadcast, not an answer');
   assert.equal(batches[1]!.hasOlder, undefined);
   assert.equal(batches[1]!.hasNewer, undefined);
   observer.acknowledgeTranscript(
@@ -1344,13 +1344,13 @@ test('answers a window page read on its own navigation version and drops a stale
   });
   const batches: DesktopTranscriptBatch[] = [];
   const consumerId = 'consumer-window';
-  const request = (navigationVersion: number, anchorSequence: number | null) => ({
+  const request = (windowEpoch: number, anchorSequence: number | null) => ({
     consumerId,
     sessionId: 'session-1',
     hostEpoch: 'host-1',
     anchorSequence,
     maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
-    navigationVersion,
+    windowEpoch,
   });
   await observer.openTranscript('session-1', consumerId, {
     id: 26,
@@ -1367,7 +1367,7 @@ test('answers a window page read on its own navigation version and drops a stale
 
   await observer.loadTranscriptBefore(request(1, 2), 26);
   assert.equal(batches.length, 1);
-  assert.equal(batches[0]!.navigationVersion, 1);
+  assert.equal(batches[0]!.windowEpoch, 1);
   assert.equal(batches[0]!.reset, false, 'extending the window does not replace it');
   assert.equal(batches[0]!.hasOlder, true);
   assert.equal(batches[0]!.hasNewer, undefined, 'an older page establishes only its older edge');
@@ -1375,13 +1375,13 @@ test('answers a window page read on its own navigation version and drops a stale
   // The same version extends the window the Renderer already holds.
   await observer.loadTranscriptAfter(request(1, 1), 26);
   assert.equal(batches.length, 2);
-  assert.equal(batches[1]!.navigationVersion, 1);
+  assert.equal(batches[1]!.windowEpoch, 1);
   assert.equal(batches[1]!.reset, false);
   assert.equal(batches[1]!.hasNewer, false);
 
   await observer.loadTranscriptAround(request(2, 1), 26);
   assert.equal(batches.length, 3);
-  assert.equal(batches[2]!.navigationVersion, 2);
+  assert.equal(batches[2]!.windowEpoch, 2);
   assert.equal(batches[2]!.reset, true, 'a window-replacing command resets the Renderer');
   assert.equal(batches[2]!.hasOlder, false);
   assert.equal(batches[2]!.hasNewer, true);
@@ -1586,7 +1586,7 @@ test('keeps a transcript consumer available after a delivery fails', async () =>
         hostEpoch: opened.hostEpoch,
         anchorSequence: 0,
         maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
-        navigationVersion: 1,
+        windowEpoch: 1,
       },
       25,
     ),

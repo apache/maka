@@ -24,8 +24,8 @@ export const DESKTOP_TRANSCRIPT_TAIL_MAX_TURNS = 10;
 export const DESKTOP_TRANSCRIPT_OVERLAY_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 export const DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 
-export interface DesktopTranscriptNavigation {
-  readonly navigationVersion: number;
+export interface DesktopTranscriptWindowRead {
+  readonly windowEpoch: number;
 }
 
 export interface DesktopTranscriptFragment {
@@ -38,13 +38,20 @@ export interface DesktopTranscriptFragment {
 }
 
 /**
- * A batch answering a range command carries that command's version and the
- * edge facts its page established. Broadcast batches (durable catch-up, cache
- * trims) carry no version and no edge facts: the Renderer owns the window and
- * applies them to whatever it holds.
+ * A batch answering a read carries the epoch of the window that asked for it,
+ * plus the edge facts its page established. The window refuses an answer from
+ * an epoch it has left — it navigated, or trimmed away the very edge the read
+ * was anchored on — because splicing those rows on would leave a hole between
+ * them and what the window still holds, and a hole is not something an edge
+ * cursor can name or a later page can fill.
+ *
+ * Batches that carry no epoch are not answers to anything the window asked
+ * for: tail growth, cache trims, and the snapshot Main sends when it has
+ * replaced the transcript underneath every window. They apply to whatever the
+ * window holds, under any epoch.
  */
 export interface DesktopTranscriptBatchPayload {
-  readonly navigationVersion?: number;
+  readonly windowEpoch?: number;
   readonly sessionId: string;
   readonly generation: string;
   readonly hostEpoch: string;
@@ -68,7 +75,7 @@ export interface DesktopTranscriptOpenResult {
 }
 
 export interface DesktopTranscriptRangeRequest {
-  readonly navigationVersion: number;
+  readonly windowEpoch: number;
   readonly consumerId: string;
   readonly sessionId: string;
   readonly hostEpoch: string;
@@ -77,10 +84,10 @@ export interface DesktopTranscriptRangeRequest {
 }
 
 export interface DesktopTranscriptHandle extends DesktopTranscriptOpenResult {
-  loadBefore(anchorSequence: number | null, maxBytes: number, navigation: DesktopTranscriptNavigation): Promise<void>;
-  loadAfter(anchorSequence: number | null, maxBytes: number, navigation: DesktopTranscriptNavigation): Promise<void>;
-  loadAround(sequence: number, maxBytes: number, navigation: DesktopTranscriptNavigation): Promise<void>;
-  loadLatest(navigation: DesktopTranscriptNavigation): Promise<void>;
+  loadBefore(anchorSequence: number | null, maxBytes: number, navigation: DesktopTranscriptWindowRead): Promise<void>;
+  loadAfter(anchorSequence: number | null, maxBytes: number, navigation: DesktopTranscriptWindowRead): Promise<void>;
+  loadAround(sequence: number, maxBytes: number, navigation: DesktopTranscriptWindowRead): Promise<void>;
+  loadLatest(navigation: DesktopTranscriptWindowRead): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -91,7 +98,7 @@ export function assertDesktopTranscriptBatch(value: unknown): DesktopTranscriptB
   const batch = value as Record<string, unknown>;
   if (
     typeof batch.sessionId !== 'string' ||
-    (batch.navigationVersion !== undefined && !isSequence(batch.navigationVersion)) ||
+    (batch.windowEpoch !== undefined && !isSequence(batch.windowEpoch)) ||
     !isSequence(batch.deliverySequence) ||
     typeof batch.generation !== 'string' ||
     typeof batch.hostEpoch !== 'string' ||

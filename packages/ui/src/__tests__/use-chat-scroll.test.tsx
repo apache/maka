@@ -224,8 +224,7 @@ test('history loads follow the reader band, in both directions, once per directi
       behavior: 'auto',
       hasOlderHistory: older,
       hasNewerHistory: newer,
-      onLoadEarlierHistory: load('up'),
-      onLoadLaterHistory: load('down'),
+      onPrefetchHistory: (edge) => load(edge === 'older' ? 'up' : 'down')(),
     });
     return null;
   }
@@ -268,6 +267,82 @@ test('history loads follow the reader band, in both directions, once per directi
   assert.deepEqual(calls, ['down']);
 });
 
+test('a fill that moved nothing is not reissued until the reader moves again', async () => {
+  const { document, window } = parseHTML(
+    '<main id="mount"></main><section id="scroller"></section>',
+  );
+  installScrollTestEnvironment(document, window, { queueFrames: false });
+  const transcript = createTranscript(document, window, {
+    clientHeight: 600, turnHeight: 600, turnCount: 8,
+  });
+
+  let requests = 0;
+  function Harness() {
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+    useChatScroll({
+      scrollRef,
+      sessionId: 'session-refused',
+      messages: [{ id: 'message-1' }] as StoredMessage[],
+      behavior: 'auto',
+      hasOlderHistory: true,
+      onPrefetchHistory: () => {
+        requests += 1;
+        return Promise.resolve(false);
+      },
+    });
+    return null;
+  }
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  await act(() => mountedRoot?.render(
+    <TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>,
+  ));
+
+  await act(async () => { transcript.readerScrollTo(0); });
+  // A read refused as stale leaves the window exactly as it was, so asking
+  // again in its own callback would ask forever.
+  assert.equal(requests, 1);
+  await act(async () => {});
+  assert.equal(requests, 1);
+});
+
+test('a failed fill is not reissued until the reader moves again', async () => {
+  const { document, window } = parseHTML(
+    '<main id="mount"></main><section id="scroller"></section>',
+  );
+  installScrollTestEnvironment(document, window, { queueFrames: false });
+  const transcript = createTranscript(document, window, {
+    clientHeight: 600, turnHeight: 600, turnCount: 8,
+  });
+
+  let requests = 0;
+  function Harness() {
+    const scrollRef = useRef<HTMLElement | null>(transcript.scroller);
+    useChatScroll({
+      scrollRef,
+      sessionId: 'session-failing',
+      messages: [{ id: 'message-1' }] as StoredMessage[],
+      behavior: 'auto',
+      hasOlderHistory: true,
+      onPrefetchHistory: () => {
+        requests += 1;
+        return Promise.reject(new Error('the range read failed'));
+      },
+    });
+    return null;
+  }
+  mountedRoot = createRoot(document.querySelector('#mount')!);
+  await act(() => mountedRoot?.render(
+    <TranscriptScrollAuthorityProvider><Harness /></TranscriptScrollAuthorityProvider>,
+  ));
+
+  await act(async () => { transcript.readerScrollTo(0); });
+  // A failed read leaves the geometry and the history flags exactly as they
+  // were, so re-checking on its own would ask again forever.
+  assert.equal(requests, 1);
+  await act(async () => {});
+  assert.equal(requests, 1);
+});
+
 test('an older request at offset zero restores the browser anchoring the reader depends on', async () => {
   const { document, window } = parseHTML(
     '<main id="mount"></main><section id="scroller"></section>',
@@ -286,7 +361,7 @@ test('an older request at offset zero restores the browser anchoring the reader 
       messages: [{ id: 'message-1' }] as StoredMessage[],
       behavior: 'auto',
       hasOlderHistory: true,
-      onLoadEarlierHistory: () => {
+      onPrefetchHistory: () => {
         requests += 1;
         return new Promise<void>(() => undefined);
       },
@@ -322,7 +397,7 @@ test('a transcript change re-reads the band while the reader stays at the tail',
       messages,
       behavior: 'auto',
       hasOlderHistory: true,
-      onLoadEarlierHistory: () => {
+      onPrefetchHistory: () => {
         requests += 1;
         return new Promise<void>(() => undefined);
       },

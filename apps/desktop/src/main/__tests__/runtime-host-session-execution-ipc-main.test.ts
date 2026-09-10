@@ -104,7 +104,7 @@ test('window transcript reads are observation operations scoped to the renderer'
   registerRuntimeHostSessionObservationIpc({ observations, resolveSideConversation: async () => false }, ipc);
   const request = {
     consumerId: 'guest-consumer', sessionId: 'shared-session', hostEpoch: 'host-1',
-    anchorSequence: 42, maxBytes: 512 * 1024, navigationVersion: 7,
+    anchorSequence: 42, maxBytes: 512 * 1024, windowEpoch: 7,
   };
   await ipc.invoke('sessions:transcript:load-after', request);
   await ipc.invoke('sessions:transcript:load-latest', { ...request, anchorSequence: null });
@@ -118,7 +118,7 @@ test('window transcript reads are observation operations scoped to the renderer'
   );
   // The Renderer owns the window, so every read must name the version it reads for.
   await assert.rejects(
-    ipc.invoke('sessions:transcript:load-after', { ...request, navigationVersion: undefined }),
+    ipc.invoke('sessions:transcript:load-after', { ...request, windowEpoch: undefined }),
     /Invalid Desktop transcript navigation/,
   );
   assert.equal(calls.length, 2);
