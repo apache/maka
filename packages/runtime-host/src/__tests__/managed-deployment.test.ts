@@ -164,6 +164,33 @@ function launchRequest(
   } as const;
 }
 
+test('repeated managed config reads allocate for the file, not the document limit', async (t) => {
+  const input = await fixture(t);
+  await claimRuntimeHostManagedDeployment(input.capability, input.config, input.authority);
+  const path = resolveRuntimeHostManagedDeploymentConfigPath(
+    input.capability.rootId,
+    input.authority,
+  );
+  const fileBytes = (await lstat(path)).size;
+  const allocations: number[] = [];
+  const allocate = Buffer.allocUnsafe;
+  Buffer.allocUnsafe = (size) => {
+    allocations.push(size);
+    return allocate(size);
+  };
+  try {
+    for (let index = 0; index < 16; index += 1) {
+      assert.deepEqual(
+        await readRuntimeHostManagedDeploymentConfig(input.capability, input.authority),
+        input.config,
+      );
+    }
+  } finally {
+    Buffer.allocUnsafe = allocate;
+  }
+  assert.deepEqual(allocations, Array<number>(16).fill(fileBytes + 1));
+});
+
 test('strictly decodes every level of the canonical deployment contract', () => {
   const config = createConfig('/srv/maka/state', 'a'.repeat(64));
   assert.deepEqual(decodeRuntimeHostManagedDeploymentConfig(config), config);
