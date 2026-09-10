@@ -108,7 +108,7 @@ index 889970f..459e6e8 100644
      "aria-controls": hasDetail && isDetailOpen ? detailId : undefined,
      onClick: toggleDetail,
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
-index e1d2ebd..1f8337e 100644
+index e1d2ebd..dcb9189 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
 @@ -47,6 +47,45 @@ const styles = {
@@ -157,7 +157,7 @@ index e1d2ebd..1f8337e 100644
  function getTextBeforeCursor(editable) {
    const selection = window.getSelection();
    if (!selection || selection.rangeCount === 0) {
-@@ -61,7 +100,12 @@ function getTextBeforeCursor(editable) {
+@@ -61,21 +100,27 @@ function getTextBeforeCursor(editable) {
    }
    const node = range.startContainer;
    if (node.nodeType === Node.TEXT_NODE) {
@@ -171,7 +171,25 @@ index e1d2ebd..1f8337e 100644
    }
    return null;
  }
-@@ -306,15 +350,15 @@ export function useTriggerMenu(options) {
+ function findActiveTrigger(textBeforeCursor, triggers) {
+   for (let i = textBeforeCursor.length - 1; i >= 0; i--) {
+     const char = textBeforeCursor[i];
+-    if (char === ' ' || char === '\n') {
+-      return null;
+-    }
+     for (const trigger of triggers) {
+       if (char === trigger.character) {
+         const prevChar = i > 0 ? textBeforeCursor[i - 1] : null;
+         if (prevChar === null || prevChar === ' ' || prevChar === '\n') {
+           const query = textBeforeCursor.slice(i + 1);
++          // Codex-style @ search stays open while the user types a
++          // multi-word name or leaves a trailing space to browse the full
++          // list. Slash commands keep their original single-token grammar.
++          if (trigger.character !== '@' && /[ \n]/u.test(query)) return null;
+           return {
+             trigger,
+             query,
+@@ -306,15 +351,15 @@ export function useTriggerMenu(options) {
      if (!editable) {
        return;
      }
@@ -191,7 +209,7 @@ index e1d2ebd..1f8337e 100644
        if (state.isActive) {
          reset();
        }
-@@ -322,9 +366,9 @@ export function useTriggerMenu(options) {
+@@ -322,9 +367,9 @@ export function useTriggerMenu(options) {
      }
      const {
        trigger,
@@ -719,7 +737,7 @@ index f22bb1f..b710951 100644
        aria-controls={hasDetail && isDetailOpen ? detailId : undefined}
        onClick={toggleDetail}
 diff --git a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
-index 6eefd4a..17071f1 100644
+index 6eefd4a..a3eba69 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
 +++ b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
 @@ -167,7 +167,56 @@ const styles = stylex.create({
@@ -791,7 +809,28 @@ index 6eefd4a..17071f1 100644
    }
  
    return null;
-@@ -486,23 +537,24 @@ export function useTriggerMenu(
+@@ -199,16 +250,15 @@ function findActiveTrigger(
+ } | null {
+   for (let i = textBeforeCursor.length - 1; i >= 0; i--) {
+     const char = textBeforeCursor[i];
+-
+-    if (char === ' ' || char === '\n') {
+-      return null;
+-    }
+-
+     for (const trigger of triggers) {
+       if (char === trigger.character) {
+         const prevChar = i > 0 ? textBeforeCursor[i - 1] : null;
+         if (prevChar === null || prevChar === ' ' || prevChar === '\n') {
+           const query = textBeforeCursor.slice(i + 1);
++          // Codex-style @ search stays open while the user types a
++          // multi-word name or leaves a trailing space to browse the full
++          // list. Slash commands keep their original single-token grammar.
++          if (trigger.character !== '@' && /[ \n]/u.test(query)) return null;
+           return {trigger, query, triggerStart: i};
+         }
+       }
+@@ -486,23 +536,24 @@ export function useTriggerMenu(
        return;
      }
  

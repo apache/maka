@@ -48,7 +48,7 @@ export function useSessionSettingIntent<Owner extends { sessionId?: string }>(in
   catalogRevision: number;
   isActiveSession(sessionId: string): boolean;
   sessions: readonly DesktopSessionSummary[];
-  newTaskPermissionMode: ChatDefaultPermissionMode;
+  newSessionPermissionMode: ChatDefaultPermissionMode;
   refreshCatalog(): Promise<unknown>;
   saveComposerDefaults(model: SessionModelTarget): void;
   writeFailureCopy(
@@ -160,7 +160,7 @@ export function useSessionSettingIntent<Owner extends { sessionId?: string }>(in
       const overlay = sessionId ? intent.overlayByChannel.permissionMode[sessionId] : undefined;
       const currentMode = sessionId
         ? overlay ?? input.sessions.find((session) => session.id === sessionId)?.permissionMode
-        : input.newTaskPermissionMode;
+        : input.newSessionPermissionMode;
       if (currentMode === mode) {
         return sessionId && overlay !== undefined
           ? intent.request('permissionMode', sessionId, mode)

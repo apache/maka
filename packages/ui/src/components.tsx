@@ -79,6 +79,7 @@ export type {
   ComposerGoalProps,
   ComposerProps,
   ComposerHandle,
+  ComposerSessionReference,
   ComposerSendMetadata,
   ComposerSlashCommandOption,
 } from './composer.js';
