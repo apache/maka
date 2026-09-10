@@ -534,9 +534,11 @@ async function withStore(
   run: (store: ReturnType<typeof createSqliteAgentRunStore>) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-root-admission-owner-'));
+  const store = createSqliteAgentRunStore(root);
   try {
-    await run(createSqliteAgentRunStore(root));
+    await run(store);
   } finally {
+    store.close?.();
     await rm(root, { recursive: true, force: true });
   }
 }
