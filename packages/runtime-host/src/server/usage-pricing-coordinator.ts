@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import { createHash } from 'node:crypto';
 import type {
   PricingConfig,
@@ -417,20 +419,19 @@ function createPricingPage(
   offset: number,
 ): PricingQueryResult {
   const items: EffectivePricingEntry[] = [];
+  const budget = new JsonArrayPageBudget(PRICING_PAGE_MAX_BYTES, {
+    kind: 'page',
+    revision,
+    offset,
+    entries: [],
+    nextOffset: null,
+  });
   for (let index = offset; index < entries.length; index += 1) {
     if (items.length >= PRICING_PAGE_MAX_ITEMS) break;
     const item = entries[index];
     if (!item) break;
-    const candidate = [...items, item];
-    const nextOffset = offset + candidate.length;
-    const page: PricingQueryResult = {
-      kind: 'page',
-      revision,
-      offset,
-      entries: candidate,
-      nextOffset: nextOffset < entries.length ? nextOffset : null,
-    };
-    if (jsonBytes(page) > PRICING_PAGE_MAX_BYTES) {
+    const nextOffset = offset + items.length + 1;
+    if (!budget.tryAppend(item, nextOffset < entries.length ? nextOffset : null)) {
       if (items.length === 0) {
         throw new Error('Canonical pricing entry exceeds the wire page limit');
       }
@@ -478,20 +479,13 @@ function usagePage(
 ): Extract<UsageQueryResult, { kind: 'buckets' }> {
   const source = allItems.slice(offset, offset + limit);
   const items: UsageBucket[] = [];
+  const budget = new JsonArrayPageBudget(
+    USAGE_PAGE_MAX_BYTES,
+    bucketPageResult([], total, offset, null, provenance),
+  );
   for (const item of source) {
-    const candidate = [...items, item];
-    const nextOffset = offset + candidate.length;
-    if (
-      jsonBytes(
-        bucketPageResult(
-          candidate,
-          total,
-          offset,
-          nextOffset < total ? nextOffset : null,
-          provenance,
-        ),
-      ) > USAGE_PAGE_MAX_BYTES
-    ) {
+    const nextOffset = offset + items.length + 1;
+    if (!budget.tryAppend(item, nextOffset < total ? nextOffset : null)) {
       break;
     }
     items.push(item);
@@ -537,21 +531,13 @@ function usageLogPage(
   provenance?: UsageProvenance,
 ): Extract<UsageQueryResult, { kind: 'logs' }> {
   const items: UsageLogProjection[] = [];
+  const budget = new JsonArrayPageBudget(
+    USAGE_PAGE_MAX_BYTES,
+    logPageResult(source, [], total, offset, null, provenance),
+  );
   for (const item of allItems.slice(0, limit)) {
-    const candidate = [...items, item];
-    const nextOffset = offset + candidate.length;
-    if (
-      jsonBytes(
-        logPageResult(
-          source,
-          candidate,
-          total,
-          offset,
-          nextOffset < total ? nextOffset : null,
-          provenance,
-        ),
-      ) > USAGE_PAGE_MAX_BYTES
-    ) {
+    const nextOffset = offset + items.length + 1;
+    if (!budget.tryAppend(item, nextOffset < total ? nextOffset : null)) {
       break;
     }
     items.push(item);
@@ -735,8 +721,4 @@ function projectCodePoint(codePoint: string): string {
   return scalar !== undefined && (scalar <= 0x1f || (scalar >= 0x7f && scalar <= 0x9f))
     ? '\ufffd'
     : codePoint;
-}
-
-function jsonBytes(value: unknown): number {
-  return Buffer.byteLength(JSON.stringify(value), 'utf8');
 }

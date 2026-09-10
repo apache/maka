@@ -17,6 +17,16 @@
  * under the License.
  */
 
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+import {
+  decodeProjectCatalogQueryResult,
+  PROJECT_CATALOG_PAGE_MAX_BYTES,
+  PROJECT_CATALOG_PAGE_MAX_ITEMS,
+  type ProjectCatalogQueryInput,
+  type ProjectCatalogQueryResult,
+  type ProjectCatalogPageItem,
+} from '../protocol/index.js';
+
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises';
@@ -275,3 +285,81 @@ function connection(): ConnectionContext {
     acquireResidency: () => ({ release: () => {} }),
   };
 }
+
+test('Project catalog includes mixed item kinds and its header in byte-limited pages', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-project-pages-'));
+  const catalog = createProjectCatalog(join(root, 'storage'));
+  try {
+    const seed = await catalog.register(root);
+    const records = Array.from({ length: 20 }, (_, index) => ({
+      ...seed,
+      id: `project-${index}`,
+      name: `Project ${index} ${'文"\\🙂'.repeat(700)}`,
+      aliases: [`old-${index}`],
+    }));
+    context.mock.method(catalog, 'list', async () => records);
+    const expected: ProjectCatalogPageItem[] = records.flatMap((record, projectIndex) => [
+      {
+        kind: 'project' as const,
+        projectIndex,
+        id: record.id,
+        name: record.name,
+        aliasCount: 1,
+        locationCount: record.locations.length,
+        preferredLocationIndex: 0,
+        archivedAt: null,
+        available: record.available,
+      },
+      { kind: 'alias' as const, projectIndex, itemIndex: 0, alias: record.aliases[0]! },
+      ...record.locations.map((location, itemIndex) => ({
+        kind: 'location' as const,
+        projectIndex,
+        itemIndex,
+        location: { path: location.path, isWorktree: location.isWorktree },
+      })),
+    ]);
+    const coordinator = new HostProjectCatalogCoordinator(
+      catalog,
+      { publish() {} },
+      { publish() {} },
+      new HostProjectMembershipGate(),
+      () => assert.fail('query must not drain'),
+    );
+    const pages: Extract<ProjectCatalogQueryResult, { kind: 'page' }>[] = [];
+    let input: ProjectCatalogQueryInput = { kind: 'list_start', view: 'locations' };
+    let end = 0;
+    do {
+      const outcome = await coordinator.handlers['project.catalog.query'](input, null as never);
+      assert.ok(outcome.ok && outcome.result.kind === 'page');
+      const page = outcome.result;
+      assert.deepEqual(decodeProjectCatalogQueryResult(page), page);
+      assert.equal(page.projectCount, records.length);
+      assert.ok(page.items.length > 0);
+      pages.push(page);
+      end += page.items.length;
+      assert.equal(page.nextCursor, end < expected.length ? String(end) : null);
+      if (page.nextCursor === null) break;
+      input = {
+        kind: 'list_continue',
+        view: 'locations',
+        revision: page.revision,
+        cursor: page.nextCursor,
+      };
+    } while (end < expected.length);
+    assert.ok(pages.length > 1);
+    assert.ok(pages[0]!.items.length < PROJECT_CATALOG_PAGE_MAX_ITEMS);
+    assertMaximalJsonPages(pages, expected, {
+      maxBytes: PROJECT_CATALOG_PAGE_MAX_BYTES,
+      maxItems: PROJECT_CATALOG_PAGE_MAX_ITEMS,
+      items: (page) => page.items,
+      candidate: (page, items, end) => ({
+        ...page,
+        items,
+        nextCursor: end < expected.length ? String(end) : null,
+      }),
+    });
+  } finally {
+    catalog.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

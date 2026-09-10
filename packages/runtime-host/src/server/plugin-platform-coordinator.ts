@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import { createHash } from 'node:crypto';
 import {
   MakaPluginRuntimeError,
@@ -213,18 +215,14 @@ function boundedPage<T>(
   if (cursor > values.length)
     throw new HostPluginPlatformError('stale_cursor', 'Plugin Platform query cursor is stale');
   const items: T[] = [];
+  const budget = new JsonArrayPageBudget(PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES, {
+    view,
+    items: [],
+    nextCursor: null,
+  });
   for (let index = cursor; index < values.length && items.length < limit; index += 1) {
-    const candidate = [...items, values[index] as T];
-    if (
-      Buffer.byteLength(
-        JSON.stringify({
-          view,
-          items: candidate,
-          nextCursor: encodeCursor(view, input.rootId, digest, index + 1),
-        }),
-        'utf8',
-      ) > PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES
-    ) {
+    // Preserve the existing non-null cursor reservation, including the last item.
+    if (!budget.tryAppend(values[index], encodeCursor(view, input.rootId, digest, index + 1))) {
       break;
     }
     items.push(values[index] as T);
