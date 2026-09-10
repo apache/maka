@@ -37,9 +37,9 @@ export function projectWorkHubDelegationState(input: {
   const ownsLiveTurn = input.session?.runningTurnIds?.includes(input.resolution.turnId) === true;
   if (ownsLiveTurn && input.session?.status === 'waiting_for_user') return 'waiting_for_user';
   if (ownsLiveTurn) return 'running';
+  if (input.turnReadFailed || !input.session || !input.turn) return 'recovering';
   if (input.session?.runningTurnIds === undefined &&
     input.turn?.statusSource === 'recorded' && input.turn.status === 'running') return 'running';
-  if (input.turnReadFailed || !input.session || !input.turn) return 'recovering';
   return 'accepted';
 }
 

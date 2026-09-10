@@ -33,6 +33,12 @@ import {
   createRecoveringDesktopTranscriptRangeController,
 } from './desktop-transcript-range-store.js';
 import type { TurnRecord } from '@maka/core/session';
+import {
+  MESSAGE_QUEUE_MAX_ENTRIES,
+  type TurnMessageExecutionResolution,
+} from '@maka/runtime-host/protocol';
+
+const WORKHUB_RESULT_SCAN_MAX_PAGES = 16;
 
 async function readDelegatedTurnResult(
   bridge: Pick<MakaBridge, 'transcripts'>,
@@ -55,12 +61,36 @@ async function readDelegatedTurnResult(
   );
   try {
     await controller.ready();
-    let preview = workHubTurnResultPreview(store.snapshot().messages, turn.turnId);
-    if (!preview && turn.firstSequence !== undefined) {
+    let preview: string | undefined;
+    let lastTargetSequence: number | undefined;
+    const boundaryEstablished = () => {
+      const entries = store.durableEntries();
+      const currentPreview = workHubTurnResultPreview(
+        entries.map(({ message }) => message),
+        turn.turnId,
+      );
+      if (currentPreview) preview = currentPreview;
+      for (const entry of entries) {
+        if (entry.message.turnId === turn.turnId) {
+          lastTargetSequence = Math.max(lastTargetSequence ?? entry.sequence, entry.sequence);
+        }
+      }
+      const crossedIntoLaterTurn = lastTargetSequence !== undefined && entries.some(
+        (entry) => entry.sequence > lastTargetSequence! && entry.message.turnId !== turn.turnId,
+      );
+      return lastTargetSequence !== undefined && (
+        crossedIntoLaterTurn || !store.range().hasNewer
+      );
+    };
+    if (!boundaryEstablished() && lastTargetSequence === undefined && turn.firstSequence !== undefined) {
       await controller.loadAround(turn.firstSequence);
-      preview = workHubTurnResultPreview(store.snapshot().messages, turn.turnId);
     }
-    return preview;
+    for (let page = 0; page <= WORKHUB_RESULT_SCAN_MAX_PAGES; page += 1) {
+      if (boundaryEstablished()) return preview;
+      if (!store.range().hasNewer || page === WORKHUB_RESULT_SCAN_MAX_PAGES) return undefined;
+      await controller.loadAfter();
+    }
+    return undefined;
   } finally {
     await controller.close();
   }
@@ -128,16 +158,25 @@ export function createDesktopWorkHubServices(
         grouped.set(reference.targetSessionId, group);
       }
       const feedback = await Promise.all([...grouped.entries()].map(async ([sessionId, group]) => {
+        const executionQuery = async () => {
+          const messageIds = [...new Set(group.map((reference) => reference.targetMessageId))];
+          const resolutions: TurnMessageExecutionResolution[] = [];
+          for (let from = 0; from < messageIds.length; from += MESSAGE_QUEUE_MAX_ENTRIES) {
+            const result = await bridge.sessions.queryMessageExecutions(
+              sessionId,
+              messageIds.slice(from, from + MESSAGE_QUEUE_MAX_ENTRIES),
+            );
+            resolutions.push(...result.resolutions);
+          }
+          return resolutions;
+        };
         const [turnRead, executionRead] = await Promise.allSettled([
           bridge.sessions.listTurns(sessionId),
-          bridge.sessions.queryMessageExecutions(
-            sessionId,
-            group.map((reference) => reference.targetMessageId),
-          ),
+          executionQuery(),
         ]);
         const turns = turnRead.status === 'fulfilled' ? turnRead.value : [];
         const resolutions = executionRead.status === 'fulfilled'
-          ? executionRead.value.resolutions
+          ? executionRead.value
           : [];
         const turnById = new Map(turns.map((turn) => [turn.turnId, turn]));
         const resolutionByMessageId = new Map(
