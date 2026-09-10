@@ -76,6 +76,11 @@ export interface RuntimeHostSettingsIpcDeps {
   readonly client: RuntimeHostSettingsClient;
   readonly settingsStore: SettingsStore;
   readonly applyClientSettings: (settings: AppSettings) => Promise<void>;
+  /**
+   * Called after a patch writes the network proxy policy, so Client-owned
+   * traffic can pick the new proxy up without a restart.
+   */
+  readonly onNetworkProxyChanged?: () => void;
 }
 
 export type RuntimeHostSettingsModuleDeps = Omit<
@@ -300,6 +305,7 @@ async function updateRuntimeHostSettingsForImportWithoutLane(
 ): Promise<RuntimeHostSettingsImportResult> {
   validateProxyPatch(patch.network?.proxy);
   const skippedCredentials = await applyHostPatchWithoutLane(deps.client, patch);
+  if (patch.network?.proxy) deps.onNetworkProxyChanged?.();
   const clientPatch = clientOwnedSettingsPatch(patch);
   const local = hasSettingsPatch(clientPatch)
     ? await deps.settingsStore.update(clientPatch)

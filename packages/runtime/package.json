@@ -27,6 +27,7 @@
     "./test-only/invocation-fixture": "./dist/__tests__/invocation-fixture.js",
     "./filesystem-worker": "./dist/filesystem-worker/index.js",
     "./sandbox": "./dist/sandbox/index.js",
+    "./network/active-proxy-state": "./dist/network/active-proxy-state.js",
     "./network/proxy-test": "./dist/network/proxy-test.js",
     "./telemetry": "./dist/telemetry/index.js",
     "./bots": "./dist/bots/index.js",
