@@ -19,7 +19,6 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { CuAction } from '@maka/core/computer-use';
 import { buildComputerUseTools } from '@maka/runtime/computer-use-tools';
 import { parseObservationText } from '@maka/runtime/test-only/observation-text-reader';
 import { createComputerUseOverlayHook } from '../computer-use-overlay-hook.js';
@@ -188,11 +187,12 @@ test('non-presented actions keep the session cursor without moving it', () => {
     { type: 'key', text: 'Return' },
     { type: 'screenshot' },
     { type: 'wait', durationMs: 100 },
-  ] as CuAction[]) {
+    { type: 'window_action' },
+  ] as const) {
     hook.onActionBegin(action, { sessionId: 's1', toolCallId: 'a1' });
   }
   assert.deepEqual(moves, []);
-  assert.deepEqual(ensured, ['s1', 's1', 's1', 's1']);
+  assert.deepEqual(ensured, ['s1', 's1', 's1', 's1', 's1']);
 });
 
 test('set_value moves the cursor to the bound element point', () => {
@@ -216,6 +216,42 @@ test('press_key without a presentation point still only ensures', () => {
   const { controller, moves, ensured } = fakeController();
   const hook = createComputerUseOverlayHook(controller as never);
   hook.onActionBegin({ type: 'press_key' }, { sessionId: 's1', toolCallId: 'a1' });
+  assert.deepEqual(moves, []);
+  assert.deepEqual(ensured, ['s1']);
+});
+
+test('press_key with a presentation point moves the click cursor', () => {
+  const { controller, moves, ensured } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'press_key' },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetWindowId: 4321,
+    },
+  );
+  assert.deepEqual(ensured, []);
+  assert.equal((moves[0] as { kind: string }).kind, 'click');
+  assert.equal((moves[0] as { screenX: number }).screenX, 201);
+});
+
+test('window_action with a presentation point still only ensures', () => {
+  // Production can attach a point: window_action has an elementId, and binding
+  // derives presentationScreenPoint from that frame. Without a point the
+  // ensure path hides a kindOf regression into the click group.
+  const { controller, moves, ensured } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'window_action' },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetWindowId: 4321,
+    },
+  );
   assert.deepEqual(moves, []);
   assert.deepEqual(ensured, ['s1']);
 });
@@ -364,9 +400,45 @@ test('set_value reaches the sink with the point it is aimed at', async () => {
     ['move', 'complete'],
     'writing into a field must move the cursor and land it, not ensure-then-cancel',
   );
-  assert.equal((events[0]?.input as { kind?: string }).kind, 'click');
-  assert.equal((events[0]?.input as { screenX?: number }).screenX, 220);
-  assert.equal((events[0]?.input as { screenY?: number }).screenY, 110);
+  assert.deepEqual(events[0]?.input, {
+    screenX: 220,
+    screenY: 110,
+    kind: 'click',
+    instant: true,
+    keepElevated: false,
+    targetWindowId: 4321,
+  });
+  assert.deepEqual(events[1]?.input, {
+    screenX: 220,
+    screenY: 110,
+    kind: 'click',
+    pulse: true,
+    targetWindowId: 4321,
+  });
+});
+
+test('press_key with an element reaches the sink with the point it is aimed at', async () => {
+  const events = await driveRealTool({}, { action: 'press_key', element_id: '5', text: 'Return' });
+  assert.deepEqual(
+    events.map((event) => event.call),
+    ['move', 'complete'],
+    'a key aimed at a named control must move the cursor and land it, not ensure-then-cancel',
+  );
+  assert.deepEqual(events[0]?.input, {
+    screenX: 220,
+    screenY: 110,
+    kind: 'click',
+    instant: true,
+    keepElevated: false,
+    targetWindowId: 4321,
+  });
+  assert.deepEqual(events[1]?.input, {
+    screenX: 220,
+    screenY: 110,
+    kind: 'click',
+    pulse: true,
+    targetWindowId: 4321,
+  });
 });
 
 test('an element whose observed frame is outside its window is not aimed at', async () => {
