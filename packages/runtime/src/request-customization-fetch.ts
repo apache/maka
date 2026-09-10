@@ -73,7 +73,7 @@ export function createRequestCustomizationFetch(
         return upstream(request.url, requestInit(request, nextHeaders, body, signal));
       }
       const generatedBody = await parseRequestBody(
-        request,
+        body as ArrayBuffer,
         customization.finalizeBody
           ? 'Request body finalizer requires a JSON object request body'
           : 'Extra request body can only be applied to a JSON object request',
@@ -124,12 +124,12 @@ function requestHasJsonBody(request: Request): boolean {
 }
 
 async function parseRequestBody(
-  request: Request,
+  body: ArrayBuffer,
   invalidBodyMessage: string,
 ): Promise<Record<string, unknown>> {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(await request.clone().text());
+    parsed = JSON.parse(new TextDecoder().decode(body));
   } catch {
     throw new Error(invalidBodyMessage);
   }
