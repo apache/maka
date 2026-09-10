@@ -1307,6 +1307,10 @@ export class DesktopRuntimeHostClient {
     return this.request("network-proxy.test", input);
   }
 
+  resolveNetworkProxy(): Promise<OperationOutput<"network-proxy.resolve">> {
+    return this.request("network-proxy.resolve", {});
+  }
+
   exportConfigurationCredentials(
     input: OperationInput<"configuration.credentials.export">,
   ): Promise<OperationOutput<"configuration.credentials.export">> {

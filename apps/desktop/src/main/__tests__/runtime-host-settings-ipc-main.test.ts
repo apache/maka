@@ -235,6 +235,7 @@ function createModuleFixture(options: {
     },
   };
 
+  let networkProxyChanges = 0;
   const module = createRuntimeHostSettingsModule({
     client: client as never,
     settingsStore: {
@@ -246,6 +247,9 @@ function createModuleFixture(options: {
       },
     } as never,
     async applyClientSettings() {},
+    onNetworkProxyChanged: () => {
+      networkProxyChanges += 1;
+    },
   });
 
   return {
@@ -253,8 +257,21 @@ function createModuleFixture(options: {
     events,
     policy: () => policy,
     secret: () => secret,
+    networkProxyChanges: () => networkProxyChanges,
   };
 }
+
+test("a proxy patch notifies Client-owned traffic so it re-resolves", async () => {
+  const fixture = createModuleFixture();
+
+  // Without this the bot bridges keep the proxy they were started with, which
+  // in practice means none at all (apache/maka#5091).
+  await fixture.module.update({ network: { proxy: { host: "127.0.0.1" } } });
+  assert.equal(fixture.networkProxyChanges(), 1);
+
+  await fixture.module.update({ personalization: { displayName: "Operator" } });
+  assert.equal(fixture.networkProxyChanges(), 1);
+});
 
 test("runtime settings project credential status without a password value", async () => {
   const fixture = createModuleFixture({ configured: true });
