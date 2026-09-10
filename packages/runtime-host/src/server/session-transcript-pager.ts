@@ -432,7 +432,7 @@ async function readRangeEdges(input: {
           return {
             fragments,
             rawBytes: fragments.reduce(
-              (sum, fragment) => sum + Buffer.from(fragment.data, 'base64').byteLength,
+              (sum, fragment) => sum + Buffer.byteLength(fragment.data, 'base64'),
               0,
             ),
             next: { position: rangeRecords[retainedEnd]!.sequence, byteOffset: null },
