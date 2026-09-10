@@ -1,0 +1,558 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useToast, useUiLocale } from '@maka/ui';
+import {
+  createPricingReconciliationTarget,
+  pricingReconciliationTargetMatches,
+  pricingReconciliationTargetModelKey,
+  type PricingMutation,
+  type PricingReconciliationTarget,
+} from '@maka/runtime-host/protocol';
+import { useUsagePricingServices } from '../pricing-services-context.js';
+import type { UsagePricingServices, UsagePricingTarget } from '../pricing-ports.js';
+import { getPricingSettingsCopy } from '../../../locales/settings-pricing-copy.js';
+import { useActionGuard } from './action-guard.js';
+import {
+  derivePricingRows,
+  draftFromRow,
+  findPricingRow,
+  validatePricingDraft,
+  type PricingDraft,
+  type PricingRowView,
+} from '../pricing-view-model.js';
+
+// Derive the controller's authority/outcome types from its injected port so the
+// port remains the test seam even though it is expressed with shared contracts.
+type DesktopPricingSnapshot = Awaited<ReturnType<UsagePricingServices['loadPricing']>>;
+type DesktopPricingMutationOutcome = Awaited<ReturnType<UsagePricingServices['mutatePricing']>>;
+
+type PricingEditor =
+  | { readonly mode: 'add' }
+  | { readonly mode: 'edit'; readonly row: PricingRowView };
+
+/**
+ * Write blockers from #2015: after a save whose post-commit reload failed, or an
+ * outcome we could not reconcile, further writes are disabled until a fresh
+ * snapshot loads. `conflict` keeps the draft and allows an explicit second save
+ * against the latest snapshot.
+ */
+export type PricingWriteState =
+  | { readonly kind: 'idle' }
+  | {
+      readonly kind: 'conflict';
+      readonly latest: DesktopPricingSnapshot;
+      readonly reason: 'revision_conflict' | 'outcome_unknown';
+      readonly intent: PricingReconciliationTarget;
+    }
+  | {
+      readonly kind: 'refresh_failed';
+      readonly intent: PricingReconciliationTarget;
+    }
+  | {
+      readonly kind: 'reconcile_unavailable';
+      readonly reason: 'revision_conflict' | 'outcome_unknown';
+      readonly intent: PricingReconciliationTarget;
+    };
+
+const EMPTY_DRAFT: PricingDraft = {
+  modelKey: '',
+  input: null,
+  output: null,
+  cacheRead: null,
+  cacheWrite: null,
+};
+
+/** Owns the Host-backed Pricing snapshot, the editor draft, and every outcome. */
+export function usePricingController(props: {
+  readonly describeError: (error: unknown) => string;
+  /** Settings-selected Host plus its lifecycle generation (`host:epoch`). */
+  readonly target: UsagePricingTarget | null;
+}) {
+  const services = useUsagePricingServices();
+  const { describeError } = props;
+  const locale = useUiLocale();
+  const copy = getPricingSettingsCopy(locale);
+  const toast = useToast();
+
+  const [snapshot, setSnapshot] = useState<DesktopPricingSnapshot | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [editor, setEditor] = useState<PricingEditor | null>(null);
+  const [draft, setDraft] = useState<PricingDraft>(EMPTY_DRAFT);
+  const [cacheOpen, setCacheOpen] = useState(false);
+  const [writeState, setWriteState] = useState<PricingWriteState>({ kind: 'idle' });
+  const [needsReview, setNeedsReview] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [resetTarget, setResetTarget] = useState<PricingRowView | null>(null);
+  const [resetBusy, setResetBusy] = useState(false);
+  const triggerRef = useRef<HTMLElement | null>(null);
+  const focusFallbackRef = useRef<HTMLElement | null>(null);
+  const focusRestorePendingRef = useRef(false);
+
+  const guard = useActionGuard<string>();
+  const mountedRef = useRef(false);
+  const lifecycleRef = useRef(0);
+  // Authority sequence: bumped by a reload start (a newer reload supersedes an
+  // older one) AND by a committed mutation (`applyOutcome`). A reload captures
+  // it and drops its result if it changed while in flight — so a slow refresh
+  // started before a save can never land back on top of the saved authority, nor
+  // reset a `refresh_failed`/`reconcile` write-block to idle.
+  const reloadTicketRef = useRef(0);
+  // Bumped whenever the selected Host enters a new lifecycle generation. A
+  // mutation captures it at dispatch and drops its result if the generation
+  // changed while it was in flight — an old-generation save must never write
+  // back onto a freshly loaded snapshot.
+  const generationEpochRef = useRef(0);
+  const targetKey = props.target?.generationKey ?? 'no-host';
+  const [renderedTargetKey, setRenderedTargetKey] = useState(targetKey);
+
+  // Fence a changed Host during render, before an old asynchronous result can
+  // land in the event-to-effect gap. React immediately restarts this component
+  // with the new target key. Keep the editor draft, but discard all authority
+  // and require review after the replacement snapshot arrives.
+  if (targetKey !== renderedTargetKey) {
+    setRenderedTargetKey(targetKey);
+    generationEpochRef.current += 1;
+    reloadTicketRef.current += 1;
+    setSnapshot(null);
+    setLoading(true);
+    setLoadError(null);
+    setWriteState({ kind: 'idle' });
+    setNeedsReview(editor !== null);
+    setResetTarget(null);
+    setSaving(false);
+    setResetBusy(false);
+    guard.finish();
+  }
+
+  useEffect(() => {
+    lifecycleRef.current += 1;
+    mountedRef.current = true;
+    const lifecycle = lifecycleRef.current;
+    return () => {
+      if (lifecycleRef.current !== lifecycle) return;
+      mountedRef.current = false;
+      reloadTicketRef.current += 1;
+    };
+  }, []);
+
+  function isCurrent(
+    lifecycle: number,
+    epoch: number,
+    target = props.target,
+  ): boolean {
+    return (
+      mountedRef.current &&
+      lifecycleRef.current === lifecycle &&
+      generationEpochRef.current === epoch &&
+      (target === null || target.isCurrent())
+    );
+  }
+
+  async function reload(): Promise<void> {
+    const host = props.target?.host;
+    const pendingWrite =
+      writeState.kind === 'refresh_failed' || writeState.kind === 'reconcile_unavailable'
+        ? writeState
+        : undefined;
+    const lifecycle = lifecycleRef.current;
+    const epoch = generationEpochRef.current;
+    const ticket = ++reloadTicketRef.current;
+    setLoading(true);
+    // No selected Host: nothing Host-scoped to load. Resolve to an empty state
+    // (like the usage stats loader's no-Host path) rather than letting the bridge
+    // fall back to a *different* (active) Host than the settings page shows.
+    if (!host) {
+      if (isCurrent(lifecycle, epoch) && ticket === reloadTicketRef.current) {
+        setSnapshot(null);
+        setLoadError(null);
+        setWriteState({ kind: 'idle' });
+        setLoading(false);
+      }
+      return;
+    }
+    try {
+      const next = await services.loadPricing(host);
+      if (!isCurrent(lifecycle, epoch) || ticket !== reloadTicketRef.current) return;
+      setSnapshot(next);
+      setLoadError(null);
+      if (pendingWrite) {
+        if (pricingReconciliationTargetMatches(pendingWrite.intent, next.entries)) {
+          setWriteState({ kind: 'idle' });
+          finishReconciledIntent(pendingWrite.intent);
+          toast.success(copy.synchronized);
+        } else {
+          setWriteState({
+            kind: 'conflict',
+            latest: next,
+            reason:
+              pendingWrite.kind === 'reconcile_unavailable'
+                ? pendingWrite.reason
+                : 'revision_conflict',
+            intent: pendingWrite.intent,
+          });
+          restoreReconciledIntent(pendingWrite.intent, next);
+        }
+      } else {
+        setWriteState({ kind: 'idle' });
+      }
+    } catch (error) {
+      if (!isCurrent(lifecycle, epoch) || ticket !== reloadTicketRef.current) return;
+      setLoadError(describeError(error));
+    } finally {
+      if (isCurrent(lifecycle, epoch) && ticket === reloadTicketRef.current) setLoading(false);
+    }
+  }
+
+  // Load on mount and whenever the selected Host generation changes. Pricing
+  // services come from a single app-root provider, so a Host change does not
+  // remount this controller; the target's `generationKey` (the Usage scope's
+  // `host:epoch`) changes instead, which resets the snapshot and reloads —
+  // replacing the previous surface's generation-key remount. A generation bump
+  // also fences any in-flight mutation from an older Host (`isCurrent`). An
+  // open draft is intentionally retained on a generation change.
+  useEffect(() => {
+    void reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetKey]);
+
+  const rows = useMemo(() => derivePricingRows(snapshot?.entries ?? []), [snapshot]);
+  // Overrides-only surface (#2015 / maintainer direction on #2218): the table
+  // shows only the user's custom rows, and adding one picks from the built-in
+  // catalog. The Host collapses an overridden built-in into a single `custom`
+  // entry, so `catalogRows` is naturally the built-ins NOT yet overridden.
+  const overrideRows = useMemo(() => rows.filter((row) => row.source === 'custom'), [rows]);
+  const catalogRows = useMemo(() => rows.filter((row) => row.source === 'builtin'), [rows]);
+  // Duplicate detection is over the OVERRIDES only (the visible list): picking or
+  // typing a built-in that is not yet overridden is a NEW override (an upsert),
+  // not a duplicate — only a key that already has a custom row is rejected
+  // ("edit its row instead"). Checking the full built-in ∪ overrides union here
+  // would wrongly flag every catalog pick (all built-ins) as a duplicate and
+  // block its save.
+  const overrideKeys = useMemo(() => overrideRows.map((row) => row.modelKey), [overrideRows]);
+  const validation = useMemo(
+    () =>
+      validatePricingDraft(draft, {
+        mode: editor?.mode ?? 'add',
+        existingKeys: overrideKeys,
+        lockedModelKey: editor?.mode === 'edit' ? editor.row.modelKey : undefined,
+      }),
+    [draft, editor, overrideKeys],
+  );
+
+  const writesBlocked =
+    needsReview ||
+    writeState.kind === 'refresh_failed' ||
+    writeState.kind === 'reconcile_unavailable';
+
+  // Restore focus only after React has committed the dialog/row removal. A
+  // timer can run while the row action is still connected, focus that doomed
+  // trigger, and then leave focus on <body> when the commit removes it. The
+  // layout effect observes the committed DOM and chooses the stable fallback
+  // when a successful reset/delete removed the opening row.
+  useLayoutEffect(() => {
+    if (!focusRestorePendingRef.current) return;
+    focusRestorePendingRef.current = false;
+    const trigger = triggerRef.current;
+    const fallback = focusFallbackRef.current;
+    triggerRef.current = null;
+    focusFallbackRef.current = null;
+    if (trigger?.isConnected) trigger.focus();
+    else if (fallback?.isConnected) fallback.focus();
+  }, [editor, resetTarget]);
+
+  // On a conflict, the fresh-authority row for whatever the user is editing or
+  // resetting — so the notice can show the latest value beside their draft
+  // rather than only claiming one exists.
+  const conflictLatestEntry = useMemo<PricingRowView | null>(() => {
+    if (writeState.kind !== 'conflict') return null;
+    const key = pricingReconciliationTargetModelKey(writeState.intent);
+    return findPricingRow(writeState.latest.entries, key);
+  }, [writeState]);
+
+  function restoreTriggerFocus() {
+    focusRestorePendingRef.current = true;
+  }
+
+  function openAdd(trigger: HTMLElement | null) {
+    // No loaded authority (no selected Host, or a load still pending/failed)
+    // means a save would have no CAS base and silently no-op — so the editor
+    // must not open. The Add control is disabled for the same reason.
+    if (writesBlocked || snapshot === null) return;
+    triggerRef.current = trigger;
+    focusFallbackRef.current = trigger;
+    setDraft(EMPTY_DRAFT);
+    setCacheOpen(false);
+    setEditor({ mode: 'add' });
+  }
+
+  function openEdit(row: PricingRowView, trigger: HTMLElement | null) {
+    if (writesBlocked) return;
+    triggerRef.current = trigger;
+    focusFallbackRef.current = trigger;
+    const prefill = draftFromRow(row);
+    setDraft(prefill.draft);
+    setCacheOpen(prefill.cacheOpen);
+    setEditor({ mode: 'edit', row });
+  }
+
+  /**
+   * Pre-fill the open Add draft from a chosen built-in catalog row: the built-in
+   * price is the starting point for the override, and the cache section opens iff
+   * the built-in carries cache rates. Stays in add mode — the row is a built-in
+   * not yet overridden, so its key validates as a new override.
+   */
+  function pickCatalogModel(row: PricingRowView) {
+    const prefill = draftFromRow(row);
+    setDraft(prefill.draft);
+    setCacheOpen(prefill.cacheOpen);
+  }
+
+  function clearModel() {
+    setDraft((current) => ({
+      ...current,
+      modelKey: '',
+      input: null,
+      output: null,
+      cacheRead: null,
+      cacheWrite: null,
+    }));
+    setCacheOpen(false);
+  }
+
+  function reviewHostChange() {
+    if (needsReview && snapshot !== null) setNeedsReview(false);
+  }
+
+  function closeEditor() {
+    if (saving) return;
+    setEditor(null);
+    setNeedsReview(false);
+    if (writeState.kind === 'conflict' && snapshot === writeState.latest) {
+      setWriteState({ kind: 'idle' });
+    }
+    restoreTriggerFocus();
+  }
+
+  const setField = <K extends keyof PricingDraft>(key: K, value: PricingDraft[K]) =>
+    setDraft((current) => ({ ...current, [key]: value }));
+
+  function finishReconciledIntent(intent: PricingReconciliationTarget): void {
+    if (intent.kind === 'upsert') setEditor(null);
+    else setResetTarget(null);
+    restoreTriggerFocus();
+  }
+
+  function restoreReconciledIntent(
+    intent: PricingReconciliationTarget,
+    latest: DesktopPricingSnapshot,
+  ): void {
+    if (intent.kind === 'upsert') {
+      const latestRow = findPricingRow(latest.entries, intent.pricing.modelKey);
+      if (editor?.mode === 'add' && latestRow) setEditor({ mode: 'edit', row: latestRow });
+      return;
+    }
+    const latestRow = findPricingRow(latest.entries, intent.modelKey);
+    if (latestRow?.source === 'custom') setResetTarget(latestRow);
+  }
+
+  /** Map a settled outcome to state; `onCommitted` runs on saved/synchronized. */
+  function applyOutcome(
+    outcome: DesktopPricingMutationOutcome,
+    intent: PricingReconciliationTarget,
+    onCommitted: () => void,
+    attemptedKey?: string,
+  ): void {
+    // Fence any reload that was in flight when this mutation committed, so a
+    // stale refresh can't overwrite the authority we're about to set (nor reset
+    // a write-block to idle). Clear its loading indicator too — the fenced
+    // reload's own `finally` will no longer run.
+    reloadTicketRef.current += 1;
+    setLoading(false);
+    switch (outcome.kind) {
+      case 'saved':
+        setSnapshot(outcome.snapshot);
+        setWriteState({ kind: 'idle' });
+        onCommitted();
+        toast.success(copy.saved, outcome.disposition === 'unchanged' ? copy.synchronized : undefined);
+        return;
+      case 'synchronized':
+        setSnapshot(outcome.snapshot);
+        setWriteState({ kind: 'idle' });
+        onCommitted();
+        toast.success(copy.synchronized);
+        return;
+      case 'review_required':
+        // Adopt fresh authority into the list so it is no longer speculative,
+        // keep the draft, and require an explicit second save against `latest`.
+        setSnapshot(outcome.snapshot);
+        setWriteState({ kind: 'conflict', latest: outcome.snapshot, reason: outcome.reason, intent });
+        // If this was an Add and the fresh authority now already has that key
+        // (added elsewhere), the duplicate check would leave `validation.config`
+        // null and silently block the required second save. Convert the Add into
+        // an Edit locked on that key so the explicit re-save upserts against the
+        // latest revision (the draft's rates are preserved).
+        if (editor?.mode === 'add' && attemptedKey) {
+          const latestRow = findPricingRow(outcome.snapshot.entries, attemptedKey);
+          if (latestRow) setEditor({ mode: 'edit', row: latestRow });
+        }
+        return;
+      case 'saved_refresh_failed':
+        // The write committed but the post-commit reload failed — the loaded list
+        // is now definitely stale. Drop it (#2015: show no speculative final
+        // list); retain both the draft and intended end state so an in-dialog
+        // refresh can confirm the committed write without replaying it.
+        setSnapshot(null);
+        setWriteState({ kind: 'refresh_failed', intent });
+        return;
+      case 'reconciliation_unavailable':
+        setWriteState({ kind: 'reconcile_unavailable', reason: outcome.reason, intent });
+        return;
+    }
+  }
+
+  /** The CAS base: the latest we saw on a conflict, else the loaded snapshot. */
+  function mutationBase(): DesktopPricingSnapshot | null {
+    return writeState.kind === 'conflict' ? writeState.latest : snapshot;
+  }
+
+  async function save() {
+    const config = validation.config;
+    const base = mutationBase();
+    const target = props.target;
+    const host = target?.host;
+    if (!config || !base || !host || saving) return;
+    if (!guard.begin('write')) return;
+    const lifecycle = lifecycleRef.current;
+    const epoch = generationEpochRef.current;
+    setSaving(true);
+    try {
+      const mutation: PricingMutation = { kind: 'upsert', pricing: config };
+      const outcome = await services.mutatePricing(host, base, mutation);
+      if (!isCurrent(lifecycle, epoch, target)) return;
+      applyOutcome(
+        outcome,
+        createPricingReconciliationTarget(base.entries, mutation),
+        () => {
+          setEditor(null);
+          restoreTriggerFocus();
+        },
+        config.modelKey,
+      );
+    } catch (error) {
+      if (isCurrent(lifecycle, epoch, target)) {
+        toast.error(copy.saveFailed, describeError(error));
+      }
+    } finally {
+      if (isCurrent(lifecycle, epoch, target)) {
+        guard.finish();
+        setSaving(false);
+      }
+    }
+  }
+
+  function openReset(
+    row: PricingRowView,
+    trigger: HTMLElement | null,
+    focusFallback: HTMLElement | null,
+  ) {
+    if (writesBlocked) return;
+    triggerRef.current = trigger;
+    focusFallbackRef.current = focusFallback;
+    setResetTarget(row);
+  }
+
+  function cancelReset() {
+    if (resetBusy) return;
+    setResetTarget(null);
+    restoreTriggerFocus();
+  }
+
+  async function confirmReset() {
+    const target = resetTarget;
+    const base = mutationBase();
+    const pricingTarget = props.target;
+    const host = pricingTarget?.host;
+    if (!target || !base || !host || resetBusy) return;
+    if (!guard.begin('write')) return;
+    const lifecycle = lifecycleRef.current;
+    const epoch = generationEpochRef.current;
+    setResetBusy(true);
+    try {
+      const mutation: PricingMutation = { kind: 'delete', modelKey: target.modelKey };
+      const intent = createPricingReconciliationTarget(base.entries, mutation);
+      const outcome = await services.mutatePricing(host, base, mutation);
+      if (!isCurrent(lifecycle, epoch, pricingTarget)) return;
+      applyOutcome(outcome, intent, () => {
+        setResetTarget(null);
+        restoreTriggerFocus();
+      });
+      // A conflict keeps the confirm dialog open for an explicit second
+      // confirm against fresh authority (mutationBase() now returns `latest`).
+    } catch (error) {
+      if (isCurrent(lifecycle, epoch, pricingTarget)) {
+        toast.error(copy.resetFailed, describeError(error));
+      }
+    } finally {
+      if (isCurrent(lifecycle, epoch, pricingTarget)) {
+        guard.finish();
+        setResetBusy(false);
+      }
+    }
+  }
+
+  return {
+    copy,
+    loading,
+    loadError,
+    // A write needs a loaded snapshot as its CAS base; without one (no Host, or
+    // a load pending/failed) the Add flow is disabled rather than silently
+    // no-opping on save.
+    hasAuthority: snapshot !== null,
+    // Overrides-only table + catalog picker for the Add flow.
+    overrideRows,
+    catalogRows,
+    pickCatalogModel,
+    clearModel,
+    editor,
+    draft,
+    setField,
+    cacheOpen,
+    setCacheOpen,
+    validation,
+    writeState,
+    needsReview,
+    writesBlocked,
+    reviewHostChange,
+    conflictLatestEntry,
+    saving,
+    resetTarget,
+    resetBusy,
+    reload,
+    openAdd,
+    openEdit,
+    closeEditor,
+    save,
+    openReset,
+    cancelReset,
+    confirmReset,
+  };
+}

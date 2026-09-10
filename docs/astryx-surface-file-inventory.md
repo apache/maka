@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.5.2` (194 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 267 files — blocker 0, reimplementation 0, polish 2, aligned 265.
+**Totals:** 269 files — blocker 0, reimplementation 0, polish 2, aligned 267.
 
 ## Exclusions (explicit)
 
@@ -81,8 +81,10 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/task-entry/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/task-entry/ui/task-entry-host.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/task-entry/ui/task-entry-provider.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/usage/pricing-services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/usage/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/usage/ui/metric-card.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/usage/ui/pricing-editor.tsx` | other | Banner, Button, Collapsible, Dialog, DialogHeader, EmptyState, HStack, Heading, Layout, LayoutContent, LayoutFooter, NumberInput, Skeleton, Text, TextInput, Typeahead, VStack | aligned — uses Astryx (Banner, Button, Collapsible, Dialog, DialogHeader, EmptyState, HStack, Heading) | aligned |
 | `apps/desktop/src/renderer/features/usage/ui/usage-settings-view.tsx` | other | Banner, Button, SegmentedControl, SegmentedControlItem, Selector, Switch, Tab, TabList, TextInput, Tooltip | aligned — uses Astryx (Banner, Button, SegmentedControl, SegmentedControlItem, Selector, Switch, Tab, TabList) | aligned |
 | `apps/desktop/src/renderer/features/usage/ui/usage-stats-table.tsx` | other | Card, EmptyState, Table | aligned — uses Astryx (Card, EmptyState, Table) | aligned |
 | `apps/desktop/src/renderer/features/workbar/services-context.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |

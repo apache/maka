@@ -17,15 +17,17 @@
  * under the License.
  */
 
-// Public API of the Usage settings feature (issue #4425). Legacy consumers
-// import only from this barrel.
+import { createServicesContext } from '../../application/contracts/feature-services.js';
+import type { UsagePricingServices } from './pricing-ports.js';
 
-export { UsageSettingsView } from './ui/usage-settings-view.js';
-export { UsageFeatureScope, type UsageScopeHandle } from './services-context.js';
-export type { UsageServices } from './ports.js';
-// The editable Pricing surface (#2015) is a Usage tab, but its services are
-// assembled in `composition/desktop-feature-services.tsx` (not the legacy
-// settings-surface that assembles `UsageServices`), so its bridge access stays
-// out of the frozen legacy-AppShell closure.
-export { UsagePricingServicesProvider } from './pricing-services-context.js';
-export type { UsagePricingServices } from './pricing-ports.js';
+// One app-root provider supplies the transport adapter. Each operation receives
+// the settings-selected Host explicitly; the controller separately receives its
+// generation key so it can fence stale work without remounting the provider.
+const { Provider, useServices } =
+  createServicesContext<UsagePricingServices>('UsagePricingServicesProvider');
+
+export const UsagePricingServicesProvider = Provider;
+
+export function useUsagePricingServices(): UsagePricingServices {
+  return useServices();
+}
