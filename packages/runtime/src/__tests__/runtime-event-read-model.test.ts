@@ -465,6 +465,9 @@ describe('projectRuntimeEventsToStoredMessages', () => {
             ],
           },
           providerExecuted: true,
+          providerOptions: {
+            google: { serverToolCallId: 'search-1', serverToolType: 'GOOGLE_SEARCH_WEB' },
+          },
           providerOutput: rawProviderOutput,
         },
         refs: { toolCallId: 'search-1' },
@@ -497,6 +500,9 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       type: 'tool_result',
       providerExecuted: true,
       providerOutput: rawProviderOutput,
+      providerOptions: {
+        google: { serverToolCallId: 'search-1', serverToolType: 'GOOGLE_SEARCH_WEB' },
+      },
     });
     assert.deepStrictEqual((projected.messages[2] as { content?: unknown }).content, {
       kind: 'web_search',
@@ -519,6 +525,9 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       {
         output: rawProviderOutput,
         providerExecuted: true,
+        providerOptions: {
+          google: { serverToolCallId: 'search-1', serverToolType: 'GOOGLE_SEARCH_WEB' },
+        },
       },
     );
   });

@@ -283,6 +283,9 @@ export function backfillRuntimeEventsFromStoredMessages(
             ...(message.providerExecuted !== undefined
               ? { providerExecuted: message.providerExecuted }
               : {}),
+            ...(message.providerOptions !== undefined
+              ? { providerOptions: structuredClone(message.providerOptions) }
+              : {}),
             ...(message.providerExecuted && message.providerOutput !== undefined
               ? { providerOutput: structuredClone(message.providerOutput) }
               : {}),

@@ -409,12 +409,15 @@ export type ModelStreamEvent =
   /** Provider-side tool execution has begun, but no replayable call exists yet. */
   | { kind: 'provider-tool-input' }
   | { kind: 'tool-call'; toolCall: ToolCallPart }
+  | { kind: 'source'; url: string; title?: string }
   | {
       kind: 'provider-tool-result';
       toolCallId: string;
       toolName: string;
       output: unknown;
       isError?: boolean;
+      /** Opaque provider metadata required to reconstruct a native toolResponse. */
+      providerOptions?: ProviderOptions;
     }
   | { kind: 'step-finish'; usage?: NormalizedUsage; finishReason?: ModelFinishReason }
   | { kind: 'finish'; finishReason?: ModelFinishReason }

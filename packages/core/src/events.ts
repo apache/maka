@@ -743,6 +743,8 @@ export interface ToolResultEvent extends BaseEvent, ToolActivityIdentity {
   operationId?: string;
   /** True when the provider executed the tool inside the model request. */
   providerExecuted?: boolean;
+  /** Opaque provider metadata required to reconstruct a native toolResponse on replay. */
+  providerOptions?: Record<string, unknown>;
   /** Raw provider result retained for provider-native replay; never rendered directly. */
   providerOutput?: unknown;
   /** Provider-neutral model-visible output computed before durable publication. */

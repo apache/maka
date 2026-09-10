@@ -152,7 +152,7 @@ test('turn-start routing compiles Claude models to the CC-compatible Anthropic t
   });
 });
 
-test('Gemini 2.x native search is fail-closed so function tools stay on the request', () => {
+test('Gemini 2.x native search stays unimplemented and drops the client WebSearch tool', () => {
   const clientSearch = {
     name: NATIVE_WEB_SEARCH_TOOL_NAME,
     description: 'Tavily',

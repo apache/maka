@@ -104,6 +104,14 @@ describe('hosted web search capability', () => {
     );
     assert.deepEqual(
       resolveHostedWebSearchCapability(
+        'google',
+        [{ id: 'gemini-3-flash', capabilities: { webSearch: true } }],
+        'gemini-3-flash',
+      ),
+      { adapter: 'google-grounding', implemented: true },
+    );
+    assert.deepEqual(
+      resolveHostedWebSearchCapability(
         'openai',
         [
           {

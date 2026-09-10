@@ -752,6 +752,10 @@ interface AiSdkStreamChunk {
   error?: unknown;
   /** Provider-specific metadata; carries the Anthropic reasoning signature. */
   providerMetadata?: unknown;
+  /** Grounding URL source parts (Gemini `source` chunks). */
+  sourceType?: unknown;
+  url?: unknown;
+  title?: unknown;
 }
 
 /**
@@ -1114,6 +1118,21 @@ function translateChunk(
           toolName: runtimeToolName?.(chunk.toolName) ?? chunk.toolName,
           output: chunk.type === 'tool-error' ? chunk.error : (chunk.output ?? chunk.result),
           ...(chunk.type === 'tool-error' || chunk.isError === true ? { isError: true } : {}),
+          ...(chunk.providerMetadata !== undefined
+            ? {
+                providerOptions: chunk.providerMetadata as ToolCallPart['providerOptions'],
+              }
+            : {}),
+        },
+      ];
+    }
+    case 'source': {
+      if (chunk.sourceType !== 'url' || typeof chunk.url !== 'string') return [];
+      return [
+        {
+          kind: 'source',
+          url: chunk.url,
+          ...(typeof chunk.title === 'string' && chunk.title.trim() ? { title: chunk.title } : {}),
         },
       ];
     }

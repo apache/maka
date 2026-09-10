@@ -113,7 +113,10 @@ function providerHostedWebSearchAdapter(
     case 'anthropic-compatible':
       return { adapter: 'anthropic-messages', implemented: true };
     case 'google':
-      return { adapter: 'google-grounding', implemented: true };
+      // implemented is produced only by googleGroundingCapability (Gemini 3+
+      // mix). A true here would be overwritten on every live path and would
+      // lie if a stored webSearch:true ever returned the adapter as-is.
+      return { adapter: 'google-grounding', implemented: false };
     case 'zai':
     case 'zai-coding-plan':
       return { adapter: 'zai-web-search', implemented: false };

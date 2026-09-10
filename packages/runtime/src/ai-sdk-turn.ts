@@ -228,19 +228,110 @@ const CHILD_STEP_BUDGET_FINALIZATION_PROMPT = [
   '</step_budget_finalization>',
 ].join('\n');
 
+function isProviderWebSearchToolName(toolName: string): boolean {
+  return (
+    toolName === 'WebSearch' ||
+    toolName === 'google.google_search' ||
+    toolName === 'googleSearch' ||
+    toolName === 'server:GOOGLE_SEARCH_WEB'
+  );
+}
+
+function googleGroundingMetadata(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const record = value as { groundingMetadata?: unknown };
+  return record.groundingMetadata ?? value;
+}
+
+function googleGroundingRows(value: unknown): Array<{
+  title: string;
+  url: string;
+  snippet: string;
+  source: string;
+}> {
+  const metadata = googleGroundingMetadata(value);
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return [];
+  const chunks = (metadata as { groundingChunks?: unknown }).groundingChunks;
+  if (!Array.isArray(chunks)) return [];
+  const rows: Array<{ title: string; url: string; snippet: string; source: string }> = [];
+  for (const chunk of chunks) {
+    const web =
+      chunk && typeof chunk === 'object' && !Array.isArray(chunk)
+        ? (chunk as { web?: unknown }).web
+        : undefined;
+    if (!web || typeof web !== 'object' || Array.isArray(web)) continue;
+    const uri = (web as { uri?: unknown }).uri;
+    const title = (web as { title?: unknown }).title;
+    if (typeof uri !== 'string') continue;
+    try {
+      const parsed = new URL(uri);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') continue;
+      rows.push({
+        title: typeof title === 'string' && title.trim() ? title : parsed.hostname,
+        url: parsed.toString(),
+        snippet: '',
+        source: parsed.hostname,
+      });
+    } catch {
+      // Provider source rows are untrusted; malformed URLs are dropped.
+    }
+  }
+  return rows;
+}
+
+function googleWebSearchQuery(value: unknown): string {
+  const metadata = googleGroundingMetadata(value);
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return '';
+  const queries = (metadata as { webSearchQueries?: unknown }).webSearchQueries;
+  if (!Array.isArray(queries)) return '';
+  return queries.filter((item): item is string => typeof item === 'string').join(' | ');
+}
+
+function webSearchRowFromUrl(
+  url: string,
+  title?: string,
+): { title: string; url: string; snippet: string; source: string } | undefined {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
+    return {
+      title: title && title.trim() ? title : parsed.hostname,
+      url: parsed.toString(),
+      snippet: '',
+      source: parsed.hostname,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function mergeWebSearchRows(
+  content: ToolResultContent,
+  rows: ReadonlyArray<{ title: string; url: string; snippet: string; source: string }>,
+): ToolResultContent {
+  if (content.kind !== 'web_search' || rows.length === 0) return content;
+  const seen = new Set(content.rows.map((row) => row.url));
+  const extra = rows.filter((row) => !seen.has(row.url));
+  return extra.length === 0 ? content : { ...content, rows: [...content.rows, ...extra] };
+}
+
 function providerToolResultContent(
   toolName: string,
   output: unknown,
   input?: unknown,
+  providerOptions?: Record<string, unknown>,
 ): ToolResultContent {
-  if (output === undefined) {
-    return {
-      kind: 'text',
-      text: `${toolName} completed without a structured result.`,
-    };
-  }
-  if (toolName !== 'WebSearch') {
+  if (!isProviderWebSearchToolName(toolName)) {
+    if (output === undefined) {
+      return {
+        kind: 'text',
+        text: `${toolName} completed without a structured result.`,
+      };
+    }
     return { kind: 'json', value: output };
+  }
+  if (output === undefined) {
+    output = {};
   }
   const queryFromInput = providerWebSearchQuery(input);
   if (Array.isArray(output)) {
@@ -347,6 +438,12 @@ function providerToolResultContent(
         // Provider source rows are untrusted; malformed URLs are dropped.
       }
     }
+  }
+  if (rows.length === 0) {
+    rows.push(...googleGroundingRows(output), ...googleGroundingRows(providerOptions?.google));
+  }
+  if (!query) {
+    query = googleWebSearchQuery(output) || googleWebSearchQuery(providerOptions?.google) || query;
   }
   return { kind: 'web_search', provider: 'model', query, rows };
 }
@@ -907,6 +1004,8 @@ export class AiSdkTurn {
     let stepThinkingParts: AssistantThinkingPart[] = [];
     let stepThinkingPartsById = new Map<string, AssistantThinkingPart>();
     let stepContentOrder: AssistantStepContentKind[] = [];
+    let stepSourceRows: Array<{ title: string; url: string; snippet: string; source: string }> = [];
+    let pendingProviderWebSearchResults: ToolResultEvent[] = [];
     const recordStepContent = (kind: AssistantStepContentKind): void => {
       if (!stepContentOrder.includes(kind)) stepContentOrder.push(kind);
     };
@@ -926,6 +1025,14 @@ export class AiSdkTurn {
       stepThinkingParts = [];
       stepThinkingPartsById = new Map();
       stepContentOrder = [];
+      stepSourceRows = [];
+    };
+    const flushPendingProviderWebSearchResults = (): void => {
+      for (const pending of pendingProviderWebSearchResults) {
+        pending.content = mergeWebSearchRows(pending.content, stepSourceRows);
+        queue.push(pending);
+      }
+      pendingProviderWebSearchResults = [];
     };
     const flushStep = async (): Promise<void> => {
       const hasThinking = stepThinkingParts.length > 0;
@@ -1983,11 +2090,27 @@ export class AiSdkTurn {
                 } else {
                   returnedToolCalls.push(event.toolCall);
                 }
+              } else if (event.kind === 'source') {
+                const row = webSearchRowFromUrl(event.url, event.title);
+                if (row) stepSourceRows.push(row);
               } else if (event.kind === 'provider-tool-result') {
                 attemptSawToolActivity = true;
                 providerToolActivityCount += 1;
                 const providerOutput = stripUndefinedDeep(event.output);
-                queue.push({
+                const providerOptions =
+                  event.providerOptions !== undefined
+                    ? stripUndefinedDeep(event.providerOptions)
+                    : undefined;
+                const content = mergeWebSearchRows(
+                  providerToolResultContent(
+                    event.toolName,
+                    providerOutput,
+                    providerToolInputs.get(event.toolCallId),
+                    event.providerOptions,
+                  ),
+                  stepSourceRows,
+                );
+                const toolResult = {
                   type: 'tool_result',
                   id: this.deps.newId(),
                   turnId,
@@ -1995,13 +2118,15 @@ export class AiSdkTurn {
                   toolUseId: event.toolCallId,
                   providerExecuted: true,
                   ...(providerOutput !== undefined ? { providerOutput } : {}),
+                  ...(providerOptions !== undefined ? { providerOptions } : {}),
                   isError: event.isError === true,
-                  content: providerToolResultContent(
-                    event.toolName,
-                    providerOutput,
-                    providerToolInputs.get(event.toolCallId),
-                  ),
-                } satisfies ToolResultEvent);
+                  content,
+                } satisfies ToolResultEvent;
+                if (content.kind === 'web_search') {
+                  pendingProviderWebSearchResults.push(toolResult);
+                } else {
+                  queue.push(toolResult);
+                }
                 providerToolInputs.delete(event.toolCallId);
               } else if (event.kind === 'step-finish' && !incompleteFinish) {
                 // The step's text/thinking deltas are all in (the stream is
@@ -2009,6 +2134,7 @@ export class AiSdkTurn {
                 // rotate to a fresh id for the next step. Tool settlement
                 // below receives this step's pre-rotation id, so durable replay
                 // can regroup calls with this reasoning/text.
+                flushPendingProviderWebSearchResults();
                 await flushStep();
                 if (midTurnState) {
                   // Durability clock: step N's thinking/text completion events
@@ -2259,6 +2385,7 @@ export class AiSdkTurn {
           // Catch-all: flush any residual step content if the provider closed the
           // stream without a trailing `finish-step` for the last step.
           const providerStepId = currentStepMessageId;
+          flushPendingProviderWebSearchResults();
           await flushStep();
 
           if (providerOutcome.kind !== 'completed') throw providerOutcome.failure;
@@ -2603,6 +2730,7 @@ export class AiSdkTurn {
         // `finish-step`; this keeps their and this step's streamed-out output on
         // BOTH exits — user stop and provider error / watchdog timeout — so the
         // transcript keeps what the user actually saw.
+        flushPendingProviderWebSearchResults();
         await flushStep().catch(() => {});
         if (this.aborted) {
           queue.push({

@@ -991,6 +991,9 @@ function projectFunctionResponse(
     ...(event.content.providerExecuted !== undefined
       ? { providerExecuted: event.content.providerExecuted }
       : {}),
+    ...(event.content.providerOptions !== undefined
+      ? { providerOptions: structuredClone(event.content.providerOptions) }
+      : {}),
     ...(event.content.providerExecuted && event.content.providerOutput !== undefined
       ? { providerOutput: structuredClone(event.content.providerOutput) }
       : {}),
