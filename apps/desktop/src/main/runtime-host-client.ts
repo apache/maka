@@ -1331,11 +1331,14 @@ export class DesktopRuntimeHostClient {
 
   prepareHostRetirement(
     mode: RuntimeHostRetirementMode,
+    options?: { readonly timeoutMs?: number; readonly allowCooperativeHandoff?: boolean },
   ): Promise<RuntimeHostRetirementPreparation> {
     return prepareConnectedRuntimeHostRetirement(
       this.connection,
       mode,
-      RUNTIME_HOST_RETIREMENT_TIMEOUT_MS,
+      options?.timeoutMs ?? RUNTIME_HOST_RETIREMENT_TIMEOUT_MS,
+      undefined,
+      options,
     );
   }
 

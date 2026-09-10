@@ -141,3 +141,23 @@ test('the pending Turn clock ticks from send time and hands over without a dupli
   await render({ liveTurn: undefined, runningStatus: false, transientMessages: [] });
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 0);
 });
+
+test('delivery metadata retains recovery details and disabled actions without duplicates', () => {
+  const markup = renderChat(undefined, { transientMessages: [{
+    id: 'failed-message', text: 'Failed draft', ts: 1000, transientPlacement: 'current_turn',
+    deliveryStatus: 'Message not sent', deliveryTone: 'danger',
+    deliveryDetail: 'Finish the current draft first.',
+    deliveryDiagnosticLabel: 'Send details', deliveryDiagnostic: 'Test diagnostic',
+    deliveryActions: [{ label: 'Edit and resend', disabled: true, onClick() {} }],
+  }] });
+  const { document } = parseHTML(markup);
+  const statuses = document.querySelectorAll('.maka-message-delivery-status');
+  assert.equal(statuses.length, 1);
+  assert.equal(statuses[0].textContent, 'Message not sent');
+  assert.equal(statuses[0].getAttribute('data-tone'), 'danger');
+  const actions = [...document.querySelectorAll('button')].filter((button) => button.textContent === 'Edit and resend');
+  assert.equal(actions.length, 1);
+  assert.ok(actions[0].hasAttribute('disabled') || actions[0].getAttribute('aria-disabled') === 'true');
+  assert.equal(document.querySelector('.maka-message-delivery-detail')?.textContent, 'Finish the current draft first.');
+  assert.equal(document.querySelector('details p')?.textContent, 'Test diagnostic');
+});

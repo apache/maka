@@ -92,6 +92,18 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await page.getByRole('menuitem', { name: '重命名', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '重命名任务' })).toBeVisible();
   await page.keyboard.press('Escape');
+  await expect(page.getByRole('textbox', { name: '重命名任务' })).toBeHidden();
+  // Dialog focus restoration can open the action tooltip over the dock.
+  // Exercise that keyboard focus explicitly and dismiss the remaining overlay.
+  await actions.press('Tab');
+  await page.keyboard.press('Shift+Tab');
+  const actionTooltip = page.getByRole('tooltip', { name: 'Drag task 0 任务操作', exact: true });
+  await expect(actionTooltip).toBeVisible();
+  await expect.poll(nativeWorkHubVisible).toBe(false);
+  const workHubNavigation = page.getByRole('button', { name: 'WorkHub', exact: true });
+  await workHubNavigation.hover();
+  await workHubNavigation.focus();
+  await expect(actionTooltip).toBeHidden();
   await expect.poll(nativeWorkHubVisible).toBe(true);
   await page.getByRole('button', { name: '搜索任务', exact: true }).click();
   await expect(page.locator('[data-maka-contract="search-modal"]')).toBeVisible();
@@ -140,7 +152,21 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   const close = await workhub.getByRole('button', { name: /^(隐藏|Hide)$/ }).boundingBox();
   const input = await editor.boundingBox();
   expect(close!.y).toBeLessThan(input!.y);
-  await workhub.getByRole('button', { name: /收起对话|Collapse conversation/ }).click();
+  await expect(workhub.locator('.workHubHistory')).toHaveCSS('opacity', '1');
+  const collapseFrames = await workhub.getByRole('button', { name: /收起对话|Collapse conversation/ }).evaluate((button) => new Promise<{ opacity: number; visible: boolean }[]>((resolve) => {
+    const history = document.querySelector('.workHubHistory')!;
+    const frames: { opacity: number; visible: boolean }[] = [];
+    const started = performance.now();
+    const sample = () => {
+      const style = getComputedStyle(history);
+      frames.push({ opacity: Number(style.opacity), visible: style.visibility === 'visible' });
+      if (performance.now() - started < 220) requestAnimationFrame(sample);
+      else resolve(frames);
+    };
+    (button as HTMLButtonElement).click();
+    requestAnimationFrame(sample);
+  }));
+  expect(collapseFrames.some((frame) => frame.visible && frame.opacity > 0 && frame.opacity < 1)).toBe(true);
   await expect(workhub.locator('.workHubHistory')).toBeHidden();
   await expect(workhub.getByRole('button', { name: /滚动到底部|Scroll to bottom/ })).toHaveCount(0);
   await expect.poll(() => workhub.evaluate(() => window.innerHeight)).toBeLessThan(expandedHeight / 2);

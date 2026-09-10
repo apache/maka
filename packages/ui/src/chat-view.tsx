@@ -51,6 +51,7 @@ import {
   ModelProviderRetryIndicator,
   LocalizedChatMessage,
   TurnRunningStatus,
+  TurnFooter,
   TurnView,
   TransientUserMessage,
   type TurnFooterActionMeta,
@@ -453,7 +454,7 @@ export function ChatView(props: {
   // A live context-compaction Turn is not an assistant stream: it renders one
   // system row (see overlayLiveTurn), not a streaming tail. Keeping it out of
   // liveInFlight/streamingActive stops chat-turn from adding an empty assistant
-  // article, the generic "pondering" spinner, and a footer placeholder on top.
+  // article and generic activity footer on top.
   const isCompactionLive = props.liveTurn?.rootExecutionKind === 'context_compact';
   // overlayLiveTurn renders one "compacting" system row for a live compaction
   // Turn that has no assistant steps — including in a session with no settled
@@ -723,10 +724,9 @@ export function ChatView(props: {
                     sender="assistant"
                     className="maka-chat-message maka-assistant-answer"
                   >
-                    <div className="maka-assistant-answer-content">
+                    <TurnFooter actions={[]} live context="" activity={
                       <TurnRunningStatus startedAt={pendingRunningStartedAt} />
-                    </div>
-                    <div aria-hidden="true" className="maka-live-turn-footer-placeholder" />
+                    } />
                   </LocalizedChatMessage>
                 </section>
               )}
@@ -868,16 +868,9 @@ export function ChatView(props: {
                     className="maka-transcript-turn"
                     data-transcript-turn-id={turn.turnId}
                   >
-                    {turn.turnId === tailTurnId
-                      ? inlineTransientMessages.map((message) => (
-                          <TransientUserMessage
-                            key={message.id}
-                            message={message}
-                          />
-                        ))
-                      : null}
                     <TurnView
                       turn={turn}
+                      transientMessages={turn.turnId === tailTurnId ? inlineTransientMessages : undefined}
                       userLabel={props.userLabel}
                       footerActions={turnPresentation?.footerActionsByTurn[turn.turnId]}
                       onFooterAction={stableTurnFooterAction}
@@ -943,14 +936,13 @@ export function ChatView(props: {
                     sender="assistant"
                     className="maka-chat-message maka-assistant-answer"
                   >
-                    <div className="maka-assistant-answer-content">
-                      {props.liveTurn?.providerRetry ? (
+                    <TurnFooter actions={[]} live context="" activity={
+                      props.liveTurn?.providerRetry ? (
                         <ModelProviderRetryIndicator retry={props.liveTurn.providerRetry} />
                       ) : (
                         (props.runningStatus && <TurnRunningStatus startedAt={pendingRunningStartedAt} />)
-                      )}
-                    </div>
-                    <div aria-hidden="true" className="maka-live-turn-footer-placeholder" />
+                      )
+                    } />
                   </LocalizedChatMessage>
                 </section>
               )}

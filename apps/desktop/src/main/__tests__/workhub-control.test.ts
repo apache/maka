@@ -106,18 +106,18 @@ test("control rejects ordinary Sessions, stale turns and switched Host epochs be
   await assert.rejects(
     async () =>
       h.tool.impl(
-        { request: { operation: "observe" } },
+        { status: "Checking Maka", request: { operation: "observe" } },
         { ...h.ctx(), sessionId: "ordinary" },
       ),
     /Only the active WorkHub/,
   );
   await assert.rejects(
-    async () => h.tool.impl({ request: { operation: "observe" } }, h.ctx("stale")),
+    async () => h.tool.impl({ status: "Checking Maka", request: { operation: "observe" } }, h.ctx("stale")),
     /Inactive turn/,
   );
   h.setCurrent(false);
   await assert.rejects(
-    async () => h.tool.impl({ request: { operation: "observe" } }, h.ctx()),
+    async () => h.tool.impl({ status: "Checking Maka", request: { operation: "observe" } }, h.ctx()),
     /Host changed/,
   );
 });
@@ -148,7 +148,7 @@ test("partial batches never replay input and the failure budget belongs to the r
   const act = async (refs = ["current"]) =>
     (await h.tool.impl(
       {
-        request: {
+        status: "Checking Maka", request: {
           operation: "act",
           actions: refs.map((ref) => ({ kind: "click", ref })),
         },
@@ -157,6 +157,7 @@ test("partial batches never replay input and the failure budget belongs to the r
     )) as {
       completed: unknown[];
       recoverable: boolean;
+      error: string;
       inputDispatched: boolean;
       requiresNewTurn?: boolean;
     };
@@ -164,11 +165,15 @@ test("partial batches never replay input and the failure budget belongs to the r
   assert.equal(partial.completed.length, 1);
   assert.equal(attempts, 2);
   assert.equal(partial.inputDispatched, false);
-  assert.equal((await h.command("snapshot")).error, "Control changed");
+  assert.equal(partial.error, "Control changed", "the model still receives the recoverable error");
+  assert.equal((await h.command("snapshot")).error, undefined, "recoverable tool failures are not conversation errors");
   failAfterInput = true;
   assert.equal((await act()).inputDispatched, true);
   assert.equal((await act()).recoverable, false);
-  assert.equal((await act()).requiresNewTurn, true);
+  const blocked = await act();
+  assert.equal(blocked.requiresNewTurn, true);
+  assert.equal(blocked.error, "Control changed");
+  assert.equal((await h.command("snapshot")).phase, "error");
   assert.equal(attempts, 4);
   h.control.complete(
     desktopSessionResourceKey({
@@ -178,13 +183,14 @@ test("partial batches never replay input and the failure budget belongs to the r
   );
   h.setTurn("new-turn");
   assert.equal((await act()).recoverable, true);
+  assert.equal((await h.command("snapshot")).error, undefined, "a new turn does not inherit the previous terminal error");
 });
 
 test("takeover cancels waiting and interrupts the exact owning turn", async (t) => {
   const h = harness();
   t.after(() => h.control.close());
   const pending = assert.rejects(
-    async () => h.tool.impl({ request: { operation: "observe", waitMs: 5000 } }, h.ctx()),
+    async () => h.tool.impl({ status: "Checking Maka", request: { operation: "observe", waitMs: 5000 } }, h.ctx()),
     /abort|User took control/i,
   );
   await new Promise((resolve) => setImmediate(resolve));
@@ -192,7 +198,7 @@ test("takeover cancels waiting and interrupts the exact owning turn", async (t) 
   await pending;
   assert.deepEqual(h.interrupted, ["turn"]);
   await assert.rejects(
-    async () => h.tool.impl({ request: { operation: "observe" } }, h.ctx()),
+    async () => h.tool.impl({ status: "Checking Maka", request: { operation: "observe" } }, h.ctx()),
     /User took control/,
   );
 });
@@ -408,7 +414,7 @@ test("window preparation cannot admit input after takeover or a Host switch", as
       async () =>
         h.tool.impl(
           {
-            request: {
+            status: "Checking Maka", request: {
               operation: "act",
               actions: [{ kind: "navigate", section: "general" }],
             },
@@ -456,7 +462,7 @@ test("takeover stops an action without exposing its internal abort reason as a c
       signal.addEventListener('abort', () => reject(signal.reason), { once: true });
     });
   });
-  const action = h.tool.impl({ request: { operation: "act", actions: [{ kind: "navigate", section: "general" }] } }, h.ctx());
+  const action = h.tool.impl({ status: "Checking Maka", request: { operation: "act", actions: [{ kind: "navigate", section: "general" }] } }, h.ctx());
   await executing;
   await h.command('stop');
   const result = await action as { interrupted: boolean; error: string };
@@ -484,7 +490,7 @@ test("cancelling undo is a normal completion for the renderer", async (t) => {
       signal.addEventListener('abort', () => reject(signal.reason), { once: true });
     });
   });
-  await h.tool.impl({ request: { operation: 'act', actions: [{ kind: 'set', target: 'theme', value: createDefaultSettings().appearance.theme }] } }, h.ctx());
+  await h.tool.impl({ status: "Checking Maka", request: { operation: 'act', actions: [{ kind: 'set', target: 'theme', value: createDefaultSettings().appearance.theme }] } }, h.ctx());
   h.control.complete(desktopSessionResourceKey({ ...scope, sessionId: WORKHUB_COORDINATION_SESSION_ID }));
   const undoing = h.command('undo');
   await executing;
@@ -492,4 +498,21 @@ test("cancelling undo is a normal completion for the renderer", async (t) => {
   await undoing;
   assert.equal((await h.command('snapshot')).error, undefined);
   assert.equal((await h.command('snapshot')).phase, 'paused');
+});
+
+
+test('control requires a short status before preparing the window and publishes the same text', async (t) => {
+  let prepared = 0;
+  const h = harness(async () => { prepared++; });
+  t.after(() => h.control.close());
+  t.mock.method(WorkHubUi.prototype, 'observe', async () => ({ section: null, language: 'en', theme: 'light', accessibility: '', controls: [] }));
+  for (const status of [undefined, '', '  ', 'a'.repeat(81), 'first\nsecond']) {
+    await assert.rejects(async () => h.tool.impl({ status, request: { operation: 'observe' } }, h.ctx()));
+  }
+  assert.equal(prepared, 0);
+  await h.tool.impl({ status: '  正在检查项目设置  ', request: { operation: 'observe' } }, h.ctx());
+  assert.equal((await h.command('snapshot')).status, '正在检查项目设置');
+  assert.equal(prepared, 1);
+  h.control.complete(desktopSessionResourceKey({ ...scope, sessionId: WORKHUB_COORDINATION_SESSION_ID }));
+  assert.equal((await h.command('snapshot')).status, undefined);
 });

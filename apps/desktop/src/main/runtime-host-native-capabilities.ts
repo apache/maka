@@ -442,6 +442,7 @@ async function invokeNativeTool(
       toolCallId: frame.toolCallId,
       abortSignal: signal,
       emitOutput() {},
+      requestUserForm: options.requestInteraction,
       ...(options.progress ? { emitProgress: options.progress } : {}),
     });
   const output = await (admissionEvidence.kind === "browser_url"

@@ -21,6 +21,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { parseHTML } from 'linkedom';
 import type { SessionEvent } from '@maka/core/events';
 import {
   armLiveTurn,
@@ -87,6 +88,31 @@ function renderLiveTurn(liveTurn: LiveTurnProjection): string {
 }
 
 describe('single live-turn handoff', () => {
+  it('keeps activity in the answer footer before the session or Turn arrives', () => {
+    const session: NonNullable<Parameters<typeof ChatView>[0]['activeSession']> = {
+      id: 'session-1', name: 'pending', status: 'running' as const, backend: 'ai-sdk',
+      labels: [], isFlagged: false, isArchived: false, hasUnread: false,
+      llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask' as const,
+    };
+    for (const activeSession of [undefined, session]) {
+      const markup = renderWithLocale(createElement(ChatView, {
+        activeSession,
+        messages: [],
+        transientMessages: [{
+          id: 'message-pending', ts: 1, text: 'send now',
+          transientPlacement: 'current_turn',
+        }],
+        runningStatus: true,
+        scrollBehavior: 'smooth',
+        onNew() {},
+      } satisfies Parameters<typeof ChatView>[0]));
+      const { document } = parseHTML(markup);
+      const status = document.querySelector('.maka-assistant-answer [role="status"]');
+      assert.ok(status?.closest('.maka-turn-footer'), 'activity must occupy the shared footer');
+      assert.equal(document.querySelector('.maka-assistant-answer [role="toolbar"]'), null);
+    }
+  });
+
   it('renders a transient user message without manufacturing a Turn', () => {
     const markup = renderWithLocale(createElement(ChatView, {
       activeSession: {
@@ -164,7 +190,9 @@ describe('single live-turn handoff', () => {
     } satisfies Parameters<typeof ChatView>[0]));
 
     assert.doesNotMatch(markup, /maka-chat-message-loading/);
-    assert.ok(markup.indexOf('send now') < markup.indexOf('data-turn-id="turn-1"'));
+    const answerIndex = markup.indexOf('maka-assistant-answer');
+    assert.ok(answerIndex >= 0);
+    assert.ok(markup.indexOf('send now') < answerIndex);
     assert.equal((markup.match(/data-transient-message-id="turn-1"/g) ?? []).length, 1);
     assert.equal((markup.match(/data-transcript-turn-id="turn-1"/g) ?? []).length, 1);
   });
@@ -200,8 +228,10 @@ describe('single live-turn handoff', () => {
       onNew() {},
     } satisfies Parameters<typeof ChatView>[0]));
 
-    assert.ok(markup.indexOf('send now') < markup.indexOf('data-turn-id="host-turn"'));
-    assert.ok(markup.indexOf('do this next') > markup.indexOf('data-turn-id="host-turn"'));
+    const answerIndex = markup.indexOf('maka-assistant-answer');
+    assert.ok(answerIndex >= 0);
+    assert.ok(markup.indexOf('send now') < answerIndex);
+    assert.ok(markup.indexOf('do this next') > answerIndex);
     assert.equal((markup.match(/data-transient-message-id=/g) ?? []).length, 2);
   });
 

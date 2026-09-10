@@ -370,6 +370,7 @@ const desktopDiagnostics: DesktopDiagnosticsDeps = {
     }),
   mainLogs: () => mainProcessLogBuffer.snapshot(),
   runtimeHostProcessLogs: () => runtimeHostProcessLogBuffer.snapshot(),
+  runtimeHostConnections: () => runtimeHostManager?.entries() ?? [],
   resolveActiveRuntimeHost: () => {
     const scope = activeRuntimeHostRef();
     return scope ? resolveRuntimeHostDiagnostics(scope) : undefined;
@@ -900,7 +901,8 @@ const workHubRuntime = createWorkHubRuntime({
 });
 const workHubControl = createWorkHubControl({
   ipcMain,
-  prepareWindow: () => workHubPresentation.prepareControl(),
+  prepareWindow: (turnId) => workHubPresentation.prepareControl(turnId),
+  finishControl: () => workHubPresentation.finishControl(),
   window: () => {
     const window = mainWindowController.browserWindow();
     if (!window) throw new Error('Maka window is unavailable');
@@ -913,8 +915,9 @@ const workHubControl = createWorkHubControl({
   isCurrent: isCurrentWorkHubTarget,
   ...workHubRuntime,
 });
+let workHubEnabled = false;
 const workHubPresentation = createWorkHubPresentation({
-  isEnabled: async () => (await settingsStore.get()).workHub.enabled,
+  isEnabled: () => workHubEnabled,
   mainWindow: () => mainWindowController.browserWindow(),
   ensureMainWindow: async () => {
     await quitCoordinator.focusOrCreateWindow();
@@ -964,7 +967,10 @@ const botRegistry = new BotRegistry({
 });
 const clientSettingsEffects = createClientSettingsEffects({
   settingsStore,
-  applyWorkHub: () => workHubPresentation.refreshSettings(),
+  applyWorkHub: async (enabled) => {
+    workHubEnabled = enabled;
+    await workHubPresentation.refreshSettings();
+  },
   applyKeepSystemAwake: async (enabled) => {
     keepSystemAwake.apply(enabled);
   },
