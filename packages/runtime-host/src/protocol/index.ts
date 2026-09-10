@@ -101,10 +101,12 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 136 as const;
-// 136: Message admission accepts an empty-text Message that carries a quote or
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 137 as const;
+// 137: Message admission accepts an empty-text Message that carries a quote or
 // an attachment (#4804). Peers older than this epoch reject that frame at
 // admission, so the pair must refuse each other at the handshake.
+// 136: WorkHub transient proposals distinguish routing dispositions from linked
+// operations. Older peers expect replace/stop_work/resume_work dispositions.
 // 135: WorkHub model Turns replace direct action proposals with active-Turn task tools.
 // 134: Coordination actions own real Runtime Turns. Removes the synthetic record
 // operation, projects typed action receipts and admitted action identities, and

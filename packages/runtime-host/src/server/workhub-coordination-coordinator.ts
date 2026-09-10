@@ -551,9 +551,8 @@ export class HostWorkHubCoordinationCoordinator {
     }
     const { turnId: _turnId, ...action } = input;
     const carriesAttachments =
-      action.proposal.disposition === 'delegate_existing' ||
-      action.proposal.disposition === 'create_new' ||
-      action.proposal.disposition === 'replace';
+      'disposition' in action.proposal ||
+      ('operation' in action.proposal && action.proposal.operation === 'correct');
     try {
       return {
         ok: true,
