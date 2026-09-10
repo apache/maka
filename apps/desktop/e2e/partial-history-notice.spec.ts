@@ -46,7 +46,12 @@ test('bounded transcript ranges expose only their truthful boundary gaps', async
 
   const firstTurn = page.locator('[data-turn-id="turn-partial-history-1"]');
   await expect(firstTurn).toBeVisible();
-  await expect(firstTurn).toHaveAttribute('data-search-highlight', 'true');
+  // Where the jump landed, read from the reading position rather than from
+  // `data-search-highlight`: that highlight clears itself 2.2s after the
+  // command lands, so waiting for the Turn to mount and then asserting it
+  // fails whenever loading the page around it takes longer than the flash —
+  // measured here as a 3s pass turning into an 18s timeout under load.
+  await expect(oldestPrompt).toHaveAttribute('data-active', 'true');
   await expect(olderGap).toHaveCount(0);
   await expect(newerGap).toBeVisible();
   await expect(newerGap.getByRole('button', {

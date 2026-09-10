@@ -55,6 +55,16 @@ const TURN = '.maka-transcript-turn';
  */
 const MOUNTED_TURNS_MAX = 40;
 
+/**
+ * How far a page boundary is allowed to move the reader, in CSS pixels.
+ *
+ * Not a tolerance for "close enough" motion: scroll anchoring corrects in whole
+ * device pixels while these are read as fractional CSS pixels, so a correct
+ * frame lands within a pixel of zero and a frame that lost the reader lands a
+ * Turn away — hundreds.
+ */
+const DISPLACEMENT_MAX_PX = 2;
+
 declare global {
   interface Window {
     __makaTranscriptCost?: {
@@ -63,7 +73,27 @@ declare global {
       skipped: WeakSet<Element>;
       skippedCount: number;
     };
+    __makaTranscriptDisplacement?: {
+      boundaries: TranscriptBoundary[];
+      peakMounted: number;
+      stop(): void;
+    };
   }
+}
+
+/**
+ * One frame where the mounted range changed: a page installed, or the band
+ * trimmed, or both.
+ */
+interface TranscriptBoundary {
+  readonly firstBefore: string;
+  readonly firstAfter: string;
+  readonly mountedBefore: number;
+  readonly mountedAfter: number;
+  /** Turns present in both frames, so a reader position can be compared. */
+  readonly carried: number;
+  readonly worstTurnId: string | null;
+  readonly worstPx: number;
 }
 
 /**
@@ -134,6 +164,100 @@ async function observe(page: Page): Promise<void> {
     };
     bind();
     new MutationObserver(bind).observe(document.body, { childList: true, subtree: true });
+  });
+}
+
+/**
+ * Watch every frame for a change in the mounted range, and measure what that
+ * change did to the reader.
+ *
+ * A Turn the reader can still see is at `top` in the viewport and at
+ * `top + scrollTop` in the document. Between two frames with no input, its
+ * document position must not move, so `Δtop + ΔscrollTop` is zero — whatever
+ * the Renderer installed above it, the browser's scroll anchoring absorbed. A
+ * page that displaces the reader breaks that sum by however tall the rows it
+ * added or dropped were.
+ *
+ * Sampled per frame rather than per gesture: the frame that installs a page is
+ * the only one where the reader can be lost, and a per-gesture reading would
+ * subtract the reader's own scrolling back out and see nothing.
+ */
+async function observeDisplacement(page: Page): Promise<void> {
+  await page.evaluate((scrollerSelector) => {
+    const scroller = document.querySelector(scrollerSelector);
+    if (!scroller) throw new Error('the chat scroll container is missing');
+    const read = () => {
+      const tops = new Map<string, number>();
+      for (const turn of document.querySelectorAll<HTMLElement>('[data-turn-id]')) {
+        const turnId = turn.dataset.turnId;
+        if (turnId) tops.set(turnId, turn.getBoundingClientRect().top);
+      }
+      return { scrollTop: scroller.scrollTop, tops, key: [...tops.keys()].join(',') };
+    };
+    const state: { boundaries: unknown[]; peakMounted: number; stop(): void } = {
+      boundaries: [],
+      peakMounted: 0,
+      stop: () => { running = false; },
+    };
+    let running = true;
+    let previous = read();
+    // The last frame before the range started changing. Held across a run of
+    // changing frames so the measurement spans settled state to settled state:
+    // scroll anchoring corrects after layout, so a reading taken inside the
+    // change would report a correction that never reached the screen.
+    let settled: ReturnType<typeof read> | null = null;
+    let peakMounted = 0;
+    const tick = (): void => {
+      if (!running) return;
+      const current = read();
+      peakMounted = Math.max(peakMounted, current.tops.size);
+      state.peakMounted = peakMounted;
+      if (current.key !== previous.key) {
+        if (!settled) settled = previous;
+      } else if (settled) {
+        const before = settled;
+        settled = null;
+        const scrolled = current.scrollTop - before.scrollTop;
+        let carried = 0;
+        let worstPx = 0;
+        let worstTurnId: string | null = null;
+        for (const [turnId, top] of current.tops) {
+          const wasAt = before.tops.get(turnId);
+          if (wasAt === undefined) continue;
+          carried += 1;
+          const displaced = Math.abs(top - wasAt + scrolled);
+          if (displaced > worstPx) {
+            worstPx = displaced;
+            worstTurnId = turnId;
+          }
+        }
+        state.boundaries.push({
+          firstBefore: before.key.split(',')[0] ?? '',
+          firstAfter: current.key.split(',')[0] ?? '',
+          mountedBefore: before.tops.size,
+          mountedAfter: current.tops.size,
+          carried,
+          worstTurnId,
+          worstPx,
+        });
+      }
+      previous = current;
+      requestAnimationFrame(tick);
+    };
+    window.__makaTranscriptDisplacement = state as never;
+    requestAnimationFrame(tick);
+  }, SCROLLER);
+}
+
+async function displacement(page: Page): Promise<{
+  boundaries: readonly TranscriptBoundary[];
+  peakMounted: number;
+}> {
+  return page.evaluate(() => {
+    const state = window.__makaTranscriptDisplacement;
+    if (!state) throw new Error('the transcript displacement probe is missing');
+    state.stop();
+    return { boundaries: state.boundaries, peakMounted: state.peakMounted };
   });
 }
 
@@ -315,4 +439,61 @@ test('paging back through the whole history keeps the mounted range bounded', as
   await expect(page.locator(`[data-turn-id="turn-prompt-rail-${PROMPT_RAIL_PROMPT_COUNT}"]`))
     .toHaveCount(1, { timeout: 30_000 });
   expect(await turns.count()).toBeLessThanOrEqual(MOUNTED_TURNS_MAX);
+});
+
+/**
+ * The scenario #5163 was reported from: quit Desktop, start it again, open a
+ * long Session, and scroll upward through history without stopping. The reader
+ * perceives stalls or jumps around range boundaries.
+ *
+ * The tests above establish that paging works and stays bounded. Neither says
+ * where the reader ended up while a page was installing, which is the whole of
+ * what that report is about. This one measures it: every frame the mounted
+ * range changes, whatever Turn the reader can still see must hold its document
+ * position.
+ *
+ * Displacement in pixels rather than frame timings on purpose — see this file's
+ * header for what happened to the timing assertions this suite replaced. A
+ * stall and a jump have the same cause here (a page boundary that moves
+ * content out from under the reader) and only one of them can be asserted
+ * without a clock.
+ */
+test('paging back never moves the reader at a range boundary', async ({
+  promptRailWindow: page,
+}) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1_000, height: 700 });
+  await expect(page.locator(`[data-turn-id="turn-prompt-rail-${PROMPT_RAIL_PROMPT_COUNT}"]`))
+    .toHaveCount(1);
+  const cdp = await page.context().newCDPSession(page);
+  const turns = page.locator('[data-turn-id]');
+  await moveToTail(page);
+  await observeDisplacement(page);
+
+  for (let iteration = 0; iteration < PROMPT_RAIL_PROMPT_COUNT; iteration += 1) {
+    const firstBefore = await turns.first().getAttribute('data-turn-id');
+    if (firstBefore === 'turn-prompt-rail-1') break;
+    await expect
+      .poll(async () => {
+        await wheel(page, cdp, { ticks: 12, deltaY: -120 });
+        return turns.first().getAttribute('data-turn-id');
+      })
+      .not.toBe(firstBefore);
+  }
+
+  const { boundaries, peakMounted } = await displacement(page);
+  // The probe has to have seen the thing it measures: a run that paged nothing,
+  // or one where every boundary replaced the range wholesale and carried no
+  // Turn across, proves nothing about the reader.
+  expect(boundaries.length).toBeGreaterThan(0);
+  expect(boundaries.filter((boundary) => boundary.carried > 0).length).toBeGreaterThan(0);
+
+  const displaced = boundaries.filter((boundary) => boundary.worstPx > DISPLACEMENT_MAX_PX);
+  expect(displaced, `range boundaries moved the reader: ${JSON.stringify(displaced)}`)
+    .toEqual([]);
+  // Sampled per frame, not per gesture: the bound above is read once the range
+  // has stopped moving, so a page that mounts the whole answer and trims it on
+  // a later frame passes it while costing the reader a full layout of every
+  // Turn it installed.
+  expect(peakMounted).toBeLessThanOrEqual(MOUNTED_TURNS_MAX);
 });

@@ -94,6 +94,8 @@ export function useChatScroll(input: {
   const restoreUnavailable =
     input.restoreTarget?.turnId === activation.current?.restoreTurnId
     && input.restoreTarget?.unavailable === true;
+  const commandTargetTurnId = useRef<string | undefined>(undefined);
+  commandTargetTurnId.current = input.target?.turnId ?? activation.current?.restoreTurnId;
   const commandTarget = useRef<string | null>(null);
   commandTarget.current = input.target?.turnId
     ? `search:${input.sessionId ?? ''}:${input.target.turnId}:${input.target.nonce}`
@@ -213,6 +215,16 @@ export function useChatScroll(input: {
       if (above <= screen * 6 && below <= screen * 6) return;
       const rect = root.getBoundingClientRect();
       const turns = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')];
+      // A mounted Turn that a pending command is about to reveal must survive
+      // this pass: a page installs it several screens from the reader, so the
+      // band would trim it before the frame that scrolls to it ever runs, and
+      // the command would never land. A target that is not mounted cannot be
+      // trimmed anyway, and waiting for it would let the window grow unbounded.
+      const pending = commandTarget.current !== null
+        && handledTarget.current !== commandTarget.current
+        ? commandTargetTurnId.current
+        : undefined;
+      if (pending && turns.some((turn) => turn.dataset.turnId === pending)) return;
       const kept = turns.filter((turn) => {
         const box = turn.getBoundingClientRect();
         return box.bottom >= rect.top - screen * 4 && box.top <= rect.bottom + screen * 4;
