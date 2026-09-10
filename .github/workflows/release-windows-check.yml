@@ -73,6 +73,7 @@ on:
       - 'packages/runtime/src/filesystem-worker/**'
       - 'packages/runtime/src/sandbox/**'
       - 'packages/runtime/src/path-containment.ts'
+      - 'packages/runtime/src/ripgrep-guidance.ts'
       - 'packages/runtime/src/sandbox-boundary-path.ts'
       - 'packages/runtime/src/apply-patch-file.ts'
       - 'packages/runtime/src/child-fd-input.ts'

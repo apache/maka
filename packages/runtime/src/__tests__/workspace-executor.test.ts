@@ -328,7 +328,7 @@ describe('LocalWorkspaceExecutor file operations', () => {
   });
 
   test('leaves other spawn failures, such as a non-executable rg, untouched', {
-    skip: process.platform === 'win32' ? 'POSIX execute bit' : false,
+    skip: process.platform === 'win32' ? 'POSIX execute permissions' : false,
   }, async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-eacces-'));
     const bin = await mkdtemp(join(tmpdir(), 'maka-workspace-grep-noexec-bin-'));
