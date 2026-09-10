@@ -378,8 +378,6 @@ export const TurnView = memo(function TurnView(props: {
    * map is built.
    */
   footerActions?: ReadonlyArray<TurnFooterActionMeta>;
-  /** One-line turn meta (model · duration · cost) shown in the answer footer. */
-  footerMeta?: string;
   onFooterAction?: (turnId: string, actionId: TurnFooterActionMeta['id']) => void;
   /**
    * PR109e-d: pre-translated Chinese phrase for a failed turn's
@@ -751,7 +749,7 @@ export const TurnView = memo(function TurnView(props: {
             {ownsTurnChrome && (props.liveStreaming || props.footerActions?.length) ? (
               <TurnFooter
                 actions={props.liveStreaming ? [] : props.footerActions ?? []}
-                meta={props.liveStreaming ? undefined : props.footerMeta}
+                meta={props.liveStreaming ? undefined : turnMetaSummary(turn)}
                 live={!!props.liveStreaming}
                 activity={props.liveStreaming?.providerRetry ? (
                   <ModelProviderRetryIndicator retry={props.liveStreaming.providerRetry} />
@@ -872,7 +870,6 @@ export interface TurnLineageBadge {
  */
 export interface TurnPresentation {
   footerActionsByTurn: Record<string, ReadonlyArray<TurnFooterActionMeta>>;
-  footerMetaByTurn: Record<string, string>;
   failedReasonLabels: Record<string, string>;
   failedSeverities: Record<string, 'error' | 'warning'>;
   failedExecutionStateLabels: Record<string, string>;
@@ -955,6 +952,16 @@ export function TurnFooter(props: {
       }
     />
   );
+}
+
+/** "model · duration · cost" for a settled turn; undefined when there is nothing to say. */
+function turnMetaSummary(turn: TurnViewModel): string | undefined {
+  const parts: string[] = [];
+  if (turn.modelId) parts.push(turn.modelId);
+  // Duration counts whole seconds, so anything under one would read「0s」.
+  if (turn.durationMs && turn.durationMs >= 1_000) parts.push(formatTurnDuration(turn.durationMs));
+  if (turn.tokens?.costUsd && turn.tokens.costUsd > 0) parts.push(`$${turn.tokens.costUsd.toFixed(4)}`);
+  return parts.length > 0 ? parts.join(' · ') : undefined;
 }
 
 const STATUS_FOOTER_ICON: Record<TurnFooterActionMeta['id'], ReactNode> = {

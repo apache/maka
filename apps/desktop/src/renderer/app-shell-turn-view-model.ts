@@ -22,7 +22,6 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import {
   deriveTurnLineageMap,
   finalAssistantReplyText,
-  formatTurnDuration,
   isSandboxDeniedTool,
   type TurnFooterActionMeta,
   type TurnLineageBadge,
@@ -54,7 +53,6 @@ export interface AppShellTurnPresentationDerivation {
 /** What one turn contributes to the presentation; cached against that turn. */
 interface TurnPresentationEntry {
   footerActions: ReadonlyArray<TurnFooterActionMeta>;
-  footerMeta?: string;
   lineageBadges?: TurnLineageBadge[];
   failedReasonLabel?: string;
   failedSeverity?: FailedTurnSeverity;
@@ -113,7 +111,6 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
     const turnIds = new Set(turns.map((turn) => turn.turnId));
     const existsTurn = (id: string) => turnIds.has(id);
     const footerActionsByTurn: Record<string, ReadonlyArray<TurnFooterActionMeta>> = {};
-    const footerMetaByTurn: Record<string, string> = {};
     const failedReasonLabels: Record<string, string> = {};
     const failedSeverities: Record<string, FailedTurnSeverity> = {};
     const failedExecutionStateLabels: Record<string, string> = {};
@@ -156,7 +153,6 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
       }
 
       footerActionsByTurn[turn.turnId] = entry.footerActions;
-      if (entry.footerMeta !== undefined) footerMetaByTurn[turn.turnId] = entry.footerMeta;
       if (entry.lineageBadges) lineageBadgesByTurn[turn.turnId] = entry.lineageBadges;
       if (entry.failedReasonLabel !== undefined) failedReasonLabels[turn.turnId] = entry.failedReasonLabel;
       if (entry.failedSeverity !== undefined) failedSeverities[turn.turnId] = entry.failedSeverity;
@@ -172,7 +168,6 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
     lastUiLocale = context.uiLocale;
     lastResult = {
       footerActionsByTurn,
-      footerMetaByTurn,
       failedReasonLabels,
       failedSeverities,
       failedExecutionStateLabels,
@@ -193,14 +188,6 @@ function deriveTurnPresentationEntry(input: {
   uiLocale: UiLocale;
 }): TurnPresentationEntry {
   const { turn, lineageEntry, pendingForTurn, uiLocale } = input;
-  const metaParts: string[] = [];
-  if (turn.modelId) metaParts.push(turn.modelId);
-  // Below a second there is nothing to report: a turn's duration counts whole
-  // seconds, so a 300ms turn would read「0s」— a number that says less than no
-  // number at all.
-  if (turn.durationMs && turn.durationMs >= 1_000) metaParts.push(formatTurnDuration(turn.durationMs));
-  if (turn.tokens?.costUsd && turn.tokens.costUsd > 0) metaParts.push(`$${turn.tokens.costUsd.toFixed(4)}`);
-  const metaSummary = metaParts.length > 0 ? metaParts.join(' · ') : undefined;
   const footerActions = deriveTurnFooterActions({
     status: turn.status,
     locale: uiLocale,
@@ -213,10 +200,7 @@ function deriveTurnPresentationEntry(input: {
     ...(pendingForTurn.size > 0 ? { pendingActions: pendingForTurn } : {}),
   });
 
-  const entry: TurnPresentationEntry = {
-    footerActions,
-    ...(metaSummary ? { footerMeta: metaSummary } : {}),
-  };
+  const entry: TurnPresentationEntry = { footerActions };
 
   if (turn.status === 'failed' && (turn.failureMessage || !isSandboxOnlyToolFailure(turn))) {
     entry.failedReasonLabel = describeTurnErrorClass(turn.errorClass, uiLocale);
