@@ -217,6 +217,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       type: process.platform === 'darwin' ? 'panel' : undefined,
       x: area.x + Math.round((area.width - width) / 2), y: Math.max(area.y, area.y + area.height - height - 96),
       minWidth: Math.min(360, width), minHeight: Math.min(80, height),
+      resizable: conversationExpanded,
       alwaysOnTop: true, autoHideMenuBar: true, maximizable: false, fullscreenable: false,
       frame: false, transparent: true, backgroundColor: '#00000000',
       hasShadow: true, roundedCorners: true,
@@ -284,7 +285,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     // Summoning follows the pointer's display, including an existing window
     // that was last used on another monitor.
     const old = conversationBounds ?? target.getBounds();
-    if (conversationBounds) target.setResizable(true);
+    target.setResizable(conversationExpanded);
     conversationBounds = undefined;
     const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
     const width = Math.min(old.width, area.width);
@@ -536,6 +537,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             const area = screen.getDisplayMatching(bounds).workArea;
             const height = Math.min(area.height, value.expanded ? expandedHeight : compactHeight);
             const animate = conversationExpanded !== value.expanded || !!resizeTarget;
+            if (conversationExpanded !== value.expanded) floating.setResizable(value.expanded);
             conversationExpanded = value.expanded;
             if (bounds.height !== height) {
               resizeFloating({ ...bounds, height, y: Math.max(area.y, Math.min(bounds.y + bounds.height - height, area.y + area.height - height)) }, animate);
