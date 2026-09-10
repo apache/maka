@@ -56,6 +56,7 @@
 import { redactSecrets } from './redact.js';
 import {
   appendStreamingDisplayRedaction,
+  copyStreamingDisplayRedactionState,
   createStreamingDisplayRedactionState,
   truncateStreamingDisplayAppend,
   truncateStreamingDisplayTail,
@@ -188,6 +189,15 @@ export function applyStreamDelta(
     } else {
       capped = truncateStreamingDisplayTail(appended, maxTotalChars, totalMarker);
       result = capped.text;
+    }
+  }
+
+  // Reconnect seeds can contain the full stream. Copy only the final bounded
+  // display and recovery state so their slices cannot keep that payload alive.
+  if (rawDelta.length > maxDeltaChars) {
+    result = structuredClone(result);
+    if (!(recovery === 'head' && totalTruncated)) {
+      capped = { ...capped, state: copyStreamingDisplayRedactionState(capped.state) };
     }
   }
 
