@@ -1,0 +1,163 @@
+diff --git a/node_modules/zod/src/v4/core/memoizer.ts b/node_modules/zod/src/v4/core/memoizer.ts
+index 61eb6bf..c2989c1 100644
+--- a/node_modules/zod/src/v4/core/memoizer.ts
++++ b/node_modules/zod/src/v4/core/memoizer.ts
+@@ -196,9 +196,6 @@ const memo: $ZodMemoizer = {
+
+   attach(inst) {
+     let isRecursiveInst: boolean | undefined;
+-    // `bucket` memoized for one parse; a recursive schema is re-entered many times and its bucket never changes
+-    let lastCtx: object | undefined;
+-    let lastBucket: Map<object, Entry> | undefined;
+
+     // Wraps `parse` in a deferred so it sees the container's final parse. Core's own deferred copies `parse` into `run` when there are no checks, and it ran first, so `run` is patched to match; with checks, `run` reads `parse` dynamically.
+     inst._zod.deferred ??= [];
+@@ -225,14 +222,7 @@ const memo: $ZodMemoizer = {
+           (ctx as WithState)[STATE] = state;
+         }
+
+-        let bucket: Map<object, Entry>;
+-        if (lastCtx === ctx) {
+-          bucket = lastBucket!;
+-        } else {
+-          bucket = bucketFor(state, inst);
+-          lastCtx = ctx;
+-          lastBucket = bucket;
+-        }
++        const bucket = bucketFor(state, inst);
+
+         const hit = bucket.get(input);
+         if (hit) {
+@@ -248,12 +238,18 @@ const memo: $ZodMemoizer = {
+           return payload;
+         }
+
++        const previousHandoff = handoff;
+         handoff = bucket;
+         const depth = open.length;
+-        const result = base(payload, ctx);
+-        handoff = undefined;
+-        // A container that rejected its input outright allocated nothing.
+-        const entry = open.length > depth ? open.pop()! : undefined;
++        let result: util.MaybeAsync<ParsePayload>;
++        let entry: Entry | undefined;
++        try {
++          result = base(payload, ctx);
++        } finally {
++          handoff = previousHandoff;
++          // A container that rejected its input outright allocated nothing.
++          entry = open.length > depth ? open.pop()! : undefined;
++        }
+
+         // Both paths written out so the sync one allocates no closure. It runs once per node, and capturing here cost more than everything else combined.
+         if (result instanceof Promise) {
+diff --git a/node_modules/zod/v4/core/memoizer.cjs b/node_modules/zod/v4/core/memoizer.cjs
+index b659b44..c8d5ff5 100644
+--- a/node_modules/zod/v4/core/memoizer.cjs
++++ b/node_modules/zod/v4/core/memoizer.cjs
+@@ -187,9 +187,6 @@ const memo = {
+     attach(inst) {
+         var _a;
+         let isRecursiveInst;
+-        // `bucket` memoized for one parse; a recursive schema is re-entered many times and its bucket never changes
+-        let lastCtx;
+-        let lastBucket;
+         // Wraps `parse` in a deferred so it sees the container's final parse. Core's own deferred copies `parse` into `run` when there are no checks, and it ran first, so `run` is patched to match; with checks, `run` reads `parse` dynamically.
+         (_a = inst._zod).deferred ?? (_a.deferred = []);
+         inst._zod.deferred.push(() => {
+@@ -213,15 +210,7 @@ const memo = {
+                     state = { buckets: new Map(), backEdges: undefined };
+                     ctx[STATE] = state;
+                 }
+-                let bucket;
+-                if (lastCtx === ctx) {
+-                    bucket = lastBucket;
+-                }
+-                else {
+-                    bucket = bucketFor(state, inst);
+-                    lastCtx = ctx;
+-                    lastBucket = bucket;
+-                }
++                const bucket = bucketFor(state, inst);
+                 const hit = bucket.get(input);
+                 if (hit) {
+                     payload.value = hit.value;
+@@ -237,12 +226,19 @@ const memo = {
+                     }
+                     return payload;
+                 }
++                const previousHandoff = handoff;
+                 handoff = bucket;
+                 const depth = open.length;
+-                const result = base(payload, ctx);
+-                handoff = undefined;
+-                // A container that rejected its input outright allocated nothing.
+-                const entry = open.length > depth ? open.pop() : undefined;
++                let result;
++                let entry;
++                try {
++                    result = base(payload, ctx);
++                }
++                finally {
++                    handoff = previousHandoff;
++                    // A container that rejected its input outright allocated nothing.
++                    entry = open.length > depth ? open.pop() : undefined;
++                }
+                 // Both paths written out so the sync one allocates no closure. It runs once per node, and capturing here cost more than everything else combined.
+                 if (result instanceof Promise) {
+                     return result.then((r) => {
+diff --git a/node_modules/zod/v4/core/memoizer.js b/node_modules/zod/v4/core/memoizer.js
+index ce6e4b3..5081884 100644
+--- a/node_modules/zod/v4/core/memoizer.js
++++ b/node_modules/zod/v4/core/memoizer.js
+@@ -180,9 +180,6 @@ const memo = {
+     attach(inst) {
+         var _a;
+         let isRecursiveInst;
+-        // `bucket` memoized for one parse; a recursive schema is re-entered many times and its bucket never changes
+-        let lastCtx;
+-        let lastBucket;
+         // Wraps `parse` in a deferred so it sees the container's final parse. Core's own deferred copies `parse` into `run` when there are no checks, and it ran first, so `run` is patched to match; with checks, `run` reads `parse` dynamically.
+         (_a = inst._zod).deferred ?? (_a.deferred = []);
+         inst._zod.deferred.push(() => {
+@@ -206,15 +203,7 @@ const memo = {
+                     state = { buckets: new Map(), backEdges: undefined };
+                     ctx[STATE] = state;
+                 }
+-                let bucket;
+-                if (lastCtx === ctx) {
+-                    bucket = lastBucket;
+-                }
+-                else {
+-                    bucket = bucketFor(state, inst);
+-                    lastCtx = ctx;
+-                    lastBucket = bucket;
+-                }
++                const bucket = bucketFor(state, inst);
+                 const hit = bucket.get(input);
+                 if (hit) {
+                     payload.value = hit.value;
+@@ -230,12 +219,19 @@ const memo = {
+                     }
+                     return payload;
+                 }
++                const previousHandoff = handoff;
+                 handoff = bucket;
+                 const depth = open.length;
+-                const result = base(payload, ctx);
+-                handoff = undefined;
+-                // A container that rejected its input outright allocated nothing.
+-                const entry = open.length > depth ? open.pop() : undefined;
++                let result;
++                let entry;
++                try {
++                    result = base(payload, ctx);
++                }
++                finally {
++                    handoff = previousHandoff;
++                    // A container that rejected its input outright allocated nothing.
++                    entry = open.length > depth ? open.pop() : undefined;
++                }
+                 // Both paths written out so the sync one allocates no closure. It runs once per node, and capturing here cost more than everything else combined.
+                 if (result instanceof Promise) {
+                     return result.then((r) => {

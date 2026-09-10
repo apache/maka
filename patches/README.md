@@ -30,6 +30,21 @@ Keep this directory small. Prefer product code that uses the dependency's
 published API; only patch for bugs that block shipping and cannot be worked
 around at the call site.
 
+## `zod@4.5.4`
+
+Recursive schemas retain their last parse context and bucket in schema closures,
+keeping the input and output graphs alive for the schema's lifetime. Containers
+also leave entries on the global allocation stack when synchronous parsing
+throws, including cycles through transforms. The patch keeps memoization in the
+parse context and restores allocation state in `finally`, including a pending
+outer allocation during reentrant parsing. Recursive cycles and shared aliases
+still use the existing per-parse memoization.
+
+`packages/core/src/__tests__/zod-memoizer-lifetime.test.ts` verifies ESM and CJS
+semantics and collection after successful, invalid, and throwing parses while
+schemas remain alive. Delete the patch when those tests pass against unpatched
+Zod.
+
 ## `@tufjs/models@5.0.0` and `@sigstore/core@4.0.1`
 
 The published ECDSA verification paths rely on Node choosing a digest when
