@@ -506,7 +506,10 @@ describe('host-managed agent graph coordinator', () => {
       assert.ok(operatorOutput);
       assert.equal(operatorOutput.phase, 'completed');
       assert.ok(Array.from(operatorOutput.preview).length <= 280);
-      assert.match(operatorOutput.preview, /Fake backend received:/);
+      assert.match(
+        operatorOutput.preview,
+        /This proves the session stream, SQLite storage, and renderer loop are connected\.$/,
+      );
       assert.match(snapshot.snapshotVersion, /^sha256:[a-f0-9]{64}$/);
       const readsBeforeInspection = delayedControlStore.projectionReadCounts();
       const inspection = await coordinator.inspectOperator(

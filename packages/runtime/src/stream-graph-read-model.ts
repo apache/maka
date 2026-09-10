@@ -881,10 +881,7 @@ function advanceClientOperatorOutput(
     const sameMessage = existing?.messageId === event.messageId;
     const append = event.type === 'text_delta' && sameMessage;
     const text = append ? foldClientOutputDelta(existing, event) : event.text;
-    const preview = boundClientOutputPreview(
-      text,
-      event.type === 'text_complete' ? 'head' : 'tail',
-    );
+    const preview = boundClientOutputPreview(text);
     if (!preview.text) return undefined;
     return {
       activationId,
@@ -934,18 +931,12 @@ function foldClientOutputDelta(
   return event.text;
 }
 
-function boundClientOutputPreview(
-  text: string,
-  edge: 'head' | 'tail',
-): { text: string; truncated: boolean } {
-  const codePoints = Array.from(edge === 'head' ? text.trim() : text);
+function boundClientOutputPreview(text: string): { text: string; truncated: boolean } {
+  const codePoints = Array.from(text);
   if (codePoints.length <= MAX_OUTPUT_PREVIEW_CODE_POINTS) {
     return { text: codePoints.join(''), truncated: false };
   }
-  const visible =
-    edge === 'head'
-      ? codePoints.slice(0, MAX_OUTPUT_PREVIEW_CODE_POINTS)
-      : codePoints.slice(-MAX_OUTPUT_PREVIEW_CODE_POINTS);
+  const visible = codePoints.slice(-MAX_OUTPUT_PREVIEW_CODE_POINTS);
   return { text: visible.join(''), truncated: true };
 }
 

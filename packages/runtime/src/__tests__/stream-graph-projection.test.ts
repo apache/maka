@@ -262,6 +262,7 @@ describe('committed stream graph projection', () => {
     const output = projection.operatorOutputs?.[0];
     assert.ok(output);
     assert.equal(Array.from(output.preview).length, 280);
+    assert.equal(output.preview, Array.from(text).slice(-280).join(''));
     assert.equal(output.previewTruncated, true);
     assert.equal(output.phase, 'completed');
     assert.equal(output.outputTokens, 90);

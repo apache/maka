@@ -424,6 +424,47 @@ describe('agent graph client read model', () => {
     assert.deepEqual(rebuilt.snapshot.recentActivity, forward.snapshot.recentActivity);
   });
 
+  test('keeps the same bounded tail when streamed text completes', () => {
+    const graphId = 'graph-output';
+    const operatorId = 'operator-output';
+    const childSessionId = 'child-output';
+    const initial = materializeAgentGraphClientProjection(
+      runningInput(graphId, operatorId, childSessionId),
+    );
+    const text = `Start ${'界'.repeat(400)} latest output `;
+    const streamed = advanceMaterializedAgentGraphClientProjection(
+      initial.snapshot,
+      initial.operators[0]!,
+      outputRuntimeEvent(graphId, operatorId, childSessionId, {
+        id: 'long-delta',
+        type: 'text_delta',
+        ts: 1_000,
+        messageId: 'long-message',
+        startOffset: 0,
+        text,
+      }),
+      false,
+    )!;
+    const completed = advanceMaterializedAgentGraphClientProjection(
+      streamed.snapshot,
+      streamed.operator,
+      outputRuntimeEvent(graphId, operatorId, childSessionId, {
+        id: 'long-text-complete',
+        type: 'text_complete',
+        ts: 2_000,
+        messageId: 'long-message',
+        text,
+      }),
+      false,
+    )!;
+    assert.equal(streamed.operator.operator.output?.preview, Array.from(text).slice(-280).join(''));
+    assert.equal(
+      completed.operator.operator.output?.preview,
+      streamed.operator.operator.output?.preview,
+    );
+    assert.equal(completed.operator.operator.output?.previewTruncated, true);
+  });
+
   test('advances a bounded streaming preview and provider-reported TPS without activity records', () => {
     const graphId = 'graph-output';
     const operatorId = 'operator-output';

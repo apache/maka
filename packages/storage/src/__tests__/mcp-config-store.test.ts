@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
@@ -56,6 +56,15 @@ test('creates and atomically updates a Claude-compatible mcp.json', async () => 
     assert.equal((await stat(join(root, 'mcp.json'))).mode & 0o777, 0o600);
   await store.remove('filesystem');
   assert.deepEqual((await store.get()).mcpServers, {});
+});
+
+test('leaves no temp file behind after writes', async () => {
+  const root = await tempRoot();
+  const store = createMcpConfigStore(root);
+  await store.upsert('filesystem', { command: 'npx', args: ['-y', 'server'] });
+  await store.remove('filesystem');
+  const strays = (await readdir(root)).filter((entry) => entry.endsWith('.tmp'));
+  assert.deepEqual(strays, []);
 });
 
 test('reads version 1 without rewriting and persists version 3 on the next mutation', async () => {

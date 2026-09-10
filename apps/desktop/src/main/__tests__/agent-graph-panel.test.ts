@@ -133,7 +133,8 @@ function installGraphRenderer(
   root: Root;
   setSnapshot(next: AgentGraphClientSnapshot): Promise<void>;
   evict(graphId: string): void;
-  renderSession(sessionId: string): Promise<void>;
+  renderSession(sessionId: string, enabled?: boolean): Promise<void>;
+  failReads(fail: boolean): void;
   holdNextEpochList(sessionId: string): DeferredRead;
   holdNextSnapshot(graphId: string): DeferredRead;
   holdNextStop(sessionId: string): DeferredRead;
@@ -179,9 +180,11 @@ function installGraphRenderer(
   const snapshotGates = new Map<string, DeferredReadGate>();
   const stopGates = new Map<string, DeferredReadGate>();
   const stopCalls: Array<{ sessionId: string; expectedGraphId: string }> = [];
+  let readsFail = false;
   let fullEpochReads = 0;
   let currentEpochReads = 0;
   const epochDirectory = (sessionId: string) => {
+    if (readsFail) throw new Error('Runtime Host unavailable');
     const currentGraphId = currentGraphIds.get(sessionId);
     const entries = [...snapshots.values()]
       .filter((entry) => entry.rootSessionId === sessionId)
@@ -281,12 +284,15 @@ function installGraphRenderer(
     epochReadCounts() {
       return { full: fullEpochReads, current: currentEpochReads };
     },
-    async renderSession(sessionId) {
+    failReads(fail) {
+      readsFail = fail;
+    },
+    async renderSession(sessionId, enabled = true) {
       await act(async () => {
         root.render(
           createElement(AgentGraphPanel, {
             rootSessionId: sessionId,
-            enabled: true,
+            enabled,
             locale: 'en',
             onOpenSession: () => undefined,
           }),
@@ -330,6 +336,52 @@ async function renderPanel(
   });
   return harness;
 }
+
+describe('AgentGraphPanel read failures', () => {
+  for (const initiallyUnavailable of [true, false]) {
+    it(`keeps an inactive ordinary session hidden when ${initiallyUnavailable ? 'the initial read' : 'a refresh'} fails and discovers later activity`, async () => {
+      const empty = snapshot({ graphId: 'graph-1', status: 'empty', scheduleRevision: 0 });
+      const harness = installGraphRenderer(empty);
+      harness.failReads(initiallyUnavailable);
+      await harness.renderSession('session-1', false);
+      if (!initiallyUnavailable) {
+        assert.equal(harness.container.textContent, '');
+        harness.failReads(true);
+        await harness.setSnapshot(empty);
+      }
+      assert.equal(harness.container.textContent, '');
+      harness.failReads(false);
+      await harness.setSnapshot({ ...empty, status: 'active', scheduleRevision: 1 });
+      assert.match(harness.container.textContent ?? '', /Agent Graph/);
+      assert.doesNotMatch(harness.container.textContent ?? '', /Could not refresh graph state/);
+      await act(async () => harness.root.unmount());
+    });
+  }
+
+  it('shows initial read errors for enabled Graph sessions', async () => {
+    const harness = installGraphRenderer(snapshot({ graphId: 'graph-1', status: 'empty' }));
+    harness.failReads(true);
+    await harness.renderSession('session-1');
+    assert.match(harness.container.textContent ?? '', /Could not refresh graph state/);
+    await act(async () => harness.root.unmount());
+  });
+
+  for (const historyOnly of [false, true]) {
+    it(`keeps refresh errors visible for ordinary sessions with known ${historyOnly ? 'history' : 'activity'}`, async () => {
+      const current = snapshot({
+        graphId: 'graph-2', status: 'empty', scheduleRevision: historyOnly ? 0 : 1,
+      });
+      const harness = installGraphRenderer(current, historyOnly
+        ? [snapshot({ graphId: 'graph-1', status: 'completed' })] : []);
+      await harness.renderSession('session-1', false);
+      assert.match(harness.container.textContent ?? '', /Agent Graph/);
+      harness.failReads(true);
+      await harness.setSnapshot(current);
+      assert.match(harness.container.textContent ?? '', /Could not refresh graph state/);
+      await act(async () => harness.root.unmount());
+    });
+  }
+});
 
 describe('AgentGraphPanel dismiss', () => {
   it('renders bounded live and completed output facts without replacing child navigation', async () => {

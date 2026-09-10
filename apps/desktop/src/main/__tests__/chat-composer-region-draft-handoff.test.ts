@@ -119,6 +119,7 @@ async function mountRegion(): Promise<{
               onboardingComposerHidden: false,
               activeInteraction: undefined,
               activeId,
+              contextUsageSessionId: activeId,
               newTaskDraftKey,
               newTaskSendPending,
               stopPendingBySession: {},

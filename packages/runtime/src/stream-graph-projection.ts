@@ -348,7 +348,7 @@ function projectOperatorOutput(
   );
   const latestText = textEvents.at(-1);
   if (!latestText || latestText.content?.kind !== 'text') return undefined;
-  const preview = boundOutputPreview(latestText.content.text, 'head');
+  const preview = boundOutputPreview(latestText.content.text);
   if (!preview.text) return undefined;
   const usageEvents = events.filter((event) => event.actions?.tokenUsage !== undefined);
   const latestUsage = usageEvents.at(-1);
@@ -381,18 +381,12 @@ function projectOperatorOutput(
   };
 }
 
-function boundOutputPreview(
-  text: string,
-  edge: 'head' | 'tail',
-): { text: string; truncated: boolean } {
-  const codePoints = Array.from(text.trim());
+function boundOutputPreview(text: string): { text: string; truncated: boolean } {
+  const codePoints = Array.from(text);
   if (codePoints.length <= AGENT_GRAPH_OUTPUT_PREVIEW_MAX_CODE_POINTS) {
     return { text: codePoints.join(''), truncated: false };
   }
-  const visible =
-    edge === 'head'
-      ? codePoints.slice(0, AGENT_GRAPH_OUTPUT_PREVIEW_MAX_CODE_POINTS)
-      : codePoints.slice(-AGENT_GRAPH_OUTPUT_PREVIEW_MAX_CODE_POINTS);
+  const visible = codePoints.slice(-AGENT_GRAPH_OUTPUT_PREVIEW_MAX_CODE_POINTS);
   return { text: visible.join(''), truncated: true };
 }
 

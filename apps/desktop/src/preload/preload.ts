@@ -17,7 +17,10 @@
  * under the License.
  */
 
+import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../shared/workhub-conversation.js';
 import { contextBridge, ipcRenderer } from 'electron';
+import { workHubControlBridge } from './workhub-control.js';
+import { workHubPresentationBridge } from './workhub-presentation.js';
 import {
   isRuntimeHostProfileKind,
   type RuntimeHostProfileKind,
@@ -260,6 +263,7 @@ import { projectDesktopSharedSessionSummary } from '../shared/shared-session-cat
 
 let activeRuntimeHost: DesktopTargetScope | undefined;
 let activeRuntimeHostGeneration = 0;
+let newTaskCatalogGeneration = 0;
 type RuntimeHostScopeKey = string;
 const runtimeHostScopes = new Map<string, DesktopTargetScope>();
 const runtimeHostProfiles = new Map<string, string>();
@@ -350,7 +354,12 @@ ipcRenderer.on(
     ) {
       activeRuntimeHostGeneration += 1;
     }
-    for (const listener of newTaskChangeListeners) listener();
+    // Guest mounts can only participate in their shared Sessions. Their
+    // reconnects cannot change the Hosts/projects available for a new task.
+    if (change.profileAccess === 'owner') {
+      newTaskCatalogGeneration += 1;
+      for (const listener of newTaskChangeListeners) listener();
+    }
   },
 );
 
@@ -572,7 +581,7 @@ async function selectedRuntimeHostScope(
 
 async function loadNewTaskCatalog(): Promise<DesktopNewTaskCatalog> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const generation = activeRuntimeHostGeneration;
+    const generation = newTaskCatalogGeneration;
     const profiles = await ipcRenderer.invoke(
       'runtime-host-profiles:getSnapshot',
     ) as DesktopRuntimeHostProfileSnapshot;
@@ -632,7 +641,7 @@ async function loadNewTaskCatalog(): Promise<DesktopNewTaskCatalog> {
         }
         }),
     );
-    if (generation !== activeRuntimeHostGeneration) continue;
+    if (generation !== newTaskCatalogGeneration) continue;
     return { defaultProfileId: profiles.defaultProfileId, hosts };
   }
   throw new Error('Runtime Host targets changed while the new-task catalog was loading');
@@ -1368,6 +1377,8 @@ const browserSelection = createBrowserSelectionCoordinator(runtimeHostSessionRef
 }, browserDocumentId);
 
 const makaBridge = {
+  workHubControl: workHubControlBridge,
+  workHubPresentation: workHubPresentationBridge,
   runtimeHost,
   sessionCollaboration: {
     async prepareInvitation(sessionId, preset, allowInsecure = false) {
@@ -2006,9 +2017,21 @@ const makaBridge = {
     },
   },
   workHub: {
+    async getSession(coordinationSessionId: string) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
+      return projectSessionSummary(scope, await ipcRenderer.invoke('workhub:getSession', scope));
+    },
     async prepareAttachments(coordinationSessionId: string, items: Parameters<MakaBridge['workHub']['prepareAttachments']>[1]) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
       return ipcRenderer.invoke('workhub:prepareAttachments', scope, await encodeIngestItems(items));
+    },
+    async answer(coordinationSessionId: string, input: WorkHubAnswerInput) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
+      return ipcRenderer.invoke('workhub:answer', scope, input) as Promise<WorkHubAnswerResult>;
+    },
+    async configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
+      return ipcRenderer.invoke('workhub:configureModel', scope, input) as Promise<OperationOutput<'workhub.coordination.configureModel'>>;
     },
     resolveCoordinationSession(): Promise<string> {
       return resolveDesktopWorkHubCoordinationSession(
@@ -2016,61 +2039,7 @@ const makaBridge = {
         (scope) => ipcRenderer.invoke('workhub:resolveCoordinationSession', scope),
       );
     },
-    async record(
-      coordinationSessionId: string,
-      input: { turnId: string; userText: string; assistantText: string },
-    ): Promise<{ turnId: string }> {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
-        coordinationSessionId,
-        runtimeHostSessionRef,
-      );
-      return ipcRenderer.invoke('workhub:record', scope, input) as Promise<{ turnId: string }>;
-    },
-    async candidates(
-      coordinationSessionId: string,
-    ): Promise<OperationOutput<'workhub.coordination.candidates'>> {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
-        coordinationSessionId,
-        runtimeHostSessionRef,
-      );
-      const result = await ipcRenderer.invoke(
-        'workhub:candidates',
-        scope,
-      ) as OperationOutput<'workhub.coordination.candidates'>;
-      return {
-        ...result,
-        candidates: result.candidates.map((candidate) => ({
-          ...candidate,
-          sessionId: recordRuntimeHostSessionScope(scope, candidate.sessionId),
-        })),
-      };
-    },
-    async act(
-      coordinationSessionId: string,
-      input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
-    ): Promise<OperationOutcome<'workhub.coordination.act'>> {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
-        coordinationSessionId,
-        runtimeHostSessionRef,
-      );
-      const result = await ipcRenderer.invoke(
-        'workhub:act',
-        scope,
-        input,
-      ) as OperationOutcome<'workhub.coordination.act'>;
-      if (!result.ok) return result;
-      if (
-        result.result.disposition === 'answer_here' ||
-        result.result.disposition === 'clarify'
-      ) return result;
-      return {
-        ok: true,
-        result: {
-          ...result.result,
-          targetSessionId: recordRuntimeHostSessionScope(scope, result.result.targetSessionId),
-        },
-      };
-    },
+
   },
   sessionLocal: {
     async listMessages(sessionId) {

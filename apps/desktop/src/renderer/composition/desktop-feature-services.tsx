@@ -18,6 +18,8 @@
  */
 
 import type { ReactNode } from 'react';
+import { WorkHubServicesProvider } from '../features/workhub';
+import { createDesktopWorkHubServices } from '../platform/desktop/create-workhub-services';
 import { ConversationServicesProvider } from '../features/conversation';
 import { createDesktopConversationServices } from '../platform/desktop/create-conversation-services';
 import { AppUpdateServicesProvider } from '../features/app-update/index.js';
@@ -27,7 +29,6 @@ import { ModuleHubServicesProvider } from '../features/module-hub';
 import { RuntimeHostManagementServicesProvider } from '../features/runtime-host-management';
 import { SessionCollaborationServicesProvider } from '../features/session-collaboration';
 import { SessionNavigationServicesProvider } from '../features/session-navigation';
-import { WorkHubComposerServicesProvider } from '../features/workhub/index.js';
 import { SessionSettingsServicesProvider } from '../features/session-settings';
 import { TaskEntryServicesProvider } from '../features/task-entry';
 import { WorkbarServicesProvider } from '../features/workbar';
@@ -40,12 +41,12 @@ import { createDesktopSessionCollaborationServices } from '../platform/desktop/c
 import { createDesktopSessionNavigationServices } from '../platform/desktop/create-session-navigation-services';
 import { createDesktopSessionSettingsServices } from '../platform/desktop/create-session-settings-services';
 import { createDesktopTaskEntryServices } from '../platform/desktop/create-task-entry-services';
-import { createDesktopWorkHubComposerServices } from '../platform/desktop/create-workhub-composer-services.js';
 import { createDesktopWorkbarServices } from '../platform/desktop/create-workbar-services';
 
 export function createDesktopFeatureServices() {
   return {
     appUpdate: createDesktopAppUpdateServices(),
+    workHub: createDesktopWorkHubServices(),
     conversation: createDesktopConversationServices(),
     connectionSettings: createDesktopConnectionSettingsServices(),
     goal: createDesktopGoalServices(),
@@ -56,7 +57,6 @@ export function createDesktopFeatureServices() {
     sessionSettings: createDesktopSessionSettingsServices(),
     taskEntry: createDesktopTaskEntryServices(),
     workbar: createDesktopWorkbarServices(),
-    workhub: createDesktopWorkHubComposerServices(),
   };
 }
 
@@ -71,19 +71,17 @@ export function DesktopFeatureServicesProvider(props: {
           <SessionCollaborationServicesProvider services={props.services.sessionCollaboration}>
             <SessionNavigationServicesProvider services={props.services.sessionNavigation}>
               <SessionSettingsServicesProvider services={props.services.sessionSettings}>
-              <WorkHubComposerServicesProvider services={props.services.workhub}>
                 <TaskEntryServicesProvider services={props.services.taskEntry}>
                   <ModuleHubServicesProvider services={props.services.moduleHub}>
                     <GoalServicesProvider services={props.services.goal}>
                       <WorkbarServicesProvider services={props.services.workbar}>
                         <ConversationServicesProvider services={props.services.conversation}>
-                          {props.children}
+                          <WorkHubServicesProvider services={props.services.workHub}>{props.children}</WorkHubServicesProvider>
                         </ConversationServicesProvider>
                       </WorkbarServicesProvider>
                     </GoalServicesProvider>
                   </ModuleHubServicesProvider>
                 </TaskEntryServicesProvider>
-              </WorkHubComposerServicesProvider>
               </SessionSettingsServicesProvider>
             </SessionNavigationServicesProvider>
           </SessionCollaborationServicesProvider>

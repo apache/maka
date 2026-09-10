@@ -102,6 +102,8 @@ interface ChatComposerRegionProps
   onboardingComposerHidden: boolean;
   activeInteraction: ComposerInteraction | undefined;
   activeId: string | undefined;
+  /** Host-backed owner identity; draft identity remains activeId while admission is pending. */
+  contextUsageSessionId: string | undefined;
   newTaskDraftKey: string;
   /** True from the moment a new-task send starts until it has settled. */
   newTaskSendPending: boolean;
@@ -207,6 +209,7 @@ export function ChatComposerRegion({
   onboardingComposerHidden,
   activeInteraction,
   activeId,
+  contextUsageSessionId,
   newTaskDraftKey,
   newTaskSendPending,
   stopPendingBySession,
@@ -398,7 +401,7 @@ export function ChatComposerRegion({
       </div>
       {LiveContextUsageProbe ? (
         <LiveContextUsageProbe
-          sessionId={activeId}
+          sessionId={contextUsageSessionId}
           model={composerRest.activeModel}
           providerType={composerRest.activeProviderType}
         >

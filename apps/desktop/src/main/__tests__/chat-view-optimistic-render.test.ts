@@ -53,7 +53,6 @@ function renderNoSessionChatView(
     ...props,
   } as ComponentProps<typeof ChatView>);
   const layout = createElement(ChatSurfaceLayout, {
-    scrollOwner: 'host',
     composer: null,
     children: view,
   });
