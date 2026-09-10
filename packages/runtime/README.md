@@ -23,23 +23,31 @@
 
 ## Public seam
 
-The package root barrel and the subpaths declared in `package.json` are supported public APIs. Do not import undeclared internal source paths from another package. The main integration points are:
+Only the **subpaths declared in `package.json` `exports`** are supported public APIs. There is **no package-root barrel**: `import('@maka/runtime')` fails with `ERR_PACKAGE_PATH_NOT_EXPORTED`. Do not import undeclared internal source paths from another package.
 
-- `SessionManager` for session and turn orchestration.
-- `BackendRegistry` and `AgentBackend` for backend selection.
-- `AiSdkBackend` for the shipped backend implementation. `FakeBackend` is test-only: it lives under `test-only/`, is exported as `@maka/runtime/test-only/fake-backend`, and release packaging drops that directory, so no production module may import it. Tests and the Desktop E2E run reach it through the composition's `primaryBackendFactory` seam.
-- Session execution-boundary APIs for managed sandbox expansion and explicit bypass.
-- `buildBuiltinTools()` and the workspace executor interfaces for tool composition.
-- `RuntimeKernel`, runtime events, projections, and recovery helpers for execution lifecycle.
+Useful entry points and import examples:
 
-Desktop composition lives in `apps/desktop/src/main/main.ts`. Other clients execute Maka through Runtime Host rather than composing Runtime directly.
+- `SessionManager` and `BackendRegistry` — `@maka/runtime/session-manager`
+  ```ts
+  import { SessionManager, BackendRegistry } from "@maka/runtime/session-manager";
+  ```
+- `AiSdkBackend` — `@maka/runtime/ai-sdk-backend`
+  ```ts
+  import { AiSdkBackend } from "@maka/runtime/ai-sdk-backend";
+  ```
+  `FakeBackend` is test-only: it lives under `test-only/`, is exported as `@maka/runtime/test-only/fake-backend`, and release packaging drops that directory, so no production module may import it. Tests and the Desktop E2E run reach it through the composition's `primaryBackendFactory` seam.
+- Session execution-boundary APIs for managed sandbox expansion and explicit bypass (`@maka/runtime/sandbox` and related declared subpaths).
+- `buildBuiltinTools()` and the workspace executor interfaces (`@maka/runtime/builtin-tools`, `@maka/runtime/shell-tools`) for tool composition.
+- `RuntimeKernel`, runtime events, projections, and recovery helpers (`@maka/runtime/runtime-kernel` and related declared subpaths) for execution lifecycle.
+
+Shared execution composition (where `BackendRegistry` and `SessionManager` are constructed) lives in `packages/runtime-host/src/server/execution-composition.ts`. Other clients execute Maka through Runtime Host rather than composing Runtime directly. The Desktop product shell is one host among those clients; do not treat `apps/desktop/src/main/main.ts` as the Runtime composition source of truth.
 
 ## Extension rules
 
 - Add backend behavior behind `AgentBackend` and register it through the existing registry.
 - Add tools through the builtin/tool composition seams; keep filesystem and shell effects behind `WorkspaceExecutor`.
 - Put shared pure contracts in `packages/core` and interactive Runtime state in the SQLite control plane owned by `packages/storage`.
-- Expose supported package APIs through the root barrel or a declared `package.json` subpath rather than importing internal files from another package.
+- Expose supported package APIs only through a declared `package.json` subpath. Do not add or rely on a package-root barrel unless `exports` gains a `"."` entry.
 - Keep provider credentials and Electron IPC outside this package. The product shell resolves credentials and passes only the dependencies required for execution.
 
 For the system-level model and code-reading map, start with the root `ARCHITECTURE.md`. Sandbox-specific contracts live in `src/sandbox/README.md`.
