@@ -63,6 +63,11 @@ operation target from a similar display name.
 **Coordination policy** combines intent and resolved evidence into either a routing
 disposition or a linked-operation proposal. Its output remains advisory.
 
+**Bound routing decision** is the Policy result stored with one Coordination root
+Turn. Recovery reuses it. The main coordination model may explain it or form a
+matching proposal, but cannot replace its candidate or operation. The binding is
+not Action Gate authorization.
+
 **Active-Turn action** names the currently executing coordination Turn. The Host
 checks its live execution, durable admission and coordination tool profile, then
 reads the original request and attachments from that admission. A tool cannot
@@ -142,6 +147,8 @@ WorkHub does not scan or rewrite that content for secrets.
 | Task tool bridge | [workhub-runtime.ts](../apps/desktop/src/main/workhub-runtime.ts) |
 | Active-Turn protocol | [workhub-coordination.ts](../packages/runtime-host/src/protocol/workhub-coordination.ts) |
 | Coordination Session and active request | [workhub-coordination-coordinator.ts](../packages/runtime-host/src/server/workhub-coordination-coordinator.ts) |
+| Shared Intent, Recall, and Policy contracts | [workhub-routing.ts](../packages/core/src/workhub-routing.ts) |
+| Optional user-selected routing model adapter | [execution-model-authority.ts](../packages/runtime-host/src/server/execution-model-authority.ts) |
 | Delegation admission and recovery | [workhub-coordination-action-gate.ts](../packages/runtime-host/src/server/workhub-coordination-action-gate.ts) |
 | Transcript services | [create-workhub-services.ts](../apps/desktop/src/renderer/platform/desktop/create-workhub-services.ts) |
 | Native window presentation | [workhub-presentation.ts](../apps/desktop/src/main/workhub-presentation.ts) |

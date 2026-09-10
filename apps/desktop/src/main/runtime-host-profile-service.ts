@@ -925,18 +925,18 @@ export function createDesktopRuntimeHostProfileService(input: {
         }
       });
     },
-    resolveManagedService(profileId) {
-      return mutate(async () => {
-        const profile = (await catalog.read()).profiles.find(
-          (candidate) => candidate.id === profileId,
-        );
-        if (!profile) return undefined;
-        const binding = findDesktopRuntimeHostManagedServiceBinding(
-          await managedServices.read(),
-          profile,
-        );
-        return binding;
-      });
+    async resolveManagedService(profileId) {
+      // Connection may be waiting for handoff while the profile mutation queue
+      // is held. Read the persisted binding without re-entering that queue;
+      // mutation adapters revalidate the snapshot before acting on it.
+      const profile = (await catalog.read()).profiles.find(
+        (candidate) => candidate.id === profileId,
+      );
+      if (!profile) return undefined;
+      return findDesktopRuntimeHostManagedServiceBinding(
+        await managedServices.read(),
+        profile,
+      );
     },
     resolveCollaborationConnectionTarget(profile) {
       return mutate(async () => {

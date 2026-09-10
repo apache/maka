@@ -59,6 +59,11 @@ function makeServices(failFirst: boolean, withHistory: boolean): WorkHubServices
     resolve: async () => sessionId, subscribeHosts: () => () => {}, subscribeAvailability: () => () => {},
     getSession: async () => session,
     listSessions: async () => [target], subscribeSessions: (handler) => { updateSessions = handler; return () => { updateSessions = undefined; }; }, modelChoices: async () => choices,
+    delegationFeedback: async (references) => references.map(({ id }) => ({
+      id,
+      state: 'completed' as const,
+      resultPreview: '重复投递测试已通过，支付回调保持同一响应。',
+    })),
     attachments: { pickFiles: async () => ({ ok: true, files: [{ approvalId: 'file-1', name: 'requirements.txt', size: 12, mimeType: 'text/plain' }] }), previewApproval: async () => ({ ok: false, reason: 'not-image' }) },
     readAttachmentBytes: async () => { throw new Error('Not an image'); },
     prepareAttachments: async (id, items) => { writes.upload(id, items); return [{ name: 'requirements.txt', kind: 'other', mimeType: 'text/plain', bytes: 12, ref: { kind: 'session_file', sessionId: 'maka_workhub_coordination', relativePath: 'artifact-1' } }]; },
@@ -88,8 +93,12 @@ type Story = StoryObj<typeof meta>;
 export const FullConversationAndWorkIdentity: Story = {
   render: () => <Surface history />,
   play: async ({ canvasElement }) => {
+    Object.values(writes).forEach((spy) => spy.mockClear());
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/END_OF_FULL_RESPONSE/)).toBeInTheDocument());
+    await waitFor(() => expect(canvas.getByText('重复投递测试已通过，支付回调保持同一响应。')).toBeInTheDocument());
+    await userEvent.click(canvas.getByRole('button', { name: '打开结果' }));
+    await waitFor(() => expect(writes.open).toHaveBeenCalledWith(targetId));
     await expect(canvasElement.querySelector('.workhub-message-identity')).toHaveAttribute('data-work-session-id', targetId);
     const navigation = canvasElement.querySelector('.workhub-navigation-item') as HTMLElement;
     await userEvent.hover(navigation);

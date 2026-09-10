@@ -21,11 +21,80 @@ import { resolveSystemUiLocale, resolveUiLocale } from '@maka/core/ui-locale';
 import { DEFAULT_UI_FONT_SIZE } from '@maka/core/settings';
 import { applyDocumentThemeMode, applyDocumentThemePalette, applyDocumentUiFontSize } from './document-appearance.js';
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
-import type { WorkHubServices } from '../../features/workhub/index.js';
+import {
+  projectWorkHubDelegationState,
+  workHubTurnResultPreview,
+  type WorkHubDelegationReference,
+  type WorkHubServices,
+} from '../../features/workhub/index.js';
 import {
   DesktopTranscriptRangeStore,
+  createDesktopTranscriptRangeController,
   createRecoveringDesktopTranscriptRangeController,
 } from './desktop-transcript-range-store.js';
+import type { TurnRecord } from '@maka/core/session';
+import {
+  MESSAGE_QUEUE_MAX_ENTRIES,
+  type TurnMessageExecutionResolution,
+} from '@maka/runtime-host/protocol';
+
+const WORKHUB_RESULT_SCAN_MAX_PAGES = 16;
+
+async function readDelegatedTurnResult(
+  bridge: Pick<MakaBridge, 'transcripts'>,
+  sessionId: string,
+  turn: TurnRecord,
+): Promise<string | undefined> {
+  const store = new DesktopTranscriptRangeStore(sessionId);
+  const controller = createDesktopTranscriptRangeController(store, (signal) =>
+    bridge.transcripts.open(
+      sessionId,
+      (batch) => {
+        if (signal.aborted || !store.accepts(batch)) return;
+        store.accept(batch);
+      },
+      (cancel) => {
+        if (signal.aborted) cancel();
+        else signal.addEventListener('abort', cancel, { once: true });
+      },
+    ),
+  );
+  try {
+    await controller.ready();
+    let preview: string | undefined;
+    let lastTargetSequence: number | undefined;
+    const boundaryEstablished = () => {
+      const entries = store.durableEntries();
+      const currentPreview = workHubTurnResultPreview(
+        entries.map(({ message }) => message),
+        turn.turnId,
+      );
+      if (currentPreview) preview = currentPreview;
+      for (const entry of entries) {
+        if (entry.message.turnId === turn.turnId) {
+          lastTargetSequence = Math.max(lastTargetSequence ?? entry.sequence, entry.sequence);
+        }
+      }
+      const crossedIntoLaterTurn = lastTargetSequence !== undefined && entries.some(
+        (entry) => entry.sequence > lastTargetSequence! && entry.message.turnId !== turn.turnId,
+      );
+      return lastTargetSequence !== undefined && (
+        crossedIntoLaterTurn || !store.range().hasNewer
+      );
+    };
+    if (!boundaryEstablished() && lastTargetSequence === undefined && turn.firstSequence !== undefined) {
+      await controller.loadAround(turn.firstSequence);
+    }
+    for (let page = 0; page <= WORKHUB_RESULT_SCAN_MAX_PAGES; page += 1) {
+      if (boundaryEstablished()) return preview;
+      if (!store.range().hasNewer || page === WORKHUB_RESULT_SCAN_MAX_PAGES) return undefined;
+      await controller.loadAfter();
+    }
+    return undefined;
+  } finally {
+    await controller.close();
+  }
+}
 
 export function createDesktopWorkHubServices(
   bridge: Pick<
@@ -41,6 +110,7 @@ export function createDesktopWorkHubServices(
     | 'attachments'
   > = window.maka,
 ): WorkHubServices {
+  const delegatedResultCache = new Map<string, string>();
   return {
     surface: new URLSearchParams(window.location.search).get('surface') === 'workhub' ? 'workhub' : 'main',
     initialLocale: resolveSystemUiLocale(navigator.languages),
@@ -73,6 +143,79 @@ export function createDesktopWorkHubServices(
     subscribeAvailability: (handler) => bridge.connections.subscribeEvents(() => handler()),
     listSessions: () => bridge.sessions.list(),
     subscribeSessions: (handler) => bridge.sessions.subscribeChanges(handler),
+    async delegationFeedback(references) {
+      let sessions: Awaited<ReturnType<typeof bridge.sessions.list>> = [];
+      try {
+        sessions = await bridge.sessions.list();
+      } catch {
+        // Exact target reads below may still prove terminal state and result.
+      }
+      const sessionById = new Map(sessions.map((session) => [session.id, session]));
+      const grouped = new Map<string, WorkHubDelegationReference[]>();
+      for (const reference of references) {
+        const group = grouped.get(reference.targetSessionId) ?? [];
+        group.push(reference);
+        grouped.set(reference.targetSessionId, group);
+      }
+      const feedback = await Promise.all([...grouped.entries()].map(async ([sessionId, group]) => {
+        const executionQuery = async () => {
+          const messageIds = [...new Set(group.map((reference) => reference.targetMessageId))];
+          const resolutions: TurnMessageExecutionResolution[] = [];
+          for (let from = 0; from < messageIds.length; from += MESSAGE_QUEUE_MAX_ENTRIES) {
+            const result = await bridge.sessions.queryMessageExecutions(
+              sessionId,
+              messageIds.slice(from, from + MESSAGE_QUEUE_MAX_ENTRIES),
+            );
+            resolutions.push(...result.resolutions);
+          }
+          return resolutions;
+        };
+        const [turnRead, executionRead] = await Promise.allSettled([
+          bridge.sessions.listTurns(sessionId),
+          executionQuery(),
+        ]);
+        const turns = turnRead.status === 'fulfilled' ? turnRead.value : [];
+        const resolutions = executionRead.status === 'fulfilled'
+          ? executionRead.value
+          : [];
+        const turnById = new Map(turns.map((turn) => [turn.turnId, turn]));
+        const resolutionByMessageId = new Map(
+          resolutions.map((resolution) => [resolution.messageId, resolution]),
+        );
+        return Promise.all(group.map(async (reference) => {
+          const resolution = resolutionByMessageId.get(reference.targetMessageId);
+          const turn = resolution?.state === 'owned' ? turnById.get(resolution.turnId) : undefined;
+          const state = projectWorkHubDelegationState({
+            resolution,
+            session: sessionById.get(sessionId),
+            turn,
+            turnReadFailed: turnRead.status === 'rejected',
+            executionReadFailed: executionRead.status === 'rejected',
+          });
+          let resultPreview: string | undefined;
+          if (state === 'completed' && turn) {
+            const cacheKey = JSON.stringify([sessionId, turn.turnId]);
+            resultPreview = delegatedResultCache.get(cacheKey);
+            if (!resultPreview) {
+              try {
+                resultPreview = await readDelegatedTurnResult(bridge, sessionId, turn);
+                if (resultPreview) {
+                  delegatedResultCache.set(cacheKey, resultPreview);
+                  if (delegatedResultCache.size > 100) {
+                    delegatedResultCache.delete(delegatedResultCache.keys().next().value!);
+                  }
+                }
+              } catch {
+                // Completion remains authoritative even when its bounded result
+                // projection is temporarily unavailable.
+              }
+            }
+          }
+          return { id: reference.id, state, ...(resultPreview ? { resultPreview } : {}) };
+        }));
+      }));
+      return feedback.flat();
+    },
     modelChoices: async (sessionId) =>
       (await bridge.connections.getSnapshot(sessionId)).chatModelChoices,
     attachments: bridge.attachments,

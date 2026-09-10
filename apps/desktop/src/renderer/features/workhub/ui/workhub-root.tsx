@@ -31,7 +31,8 @@ import { useWorkHubController } from '../controller/use-workhub-controller.js';
 import type { WorkHubControlSnapshot } from '../../../../shared/workhub-control.js';
 import type { WorkHubPresentationSnapshot } from '../../../../shared/workhub-presentation.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
-import { workHubLinkedWork } from '../model/linked-work.js';
+import { applyWorkHubDelegationFeedback, workHubLinkedWork } from '../model/linked-work.js';
+import type { WorkHubDelegationFeedback, WorkHubDelegationReference } from '../model/linked-work.js';
 
 function cancelReveal(element: HTMLDivElement | null, content: HTMLDivElement | null) {
   for (const target of [element, content]) for (const animation of target?.getAnimations() ?? []) animation.cancel();
@@ -205,7 +206,31 @@ export function WorkHubRoot() {
     updatedAt: task.lastMessageAt ?? task.statusUpdatedAt ?? 0,
   }));
   const links = useMemo(() => workHubLinkedWork(transcript.messages, controller.sessions, getWorkHubRailCopy(locale).work), [transcript.messages, controller.sessions, locale]);
-  const delegatedSessionIds = links.map((link) => link.targetSessionId);
+  const [delegationFeedback, setDelegationFeedback] = useState<readonly WorkHubDelegationFeedback[]>([]);
+  useEffect(() => {
+    let current = true;
+    const references: WorkHubDelegationReference[] = links.flatMap((link) =>
+      link.targetMessageId && link.targetTurnId ? [{
+        id: link.id,
+        targetSessionId: link.targetSessionId,
+        targetMessageId: link.targetMessageId,
+        targetTurnId: link.targetTurnId,
+      }] : [],
+    );
+    if (references.length === 0) {
+      setDelegationFeedback([]);
+      return () => { current = false; };
+    }
+    void services.delegationFeedback(references).then((feedback) => {
+      if (current) setDelegationFeedback(feedback);
+    }).catch(controller.report);
+    return () => { current = false; };
+  }, [services, links]);
+  const linksWithFeedback = useMemo(
+    () => applyWorkHubDelegationFeedback(links, delegationFeedback),
+    [links, delegationFeedback],
+  );
+  const delegatedSessionIds = linksWithFeedback.map((link) => link.targetSessionId);
   const call = (task: Promise<unknown>) => {
     void task.catch(controller.report);
   };
@@ -299,7 +324,7 @@ export function WorkHubRoot() {
         <WorkHubNavigationRail locale={locale} sessions={tasks} delegatedSessionIds={delegatedSessionIds} copy={getWorkHubRailCopy(locale)} onOpenSession={(id) => call(services.presentation.openSession(id))} />
         <div className="workhub-conversation-shell">
         <WorkHubConversation
-          workLinks={links}
+          workLinks={linksWithFeedback}
           onReadAttachmentBytes={services.readAttachmentBytes}
           onOpenWork={(id) => call(services.presentation.openSession(id))}
           scrollBehavior="auto"

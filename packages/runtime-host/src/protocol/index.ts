@@ -101,10 +101,11 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 141 as const;
-// 141: Message admission accepts an empty-text Message that carries a quote or
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 142 as const;
+// 142: Message admission accepts an empty-text Message that carries a quote or
 // an attachment (#4804). Peers older than this epoch reject that frame at
 // admission, so the pair must refuse each other at the handshake.
+// 141: WorkHub root admissions bind model Intent/Recall decisions before actions.
 // 140: Plugin Platform queries expose scoped Command contribution projections.
 // Epoch-139 peers reject the added query view and result shape.
 // 139: WorkHub recovery preserves the Host-authenticated Desktop capability binding.

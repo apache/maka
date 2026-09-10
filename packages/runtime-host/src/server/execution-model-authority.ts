@@ -28,6 +28,18 @@ import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { parseRequestHeaders, type RuntimePolicy } from '@maka/core/runtime-policy';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionHeader } from '@maka/core/session';
+import {
+  applyWorkHubRoutingPolicy,
+  bindWorkHubRoutingDecision,
+  decodeWorkHubIntent,
+  decodeWorkHubRecall,
+  projectWorkHubIntentModelInput,
+  projectWorkHubRecallModelInput,
+  WORKHUB_INTENT_SYSTEM_PROMPT,
+  WORKHUB_RECALL_SYSTEM_PROMPT,
+  workHubIntentRequiresRecall,
+  type WorkHubRoutingDecision,
+} from '@maka/core/workhub-routing';
 import type { ModelCallKind } from '@maka/core/usage-stats/types';
 import {
   buildPricingLookup,
@@ -192,6 +204,93 @@ export interface HostMemoryExtractionModel {
     | { readonly ok: true; readonly text: string }
     | { readonly ok: false; readonly errorClass: HostAuxiliaryModelFailureClass }
   >;
+}
+
+export interface HostWorkHubRoutingModel {
+  decide(input: {
+    readonly turnId: string;
+    readonly header: SessionHeader;
+    readonly userText: string;
+    readonly transcript: readonly { readonly role: 'user' | 'assistant'; readonly text: string }[];
+    readonly resolveCandidates: () => Promise<{
+      readonly candidateSetId: string;
+      readonly candidates: readonly {
+        readonly candidateRef: string;
+        readonly sessionName: string;
+        readonly workspaceName: string;
+        readonly state: string;
+        readonly recency: 'today' | 'this_week' | 'older';
+      }[];
+    }>;
+    readonly abortSignal: AbortSignal;
+  }): Promise<WorkHubRoutingDecision>;
+}
+
+/** Uses the Coordination Session's exact saved model target for split Intent and Recall. */
+export function createHostWorkHubRoutingModel(
+  input: HostSessionEffectModelInput,
+): HostWorkHubRoutingModel {
+  const authority = createAuxiliaryModelCallAuthority(input);
+  return Object.freeze({
+    decide: async ({
+      turnId,
+      header,
+      userText,
+      transcript,
+      resolveCandidates,
+      abortSignal,
+    }: Parameters<HostWorkHubRoutingModel['decide']>[0]) => {
+      const intentResult = await runHostAuxiliaryModelCall(authority, {
+        transportContextId: header.id,
+        telemetrySessionId: header.id,
+        header,
+        callKind: 'workhub_intent',
+        callId: `workhub_intent_${turnId}`,
+        abortSignal,
+        buildRequest: () => ({
+          system: WORKHUB_INTENT_SYSTEM_PROMPT,
+          prompt: JSON.stringify(projectWorkHubIntentModelInput({ userText, transcript })),
+          maxOutputTokens: 80,
+          maxRetries: 0,
+        }),
+      });
+      const intent = decodeWorkHubIntent(parseStrictJsonObject(intentResult.text));
+      if (!workHubIntentRequiresRecall(intent)) {
+        return bindWorkHubRoutingDecision(
+          applyWorkHubRoutingPolicy(intent, { kind: 'not_applicable' }),
+        );
+      }
+      const { candidateSetId, candidates } = await resolveCandidates();
+      const recallInput = projectWorkHubRecallModelInput({ userText, intent, candidates });
+      const recallResult = await runHostAuxiliaryModelCall(authority, {
+        transportContextId: header.id,
+        telemetrySessionId: header.id,
+        header,
+        callKind: 'workhub_recall',
+        callId: `workhub_recall_${turnId}`,
+        abortSignal,
+        buildRequest: () => ({
+          system: WORKHUB_RECALL_SYSTEM_PROMPT,
+          prompt: JSON.stringify(recallInput),
+          maxOutputTokens: 160,
+          maxRetries: 0,
+        }),
+      });
+      const recall = decodeWorkHubRecall(
+        parseStrictJsonObject(recallResult.text),
+        new Set(recallInput.candidates.map(({ candidateRef }) => candidateRef)),
+      );
+      return bindWorkHubRoutingDecision(applyWorkHubRoutingPolicy(intent, recall), candidateSetId);
+    },
+  });
+}
+
+function parseStrictJsonObject(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    throw new Error('WorkHub routing model did not return a JSON object');
+  }
+  return JSON.parse(trimmed);
 }
 
 /** Creates bounded extraction calls on the source Session's model authority. */

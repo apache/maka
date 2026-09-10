@@ -34,6 +34,7 @@ export function formatHostHandoff(
   const tw = locale === 'zh-TW';
   const titles = tw
     ? {
+        replacement_required: '需要切換 WSL 背景服務',
         busy: '背景服務仍在使用中',
         activity_unknown: '需要確認是否停止背景服務',
         operator_required: '背景服務需要手動更新',
@@ -42,6 +43,7 @@ export function formatHostHandoff(
       }
     : zh
       ? {
+          replacement_required: '需要切换 WSL 后台服务',
           busy: '后台服务仍在使用中',
           activity_unknown: '需要确认是否停止后台服务',
           operator_required: '后台服务需要手动更新',
@@ -49,6 +51,7 @@ export function formatHostHandoff(
           retry_required: '暂时无法完成交接',
         }
       : {
+          replacement_required: 'Switch the WSL background service',
           busy: 'Your background service is still in use',
           activity_unknown: 'Confirm before stopping the service',
           operator_required: 'The background service needs a manual update',
@@ -57,6 +60,8 @@ export function formatHostHandoff(
         };
   const descriptions = tw
     ? {
+        replacement_required:
+          '目前尚未更新。選擇繼續後，將透過已安裝的管理程式安全停止舊服務並啟動選定版本；有進行中的工作時會另行確認。',
         busy: '其他連線或正在執行的工作阻止了自動交接。停止並繼續可能中斷這些工作。',
         activity_unknown:
           '背景服務與目前用戶端不相容，且無法確認有哪些工作仍在執行。停止並繼續會重新啟動服務，可能中斷其他視窗或裝置上的工作。',
@@ -66,6 +71,8 @@ export function formatHostHandoff(
       }
     : zh
       ? {
+          replacement_required:
+            '当前尚未更新。选择继续后，将通过已安装的管理程序安全停止旧服务并启动选定版本；有活动工作时会另行确认。',
           busy: '其它连接或正在执行的工作阻止了自动交接。停止并继续可能中断这些工作。',
           activity_unknown:
             '后台服务与当前客户端不兼容，且无法确认有哪些工作仍在运行。停止并继续会重新启动服务，可能中断其他窗口或设备上的工作。',
@@ -74,6 +81,8 @@ export function formatHostHandoff(
           retry_required: '服务状态发生了变化，或交接尚未完成。可以安全重试，不会默认中断工作。',
         }
       : {
+          replacement_required:
+            'No update is running. Continue to retire the old service through its installed operator and start the selected version. Interrupting active work requires a separate confirmation.',
           busy: 'Other connections or work in progress prevent an automatic handoff. Stopping the service may interrupt that work.',
           activity_unknown:
             'The background service is incompatible with this client, and its active work is unknown. Stop and continue restarts it and may interrupt work in other windows or devices.',
@@ -115,6 +124,28 @@ export function formatHostHandoff(
         };
     descriptions.operator_required = guidance[view.recoveryBlocker];
   }
+  if (view.manualRecheck && view.reason === 'busy') {
+    descriptions.busy = zh
+      ? tw
+        ? '舊服務拒絕安全停止；這可能是其他連線或背景工作所致。關閉其他用戶端後可再次嘗試安全停止，或明確選擇中斷工作並繼續。'
+        : '旧服务拒绝安全停止；这可能是其他连接或后台工作所致。关闭其他客户端后可再次尝试安全停止，或明确选择中断工作并继续。'
+      : 'The old service refused safe retirement. Other connections or background work may be keeping it in use. Close other clients and try stopping safely again, or explicitly interrupt work and continue.';
+  }
+  if (view.manualRecheck && view.reason === 'operator_required') {
+    titles.operator_required = zh
+      ? tw
+        ? '無法連線到背景服務'
+        : '无法连接后台服务'
+      : 'Cannot connect to the background service';
+    descriptions.operator_required = zh
+      ? tw
+        ? '目前版本無法連線，且尚未執行更新。請查看診斷或更新用戶端，完成後重新檢查。'
+        : '当前版本无法连接，且尚未执行更新。请查看诊断或更新客户端，完成后重新检查。'
+      : 'These builds cannot connect and no update is running. Check the diagnostic or update the client, then recheck.';
+  }
+  const packageChange = view.packageChange
+    ? `${view.target.name}: ${view.packageChange.current} → ${view.packageChange.target}`
+    : '';
   const activity = view.activity;
   const background = activity?.drainResidencies;
   const backgroundFacts = !activity
@@ -137,17 +168,23 @@ export function formatHostHandoff(
         ? `${activity.connections} 个连接 · ${activity.activeOperations} 个进行中的操作`
         : `${activity.connections} connections · ${activity.activeOperations} operations in progress`
     : '';
-  const waiting = view.mayExitNaturally
-    ? tw
-      ? 'Maka 會持續檢查，並在可以安全繼續時自動繼續。'
-      : zh
-        ? 'Maka 会持续检查，并在可以安全继续时自动继续。'
-        : 'Maka keeps checking and continues automatically when it is safe.'
-    : tw
-      ? 'Maka 會持續檢查。若狀態沒有改變，等待或重試不會解決此問題。'
-      : zh
-        ? 'Maka 会持续检查。若状态没有变化，等待或重试不会解决此问题。'
-        : 'Maka keeps checking. Waiting or retrying will not resolve this unless the service state changes.';
+  const waiting = view.manualRecheck
+    ? zh
+      ? tw
+        ? '重新檢查只會重試連線，不會更新服務。'
+        : '重新检查只会重试连接，不会更新服务。'
+      : 'Recheck retries the connection without updating the service.'
+    : view.mayExitNaturally
+      ? tw
+        ? 'Maka 會持續檢查，並在可以安全繼續時自動繼續。'
+        : zh
+          ? 'Maka 会持续检查，并在可以安全继续时自动继续。'
+          : 'Maka keeps checking and continues automatically when it is safe.'
+      : tw
+        ? 'Maka 會持續檢查。若狀態沒有改變，等待或重試不會解決此問題。'
+        : zh
+          ? 'Maka 会持续检查。若状态没有变化，等待或重试不会解决此问题。'
+          : 'Maka keeps checking. Waiting or retrying will not resolve this unless the service state changes.';
   const repairNotice =
     view.operation === 'repair'
       ? tw
@@ -159,19 +196,34 @@ export function formatHostHandoff(
   const labels = tw
     ? {
         cancel: '取消',
-        retry: '安全重試',
-        interrupt: view.operation === 'repair' ? '中斷並修復' : '停止並繼續',
+        retry: view.manualRecheck ? '重新檢查' : '安全重試',
+        replace: '停止舊服務並繼續',
+        interrupt: view.manualRecheck
+          ? '中斷工作並繼續'
+          : view.operation === 'repair'
+            ? '中斷並修復'
+            : '停止並繼續',
       }
     : zh
       ? {
           cancel: '取消',
-          retry: '安全重试',
-          interrupt: view.operation === 'repair' ? '中断并修复' : '停止并继续',
+          retry: view.manualRecheck ? '重新检查' : '安全重试',
+          replace: '停止旧服务并继续',
+          interrupt: view.manualRecheck
+            ? '中断工作并继续'
+            : view.operation === 'repair'
+              ? '中断并修复'
+              : '停止并继续',
         }
       : {
           cancel: 'Cancel',
-          retry: 'Retry safely',
-          interrupt: view.operation === 'repair' ? 'Interrupt and repair' : 'Stop and continue',
+          retry: view.manualRecheck ? 'Recheck' : 'Retry safely',
+          replace: 'Stop old service and continue',
+          interrupt: view.manualRecheck
+            ? 'Interrupt work and continue'
+            : view.operation === 'repair'
+              ? 'Interrupt and repair'
+              : 'Stop and continue',
         };
   const phases = tw
     ? {
@@ -217,7 +269,7 @@ export function formatHostHandoff(
           : zh
             ? '正在完成交接或安全收尾，请稍候。'
             : 'Finishing the handoff or its safe recovery. Please wait.'
-        : [facts, backgroundFacts, waiting, repairNotice, view.operatorStep]
+        : [packageChange, facts, backgroundFacts, waiting, repairNotice, view.operatorStep]
             .filter(Boolean)
             .join('\n'),
     actions: view.actions.map((action) => ({ action, label: labels[action] })),

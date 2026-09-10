@@ -32,6 +32,7 @@ import { createDesktopWorkHubServices } from '../../renderer/platform/desktop/cr
 import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
 import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 import type { AttachmentRef } from '@maka/core/events';
+import { MESSAGE_QUEUE_MAX_ENTRIES } from '@maka/runtime-host/protocol';
 
 test('WorkHub upload references round-trip through idle answers, both queue modes and attachment reads', async (t) => {
   const owner = {
@@ -104,6 +105,208 @@ test('WorkHub upload references round-trip through idle answers, both queue mode
   const foreign = [{ ...uploaded, ref: { ...uploaded.ref, kind: 'session_file' as const, sessionId: desktopSessionKey({ hostId: 'foreign-host', sessionId: nativeSessionId }), relativePath: 'brief.txt' } }];
   await assert.rejects(services.answer(sessionId, { turnId: 'foreign', text: 'read this', attachments: foreign }), /another Host or Session/);
   await assert.rejects(services.enqueueMessage(sessionId, 'foreign', 'read this', foreign, 'next_turn'), /another Host or Session/);
+});
+
+test('WorkHub projects the exact delegated Turn status and bounded assistant result', async (t) => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+  t.after(() => {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  const sessionId = desktopSessionKey({ hostId: 'owner-host', sessionId: 'target-session' });
+  const result: StoredMessage = {
+    type: 'assistant', id: 'answer', turnId: 'owned-turn', ts: 3,
+    modelId: 'model', text: 'The delegated task finished with this exact result.',
+  };
+  const services = createDesktopWorkHubServices({
+    attachments: {},
+    sessions: {
+      async list() {
+        return [{
+          id: sessionId, name: 'Target task', isFlagged: false, isArchived: false,
+          labels: [], hasUnread: false, status: 'active', runningTurnIds: [], revision: 1,
+        }];
+      },
+      async listTurns() {
+        return [{ turnId: 'owned-turn', firstSequence: 1, status: 'completed', statusSource: 'recorded' }];
+      },
+      async queryMessageExecutions() {
+        return { resolutions: [{ messageId: 'delegated-message', state: 'owned', turnId: 'owned-turn', runId: 'run' }] };
+      },
+    },
+    transcripts: {
+      async open(_sessionId: string, onBatch: (batch: DesktopTranscriptBatch) => void) {
+        const snapshot = {
+          sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
+          durableThrough: 1, overlay: [], hasOlder: false, hasNewer: false,
+        };
+        for (const batch of encodeDesktopTranscriptSnapshot({
+          ...snapshot, navigationVersion: 0, durable: [{ sequence: 1, message: result }],
+        })) onBatch({ ...batch, deliverySequence: 1 });
+        return {
+          ...snapshot, readThroughMessageId: result.id,
+          loadBefore: async () => undefined, loadAfter: async () => undefined,
+          loadAround: async () => undefined, close: async () => undefined,
+        };
+      },
+    },
+  } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
+
+  assert.deepEqual(await services.delegationFeedback([{
+    id: 'delegation-record', targetSessionId: sessionId,
+    targetMessageId: 'delegated-message', targetTurnId: 'initial-turn',
+  }]), [{
+    id: 'delegation-record', state: 'completed',
+    resultPreview: 'The delegated task finished with this exact result.',
+  }]);
+});
+
+test('WorkHub proves a long historical Turn tail before caching its final result', async (t) => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+  t.after(() => {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  const sessionId = desktopSessionKey({ hostId: 'owner-host', sessionId: 'target-session' });
+  const intermediate: StoredMessage = {
+    type: 'assistant', id: 'intermediate', turnId: 'owned-turn', ts: 1,
+    modelId: 'model', text: 'Intermediate answer that must not be cached.',
+  };
+  const final: StoredMessage = {
+    type: 'assistant', id: 'final', turnId: 'owned-turn', ts: 2,
+    modelId: 'model', text: 'Final answer after the historical Turn boundary.',
+  };
+  const next: StoredMessage = {
+    type: 'user', id: 'next', turnId: 'next-turn', ts: 3, text: 'Later turn',
+  };
+  let deliverySequence = 0;
+  let opens = 0;
+  let loadAfters = 0;
+  const services = createDesktopWorkHubServices({
+    attachments: {},
+    sessions: {
+      async list() {
+        return [{
+          id: sessionId, name: 'Target task', isFlagged: false, isArchived: false,
+          labels: [], hasUnread: false, status: 'active', runningTurnIds: [], revision: 1,
+        }];
+      },
+      async listTurns() {
+        return [{ turnId: 'owned-turn', firstSequence: 1, status: 'completed', statusSource: 'recorded' }];
+      },
+      async queryMessageExecutions() {
+        return { resolutions: [{ messageId: 'delegated-message', state: 'owned', turnId: 'owned-turn', runId: 'run' }] };
+      },
+    },
+    transcripts: {
+      async open(_sessionId: string, onBatch: (batch: DesktopTranscriptBatch) => void) {
+        opens += 1;
+        const emit = (
+          navigationVersion: number,
+          durable: Array<{ sequence: number; message: StoredMessage }>,
+          hasOlder: boolean,
+          hasNewer: boolean,
+        ) => {
+          for (const batch of encodeDesktopTranscriptSnapshot({
+            sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
+            durableThrough: 4, overlay: [], hasOlder, hasNewer, navigationVersion, durable,
+          })) onBatch({ ...batch, deliverySequence: ++deliverySequence });
+        };
+        emit(0, [{ sequence: 4, message: { ...next, id: 'tail', ts: 4 } }], true, false);
+        return {
+          sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
+          durableThrough: 4, hasOlder: true, hasNewer: false, readThroughMessageId: 'tail',
+          loadBefore: async () => undefined,
+          async loadAround(_sequence: number | null, _maxBytes: number | undefined, navigation: { navigationVersion: number }) {
+            emit(navigation.navigationVersion, [{ sequence: 1, message: intermediate }], false, true);
+          },
+          async loadAfter(anchor: number | null, _maxBytes: number | undefined, navigation: { navigationVersion: number }) {
+            loadAfters += 1;
+            assert.equal(anchor, 1);
+            emit(navigation.navigationVersion, [
+              { sequence: 2, message: final },
+              { sequence: 3, message: next },
+            ], false, true);
+          },
+          close: async () => undefined,
+        };
+      },
+    },
+  } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
+  const reference = {
+    id: 'delegation-record', targetSessionId: sessionId,
+    targetMessageId: 'delegated-message', targetTurnId: 'initial-turn',
+  };
+
+  assert.equal((await services.delegationFeedback([reference]))[0]?.resultPreview, final.text);
+  assert.equal((await services.delegationFeedback([reference]))[0]?.resultPreview, final.text);
+  assert.equal(opens, 1);
+  assert.equal(loadAfters, 1);
+});
+
+test('WorkHub batches more than the message execution query limit per target Session', async (t) => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+  t.after(() => {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  const sessionId = desktopSessionKey({ hostId: 'owner-host', sessionId: 'target-session' });
+  const querySizes: number[] = [];
+  const services = createDesktopWorkHubServices({
+    attachments: {},
+    sessions: {
+      async list() {
+        return [{
+          id: sessionId, name: 'Target task', isFlagged: false, isArchived: false,
+          labels: [], hasUnread: false, status: 'active', runningTurnIds: [], revision: 1,
+        }];
+      },
+      async listTurns() { return []; },
+      async queryMessageExecutions(_sessionId: string, messageIds: string[]) {
+        querySizes.push(messageIds.length);
+        if (messageIds.length > MESSAGE_QUEUE_MAX_ENTRIES) throw new Error('query limit exceeded');
+        return { resolutions: messageIds.map((messageId) => ({ messageId, state: 'pending' as const })) };
+      },
+    },
+  } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
+  const references = Array.from({ length: MESSAGE_QUEUE_MAX_ENTRIES + 1 }, (_, index) => ({
+    id: `delegation-${index}`, targetSessionId: sessionId,
+    targetMessageId: `message-${index}`, targetTurnId: `turn-${index}`,
+  }));
+
+  assert.deepEqual((await services.delegationFeedback(references)).map(({ state }) => state),
+    references.map(() => 'accepted'));
+  assert.deepEqual(querySizes, [MESSAGE_QUEUE_MAX_ENTRIES, 1]);
+});
+
+test('WorkHub does not infer live running when the Session catalog is unavailable', async (t) => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+  t.after(() => {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  const sessionId = desktopSessionKey({ hostId: 'owner-host', sessionId: 'target-session' });
+  const services = createDesktopWorkHubServices({
+    attachments: {},
+    sessions: {
+      async list() { throw new Error('catalog unavailable'); },
+      async listTurns() {
+        return [{ turnId: 'owned-turn', firstSequence: 1, status: 'running', statusSource: 'recorded' }];
+      },
+      async queryMessageExecutions() {
+        return { resolutions: [{ messageId: 'delegated-message', state: 'owned', turnId: 'owned-turn', runId: 'run' }] };
+      },
+    },
+  } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
+
+  assert.equal((await services.delegationFeedback([{
+    id: 'delegation-record', targetSessionId: sessionId,
+    targetMessageId: 'delegated-message', targetTurnId: 'initial-turn',
+  }]))[0]?.state, 'recovering');
 });
 
 // Keep the real preload's navigation defaults and filtering in this consumer
