@@ -2335,14 +2335,11 @@ export class AiSdkTurn {
               (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
             );
             if (rejectedSettlement) throw rejectedSettlement.reason;
-            const settlements = settlementOutcomes.map((outcome) => {
-              // A rejected settlement was handled above, so preserving the
-              // original array shape also preserves tool-call identity by index.
+            settlementOutcomes.forEach((outcome, index) => {
+              // All settlements completed and rejection was checked above;
+              // preserve provider order for Plan and Yield result handling.
               if (outcome.status === 'rejected') throw outcome.reason;
-              return outcome.value;
-            });
-            for (let index = 0; index < settlements.length; index += 1) {
-              const settlement = settlements[index]!;
+              const settlement = outcome.value;
               const toolCall = returnedToolCalls[index];
               if (isPlanToolResult(settlement.result)) {
                 this.handlePlanToolResult(settlement.result, queue);
@@ -2354,7 +2351,10 @@ export class AiSdkTurn {
               ) {
                 this.handleAgentGraphYieldToolResult(settlement.result);
               }
-            }
+            });
+            // Continuation reads durable events, not raw results. Do not retain
+            // an entire completed batch across the next provider request.
+            settlementOutcomes.length = 0;
             await queue.waitUntilConsumedThroughCurrent();
 
             const continuationWillRun =
