@@ -103,19 +103,6 @@ export function appendPromptContextDraft(current: string, fragment: string): str
   return `${base}\n\n${next}`;
 }
 
-function copyDraftTail(value: string): string {
-  // A slice can retain the entire oversized input. Copy code units instead,
-  // preserving even lone surrogates at the established truncation boundary.
-  const codes = new Uint16Array(8192);
-  const parts: string[] = [];
-  for (let offset = value.length - COMPOSER_DRAFT_MAX_CHARS; offset < value.length; offset += codes.length) {
-    const length = Math.min(codes.length, value.length - offset);
-    for (let index = 0; index < length; index++) codes[index] = value.charCodeAt(offset + index);
-    parts.push(String.fromCharCode(...codes.subarray(0, length)));
-  }
-  return parts.join('');
-}
-
 export function rememberComposerDraft(store: Map<string, string>, key: string | undefined, value: string): void {
   if (!key) return;
   const trimmed = value.trim();
@@ -124,8 +111,9 @@ export function rememberComposerDraft(store: Map<string, string>, key: string | 
     return;
   }
 
+  // Detach the tail from the oversized backing while preserving every UTF-16 code unit.
   const bounded = value.length > COMPOSER_DRAFT_MAX_CHARS
-    ? copyDraftTail(value)
+    ? structuredClone(value.slice(value.length - COMPOSER_DRAFT_MAX_CHARS))
     : value;
   store.delete(key);
   store.set(key, bounded);
