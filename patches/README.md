@@ -77,6 +77,16 @@ Delete when that guard passes against an unpatched package.
 
 ## `@astryxdesign/core@0.5.2`
 
+The shared code tokenizer caches only valid language definitions. Caching `null`
+for arbitrary unsupported fence labels grows a process-lifetime map; a short
+label can also be a sliced string retaining its entire Markdown message after
+unmount. Unknown labels keep their plain-text fallback, and known languages
+keep reusing compiled regexes. A call-site language filter would duplicate the
+dependency's language list, discard the displayed label, and miss the shared
+CodeEditor path. `packages/ui/src/__tests__/astryx-tokenizer-cache.test.ts` checks
+the installed tokenizer's semantics and cache lifetime; delete this hunk when
+those tests pass against unpatched Astryx.
+
 `ChatComposerInput` synchronizes external controlled values into its editable
 DOM in a layout effect. A passive effect can leave the old multiline draft
 visible for a frame after the sent message is rendered; clearing it later
