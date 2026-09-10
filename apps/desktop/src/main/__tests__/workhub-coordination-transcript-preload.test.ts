@@ -106,6 +106,61 @@ test('WorkHub upload references round-trip through idle answers, both queue mode
   await assert.rejects(services.enqueueMessage(sessionId, 'foreign', 'read this', foreign, 'next_turn'), /another Host or Session/);
 });
 
+test('WorkHub projects the exact delegated Turn status and bounded assistant result', async (t) => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
+  t.after(() => {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  const sessionId = desktopSessionKey({ hostId: 'owner-host', sessionId: 'target-session' });
+  const result: StoredMessage = {
+    type: 'assistant', id: 'answer', turnId: 'owned-turn', ts: 3,
+    modelId: 'model', text: 'The delegated task finished with this exact result.',
+  };
+  const services = createDesktopWorkHubServices({
+    attachments: {},
+    sessions: {
+      async list() {
+        return [{
+          id: sessionId, name: 'Target task', isFlagged: false, isArchived: false,
+          labels: [], hasUnread: false, status: 'active', runningTurnIds: [], revision: 1,
+        }];
+      },
+      async listTurns() {
+        return [{ turnId: 'owned-turn', firstSequence: 1, status: 'completed', statusSource: 'recorded' }];
+      },
+      async queryMessageExecutions() {
+        return { resolutions: [{ messageId: 'delegated-message', state: 'owned', turnId: 'owned-turn', runId: 'run' }] };
+      },
+    },
+    transcripts: {
+      async open(_sessionId: string, onBatch: (batch: DesktopTranscriptBatch) => void) {
+        const snapshot = {
+          sessionId: 'target-session', generation: 'generation-1', hostEpoch: 'epoch-1',
+          durableThrough: 1, overlay: [], hasOlder: false, hasNewer: false,
+        };
+        for (const batch of encodeDesktopTranscriptSnapshot({
+          ...snapshot, navigationVersion: 0, durable: [{ sequence: 1, message: result }],
+        })) onBatch({ ...batch, deliverySequence: 1 });
+        return {
+          ...snapshot, readThroughMessageId: result.id,
+          loadBefore: async () => undefined, loadAfter: async () => undefined,
+          loadAround: async () => undefined, close: async () => undefined,
+        };
+      },
+    },
+  } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
+
+  assert.deepEqual(await services.delegationFeedback([{
+    id: 'delegation-record', targetSessionId: sessionId,
+    targetMessageId: 'delegated-message', targetTurnId: 'initial-turn',
+  }]), [{
+    id: 'delegation-record', state: 'completed',
+    resultPreview: 'The delegated task finished with this exact result.',
+  }]);
+});
+
 // Keep the real preload's navigation defaults and filtering in this consumer
 // regression; the IPC stub models the observer's authoritative reset reply.
 test('WorkHub tail navigation converges through the preload with a fragmented sparse tail', { timeout: 5_000 }, async (t) => {

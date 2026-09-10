@@ -28,6 +28,10 @@ import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../shared/wo
 import type { WorkHubControlBridge } from '../../../shared/workhub-control.js';
 import type { WorkHubPresentationBridge } from '../../../shared/workhub-presentation.js';
 import type { WorkHubCoordinationHostChange } from './controller/coordination-lifecycle.js';
+import type {
+  WorkHubDelegationFeedback,
+  WorkHubDelegationReference,
+} from './model/linked-work.js';
 
 export interface WorkHubTranscriptSnapshot {
   readonly messages: readonly StoredMessage[];
@@ -53,6 +57,9 @@ export interface WorkHubServices {
   subscribeAvailability(handler: () => void): () => void;
   listSessions(): Promise<(SessionSummary & { revision: number })[]>;
   subscribeSessions(handler: () => void): () => void;
+  delegationFeedback(
+    references: readonly WorkHubDelegationReference[],
+  ): Promise<readonly WorkHubDelegationFeedback[]>;
   modelChoices(sessionId: string): Promise<ChatModelChoice[]>;
   readonly attachments: ComposerAttachmentService;
   readAttachmentBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;

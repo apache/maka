@@ -97,6 +97,40 @@
   min-width: 0;
 }
 
+.workhub-result-card {
+  display: grid;
+  gap: 6px;
+  width: min(100%, 34rem);
+  padding: 9px 11px;
+  border: 1px solid color-mix(in oklch, var(--workhub-work-color) 28%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, var(--workhub-work-color) 5%, transparent);
+}
+
+.workhub-result-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--workhub-work-label);
+  font-size: var(--font-size-body-sm, 12px);
+}
+
+.workhub-result-heading span,
+.workhub-result-card p {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-body-xs, 12px);
+}
+
+.workhub-result-card p {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  white-space: normal;
+}
+
 .workhub-message-identity button {
   height: auto;
   min-height: 28px;
