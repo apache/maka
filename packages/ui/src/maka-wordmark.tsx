@@ -28,8 +28,8 @@
  * `apps/desktop/assets/icon.png`, which is the app icon shipped with the
  * desktop build — so the empty-state mark and the dock icon cannot drift
  * apart. Paths are filled with `currentColor`, set to the fixed brand colour
- * (`--maka-brand`, DESIGN.md) so every surface shows the same mark;
- * `className` or `style` can still override it.
+ * (`--maka-brand`, DESIGN.md) so every surface shows the same mark. It is
+ * set inline, so only `style` can override it; a class `color` rule loses.
  */
 
 import { MAKA_WORDMARK_PATH } from '@maka/core/maka-wordmark';
