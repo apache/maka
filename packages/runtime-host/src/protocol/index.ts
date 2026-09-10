@@ -101,9 +101,11 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 136 as const;
-// 136: QuoteRef accepts bounded Session-reference provenance fields.
-// Epoch-135 peers reject these fields on the strict message-content shape.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 137 as const;
+// 137: QuoteRef accepts bounded Session-reference provenance fields.
+// Epoch-136 peers reject these fields on the strict message-content shape.
+// 136: WorkHub transient proposals distinguish routing dispositions from linked
+// operations. Older peers expect replace/stop_work/resume_work dispositions.
 // 135: WorkHub model Turns replace direct action proposals with active-Turn task tools.
 // 134: Coordination actions own real Runtime Turns. Removes the synthetic record
 // operation, projects typed action receipts and admitted action identities, and

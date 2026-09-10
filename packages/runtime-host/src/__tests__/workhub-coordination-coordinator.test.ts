@@ -154,7 +154,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       const stop = {
         turnId: 'active-turn',
         actionId: 'model-stop-call',
-        proposal: { disposition: 'stop_work' as const, expects: { targetSessionId: target.id } },
+        proposal: { operation: 'stop' as const, expects: { targetSessionId: target.id } },
       };
       canonical = { text: '可以把 Payments 停一下了' };
       const stopped = await workhub.handlers['workhub.coordination.actFromTurn'](stop, CONTEXT);
@@ -1050,7 +1050,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           candidateSetId: staleCandidates.result.candidateSetId,
 
           proposal: {
-            disposition: 'replace',
+            operation: 'correct',
             replacesActionId: staleSource.actionId,
             target: {
               disposition: 'delegate_existing',
@@ -1118,7 +1118,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           actionId: 'stop-action',
           userText: 'Stop Payments',
           proposal: {
-            disposition: 'stop_work',
+            operation: 'stop',
             expects: { targetSessionId: target.id },
           },
         },
@@ -1158,7 +1158,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           actionId: 'stop-action',
           userText: 'Stop Payments',
           proposal: {
-            disposition: 'stop_work',
+            operation: 'stop',
             expects: { targetSessionId: targetId },
           },
         },
@@ -1223,7 +1223,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           actionId: 'stop-action',
           userText: 'Stop Payments',
           proposal: {
-            disposition: 'stop_work',
+            operation: 'stop',
             expects: { targetSessionId: target.id },
           },
         },
@@ -1251,7 +1251,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       actionId: 'resume-action',
       userText: 'Resume Payments',
       proposal: {
-        disposition: 'resume_work' as const,
+        operation: 'resume' as const,
         resumesActionId: 'source-action',
         expects: { targetSessionId: targetId },
       },
@@ -1371,7 +1371,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         actionId: 'resume-after-recovery',
         userText: 'Resume Payments',
         proposal: {
-          disposition: 'resume_work' as const,
+          operation: 'resume' as const,
           resumesActionId: 'source-action',
           expects: { targetSessionId: target.id },
         },
@@ -1488,7 +1488,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           actionId: 'stop-racing-action',
           userText: 'Stop Payments',
           proposal: {
-            disposition: 'stop_work',
+            operation: 'stop',
             expects: { targetSessionId: target.id },
           },
         },
@@ -1517,7 +1517,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       actionId: 'stop-action',
       userText: 'Stop Payments',
       proposal: {
-        disposition: 'stop_work' as const,
+        operation: 'stop' as const,
         expects: { targetSessionId: targetId },
       },
     });
@@ -1696,7 +1696,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           {
             actionId: 'stop-action',
             userText: 'Stop Payments',
-            proposal: { disposition: 'stop_work', expects: { targetSessionId: target.id } },
+            proposal: { operation: 'stop', expects: { targetSessionId: target.id } },
           },
           CONTEXT,
         );
@@ -1819,7 +1819,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         {
           actionId: 'stop-action',
           userText: 'Stop Payments',
-          proposal: { disposition: 'stop_work', expects: { targetSessionId: target.id } },
+          proposal: { operation: 'stop', expects: { targetSessionId: target.id } },
         },
         CONTEXT,
       );
@@ -1885,7 +1885,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       const stopInput = {
         actionId: 'stop-action',
         userText: 'Stop Payments',
-        proposal: { disposition: 'stop_work' as const, expects: { targetSessionId: target.id } },
+        proposal: { operation: 'stop' as const, expects: { targetSessionId: target.id } },
       };
       assert.equal(
         await store.claimWorkHubAction({
@@ -2014,7 +2014,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         {
           actionId: 'stop-action',
           userText: 'Stop Payments',
-          proposal: { disposition: 'stop_work', expects: { targetSessionId: payments.id } },
+          proposal: { operation: 'stop', expects: { targetSessionId: payments.id } },
         },
         CONTEXT,
       );

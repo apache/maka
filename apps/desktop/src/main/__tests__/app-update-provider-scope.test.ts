@@ -237,7 +237,7 @@ describe('AppUpdateProvider render scope', () => {
       },
     });
 
-    await act(async () => renderProvider(root, services, false));
+    await act(async () => renderProvider(root, services, true));
     await act(async () => emit?.({
       state: 'downloaded',
       currentVersion: '1.0.0',
@@ -245,15 +245,18 @@ describe('AppUpdateProvider render scope', () => {
     }));
     await act(async () => {
       latestSidebar?.onOpenUpdate?.();
+      latestAbout?.installDownloadedUpdate?.();
       latestSidebar?.onOpenUpdate?.();
     });
     assert.equal(installCount, 1);
+    assert.equal(latestAbout?.installPending, true);
 
     await act(async () => {
       resolveInstall({ ok: true });
       await installResult;
       await Promise.resolve();
     });
+    assert.equal(latestAbout?.installPending, false);
     await act(async () => root.unmount());
   });
 

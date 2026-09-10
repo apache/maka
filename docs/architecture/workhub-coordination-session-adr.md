@@ -53,7 +53,7 @@ durable conversation and execution substrate.
 The role is provisioned lazily when WorkHub first needs it and resolves to the same
 Session after Runtime Host or application restarts. The Session role representation,
 lookup, recovery, and per-Host UI resolution enforce this lifecycle contract. The
-coordination transcript and typed dispositions use that same Session substrate.
+coordination transcript and typed action proposals use that same Session substrate.
 
 The per-Host boundary is intentional. A Coordination Session coordinates only the
 ordinary Sessions belonging to the same Runtime Host. Switching Runtime Hosts
@@ -76,9 +76,9 @@ ordinary navigation and target discovery.
 The Coordination Session is authoritative only for the coordination conversation.
 It never acquires authority over an ordinary Session's execution or lifecycle.
 
-## Dispositions and action admission
+## Routing dispositions, linked operations, and admission
 
-Every WorkHub input resolves to exactly one proposed **disposition**:
+Every ordinary routing input resolves to exactly one proposed **routing disposition**:
 
 - `answer_here`: answer in the Coordination Session.
 - `delegate_existing`: delegate concrete work to one bounded, valid ordinary
@@ -87,12 +87,34 @@ Every WorkHub input resolves to exactly one proposed **disposition**:
 - `clarify`: continue clarification in the Coordination Session without guessing a
   target or creating a Session.
 
-Linked correction is a user-confirmed coordination operation over a prior durable
-delegation, not a model disposition. Its replacement target is still restricted to
-`delegate_existing` or explicit `create_new` admission.
+Correction, stop, and resume are **linked operations** over a prior durable
+delegation, not additional routing dispositions. Correction's replacement target
+is still restricted to `delegate_existing` or explicit `create_new` admission.
+Stop and resume follow the durable delegation-to-Session-to-Turn lineage rather
+than inferring an operation target from a similarly named Session.
+
+The decision flow is:
+
+```text
+user input
+  -> intent analysis
+  -> Session Resolver or linked-target resolution
+  -> Coordination policy
+  -> routing disposition or linked-operation proposal
+  -> deterministic Action Gate
+  -> owning Host / Session
+```
+
+Intent describes what the user wants; it does not select authority. The Session
+Resolver returns bounded existing-Session evidence and never creates a Session.
+Linked-target resolution starts from a bounded WorkHub-owned delegation and
+follows its durable Message, Turn, and continuation lineage. Coordination policy
+combines that evidence into an advisory proposal. Missing, stale, or ambiguous
+linkage fails closed instead of falling back to name similarity.
 
 All model and routing output is advisory. Before any write, a deterministic
-**Action Gate** admits or rejects the proposed disposition and operation. The gate
+**Action Gate** admits or rejects the proposed routing disposition or linked
+operation. The gate
 enforces Runtime Host and target validity, archive and waiting state, self-route
 exclusion, explicit `create_new`, and existing tool and permission ceilings. For a
 replacement, the gate additionally requires explicit correction evidence in the
@@ -100,23 +122,19 @@ trusted user text, claims the source delegation in Coordination transcript order
 and rejects any later competing replacement intent. Neither a model nor a routing
 policy can directly authorize a write, Stop, or expansion of execution authority.
 
-Routing experiments replace Action Intent classification and/or Session Resolver
-recall behind the fixed Action Policy and unchanged Action Gate. A strategy names
-one Intent component and one Resolver component; it has no proposal-producing
-`resolve()` method and owns no visit focus. R2.4 pairs deterministic components;
-R3-A pairs model-assisted intent with model-ranked recall; R3-B pairs model-assisted
-intent with deterministic recall. These are experiment configurations, not separate
-policy implementations or a production model rollout.
+The current production path performs intent analysis and Coordination policy through
+the Coordination model's active-Turn task actions. Bounded candidate discovery is
+the Session Resolver input to that decision; the transient proposal interface keeps
+routing dispositions separate from linked operations. `answer_here` and `clarify`
+remain transcript outcomes; only the side-effecting routing subset crosses the Host
+proposal boundary. Historical R2.4/R3 experiment configurations remain evaluation
+evidence, not a second production policy or a renderer-owned language authority.
 
-Intent output contains no target. Resolver output contains only ranked or ambiguous
-opaque candidate references, or no match; it cannot return creation or a disposition.
-The controller shares one bounded candidate context across arms; deterministic
-components retain full request text, while model adapters bound text at the model
-call boundary. The controller passes validated evidence through the same Policy with the same trusted Session snapshot.
-A model recall budget does not hide known Sessions from exact-name or correction
-rules in that fixed Policy. Policy retains trusted-text creation,
-ambiguity, correction and focus constraints. Model ranking alone cannot authorize
-work, and every resulting proposal still goes through the Host-owned Gate.
+Intent output contains no target. Session Resolver output contains only bounded
+opaque candidate references; it cannot return creation or a disposition. Linked
+target evidence is likewise advisory and cannot prove ownership. Model ranking or
+tool selection alone cannot authorize work, and every resulting proposal still goes
+through the Host-owned Gate with the original trusted user request.
 
 ## Delegation links rather than copies transcripts
 

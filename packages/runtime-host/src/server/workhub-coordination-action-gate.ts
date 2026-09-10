@@ -286,6 +286,7 @@ export class WorkHubCoordinationActionGate {
     context: ConnectionContext,
     admittedTurnId?: string,
   ): Promise<WorkHubCoordinationActResult> {
+    const proposal = input.proposal;
     if (!input.userText.trim()) {
       return Promise.reject(
         new WorkHubActionGateFailure('action_conflict', 'WorkHub action text is empty'),
@@ -294,15 +295,20 @@ export class WorkHubCoordinationActionGate {
     if (
       input.delegationText !== undefined &&
       (!input.delegationText.trim() ||
-        (input.proposal.disposition !== 'delegate_existing' &&
-          input.proposal.disposition !== 'create_new' &&
-          input.proposal.disposition !== 'replace'))
+        !(
+          'disposition' in proposal ||
+          ('operation' in proposal && proposal.operation === 'correct')
+        ))
     ) {
       return Promise.reject(
         new WorkHubActionGateFailure('action_conflict', 'Invalid WorkHub delegation text'),
       );
     }
-    if (input.proposal.disposition === 'create_new' && !input.proposal.title.trim()) {
+    if (
+      'disposition' in proposal &&
+      proposal.disposition === 'create_new' &&
+      !proposal.title.trim()
+    ) {
       return Promise.reject(
         new WorkHubActionGateFailure('action_conflict', 'WorkHub creation title is empty'),
       );
@@ -366,7 +372,7 @@ export class WorkHubCoordinationActionGate {
       return this.#assign(assignmentInputFromRecord(durable), context);
     }
 
-    if (proposal.disposition === 'stop_work') {
+    if ('operation' in proposal && proposal.operation === 'stop') {
       const source = await this.#stopSource(input.actionId, proposal.expects.targetSessionId);
       const stopFingerprint = stopActionFingerprint(input, source);
       await this.#claimAction(input.actionId, 'stop', stopFingerprint, source.delegationId);
@@ -424,7 +430,7 @@ export class WorkHubCoordinationActionGate {
       });
       return this.#stop(requested, source);
     }
-    if (proposal.disposition === 'resume_work') {
+    if ('operation' in proposal && proposal.operation === 'resume') {
       const source = await this.#effects.readAssignment(proposal.resumesActionId);
       if (!source || source.targetSessionId !== proposal.expects.targetSessionId) {
         throw new WorkHubActionGateFailure(
@@ -462,7 +468,7 @@ export class WorkHubCoordinationActionGate {
       );
     }
 
-    if (proposal.disposition === 'create_new') {
+    if ('disposition' in proposal && proposal.disposition === 'create_new') {
       if (!input.create) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
@@ -476,7 +482,7 @@ export class WorkHubCoordinationActionGate {
       );
     }
 
-    if (proposal.disposition === 'replace') {
+    if ('operation' in proposal && proposal.operation === 'correct') {
       const replaced = await this.#effects.readAssignment(proposal.replacesActionId);
       if (!replaced) {
         throw new WorkHubActionGateFailure(
@@ -708,7 +714,7 @@ export class WorkHubCoordinationActionGate {
     input: AdmittedWorkHubAction,
     replaced: WorkHubDelegationAssignedMessage,
   ): Promise<WorkHubDelegationReplacementInput> {
-    if (input.proposal.disposition !== 'replace') {
+    if (!('operation' in input.proposal) || input.proposal.operation !== 'correct') {
       throw new WorkHubActionGateFailure('action_conflict', 'Invalid WorkHub replacement');
     }
     const target = input.proposal.target;
@@ -877,7 +883,8 @@ export class WorkHubCoordinationActionGate {
     targetSessionId: string,
   ): Promise<void> {
     if (
-      input.proposal.disposition !== 'replace' ||
+      !('operation' in input.proposal) ||
+      input.proposal.operation !== 'correct' ||
       input.proposal.target.disposition !== 'delegate_existing' ||
       input.candidateSetId === undefined
     ) {
@@ -1033,10 +1040,7 @@ function delegationAssignment(
   targetSessionName: string,
 ): WorkHubDelegationAssignmentInput {
   const create = input.create;
-  if (
-    input.proposal.disposition !== 'delegate_existing' &&
-    input.proposal.disposition !== 'create_new'
-  ) {
+  if (!('disposition' in input.proposal)) {
     throw new WorkHubActionGateFailure(
       'action_conflict',
       'WorkHub local action cannot create a delegation intent',
@@ -1103,30 +1107,37 @@ function digest(value: unknown): `sha256:${string}` {
 }
 
 function actionFingerprint(input: WorkHubAdmittedAction): `sha256:${string}` {
-  return digest({
+  const common = {
     userText: input.userText,
     ...(input.attachments ? { attachments: input.attachments } : {}),
     ...(input.newWorkDefaults ? { newWorkDefaults: input.newWorkDefaults } : {}),
     ...(input.delegationText === undefined ? {} : { delegationText: input.delegationText }),
-    disposition: input.proposal.disposition,
-    ...(input.proposal.disposition === 'delegate_existing'
-      ? { candidateRef: input.proposal.candidateRef }
-      : {}),
-    ...(input.proposal.disposition === 'create_new'
-      ? {
-          title: input.proposal.title,
-          workspace: input.create?.workspace,
-        }
-      : {}),
-    ...(input.proposal.disposition === 'replace'
-      ? {
-          replacesActionId: input.proposal.replacesActionId,
-          target: input.proposal.target,
-          ...(input.proposal.target.disposition === 'create_new'
-            ? { workspace: input.create?.workspace }
-            : {}),
-        }
-      : {}),
+  };
+  const proposal = input.proposal;
+  if ('disposition' in proposal) {
+    return digest({
+      ...common,
+      disposition: proposal.disposition,
+      ...(proposal.disposition === 'delegate_existing'
+        ? { candidateRef: proposal.candidateRef }
+        : { title: proposal.title, workspace: input.create?.workspace }),
+    });
+  }
+  if (proposal.operation === 'correct') {
+    return digest({
+      ...common,
+      disposition: 'replace',
+      replacesActionId: proposal.replacesActionId,
+      target: proposal.target,
+      ...(proposal.target.disposition === 'create_new'
+        ? { workspace: input.create?.workspace }
+        : {}),
+    });
+  }
+  // Preserve durable action fingerprints across the transient proposal rename.
+  return digest({
+    ...common,
+    disposition: proposal.operation === 'stop' ? 'stop_work' : 'resume_work',
   });
 }
 
@@ -1134,7 +1145,7 @@ function replacementActionFingerprint(
   input: WorkHubAdmittedAction,
   targetSessionId: string,
 ): `sha256:${string}` {
-  if (input.proposal.disposition !== 'replace') {
+  if (!('operation' in input.proposal) || input.proposal.operation !== 'correct') {
     throw new WorkHubActionGateFailure('action_conflict', 'Invalid WorkHub replacement replay');
   }
   return digest({
@@ -1142,7 +1153,7 @@ function replacementActionFingerprint(
     ...(input.attachments ? { attachments: input.attachments } : {}),
     ...(input.newWorkDefaults ? { newWorkDefaults: input.newWorkDefaults } : {}),
     ...(input.delegationText === undefined ? {} : { delegationText: input.delegationText }),
-    disposition: input.proposal.disposition,
+    disposition: 'replace',
     replacesActionId: input.proposal.replacesActionId,
     target: {
       disposition: input.proposal.target.disposition,
@@ -1158,7 +1169,7 @@ function stopActionFingerprint(
   input: WorkHubAdmittedAction,
   source: WorkHubDelegationAssignedMessage,
 ): `sha256:${string}` {
-  if (input.proposal.disposition !== 'stop_work') {
+  if (!('operation' in input.proposal) || input.proposal.operation !== 'stop') {
     throw new WorkHubActionGateFailure('action_conflict', 'Invalid WorkHub stop replay');
   }
   return digest({

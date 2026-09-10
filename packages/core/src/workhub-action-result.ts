@@ -19,6 +19,11 @@
 
 import { isRecord } from './record-schema.js';
 
+/**
+ * Durable coordination receipt schema. The linked-operation variants retain
+ * their historical `disposition` tags so existing records and replay
+ * fingerprints stay compatible; transient proposals use `operation` instead.
+ */
 export type WorkHubActionResult =
   | { readonly disposition: 'answer_here'; readonly coordinationTurnId: string }
   | { readonly disposition: 'clarify'; readonly coordinationTurnId: string }

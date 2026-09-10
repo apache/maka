@@ -1001,7 +1001,7 @@ test('WorkHub creates new work through the production assignment composition', a
           actionId: 'workhub-create-stop-action',
           userText: 'Stop Login stability',
           proposal: {
-            disposition: 'stop_work',
+            operation: 'stop',
             expects: { targetSessionId },
           },
         },
@@ -1141,7 +1141,7 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
           actionId: 'workhub-resume-stop-resume',
           userText: 'Resume Payments',
           proposal: {
-            disposition: 'resume_work',
+            operation: 'resume',
             resumesActionId: 'workhub-resume-stop-delegation',
             expects: { targetSessionId: target.id },
           },
@@ -1185,7 +1185,7 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
         actionId: 'workhub-resume-stop-resume',
         userText: 'Resume Payments',
         proposal: {
-          disposition: 'resume_work' as const,
+          operation: 'resume' as const,
           resumesActionId: 'workhub-resume-stop-delegation',
           expects: { targetSessionId: target.id },
         },
@@ -1243,7 +1243,7 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
           actionId: 'workhub-resume-stop-stop',
           userText: 'Stop Payments',
           proposal: {
-            disposition: 'stop_work',
+            operation: 'stop',
             expects: { targetSessionId: target.id },
           },
         },
@@ -1340,7 +1340,7 @@ test('WorkHub does not record resume while safe-boundary resume is disabled', as
           actionId,
           userText: 'Resume Payments',
           proposal: {
-            disposition: 'resume_work',
+            operation: 'resume',
             resumesActionId: 'workhub-disabled-resume-delegation',
             expects: { targetSessionId: target.id },
           },
@@ -1459,7 +1459,7 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
           actionId: 'workhub-stop-shared-action',
           userText: `Stop ${sourceCandidate.sessionName}`,
           proposal: {
-            disposition: 'stop_work',
+            operation: 'stop',
             expects: { targetSessionId: source.id },
           },
         },
@@ -1510,7 +1510,7 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
         userText: `No, move this to ${correctionDestination.sessionName} instead`,
         candidateSetId: correctionCandidates.result.candidateSetId,
         proposal: {
-          disposition: 'replace',
+          operation: 'correct',
           replacesActionId: assignment.actionId,
           target: {
             disposition: 'delegate_existing',
