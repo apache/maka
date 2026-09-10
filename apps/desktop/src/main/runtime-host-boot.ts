@@ -256,6 +256,7 @@ import {
 } from './client-plugin-transport.js';
 import { registerRuntimeHostRecallIpc } from "./runtime-host-recall-ipc-main.js";
 import { createRuntimeHostProjectCatalog } from "./runtime-host-project-catalog.js";
+import { createClientNetworkProxyApplier } from "./client-network-proxy.js";
 import { createRuntimeHostDefaultRecovery } from "./runtime-host-default-recovery.js";
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import {
@@ -1750,11 +1751,23 @@ function registerHostClientIpc(
     openPath: (path) => shell.openPath(path),
     allowLocalPaths: !usesHostWorkspace,
   });
+  // Client-owned outbound traffic (the bot bridges) is proxied here, not in the
+  // Host: it runs in this process and the Host never sees it.
+  const clientNetworkProxy = createClientNetworkProxyApplier({
+    profileKind: target.kind,
+    resolve: () => client.resolveNetworkProxy(),
+    onError: (error) =>
+      console.error("[runtime-host] Client network proxy resolution failed:", error),
+  });
+  void clientNetworkProxy.refresh();
   const runtimeHostSettings = createRuntimeHostSettingsModule({
     client,
     settingsStore,
     applyClientSettings: async (settings) => {
       await clientSettingsEffects.apply(settings, true);
+    },
+    onNetworkProxyChanged: () => {
+      void clientNetworkProxy.refresh();
     },
   });
   registerRuntimeHostSettingsIpc({

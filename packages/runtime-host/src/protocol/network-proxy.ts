@@ -18,7 +18,7 @@
  */
 
 import type { RuntimePolicy } from '@maka/core/runtime-policy';
-import type { TestProxyResult } from '@maka/core/settings/network-settings';
+import type { ProxyType, TestProxyResult } from '@maka/core/settings/network-settings';
 import {
   requireEncodedByteLimit,
   requireExactRecord,
@@ -46,6 +46,36 @@ export interface NetworkProxyTestInput {
 
 export type NetworkProxyTestResult = TestProxyResult;
 
+export type NetworkProxyResolveInput = Record<string, never>;
+
+/**
+ * The effective proxy a Client must apply to the network it owns, already
+ * resolved against Runtime Policy. `bypassList` is the merged configured and
+ * automatic list, so the Client never re-derives policy. Carries the secret:
+ * only the Host can read it, and a Client that runs its own outbound traffic
+ * (bot bridges) cannot dial an authenticated proxy without it.
+ */
+export interface ResolvedNetworkProxy {
+  readonly enabled: true;
+  readonly type: ProxyType;
+  readonly host: string;
+  readonly port: number;
+  readonly username?: string;
+  readonly password?: string;
+  readonly bypassList: string[];
+}
+
+/**
+ * `proxy` is absent when the policy disables the proxy — a positive "send
+ * everything direct", distinct from `credential_not_configured`, which means
+ * the policy wants an authenticated proxy whose secret is missing and so
+ * cannot be honoured.
+ */
+export interface NetworkProxyResolveResult {
+  readonly kind: 'ready' | 'credential_not_configured';
+  readonly proxy?: ResolvedNetworkProxy;
+}
+
 export const NETWORK_PROXY_OPERATION_SPECS = {
   'network-proxy.test': defineOperation<
     NetworkProxyTestInput,
@@ -57,6 +87,20 @@ export const NETWORK_PROXY_OPERATION_SPECS = {
     errors: ERRORS,
     decodeInput: decodeNetworkProxyTestInput,
     decodeOutput: decodeNetworkProxyTestResult,
+  }),
+  'network-proxy.resolve': defineOperation<
+    NetworkProxyResolveInput,
+    NetworkProxyResolveResult,
+    (typeof ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: ERRORS,
+    decodeInput: (value) => {
+      requireExactRecord(value, 'network proxy resolve input', []);
+      return {};
+    },
+    decodeOutput: decodeNetworkProxyResolveResult,
   }),
 } as const;
 
@@ -135,6 +179,53 @@ function decodeNetworkProxyTestResult(value: unknown): NetworkProxyTestResult {
   };
   requireEncodedByteLimit(decoded, 'network proxy test result', RESULT_MAX_BYTES);
   return decoded;
+}
+
+function decodeNetworkProxyResolveResult(value: unknown): NetworkProxyResolveResult {
+  const result = requireShapedRecord(value, 'network proxy resolve result', ['kind'], ['proxy']);
+  if (result.kind !== 'ready' && result.kind !== 'credential_not_configured') {
+    throw invalidProtocolFrame('Invalid network proxy resolve kind');
+  }
+  if (result.kind === 'credential_not_configured' && result.proxy !== undefined) {
+    throw invalidProtocolFrame('Unresolved network proxy must not carry a configuration');
+  }
+  const decoded: NetworkProxyResolveResult = {
+    kind: result.kind,
+    ...(result.proxy === undefined ? {} : { proxy: decodeResolvedNetworkProxy(result.proxy) }),
+  };
+  requireEncodedByteLimit(decoded, 'network proxy resolve result', RESULT_MAX_BYTES);
+  return decoded;
+}
+
+function decodeResolvedNetworkProxy(value: unknown): ResolvedNetworkProxy {
+  const proxy = requireShapedRecord(
+    value,
+    'resolved network proxy',
+    ['enabled', 'type', 'host', 'port', 'bypassList'],
+    ['username', 'password'],
+  );
+  if (
+    proxy.enabled !== true ||
+    (proxy.type !== 'http' && proxy.type !== 'https' && proxy.type !== 'socks5') ||
+    typeof proxy.host !== 'string' ||
+    proxy.host.length === 0 ||
+    proxy.host.length > 255
+  ) {
+    throw invalidProtocolFrame('Invalid resolved network proxy');
+  }
+  return {
+    enabled: true,
+    type: proxy.type,
+    host: proxy.host,
+    port: boundedInteger(proxy.port, 1, 65_535, 'resolved network proxy port'),
+    ...(proxy.username === undefined
+      ? {}
+      : { username: requireUtf8String(proxy.username, 'resolved network proxy username', 256) }),
+    ...(proxy.password === undefined
+      ? {}
+      : { password: requireUtf8String(proxy.password, 'resolved network proxy password', 1_024) }),
+    bypassList: stringList(proxy.bypassList, 'resolved network proxy bypass list'),
+  };
 }
 
 function decodeProbeUrl(value: unknown): string {
