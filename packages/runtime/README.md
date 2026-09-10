@@ -19,11 +19,18 @@
 
 # `@maka/runtime`
 
-`@maka/runtime` is Maka's pure-Node agent runtime. It owns model/backend execution, session sandbox-boundary control flow, event projection, context handling, recovery, and sandbox-aware workspace execution. Product shells compose it; they do not reimplement its loop.
+`@maka/runtime` is Maka's pure-Node agent runtime. It owns model/backend execution, session sandbox-boundary control flow, event projection, context handling, recovery, and sandbox-aware workspace execution. Runtime Host composes it; clients do not reimplement its loop.
 
 ## Public seam
 
-The package root barrel and the subpaths declared in `package.json` are supported public APIs. Do not import undeclared internal source paths from another package. The main integration points are:
+The subpaths declared in [`package.json`](./package.json) are supported public APIs. The package root (`@maka/runtime`) is not exported. Import through a declared subpath rather than an internal source path:
+
+```ts
+import { SessionManager } from '@maka/runtime/session-manager';
+import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
+```
+
+The main integration points are:
 
 - `SessionManager` for session and turn orchestration.
 - `BackendRegistry` and `AgentBackend` for backend selection.
@@ -32,14 +39,14 @@ The package root barrel and the subpaths declared in `package.json` are supporte
 - `buildBuiltinTools()` and the workspace executor interfaces for tool composition.
 - `RuntimeKernel`, runtime events, projections, and recovery helpers for execution lifecycle.
 
-Desktop composition lives in `apps/desktop/src/main/main.ts`. Other clients execute Maka through Runtime Host rather than composing Runtime directly.
+The shared execution composition lives in [`packages/runtime-host/src/server/execution-composition.ts`](../runtime-host/src/server/execution-composition.ts). Desktop, TUI, and CLI execute Maka through Runtime Host.
 
 ## Extension rules
 
 - Add backend behavior behind `AgentBackend` and register it through the existing registry.
 - Add tools through the builtin/tool composition seams; keep filesystem and shell effects behind `WorkspaceExecutor`.
 - Put shared pure contracts in `packages/core` and interactive Runtime state in the SQLite control plane owned by `packages/storage`.
-- Expose supported package APIs through the root barrel or a declared `package.json` subpath rather than importing internal files from another package.
+- Expose supported package APIs through a declared `package.json` subpath rather than importing internal files from another package.
 - Keep provider credentials and Electron IPC outside this package. The product shell resolves credentials and passes only the dependencies required for execution.
 
 For the system-level model and code-reading map, start with the root `ARCHITECTURE.md`. Sandbox-specific contracts live in `src/sandbox/README.md`.
