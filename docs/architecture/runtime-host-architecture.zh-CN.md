@@ -132,11 +132,11 @@ Module 契约包括 `handlers`、`recover(phase)`、`beginDrain()`、`close()`�
 
 实现：[Module contract](../../packages/runtime-host/src/server/host-composition.ts)、[interactive assembly](../../packages/runtime-host/src/server/execution-composition.ts)。
 
-## 本地持久化边界
+### 本地持久化边界
 
 本地 Runtime 接入遵循 [#2370](https://github.com/apache/maka/issues/2370) 和 [#4666](https://github.com/apache/maka/discussions/4666) 讨论的职责分离，但不替换已有 live-state authority。
 
-Host 已经用 root lease 打开 `storage-writer-composition.ts`，并注入由其持有的 writers。`execution-stores.ts` 保留 lease 校验、品牌鉴权及 close/drain 行为。`session-store-contract.ts` 将 Session 操作、DTO 和领域错误从 SQLite adapter 中分离；`runtime-event-store-contract.ts` 则定义 Tool 事务 DTO 与 Session 事件位置。旧导出保持兼容。这不是第二套 facade，也不表示已有 remote live-state adapter。
+可信 Host 装配层选择 `ExecutionPersistenceProvider`，默认使用 Local。它通过 `storage-writer-composition.ts` 用 root lease 打开整组 writers；`execution-stores.ts` 对所有被选实现保留 lease 校验、品牌鉴权及 close/drain 行为。`session-store-contract.ts` 将 Session 操作、DTO 和领域错误从 SQLite 中分离；`runtime-event-store-contract.ts` 定义 Tool 事务 DTO 与 Session 事件位置。独立的 test-only Memory provider 用于验证可替换边界，不是持久化 remote adapter。完整 provider 范围与生命周期见[执行持久化边界](local-runtime-execution-persistence.md)。
 
 | 能力 | 契约与消费者 | 保留的提交边界 |
 |---|---|---|
@@ -147,11 +147,11 @@ Host 已经用 root lease 打开 `storage-writer-composition.ts`，并注入由�
 | Continuation | `RuntimeContinuationAuthorityStore`；Runtime recovery、Root Turn coordinator | 绑定不可变 source 的 claim，以及专用 continuation-start 提交 |
 | WorkHub 委派 | `assignWorkHubMessage`；WorkHub coordinator 经 Host composition 调用 | 可选目标创建/claim、目标 pending admission、协调记录与可选 supersession 在同一事务提交 |
 
-消费者按需保留已有的窄 `Pick<...>` 依赖，不向 coordinator 暴露 SQL handle 或通用 transaction callback。Goal、Memory、Artifact 等领域继续使用已有契约与生命周期。
+消费者按需保留已有的窄 `Pick<...>` 依赖，不向 coordinator 暴露 SQL handle 或通用 transaction callback。Goal、Interaction、Graph authority 因为已有操作会跨越这些边界，属于被选中的执行一致性组；长期 Memory、Artifact payload 与 runtime policy 仍独立装配。
 
 ### 用 WorkHub 验证兼容性
 
-进程崩溃测试通过真实 Host 连接提交 `workhub.coordination.act`。仅存在于 fixture 的屏障在真实 SQLite 委派事务提交之后、结果返回 Host 之前暂停。父进程不做 drain，直接强杀子进程；确认目标消息仍待执行、目标 Root 尚未准入后，再启动持有新 lease 的 Host。正式恢复流程必须显示同一委派、执行同一目标消息，并在 Client 重试时收敛到原身份。
+进程崩溃测试先通过 `workhub.coordination.answer` 准入真实协调 Turn，再经 Host 连接提交 `workhub.coordination.actFromTurn`。Host 从已准入 Turn 读取用户原文和源附件。仅存在于 fixture 的屏障在真实 SQLite 委派事务提交之后、结果返回 Host 之前暂停。父进程不做 drain，直接强杀子进程；确认目标消息仍待执行、目标 Root 尚未准入后，再启动持有新 lease 的 Host。正式恢复流程必须显示同一委派、执行同一目标消息，并在新准入的协调 Turn 重试动作时收敛到原身份。
 
 `create_new` 和 `delegate_existing` 都覆盖带附件与不带附件的情况。Host 在委派之前复制选中的 Artifact；事务保留协调 Session 的源引用及目标 Session 的 admission 引用，并校验附件元数据对应。改变源附件不能复用原 action 身份。另有事务中断测试在目标 admission 插入之后验证整体回滚。
 

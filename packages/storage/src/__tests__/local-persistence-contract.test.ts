@@ -97,7 +97,7 @@ test('leased WorkHub contract persists copied attachments and rejects inconsiste
       attachments: [copied],
     });
     const request: WorkHubMessageAssignmentRequest = {
-      assignment: { ...base.assignment, attachments: [source] },
+      assignment: { ...base.assignment, attachments: [source], targetAttachments: [copied] },
       admission: {
         ...base.admission,
         content,
