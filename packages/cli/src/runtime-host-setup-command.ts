@@ -140,6 +140,7 @@ export interface RuntimeHostSetupCliOptions {
   readonly bindPairingToClient?: boolean;
   readonly repairRootAfterRemount?: true;
   readonly updateExisting?: boolean;
+  readonly allowInterruptActiveTasks?: boolean;
   readonly rootPath?: string;
   readonly projectDirectoryRoots?: readonly {
     readonly label: string;
@@ -502,7 +503,7 @@ async function runRuntimeHostSupervisedSetupLocked(
                   .then(() => undefined),
             }
           : {}),
-        allowInterruptActiveTasks: Boolean(current && packageChanged && options.updateExisting),
+        allowInterruptActiveTasks: options.allowInterruptActiveTasks === true,
         deps: lifecycleDeps,
       });
       if (replacement.kind === 'active_tasks') {
@@ -880,7 +881,7 @@ async function runRuntimeHostOnDemandSetupLocked(
           activateDesired: async () => {
             await deps.activateDesired({ rootId: capability.rootId });
           },
-          allowInterruptActiveTasks: Boolean(current && packageChanged && options.updateExisting),
+          allowInterruptActiveTasks: options.allowInterruptActiveTasks === true,
           deps: lifecycleDeps,
         });
         if (replacement.kind === 'active_tasks') {

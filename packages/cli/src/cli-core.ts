@@ -465,6 +465,7 @@ export async function runMakaCli(
         bindPairingToClient: command.bindPairingToClient,
         ...(command.repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
         updateExisting: command.updateExisting,
+        allowInterruptActiveTasks: command.allowInterruptActiveTasks,
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),
         ...(command.projectDirectoryRoots
           ? { projectDirectoryRoots: command.projectDirectoryRoots }

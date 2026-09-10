@@ -181,5 +181,36 @@ test('WSL setup forwards the development archive and its exact evidence', async 
   const setupCommand = launches[1]?.at(-1) ?? '';
   assert.match(setupCommand, new RegExp(`${RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV}=`, 'u'));
   assert.ok(setupCommand.includes(integrity));
+  assert.match(setupCommand, /--update-existing/u);
+  assert.doesNotMatch(setupCommand, /--allow-interrupt-active-tasks/u);
   assert.match(setupCommand, /--package.*\/mnt\/c\/maka-development\.tgz/u);
+});
+
+
+test('released WSL onboarding cannot authorize replacement or interruption', async () => {
+  let command = '';
+  await assert.rejects(runDesktopRuntimeHostWslSetup({
+    distribution: 'Ubuntu',
+    setupPackage: { kind: 'npm', specifier: 'maka-agent@0.2.0' },
+    principalId: 'desktop:client',
+  }, () => undefined, undefined, {
+    wslExecutable: 'wsl.exe',
+    processFactory: (_executable, args) => {
+      command = args.at(-1) ?? '';
+      const child = new EventEmitter() as ChildProcessWithoutNullStreams;
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      Object.assign(child, { stdin: new PassThrough(), stdout, stderr, kill: () => true });
+      process.nextTick(() => {
+        stdout.end(encodeRuntimeHostSetupFrame({
+          schemaVersion: 1, sequence: 0, kind: 'error',
+          error: { code: 'version_change_requires_update', message: 'Use the update workflow' },
+        }));
+        stderr.end();
+        child.emit('close', 1, null);
+      });
+      return child;
+    },
+  }), /Use the update workflow/u);
+  assert.doesNotMatch(command, /--update-existing|--allow-interrupt-active-tasks/u);
 });

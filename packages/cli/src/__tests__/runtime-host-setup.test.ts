@@ -306,6 +306,36 @@ test('on-demand setup installs one exact deployment without a service backend', 
     'version_change_requires_update',
   );
 
+  const beforeBusyUpdate = await readFile(
+    resolveRuntimeHostManagedDeploymentConfigPath(rootId),
+    'utf8',
+  );
+  const busyOutputs: string[] = [];
+  assert.equal(
+    await runRuntimeHostSetupCli(
+      { ...replacementOptions, updateExisting: true },
+      {
+        ...replacementPackage,
+        replaceLifecycle: async (input) => {
+          // Model the source Host refusing retirement while a TUI owns work.
+          assert.equal(input.allowInterruptActiveTasks, false);
+          return { kind: 'active_tasks' };
+        },
+        writeOutput: (value) => busyOutputs.push(value),
+      },
+    ),
+    1,
+  );
+  assert.equal(
+    await readFile(resolveRuntimeHostManagedDeploymentConfigPath(rootId), 'utf8'),
+    beforeBusyUpdate,
+  );
+  assert.ok(
+    busyOutputs
+      .map(decodeRuntimeHostSetupFrame)
+      .some((frame) => frame?.kind === 'error' && frame.error.code === 'active_tasks'),
+  );
+
   const replacementOutputs: string[] = [];
   let replacementAllowedInterrupt: boolean | undefined;
   assert.equal(
@@ -329,7 +359,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
   ) as RuntimeHostManagedDeploymentConfig;
   assert.equal(replaced.launch.package.version, '1.2.4');
   assert.equal(replaced.launch.package.integrity, replacementIntegrity);
-  assert.equal(replacementAllowedInterrupt, true);
+  assert.equal(replacementAllowedInterrupt, false);
   assert.equal(
     replacementOutputs.map(decodeRuntimeHostSetupFrame).some((frame) => frame?.kind === 'complete'),
     true,

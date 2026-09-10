@@ -182,7 +182,7 @@ export async function runDesktopRuntimeHostWslSetup(
     executable,
     processFactory,
   );
-  const command = runtimeHostWslSetupCommand(setupPackage, input);
+  const command = runtimeHostWslSetupCommand(setupPackage, input, input.setupPackage.kind === 'development_archive');
   const child = processFactory(executable, ['--distribution', distribution, '--exec', '/bin/sh', '-lc', command]);
   return runWslFramedProcess({
     child,
@@ -241,6 +241,7 @@ async function resolveWslPackageSpecifier(
 function runtimeHostWslSetupCommand(
   setupPackage: { readonly specifier: string; readonly integrity?: string },
   input: Pick<DesktopRuntimeHostWslSetupInput, 'principalId' | 'projectDirectoryRoots'>,
+  development: boolean,
 ): string {
   if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(input.principalId)) {
     throw new Error('Runtime Host setup principal is invalid');
@@ -256,7 +257,9 @@ function runtimeHostWslSetupCommand(
     '--lifecycle',
     'on-demand',
     '--repair-root-after-remount',
-    '--update-existing',
+    // Source development explicitly selects a new archive; released onboarding
+    // must never replace an existing shared deployment as a side effect of Connect.
+    ...(development ? ['--update-existing'] : []),
     ...(input.projectDirectoryRoots === undefined
       ? []
       : input.projectDirectoryRoots.length === 0

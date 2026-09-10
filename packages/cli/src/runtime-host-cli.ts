@@ -142,6 +142,7 @@ export type RuntimeHostCliCommand =
       bindPairingToClient?: true;
       repairRootAfterRemount?: true;
       updateExisting?: true;
+      allowInterruptActiveTasks?: true;
       clientDataRoot?: string;
       rootPath?: string;
       projectDirectoryRoots?: { label: string; path: string }[];
@@ -702,6 +703,7 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
   let bindPairingToClient = false;
   let repairRootAfterRemount = false;
   let updateExisting = false;
+  let allowInterruptActiveTasks = false;
   let clientDataRoot: string | undefined;
   let enableDirectPeer = false;
   const coordinationRelays: string[] = [];
@@ -750,6 +752,10 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
         if (repairRootAfterRemount) return error('Duplicate --repair-root-after-remount');
         repairRootAfterRemount = true;
       },
+      '--allow-interrupt-active-tasks': () => {
+        if (allowInterruptActiveTasks) return error('Duplicate --allow-interrupt-active-tasks');
+        allowInterruptActiveTasks = true;
+      },
       '--update-existing': () => {
         if (updateExisting) return error('Duplicate --update-existing');
         updateExisting = true;
@@ -757,6 +763,9 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
     },
   });
   if ('kind' in options) return options;
+  if (allowInterruptActiveTasks && !updateExisting) {
+    return error('--allow-interrupt-active-tasks requires --update-existing');
+  }
   if (!principalId || !/^[A-Za-z0-9_.:-]{1,128}$/u.test(principalId)) {
     return error('runtime-host setup requires a valid --principal');
   }
@@ -777,6 +786,7 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
     ...(bindPairingToClient ? { bindPairingToClient: true } : {}),
     ...(repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
     ...(updateExisting ? { updateExisting: true } : {}),
+    ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
     ...(clientDataRoot ? { clientDataRoot } : {}),
     ...(enableDirectPeer ? { directPeer: { coordinationRelays } } : {}),
   };
