@@ -255,12 +255,13 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   // Sample the real native resize, including repeated folds. The composer
   // must stay inside the window while its original 12px gutter interpolates.
   for (const expanded of [true, false, true]) {
-    const motion = await workhub.getByRole('button', { name: expanded ? /展开对话|Expand conversation/ : /收起对话|Collapse conversation/ }).evaluate((button) => new Promise<{ bottom: number; left: number }[]>((resolve) => {
-      const frames: { bottom: number; left: number }[] = [];
+    const motion = await workhub.getByRole('button', { name: expanded ? /展开对话|Expand conversation/ : /收起对话|Collapse conversation/ }).evaluate((button) => new Promise<{ bottom: number; left: number; height: number; inset: number }[]>((resolve) => {
+      const frames: { bottom: number; left: number; height: number; inset: number }[] = [];
       const started = performance.now();
       const sample = () => {
         const rect = document.querySelector('.workHubComposerSurface')!.getBoundingClientRect();
-        frames.push({ bottom: innerHeight - rect.bottom, left: rect.left });
+        const inset = parseFloat(getComputedStyle(document.querySelector('.workHubLive')!).getPropertyValue('--workhub-viewport-inset'));
+        frames.push({ bottom: innerHeight - rect.bottom, left: rect.left, height: innerHeight, inset });
         if (performance.now() - started < 500) requestAnimationFrame(sample);
         else resolve(frames);
       };
@@ -270,7 +271,18 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     expect(motion.every(({ bottom, left }) => bottom >= -0.5 && bottom <= 12.5 && left >= -0.5 && left <= 12.5)).toBe(true);
     expect(motion.some(({ bottom }) => bottom > 0.5 && bottom < 11.5)).toBe(true);
     expect(motion.at(-1)!.bottom).toBeCloseTo(expanded ? 12 : 0);
+    expect(new Set(motion.map(({ height }) => height)).size).toBeLessThanOrEqual(2);
+    expect(motion.some(({ inset }) => inset > 0)).toBe(true);
+    expect(motion.at(-1)!.inset).toBe(0);
   }
+  const keptEditor = await workhub.evaluate(async () => {
+    const editor = document.querySelector('.maka-composer-editor [contenteditable]');
+    (document.querySelector('.workHubWindowActions [aria-expanded="true"]') as HTMLButtonElement).click();
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    (document.querySelector('.workHubExpandButton') as HTMLButtonElement).click();
+    return document.querySelector('.maka-composer-editor [contenteditable]') === editor;
+  });
+  expect(keptEditor).toBe(true);
   await expect(workhub.locator('.workHubHistory')).toBeVisible();
   await expect.poll(() => workhub.evaluate(() => window.innerHeight)).toBe(expandedHeight);
   await expect.poll(floatingBottom).toBe(anchoredBottom);

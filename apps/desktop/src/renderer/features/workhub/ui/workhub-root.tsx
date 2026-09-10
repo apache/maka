@@ -90,6 +90,16 @@ export function WorkHubRoot() {
   const editingProgress = progress && editingProgressRequest === presentation.progressRequest;
   const floating = presentation?.placement === 'floating';
   const showConversation = !progress && (!floating || conversationExpanded);
+  useLayoutEffect(() => {
+    const element = surface.current;
+    const unsubscribe = services.presentation.onViewportInset((inset) => {
+      element?.style.setProperty('--workhub-viewport-inset', `${inset}px`);
+    });
+    return () => {
+      unsubscribe();
+      element?.style.removeProperty('--workhub-viewport-inset');
+    };
+  }, [services]);
   const dockMotion = useRef<{ floating: boolean; progress: boolean; expanded: boolean; padding: Keyframe; animation?: Animation }>(undefined);
   useLayoutEffect(() => {
     const dock = composerSurface.current?.parentElement?.parentElement;

@@ -39,6 +39,7 @@ export const workHubPresentationBridge: WorkHubPresentationBridge = {
   hide: () => ipcRenderer.invoke('workhub-presentation:command', 'hide'),
   openSession: (sessionKey) => ipcRenderer.invoke('workhub-presentation:command', 'session', sessionKey),
   subscribe: (handler) => subscribe('workhub-presentation:changed', handler),
+  onViewportInset: (handler) => subscribe('workhub-presentation:viewport-inset', handler),
   onFocusComposer: (handler) => subscribe('workhub-presentation:focus-composer', handler),
   onOpenMain: (handler) => {
     const unsubscribe = subscribe('workhub-presentation:open-main', handler);

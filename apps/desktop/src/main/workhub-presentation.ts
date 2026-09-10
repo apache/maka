@@ -65,6 +65,9 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   let expandedHeight = 720;
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;
   let resizeTarget: Electron.Rectangle | undefined;
+  let resizeViewportHeight: number | undefined;
+  let viewportInset = 0;
+  let floatingRadius: number | undefined;
   let queue: Promise<unknown> = Promise.resolve();
   const mainReady = new WeakSet<Electron.WebContents>();
   const pendingNavigation = new WeakMap<Electron.WebContents, { navigation: WorkHubMainNavigation; revision: number }>();
@@ -140,10 +143,20 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     return view;
   }
 
-  function cancelFloatingAnimation(): void {
+  function cancelFloatingAnimation(preserveViewport = false): void {
+    const restoreViewport = resizeViewportHeight !== undefined;
     if (resizeTimer) clearTimeout(resizeTimer);
     resizeTimer = undefined;
     resizeTarget = undefined;
+    resizeViewportHeight = undefined;
+    if (preserveViewport) return;
+    setViewportInset(0);
+    // Cancellation can precede an asynchronous dock. Restore native coordinates
+    // immediately without remembering an intermediate height as the expanded size.
+    if (restoreViewport && floating && !floating.isDestroyed() && parent === floating) {
+      const { width, height } = floating.getContentBounds();
+      setViewBounds({ x: 0, y: 0, width, height });
+    }
   }
 
   function resizeFloating(bounds: Electron.Rectangle, animate: boolean): void {
@@ -151,13 +164,18 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     if (resizeTarget && bounds.x === resizeTarget.x && bounds.y === resizeTarget.y &&
       bounds.width === resizeTarget.width && bounds.height === resizeTarget.height) return;
     const initial = window.getBounds();
-    cancelFloatingAnimation();
+    const previousViewportHeight = resizeViewportHeight;
+    cancelFloatingAnimation(true);
     if (!animate || !window.isVisible() || systemPreferences.getAnimationSettings().prefersReducedMotion) {
       window.setBounds(bounds);
       fitFloating();
       return;
     }
     resizeTarget = bounds;
+    // Move a stable canvas through the native window instead of relaying every
+    // height sample through Blink layout. The native bounds still own hit testing.
+    resizeViewportHeight = Math.max(initial.height, bounds.height, previousViewportHeight ?? 0);
+    fitFloating();
     const started = performance.now();
     const frequency = screen.getDisplayMatching(bounds).displayFrequency;
     const frameDuration = 1000 / (Number.isFinite(frequency) && frequency > 0 ? frequency : 60);
@@ -192,7 +210,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
         const nextFrame = Math.min(RESIZE_DURATION, frame * frameDuration);
         resizeTimer = setTimeout(tick, Math.max(1, nextFrame - elapsed));
       }
-      else cancelFloatingAnimation();
+      else { cancelFloatingAnimation(); fitFloating(); }
     };
     tick();
   }
@@ -204,10 +222,25 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     viewBounds = bounds;
   }
 
+  function setViewportInset(inset: number): void {
+    if (viewportInset === inset) return;
+    viewportInset = inset;
+    if (view && !view.webContents.isDestroyed()) view.webContents.send('workhub-presentation:viewport-inset', inset / view.webContents.getZoomFactor());
+  }
+
   function fitFloating(): void {
     if (!floating || floating.isDestroyed() || parent !== floating || !view) return;
     const { width, height } = floating.getContentBounds();
-    setViewBounds({ x: 0, y: 0, width, height });
+    // Clip in the native parent so resizing does not rebuild a renderer mask.
+    // CSS supplies the larger resting radius; this is its minimum moving edge.
+    const radius = Math.floor((progressRequest === undefined ? 20 : 18) * view.webContents.getZoomFactor());
+    if (radius !== floatingRadius) {
+      floating.contentView.setBorderRadius(radius);
+      floatingRadius = radius;
+    }
+    const canvasHeight = resizeViewportHeight ?? height;
+    setViewportInset(canvasHeight - height);
+    setViewBounds({ x: 0, y: height - canvasHeight, width, height: canvasHeight });
     if (progressRequest === undefined && conversationExpanded && !resizeTarget) expandedHeight = height;
   }
 
@@ -227,6 +260,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       hasShadow: true, roundedCorners: true,
       webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
     });
+    floatingRadius = undefined;
     // A macOS panel can accompany fullscreen apps without turning Maka into
     // a Dock-less accessory application.
     if (process.platform === 'darwin') floating.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });

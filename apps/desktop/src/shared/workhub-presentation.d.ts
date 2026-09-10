@@ -55,6 +55,8 @@ export interface WorkHubPresentationBridge {
   hide(): Promise<void>;
   openSession(sessionKey: string): Promise<void>;
   subscribe(handler: (snapshot: WorkHubPresentationSnapshot) => void): () => void;
+  /** Visible top edge inside the animation canvas, in CSS pixels. */
+  onViewportInset(handler: (inset: number) => void): () => void;
   onFocusComposer(handler: (expand?: boolean) => void): () => void;
   onOpenMain(handler: (navigation: WorkHubMainNavigation) => void): () => void;
 }

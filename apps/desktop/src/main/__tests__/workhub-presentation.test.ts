@@ -86,7 +86,8 @@ async function harness(animate = false, displayFrequency = 60) {
       return this.contents;
     }
     children = new Set<FakeView>();
-    contentView = { addChildView: (v: FakeView) => this.children.add(v), removeChildView: (v: FakeView) => this.children.delete(v) };
+    cornerRadius = 0;
+    contentView = { setBorderRadius: (radius: number) => { this.cornerRadius = radius; }, addChildView: (v: FakeView) => this.children.add(v), removeChildView: (v: FakeView) => this.children.delete(v) };
     visible = false;
     destroyed = false;
     bounds = { x: 0, y: 0, width: 1000, height: 800 };
@@ -283,6 +284,8 @@ test('animates from the current height, keeps the bottom anchored and survives r
   h.advance(80);
   assert.ok(floating.bounds.height > 110 && floating.bounds.height < 720);
   assert.equal(floating.bounds.y + floating.bounds.height, bottom);
+  assert.equal(view.boundsUpdates.at(-1)!.height, 720, 'height animation keeps the renderer canvas stable');
+  assert.equal(view.boundsUpdates.at(-1)!.y + 720, floating.bounds.height, 'the live editor stays at the native bottom');
   // A composer measurement during expansion must not restart or shrink it.
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 114 });
   h.advance(340);
@@ -295,15 +298,18 @@ test('animates from the current height, keeps the bottom anchored and survives r
   assert.ok(intermediate > 110 && intermediate < 720);
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 110 });
   assert.equal(floating.bounds.height, intermediate);
+  assert.equal(view.boundsUpdates.at(-1)!.height, 720, 'reversal reuses the existing canvas');
   h.advance(420);
   assert.equal(floating.bounds.height, 720);
   assert.equal(floating.bounds.y + floating.bounds.height, bottom);
+  assert.equal(view.boundsUpdates.at(-1)!.y, 0);
   await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 110 });
   h.advance(80);
   await h.command(view.webContents, 'hide');
   const hiddenBounds = floating.bounds;
   h.advance(500);
   assert.equal(floating.bounds, hiddenBounds);
+  assert.equal(view.webContents.sent.filter(([channel]) => channel.endsWith('viewport-inset')).at(-1)![1], 0, 'hiding clears transient clipping');
   h.controller.dispose();
 });
 
@@ -590,18 +596,23 @@ test('a pending backdrop capture and older hide cannot delay or undo the shortcu
 });
 
 test('the shortcut supersedes a pending dock without waiting for the main window', async () => {
-  const h = await harness();
+  const h = await harness(true);
   await h.controller.refreshSettings();
   h.shortcut();
   const view = h.views[0]!;
+  const floating = h.windows[1]!;
+  await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 96 });
+  h.advance(80);
+  assert.ok(view.boundsUpdates.at(-1)!.y < 0);
   const opened = deferred<void>();
   const opening = h.deferOpening(opened.promise);
   const docking = h.command(view.webContents, 'dock');
   await opening;
+  assert.deepEqual({ ...view.boundsUpdates.at(-1) }, { x: 0, y: 0, width: floating.bounds.width, height: floating.bounds.height }, 'pending docking restores normal input coordinates');
   h.shortcut();
   h.shortcut();
-  const floating = h.windows[1]!;
   assert.equal(floating.visible, true);
+  assert.equal(floating.bounds.height, 720, 'cancelling must not remember the intermediate animation height');
   opened.resolve();
   await docking;
   assert.equal(h.controller.getSnapshot().placement, 'floating');
@@ -616,11 +627,15 @@ test('native resize callbacks do not submit duplicate view bounds and follow dis
   const h = await harness(true, 120);
   await h.controller.show();
   const view = h.views[0]!;
+  view.webContents.getZoomFactor = () => 2;
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 96 });
   const before = view.boundsUpdates.length;
   h.advance(9);
   assert.ok(view.boundsUpdates.length > before, 'a 120Hz display gets its next animation frame before 16ms');
   assert.equal(view.boundsUpdates.length - before, 1, 'an early timer must not submit a second resize for the same display frame');
+  const floating = h.windows[1]!;
+  assert.equal(floating.cornerRadius, 40, 'native clipping follows renderer zoom');
+  assert.equal(view.webContents.sent.filter(([channel]) => channel.endsWith('viewport-inset')).at(-1)![1], (720 - floating.bounds.height) / 2, 'renderer offsets use CSS pixels');
   h.advance(411);
   assert.equal(h.windows[1]!.bounds.height, 720);
   for (let index = 1; index < view.boundsUpdates.length; index++) {
@@ -783,8 +798,11 @@ test('editing progress grows at its existing bottom and opening interpolates bot
   h.advance(80);
   assert.ok(floating.bounds.height > 112 && floating.bounds.height < 180);
   assert.equal(floating.bounds.width, 360);
+  assert.equal(floating.cornerRadius, 18, 'the native card clips the moving canvas at its visible edge');
   assert.equal(floating.bounds.y + floating.bounds.height, bottom);
   assert.equal(h.controller.getSnapshot().progressRequest, request, 'editing does not open the conversation');
+  assert.equal(view.boundsUpdates.at(-1)!.height, 180);
+  assert.equal(view.boundsUpdates.at(-1)!.y + 180, floating.bounds.height);
   h.advance(340);
   assert.equal(floating.bounds.height, 180);
   await h.command(view.webContents, 'show-conversation', request);
@@ -793,9 +811,11 @@ test('editing progress grows at its existing bottom and opening interpolates bot
   assert.ok(floating.bounds.height > 180 && floating.bounds.height < 720);
   assert.ok(Math.abs(floating.bounds.x + floating.bounds.width / 2 - center) <= 0.5);
   assert.equal(floating.bounds.y + floating.bounds.height, bottom);
+  assert.equal(view.boundsUpdates.at(-1)!.height, 720, 'opening the card changes width without relaying height through layout');
   h.advance(340);
   assert.equal(floating.bounds.height, 720);
   assert.equal(floating.bounds.width, 520);
+  assert.equal(floating.cornerRadius, 20);
   assert.deepEqual({ ...view.boundsUpdates.at(-1) }, { x: 0, y: 0, width: 520, height: 720 });
   assert.equal(floating.focused, 0);
   assert.equal(h.main.focused, 0);

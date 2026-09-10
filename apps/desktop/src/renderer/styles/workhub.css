@@ -17,6 +17,13 @@
  * under the License.
  */
 
+/* Native animation samples must not invalidate the conversation's entire style tree. */
+@property --workhub-viewport-inset {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
 .workhub-body {
   display: grid;
   width: 100%;
@@ -164,7 +171,7 @@
   .workHubLiveWelcome > svg { color: var(--maka-brand); }
   .workHubHistory { transition: opacity 240ms ease-out, visibility 0s; }
   .workHubLive[data-conversation-expanded='false'] .workHubHistory { visibility: hidden; opacity: 0; transition-delay: 0s, 240ms; }
-  .workHubWindowControls { position: absolute; inset: 4px 12px auto; height: 28px; display: flex; align-items: center; justify-content: space-between; z-index: 2; -webkit-app-region: drag; }
+  .workHubWindowControls { --workhub-viewport-inset: inherit; transform: translateY(var(--workhub-viewport-inset)); position: absolute; inset: 4px 12px auto; height: 28px; display: flex; align-items: center; justify-content: space-between; z-index: 2; -webkit-app-region: drag; }
   .workHubWindowActions { display: flex; gap: 4px; }
   .workHubWindowControls button { -webkit-app-region: no-drag; color: var(--muted-foreground); }
   .workHubWindowControls .workHubCloseButton { width: 18px; height: 18px; min-width: 18px; min-height: 18px; padding: 0; border-radius: 50%; background: color-mix(in oklch, var(--foreground) 13%, transparent); }
@@ -182,6 +189,7 @@
   }
   .workHubLive[data-placement='floating']::before {
     content: ''; position: absolute; inset: 0; z-index: 4; pointer-events: none; border-radius: inherit;
+    --workhub-viewport-inset: inherit; transform: translateY(var(--workhub-viewport-inset));
     background: linear-gradient(155deg, rgb(255 255 255 / 7%), transparent 38%, transparent 72%, rgb(255 255 255 / 3%));
     box-shadow: inset 0 1px 0 rgb(255 255 255 / 24%), inset 0 -1px 0 color-mix(in oklch, var(--foreground) 9%, transparent), inset 0 0 0 1px color-mix(in oklch, var(--foreground) 7%, transparent);
     opacity: 0.65; transition: opacity 420ms ease-out;
@@ -231,6 +239,8 @@ html:has(.workHubLive), body:has(.workHubLive), #root:has(.workHubLive) { backgr
   overflow: hidden;
 }
 .workHubProgressCard {
+  --workhub-viewport-inset: inherit;
+  transform: translateY(var(--workhub-viewport-inset));
   position: absolute; inset: 0 0 auto; box-sizing: border-box; z-index: 2;
   display: flex; flex-direction: column; gap: 4px; padding: 11px 13px 7px;
   color: var(--foreground); -webkit-app-region: drag;
