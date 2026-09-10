@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../shared/workhub-conversation.js';
 import type { ConnectionEvent } from '@maka/core/connections';
 import type {
   ConnectionTestResult,
@@ -713,6 +714,8 @@ export interface DesktopSessionUsageSummary extends UsageSummaryV2 {
 
 export interface MakaBridge {
   sessionLocal: import('../shared/session-local-contract.js').DesktopSessionLocalBridge;
+  workHubControl: import('../shared/workhub-control.js').WorkHubControlBridge;
+  workHubPresentation: import('../shared/workhub-presentation.js').WorkHubPresentationBridge;
   sessionCollaboration: {
     prepareInvitation(
       sessionId: string,
@@ -1009,23 +1012,13 @@ export interface MakaBridge {
     ): () => void;
   };
   workHub: {
+    getSession(coordinationSessionId: string): Promise<DesktopSessionSummary>;
     prepareAttachments(coordinationSessionId: string, items: RendererIngestInput[]): Promise<AttachmentRef[]>;
+    answer(coordinationSessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
+    configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>): Promise<OperationOutput<'workhub.coordination.configureModel'>>;
     /** Resolve the active Runtime Host's stable coordination conversation. */
     resolveCoordinationSession(): Promise<string>;
-    /** Persist one deterministic clarification or routing summary. */
-    record(
-      coordinationSessionId: string,
-      input: { turnId: string; userText: string; assistantText: string },
-    ): Promise<{ turnId: string }>;
-    /** Read one bounded, Host-issued candidate set for a coordination action. */
-    candidates(
-      coordinationSessionId: string,
-    ): Promise<OperationOutput<'workhub.coordination.candidates'>>;
-    /** Submit a typed proposal; trusted creation context is added outside the renderer. */
-    act(
-      coordinationSessionId: string,
-      input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
-    ): Promise<OperationOutcome<'workhub.coordination.act'>>;
+
   };
   sessions: {
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]>;

@@ -42,6 +42,7 @@ export interface ComposerMentionsSurface {
     readonly projectId: string | null;
   };
   readonly onAddQuote?: (quote: QuoteRef) => void;
+  readonly pendingQuotes?: readonly QuoteRef[];
 }
 
 
@@ -117,7 +118,7 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     skills: EMPTY_SKILLS,
   });
   const [sessions, setSessions] = useState<readonly ConversationSession[]>([]);
-  const contextKey = [
+  const contextKey = surface.sessionId ? `session\u0000${surface.sessionId}` : [
     surface.sessionId ?? '',
     surface.projectPath ?? '',
     surface.newSessionModel?.llmConnectionSlug ?? '',
@@ -223,15 +224,15 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
   }, [
     contextKey,
     services,
-    surface.newSessionModel?.llmConnectionSlug,
-    surface.newSessionModel?.model,
-    surface.newSessionCollaborationMode,
-    surface.newSessionPermissionMode,
+    surface.sessionId ? undefined : surface.newSessionModel?.llmConnectionSlug,
+    surface.sessionId ? undefined : surface.newSessionModel?.model,
+    surface.sessionId ? undefined : surface.newSessionCollaborationMode,
+    surface.sessionId ? undefined : surface.newSessionPermissionMode,
     surface.sessionId,
     surface.skillCatalogRevision,
-    surface.newTaskTarget?.profileId,
-    surface.newTaskTarget?.hostId,
-    surface.newTaskTarget?.projectId,
+    surface.sessionId ? undefined : surface.newTaskTarget?.profileId,
+    surface.sessionId ? undefined : surface.newTaskTarget?.hostId,
+    surface.sessionId ? undefined : surface.newTaskTarget?.projectId,
   ]);
 
   const searchMentionFiles = useMemo(
@@ -261,6 +262,7 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     activeId: surface.sessionId,
     hostId: activeHostId,
     addQuote: surface.onAddQuote,
+    pendingQuotes: surface.pendingQuotes,
     errorCopy: useMemo(
       () => ({
         unavailableTitle: mentionCopy.sessionReferenceUnavailableTitle,
@@ -269,11 +271,13 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
         emptyDetail: mentionCopy.sessionReferenceEmptyDetail,
         readFailedTitle: mentionCopy.sessionReferenceReadFailedTitle,
         readFailedDetail: mentionCopy.sessionReferenceReadFailedDetail,
+        limitDetail: mentionCopy.sessionReferenceLimitDetail,
       }),
       [
         mentionCopy.sessionReferenceEmptyDetail,
         mentionCopy.sessionReferenceEmptyTitle,
         mentionCopy.sessionReferenceReadFailedDetail,
+        mentionCopy.sessionReferenceLimitDetail,
         mentionCopy.sessionReferenceReadFailedTitle,
         mentionCopy.sessionReferenceUnavailableDetail,
         mentionCopy.sessionReferenceUnavailableTitle,

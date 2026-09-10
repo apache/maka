@@ -137,7 +137,7 @@ export function createSessionSnapshot(
   return {
     reference: {
       sessionId: options.sessionId,
-      sessionName: options.sessionName,
+      sessionName: redactSecrets(options.sessionName),
       capturedAt: options.capturedAt ?? Date.now(),
     },
     items: selected,
@@ -150,11 +150,12 @@ export function createSessionSnapshot(
 
 /** Convert a snapshot into the existing inline quote transport. */
 export function sessionSnapshotToQuote(snapshot: SessionSnapshot): QuoteRef {
+  const sessionName = redactSecrets(snapshot.reference.sessionName);
   return {
     text: snapshot.text,
-    label: `Session: ${snapshot.reference.sessionName}`,
+    label: `Session: ${sessionName}`,
     sourceSessionId: snapshot.reference.sessionId,
-    sourceSessionName: snapshot.reference.sessionName,
+    sourceSessionName: sessionName,
     sourceCapturedAt: snapshot.reference.capturedAt,
     sourceTruncated: snapshot.truncated,
   };

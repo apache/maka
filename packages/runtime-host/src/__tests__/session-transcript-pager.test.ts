@@ -986,3 +986,18 @@ function decodeBootstrap(
     JSON.parse(Buffer.from(fragment.data, 'base64').toString('utf8')),
   );
 }
+
+test('shared transcript preserves admitted action identity alongside its physical Turn', () => {
+  const message = {
+    type: 'user' as const,
+    id: 'input',
+    turnId: 'physical-retry',
+    ts: 1,
+    text: 'Resume Payments',
+    coordinationActionId: 'resume-action',
+  };
+  assert.deepEqual(
+    projectSharedSessionTranscriptMessage(message, 'maka_workhub_coordination'),
+    message,
+  );
+});

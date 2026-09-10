@@ -28,6 +28,9 @@ test('archived-only history boots into a usable new task', async ({ window: page
   await composer.press('Enter');
   await expect(reply).toBeVisible({ timeout: 20_000 });
 
+  // Visible streaming text is not proof that the Host has released the Turn.
+  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1);
+
   // Prove bootstrap can restore this history before archiving it.
   await page.reload();
   await expect(reply).toBeVisible();

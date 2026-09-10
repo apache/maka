@@ -72,6 +72,9 @@ test('round-trips Session snapshot provenance and rejects partial provenance', (
   assert.deepEqual(decodeMessageContent({ text: 'continue', quotes: [quote] }).quotes, [quote]);
   assert.equal(isQuoteRef({ ...quote, sourceTruncated: undefined }), false);
   assert.equal(isQuoteRef({ ...quote, sourceCapturedAt: Number.NaN }), false);
+  assert.equal(isQuoteRef({ ...quote, sourceCapturedAt: Number.MAX_VALUE }), false);
+  assert.equal(isQuoteRef({ ...quote, sourceCapturedAt: 8.64e15 + 1 }), false);
+  assert.equal(isQuoteRef({ ...quote, sourceCapturedAt: 8.64e15 }), true);
 });
 
 test('round-trips bounded tool step progress through the shared wire codec', () => {

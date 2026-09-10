@@ -119,6 +119,7 @@ export {
   MessageSquare,
   Mic,
   Maximize2,
+  PictureInPicture2,
   Minus,
   Minimize2,
   Monitor,

@@ -250,6 +250,16 @@ describe('permission response IPC boundary', () => {
       },
     );
     assert.equal(normalizeSessionSendCommand({ type: 'stop' }), undefined);
+    for (const sourceCapturedAt of [Number.MAX_VALUE, 8.64e15 + 1]) {
+      assert.throws(() => normalizeSessionSendCommand({ type: 'send', text: 'review', quotes: [{
+        text: 'excerpt', sourceSessionId: 'source', sourceSessionName: 'Research',
+        sourceCapturedAt, sourceTruncated: false,
+      }] }));
+    }
+    assert.doesNotThrow(() => normalizeSessionSendCommand({ type: 'send', text: 'review', quotes: [{
+      text: 'excerpt', sourceSessionId: 'source', sourceSessionName: 'Research',
+      sourceCapturedAt: 8.64e15, sourceTruncated: false,
+    }] }));
     assert.deepEqual(normalizeSessionSendCommand({ type: 'send', text: '', skillIds: ['writer'] }), {
       type: 'send',
       text: '',

@@ -92,6 +92,22 @@ test('redacts secrets from retained user and assistant messages before quoting t
   assert.doesNotMatch(sessionSnapshotToQuote(snapshot).text, /sk-live-secret-token-value/);
 });
 
+test('redacts a credential-shaped title in both snapshot provenance and quote labels', () => {
+  const secret = 'sk-live-secret-token-value';
+  const snapshot = createSessionSnapshot([user('secret', secret)], {
+    sessionId: 'source',
+    sessionName: secret,
+  });
+  assert.doesNotMatch(JSON.stringify(snapshot), /sk-live-secret-token-value/);
+  // Older Hosts can still supply a raw name; the model-facing converter owns
+  // redaction independently of the snapshot producer.
+  snapshot.reference.sessionName = secret;
+  assert.doesNotMatch(
+    JSON.stringify(sessionSnapshotToQuote(snapshot)),
+    /sk-live-secret-token-value/,
+  );
+});
+
 test('bounds a snapshot from the newest content and preserves truncation provenance', () => {
   const snapshot = createSessionSnapshot(
     [

@@ -124,6 +124,7 @@ test('Session reference picker keeps same-Host sessions and send waits for the s
       activeId: 'current',
       hostId: 'host-a',
       addQuote: latestQuotes.addQuote,
+      pendingQuotes: latestQuotes.pendingQuotes,
       errorCopy: {
         unavailableTitle: 'Session unavailable',
         unavailableDetail: 'Refresh and try again.',
@@ -175,6 +176,39 @@ test('Session reference picker keeps same-Host sessions and send waits for the s
     sourceCapturedAt: 1,
     sourceTruncated: false,
   }]);
+
+  for (const mutation of ['remove', 'add'] as const) {
+    await act(async () => {
+      latestQuotes!.clearQuotes();
+      await latest!.pick({ id: 'source' });
+    });
+    let resolveRead!: (snapshot: SessionSnapshot) => void;
+    services.sessions.readSnapshot = async () => new Promise((resolve) => { resolveRead = resolve; });
+    await act(() => { waiting = latest!.waitForPending(); });
+    await act(async () => {
+      if (mutation === 'remove') latest!.removePendingReference('source');
+      else {
+        sessions.push(session('second-source', 'host-a'));
+        await latest!.pick({ id: 'second-source' });
+      }
+      resolveRead({ reference: { sessionId: 'source', sessionName: 'source', capturedAt: 1 },
+        items: [], text: 'stale excerpt', estimatedTokens: 3, maxChars: 12_000, truncated: false });
+      assert.equal(await waiting, false);
+    });
+    assert.equal(latestQuotes!.pendingQuotes.length, 0);
+    assert.deepEqual(latest!.pendingReferences.map((item) => item.id), mutation === 'remove' ? [] : ['source', 'second-source']);
+    await act(() => {
+      latest!.removePendingReference('source');
+      latest!.removePendingReference('second-source');
+    });
+  }
+
+  await act(() => {
+    for (let index = 0; index < 16; index++) latestQuotes!.addQuote({ text: `quote ${index}` });
+  });
+  await act(async () => { await latest!.pick({ id: 'source' }); });
+  assert.equal(latest!.pendingReferences.length, 0);
+  assert.match(latest!.error!.detail, /16/);
 });
 
 test('send resolves the selected Session snapshot at the send boundary', async () => {

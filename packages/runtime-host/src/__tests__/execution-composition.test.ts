@@ -18,6 +18,10 @@
  */
 
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import type { WorkHubAdmittedAction } from '../server/workhub-coordination-action-gate.js';
+import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import type { BackendSendInput } from '@maka/core/backend-types';
@@ -36,7 +40,13 @@ import type {
   AgentGraphIntentClaim,
   AgentGraphIntentClaimRequest,
 } from '@maka/core/agent-graph-control';
+import type { HostedUserQuestionSettlement } from '@maka/core/backend-types';
 import type { ShellRunRecord } from '@maka/core/shell-run';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import {
+  AgentGraphCoordinator,
+  agentGraphIdForRootSession,
+} from '@maka/runtime/stream-graph-coordinator';
 import {
   FAKE_ASK_USER_QUESTION_PROMPT,
   FAKE_HOLD_OPEN_PROMPT,
@@ -74,7 +84,10 @@ import {
   stopOwnedWorkHubRoot,
   stopReplacedWorkHubRoot,
 } from '../server/execution-composition.js';
-import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { RuntimeHostKernel, type RuntimeHostCompositionContext } from '../server/host-kernel.js';
+import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
+import { connectRuntimeHost, RuntimeHostOperationError } from '../client/index.js';
+import { RUNTIME_HOST_PROTOCOL_VERSION } from '../protocol/index.js';
 import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 
 const require = createRequire(import.meta.url);
@@ -956,7 +969,8 @@ test('WorkHub creates new work through the production assignment composition', a
     try {
       const resolved = await composition.handlers['workhub.coordination.resolve']({}, context);
       assert.equal(resolved.ok, true);
-      const created = await composition.handlers['workhub.coordination.act'](
+      const created = await actWorkHub(
+        composition,
         {
           actionId: 'workhub-create-action',
           userText: 'Fix login stability',
@@ -981,11 +995,11 @@ test('WorkHub creates new work through the production assignment composition', a
           ?.latestDelegationActionId,
         'workhub-create-action',
       );
-      const stopped = await composition.handlers['workhub.coordination.act'](
+      const stopped = await actWorkHub(
+        composition,
         {
           actionId: 'workhub-create-stop-action',
           userText: 'Stop Login stability',
-          confirmation: { kind: 'user_stop' },
           proposal: {
             disposition: 'stop_work',
             expects: { targetSessionId },
@@ -1092,7 +1106,8 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
       assert.ok(candidate);
       if (!candidate) return;
 
-      const delegated = await composition.handlers['workhub.coordination.act'](
+      const delegated = await actWorkHub(
+        composition,
         {
           actionId: 'workhub-resume-stop-delegation',
           userText: FAKE_HOLD_OPEN_PROMPT,
@@ -1120,7 +1135,8 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
 
       pauseNext = true;
       boundary = deferred<void>();
-      const resumed = await composition.handlers['workhub.coordination.act'](
+      const resumed = await actWorkHub(
+        composition,
         {
           actionId: 'workhub-resume-stop-resume',
           userText: 'Resume Payments',
@@ -1160,9 +1176,11 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
       );
       assert.ok(restartedOwner);
       owner = restartedOwner;
-      ({ composition } = await createCapturedExecutionComposition(owner, {
+      ({ composition, manager } = await createCapturedExecutionComposition(owner, {
         safeBoundaryResume: true,
       }));
+      closed = false;
+      await manager.renameSession(target.id, 'Renamed Payments');
       const retry = {
         actionId: 'workhub-resume-stop-resume',
         userText: 'Resume Payments',
@@ -1172,10 +1190,10 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
           expects: { targetSessionId: target.id },
         },
       };
-      const replayed = await composition.handlers['workhub.coordination.act'](retry, context);
-      assert.equal(replayed.ok, false, JSON.stringify(replayed));
-      if (!replayed.ok) assert.equal(replayed.error.code, 'operation_conflict');
-      const fresh = await composition.handlers['workhub.coordination.act'](
+      const replayed = await actWorkHub(composition, retry, context);
+      assert.deepEqual(replayed, resumed);
+      const fresh = await actWorkHub(
+        composition,
         { ...retry, actionId: 'workhub-resume-again' },
         context,
       );
@@ -1219,11 +1237,11 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
         },
       });
 
-      const stopped = await composition.handlers['workhub.coordination.act'](
+      const stopped = await actWorkHub(
+        composition,
         {
           actionId: 'workhub-resume-stop-stop',
           userText: 'Stop Payments',
-          confirmation: { kind: 'user_stop' },
           proposal: {
             disposition: 'stop_work',
             expects: { targetSessionId: target.id },
@@ -1289,7 +1307,8 @@ test('WorkHub does not record resume while safe-boundary resume is disabled', as
       );
       assert.ok(candidate);
       if (!candidate) return;
-      const delegated = await composition.handlers['workhub.coordination.act'](
+      const delegated = await actWorkHub(
+        composition,
         {
           actionId: 'workhub-disabled-resume-delegation',
           userText: FAKE_HOLD_OPEN_PROMPT,
@@ -1315,7 +1334,8 @@ test('WorkHub does not record resume while safe-boundary resume is disabled', as
       );
 
       const actionId = 'workhub-disabled-resume';
-      const resumed = await composition.handlers['workhub.coordination.act'](
+      const resumed = await actWorkHub(
+        composition,
         {
           actionId,
           userText: 'Resume Payments',
@@ -1398,7 +1418,8 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
       assert.ok(destinationCandidate);
       if (!sourceCandidate || !destinationCandidate) return;
 
-      const delegated = await composition.handlers['workhub.coordination.act'](
+      const delegated = await actWorkHub(
+        composition,
         {
           actionId: 'workhub-steering-action',
           userText: 'Continue this manual work from WorkHub',
@@ -1432,11 +1453,11 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
         [assignment],
       );
 
-      const stopped = await composition.handlers['workhub.coordination.act'](
+      const stopped = await actWorkHub(
+        composition,
         {
           actionId: 'workhub-stop-shared-action',
           userText: `Stop ${sourceCandidate.sessionName}`,
-          confirmation: { kind: 'user_stop' },
           proposal: {
             disposition: 'stop_work',
             expects: { targetSessionId: source.id },
@@ -1484,23 +1505,27 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
       assert.ok(correctionDestination);
       if (!correctionDestination) return;
 
-      const correction = await composition.handlers['workhub.coordination.act'](
-        {
-          actionId: 'workhub-correction-action',
-          userText: `No, move this to ${correctionDestination.sessionName} instead`,
-          candidateSetId: correctionCandidates.result.candidateSetId,
-          confirmation: { kind: 'user_correction' },
-          proposal: {
-            disposition: 'replace',
-            replacesActionId: assignment.actionId,
-            target: {
-              disposition: 'delegate_existing',
-              candidateRef: correctionDestination.candidateRef,
-            },
+      const correctionInput = {
+        actionId: 'workhub-correction-action',
+        userText: `No, move this to ${correctionDestination.sessionName} instead`,
+        candidateSetId: correctionCandidates.result.candidateSetId,
+        proposal: {
+          disposition: 'replace',
+          replacesActionId: assignment.actionId,
+          target: {
+            disposition: 'delegate_existing',
+            candidateRef: correctionDestination.candidateRef,
           },
         },
+      } as const;
+      const stale = await actWorkHub(
+        composition,
+        { ...correctionInput, candidateSetId: `sha256:${'0'.repeat(64)}` },
         context,
       );
+      assert.equal(stale.ok, false);
+      if (!stale.ok) assert.equal(stale.error.code, 'candidate_set_stale');
+      const correction = await actWorkHub(composition, correctionInput, context);
       assert.equal(correction.ok, true, JSON.stringify(correction));
       if (!correction.ok) return;
       assert.equal(correction.result.disposition, 'replace');
@@ -2102,6 +2127,193 @@ test('production composition validates graph stop before aborting a claimed chil
   });
 });
 
+test('interaction fail-stop stops graph operators through the kernel and releases ownership', {
+  timeout: 10_000,
+}, async (t) => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const failure = new Error('backend continuation apply failed');
+    let graph!: AgentGraphCoordinator;
+    const recoverGraph = AgentGraphCoordinator.prototype.recover;
+    t.mock.method(
+      AgentGraphCoordinator.prototype,
+      'recover',
+      async function (this: AgentGraphCoordinator) {
+        graph = this;
+        return recoverGraph.call(this);
+      },
+    );
+    const published = deferred<string>();
+    const stopped = deferred<void>();
+    const stopObservations: Array<{ error?: unknown }> = [];
+    let settlement: HostedUserQuestionSettlement | undefined;
+    let retained = false;
+    let retainedAtShutdownRequest = false;
+    let captured!: Awaited<ReturnType<typeof createCapturedExecutionComposition>>;
+    const host = await RuntimeHostKernel.start({
+      owner,
+      idleGraceMs: 60_000,
+      shutdownGraceMs: 5_000,
+      composition: defineInteractiveRuntimeHostComposition(async (kernelContext) => {
+        captured = await createCapturedExecutionComposition(owner, {
+          context: {
+            ...kernelContext,
+            retainUntilProcessExit: () => {
+              retained = true;
+              kernelContext.retainUntilProcessExit();
+            },
+            requestDrain: () => {
+              retainedAtShutdownRequest = retained;
+              kernelContext.requestDrain();
+            },
+          },
+          primaryBackendFactory: (backendContext) => {
+            const backend = new FakeBackend(backendContext);
+            const send = backend.send.bind(backend);
+            backend.send = async function* (input) {
+              const bridge = input.hostedInteraction;
+              assert.ok(bridge);
+              yield* send({
+                ...input,
+                hostedInteraction: {
+                  ...bridge,
+                  admitUserQuestionRequest: async (request) => {
+                    settlement = request.settlement;
+                    await bridge.admitUserQuestionRequest({
+                      ...request,
+                      settlement: {
+                        ...request.settlement,
+                        applyAnswer: async () => {
+                          throw failure;
+                        },
+                      },
+                    });
+                    published.resolve(request.request.requestId);
+                  },
+                },
+              });
+            };
+            return backend;
+          },
+        });
+        return captured.composition;
+      }),
+    });
+    const closed = host.closed.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    const connected = await connectRuntimeHost({
+      rootPath: root,
+      protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+    });
+    assert.equal(connected.kind, 'connected');
+    if (connected.kind !== 'connected') throw new Error('kernel connection unavailable');
+    const { manager } = captured;
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    try {
+      const session = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      await graph.toolsForSession(session.id);
+      const turnId = 'interaction-drain-turn';
+      // Prepare the held-open backend with a fixture residency. The answer below exercises
+      // kernel drain over UDS; poisoned root-execution settlement is a separate close path.
+      const started = await captured.composition.handlers['turn.start'](
+        {
+          sessionId: session.id,
+          turnId,
+          content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+        },
+        {
+          hostEpoch: host.hostEpoch,
+          connectionId: 'interaction-drain-fixture',
+          principal: 'local_os_user',
+          acquireResidency: () => ({ release() {} }),
+        },
+      );
+      assert.equal(started.ok, true);
+      const interactionId = await published.promise;
+      const run = (await stores.runtimeEventStore.listSessionInvocations(session.id)).find(
+        (run) => run.turnId === turnId,
+      );
+      assert.ok(run);
+      const operator = await manager.provisionAgentGraphOperator({
+        graphId: agentGraphIdForRootSession(session.id),
+        workId: `graph_work_${'a'.repeat(32)}`,
+        operatorId: `graph_operator_${'b'.repeat(32)}`,
+        agentId: LOCAL_READ_AGENT_DEFINITION.id,
+        source: {
+          sessionId: session.id,
+          turnId,
+          runId: run.runId,
+          toolCallId: 'provision-for-drain',
+        },
+        edges: [],
+        expectedScheduleRevision: 0,
+      });
+      const stopSession = manager.stopSession.bind(manager);
+      t.mock.method(
+        manager,
+        'stopSession',
+        async (sessionId: string, input: Parameters<SessionManager['stopSession']>[1]) => {
+          if (sessionId !== operator.header.id) return stopSession(sessionId, input);
+          const observation: (typeof stopObservations)[number] = {};
+          stopObservations.push(observation);
+          try {
+            await stopSession(sessionId, input);
+          } catch (error) {
+            observation.error = error;
+            throw error;
+          } finally {
+            stopped.resolve();
+          }
+        },
+      );
+      await assert.rejects(
+        connected.connection.request('interaction.answer', {
+          sessionId: session.id,
+          interactionId,
+          answer: { kind: 'question', answers: ['邀请制', '本周', '是'] },
+        }),
+        (error: unknown) =>
+          error instanceof RuntimeHostOperationError && error.code === 'internal_failure',
+      );
+      await stopped.promise;
+      assert.equal(retained, true);
+      assert.equal(retainedAtShutdownRequest, true);
+      assert.deepEqual(stopObservations, [{}]);
+    } finally {
+      // Release the injected backend waiter; fail-stop intentionally cannot apply its continuation.
+      await settlement?.applyClosure('turn_stopped');
+      await connected.connection.close();
+      void host.close().catch(() => undefined);
+      const closeError = await closed;
+      assert.ok(
+        closeError instanceof AggregateError,
+        `Unexpected shutdown result: ${String(closeError)}`,
+      );
+      const errorTree = (error: unknown): string =>
+        error instanceof AggregateError
+          ? [error.message, ...error.errors.map(errorTree)].join('\n')
+          : String(error);
+      // Poisoned compositions can aggregate other close errors; operator stop must not reenter admission.
+      const details = errorTree(closeError);
+      assert.match(details, /Interaction coordinator entered fail-stop/);
+      assert.doesNotMatch(
+        details,
+        /Cannot enter Session admission|termination required|shutdown deadline/i,
+      );
+      const replacementOwner = await tryAcquireInteractiveRootOwner(owner.capability);
+      assert.ok(replacementOwner, 'kernel released exclusive root ownership');
+      await replacementOwner.close();
+    }
+  });
+});
+
 function compositionContext(owner: InteractiveRootOwner) {
   return {
     owner,
@@ -2215,6 +2427,10 @@ async function seedLegacyFakeBackendSession(
 async function createCapturedExecutionComposition(
   owner: InteractiveRootOwner,
   options: {
+    readonly context?: Pick<
+      RuntimeHostCompositionContext,
+      'retainUntilProcessExit' | 'requestDrain'
+    >;
     readonly safeBoundaryResume?: boolean;
     readonly primaryBackendFactory?: BackendFactory;
     readonly residencies?: HostResidencyRegistry;
@@ -2248,9 +2464,19 @@ async function createCapturedExecutionComposition(
                 residencies.acquire(label, kind),
             }
           : {}),
+        ...options.context,
       },
       {},
-      { primaryBackendFactory },
+      {
+        primaryBackendFactory: (context) =>
+          context.sessionId === WORKHUB_COORDINATION_SESSION_ID
+            ? new (class extends FakeBackend {
+                override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+                  yield* super.send({ ...input, text: FAKE_HOLD_OPEN_PROMPT });
+                }
+              })(context)
+            : primaryBackendFactory(context),
+      },
     );
     await composition.recover();
     if (!manager) throw new Error('Production execution composition did not construct Runtime');
@@ -2437,4 +2663,35 @@ async function withCompositionRoot(
 
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 2_000): Promise<void> {
   await pollFor(predicate, { timeoutMs, pollMs: 10, message: 'Timed out waiting for condition' });
+}
+
+/** Runs each task action under a real, admitted coordination Turn. */
+async function actWorkHub(
+  composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>,
+  input: WorkHubAdmittedAction,
+  context: ConnectionContext,
+) {
+  const { userText, attachments, ...action } = input;
+  const turnId = randomUUID();
+  const started = await composition.handlers['workhub.coordination.answer'](
+    { turnId, text: userText, ...(attachments ? { attachments } : {}) },
+    context,
+  );
+  assert.ok(started.ok, JSON.stringify(started));
+  try {
+    return await composition.handlers['workhub.coordination.actFromTurn'](
+      { ...action, turnId },
+      context,
+    );
+  } finally {
+    const run = await composition.handlers['turn.query'](
+      { sessionId: WORKHUB_COORDINATION_SESSION_ID, turnId },
+      context,
+    );
+    assert.ok(run.ok, JSON.stringify(run));
+    await composition.handlers['turn.stop'](
+      { sessionId: WORKHUB_COORDINATION_SESSION_ID, turnId, runId: run.result.runId },
+      context,
+    );
+  }
 }

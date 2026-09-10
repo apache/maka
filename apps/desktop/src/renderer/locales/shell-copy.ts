@@ -440,7 +440,6 @@ type ShellCopy = {
     workspaceActions: string;
   };
   app: {
-    returnToWorkHub: string;
     loadingWorkbarLabel: string;
     loadingWorkbar: string;
     useSkillPrompt(skillName: string): string;
@@ -1174,7 +1173,6 @@ const SHELL_COPY_BY_LOCALE = {
       workspaceActions: '工作区辅助操作',
     },
     app: {
-      returnToWorkHub: '返回 WorkHub',
       loadingWorkbarLabel: '正在加载任务工作栏',
       loadingWorkbar: '正在加载任务工作栏…',
       useSkillPrompt: (skillName: string) => `使用 ${skillName} 技能：`,
@@ -1676,7 +1674,6 @@ const SHELL_COPY_BY_LOCALE = {
       workspaceActions: '工作區輔助操作',
     },
     app: {
-      returnToWorkHub: '返回 WorkHub',
       loadingWorkbarLabel: '正在載入任務工作欄',
       loadingWorkbar: '正在載入任務工作欄…',
       useSkillPrompt: (skillName: string) => `使用 ${skillName} 技能：`,
@@ -2223,7 +2220,6 @@ const SHELL_COPY_BY_LOCALE = {
       workspaceActions: 'Workspace actions',
     },
     app: {
-      returnToWorkHub: 'Return to WorkHub',
       loadingWorkbarLabel: 'Loading task workbar',
       loadingWorkbar: 'Loading task workbar…',
       useSkillPrompt: (skillName: string) => `Use the ${skillName} skill: `,

@@ -44,7 +44,7 @@ import {
   type ToolActivityItem,
   type ToolOutputChunk,
 } from './materialize.js';
-import { isConnectorTool, resolveToolDisplayName } from './tool-activity/display-name.js';
+import { isConnectorTool, resolveToolDisplayName, workHubControlStatus } from './tool-activity/display-name.js';
 import {
   computerActionLabel,
   computerActionLabelIncludesTarget,
@@ -525,6 +525,7 @@ function collapsedToolTarget(
   locale: UiLocale,
   preferred?: string,
 ): string | undefined {
+  if (workHubControlStatus(item)) return undefined;
   if (item.intent) return formatToolIntent(item.intent);
   const line = preferred ?? formatToolInvocationLine(item, locale);
   if (!line) return undefined;

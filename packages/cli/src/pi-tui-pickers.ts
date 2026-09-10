@@ -63,6 +63,7 @@ import type {
   OnboardingRejectionReason,
 } from './pi-tui-contracts.js';
 import { ansi, editorTheme, selectListTheme, stripAnsi } from './tui-ansi.js';
+import { stripUnfocusedCursorStyle } from './tui-editor-render.js';
 import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 
 interface TuiPickerCopy {
@@ -677,24 +678,13 @@ export class UserQuestionOverlay implements Component {
   }
 
   private renderInputRow(width: number): string[] {
-    const prefix = this.onInputRow ? '→ ' : '  ';
-    const contentWidth = Math.max(1, width - USER_QUESTION_ROW_PREFIX_WIDTH);
-    // Focused only while the input row is highlighted: that both shows the block
-    // cursor and emits the hardware-cursor marker (#1064) so IME candidate windows
-    // anchor to the edited text instead of the terminal bottom.
+    const marker = this.onInputRow ? '→' : ' ';
+    // Focus controls the IME marker and our cursor-visibility adapter (#1064).
     this.editor.focused = this.onInputRow;
     if (!this.onInputRow && this.editor.getText().length === 0) {
-      return [padLine(`${prefix}${ansi.dim(this.input.placeholder)}`, width)];
+      return [padLine(`${marker} ${ansi.dim(this.input.placeholder)}`, width)];
     }
-    // Drop the editor's own top/bottom border rows; keep just its content lines
-    // so the answer reads as one row of the list.
-    const editorLines = this.editor.render(contentWidth).slice(1, -1);
-    if (editorLines.length === 0) {
-      return [padLine(`${prefix}${ansi.dim(this.input.placeholder)}`, width)];
-    }
-    return editorLines.map((line, index) =>
-      padLine(`${index === 0 ? prefix : '  '}${line}`, width),
-    );
+    return renderFieldRow(this.editor, marker, width);
   }
 }
 
@@ -1056,16 +1046,7 @@ export class ModelSearchOverlay implements Component {
   }
 
   private renderFieldRow(editor: Editor, label: string, width: number): string[] {
-    const prefix = `${label} `;
-    const prefixWidth = visibleWidth(prefix);
-    const contentWidth = Math.max(1, width - prefixWidth);
-    const editorLines = editor.render(contentWidth).slice(1, -1);
-    if (editorLines.length === 0) {
-      return [padLine(prefix, width)];
-    }
-    return editorLines.map((line, index) =>
-      padLine(`${index === 0 ? prefix : ' '.repeat(prefixWidth)}${line}`, width),
-    );
+    return renderFieldRow(editor, label, width);
   }
 }
 
@@ -1201,6 +1182,20 @@ function padLine(text: string, width: number): string {
   const safeWidth = Math.max(1, width);
   const trimmed = visibleWidth(text) > safeWidth ? truncateToWidth(text, safeWidth, '') : text;
   return `${trimmed}${' '.repeat(Math.max(0, safeWidth - visibleWidth(trimmed)))}`;
+}
+
+function renderFieldRow(editor: Editor, label: string, width: number): string[] {
+  const prefix = `${label} `;
+  const prefixWidth = visibleWidth(prefix);
+  const contentWidth = Math.max(1, width - prefixWidth);
+  // These field editors have no autocomplete rows. Keep Editor's wrapping and
+  // scrolling, but omit its top/bottom borders.
+  const lines = editor.render(contentWidth).slice(1, -1);
+  const editorLines = stripUnfocusedCursorStyle(lines, editor.focused);
+  if (editorLines.length === 0) return [padLine(prefix, width)];
+  return editorLines.map((line, index) =>
+    padLine(`${index === 0 ? prefix : ' '.repeat(prefixWidth)}${line}`, width),
+  );
 }
 
 function keyEntryHint(
@@ -2001,15 +1996,6 @@ export class OnboardingWizard implements Component {
   }
 
   private renderFieldRow(editor: Editor, label: string, width: number): string[] {
-    const prefix = `${label} `;
-    const prefixWidth = visibleWidth(prefix);
-    const contentWidth = Math.max(1, width - prefixWidth);
-    const editorLines = editor.render(contentWidth).slice(1, -1);
-    if (editorLines.length === 0) {
-      return [padLine(prefix, width)];
-    }
-    return editorLines.map((line, index) =>
-      padLine(`${index === 0 ? prefix : ' '.repeat(prefixWidth)}${line}`, width),
-    );
+    return renderFieldRow(editor, label, width);
   }
 }

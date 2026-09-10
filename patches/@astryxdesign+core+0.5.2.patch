@@ -1,3 +1,25 @@
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
+index 5046603..ec36a00 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
+@@ -22,7 +22,7 @@
+  * - /apps/storybook/stories/ChatComposer.stories.tsx
+  * - /packages/cli/assets/templates/blocks/components/ChatComposerInput/ (block examples)
+  */
+-import { useRef, useState, useCallback, useEffect, useImperativeHandle } from 'react';
++import { useRef, useState, useCallback, useEffect, useLayoutEffect, useImperativeHandle } from 'react';
+ import { createPortal } from 'react-dom';
+ import * as stylex from '@stylexjs/stylex';
+ import "../theme/tokens.stylex.js";
+@@ -207,7 +207,7 @@ export function ChatComposerInput(props) {
+       inputControlRef.current = null;
+     };
+   }, [inputControlRef]);
+-  useEffect(() => {
++  useLayoutEffect(() => {
+     if (controlledValue === undefined || !editableRef.current) {
+       return;
+     }
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
 index ff34874..0f5ae14 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
@@ -19,19 +41,40 @@ index ff34874..0f5ae14 100644
  export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
  export declare namespace ChatLayout {
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
-index ff9b9fa..6d4df27 100644
+index ff9b9fa..d20288e 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
-@@ -28,7 +28,7 @@
-  * - /apps/storybook/stories/ChatLayout.stories.tsx
-  * - /packages/cli/assets/templates/blocks/components/ChatLayout/ (block examples)
-  */
--import { useMemo, useRef } from 'react';
-+import { useEffect, useMemo, useRef } from 'react';
- import * as stylex from '@stylexjs/stylex';
- import "../theme/tokens.stylex.js";
- import { spacingVars } from "../theme/tokens.stylex.js";
-@@ -195,6 +195,7 @@ export function ChatLayout({
+@@ -85,7 +85,8 @@ const styles = {
+     kfzvcC: "x47corl",
+     k6WDB: "xvn2z4z",
+     keRtuK: "x67t5t6",
+-    kZKoxP: "xpyat2d",
++    kZKoxP: "x5yr21d",
++    kY2c9j: "maka-x-blur-behind",
+     kX1K2I: "xw26lqc",
+     kAExgp: "x1bv1mxo",
+     $$css: true
+@@ -120,19 +121,16 @@ const styles = {
+     $$css: true
+   },
+   blurLayerCompact: {
+-    kZKoxP: "xwzfr38",
+     kX1K2I: "xkm2don",
+     kAExgp: "xiy8rlo",
+     $$css: true
+   },
+   blurLayerBalanced: {
+-    kZKoxP: "xpyat2d",
+     kX1K2I: "xw26lqc",
+     kAExgp: "x1bv1mxo",
+     $$css: true
+   },
+   blurLayerSpacious: {
+-    kZKoxP: "x1wkxgih",
+     kX1K2I: "xr5yg4x",
+     kAExgp: "xo9xo30",
+     $$css: true
+@@ -195,6 +193,7 @@ export function ChatLayout({
    className,
    style,
    'data-testid': testId,
@@ -39,7 +82,7 @@ index ff9b9fa..6d4df27 100644
    ref,
    ...rest
  }) {
-@@ -205,12 +206,21 @@ export function ChatLayout({
+@@ -205,7 +204,11 @@ export function ChatLayout({
  
    // --- Default scroll behavior ---
    const scroll = useChatStreamScroll({
@@ -52,16 +95,6 @@ index ff9b9fa..6d4df27 100644
    });
    const newMsgs = useChatNewMessages({
      isLocked: scroll.isLocked,
-     onResize: scroll.scrollIfLocked
-   });
-+  useEffect(() => {
-+    if (scroll.isLocked) {
-+      newMsgs.dismiss();
-+    }
-+  }, [scroll.isLocked, newMsgs.dismiss]);
-   const defaultScrollButton = /*#__PURE__*/_jsx(ChatLayoutScrollButton, {
-     isVisible: scroll.isScrolledUp || newMsgs.hasNewMessages,
-     label: newMsgs.hasNewMessages ? t('@astryx.chatLayout.newMessages') : undefined,
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
 index 889970f..459e6e8 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
@@ -74,19 +107,6 @@ index 889970f..459e6e8 100644
      "aria-expanded": hasDetail ? isDetailOpen : undefined,
      "aria-controls": hasDetail && isDetailOpen ? detailId : undefined,
      onClick: toggleDetail,
-diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js b/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
-index 8c509bc..5f46785 100644
---- a/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
-+++ b/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
-@@ -49,6 +49,8 @@ export function useChatNewMessages({
-   const elementRef = useRef(null);
-   const cleanupRef = useRef(null);
-   const attach = useCallback(el => {
-+    lastMessageRef.current = null;
-+    setHasNewMessages(false);
-     observeResize(el, () => {
-       onResizeRef.current?.();
-       const messages = el.getElementsByClassName('astryx-chat-message');
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
 index e1d2ebd..dcb9189 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
@@ -461,6 +481,18 @@ index 3d2cf00..c5c0d55 100644
        id: `${id}-children`,
        role: "group",
        "aria-labelledby": `${id}-label`,
+diff --git a/node_modules/@astryxdesign/core/dist/astryx.css b/node_modules/@astryxdesign/core/dist/astryx.css
+index 0159f32..654948b 100644
+--- a/node_modules/@astryxdesign/core/dist/astryx.css
++++ b/node_modules/@astryxdesign/core/dist/astryx.css
+@@ -1280,6 +1280,7 @@
+   .x1yn0g08:not(#\#):not(#\#):not(#\#){word-break:break-all}
+   .x13faqbe:not(#\#):not(#\#):not(#\#){word-break:break-word}
+   .x1lldw8n:not(#\#):not(#\#):not(#\#){word-break:normal}
++  .maka-x-blur-behind:not(#\#):not(#\#):not(#\#){z-index:-1}
+   .x1ja2u2z:not(#\#):not(#\#):not(#\#){z-index:0}
+   .x1vjfegm:not(#\#):not(#\#):not(#\#){z-index:1}
+   .xfo81ep:not(#\#):not(#\#):not(#\#){z-index:1000}
 diff --git a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts b/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts
 index 7a35d1c..50ee70b 100644
 --- a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts
@@ -630,6 +662,68 @@ index 693d728..7d5724e 100644
 +  return targetText.slice(0, snapToGraphemeBoundary(targetText, renderedPresentation.displayedLen));
  }
 \ No newline at end of file
+diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
+index 5a6a56b..df6a47f 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
++++ b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
+@@ -28,6 +28,7 @@ import {
+   useState,
+   useCallback,
+   useEffect,
++  useLayoutEffect,
+   useImperativeHandle,
+   type ReactNode,
+   type KeyboardEvent,
+@@ -402,7 +403,7 @@ export function ChatComposerInput(props: ChatComposerInputProps) {
+     };
+   }, [inputControlRef]);
+ 
+-  useEffect(() => {
++  useLayoutEffect(() => {
+     if (controlledValue === undefined || !editableRef.current) {
+       return;
+     }
+diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
+index d45a912..efec9fd 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
++++ b/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
+@@ -177,7 +177,15 @@ const styles = stylex.create({
+     pointerEvents: 'none',
+     backdropFilter: 'blur(12px)',
+     WebkitBackdropFilter: 'blur(12px)',
+-    height: 100,
++    // The fade has to cover exactly what the dock hides, and the dock's height
++    // is its content's. A per-density constant only matched by accident: at
++    // 'balanced' the 100px layer started 90px inside the opaque composer, so
++    // the ramp was invisible wherever the composer painted and the transcript
++    // stayed crisp right up to the dock's top edge.
++    height: '100%',
++    // Behind the dock's own chrome. The scroll button is in flow at the top of
++    // this container and belongs on top of the fade, not under it.
++    zIndex: -1,
+     maskImage: 'linear-gradient(to bottom, transparent, black 36px)',
+     WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 36px)',
+   },
+@@ -210,18 +218,16 @@ const styles = stylex.create({
+     paddingInline: spacingVars['--spacing-4'],
+   },
+ 
++  // Density tunes the ramp only — the layer's height follows the dock.
+   blurLayerCompact: {
+-    height: 80,
+     maskImage: 'linear-gradient(to bottom, transparent, black 24px)',
+     WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 24px)',
+   },
+   blurLayerBalanced: {
+-    height: 100,
+     maskImage: 'linear-gradient(to bottom, transparent, black 36px)',
+     WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 36px)',
+   },
+   blurLayerSpacious: {
+-    height: 120,
+     maskImage: 'linear-gradient(to bottom, transparent, black 48px)',
+     WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 48px)',
+   },
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
 index f22bb1f..b710951 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx

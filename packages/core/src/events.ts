@@ -385,6 +385,7 @@ export function isQuoteRef(value: unknown): value is QuoteRef {
         typeof record.sourceCapturedAt === 'number' &&
         Number.isFinite(record.sourceCapturedAt) &&
         record.sourceCapturedAt >= 0 &&
+        record.sourceCapturedAt <= 8.64e15 &&
         typeof record.sourceTruncated === 'boolean'))
   );
 }

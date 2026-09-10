@@ -38,6 +38,7 @@ export interface SessionReferenceErrorCopy {
   readonly emptyDetail: string;
   readonly readFailedTitle: string;
   readonly readFailedDetail: string;
+  readonly limitDetail?: string;
 }
 
 export function useSessionReferenceComposer(options: {
@@ -45,6 +46,7 @@ export function useSessionReferenceComposer(options: {
   readonly activeId?: string;
   readonly hostId?: string;
   readonly addQuote?: (quote: QuoteRef) => void;
+  readonly pendingQuotes?: readonly QuoteRef[];
   readonly errorCopy: SessionReferenceErrorCopy;
 }) {
   const services = useConversationServices();
@@ -61,6 +63,8 @@ export function useSessionReferenceComposer(options: {
   const [pendingReferences, setPendingReferences] = useState<readonly SessionReferenceSession[]>([]);
   const pendingReferencesRef = useRef<SessionReferenceSession[]>([]);
   const pendingPromise = useRef<Promise<boolean> | null>(null);
+  const pendingQuotesRef = useRef(options.pendingQuotes);
+  pendingQuotesRef.current = options.pendingQuotes;
   const pendingContextKey = useRef<string | undefined>(undefined);
   const references = useMemo(
     () => options.sessions
@@ -116,6 +120,13 @@ export function useSessionReferenceComposer(options: {
       lastMessagePreview: source.lastMessagePreview,
     } satisfies SessionReferenceSession;
     if (!pendingReferencesRef.current.some((reference) => reference.id === selected.id)) {
+      if (pendingReferencesRef.current.length + (pendingQuotesRef.current?.length ?? 0) >= 16) {
+        reportError(options.errorCopy.unavailableTitle, options.errorCopy.limitDetail ?? 'Remove a quote before adding another (maximum 16).');
+        return;
+      }
+      generation.current += 1;
+      pendingPromise.current = null;
+      setPending(false);
       const next = [...pendingReferencesRef.current, selected];
       pendingReferencesRef.current = next;
       setPendingReferences(next);
@@ -127,6 +138,10 @@ export function useSessionReferenceComposer(options: {
     if (operation && pendingContextKey.current === contextKey) return operation;
     const selected = pendingReferencesRef.current;
     if (selected.length === 0) return true;
+    if (selected.length + (pendingQuotesRef.current?.length ?? 0) > 16) {
+      reportError(options.errorCopy.unavailableTitle, options.errorCopy.limitDetail ?? 'Remove a quote before sending (maximum 16).');
+      return false;
+    }
     const request = ++generation.current;
     const requestContextKey = contextKey;
     pendingContextKey.current = requestContextKey;
@@ -148,6 +163,10 @@ export function useSessionReferenceComposer(options: {
           sources.map((source) => services.sessions.readSnapshot(source!.id)),
         );
         if (request !== generation.current || requestContextKey !== contextKeyRef.current) return false;
+        if (selected.length + (pendingQuotesRef.current?.length ?? 0) > 16) {
+          reportError(options.errorCopy.unavailableTitle, options.errorCopy.limitDetail ?? 'Remove a quote before sending (maximum 16).');
+          return false;
+        }
         if (snapshots.some((snapshot) => !snapshot.text.trim())) {
           reportError(options.errorCopy.emptyTitle, options.errorCopy.emptyDetail);
           return false;
@@ -177,6 +196,9 @@ export function useSessionReferenceComposer(options: {
   const removePendingReference = useCallback((sessionId: string): void => {
     const next = pendingReferencesRef.current.filter((reference) => reference.id !== sessionId);
     if (next.length === pendingReferencesRef.current.length) return;
+    generation.current += 1;
+    pendingPromise.current = null;
+    setPending(false);
     pendingReferencesRef.current = next;
     setPendingReferences(next);
   }, []);

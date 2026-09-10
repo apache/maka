@@ -44,6 +44,70 @@ const CONTEXT: ConnectionContext = {
   acquireResidency: () => ({ release: () => undefined }),
 };
 
+test('Daily Review shutdown during summary reads prevents model admission and publication', async () => {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  let modelCalls = 0;
+  await withCoordinator(
+    async ({ coordinator, store }) => {
+      const running = coordinator.handlers['daily-review.mutate'](
+        {
+          kind: 'run',
+          range: 1,
+          offsetDays: 0,
+          modelKeyOverride: '',
+          replaceExisting: true,
+        },
+        CONTEXT,
+      );
+      await entered.promise;
+      const closing = coordinator.close();
+      release.resolve();
+      const result = await running;
+      await closing;
+      assert.equal(modelCalls, 0);
+      assert.deepEqual(result, {
+        ok: false,
+        error: { code: 'host_draining', message: 'Runtime Host is draining' },
+      });
+      assert.equal(
+        await store.getArchive(dailyReviewArchiveId(localDayBoundsAt(Date.now(), 0), 1)),
+        null,
+      );
+    },
+    {
+      generate: async () => {
+        modelCalls++;
+        return { ok: false, errorClass: 'configuration' };
+      },
+    },
+    true,
+    {
+      list: async () => {
+        entered.resolve();
+        await release.promise;
+        return [
+          {
+            id: 'session',
+            name: 'Today',
+            lastMessageAt: Date.now(),
+            isFlagged: false,
+            isArchived: false,
+            labels: [],
+            hasUnread: false,
+            status: 'active',
+            backend: 'fake',
+            llmConnectionSlug: '',
+            connectionLocked: false,
+            model: '',
+            permissionMode: 'ask',
+          },
+        ];
+      },
+    },
+  );
+});
+
 test('Daily Review handoff fences an admitted timer tick and cancellation resumes a due review', async () => {
   let now = new Date(2026, 8, 9, 12).getTime();
   const timers = new Set<() => void>();

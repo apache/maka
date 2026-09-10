@@ -58,6 +58,42 @@ test('registers Session observation as one reconnectable operation', () => {
   assert.equal(ipc.reconnectableChannels.has('sessions:observe'), true);
 });
 
+for (const phase of ['connecting', 'seeding'] as const) {
+  for (const cancellation of ['unobserve', 'renderer destruction'] as const) {
+    test(`Session observation IPC completes normally after ${cancellation} while ${phase}`, async () => {
+      const errors: unknown[] = [];
+      const observations = new RuntimeHostSessionObservationRegistry((error) => errors.push(error));
+      const ipc = ipcHarness();
+      let finishSeed = () => {};
+      let seeds = 0;
+      const source = {
+        observe: () => {
+          seeds += 1;
+          return new Promise<void>((resolve) => { finishSeed = resolve; });
+        },
+        async unobserve() {},
+      };
+      if (phase === 'seeding') await observations.attach(source);
+      registerRuntimeHostSessionObservationIpc({ observations, resolveSideConversation: async () => false }, ipc);
+      const observing = ipc.invoke('sessions:observe', 'session-1', 'observer-1');
+      void observing.catch(() => undefined);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(observations.observedSessionIds(), ['session-1']);
+
+      if (cancellation === 'unobserve') await observations.unobserve('observer-1');
+      else ipc.rendererDestroyed();
+      finishSeed();
+
+      assert.deepEqual(await observing, []);
+      assert.deepEqual(observations.observedSessionIds(), []);
+      assert.deepEqual(await observations.attach(source), []);
+      assert.equal(seeds, phase === 'seeding' ? 1 : 0);
+      assert.deepEqual(errors, []);
+      await observations.close();
+    });
+  }
+}
+
 test('forward transcript paging is an observation operation scoped to the renderer', async () => {
   const ipc = ipcHarness();
   const observations = new RuntimeHostSessionObservationRegistry();

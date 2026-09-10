@@ -227,7 +227,8 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(!revoked.ok && revoked.error.code, 'not_found');
   });
 
-  test('drains for canonical state failure but keeps projection failure scoped to its query', async () => {
+  test('drains for canonical state failure but keeps projection failure scoped to its query', async (t) => {
+    t.mock.method(console, 'error', () => {});
     const harness = createHarness();
     harness.updates = [
       resourceUpdate(0, {
@@ -255,6 +256,39 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(!unavailable.ok && unavailable.error.code, 'internal_failure');
     assert.equal(harness.drainCount, 1);
     assert.equal(harness.terminateCount, 0);
+  });
+
+  test('logs a bounded redacted canonical state failure before draining', async (t) => {
+    const logs: string[] = [];
+    let drainCount = 0;
+    let logCountAtDrain = 0;
+    t.mock.method(console, 'error', (...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
+    const harness = createHarness({
+      requestDrain: () => {
+        drainCount += 1;
+        logCountAtDrain = logs.length;
+      },
+    });
+    harness.stateReadFailure = new Error(
+      `canonical state unavailable api_key=sk-secretvalue123 ${'x'.repeat(16 * 1024)}`,
+    );
+
+    const result = await harness.coordinator.handlers['runtime.resource.query'](
+      { kind: 'list_start', sessionId: SESSION_ID },
+      connection('connection-1'),
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(!result.ok && result.error.code, 'internal_failure');
+    assert.equal(drainCount, 1);
+    assert.equal(logCountAtDrain, 1);
+    assert.equal(logs.length, 1);
+    assert.match(logs[0] ?? '', /canonical state unavailable/);
+    assert.match(logs[0] ?? '', /\[redacted\]/i);
+    assert.doesNotMatch(logs[0] ?? '', /sk-secretvalue123/);
+    assert.ok(Buffer.byteLength(logs[0] ?? '', 'utf8') < 9 * 1024);
   });
 
   test('fences PTY control by connection and retains only exact sequence retries', async () => {
@@ -399,6 +433,7 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(started.ok, false);
     assert.ok(harness.lastBackgroundInput);
     assert.equal(harness.stopCount, 1);
+    assert.equal(harness.drainCount, 1);
     harness.finishBackground({ successful: false });
   });
 
@@ -702,12 +737,55 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(!missing.ok && missing.error.code, 'not_found');
     assert.equal(harness.stopCount, 0);
   });
+
+  test('drains when the admitted mutable Session read fails', async () => {
+    const harness = createHarness();
+    harness.sessionReadFailureAt = 2;
+
+    const started = await harness.coordinator.handlers['runtime.resource.start'](
+      { sessionId: SESSION_ID, launchId: 'session-read-failure' },
+      connection('connection-1'),
+    );
+
+    assert.equal(started.ok, false);
+    assert.equal(!started.ok && started.error.code, 'internal_failure');
+    assert.equal(harness.drainCount, 1);
+    assert.equal(harness.lastBackgroundInput, undefined);
+  });
+});
+
+test('rejects a queued resource start when drain detaches from the active Session admission', async () => {
+  const harness = createHarness();
+  let release!: () => void;
+  let entered!: () => void;
+  const blocker = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const active = harness.sessionAdmission.run(SESSION_ID, async () => {
+    entered();
+    await blocker;
+    // Invoke from inside the active async context after the resource launch is queued.
+    harness.sessionAdmission.detach(() => harness.coordinator.beginDrain());
+  });
+  await started;
+  const resource = harness.coordinator.runBackgroundBash(backgroundInput());
+  const observed = assert.rejects(resource, /Runtime resources are draining/);
+  release();
+  await Promise.all([active, observed]);
+  assert.equal(harness.lastBackgroundInput, undefined);
+  assert.equal(harness.terminateCount, 1);
+  assert.equal(harness.activeResidencies, 0);
 });
 
 function createHarness(
-  options: Pick<
-    HostRuntimeResourceCoordinatorInput,
-    'resolveShell' | 'sessionAccessAuthority'
+  options: Partial<
+    Pick<
+      HostRuntimeResourceCoordinatorInput,
+      'requestDrain' | 'resolveShell' | 'sessionAccessAuthority'
+    >
   > = {},
 ) {
   let backgroundCompletion: ShellRunBashInput['onCompletion'];
@@ -716,6 +794,8 @@ function createHarness(
   const state = {
     updates: [resourceUpdate(0)],
     sessionState: 'active' as 'active' | 'archived' | 'missing',
+    sessionReadCount: 0,
+    sessionReadFailureAt: undefined as number | undefined,
     writeCount: 0,
     stopCount: 0,
     terminateCount: 0,
@@ -829,6 +909,10 @@ function createHarness(
     },
     sessionHeaders: {
       readHeader: async (sessionId) => {
+        state.sessionReadCount += 1;
+        if (state.sessionReadCount === state.sessionReadFailureAt) {
+          throw new Error('Session state unavailable');
+        }
         if (state.sessionState === 'missing') throw new SessionNotFoundError(sessionId);
         return {
           cwd: '/workspace',

@@ -353,6 +353,7 @@ function normalizeOptionalQuotes(input: unknown): { quotes?: QuoteRef[] } {
         typeof sourceCapturedAt !== 'number' ||
         !Number.isFinite(sourceCapturedAt) ||
         sourceCapturedAt < 0 ||
+        sourceCapturedAt > 8.64e15 ||
         typeof sourceTruncated !== 'boolean')
     ) {
       throw new Error('Invalid send quote Session provenance');
