@@ -92,6 +92,7 @@ export function ProjectsSettingsPage(props: {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false);
+  const [adding, setAdding] = useState(false);
   const directoryPickerTriggerRef = useRef<HTMLButtonElement>(null);
   const reloadGeneration = useRef(0);
 
@@ -265,13 +266,17 @@ export function ProjectsSettingsPage(props: {
               variant="secondary"
               size="sm"
               label={copy.addProject}
-              clickAction={capabilities.chooseHostDirectory
-                ? () => {
-                    if (props.runtimeHostTargetVerified) setDirectoryPickerOpen(true);
-                  }
-                : async () => {
-                    if (!props.runtimeHostTargetVerified) return;
+              isLoading={adding}
+              onClick={() => {
+                if (capabilities.chooseHostDirectory) {
+                  if (props.runtimeHostTargetVerified) setDirectoryPickerOpen(true);
+                  return;
+                }
+                void runRowAction('add', async () => {
+                  setAdding(true);
+                  try {
                     const result = await window.maka.projects.add(host);
+                    if (!mountedRef.current) return;
                     if (!result.ok && result.reason === 'archived') {
                       const ok = await toast.confirm({
                         title: copy.archivedProjectTitle,
@@ -279,13 +284,14 @@ export function ProjectsSettingsPage(props: {
                         confirmLabel: copy.archivedProjectRestore,
                         cancelLabel: copy.archivedProjectCancel,
                       });
-                      if (!ok) return;
+                      if (!ok || !mountedRef.current) return;
                       await window.maka.projects.restore(result.projectId, host);
-                      await reload();
-                      return;
                     }
-                    if (result.ok) await reload();
-                  }}
+                  } finally {
+                    if (mountedRef.current) setAdding(false);
+                  }
+                }, copy.actionFailed);
+              }}
             />
           ) : undefined}
         >
@@ -510,7 +516,7 @@ export function ProjectsSettingsPage(props: {
           onClose={() => setDirectoryPickerOpen(false)}
           onRegistered={() => {
             setDirectoryPickerOpen(false);
-            void reload();
+            void runRowAction('add', async () => {}, copy.actionFailed);
           }}
         />
       </RuntimeHostInteractionBoundary>
