@@ -21,7 +21,6 @@ import { createRoot } from 'react-dom/client';
 import { syncUiLocaleDocument } from '@maka/ui';
 import { App } from './app';
 import { applyCachedThemeBeforeMount } from './cached-theme-bootstrap';
-import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
 import './styles.css';
 import { readSystemUiLocale } from './use-system-ui-locale';
 import {
@@ -48,8 +47,10 @@ const desktopFeatureServices = createDesktopFeatureServices();
  * can never block the renderer from mounting. On timeout/failure React
  * mounts with `null` and the classic in-app loading path takes over.
  */
-async function prefetchOnboardingSnapshot(): Promise<OnboardingSnapshot | null> {
-  const attempt = async (): Promise<OnboardingSnapshot | null> => {
+async function prefetchOnboardingSnapshot() {
+  // WorkHub owns its session readiness and never consumes Desktop onboarding.
+  if (desktopFeatureServices.workHub.surface === 'workhub') return null;
+  const attempt = async () => {
     try {
       return await window.maka.onboarding.getSnapshot();
     } catch {

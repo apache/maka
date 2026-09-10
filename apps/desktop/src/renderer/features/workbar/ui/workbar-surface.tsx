@@ -244,6 +244,7 @@ function WorkbarFaceMenu(props: {
         return (
           <DropdownMenuItem
             key={definition.kind}
+            data-maka-assistant-exclude={definition.kind === 'browser' || definition.kind === 'terminal' ? definition.kind : undefined}
             label={faceLabel(definition.kind, copy)}
             icon={<FaceIcon size={ICON_SIZE.control} aria-hidden />}
             endContent={isOpen ? <Check size={ICON_SIZE.control} aria-hidden /> : undefined}
@@ -301,6 +302,7 @@ function WorkbarTabStrip(props: {
               return (
                 <Tab
                   key={tab.id}
+                  data-maka-assistant-exclude={tab.kind === 'browser' || tab.kind === 'terminal' ? tab.kind : undefined}
                   value={tab.id}
                   label={tabLabel(tab, props.tabs, copy)}
                   panelId={`maka-workbar-panel-${tab.id}`}
@@ -349,6 +351,7 @@ function WorkbarLauncher(props: {
           {WORKBAR_TOOL_DEFINITIONS.map((definition) => (
             <ListItem
               key={definition.kind}
+              data-maka-assistant-exclude={definition.kind === 'browser' || definition.kind === 'terminal' ? definition.kind : undefined}
               startContent={
                 <Icon icon={FACE_ICON[definition.icon]} size="sm" color="secondary" />
               }
@@ -575,7 +578,7 @@ export function WorkbarSurface(props: {
         }
         return content ? (
           <WorkbarPanel
-            key={tab.id}
+            key={tab.kind === 'side-chat' ? tab.id : `${props.sessionId}:${tab.id}`}
             id={`maka-workbar-panel-${tab.id}`}
             active={selected && !props.hidden}
             collapsed={!panelVisible}

@@ -94,6 +94,8 @@ export interface WorkbarControllerSelectors {
 export interface UseWorkbarControllerInput {
   /** Whether the Session workspace (rather than a module page) owns the shell. */
   available: boolean;
+  /** Local selection owns layout even while Host creation is pending. */
+  layoutSessionId: string | undefined;
   activeSession: SessionSummary | undefined;
   sessions: readonly SessionSummary[];
   projectId: string | null | undefined;
@@ -141,24 +143,6 @@ function terminalResourceKey(sessionId: string, ref: string): string {
   return `${sessionId}\u0000${ref}`;
 }
 
-function pendingActiveSessionBelongsToKnownFamily(
-  activeSession: SessionSummary | undefined,
-  knownSessions: readonly SessionSummary[],
-): boolean {
-  if (!activeSession || knownSessions.some((session) => session.id === activeSession.id)) {
-    return false;
-  }
-  // Pending catalog views (from `pendingSessionView`) carry no lineage metadata.
-  // Keep the previous catalog family through that boundary so we don't dismiss a live
-  // Side Conversation while the actual linked child row is still loading.
-  if (activeSession.model === '' && activeSession.llmConnectionSlug === '') {
-    return knownSessions.length > 0;
-  }
-  const parentSessionId =
-    activeSession.subagent?.parentSessionId ?? activeSession.subagentParent?.parentSessionId;
-  return parentSessionId !== undefined && knownSessions.some((session) => session.id === parentSessionId);
-}
-
 function projectWorkbarPanelsForSession(
   panels: SessionWorkbarPanelsState,
   activeSessionId: string | undefined,
@@ -192,7 +176,7 @@ export function useWorkbarController(
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
   const { browser, sideChat, terminal } = useWorkbarServices();
   const activeSessionId = input.activeSession?.id;
-  const layout = useWorkbarLayoutState(activeSessionId, input.authoritativeSessionIds);
+  const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds);
   const sideConversations = useSideConversationWorkspace();
   const [pendingSideChatClose, setPendingSideChatClose] = useState<
     Array<{ placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }>
@@ -217,9 +201,17 @@ export function useWorkbarController(
     lastKnownFamilySessionRef.current = input.activeSession;
     lastKnownFamilySessionsRef.current = input.sessions;
   }
-  const canUseLastKnownFamily = pendingActiveSessionBelongsToKnownFamily(
-    input.activeSession,
-    lastKnownFamilySessionsRef.current,
+  // Local navigation may precede Host/catalog delivery. Unknown membership
+  // cannot authorize destructive cleanup of an already-mounted Side Chat.
+  const canUseLastKnownFamily = Boolean(
+    input.layoutSessionId &&
+    !input.sessions.some((session) => session.id === input.layoutSessionId) &&
+    (!input.activeSession ||
+      (input.activeSession.model === '' && input.activeSession.llmConnectionSlug === '') ||
+      lastKnownFamilySessionsRef.current.some((session) =>
+        session.id === (input.activeSession?.subagent?.parentSessionId ??
+          input.activeSession?.subagentParent?.parentSessionId))) &&
+    lastKnownFamilySessionRef.current,
   );
   const familySessionForSideChat =
     activeSessionIsCataloged || canUseLastKnownFamily
@@ -758,9 +750,8 @@ export function useWorkbarController(
     () => new Set(activeSideConversationPanels.map((panel) => `side-chat:${panel.id}`)),
     [activeSideConversationPanels],
   );
-  // Keep one WorkbarSurface mounted for the whole linked Session scope. This
-  // avoids remounting every tool when the first/last Side Chat tab appears and
-  // lets each tool receive the new sessionId and reset its own session data.
+  // The surface retains Side Chat identity across a linked family. Other tool
+  // panels remain keyed by their Session inside WorkbarSurface.
   const sideConversationSurfaceKey = useMemo(() => {
     const familyRoot = linkedSideConversationFamilyRootId(
       familySessionForSideChat,

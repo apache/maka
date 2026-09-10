@@ -25,6 +25,11 @@
 - Decision source: [Discussion #3286](https://github.com/apache/maka/discussions/3286#discussioncomment-18135855)
 - Delivery tracker: [Issue #3492](https://github.com/apache/maka/issues/3492)
 
+The one-Session ownership decision remains in force. The deterministic routing
+experiments described below are historical: the current coordination model uses
+active-Turn task actions and restricted Desktop capabilities. See the
+[current domain language](../workhub-domain-language.md) for the implemented flow.
+
 ## Context
 
 WorkHub is intended to be one persistent conversational place where a user can ask
@@ -72,68 +77,6 @@ The Coordination Session is authoritative only for the coordination conversation
 It never acquires authority over an ordinary Session's execution or lifecycle.
 
 ## Dispositions and action admission
-
-An admitted Coordination request owns a real root Turn and Run in the reserved
-WorkHub Session. `answer_here` executes the existing model answer path. Action
-Turns execute the Host operation through the same Runtime admission, execution
-ownership, terminal commit, and recovery machinery; admission does not require an
-extra model call. Intent, Resolver, and clarification can later invoke models
-inside this coordination execution without changing target Session authority.
-
-A successful Action Run writes a host-authored, model-hidden
-`RuntimeEvent.actions.coordination` receipt. The transcript projects it as an
-`action_receipt`, not an invented assistant response. Clarification carries its
-prompt; resume carries the target reference and admission acknowledgement.
-The synthetic `workhub.coordination.record` operation is removed. Released history
-remains readable without inventing admissions for old summary rows.
-
-A receipt acknowledges what the operation accepted; it is not the target's current
-execution state. Candidate-snapshot expiry is a distinct refusal. For a replacement
-of an existing Session, the client may refresh its opaque candidate reference at
-most twice while preserving the action, source delegation, and chosen target.
-Routing is not rerun; a missing or renamed target, another refusal, or continued
-snapshot churn stops the attempt. The Host still validates every refreshed proposal.
-
-Re-delivery of a completed request returns that receipt, including
-after restart, without repeating the effect. Incoming execution content is validated
-against the admitted descriptor even when another request wins admission concurrently;
-legacy compatibility ignores only an absent action identity field, never the input digest.
-Failed attempts remain terminal;
-a same-action retry gets a subsequent admitted Turn. If the failed attempt already
-committed a receipt, the new Turn reuses that result without repeating the effect.
-When target resume admission committed before a missing receipt, retry first
-consults the deterministic target Turn admission and acknowledges that original
-Turn. It does not plan another continuation from the newer target lineage.
-
-The shared transcript reader derives receipts directly from RuntimeEvents and
-retains legacy atomic linkage facts and released history. A rebuildable SQLite
-index holds only `(source, sourceSequence)` references in stable page order; it
-contains no message bodies, action results, or execution authority. Initial
-backfill and incremental refresh commit at most 64 references per foreground
-request. An unfinished catch-up returns `transcript_preparing`, including the
-committed index position; it publishes no incomplete snapshot or empty-history
-claim. Subscription clients yield between resumable requests and retain their
-loading state within the open deadline. Later page and overlay-release requests
-retain their independent per-request timeout, not the remaining preparation time.
-Reader recreation resumes the committed
-source positions. There is no detached maintenance worker or second task lifecycle.
-Once caught up, normal pages
-seek the index and project bounded source batches/Turns. Wall-clock regressions
-and later appends cannot renumber existing pages. No receipt is written back into
-the legacy message store. The WorkHub view groups receipt retries by action
-identity rather than exposing each physical attempt as a new conversation card.
-Persisted user inputs and Run terminal states always remain readable, including
-a failed attempt whose receipt was never committed. The projection carries the
-admitted action identity alongside the physical Turn identity. Only a visible
-receipt or atomic link suppresses its input rows; a bounded page without that
-replacement still shows the failed inputs. Missing acknowledgement is presented
-as incomplete confirmation, without claiming the target effect failed.
-Host-only Turns retain execution ownership without activating a model provider.
-An interrupted Host action is
-closed by Runtime recovery and never replayed as a model answer. Target-owned
-claims, assignment atomicity, and resume source-boundary checks still decide
-whether an unfinished effect can continue. Transactional delegation/Stop facts
-remain authoritative for their existing ownership and linkage projections.
 
 Every WorkHub input resolves to exactly one proposed **disposition**:
 

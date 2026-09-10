@@ -84,7 +84,9 @@ const PERSISTED_GRANT_MIGRATIONS: ReadonlyMap<string, PersistedGrantMigration> =
   // Retired with the second execution-inspection contract; no shipped surface
   // called execution.inspect.resolve.
   ['execution.inspect.resolve', { kind: 'release' }],
-  // Synthetic Coordination recording was retired, not widened into action authority.
+  // Direct WorkHub actions and record writes were retired. Their grants do not
+  // authorize actFromTurn, which requires the active coordination Turn.
+  ['workhub.coordination.act', { kind: 'release' }],
   ['workhub.coordination.record', { kind: 'release' }],
 ]);
 

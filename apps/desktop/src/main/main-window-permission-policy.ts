@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { WebContents } from 'electron';
+import type { Session, WebContents } from 'electron';
 
 export interface MainWindowPermissionCheck {
   ownerMatches: boolean;
@@ -85,17 +85,25 @@ export function matchesTrustedRendererUrl(
   }
 }
 
+const trustedOwners = new WeakMap<Session, Map<WebContents, string>>();
+
 export function installMainWindowPermissionPolicy(
   owner: WebContents,
   trustedRendererUrl: string,
 ): void {
   const rendererSession = owner.session;
+  const existing = trustedOwners.get(rendererSession);
+  const owners = existing ?? new Map<WebContents, string>();
+  owners.set(owner, trustedRendererUrl);
+  owner.once('destroyed', () => owners.delete(owner));
+  if (existing) return;
+  trustedOwners.set(rendererSession, owners);
   rendererSession.setPermissionCheckHandler((requester, permission, _origin, details) =>
     allowsMainWindowPermissionCheck({
-      ownerMatches: requester === owner,
+      ownerMatches: !!requester && owners.has(requester),
       rendererUrlMatches: matchesTrustedRendererUrl(
         details.requestingUrl ?? '',
-        trustedRendererUrl,
+        requester ? (owners.get(requester) ?? '') : '',
       ),
       permission,
       isMainFrame: details.isMainFrame,
@@ -104,8 +112,8 @@ export function installMainWindowPermissionPolicy(
   rendererSession.setPermissionRequestHandler((requester, permission, callback, details) => {
     const mediaTypes = 'mediaTypes' in details ? details.mediaTypes : undefined;
     callback(allowsMainWindowPermissionRequest({
-      ownerMatches: requester === owner,
-      rendererUrlMatches: matchesTrustedRendererUrl(details.requestingUrl, trustedRendererUrl),
+      ownerMatches: !!requester && owners.has(requester),
+      rendererUrlMatches: matchesTrustedRendererUrl(details.requestingUrl, requester ? (owners.get(requester) ?? '') : ''),
       permission,
       isMainFrame: details.isMainFrame,
       mediaTypes,

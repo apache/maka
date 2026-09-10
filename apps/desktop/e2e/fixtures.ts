@@ -86,19 +86,15 @@ export async function awaitSendReady(page: Page): Promise<void> {
   });
 }
 
-/**
- * Wait for the default Host's Coordination Session and the WorkHub projection
- * to agree that the surface is ready. A mounted WorkHub main is not sufficient:
- * it is also rendered while the Host reconnects and the projection reloads.
- */
-export async function waitForWorkHubReady(page: Page, workCount: number): Promise<void> {
-  await expect
-    .poll(async () => {
-      const snapshot = await page.evaluate(() => window.maka.runtimeHostProfiles.getSnapshot());
-      return snapshot.entries.find(({ isDefault }) => isDefault)?.readiness;
-    })
-    .toBe('ready');
-  await expect(page.getByText(`${workCount} 项工作`, { exact: true })).toBeVisible();
+/** The persistent WorkHub WebContentsView is a distinct renderer, not part of the main DOM. */
+export async function getWorkHubPage(app: ElectronApplication): Promise<Page> {
+  let view: Page | undefined;
+  await expect.poll(() => {
+    view = app.context().pages().find((candidate) => new URL(candidate.url()).searchParams.get('surface') === 'workhub');
+    return Boolean(view);
+  }).toBe(true);
+  await expect(view!.locator('.workHubLive .maka-composer-editor')).toBeVisible();
+  return view!;
 }
 
 /**
@@ -126,7 +122,7 @@ export async function waitForInvocableSkills(
  * backend (BackendRegistry override in main); this only satisfies the UI
  * readiness gates. Kept in the fixture so test data stays out of production main.
  */
-async function seedE2eConnection(userDataDir: string): Promise<string> {
+async function seedE2eConnection(userDataDir: string): Promise<void> {
   const workspaceRoot = path.join(userDataDir, 'workspaces', 'default');
   const capability = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -183,7 +179,6 @@ async function seedE2eConnection(userDataDir: string): Promise<string> {
     if (defaultTarget.kind !== 'committed') {
       throw new Error(`E2E default target seed was not committed: ${defaultTarget.kind}`);
     }
-    return connection.connectionId;
   } finally {
     await owner.close();
   }
@@ -218,28 +213,20 @@ async function seedRailRenderSessions(userDataDir: string): Promise<void> {
   }
 }
 
-async function seedParentRemovalSessions(
-  userDataDir: string,
-  connectionId: string,
-): Promise<void> {
+async function seedParentRemovalSessions(userDataDir: string): Promise<void> {
   const workspaceRoot = path.join(userDataDir, 'workspaces', 'default');
-  const projectRoot = path.join(userDataDir, 'project');
-  const now = Date.UTC(2026, 4, 22, 3, 0, 0);
-  await mkdir(projectRoot, { recursive: true });
   const store = createSessionStore(workspaceRoot);
   try {
     const parent = await store.create({
-      cwd: projectRoot,
-      llmConnectionId: connectionId,
+      cwd: path.join(userDataDir, 'project'),
       llmConnectionSlug: 'e2e',
       model: 'claude-sonnet-4-5-20250929',
       permissionMode: 'ask',
       name: PARENT_REMOVAL_PARENT_NAME,
       labels: [],
     });
-    const child = await store.createSubagent({
-      cwd: projectRoot,
-      llmConnectionId: connectionId,
+    await store.createSubagent({
+      cwd: path.join(userDataDir, 'project'),
       llmConnectionSlug: 'e2e',
       model: 'claude-sonnet-4-5-20250929',
       permissionMode: 'ask',
@@ -272,70 +259,6 @@ async function seedParentRemovalSessions(
         initialRunId: 'e2e-child-run',
       },
     });
-    await store.appendMessages(parent.id, [
-      {
-        type: 'user',
-        id: 'e2e-parent-user',
-        turnId: 'e2e-parent-turn',
-        ts: now - 2_000,
-        text: '请让实现子任务检查侧边对话的保留行为。',
-      },
-      {
-        type: 'tool_call',
-        id: 'e2e-spawn-call',
-        turnId: 'e2e-parent-turn',
-        ts: now - 1_900,
-        toolName: 'spawn_subagent',
-        displayName: 'Implementation',
-        intent: '检查侧边对话在父子任务间的连续性',
-        args: {},
-      },
-      {
-        type: 'tool_result',
-        id: 'e2e-spawn-result',
-        turnId: 'e2e-parent-turn',
-        ts: now - 1_800,
-        toolUseId: 'e2e-spawn-call',
-        isError: false,
-        content: {
-          kind: 'subagent',
-          childSessionId: child.header.id,
-          agentId: 'implementation',
-          agentName: 'Implementation',
-          turnId: 'e2e-child-turn',
-          runId: 'e2e-child-run',
-          status: 'completed',
-          permissionMode: 'ask',
-          summary: '已完成侧边对话连续性检查',
-          artifactIds: [],
-        },
-      },
-      {
-        type: 'assistant',
-        id: 'e2e-parent-assistant',
-        turnId: 'e2e-parent-turn',
-        ts: now - 1_700,
-        text: '实现子任务已完成检查。',
-        modelId: 'claude-sonnet-4-5-20250929',
-      },
-    ]);
-    await store.appendMessages(child.header.id, [
-      {
-        type: 'user',
-        id: 'e2e-child-user',
-        turnId: 'e2e-child-turn',
-        ts: now - 1_600,
-        text: '检查父任务中打开的侧边对话。',
-      },
-      {
-        type: 'assistant',
-        id: 'e2e-child-assistant',
-        turnId: 'e2e-child-turn',
-        ts: now - 1_500,
-        text: '已确认切换到子任务后，父任务的侧边对话应继续保留。',
-        modelId: 'claude-sonnet-4-5-20250929',
-      },
-    ]);
   } finally {
     await store.close?.();
   }
@@ -509,11 +432,8 @@ export async function withE2eWindow(
   const mainLogs: string[] = [];
   const rendererLogs: string[] = [];
   try {
-    const e2eConnectionId = seed ? await seedE2eConnection(userDataDir) : undefined;
-    if (parentRemovalSessions) {
-      if (!e2eConnectionId) throw new Error('Parent-removal fixture requires a seeded connection');
-      await seedParentRemovalSessions(userDataDir, e2eConnectionId);
-    }
+    if (seed) await seedE2eConnection(userDataDir);
+    if (parentRemovalSessions) await seedParentRemovalSessions(userDataDir);
     if (railRenderSessions) await seedRailRenderSessions(userDataDir);
     if (invocableSkills) await seedE2eInvocableSkills(userDataDir);
     if (gitReviewExtraFiles !== undefined) {
