@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useToast, useUiLocale } from '@maka/ui';
 import {
   createPricingReconciliationTarget,
@@ -105,6 +105,7 @@ export function usePricingController(props: {
   const [resetBusy, setResetBusy] = useState(false);
   const triggerRef = useRef<HTMLElement | null>(null);
   const focusFallbackRef = useRef<HTMLElement | null>(null);
+  const focusRestorePendingRef = useRef(false);
 
   const guard = useActionGuard<string>();
   const mountedRef = useRef(false);
@@ -262,6 +263,22 @@ export function usePricingController(props: {
     writeState.kind === 'refresh_failed' ||
     writeState.kind === 'reconcile_unavailable';
 
+  // Restore focus only after React has committed the dialog/row removal. A
+  // timer can run while the row action is still connected, focus that doomed
+  // trigger, and then leave focus on <body> when the commit removes it. The
+  // layout effect observes the committed DOM and chooses the stable fallback
+  // when a successful reset/delete removed the opening row.
+  useLayoutEffect(() => {
+    if (!focusRestorePendingRef.current) return;
+    focusRestorePendingRef.current = false;
+    const trigger = triggerRef.current;
+    const fallback = focusFallbackRef.current;
+    triggerRef.current = null;
+    focusFallbackRef.current = null;
+    if (trigger?.isConnected) trigger.focus();
+    else if (fallback?.isConnected) fallback.focus();
+  }, [editor, resetTarget]);
+
   // On a conflict, the fresh-authority row for whatever the user is editing or
   // resetting — so the notice can show the latest value beside their draft
   // rather than only claiming one exists.
@@ -272,14 +289,7 @@ export function usePricingController(props: {
   }, [writeState]);
 
   function restoreTriggerFocus() {
-    const trigger = triggerRef.current;
-    triggerRef.current = null;
-    const fallback = focusFallbackRef.current;
-    focusFallbackRef.current = null;
-    requestAnimationFrame(() => {
-      if (trigger?.isConnected) trigger.focus();
-      else if (fallback?.isConnected) fallback.focus();
-    });
+    focusRestorePendingRef.current = true;
   }
 
   function openAdd(trigger: HTMLElement | null) {

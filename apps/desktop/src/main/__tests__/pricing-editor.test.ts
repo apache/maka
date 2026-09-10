@@ -233,10 +233,9 @@ describe('PricingEditor', () => {
 
     await click(resetButton);
     await click(buttonByText(harness.doc, copy.confirmReset));
-    await flushAnimationFrame();
 
     assert.equal(resetButton.isConnected, false, 'the reset trigger leaves with its override row');
-    assert.equal(focused, addButton, 'focus falls back to the stable Add action');
+    assert.equal(focused, addButton, 'the committed row removal falls back to the stable Add action');
     await act(async () => harness.root.unmount());
   });
 
@@ -928,12 +927,6 @@ async function clickElement(element: HTMLElement | undefined) {
     element.click();
     await Promise.resolve();
     await Promise.resolve();
-  });
-}
-
-async function flushAnimationFrame(): Promise<void> {
-  await act(async () => {
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
   });
 }
 
