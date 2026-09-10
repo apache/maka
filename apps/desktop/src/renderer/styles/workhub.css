@@ -190,6 +190,12 @@
   .workHubLive[data-placement='floating'][data-conversation-expanded='false']::before { opacity: 1; }
   .workHubLive[data-placement='floating'] .workhub-anchor-rail { display: none; }
   .workHubLive[data-placement='floating'] .maka-chat-layout { background: transparent; }
+  /* Keep the sticky dock bottom-aligned even before the native window has
+     grown enough to fit its composer, 32px scroll button and 12px gaps. */
+  .workHubLive[data-placement='floating'][data-conversation-expanded='true'] > .maka-chat-layout {
+    position: absolute; bottom: 0; width: 100%; height: calc(100% - 32px);
+    min-height: calc(var(--workhub-composer-height, 96px) + 56px);
+  }
   .workHubLive[data-placement='floating'] .maka-composer {
     padding: 0;
     --_chat-composer-radius: 20px;

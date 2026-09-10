@@ -90,6 +90,26 @@ export function WorkHubRoot() {
   const editingProgress = progress && editingProgressRequest === presentation.progressRequest;
   const floating = presentation?.placement === 'floating';
   const showConversation = !progress && (!floating || conversationExpanded);
+  const dockMotion = useRef<{ floating: boolean; progress: boolean; expanded: boolean; padding: Keyframe; animation?: Animation }>(undefined);
+  useLayoutEffect(() => {
+    const dock = composerSurface.current?.parentElement?.parentElement;
+    if (!dock) return;
+    const readPadding = (): Keyframe => {
+      const style = getComputedStyle(dock);
+      return { paddingInlineStart: style.paddingInlineStart, paddingInlineEnd: style.paddingInlineEnd, paddingBottom: style.paddingBottom };
+    };
+    const previous = dockMotion.current;
+    const from = previous?.animation?.playState === 'running' ? readPadding() : previous?.padding;
+    previous?.animation?.cancel();
+    const padding = readPadding();
+    // Animate only a live expand/collapse. Summoning a parked renderer must
+    // paint its final gutter immediately; interrupted motion resumes in place.
+    const animation = floating && previous?.floating && !progress && !previous.progress && previous.expanded !== showConversation && from && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      ? dock.animate([from, padding], { duration: 420, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' })
+      : undefined;
+    dockMotion.current = { floating, progress, expanded: showConversation, padding, animation };
+  }, [floating, progress, showConversation]);
+  useEffect(() => () => dockMotion.current?.animation?.cancel(), []);
   const editProgress = () => {
     if (progress) setEditingProgressRequest(presentation.progressRequest);
   };

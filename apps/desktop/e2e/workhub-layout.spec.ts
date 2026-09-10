@@ -252,7 +252,25 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   expect(await workhub.evaluate(() => innerHeight)).toBe(longInputHeight);
   await editor.fill('Keep this draft while folding the conversation.');
   await expect.poll(() => workhub.evaluate(() => innerHeight)).toBe(compactHeight);
-  await workhub.getByRole('button', { name: /展开对话|Expand conversation/ }).click();
+  // Sample the real native resize, including repeated folds. The composer
+  // must stay inside the window while its original 12px gutter interpolates.
+  for (const expanded of [true, false, true]) {
+    const motion = await workhub.getByRole('button', { name: expanded ? /展开对话|Expand conversation/ : /收起对话|Collapse conversation/ }).evaluate((button) => new Promise<{ bottom: number; left: number }[]>((resolve) => {
+      const frames: { bottom: number; left: number }[] = [];
+      const started = performance.now();
+      const sample = () => {
+        const rect = document.querySelector('.workHubComposerSurface')!.getBoundingClientRect();
+        frames.push({ bottom: innerHeight - rect.bottom, left: rect.left });
+        if (performance.now() - started < 500) requestAnimationFrame(sample);
+        else resolve(frames);
+      };
+      (button as HTMLButtonElement).click();
+      requestAnimationFrame(sample);
+    }));
+    expect(motion.every(({ bottom, left }) => bottom >= -0.5 && bottom <= 12.5 && left >= -0.5 && left <= 12.5)).toBe(true);
+    expect(motion.some(({ bottom }) => bottom > 0.5 && bottom < 11.5)).toBe(true);
+    expect(motion.at(-1)!.bottom).toBeCloseTo(expanded ? 12 : 0);
+  }
   await expect(workhub.locator('.workHubHistory')).toBeVisible();
   await expect.poll(() => workhub.evaluate(() => window.innerHeight)).toBe(expandedHeight);
   await expect.poll(floatingBottom).toBe(anchoredBottom);

@@ -161,6 +161,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const started = performance.now();
     const frequency = screen.getDisplayMatching(bounds).displayFrequency;
     const frameDuration = 1000 / (Number.isFinite(frequency) && frequency > 0 ? frequency : 60);
+    let frame = 0;
     let previous = initial;
     const tick = () => {
       if (disposed || window.isDestroyed() || floating !== window || placement !== 'floating') {
@@ -185,7 +186,10 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
         // Keep frame deadlines independent of native resize work; do not add
         // another full frame's delay after every setBounds/resize callback.
         const elapsed = performance.now() - started;
-        const nextFrame = Math.min(RESIZE_DURATION, (Math.floor(elapsed / frameDuration) + 1) * frameDuration);
+        // Timers can fire just before their deadline. Always advance the frame
+        // index so an early callback cannot submit two native resizes per frame.
+        frame = Math.max(frame + 1, Math.floor(elapsed / frameDuration) + 1);
+        const nextFrame = Math.min(RESIZE_DURATION, frame * frameDuration);
         resizeTimer = setTimeout(tick, Math.max(1, nextFrame - elapsed));
       }
       else cancelFloatingAnimation();

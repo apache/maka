@@ -130,7 +130,9 @@ async function harness(animate = false, displayFrequency = 60) {
   runInNewContext(output.outputFiles[0]!.text, {
     module, exports: module.exports, console, process, URL, Error,
     performance: { now: () => now },
-    setTimeout: (callback: () => void, delay: number) => { timers.set(++timerId, { at: now + delay, callback }); return timerId; },
+    // Native timers truncate fractional delays, so callbacks can precede a
+    // display deadline. Model that instead of an ideal fractional clock.
+    setTimeout: (callback: () => void, delay: number) => { timers.set(++timerId, { at: now + Math.max(1, Math.floor(delay)), callback }); return timerId; },
     clearTimeout: (id: number) => timers.delete(id),
     require: (name: string) => name === 'electron' ? {
       BrowserWindow: FakeWindow, WebContentsView: FakeView,
@@ -618,6 +620,7 @@ test('native resize callbacks do not submit duplicate view bounds and follow dis
   const before = view.boundsUpdates.length;
   h.advance(9);
   assert.ok(view.boundsUpdates.length > before, 'a 120Hz display gets its next animation frame before 16ms');
+  assert.equal(view.boundsUpdates.length - before, 1, 'an early timer must not submit a second resize for the same display frame');
   h.advance(411);
   assert.equal(h.windows[1]!.bounds.height, 720);
   for (let index = 1; index < view.boundsUpdates.length; index++) {
