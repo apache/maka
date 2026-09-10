@@ -19,7 +19,7 @@
 
 import { useEffect, useRef } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent, within } from 'storybook/test';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { ToolCallDetail, ToolTrow } from '../src/tool-activity.js';
 import type { ToolActivityItem } from '../src/materialize.js';
 import {
@@ -276,6 +276,8 @@ export const LongIntentGroupNarrow: Story = {
     );
     expect(disclosure).not.toBeNull();
     await userEvent.click(disclosure!);
+    await waitFor(() => expect(disclosure).toHaveAttribute('aria-expanded', 'true'));
+    expect(getComputedStyle(disclosure!).position).toBe('static');
     const rows = Array.from(group!.querySelectorAll<HTMLElement>('[role="button"]'));
     expect(Math.max(...rows.map((row) => row.getBoundingClientRect().width))).toBeLessThanOrEqual(
       turn.clientWidth + 8,

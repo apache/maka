@@ -173,17 +173,15 @@
   contain-intrinsic-block-size: auto 32px;
 }
 
-/* Expanded activity headers stay reachable while their own detail is being
-   read. Native sticky positioning keeps the header in the transcript flow,
-   so it leaves naturally at the card boundary and does not disturb ChatLayout
-   scroll anchoring while reasoning or tool output continues to stream. */
-.maka-turn :is(.maka-deep-thinking, .maka-tool-activity-card) {
+/* An expanded reasoning header stays reachable while its own detail is being
+   read. Tool-call disclosures remain in normal flow: pinning both the group
+   header and an expanded call row creates a floating two-tier stack that
+   visually detaches from the transcript around adjacent messages. */
+.maka-turn .maka-deep-thinking {
   --maka-activity-sticky-top: var(--space-2);
-  --maka-activity-header-height: var(--h-control-sm);
 }
 
-.maka-turn .maka-activity-card-header[aria-expanded="true"],
-.maka-turn .maka-tool-activity-card [role="button"][aria-expanded="true"] {
+.maka-turn .maka-activity-card-header[aria-expanded="true"] {
   position: sticky;
   top: var(--maka-activity-sticky-top);
   z-index: var(--z-sticky);
@@ -192,23 +190,11 @@
   box-shadow: 0 var(--border-width-hairline) 0 var(--border-soft);
 }
 
-/* A call detail inside an expanded tool group forms a second, bounded sticky
-   tier. The group remains available to collapse the whole run; the lower row
-   collapses only the detail currently being read.
-   Stock ChatToolCalls uses role=button on call rows (no data-slot patch). */
-.maka-turn
-  .maka-tool-activity-card
-  > [role="button"][aria-expanded="true"]
-  ~ div
-  [role="button"][aria-expanded="true"] {
-  top: calc(var(--maka-activity-sticky-top) + var(--maka-activity-header-height));
-}
-
 /* Astryx clips the animated group body with overflow:hidden. `clip` preserves
-   that visual boundary without becoming a scroll ancestor that captures the
-   nested sticky row. The inner wrapper is also a grid item: without an explicit
-   zero minimum its long, nowrap call preview becomes the track's minimum size
-   and stretches every expanded row past the turn instead of ellipsizing it. */
+   that visual boundary. The inner wrapper is also a grid item: without an
+   explicit zero minimum its long, nowrap call preview becomes the track's
+   minimum size and stretches every expanded row past the turn instead of
+   ellipsizing it. */
 .maka-turn .maka-tool-activity-card > [role="button"] + div > div {
   min-width: 0;
   overflow: clip;
