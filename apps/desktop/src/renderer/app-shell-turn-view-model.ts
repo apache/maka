@@ -54,6 +54,7 @@ export interface AppShellTurnPresentationDerivation {
 /** What one turn contributes to the presentation; cached against that turn. */
 interface TurnPresentationEntry {
   footerActions: ReadonlyArray<TurnFooterActionMeta>;
+  footerMeta?: string;
   lineageBadges?: TurnLineageBadge[];
   failedReasonLabel?: string;
   failedSeverity?: FailedTurnSeverity;
@@ -112,6 +113,7 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
     const turnIds = new Set(turns.map((turn) => turn.turnId));
     const existsTurn = (id: string) => turnIds.has(id);
     const footerActionsByTurn: Record<string, ReadonlyArray<TurnFooterActionMeta>> = {};
+    const footerMetaByTurn: Record<string, string> = {};
     const failedReasonLabels: Record<string, string> = {};
     const failedSeverities: Record<string, FailedTurnSeverity> = {};
     const failedExecutionStateLabels: Record<string, string> = {};
@@ -154,6 +156,7 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
       }
 
       footerActionsByTurn[turn.turnId] = entry.footerActions;
+      if (entry.footerMeta !== undefined) footerMetaByTurn[turn.turnId] = entry.footerMeta;
       if (entry.lineageBadges) lineageBadgesByTurn[turn.turnId] = entry.lineageBadges;
       if (entry.failedReasonLabel !== undefined) failedReasonLabels[turn.turnId] = entry.failedReasonLabel;
       if (entry.failedSeverity !== undefined) failedSeverities[turn.turnId] = entry.failedSeverity;
@@ -169,6 +172,7 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
     lastUiLocale = context.uiLocale;
     lastResult = {
       footerActionsByTurn,
+      footerMetaByTurn,
       failedReasonLabels,
       failedSeverities,
       failedExecutionStateLabels,
@@ -207,10 +211,12 @@ function deriveTurnPresentationEntry(input: {
       ? { alreadyRegenerated: true }
       : {}),
     ...(pendingForTurn.size > 0 ? { pendingActions: pendingForTurn } : {}),
-    ...(metaSummary ? { metaSummary } : {}),
   });
 
-  const entry: TurnPresentationEntry = { footerActions };
+  const entry: TurnPresentationEntry = {
+    footerActions,
+    ...(metaSummary ? { footerMeta: metaSummary } : {}),
+  };
 
   if (turn.status === 'failed' && (turn.failureMessage || !isSandboxOnlyToolFailure(turn))) {
     entry.failedReasonLabel = describeTurnErrorClass(turn.errorClass, uiLocale);

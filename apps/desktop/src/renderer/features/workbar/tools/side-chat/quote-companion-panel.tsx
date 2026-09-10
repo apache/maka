@@ -290,6 +290,7 @@ export function QuoteCompanionPanel(props: {
           }).filter((action) => action.id !== 'branch'),
         ]),
       ),
+      footerMetaByTurn: {},
       failedReasonLabels: {},
       failedSeverities: {},
       failedExecutionStateLabels: {},
