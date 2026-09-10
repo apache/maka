@@ -673,6 +673,10 @@ describe('opencode digest extractors', () => {
     assert.equal(opencodeMessageRole({ role: 'assistant' }), 'assistant');
     assert.equal(opencodeMessageRole({ role: 'system' }), undefined);
     assert.equal(opencodePartText({ type: 'text', text: '用一句话介绍' }), '用一句话介绍');
+    assert.equal(
+      opencodePartText({ type: 'text', text: 'SYNTHETIC_COMPACTION', synthetic: true }),
+      undefined,
+    );
     assert.equal(opencodePartText({ type: 'reasoning', text: 'SECRET_THINKING' }), undefined);
     assert.equal(opencodePartText({ type: 'step-start' }), undefined);
     assert.equal(

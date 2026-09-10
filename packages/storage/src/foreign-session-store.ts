@@ -860,6 +860,9 @@ export function codexCwdSqlVariants(path: string): string[] {
   return [...variants];
 }
 
+/** Hard cap on SQLite rows walked for one OpenCode digest, independent of payload size. */
+export const OPENCODE_DIGEST_MAX_SQLITE_ROWS = 2048;
+
 /* ----------------------------- OpenCode SQLite ----------------------------- */
 
 interface OpenCodeStatement {
@@ -920,31 +923,50 @@ function parseSqliteJsonObject(value: unknown): Record<string, unknown> | undefi
   return parseForeignJsonLine(value);
 }
 
-/** Walk a statement iterator newest-first; stop before holding more than the digest byte cap. */
-function collectSqliteRowsUntilReadCap(iterable: Iterable<unknown>): {
+function sqlitePayloadBytes(value: unknown): number {
+  if (typeof value === 'string') return Buffer.byteLength(value);
+  if (value instanceof Uint8Array) return value.byteLength;
+  if (value === null || value === undefined) return 0;
+  try {
+    return Buffer.byteLength(JSON.stringify(value));
+  } catch {
+    return 1;
+  }
+}
+
+/** Walk a statement iterator newest-first; stop at the digest byte cap or row cap. */
+export function collectSqliteRowsUntilReadCap(
+  iterable: Iterable<unknown>,
+  limits: { maxBytes?: number; maxRows?: number } = {},
+): {
   rows: Record<string, unknown>[];
   truncated: boolean;
+  usedBytes: number;
+  usedRows: number;
 } {
+  const maxBytes = limits.maxBytes ?? FOREIGN_SESSION_DIGEST_MAX_READ_BYTES;
+  const maxRows = limits.maxRows ?? OPENCODE_DIGEST_MAX_SQLITE_ROWS;
   const rows: Record<string, unknown>[] = [];
   let used = 0;
+  let walked = 0;
   let truncated = false;
   for (const value of iterable) {
+    walked += 1;
+    if (walked > maxRows) {
+      truncated = true;
+      break;
+    }
     const rec = asObject(value);
     if (rec === undefined) continue;
-    const dataRaw = rec.data;
-    const nbytes = typeof dataRaw === 'string' ? Buffer.byteLength(dataRaw) : 0;
-    if (nbytes > FOREIGN_SESSION_DIGEST_MAX_READ_BYTES) {
-      truncated = true;
-      continue;
-    }
-    if (used + nbytes > FOREIGN_SESSION_DIGEST_MAX_READ_BYTES) {
+    const nbytes = sqlitePayloadBytes(rec.data);
+    if (used + nbytes > maxBytes) {
       truncated = true;
       break;
     }
     used += nbytes;
     rows.push(rec);
   }
-  return { rows, truncated };
+  return { rows, truncated, usedBytes: used, usedRows: walked };
 }
 
 async function withOpenCodeDb<T>(
@@ -991,11 +1013,15 @@ async function readOpenCodeSessionRows(
       'directory',
       'time_created',
       'time_updated',
+      'time_archived',
       'parent_id',
     ].filter((column) => columns.has(column));
     // Identifiers below are from this allowlist, never from the DB.
     const where: string[] = [];
     const params: unknown[] = [];
+    if (columns.has('time_archived')) {
+      where.push('time_archived IS NULL');
+    }
     if (columns.has('time_updated')) {
       where.push('time_updated >= ?');
       params.push(now - FOREIGN_SESSION_SCAN_MAX_AGE_MS);
@@ -1004,9 +1030,10 @@ async function readOpenCodeSessionRows(
       where.push("(parent_id IS NULL OR parent_id = '')");
     }
     // Coarse cwd prefilter before LIMIT so other projects cannot fill the
-    // window. JS still runs normalizePath() as the authority.
-    if (cwdFilter !== undefined) {
-      const variants = [...new Set([cwdFilter, normalizePath(cwdFilter)])];
+    // window. Separator/trailing-slash variants match Codex; JS still runs
+    // normalizePath() as the authority.
+    if (cwdFilter !== undefined && columns.has('directory')) {
+      const variants = codexCwdSqlVariants(cwdFilter);
       where.push(`directory IN (${variants.map(() => '?').join(', ')})`);
       params.push(...variants);
     }
@@ -1069,6 +1096,8 @@ async function readOpenCodeDigestRows(
 
     const messageColumns = sqliteTableColumns(db, 'message');
     let truncated = false;
+    let remainingBytes = FOREIGN_SESSION_DIGEST_MAX_READ_BYTES;
+    let remainingRows = OPENCODE_DIGEST_MAX_SQLITE_ROWS;
     const messages: OpenCodeDigestMessage[] = [];
     if (messageColumns.has('id') && messageColumns.has('data')) {
       const order = messageColumns.has('time_created') ? 'time_created DESC, id DESC' : 'id DESC';
@@ -1076,8 +1105,15 @@ async function readOpenCodeDigestRows(
         db
           .prepare(`SELECT id, data FROM message WHERE session_id = ? ORDER BY ${order}`)
           .iterate(sessionId),
+        { maxBytes: remainingBytes, maxRows: remainingRows },
       );
       truncated = truncated || collected.truncated;
+      remainingBytes = Math.max(0, remainingBytes - collected.usedBytes);
+      remainingRows = Math.max(0, remainingRows - collected.usedRows);
+      if (collected.truncated) {
+        remainingBytes = 0;
+        remainingRows = 0;
+      }
       for (const rec of collected.rows.reverse()) {
         const id = nonEmptyString(rec.id);
         const data = parseSqliteJsonObject(rec.data);
@@ -1094,6 +1130,7 @@ async function readOpenCodeDigestRows(
         db
           .prepare(`SELECT message_id, data FROM part WHERE session_id = ? ORDER BY ${order}`)
           .iterate(sessionId),
+        { maxBytes: remainingBytes, maxRows: remainingRows },
       );
       truncated = truncated || collected.truncated;
       for (const rec of collected.rows.reverse()) {

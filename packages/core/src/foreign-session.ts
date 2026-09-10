@@ -574,9 +574,9 @@ export function codexRolloutMessage(
  *
  * One conversation is a `session` row plus `message` / `part` rows.
  * Digest extraction is deliberately NOT the import mapper: tool output,
- * reasoning/thinking, step markers, and system prompts stay out. Only
- * `text` parts (by message role) and file paths on tool *inputs* cross
- * the gate.
+ * reasoning/thinking, step markers, synthetic/compaction text, and system
+ * prompts stay out. Only `text` parts (by message role) and file paths on
+ * tool *inputs* cross the gate.
  * ------------------------------------------------------------------ */
 
 /** `user` / `assistant` from a message row's `data` JSON; anything else is dropped. */
@@ -586,9 +586,9 @@ export function opencodeMessageRole(
   return data.role === 'user' || data.role === 'assistant' ? data.role : undefined;
 }
 
-/** Visible text from a `type: "text"` part. Reasoning/tool/step parts return undefined. */
+/** Visible text from a `type: "text"` part. Reasoning/tool/step/synthetic parts return undefined. */
 export function opencodePartText(part: Record<string, unknown>): string | undefined {
-  if (part.type !== 'text') return undefined;
+  if (part.type !== 'text' || part.synthetic === true) return undefined;
   return typeof part.text === 'string' && part.text.length > 0 ? part.text : undefined;
 }
 

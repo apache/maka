@@ -30,7 +30,9 @@ import {
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
 import {
+  OPENCODE_DIGEST_MAX_SQLITE_ROWS,
   codexCwdSqlVariants,
+  collectSqliteRowsUntilReadCap,
   createForeignSessionStore,
   isClaudeCodeImportEnabled,
   isCodexImportEnabled,
@@ -194,6 +196,7 @@ type OpenCodeSessionSeed = {
   title?: string;
   parentId?: string | null;
   updatedAtMs?: number;
+  archivedAtMs?: number | null;
   userText?: string;
   assistantText?: string;
   filePath?: string;
@@ -241,7 +244,7 @@ async function seedOpenCodeDb(home: string, sessions: OpenCodeSessionSeed[]): Pr
         session.title ?? session.id,
         ts,
         ts,
-        null,
+        session.archivedAtMs ?? null,
       );
       const userMsg = nextId('msg');
       const assistantMsg = nextId('msg');
@@ -675,6 +678,42 @@ describe('foreign session store — OpenCode scan', () => {
     assert.ok(!all.some((s) => s.id === 'ses_expired'));
     assert.ok(!all.some((s) => s.id === 'ses_r054'));
   });
+
+  it('excludes archived sessions so they cannot fill the scan window', async () => {
+    const home = await tempHome();
+    const sessions: OpenCodeSessionSeed[] = [];
+    for (let i = 0; i < FOREIGN_SESSION_SCAN_MAX_SESSIONS + 5; i++) {
+      sessions.push({
+        id: `ses_arch${String(i).padStart(3, '0')}`,
+        cwd: '/repo',
+        updatedAtMs: NOW - i * 1000,
+        archivedAtMs: NOW - i * 1000,
+      });
+    }
+    sessions.push({
+      id: 'ses_live',
+      cwd: '/repo',
+      updatedAtMs: NOW - 80_000,
+    });
+    await seedOpenCodeDb(home, sessions);
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const all = await store.listSessions();
+    assert.deepEqual(
+      all.map((s) => s.id),
+      ['ses_live'],
+    );
+  });
+
+  it('matches OpenCode directory across trailing-separator forms', async () => {
+    const home = await tempHome();
+    await seedOpenCodeDb(home, [{ id: 'ses_trail', cwd: '/repo/one/' }]);
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const filtered = await store.listSessions({ cwd: '/repo/one' });
+    assert.deepEqual(
+      filtered.map((s) => s.id),
+      ['ses_trail'],
+    );
+  });
 });
 
 describe('foreign session store — digest', () => {
@@ -875,6 +914,100 @@ describe('foreign session store — digest', () => {
     );
     const flat = JSON.stringify(digest);
     assert.ok(!flat.includes('OLD_USER_SHOULD_DROP'), flat);
+  });
+
+  it('stops OpenCode digest walk at an oversize newest row instead of skipping it', async () => {
+    const home = await tempHome();
+    const dbPath = await seedOpenCodeDb(home, [
+      { id: 'ses_oversize', cwd: '/repo', userText: 'OLD_KEEP_IF_CONTINUE' },
+    ]);
+    const db = new DatabaseSync(dbPath);
+    try {
+      const oversize = 'x'.repeat(FOREIGN_SESSION_DIGEST_MAX_READ_BYTES + 1);
+      db.prepare(
+        'INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)',
+      ).run('part_huge', 'msg_ignored', 'ses_oversize', NOW + 10_000, oversize);
+    } finally {
+      db.close();
+    }
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const [session] = await store.listSessions();
+    assert.ok(session);
+    const digest = await store.readDigest(session);
+    assert.ok(
+      digest.warnings.some((w) => w.includes(`${FOREIGN_SESSION_DIGEST_MAX_READ_BYTES}`)),
+      JSON.stringify(digest.warnings),
+    );
+    assert.ok(!JSON.stringify(digest).includes('OLD_KEEP_IF_CONTINUE'));
+  });
+
+  it('drops OpenCode synthetic text parts from the digest', async () => {
+    const home = await tempHome();
+    const dbPath = await seedOpenCodeDb(home, [
+      { id: 'ses_synth', cwd: '/repo', userText: 'real user prompt' },
+    ]);
+    const db = new DatabaseSync(dbPath);
+    try {
+      const user = db
+        .prepare(`SELECT id FROM message WHERE session_id = ? AND data LIKE '%user%'`)
+        .get('ses_synth') as { id: string };
+      db.prepare(
+        'INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)',
+      ).run(
+        'part_synth',
+        user.id,
+        'ses_synth',
+        NOW + 1,
+        JSON.stringify({ type: 'text', text: 'SYNTHETIC_COMPACTION', synthetic: true }),
+      );
+    } finally {
+      db.close();
+    }
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const [session] = await store.listSessions();
+    assert.ok(session);
+    const digest = await store.readDigest(session);
+    assert.ok(!JSON.stringify(digest).includes('SYNTHETIC_COMPACTION'));
+    assert.match(digest.userMessages[0]!, /real user prompt/);
+  });
+
+  it('counts non-string SQLite payloads and stops at the row cap', () => {
+    const oversize = collectSqliteRowsUntilReadCap([
+      { data: 'x'.repeat(FOREIGN_SESSION_DIGEST_MAX_READ_BYTES + 1) },
+      { data: JSON.stringify({ type: 'text', text: 'OLDER' }) },
+    ]);
+    assert.equal(oversize.truncated, true);
+    assert.equal(oversize.rows.length, 0);
+
+    const half = {
+      type: 'text',
+      text: 'y'.repeat(Math.floor(FOREIGN_SESSION_DIGEST_MAX_READ_BYTES / 2) + 1024),
+    };
+    const objects = collectSqliteRowsUntilReadCap([
+      { data: { type: 'text', text: 'hello' } },
+      { data: half },
+      { data: half },
+    ]);
+    assert.equal(objects.truncated, true);
+    assert.equal(objects.rows.length, 2);
+    assert.equal((objects.rows[0]!.data as { text: string }).text, 'hello');
+
+    const many = Array.from({ length: OPENCODE_DIGEST_MAX_SQLITE_ROWS + 5 }, (_, i) => ({
+      data: { n: i },
+    }));
+    const capped = collectSqliteRowsUntilReadCap(many);
+    assert.equal(capped.truncated, true);
+    assert.equal(capped.rows.length, OPENCODE_DIGEST_MAX_SQLITE_ROWS);
+
+    const first = collectSqliteRowsUntilReadCap([{ data: 'x'.repeat(1024) }]);
+    const leftoverBytes = FOREIGN_SESSION_DIGEST_MAX_READ_BYTES - first.usedBytes;
+    const leftoverRows = OPENCODE_DIGEST_MAX_SQLITE_ROWS - first.usedRows;
+    const second = collectSqliteRowsUntilReadCap([{ data: 'y'.repeat(leftoverBytes + 1) }], {
+      maxBytes: leftoverBytes,
+      maxRows: leftoverRows,
+    });
+    assert.equal(second.truncated, true);
+    assert.equal(second.rows.length, 0);
   });
 
   it('refuses a transcript path replaced by an out-of-root symlink', async () => {
