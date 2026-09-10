@@ -41,7 +41,7 @@ export function publishTransientUserMessage(
   options: {
     placement?: TransientUserMessageProjection['transientPlacement'];
     hostTurnId?: string;
-    displayAfter?: import('@maka/core/events').MessageDisplayAnchor | null;
+    pendingSteering?: boolean;
     updateOnly?: boolean;
     directoryReferences?: DirectoryReferences;
     quotes?: readonly QuoteRef[];
@@ -54,7 +54,7 @@ export function publishTransientUserMessage(
   const next: TransientUserMessageProjection = {
     id: messageId,
     ts: Date.now(),
-    ...(options.displayAfter !== undefined ? { displayAfter: options.displayAfter } : {}),
+    ...(options.pendingSteering !== undefined ? { pendingSteering: options.pendingSteering } : {}),
     text,
     ...copiedArray('attachments', attachments),
     ...copiedArray('directoryReferences', directoryReferences),

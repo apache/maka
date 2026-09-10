@@ -40,29 +40,24 @@ import {
 } from './app-shell-chat-actions-fixture.js';
 
 describe('busy-raced send settlement', () => {
-  it('captures the visible steering boundary before submission and keeps it through admission', async () => {
-    const position = { hostTurnId: 'running-turn', displayAfter: { kind: 'tool' as const, id: 'visible-tool' } };
+  it('keeps steering pending through Host admission without submitting a display anchor', async () => {
     const transient = new Map<string, TransientUserMessageProjection>();
-    let submittedAnchor: unknown;
-    let captures = 0;
     const restoreWindow = installWindow({ sessions: {
       submitMessage: async (_sessionId: string, _placement: string, command: { displayAfter?: unknown }) => {
-        submittedAnchor = command.displayAfter;
-        assert.deepEqual([...transient.values()][0]?.displayAfter, position.displayAfter);
+        assert.equal(command.displayAfter, undefined);
+        assert.equal([...transient.values()][0]?.pendingSteering, true);
         return { ok: true, disposition: 'steering', attachments: [], inlineReferences: [], skillInvocation: EMPTY_SKILL_INVOCATION };
       },
     } });
     try {
       const actions = createAppShellChatActions({
         ...createActionsDeps(), activeIdRef: { current: 'session-a' },
-        captureSteeringPosition: () => { captures++; return position; },
+        getRunningTurnId: () => 'running-turn',
         addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
         updateTransientMessage: (_sessionId, message) => transient.set(message.id, message),
       });
       assert.equal(await actions.enqueueMessage('session-a', 'steer', 'current_turn'), true);
-      assert.equal(captures, 1);
-      assert.deepEqual(submittedAnchor, position.displayAfter);
-      assert.deepEqual([...transient.values()][0]?.displayAfter, position.displayAfter);
+      assert.equal([...transient.values()][0]?.pendingSteering, true);
     } finally { restoreWindow(); }
   });
 

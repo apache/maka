@@ -49,7 +49,6 @@ import { getConversationCopy } from "./conversation-copy.js";
 export { isCancelledToolResultContent, isInFlightToolStatus, toolResultActivityStatus } from '@maka/core/tool-result-status';
 
 export interface ChatItem {
-  displayAfter?: MessageContent['displayAfter'];
   compactionState?: "running" | "compacted" | "failed";
   id: string;
   role: "user" | "assistant" | "system";
@@ -359,8 +358,8 @@ function mergeLiveOverPersisted(
  * - `tools`: one contiguous group of tool activity. Adjacent groups are
  *   pre-merged; presentation may split ordinary evidence and linked-session
  *   navigation into adjacent native Astryx segments without reordering them.
- * - `user`: an instruction inserted after the turn began, displayed at its
- *   captured Send boundary, or at Runtime acknowledgement for older messages.
+ * - `user`: an instruction inserted after the turn began, displayed where
+ *   Runtime acknowledged it.
  *
  * The model stays FLAT: the collapsed "Processing" fold (#1307) is a render
  * concern applied by `foldTimeline` (timeline-fold.ts) at the component layer,
@@ -373,7 +372,6 @@ export type TurnTimelineItem =
       message: ChatItem;
       messageId: string;
       steeringEventId?: string;
-      transient?: import('./chat-view.js').TransientUserMessageProjection;
     }
   | {
       kind: "thinking";
@@ -639,7 +637,7 @@ export function overlayLiveTurn(
   }
   appendLiveThrough(liveEntries.length - 1);
   timeline.push(...deferredSteering);
-  const mergedTimeline = mergeAdjacentTimeline(positionAnchoredMessages(timeline));
+  const mergedTimeline = mergeAdjacentTimeline(timeline);
   const next = {
     ...current,
     tools: timelineTools(mergedTimeline),
@@ -1062,8 +1060,8 @@ export function projectTurnTools(
  *  - leftover buffered tools (abort / pure-tool turn with no assistant row)
  *    flush as a trailing tools group.
  *
- * Empty text/thinking produce no item. Thinking from distinct messages keeps
- * its identity so a Send anchor can split it; adjacent tools groups merge.
+ * Empty text/thinking produce no item. Adjacent thinking blocks merge with
+ * a blank line; adjacent tools groups merge into one group.
  */
 function buildTurnTimeline(
   turnMessages: readonly StoredMessage[],
@@ -1159,7 +1157,7 @@ function buildTurnTimeline(
     }
   }
   flushTools(pending);
-  return mergeAdjacentTimeline(positionAnchoredMessages(raw));
+  return mergeAdjacentTimeline(raw);
 }
 
 function chatItemFromUserMessage(message: UserMessage): ChatItem {
@@ -1175,7 +1173,6 @@ function chatItemFromContent(
   return {
     id,
     role: "user",
-    ...(content.displayAfter !== undefined ? { displayAfter: content.displayAfter } : {}),
     text: content.displayText ?? content.text,
     ts,
     ...(content.attachments && content.attachments.length > 0
@@ -1202,79 +1199,6 @@ function flattenTimelineTools(items: readonly TurnTimelineItem[]): TurnTimelineI
     : [item]);
 }
 
-/** Display order is independent of the step boundary that consumed steering. */
-function positionAnchoredMessages(items: readonly TurnTimelineItem[]): TurnTimelineItem[] {
-  const anchored = items.filter((item) => item.kind === 'user' && item.message.displayAfter !== undefined);
-  if (anchored.length === 0) return [...items];
-  const flat = flattenTimelineTools(items);
-  const known = new Set(flat.map(timelineItemKey));
-  const followers = new Map<string | null, TurnTimelineItem[]>();
-  const moved = new Set<string>();
-  for (const item of anchored) {
-    if (item.kind !== 'user') continue;
-    const anchor = item.message.displayAfter!;
-    const key = anchor === null ? null : `${anchor.kind}\0${anchor.id}`;
-    // An unloaded or legacy boundary cannot justify guessing another position.
-    if (key !== null && (!known.has(key) || key === timelineItemKey(item))) continue;
-    followers.set(key, [...(followers.get(key) ?? []), item]);
-    moved.add(item.messageId);
-  }
-  const out: TurnTimelineItem[] = [];
-  const emitted = new Set<string>();
-  const emit = (entries: readonly TurnTimelineItem[]) => {
-    const stack = [...entries].reverse();
-    while (stack.length) {
-      const item = stack.pop()!;
-      if (item.kind === 'user') {
-        if (emitted.has(item.messageId)) continue;
-        emitted.add(item.messageId);
-      }
-      out.push(item);
-      const next = followers.get(timelineItemKey(item));
-      if (next) stack.push(...[...next].reverse());
-    }
-  };
-  emit(followers.get(null) ?? []);
-  for (const item of flat) {
-    if (item.kind !== 'user' || !moved.has(item.messageId)) emit([item]);
-  }
-  // Invalid cyclic anchors must not hide the user's instructions.
-  emit(anchored);
-  return out;
-}
-
-export function overlayTransientMessages(
-  turns: readonly TurnViewModel[],
-  messages: readonly import('./chat-view.js').TransientUserMessageProjection[],
-): readonly TurnViewModel[] {
-  if (!messages.some((message) => message.displayAfter !== undefined)) return turns;
-  const durableIds = new Set(turns.flatMap((turn) => [
-    ...(turn.user ? [turn.user.id] : []),
-    ...turn.timeline.flatMap((item) => item.kind === 'user' ? [item.messageId] : []),
-  ]));
-  return turns.map((turn) => {
-    const pending = messages.filter((message) => message.displayAfter !== undefined
-      && message.transientPlacement === 'current_turn'
-      && (message.hostTurnId ?? turns.at(-1)?.turnId) === turn.turnId
-      && !durableIds.has(message.id));
-    if (pending.length === 0) return turn;
-    const timeline = mergeAdjacentTimeline(positionAnchoredMessages([
-      ...turn.timeline,
-      ...pending.map((message): TurnTimelineItem => ({
-        kind: 'user', messageId: message.id, transient: message,
-        message: chatItemFromContent(message.id, message.ts, {
-          ...message,
-          attachments: message.attachments ? [...message.attachments] : undefined,
-          directoryReferences: message.directoryReferences ? [...message.directoryReferences] : undefined,
-          quotes: message.quotes ? [...message.quotes] : undefined,
-          inlineReferences: message.inlineReferences ? [...message.inlineReferences] : undefined,
-        }),
-      })),
-    ]));
-    return { ...turn, timeline, tools: timelineTools(timeline) };
-  });
-}
-
 function mergeAdjacentTimeline(
   items: readonly TurnTimelineItem[],
 ): TurnTimelineItem[] {
@@ -1284,7 +1208,6 @@ function mergeAdjacentTimeline(
     if (
       item.kind === "thinking" &&
       last?.kind === "thinking" &&
-      item.messageId === last.messageId &&
       !item.live &&
       !last.live
     ) {

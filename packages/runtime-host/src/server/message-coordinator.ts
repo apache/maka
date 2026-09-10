@@ -304,7 +304,7 @@ type QueuedMutationKind = 'retract' | 'retract_entry' | 'promote' | 'update_entr
 type MessageOperationKind = QueuedMutationKind | 'submit' | 'interrupt';
 
 interface PendingQueuedMutation {
-  readonly payload: object;
+  readonly payload: { readonly sessionId: string };
   readonly result: Promise<MessageOutcome<unknown>>;
 }
 
@@ -1992,7 +1992,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     if (state.transition) {
       return failure('operation_conflict', 'Message queue is draining into the next Turn');
     }
-    const current = state.followup;
+    const steering = state.steering.some((entry) => entry.entryId === input.entryIds[0]);
+    const current = steering ? state.steering : state.followup;
     if (input.entryIds.length !== current.length) {
       return failure('operation_conflict', 'Message queue changed since the reorder was issued');
     }
@@ -2003,14 +2004,17 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       if (!entry) {
         return failure('operation_conflict', 'Message queue changed since the reorder was issued');
       }
+      byId.delete(entryId);
       reordered.push(entry);
     }
     if (reordered.some((entry, index) => current[index] !== entry)) {
       await this.#admissions.reorderMessageAdmissions(
         input.sessionId,
         reordered.map((entry) => entry.messageId),
+        steering ? 'steering' : 'followup',
       );
-      state.followup = reordered;
+      if (steering) state.steering = reordered;
+      else state.followup = reordered;
       this.#mutated(state);
     }
     const result = { queueRevision: state.revision };
@@ -2329,6 +2333,14 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     this.#assertRun(run);
     const state = this.#requireState(run.sessionId);
     if (state.phase !== 'open' || run.generation !== state.generation) return [];
+    // Queue edits await durable storage while provider boundaries run outside
+    // the admission gate. Take the entire batch only after those edits settle.
+    if (
+      [...this.#pendingQueuedMutations.values()].some(
+        ({ payload }) => payload.sessionId === run.sessionId,
+      )
+    )
+      return [];
     const entries = state.steering.splice(0);
     if (entries.length === 0) return [];
     const leases = entries.map((entry): SteeringLease => {

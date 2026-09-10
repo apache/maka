@@ -50,7 +50,7 @@ export function SessionLocalMessages(props: {
               id: message.messageId,
               text: message.text,
               ts: message.createdAt,
-              displayAfter: message.displayAfter,
+              ...(message.displayAfter !== undefined ? { pendingSteering: true } : {}),
               transientPlacement: message.placement,
               attachments: message.attachments,
               directoryReferences: message.directoryReferences,

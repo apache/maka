@@ -1486,10 +1486,10 @@ function AppShellContent({
     retryMessages,
   } = useStableActions(createAppShellChatActions, {
     uiLocale,
-    captureSteeringPosition: (sessionId) => {
+    getRunningTurnId: (sessionId) => {
       if (sessionId !== activeId) return undefined;
       const liveTurn = sessionUiController.liveTurnBySessionRef.current[sessionId];
-      return Conversation.captureSessionSteeringPosition({ messages, liveTurn, transientMessages, locale: uiLocale }, activeSession?.runningTurnIds?.[0]);
+      return liveTurn ? (liveTurn.terminal ? undefined : liveTurn.turnId) : activeSession?.runningTurnIds?.[0];
     },
     activeIdRef,
     captureComposerImportOwner,
@@ -2562,6 +2562,7 @@ function AppShellContent({
                   continuing={showContinuingIndicator && !activeStreamingLive}
                   onSend={sendOwningItsTarget}
                   onStop={stop}
+                  pendingMessages={transientMessages}
                   queuedMessages={activeMessageQueue?.entries}
                   queuedMessageRevision={activeMessageQueue?.queueRevision}
                   onPromoteQueuedEntry={activeId ? promoteQueuedEntry : undefined}

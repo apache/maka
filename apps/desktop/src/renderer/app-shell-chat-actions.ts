@@ -148,7 +148,7 @@ export interface AppShellChatActions {
 
 export function createAppShellChatActions(deps: {
   uiLocale: UiLocale;
-  captureSteeringPosition?: (sessionId: string) => { hostTurnId: string; displayAfter: import('@maka/core/events').MessageDisplayAnchor | null } | undefined;
+  getRunningTurnId?: (sessionId: string) => string | undefined;
   activeIdRef: RefBox<string | undefined>;
   captureComposerImportOwner: () => ComposerImportOwner;
   checkTaskSubmissionReadiness: () => Promise<boolean>;
@@ -310,6 +310,7 @@ export function createAppShellChatActions(deps: {
     displayText?: string;
     quotes?: readonly QuoteRef[];
     exactTurn?: boolean;
+    pendingSteering?: boolean;
     waitForHostAdmission?: boolean;
     /** Whether this Session's surface is on screen to receive Skill feedback. */
     isSurfaceVisible?: () => boolean;
@@ -367,7 +368,7 @@ export function createAppShellChatActions(deps: {
       {
         updateOnly: true,
         placement,
-        ...(input.command.displayAfter !== undefined ? { displayAfter: input.command.displayAfter } : {}),
+        pendingSteering: result.disposition === 'turn_started' ? false : input.pendingSteering,
         ...(result.turnId ? { hostTurnId: result.turnId } : {}),
         ...copiedArray('directoryReferences', directoryReferences),
         ...copiedArray('quotes', quotes),
@@ -390,7 +391,7 @@ export function createAppShellChatActions(deps: {
     const quotes = options.quotes;
     const exactTurn = options.turnOrchestration !== undefined;
     const initialSessionId = activeIdRef.current;
-    const position = initialSessionId && !exactTurn ? deps.captureSteeringPosition?.(initialSessionId) : undefined;
+    const steeringTurnId = initialSessionId && !exactTurn ? deps.getRunningTurnId?.(initialSessionId) : undefined;
     const initialNewTaskTarget = initialSessionId ? undefined : newTaskTarget;
     const sendOwner = captureComposerImportOwner();
     const newChatOwner = initialSessionId ? null : sendOwner;
@@ -439,7 +440,6 @@ export function createAppShellChatActions(deps: {
             : undefined;
         const sendCommand = {
           text,
-          ...(position ? { displayAfter: position.displayAfter } : {}),
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...copiedArray('attachmentItems', attachmentItems),
           ...copiedArray('retainedAttachments', retainedAttachments),
@@ -458,6 +458,7 @@ export function createAppShellChatActions(deps: {
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...copiedArray('quotes', quotes),
           exactTurn,
+          pendingSteering: Boolean(steeringTurnId),
           waitForHostAdmission: options.waitForHostAdmission,
           isSurfaceVisible: () => activeIdRef.current === sessionId,
         });
@@ -487,7 +488,7 @@ export function createAppShellChatActions(deps: {
         // the new-chat surface, so the empty-session Maka hero cannot paint
         // between observation settling and the submitted content appearing.
         Conversation.publishTransientUserMessage(
-      deps,
+          deps,
           session.id,
           messageId,
           options.displayText ?? text,
@@ -526,13 +527,13 @@ export function createAppShellChatActions(deps: {
       optimisticSessionId = sessionId;
       optimisticMessageId = messageId;
       Conversation.publishTransientUserMessage(
-      deps,
+        deps,
         sessionId,
         messageId,
         options.displayText ?? text,
         [],
         {
-          ...position,
+          ...(steeringTurnId ? { hostTurnId: steeringTurnId, pendingSteering: true } : {}),
           ...copiedArray('directoryReferences', directoryReferences),
           ...copiedArray('quotes', quotes),
           inlineReferences: [],
@@ -611,11 +612,12 @@ export function createAppShellChatActions(deps: {
     options: MessageContextOptions = {},
   ): Promise<boolean> {
     const messageId = crypto.randomUUID();
-    const position = placement === 'current_turn' ? deps.captureSteeringPosition?.(sessionId) : undefined;
+    const steeringTurnId = placement === 'current_turn' ? deps.getRunningTurnId?.(sessionId) : undefined;
     const directoryReferences = options.directoryReferences;
     const quotes = options.quotes ?? [];
     Conversation.publishTransientUserMessage(deps, sessionId, messageId, text, Conversation.retainedAttachmentRefs(pending ?? []), {
-      ...position,
+      pendingSteering: placement === 'current_turn',
+      ...(steeringTurnId ? { hostTurnId: steeringTurnId } : {}),
       placement,
       ...copiedArray('directoryReferences', directoryReferences),
       ...copiedArray('quotes', quotes),
@@ -628,9 +630,9 @@ export function createAppShellChatActions(deps: {
         sessionId,
         messageId,
         placement,
+        pendingSteering: placement === 'current_turn',
         command: {
           text,
-          ...(position ? { displayAfter: position.displayAfter } : {}),
           ...copiedArray('attachmentItems', attachmentItems),
           ...copiedArray('retainedAttachments', retainedAttachments),
           ...copiedArray('directoryReferences', directoryReferences),

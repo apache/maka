@@ -172,7 +172,8 @@ export function TranscriptHistoryGapRow({
  * plus `hostTurnId` for the grouping once the Host names one.
  */
 export interface TransientUserMessageProjection {
-  displayAfter?: import('@maka/core/events').MessageDisplayAnchor | null;
+  /** Held above the composer until Runtime emits steering_message. */
+  pendingSteering?: boolean;
   deliveryStatus?: string;
   deliveryDetail?: string;
   deliveryActions?: readonly { label: string; onClick(): void }[];
@@ -184,9 +185,9 @@ export interface TransientUserMessageProjection {
   quotes?: readonly QuoteRef[];
   inlineReferences?: readonly InlineReference[];
   /**
-   * Presentation-only placement until canonical transcript grouping arrives:
-   * `current_turn` renders beside the tail Turn (at displayAfter when supplied),
-   * `next_turn` below it.
+   * Presentation-only placement until canonical transcript grouping arrives.
+   * Pending steering and next-turn messages stay in the composer queue; an
+   * unresolved current-turn root prompt can render beside its live Turn.
    */
   transientPlacement: 'current_turn' | 'next_turn';
   /** The Host Turn this Message is already bound to, once the Host named one. */
@@ -403,7 +404,7 @@ export function ChatView(props: {
     [drainingMessageIds, props.messages],
   );
   const chat = useMemo(() => materializeChat(visibleMessages, locale), [visibleMessages, locale]);
-  const transientMessages = props.transientMessages ?? [];
+  const transientMessages = (props.transientMessages ?? []).filter((message) => !message.pendingSteering && message.transientPlacement !== 'next_turn');
   // The projection owns the derived turns, so a turn nothing said anything
   // about keeps its object identity and its memoized TurnView skips — across
   // deltas AND across the message refreshes that fire at every step/tool
@@ -413,7 +414,6 @@ export function ChatView(props: {
     locale,
     messages: visibleMessages,
     liveTurn: props.liveTurn,
-    transientMessages: props.transientMessages,
     shellRunUpdates: props.shellRunUpdates,
   });
   // Derived FROM the projected turns, not beside them: the consumer keys its
@@ -623,10 +623,7 @@ export function ChatView(props: {
       })
     : [];
   const inlineTransientMessageIds = new Set(
-    [
-      ...inlineTransientMessages.map((message) => message.id),
-      ...turns.flatMap((turn) => turn.timeline.flatMap((item) => item.kind === 'user' ? [item.messageId] : [])),
-    ],
+    inlineTransientMessages.map((message) => message.id),
   );
   const { highlightedTurnId } = useChatScroll({
     scrollRef,

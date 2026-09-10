@@ -106,10 +106,6 @@
 
    Scoped to the filled bubble on purpose: the assistant bubble is `ghost` (no
    fill, measured transparent), so it carries no tint to override. */
-.maka-steering-message[data-steering-pending="true"] .maka-chat-message-bubble-user {
-  background: color-mix(in srgb, var(--chat-user-bg) 45%, transparent);
-}
-
 .maka-chat-message-bubble-user {
   background: var(--chat-user-bg);
   color: var(--chat-user-foreground, var(--foreground));

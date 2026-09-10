@@ -2370,6 +2370,80 @@ test('entries reorder permutes the follow-up queue and rejects stale orders', as
   await fixture.coordinator.close();
 });
 
+test('steering edits and reorders settle before one complete batch is pulled; follow-ups advance one per Turn', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  for (const id of ['steer-1', 'steer-2', 'steer-3']) await submit(fixture, id, id, 'current_turn');
+  for (const id of ['follow-1', 'follow-2']) await submit(fixture, id, id, 'next_turn');
+  const entries = fixture.coordinator.projection(ROOT.sessionId).steering;
+  const update = await fixture.coordinator.handlers['queue.entry.update'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      updateId: 'update-steering',
+      entryId: entries[1]!.entryId,
+      expectedQueueRevision: fixture.coordinator.projection(ROOT.sessionId).queueRevision,
+      text: 'edited second instruction',
+    },
+    operationContext(),
+  );
+  assert.equal(update.ok, true);
+  const storing = deferred<void>();
+  const stored = deferred<void>();
+  fixture.admissions.reorderMessageAdmissions = async (_sessionId, ids, disposition) => {
+    assert.equal(disposition, 'steering');
+    assert.deepEqual(ids, ['steer-3', 'steer-1', 'steer-2']);
+    storing.resolve();
+    await stored.promise;
+  };
+  const reorder = fixture.coordinator.handlers['queue.entries.reorder'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      reorderId: 'reorder-steering',
+      entryIds: [entries[2]!.entryId, entries[0]!.entryId, entries[1]!.entryId],
+    },
+    operationContext(),
+  );
+  await storing.promise;
+  assert.deepEqual(
+    owner.pull(),
+    [],
+    'a provider boundary cannot take stale order while the edit is being stored',
+  );
+  stored.resolve();
+  assert.equal((await reorder).ok, true);
+  const batch = owner.pull();
+  assert.deepEqual(
+    batch.map((lease) => lease.messageId),
+    ['steer-3', 'steer-1', 'steer-2'],
+  );
+  assert.equal(batch[2]?.content.text, 'edited second instruction');
+  assert.deepEqual(owner.pull(), []);
+  owner.ack(batch.map((lease) => lease.id));
+  owner.release();
+  const first = fixture.coordinator.beginTerminalTransition(ROOT);
+  assert.deepEqual(
+    first.sources.map((message) => message.messageId),
+    ['follow-1'],
+  );
+  const successor = { sessionId: ROOT.sessionId, turnId: 'turn-2', runId: 'run-2' };
+  fixture.coordinator.commitNextRoot(first, successor);
+  const next = fixture.coordinator.bindRun(successor);
+  next.release();
+  const second = fixture.coordinator.beginTerminalTransition(successor);
+  assert.deepEqual(
+    second.sources.map((message) => message.messageId),
+    ['follow-2'],
+  );
+  const last = { sessionId: ROOT.sessionId, turnId: 'turn-3', runId: 'run-3' };
+  fixture.coordinator.commitNextRoot(second, last);
+  fixture.coordinator.bindRun(last).release();
+  fixture.coordinator.completeIdle(fixture.coordinator.beginTerminalTransition(last));
+  await fixture.coordinator.close();
+});
+
 test('queued mutations reject a queue that is draining into the next Turn', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);

@@ -26,7 +26,6 @@ import {
   foldShellRunUpdates,
   materializeTurns,
   overlayLiveTurn,
-  overlayTransientMessages,
   projectTurnTools,
   type ShellRunOverlayEntry,
   type ToolActivityItem,
@@ -65,7 +64,6 @@ export interface TranscriptProjectionInput {
   messages: readonly StoredMessage[];
   liveTurn?: LiveTurnProjection;
   shellRunUpdates?: readonly ShellRunUpdate[];
-  transientMessages?: readonly import('./chat-view.js').TransientUserMessageProjection[];
 }
 
 export interface TranscriptProjection {
@@ -84,7 +82,6 @@ export function createTranscriptProjection(): TranscriptProjection {
   let lastLocale: UiLocale | undefined;
   let lastLiveTurn: LiveTurnProjection | undefined;
   let lastUpdates: readonly ShellRunUpdate[] | undefined;
-  let lastTransientMessages: TranscriptProjectionInput['transientMessages'];
 
   // Stage outputs.
   let settledTurns: readonly TurnViewModel[] = NO_TURNS;
@@ -105,7 +102,6 @@ export function createTranscriptProjection(): TranscriptProjection {
     lastLocale = undefined;
     lastLiveTurn = undefined;
     lastUpdates = undefined;
-    lastTransientMessages = undefined;
     settledTurns = NO_TURNS;
     liveTurns = NO_TURNS;
     liveTurnsFrom = undefined;
@@ -133,7 +129,6 @@ export function createTranscriptProjection(): TranscriptProjection {
       && input.messages === lastMessages
       && input.locale === lastLocale
       && input.liveTurn === lastLiveTurn
-      && input.transientMessages === lastTransientMessages
       && !updatesMoved
     ) {
       return lastTurns;
@@ -165,8 +160,7 @@ export function createTranscriptProjection(): TranscriptProjection {
     // Final identity reconciliation against what we last published: a stage
     // that rewrote a turn without changing its value hands the previous object
     // back, so identity moves only when the value did.
-    const overlaid = overlayTransientMessages(applyShellRunOverlay(liveTurns), input.transientMessages ?? []);
-    lastTransientMessages = input.transientMessages;
+    const overlaid = applyShellRunOverlay(liveTurns);
     lastTurns = hasProjected ? reconcileTurnIdentities(lastTurns, overlaid) : overlaid;
     hasProjected = true;
     return lastTurns;
@@ -202,19 +196,6 @@ export function createTranscriptProjection(): TranscriptProjection {
   }
 
   return { project };
-}
-
-/** Capture once at Send, before attachment preparation or Host admission can yield. */
-export function captureSteeringPosition(input: TranscriptProjectionInput, turnId: string): {
-  hostTurnId: string;
-  displayAfter: import('@maka/core/events').MessageDisplayAnchor | null;
-} {
-  const turn = createTranscriptProjection().project(input).find((turn) => turn.turnId === turnId);
-  const tail = turn?.timeline.at(-1);
-  const displayAfter = !tail ? null : tail.kind === 'tools'
-    ? { kind: 'tool' as const, id: tail.items.at(-1)!.toolUseId }
-    : { kind: tail.kind, id: tail.messageId };
-  return { hostTurnId: turnId, displayAfter };
 }
 
 /**
@@ -279,17 +260,17 @@ function isPlainObject(value: object): boolean {
   return prototype === Object.prototype || prototype === null;
 }
 
-/** Pending messages keep their captured position when a client reconnects. */
+/** Restore the pending presentation from the Host queue after reconnecting. */
 export function projectQueuedUserMessages(event: Extract<import('@maka/core/events').SessionEvent, { type: 'queue_update' }>): import('./chat-view.js').TransientUserMessageProjection[] {
   return (event.steeringEntries ?? []).concat(event.followupEntries ?? [])
     .filter((entry) => entry.state === 'queued')
     .map((entry) => ({
       id: entry.messageId,
       transientPlacement: entry.placement,
+      pendingSteering: entry.placement === 'current_turn',
       ...(entry.placement === 'current_turn' && { hostTurnId: event.turnId }),
       ts: event.ts,
       text: entry.content.displayText ?? entry.content.text,
-      ...(entry.content.displayAfter !== undefined ? { displayAfter: entry.content.displayAfter } : {}),
       ...(entry.content.attachments && { attachments: [...entry.content.attachments] }),
       ...(entry.content.directoryReferences && {
         directoryReferences: entry.content.directoryReferences,

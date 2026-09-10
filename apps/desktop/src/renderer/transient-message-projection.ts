@@ -49,7 +49,7 @@ export function mergeTransientMessageProjection(
 ): TransientUserMessage {
   update = {
     ...update,
-    ...(update.displayAfter === undefined && current.displayAfter !== undefined ? { displayAfter: current.displayAfter } : {}),
+    ...(update.pendingSteering === undefined && current.pendingSteering !== undefined ? { pendingSteering: current.pendingSteering } : {}),
     ...(!Object.hasOwn(update, 'deliveryStatus') && current.deliveryStatus !== undefined ? { deliveryStatus: current.deliveryStatus } : {}),
     ...(!Object.hasOwn(update, 'deliveryDetail') && current.deliveryDetail !== undefined ? { deliveryDetail: current.deliveryDetail } : {}),
     ...(!Object.hasOwn(update, 'deliveryActions') && current.deliveryActions !== undefined ? { deliveryActions: current.deliveryActions } : {}),

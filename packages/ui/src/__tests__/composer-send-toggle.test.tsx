@@ -166,7 +166,7 @@ test('keeps Host order visible until the reordered projection arrives', async ()
       text: 'updated steering\nsecond line',
     }]);
     assert.deepEqual(deletedEntryIds, ['steering']);
-    const grips = [...container.querySelectorAll<HTMLElement>('.maka-composer-queue-grip')];
+    const grips = [...container.querySelectorAll<HTMLElement>('[data-queue-placement="next_turn"] .maka-composer-queue-grip')];
     assert.equal(grips.length, 2);
     const dragStart = new window.Event('dragstart', { bubbles: true });
     Object.defineProperty(dragStart, 'dataTransfer', {
@@ -178,6 +178,7 @@ test('keeps Host order visible until the reordered projection arrives', async ()
     assert.ok(steeringRow);
     await act(() => steeringRow.dispatchEvent(new window.Event('drop', { bubbles: true })));
     assert.equal(requestedOrder, undefined);
+    await act(() => grips[1]?.dispatchEvent(dragStart));
     const firstRow = grips[0]?.closest('li')?.parentElement;
     assert.ok(firstRow);
     await act(() => firstRow.dispatchEvent(new window.Event('drop', { bubbles: true })));
@@ -194,4 +195,29 @@ test('keeps Host order visible until the reordered projection arrives', async ()
     await act(() => root.unmount());
     Object.assign(globalThis, original);
   }
+});
+
+
+test('deduplicates pending steering against Host queue entries and keeps the plate through an empty queue snapshot', () => {
+  const pending = { id: 'steer', text: 'new direction', ts: 1, pendingSteering: true, transientPlacement: 'current_turn' as const };
+  const queued = { entryId: 'host-entry', messageId: pending.id, placement: 'current_turn' as const, state: 'queued' as const, content: { text: pending.text } };
+  for (const entries of [[queued], []]) {
+    const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
+      queuedMessages={entries} pendingMessages={[pending]} /></LocaleProvider>);
+    const document = parseHTML(`<html><body>${markup}</body></html>`).document;
+    assert.equal(document.querySelectorAll('.maka-composer-queue-text').length, 1);
+    assert.equal(document.querySelector('.maka-composer-queue-text')?.textContent, pending.text);
+    assert.equal(document.querySelector('.maka-composer-queue-status')?.textContent, 'Steering · Applied together');
+  }
+});
+
+
+test('a locally saved follow-up keeps its delivery status and recovery actions in the pending list', () => {
+  const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
+    pendingMessages={[{ id: 'local', text: 'offline follow-up', ts: 1, transientPlacement: 'next_turn',
+      deliveryStatus: 'Delivery uncertain', deliveryDetail: 'Connection interrupted',
+      deliveryActions: [{ label: 'Check delivery', onClick() {} }] }]} /></LocaleProvider>);
+  const document = parseHTML(`<html><body>${markup}</body></html>`).document;
+  assert.equal(document.querySelector('.maka-composer-queue-delivery')?.textContent, 'Delivery uncertain');
+  assert.ok([...document.querySelectorAll('.maka-composer-queue-actions button')].some((button) => button.textContent === 'Check delivery'));
 });

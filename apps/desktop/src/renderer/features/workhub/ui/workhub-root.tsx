@@ -239,6 +239,13 @@ export function WorkHubRoot() {
               </div>
             )}
             <WorkHubComposer
+              pendingMessages={controller.transientMessages}
+              queuedMessages={controller.messageQueue.entries}
+              queuedMessageRevision={controller.messageQueue.revision}
+              onUpdateQueuedEntry={controller.updateQueuedEntry}
+              onDeleteQueuedEntry={controller.deleteQueuedEntry}
+              onPromoteQueuedEntry={controller.promoteQueuedEntry}
+              onReorderQueuedEntries={controller.reorderQueuedEntries}
               placeholder={progress ? t.progressInput : t.welcome}
               ref={composer}
               sessionId={controller.sessionId}

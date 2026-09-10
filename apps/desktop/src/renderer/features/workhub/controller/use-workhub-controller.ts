@@ -26,7 +26,6 @@ import {
   reconcileTerminalLiveTurn,
   settleLiveTurnStep,
   useUiLocale,
-  captureSteeringPosition,
   type LiveTurnProjection,
   type TransientUserMessageProjection,
 } from '@maka/ui';
@@ -65,6 +64,7 @@ export function useWorkHubController() {
   const transcriptRef = useRef(emptyTranscript);
   const [viewportNavigation] = useState(createTranscriptViewportNavigation);
   const [transientMessages, setTransientMessages] = useState<TransientUserMessageProjection[]>([]);
+  const [messageQueue, setMessageQueue] = useState<{ entries: import('@maka/core/events').MessageQueueEntryProjection[]; revision?: number }>({ entries: [] });
   const [liveTurn, setLiveTurn] = useState<LiveTurnProjection>();
   const [sending, setSending] = useState(false);
   const [stopPending, setStopPending] = useState(false);
@@ -78,7 +78,7 @@ export function useWorkHubController() {
   currentSessionId.current = sessionId;
   const sendingRef = useRef(false);
   const pendingSend = useRef<SendAttempt | undefined>(undefined);
-  const pendingSteer = useRef<{ sessionId: string; turnId: string; messageId: string; text: string; attachments: AttachmentRef[]; displayAfter: import('@maka/core/events').MessageDisplayAnchor | null; observed: boolean }>(undefined);
+  const pendingSteer = useRef<{ sessionId: string; turnId: string; messageId: string; text: string; attachments: AttachmentRef[]; observed: boolean }>(undefined);
   const report = (reason: unknown) =>
     setError(reason instanceof Error ? reason.message : String(reason));
 
@@ -234,6 +234,7 @@ export function useWorkHubController() {
 
   useEffect(() => {
     if (!sessionId) return;
+    setMessageQueue({ entries: [] });
     let disposed = false;
     let handle: WorkHubTranscript | undefined;
     let observationPhase: 'pending' | 'ready' = 'pending';
@@ -258,7 +259,8 @@ export function useWorkHubController() {
       (event) => {
         if (disposed) return;
         if (event.type === 'queue_update') {
-          const queued = projectQueuedUserMessages(event).filter((message) => message.transientPlacement === 'current_turn');
+          setMessageQueue({ entries: [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])], revision: event.queueRevision });
+          const queued = projectQueuedUserMessages(event);
           if (queued.length) setTransientMessages((previous) => [
             ...previous.filter((message) => !queued.some((entry) => entry.id === message.id)),
             ...queued,
@@ -268,6 +270,7 @@ export function useWorkHubController() {
           setTransientMessages((previous) => previous.filter((message) => message.id !== event.messageId));
         }
         if (event.type === 'steering_message') {
+          setMessageQueue((previous) => ({ ...previous, entries: previous.entries.filter((entry) => entry.messageId !== event.messageId) }));
           if (pendingSteer.current?.messageId === event.messageId) pendingSteer.current.observed = true;
           // The live Turn now owns this row, before the durable transcript
           // necessarily catches up. Retire its admission placeholder.
@@ -348,20 +351,21 @@ export function useWorkHubController() {
     setError(undefined);
     try {
       if (steeringTurnId) {
-        const attempt = sameSteer ?? { sessionId: target, turnId: steeringTurnId, messageId: crypto.randomUUID(), text, attachments: [...attachments], ...captureSteeringPosition({ messages: transcript.messages, liveTurn, transientMessages, locale }, steeringTurnId), observed: false };
+        const attempt = sameSteer ?? { sessionId: target, turnId: steeringTurnId, messageId: crypto.randomUUID(), text, attachments: [...attachments], observed: false };
         pendingSteer.current = attempt;
-        const result = await services.steer(target, attempt.messageId, text, attachments, attempt.displayAfter);
-        if (result === 'rejected' && pendingSteer.current === attempt) pendingSteer.current = undefined;
+        setTransientMessages((messages) => [...messages.filter((message) => message.id !== attempt.messageId), {
+          id: attempt.messageId, hostTurnId: steeringTurnId, text, attachments: [...attachments],
+          ts: Date.now(), transientPlacement: 'current_turn', pendingSteering: true,
+        }]);
+        const result = await services.steer(target, attempt.messageId, text, attachments);
+        if (result === 'rejected' && pendingSteer.current === attempt) {
+          pendingSteer.current = undefined;
+          setTransientMessages((messages) => messages.filter((message) => message.id !== attempt.messageId));
+        }
         if (result !== 'admitted' && !attempt.observed) throw new Error(workHubLiveCopy[localeRef.current][result === 'unknown' ? 'sendUnknown' : 'sendNotAdmitted']);
         if (pendingSteer.current === attempt) pendingSteer.current = undefined;
         if (currentSessionId.current === target) {
           viewportNavigation.followLatest(target);
-          if (!attempt.observed && !transcriptRef.current.messages.some((message) => message.id === attempt.messageId)) {
-            setTransientMessages((messages) => [...messages.filter((message) => message.id !== attempt.messageId), {
-              id: attempt.messageId, hostTurnId: steeringTurnId, text, attachments: [...attachments],
-              ts: Date.now(), transientPlacement: 'current_turn', displayAfter: attempt.displayAfter,
-            }]);
-          }
         }
         return true;
       }
@@ -449,6 +453,12 @@ export function useWorkHubController() {
       report(reason);
     }
   }
+  async function mutateQueue(action: (target: string) => Promise<void>) {
+    if (!sessionId) return;
+    setError(undefined);
+    try { await action(sessionId); }
+    catch (reason) { report(reason); throw reason; }
+  }
   return {
     services,
     sessionId,
@@ -457,6 +467,11 @@ export function useWorkHubController() {
     choices,
     transcript,
     transientMessages,
+    messageQueue,
+    updateQueuedEntry: (entryId: string, revision: number, text: string) => mutateQueue((target) => services.updateQueueEntry(target, entryId, revision, text)),
+    deleteQueuedEntry: (entryId: string) => mutateQueue((target) => services.retractQueueEntry(target, entryId)),
+    promoteQueuedEntry: (entryId: string) => mutateQueue((target) => services.promoteQueueEntry(target, entryId)),
+    reorderQueuedEntries: (entryIds: readonly string[]) => mutateQueue((target) => services.reorderQueueEntries(target, entryIds)),
     viewportNavigation,
     liveTurn,
     busy,

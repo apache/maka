@@ -145,7 +145,7 @@ export interface InlineReference {
   start: number;
 }
 
-/** A visible conversation boundary captured when the user presses Send. */
+/** Legacy display boundary retained for messages authored by earlier clients. */
 export interface MessageDisplayAnchor {
   kind: 'user' | 'thinking' | 'text' | 'tool';
   id: string;
@@ -160,7 +160,7 @@ export interface MessageContent {
   text: string;
   /** Human-facing text when it differs from `text`; omit when equal. */
   displayText?: string;
-  /** Display-only steering position; null means immediately after the Turn's prompt. */
+  /** Legacy display hint. Readers accept it; transcript order follows Runtime consumption. */
   displayAfter?: MessageDisplayAnchor | null;
   /** Ordered attachment references; omit when empty. Attachment bytes never travel here. */
   attachments?: AttachmentRef[];

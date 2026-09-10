@@ -14739,6 +14739,42 @@ describe('AiSdkBackend steering durability and identity', () => {
     assert.match(secondPrompt, /the first answer/);
   });
 
+  test('all three steering messages reach the same next model request in queue order', async () => {
+    const model = textCompletionModel('the first answer');
+    const durable = durableTurnHarness('turn-1', 'start');
+    const backend = steeringBackend(model, {
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+    });
+    let pulls = 0;
+    const acked: string[] = [];
+    const instructions = ['third instruction', 'first instruction', 'edited second instruction'];
+    const events = await drainDurably(
+      backend.send(
+        durable.input({
+          pullSteering: () =>
+            ++pulls === 2
+              ? instructions.map((text, index) => ({
+                  id: `lease-${index}`,
+                  messageId: `message-${index}`,
+                  content: { text },
+                }))
+              : [],
+          ackSteering: (ids: readonly string[]) => acked.push(...ids),
+        }),
+      ),
+      durable,
+    );
+    assert.equal(model.doStreamCalls.length, 2);
+    const prompt = JSON.stringify(model.doStreamCalls[1]?.prompt);
+    const positions = instructions.map((text) => prompt.indexOf(text));
+    assert.ok(positions[0]! >= 0 && positions[1]! > positions[0]! && positions[2]! > positions[1]!);
+    assert.deepEqual(acked, ['lease-0', 'lease-1', 'lease-2']);
+    assert.deepEqual(
+      events.filter((event) => event.type === 'steering_message').map((event) => event.messageId),
+      ['message-0', 'message-1', 'message-2'],
+    );
+  });
+
   test('the late-steer edge is skipped without a durable current-run reader', async () => {
     // The no-reader projection at the top of the loop appends steering alone —
     // it never appends the assistant output of the step just finished. Taking

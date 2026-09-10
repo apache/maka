@@ -284,8 +284,7 @@ export function TransientUserMessage(props: {
       <LocalizedChatMessage
         accessibleLabel={copy.userAriaLabel}
         sender="user"
-        className={`maka-chat-message maka-user-message${message.displayAfter !== undefined ? ' maka-steering-message' : ''}`}
-        data-steering-pending={message.displayAfter !== undefined ? 'true' : undefined}
+        className="maka-chat-message maka-user-message"
       >
         <UserMessageBody
           messageId={message.id}
@@ -634,7 +633,6 @@ export const TurnView = memo(function TurnView(props: {
               accessibleLabel={copy.userAriaLabel}
               sender="user"
               className="maka-chat-message maka-user-message maka-steering-message"
-              data-steering-pending={segment.item.transient ? 'true' : undefined}
             >
               <UserMessageBody
                 messageId={message.id}
@@ -644,7 +642,6 @@ export const TurnView = memo(function TurnView(props: {
                 quotes={message.quotes}
                 directoryReferences={message.directoryReferences}
                 inlineReferences={message.inlineReferences}
-                delivery={segment.item.transient}
               />
             </LocalizedChatMessage>
           );

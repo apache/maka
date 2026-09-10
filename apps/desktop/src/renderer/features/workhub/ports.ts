@@ -58,7 +58,11 @@ export interface WorkHubServices {
   readAttachmentBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   prepareAttachments(sessionId: string, items: Array<{ approvalId: string; name: string; mimeType?: string } | { file: File }>): Promise<AttachmentRef[]>;
   answer(sessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
-  steer(sessionId: string, messageId: string, text: string, attachments: AttachmentRef[], displayAfter?: import('@maka/core/events').MessageDisplayAnchor | null): Promise<'admitted' | 'unknown' | 'rejected'>;
+  steer(sessionId: string, messageId: string, text: string, attachments: AttachmentRef[]): Promise<'admitted' | 'unknown' | 'rejected'>;
+  retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
+  promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
+  updateQueueEntry(sessionId: string, entryId: string, expectedQueueRevision: number, text: string): Promise<void>;
+  reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void>;
   configureModel(
     sessionId: string,
     input: OperationInput<'workhub.coordination.configureModel'>,

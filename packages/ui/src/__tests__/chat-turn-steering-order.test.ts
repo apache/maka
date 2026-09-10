@@ -26,6 +26,12 @@ import { TurnView } from '../chat-turn.js';
 import { LocaleProvider } from '../locale-context.js';
 import type { TurnViewModel } from '../materialize.js';
 import { createTranscriptProjection } from '../transcript-projection.js';
+import { ChatView } from '../chat-view.js';
+import { Composer } from '../composer.js';
+import { ChatSurfaceLayout } from '../chat-surface-layout.js';
+import { armLiveTurn } from '../live-turn-projection.js';
+import { applyLiveTurnEvent } from './live-turn-zh.js';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
 
 test('renders steering where it arrived in the assistant timeline', () => {
   const turn: TurnViewModel = {
@@ -72,19 +78,33 @@ test('renders steering where it arrived in the assistant timeline', () => {
   }
 });
 
-test('marks only the waiting steering bubble pending without duplicating its text', () => {
-  const messages = [{ type: 'user' as const, id: 'original', turnId: 'turn-1', ts: 1, text: 'request' }];
-  const pending = { id: 'steer', hostTurnId: 'turn-1', ts: 2, text: 'inserted instruction', displayAfter: null, transientPlacement: 'current_turn' as const };
-  const projection = createTranscriptProjection();
-  const render = (turn: TurnViewModel) => parseHTML(`<html><body>${renderToStaticMarkup(
-    createElement(LocaleProvider, { locale: 'en', children: createElement(TurnView, { turn }) }),
+test('holds steering above the composer while old output continues, then renders its real reply boundary', () => {
+  const messages: StoredMessage[] = [{ type: 'user', id: 'original', turnId: 'turn-1', ts: 1, text: 'request' }];
+  const pending = { id: 'steer', hostTurnId: 'turn-1', ts: 2, text: 'inserted instruction', pendingSteering: true, transientPlacement: 'current_turn' as const };
+  let live: import('../live-turn-projection.js').LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
+    type: 'text_delta', id: 'first', turnId: 'turn-1', messageId: 'before', ts: 2, text: 'old answer continues',
+  });
+  const render = (transientMessages = [pending], durable = messages) => parseHTML(`<html><body>${renderToStaticMarkup(
+    createElement(LocaleProvider, { locale: 'en', children: createElement(ChatSurfaceLayout, {
+      composer: createElement(Composer, { streaming: true, pendingMessages: transientMessages, onSend: () => undefined, onStop: () => undefined }),
+      children: createElement(ChatView, {
+        messages: durable, liveTurn: live, transientMessages,
+        initialLiveContentSnapshot: { turnId: 'turn-1', entries: new Map([['text:before', 'old answer continues'], ['text:after', 'reply to new instruction']]) }, onNew: () => undefined, scrollBehavior: 'auto',
+        activeSession: { id: 'session', name: 'Session', status: 'running', labels: [] } as unknown as SessionSummary,
+      }),
+    }) }),
   )}</body></html>`).document;
-  const waiting = render(projection.project({ messages, locale: 'en', transientMessages: [pending] })[0]!);
-  assert.equal(waiting.querySelectorAll('[data-steering-pending="true"]').length, 1);
-  assert.equal(waiting.body.textContent.split(pending.text).length - 1, 1);
-  const accepted = render(projection.project({ messages: [
-    ...messages, { type: 'user', id: pending.id, turnId: 'turn-1', ts: 3, text: pending.text, displayAfter: null },
-  ], locale: 'en', transientMessages: [pending] })[0]!);
-  assert.equal(accepted.querySelectorAll('[data-steering-pending]').length, 0);
-  assert.equal(accepted.body.textContent.split(pending.text).length - 1, 1);
+  const waiting = render();
+  assert.equal(waiting.querySelector('.maka-composer-queue-text')?.textContent, pending.text);
+  assert.equal(waiting.querySelectorAll('.maka-steering-message').length, 0);
+  const timeline = () => createTranscriptProjection().project({ messages, liveTurn: live, locale: 'en' })[0]!.timeline.map((item) => item.kind === 'user' ? item.message.text : item.kind === 'text' ? item.text : item.kind);
+  assert.deepEqual(timeline(), ['old answer continues']);
+  live = applyLiveTurnEvent(live, { type: 'text_complete', id: 'finished', turnId: 'turn-1', messageId: 'before', ts: 3, text: 'old answer continues' });
+  live = applyLiveTurnEvent(live, { type: 'steering_message', id: 'accepted', turnId: 'turn-1', messageId: pending.id, ts: 4, content: { text: pending.text } });
+  live = applyLiveTurnEvent(live, { type: 'text_delta', id: 'reply', turnId: 'turn-1', messageId: 'after', ts: 5, text: 'reply to new instruction' });
+  const accepted = render([]);
+  assert.equal(accepted.querySelector('.maka-composer-queue'), null);
+  const text = accepted.body.textContent ?? '';
+  assert.deepEqual(timeline(), ['old answer continues', pending.text, 'reply to new instruction']);
+  assert.equal(text.split(pending.text).length - 1, 1);
 });

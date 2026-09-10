@@ -88,6 +88,7 @@ test('queue_update events drive the independent desktop queue projection', () =>
     {
       id: 'message-steer',
       transientPlacement: 'current_turn',
+      pendingSteering: true,
       hostTurnId: 'turn-1',
       ts: 1,
       text: 'adjust this run',
@@ -95,6 +96,7 @@ test('queue_update events drive the independent desktop queue projection', () =>
     {
       id: 'message-next',
       transientPlacement: 'next_turn',
+      pendingSteering: false,
       ts: 1,
       text: 'do this next',
     },
