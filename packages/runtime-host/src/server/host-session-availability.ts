@@ -98,11 +98,14 @@ export function runtimeHostExecutionUnavailableReason(
     (execution.kind === 'workhub_coordination' && !coordinationIdentity
       ? WORKHUB_COORDINATION_TARGET_UNAVAILABLE_REASON
       : undefined) ??
-    (execution.kind === 'workhub_coordination' && header.toolProfile !== 'workhub-coordination-v1'
+    (execution.kind === 'workhub_coordination' &&
+    header.toolProfile !== 'workhub-coordination-v1' &&
+    header.toolProfile !== 'workhub-coordination-v2'
       ? WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON
       : undefined) ??
     (execution.kind === 'workhub_coordination' &&
-    (header.permissionMode !== 'explore' ||
+    (header.permissionMode !==
+      (header.toolProfile === 'workhub-coordination-v2' ? 'bypass' : 'explore') ||
       (header.collaborationMode ?? 'agent') !== 'agent' ||
       (header.orchestrationMode ?? 'default') !== 'default')
       ? WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON

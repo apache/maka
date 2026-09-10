@@ -2029,12 +2029,30 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     });
   }
   if (value.kind === 'workhub_coordination') {
-    if (!hasExactKeys(value, ['kind', 'inputDigest']) || !isSha256Digest(value.inputDigest)) {
+    if (
+      !hasExactKeys(
+        value,
+        value.operation === undefined
+          ? ['kind', 'inputDigest']
+          : [
+              'kind',
+              'inputDigest',
+              'operation',
+              ...(value.actionId === undefined ? [] : ['actionId']),
+            ],
+      ) ||
+      (value.operation !== undefined && value.operation !== 'action') ||
+      (value.actionId !== undefined &&
+        (typeof value.actionId !== 'string' || !isSafeId(value.actionId))) ||
+      !isSha256Digest(value.inputDigest)
+    ) {
       throw new Error('Invalid root execution descriptor');
     }
     return Object.freeze({
       kind: 'workhub_coordination',
+      ...(value.operation === 'action' ? { operation: 'action' as const } : {}),
       inputDigest: value.inputDigest,
+      ...(typeof value.actionId === 'string' ? { actionId: value.actionId } : {}),
     });
   }
   if (value.kind === 'regenerate') {

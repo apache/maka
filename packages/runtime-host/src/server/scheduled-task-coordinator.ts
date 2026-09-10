@@ -63,6 +63,7 @@ import {
 } from '../protocol/index.js';
 import type { ScheduledTaskOperationHandlerMap } from './operation-dispatcher.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
+import type { HostResidencyKind } from './host-residency-registry.js';
 import type { HostedExecutionAuthority } from './hosted-execution-authority.js';
 import type { SessionCreateInput } from '../protocol/session-catalog.js';
 
@@ -97,7 +98,7 @@ export interface HostScheduledTaskCoordinatorInput {
   readonly changes: {
     publish(revision: number, reason: ScheduledTaskChangedReason, taskId: string): void;
   };
-  readonly acquireResidency: () => RuntimeHostResidency;
+  readonly acquireResidency: (kind?: HostResidencyKind) => RuntimeHostResidency;
   readonly requestDrain: () => void;
   readonly now?: () => number;
   readonly newId?: () => string;
@@ -143,7 +144,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
   readonly #nativeEffects: ScheduledTaskNativeEffects;
   readonly #createSession: HostScheduledTaskCoordinatorInput['createSession'];
   readonly #changes: HostScheduledTaskChangeServiceLike;
-  readonly #acquireResidency: () => RuntimeHostResidency;
+  readonly #acquireResidency: HostScheduledTaskCoordinatorInput['acquireResidency'];
   readonly #requestDrain: () => void;
   readonly #now: () => number;
   readonly #newId: () => string;
@@ -561,24 +562,32 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
   }
 
   async #refresh(): Promise<void> {
-    await this.#exclusive(async () => {
-      if (this.#handoffHeld || this.#draining) return;
-      for (const claim of await this.#store.listPendingFires()) {
-        if (this.#handoffHeld || this.#draining) break;
-        if (claim.nativeState === 'waiting_for_provider') {
-          await this.#fulfill(claim, true);
+    if (this.#handoffHeld || this.#draining) return;
+    // Cover claim admission, native delivery, and persistence, while an idle
+    // schedule or a read-only catalog query does not claim active work.
+    const residency = this.#acquireResidency();
+    try {
+      await this.#exclusive(async () => {
+        if (this.#handoffHeld || this.#draining) return;
+        for (const claim of await this.#store.listPendingFires()) {
+          if (this.#handoffHeld || this.#draining) break;
+          if (claim.nativeState === 'waiting_for_provider') {
+            await this.#fulfill(claim, true);
+          }
         }
-      }
-      while (!this.#draining && !this.#handoffHeld) {
-        const scan = await this.#store.claimNextDue(this.#now());
-        for (const expired of scan.expired) this.#publish('updated', expired.id);
-        const claim = scan.claim;
-        if (!claim) break;
-        await this.#refreshResidency();
-        await this.#fulfill(claim, false);
-      }
-      await this.#refreshSchedule();
-    });
+        while (!this.#draining && !this.#handoffHeld) {
+          const scan = await this.#store.claimNextDue(this.#now());
+          for (const expired of scan.expired) this.#publish('updated', expired.id);
+          const claim = scan.claim;
+          if (!claim) break;
+          await this.#refreshResidency();
+          await this.#fulfill(claim, false);
+        }
+        await this.#refreshSchedule();
+      });
+    } finally {
+      residency.release();
+    }
   }
 
   async #fulfill(
@@ -876,7 +885,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       !this.#draining &&
       (claims.length > 0 ||
         tasks.some((task) => task.status === 'active' && task.nextFireAt !== null));
-    if (shouldHold && !this.#residency) this.#residency = this.#acquireResidency();
+    if (shouldHold && !this.#residency) this.#residency = this.#acquireResidency('idle');
     if (!shouldHold) this.#releaseResidency();
   }
 

@@ -91,7 +91,7 @@ export function ChatSurfaceLayout({
       autoScroll={!hostOwned}
       // Astryx's default button reads `isScrolledUp`, which stops updating the
       // moment its scroll layer is off. Maka's reads Maka's pin instead.
-      scrollButton={hostOwned
+      scrollButton={props.scrollButton === null ? null : hostOwned
         ? <TranscriptScrollButton onActivate={onReturnToTail} />
         : props.scrollButton}
       density={density}

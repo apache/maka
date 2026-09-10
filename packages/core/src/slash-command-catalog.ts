@@ -51,6 +51,7 @@ export const SLASH_COMMAND_CATALOG = [
   { id: 'skill', session: 'required', surfaces: ['tui'] },
   { id: 'swarm', session: 'none', surfaces: ['desktop', 'tui'] },
   { id: 'thinking', session: 'required', surfaces: ['tui'] },
+  { id: 'todo', session: 'required', surfaces: ['tui'] },
   { id: 'transcript', session: 'required', surfaces: ['tui'] },
   { id: 'update', session: 'none', surfaces: ['tui'] },
 ] as const satisfies readonly SlashCommandSpec[];

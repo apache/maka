@@ -18,6 +18,41 @@
  */
 
 export const TUI_COPY_RESOURCES = {
+  todo: {
+    en: {
+      title: 'Current Todo',
+      markedComplete: 'marked complete',
+      open: '/todo to view',
+      usage: 'Usage: /todo',
+      progress: 'Todo',
+      unavailable: 'Todo unavailable',
+      empty: 'No Todo items',
+      loading: 'Loading Todo…',
+      hint: '↑↓/PgUp/PgDn scroll · Home/End · Esc close',
+    },
+    'zh-CN': {
+      title: '当前待办',
+      markedComplete: '标记完成',
+      open: '/todo 查看',
+      usage: '用法：/todo',
+      progress: '待办',
+      unavailable: '待办不可用',
+      empty: '暂无待办',
+      loading: '正在加载待办…',
+      hint: '↑↓/PgUp/PgDn 滚动 · Home/End · Esc 关闭',
+    },
+    'zh-TW': {
+      title: '目前待辦',
+      markedComplete: '標記完成',
+      open: '/todo 查看',
+      usage: '用法：/todo',
+      progress: '待辦',
+      unavailable: '待辦不可用',
+      empty: '沒有待辦',
+      loading: '正在載入待辦…',
+      hint: '↑↓/PgUp/PgDn 捲動 · Home/End · Esc 關閉',
+    },
+  },
   'transcript-reader': {
     en: {
       title: 'DETAILED TRANSCRIPT',
@@ -320,6 +355,8 @@ export const TUI_COPY_RESOURCES = {
           'publication-credential-failed':
             'The provider credential could not be stored or applied.',
           'persist-failed': 'The configuration could not be saved.',
+          'commit-unknown':
+            'Configuration published; crash durability is uncertain. Check synchronization before retrying.',
           'manager-failed': 'The MCP connection action failed.',
           turn_active: 'MCP cannot be changed while a turn or another control action is running.',
           invalid: 'Check the value and try again.',
@@ -419,6 +456,7 @@ export const TUI_COPY_RESOURCES = {
           'credential-cleanup-failed': '无法删除旧凭据，配置未修改。',
           'publication-credential-failed': '无法保存或应用 Provider 凭据。',
           'persist-failed': '无法保存配置。',
+          'commit-unknown': '配置已发布，但无法确认崩溃后的持久性。请先检查同步状态再重试。',
           'manager-failed': 'MCP 连接操作失败。',
           turn_active: 'Turn 或其他控制操作运行期间不能修改 MCP。',
           invalid: '请检查输入后重试。',
@@ -519,6 +557,7 @@ export const TUI_COPY_RESOURCES = {
           'credential-cleanup-failed': '無法移除已儲存的認證資料；設定未變更。',
           'publication-credential-failed': '無法儲存或套用 Provider 認證資料。',
           'persist-failed': '無法儲存設定。',
+          'commit-unknown': '設定已發布，但無法確認當機後的持久性。請先檢查同步狀態再重試。',
           'manager-failed': 'MCP 連線操作失敗。',
           turn_active: 'Turn 或其他控制操作執行期間無法修改 MCP。',
           invalid: '請檢查輸入後重試。',
@@ -618,11 +657,17 @@ export const TUI_COPY_RESOURCES = {
     en: {
       modelPickerTitle: 'Select Model',
       modelSwitchCacheWarning:
-        '⚠ Switching models may rebuild the prompt cache; the next request may be slower or cost more.',
+        '\u26a0 Switching models may rebuild the prompt cache; the next request may be slower or cost more.',
       modelSearchHint:
         'Search models / providers / connections · ↑↓ select · Enter confirm · Esc cancel',
       searchLabel: 'Search',
       noMatchingModels: 'No matching models',
+      resumeSessionTitle: 'Resume Session',
+      sessionScopeCurrent: 'Current',
+      sessionScopeAll: 'All',
+      sessionSearchHint:
+        'Search name / id / path / model / connection · Tab scope · ↑↓ select · Enter open · Esc close',
+      noMatchingSessions: 'No matching sessions',
       selectPickerHint: '↑↓ select · Enter confirm · Esc close',
       providerConfigured: 'configured',
       addAccount: 'add account',
@@ -718,10 +763,17 @@ export const TUI_COPY_RESOURCES = {
     },
     'zh-CN': {
       modelPickerTitle: '选择模型',
-      modelSwitchCacheWarning: '⚠ 切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高。',
+      modelSwitchCacheWarning:
+        '\u26a0 切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高。',
       modelSearchHint: '搜索模型 / 服务商 / 连接 · ↑↓ 选择 · Enter 确认 · Esc 取消',
       searchLabel: '搜索',
       noMatchingModels: '没有匹配的模型',
+      resumeSessionTitle: '恢复会话',
+      sessionScopeCurrent: '当前目录',
+      sessionScopeAll: '全部',
+      sessionSearchHint:
+        '搜索名称 / ID / 路径 / 模型 / 连接 · Tab 切换范围 · ↑↓ 选择 · Enter 打开 · Esc 关闭',
+      noMatchingSessions: '没有匹配的会话',
       selectPickerHint: '↑↓ 选择 · Enter 确认 · Esc 关闭',
       providerConfigured: '已设置',
       addAccount: '添加账号',
@@ -807,10 +859,17 @@ export const TUI_COPY_RESOURCES = {
     },
     'zh-TW': {
       modelPickerTitle: '選擇模型',
-      modelSwitchCacheWarning: '⚠ 切換模型可能需要重建提示快取；下一次請求可能較慢或成本較高。',
+      modelSwitchCacheWarning:
+        '\u26a0 切換模型可能需要重建提示快取；下一次請求可能較慢或成本較高。',
       modelSearchHint: '搜尋模型 / 服務商 / 連線 · ↑↓ 選擇 · Enter 確認 · Esc 取消',
       searchLabel: '搜尋',
       noMatchingModels: '沒有符合的模型',
+      resumeSessionTitle: '恢復會話',
+      sessionScopeCurrent: '目前目錄',
+      sessionScopeAll: '全部',
+      sessionSearchHint:
+        '搜尋名稱 / ID / 路徑 / 模型 / 連線 · Tab 切換範圍 · ↑↓ 選取 · Enter 開啟 · Esc 關閉',
+      noMatchingSessions: '沒有符合的會話',
       selectPickerHint: '↑↓ 選擇 · Enter 確認 · Esc 關閉',
       providerConfigured: '已設定',
       addAccount: '新增帳號',
@@ -929,6 +988,7 @@ export const TUI_COPY_RESOURCES = {
         skill: 'Invoke a skill (or type /skill:<name> inline)',
         swarm: 'Show, enable, disable, or run one Swarm turn',
         thinking: 'Set thinking level',
+        todo: 'Show the current session Todo list',
         transcript: 'Browse the full transcript inside Maka',
       },
       help: {
@@ -982,6 +1042,7 @@ export const TUI_COPY_RESOURCES = {
         skill: '调用 Skill（也可直接输入 /skill:<name>）',
         swarm: '查看、启用、停用 Swarm 模式，或执行一次 Swarm 任务',
         thinking: '设置思考级别',
+        todo: '查看当前会话待办清单',
         transcript: '在 Maka 内浏览完整对话记录',
       },
       help: {
@@ -1035,6 +1096,7 @@ export const TUI_COPY_RESOURCES = {
         skill: '呼叫 Skill（也可直接輸入 /skill:<name>）',
         swarm: '檢視、啟用、停用 Swarm 模式，或執行一次 Swarm 任務',
         thinking: '設定思考級別',
+        todo: '檢視目前會話待辦清單',
         transcript: '在 Maka 內瀏覽完整對話記錄',
       },
       help: {

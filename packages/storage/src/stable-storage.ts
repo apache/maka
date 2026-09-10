@@ -18,7 +18,7 @@
  */
 
 import { constants, type BigIntStats } from 'node:fs';
-import { lstat, open } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
 export interface ReadStableBoundedFileInput {
@@ -97,6 +97,20 @@ export async function syncFile(path: string): Promise<void> {
   } finally {
     await handle.close();
   }
+}
+
+/**
+ * Create (or harden) an owner-only directory: recursive mkdir plus a
+ * fail-closed chmod, since mkdir's mode only applies on creation. Callers that
+ * store secrets use this before creating their file or update lock.
+ */
+export async function hardenDirectory(dir: string, mode: number = 0o700): Promise<void> {
+  await mkdir(dir, { recursive: true, mode });
+  if (process.platform === 'win32') {
+    await chmod(dir, mode).catch(() => {});
+    return;
+  }
+  await chmod(dir, mode);
 }
 
 export async function syncDirectoryChain(

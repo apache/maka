@@ -21,7 +21,7 @@
 
 # Maka Backend Architecture
 
-Maka has one execution authority: Runtime Host. Desktop, TUI, CLI, bots, and evaluation clients ask Runtime Host to execute work; none owns a second Runtime.
+Each State Root has its own Runtime Host as execution and write authority. Desktop, TUI, CLI, bots, and evaluation clients execute work through that Host boundary rather than creating a second Runtime for the same state. Multiple Hosts may own different State Roots; Peer Mesh supplies endpoint membership and connections without combining their execution authorities.
 
 ```mermaid
 flowchart LR
@@ -76,6 +76,8 @@ The result kernel contains only score, normalized usage, attributable cost, dura
 
 ## Reading paths
 
+- Host ownership, admission, observation, Client isolation and lifecycle: [Runtime Host architecture](./docs/architecture/runtime-host-architecture.md).
+- Network identity, membership, path selection and stream recovery: [Peer Mesh architecture](./docs/architecture/peer-mesh-architecture.md).
 - Runtime facts and projections: [Runtime core](./docs/architecture/runtime-core-architecture-draft.md) and [compaction](./docs/architecture/llm-compaction-events-log-projection-draft.md).
 - Crash recovery and continuation: [Runtime resume](./docs/architecture/runtime-resume-architecture.md).
 - Multi-agent scheduling: [Agent Graph](./docs/architecture/agent-graph-stream-scheduling-draft.md).

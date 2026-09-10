@@ -247,6 +247,7 @@ export const Composer = forwardRef<
   ComposerHandle,
   {
     disabled?: boolean;
+    placeholder?: string;
     /**
      * Prevent submission while leaving the draft and recovery controls usable.
      * Hosts use this for configuration failures that the model picker can fix.
@@ -349,6 +350,10 @@ export const Composer = forwardRef<
     activeModelLabel?: string;
     activeProviderType?: ProviderType;
     modelChoices?: ChatModelChoice[];
+    /** Inline browsing for compact windows that cannot fit a popup menu. */
+    modelPickerPresentation?: 'menu' | 'wheel';
+    /** Maximum input height in the upstream editor's row units. */
+    maxInputRows?: number;
     /** Whether this Session already has conversation history whose provider prompt cache may be rebuilt by a switch. */
     modelSwitchHasHistory?: boolean;
     /** Identity recovery must not present the stale target as a checked, selectable row. */
@@ -432,6 +437,8 @@ export const Composer = forwardRef<
      * the moment the first message creates the session.
      */
     workspacePicker?: WorkspacePickerModel;
+    /** Host actions that share the composer's existing footer. */
+    footerAccessory?: ReactNode;
     /**
      * PR-MOVE-PERMISSION-MODE (WAWQAQ 47fe0d0e + a667cf6c): the
      * permission mode picker lives inside the composer left-controls
@@ -536,7 +543,7 @@ export const Composer = forwardRef<
     });
   const modelSwitchAvailabilityRef = useRef(modelSwitchAvailability);
   modelSwitchAvailabilityRef.current = modelSwitchAvailability;
-  useLayoutEffect(() => setModelPickerOpen(false), [props.activeSession?.id]);
+  useLayoutEffect(() => setModelPickerOpen(false), [props.activeSession?.id, props.modelPickerPresentation]);
   const [pendingImportAction, setPendingImportAction] = useState<ComposerImportActionId | null>(null);
   const composerMountedRef = useMountedRef();
   const sendPendingRef = useRef(false);
@@ -1466,7 +1473,7 @@ export const Composer = forwardRef<
   // returns to Send (the host queues it as a follow-up). Stop is not lost in
   // that window: Esc interrupts from the input, which is where the hands already
   // are.
-  const stopShown = props.streaming === true && !text.trim();
+  const stopShown = props.streaming === true && (!text.trim() || props.sendBlocked === true);
   // The pending plate renders the follow-up queue only: steering entries are
   // already handed to the active Turn and leave the plate at that moment.
   const queueCount = props.queuedMessages?.length ?? 0;
@@ -1844,9 +1851,9 @@ export const Composer = forwardRef<
                 className="maka-composer-editor"
                 value={text}
                 onChange={onInputChange}
-                placeholder={copy.placeholder}
+                placeholder={props.placeholder ?? copy.placeholder}
                 label={copy.textareaAriaLabel}
-                maxRows={COMPOSER_MAX_ROWS}
+                maxRows={props.maxInputRows ?? COMPOSER_MAX_ROWS}
                 // Prompt history stays ours: persisted, shared across input
                 // surfaces, and clearable from Settings · 数据 (see
                 // use-composer-history.ts).
@@ -2097,6 +2104,7 @@ export const Composer = forwardRef<
               <div className="maka-model-selection-controls">
                 {props.activeSession ? (
                   <ChatModelSwitcher
+                    presentation={props.modelPickerPresentation}
                     activeSession={props.activeSession}
                     activeModelConnectionId={props.activeModelConnectionId}
                     activeModelConnectionSlug={props.activeModelConnectionSlug}
@@ -2198,6 +2206,7 @@ export const Composer = forwardRef<
                   icon={mark.icon}
                 />
               ))}
+              {props.footerAccessory}
             </div>
           )}
           sendButton={stopShown ? (

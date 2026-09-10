@@ -96,6 +96,126 @@ test('atomically commits one WorkHub assignment and target admission', async () 
   }
 });
 
+test('atomically binds delegated text and copied attachments while preserving source authority', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-workhub-delegated-content-'));
+  let store = createSessionStore(root);
+  try {
+    await createCoordinationSession(store, root);
+    const target = await store.create({
+      cwd: root,
+      name: 'Payments',
+      llmConnectionSlug: 'test',
+      model: 'test',
+      permissionMode: 'ask',
+    });
+    const base = assignmentRequest('delegated-content', target.id, 'Payments', 'target-turn');
+    const sourceAttachment = {
+      kind: 'other' as const,
+      name: 'requirements.txt',
+      mimeType: 'text/plain',
+      bytes: 12,
+      ref: {
+        kind: 'session_file' as const,
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        relativePath: 'source-file',
+      },
+    };
+    const targetAttachment = {
+      ...sourceAttachment,
+      ref: { kind: 'session_file' as const, sessionId: target.id, relativePath: 'copied-file' },
+    };
+    const content = normalizeMessageContent({
+      text: 'Fix the payment retry state',
+      attachments: [targetAttachment],
+    });
+    const request = {
+      ...base,
+      assignment: {
+        ...base.assignment,
+        userText: 'Continue Payments and explain the result here',
+        delegationText: content.text,
+        attachments: [sourceAttachment],
+        targetAttachments: [targetAttachment],
+      },
+      admission: {
+        ...base.admission,
+        content,
+        submittedContentDigest: messageContentDigest(content),
+      },
+    };
+    const wrongContent = normalizeMessageContent({
+      text: request.assignment.userText,
+      attachments: [targetAttachment],
+    });
+    await assert.rejects(
+      store.assignWorkHubMessage({
+        ...request,
+        admission: {
+          ...request.admission,
+          content: wrongContent,
+          submittedContentDigest: messageContentDigest(wrongContent),
+        },
+      }),
+      /Invalid WorkHub assignment identity/,
+    );
+    await assert.rejects(
+      store.assignWorkHubMessage({
+        ...request,
+        assignment: { ...request.assignment, targetAttachments: [sourceAttachment] },
+      }),
+      /Invalid WorkHub assignment identity/,
+    );
+    assert.equal(await store.readWorkHubAssignment(request.assignment.actionId), undefined);
+    assert.equal(
+      await store.readMessageAdmission(target.id, request.admission.messageId),
+      undefined,
+    );
+    assert.equal((await store.assignWorkHubMessage(request)).kind, 'assigned');
+    assert.deepEqual(
+      (await store.readMessageAdmission(target.id, request.admission.messageId))?.content,
+      content,
+    );
+    await store.close?.();
+    store = createSessionStore(root);
+    assert.deepEqual((await store.assignWorkHubMessage(request)).assignment, request.assignment);
+    const changed = normalizeMessageContent({ ...content, text: 'Different delegated work' });
+    await assert.rejects(
+      store.assignWorkHubMessage({
+        ...request,
+        assignment: { ...request.assignment, delegationText: changed.text },
+        admission: {
+          ...request.admission,
+          content: changed,
+          submittedContentDigest: messageContentDigest(changed),
+        },
+      }),
+      /different assignment/,
+    );
+    await assert.rejects(
+      store.assignWorkHubMessage({
+        ...request,
+        assignment: {
+          ...request.assignment,
+          attachments: [
+            {
+              ...sourceAttachment,
+              ref: { ...sourceAttachment.ref, relativePath: 'another-source' },
+            },
+          ],
+        },
+      }),
+      /different assignment/,
+    );
+    assert.deepEqual(
+      await store.readWorkHubAssignment(request.assignment.actionId),
+      request.assignment,
+    );
+  } finally {
+    await store.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('scans every target Message lifecycle once and preserves Coordination order', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-workhub-target-linkage-'));
   const store = createSessionStore(root);

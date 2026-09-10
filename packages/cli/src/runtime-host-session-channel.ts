@@ -43,6 +43,7 @@ import {
   InteractionPendingSnapshot,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   SessionContinuitySnapshot,
+  SessionDomainChangedFrame,
   SubscriptionFrame,
   type GoalProjection,
 } from '@maka/runtime-host/protocol';
@@ -71,6 +72,7 @@ export interface RuntimeHostSessionChannelOptions {
   now: () => number;
   onTurnStarted: (turn: MakaPreparedSessionTurn) => void;
   onRuntimeResourceChanged: (sourceSessionId: string, ref: string) => void;
+  onSessionDomainChanged?: (frame: SessionDomainChangedFrame) => void;
   onInteractionPending: (pending: InteractionPendingSnapshot) => void;
   onInteractionResolved: (pending: InteractionPendingSnapshot) => void;
   onTranscriptSettlement: (turnId: string) => void;
@@ -96,6 +98,7 @@ export class RuntimeHostSessionChannel {
   readonly #now: () => number;
   readonly #onTurnStarted: (turn: MakaPreparedSessionTurn) => void;
   readonly #onRuntimeResourceChanged: (sourceSessionId: string, ref: string) => void;
+  readonly #onSessionDomainChanged: ((frame: SessionDomainChangedFrame) => void) | undefined;
   readonly #onInteractionPending: (pending: InteractionPendingSnapshot) => void;
   readonly #onInteractionResolved: (pending: InteractionPendingSnapshot) => void;
   readonly #onTranscriptSettlement: (turnId: string) => void;
@@ -136,6 +139,7 @@ export class RuntimeHostSessionChannel {
     this.#now = options.now;
     this.#onTurnStarted = options.onTurnStarted;
     this.#onRuntimeResourceChanged = options.onRuntimeResourceChanged;
+    this.#onSessionDomainChanged = options.onSessionDomainChanged;
     this.#onInteractionPending = options.onInteractionPending;
     this.#onInteractionResolved = options.onInteractionResolved;
     this.#onTranscriptSettlement = options.onTranscriptSettlement;
@@ -144,6 +148,16 @@ export class RuntimeHostSessionChannel {
     this.#onSnapshotChanged = options.onSnapshotChanged;
     this.#onFailed = options.onFailed;
     this.#onRecovered = options.onRecovered;
+    this.#subscribeSessionDomainChanges(subscription);
+  }
+
+  #subscribeSessionDomainChanges(subscription: RuntimeHostSessionSubscription): void {
+    if (!this.#onSessionDomainChanged) return;
+    subscription.subscribeSessionDomainChanges((frame) => {
+      if (!this.#closing && this.#subscription === subscription) {
+        this.#onSessionDomainChanged?.(frame);
+      }
+    });
   }
 
   static async open(
@@ -408,6 +422,7 @@ export class RuntimeHostSessionChannel {
         return;
       }
       this.#subscription = replacement;
+      this.#subscribeSessionDomainChanges(replacement);
       this.#ready = false;
       this.#pendingFrames.length = 0;
       void this.#pump(replacement);

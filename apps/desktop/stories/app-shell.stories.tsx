@@ -2427,14 +2427,14 @@ export const TailFollowDoesNotAskForHistory: Story = {
 // blocks each carrying a `data-maka-transcript-boundary` marker so sub-turn
 // content-visibility bounds them. Reasoning stays mounted while folded, so it is
 // real layout, not free collapsed bytes.
-function oversizedTurnMessages(): StoredMessage[] {
+function oversizedTurnMessages(steps = 24): StoredMessage[] {
   const turnId = 'turn-oversized';
   const out: StoredMessage[] = [
     user('msg-oversized-user', turnId, 30, '逐项检查一组独立的合成步骤，并给出简短结果。'),
   ];
   const prose = '这一段只包含确定性的合成文本，用于测量长对话的滚动渲染。'.repeat(8);
   const reasoning = '先确认输入边界（空 / 超长 / 并发），再对合成输出做一次去抖动检查，确保占位高度不随展开态漂移。'.repeat(4);
-  for (let step = 1; step <= 24; step += 1) {
+  for (let step = 1; step <= steps; step += 1) {
     const ts = NOW - (25 - step) * 20_000;
     out.push({
       type: 'assistant',
@@ -2474,6 +2474,10 @@ function oversizedTurnMessages(): StoredMessage[] {
 }
 
 const oversizedTurn = oversizedTurnMessages();
+
+export const Performance45Tools: Story = {
+  render: () => <ComposedShell chat={{ messages: oversizedTurnMessages(45) }} />,
+};
 
 export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
   render: () => <ComposedShell chat={{ messages: oversizedTurn }} />,

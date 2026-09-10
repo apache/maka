@@ -48,3 +48,4 @@ release/asf/
 
 # Astro type generation
 .astro
+perf-results/

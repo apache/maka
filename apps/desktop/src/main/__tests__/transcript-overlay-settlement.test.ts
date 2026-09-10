@@ -32,7 +32,7 @@ import {
   readSessionTranscriptPage,
   updateSubscriberTranscriptHighWater,
 } from '../../../../../packages/runtime-host/dist/server/session-transcript-pager.js';
-import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/desktop-transcript-range-store.js';
+import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import type { DesktopTranscriptNavigation } from '../../preload/transcript-contract.js';
 import { encodeDesktopTranscriptChange, encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 import { DesktopTranscriptReplica, type DesktopTranscriptReplicaChange } from '../desktop-transcript-replica.js';

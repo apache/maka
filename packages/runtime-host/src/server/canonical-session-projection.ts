@@ -18,7 +18,7 @@
  */
 
 import type { SessionHeader } from '@maka/core/session';
-import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
+import { isSessionNotFoundError, type ExecutionStoresWriter } from '@maka/storage/execution-stores';
 import type {
   SessionContinuitySnapshot,
   SessionContinuityIdentity,
@@ -90,7 +90,7 @@ export class CanonicalSessionProjectionReader {
       header = record.header;
       metadataRevision = record.revision;
     } catch (error) {
-      if (isMissingFile(error)) return null;
+      if (isMissingFile(error) || isSessionNotFoundError(error)) return null;
       throw error;
     }
     if (header.id !== sessionId) {

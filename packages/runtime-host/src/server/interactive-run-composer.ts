@@ -150,7 +150,11 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
         input.plan,
         input.deepResearch?.tools,
       );
-  const clientCapabilityTools = hasToolCeiling ? [] : (input.clientCapabilities?.tools ?? []);
+  const clientCapabilityTools =
+    input.boundTools !== undefined ||
+    (input.toolProfile !== undefined && input.toolProfile !== 'workhub-coordination-v2')
+      ? []
+      : (input.clientCapabilities?.tools ?? []);
   const resolveTools = (): readonly MakaTool[] => {
     const stableHostTools = [...defaultTools, ...clientCapabilityTools];
     const additionalTools = hasToolCeiling

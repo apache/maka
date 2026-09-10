@@ -241,6 +241,9 @@ export type RootExecutionDescriptor =
   | {
       /** Tool-free conversational execution admitted only by WorkHub authority. */
       kind: 'workhub_coordination';
+      operation?: 'action';
+      /** Stable request identity shared by physical action retries. */
+      actionId?: string;
       inputDigest: `sha256:${string}`;
     }
   | { kind: 'regenerate'; sourceTurnId: string }

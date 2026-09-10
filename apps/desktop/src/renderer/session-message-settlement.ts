@@ -19,7 +19,7 @@
 
 import type { StoredMessage } from '@maka/core/session';
 import type { MakaBridge } from '../preload/bridge-contract.js';
-import { DesktopTranscriptRangeStore } from './desktop-transcript-range-store.js';
+import { DesktopTranscriptRangeStore } from './platform/desktop/desktop-transcript-range-store.js';
 
 const COMMITTED_ASSISTANT_SETTLE_TIMEOUT_MS = 480;
 

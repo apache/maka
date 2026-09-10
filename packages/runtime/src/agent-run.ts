@@ -944,7 +944,7 @@ export class AgentRun {
     };
   }
 
-  async begin(): Promise<AgentRunBeginResult> {
+  private async beginUserTurn(): Promise<RuntimeEvent> {
     // Owed from here, not from after the opening: `openInvocation` can leave the
     // invocation open and still throw, and `finalize` reopens what it can.
     this.initialRuntimeEventPending = true;
@@ -953,6 +953,17 @@ export class AgentRun {
     this.lastTs = this.input.now();
     const initialRuntimeEvent = await this.recordInitialRuntimeEvent(this.lastTs);
 
+    return initialRuntimeEvent;
+  }
+
+  /** Host actions share Turn facts and finalization without activating a provider. */
+  async beginCoordination(): Promise<void> {
+    await this.beginUserTurn();
+    await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, this.lastTs);
+  }
+
+  async begin(): Promise<AgentRunBeginResult> {
+    const initialRuntimeEvent = await this.beginUserTurn();
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
 
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, this.lastTs);

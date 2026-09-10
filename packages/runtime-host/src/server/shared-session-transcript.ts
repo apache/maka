@@ -61,6 +61,9 @@ export function projectSharedSessionTranscriptMessage(
           ? {}
           : { steeringEventId: message.steeringEventId }),
         ...(message.origin === undefined ? {} : { origin: message.origin }),
+        ...(message.coordinationActionId === undefined
+          ? {}
+          : { coordinationActionId: message.coordinationActionId }),
       };
     }
     case 'assistant':

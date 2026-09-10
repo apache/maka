@@ -35,6 +35,8 @@ import {
   sessionStartModeSpec,
 } from '@maka/core/session-start-mode';
 import {
+  WORKHUB_COORDINATION_SESSION_ID,
+  isWorkHubCoordinationSession,
   isWorkHubCoordinationSessionId,
   isWorkHubCoordinationSessionTarget,
   type SessionHeader,
@@ -70,6 +72,7 @@ import {
   SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS,
   type OperationError,
   type OperationOutcome,
+  type WorkHubCoordinationConfigureModelInput,
   type SessionCatalogItem,
   type SessionCatalogLiveRunState,
   type SessionCatalogProjection,
@@ -688,10 +691,24 @@ export class HostSessionCatalogCoordinator {
     });
   }
 
+  configureWorkHubModel(
+    input: WorkHubCoordinationConfigureModelInput,
+  ): Promise<OperationOutcome<'workhub.coordination.configureModel'>> {
+    return this.#updateConfiguration(
+      {
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        expectedRevision: input.expectedRevision,
+        patch: { modelTarget: input.modelTarget },
+      },
+      'workhub',
+    );
+  }
+
   async #updateConfiguration(
     input: SessionConfigurationUpdateInput,
+    authority: 'ordinary' | 'workhub' = 'ordinary',
   ): Promise<OperationOutcome<'session.configuration.update'>> {
-    if (isWorkHubCoordinationSessionId(input.sessionId)) {
+    if (authority === 'ordinary' && isWorkHubCoordinationSessionId(input.sessionId)) {
       return configurationFailure(
         'operation_conflict',
         'WorkHub Coordination Session configuration requires WorkHub authority',
@@ -701,7 +718,17 @@ export class HostSessionCatalogCoordinator {
       let commitAttempted = false;
       try {
         const current = await this.#stores.readHeaderRecordSnapshot(input.sessionId);
-        if (isWorkHubCoordinationSessionTarget(current.header)) {
+        if (
+          authority === 'workhub' &&
+          (!isWorkHubCoordinationSessionId(current.header.id) ||
+            !isWorkHubCoordinationSession(current.header))
+        ) {
+          return configurationFailure(
+            'operation_conflict',
+            'WorkHub Coordination Session identity is unavailable',
+          );
+        }
+        if (authority === 'ordinary' && isWorkHubCoordinationSessionTarget(current.header)) {
           return configurationFailure(
             'operation_conflict',
             'WorkHub Coordination Session configuration requires WorkHub authority',
@@ -725,7 +752,10 @@ export class HostSessionCatalogCoordinator {
           return configurationSuccess({
             kind: 'committed',
             session: projectSessionCatalogRecord(
-              await this.#stores.readCatalogRecord(input.sessionId),
+              await this.#stores.readCatalogRecord(
+                input.sessionId,
+                authority === 'workhub' ? 'recoverable' : 'ordinary',
+              ),
             ),
           });
         }
@@ -735,7 +765,13 @@ export class HostSessionCatalogCoordinator {
           clearConnectionBlock: input.patch.modelTarget !== undefined,
           configuration,
         });
-        return configurationSuccess(await this.#committedUpdate(input.sessionId, lease));
+        return configurationSuccess(
+          await this.#committedUpdate(
+            input.sessionId,
+            lease,
+            authority === 'workhub' ? 'recoverable' : 'ordinary',
+          ),
+        );
       } catch (error) {
         if (
           !commitAttempted &&
@@ -905,11 +941,14 @@ export class HostSessionCatalogCoordinator {
   async #committedUpdate(
     sessionId: string,
     lease: SessionAdmissionLease,
+    roleScope: 'ordinary' | 'recoverable' = 'ordinary',
   ): Promise<SessionUpdateResult> {
     await this.#continuity.refreshCanonical(sessionId, lease);
     return {
       kind: 'committed',
-      session: projectSessionCatalogRecord(await this.#stores.readCatalogRecord(sessionId)),
+      session: projectSessionCatalogRecord(
+        await this.#stores.readCatalogRecord(sessionId, roleScope),
+      ),
     };
   }
 

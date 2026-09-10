@@ -99,6 +99,7 @@ export interface RuntimeHostPeerClient {
     readonly relayCandidates: readonly RuntimeHostPeerTransitRelayCandidate[];
   }): Promise<void>;
   attachRouteResolver(resolver: RuntimeHostPeerRouteResolver): () => void;
+  /** Notify reconnect owners when candidates change or a peer becomes connected. */
   subscribeRoutes(peerId: string, listener: () => void): () => void;
   observeAuthenticatedReachability(input: {
     readonly expectedPeerId: string;
@@ -289,6 +290,29 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   }
 
   subscribeRoutes(peerId: string, listener: () => void): () => void {
+    const snapshot = () =>
+      this.#connectionResolution(
+        { peerId, routeHints: [], directDeadlineMs: 0 },
+        'application',
+        false,
+      );
+    let previous = snapshot();
+    let connected = this.isConnected(peerId);
+    return this.#subscribeRouteResolution(peerId, () => {
+      const next = snapshot();
+      const nextConnected = this.isConnected(peerId);
+      const available =
+        next.state === 'available' &&
+        (!sameCandidates(previous, next) || (nextConnected && !connected));
+      previous = next;
+      connected = nextConnected;
+      // A dial's own recovery sweep toggles recovering/exhausted. Waking its
+      // reconnect owner for those transitions would bypass every backoff.
+      if (available) listener();
+    });
+  }
+
+  #subscribeRouteResolution(peerId: string, listener: () => void): () => void {
     const listeners = this.#routeListeners.get(peerId) ?? new Set<() => void>();
     const first = listeners.size === 0;
     listeners.add(listener);
@@ -540,7 +564,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       void updateTail.catch(() => undefined);
     };
     const unsubscribe =
-      kind === 'application' ? this.subscribeRoutes(input.peerId, update) : undefined;
+      kind === 'application' ? this.#subscribeRouteResolution(input.peerId, update) : undefined;
     let connection: Promise<RuntimeHostPeerNativeStream>;
     try {
       connection = endpoint[kind === 'application' ? 'connect' : 'connectMeshControl']({

@@ -2623,7 +2623,41 @@ function validateMainRendererLoader(desktopRoot, violations) {
   const [loaderFunction] = loaderFunctions;
   const [resolverFunction] = resolverFunctions;
   const ifStatements = loaderFunction ? nodesIn(loaderFunction.body).filter((node) => node.type === 'IfStatement') : [];
-  const [loadBranch] = ifStatements;
+  const hasWorkHubSurface = loaderFunction?.params.length === 3;
+  const loadBranch = ifStatements[hasWorkHubSurface ? 1 : 0];
+  const surfaceBranch = ifStatements[0];
+  const surfaceStatements = surfaceBranch?.consequent?.body ?? [];
+  const surfaceUrl = surfaceStatements[0]?.declarations?.[0];
+  const surfaceQuery = surfaceStatements[1]?.expression;
+  const surfaceParameter = loaderFunction?.params[2];
+  const validWorkHubSurface =
+    !hasWorkHubSurface || (
+      isIdentifier(surfaceParameter, 'surface') &&
+      surfaceParameter.optional === true &&
+      surfaceParameter.typeAnnotation?.typeAnnotation?.type === 'TSLiteralType' &&
+      staticString(surfaceParameter.typeAnnotation.typeAnnotation.literal) === 'workhub' &&
+      isIdentifier(surfaceBranch.test, 'surface') &&
+      !surfaceBranch.alternate &&
+      surfaceStatements.length === 4 &&
+      surfaceStatements[0].kind === 'const' &&
+      surfaceStatements[0].declarations.length === 1 &&
+      isIdentifier(surfaceUrl?.id, 'url') &&
+      surfaceUrl.init?.type === 'NewExpression' &&
+      isIdentifier(surfaceUrl.init.callee, 'URL') &&
+      surfaceUrl.init.arguments.length === 1 &&
+      isNamedMember(surfaceUrl.init.arguments[0], 'rendererEntry', 'url') &&
+      surfaceQuery?.type === 'CallExpression' &&
+      isMemberExpression(surfaceQuery.callee) &&
+      isNamedMember(surfaceQuery.callee.object, 'url', 'searchParams') &&
+      memberPropertyName(surfaceQuery.callee) === 'set' &&
+      surfaceQuery.arguments.length === 2 &&
+      staticString(surfaceQuery.arguments[0]) === 'surface' &&
+      isIdentifier(surfaceQuery.arguments[1], 'surface') &&
+      isOnlyAwaitedMemberCall({ type: 'BlockStatement', body: [surfaceStatements[2]] }, 'mainWindow', 'loadURL', 'url', 'href') &&
+      surfaceStatements[3].type === 'ReturnStatement' &&
+      !surfaceStatements[3].argument &&
+      !program.body.some((statement) => statementBindings(statement).includes('URL'))
+    );
   const resolverReturns = resolverFunction
     ? nodesIn(resolverFunction.body).filter((node) => node.type === 'ReturnStatement')
     : [];
@@ -2653,17 +2687,18 @@ function validateMainRendererLoader(desktopRoot, violations) {
     loaderFunctions.length === 1 &&
     loaderFunction.async === true &&
     JSON.stringify(loaderFunction.params.map((parameter) => parameter.type === 'Identifier' ? parameter.name : undefined)) ===
-      JSON.stringify(['mainWindow', 'rendererEntry']) &&
-    loaderFunction.body.body.length === 1 &&
+      JSON.stringify(hasWorkHubSurface ? ['mainWindow', 'rendererEntry', 'surface'] : ['mainWindow', 'rendererEntry']) &&
+    validWorkHubSurface &&
+    loaderFunction.body.body.length === (hasWorkHubSurface ? 2 : 1) &&
     entryPaths.length === 1 &&
     isRendererEntryPathInitializer(entryPaths[0].init) &&
     entryUrls.length === 1 &&
     isRendererEntryUrlInitializer(entryUrls[0].init) &&
-    loadCalls.length === 2 &&
+    loadCalls.length === (hasWorkHubSurface ? 3 : 2) &&
     loadCalls.filter((node) => isMemberCall(node, 'mainWindow', 'loadFile', 'rendererEntry', 'filePath')).length === 1 &&
     loadCalls.filter((node) => isMemberCall(node, 'mainWindow', 'loadURL', 'rendererEntry', 'url')).length === 1 &&
-    navigationTokens.length === 4 &&
-    ifStatements.length === 1 &&
+    navigationTokens.length === (hasWorkHubSurface ? 5 : 4) &&
+    ifStatements.length === (hasWorkHubSurface ? 2 : 1) &&
     isNamedMember(loadBranch.test, 'rendererEntry', 'useDevServer') &&
     isOnlyAwaitedMemberCall(loadBranch.consequent, 'mainWindow', 'loadURL', 'rendererEntry', 'url') &&
     isOnlyAwaitedMemberCall(loadBranch.alternate, 'mainWindow', 'loadFile', 'rendererEntry', 'filePath');
@@ -3074,6 +3109,8 @@ function isSanctionedDependencyTarget(desktopRoot, section, importerPath, depend
 }
 
 const MIGRATION_SWAP_ZONES = {
+  legacyAppShell: ['platform'],
+  legacyAppShellClosure: ['platform'],
   rootDebt: ['bootstrap', 'composition'],
   rootDebtClosure: ['application', 'bootstrap', 'composition', 'platform'],
 };

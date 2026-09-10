@@ -116,6 +116,20 @@ export function formatHostHandoff(
     descriptions.operator_required = guidance[view.recoveryBlocker];
   }
   const activity = view.activity;
+  const background = activity?.drainResidencies;
+  const backgroundFacts = !activity
+    ? ''
+    : background !== undefined
+      ? tw
+        ? `${background} 個背景工作`
+        : zh
+          ? `${background} 个后台工作`
+          : `${background} background activities`
+      : tw
+        ? '背景工作數量未知'
+        : zh
+          ? '后台工作数量未知'
+          : 'Background activity count unknown';
   const facts = activity
     ? tw
       ? `${activity.connections} 個連線 · ${activity.activeOperations} 個進行中的操作`
@@ -203,7 +217,9 @@ export function formatHostHandoff(
           : zh
             ? '正在完成交接或安全收尾，请稍候。'
             : 'Finishing the handoff or its safe recovery. Please wait.'
-        : [facts, waiting, repairNotice, view.operatorStep].filter(Boolean).join('\n'),
+        : [facts, backgroundFacts, waiting, repairNotice, view.operatorStep]
+            .filter(Boolean)
+            .join('\n'),
     actions: view.actions.map((action) => ({ action, label: labels[action] })),
   };
 }

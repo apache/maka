@@ -266,7 +266,7 @@ describe('browser tool execution', () => {
       },
       releaseBrowserSession() {},
       computerUseTools,
-      releaseComputerUseSession() {},
+      releaseDesktopInteractionSession() {},
     });
     assert.ok(provider.call);
     if (!provider.call) return;

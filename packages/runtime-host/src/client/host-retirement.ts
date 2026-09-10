@@ -35,6 +35,7 @@ export async function prepareConnectedRuntimeHostRetirement(
   mode: RuntimeHostRetirementMode,
   timeoutMs?: number,
   signal?: AbortSignal,
+  options?: { readonly allowCooperativeHandoff?: boolean },
 ): Promise<RuntimeHostRetirementPreparation> {
   signal?.throwIfAborted();
   // Retirement uses a dedicated lifecycle connection. Closing it cancels the
@@ -49,7 +50,9 @@ export async function prepareConnectedRuntimeHostRetirement(
       {
         expectedHostEpoch: connection.hostEpoch,
         allowInterruptActiveTasks: mode === 'interrupt_active_work',
-        ...(mode === 'refuse_active_work' && connection.cooperativeHandoff
+        ...(mode === 'refuse_active_work' &&
+        connection.cooperativeHandoff &&
+        options?.allowCooperativeHandoff !== false
           ? { allowCooperativeHandoff: true }
           : {}),
       },

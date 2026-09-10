@@ -609,6 +609,40 @@ test('ordinary configuration rejects the WorkHub Coordination Session identity',
   assert.equal(fixture.drainRequests(), 0);
 });
 
+test('WorkHub model authority preserves its execution policy and uses versioned runtime configuration', async () => {
+  const fixture = createFixture({
+    header: {
+      id: WORKHUB_COORDINATION_SESSION_ID,
+      role: WORKHUB_COORDINATION_SESSION_ROLE,
+      toolProfile: 'workhub-coordination-v2',
+      permissionMode: 'bypass',
+      orchestrationMode: 'default',
+      model: 'old-model',
+    },
+  });
+  const input = {
+    expectedRevision: fixture.revision(),
+    modelTarget: {
+      kind: 'explicit' as const,
+      connectionId: 'connection-1',
+      connectionSlug: 'test',
+      model: 'model-1',
+    },
+  };
+  const outcome = await fixture.coordinator.configureWorkHubModel(input);
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.equal(fixture.header().model, 'model-1');
+  assert.equal(fixture.header().permissionMode, 'bypass');
+  assert.equal(fixture.header().toolProfile, 'workhub-coordination-v2');
+  assert.equal(fixture.header().orchestrationMode, 'default');
+  const stale = await fixture.coordinator.configureWorkHubModel(input);
+  assert.equal(stale.ok && stale.result.kind, 'revision_conflict');
+  const corrupt = createFixture();
+  const rejected = await corrupt.coordinator.configureWorkHubModel(input);
+  assert.equal(rejected.ok, false);
+  assert.equal(corrupt.revision(), 3);
+});
+
 test('ordinary metadata and configuration reject a corrupt Coordination role on another identity', async () => {
   const corrupt = {
     ...sessionHeader('session-1', ['user-label']),

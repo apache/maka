@@ -33,6 +33,7 @@
  * projection, or ledger logic lives here. Those arrive in later nodes.
  */
 
+import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
 import { isModelRetryDecision, type ModelRetryDecision } from './model-failure.js';
 
 import {
@@ -536,6 +537,8 @@ export interface RuntimeEventPermissionClosureAccepted {
  * event without `actions.endInvocation` MUST assert a terminal `status`.
  */
 export interface RuntimeEventActions {
+  /** Host coordination receipt linked to this admitted Run. */
+  coordination?: WorkHubActionReceipt;
   /** Durable physical pause; does not complete or cancel the owning logical Turn. */
   handoffPause?: RuntimeHandoffPause;
   /** Patch applied to invocation-scoped runtime state. */
@@ -838,6 +841,7 @@ const RUNTIME_ACTIONS_SHAPE = defineObjectShape<RuntimeEventActions>()(
   [],
   [
     'handoffPause',
+    'coordination',
     'stateDelta',
     'artifactDelta',
     'permissionRequest',
@@ -1272,6 +1276,7 @@ function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
   }
   return (
     (value.handoffPause === undefined || isRuntimeHandoffPause(value.handoffPause)) &&
+    (value.coordination === undefined || isWorkHubActionReceipt(value.coordination)) &&
     (value.stateDelta === undefined || isRecord(value.stateDelta)) &&
     (value.artifactDelta === undefined ||
       (isRecord(value.artifactDelta) &&

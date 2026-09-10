@@ -506,6 +506,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       const directories = new Set<string>();
       const discharged: string[] = [];
       let failedPaths = 0;
+      let realArtifactRoot: string | undefined;
       try {
         for (const relativePath of selected) {
           if (
@@ -515,10 +516,33 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
             discharged.push(relativePath);
             continue;
           }
-          const target = join(this.artifactRoot, relativePath);
+          const entry = await resolveArtifactRemovalEntry(this.artifactRoot, relativePath);
+          if (!entry) {
+            discharged.push(relativePath);
+            continue;
+          }
+          realArtifactRoot ??= await ensureRealDirectory(this.artifactRoot);
+          if (!isInsideOrSamePath(realArtifactRoot, dirname(entry.unlinkPath))) {
+            failedPaths += 1;
+            continue;
+          }
+          const artifactIds = new Set([
+            ...artifactIdsFromUpgradeOrphanPath(relativePath),
+            ...artifactIdsFromUpgradeOrphanPath(entry.unlinkPath),
+          ]);
+          if (
+            artifactIds.size > 0 &&
+            (await this.hasClaimedRemovalIdentityUnlocked(
+              [...artifactIds],
+              entry.comparisonIdentity,
+            ))
+          ) {
+            discharged.push(relativePath);
+            continue;
+          }
           try {
-            await unlink(target);
-            directories.add(dirname(target));
+            await unlink(entry.unlinkPath);
+            directories.add(dirname(entry.unlinkPath));
           } catch (error) {
             if (!isNotFound(error)) {
               failedPaths += 1;
@@ -537,6 +561,19 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         failedPaths,
       };
     });
+  }
+
+  private async hasClaimedRemovalIdentityUnlocked(
+    artifactIds: readonly string[],
+    comparisonIdentity: string,
+  ): Promise<boolean> {
+    for (const relativePath of this.metadataRepository.readRelativePathsByCaseFoldedArtifactIds(
+      artifactIds,
+    )) {
+      const entry = await resolveArtifactRemovalEntry(this.artifactRoot, relativePath);
+      if (entry?.comparisonIdentity === comparisonIdentity) return true;
+    }
+    return false;
   }
 
   private async replayExistingArtifactUnlocked(
@@ -1211,6 +1248,20 @@ function symlinkEntryIdentity(entryStat: BigIntStats): string {
     entryStat.ctimeNs,
     entryStat.mtimeNs,
   ].join(':');
+}
+
+function artifactIdsFromUpgradeOrphanPath(relativePath: string): readonly string[] {
+  const name = basename(relativePath);
+  const artifactIds: string[] = [];
+  for (
+    let separator = name.indexOf('-');
+    separator > 0;
+    separator = name.indexOf('-', separator + 1)
+  ) {
+    const artifactId = name.slice(0, separator);
+    if (isCanonicalArtifactEntityId(artifactId)) artifactIds.push(artifactId);
+  }
+  return artifactIds;
 }
 
 function isInsideOrSamePath(root: string, target: string): boolean {

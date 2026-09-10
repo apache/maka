@@ -193,7 +193,6 @@ export function AgentGraphPanel(props: {
     !shouldShowAgentGraphPanel({
       enabled: props.enabled,
       hasGraphActivity: hasGraphActivity || hasGraphHistory,
-      error,
       sessionId: props.rootSessionId,
       graphId: snapshot?.graphId,
       status: snapshot?.status,

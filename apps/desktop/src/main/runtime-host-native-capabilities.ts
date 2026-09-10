@@ -107,11 +107,11 @@ export interface DesktopNativeCapabilityProviderInput {
   }) => string | Promise<string>;
   readonly releaseBrowserSession: (sessionId: string) => void | Promise<void>;
   readonly computerUseTools: ComputerUseToolSet;
-  readonly releaseComputerUseSession: (
+  readonly releaseDesktopInteractionSession: (
     sessionId: string,
   ) => void | Promise<void>;
   readonly oauthPresentation?: OAuthPresentationBackend;
-  readonly additionalGroups?: () => readonly DesktopCapabilityGroup[];
+  readonly additionalGroups?: (scope?: DesktopTargetScope) => readonly DesktopCapabilityGroup[];
   readonly additionalServices?: (
     scope: DesktopTargetScope,
   ) => readonly DesktopCapabilityService[];
@@ -137,7 +137,7 @@ interface DesktopNativeCapabilityProviderOptions {
   readonly clientCwd?: string;
   readonly isTargetValid?: () => boolean;
   readonly onSessionUsed?: (sessionId: string) => void;
-  readonly onComputerUseTurnUsed?: (sessionId: string, turnId: string) => void;
+  readonly onDesktopInteractionTurnUsed?: (sessionId: string, turnId: string) => void;
   readonly onClosed?: () => void;
   /** Reports a visible degradation while assembling the published manifest. */
   readonly onDiagnostic?: (diagnostic: string) => void;
@@ -164,7 +164,7 @@ export function createDesktopNativeCapabilityProvider(
     ),
   );
   const groups = fitDesktopCapabilityManifest(
-    prepareCapabilityGroups(capabilityGroups(input), providerOptions.onDiagnostic),
+    prepareCapabilityGroups(capabilityGroups(input, providerOptions.targetScope), providerOptions.onDiagnostic),
     serviceOffers,
     hostPathAccess,
     providerOptions.onDiagnostic,
@@ -185,7 +185,7 @@ export function createDesktopNativeCapabilityProvider(
   const bindings = indexBindings(groups);
   const releaseSessionResources = [
     input.releaseBrowserSession,
-    input.releaseComputerUseSession,
+    input.releaseDesktopInteractionSession,
   ] as const;
   const activeInvocations = new Map<
     AbortController,
@@ -346,6 +346,7 @@ async function settleSessionReleases(
 
 function capabilityGroups(
   input: DesktopNativeCapabilityProviderInput,
+  scope?: DesktopTargetScope,
 ): DesktopCapabilityGroup[] {
   return [
     ...(input.browserTools.length > 0
@@ -370,7 +371,7 @@ function capabilityGroups(
           },
         ]
       : []),
-    ...(input.additionalGroups?.() ?? []),
+    ...(input.additionalGroups?.(scope) ?? []),
   ];
 }
 
@@ -430,8 +431,8 @@ async function invokeNativeTool(
   signal.throwIfAborted();
   usedSessionIds.add(frame.sessionId);
   providerOptions.onSessionUsed?.(frame.sessionId);
-  if (frame.offerId === COMPUTER_USE_OFFER_ID) {
-    providerOptions.onComputerUseTurnUsed?.(frame.sessionId, frame.turnId);
+  if (frame.offerId === COMPUTER_USE_OFFER_ID || frame.offerId === "desktop_workhub") {
+    providerOptions.onDesktopInteractionTurnUsed?.(frame.sessionId, frame.turnId);
   }
   const execute = () =>
     binding.tool.impl(args, {

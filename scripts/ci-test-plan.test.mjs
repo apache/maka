@@ -117,6 +117,19 @@ test('documentation with a dedicated contract still selects that contract', () =
   }
 });
 
+test('DeepSeek Harness toolchain inputs rebuild its pinned fingerprint', () => {
+  for (const path of [
+    'packages/eval/harbor/deepseek-harness-toolchain/package.json',
+    'packages/eval/harbor/deepseek-harness-toolchain/package-lock.json',
+    'packages/eval/harbor/deepseek-harness-toolchain/patch-subprocess-local.mjs',
+    'packages/eval/src/toolchain-verification.ts',
+    'scripts/prepare-deepseek-harness-toolchain.mjs',
+  ]) {
+    assert.equal(planTests([path], { graph }).deepseekHarnessToolchain, true, path);
+  }
+  assert.equal(planTests(['packages/eval/README.md'], { graph }).deepseekHarnessToolchain, false);
+});
+
 test('changed files are derived from the PR merge base', () => {
   const calls = [];
   const exec = (_command, args) => {

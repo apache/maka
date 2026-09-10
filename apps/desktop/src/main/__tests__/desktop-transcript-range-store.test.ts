@@ -35,7 +35,7 @@ import {
   createRecoveringDesktopTranscriptRangeController,
   createDesktopTranscriptRangeController,
   DesktopTranscriptRangeStore,
-} from '../../renderer/desktop-transcript-range-store.js';
+} from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import { mergeSettledMessages } from '../../renderer/settled-message-merge.js';
 import { readSettledMessages } from '../../renderer/session-message-settlement.js';
 import { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';

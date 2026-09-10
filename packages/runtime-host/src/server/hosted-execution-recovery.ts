@@ -454,7 +454,11 @@ function recoveryExecutionContract(execution: RootExecutionDescriptor): Recovery
     case 'external_message':
       return contract(true, true, 'root_replay');
     case 'workhub_coordination':
-      return contract(false, true, 'root_replay');
+      return contract(
+        false,
+        true,
+        execution.operation === 'action' ? 'host_recovery_closure' : 'root_replay',
+      );
     case 'regenerate':
       return contract(false, true, 'root_replay');
     case 'context_compact':
@@ -491,6 +495,7 @@ function usesHostRecoveryClosure(execution: RootExecutionDescriptor): execution 
   RootExecutionDescriptor,
   {
     kind:
+      | 'workhub_coordination'
       | 'goal'
       | 'legacy_automation'
       | 'agent_graph_supervisor_wake'
@@ -501,6 +506,7 @@ function usesHostRecoveryClosure(execution: RootExecutionDescriptor): execution 
   }
 > {
   return (
+    (execution.kind === 'workhub_coordination' && execution.operation === 'action') ||
     execution.kind === 'legacy_automation' ||
     execution.kind === 'goal' ||
     execution.kind === 'agent_graph_supervisor_wake' ||

@@ -46,7 +46,7 @@ import {
   showSessionWorkspaceUnavailableToast,
 } from './session-workspace-errors.js';
 import * as skillFeedback from './skill-invocation-feedback.js';
-import type { DesktopTranscriptRangeController } from './desktop-transcript-range-store.js';
+import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
 import type { SessionPendingClaim } from './app-shell-session-ui-state.js';
 import {
   retainedAttachmentRefs,

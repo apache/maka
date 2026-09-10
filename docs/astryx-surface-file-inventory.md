@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.5.2` (194 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 260 files — blocker 0, reimplementation 0, polish 1, aligned 259.
+**Totals:** 266 files — blocker 0, reimplementation 0, polish 2, aligned 264.
 
 ## Exclusions (explicit)
 
@@ -41,6 +41,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/command-palette.tsx` | dialog-overlay | CommandPalette, CommandPaletteFooter, CommandPaletteInput, EmptyState, Kbd | aligned — uses Astryx (CommandPalette, CommandPaletteFooter, CommandPaletteInput, EmptyState, Kbd) | aligned |
 | `apps/desktop/src/renderer/composer-mentions.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/composition/desktop-feature-services.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/composition/legacy-desktop-region.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/custom-pet-companion.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/error-boundary.tsx` | other | Button, Card | aligned — uses Astryx (Button, Card) | aligned |
 | `apps/desktop/src/renderer/features/app-update/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
@@ -98,10 +99,15 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx` | shell-chrome-or-panel | Card, ResizeHandle, Spinner | aligned — uses Astryx (Card, ResizeHandle, Spinner) | aligned |
 | `apps/desktop/src/renderer/features/workbar/ui/workbar-surface.tsx` | shell-chrome-or-panel | Badge, Card, DropdownMenu, DropdownMenuItem, Heading, Icon, Kbd, List, ListItem, Section, Spinner, Tab, TabList | aligned — uses Astryx (Badge, Card, DropdownMenu, DropdownMenuItem, Heading, Icon, Kbd, List) | aligned |
 | `apps/desktop/src/renderer/features/workbar/ui/workbar-toggle.tsx` | shell-chrome-or-panel | Icon, IconButton, Tooltip | aligned — uses Astryx (Icon, IconButton, Tooltip) | aligned |
-| `apps/desktop/src/renderer/features/workhub/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
-| `apps/desktop/src/renderer/features/workhub/ui/workhub-composer.tsx` | shell-chrome-or-panel | Selector | aligned — uses Astryx (Selector) | aligned |
+| `apps/desktop/src/renderer/features/workhub/ui/control-overlay.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/workhub/ui/cursor.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/workhub/ui/main-navigation.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/workhub/ui/workhub-composer.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/workhub/ui/workhub-conversation.tsx` | other | Button | aligned — uses Astryx (Button) | aligned |
+| `apps/desktop/src/renderer/features/workhub/ui/workhub-dock.tsx` | other | Button | aligned — uses Astryx (Button) | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-navigation-rail.tsx` | other | Button, List, ListItem, StatusDot | aligned — uses Astryx (Button, List, ListItem, StatusDot) | aligned |
-| `apps/desktop/src/renderer/features/workhub/ui/workhub-prompt-rail.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/workhub/ui/workhub-root.tsx` | other | Button, IconButton | aligned — uses Astryx (Button, IconButton) | aligned |
+| `apps/desktop/src/renderer/features/workhub/ui/workhub-surface-switch.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-work-identity.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/keyboard-help.tsx` | dialog-overlay | Dialog, DialogHeader, Heading, Kbd, Layout, LayoutContent | aligned — uses Astryx (Dialog, DialogHeader, Heading, Kbd, Layout, LayoutContent) | aligned |
 | `apps/desktop/src/renderer/live-turn-reconciler.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
@@ -174,6 +180,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/styles/custom-pet-companion.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/daily-review.css` | module-hub | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/deep-research.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
+| `apps/desktop/src/renderer/styles/desktop-assistant.css` | styles | n/a (css) | off-rhythm control height 30px (Design size) | polish |
 | `apps/desktop/src/renderer/styles/error.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/help.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/hero.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
@@ -224,7 +231,6 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/styles/workbar/terminal.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/workhub.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/work-board-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, Spinner, TextInput | aligned — uses Astryx (Banner, Button, EmptyState, Spinner, TextInput) | aligned |
-| `apps/desktop/src/renderer/workhub-surface.tsx` | other | Button, ChatMessage, ChatMessageBubble, ChatMessageList, Skeleton | aligned — uses Astryx (Button, ChatMessage, ChatMessageBubble, ChatMessageList, Skeleton) | aligned |
 | `packages/ui/src/astryx-chat-reasoning.tsx` | shell-chrome-or-panel | Icon | aligned — uses Astryx (Icon) | aligned |
 | `packages/ui/src/astryx-i18n.tsx` | ui-composition | InternationalizationProvider | aligned — uses Astryx (InternationalizationProvider) | aligned |
 | `packages/ui/src/attachment-image.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |

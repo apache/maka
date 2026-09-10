@@ -54,6 +54,7 @@ import { SettingsField, SettingsRow } from './settings-section';
  */
 export function SettingsExpandableRow(props: {
   label: ReactNode;
+  assistantTarget?: string;
   /** The settled value, shown while collapsed. */
   value: ReactNode;
   /** Label for the affordance that opens the editor (更改 / 设置 / 编辑).
@@ -127,6 +128,7 @@ export function SettingsExpandableRow(props: {
             {props.beforeAction}
             <Button
               ref={triggerRef}
+              data-maka-assistant-target={props.assistantTarget ? `${props.assistantTarget}.edit` : undefined}
               variant="ghost"
               size="sm"
               isDisabled={props.isDisabled}
@@ -154,6 +156,7 @@ export function SettingsExpandableRow(props: {
           <Button
             variant="primary"
             isDisabled={props.isDisabled || props.canSave === false}
+            data-maka-assistant-target={props.assistantTarget ? `${props.assistantTarget}.save` : undefined}
             clickAction={() => props.onSave()}
             label={props.saveLabel}
           />

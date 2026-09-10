@@ -53,7 +53,14 @@ export function resolveMainRendererEntry(
 export async function loadMainRenderer(
   mainWindow: MainRendererWindow,
   rendererEntry: MainRendererEntry,
+  surface?: 'workhub',
 ): Promise<void> {
+  if (surface) {
+    const url = new URL(rendererEntry.url);
+    url.searchParams.set('surface', surface);
+    await mainWindow.loadURL(url.href);
+    return;
+  }
   if (rendererEntry.useDevServer) {
     await mainWindow.loadURL(rendererEntry.url);
   } else {

@@ -25,6 +25,11 @@
 - Decision source: [Discussion #3286](https://github.com/apache/maka/discussions/3286#discussioncomment-18135855)
 - Delivery tracker: [Issue #3492](https://github.com/apache/maka/issues/3492)
 
+The one-Session ownership decision remains in force. The deterministic routing
+experiments described below are historical: the current coordination model uses
+active-Turn task actions and restricted Desktop capabilities. See the
+[current domain language](../workhub-domain-language.md) for the implemented flow.
+
 ## Context
 
 WorkHub is intended to be one persistent conversational place where a user can ask
@@ -48,7 +53,7 @@ durable conversation and execution substrate.
 The role is provisioned lazily when WorkHub first needs it and resolves to the same
 Session after Runtime Host or application restarts. The Session role representation,
 lookup, recovery, and per-Host UI resolution enforce this lifecycle contract. The
-coordination transcript and disposition semantics remain separate later work.
+coordination transcript and typed dispositions use that same Session substrate.
 
 The per-Host boundary is intentional. A Coordination Session coordinates only the
 ordinary Sessions belonging to the same Runtime Host. Switching Runtime Hosts
@@ -277,8 +282,8 @@ lets the stop reach a terminal resolution.
   replacement. Its target comes from the shared Session Resolver port, whose
   first implementation is a temporary exact-name baseline; replacing it changes
   recall only, because admission revalidates opaque identity and expected state
-  rather than any display name. Pause, resume, and pronoun-based stop controls
-  remain later work.
+  rather than any display name. Named resume uses ordinary Session continuation admission. Pause and
+  pronoun-based stop controls remain later work.
 
 Reevaluate the per-Host decision if supported workflows require one WorkHub
 conversation to coordinate ordinary Sessions on multiple Runtime Hosts, or if Host

@@ -121,6 +121,7 @@ function input(
 ): UseWorkbarControllerInput {
   return {
     available: true,
+    layoutSessionId: activeSession?.id,
     activeSession,
     projectId: activeSession?.projectId,
     projectAliases: [],
@@ -137,6 +138,20 @@ describe('useWorkbarController', () => {
     controllerRenderSnapshots = [];
     cleanupFakeDom();
     delete (globalThis as { window?: unknown }).window;
+  });
+
+  it('preserves an expansion requested before the Host-backed Session arrives', async () => {
+    const { root } = installReactRenderer();
+    const services = createFakeWorkbarServices();
+    await act(async () => renderController(root, services, {
+      ...input(undefined), layoutSessionId: 'pending',
+    }));
+    await act(async () => controller().commands.toggleRight());
+    assert.equal(controller().host.rightCollapsed, false);
+    assert.equal(controller().host.activeId, undefined);
+    await act(async () => renderController(root, services, input(session('pending'))));
+    assert.equal(controller().host.activeId, 'pending');
+    assert.equal(controller().host.rightCollapsed, false);
   });
 
   it('keeps right-panel visibility independent across Session navigation', async () => {

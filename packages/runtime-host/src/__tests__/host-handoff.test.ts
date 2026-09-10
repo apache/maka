@@ -31,6 +31,7 @@ import {
 } from '../client/host-handoff.js';
 import { decodeClientFrame, decodeHostFrame } from '../protocol/index.js';
 import { decodeHostActivitySnapshot, isHostActivityIdle } from '../protocol/host-status.js';
+import { formatHostHandoff } from '../client/host-handoff-copy.js';
 
 const idle = { connections: 0, activeOperations: 0, processUptimeSeconds: 1, residencies: [] };
 const target = {
@@ -92,6 +93,31 @@ test('compatible connection needs no handoff surface', async () => {
     (await runHostHandoff({ observe: async () => ({ kind: 'ready', value: resource(42) }) })).value,
     42,
   );
+});
+
+test('handoff copy exposes background work even with zero operations and keeps legacy counts unknown', () => {
+  const view: HostHandoffView = {
+    revision: 'test',
+    target,
+    state: 'attention',
+    reason: 'busy',
+    mayExitNaturally: false,
+    actions: ['cancel', 'interrupt'],
+    defaultAction: 'cancel',
+    activity: {
+      ...idle,
+      residencies: [{ label: 'memory-extraction', count: 2 }],
+      drainResidencies: 2,
+    },
+  };
+  for (const [locale, known, unknown] of [
+    ['en', '2 background activities', 'Background activity count unknown'],
+    ['zh-CN', '2 个后台工作', '后台工作数量未知'],
+    ['zh-TW', '2 個背景工作', '背景工作數量未知'],
+  ] as const) {
+    assert.ok(formatHostHandoff(view, locale).detail.includes(known));
+    assert.ok(formatHostHandoff({ ...view, activity: idle }, locale).detail.includes(unknown));
+  }
 });
 
 test('maintenance evidence distinguishes idle retention without guessing for legacy activity', () => {

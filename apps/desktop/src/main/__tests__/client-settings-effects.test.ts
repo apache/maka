@@ -30,6 +30,7 @@ test('applies each client settings snapshot once across local writes and file wa
   const appIcons: string[] = [];
   const effects = createClientSettingsEffects({
     settingsStore: { get: async () => current },
+    applyWorkHub: async () => undefined,
     applyKeepSystemAwake: async (enabled) => {
       keepAwake.push(enabled);
     },
@@ -69,6 +70,7 @@ test('applies a chosen app icon once, and again only when the choice changes', a
   const appIcons: string[] = [];
   const effects = createClientSettingsEffects({
     settingsStore: { get: async () => current },
+    applyWorkHub: async () => undefined,
     applyKeepSystemAwake: async () => undefined,
     applyBotSettings: async () => undefined,
     applyAppIcon: async (icon) => {
@@ -105,6 +107,7 @@ test('an OS appearance flip re-applies the icon without any setting changing', a
   const applied: string[] = [];
   const effects = createClientSettingsEffects({
     settingsStore: { get: async () => current },
+    applyWorkHub: async () => undefined,
     applyKeepSystemAwake: async () => undefined,
     applyBotSettings: async () => undefined,
     applyAppIcon: async (icon) => {
@@ -141,6 +144,7 @@ test('with one icon for both appearances a theme flip changes nothing', async ()
   const applied: string[] = [];
   const effects = createClientSettingsEffects({
     settingsStore: { get: async () => current },
+    applyWorkHub: async () => undefined,
     applyKeepSystemAwake: async () => undefined,
     applyBotSettings: async () => undefined,
     applyAppIcon: async (icon) => {
@@ -166,6 +170,7 @@ test('an explicit dark preference ignores what the OS reports', async () => {
   const applied: string[] = [];
   const effects = createClientSettingsEffects({
     settingsStore: { get: async () => current },
+    applyWorkHub: async () => undefined,
     applyKeepSystemAwake: async () => undefined,
     applyBotSettings: async () => undefined,
     applyAppIcon: async (icon) => {

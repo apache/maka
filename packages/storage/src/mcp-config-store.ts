@@ -17,8 +17,7 @@
  * under the License.
  */
 
-import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   MCP_CONFIG_VERSION,
@@ -32,7 +31,13 @@ import {
   type McpServerConfig,
   type McpStdioServerConfig,
 } from '@maka/core/mcp';
+import { writeAtomicFile } from './atomic-file-write.js';
 import { withProcessLifetimeFileUpdateLock } from './process-lifetime-file-update-lock.js';
+import { hardenDirectory } from './stable-storage.js';
+
+// Consumers reconcile an already-published write through this store's public
+// boundary; the shared atomic writer itself remains internal to storage.
+export { AtomicFileWriteCommitUnknownError } from './atomic-file-write.js';
 
 const MAX_SERVERS = 100;
 const MAX_ID_LENGTH = 128;
@@ -45,7 +50,10 @@ export interface McpConfigStore {
   /** One cross-process read-transform-write transaction. `apply` sees the
    * current on-disk config and may finish asynchronous effects that must
    * precede the commit, such as retiring credentials. The shared file lock
-   * remains held until the replacement document is durable. */
+   * remains held until the write settles. A write can fail after publication
+   * with AtomicFileWriteCommitUnknownError when durability is unconfirmed:
+   * reload with get() and reconcile consumers before considering a retry.
+   * Never blindly replay apply, whose effects may already have happened. */
   transform(
     apply: (current: McpConfigFile) => McpConfigFile | Promise<McpConfigFile>,
   ): Promise<McpConfigFile>;
@@ -195,30 +203,15 @@ class FileMcpConfigStore implements McpConfigStore {
   }
 
   private async write(config: McpConfigFile): Promise<void> {
-    const dir = dirname(this.path);
     await this.ensureDirectory();
-    const tempPath = join(dir, `.mcp-${randomUUID()}.tmp`);
-    try {
-      await writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, {
-        encoding: 'utf8',
-        mode: 0o600,
-        flag: 'wx',
-      });
-      if (process.platform !== 'win32') await chmod(tempPath, 0o600);
-      await rename(tempPath, this.path);
-      if (process.platform !== 'win32') await chmod(this.path, 0o600);
-    } finally {
-      await rm(tempPath, { force: true }).catch(() => {});
-    }
+    await writeAtomicFile(this.path, `${JSON.stringify(config, null, 2)}\n`, {
+      fileMode: 0o600,
+    });
   }
 
   private ensureDirectory(): Promise<void> {
     if (this.directoryReady) return this.directoryReady;
-    const dir = dirname(this.path);
-    const ready = (async () => {
-      await mkdir(dir, { recursive: true, mode: 0o700 });
-      if (process.platform !== 'win32') await chmod(dir, 0o700);
-    })();
+    const ready = hardenDirectory(dirname(this.path), 0o700);
     this.directoryReady = ready;
     void ready.catch(() => {
       if (this.directoryReady === ready) this.directoryReady = undefined;

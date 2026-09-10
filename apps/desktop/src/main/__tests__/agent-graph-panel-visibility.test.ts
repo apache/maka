@@ -60,7 +60,6 @@ describe('shouldShowAgentGraphPanel', () => {
       shouldShowAgentGraphPanel({
         enabled: true,
         hasGraphActivity: true,
-        error: false,
         sessionId: 'session-1',
         graphId: 'graph-1',
         status: 'completed',
@@ -75,7 +74,6 @@ describe('shouldShowAgentGraphPanel', () => {
       shouldShowAgentGraphPanel({
         enabled: true,
         hasGraphActivity: true,
-        error: false,
         sessionId: 'session-1',
         graphId: 'graph-2',
         status: 'active',
@@ -90,7 +88,6 @@ describe('shouldShowAgentGraphPanel', () => {
       shouldShowAgentGraphPanel({
         enabled: true,
         hasGraphActivity: true,
-        error: false,
         sessionId: 'session-1',
         graphId: 'graph-1',
         status: 'active',
@@ -105,7 +102,6 @@ describe('shouldShowAgentGraphPanel', () => {
       shouldShowAgentGraphPanel({
         enabled: true,
         hasGraphActivity: true,
-        error: false,
         sessionId: 'session-2',
         graphId: 'graph-1',
         status: 'completed',
@@ -120,7 +116,6 @@ describe('shouldShowAgentGraphPanel', () => {
       shouldShowAgentGraphPanel({
         enabled: false,
         hasGraphActivity: false,
-        error: false,
         sessionId: 'session-1',
         dismissedBySession: {},
       }),
@@ -133,7 +128,6 @@ describe('shouldShowAgentGraphPanel', () => {
       shouldShowAgentGraphPanel({
         enabled: true,
         hasGraphActivity: false,
-        error: false,
         sessionId: 'session-1',
         dismissedBySession: {},
       }),

@@ -975,22 +975,24 @@ export class DesktopRuntimeHostClient {
     return this.request("workhub.coordination.resolve", {});
   }
 
+  async getWorkHubSession(): Promise<SessionCatalogProjection> {
+    return requireSessionProjection(await this.request('workhub.coordination.query', {}));
+  }
+
+  answerWorkHubCoordination(input: OperationInput<'workhub.coordination.answer'>) {
+    return this.request('workhub.coordination.answer', input);
+  }
+
+  configureWorkHubModel(input: OperationInput<'workhub.coordination.configureModel'>) {
+    return this.request('workhub.coordination.configureModel', input);
+  }
+
   listWorkHubCoordinationCandidates() {
     return this.request("workhub.coordination.candidates", {});
   }
 
-  actWorkHubCoordination(
-    input: OperationInput<"workhub.coordination.act">,
-  ): Promise<OperationOutput<"workhub.coordination.act">> {
-    return this.request("workhub.coordination.act", input);
-  }
-
-
-
-  recordWorkHubCoordination(
-    input: OperationInput<"workhub.coordination.record">,
-  ): Promise<OperationOutput<"workhub.coordination.record">> {
-    return this.request("workhub.coordination.record", input);
+  actWorkHubCoordinationFromTurn(input: OperationInput<'workhub.coordination.actFromTurn'>) {
+    return this.request('workhub.coordination.actFromTurn', input);
   }
 
   listExternalSessionSources(): Promise<ExternalSessionSourceQueryResult> {
@@ -1329,11 +1331,14 @@ export class DesktopRuntimeHostClient {
 
   prepareHostRetirement(
     mode: RuntimeHostRetirementMode,
+    options?: { readonly timeoutMs?: number; readonly allowCooperativeHandoff?: boolean },
   ): Promise<RuntimeHostRetirementPreparation> {
     return prepareConnectedRuntimeHostRetirement(
       this.connection,
       mode,
-      RUNTIME_HOST_RETIREMENT_TIMEOUT_MS,
+      options?.timeoutMs ?? RUNTIME_HOST_RETIREMENT_TIMEOUT_MS,
+      undefined,
+      options,
     );
   }
 

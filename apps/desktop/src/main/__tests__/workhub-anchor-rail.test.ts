@@ -21,21 +21,39 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { WorkHubSessionSummary } from "../../renderer/workhub-controller.js";
+import type { WorkHubAnchorSession } from "../../renderer/features/workhub/index.js";
 import {
   deriveWorkHubAnchors,
   matchesWorkHubFilter,
   MAX_WORKHUB_ANCHORS,
   WorkHubNavigationRail,
+  workHubLinkedWork,
 } from "../../renderer/features/workhub/index.js";
 import { getWorkHubRailCopy } from "../../renderer/locales/workhub-copy.js";
+import type { ToolCallMessage, ToolResultMessage } from '@maka/core/session';
+
+test('durable task results restore Host-scoped work links without treating failed or unrelated tools as delegations', () => {
+  const target = JSON.stringify(['host-a', 'task-a']);
+  const call: ToolCallMessage = { type: 'tool_call', id: 'task-call', turnId: 'turn', ts: 1, toolName: 'mcp__desktop_workhub__tasks', args: {} };
+  const result: ToolResultMessage = { type: 'tool_result', id: 'task-result', turnId: 'turn', ts: 2, toolUseId: call.id, isError: false, content: { kind: 'json', value: { disposition: 'create_new', targetSessionKey: target } } };
+  const expected = [{ id: result.id, coordinationTurnId: call.turnId, targetSessionId: target, targetSessionName: 'Renamed task' }];
+  assert.deepEqual(workHubLinkedWork([call, result], [{ id: target, name: 'Renamed task' }], 'Work'), expected);
+  assert.deepEqual(workHubLinkedWork([call, { ...result, content: { kind: 'json', value: { content: [], structuredContent: { disposition: 'create_new', targetSessionKey: target } } } }], [{ id: target, name: 'Renamed task' }], 'Work'), expected);
+  assert.deepEqual(workHubLinkedWork([call, { ...result, content: { kind: 'text', text: JSON.stringify({ disposition: 'delegate_existing', targetSessionKey: target }) } }], [], 'Work'), [{ ...expected[0], targetSessionName: 'Work' }]);
+  assert.deepEqual(workHubLinkedWork([
+    call,
+    { ...result, isError: true },
+    { ...result, toolUseId: 'other-tool' },
+    { ...result, content: { kind: 'json', value: { disposition: 'stop_work', targetSessionKey: target } } },
+  ], [], 'Work'), []);
+});
 
 function session(
   sessionId: string,
-  state: WorkHubSessionSummary["state"],
+  state: WorkHubAnchorSession["state"],
   updatedAt: number,
   archived = false,
-): WorkHubSessionSummary {
+): WorkHubAnchorSession {
   return {
     target: { sessionId },
     projectName: "Maka",

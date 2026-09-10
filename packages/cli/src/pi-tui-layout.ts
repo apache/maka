@@ -168,11 +168,13 @@ export class MakaPiLayoutComponent extends Container {
     private readonly editor: ViewportAwareEditor,
     private readonly statusLine: Component,
     private readonly terminal: Terminal,
+    private readonly todoIndicator?: Component,
   ) {
     super();
     this.addChild(transcript);
     this.addChild(activityStrip);
     this.addChild(pendingQueue);
+    if (todoIndicator) this.addChild(todoIndicator);
     this.addChild(editor);
     this.addChild(statusLine);
   }
@@ -182,18 +184,32 @@ export class MakaPiLayoutComponent extends Container {
     const activityLines = this.activityStrip.render(width);
     const allPendingLines = this.pendingQueue.render(width);
     const statusLines = this.statusLine.render(width);
+    // Supplementary information must not steal the composer's minimum space.
+    const todoLines =
+      this.terminal.rows >
+      activityLines.length +
+        allPendingLines.length +
+        statusLines.length +
+        this.editor.minimumViewportRows()
+        ? (this.todoIndicator?.render(width) ?? []).slice(0, 1)
+        : [];
     const pendingRowsAvailable = this.editor.isShowingAutocomplete()
       ? Math.max(
           0,
           this.terminal.rows -
             activityLines.length -
             statusLines.length -
+            todoLines.length -
             this.editor.minimumViewportRows(),
         )
       : allPendingLines.length;
     const pendingLines = fitPendingQueueLines(allPendingLines, pendingRowsAvailable);
     this.editor.setViewportRows(
-      this.terminal.rows - activityLines.length - pendingLines.length - statusLines.length,
+      this.terminal.rows -
+        activityLines.length -
+        pendingLines.length -
+        statusLines.length -
+        todoLines.length,
     );
     const editorLines = this.editor.render(width);
     // #1064: when the activity strip is showing (a turn is running), separate
@@ -207,7 +223,11 @@ export class MakaPiLayoutComponent extends Container {
       activityActive && lastTranscriptLine !== undefined && lastTranscriptLine.length > 0;
     const paddedTranscript = needGap ? [...transcriptLines, ''] : transcriptLines;
     const chromeRows =
-      activityLines.length + pendingLines.length + editorLines.length + statusLines.length;
+      activityLines.length +
+      pendingLines.length +
+      todoLines.length +
+      editorLines.length +
+      statusLines.length;
     const viewportRows = Math.max(0, this.terminal.rows - chromeRows);
     const paddingRows = Math.max(0, viewportRows - paddedTranscript.length);
     const lines = [
@@ -215,6 +235,7 @@ export class MakaPiLayoutComponent extends Container {
       ...Array.from({ length: paddingRows }, () => ''),
       ...activityLines,
       ...pendingLines,
+      ...todoLines,
       ...editorLines,
       ...statusLines,
     ];

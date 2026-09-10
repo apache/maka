@@ -28,6 +28,7 @@ import {
   type SessionSummary,
   type StoredMessage,
 } from '@maka/core/session';
+import { projectSessionTodoItemsForDisplay, type SessionTodoItem } from '@maka/core/session-todo';
 import { markPersisted } from '@maka/core/persisted-value';
 import {
   type ActiveInteractionRequestEvent,
@@ -74,6 +75,7 @@ import {
   type GoalControlAction,
   type GoalProjection,
   type SessionContinuitySnapshot,
+  type SessionDomainChangedFrame,
   type TurnResumeParkReason,
 } from '@maka/runtime-host/protocol';
 import { RuntimeHostSessionChannel } from './runtime-host-session-channel.js';
@@ -230,6 +232,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   #transcriptRefreshSequence = 0;
   readonly #startedTurnListeners = new Set<(turn: MakaAttachedSessionTurn) => void>();
   readonly #goalListeners = new Set<(goal: GoalProjection | null) => void>();
+  readonly #todoChangeListeners = new Set<(sessionId: string) => void>();
   readonly #pendingInteractionListeners = new Set<(pending: InteractionPendingSnapshot) => void>();
   readonly #claimedTurnIds = new Set<string>();
   readonly #shellRunListeners = new Set<(update: ShellRunUpdate) => void>();
@@ -560,6 +563,23 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   ): Promise<OperationOutput<'turn.message.query'>> {
     const sessionId = await this.#ensureSession();
     return this.#request('turn.message.query', { sessionId, messageIds });
+  }
+
+  async queryTodo(sessionId: string): Promise<{ sessionId: string; items: SessionTodoItem[] }> {
+    const currentSessionId = this.#requireSession('query Todo');
+    if (sessionId !== currentSessionId) {
+      throw new Error(`Cannot query Todo for a non-current Session: ${sessionId}`);
+    }
+    const sessionGeneration = this.#sessionGeneration;
+    const result = await this.#request('session.todo.query', { sessionId });
+    this.#assertCurrentSession(sessionId, sessionGeneration);
+    if (result.sessionId !== sessionId) {
+      throw new Error(`Runtime Host returned Todo for an unexpected Session: ${result.sessionId}`);
+    }
+    return {
+      sessionId,
+      items: projectSessionTodoItemsForDisplay(result.items),
+    };
   }
 
   async retractQueued(): Promise<MakaRetractedMessages> {
@@ -1103,6 +1123,11 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return () => this.#goalListeners.delete(listener);
   }
 
+  subscribeTodoChanges(listener: (sessionId: string) => void): () => void {
+    this.#todoChangeListeners.add(listener);
+    return () => this.#todoChangeListeners.delete(listener);
+  }
+
   async controlGoal(action: GoalControlAction): Promise<GoalProjection | null> {
     const sessionId = this.#sessionId;
     if (!sessionId) return null;
@@ -1538,6 +1563,8 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       onTurnStarted: (turn) => this.#publishStartedTurn(turn, sessionGeneration),
       onRuntimeResourceChanged: (sourceSessionId, ref) =>
         this.#publishRuntimeResource(sourceSessionId, ref),
+      onSessionDomainChanged: (frame) =>
+        this.#publishSessionDomainChanged(frame, sessionId, sessionGeneration),
       onInteractionPending: (pending) => {
         for (const listener of this.#pendingInteractionListeners) listener(pending);
       },
@@ -1558,8 +1585,32 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         if (this.#sessionId !== sessionId || this.#sessionGeneration !== sessionGeneration) return;
         for (const listener of this.#goalListeners) listener(goal);
       },
-      onRecovered: () => this.#refreshRuntimeResources(sessionId),
+      onRecovered: () => {
+        this.#refreshRuntimeResources(sessionId);
+        this.#publishTodoChanged(sessionId, sessionGeneration);
+      },
     });
+  }
+
+  #publishSessionDomainChanged(
+    frame: SessionDomainChangedFrame,
+    sessionId: string,
+    sessionGeneration: number,
+  ): void {
+    if (
+      frame.domain !== 'todo' ||
+      frame.sessionId !== sessionId ||
+      this.#sessionId !== sessionId ||
+      this.#sessionGeneration !== sessionGeneration
+    ) {
+      return;
+    }
+    this.#publishTodoChanged(sessionId, sessionGeneration);
+  }
+
+  #publishTodoChanged(sessionId: string, sessionGeneration: number): void {
+    if (this.#sessionId !== sessionId || this.#sessionGeneration !== sessionGeneration) return;
+    for (const listener of this.#todoChangeListeners) listener(sessionId);
   }
 
   #publishRuntimeResource(sourceSessionId: string, ref: string): void {

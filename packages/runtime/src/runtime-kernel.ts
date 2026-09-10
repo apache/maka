@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { WorkHubActionReceipt } from '@maka/core/workhub-action-result';
 import type { AgentRunStore } from '@maka/core/agent-run';
 import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
@@ -170,6 +171,12 @@ export interface RuntimeKernelLike {
   resumeContinuation?(
     continuation: RuntimeContinuation,
     options?: ResumeContinuationOptions,
+  ): AsyncIterable<SessionEvent>;
+  runCoordinationOperation(
+    sessionId: string,
+    input: UserMessageInput,
+    options: TurnStartOptions,
+    execute: () => Promise<WorkHubActionReceipt>,
   ): AsyncIterable<SessionEvent>;
   compactSession(sessionId: string, input?: CompactSessionInput): AsyncIterable<SessionEvent>;
   preflightContextCompaction(sessionId: string): Promise<void>;
@@ -347,6 +354,7 @@ interface PendingExecutionClaim {
   rejectSettled(error: unknown): void;
   phase: 'pending' | 'attached' | 'reserved' | 'released' | 'failed';
   run?: AgentRun;
+  hostOperation?: true;
   backendPreparation?: PreparedBackendActivation;
   stopIntent?: SessionStopIntent;
   finalization?: ExecutionClaimOutcome;
@@ -954,6 +962,119 @@ export class RuntimeKernel implements RuntimeKernelLike {
       () => this.revalidateContinuationSafety(continuation),
       inheritedSandboxBoundaryDenied,
     );
+  }
+
+  /** Host coordination uses the same Run owner and terminal authority without a provider send. */
+  async *runCoordinationOperation(
+    sessionId: string,
+    input: UserMessageInput,
+    options: TurnStartOptions,
+    execute: () => Promise<WorkHubActionReceipt>,
+  ): AsyncIterable<SessionEvent> {
+    const execution = this.takeExecutionClaim(sessionId);
+    execution.hostOperation = true;
+    try {
+      await this.enterExecutionClaim(execution);
+      const header = await this.deps.store.readHeader(sessionId);
+      const run = new AgentRun({
+        sessionId,
+        header,
+        userInput: input,
+        runId: options.runId,
+        userMessageId: options.userMessageId,
+        durability: 'required',
+        runStore: this.deps.runStore,
+        runtimeEventStore: this.deps.runtimeEventStore,
+        newId: this.deps.newId,
+        now: this.deps.now,
+        effectiveOrchestration: resolveEffectiveOrchestration('default', undefined),
+        hooks: {
+          reserveRun: async (id, nextHeader, activeRun) => {
+            const active = await this.reserveParentRun(id, nextHeader, activeRun, execution);
+            this.reserveExecutionClaim(execution, active, activeRun);
+            return active;
+          },
+          unregisterRun: (active, activeRun) => this.unregisterParentRun(active, activeRun),
+          updateHeader: (id, patch) => this.updateHeader(id, patch),
+          updateStatus: (id, status, reason, ts) => this.updateStatus(id, status, reason, ts),
+          ...this.messageProjectionHook(),
+        },
+      });
+      this.attachExecutionClaim(execution, run);
+      const owners = this.createRunOwnerScope(run, execution);
+      try {
+        owners.bindMessage(this.deps.messageAuthority, {
+          sessionId,
+          turnId: input.turnId,
+          runId: run.runId,
+        });
+        // Keep the execution claim attached until finalization. Stop/drain can
+        // therefore cancel and await this Run without a provider generation.
+        await run.beginCoordination();
+        await options.onRunStarted?.(run.runId, header);
+      } catch (error) {
+        await this.finalizeFailedRunStart(owners, run, execution, error);
+        return;
+      }
+      try {
+        if (run.isStopped()) return;
+        const executed = await execute();
+        const receipt: WorkHubActionReceipt = {
+          ...executed,
+          result:
+            executed.result.disposition === 'clarify'
+              ? { ...executed.result, coordinationTurnId: input.turnId }
+              : executed.result,
+        };
+        const receiptEvent: RuntimeEvent = {
+          id: this.deps.newId(),
+          sessionId,
+          turnId: input.turnId,
+          runId: run.runId,
+          invocationId: run.runId,
+          ts: this.deps.now(),
+          partial: false,
+          role: 'system',
+          author: 'host',
+          modelVisibility: 'hidden',
+          actions: { coordination: receipt },
+        };
+        await run.recordRuntimeEvents([receiptEvent], { requireDurableWrite: true });
+        if (run.isStopped()) return;
+        const complete: CompleteEvent = {
+          type: 'complete',
+          id: this.deps.newId(),
+          turnId: input.turnId,
+          ts: this.deps.now(),
+          stopReason: 'end_turn',
+        };
+        await run.acceptMappedEvent(
+          complete,
+          mapSessionEventToRuntimeEvent(
+            complete,
+            this.runtimeEventMapContext({
+              sessionId,
+              invocationId: run.runId,
+              runId: run.runId,
+              turnId: input.turnId,
+            }),
+          ),
+          { requireTerminalWrite: true },
+        );
+        yield complete;
+      } catch (error) {
+        await run.recordFailure(error);
+        throw error;
+      } finally {
+        const failures = new FailureCollector();
+        await failures.capture(() => owners.finalize());
+        await failures.capture(() => owners.releaseMessage());
+        failures.throwIfAny(`Coordination cleanup failed for ${run.runId}`);
+      }
+    } finally {
+      this.releaseExecutionClaim(execution);
+      await this.flushBackendInvalidation(sessionId);
+    }
   }
 
   async *compactSession(
@@ -2066,25 +2187,29 @@ export class RuntimeKernel implements RuntimeKernelLike {
     );
   }
 
+  private activeRunsFor(sessionId: string): AgentRun[] {
+    const runs = new Set<AgentRun>();
+    for (const active of this.backendGenerationsFor(sessionId)) {
+      for (const run of active.activeRuns.values()) runs.add(run);
+    }
+    for (const claim of this.executionClaims.get(sessionId) ?? []) {
+      if (claim.hostOperation && claim.run) runs.add(claim.run);
+    }
+    return [...runs];
+  }
+
   hasActiveRuns(sessionId: string): boolean {
-    return this.backendGenerationsFor(sessionId).some((active) => active.activeRuns.size > 0);
+    return this.activeRunsFor(sessionId).length > 0;
   }
 
   runningTurnIds(sessionId: string): string[] {
-    const turnIds: string[] = [];
-    for (const active of this.backendGenerationsFor(sessionId)) {
-      for (const run of active.activeRuns.values()) {
-        if (!turnIds.includes(run.turnId)) turnIds.push(run.turnId);
-      }
-    }
-    return turnIds;
+    return [...new Set(this.activeRunsFor(sessionId).map((run) => run.turnId))];
   }
 
   hasActiveRun(sessionId: string, runId: string, turnId?: string): boolean {
-    return this.backendGenerationsFor(sessionId).some((active) => {
-      const run = active.activeRuns.get(runId);
-      return run !== undefined && (turnId === undefined || run.turnId === turnId);
-    });
+    return this.activeRunsFor(sessionId).some(
+      (run) => run.runId === runId && (turnId === undefined || run.turnId === turnId),
+    );
   }
 
   requestRunHandoff(
