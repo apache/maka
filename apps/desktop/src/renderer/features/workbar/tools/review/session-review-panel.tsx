@@ -28,10 +28,10 @@ import { Skeleton } from '@astryxdesign/core/Skeleton';
 import { Text } from '@astryxdesign/core/Text';
 import { redactSecrets as displayRedactSecrets } from '@maka/core/display-redaction';
 import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
-import { type GitReviewReadResult } from '@maka/core/git-review';
+import { type GitReviewBranchContext, type GitReviewReadResult } from '@maka/core/git-review';
 import { DiffCodePreview, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, ArrowRight, GitBranch } from '@maka/ui/icons';
-import { getDesktopConversationCopy } from '../../../../locales/conversation-copy';
+import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
 import { useWorkbarServices } from '../../services-context.js';
 import {
   persistSessionReviewBaseBranch,
@@ -64,6 +64,7 @@ export function SessionReviewPanel(props: {
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).reviewPanel;
   const [gitResult, setGitResult] = useState<GitReviewReadResult | null>(null);
+  const [branches, setBranches] = useState<GitReviewBranchContext | null>(null);
   const [loading, setLoading] = useState(false);
   const [visibleFileCount, setVisibleFileCount] = useState(REVIEW_FILE_PAGE_SIZE);
   const [error, setError] = useState<string | null>(null);
@@ -76,6 +77,8 @@ export function SessionReviewPanel(props: {
   const baseBranchRef = useRef(baseBranch);
 
   useEffect(() => {
+    setBranches(null);
+    setGitResult(null);
     const stored = readSessionReviewBaseBranch(props.sessionId);
     baseBranchRef.current = stored;
     setBaseBranch(stored);
@@ -106,6 +109,13 @@ export function SessionReviewPanel(props: {
         persistSessionReviewBaseBranch(props.sessionId, null);
         nextGit = await readReview(null);
         if (revision !== revisionRef.current) return;
+      }
+      const nextBranches = nextGit.ok ? nextGit.snapshot : nextGit.branches;
+      if (nextBranches) {
+        setBranches({
+          currentBranch: nextBranches.currentBranch,
+          baseBranchOptions: nextBranches.baseBranchOptions,
+        });
       }
       if (nextGit.ok) {
         const adopted = resolveAdoptedBaseBranch(
@@ -204,30 +214,29 @@ export function SessionReviewPanel(props: {
       aria-busy={loading || undefined}
     >
       <VStack gap={3} align="stretch" width="100%">
-        {/* Rendered independently of the file list: an empty diff is exactly
-            when the base branch is worth changing. */}
-        {gitSnapshot && gitSnapshot.baseBranchOptions.length > 0 ? (
+        {/* Keep branch selection available when computing the diff fails. */}
+        {branches && branches.baseBranchOptions.length > 0 ? (
           <HStack
             gap={2}
             align="center"
             width="100%"
             className="maka-session-review-branch-row"
           >
-            {gitSnapshot.currentBranch ? (
+            {branches.currentBranch ? (
               <>
                 <Text
                   type="supporting"
                   maxLines={1}
                   className="maka-session-review-current-branch"
                 >
-                  {gitSnapshot.currentBranch}
+                  {branches.currentBranch}
                 </Text>
                 <ArrowRight size={ICON_SIZE.control} aria-hidden />
               </>
             ) : null}
             <SessionReviewBaseBranchPicker
               baseBranch={baseBranch}
-              baseBranchOptions={gitSnapshot.baseBranchOptions}
+              baseBranchOptions={branches.baseBranchOptions}
               label={copy.baseBranchLabel}
               onSelect={selectBaseBranch}
             />
