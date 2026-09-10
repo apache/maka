@@ -43,9 +43,9 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
   assert.ok(owner);
   if (!owner) return;
 
+  const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+  const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
   try {
-    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-    const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
       llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
@@ -225,8 +225,9 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
     await recovered.prepareRecovery();
     assert.equal(recovered.manager.get(session.id)?.condition, 'A second Host-epoch Goal');
     await recovered.close();
-    await goalStore.close();
   } finally {
+    await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
@@ -313,6 +314,7 @@ test('session retirement forgets a terminal Goal without recreating deleted auth
     assert.deepEqual(projectionChanges, [session.id]);
   } finally {
     await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
@@ -435,6 +437,7 @@ test('restart settles the durable current Goal execution through Hosted Executio
     assert.equal(drainRequested, false);
   } finally {
     await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
@@ -522,6 +525,7 @@ test('restart replaces a stale current execution with the current durable Goal i
     await coordinator.close();
   } finally {
     await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
@@ -669,6 +673,7 @@ test('goal.arm creates one Goal per Session and refuses a second while it is unf
     await coordinator.close();
   } finally {
     await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
@@ -771,6 +776,7 @@ test('a Goal armed but never carried by a Turn does not start itself after a res
     await restarted.close();
   } finally {
     await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
@@ -917,6 +923,7 @@ test('resuming an armed Goal drives it, and a restart puts that drive back', asy
     await restarted.close();
   } finally {
     await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
@@ -998,6 +1005,7 @@ test('an arm admitted before the drain creates no Goal after it', async () => {
     await host.close();
   } finally {
     await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }

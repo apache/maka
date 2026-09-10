@@ -103,6 +103,7 @@ async function fixture(t: TestContext) {
     for (const release of releases) release();
     await host.close();
     await goalStore.close();
+    await stores.sessionStore.close?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   });
@@ -226,7 +227,6 @@ async function fixture(t: TestContext) {
     evaluations: () => evaluations,
   };
 }
-
 test('retired Goal token metadata is released only on commit and on Host close', async (t) => {
   const f = await fixture(t);
   for (let i = 0; i < 32; i++) {
