@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { GitReviewBaseBranchOption } from '@maka/core/git-review';
 import { Selector } from '@astryxdesign/core/Selector';
 
 /**
@@ -30,7 +31,7 @@ import { Selector } from '@astryxdesign/core/Selector';
  */
 export function SessionReviewBaseBranchPicker(props: {
   baseBranch: string | null;
-  baseBranchOptions: readonly string[];
+  baseBranchOptions: readonly GitReviewBaseBranchOption[];
   label: string;
   onSelect: (branch: string) => void;
 }) {

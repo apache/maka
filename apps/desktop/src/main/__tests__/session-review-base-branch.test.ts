@@ -60,7 +60,10 @@ function renderPicker(baseBranch: string | null) {
   return renderToStaticMarkup(
     createElement(SessionReviewBaseBranchPicker, {
       baseBranch,
-      baseBranchOptions: ['main', 'origin/develop'],
+      baseBranchOptions: [
+        { label: 'main', value: 'refs/heads/main' },
+        { label: 'origin/develop', value: 'refs/remotes/origin/develop' },
+      ],
       label: AUTO_SENTINEL,
       onSelect: () => undefined,
     }),
@@ -87,17 +90,20 @@ describe('session review base branch', () => {
   });
 
   it('adopts the resolved base branch only when the backend offers it', () => {
-    const options = ['main', 'origin/develop'];
+    const options = [
+      { label: 'main', value: 'refs/heads/main' },
+      { label: 'origin/develop', value: 'refs/remotes/origin/develop' },
+    ];
     assert.equal(
-      resolveAdoptedBaseBranch('origin/develop', {
-        baseBranch: 'main',
+      resolveAdoptedBaseBranch('refs/remotes/origin/develop', {
+        baseBranch: 'refs/heads/main',
         baseBranchOptions: options,
       }),
-      'origin/develop',
+      'refs/remotes/origin/develop',
     );
     assert.equal(
-      resolveAdoptedBaseBranch(null, { baseBranch: 'main', baseBranchOptions: options }),
-      'main',
+      resolveAdoptedBaseBranch(null, { baseBranch: 'refs/heads/main', baseBranchOptions: options }),
+      'refs/heads/main',
     );
     // A resolved branch the backend would reject on the next read stays unpinned.
     assert.equal(
@@ -111,6 +117,18 @@ describe('session review base branch', () => {
       resolveAdoptedBaseBranch(null, { baseBranch: null, baseBranchOptions: options }),
       null,
     );
+  });
+
+  it('persists the canonical selection when the backend migrates a legacy name', () => {
+    cleanups.push(installMemoryLocalStorage());
+    persistSessionReviewBaseBranch('legacy', 'main');
+    const adopted = resolveAdoptedBaseBranch(readSessionReviewBaseBranch('legacy'), {
+      baseBranch: 'refs/heads/main',
+      baseBranchOptions: [{ label: 'main', value: 'refs/heads/main' }],
+    });
+    assert.equal(adopted, 'refs/heads/main');
+    persistSessionReviewBaseBranch('legacy', adopted);
+    assert.equal(readSessionReviewBaseBranch('legacy'), 'refs/heads/main');
   });
 
   it('pins the branch per Session and survives corrupt storage', () => {
@@ -135,8 +153,9 @@ describe('session review base branch', () => {
   });
 
   it('shows the compared branch instead of an auto pseudo-entry', () => {
-    const trigger = renderTrigger('origin/develop');
-    assert.match(trigger, /origin\/develop/);
+    const trigger = renderTrigger('refs/remotes/origin/develop');
+    assert.match(trigger, />origin\/develop</);
+    assert.doesNotMatch(trigger, /refs\/remotes/);
     assert.doesNotMatch(trigger, new RegExp(AUTO_SENTINEL));
   });
 

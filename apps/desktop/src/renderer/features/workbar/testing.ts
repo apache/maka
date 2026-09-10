@@ -34,6 +34,7 @@ export * from './tools/artifacts/artifact-list-keyboard.js';
 export * from './tools/artifacts/artifact-visibility.js';
 export * from '../../application/contracts/session-inspector/session-inspector-panel-model.js';
 export * from './tools/review/session-review-base-branch-model.js';
+export { SessionReviewPanel } from './tools/review/session-review-panel.js';
 export { SessionReviewBaseBranchPicker } from './tools/review/session-review-base-branch-picker.js';
 export {
   compactNumberFormatter,

@@ -77,7 +77,7 @@ export function reviewBaseBranchRequestValue(
 }
 
 /**
- * Adopts the base branch the backend resolved for a request that omitted one,
+ * Adopts the canonical branch the backend resolved, including legacy names,
  * so the Session pins a real branch instead of re-resolving on every read.
  * The resolved branch must be one of the offered options: a value the backend
  * would reject on the next read is worse than staying unresolved.
@@ -86,8 +86,12 @@ export function resolveAdoptedBaseBranch(
   selection: string | null,
   snapshot: Pick<GitReviewSnapshot, 'baseBranch' | 'baseBranchOptions'>,
 ): string | null {
-  if (selection !== null) return selection;
+  if (snapshot.baseBranchOptions.some((option) => option.value === selection)) {
+    return selection;
+  }
   const resolved = snapshot.baseBranch;
   if (resolved === null) return null;
-  return snapshot.baseBranchOptions.includes(resolved) ? resolved : null;
+  return snapshot.baseBranchOptions.some((option) => option.value === resolved)
+    ? resolved
+    : null;
 }
