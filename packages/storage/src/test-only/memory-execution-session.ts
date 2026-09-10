@@ -495,7 +495,10 @@ export function createMemorySessionStore(
         const { header } = requireHeader(s, id);
         const ordinary = id !== HUB && header.role === undefined;
         const coordination = id === HUB && header.role === WORKHUB_COORDINATION_SESSION_ROLE;
-        if (!ordinary && !(roleScope === 'recoverable' && coordination))
+        if (
+          header.conversationCopy?.state === 'preparing' ||
+          (!ordinary && !(roleScope === 'recoverable' && coordination))
+        )
           throw new SessionNotFoundError(id);
         return catalog(s, id);
       }),
@@ -516,7 +519,8 @@ export function createMemorySessionStore(
           (r) =>
             !cursor ||
             r.activityAt < cursor.activityAt ||
-            (r.activityAt === cursor.activityAt && r.header.id > cursor.sessionId),
+            (r.activityAt === cursor.activityAt &&
+              compareCatalogSessionIds(r.header.id, cursor.sessionId) > 0),
         );
         return {
           kind: 'page',
@@ -1220,12 +1224,20 @@ function selectCatalog(s: MemoryState, filter: Parameters<SessionAuthorityStore[
     .filter(
       (r) =>
         r.header.role !== WORKHUB_COORDINATION_SESSION_ROLE &&
+        r.header.conversationCopy?.state !== 'preparing' &&
         (filter?.subagentParentSessionId
           ? r.header.subagentParent?.parentSessionId === filter.subagentParentSessionId
           : !r.header.subagentParent),
     )
     .map((r) => catalog(s, r.header.id))
-    .sort((x, y) => y.activityAt - x.activityAt || x.header.id.localeCompare(y.header.id));
+    .sort(
+      (x, y) => y.activityAt - x.activityAt || compareCatalogSessionIds(x.header.id, y.header.id),
+    );
+}
+function compareCatalogSessionIds(left: string, right: string): number {
+  // Session IDs are restricted to ASCII. This matches Local's SQLite BINARY
+  // order, unlike localeCompare, and must also be used to advance the cursor.
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 export function assertGraphRevision(s: MemoryState, graphId: string, expected: number): void {
   const updates = [...rows<AgentGraphScheduleUpdate>(s, 'graphUpdates').values()].filter(

@@ -59,6 +59,7 @@ import {
   SessionMetadataConflictError,
   SessionNotFoundError,
   SessionMetadataVersionConflictError,
+  type SessionCatalogPageCursor,
   type WorkHubMessageAssignmentRequest,
   type UpdateSessionConfigurationRequest,
 } from '../session-store-contract.js';
@@ -75,6 +76,159 @@ for (const backend of ['Local', 'Memory'] as const) {
     backend === 'Local'
       ? localExecutionPersistenceProvider
       : createMemoryExecutionPersistenceProvider();
+  test(
+    backend + ': catalog hides preparing copies until publication without losing recovery state',
+    async () => {
+      await withProvider(make(), async ({ sessionStore: s }, root) => {
+        const source = await s.create(sessionInput(root));
+        const requestFingerprint = `sha256:${'d'.repeat(64)}` as const;
+        const conversationCopy = {
+          kind: 'branch' as const,
+          sourceSessionId: source.id,
+          requestFingerprint,
+          state: 'preparing' as const,
+          intent: 'side_conversation' as const,
+        };
+        const created = await s.createStableSession({
+          sessionId: 'preparing-copy',
+          requestFingerprint,
+          input: {
+            ...sessionInput(root),
+            parentSessionId: source.id,
+            conversationCopy,
+          },
+        });
+        assert.equal(created.kind, 'created');
+        if (created.kind !== 'created') throw new Error('Copy was not created');
+        const target = created.record.header.id;
+        assert.deepEqual(
+          (await s.list()).map((entry) => entry.id),
+          [source.id],
+        );
+        const before = await s.listCatalogPage(undefined, undefined, 1);
+        assert.equal(before.kind, 'page');
+        if (before.kind !== 'page') throw new Error('Catalog unavailable');
+        assert.deepEqual(
+          before.records.map((entry) => entry.header.id),
+          [source.id],
+        );
+        assert.equal(before.hasMore, false);
+        for (const scope of [undefined, 'ordinary', 'recoverable'] as const) {
+          await assert.rejects(s.readCatalogRecord(target, scope), SessionNotFoundError);
+        }
+        assert.deepEqual(
+          (await s.readHeaderRecordSnapshot(target)).header.conversationCopy,
+          conversationCopy,
+        );
+        for (const headers of [await s.listHeaders(), await s.listForRecovery()]) {
+          assert.ok(headers.some((header) => header.id === target));
+        }
+        // A failed publication must not make the staged copy discoverable.
+        await assert.rejects(
+          s.updateHeaderVersioned(
+            target,
+            {
+              conversationCopy: { ...conversationCopy, state: 'committed' },
+            },
+            created.record.revision - 1,
+          ),
+          SessionMetadataVersionConflictError,
+        );
+        assert.deepEqual(
+          (await s.list()).map((entry) => entry.id),
+          [source.id],
+        );
+        await s.updateHeaderVersioned(
+          target,
+          {
+            conversationCopy: { ...conversationCopy, state: 'committed' },
+          },
+          created.record.revision,
+        );
+        assert.deepEqual(
+          new Set((await s.list()).map((entry) => entry.id)),
+          new Set([source.id, target]),
+        );
+        const after = await s.listCatalogPage(undefined, undefined, 10);
+        assert.equal(after.kind, 'page');
+        if (after.kind !== 'page') throw new Error('Catalog unavailable');
+        assert.deepEqual(
+          new Set(after.records.map((entry) => entry.header.id)),
+          new Set([source.id, target]),
+        );
+        assert.equal(after.hasMore, false);
+        assert.notEqual(after.revision, before.revision);
+        assert.equal(
+          (await s.listCatalogPage(undefined, undefined, 1, before.revision)).kind,
+          'revision_changed',
+        );
+        for (const scope of [undefined, 'ordinary', 'recoverable'] as const) {
+          assert.equal(
+            (await s.readCatalogRecord(target, scope)).header.conversationCopy?.state,
+            'committed',
+          );
+        }
+      });
+    },
+  );
+  test(
+    backend + ': catalog pagination visits mixed-case tied IDs exactly once in Local order',
+    async () => {
+      await withProvider(make(), async ({ sessionStore: s }, root) => {
+        // Deliberately neither insertion order nor locale order. Session IDs are
+        // ASCII; Local's BINARY tie-breaker orders punctuation and case by code.
+        const ids = ['b', 'a', '_', 'B', 'A', 'a_', 'a0', '-', 'a-'];
+        for (const id of [...ids, 'newer', 'older']) {
+          const created = await s.createStableSession({
+            sessionId: id,
+            requestFingerprint: `sha256:${'e'.repeat(64)}`,
+            input: sessionInput(root),
+          });
+          assert.equal(created.kind, 'created');
+          await s.updateHeader(id, {
+            createdAt: 50,
+            lastMessageAt: id === 'newer' ? 200 : id === 'older' ? 50 : 100,
+          });
+        }
+        const expected = ['newer', '-', 'A', 'B', '_', 'a', 'a-', 'a0', 'a_', 'b', 'older'];
+        for (const limit of [1, 2, 3, expected.length, expected.length + 1]) {
+          const visited: string[] = [];
+          let cursor: SessionCatalogPageCursor | undefined;
+          let revision: `sha256:${string}` | undefined;
+          for (let pageIndex = 0; ; pageIndex++) {
+            assert.ok(pageIndex <= expected.length, 'Pagination did not converge');
+            const page = await s.listCatalogPage(undefined, cursor, limit, revision);
+            assert.equal(page.kind, 'page');
+            if (page.kind !== 'page') throw new Error('Unchanged catalog revision changed');
+            revision ??= page.revision;
+            assert.equal(page.revision, revision);
+            assert.ok(page.records.length <= limit);
+            for (const record of page.records) {
+              assert.ok(
+                !visited.includes(record.header.id),
+                'Repeated Session: ' + record.header.id,
+              );
+              visited.push(record.header.id);
+            }
+            const last = page.records.at(-1);
+            if (last) cursor = { activityAt: last.activityAt, sessionId: last.header.id };
+            if (!page.hasMore) break;
+            assert.ok(last, 'Nonterminal page must advance');
+          }
+          assert.deepEqual(visited, expected, `Complete traversal with page size ${limit}`);
+          const empty = await s.listCatalogPage(undefined, cursor, limit, revision);
+          assert.equal(empty.kind, 'page');
+          if (empty.kind !== 'page') throw new Error('Catalog revision changed');
+          assert.deepEqual(empty.records, []);
+          assert.equal(empty.hasMore, false);
+        }
+        assert.deepEqual(
+          (await s.list()).map((entry) => entry.id),
+          expected,
+        );
+      });
+    },
+  );
   test(
     backend + ': catalog reads explicitly opt into the recoverable coordination role',
     async () => {
