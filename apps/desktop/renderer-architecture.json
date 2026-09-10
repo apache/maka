@@ -34,8 +34,6 @@
     "src/renderer/chat-message-surface.tsx",
     "src/renderer/chat-recovery-notice.tsx",
     "src/renderer/command-palette-commands.ts",
-    "src/renderer/command-palette-types.ts",
-    "src/renderer/command-palette.tsx",
     "src/renderer/composer-attachments.ts",
     "src/renderer/composer-defaults.ts",
     "src/renderer/composer-mentions.tsx",
@@ -53,7 +51,6 @@
     "src/renderer/error-boundary.tsx",
     "src/renderer/follow-up-submit-routing.ts",
     "src/renderer/interrupted-resume.ts",
-    "src/renderer/keyboard-help.tsx",
     "src/renderer/live-content-seed.ts",
     "src/renderer/live-turn-reconciler.tsx",
     "src/renderer/live-turn-snapshot.ts",
@@ -229,14 +226,12 @@
     "src/renderer/use-new-task-choice.ts",
     "src/renderer/use-onboarding-snapshot.ts",
     "src/renderer/use-project-context.ts",
-    "src/renderer/use-settings-modal.ts",
     "src/renderer/use-shell-appearance.ts",
     "src/renderer/use-shell-chat-model.ts",
     "src/renderer/use-shell-connections.ts",
     "src/renderer/use-shell-live-turn.ts",
     "src/renderer/use-shell-memory-pill.ts",
     "src/renderer/use-shell-resume.ts",
-    "src/renderer/use-shell-search.ts",
     "src/renderer/use-stable-actions.ts",
     "src/renderer/use-system-ui-locale.ts",
     "src/renderer/use-task-submission-readiness.ts",
@@ -293,6 +288,13 @@
       "symbol": "useModuleHubController",
       "owner": "src/renderer/features/module-hub/ui/module-hub-provider.tsx",
       "ownerSymbol": "ModuleHubProvider",
+      "count": 1
+    },
+    {
+      "implementation": "src/renderer/features/overlays/controller/use-overlays-controller.ts",
+      "symbol": "useOverlaysController",
+      "owner": "src/renderer/features/overlays/ui/overlays-root.tsx",
+      "ownerSymbol": "OverlaysRoot",
       "count": 1
     },
     {
@@ -447,7 +449,7 @@
           "./theme": 1
         },
         "importSpecifiers": 1,
-        "nonTriviaTokens": 642
+        "nonTriviaTokens": 637
       },
       "src/renderer/app-shell-effects.ts": {
         "importDeclarations": 11,
@@ -503,7 +505,7 @@
         "nonTriviaTokens": 3816
       },
       "src/renderer/app-shell-overlays.tsx": {
-        "importDeclarations": 7,
+        "importDeclarations": 5,
         "bridgePaths": {},
         "environmentCapabilities": {
           "window": 2,
@@ -522,8 +524,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./app-shell-command-actions": 1,
-          "./command-palette": 1,
-          "./keyboard-help": 1,
+          "./features/overlays/index.js": 1,
           "./locales/shell-remaining-copy.js": 1,
           "./settings/settings-modal": 1,
           "@astryxdesign/core/hooks": 1,
@@ -531,8 +532,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 11,
-        "nonTriviaTokens": 977
+        "importSpecifiers": 8,
+        "nonTriviaTokens": 881
       },
       "src/renderer/app-shell-project-actions.ts": {
         "importDeclarations": 4,
@@ -710,7 +711,7 @@
         "nonTriviaTokens": 1273
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 70,
+        "importDeclarations": 66,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -752,10 +753,8 @@
           "useAppShellSessionUiReads": 1,
           "useAppShellSessionWorkspace": 1,
           "useAppShellTurnPresentation": 1,
-          "useCommandPalette": 1,
           "useComposerAttachments": 1,
           "useEffect": 7,
-          "useKeyboardHelp": 1,
           "useLayoutEffect": 2,
           "useNewTaskChoice": 1,
           "useOnboardingSnapshot": 1,
@@ -765,7 +764,6 @@
           "useSessionEventHealthPolling": 1,
           "useSessionNavigationReads": 1,
           "useSessionSettingIntent": 1,
-          "useSettingsModal": 1,
           "useShellAppearance": 1,
           "useShellChatModel": 1,
           "useShellConnections": 3,
@@ -773,7 +771,6 @@
           "useShellMemoryPill": 1,
           "useShellResume": 1,
           "useShellRunUpdates": 1,
-          "useShellSearch": 1,
           "useStableActions": 6,
           "useState": 14,
           "useSystemUiLocale": 1,
@@ -803,7 +800,6 @@
           "./app-shell-turn-view-model": 1,
           "./chat-composer-region": 1,
           "./chat-message-surface": 1,
-          "./command-palette": 1,
           "./composer-defaults": 1,
           "./composer-mentions": 1,
           "./custom-pet-companion": 1,
@@ -817,6 +813,7 @@
           "./features/conversation/index.js": 1,
           "./features/goals": 1,
           "./features/module-hub": 1,
+          "./features/overlays/index.js": 1,
           "./features/session-collaboration": 1,
           "./features/session-navigation": 1,
           "./features/session-settings": 1,
@@ -824,7 +821,6 @@
           "./features/workbar": 1,
           "./features/workhub": 1,
           "./follow-up-submit-routing": 1,
-          "./keyboard-help": 1,
           "./live-content-seed": 1,
           "./live-turn-reconciler": 1,
           "./locales/conversation-copy": 1,
@@ -849,14 +845,12 @@
           "./use-new-task-choice": 1,
           "./use-onboarding-snapshot": 1,
           "./use-project-context": 1,
-          "./use-settings-modal": 1,
           "./use-shell-appearance": 1,
           "./use-shell-chat-model": 1,
           "./use-shell-connections": 1,
           "./use-shell-live-turn": 1,
           "./use-shell-memory-pill": 1,
           "./use-shell-resume": 1,
-          "./use-shell-search": 1,
           "./use-stable-actions": 1,
           "./use-system-ui-locale": 1,
           "./use-task-submission-readiness": 1,
@@ -871,8 +865,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 108,
-        "nonTriviaTokens": 13697
+        "importSpecifiers": 104,
+        "nonTriviaTokens": 13617
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
@@ -1162,41 +1156,6 @@
           "@maka/ui/icons": 1
         }
       },
-      "src/renderer/command-palette-types.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
-      "src/renderer/command-palette.tsx": {
-        "bridgePaths": {},
-        "environmentCapabilities": {
-          "window.cancelAnimationFrame": 1,
-          "window.requestAnimationFrame": 1
-        },
-        "hookCalls": {
-          "useEffect": 1,
-          "useHotkeys": 1,
-          "useRef": 1,
-          "useState": 1,
-          "useUiLocale": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./locales/shell-copy": 1,
-          "@astryxdesign/core/EmptyState": 1,
-          "@astryxdesign/core/hooks": 1,
-          "@astryxdesign/core/Kbd": 1,
-          "@maka/ui": 1,
-          "@maka/ui/icons": 1,
-          "react": 1
-        }
-      },
       "src/renderer/composer-attachments.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -1402,29 +1361,6 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {}
-      },
-      "src/renderer/keyboard-help.tsx": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {
-          "useHotkeys": 1,
-          "useState": 1,
-          "useUiLocale": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./locales/shell-copy": 1,
-          "@astryxdesign/core/Dialog": 1,
-          "@astryxdesign/core/Heading": 1,
-          "@astryxdesign/core/hooks": 1,
-          "@astryxdesign/core/Kbd": 1,
-          "@astryxdesign/core/Layout": 1,
-          "@maka/ui": 1,
-          "@maka/ui/icons": 1,
-          "react": 1
-        }
       },
       "src/renderer/live-content-seed.ts": {
         "bridgePaths": {},
@@ -4262,23 +4198,6 @@
           "react": 1
         }
       },
-      "src/renderer/use-settings-modal.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {
-          "document.activeElement": 1,
-          "document.activeElement.blur": 1
-        },
-        "hookCalls": {
-          "useState": 5
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./browser-storage": 1,
-          "react": 1
-        }
-      },
       "src/renderer/use-shell-appearance.ts": {
         "bridgePaths": {
           "window.maka.e2eFixture.getState": 1,
@@ -4386,21 +4305,6 @@
         "dependencyPaths": {
           "./locales/shell-copy.js": 1,
           "@maka/ui": 1,
-          "react": 1
-        }
-      },
-      "src/renderer/use-shell-search.ts": {
-        "bridgePaths": {
-          "window.maka.search.thread": 1
-        },
-        "environmentCapabilities": {},
-        "hookCalls": {
-          "useState": 2
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
           "react": 1
         }
       },
@@ -4783,7 +4687,7 @@
     },
     {
       "capability": "commands-and-overlays",
-      "targetZone": "application/overlays",
+      "targetZone": "features/overlays",
       "legacyPaths": [
         "src/renderer/app-shell-command-actions.ts",
         "src/renderer/app-shell-overlays.tsx"

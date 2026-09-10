@@ -18,15 +18,14 @@
  */
 
 import { lazy, Suspense, useLayoutEffect, useRef } from 'react';
-import type { ChatDefaultPermissionMode, SettingsSection, ThemePalette, ThemePreference } from '@maka/core/settings';
-import type { ProviderType } from '@maka/core/llm-connections';
+import type { ThemePalette, ThemePreference } from '@maka/core/settings';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { useHotkeys } from '@astryxdesign/core/hooks';
-import { SearchModal, useUiLocale } from '@maka/ui';
-import { KeyboardHelpModal } from './keyboard-help';
-import { CommandPalette } from './command-palette';
+import { useUiLocale } from '@maka/ui';
+import * as Overlays from './features/overlays/index.js';
+import type { OverlaysShellProjection } from './features/overlays/index.js';
 import { useAppShellCommands, type AppShellCommandListOptions } from './app-shell-command-actions';
 import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
 import type { UiLocaleUpdateGate } from './settings/ui-locale-update-gate';
@@ -41,8 +40,6 @@ const SettingsModal = lazy(async () => {
   await e2eLatch?.wait('settings.chunk');
   return import('./settings/settings-modal');
 });
-
-type SearchModalProps = Parameters<typeof SearchModal>[0];
 
 function SettingsModalFallback() {
   const copy = getShellRemainingCopy(useUiLocale()).overlays;
@@ -61,8 +58,14 @@ function SettingsModalFallback() {
   );
 }
 
-export function AppShellOverlays(props: {
-  settingsOpen: boolean;
+/**
+ * What the overlay layer still needs from the shell: the Settings modal's
+ * inputs and the actions that leave an overlay for a shell surface. Which
+ * overlay is showing, and what Settings was asked to show, come from the
+ * overlays feature.
+ */
+export interface AppShellOverlaysProps {
+  /** The shell's close, which also re-reads what Settings may have changed. */
   closeSettings(): void;
   themePref: ThemePreference;
   setThemePref(themePref: ThemePreference): void;
@@ -78,57 +81,38 @@ export function AppShellOverlays(props: {
    * can disagree the moment anything else writes the setting.
    */
   refreshChatDefaults(): void;
-  settingsRequest: { readonly section?: SettingsSection; readonly profileId?: string };
-  settingsProviderCatalogOpen: boolean;
-  settingsConnectionDetailSlug: string | undefined;
-  settingsCreateProviderType: ProviderType | undefined;
   onOpenDailyReview(): void;
-  onOpenKeyboardHelp(): void;
   onOpenSettingsSession(sessionId: string): void;
   archivedTasks: ArchivedTasksBridge;
-  helpOpen: boolean;
-  closeHelp(): void;
-  searchModalOpen: boolean;
-  closeSearchModal(): void;
-  searchModalDeps: SearchModalProps['deps'];
-  searchModalOnNavigate: NonNullable<SearchModalProps['onNavigateToSession']>;
-  paletteOpen: boolean;
-  closePalette(): void;
   commandOptions: AppShellCommandListOptions;
   onExternalSessionImported(session: DesktopSessionSummary): void;
   onRemoteHostAdded(profileId: string): void;
   onSelectedRuntimeHostProfileIdChange(profileId: string | undefined): void;
-}) {
-  const {
-    closeHelp,
-    closePalette,
-    closeSearchModal,
-    closeSettings,
-    commandOptions,
-    helpOpen,
-    paletteOpen,
-    searchModalDeps,
-    searchModalOnNavigate,
-    searchModalOpen,
-    settingsOpen,
-    settingsRequest,
-    settingsProviderCatalogOpen,
-    settingsConnectionDetailSlug,
-    settingsCreateProviderType,
-    setThemePalette,
-    setThemePref,
-    setUiLocalePreference,
-    uiLocaleUpdateGate,
-    setUserLabel,
-    refreshChatDefaults,
-    themePalette,
-    themePref,
-    onExternalSessionImported,
-  } = props;
+  /**
+   * Opens a Session from a Search result. The shell hands over its stable
+   * opener: the modal lists this callback in an effect's dependencies.
+   */
+  onNavigateToSession(sessionId: string, turnId?: string, sequence?: number): void;
+}
 
-  const closeSettingsRef = useRef(closeSettings);
+export function AppShellOverlays(props: AppShellOverlaysProps) {
+  return (
+    <Overlays.OverlaysConsumer>
+      {(overlays) => <OverlayLayer overlays={overlays} {...props} />}
+    </Overlays.OverlaysConsumer>
+  );
+}
+
+function OverlayLayer({
+  overlays,
+  ...props
+}: AppShellOverlaysProps & { readonly overlays: OverlaysShellProjection }) {
+  const { commands, selectors } = overlays;
+  const { settings } = selectors;
+
+  const closeSettingsRef = useRef(props.closeSettings);
   useLayoutEffect(() => {
-    closeSettingsRef.current = closeSettings;
+    closeSettingsRef.current = props.closeSettings;
   });
 
   // The overlay boundary, rather than the lazy Settings chunk, owns Escape.
@@ -136,7 +120,7 @@ export function AppShellOverlays(props: {
   // surface and the resolved Settings surface. Keep the listener stable while
   // Settings is open, but read the latest shell callback after every commit.
   useLayoutEffect(() => {
-    if (!settingsOpen) return;
+    if (!settings.open) return;
 
     function onKeyDown(event: globalThis.KeyboardEvent) {
       if (
@@ -154,67 +138,51 @@ export function AppShellOverlays(props: {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [settingsOpen]);
+  }, [settings.open]);
 
   // #1045: base commands freeze per open/close; session rows stay live on
   // visibleSessions/activeId. run() closures read latest options via ref.
-  const commands = useAppShellCommands(paletteOpen, commandOptions);
+  const paletteCommands = useAppShellCommands(selectors.paletteOpen, props.commandOptions);
   useHotkeys([
     {
       keys: 'mod+shift+d',
       allowInInputs: true,
-      onPress: () => void commands.find((command) => command.id === 'diag:copy-diagnostics')?.run(),
+      onPress: () =>
+        void paletteCommands.find((command) => command.id === 'diag:copy-diagnostics')?.run(),
     },
   ]);
+
   return (
     <>
-      {settingsOpen && (
+      {settings.open && (
         <Suspense fallback={<SettingsModalFallback />}>
           <SettingsModal
-            onClose={closeSettings}
-            themePref={themePref}
-            onThemeChange={setThemePref}
-            themePalette={themePalette}
-            onThemePaletteChange={setThemePalette}
-            onUiLocalePreferenceChange={setUiLocalePreference}
-            uiLocaleUpdateGate={uiLocaleUpdateGate}
-            onUserLabelChange={setUserLabel}
-            onDefaultPermissionModeChange={() => refreshChatDefaults()}
-            request={settingsRequest}
-            openProviderCatalog={settingsProviderCatalogOpen}
-            initialConnectionSlug={settingsConnectionDetailSlug}
-            initialCreateProviderType={settingsCreateProviderType}
+            onClose={props.closeSettings}
+            themePref={props.themePref}
+            onThemeChange={props.setThemePref}
+            themePalette={props.themePalette}
+            onThemePaletteChange={props.setThemePalette}
+            onUiLocalePreferenceChange={props.setUiLocalePreference}
+            uiLocaleUpdateGate={props.uiLocaleUpdateGate}
+            onUserLabelChange={props.setUserLabel}
+            onDefaultPermissionModeChange={() => props.refreshChatDefaults()}
+            request={settings.request}
+            openProviderCatalog={settings.providerCatalogOpen}
+            initialConnectionSlug={settings.connectionDetailSlug}
+            initialCreateProviderType={settings.createProviderType}
             onOpenDailyReview={props.onOpenDailyReview}
-            onOpenKeyboardHelp={props.onOpenKeyboardHelp}
+            onOpenKeyboardHelp={commands.openHelp}
             onOpenSession={props.onOpenSettingsSession}
             archivedTasks={props.archivedTasks}
-            onTaskImported={onExternalSessionImported}
+            onTaskImported={props.onExternalSessionImported}
             onRemoteHostAdded={props.onRemoteHostAdded}
             onSelectedRuntimeHostProfileIdChange={props.onSelectedRuntimeHostProfileIdChange}
           />
         </Suspense>
       )}
-      <KeyboardHelpModal
-        isOpen={helpOpen}
-        onOpenChange={(open) => {
-          if (!open) closeHelp();
-        }}
-      />
-      <SearchModal
-        isOpen={searchModalOpen}
-        onOpenChange={(open) => {
-          if (!open) closeSearchModal();
-        }}
-        deps={searchModalDeps}
-        onNavigateToSession={searchModalOnNavigate}
-      />
-      <CommandPalette
-        isOpen={paletteOpen}
-        onOpenChange={(open) => {
-          if (!open) closePalette();
-        }}
-        commands={commands}
-      />
+      <Overlays.KeyboardHelpModal />
+      <Overlays.SearchModalHost onNavigateToSession={props.onNavigateToSession} />
+      <Overlays.CommandPalette commands={paletteCommands} />
     </>
   );
 }

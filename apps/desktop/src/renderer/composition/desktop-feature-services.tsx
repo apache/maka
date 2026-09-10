@@ -32,6 +32,7 @@ import { SessionNavigationServicesProvider } from '../features/session-navigatio
 import { SessionSettingsServicesProvider } from '../features/session-settings';
 import { TaskEntryServicesProvider } from '../features/task-entry';
 import { WorkbarServicesProvider } from '../features/workbar';
+import { OverlaysServicesProvider } from '../features/overlays/index.js';
 import { createDesktopAppUpdateServices } from '../platform/desktop/create-app-update-services';
 import { createDesktopGoalServices } from '../platform/desktop/create-goal-services';
 import { createDesktopConnectionSettingsServices } from '../platform/desktop/create-connection-settings-services';
@@ -42,6 +43,7 @@ import { createDesktopSessionNavigationServices } from '../platform/desktop/crea
 import { createDesktopSessionSettingsServices } from '../platform/desktop/create-session-settings-services';
 import { createDesktopTaskEntryServices } from '../platform/desktop/create-task-entry-services';
 import { createDesktopWorkbarServices } from '../platform/desktop/create-workbar-services';
+import { createDesktopOverlaysServices } from '../platform/desktop/create-overlays-services';
 
 export function createDesktopFeatureServices() {
   return {
@@ -51,6 +53,7 @@ export function createDesktopFeatureServices() {
     connectionSettings: createDesktopConnectionSettingsServices(),
     goal: createDesktopGoalServices(),
     moduleHub: createDesktopModuleHubServices(),
+    overlays: createDesktopOverlaysServices(),
     runtimeHostManagement: createDesktopRuntimeHostManagementServices(),
     sessionCollaboration: createDesktopSessionCollaborationServices(),
     sessionNavigation: createDesktopSessionNavigationServices(),
@@ -76,7 +79,11 @@ export function DesktopFeatureServicesProvider(props: {
                     <GoalServicesProvider services={props.services.goal}>
                       <WorkbarServicesProvider services={props.services.workbar}>
                         <ConversationServicesProvider services={props.services.conversation}>
-                          <WorkHubServicesProvider services={props.services.workHub}>{props.children}</WorkHubServicesProvider>
+                          <WorkHubServicesProvider services={props.services.workHub}>
+                            <OverlaysServicesProvider services={props.services.overlays}>
+                              {props.children}
+                            </OverlaysServicesProvider>
+                          </WorkHubServicesProvider>
                         </ConversationServicesProvider>
                       </WorkbarServicesProvider>
                     </GoalServicesProvider>

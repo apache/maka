@@ -66,8 +66,6 @@ import {
   reconcileInteractions,
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
-import { useKeyboardHelp } from './keyboard-help';
-import { useCommandPalette } from './command-palette';
 import { ChatMessageSurface } from './chat-message-surface';
 import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
 import * as Conversation from './features/conversation';
@@ -95,6 +93,8 @@ import {
 } from './features/session-navigation';
 import * as TaskEntry from './features/task-entry';
 import type { TaskEntryShellProjection } from './features/task-entry';
+import * as Overlays from './features/overlays/index.js';
+import type { OverlaysShellProjection } from './features/overlays/index.js';
 import { useNewTaskChoice } from './use-new-task-choice';
 import { SessionCollaborationDialog } from './session-collaboration-dialog';
 import * as SessionCollaboration from './features/session-collaboration';
@@ -133,7 +133,6 @@ import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
-import { useShellSearch } from './use-shell-search';
 import { useSessionSettingIntent } from './features/session-settings';
 import { deriveStaleSessionIds } from './stale-sessions';
 import { pendingSessionView } from './pending-session-view';
@@ -200,7 +199,6 @@ import { useShellChatModel } from './use-shell-chat-model';
 import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellResume } from './use-shell-resume';
 
-import { useSettingsModal } from './use-settings-modal';
 import { useSystemUiLocale } from './use-system-ui-locale';
 import {
   isSessionWorkspaceUnavailableError,
@@ -267,9 +265,13 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
               <WorkHubControlOverlay />
               <TaskEntry.TaskEntryRoot>
                 {(taskEntry) => (
-                  <AppShellContent
-                    {...{ initialOnboardingSnapshot, taskEntry, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
-                  />
+                  <Overlays.OverlaysRoot>
+                    {(overlays) => (
+                      <AppShellContent
+                        {...{ initialOnboardingSnapshot, taskEntry, overlays, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
+                      />
+                    )}
+                  </Overlays.OverlaysRoot>
                 )}
               </TaskEntry.TaskEntryRoot>
             </AppUpdateProvider>
@@ -294,6 +296,7 @@ const SESSION_RAIL = <SessionListPanel />;
 function AppShellContent({
   initialOnboardingSnapshot = null,
   taskEntry,
+  overlays,
   uiLocale,
   uiLocaleOverride,
   setUiLocaleOverride,
@@ -301,6 +304,7 @@ function AppShellContent({
 }: {
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
   taskEntry: TaskEntryShellProjection;
+  overlays: OverlaysShellProjection;
   uiLocale: UiLocale;
   uiLocaleOverride: UiLocale | null;
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
@@ -348,21 +352,21 @@ function AppShellContent({
   }, []);
 
   const {
-    settingsOpen,
-    settingsRequest,
-    settingsProviderCatalogOpen,
-    settingsConnectionDetailSlug,
-    settingsCreateProviderType,
-    setSettingsOpen,
-    setSettingsProviderCatalogOpen,
-    setSettingsProfileId,
+    openHelp,
+    closePalette,
+    openSearch,
+    setSearchScrollTarget,
+    consumeSearchScrollTarget,
     openSettings,
     openSettingsSection,
     openProjectSettings,
     openProviderCatalog,
     openConnectionDetail,
     openProviderCreate,
-  } = useSettingsModal();
+    setSettingsProfileId,
+  } = overlays.commands;
+  const { searchScrollTarget } = overlays.selectors;
+  const settingsOpen = overlays.selectors.settings.open;
 
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   // The owner bridge keeps commands stable while TaskEntryRoot swaps the
@@ -608,8 +612,6 @@ function AppShellContent({
   // recent workspace history so the home view is populated before the async
   // `app:info` round-trip completes on mount.
   const persistedComposerDefaults = loadComposerDefaults();
-  const [helpOpen, closeHelp, openHelp] = useKeyboardHelp();
-  const [paletteOpen, openPalette, closePalette] = useCommandPalette();
   const composerRef = useRef<ComposerHandle>(null);
   const openComposerModelPicker = useCallback(() => {
     composerRef.current?.openModelPicker();
@@ -935,26 +937,6 @@ function AppShellContent({
     [],
   );
 
-  /* PR-FE-BUG-HUNT-0 (kenji bug-hunt 2026-06-24): SearchModal +
-     CommandPalette callbacks used to be inline arrows in JSX, so
-     their identity churned on every App re-render. SearchModal's
-     debounce effect lists `searchThread` in its dep array; during a
-     turn stream `App` re-renders many times per second and the
-     180ms timeout was torn down + restarted on every render, so it
-     never reached its `setTimeout` fire — search was effectively
-     dead while a stream was active. Same root cause for the palette
-     selection effect that resets keyboard highlight on every deps
-     change. Stable refs + memos keep the timers alive. */
-  const {
-    searchModalOpen,
-    setSearchModalOpen,
-    searchScrollTarget,
-    setSearchScrollTarget,
-    consumeSearchScrollTarget,
-    closeSearchModal,
-    searchModalDeps,
-    searchModalOnNavigate,
-  } = useShellSearch({ openSessionInChatRef });
   /** 技能页 使用: jump to the chat view and seed the composer with a skill
    *  invocation. Same human-in-the-loop rule as maka://compose — we never
    *  auto-send; the user finishes the sentence and presses Enter.
@@ -975,10 +957,10 @@ function AppShellContent({
   );
   const openWorkHub = useCallback(() => {
     if (!workHubEnabledRef.current) return;
-    setSettingsOpen(false);
+    overlays.commands.closeSettings();
     setNavSelection({ section: 'sessions' });
     setWorkHubActive(true);
-  }, [setNavSelection]);
+  }, [overlays.commands, setNavSelection]);
 
   // Transient placeholder while the real SessionSummary loads, so the composer
   // does not flash a value the session never had.
@@ -1345,7 +1327,7 @@ function AppShellContent({
     newSessionPermissionMode: newTaskPermissionMode,
   };
 
-  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen || sharedSessionDialog.isOpen;
+  const hasModalOpen = overlays.selectors.anyModalOpen || sharedSessionDialog.isOpen;
   const shellObscured = hasModalOpen || settingsOpen;
   const contextCompactionPresentation = useMemo(
     () =>
@@ -1464,7 +1446,7 @@ function AppShellContent({
     refreshSessions,
     setActiveId,
     setNavSelection,
-    setSearchModalOpen,
+    openSearchModal: openSearch,
     setSessionListCollapsed: sessionRailLayoutStore.setCollapsed,
     workbar: {
       rightCollapsed: selectors.rightCollapsed,
@@ -2145,8 +2127,7 @@ function AppShellContent({
   }
 
   function closeSettings() {
-    setSettingsOpen(false);
-    setSettingsProviderCatalogOpen(false);
+    overlays.commands.closeSettings();
     // PR110c: re-pull onboarding snapshot when the user closes the
     // Settings modal — they may have just configured a default
     // connection or supplied a credential. Existing connections /
@@ -2231,7 +2212,7 @@ function AppShellContent({
     messages,
     newTaskProfileId: taskEntry.selectors.selectedProfileId,
     settingsOpen,
-    settingsProfileId: settingsRequest.profileId,
+    settingsProfileId: overlays.selectors.settings.request.profileId,
     sessions,
     themePref,
     visibleSessions,
@@ -2366,7 +2347,7 @@ function AppShellContent({
             <AppShellTopbarActions
               sidebarCollapsed={sessionListCollapsed}
               onToggleSidebar={() => sessionSideNavHandleRef.current?.getCollapseState()?.toggle()}
-              onOpenSearchModal={() => setSearchModalOpen(true)}
+              onOpenSearchModal={openSearch}
             />
             {/* Only a session has an identity to state. The other views name
                 themselves in the nav column they are selected from, and the
@@ -2864,7 +2845,6 @@ function AppShellContent({
       />
 
       <AppShellOverlays
-        settingsOpen={settingsOpen}
         closeSettings={closeSettings}
         themePref={themePref}
         setThemePref={setThemePref}
@@ -2876,29 +2856,17 @@ function AppShellContent({
         refreshChatDefaults={() => {
           void taskEntry.commands.refresh().catch(() => undefined);
         }}
-        settingsRequest={settingsRequest}
-        settingsProviderCatalogOpen={settingsProviderCatalogOpen}
-        settingsConnectionDetailSlug={settingsConnectionDetailSlug}
-        settingsCreateProviderType={settingsCreateProviderType}
         onOpenDailyReview={() => {
           closeSettings();
           setNavSelection({ section: 'automations', module: 'daily-review' });
         }}
-        onOpenKeyboardHelp={openHelp}
         onOpenSettingsSession={(sessionId) => {
           closeSettings();
           openSessionInChat(sessionId);
         }}
         archivedTasks={archivedTasksBridge}
-        helpOpen={helpOpen}
-        closeHelp={closeHelp}
-        searchModalOpen={searchModalOpen}
-        closeSearchModal={closeSearchModal}
-        searchModalDeps={searchModalDeps}
-        searchModalOnNavigate={searchModalOnNavigate}
-        paletteOpen={paletteOpen}
-        closePalette={closePalette}
         commandOptions={commandOptions}
+        onNavigateToSession={openSessionInChat}
         onExternalSessionImported={(session) => {
           closeSettings();
           openSessionInChat(session.id);
