@@ -30,6 +30,21 @@ Keep this directory small. Prefer product code that uses the dependency's
 published API; only patch for bugs that block shipping and cannot be worked
 around at the call site.
 
+## `@earendil-works/pi-tui@0.84.4`
+
+Editor undo snapshots deep-clone all stored paste strings for each typed word,
+so a 1 MiB paste followed by 60 words retains roughly 60 MiB of duplicate text.
+The editor now copies its mutable state, lines array, and paste Map while
+sharing immutable strings. All undo steps, paste renumbering, and submission
+cleanup are preserved; the generic undo stack used by Input stays unchanged.
+Snapshot creation and storage are private, with no published clone policy
+that product code can configure.
+
+`packages/cli/src/__tests__/tui-editor-undo-pastes.test.ts` checks the actual Maka
+editor through public editing methods and ordinary keystrokes, including a
+GC-enabled child that retains a large paste through 60 undo steps. Delete the
+patch when these tests pass against the unpatched dependency.
+
 ## `zod@4.5.4`
 
 Recursive schemas retain their last parse context and bucket in schema closures,
