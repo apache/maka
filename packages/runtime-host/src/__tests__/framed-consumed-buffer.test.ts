@@ -31,7 +31,11 @@ test('drained framed transports release consumed buffers without dropping queued
   if (!global.gc) {
     assert.notEqual(process.env.MAKA_FRAMED_BUFFER_GC_CHILD, '1', 'child must expose GC');
     const child = spawnSync(process.execPath, ['--expose-gc', fileURLToPath(import.meta.url)], {
-      env: { ...process.env, MAKA_FRAMED_BUFFER_GC_CHILD: '1' },
+      env: {
+        ...process.env,
+        NODE_TEST_CONTEXT: undefined,
+        MAKA_FRAMED_BUFFER_GC_CHILD: '1',
+      },
       encoding: 'utf8',
       timeout: 30_000,
     });
@@ -73,12 +77,14 @@ test('drained framed transports release consumed buffers without dropping queued
       const count = mode === 'queued' ? 96 : 1;
       const frames = Array.from({ length: count }, (_, index) => ({
         index,
-        payload: '🦊'.repeat(5000),
+        payload: '🦊'.repeat(mode === 'queued' ? 5000 : 16000),
       }));
       const bytes = Buffer.from(
         frames.map((frame) => JSON.stringify(frame) + '\n').join('') +
           (mode === 'partial' ? '{"tail":' : ''),
       );
+      // Observe a dedicated backing store, not a pool shared with unrelated buffers.
+      assert.ok(bytes.byteLength >= Buffer.poolSize >>> 1);
       const from = Buffer.from;
       let captured = false;
       Buffer.from = ((...args: Parameters<typeof Buffer.from>) => {
