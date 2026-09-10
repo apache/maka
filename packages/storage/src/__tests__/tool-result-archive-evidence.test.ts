@@ -146,7 +146,7 @@ test('checks byte and record budgets before fetching any ledger JSON', async (t)
     const get = statement.get.bind(statement);
     const all = statement.all.bind(statement);
     const count = (row: Record<string, unknown> | undefined) => {
-      for (const key of ['payload_json', 'record_json'])
+      for (const key of ['payload_json', 'evidence_json', 'record_json'])
         if (typeof row?.[key] === 'string') materialized += Buffer.byteLength(row[key]);
     };
     t.mock.method(statement, 'get', (...args: Parameters<typeof get>) => {
@@ -173,6 +173,17 @@ test('checks byte and record budgets before fetching any ledger JSON', async (t)
     reason: 'too_large',
   });
   assert.equal(materialized, 0);
+  f.db.exec('DELETE FROM core_agent_run_events');
+  f.db
+    .prepare(
+      "UPDATE runtime_events SET payload_json = json_set(payload_json, '$.content.modelProjection.text', ?) WHERE event_id = 'response'",
+    )
+    .run('x'.repeat(3 * 1024 * 1024));
+  assert.deepEqual(await f.reader.read({ sessionId: 'session', runtimeEventId: 'response' }), {
+    ok: false,
+    reason: 'too_large',
+  });
+  assert.equal(materialized, 0, 'oversized projection is refused before returning evidence JSON');
 });
 
 test('unscoped malformed transitions prevent a false complete history', async (t) => {
@@ -238,7 +249,7 @@ test('database read failures are unavailable, not corrupt evidence', async (t) =
     DatabaseSync.prototype,
     'prepare',
     function (this: DatabaseSync, sql: string) {
-      if (sql.includes('length(CAST(payload_json AS BLOB))'))
+      if (sql.includes('AS bytes FROM runtime_events'))
         throw new Error('injected database unavailable');
       return prepare.call(this, sql);
     },

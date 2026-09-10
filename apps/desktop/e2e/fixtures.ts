@@ -86,19 +86,15 @@ export async function awaitSendReady(page: Page): Promise<void> {
   });
 }
 
-/**
- * Wait for the default Host's Coordination Session and the WorkHub projection
- * to agree that the surface is ready. A mounted WorkHub main is not sufficient:
- * it is also rendered while the Host reconnects and the projection reloads.
- */
-export async function waitForWorkHubReady(page: Page, workCount: number): Promise<void> {
-  await expect
-    .poll(async () => {
-      const snapshot = await page.evaluate(() => window.maka.runtimeHostProfiles.getSnapshot());
-      return snapshot.entries.find(({ isDefault }) => isDefault)?.readiness;
-    })
-    .toBe('ready');
-  await expect(page.getByText(`${workCount} 项工作`, { exact: true })).toBeVisible();
+/** The persistent WorkHub WebContentsView is a distinct renderer, not part of the main DOM. */
+export async function getWorkHubPage(app: ElectronApplication): Promise<Page> {
+  let view: Page | undefined;
+  await expect.poll(() => {
+    view = app.context().pages().find((candidate) => new URL(candidate.url()).searchParams.get('surface') === 'workhub');
+    return Boolean(view);
+  }).toBe(true);
+  await expect(view!.locator('.workHubLive .maka-composer-editor')).toBeVisible();
+  return view!;
 }
 
 /**
@@ -394,7 +390,7 @@ async function seedCurrentProject(workspaceRoot: string, projectRoot: string): P
  * and `launchE2eApp` outside the try, so a readiness timeout left a zombie
  * Electron and a leaked `maka-e2e-*` directory.
  */
-async function withE2eWindow(
+export async function withE2eWindow(
   {
     seed,
     readinessSelector,
@@ -407,6 +403,7 @@ async function withE2eWindow(
     parentRemovalSessions,
     railRenderSessions,
     newTaskProject,
+    tracePath,
   }: {
     seed: boolean;
     readinessSelector: string;
@@ -421,6 +418,7 @@ async function withE2eWindow(
     parentRemovalSessions?: boolean;
     railRenderSessions?: boolean;
     newTaskProject?: boolean;
+    tracePath?: string;
   },
   use: (page: Page, context: { userDataDir: string; app: ElectronApplication; restart(): Promise<Page> }) => Promise<void>,
 ): Promise<void> {
@@ -430,6 +428,7 @@ async function withE2eWindow(
   const homeDir = path.join(userDataDir, 'home');
   await mkdir(homeDir, { recursive: true });
   let app: ElectronApplication | undefined;
+  let traceStarted = false;
   const mainLogs: string[] = [];
   const rendererLogs: string[] = [];
   try {
@@ -479,6 +478,11 @@ async function withE2eWindow(
       rendererLogs.push(`[pageerror] ${error.stack ?? error.message}`);
       if (rendererLogs.length > 30) rendererLogs.shift();
     });
+    if (tracePath) {
+      await mkdir(path.dirname(tracePath), { recursive: true });
+      await app.context().tracing.start({ snapshots: true });
+      traceStarted = true;
+    }
     // Centralize the cold-start wait so test bodies are flake-free under retries:0.
     try {
       await page.waitForSelector(readinessSelector, { timeout: 20_000 });
@@ -504,7 +508,13 @@ async function withE2eWindow(
     } });
   } finally {
     try {
-      if (app) await closeElectronApplication(app, 5_000);
+      try {
+        if (app && tracePath && traceStarted) {
+          await app.context().tracing.stop({ path: tracePath });
+        }
+      } finally {
+        if (app) await closeElectronApplication(app, 5_000);
+      }
     } finally {
       await rm(userDataDir, { recursive: true, force: true });
     }

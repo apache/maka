@@ -185,7 +185,6 @@ function harness() {
 function view(messages: StoredMessage[]): ReactElement {
   const chat = createElement(ChatView, { messages, activeSession, onNew: () => {} } as never);
   const layout = createElement(ChatSurfaceLayout, {
-    scrollOwner: 'host',
     composer: null,
     children: chat,
   });

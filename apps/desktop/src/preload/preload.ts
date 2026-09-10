@@ -17,7 +17,10 @@
  * under the License.
  */
 
+import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../shared/workhub-conversation.js';
 import { contextBridge, ipcRenderer } from 'electron';
+import { workHubControlBridge } from './workhub-control.js';
+import { workHubPresentationBridge } from './workhub-presentation.js';
 import {
   isRuntimeHostProfileKind,
   type RuntimeHostProfileKind,
@@ -84,6 +87,7 @@ import {
   type DesktopTranscriptBatch,
   type DesktopTranscriptHandle,
   type DesktopTranscriptOpenResult,
+  type DesktopTranscriptNavigation,
 } from './transcript-contract.js';
 import {
   adoptTranscriptIdentity,
@@ -232,6 +236,7 @@ import {
   type CollaborationTurnRequestWithdrawResult,
   type SessionTurnAccessRequest,
 } from '@maka/runtime-host/protocol';
+import type { PlanControlIpcResult } from '../shared/plan-mode-ipc.js';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import {
   desktopSessionKey,
@@ -258,6 +263,7 @@ import { projectDesktopSharedSessionSummary } from '../shared/shared-session-cat
 
 let activeRuntimeHost: DesktopTargetScope | undefined;
 let activeRuntimeHostGeneration = 0;
+let newTaskCatalogGeneration = 0;
 type RuntimeHostScopeKey = string;
 const runtimeHostScopes = new Map<string, DesktopTargetScope>();
 const runtimeHostProfiles = new Map<string, string>();
@@ -348,7 +354,12 @@ ipcRenderer.on(
     ) {
       activeRuntimeHostGeneration += 1;
     }
-    for (const listener of newTaskChangeListeners) listener();
+    // Guest mounts can only participate in their shared Sessions. Their
+    // reconnects cannot change the Hosts/projects available for a new task.
+    if (change.profileAccess === 'owner') {
+      newTaskCatalogGeneration += 1;
+      for (const listener of newTaskChangeListeners) listener();
+    }
   },
 );
 
@@ -570,7 +581,7 @@ async function selectedRuntimeHostScope(
 
 async function loadNewTaskCatalog(): Promise<DesktopNewTaskCatalog> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const generation = activeRuntimeHostGeneration;
+    const generation = newTaskCatalogGeneration;
     const profiles = await ipcRenderer.invoke(
       'runtime-host-profiles:getSnapshot',
     ) as DesktopRuntimeHostProfileSnapshot;
@@ -630,7 +641,7 @@ async function loadNewTaskCatalog(): Promise<DesktopNewTaskCatalog> {
         }
         }),
     );
-    if (generation !== activeRuntimeHostGeneration) continue;
+    if (generation !== newTaskCatalogGeneration) continue;
     return { defaultProfileId: profiles.defaultProfileId, hosts };
   }
   throw new Error('Runtime Host targets changed while the new-task catalog was loading');
@@ -1260,12 +1271,16 @@ function executeWebSearchQuery(input: {
     return Promise.resolve({
       ok: false,
       reason: 'unsupported_provider',
-      message: '原生联网搜索由任务中的主模型请求执行，不支持从设置页单独调用。',
+      message: 'web search runs through the primary model inside tasks',
     });
   }
   const query = normalizeWebSearchQuery(input.query);
   if (!query) {
-    return Promise.resolve({ ok: false, reason: 'invalid_query', message: '请输入有效的搜索关键词。' });
+    return Promise.resolve({
+      ok: false,
+      reason: 'invalid_query',
+      message: 'the query is empty after normalization',
+    });
   }
   const apiKey = webSearchCredentialOverride(input.apiKey);
   return selectedRuntimeHostScope(host).then((scope) =>
@@ -1288,7 +1303,7 @@ function executeWebSearchTest(input: {
     return Promise.resolve({
       ok: false,
       reason: 'unsupported_provider',
-      message: '原生联网搜索由任务中的主模型请求执行，不需要单独测试搜索凭据。',
+      message: 'web search runs through the primary model inside tasks',
     });
   }
   const apiKey = webSearchCredentialOverride(input.apiKey);
@@ -1304,7 +1319,7 @@ function unsupportedWebSearchProvider(): WebSearchResponse {
   return {
     ok: false,
     reason: 'unsupported_provider',
-    message: '当前配置不支持这个搜索引擎，请选择 Tavily 后重试。',
+    message: 'no web search provider is configured',
   };
 }
 
@@ -1362,6 +1377,8 @@ const browserSelection = createBrowserSelectionCoordinator(runtimeHostSessionRef
 }, browserDocumentId);
 
 const makaBridge = {
+  workHubControl: workHubControlBridge,
+  workHubPresentation: workHubPresentationBridge,
   runtimeHost,
   sessionCollaboration: {
     async prepareInvitation(sessionId, preset, allowInsecure = false) {
@@ -2000,67 +2017,29 @@ const makaBridge = {
     },
   },
   workHub: {
+    async getSession(coordinationSessionId: string) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
+      return projectSessionSummary(scope, await ipcRenderer.invoke('workhub:getSession', scope));
+    },
+    async prepareAttachments(coordinationSessionId: string, items: Parameters<MakaBridge['workHub']['prepareAttachments']>[1]) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
+      return ipcRenderer.invoke('workhub:prepareAttachments', scope, await encodeIngestItems(items));
+    },
+    async answer(coordinationSessionId: string, input: WorkHubAnswerInput) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
+      return ipcRenderer.invoke('workhub:answer', scope, input) as Promise<WorkHubAnswerResult>;
+    },
+    async configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
+      return ipcRenderer.invoke('workhub:configureModel', scope, input) as Promise<OperationOutput<'workhub.coordination.configureModel'>>;
+    },
     resolveCoordinationSession(): Promise<string> {
       return resolveDesktopWorkHubCoordinationSession(
         activeRuntimeHostRef,
         (scope) => ipcRenderer.invoke('workhub:resolveCoordinationSession', scope),
       );
     },
-    async record(
-      coordinationSessionId: string,
-      input: { turnId: string; userText: string; assistantText: string },
-    ): Promise<{ turnId: string }> {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
-        coordinationSessionId,
-        runtimeHostSessionRef,
-      );
-      return ipcRenderer.invoke('workhub:record', scope, input) as Promise<{ turnId: string }>;
-    },
-    async candidates(
-      coordinationSessionId: string,
-    ): Promise<OperationOutput<'workhub.coordination.candidates'>> {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
-        coordinationSessionId,
-        runtimeHostSessionRef,
-      );
-      const result = await ipcRenderer.invoke(
-        'workhub:candidates',
-        scope,
-      ) as OperationOutput<'workhub.coordination.candidates'>;
-      return {
-        ...result,
-        candidates: result.candidates.map((candidate) => ({
-          ...candidate,
-          sessionId: recordRuntimeHostSessionScope(scope, candidate.sessionId),
-        })),
-      };
-    },
-    async act(
-      coordinationSessionId: string,
-      input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
-    ): Promise<OperationOutcome<'workhub.coordination.act'>> {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
-        coordinationSessionId,
-        runtimeHostSessionRef,
-      );
-      const result = await ipcRenderer.invoke(
-        'workhub:act',
-        scope,
-        input,
-      ) as OperationOutcome<'workhub.coordination.act'>;
-      if (!result.ok) return result;
-      if (
-        result.result.disposition === 'answer_here' ||
-        result.result.disposition === 'clarify'
-      ) return result;
-      return {
-        ok: true,
-        result: {
-          ...result.result,
-          targetSessionId: recordRuntimeHostSessionScope(scope, result.result.targetSessionId),
-        },
-      };
-    },
+
   },
   sessionLocal: {
     async listMessages(sessionId) {
@@ -2409,30 +2388,30 @@ const makaBridge = {
         unsubscribe();
       };
     },
-    requestPlanRevision(sessionId: string, proposalId: string): Promise<PlanSessionState> {
+    requestPlanRevision(sessionId: string, proposalId: string): Promise<PlanControlIpcResult<PlanSessionState>> {
       return invokeProjectedSessionRuntimeHost('plan-mode:requestRevision', sessionId, proposalId);
     },
     abandonPlanProposal(
       sessionId: string,
       proposalId: string,
     ): Promise<PlanSessionState> {
-      return invokeProjectedSessionRuntimeHost('plan-mode:abandon', sessionId, proposalId);
+      return invokeProjectedSessionRuntimeHost<PlanSessionState>('plan-mode:abandon', sessionId, proposalId);
     },
     approvePlan(sessionId: string, input: {
       proposalId: string;
       expectedRevision: number;
       expectedStoreVersion: number;
       turnId: string;
-    }): Promise<{ turnId: string; executionId: string }> {
+    }): Promise<PlanControlIpcResult<{ turnId: string; executionId: string }>> {
       return invokeSessionRuntimeHost('plan-mode:approve', sessionId, input);
     },
-    resumePlan(sessionId: string, executionId: string, turnId: string): Promise<{
+    resumePlan(sessionId: string, executionId: string, turnId: string): Promise<PlanControlIpcResult<{
       turnId: string;
       executionId: string;
-    }> {
+    }>> {
       return invokeSessionRuntimeHost('plan-mode:resume', sessionId, executionId, turnId);
     },
-    abandonPlanExecution(sessionId: string, executionId: string): Promise<PlanSessionState> {
+    abandonPlanExecution(sessionId: string, executionId: string): Promise<PlanControlIpcResult<PlanSessionState>> {
       return invokeProjectedSessionRuntimeHost('plan-mode:abandonExecution', sessionId, executionId);
     },
     setModelConfiguration(sessionId: string, input: {
@@ -2477,6 +2456,8 @@ const makaBridge = {
       const channel = `sessions:transcript:${consumerId}`;
       let identity: DesktopTranscriptIdentity | undefined;
       let cachedIdentity: DesktopTranscriptIdentity | undefined;
+      let navigationVersion = 0;
+      const retiredGenerations = new Set<string>();
       let closed = false;
       let requestClose = () => {};
       let consumerScope: DesktopTargetScope | undefined;
@@ -2495,12 +2476,15 @@ const makaBridge = {
             host.targetEpoch !== consumerScope.targetEpoch
           ) return;
           batch = assertDesktopTranscriptBatch(value);
-          const adopted = adoptTranscriptIdentity(identity, batch);
-          if (adopted !== identity) {
-            identity = adopted;
-            consumerScope = host;
+          if ((batch.navigationVersion ?? 0) === navigationVersion && !retiredGenerations.has(batch.generation)) {
+            const adopted = adoptTranscriptIdentity(identity, batch);
+            if (adopted !== identity) {
+              if (identity && identity.generation !== adopted.generation) retiredGenerations.add(identity.generation);
+              identity = adopted;
+              consumerScope = host;
+            }
+            if (identity !== undefined && batch.generation === identity.generation) handler(batch);
           }
-          if (identity !== undefined && batch.generation === identity.generation) handler(batch);
         } catch (error) {
           requestClose();
           throw error;
@@ -2570,7 +2554,14 @@ const makaBridge = {
         operation: 'sessions:transcript:load-before' | 'sessions:transcript:load-after' | 'sessions:transcript:load-around',
         anchorSequence: number | null,
         maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+        navigation?: DesktopTranscriptNavigation,
       ): Promise<void> => {
+        const nextNavigation = navigation ?? {
+          navigationVersion: navigationVersion + 1,
+          intent: 'history' as const,
+        };
+        if (nextNavigation.navigationVersion < navigationVersion) return Promise.resolve();
+        navigationVersion = nextNavigation.navigationVersion;
         const currentIdentity = identity;
         if (!currentIdentity) {
           throw new Error('Desktop transcript identity is unavailable');
@@ -2581,17 +2572,21 @@ const makaBridge = {
           hostEpoch: currentIdentity.hostEpoch,
           anchorSequence,
           maxBytes,
+          navigationVersion: nextNavigation.navigationVersion,
+          intent: nextNavigation.intent,
+          preserveRange: nextNavigation.preserveRange,
+          readingTurnId: nextNavigation.readingTurnId,
         }) as Promise<void>;
       };
       return {
         ...opened,
         sessionId,
-        loadBefore: (anchorSequence, maxBytes) =>
-          range('sessions:transcript:load-before', anchorSequence, maxBytes),
-        loadAfter: (anchorSequence, maxBytes) =>
-          range('sessions:transcript:load-after', anchorSequence, maxBytes),
-        loadAround: (sequence, maxBytes) =>
-          range('sessions:transcript:load-around', sequence, maxBytes),
+        loadBefore: (anchorSequence, maxBytes, navigation) =>
+          range('sessions:transcript:load-before', anchorSequence, maxBytes, navigation),
+        loadAfter: (anchorSequence, maxBytes, navigation) =>
+          range('sessions:transcript:load-after', anchorSequence, maxBytes, navigation),
+        loadAround: (sequence, maxBytes, navigation) =>
+          range('sessions:transcript:load-around', sequence, maxBytes, navigation),
         async close() {
           if (closed) return;
           requestClose();
@@ -3009,10 +3004,10 @@ const makaBridge = {
     reset(host?: DesktopRuntimeHostRef): Promise<LocalMemoryState> {
       return invokeSelectedRuntimeHost(host, 'memory:reset');
     },
-    restoreLatestBackup(host?: DesktopRuntimeHostRef): Promise<{ ok: true; state: LocalMemoryState } | { ok: false; state: LocalMemoryState; message: string }> {
+    restoreLatestBackup(host?: DesktopRuntimeHostRef): Promise<{ ok: true; state: LocalMemoryState } | { ok: false; state: LocalMemoryState; code: string }> {
       return invokeSelectedRuntimeHost(host, 'memory:restoreLatestBackup');
     },
-    restoreBackup(kind: 'save' | 'reset' | 'restore', host?: DesktopRuntimeHostRef): Promise<{ ok: true; state: LocalMemoryState } | { ok: false; state: LocalMemoryState; message: string }> {
+    restoreBackup(kind: 'save' | 'reset' | 'restore', host?: DesktopRuntimeHostRef): Promise<{ ok: true; state: LocalMemoryState } | { ok: false; state: LocalMemoryState; code: string }> {
       return invokeSelectedRuntimeHost(host, 'memory:restoreBackup', kind);
     },
     setEnabled(enabled: boolean, host?: DesktopRuntimeHostRef): Promise<LocalMemoryState> {
@@ -3021,13 +3016,13 @@ const makaBridge = {
     setAgentReadEnabled(enabled: boolean, host?: DesktopRuntimeHostRef): Promise<LocalMemoryState> {
       return invokeSelectedRuntimeHost(host, 'memory:setAgentReadEnabled', enabled);
     },
-    openFile(host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; message: string }> {
+    openFile(host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; code: string }> {
       return invokeSelectedRuntimeHost(host, 'memory:openFile');
     },
-    openLatestBackup(host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; message: string }> {
+    openLatestBackup(host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; code: string }> {
       return invokeSelectedRuntimeHost(host, 'memory:openLatestBackup');
     },
-    openBackup(kind: 'save' | 'reset' | 'restore', host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; message: string }> {
+    openBackup(kind: 'save' | 'reset' | 'restore', host?: DesktopRuntimeHostRef): Promise<{ ok: true } | { ok: false; code: string }> {
       return invokeSelectedRuntimeHost(host, 'memory:openBackup', kind);
     },
   },

@@ -17,6 +17,9 @@
  * under the License.
  */
 
+import { registerRuntimeHostWorkHubIpc } from '../runtime-host-workhub-ipc-main.js';
+import type { DesktopRuntimeHostClient } from '../runtime-host-client.js';
+import type { ReconnectableReadIpcMain } from '../ipc-reconnect-policy.js';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -703,6 +706,55 @@ test("read adapters project ordinary failures without hiding reconnectable failu
       }, "TRACE_FAILED"),
     failure,
   );
+});
+
+test('WorkHub reconciles a lost answer through the replacement IPC owner without a fresh submission', { timeout: 1_000 }, async (t) => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  t.after(() => router.close());
+  const input = { turnId: 'original-turn', text: 'original payload' };
+  const dispatched = deferred<void>();
+  let submissions = 0;
+  const register = (epoch: string) => {
+    const target = router.createTarget('workhub');
+    const channels: string[] = [];
+    // Apply the same scope stripping as the candidate's ScopedIpcMain.
+    const scoped: ReconnectableReadIpcMain = {
+      handle: (channel, listener) => { channels.push(channel); target.handle(channel, (event, _scope, ...args) => listener(event, ...args)); },
+      handleReconciledControl(channel, handlers) {
+        channels.push(channel);
+        target.handleReconciledControl!(channel, {
+          dispatch: (event, _scope, ...args) => handlers.dispatch(event, ...args),
+          reconcile: (context, event, _scope, ...args) => handlers.reconcile(context, event, ...args),
+          reconciliationUnavailable: (context, event, _scope, ...args) => handlers.reconciliationUnavailable(context, event, ...args),
+        });
+      },
+    };
+    registerRuntimeHostWorkHubIpc({
+      hostEpoch: epoch,
+      answerWorkHubCoordination: async (request: Parameters<DesktopRuntimeHostClient['answerWorkHubCoordination']>[0]) => {
+        assert.deepEqual(request, input);
+        submissions++;
+        dispatched.resolve();
+        throw new RuntimeHostRequestInterruptedError('workhub.coordination.answer', 'command', 'dispatched', 'connection_lost');
+      },
+      queryTurn: async (request: Parameters<DesktopRuntimeHostClient['queryTurn']>[0]) => {
+        assert.equal(epoch, 'new-host', 'reconciliation belongs to the replacement client');
+        assert.deepEqual(request, { sessionId: 'maka_workhub_coordination', turnId: input.turnId });
+        throw new RuntimeHostOperationError('turn.query', 'not_found', 'Turn was not admitted');
+      },
+    } as unknown as DesktopRuntimeHostClient, scoped, {});
+    target.completeRegistration();
+    return () => { for (const channel of channels) target.removeHandler(channel); };
+  };
+  const retire = register('old-host');
+  router.activate('workhub');
+  const result = ipc.invoke('workhub:answer', scope('workhub'), input);
+  await dispatched.promise;
+  retire();
+  register('new-host');
+  assert.deepEqual(await result, { kind: 'not_admitted' });
+  assert.equal(submissions, 1);
 });
 
 type IpcHandler = Parameters<IpcMain["handle"]>[1];

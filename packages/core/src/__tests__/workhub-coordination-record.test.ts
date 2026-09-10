@@ -46,6 +46,14 @@ describe('WorkHub Coordination stored records', () => {
     } as const;
 
     assert.deepEqual(decodeCanonicalMessage(assigned), assigned);
+    const delegated = { ...assigned, delegationText: 'Inspect the payment retry state' };
+    assert.deepEqual(decodeCanonicalMessage(delegated), delegated);
+    for (const delegationText of ['', '  ', 42, null]) {
+      assert.throws(
+        () => decodeCanonicalMessage({ ...assigned, delegationText }),
+        /Invalid stored message schema/u,
+      );
+    }
   });
 
   test('rejects malformed or widened coordination records', () => {
@@ -187,6 +195,8 @@ describe('WorkHub Coordination stored records', () => {
     } as const;
 
     assert.deepEqual(decodeCanonicalMessage(replacement), replacement);
+    const delegatedReplacement = { ...replacement, delegationText: 'Fix the login retry loop' };
+    assert.deepEqual(decodeCanonicalMessage(delegatedReplacement), delegatedReplacement);
     assert.deepEqual(decodeCanonicalMessage(assigned), assigned);
     assert.deepEqual(decodeCanonicalMessage(superseded), superseded);
     assert.deepEqual(decodeCanonicalMessage(aborted), aborted);

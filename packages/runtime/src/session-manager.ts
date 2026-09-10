@@ -29,6 +29,7 @@
  * persistence and same-session serialization semantics.
  */
 
+import type { WorkHubActionReceipt } from '@maka/core/workhub-action-result';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -137,7 +138,10 @@ import type {
   RuntimeInvocationRootAuthority,
   ToolBoundaryProtocol,
 } from '@maka/core/runtime-event';
-import type { RunCompositionSnapshot } from '@maka/core/run-composition';
+import type {
+  RequestCompositionSnapshotInput,
+  RunCompositionSnapshot,
+} from '@maka/core/run-composition';
 import type {
   SubagentWorkspaceBinding,
   SubagentWorktreeExecutor,
@@ -711,6 +715,11 @@ export interface BackendFactoryContext {
   recordSystemNote?: (kind: RuntimeSystemNoteKind, turnId: string, data?: unknown) => Promise<void>;
   /** Immutable Run policy snapshot; provider dispatch waits for this durable commit. */
   recordRunComposition?: (runId: string, snapshot: RunCompositionSnapshot) => Promise<void>;
+  /** Append-only logical request surface; provider dispatch waits for this durable epoch. */
+  recordRequestComposition?: (
+    runId: string,
+    snapshot: RequestCompositionSnapshotInput,
+  ) => Promise<string>;
   loadHistoryCompactCheckpoint?: () => Promise<HistoryCompactCheckpoint | undefined>;
   recordHistoryCompactCheckpoint?: (
     checkpoint: HistoryCompactCheckpoint,
@@ -2334,6 +2343,15 @@ export class SessionManager {
     }
   }
 
+  runCoordinationOperation(
+    sessionId: string,
+    input: UserMessageInput,
+    options: TurnStartOptions,
+    execute: () => Promise<WorkHubActionReceipt>,
+  ): AsyncIterable<SessionEvent> {
+    return this.runtimeKernel.runCoordinationOperation(sessionId, input, options, execute);
+  }
+
   async *compactSession(
     sessionId: string,
     input: CompactSessionInput = {},
@@ -3587,38 +3605,39 @@ export class SessionManager {
     const hostedAuthority = isRuntimeHostedRootAuthority(this.deps.messageAuthority)
       ? this.deps.messageAuthority
       : undefined;
-    const ownStop = hostedAuthority
-      ? hostedAuthority.stopSession(sessionId, input)
-      : this.runtimeKernel.stopSession(sessionId, input);
-    let childStops: PromiseSettledResult<void>[] = [];
-    let childLookupError: unknown;
-    try {
-      const children = await this.listChildSessions(sessionId);
-      childStops = await Promise.allSettled(
-        children
-          .filter((child) => child.subagentParent?.lifecycle === 'foreground')
-          .map((child) =>
-            hostedAuthority
-              ? hostedAuthority.stopSession(child.id, input)
-              : this.runtimeKernel.stopSession(child.id, input),
-          ),
-      );
-    } catch (error) {
-      childLookupError = error;
-    }
-    await ownStop;
-    const childStopError = childStops.find(
-      (result): result is PromiseRejectedResult => result.status === 'rejected',
-    )?.reason;
-    if (childLookupError !== undefined) throw childLookupError;
-    if (childStopError !== undefined) throw childStopError;
+    await this.#stopSessionTree(
+      sessionId,
+      hostedAuthority
+        ? hostedAuthority.stopSession(sessionId, input)
+        : this.runtimeKernel.stopSession(sessionId, input),
+      (childSessionId) =>
+        hostedAuthority
+          ? hostedAuthority.stopSession(childSessionId, input)
+          : this.runtimeKernel.stopSession(childSessionId, input),
+    );
   }
 
   async deliverHostedRootStop(sessionId: string, input: StopSessionInput = {}): Promise<void> {
-    const ownStop = this.runtimeKernel.stopSession(sessionId, input);
     const authority = isRuntimeHostedRootAuthority(this.deps.messageAuthority)
       ? this.deps.messageAuthority
       : undefined;
+    await this.#stopSessionTree(
+      sessionId,
+      this.runtimeKernel.stopSession(sessionId, input),
+      (childSessionId) =>
+        authority
+          ? authority.stopSession(childSessionId, input)
+          : this.runtimeKernel.stopSession(childSessionId, input),
+    );
+  }
+
+  async #stopSessionTree(
+    sessionId: string,
+    ownStop: Promise<void>,
+    stopChild: (childSessionId: string) => Promise<void>,
+  ): Promise<void> {
+    // Observe immediately while child lookup runs; await below still propagates the original error.
+    void ownStop.catch(() => undefined);
     let childStops: PromiseSettledResult<void>[] = [];
     let childLookupError: unknown;
     try {
@@ -3626,11 +3645,7 @@ export class SessionManager {
       childStops = await Promise.allSettled(
         children
           .filter((child) => child.subagentParent?.lifecycle === 'foreground')
-          .map((child) =>
-            authority
-              ? authority.stopSession(child.id, input)
-              : this.runtimeKernel.stopSession(child.id, input),
-          ),
+          .map((child) => stopChild(child.id)),
       );
     } catch (error) {
       childLookupError = error;
@@ -3686,6 +3701,12 @@ export class SessionManager {
         executionKind: input.execution.kind,
         goalId: input.execution.goalId,
       };
+    } else if (
+      input.execution.kind === 'workhub_coordination' &&
+      input.execution.operation === 'action'
+    ) {
+      recoveryReason = 'coordination_action_admission_without_run';
+      diagnostic = { executionKind: input.execution.kind, operation: input.execution.operation };
     } else if (input.execution.kind === 'legacy_automation') {
       root = { kind: 'legacy_automation', legacyAutomationId: input.execution.automationId };
       recoveryReason = 'legacy_automation_authority_removed';

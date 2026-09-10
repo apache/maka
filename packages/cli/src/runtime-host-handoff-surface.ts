@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { createInterface } from 'node:readline';
+import { clearLine, createInterface, cursorTo, type Interface } from 'node:readline';
 import { stripVTControlCharacters } from 'node:util';
 import type { Readable, Writable } from 'node:stream';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -27,35 +27,25 @@ import {
   type OpenHostHandoffSurface,
 } from '@maka/runtime-host/client';
 
-/** One readline lifetime renders the shared decision; it never selects replacement policy. */
+/** The surface owns terminal input; replacement policy stays in the shared handoff. */
 export function createCliHostHandoffSurface(
   locale: UiLocale,
   input: Readable = process.stdin,
   output: Writable & { isTTY?: boolean } = process.stderr,
 ): OpenHostHandoffSurface {
   return (submit) => {
-    const readline = createInterface({ input, output, terminal: output.isTTY === true });
+    let readline: Interface | undefined;
     let current: HostHandoffView | undefined;
     let closed = false;
     let ended = false;
+    const releaseReader = () => {
+      const previous = readline;
+      readline = undefined;
+      previous?.close();
+    };
     const cancel = () => {
       if (current) submit(current.revision, 'cancel');
     };
-    readline.on('SIGINT', cancel);
-    readline.on('close', () => {
-      ended = true;
-      if (!closed) cancel();
-    });
-    readline.on('line', (line) => {
-      if (!current) return;
-      const answer = line.trim().toLowerCase();
-      const action = answer === 'r' ? 'retry' : answer === 'stop' ? 'interrupt' : 'cancel';
-      if (!current.actions.includes(action)) {
-        readline.prompt();
-        return;
-      }
-      submit(current.revision, action);
-    });
     return {
       update(view) {
         if (closed || current?.revision === view.revision) return;
@@ -64,8 +54,13 @@ export function createCliHostHandoffSurface(
           cancel();
           return;
         }
-        // Discard partially typed consent when the observed target/consequences change.
-        if (output.isTTY) readline.write(null, { ctrl: true, name: 'u' });
+        // A new observation gets a new input buffer. Ctrl+U leaves text after
+        // the cursor intact and is ignored by readline in TERM=dumb.
+        releaseReader();
+        if (output.isTTY) {
+          clearLine(output, 0);
+          cursorTo(output, 0);
+        }
         const copy = formatHostHandoff(view, locale);
         const text = [copy.title, copy.description, copy.detail, view.diagnostic]
           .filter(Boolean)
@@ -82,12 +77,43 @@ export function createCliHostHandoffSurface(
           ({ action, label }) =>
             `${action === 'interrupt' ? 'stop' : action === 'retry' ? 'r' : 'Enter'}: ${label}`,
         );
-        readline.setPrompt(options.join(' · ') + ' > ');
-        readline.prompt();
+        // Create the reader only after the explanation is visible, with the
+        // final action prompt already installed. Never draw readline's default >.
+        const reader = createInterface({
+          input,
+          output,
+          terminal: output.isTTY === true,
+          prompt: options.join(' · ') + ' > ',
+        });
+        readline = reader;
+        reader.on('SIGINT', cancel);
+        reader.on('close', () => {
+          if (readline !== reader) return;
+          ended = true;
+          if (!closed) cancel();
+        });
+        reader.on('line', (line) => {
+          if (readline !== reader || current?.revision !== view.revision) return;
+          const answer = line.trim().toLowerCase();
+          const action =
+            answer === 'r'
+              ? 'retry'
+              : answer === 'stop'
+                ? 'interrupt'
+                : answer === ''
+                  ? 'cancel'
+                  : undefined;
+          if (!action || !view.actions.includes(action)) {
+            reader.prompt();
+            return;
+          }
+          submit(view.revision, action);
+        });
+        reader.prompt();
       },
       close() {
         closed = true;
-        readline.close();
+        releaseReader();
       },
     };
   };

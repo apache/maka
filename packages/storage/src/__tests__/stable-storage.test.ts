@@ -18,11 +18,23 @@
  */
 
 import assert from 'node:assert/strict';
-import { appendFile, lstat, mkdtemp, open, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { readStableBoundedFile } from '../stable-storage.js';
+import { hardenDirectory, readStableBoundedFile } from '../stable-storage.js';
 
 async function fixture(t: test.TestContext) {
   const directory = await mkdtemp(join(tmpdir(), 'maka-stable-file-'));
@@ -98,4 +110,25 @@ test('rejects a pathname replaced after opening the file', async (t) => {
     ),
     /invalid stable file/u,
   );
+});
+
+test('hardenDirectory creates a 0700 directory chain', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const { directory } = await fixture(t);
+  const targetDir = join(directory, 'secrets', 'sub');
+  await hardenDirectory(targetDir);
+  assert.equal((await stat(join(directory, 'secrets'))).mode & 0o777, 0o700);
+  assert.equal((await stat(targetDir)).mode & 0o777, 0o700);
+});
+
+test('hardenDirectory re-chmods a pre-existing world-accessible directory to 0700', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const { directory } = await fixture(t);
+  const loose = join(directory, 'loose');
+  await mkdir(loose, { recursive: true, mode: 0o777 });
+  await chmod(loose, 0o777); // mkdir's mode only applies on creation
+  await hardenDirectory(loose);
+  assert.equal((await stat(loose)).mode & 0o777, 0o700);
 });

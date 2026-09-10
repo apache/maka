@@ -36,7 +36,7 @@ describe('Computer Use host health', () => {
   it('does not report a binary-only executor as healthy before first use', () => {
     assert.deepEqual(computerUseServiceHealth('maka-cu', snapshot('idle')), {
       state: 'not_run',
-      reason: 'maka-cu 已可用，将在首次调用时启动。',
+      reason: 'cu_executor_lazy_start',
     });
   });
 
@@ -44,7 +44,7 @@ describe('Computer Use host health', () => {
     assert.equal(computerUseServiceHealth('maka-cu', snapshot('ready')).state, 'healthy');
     assert.equal(
       computerUseServiceHealth('maka-cu', snapshot('backing_off')).reason,
-      'maka-cu executor 正在启动或恢复。',
+      'cu_executor_recovering',
     );
     assert.equal(
       computerUseServiceHealth('maka-cu', snapshot('starting')).state,
@@ -52,11 +52,11 @@ describe('Computer Use host health', () => {
     );
     assert.deepEqual(computerUseServiceHealth('maka-cu', snapshot('unavailable')), {
       state: 'not_available',
-      reason: 'maka-cu executor 启动失败或已退出。',
+      reason: 'cu_executor_start_failed',
     });
     assert.deepEqual(computerUseServiceHealth('maka-cu', snapshot('disposed')), {
       state: 'not_available',
-      reason: 'maka-cu executor 已停止。',
+      reason: 'cu_executor_stopped',
     });
   });
 

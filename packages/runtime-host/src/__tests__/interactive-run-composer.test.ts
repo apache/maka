@@ -56,6 +56,126 @@ test('Deep Research keeps standard inspection tools and its durable workspace to
   }
 });
 
+test('the composer resolves scoped Tool additions without rebuilding the backend', () => {
+  let additions: readonly MakaTool[] = [];
+  const dynamic = tool('dynamic_tool');
+  const composer = createFixtureComposer({ resolveAdditionalTools: () => additions });
+
+  assert.equal(
+    composer.tools.some(({ name }) => name === dynamic.name),
+    false,
+  );
+  additions = [dynamic];
+  assert.equal(
+    composer.resolveTools?.().some(({ name }) => name === dynamic.name),
+    true,
+  );
+});
+
+test('the composer keeps Host bindings stable while resampling scoped Tool additions', () => {
+  let additions: readonly MakaTool[] = [];
+  const composer = createFixtureComposer({ resolveAdditionalTools: () => additions });
+  const initialRead = composer.tools.find(({ name }) => name === 'Read');
+  assert.ok(initialRead);
+
+  additions = [tool('dynamic_tool')];
+  const next = composer.resolveTools?.() ?? [];
+  assert.equal(
+    next.find(({ name }) => name === 'Read'),
+    initialRead,
+  );
+  assert.equal(
+    next.some(({ name }) => name === 'dynamic_tool'),
+    true,
+  );
+});
+
+test('scoped Tool resolution receives the complete stable Host binding', () => {
+  let observedHostTools: readonly MakaTool[] = [];
+  const composer = createFixtureComposer({
+    hostTools: [tool('host_extension')],
+    resolveAdditionalTools: (hostTools) => {
+      observedHostTools = hostTools;
+      return [tool('plugin_extension')];
+    },
+  });
+
+  assert.equal(
+    observedHostTools.some(({ name }) => name === 'Read'),
+    true,
+  );
+  assert.equal(
+    observedHostTools.some(({ name }) => name === 'host_extension'),
+    true,
+  );
+  assert.equal(
+    composer.tools.some(({ name }) => name === 'plugin_extension'),
+    true,
+  );
+});
+
+test('an explicit tool profile remains an exact ceiling over scoped Tool additions', () => {
+  const composer = createFixtureComposer({
+    toolProfile: 'headless-coding-v1',
+    resolveAdditionalTools: () => [tool('Read'), tool('plugin_only')],
+  });
+
+  assert.equal(
+    composer.resolveTools?.().some(({ name }) => name === 'plugin_only'),
+    false,
+  );
+  assert.equal(composer.resolveTools?.().filter(({ name }) => name === 'Read').length, 1);
+});
+
+function tool(name: string): MakaTool {
+  return {
+    name,
+    description: name,
+    parameters: {},
+    impl: async () => name,
+  };
+}
+test('WorkHub v2 binds control, tasks and attachment reading while legacy WorkHub stays tool-free', () => {
+  const control = tool('mcp__desktop_workhub__control');
+  const tasks = tool('mcp__desktop_workhub__tasks');
+  const clientCapabilities = {
+    tools: [control, tasks, tool('Bash'), tool('mcp__desktop_browser__navigate')],
+    groups: [],
+  };
+  assert.deepEqual(
+    createFixtureComposer({
+      toolProfile: 'workhub-coordination-v2',
+      clientCapabilities,
+      resolveAdditionalTools: () => [tool('plugin_only'), tool('Read')],
+    }).tools.map(({ name }) => name),
+    [control.name, tasks.name, 'Read'],
+  );
+  assert.deepEqual(
+    createFixtureComposer({
+      toolProfile: 'workhub-coordination-v1',
+      clientCapabilities,
+    }).tools,
+    [],
+  );
+  assert.throws(
+    () =>
+      createFixtureComposer({
+        toolProfile: 'workhub-coordination-v2',
+        clientCapabilities: { tools: [control], groups: [] },
+      }),
+    /Hosted tool profile is unavailable: mcp__desktop_workhub__tasks/,
+  );
+  assert.throws(
+    () =>
+      createFixtureComposer({
+        toolProfile: 'workhub-coordination-v2',
+        boundTools: [],
+        clientCapabilities,
+      }),
+    /Hosted tool profile is unavailable/,
+  );
+});
+
 function createFixtureComposer(
   overrides: Partial<Parameters<typeof createInteractiveRunComposer>[0]> = {},
 ) {

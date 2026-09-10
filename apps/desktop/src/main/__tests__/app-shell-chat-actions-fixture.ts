@@ -94,6 +94,7 @@ export function createTransientState() {
 export function createActionsDeps() {
   const activeIdRef = { current: undefined as string | undefined };
   return {
+    onFollowLatest: async (_sessionId: string) => true,
     uiLocale: 'en' as const,
     activeIdRef,
     captureComposerImportOwner: () => ({

@@ -29,8 +29,16 @@ import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import { isRuntimeHandoffPause, type RuntimeHandoffIntent } from '@maka/core/runtime-handoff';
 import { RunHandoffGate, type RunHandoffRequest } from './run-handoff-gate.js';
 import { preserveHandoffOpening } from './runtime-resume.js';
-import type { RunCompositionSnapshot } from '@maka/core/run-composition';
-import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
+import type {
+  RequestCompositionSnapshot,
+  RequestCompositionSnapshotInput,
+  RunCompositionSnapshot,
+} from '@maka/core/run-composition';
+import {
+  createRequestCompositionSnapshot,
+  decodeRequestCompositionSnapshot,
+  decodeRunCompositionSnapshot,
+} from '@maka/core/run-composition';
 import { DurableStoreWriteError, RunSealedError } from '@maka/core/runtime-event-store';
 import {
   buildInvocationOpenedEvent,
@@ -50,6 +58,7 @@ import {
 } from '@maka/core/tool-ledger-scanner';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 
+import { stableHash } from './request-shape.js';
 import { Buffer } from 'node:buffer';
 import { isDeepStrictEqual } from 'node:util';
 import { redactSecrets } from '@maka/core/redaction';
@@ -258,6 +267,9 @@ export class AgentRun {
   private runComposition: RunCompositionSnapshot | undefined;
   private runCompositionWrite: Promise<void> | undefined;
   private runCompositionCommitted = false;
+  private requestComposition: RequestCompositionSnapshot | undefined;
+  private requestCompositionIndex: Map<string, RequestCompositionSnapshot> | undefined;
+  private requestCompositionIndexRead: Promise<void> | undefined;
   private failureClass: string | undefined;
   private failureMessage: string | undefined;
   private lastTs = 0;
@@ -644,6 +656,77 @@ export class AgentRun {
   }
 
   /**
+   * Durably binds one logical model step to its effective request surface.
+   * Unchanged steps reuse the latest snapshot; a changed surface appends a full
+   * replacement before provider dispatch, matching DSH request/header epochs.
+   */
+  async recordRequestComposition(input: RequestCompositionSnapshotInput): Promise<string> {
+    if (!this.input.runStore) {
+      throw new Error('AgentRun store is not configured');
+    }
+    await this.loadRequestCompositionIndex();
+    const snapshot = createRequestCompositionSnapshot(
+      input,
+      this.requestCompositionIndex?.size ? 'change' : 'initial',
+    );
+    const surfaceHash = requestCompositionSurfaceHash(snapshot);
+    const existing = this.requestCompositionIndex?.get(surfaceHash);
+    if (existing) {
+      if (!sameRequestCompositionSurface(existing, snapshot)) {
+        throw new Error(`Request Composition surface hash collision: ${surfaceHash}`);
+      }
+      this.requestComposition = existing;
+      return existing.compositionId;
+    }
+    await this.enqueueRequiredRunStoreWrite('append request composition', async () => {
+      await this.input.runStore?.appendEvent(
+        this.sessionId,
+        this.runId,
+        {
+          type: 'request_composition_resolved',
+          id: snapshot.compositionId,
+          runId: this.runId,
+          sessionId: this.sessionId,
+          turnId: this.turnId,
+          ts: this.input.now(),
+          data: { snapshot },
+        },
+        { durable: true },
+      );
+    });
+    this.requestComposition = snapshot;
+    this.requestCompositionIndex?.set(surfaceHash, snapshot);
+    return snapshot.compositionId;
+  }
+
+  private async loadRequestCompositionIndex(): Promise<void> {
+    if (this.requestCompositionIndex) return;
+    if (this.requestCompositionIndexRead) return await this.requestCompositionIndexRead;
+    const read = (async (): Promise<void> => {
+      const index = new Map<string, RequestCompositionSnapshot>();
+      const events = await this.input.runStore?.readEvents(this.sessionId, this.runId);
+      for (const event of events ?? []) {
+        if (event.type !== 'request_composition_resolved') continue;
+        const snapshot = decodeRequestCompositionSnapshot(event.data?.snapshot);
+        const surfaceHash = requestCompositionSurfaceHash(snapshot);
+        const existing = index.get(surfaceHash);
+        if (existing && !sameRequestCompositionSurface(existing, snapshot)) {
+          throw new Error(`Request Composition surface hash collision: ${surfaceHash}`);
+        }
+        index.set(surfaceHash, existing ?? snapshot);
+        this.requestComposition = snapshot;
+      }
+      this.requestCompositionIndex = index;
+    })();
+    this.requestCompositionIndexRead = read;
+    try {
+      await read;
+    } finally {
+      if (this.requestCompositionIndexRead === read) this.requestCompositionIndexRead = undefined;
+    }
+  }
+
+  /**
    * Canonical accounting record for one physical provider request (#1679).
    *
    * Durable, unlike the diagnostic attempt append above: this is the metering
@@ -861,7 +944,7 @@ export class AgentRun {
     };
   }
 
-  async begin(): Promise<AgentRunBeginResult> {
+  private async beginUserTurn(): Promise<RuntimeEvent> {
     // Owed from here, not from after the opening: `openInvocation` can leave the
     // invocation open and still throw, and `finalize` reopens what it can.
     this.initialRuntimeEventPending = true;
@@ -870,6 +953,17 @@ export class AgentRun {
     this.lastTs = this.input.now();
     const initialRuntimeEvent = await this.recordInitialRuntimeEvent(this.lastTs);
 
+    return initialRuntimeEvent;
+  }
+
+  /** Host actions share Turn facts and finalization without activating a provider. */
+  async beginCoordination(): Promise<void> {
+    await this.beginUserTurn();
+    await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, this.lastTs);
+  }
+
+  async begin(): Promise<AgentRunBeginResult> {
+    const initialRuntimeEvent = await this.beginUserTurn();
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
 
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, this.lastTs);
@@ -1909,6 +2003,38 @@ function redactTraceString(value: string): string {
 
 function errorMessage(error: unknown): string {
   return redactTraceString(error instanceof Error ? error.message : String(error));
+}
+
+function sameRequestCompositionSurface(
+  current: RequestCompositionSnapshot,
+  candidate: RequestCompositionSnapshot,
+): boolean {
+  const {
+    schemaVersion: _schemaVersion,
+    compositionId: _compositionId,
+    step: _step,
+    reason: _reason,
+    ...currentSurface
+  } = current;
+  const {
+    schemaVersion: _candidateSchemaVersion,
+    compositionId: _candidateCompositionId,
+    step: _candidateStep,
+    reason: _candidateReason,
+    ...candidateSurface
+  } = candidate;
+  return isDeepStrictEqual(currentSurface, candidateSurface);
+}
+
+function requestCompositionSurfaceHash(snapshot: RequestCompositionSnapshot): string {
+  const {
+    schemaVersion: _schemaVersion,
+    compositionId: _compositionId,
+    step: _step,
+    reason: _reason,
+    ...surface
+  } = snapshot;
+  return stableHash(surface);
 }
 
 function isInteractionResumeAck(event: SessionEvent): boolean {

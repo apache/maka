@@ -336,6 +336,12 @@ function compactToolSummary(entry: MakaPiToolEntry): CompactToolSummary | undefi
   ) {
     return { text: linesText(readBodyLineCount(text)), protect: true };
   }
+  const status = makaPiToolPresentationStatus(entry);
+  // Error-text size is not a successful read's size. Show only the outcome,
+  // including under NO_COLOR; the full reason remains in expanded details.
+  if (status === 'error' || status === 'failed' || status === 'aborted') {
+    return { text: status === 'error' ? 'failed' : status, protect: true };
+  }
   return textResultSummary(text);
 }
 

@@ -23,8 +23,14 @@ import type { SessionEvent } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
-import { Badge, type BadgeVariant, Button as UiButton, useToast, useUiLocale } from '@maka/ui';
-import { getPlanModeCopy, type PlanModeCopy } from './locales/plan-mode-copy.js';
+import { Badge, type BadgeVariant, Button as UiButton, useToast, useUiLocale, type UiLocale } from '@maka/ui';
+import { reportUnexpectedError } from './application/contracts/operation-diagnostics.js';
+import type { PlanControlIpcResult } from '../shared/plan-mode-ipc.js';
+import {
+  getPlanModeCopy,
+  planControlFailureCopy,
+  type PlanModeCopy,
+} from './locales/plan-mode-copy.js';
 
 export interface PlanModeState {
   state: PlanSessionState | undefined;
@@ -38,7 +44,8 @@ export interface PlanModeState {
 
 export function usePlanModeState(session: SessionSummary | undefined): PlanModeState {
   const toastApi = useToast();
-  const copy = getPlanModeCopy(useUiLocale());
+  const locale = useUiLocale();
+  const copy = getPlanModeCopy(locale);
   const [state, setState] = useState<PlanSessionState>();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
@@ -64,7 +71,10 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
     setState(undefined);
     setError(undefined);
     if (!session) return;
-    const refreshOrReport = () => void refresh().catch((cause) => setError(message(cause)));
+    const refreshOrReport = () => void refresh().catch((cause) => {
+      reportUnexpectedError('plan-mode:refresh', cause);
+      setError(copy.operationFailed);
+    });
     refreshOrReport();
     const unsubscribeEvents = window.maka.sessions.subscribeEvents(session.id, (event: SessionEvent) => {
       if (
@@ -83,25 +93,32 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
       unsubscribeEvents();
       unsubscribePlanChanges();
     };
-  }, [session?.id, session?.collaborationMode, refresh]);
-
-  const run = useCallback(async (action: () => Promise<void>): Promise<void> => {
-    setPending(true);
-    setError(undefined);
-    try {
-      await action();
-      await refresh();
-    } catch (cause) {
-      setError(message(cause));
-    } finally {
-      setPending(false);
-    }
-  }, [refresh]);
+  }, [copy.operationFailed, session?.id, session?.collaborationMode, refresh]);
+  const run = useCallback(
+    async (action: () => Promise<PlanControlIpcResult<unknown>>): Promise<void> => {
+      setPending(true);
+      setError(undefined);
+      try {
+        const result = await action();
+        if (!result.ok) {
+          setError(planControlFailureCopy(result.error, copy));
+          return;
+        }
+        await refresh();
+      } catch (cause) {
+        reportUnexpectedError('plan-mode:action', cause);
+        setError(copy.operationFailed);
+      } finally {
+        setPending(false);
+      }
+    },
+    [copy, refresh],
+  );
 
   const requestRevision = useCallback(async (proposalId: string): Promise<void> => {
     if (!session) return;
     await run(async () => {
-      await window.maka.sessions.requestPlanRevision(session.id, proposalId);
+      return window.maka.sessions.requestPlanRevision(session.id, proposalId);
     });
   }, [run, session?.id]);
 
@@ -123,13 +140,14 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
           };
     approvalRetry.current = input;
     await run(async () => {
-      await window.maka.sessions.approvePlan(session.id, {
+      const result = await window.maka.sessions.approvePlan(session.id, {
         proposalId: input.proposalId,
         expectedRevision: input.expectedRevision,
         expectedStoreVersion: input.expectedStoreVersion,
         turnId: input.turnId,
       });
-      approvalRetry.current = undefined;
+      if (result.ok) approvalRetry.current = undefined;
+      return result;
     });
   }, [run, session?.id, state]);
 
@@ -142,8 +160,9 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
         : { sessionId: session.id, executionId, turnId: crypto.randomUUID() };
     resumeRetry.current = input;
     await run(async () => {
-      await window.maka.sessions.resumePlan(session.id, executionId, input.turnId);
-      resumeRetry.current = undefined;
+      const result = await window.maka.sessions.resumePlan(session.id, executionId, input.turnId);
+      if (result.ok) resumeRetry.current = undefined;
+      return result;
     });
   }, [run, session?.id]);
 
@@ -158,7 +177,7 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
     });
     if (!confirmed) return;
     await run(async () => {
-      await window.maka.sessions.abandonPlanExecution(session.id, executionId);
+      return window.maka.sessions.abandonPlanExecution(session.id, executionId);
     });
   }, [copy, run, session?.id, toastApi]);
 
@@ -365,8 +384,4 @@ function executionStepMark(status: PlanExecutionStep['status']): string {
   if (status === 'in_progress') return '•';
   if (status === 'skipped') return '–';
   return '';
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

@@ -21,11 +21,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import {
-  decodeWorkHubCoordinationActInput,
+  decodeWorkHubCoordinationActFromTurnInput,
+  decodeWorkHubCoordinationConfigureModelInput,
   decodeWorkHubCoordinationActResult,
   decodeWorkHubCoordinationAnswerInput,
   decodeWorkHubCoordinationCandidatesResult,
-  decodeWorkHubCoordinationRecordInput,
   decodeWorkHubCoordinationResolveInput,
   decodeWorkHubCoordinationResolveResult,
   HOST_OPERATION_SPECS,
@@ -50,235 +50,87 @@ test('WorkHub Coordination resolve has a closed empty input and bounded identity
   );
 });
 
-test('WorkHub Coordination answer and summary inputs are closed and bounded', () => {
-  assert.deepEqual(
-    decodeWorkHubCoordinationAnswerInput({ turnId: 'answer-turn', text: 'What changed?' }),
-    { turnId: 'answer-turn', text: 'What changed?' },
-  );
-  assert.deepEqual(
-    decodeWorkHubCoordinationRecordInput({
-      turnId: 'summary-turn',
-      userText: 'Continue payment work',
-      assistantText: 'Submitted to Payment',
-    }),
-    {
-      turnId: 'summary-turn',
-      userText: 'Continue payment work',
-      assistantText: 'Submitted to Payment',
+test('WorkHub model configuration only accepts a revision and explicit model identity', () => {
+  const input = {
+    expectedRevision: 3,
+    modelTarget: {
+      kind: 'explicit',
+      connectionId: 'connection-1',
+      connectionSlug: 'test',
+      model: 'model-1',
     },
-  );
-  assert.deepEqual(
-    decodeWorkHubCoordinationActInput({
-      actionId: 'action-correction',
-      userText: 'No, use login instead',
-      candidateSetId: `sha256:${'e'.repeat(64)}`,
-      confirmation: { kind: 'user_correction' },
-      proposal: {
-        disposition: 'replace',
-        replacesActionId: 'action-payments',
-        target: { disposition: 'delegate_existing', candidateRef: 'candidate_login' },
-      },
-    }).proposal,
-    {
-      disposition: 'replace',
-      replacesActionId: 'action-payments',
-      target: { disposition: 'delegate_existing', candidateRef: 'candidate_login' },
-    },
-  );
-  assert.deepEqual(
-    decodeWorkHubCoordinationActInput({
-      actionId: 'action-stop',
-      userText: 'Stop Payments',
-      proposal: {
-        disposition: 'stop_work',
-        expects: { targetSessionId: 'payments' },
-      },
-      confirmation: { kind: 'user_stop' },
-    }),
-    {
-      actionId: 'action-stop',
-      userText: 'Stop Payments',
-      proposal: {
-        disposition: 'stop_work',
-        expects: { targetSessionId: 'payments' },
-      },
-      confirmation: { kind: 'user_stop' },
-    },
-  );
+  };
+  assert.deepEqual(decodeWorkHubCoordinationConfigureModelInput(input), input);
   for (const invalid of [
-    {
-      actionId: 'action-stop-no-confirmation',
-      userText: 'Stop Payments',
-      proposal: {
-        disposition: 'stop_work',
-        expects: { targetSessionId: 'payments' },
-      },
-    },
-    {
-      actionId: 'action-stop-wrong-confirmation',
-      userText: 'Stop Payments',
-      proposal: {
-        disposition: 'stop_work',
-        expects: { targetSessionId: 'payments' },
-      },
-      confirmation: { kind: 'user_correction' },
-    },
-    {
-      actionId: 'action-stop-injected',
-      userText: 'Stop Payments',
-      proposal: {
-        disposition: 'stop_work',
-        expects: { targetSessionId: 'payments' },
-        targetSessionId: 'injected',
-      },
-      confirmation: { kind: 'user_stop' },
-    },
-    // Preconditions are part of the closed proposal shape, not an optional hint.
-    {
-      actionId: 'action-stop-missing-preconditions',
-      userText: 'Stop Payments',
-      proposal: { disposition: 'stop_work', stopsActionId: 'action-payments' },
-      confirmation: { kind: 'user_stop' },
-    },
-    // Preconditions are a closed shape: no room for a second, client-asserted proof.
-    {
-      actionId: 'action-stop-extra-precondition',
-      userText: 'Stop Payments',
-      proposal: {
-        disposition: 'stop_work',
-        expects: { targetSessionId: 'payments', activeActionIds: ['action-payments'] },
-      },
-      confirmation: { kind: 'user_stop' },
-    },
-  ]) {
+    { ...input, sessionId: 'another-session' },
+    { ...input, permissionMode: 'bypass' },
+    { ...input, expectedRevision: -1 },
+    { ...input, modelTarget: { kind: 'default' } },
+  ])
     assert.throws(
-      () => decodeWorkHubCoordinationActInput(invalid),
-      (error) => error instanceof RuntimeHostProtocolError,
+      () => decodeWorkHubCoordinationConfigureModelInput(invalid),
+      RuntimeHostProtocolError,
     );
-  }
-  assert.throws(
-    () =>
-      decodeWorkHubCoordinationActInput({
-        actionId: 'action-unconfirmed-correction',
-        userText: 'Use login instead',
-        candidateSetId: `sha256:${'f'.repeat(64)}`,
-        proposal: {
-          disposition: 'replace',
-          replacesActionId: 'action-payments',
-          target: { disposition: 'delegate_existing', candidateRef: 'candidate_login' },
-        },
-      }),
-    (error) => error instanceof RuntimeHostProtocolError,
-  );
-  assert.equal(HOST_OPERATION_SPECS['workhub.coordination.answer'].mode, 'command');
-  assert.equal(HOST_OPERATION_SPECS['workhub.coordination.record'].mode, 'command');
-  assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.answer'), true);
-  assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.record'), true);
-  assert.throws(
-    () => decodeWorkHubCoordinationAnswerInput({ turnId: 'turn', text: 'answer', extra: true }),
-    (error) => error instanceof RuntimeHostProtocolError,
-  );
-  assert.throws(
-    () =>
-      decodeWorkHubCoordinationRecordInput({
-        turnId: 'turn',
-        userText: 'user',
-        assistantText: 'x'.repeat(8 * 1024 + 1),
-      }),
-    (error) => error instanceof RuntimeHostProtocolError,
-  );
 });
 
-test('WorkHub Coordination resume has closed input and outcome shapes', () => {
-  assert.deepEqual(
-    decodeWorkHubCoordinationActInput({
-      actionId: 'action-resume',
-      userText: 'Resume Payments',
-      proposal: {
-        disposition: 'resume_work',
-        resumesActionId: 'source-action',
-        expects: { targetSessionId: 'payments' },
-      },
-    }),
-    {
-      actionId: 'action-resume',
-      userText: 'Resume Payments',
-      proposal: {
-        disposition: 'resume_work',
-        resumesActionId: 'source-action',
-        expects: { targetSessionId: 'payments' },
-      },
-    },
+test('WorkHub model actions cannot supply user authority or attachment locators', () => {
+  const input = {
+    turnId: 'active-model-turn',
+    actionId: 'tool-call-1',
+    proposal: { disposition: 'create_new', title: 'Login audit' },
+    delegationText: 'Inspect the login retries',
+    create: { workspace: { kind: 'project', projectId: 'maka' } },
+    newWorkDefaults: { permissionMode: 'ask' },
+  };
+  assert.deepEqual(decodeWorkHubCoordinationActFromTurnInput(input), input);
+  for (const extra of [
+    { userText: 'Create a new Session' },
+    { confirmation: { kind: 'user_stop' } },
+    { attachments: [] },
+  ]) {
+    assert.throws(
+      () => decodeWorkHubCoordinationActFromTurnInput({ ...input, ...extra }),
+      RuntimeHostProtocolError,
+    );
+  }
+  assert.throws(
+    () =>
+      decodeWorkHubCoordinationActFromTurnInput({
+        turnId: 'active-model-turn',
+        actionId: 'tool-call-2',
+        proposal: { disposition: 'answer_here' },
+      }),
+    RuntimeHostProtocolError,
   );
+  assert.equal(HOST_OPERATION_SPECS['workhub.coordination.actFromTurn'].mode, 'command');
+  assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.actFromTurn'), true);
+});
 
-  for (const invalid of [
-    {
-      actionId: 'action-resume-confirmed',
-      userText: 'Resume Payments',
-      proposal: { disposition: 'resume_work', expects: { targetSessionId: 'payments' } },
-      confirmation: { kind: 'user_stop' },
-    },
-    {
-      actionId: 'action-resume-missing-target',
-      userText: 'Resume Payments',
-      proposal: { disposition: 'resume_work' },
-    },
-    {
-      actionId: 'action-resume-injected',
-      userText: 'Resume Payments',
-      proposal: {
-        disposition: 'resume_work',
-        resumesActionId: 'source-action',
-        expects: { targetSessionId: 'payments' },
-        targetSessionId: 'injected',
-      },
-    },
-  ]) {
+test('delegation content is optional, bounded, and unavailable to stop or resume', () => {
+  const input = {
+    actionId: 'delegate-content',
+    turnId: 'active-turn',
+    delegationText: 'Fix the payment retry state',
+    candidateSetId: `sha256:${'a'.repeat(64)}`,
+    proposal: { disposition: 'delegate_existing', candidateRef: 'candidate-payments' },
+  };
+  assert.deepEqual(decodeWorkHubCoordinationActFromTurnInput(input), input);
+  for (const delegationText of ['', ' ', 'x'.repeat(48 * 1024 + 1), 7]) {
     assert.throws(
-      () => decodeWorkHubCoordinationActInput(invalid),
-      (error) => error instanceof RuntimeHostProtocolError,
+      () => decodeWorkHubCoordinationActFromTurnInput({ ...input, delegationText }),
+      RuntimeHostProtocolError,
     );
   }
-
-  for (const result of [
-    {
-      disposition: 'resume_work',
-      outcome: 'resume_started',
-      targetSessionId: 'payments',
-      targetTurnId: 'turn-2',
-    },
-    {
-      disposition: 'resume_work',
-      outcome: 'already_running',
-      targetSessionId: 'payments',
-    },
-  ]) {
-    assert.deepEqual(decodeWorkHubCoordinationActResult(result), result);
-  }
-
-  for (const invalid of [
-    {
-      disposition: 'resume_work',
-      outcome: 'parked',
-      targetSessionId: 'payments',
-    },
-    {
-      disposition: 'resume_work',
-      outcome: 'already_running',
-      targetSessionId: 'payments',
-      parkReason: 'safety_check_failed',
-    },
-    {
-      disposition: 'resume_work',
-      outcome: 'resume_started',
-      targetSessionId: 'payments',
-    },
-  ]) {
-    assert.throws(
-      () => decodeWorkHubCoordinationActResult(invalid),
-      (error) => error instanceof RuntimeHostProtocolError,
-    );
-  }
+  assert.throws(
+    () =>
+      decodeWorkHubCoordinationActFromTurnInput({
+        actionId: 'stop-content',
+        turnId: 'active-turn',
+        delegationText: 'Unrelated work',
+        proposal: { disposition: 'stop_work', expects: { targetSessionId: 'payments' } },
+      }),
+    RuntimeHostProtocolError,
+  );
 });
 
 test('WorkHub Coordination candidates are bounded and carry opaque proposal identities', () => {
@@ -314,196 +166,129 @@ test('WorkHub Coordination candidates are bounded and carry opaque proposal iden
   );
 });
 
-test('WorkHub Coordination action input is a closed disposition union', () => {
-  assert.deepEqual(
-    decodeWorkHubCoordinationActInput({
-      actionId: 'action-answer',
-      userText: 'What changed?',
-      proposal: { disposition: 'answer_here' },
-    }),
+test('model actions retain closed task inputs and bounded answer content', () => {
+  const candidateSetId = 'sha256:' + 'a'.repeat(64);
+  const base = { turnId: 'active-turn', actionId: 'action' };
+  const workspace = { kind: 'host_path', path: '/workspace' };
+  for (const fields of [
+    { proposal: { disposition: 'delegate_existing', candidateRef: 'candidate' }, candidateSetId },
     {
-      actionId: 'action-answer',
-      userText: 'What changed?',
-      proposal: { disposition: 'answer_here' },
+      proposal: { disposition: 'create_new', title: 'Audit' },
+      create: { workspace },
+      newWorkDefaults: { permissionMode: 'ask' },
     },
-  );
-  assert.deepEqual(
-    decodeWorkHubCoordinationActInput({
-      actionId: 'action-delegate',
-      userText: 'Continue payments',
-      candidateSetId: `sha256:${'b'.repeat(64)}`,
-      proposal: { disposition: 'delegate_existing', candidateRef: 'candidate_payments' },
-    }).proposal,
-    { disposition: 'delegate_existing', candidateRef: 'candidate_payments' },
-  );
-  assert.deepEqual(
-    decodeWorkHubCoordinationActInput({
-      actionId: 'action-create',
-      userText: 'Create an accessibility audit',
-      proposal: { disposition: 'create_new', title: 'Accessibility audit' },
-      create: {
-        workspace: { kind: 'host_path', path: '/workspace' },
+    {
+      proposal: {
+        disposition: 'replace',
+        replacesActionId: 'source',
+        target: { disposition: 'delegate_existing', candidateRef: 'candidate' },
       },
-    }).create,
-    {
-      workspace: { kind: 'host_path', path: '/workspace' },
+      candidateSetId,
     },
-  );
-  assert.throws(
-    () =>
-      decodeWorkHubCoordinationActInput({
-        actionId: 'action-create-with-identity',
-        userText: 'Create an accessibility audit',
-        proposal: { disposition: 'create_new', title: 'Accessibility audit' },
-        create: {
-          sessionId: 'renderer-invented',
-          workspace: { kind: 'host_path', path: '/workspace' },
-        },
-      }),
-    (error) => error instanceof RuntimeHostProtocolError,
-  );
-  assert.throws(
-    () =>
-      decodeWorkHubCoordinationActInput({
-        actionId: 'action-bypass',
-        userText: 'Continue payments',
-        proposal: {
-          disposition: 'delegate_existing',
-          candidateRef: 'candidate_payments',
-          sessionId: 'invented-session',
-        },
-        candidateSetId: `sha256:${'c'.repeat(64)}`,
-      }),
-    (error) => error instanceof RuntimeHostProtocolError,
-  );
-  assert.throws(
-    () =>
-      decodeWorkHubCoordinationActInput({
-        actionId: 'action-escalate',
-        userText: 'Continue payments',
-        proposal: { disposition: 'answer_here' },
-        permissionMode: 'bypass',
-        tools: ['shell'],
-      }),
-    (error) => error instanceof RuntimeHostProtocolError,
-  );
-  assert.throws(
-    () =>
-      decodeWorkHubCoordinationActInput({
-        actionId: 'action-implicit-create',
-        userText: 'Continue payments',
-        proposal: { disposition: 'delegate_existing', candidateRef: 'candidate_payments' },
-        candidateSetId: `sha256:${'d'.repeat(64)}`,
-        create: {
-          workspace: { kind: 'host_path', path: '/workspace' },
-        },
-      }),
-    (error) => error instanceof RuntimeHostProtocolError,
-  );
-  assert.throws(
-    () =>
-      decodeWorkHubCoordinationActInput({
-        actionId: 'action-replace',
-        userText: 'No, use login instead',
-        candidateSetId: `sha256:${'e'.repeat(64)}`,
-        proposal: {
-          disposition: 'delegate_existing',
-          candidateRef: 'candidate_login',
-          replace: {
-            candidateRef: 'candidate_payments',
-            expectedTurnId: 'turn-payments',
-          },
-        },
-      }),
-    (error) => error instanceof RuntimeHostProtocolError,
-  );
-  assert.equal(HOST_OPERATION_SPECS['workhub.coordination.act'].mode, 'command');
-  assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.act'), true);
+    { proposal: { disposition: 'stop_work', expects: { targetSessionId: 'target' } } },
+    {
+      proposal: {
+        disposition: 'resume_work',
+        resumesActionId: 'source',
+        expects: { targetSessionId: 'target' },
+      },
+    },
+  ])
+    assert.deepEqual(decodeWorkHubCoordinationActFromTurnInput({ ...base, ...fields }), {
+      ...base,
+      ...fields,
+    });
+  for (const fields of [
+    { proposal: { disposition: 'create_new', title: 'Audit' } },
+    { proposal: { disposition: 'delegate_existing', candidateRef: 'candidate' } },
+    {
+      proposal: { disposition: 'create_new', title: 'Audit' },
+      create: { workspace },
+      newWorkDefaults: { permissionMode: 'invented' },
+    },
+    {
+      proposal: {
+        disposition: 'stop_work',
+        expects: { targetSessionId: 'target', activeActionIds: ['forged'] },
+      },
+    },
+    {
+      proposal: {
+        disposition: 'resume_work',
+        resumesActionId: 'source',
+        expects: { targetSessionId: 'target' },
+      },
+      create: { workspace },
+    },
+  ])
+    assert.throws(() => decodeWorkHubCoordinationActFromTurnInput({ ...base, ...fields }));
+  const attachments = [
+    {
+      name: 'brief.txt',
+      kind: 'other',
+      mimeType: 'text/plain',
+      bytes: 4,
+      ref: { kind: 'session_file', sessionId: 'maka_workhub_coordination', relativePath: 'brief' },
+    },
+  ];
+  const answer = { turnId: 'answer', text: 'Review file', attachments };
+  assert.deepEqual(decodeWorkHubCoordinationAnswerInput(answer), answer);
+  for (const invalid of [
+    { ...answer, extra: true },
+    { ...answer, text: 'x'.repeat(48 * 1024 + 1) },
+    { ...answer, attachments: Array(9).fill(attachments[0]) },
+  ])
+    assert.throws(() => decodeWorkHubCoordinationAnswerInput(invalid));
 });
 
-test('WorkHub Coordination action results preserve the admitted disposition', () => {
-  assert.deepEqual(
-    decodeWorkHubCoordinationActResult({
-      disposition: 'delegate_existing',
-      targetSessionId: 'payments',
-      targetTurnId: 'turn-payments',
-      steered: true,
-    }),
+test('action outcomes cannot invent a target Turn or revive removed local dispositions', () => {
+  for (const result of [
     {
       disposition: 'delegate_existing',
-      targetSessionId: 'payments',
-      targetTurnId: 'turn-payments',
+      targetSessionId: 'target',
+      targetTurnId: 'turn',
       steered: true,
     },
-  );
-  assert.throws(
-    () =>
-      decodeWorkHubCoordinationActResult({
-        disposition: 'delegate_existing',
-        targetSessionId: 'payments',
-        targetTurnId: 'turn-payments',
-        permissionMode: 'bypass',
-      }),
-    (error) => error instanceof RuntimeHostProtocolError,
-  );
-  assert.deepEqual(
-    decodeWorkHubCoordinationActResult({
-      disposition: 'replace',
-      replacementDisposition: 'delegate_existing',
-      targetSessionId: 'login',
-      targetTurnId: 'turn-login',
-    }),
+    { disposition: 'create_new', targetSessionId: 'target', targetTurnId: 'turn' },
     {
       disposition: 'replace',
-      replacementDisposition: 'delegate_existing',
-      targetSessionId: 'login',
-      targetTurnId: 'turn-login',
+      replacementDisposition: 'create_new',
+      targetSessionId: 'target',
+      targetTurnId: 'turn',
     },
-  );
-  assert.deepEqual(
-    decodeWorkHubCoordinationActResult({
-      disposition: 'stop_work',
-      outcome: 'not_owned',
-      targetSessionId: 'payments',
-      targetTurnId: 'shared-turn',
-    }),
+    { disposition: 'stop_work', outcome: 'cancelled_pending', targetSessionId: 'target' },
     {
       disposition: 'stop_work',
       outcome: 'not_owned',
-      targetSessionId: 'payments',
-      targetTurnId: 'shared-turn',
-    },
-  );
-  assert.throws(
-    () =>
-      decodeWorkHubCoordinationActResult({
-        disposition: 'stop_work',
-        outcome: 'stopped',
-        targetSessionId: 'payments',
-      }),
-    (error) => error instanceof RuntimeHostProtocolError,
-  );
-  for (const invalid of [
-    {
-      disposition: 'stop_work',
-      outcome: 'stop_delivered',
-      targetSessionId: 'payments',
+      targetSessionId: 'target',
+      targetTurnId: 'user-turn',
     },
     {
-      disposition: 'stop_work',
-      outcome: 'not_owned',
-      targetSessionId: 'payments',
+      disposition: 'resume_work',
+      outcome: 'resume_started',
+      targetSessionId: 'target',
+      targetTurnId: 'turn',
     },
+    { disposition: 'resume_work', outcome: 'already_running', targetSessionId: 'target' },
+  ])
+    assert.deepEqual(decodeWorkHubCoordinationActResult(result), result);
+  for (const result of [
+    { disposition: 'answer_here', coordinationTurnId: 'turn' },
+    { disposition: 'clarify', coordinationTurnId: 'turn' },
     {
       disposition: 'stop_work',
       outcome: 'cancelled_pending',
-      targetSessionId: 'payments',
-      targetTurnId: 'unexpected-turn',
+      targetSessionId: 'target',
+      targetTurnId: 'forged',
     },
-  ]) {
-    assert.throws(
-      () => decodeWorkHubCoordinationActResult(invalid),
-      (error) => error instanceof RuntimeHostProtocolError,
-    );
-  }
+    { disposition: 'stop_work', outcome: 'not_owned', targetSessionId: 'target' },
+    {
+      disposition: 'resume_work',
+      outcome: 'already_running',
+      targetSessionId: 'target',
+      targetTurnId: 'forged',
+    },
+    { disposition: 'resume_work', outcome: 'resume_started', targetSessionId: 'target' },
+  ])
+    assert.throws(() => decodeWorkHubCoordinationActResult(result));
 });

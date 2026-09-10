@@ -75,6 +75,7 @@ import type { ConnectionsBridge } from '../../src/renderer/settings/providers-pa
 import type { ProjectRecord } from '@maka/core/project';
 import type { ArchivedTasksBridge } from '../../src/renderer/settings/tasks-settings-page';
 import type {
+  DesktopLocalRuntimeHostRemoteAccessSnapshot,
   DesktopRuntimeHostProfileChangedEvent,
   DesktopRuntimeHostProfileSnapshot,
   DesktopSessionSummary,
@@ -556,7 +557,6 @@ function makeCapability(input: Partial<CapabilitySnapshot> & Pick<CapabilitySnap
     runtimeProbe: { state: 'healthy', source: 'runtime_probe', lastCheckedAt: NOW - 60_000 },
     canRevoke: false,
     canPause: false,
-    guidance: [],
     auditEvents: [],
     updatedAt: NOW - 60_000,
     ...input,
@@ -581,7 +581,6 @@ const capabilitySnapshot: CapabilitySnapshotCollection = {
         { id: 'screen_recording', required: true, status: 'not_determined' },
       ],
       actionApproval: { state: 'required_per_action', source: 'capability_policy' },
-      guidance: ['前往系统设置授予屏幕录制权限后重新探测。'],
     }),
     makeCapability({
       id: 'memory_write',
@@ -752,6 +751,9 @@ const makaBridge = {
     setEnabled: async () => runtimeHostProfiles,
     setDefault: async () => runtimeHostProfiles,
     subscribeChanges: () => () => undefined,
+  },
+  localRuntimeHostRemoteAccess: {
+    getSnapshot: async (): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot> => ({ state: 'off' }),
   },
   // Projects always mounts the Runtime Host management dialog shell, even
   // before a remote profile is selected. Keep the shared Settings fixture in
@@ -2863,8 +2865,8 @@ export const ModelsCatalogIntentDuringWarmRevalidation: Story = {
 };
 /**
  * The expanded state, not the collapsed one the page opens in: the capability layers grid
- * and the guidance block are hidden until diagnostics are expanded, so the collapsed story
- * gives those layouts no baseline at all — which is exactly where the remaining overflow
+ * is hidden until diagnostics are expanded, so the collapsed story
+ * gives that layout no baseline at all — which is exactly where the remaining overflow
  * was hiding. Everything the collapsed story shows is still on screen here.
  *
  * The disclosure is per-row now (a CollapsibleGroup, one open at a time) rather than one

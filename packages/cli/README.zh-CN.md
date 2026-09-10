@@ -22,7 +22,8 @@
 [English](./README.md)
 
 Maka 是一个本地优先的 Agent 工作空间。`maka-agent` npm 包包含交互式终端界面、非交互
-CLI、Runtime Host 工具和 Eval 命令。
+CLI、Runtime Host 工具和 Eval 命令。该包发布在 `nightly` dist-tag 上；`latest` 指向一个
+早期 alpha stub（见[安装](#安装)）。
 
 ## Apache 孵化免责声明
 
@@ -55,15 +56,21 @@ release commit 中的 [DISCLAIMER-WIP](https://github.com/apache/maka/blob/main/
 
 ## 安装
 
-Beta 阶段请明确从 `next` dist-tag 安装：
+npm 上有两条 dist-tag，且二者不可互换：
 
-```sh
-npm install --global maka-agent@next
-maka --version
-maka --help
-```
+- `nightly` 承载完整的 CLI。该发布线每日推进——请解析 tag 本身（或查询其当前版本），不要誊写任何文档里的版本号：
 
-公开命令只有 `maka`。一次性运行请使用 `npx --yes --package maka-agent@next maka`；npm 上与本项目
+  ```sh
+  npm install --global maka-agent@nightly
+  maka --version
+  maka --help
+  ```
+
+- `latest` 指向一个早期 alpha（`0.0.0-alpha.0`），命令面只有 `doctor`、帮助与版本命令。
+  因此不要使用裸的 `npm update --global maka-agent`：它跟随 `latest`，可能把安装切换到
+  另一条发布线。
+
+公开命令只有 `maka`。一次性运行请使用 `npx --yes --package maka-agent@nightly maka`；npm 上与本项目
 无关的 `maka` 包不是本项目。`runtime-host service install` 使用上面的持久全局安装；
 `runtime-host setup` 会从 `npx` 调用的精确 package 创建自己的托管副本。
 
@@ -96,35 +103,40 @@ Maka 默认会在执行高权限工具操作前询问。`maka run --yolo` 会授
 
 ## 升级
 
-使用预发布版本时，请继续明确指定 `next`：
+在 nightly 线内更新时固定精确版本（`--target` 只接受 `latest`、`next` 或精确的 Maka
+版本号——不存在 `nightly` 这个 channel 名）。先解析当前 nightly 版本再传入精确值：
+updater 拒绝降级，nightly 前进之后誊写的旧版本号会被直接拒绝。
 
 ```sh
-maka update --target next
+version="$(npm view maka-agent@nightly version --registry=https://registry.npmjs.org)"
+maka update --target "$version"
 maka --version
 ```
 
+不要使用裸的 `npm update --global maka-agent` 来升级：它跟随 `latest`（早期 alpha stub），
+可能把安装切换到另一条发布线。
+
 更新流程会先 stage 并验证精确 release，再替换本地 Runtime Host 与 npm-global package；
 默认不会中断 active 或 durable work。只有在你确认可以安全中断后，才使用
-`--allow-interrupt-active-tasks`。`npm install --global maka-agent@next` 仍可用于修复安装；
-不要使用不带 tag 的 `npm update --global maka-agent`，因为它会跟随 `latest`，可能选中
-不同的发布线。稳定版发布后，使用 `maka update --target latest`。
+`--allow-interrupt-active-tasks`。`npm install --global maka-agent@nightly` 仍可用于修复安装。
 
 ## 设置远程 Runtime Host
 
 在 Linux 或 macOS 上从精确的发布 package 设置持久 remote Runtime Host：
 
 ```sh
-npx --yes --package maka-agent@next maka runtime-host setup \
+npx --yes --package maka-agent@nightly maka runtime-host setup \
   --principal my-client \
   --preset terminal-client
 ```
 
 重复设置会替换该 Client credential。设置成功后，service 不再依赖临时 `npx` cache。
 
-可以在不改变当前 Host 的情况下检查 managed service 对应的发布频道：
+检查 managed service 应跟随的 nightly 发布，且不改变当前运行中的 Host——传入上面解析出的
+精确版本，而不是指向早期 alpha 的 `latest`：
 
 ```sh
-maka runtime-host service check-update --target next --json
+maka runtime-host service check-update --target "$version" --json
 ```
 
 结果会把频道固定为精确版本和 package integrity，并说明 package 是否提供足够的兼容性证据，
@@ -132,10 +144,13 @@ maka runtime-host service check-update --target next --json
 selector 传给 `service update --target`。该路径会先校验 archive 与解包后的 manifest，再委托给
 现有的精确 package 更新事务；需要人工审查的候选不会改变当前 Host。
 
-Installation owner 可以持久化一个更新目标，并通过同一套已验证事务执行 reconciliation：
+Installation owner 可以持久化一个更新目标，并通过同一套已验证事务执行 reconciliation。持久化
+上面解析出的精确 nightly 版本：不存在 `nightly` 这个 target 名，而 `latest` 指向早期 alpha，
+reconciliation 会把对一个 nightly 安装而言更旧的候选判为降级。因此要跟随每日推进的 nightly，
+就需要重新解析当前版本，并用新值再次运行 `update-policy`：
 
 ```sh
-maka runtime-host service update-policy --target latest \
+maka runtime-host service update-policy --target "$version" \
   --expected-service-id <service-id> \
   --expected-root-path <state-root> \
   --expected-root-id <root-id>
@@ -149,7 +164,7 @@ maka runtime-host service reconcile-update --json
 
 ```sh
 # 仅限安装过 managed Runtime Host service 的 Linux 或 macOS
-npx --yes --package maka-agent@next maka runtime-host service uninstall
+npx --yes --package maka-agent@nightly maka runtime-host service uninstall
 
 # 如果曾全局安装 Maka
 npm uninstall --global maka-agent

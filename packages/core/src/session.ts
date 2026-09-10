@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
+
 import {
   MODEL_FAILURE_MESSAGE_MAX_BYTES,
   isModelRetryDecision,
@@ -27,6 +29,7 @@ import {
   decodeMessageContent,
   TOOL_ACTIVITY_KINDS,
   type MessageContent,
+  type AttachmentRef,
   type ToolActivityKind,
   type ToolResultContent,
 } from './events.js';
@@ -219,7 +222,11 @@ export function isTurnStatus(value: unknown): value is TurnStatus {
 // Header (JSONL line 1)
 // ============================================================================
 
-export const SESSION_TOOL_PROFILES = ['headless-coding-v1', 'workhub-coordination-v1'] as const;
+export const SESSION_TOOL_PROFILES = [
+  'headless-coding-v1',
+  'workhub-coordination-v1',
+  'workhub-coordination-v2',
+] as const;
 export type SessionToolProfile = (typeof SESSION_TOOL_PROFILES)[number];
 
 export function isSessionToolProfile(value: unknown): value is SessionToolProfile {
@@ -762,6 +769,8 @@ export type StoredMessage =
   | SystemNoteMessage;
 
 export interface UserMessage extends MessageContent {
+  /** Derived from the admitted WorkHub action; does not change physical Turn identity. */
+  coordinationActionId?: string;
   type: 'user';
   id: string;
   turnId: string;
@@ -930,9 +939,39 @@ export type WorkHubDelegationWorkspace =
   | { readonly kind: 'project'; readonly projectId: string }
   | { readonly kind: 'host_path'; readonly path: string };
 
+/** User-selected creation defaults; never applied to an existing Work. */
+export interface WorkHubCreateDefaults {
+  readonly model?: {
+    readonly llmConnectionId: string;
+    readonly llmConnectionSlug: string;
+    readonly model: string;
+  };
+  readonly permissionMode?: PermissionMode;
+}
+
+export function isWorkHubCreateDefaults(value: unknown): value is WorkHubCreateDefaults {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some((key) => key !== 'model' && key !== 'permissionMode')
+  )
+    return false;
+  if (value.permissionMode !== undefined && !isPermissionMode(value.permissionMode)) return false;
+  if (value.model === undefined) return true;
+  const model = value.model;
+  return (
+    isRecord(model) &&
+    Object.keys(model).length === 3 &&
+    ['llmConnectionId', 'llmConnectionSlug', 'model'].every(
+      (key) =>
+        typeof model[key] === 'string' && model[key].trim().length > 0 && model[key].length <= 512,
+    )
+  );
+}
+
 export interface WorkHubDelegationCreateSpec {
   readonly title: string;
   readonly workspace: WorkHubDelegationWorkspace;
+  readonly defaults?: WorkHubCreateDefaults;
 }
 
 interface WorkHubCoordinationMessageEnvelope {
@@ -949,8 +988,11 @@ interface WorkHubCoordinationMessageEnvelope {
   coordinationTurnId: string;
   targetSessionId: string;
   disposition: WorkHubDelegationDisposition;
-  /** Exact target payload; retained so retry does not depend on renderer memory. */
+  /** Original user request retained as the action's authorization evidence. */
   userText: string;
+  attachments?: AttachmentRef[];
+  /** Actual delegated content; omitted when the original request is used verbatim. */
+  delegationText?: string;
   /** Present exactly for create_new. */
   create?: WorkHubDelegationCreateSpec;
 }
@@ -965,6 +1007,8 @@ export interface WorkHubDelegationAssignedMessage extends WorkHubCoordinationMes
   targetTurnId: string;
   targetMessageId: string;
   targetSessionName: string;
+  /** Copied, target-owned attachment locators admitted atomically with this record. */
+  targetAttachments?: AttachmentRef[];
   steered?: true;
   /** Present only when this assignment atomically supersedes an earlier link. */
   replacesActionId?: string;
@@ -1086,7 +1130,18 @@ export interface WorkHubActionClaim {
 
 export type WorkHubActionClaimOutcome = 'claimed' | 'same_claim' | 'conflict';
 
+export interface WorkHubCoordinationActionMessage {
+  type: 'workhub_coordination';
+  kind: 'action_receipt';
+  schemaVersion: 1;
+  id: string;
+  turnId: string;
+  ts: number;
+  receipt: WorkHubActionReceipt;
+}
+
 export type WorkHubCoordinationMessage =
+  | WorkHubCoordinationActionMessage
   | WorkHubDelegationAssignedMessage
   | WorkHubDelegationReplacementRequestedMessage
   | WorkHubDelegationReplacementAbortedMessage
@@ -1192,6 +1247,7 @@ const USER_MESSAGE_SHAPE = defineObjectShape<UserMessage>()(
     'quotes',
     'inlineReferences',
     'steeringEventId',
+    'coordinationActionId',
     'origin',
   ],
 );
@@ -1292,7 +1348,15 @@ const WORKHUB_DELEGATION_ASSIGNED_MESSAGE_SHAPE =
       'targetMessageId',
       'targetSessionName',
     ],
-    ['create', 'steered', 'replacesActionId', 'replacesDelegationId'],
+    [
+      'attachments',
+      'targetAttachments',
+      'create',
+      'steered',
+      'replacesActionId',
+      'replacesDelegationId',
+      'delegationText',
+    ],
   );
 const WORKHUB_DELEGATION_REPLACEMENT_REQUESTED_MESSAGE_SHAPE =
   defineObjectShape<WorkHubDelegationReplacementRequestedMessage>()(
@@ -1315,7 +1379,7 @@ const WORKHUB_DELEGATION_REPLACEMENT_REQUESTED_MESSAGE_SHAPE =
       'replacedTargetMessageId',
       'targetSessionName',
     ],
-    ['create'],
+    ['attachments', 'create', 'delegationText'],
   );
 const WORKHUB_DELEGATION_SUPERSEDED_MESSAGE_SHAPE =
   defineObjectShape<WorkHubDelegationSupersededMessage>()(
@@ -1396,7 +1460,7 @@ const WORKHUB_DELEGATION_STOP_RESOLVED_MESSAGE_SHAPE =
   );
 const WORKHUB_DELEGATION_CREATE_SHAPE = defineObjectShape<WorkHubDelegationCreateSpec>()(
   ['title', 'workspace'],
-  [],
+  ['defaults'],
 );
 const WORKHUB_DELEGATION_PROJECT_WORKSPACE_SHAPE = defineObjectShape<
   Extract<WorkHubDelegationWorkspace, { kind: 'project' }>
@@ -1442,7 +1506,10 @@ function decodeMessage(
       if (
         hasExactShape(message, USER_MESSAGE_SHAPE) &&
         hasMessageEnvelope(message, true) &&
-        (message.origin === undefined || decodeTurnOrigin(message.origin) !== undefined)
+        (message.origin === undefined || decodeTurnOrigin(message.origin) !== undefined) &&
+        (message.coordinationActionId === undefined ||
+          (typeof message.coordinationActionId === 'string' &&
+            message.coordinationActionId.length > 0))
       ) {
         const {
           displayText,
@@ -1576,6 +1643,16 @@ function decodeMessage(
 }
 
 function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean {
+  if (message.kind === 'action_receipt')
+    return (
+      hasMessageEnvelope(message, true) &&
+      message.schemaVersion === 1 &&
+      Object.keys(message).every((k) =>
+        ['type', 'kind', 'schemaVersion', 'id', 'turnId', 'ts', 'receipt'].includes(k),
+      ) &&
+      isWorkHubActionReceipt(message.receipt)
+    );
+
   if (message.kind === 'delegation_stop_requested') {
     return (
       hasMessageEnvelope(message, true) &&
@@ -1660,6 +1737,9 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
     typeof message.targetSessionId === 'string' &&
     typeof message.userText === 'string' &&
     message.userText.trim().length > 0 &&
+    isWorkHubMessageAttachments(message.attachments) &&
+    (message.delegationText === undefined ||
+      (typeof message.delegationText === 'string' && message.delegationText.trim().length > 0)) &&
     ((message.disposition === 'delegate_existing' && message.create === undefined) ||
       (message.disposition === 'create_new' && isWorkHubDelegationCreateSpec(message.create))) &&
     (message.disposition === 'delegate_existing' || message.disposition === 'create_new');
@@ -1683,6 +1763,7 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
   return (
     message.kind === 'delegation_assigned' &&
     hasExactShape(message, WORKHUB_DELEGATION_ASSIGNED_MESSAGE_SHAPE) &&
+    isWorkHubMessageAttachments(message.targetAttachments) &&
     typeof message.delegationId === 'string' &&
     typeof message.targetTurnId === 'string' &&
     typeof message.targetMessageId === 'string' &&
@@ -1712,10 +1793,21 @@ function isWorkHubActionIdentity(message: Record<string, unknown>): boolean {
   );
 }
 
+function isWorkHubMessageAttachments(value: unknown): boolean {
+  if (value === undefined) return true;
+  try {
+    decodeMessageContent({ text: '', attachments: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function isWorkHubDelegationCreateSpec(value: unknown): value is WorkHubDelegationCreateSpec {
   if (
     !isRecord(value) ||
     !hasExactShape(value, WORKHUB_DELEGATION_CREATE_SHAPE) ||
+    (value.defaults !== undefined && !isWorkHubCreateDefaults(value.defaults)) ||
     typeof value.title !== 'string' ||
     value.title.trim().length === 0 ||
     !isRecord(value.workspace)
