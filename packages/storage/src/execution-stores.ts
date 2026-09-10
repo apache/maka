@@ -39,16 +39,14 @@ import {
   type DurableRuntimeEventStore,
   type EvidenceReadBudget,
   type RootTurnAdmission,
-  type RootTurnAdmissionAuthorization,
   type RootTurnSourceMessageReceipt,
 } from './agent-run-store.js';
-import {
-  createConversationOperationalStateStore,
-  type ConversationOperationalStateStore,
-} from './conversation-operational-state.js';
-import { createSessionStore, type SessionAuthorityStore } from './session-store.js';
+import type { ConversationOperationalStateStore } from './conversation-operational-state.js';
+import { createSessionStore } from './session-store.js';
+import type { SessionAuthorityStore } from './session-store-contract.js';
 import {
   assertStorageRootLease,
+  assertStorageRootLeaseActive,
   runWithStorageRootLease,
   StorageRootAuthorityError,
   type StorageRootKind,
@@ -58,20 +56,37 @@ import {
   closeSqliteInteractionStoreFacade,
   openSqliteInteractiveInteractionStoreForRead,
   openSqliteInteractiveInteractionStoreForWrite,
+  createSqliteInteractionStore,
   type InteractiveInteractionStoreReaderFacade,
   type InteractiveInteractionStoreWriterFacade,
 } from './interaction-store.js';
-import {
-  openRuntimeEventPersistence,
-  openRuntimeEventReadPersistence,
-} from './runtime-event-persistence.js';
+import { openRuntimeEventReadPersistence } from './runtime-event-persistence.js';
 import type {
   CommitToolOutcomeInput,
   CommitToolPreparedInput,
   SessionRuntimeEventEntry,
   ToolCommitResult,
   ToolOperationRecord,
-} from './sqlite-runtime-store.js';
+} from './runtime-event-store-contract.js';
+
+import { localExecutionPersistenceProvider } from './local-execution-persistence.js';
+import {
+  EXECUTION_GRAPH_METHODS,
+  type ExecutionGraphStore,
+  type ExecutionPersistenceProvider,
+} from './execution-persistence-provider.js';
+import {
+  openInteractiveGoalAuthorityForWrite,
+  createSqliteGoalAuthority,
+  type InteractiveGoalAuthorityWriter,
+} from './goal-authority.js';
+export type {
+  ExecutionPersistenceProvider,
+  ExecutionGraphStore,
+} from './execution-persistence-provider.js';
+
+const executionStoreProvidersByLease = new WeakMap<object, ExecutionPersistenceProvider>();
+const failedExecutionLeases = new WeakSet<object>();
 
 const executionStoresWriterBrand: unique symbol = Symbol('ExecutionStoresWriter');
 const executionStoresReaderBrand: unique symbol = Symbol('ExecutionStoresReader');
@@ -84,11 +99,11 @@ export {
   normalizeRootTurnAdmissionPayload,
   rootTurnAdmissionRecordFits,
 } from './agent-run-store.js';
-export { isSessionNotFoundError } from './session-store.js';
+export { isSessionNotFoundError } from './session-store-contract.js';
 export {
   SessionMetadataConflictError,
   SessionMetadataVersionConflictError,
-} from './sqlite-session-metadata-store.js';
+} from './session-store-contract.js';
 
 export type {
   AdmitRootTurnInput,
@@ -117,6 +132,7 @@ export type {
 export { submittedTurnIntentsEqual } from './submitted-turn-intent.js';
 export type { SubmittedTurnIntent } from './submitted-turn-intent.js';
 export type {
+  CreateStableSessionRequest,
   ProbeSessionRemovalResult,
   ExternalSessionImportLookupResult,
   SessionCatalogPageCursor,
@@ -134,7 +150,7 @@ export type {
   SessionTurnContributionPage,
   SessionTurnLandmark,
   SessionTurnLandmarkSnapshot,
-} from './session-store.js';
+} from './session-store-contract.js';
 
 export type ExecutionSessionWriter = SessionAuthorityStore;
 export type {
@@ -166,6 +182,8 @@ interface ExecutionStoresWriterBase<K extends StorageRootKind> {
 }
 
 export interface InteractiveExecutionStoresWriter extends ExecutionStoresWriterBase<'interactive'> {
+  readonly graphControlStore: ExecutionGraphStore;
+  readonly goalStore: InteractiveGoalAuthorityWriter;
   readonly interactionStore: InteractiveInteractionStoreWriterFacade;
 }
 
@@ -283,87 +301,203 @@ export function authenticateExecutionStoresReader<K extends StorageRootKind>(
 
 export async function openInteractiveExecutionStoresForWrite(
   lease: StorageRootLease<'interactive', 'write'>,
+  provider: ExecutionPersistenceProvider = localExecutionPersistenceProvider,
 ): Promise<ExecutionStoresWriter<'interactive'>> {
-  const interactionStore = await openSqliteInteractiveInteractionStoreForWrite(lease);
-  return openExecutionStoresForWrite(lease, 'interactive', {
-    interactionStore,
-  });
-}
-
-async function openExecutionStoresForWrite<K extends StorageRootKind, E extends object>(
-  lease: StorageRootLease<K, 'write'>,
-  kind: K,
-  extension: E,
-): Promise<ExecutionStoresWriterBase<K> & E> {
-  await assertStorageRootLease(lease, kind, 'write');
+  await assertStorageRootLease(lease, 'interactive', 'write');
+  if (failedExecutionLeases.has(lease)) {
+    throw new StorageRootAuthorityError(
+      'invalid_lease',
+      'Execution persistence requires a fresh owner after an uncertain open or close',
+    );
+  }
+  const selected = executionStoreProvidersByLease.get(lease);
+  if (selected && selected !== provider) {
+    throw new StorageRootAuthorityError(
+      'invalid_lease',
+      'A different execution provider already owns this lease',
+    );
+  }
   const existing = executionStoresWritersByLease.get(lease);
-  if (existing) return existing as ExecutionStoresWriterBase<K> & E;
-
+  if (existing) {
+    if (executionStoresWriterKinds.get(existing) !== 'interactive')
+      throw invalidExecutionStores('interactive', 'write');
+    return existing as InteractiveExecutionStoresWriter;
+  }
   const opening = executionStoresWritersOpeningByLease.get(lease);
   if (opening) {
     await opening;
-    return openExecutionStoresForWrite(lease, kind, extension);
+    return openInteractiveExecutionStoresForWrite(lease, provider);
   }
-
+  executionStoreProvidersByLease.set(lease, provider);
   let releaseOpening!: () => void;
   const openingGate = new Promise<void>((resolve) => {
     releaseOpening = resolve;
   });
   executionStoresWritersOpeningByLease.set(lease, openingGate);
   try {
-    return await createExecutionStoresForWrite(lease, kind, extension);
+    return await createExecutionStoresForWrite(lease, provider);
+  } catch (error) {
+    if (!executionStoresWritersByLease.has(lease) && !failedExecutionLeases.has(lease))
+      executionStoreProvidersByLease.delete(lease);
+    throw error;
   } finally {
     executionStoresWritersOpeningByLease.delete(lease);
     releaseOpening();
   }
 }
 
-async function createExecutionStoresForWrite<K extends StorageRootKind, E extends object>(
-  lease: StorageRootLease<K, 'write'>,
-  kind: K,
-  extension: E,
-): Promise<ExecutionStoresWriterBase<K> & E> {
-  const sessionStore = createSessionStore(lease.canonicalPath);
-  const agentRunStore = createSqliteAgentRunStore(lease.canonicalPath);
-  const interactionStore =
-    'interactionStore' in extension
-      ? (extension.interactionStore as InteractiveInteractionStoreWriterFacade)
-      : undefined;
-  const runtimePersistence = await openRuntimeEventPersistence({
-    workspaceRoot: lease.canonicalPath,
-  }).catch(async (error) => {
-    await sessionStore.close?.().catch(() => {});
-    agentRunStore.close?.();
-    if (interactionStore) closeSqliteInteractionStoreFacade(interactionStore);
+async function createExecutionStoresForWrite(
+  lease: StorageRootLease<'interactive', 'write'>,
+  provider: ExecutionPersistenceProvider,
+): Promise<InteractiveExecutionStoresWriter> {
+  const kind = 'interactive' as const;
+  const persistence = await runWithStorageRootLease(lease, kind, 'write', () =>
+    provider.open({
+      rootId: lease.rootId,
+      canonicalPath: lease.canonicalPath,
+    }),
+  ).catch((error: unknown) => {
+    // An unsuccessful factory must clean up its own partial handles. Until a
+    // fresh owner is acquired, do not assume an unknown factory failure did so.
+    failedExecutionLeases.add(lease);
     throw error;
   });
-  const runtimeEventStore = runtimePersistence.runtimeEventStore;
-  let conversationOperationalStateStore: ConversationOperationalStateStore;
+  let closed = false;
+  let closeTask: Promise<void> | undefined;
+  const active = new Set<Promise<unknown>>();
+  const subscriptions = new Set<() => void>();
+  const run = <T>(operation: () => Promise<T>): Promise<T> => {
+    if (closed) return Promise.reject(invalidExecutionStores(kind, 'write'));
+    const pending = runWithStorageRootLease(lease, kind, 'write', () => {
+      if (closed) throw invalidExecutionStores(kind, 'write');
+      return operation();
+    });
+    active.add(pending);
+    void pending.finally(() => active.delete(pending)).catch(() => undefined);
+    return pending;
+  };
+  const sessionStore = persistence.sessionStore;
+  const agentRunStore = persistence.agentRunStore;
+  const runtimeEventStore = persistence.runtimeEventStore;
+  const runtimePersistence = { runtimeCommitStore: runtimeEventStore };
+  const conversationOperationalStateStore = {
+    purge: (sessionId: string) => persistence.purgeConversationOperationalState(sessionId),
+  };
+  let interactionStore: InteractiveInteractionStoreWriterFacade | undefined;
+  let goalStore: InteractiveGoalAuthorityWriter | undefined;
+  const releaseChildBindings: Array<() => void> = [];
+  const retainUntilGroupClose = (release: () => void) => releaseChildBindings.push(release);
   try {
-    conversationOperationalStateStore = createConversationOperationalStateStore(
-      lease.canonicalPath,
+    await assertStorageRootLease(lease, kind, 'write');
+    await sessionStore.ready();
+    await agentRunStore.ready?.();
+    interactionStore = await openSqliteInteractiveInteractionStoreForWrite(
+      lease,
+      () =>
+        new Proxy(persistence.interactionStore, {
+          get(target, property, receiver) {
+            if (property === 'close') return () => {};
+            const value = Reflect.get(target, property, receiver);
+            return typeof value === 'function'
+              ? (...args: unknown[]) => run(async () => Reflect.apply(value, target, args))
+              : value;
+          },
+        }),
+      provider === localExecutionPersistenceProvider ? createSqliteInteractionStore : provider,
+      retainUntilGroupClose,
+    );
+    goalStore = await openInteractiveGoalAuthorityForWrite(
+      lease,
+      () => ({
+        list: () => run(async () => persistence.goalStore.list()),
+        read: (sessionId) => run(async () => persistence.goalStore.read(sessionId)),
+        commit: (input) => run(async () => persistence.goalStore.commit(input)),
+        // The group owns the backend handle; closing this facade only revokes it.
+        close: () => {},
+      }),
+      provider === localExecutionPersistenceProvider ? createSqliteGoalAuthority : provider,
+      retainUntilGroupClose,
     );
   } catch (error) {
-    await closeExecutionStorePersistence(sessionStore, runtimePersistence, {
-      agentRunStore,
-      interactionStore,
-    }).catch(() => {});
+    closed = true;
+    const failures: unknown[] = [error];
+    try {
+      if (interactionStore) closeSqliteInteractionStoreFacade(interactionStore);
+    } catch (closeError) {
+      failures.push(closeError);
+    }
+    try {
+      await goalStore?.close();
+    } catch (closeError) {
+      failures.push(closeError);
+    }
+    try {
+      await persistence.close();
+    } catch (closeError) {
+      failures.push(closeError);
+    }
+    if (failures.length > 1) {
+      failedExecutionLeases.add(lease);
+      throw new AggregateError(failures, 'Unable to compose execution persistence');
+    }
+    for (const release of releaseChildBindings) release();
     throw error;
   }
-  await agentRunStore.ready?.().catch(async (error) => {
-    await closeExecutionStorePersistence(sessionStore, runtimePersistence, {
-      agentRunStore,
-      conversationOperationalStateStore,
-      interactionStore,
-    }).catch(() => {});
-    throw error;
+  const close = () =>
+    (closeTask ??= (async () => {
+      closed = true;
+      executionStoresWriterKinds.delete(stores);
+      const errors: unknown[] = [];
+      for (const unsubscribe of subscriptions) {
+        try {
+          unsubscribe();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      subscriptions.clear();
+      await Promise.allSettled([...active]);
+      try {
+        await goalStore!.close();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        closeSqliteInteractionStoreFacade(interactionStore!);
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await persistence.close();
+      } catch (error) {
+        errors.push(error);
+      }
+      // Failed close retains the closed owner, so another backend cannot open over it.
+      if (errors.length) throw new AggregateError(errors, 'Unable to close execution persistence');
+      for (const release of releaseChildBindings) release();
+      if (executionStoresWritersByLease.get(lease) === stores) {
+        executionStoresWritersByLease.delete(lease);
+        executionStoreProvidersByLease.delete(lease);
+      }
+    })());
+  const graphMethods = Object.fromEntries(
+    EXECUTION_GRAPH_METHODS.map((name) => [
+      name,
+      (...args: unknown[]) =>
+        run(() =>
+          Reflect.apply(persistence.graphControlStore[name], persistence.graphControlStore, args),
+        ),
+    ]),
+  ) as Omit<ExecutionGraphStore, 'close'>;
+  const graphControlStore: ExecutionGraphStore = Object.freeze({
+    ...graphMethods,
+    close: () => {},
   });
-  const run = <T>(operation: () => Promise<T>) =>
-    runWithStorageRootLease(lease, kind, 'write', operation);
-  let closeTask: Promise<void> | undefined;
 
-  const stores: ExecutionStoresWriterBase<K> & E = {
-    ...extension,
+  const stores: InteractiveExecutionStoresWriter = {
+    interactionStore,
+    graphControlStore,
+    goalStore,
     kind,
     [executionStoresWriterBrand]: kind,
     purgeConversationOperationalState: (sessionId) =>
@@ -482,7 +616,18 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.reorderMessageAdmissions(sessionId, messageIds)),
       cancelMessageAdmissions: (sessionId, messageIds) =>
         run(() => sessionStore.cancelMessageAdmissions(sessionId, messageIds)),
-      subscribeTranscriptChanges: (listener) => sessionStore.subscribeTranscriptChanges(listener),
+      subscribeTranscriptChanges: (listener) => {
+        if (closed) throw invalidExecutionStores(kind, 'write');
+        assertStorageRootLeaseActive(lease, kind, 'write');
+        const unsubscribe = sessionStore.subscribeTranscriptChanges((sessionId) => {
+          if (!closed) listener(sessionId);
+        });
+        subscriptions.add(unsubscribe);
+        return () => {
+          subscriptions.delete(unsubscribe);
+          unsubscribe();
+        };
+      },
       updateHeader: (sessionId, patch) => run(() => sessionStore.updateHeader(sessionId, patch)),
       updateHeaderVersioned: (sessionId, patch, expectedRevision) =>
         run(() => sessionStore.updateHeaderVersioned(sessionId, patch, expectedRevision)),
@@ -504,17 +649,7 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.listPendingSessionRetirementCleanupIds(sessionId)),
       completeSessionRetirementCleanup: (sessionId) =>
         run(() => sessionStore.completeSessionRetirementCleanup(sessionId)),
-      close: () =>
-        (closeTask ??= (async () => {
-          if (executionStoresWritersByLease.get(lease) === stores) {
-            executionStoresWritersByLease.delete(lease);
-          }
-          await closeExecutionStorePersistence(sessionStore, runtimePersistence, {
-            agentRunStore,
-            conversationOperationalStateStore,
-            interactionStore,
-          });
-        })()),
+      close,
     },
     agentRunStore: {
       appendEvent: (sessionId, runId, event, options) =>

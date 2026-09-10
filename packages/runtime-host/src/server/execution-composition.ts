@@ -78,13 +78,16 @@ import {
   resolveTurnShellPlan,
   validateShellPreference,
 } from '@maka/runtime/shell-detect';
-import { type MakaTool } from '@maka/runtime/tool-runtime';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { Context } from '@maka/runtime/plugin-kernel';
 import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
 import { PluginToolService } from '@maka/runtime/plugin-tool-service';
-import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
+import type { RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
 import { isHostedExecutionTerminal } from './hosted-execution-authority.js';
-import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
+import type {
+  ExecutionPersistenceProvider,
+  ExecutionGraphStore,
+} from '@maka/storage/execution-persistence-provider';
 import { createArtifactAttachmentResourceReader } from '@maka/storage/artifact-stores';
 import { createReadImageSnapshotStore } from '@maka/storage/read-image-snapshot-store';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
@@ -241,6 +244,7 @@ export interface CreateExecutionRuntimeHostCompositionOptions {
 }
 
 export interface ExecutionRuntimeHostCompositionDependencies {
+  readonly executionPersistenceProvider?: ExecutionPersistenceProvider;
   readonly primaryBackendFactory?: BackendFactory;
   readonly oauthAuthorization?: Pick<
     HostOAuthCoordinatorInput,
@@ -260,6 +264,7 @@ export async function createExecutionRuntimeHostComposition(
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<ExecutionRuntimeHostComposition> {
   const storage = await openStorageWriterComposition(context.owner.lease, {
+    executionProvider: dependencies.executionPersistenceProvider,
     contextOffloadLimits: CONTEXT_OFFLOAD_LIMITS,
     afterRuntimePolicyOpened: async (stores) => {
       if (options.bootstrapRuntimePolicy !== false) {
@@ -280,7 +285,7 @@ export async function createExecutionRuntimeHostComposition(
     );
   }
   const stores = storage.execution;
-  let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
+  let graphControlStore: ExecutionGraphStore | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   let memoryExtraction: HostMemoryExtractionCoordinator | undefined;
@@ -500,9 +505,7 @@ export async function createExecutionRuntimeHostComposition(
       hostTools: childHostTools,
       worktreePatchWriteBackAvailable: true,
     });
-    const openedGraphControlStore = createAgentGraphControlStore(
-      context.owner.capability.canonicalPath,
-    );
+    const openedGraphControlStore = stores.graphControlStore;
     graphControlStore = openedGraphControlStore;
     let resolveAvailableToolNames: ((sessionId: string) => Promise<string[]>) | undefined;
     let resolveNewSessionToolNames:
