@@ -22,6 +22,7 @@ import { promises as fs } from 'node:fs';
 import { glob as nodeGlob } from 'node:fs/promises';
 import { dirname, isAbsolute, parse, resolve } from 'node:path';
 import { isPathInside } from '../path-containment.js';
+import { ripgrepMissingAtStartupMessage, ripgrepVanishedMessage } from '../ripgrep-guidance.js';
 import { sandboxPathApi } from './sandbox-paths.js';
 import { sandboxBoundaryExpansionAllowsPath } from '@maka/core/sandbox-boundary';
 import {
@@ -408,18 +409,26 @@ export async function executeFilesystemOperation(
           'Grep is not available inside the Windows sandbox preview; use Glob and Read instead.',
         );
       }
-      if (!dependencies.grepExecutable)
-        throw operationError('grep_unavailable', 'Grep is unavailable in this runtime.');
+      const grepExecutable = dependencies.grepExecutable;
+      if (!grepExecutable)
+        throw operationError('grep_unavailable', ripgrepMissingAtStartupMessage());
       const args = ['-n', '--no-heading', `--max-count=${operation.maxCountPerFile}`];
       if (operation.glob) args.push('--glob', operation.glob);
       args.push('--', operation.pattern, path);
       const result = await (dependencies.runGrep ?? runRipgrep)({
-        executable: dependencies.grepExecutable,
+        executable: grepExecutable,
         args,
         // The target is canonical and absolute. Running from its filesystem root avoids
         // requiring operation-scoped workers to read the broader session workspace.
         cwd: parse(path).root,
         timeoutMs: operation.timeoutMs,
+      }).catch((error: unknown) => {
+        // The cwd is a filesystem root, which always exists, so a spawn ENOENT
+        // means the executable resolved at startup is gone. Left alone it would
+        // be normalized to `not_found` and read as a missing search path.
+        if (nodeErrorCode(error) === 'ENOENT')
+          throw operationError('grep_unavailable', ripgrepVanishedMessage(grepExecutable));
+        throw error;
       });
       if (result.exitCode === 1) return { kind: 'grep', matches: [] };
       if (result.exitCode !== 0) {
