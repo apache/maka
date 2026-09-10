@@ -27,3 +27,5 @@ export * from './maka-subject.js';
 export * from './result.js';
 export * from './runner.js';
 export * from './spec.js';
+export * from './workhub-routing-evaluation.js';
+export * from './workhub-routing-model.js';

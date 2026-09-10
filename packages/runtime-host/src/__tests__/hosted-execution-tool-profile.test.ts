@@ -199,4 +199,10 @@ test('WorkHub v2 can read its attachments without inheriting terminal, browser, 
     /Hosted tool profile is unavailable/,
   );
   assert.equal(hostedExecutionRunProfile('workhub-coordination-v2')?.memoryExtraction, false);
+  const prompt = hostedExecutionRunProfile('workhub-coordination-v2')?.systemPrompt ?? '';
+  assert.match(prompt, /Intent never selects a target/u);
+  assert.match(prompt, /call the tasks candidates operation before choosing/u);
+  assert.match(prompt, /only when the user explicitly asks to create new work/u);
+  assert.match(prompt, /never implies create_new/u);
+  assert.match(prompt, /ordinary request to continue work is routing, not a linked resume/u);
 });
