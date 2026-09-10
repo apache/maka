@@ -20,7 +20,12 @@
 import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
-import type { AssistantStepContentKind, StoredMessage, TurnStatus } from '@maka/core/session';
+import type {
+  AssistantStepContentKind,
+  StoredMessage,
+  TurnStatus,
+  WorkHubCoordinationActionMessage,
+} from '@maka/core/session';
 import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
 import type { ToolActivityKind, ToolResultContent } from '@maka/core/events';
 import { markPersisted } from '@maka/core/persisted-value';
@@ -99,6 +104,21 @@ export function isContinuationStartRuntimeEvent(event: RuntimeEvent): boolean {
   );
 }
 
+export function projectRuntimeEventCoordinationReceipt(
+  event: RuntimeEvent,
+): WorkHubCoordinationActionMessage | undefined {
+  if (!event.actions?.coordination) return undefined;
+  return {
+    type: 'workhub_coordination',
+    kind: 'action_receipt',
+    schemaVersion: 1,
+    id: event.id,
+    turnId: event.turnId,
+    ts: event.ts,
+    receipt: event.actions.coordination,
+  };
+}
+
 /**
  * Whether the event can affect the StoredMessage projection or the state needed
  * to construct one. Pure control-plane facts are intentionally absent so a
@@ -106,6 +126,7 @@ export function isContinuationStartRuntimeEvent(event: RuntimeEvent): boolean {
  */
 export function affectsRuntimeEventStoredMessageProjection(event: RuntimeEvent): boolean {
   return (
+    event.actions?.coordination !== undefined ||
     event.content !== undefined ||
     isTerminalRuntimeEvent(event) ||
     event.actions?.permissionRequest !== undefined ||
@@ -282,6 +303,12 @@ export function projectRuntimeEventsToStoredMessages(
           }
           break;
       }
+    }
+
+    const coordinationReceipt = projectRuntimeEventCoordinationReceipt(event);
+    if (coordinationReceipt) {
+      messages.push(coordinationReceipt);
+      projected = true;
     }
 
     if (event.actions?.permissionRequest) {
@@ -558,6 +585,7 @@ export function applyArchivedToolResultReadModelStatuses(
           toolCallId: placeholder.toolCallId,
           toolName: placeholder.toolName,
           artifactId: placeholder.artifactId,
+          ...(placeholder.rewriteVersion === 2 ? { resourceRef: placeholder.resourceRef } : {}),
           bodySha256: placeholder.bodySha256,
           originalEstimatedTokens: placeholder.originalEstimatedTokens,
           originalBytes: placeholder.originalBytes,
@@ -970,6 +998,9 @@ function projectFunctionResponse(
         toolName: archivedPlaceholder.toolName,
         artifactId: archivedPlaceholder.artifactId,
         bodySha256: archivedPlaceholder.bodySha256,
+        ...(archivedPlaceholder.rewriteVersion === 2
+          ? { resourceRef: archivedPlaceholder.resourceRef }
+          : {}),
         originalEstimatedTokens: archivedPlaceholder.originalEstimatedTokens,
         originalBytes: archivedPlaceholder.originalBytes,
         rewriteVersion: archivedPlaceholder.rewriteVersion,

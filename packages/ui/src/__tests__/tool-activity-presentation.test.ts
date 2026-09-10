@@ -554,3 +554,14 @@ describe('collapsed tool row target', () => {
     assert.match(markup, /redacted/i);
   });
 });
+
+it('uses WorkHub status once in the collapsed row and retains arguments in details', () => {
+  for (const args of [{ args: { status: '正在打开扩展', request: { operation: 'observe' } } }, { argsPreview: { status: '正在打开扩展' } }]) {
+    const item: ToolActivityItem = { toolUseId: 'workhub-control', toolName: 'mcp__desktop_workhub__control', status: 'running', args: undefined, ...args };
+    const row = renderToStaticMarkup(createElement(ToolTrow, { items: [item] }));
+    assert.match(row, /正在打开扩展/);
+    assert.doesNotMatch(row, /status:|request:/);
+    const detail = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
+    assert.match(detail, /status/);
+  }
+});

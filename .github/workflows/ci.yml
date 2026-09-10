@@ -274,6 +274,19 @@ jobs:
         if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm run build
 
+      # The DeepSeek Harness toolchain is built outside the npm workspace, then
+      # admitted solely by this digest. Rebuild its pinned linux/amd64 tree in
+      # hosted CI whenever an input or its identity changes, so a typo or a
+      # machine-specific tree cannot be committed as an accepted fingerprint.
+      - name: Verify DeepSeek Harness toolchain fingerprint
+        if: steps.plan.outputs.deepseek_harness_toolchain == 'true'
+        run: |
+          toolchain_root="$RUNNER_TEMP/maka-deepseek-harness-toolchain"
+          actual="$(node scripts/prepare-deepseek-harness-toolchain.mjs --out "$toolchain_root" | tail -n 1)"
+          expected="$(node --input-type=module -e 'import { TOOLCHAIN_IDENTITIES } from "./packages/eval/dist/toolchain-verification.js"; console.log(TOOLCHAIN_IDENTITIES["deepseek-harness"].fingerprint);')"
+          test "$actual" = "$expected"
+          (cd "$toolchain_root" && sha256sum --check --quiet checksums.sha256)
+
       - name: Release contracts
         if: steps.plan.outputs.release_contract == 'true'
         run: npm run check:release

@@ -19,7 +19,10 @@
 
 import { createHash } from 'node:crypto';
 import { decodeDurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
-import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
+import {
+  durableToolResultProjectionDigest,
+  type ModelProjectionTransition,
+} from '@maka/core/model-projection-transition';
 import type { ToolResultArchiveEvidenceReader } from '@maka/core/tool-result-archive-evidence';
 import {
   decodeLedgerTransition,
@@ -30,6 +33,12 @@ import {
   type ToolResultArchiveReader,
 } from './tool-result-archive.js';
 import { serializeToolResultProjectionV1 } from './tool-result-archive-encoding.js';
+import type { LedgerArchiveResourceIdentity } from './tool-result-archive-resource.js';
+import type { ToolResultArchiveRecorder } from './tool-result-archive-capability.js';
+import {
+  TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_BYTES,
+  TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_TRANSITIONS,
+} from '@maka/core/tool-result-archive-evidence';
 
 /**
  * Read-only v1 reconstruction. It never calls a live tool projector, reads an
@@ -100,7 +109,13 @@ export function createLedgerToolResultArchiveReader(
         const placeholder = replacement.kind === 'json' ? replacement.value : undefined;
         if (
           isArchivedToolResultPlaceholder(placeholder) &&
-          placeholder.artifactId === request.artifactId
+          ((placeholder.rewriteVersion === 1 &&
+            request.rewriteVersion === 1 &&
+            placeholder.artifactId === request.artifactId) ||
+            (placeholder.rewriteVersion === 2 &&
+              request.rewriteVersion === 2 &&
+              placeholder.sourceProjectionDigest === request.sourceProjectionDigest &&
+              placeholder.previousTransitionId === request.previousTransitionId))
         ) {
           if (
             placeholder.runtimeEventId !== request.runtimeEventId ||
@@ -111,6 +126,12 @@ export function createLedgerToolResultArchiveReader(
             placeholder.rewriteVersion !== request.rewriteVersion
           )
             return { ok: false, reason: 'source_mismatch' };
+          if (
+            placeholder.rewriteVersion === 2 &&
+            (placeholder.sourceProjectionDigest !== transition.sourceProjectionDigest ||
+              placeholder.previousTransitionId !== transition.previousTransitionId)
+          )
+            return { ok: false, reason: 'corrupt' };
           const serializedResult = serializeToolResultProjectionV1(source);
           if (Buffer.byteLength(serializedResult, 'utf8') !== request.originalBytes)
             return { ok: false, reason: 'size_mismatch' };
@@ -124,5 +145,68 @@ export function createLedgerToolResultArchiveReader(
     } catch {
       return { ok: false, reason: 'corrupt' };
     }
+  };
+}
+
+export function createLedgerArchiveResourceReader(evidence: ToolResultArchiveEvidenceReader) {
+  const reader = createLedgerToolResultArchiveReader(evidence);
+  return (input: LedgerArchiveResourceIdentity & { sessionId: string; maxBytes: number }) =>
+    reader({
+      ...input,
+      kind: 'maka.archived_tool_result',
+      rewriteVersion: 2,
+      originalEstimatedTokens: 1,
+      reason: 'stale_tool_result_pruned_before_compact',
+    });
+}
+
+/** Verify reconstructibility before committing a replacement; does not write any payload. */
+export function createLedgerArchivePreparer(
+  evidence: ToolResultArchiveEvidenceReader,
+): ToolResultArchiveRecorder {
+  return async (input) => {
+    const request = { ...input };
+    const loaded = await evidence.read({
+      sessionId: request.sessionId,
+      runtimeEventId: request.runtimeEventId,
+    });
+    if (
+      !loaded.ok ||
+      loaded.transitions.length >= TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_TRANSITIONS ||
+      loaded.storedBytes === undefined ||
+      loaded.storedBytes > TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_BYTES - 64 * 1024
+    )
+      return;
+    const content = loaded.event.content;
+    if (
+      loaded.event.sessionId !== request.sessionId ||
+      loaded.event.id !== request.runtimeEventId ||
+      content?.kind !== 'function_response' ||
+      content.providerExecuted ||
+      !content.modelProjection ||
+      content.id !== request.toolCallId ||
+      content.name !== request.toolName
+    )
+      return;
+    const transitions: ModelProjectionTransition[] = [];
+    for (const event of loaded.transitions) {
+      const decoded = decodeLedgerTransition(event, request.sessionId);
+      if (!decoded || decoded.target.runtimeEventId !== request.runtimeEventId) return;
+      transitions.push(decoded);
+    }
+    const reduced = reduceEffectiveModelProjections([loaded.event], transitions);
+    const previous = reduced.applied.at(-1);
+    if (previous?.transitionId !== request.previousTransitionId) return;
+    const source = previous?.replacement ?? content.modelProjection;
+    if (source.kind === 'json' && isArchivedToolResultPlaceholder(source.value)) return;
+    if (durableToolResultProjectionDigest(source) !== request.sourceProjectionDigest) return;
+    const body = serializeToolResultProjectionV1(source);
+    if (
+      body !== request.serializedResult ||
+      Buffer.byteLength(body) !== request.originalBytes ||
+      createHash('sha256').update(body).digest('hex') !== request.bodySha256
+    )
+      return;
+    return { ledger: true };
   };
 }

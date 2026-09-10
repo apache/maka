@@ -46,8 +46,7 @@ import {
   showSessionWorkspaceUnavailableToast,
 } from './session-workspace-errors.js';
 import * as skillFeedback from './skill-invocation-feedback.js';
-import { restoreTranscriptTailAfterSend } from './features/conversation/index.js';
-import type { DesktopTranscriptRangeController } from './desktop-transcript-range-store.js';
+import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
 import type { SessionPendingClaim } from './app-shell-session-ui-state.js';
 import {
   retainedAttachmentRefs,
@@ -176,6 +175,7 @@ export function createAppShellChatActions(deps: {
   ) => void;
   removeTransientMessage: (sessionId: string, messageId: string) => void;
   transcriptRangeRef: RefBox<DesktopTranscriptRangeController | undefined>;
+  onFollowLatest: (sessionId: string) => Promise<boolean>;
   /** #646: arm the "正在处理…" indicator locally at send() — the model-wait
    * window opens before any SessionEvent arrives (turn_started is not one). */
   setLiveTurnBySession: LiveTurnRecordUpdater;
@@ -225,6 +225,7 @@ export function createAppShellChatActions(deps: {
     updateTransientMessage,
     removeTransientMessage,
     transcriptRangeRef,
+    onFollowLatest,
     setLiveTurnBySession,
     setInteractionBySession,
     onInteractionChanged,
@@ -501,7 +502,7 @@ export function createAppShellChatActions(deps: {
       }
       if (!initialSessionId) {
         if (!initialNewTaskTarget) return false;
-        if (pending?.length) preflightAttachmentItems(pending, uiLocale);
+        if (pending?.length) preflightAttachmentItems(pending);
         const session = await window.maka.newTasks.create(initialNewTaskTarget, {
           name: DEFAULT_SESSION_NAME,
           ...(newChatModel
@@ -558,11 +559,7 @@ export function createAppShellChatActions(deps: {
         return true;
       }
       const sessionId = initialSessionId;
-      const transcript = transcriptRangeRef.current;
-      void restoreTranscriptTailAfterSend({
-        sessionId, controller: transcript, setMessages,
-        isCurrent: () => activeIdRef.current === sessionId && transcriptRangeRef.current === transcript,
-      });
+      if (!await onFollowLatest(sessionId)) return false;
       optimisticSessionId = sessionId;
       optimisticMessageId = messageId;
       showTransientUserMessage(

@@ -44,10 +44,6 @@ import type { ImageMimeType } from './image-file.js';
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
-export type WorkspaceIsolationKind = ToolExecutionFacts['isolation'];
-export type WorkspaceWriteBackMode = ToolExecutionFacts['writeBack'];
-export type WorkspaceNetworkMode = ToolExecutionFacts['network'];
-export type WorkspaceSecretMode = ToolExecutionFacts['secrets'];
 export type WorkspaceExecutorFacts = ToolExecutionFacts;
 
 export const LOCAL_WORKSPACE_EXECUTOR_FACTS: WorkspaceExecutorFacts = {

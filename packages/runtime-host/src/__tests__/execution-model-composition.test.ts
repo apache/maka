@@ -39,7 +39,10 @@ import {
 } from '@maka/core/sandbox-boundary';
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
-import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
+import {
+  decodeRequestCompositionSnapshot,
+  decodeRunCompositionSnapshot,
+} from '@maka/core/run-composition';
 import { readInvocation, testInvocationRecord } from '@maka/runtime/test-only/invocation-fixture';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
@@ -146,7 +149,8 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:aa3ab56a7b67dde133fffe885f4def81735c93015202e31ecb339a84863f6d03';
+  // ArchiveRead now describes both ledger and legacy resource references.
+  'sha256:22809de022f9c46186cae986eda23438efe9dbe6856b57abb0613ea48b51ad9c';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -797,11 +801,10 @@ test('handoff composition preparation commits the provider composition without d
       text: 'Use the prepared composition.',
       context: [],
     })) {
-      // The provider gate must commit the same resolved composition.
+      // The provider gate reuses the durably prepared immutable baseline.
     }
     assert.ok(provider.requests.length > 0);
-    assert.ok(snapshots.length > 1);
-    for (const snapshot of snapshots) assert.deepEqual(snapshot, snapshots[0]);
+    assert.equal(snapshots.length, 1);
   } finally {
     await backend?.dispose();
     await provider.close();
@@ -854,6 +857,153 @@ test('provider dispatch fails closed when the Run Composition commit fails', asy
       invocationId: 'composition-invocation',
       runId: 'composition-run',
       turnId: 'composition-turn',
+      text: 'This request must not reach the provider.',
+      context: [],
+    })) {
+      events.push(event);
+    }
+
+    assert.equal(commits, 1);
+    assert.equal(provider.requests.length, 0);
+    assert.ok(events.some((event) => event.type === 'error'));
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
+test('a failed Run Composition commit can recover on a later dispatch', async () => {
+  const provider = await startProvider();
+  let commits = 0;
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        recordRunComposition: async (_runId, snapshot) => {
+          commits += 1;
+          decodeRunCompositionSnapshot(snapshot);
+          if (commits === 1) throw new Error('transient Run Composition failure');
+        },
+      }),
+    );
+    for await (const _event of backend.send({
+      invocationId: 'composition-retry-invocation-1',
+      runId: 'composition-retry-run',
+      turnId: 'composition-retry-turn-1',
+      text: 'The first request must fail closed.',
+      context: [],
+    })) {
+      // Drain the failed attempt.
+    }
+    assert.equal(provider.requests.length, 0);
+
+    for await (const _event of backend.send({
+      invocationId: 'composition-retry-invocation-2',
+      runId: 'composition-retry-run',
+      turnId: 'composition-retry-turn-2',
+      text: 'Retry after the authority recovers.',
+      context: [],
+    })) {
+      // Drain the successful retry.
+    }
+
+    assert.equal(commits, 2);
+    assert.equal(provider.requests.length, 1);
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
+test('Run Composition keeps the immutable composer Tool baseline', async () => {
+  const provider = await startProvider();
+  const makeTool = (name: string): MakaTool => ({
+    name,
+    description: name,
+    parameters: z.object({}),
+    impl: async () => name,
+  });
+  const initial = makeTool('initial_tool');
+  const dynamic = makeTool('dynamic_tool');
+  let currentTools: readonly MakaTool[] = [initial];
+  let committedToolNames: readonly string[] = [];
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        createRunComposer: async () => ({
+          composerId: 'test.dynamic-tools',
+          composerRevision: '1',
+          tools: [initial],
+          resolveTools: () => currentTools,
+          resolveSystemPrompt: async () => ({ text: 'test prompt', sourceRevisions: [] }),
+        }),
+        recordRunComposition: async (_runId, snapshot) => {
+          committedToolNames = decodeRunCompositionSnapshot(snapshot).toolNames;
+        },
+      }),
+    );
+    currentTools = [dynamic];
+
+    for await (const _event of backend.send({
+      invocationId: 'composition-baseline-invocation',
+      runId: 'composition-baseline-run',
+      turnId: 'composition-baseline-turn',
+      text: 'Use the current Tool surface.',
+      context: [],
+    })) {
+      // Drain the request.
+    }
+
+    assert.deepEqual(committedToolNames, ['initial_tool']);
+    const requestTools = provider.requests[0]?.body.tools as Array<{
+      function?: { name?: string };
+    }>;
+    assert.equal(
+      requestTools.some((entry) => entry.function?.name === 'dynamic_tool'),
+      true,
+    );
+    assert.equal(
+      requestTools.some((entry) => entry.function?.name === 'initial_tool'),
+      false,
+    );
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
+test('provider dispatch fails closed when the Request Composition epoch commit fails', async () => {
+  const provider = await startProvider();
+  let commits = 0;
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        recordRunComposition: async () => undefined,
+        recordRequestComposition: async () => {
+          commits += 1;
+          throw new Error('Request Composition store unavailable');
+        },
+      }),
+    );
+    const events = [];
+    for await (const event of backend.send({
+      invocationId: 'request-composition-invocation',
+      runId: 'request-composition-run',
+      turnId: 'request-composition-turn',
       text: 'This request must not reach the provider.',
       context: [],
     })) {
@@ -2336,6 +2486,32 @@ test('production Host executes and durably supervises an Agent Graph over a real
     assert.match(rootComposition?.baseSystemPromptHash ?? '', /^sha256:[a-f0-9]{64}$/u);
     assert.ok(rootComposition?.toolNames.includes('view_agent_graph'));
     const wakeRuns = runs.filter((run) => run.opening.root.kind === 'agent_graph_supervisor_wake');
+    const rootRunEvents = await execution.agentRunStore.readEvents(
+      session.id,
+      initialTerminal.runId,
+    );
+    const requestCompositions = rootRunEvents
+      .filter((event) => event.type === 'request_composition_resolved')
+      .map((event) => decodeRequestCompositionSnapshot(event.data?.snapshot));
+    assert.ok(requestCompositions.length > 0);
+    assert.match(requestCompositions[0]?.systemPromptHash ?? '', /^sha256:[a-f0-9]{64}$/u);
+    assert.ok(
+      requestCompositions.some((snapshot) => snapshot.toolNames.includes('view_agent_graph')),
+    );
+    const requestCompositionIds = new Set(
+      requestCompositions.map((snapshot) => snapshot.compositionId),
+    );
+    const modelAttempts = rootRunEvents.filter(
+      (event) => event.type === 'model_call_attempt_recorded',
+    );
+    assert.ok(modelAttempts.length > 0);
+    assert.ok(
+      modelAttempts.every(
+        (event) =>
+          typeof event.data?.requestCompositionId === 'string' &&
+          requestCompositionIds.has(event.data.requestCompositionId),
+      ),
+    );
     assert.ok(wakeRuns.length > 0);
     assert.ok(wakeRuns.every((run) => runtimeInvocationOutcome(run) === 'completed'));
     assert.ok(wakeRuns.every((run) => run.opening.configuration.orchestrationMode === 'graph'));
@@ -4086,6 +4262,7 @@ function backendCreationFixture(input: {
   recordRunTrace?: (event: RunTraceEvent) => unknown;
   runtimeCommitSink?: HostAiSdkBackendInput['runtimeCommitSink'];
   recordRunComposition?: BackendFactoryContext['recordRunComposition'];
+  recordRequestComposition?: BackendFactoryContext['recordRequestComposition'];
   recordHistoryCompactCheckpoint?: BackendFactoryContext['recordHistoryCompactCheckpoint'];
   recordModelCallAttempt?: BackendFactoryContext['recordModelCallAttempt'];
   createFetchTransport?: HostAiSdkBackendInput['createFetchTransport'];
@@ -4149,6 +4326,9 @@ function backendCreationFixture(input: {
         : {}),
       ...(input.recordRunTrace ? { recordRunTrace: input.recordRunTrace } : {}),
       ...(input.recordRunComposition ? { recordRunComposition: input.recordRunComposition } : {}),
+      ...(input.recordRequestComposition
+        ? { recordRequestComposition: input.recordRequestComposition }
+        : {}),
       ...(input.recordHistoryCompactCheckpoint
         ? { recordHistoryCompactCheckpoint: input.recordHistoryCompactCheckpoint }
         : {}),

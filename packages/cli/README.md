@@ -22,7 +22,8 @@
 [简体中文](https://github.com/apache/maka/blob/main/packages/cli/README.zh-CN.md)
 
 Maka is a local-first agent workspace. The `maka-agent` npm package installs the interactive
-terminal UI, the non-interactive CLI, Runtime Host tooling, and the Eval command.
+terminal UI, the non-interactive CLI, Runtime Host tooling, and the Eval command. That package is
+published under the `nightly` dist-tag; `latest` holds an early alpha stub (see [Install](#install)).
 
 ## Apache Incubation Disclaimer
 
@@ -58,16 +59,24 @@ release gate. Real Eval executor validation currently runs on Linux x64 with Nod
 
 ## Install
 
-Install the current beta explicitly from the `next` dist-tag:
+Two dist-tags are live on npm, and they are not interchangeable:
 
-```sh
-npm install --global maka-agent@next
-maka --version
-maka --help
-```
+- `nightly` carries the complete CLI. The line moves daily — resolve the tag (or query its
+  current version) instead of copying a version number from any document:
+
+  ```sh
+  npm install --global maka-agent@nightly
+  maka --version
+  maka --help
+  ```
+
+- `latest` points at an early alpha (`0.0.0-alpha.0`) whose command surface is limited to
+  `doctor`, help, and version. Because of that split, do not use a bare
+  `npm update --global maka-agent`: it follows `latest` and may switch the installation to the
+  other release line.
 
 The public command is `maka`. For a one-off invocation, use
-`npx --yes --package maka-agent@next maka`; the unrelated `maka` package on npm is not this project.
+`npx --yes --package maka-agent@nightly maka`; the unrelated `maka` package on npm is not this project.
 `runtime-host service install` uses the persistent global installation above; `runtime-host setup`
 creates its own managed copy from the exact package invoked by `npx`.
 
@@ -103,26 +112,31 @@ modify.
 
 ## Upgrade
 
-While using prereleases, keep the `next` tag explicit:
+Update within the nightly line by pinning the exact release (`--target` accepts `latest`,
+`next`, or an exact Maka version — there is no `nightly` channel name). Resolve the current
+nightly version first and pass that exact value: the updater refuses downgrades, so a copied
+version number goes stale as soon as the nightly line moves on.
 
 ```sh
-maka update --target next
+version="$(npm view maka-agent@nightly version --registry=https://registry.npmjs.org)"
+maka update --target "$version"
 maka --version
 ```
+
+Do not use a bare `npm update --global maka-agent` to upgrade: it follows `latest`, which holds
+the early alpha stub, and may switch the installation to the other release line.
 
 The update stages and verifies the exact release before replacing the local Runtime Host or the
 npm-global package. It refuses to interrupt active or durable work by default. Use
 `--allow-interrupt-active-tasks` only after deciding that interruption is safe. A direct
-`npm install --global maka-agent@next` remains available for installation repair; do not use a bare
-`npm update --global maka-agent`, because it follows `latest` and may select a different release
-line. After a stable release is available, select it with `maka update --target latest`.
+`npm install --global maka-agent@nightly` remains available for installation repair.
 
 ## Remote Runtime Host setup
 
 To set up a persistent remote Runtime Host from an exact released package on Linux or macOS:
 
 ```sh
-npx --yes --package maka-agent@next maka runtime-host setup \
+npx --yes --package maka-agent@nightly maka runtime-host setup \
   --principal my-client \
   --preset terminal-client
 ```
@@ -130,10 +144,12 @@ npx --yes --package maka-agent@next maka runtime-host setup \
 Rerunning setup replaces that Client credential. The service no longer depends on the temporary
 `npx` cache after setup succeeds.
 
-Check a managed service against a release channel without changing the running Host:
+Check a managed service against the nightly release it should track, without changing the
+running Host — pass the exact version resolved above rather than `latest`, which holds the
+early alpha:
 
 ```sh
-maka runtime-host service check-update --target next --json
+maka runtime-host service check-update --target "$version" --json
 ```
 
 The result pins the selected channel to an exact version and package integrity. It also reports
@@ -144,10 +160,13 @@ to the existing exact-package update transaction, and does not mutate a candidat
 manual review.
 
 The installation owner can persist one update target and reconcile it with the same verified
-transaction:
+transaction. Pin the exact nightly version resolved above: there is no `nightly` target name,
+and `latest` holds the early alpha, which the reconciliation assesses as a downgrade for a
+nightly installation. Following successive nightlies therefore means resolving the current
+version again and re-running `update-policy` with the fresh value:
 
 ```sh
-maka runtime-host service update-policy --target latest \
+maka runtime-host service update-policy --target "$version" \
   --expected-service-id <service-id> \
   --expected-root-path <state-root> \
   --expected-root-id <root-id>
@@ -161,7 +180,7 @@ bounded one-shot command: it never interrupts active work and does not install a
 
 ```sh
 # When a managed Runtime Host service was installed on Linux or macOS
-npx --yes --package maka-agent@next maka runtime-host service uninstall
+npx --yes --package maka-agent@nightly maka runtime-host service uninstall
 
 # If Maka was installed globally
 npm uninstall --global maka-agent

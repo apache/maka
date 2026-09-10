@@ -303,6 +303,101 @@ test('offline intents are dispatched only after connectivity returns', async (t)
   assert.equal(calls[0]!.content.attachments?.length, 1);
 });
 
+for (const refusal of ['operation-error', 'blocked-skill'] as const) {
+  test(`a retained ${refusal} local message does not block later sends`, async (t) => {
+    const { store, beforeClose } = await database(t);
+    const calls: string[] = [];
+    const target: DesktopSessionLocalTarget = {
+      partition: 'authority',
+      profileId: 'profile',
+      scope: { hostId: 'root', targetEpoch: 'target' },
+      client: client('epoch'),
+      submit: async (input) => {
+        calls.push(input.messageId);
+        if (input.messageId === 'message-1') {
+          if (refusal === 'blocked-skill')
+            return { disposition: 'blocked', skillInvocation: accepted.skillInvocation };
+          throw new RuntimeHostOperationError('turn.message.submit', 'session_busy', 'busy');
+        }
+        return accepted;
+      },
+    };
+    const service = new DesktopSessionLocalService(store, {
+      targets: () => [target],
+      changed() {},
+      onError: (error) => assert.fail(String(error)),
+    });
+    beforeClose.push(() => service.close());
+    store.enqueue('authority', intent());
+    service.wake();
+    await waitFor(() => store.get('authority', 'message-1')?.state === 'failed');
+    const failed = store.get('authority', 'message-1');
+
+    store.enqueue('authority', intent('message-2'));
+    store.enqueue('authority', intent('message-3'));
+    service.wake();
+    await waitFor(() => store.get('authority', 'message-3')?.state === 'accepted');
+
+    assert.deepEqual(calls, ['message-1', 'message-2', 'message-3']);
+    assert.equal(store.get('authority', 'message-2')?.state, 'accepted');
+    assert.deepEqual(store.get('authority', 'message-1'), failed);
+    const retained = service.listMessages(target, 'session-1')[0]!;
+    assert.equal(retained.state, 'failed');
+    assert.equal(retained.text, 'hello');
+    assert.equal(retained.canCancel, true);
+    assert.ok(retained.error);
+  });
+}
+
+test('an unknown Host outcome blocks later local sends until the original message is reconciled', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const calls: string[] = [];
+  const originalAck = deferred<TurnMessageSubmitResult>();
+  let reconcile = false;
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority',
+    profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target' },
+    client: client('epoch'),
+    submit: async (input) => {
+      calls.push(input.messageId);
+      if (input.messageId === 'message-1') {
+        if (reconcile) return originalAck.promise;
+        throw new RuntimeHostRequestInterruptedError(
+          'turn.message.submit',
+          'command',
+          'dispatched',
+          'connection_lost',
+        );
+      }
+      return accepted;
+    },
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target],
+    changed() {},
+    onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  store.enqueue('authority', intent());
+  service.wake();
+  await waitFor(() => store.get('authority', 'message-1')?.state === 'unknown');
+  store.enqueue('authority', intent('message-2'));
+  store.enqueue('authority', intent('other-session', 'session-2'));
+  service.wake();
+  await waitFor(() => store.get('authority', 'other-session')?.state === 'accepted');
+  assert.deepEqual(calls, ['message-1', 'other-session']);
+  assert.equal(store.get('authority', 'message-2')?.state, 'saved');
+
+  reconcile = true;
+  service.reconcile(target, 'session-1', 'message-1');
+  await waitFor(() => calls.length === 3);
+  assert.equal(store.get('authority', 'message-2')?.state, 'saved');
+  originalAck.resolve(accepted);
+  await waitFor(() => store.get('authority', 'message-2')?.state === 'accepted');
+  assert.deepEqual(calls, ['message-1', 'other-session', 'message-1', 'message-2']);
+});
+
 test('lost ACK recovery never changes epoch or ID and does not block another Session', async (t) => {
   const { store, beforeClose } = await database(t);
   const calls: TurnMessageSubmitInput[] = [];
@@ -617,7 +712,7 @@ test('local submit preserves picked-file approvals until durable admission succe
         'current_turn',
         { ...draft, messageId: 'too-large', attachmentItems: largePicked },
       ),
-    /附件总量超出大小限制/,
+    /attachment_ingest:total_size_exceeded/,
   );
   assert.equal(resizeCalls, 0);
   assert.equal(store.get('authority', 'too-large'), undefined);

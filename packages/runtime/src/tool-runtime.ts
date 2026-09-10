@@ -1126,22 +1126,18 @@ export class ToolRuntime {
       tool.name === 'request_sandbox_boundary' &&
       !this.interactionRun() &&
       (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest);
-    const callArgs = await buildToolCallArgs({
-      parameters: tool.parameters,
-      categoryHint: tool.categoryHint,
-      permissionArgs: tool.permissionArgs,
-      executionArgs: rawExecutionArgs,
-      sessionId: this.input.sessionId,
-      turnId,
-      toolCallId: toolUseId,
-      directOnlyRejected: directOnlyFailure !== undefined,
-      validationDeferred: sandboxBoundaryUnavailable,
-    });
-    const executionArgs = callArgs.executionArgs;
-    const permissionArgs = callArgs.permissionArgs;
-    const persistedArgs = callArgs.persistedArgs;
-    const modelFacingArgs = callArgs.modelFacingArgs;
-    const permissionArgsError = callArgs.permissionArgsError;
+    const { executionArgs, permissionArgs, persistedArgs, modelFacingArgs, permissionArgsError } =
+      await buildToolCallArgs({
+        parameters: tool.parameters,
+        categoryHint: tool.categoryHint,
+        permissionArgs: tool.permissionArgs,
+        executionArgs: rawExecutionArgs,
+        sessionId: this.input.sessionId,
+        turnId,
+        toolCallId: toolUseId,
+        directOnlyRejected: directOnlyFailure !== undefined,
+        validationDeferred: sandboxBoundaryUnavailable,
+      });
     const now = this.input.now();
     const trace = this.input.getRunTrace?.() ?? null;
     const runId = this.input.runId;

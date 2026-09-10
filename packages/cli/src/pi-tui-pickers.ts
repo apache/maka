@@ -23,6 +23,7 @@ import {
   Key,
   SelectList,
   decodeKittyPrintable,
+  isKeyRelease,
   isKeyRepeat,
   matchesKey,
   truncateToWidth,
@@ -62,6 +63,7 @@ import type {
   OnboardingRejectionReason,
 } from './pi-tui-contracts.js';
 import { ansi, editorTheme, selectListTheme, stripAnsi } from './tui-ansi.js';
+import { stripUnfocusedCursorStyle } from './tui-editor-render.js';
 import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 
 interface TuiPickerCopy {
@@ -70,6 +72,11 @@ interface TuiPickerCopy {
   readonly modelSearchHint: string;
   readonly searchLabel: string;
   readonly noMatchingModels: string;
+  readonly resumeSessionTitle: string;
+  readonly sessionScopeCurrent: string;
+  readonly sessionScopeAll: string;
+  readonly sessionSearchHint: string;
+  readonly noMatchingSessions: string;
   readonly selectPickerHint: string;
   readonly providerConfigured: string;
   readonly addAccount: string;
@@ -671,24 +678,13 @@ export class UserQuestionOverlay implements Component {
   }
 
   private renderInputRow(width: number): string[] {
-    const prefix = this.onInputRow ? '→ ' : '  ';
-    const contentWidth = Math.max(1, width - USER_QUESTION_ROW_PREFIX_WIDTH);
-    // Focused only while the input row is highlighted: that both shows the block
-    // cursor and emits the hardware-cursor marker (#1064) so IME candidate windows
-    // anchor to the edited text instead of the terminal bottom.
+    const marker = this.onInputRow ? '→' : ' ';
+    // Focus controls the IME marker and our cursor-visibility adapter (#1064).
     this.editor.focused = this.onInputRow;
     if (!this.onInputRow && this.editor.getText().length === 0) {
-      return [padLine(`${prefix}${ansi.dim(this.input.placeholder)}`, width)];
+      return [padLine(`${marker} ${ansi.dim(this.input.placeholder)}`, width)];
     }
-    // Drop the editor's own top/bottom border rows; keep just its content lines
-    // so the answer reads as one row of the list.
-    const editorLines = this.editor.render(contentWidth).slice(1, -1);
-    if (editorLines.length === 0) {
-      return [padLine(`${prefix}${ansi.dim(this.input.placeholder)}`, width)];
-    }
-    return editorLines.map((line, index) =>
-      padLine(`${index === 0 ? prefix : '  '}${line}`, width),
-    );
+    return renderFieldRow(this.editor, marker, width);
   }
 }
 
@@ -800,6 +796,134 @@ function matchesModelChoice(choice: ModelChoice, query: string): boolean {
   if (provider?.label.toLowerCase().includes(query)) return true;
   if (provider?.menuLabel?.toLowerCase().includes(query)) return true;
   return false;
+}
+
+export interface SessionSearchChoice {
+  item: SelectItem;
+  searchText: string;
+}
+
+export interface SessionSearchOverlayInput {
+  locale: UiLocale;
+  choices: readonly SessionSearchChoice[];
+  scopeLabel: string;
+  onSelect: (item: SelectItem) => void;
+  onCancel: () => void;
+  onToggleScope: () => void;
+}
+
+export class SessionSearchOverlay implements Component {
+  private renderWidth = 0;
+  private readonly searchEditor: Editor;
+  private readonly copy: TuiPickerCopy;
+  private choices: readonly SessionSearchChoice[];
+  private filtered: readonly SessionSearchChoice[];
+  private list: SelectList;
+  private selectedValue: string | undefined;
+  private scopeLabel: string;
+
+  constructor(
+    private readonly tui: TUI,
+    private readonly input: SessionSearchOverlayInput,
+  ) {
+    this.copy = getTuiPickerCopy(input.locale);
+    this.choices = input.choices;
+    this.filtered = input.choices;
+    this.scopeLabel = input.scopeLabel;
+    this.list = this.buildList();
+    this.searchEditor = new Editor(tui, editorTheme(), { paddingX: 0 });
+    this.searchEditor.onChange = (text) => this.applyQuery(text);
+  }
+
+  updateChoices(choices: readonly SessionSearchChoice[], scopeLabel: string): void {
+    this.choices = choices;
+    this.scopeLabel = scopeLabel;
+    this.applyQuery(this.searchEditor.getText());
+  }
+
+  private buildList(): SelectList {
+    const list = new SelectList(
+      this.filtered.map(({ item }) => item),
+      10,
+      selectListTheme(),
+      {
+        minPrimaryColumnWidth: 20,
+        maxPrimaryColumnWidth: Math.max(20, this.renderWidth - 30),
+      },
+    );
+    const selectedIndex = this.filtered.findIndex(({ item }) => item.value === this.selectedValue);
+    if (selectedIndex >= 0) list.setSelectedIndex(selectedIndex);
+    list.onSelectionChange = (item) => {
+      this.selectedValue = item.value;
+    };
+    list.onSelect = (item) => {
+      this.selectedValue = item.value;
+      this.input.onSelect(item);
+    };
+    list.onCancel = () => this.input.onCancel();
+    return list;
+  }
+
+  private applyQuery(text: string): void {
+    const query = text.trim().toLocaleLowerCase();
+    this.filtered = query
+      ? this.choices.filter((choice) => choice.searchText.includes(query))
+      : this.choices;
+    this.list = this.buildList();
+  }
+
+  invalidate(): void {
+    this.searchEditor.invalidate();
+    this.list.invalidate();
+  }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl('c'))) {
+      this.input.onCancel();
+      return;
+    }
+    if (matchesKey(data, Key.tab) && !isKeyRelease(data) && !isKeyRepeat(data)) {
+      this.input.onToggleScope();
+      return;
+    }
+    if (matchesKey(data, Key.up) || matchesKey(data, Key.down) || matchesKey(data, Key.enter)) {
+      if (matchesKey(data, Key.enter) && isKeyRepeat(data)) return;
+      this.list.handleInput(data);
+      return;
+    }
+    this.searchEditor.handleInput(data);
+  }
+
+  render(width: number): string[] {
+    const safeWidth = Math.max(1, width);
+    if (safeWidth !== this.renderWidth) {
+      this.renderWidth = safeWidth;
+      this.list = this.buildList();
+    }
+    this.searchEditor.focused = true;
+    return [
+      padLine(`${this.copy.resumeSessionTitle} ${ansi.accent(this.scopeLabel)}`, safeWidth),
+      padLine(ansi.dim(this.copy.sessionSearchHint), safeWidth),
+      padLine('', safeWidth),
+      ...this.renderFieldRow(safeWidth),
+      padLine('', safeWidth),
+      ...(this.filtered.length === 0
+        ? [padLine(ansi.dim(this.copy.noMatchingSessions), safeWidth)]
+        : this.list.render(safeWidth).map((line) => formatPickerItemLine(line, safeWidth))),
+      padLine(ansi.accent('-'.repeat(safeWidth)), safeWidth),
+    ];
+  }
+
+  private renderFieldRow(width: number): string[] {
+    const prefix = `${this.copy.searchLabel} `;
+    const contentWidth = Math.max(1, width - visibleWidth(prefix));
+    const editorLines = this.searchEditor.render(contentWidth).slice(1, -1);
+    return editorLines.length > 0
+      ? editorLines.map((line, index) =>
+          padLine(`${index === 0 ? prefix : ' '.repeat(prefix.length)}${line}`, width),
+        )
+      : [padLine(prefix, width)];
+  }
 }
 
 export interface ModelSearchOverlayInput {
@@ -922,16 +1046,7 @@ export class ModelSearchOverlay implements Component {
   }
 
   private renderFieldRow(editor: Editor, label: string, width: number): string[] {
-    const prefix = `${label} `;
-    const prefixWidth = visibleWidth(prefix);
-    const contentWidth = Math.max(1, width - prefixWidth);
-    const editorLines = editor.render(contentWidth).slice(1, -1);
-    if (editorLines.length === 0) {
-      return [padLine(prefix, width)];
-    }
-    return editorLines.map((line, index) =>
-      padLine(`${index === 0 ? prefix : ' '.repeat(prefixWidth)}${line}`, width),
-    );
+    return renderFieldRow(editor, label, width);
   }
 }
 
@@ -1067,6 +1182,20 @@ function padLine(text: string, width: number): string {
   const safeWidth = Math.max(1, width);
   const trimmed = visibleWidth(text) > safeWidth ? truncateToWidth(text, safeWidth, '') : text;
   return `${trimmed}${' '.repeat(Math.max(0, safeWidth - visibleWidth(trimmed)))}`;
+}
+
+function renderFieldRow(editor: Editor, label: string, width: number): string[] {
+  const prefix = `${label} `;
+  const prefixWidth = visibleWidth(prefix);
+  const contentWidth = Math.max(1, width - prefixWidth);
+  // These field editors have no autocomplete rows. Keep Editor's wrapping and
+  // scrolling, but omit its top/bottom borders.
+  const lines = editor.render(contentWidth).slice(1, -1);
+  const editorLines = stripUnfocusedCursorStyle(lines, editor.focused);
+  if (editorLines.length === 0) return [padLine(prefix, width)];
+  return editorLines.map((line, index) =>
+    padLine(`${index === 0 ? prefix : ' '.repeat(prefixWidth)}${line}`, width),
+  );
 }
 
 function keyEntryHint(
@@ -1867,15 +1996,6 @@ export class OnboardingWizard implements Component {
   }
 
   private renderFieldRow(editor: Editor, label: string, width: number): string[] {
-    const prefix = `${label} `;
-    const prefixWidth = visibleWidth(prefix);
-    const contentWidth = Math.max(1, width - prefixWidth);
-    const editorLines = editor.render(contentWidth).slice(1, -1);
-    if (editorLines.length === 0) {
-      return [padLine(prefix, width)];
-    }
-    return editorLines.map((line, index) =>
-      padLine(`${index === 0 ? prefix : ' '.repeat(prefixWidth)}${line}`, width),
-    );
+    return renderFieldRow(editor, label, width);
   }
 }

@@ -17,261 +17,117 @@
  * under the License.
  */
 
+import { useState } from 'react';
+import { ToastProvider, LocaleProvider, AstryxLocaleProvider } from '@maka/ui';
+import type { StoredMessage, SessionSummary } from '@maka/core/session';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, within, waitFor } from 'storybook/test';
-import type {
-  WorkHubController,
-  WorkHubCoordinationTurn,
-  WorkHubProjection,
-} from '../src/renderer/workhub-controller';
-import { WorkHubSurface } from '../src/renderer/workhub-surface';
+import { WorkHubRoot, WorkHubServicesProvider, type WorkHubServices, type WorkHubTranscriptSnapshot } from '../src/renderer/features/workhub/index.js';
+import { desktopSessionKey } from '../src/shared/runtime-host-identity.js';
 
-// Fidelity convention (#1433): every story names the real app path that
-// reaches it. See apps/desktop/stories/FIDELITY.md.
-//
-// Real host: app-shell.tsx mounts <WorkHubSurface> in the conversation column
-// when WorkHub is enabled and a Coordination Session exists. The surface takes
-// its `controller` as a prop — the same seam production fills with
-// `createWorkHubController` — so a story serves one pinned projection and
-// conversation instead of driving a live Coordination Session.
-
-const TARGET_SESSION_ID = 'session-workhub-target';
-const SESSION_NAME = '支付回调幂等性';
-const PROJECT_NAME = 'maka-agent';
-const LOCALE = 'zh-CN';
-
-const meta = {
-  title: 'Product/WorkHub',
-  parameters: { layout: 'fullscreen' },
-} satisfies Meta;
-
+// Real host: a persistent WebContentsView mounts WorkHubRoot once and moves between windows.
+const sessionId = desktopSessionKey({ hostId: 'story-host', sessionId: 'maka_workhub_coordination' });
+const targetId = desktopSessionKey({ hostId: 'story-host', sessionId: 'payments' });
+const writes = { answer: fn(), model: fn(), upload: fn(), open: fn() };
+const choices = ['model-a', 'model-b'].map((model, index) => ({
+  connectionId: 'connection-test', connectionSlug: 'test', connectionName: 'Test', providerType: 'openai' as const,
+  providerLabel: 'OpenAI', model, label: model, isDefault: index === 0, thinkingLevels: [],
+}));
+function makeServices(failFirst: boolean, withHistory: boolean): WorkHubServices {
+  let failures = failFirst ? 1 : 0;
+  let session: SessionSummary & { revision: number } = {
+    id: sessionId, name: 'WorkHub', revision: 1, isFlagged: false, isArchived: false, labels: [], hasUnread: false,
+    status: 'active', runningTurnIds: [], backend: 'ai-sdk', llmConnectionId: 'connection-test', llmConnectionSlug: 'test', connectionLocked: false,
+    model: 'model-a', permissionMode: 'ask',
+  };
+  const target = { ...session, id: targetId, name: '支付回调幂等性', cwd: '/projects/maka' };
+  let messages: StoredMessage[] = withHistory ? [
+    { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: '继续支付回调幂等性，补充重复投递测试点。' },
+    { type: 'assistant', id: 'answer-1', turnId: 'turn-1', ts: 2, modelId: 'model-a', text: '已将任务交给支付回调工作。完整说明保留在工作台。\n\n' + '重复请求需要保持同一响应。'.repeat(70) + '\n\nEND_OF_FULL_RESPONSE' },
+    { type: 'workhub_coordination', kind: 'delegation_assigned', id: 'link-1', turnId: 'turn-1', coordinationTurnId: 'turn-1', ts: 3, schemaVersion: 1, actionId: 'action-1', actionFingerprint: `sha256:${'0'.repeat(64)}`, disposition: 'delegate_existing', userText: '继续支付回调幂等性，补充重复投递测试点。', targetSessionId: targetId, targetSessionName: target.name, targetTurnId: 'target-turn', targetMessageId: 'target-message', delegationId: 'delegation-1' },
+  ] : [];
+  let updateTranscript: ((snapshot: WorkHubTranscriptSnapshot) => void) | undefined;
+  let updateSessions: (() => void) | undefined;
+  const publish = () => updateTranscript?.({ messages, hasOlder: false, hasNewer: false, ready: true });
+  return {
+    surface: 'workhub', initialLocale: 'zh-CN', subscribeAppearance: () => () => {},
+    presentation: { ready: async () => {}, progressReady: async () => {}, showConversation: async () => {}, getSnapshot: async () => ({ placement: 'docked', floatingVisible: false, shortcutRegistered: true, rendererCrashed: false }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openSession: async (id) => { writes.open(id); }, subscribe: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
+    control: { getSnapshot: async () => ({ revision: 0, phase: 'idle', canUndo: false }), subscribe: () => () => {}, stop: async () => {}, undo: async () => {} },
+    resolve: async () => sessionId, subscribeHosts: () => () => {}, subscribeAvailability: () => () => {},
+    getSession: async () => session,
+    listSessions: async () => [target], subscribeSessions: (handler) => { updateSessions = handler; return () => { updateSessions = undefined; }; }, modelChoices: async () => choices,
+    attachments: { pickFiles: async () => ({ ok: true, files: [{ approvalId: 'file-1', name: 'requirements.txt', size: 12, mimeType: 'text/plain' }] }), previewApproval: async () => ({ ok: false, reason: 'not-image' }) },
+    readAttachmentBytes: async () => { throw new Error('Not an image'); },
+    prepareAttachments: async (id, items) => { writes.upload(id, items); return [{ name: 'requirements.txt', kind: 'other', mimeType: 'text/plain', bytes: 12, ref: { kind: 'session_file', sessionId: 'maka_workhub_coordination', relativePath: 'artifact-1' } }]; },
+    answer: async (id, input) => {
+      writes.answer(id, input);
+      if (failures-- > 0) throw new Error('Temporary Host failure');
+      messages = [...messages, { type: 'user', id: input.turnId, turnId: input.turnId, ts: 4, text: input.text, attachments: input.attachments }, { type: 'assistant', id: `${input.turnId}-answer`, turnId: input.turnId, ts: 5, modelId: 'model-a', text: '已收到。' }, { type: 'turn_state', id: `${input.turnId}-done`, turnId: input.turnId, ts: 6, status: 'completed' }];
+      publish(); return { kind: 'admitted', turnId: input.turnId };
+    },
+    configureModel: async (id, input) => {
+      writes.model(id, input); session = { ...session, revision: session.revision + 1, model: input.modelTarget.model }; updateSessions?.();
+      return { kind: 'committed', session: { ...session, workspace: { target: { kind: 'host_path', path: '/projects/maka' }, hostCwd: '/projects/maka' }, createdAt: 0, activityAt: 0, labelsTruncated: false, llmConnectionId: 'connection-test', collaborationMode: 'agent', orchestrationMode: 'default' } };
+    },
+    observe: () => () => {},
+    openTranscript: async (_id, handler) => { updateTranscript = handler; publish(); return { observationChanged: () => {}, loadOlder: async () => {}, loadLatest: async () => {}, close: async () => { updateTranscript = undefined; } }; },
+    stop: async () => {},
+  };
+}
+function Surface({ failFirst = false, history = false }: { failFirst?: boolean; history?: boolean }) {
+  const [services] = useState(() => makeServices(failFirst, history));
+  return <LocaleProvider locale="zh-CN"><AstryxLocaleProvider><ToastProvider><WorkHubServicesProvider services={services}><div style={{ height: '100dvh' }}><WorkHubRoot /></div></WorkHubServicesProvider></ToastProvider></AstryxLocaleProvider></LocaleProvider>;
+}
+const meta = { title: 'Product/WorkHub', parameters: { layout: 'fullscreen' } } satisfies Meta;
 export default meta;
-
 type Story = StoryObj<typeof meta>;
 
-function submittedTurn(): WorkHubCoordinationTurn {
-  return {
-    messageId: 'message-1',
-    turnId: 'turn-1',
-    text: `继续${SESSION_NAME}，补充重复投递测试点。`,
-    state: 'running',
-    assignment: {
-      actionId: 'action-1',
-      delegationId: 'delegation-1',
-      targetSessionId: TARGET_SESSION_ID,
-      targetSessionName: SESSION_NAME,
-      targetMessageId: 'target-message-1',
-      targetTurnId: 'target-turn-1',
-      feedbackState: 'running',
-      linkState: 'active',
-    },
-    updatedAt: 1,
-  };
-}
-
-function projection(): WorkHubProjection {
-  return {
-    sessions: [
-      {
-        target: { sessionId: TARGET_SESSION_ID },
-        projectName: PROJECT_NAME,
-        sessionName: SESSION_NAME,
-        archived: false,
-        state: 'running',
-        updatedAt: 1,
-      },
-    ],
-    turns: [],
-  };
-}
-
-function controller(turns: readonly WorkHubCoordinationTurn[]): WorkHubController {
-  return {
-    read: async () => projection(),
-    submit: async () => {
-      throw new Error('submission is not part of these stories');
-    },
-    openConversation: async (handler) => {
-      handler(turns);
-      return { close: async () => {} };
-    },
-    recordConversationTurn: async ({ turnId }) => ({ turnId }),
-    subscribe: () => () => {},
-    resetVisitContext: () => {},
-  };
-}
-
-const openRailSession = fn();
-
-function Surface(props: { turns: readonly WorkHubCoordinationTurn[]; onOpenSession?: (sessionId: string) => void; fixture?: WorkHubController }) {
-  return (
-    <div className="maka-detail-with-artifacts" style={{ height: '100dvh' }}>
-      <div className="mainColumn">
-        <WorkHubSurface
-          controller={props.fixture ?? controller(props.turns)}
-          leaseScope="session-workhub-coordination"
-          locale={LOCALE}
-          onOpenSession={props.onOpenSession ?? (() => {})}
-        />
-      </div>
-    </div>
-  );
-}
-
-// Real path: WorkHub routed a prompt to an existing Session and reports where
-// the work went. The target's project name is a `<small>` inside the Button's
-// own label column, so it has to stay inside the control's box: a project name
-// that overflows the button reads as loose text under an unrelated row.
-export const SubmittedWorkKeepsTargetMetadataInside: Story = {
-  render: () => <Surface turns={[submittedTurn()]} />,
+export const FullConversationAndWorkIdentity: Story = {
+  render: () => <Surface history />,
   play: async ({ canvasElement }) => {
-    await waitFor(() => {
-      expect(canvasElement.querySelector('.workhub-submitted-session small')).not.toBeNull();
-    });
-    const button = canvasElement.querySelector<HTMLElement>('.workhub-submitted > button');
-    const project = canvasElement.querySelector<HTMLElement>('.workhub-submitted-session small');
-    if (!button || !project) throw new Error('submitted work control is missing');
-
-    expect(project.textContent).toBe(PROJECT_NAME);
-    expect(button.getBoundingClientRect().bottom).toBeGreaterThanOrEqual(
-      project.getBoundingClientRect().bottom,
-    );
-
-    // #4914: WorkHub's conversation is one surface — the user bubble rounds
-    // like the composer plate beneath it, both resolving Astryx's
-    // `--radius-chat`. `density="compact"` on WorkHub's chat primitives had
-    // pinned the bubble to `--radius-container` (12px) while the composer
-    // stayed 28px, splitting a transcript and a dock on the same surface by
-    // more than 2x. Compared against the real composer plate, not a literal,
-    // so an upstream `--radius-chat` change moves both or fails here.
-    const bubble = canvasElement.querySelector<HTMLElement>(
-      '.workhub-projected-turn .workhub-user-bubble',
-    );
-    const plate = canvasElement.querySelector('.maka-composer-astryx')?.firstElementChild;
-    if (!bubble || !plate) throw new Error('WorkHub bubble or composer plate is missing');
-    const bubbleRadius = getComputedStyle(bubble).borderTopLeftRadius;
-    expect(bubbleRadius).not.toBe('0px');
-    expect(bubbleRadius).toBe(getComputedStyle(plate).borderTopLeftRadius);
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText(/END_OF_FULL_RESPONSE/)).toBeInTheDocument());
+    await expect(canvasElement.querySelector('.workhub-message-identity')).toHaveAttribute('data-work-session-id', targetId);
+    const navigation = canvasElement.querySelector('.workhub-navigation-item') as HTMLElement;
+    await userEvent.hover(navigation);
+    await waitFor(() => expect(canvasElement.querySelector('.workhub-message-identity')).toHaveAttribute('data-work-highlighted', 'true'));
   },
 };
-
-// Real path: the production WorkHubSurface derives the Rail from Session facts.
-// Filtering and responsive geometry need a renderer, not an Electron/Host fixture.
-const anchorRailPlay: NonNullable<Story['play']> = async ({ canvasElement }) => {
-  openRailSession.mockClear();
-  const canvas = within(canvasElement);
-  const rail = await canvas.findByRole('complementary', { name: '工作导航' });
-  const navigation = within(rail);
-  await expect(await navigation.findByRole('button', { name: new RegExp(SESSION_NAME) })).toBeVisible();
-  const sessionEntry = navigation.getByRole('button', { name: new RegExp(SESSION_NAME) });
-  await userEvent.click(sessionEntry);
-  await expect(openRailSession).toHaveBeenCalledTimes(1);
-  await expect(openRailSession).toHaveBeenLastCalledWith('session-workhub-target');
-  sessionEntry.focus();
-  await userEvent.keyboard('{Enter}');
-  await expect(openRailSession).toHaveBeenCalledTimes(2);
-  await expect(openRailSession).toHaveBeenLastCalledWith('session-workhub-target');
-  await userEvent.click(navigation.getByRole('button', { name: '待处理' }));
-  await expect(navigation.getByText('此筛选下没有工作')).toBeVisible();
-  await expect(navigation.queryByRole('button', { name: new RegExp(SESSION_NAME) })).toBeNull();
-  await userEvent.click(navigation.getByRole('button', { name: '全部' }));
-  await expect(await navigation.findByRole('button', { name: new RegExp(SESSION_NAME) })).toBeVisible();
-  const conversation = canvasElement.querySelector<HTMLElement>('.workhub-conversation-shell');
-  const composer = canvasElement.querySelector<HTMLElement>('.workhub-surface .maka-composer-editor');
-  if (!conversation || !composer) throw new Error('WorkHub conversation or composer missing');
-  const railBox = rail.getBoundingClientRect();
-  const conversationBox = conversation.getBoundingClientRect();
-  const composerBox = composer.getBoundingClientRect();
-  if (window.innerWidth <= 1240) {
-    expect(railBox.bottom).toBeLessThanOrEqual(conversationBox.top + 1);
-  } else {
-    expect(railBox.right).toBeLessThanOrEqual(conversationBox.left);
-    expect(Math.abs(composerBox.left + composerBox.width / 2 -
-      (conversationBox.left + conversationBox.width / 2))).toBeLessThanOrEqual(4);
-  }
-};
-
-export const AnchorRailFiltersAndReflows: Story = {
-  render: () => <Surface turns={[submittedTurn()]} onOpenSession={openRailSession} />,
-  play: anchorRailPlay,
-};
-
-// The render smoke runner selects its narrow viewport from this story ID.
-export const AnchorRailFiltersAndReflowsNarrow: Story = {
-  ...AnchorRailFiltersAndReflows,
-};
-
-// Production scroll container and message frames: enough real turns to require
-// scrolling, with two messages sharing a Turn ID to exercise message identity.
-const promptRailTurns: WorkHubCoordinationTurn[] = Array.from({ length: 14 }, (_, index) => ({
-  messageId: `prompt-${index}`,
-  turnId: `conversation-${Math.floor(index / 2)}`,
-  text: `第 ${index + 1} 次讨论：支付回调的并发与重试`,
-  result: '已检查当前处理路径。需要同时覆盖重复投递、并发请求和失败后的重试，确认每个请求只产生一次业务变更。',
-  state: 'completed',
-  updatedAt: index,
-}));
-
-let publishPromptTurns: (turns: readonly WorkHubCoordinationTurn[]) => void = () => {};
-const promptController: WorkHubController = {
-  ...controller(promptRailTurns),
-  openConversation: async (handler) => {
-    publishPromptTurns = handler;
-    handler(promptRailTurns);
-    return { close: async () => { publishPromptTurns = () => {}; } };
+export const FullConversationNarrow: Story = { ...FullConversationAndWorkIdentity, parameters: { viewport: { defaultViewport: 'tablet' } } };
+export const StandardComposer: Story = {
+  render: () => <Surface />,
+  play: async ({ canvasElement }) => {
+    Object.values(writes).forEach((spy) => spy.mockClear());
+    const canvas = within(canvasElement); const page = within(canvasElement.ownerDocument.body);
+    await waitFor(() => expect(canvas.getByRole('button', { name: /切换当前任务模型/ })).toBeEnabled());
+    await userEvent.click(canvas.getByRole('button', { name: /切换当前任务模型/ }));
+    await userEvent.click(page.getByRole('menuitemradio', { name: 'model-b' }));
+    await waitFor(() => expect(writes.model).toHaveBeenCalledWith(sessionId, expect.objectContaining({ expectedRevision: 1, modelTarget: expect.objectContaining({ model: 'model-b' }) })));
+    await userEvent.click(canvas.getByRole('button', { name: '添加上下文' }));
+    await userEvent.click(page.getByRole('menuitem', { name: /添加文件/ }));
+    const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
+    await userEvent.click(editor); await userEvent.type(editor, 'Review requirements'); await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(writes.answer).toHaveBeenCalledWith(sessionId, expect.objectContaining({ text: 'Review requirements', attachments: [expect.objectContaining({ name: 'requirements.txt' })] })));
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-composer-attachment-token')).toHaveLength(0));
   },
 };
-
-const promptRailPlay: NonNullable<Story['play']> = async ({ canvasElement }) => {
-  const root = canvasElement.querySelector<HTMLElement>('[data-chat-scroll-container]');
-  if (!root) throw new Error('WorkHub scroll container missing');
-  await waitFor(() => expect(canvasElement.querySelectorAll('.maka-prompt-rail-tick')).toHaveLength(14));
-  await waitFor(() => expect(canvasElement.querySelectorAll('.workhub-turn[data-turn-id]')).toHaveLength(14));
-  const ticks = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('.maka-prompt-rail-tick'));
-  const frames = Array.from(canvasElement.querySelectorAll<HTMLElement>('.workhub-turn[data-turn-id]'));
-  expect(new Set(frames.map((frame) => frame.dataset.turnId)).size).toBe(14);
-  expect(root.scrollHeight).toBeGreaterThan(root.clientHeight);
-  await userEvent.click(ticks[0]!);
-  await waitFor(() => {
-    expect(ticks[0]).toHaveAttribute('aria-current', 'true');
-    expect(Math.abs(frames[0]!.getBoundingClientRect().top - root.getBoundingClientRect().top)).toBeLessThan(4);
-  });
-  const navigation = within(await within(canvasElement).findByRole('complementary', { name: '工作导航' }));
-  await userEvent.click(navigation.getByRole('button', { name: '待处理' }));
-  expect(canvasElement.querySelectorAll('.maka-prompt-rail-tick')).toHaveLength(14);
-  await userEvent.click(navigation.getByRole('button', { name: '全部' }));
-  ticks[6]!.focus();
-  await userEvent.keyboard('{Enter}');
-  await waitFor(() => {
-    expect(ticks[6]).toHaveAttribute('aria-current', 'true');
-    expect(Math.abs(frames[6]!.getBoundingClientRect().top - root.getBoundingClientRect().top)).toBeLessThan(4);
-  });
-  // A reader wheel gesture releases the shared rail's short jump hold.
-  root.dispatchEvent(new WheelEvent('wheel', { deltaY: root.scrollHeight, bubbles: true }));
-  root.scrollTo({ top: root.scrollHeight, behavior: 'instant' });
-  await waitFor(() => expect(ticks[13]).toHaveAttribute('aria-current', 'true'));
-  // Leave a middle prompt selected for visual evidence of the rail and target.
-  await userEvent.click(ticks[6]!);
-  await waitFor(() => expect(ticks[6]).toHaveAttribute('aria-current', 'true'));
-  // Simulate ordinary Coordination transcript updates while the reader is
-  // inspecting an earlier message: growth must not pull them back to the tail.
-  for (let chunk = 1; chunk <= 3; chunk += 1) {
-    publishPromptTurns(promptRailTurns.map((turn, index) => index === 13
-      ? { ...turn, state: 'running', result: `${turn.result}\n${'新增流式结果。'.repeat(chunk * 80)}` }
-      : turn));
-    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-    await waitFor(() => {
-      expect(ticks[6]).toHaveAttribute('aria-current', 'true');
-      expect(Math.abs(frames[6]!.getBoundingClientRect().top - root.getBoundingClientRect().top)).toBeLessThan(4);
-    });
-  }
-};
-
-export const ConversationPromptAnchors: Story = {
-  render: () => <Surface turns={promptRailTurns} fixture={promptController} />,
-  play: promptRailPlay,
-};
-
-export const ConversationPromptAnchorsNarrow: Story = {
-  ...ConversationPromptAnchors,
+export const ComposerRetainsFailedAttachment: Story = {
+  render: () => <Surface failFirst />,
+  play: async ({ canvasElement }) => {
+    Object.values(writes).forEach((spy) => spy.mockClear());
+    const canvas = within(canvasElement); const page = within(canvasElement.ownerDocument.body);
+    await waitFor(() => expect(canvas.getByRole('button', { name: /切换当前任务模型/ })).toBeEnabled());
+    await userEvent.click(canvas.getByRole('button', { name: '添加上下文' }));
+    await userEvent.click(page.getByRole('menuitem', { name: /添加文件/ }));
+    const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
+    await userEvent.click(editor); await userEvent.type(editor, 'Review requirements'); await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(canvas.getByRole('alert')).toHaveTextContent('Temporary Host failure'));
+    expect(editor).toHaveTextContent('Review requirements');
+    expect(canvasElement.querySelectorAll('.maka-composer-attachment-token')).toHaveLength(1);
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(writes.answer).toHaveBeenCalledTimes(2));
+    expect(writes.upload).toHaveBeenCalledTimes(1);
+    expect(writes.answer.mock.calls[0]?.[1].turnId).toBe(writes.answer.mock.calls[1]?.[1].turnId);
+    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-composer-attachment-token')).toHaveLength(0));
+  },
 };

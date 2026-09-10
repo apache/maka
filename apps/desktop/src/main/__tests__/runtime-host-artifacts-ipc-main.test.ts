@@ -79,6 +79,7 @@ for (const [fault, reason] of [
       }
       syncBuiltinESMExports();
       registerRuntimeHostArtifactsIpc({
+        uiLocale: () => 'zh-CN' as const,
         ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as Handler) },
         client: {
           hostEpoch: "host-1",
@@ -138,6 +139,7 @@ function attachmentReadHandler(
 ): Handler {
   const handlers = new Map<string, Handler>();
   registerRuntimeHostArtifactsIpc({
+    uiLocale: () => 'zh-CN' as const,
     ipcMain: {
       handle: (channel, handler) => handlers.set(channel, handler as Handler),
     },
@@ -205,6 +207,7 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
 
   try {
     registerRuntimeHostArtifactsIpc({
+    uiLocale: () => 'zh-CN' as const,
       ipcMain: {
         handle: (channel, handler) => handlers.set(channel, handler as Handler),
       },

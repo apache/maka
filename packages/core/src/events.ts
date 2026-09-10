@@ -836,6 +836,7 @@ export type ToolResultContent =
       toolCallId: string;
       toolName: string;
       artifactId?: string;
+      resourceRef?: string;
       bodySha256?: string;
       originalEstimatedTokens: number;
       originalBytes: number;

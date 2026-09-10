@@ -33,6 +33,7 @@ import {
   type MakaPluginRootId,
 } from '@maka/runtime/plugin-runtime';
 import type { ExtensionPackageManifest } from './extension-package-manifest.js';
+import type { PluginToolInspection } from '@maka/runtime/plugin-tool-service';
 import { validateExtensionConfiguration } from './extension-package-manifest.js';
 import { recoverExtensionBundleImports } from './extension-bundle.js';
 import { loadPluginCompositionPatch } from './plugin-composition-patch.js';
@@ -74,6 +75,7 @@ export interface HostPluginPlatformOptions {
   readonly packages?: PluginPackageStore;
   readonly packageLoader?: TrustedPluginPackageLoader;
   readonly store?: HostPluginCompositionStore;
+  readonly tools?: { inspect(rootId?: MakaPluginRootId): readonly PluginToolInspection[] };
 }
 
 export interface HostPluginPlatformFailure {
@@ -109,6 +111,7 @@ export class HostPluginPlatform {
   readonly #packages: PluginPackageStore;
   readonly #packageLoader: TrustedPluginPackageLoader;
   readonly #store: HostPluginCompositionStore;
+  readonly #tools?: HostPluginPlatformOptions['tools'];
 
   #authority: PersistedPluginComposition = emptyCompositionAuthority();
   #desired: MakaCompositionState = emptyCompositionState();
@@ -133,6 +136,7 @@ export class HostPluginPlatform {
     this.#packageLoader =
       options.packageLoader ?? new TrustedPluginPackageLoader(controlDirectory, this.#packages);
     this.#store = options.store ?? new HostPluginCompositionStore(controlDirectory);
+    this.#tools = options.tools;
   }
 
   async recover(): Promise<void> {
@@ -468,6 +472,11 @@ export class HostPluginPlatform {
   inspect(rootId?: MakaPluginRootId): readonly MakaCompositionEntryInspection[] {
     this.#assertReadable();
     return this.#composition.inspectTree(rootId);
+  }
+
+  inspectTools(rootId?: MakaPluginRootId): readonly PluginToolInspection[] {
+    this.#assertReadable();
+    return this.#tools?.inspect(rootId) ?? Object.freeze([]);
   }
 
   async status(): Promise<{

@@ -26,7 +26,7 @@
 
 import { computerUseModelCallArgs } from '@maka/core/computer-use';
 
-/** Recursively freezes a tool argument snapshot and rejects non-data values. */
+/** Recursively freezes a tool argument snapshot and rejects cycles and object accessors. */
 export function snapshotToolArgs(value: unknown): unknown {
   return snapshotJsonValue(value, new WeakSet<object>());
 }
@@ -53,7 +53,7 @@ function snapshotJsonValue(value: unknown, seen: WeakSet<object>): unknown {
  * Validates the schema shapes supported by the runtime without changing the
  * existing validation order or error behavior.
  */
-export async function validateDeclaredToolArgs(parameters: unknown, args: unknown): Promise<void> {
+async function validateDeclaredToolArgs(parameters: unknown, args: unknown): Promise<void> {
   if (!parameters || (typeof parameters !== 'object' && typeof parameters !== 'function')) {
     return;
   }
@@ -102,13 +102,13 @@ export async function validateDeclaredToolArgs(parameters: unknown, args: unknow
   }
 }
 
-export interface ToolPermissionArgsContext {
+interface ToolPermissionArgsContext {
   sessionId: string;
   turnId: string;
   toolCallId: string;
 }
 
-export interface ToolCallArgsInput {
+interface ToolCallArgsInput {
   parameters: unknown;
   categoryHint?: string | undefined;
   permissionArgs?: ((args: never, context: ToolPermissionArgsContext) => unknown) | undefined;
@@ -122,7 +122,7 @@ export interface ToolCallArgsInput {
   validationDeferred: boolean;
 }
 
-export interface ToolCallArgs {
+interface ToolCallArgs {
   readonly executionArgs: unknown;
   readonly permissionArgs: unknown;
   readonly persistedArgs: unknown;
