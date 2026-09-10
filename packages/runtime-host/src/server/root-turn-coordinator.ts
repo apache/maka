@@ -397,7 +397,11 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
 
   async recover(): Promise<void> {
     for (const [sessionId, plan] of this.#recoveryPlansBySession) {
-      if (plan.rootReplayAdmission && !(await this.bindRecoveryCapabilities(sessionId))) continue;
+      if (
+        plan.rootReplayAdmission &&
+        !(await this.bindRecoveryCapabilities(sessionId, plan.rootReplayAdmission.execution))
+      )
+        continue;
       try {
         for (const admission of plan.admissions) {
           const run = await this.readRunIfPresent(sessionId, admission.runId);
@@ -492,28 +496,27 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     }
   }
 
-  private async bindRecoveryCapabilities(sessionId: string): Promise<boolean> {
+  private async bindRecoveryCapabilities(
+    sessionId: string,
+    execution: RootExecutionDescriptor,
+  ): Promise<boolean> {
     const header = await this.stores.sessionStore.readHeaderSnapshot(sessionId);
     if (header.toolProfile !== 'workhub-coordination-v2') return true;
-    if (!this.clientCapabilities) return false;
-    // Recovery has no initiating Desktop connection. Select through the same
-    // authority as a live admission, and commit only a complete tool binding.
-    const required = hostedExecutionRunProfile(header.toolProfile)!.toolNames.filter((name) =>
-      name.startsWith('mcp__'),
-    );
-    const preview = await this.clientCapabilities.runWithSessionBindingPreview(
+    // Older admissions without authenticated provider evidence stay pending.
+    // Neither registration order nor a tool name can establish Desktop ownership.
+    if (
+      execution.kind !== 'workhub_coordination' ||
+      !execution.capabilityBinding ||
+      !this.clientCapabilities
+    )
+      return false;
+    return this.clientCapabilities.bindRecoveredSession(
       sessionId,
-      '',
-      async () => {
-        const snapshot = this.clientCapabilities!.snapshotForSession(sessionId);
-        try {
-          return required.every((name) => snapshot?.tools.some((tool) => tool.name === name));
-        } finally {
-          snapshot?.release();
-        }
-      },
+      execution.capabilityBinding,
+      hostedExecutionRunProfile(header.toolProfile)!.toolNames.filter((name) =>
+        name.startsWith('mcp__'),
+      ),
     );
-    return preview.ok && preview.value && (await preview.commit()).ok;
   }
 
   async close(): Promise<void> {
@@ -1482,13 +1485,18 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         return { error: 'A root Turn is still active' };
       }
       const header = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
-      if (!(await this.bindRecoveryCapabilities(input.sessionId))) return { deferred: true };
+      const previous = this.rootAdmissionOwner.latestAdmission(input.sessionId)?.execution;
       const execution = {
         kind: isWorkHubCoordinationSessionId(header.id)
           ? ('workhub_coordination' as const)
           : ('external_message' as const),
         inputDigest: messageContentDigest(input.submittedContent),
+        ...(previous?.kind === 'workhub_coordination' && previous.capabilityBinding
+          ? { capabilityBinding: previous.capabilityBinding }
+          : {}),
       };
+      if (!(await this.bindRecoveryCapabilities(input.sessionId, execution)))
+        return { deferred: true };
       const unavailableReason = runtimeHostExecutionUnavailableReason(header, execution);
       if (unavailableReason) return { error: unavailableReason };
       const reservation = this.reserveRootTurn(input.sessionId);
@@ -2009,6 +2017,16 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         if (request.execution.kind === 'external_message') {
           await this.prepareFreshAgentGraphEpoch(header, request.turnOrchestration);
         }
+        const capabilityBinding =
+          request.execution.kind === 'workhub_coordination' &&
+          header.toolProfile === 'workhub-coordination-v2'
+            ? this.clientCapabilities?.sessionToolProviderBinding(
+                request.sessionId,
+                hostedExecutionRunProfile(header.toolProfile)!.toolNames.filter((name) =>
+                  name.startsWith('mcp__'),
+                ),
+              )
+            : undefined;
         const admitted = await this.rootAdmissionOwner.admitRootTurn({
           sessionId: request.sessionId,
           turnId: request.turnId,
@@ -2020,7 +2038,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           // generated admission identity.
           proposedUserMessageId:
             request.execution.kind === 'external_message' ? request.turnId : randomUUID(),
-          execution: request.execution,
+          execution: { ...request.execution, ...(capabilityBinding ? { capabilityBinding } : {}) },
           normalizedInput: canonicalContent.content,
           ...(request.turnOrchestration ? { turnOrchestration: request.turnOrchestration } : {}),
           ...(prepared.skillInvocation ? { skillInvocation: prepared.skillInvocation } : {}),
@@ -3115,6 +3133,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             ? 'workhub_coordination'
             : 'external_message',
         inputDigest: messageContentDigest(batch.submittedContent),
+        ...(previous.descriptor.kind === 'workhub_coordination' &&
+        previous.descriptor.capabilityBinding
+          ? { capabilityBinding: previous.descriptor.capabilityBinding }
+          : {}),
       },
       normalizedInput: batch.content,
       sourceMessages: batch.sources,
@@ -3311,18 +3333,19 @@ function throwHostedStopError(
   }
 }
 
-/** Compatibility may omit only the action identity absent from an older admission. */
+/** Compare the request identity separately from its Host-selected capability binding. */
 function rootExecutionMatches(
   stored: RootExecutionDescriptor,
   incoming: RootExecutionDescriptor,
 ): boolean {
-  if (
-    stored.kind === 'workhub_coordination' &&
-    incoming.kind === 'workhub_coordination' &&
-    stored.actionId === undefined
-  ) {
-    const { actionId: _actionId, ...legacyIncoming } = incoming;
-    return isDeepStrictEqual(stored, legacyIncoming);
+  if (stored.kind === 'workhub_coordination' && incoming.kind === 'workhub_coordination') {
+    const { capabilityBinding: _storedBinding, ...storedRequest } = stored;
+    const { capabilityBinding: _incomingBinding, actionId, ...incomingRequest } = incoming;
+    // Compatibility permits the action identity absent from older admissions.
+    return isDeepStrictEqual(storedRequest, {
+      ...incomingRequest,
+      ...(stored.actionId === undefined ? {} : { actionId }),
+    });
   }
   return isDeepStrictEqual(stored, incoming);
 }

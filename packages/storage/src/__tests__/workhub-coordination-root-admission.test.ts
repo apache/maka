@@ -40,6 +40,7 @@ for (const actionId of [undefined, 'stable-action']) {
         execution: {
           kind: 'workhub_coordination',
           inputDigest,
+          capabilityBinding: `sha256:${'b'.repeat(64)}`,
           ...(actionId ? { operation: 'action' as const, actionId } : {}),
         },
         previousRootTurnId: null,

@@ -1825,7 +1825,11 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
         },
         { bootstrapRuntimePolicy: false },
       );
-    const registerDesktop = async (registrationId: string, names: string[]) => {
+    const registerDesktop = async (
+      registrationId: string,
+      names: string[],
+      connectionId = context.connectionId,
+    ) => {
       const result = await composition!.handlers['client.capability.replace'](
         {
           registrationId,
@@ -1844,7 +1848,7 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
             },
           ],
         },
-        context,
+        { ...context, connectionId },
       );
       assert.ok(result.ok, JSON.stringify(result));
     };
@@ -1913,6 +1917,11 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
       // The terminal root is durable; the successor may or may not have
       // committed its root admission when the process stops.
       const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const prior = await stores.agentRunStore.readRootTurnAdmission(sessionId, initialTurnId);
+      assert.ok(
+        prior?.execution.kind === 'workhub_coordination' && prior.execution.capabilityBinding,
+      );
+      const capabilityBinding = prior.execution.capabilityBinding;
       const content = { text: 'Recovered follow-up' };
       const messageId = randomUUID();
       const digest = messageContentDigest(content);
@@ -1936,7 +1945,7 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
           proposedRunId: randomUUID(),
           previousRootTurnId: initialTurnId,
           proposedUserMessageId: messageId,
-          execution: { kind: 'workhub_coordination', inputDigest: digest },
+          execution: { kind: 'workhub_coordination', inputDigest: digest, capabilityBinding },
           normalizedInput: content,
           sourceMessages: [
             {
@@ -1956,6 +1965,37 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
       await composition.recover();
       assert.equal(drained, false, 'Host recovery reaches ready without a Desktop');
       assert.equal(provider.requests.length, requestsBeforeRecovery);
+      const recoveredCapabilities = composition.clientCapabilities;
+      assert.ok(recoveredCapabilities instanceof HostClientCapabilityCoordinator);
+      const hostileFrames: ClientCapabilityHostFrame[] = [];
+      composition.clientCapabilities!.attachConnection(
+        clientCapabilityConnectionIdentity(
+          'hostile',
+          'unrelated-client',
+          'unrelated-principal',
+          'capability_provider',
+          { principalId: 'unrelated-owner', clientInstanceId: 'unrelated-desktop' },
+        ),
+        {
+          send: async (frame) => {
+            hostileFrames.push(frame);
+          },
+        },
+      );
+      await registerDesktop('hostile-reg', ['control', 'tasks'], 'hostile');
+      assert.equal(
+        provider.requests.length,
+        requestsBeforeRecovery,
+        'an unrelated provider cannot activate the recovered Turn',
+      );
+      assert.equal(
+        recoveredCapabilities.sessionToolProviderBinding(sessionId, [
+          'mcp__desktop_workhub__control',
+          'mcp__desktop_workhub__tasks',
+        ]),
+        undefined,
+      );
+
       composition.clientCapabilities!.attachConnection(
         clientCapabilityConnectionIdentity('desktop'),
         { send: async () => {} },
@@ -1995,6 +2035,17 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
       assert.deepEqual(
         users.map((message) => message.text),
         ['Initial request', 'Recovered follow-up'],
+      );
+      assert.equal(
+        hostileFrames.some((frame) => frame.kind === 'client.capability.call'),
+        false,
+      );
+      assert.equal(
+        recoveredCapabilities.sessionToolProviderBinding(sessionId, [
+          'mcp__desktop_workhub__control',
+          'mcp__desktop_workhub__tasks',
+        ]),
+        capabilityBinding,
       );
       assert.equal(drained, false);
     } finally {
