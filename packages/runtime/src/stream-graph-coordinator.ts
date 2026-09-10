@@ -1200,13 +1200,15 @@ export class AgentGraphCoordinator {
           // stop race). Only the authoritative RuntimeEvent fold populates the
           // immutable terminal-history table.
           terminalActivities: [],
-          activityRecords: [
-            {
-              recordId: advanced.activity.recordId,
-              eventTime: advanced.activity.eventTime,
-            },
-          ],
-          incrementalRecordId: advanced.activity.recordId,
+          activityRecords: advanced.activity
+            ? [
+                {
+                  recordId: advanced.activity.recordId,
+                  eventTime: advanced.activity.eventTime,
+                },
+              ]
+            : [],
+          ...(advanced.activity ? { incrementalRecordId: advanced.activity.recordId } : {}),
         });
         if (committed.snapshotVersion === advanced.snapshot.snapshotVersion) {
           this.#notifyClientChanged(driver, 'runtime_activity');
@@ -1732,7 +1734,6 @@ function isMaterializedGraphClientEvent(
   type: AgentGraphSupervisorRuntimeEvent['event']['type'],
 ): boolean {
   return ![
-    'text_delta',
     'thinking_delta',
     'tool_output_delta',
     'tool_progress',
