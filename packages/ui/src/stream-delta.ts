@@ -231,7 +231,8 @@ export function applyStreamComplete(
   }
 
   return {
-    text: result,
+    // Detach the bounded display from a slice's potentially much larger backing string.
+    text: totalTruncated ? structuredClone(result) : result,
     redacted: redacted !== rawText,
     truncated: totalTruncated,
   };
