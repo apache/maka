@@ -302,3 +302,118 @@ test('carries the subagent subtree and its artifact bytes across', async () => {
     await rm(target.root, { recursive: true, force: true });
   }
 });
+
+test('leaves the shared workspace connection as it found it', async () => {
+  const source = await makeWorkspace('maka-import-pragma-source');
+  const target = await makeWorkspace('maka-import-pragma-target');
+  const { acquireOperationalStateDatabase } = await import('@maka/storage/operational-state-store');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    await createSession(target.workspaceRoot, 'Unrelated');
+    const bundle = join(source.root, 'bundle.maka-session');
+    await exportSessionBundle({
+      workspaceRoot: source.workspaceRoot,
+      sessionId,
+      destination: bundle,
+    });
+
+    // Hold a lease across the import, the way a running Runtime Host does. The
+    // operational store hands out one reference-counted connection per
+    // workspace, and `PRAGMA foreign_keys` is per-connection: reading it on a
+    // fresh handle would report the default no matter what the import did.
+    // The import canonicalises the root before acquiring, so a lease taken on
+    // the uncanonicalised path would be a different connection and this test
+    // would observe nothing.
+    const { realpath } = await import('node:fs/promises');
+    const held = acquireOperationalStateDatabase(await realpath(target.workspaceRoot));
+    try {
+      const before = readForeignKeys(held.database);
+      assert.equal(before, 1);
+
+      const imported = await importSessionBundle({
+        workspaceRoot: target.workspaceRoot,
+        source: bundle,
+      });
+      assert.equal(imported.ok, true);
+
+      // The merge must disable foreign keys to insert in table order. Leaving
+      // the pragma off would silently disarm constraint checking for every
+      // later user of this workspace -- a failure nothing would report.
+      assert.equal(readForeignKeys(held.database), before);
+    } finally {
+      held.close();
+    }
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+function readForeignKeys(database: DatabaseSync): number {
+  const row = (database.prepare('PRAGMA foreign_keys').get() ?? {}) as Record<string, unknown>;
+  return Number(Object.values(row)[0] ?? 0);
+}
+
+test('refuses a bundle written against a different schema', async () => {
+  const source = await makeWorkspace('maka-import-schema-source');
+  const target = await makeWorkspace('maka-import-schema-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedHistory(source.workspaceRoot, sessionId);
+    await createSession(target.workspaceRoot, 'Unrelated');
+    const bundle = join(source.root, 'bundle.maka-session');
+    await exportSessionBundle({
+      workspaceRoot: source.workspaceRoot,
+      sessionId,
+      destination: bundle,
+    });
+
+    // Hydrate and tamper, which is the only way to hold a bundle from a build
+    // that is not this one. The merge copies rows with `INSERT ... SELECT *`,
+    // which maps by position: a bundle whose tables carry the same column count
+    // in a different order would be inserted transposed -- rows that read as
+    // data and are not.
+    const { createSessionBundleFileService } = await import(
+      '@maka/storage/session-bundle-file-service'
+    );
+    const { importSessionBundleState } = await import('@maka/storage/session-bundle-policy');
+    const { SESSION_EXPORT_BUNDLE_LIMITS } = await import('../session-export.js');
+    const hydration = await createSessionBundleFileService().hydrate({
+      source: { path: bundle },
+      limits: SESSION_EXPORT_BUNDLE_LIMITS,
+      expectedSessionId: sessionId,
+      destinationRoot: join(source.root, 'hydrated'),
+    });
+    const bundleDb = new DatabaseSync(join(hydration.stateRoot, OPERATIONAL_STATE_DATABASE_NAME));
+    try {
+      bundleDb.exec(
+        "UPDATE operational_schema_migrations SET version = version + 1 WHERE scope = 'usage'",
+      );
+    } finally {
+      bundleDb.close();
+    }
+
+    await assert.rejects(
+      () =>
+        importSessionBundleState({
+          stateRoot: target.workspaceRoot,
+          bundleStateRoot: hydration.stateRoot,
+        }),
+      (error: unknown) => (error as { code?: string }).code === 'schema_unsupported',
+    );
+
+    const after = openDatabase(target.workspaceRoot, true);
+    try {
+      const count = after.prepare('SELECT COUNT(*) AS count FROM session_metadata').get() as {
+        count?: unknown;
+      };
+      assert.equal(Number(count.count), 1);
+    } finally {
+      after.close();
+    }
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});

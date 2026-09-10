@@ -51,6 +51,7 @@ import {
   inspectOperationalStateSchema,
   OPERATIONAL_STATE_DATABASE_NAME,
   OperationalStateMigrationBlockedError,
+  type OperationalStateDatabaseLease,
 } from './operational-state-store.js';
 import { TERMINAL_RUNTIME_EVENT_SQL } from './runtime-transcript-query.js';
 import { isSafeStorageId } from './storage-id.js';
@@ -910,12 +911,26 @@ export async function importSessionBundleState(
       // import is a write the user asked for, and the target is often a
       // workspace with no database yet -- moving to a new machine is the whole
       // point -- so this opens the ordinary way and lets it be initialised.
-      const lease = acquireOperationalStateDatabase(stateRoot);
+      let lease: OperationalStateDatabaseLease;
       try {
-        const target = lease.database;
-        assertImportableInto(target, sessionIds);
+        lease = acquireOperationalStateDatabase(stateRoot);
+      } catch (error) {
+        // A target this build cannot open is a schema verdict, not an IO one;
+        // everything else the operational store raises is the environment.
+        if (error instanceof OperationalStateMigrationBlockedError) {
+          throw new SessionBundleImportError(
+            'schema_unsupported',
+            'Workspace schema cannot be opened by this build',
+            { cause: error },
+          );
+        }
+        throw error;
+      }
+      try {
+        assertBundleSchemaMatches(lease.database, bundleDatabasePath);
+        assertImportableInto(lease.database, sessionIds);
         const artifactFiles = await copyBundleArtifacts(bundleStateRoot, stateRoot);
-        const inserted = mergeBundleDatabase(target, bundleDatabasePath);
+        const inserted = mergeBundleDatabase(lease, bundleDatabasePath);
         const contextRefs = await mergeBundleContext(
           bundleStateRoot,
           stateRoot,
@@ -928,6 +943,61 @@ export async function importSessionBundleState(
       }
     }),
   );
+}
+
+/**
+ * Refuse a bundle written against a different schema.
+ *
+ * The merge copies rows with `INSERT ... SELECT *`, which maps by position. A
+ * bundle whose tables have a different column ORDER but the same count would
+ * be inserted silently transposed -- rows that read as data and are not. The
+ * export only ever writes a bundle at its own current schema, so any mismatch
+ * here means the two builds disagree, and the honest answer is to say so
+ * rather than to guess a mapping.
+ */
+function assertBundleSchemaMatches(target: DatabaseSync, bundleDatabasePath: string): void {
+  const bundle = new DatabaseSync(bundleDatabasePath, { readOnly: true });
+  try {
+    const bundleVersions = readSchemaRegistry(bundle);
+    const targetVersions = readSchemaRegistry(target);
+    for (const [scope, version] of Object.entries(bundleVersions)) {
+      if (targetVersions[scope] !== version) {
+        throw new SessionBundleImportError(
+          'schema_unsupported',
+          `Bundle schema ${scope} is ${version}; this workspace is ${
+            targetVersions[scope] ?? 'absent'
+          }`,
+        );
+      }
+    }
+    const bundleUserVersion = readUserVersionPragma(bundle);
+    const targetUserVersion = readUserVersionPragma(target);
+    if (bundleUserVersion !== targetUserVersion) {
+      throw new SessionBundleImportError(
+        'schema_unsupported',
+        `Bundle runtime schema is ${bundleUserVersion}; this workspace is ${targetUserVersion}`,
+      );
+    }
+  } finally {
+    bundle.close();
+  }
+}
+
+function readSchemaRegistry(database: DatabaseSync): Record<string, number> {
+  const versions: Record<string, number> = {};
+  for (const row of database
+    .prepare('SELECT scope, version FROM operational_schema_migrations')
+    .all() as Array<{ scope?: unknown; version?: unknown }>) {
+    if (typeof row.scope === 'string' && typeof row.version === 'number') {
+      versions[row.scope] = row.version;
+    }
+  }
+  return versions;
+}
+
+function readUserVersionPragma(database: DatabaseSync): number {
+  const row = (database.prepare('PRAGMA user_version').get() ?? {}) as Record<string, unknown>;
+  return Number(Object.values(row)[0] ?? -1);
 }
 
 function readBundleSessionIds(bundleDatabasePath: string): string[] {
@@ -1010,11 +1080,41 @@ async function copyBundleArtifacts(bundleStateRoot: string, stateRoot: string): 
  * describing the WORKSPACE rather than a Session are skipped -- the target has
  * its own, and they are not the bundle's to bring.
  */
-function mergeBundleDatabase(target: DatabaseSync, bundleDatabasePath: string): string[] {
-  target.exec(`ATTACH DATABASE '${bundleDatabasePath.replaceAll("'", "''")}' AS bundle`);
+function mergeBundleDatabase(
+  lease: OperationalStateDatabaseLease,
+  bundleDatabasePath: string,
+): string[] {
+  const target = lease.database;
+  // Read-only, so a bundle is never written by the act of reading it -- and so
+  // a hydrated staging tree cannot pick up a journal beside it.
+  const uri = `file:${encodeURI(bundleDatabasePath)}?mode=ro`;
+  target.exec(`ATTACH DATABASE '${uri.replaceAll("'", "''")}' AS bundle`);
   try {
-    target.exec('PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE');
+    // The lease owns a shared, reference-counted connection with its own
+    // transaction depth. Driving BEGIN/COMMIT directly would step around that,
+    // and the foreign-key pragma it needs must be put back: leaving it off
+    // would silently disarm constraint checking for every later user of this
+    // connection.
+    const restoreForeignKeys =
+      Number(
+        Object.values(
+          (target.prepare('PRAGMA foreign_keys').get() ?? {}) as Record<string, unknown>,
+        )[0] ?? 0,
+      ) === 1;
+    target.exec('PRAGMA foreign_keys = OFF');
     try {
+      return lease.transaction('write', () => mergeAttachedBundle(target));
+    } finally {
+      if (restoreForeignKeys) target.exec('PRAGMA foreign_keys = ON');
+    }
+  } finally {
+    target.exec('DETACH DATABASE bundle');
+  }
+}
+
+function mergeAttachedBundle(target: DatabaseSync): string[] {
+  {
+    {
       const tables = target
         .prepare(
           "SELECT name FROM bundle.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -1039,21 +1139,12 @@ function mergeBundleDatabase(target: DatabaseSync, bundleDatabasePath: string): 
           'Imported Sessions would leave dangling references',
         );
       }
-      const sessionIds = (
+      return (
         target
           .prepare('SELECT session_id FROM bundle.session_metadata ORDER BY session_id')
           .all() as Array<{ session_id?: unknown }>
       ).map((entry) => String(entry.session_id));
-      target.exec('COMMIT');
-      return sessionIds;
-    } catch (error) {
-      try {
-        target.exec('ROLLBACK');
-      } catch {}
-      throw error;
     }
-  } finally {
-    target.exec('DETACH DATABASE bundle');
   }
 }
 
