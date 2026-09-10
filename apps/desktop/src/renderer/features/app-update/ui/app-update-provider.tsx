@@ -22,6 +22,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   type ReactNode,
 } from 'react';
 import {
@@ -60,6 +61,7 @@ export function AppUpdateProvider(props: { readonly children?: ReactNode }) {
   const locale = useUiLocale();
   const copy = getAppUpdateCopy(locale);
   const installInFlightRef = useRef(false);
+  const [installPending, setInstallPending] = useState(false);
   const notifiedInstallErrorRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -86,6 +88,7 @@ export function AppUpdateProvider(props: { readonly children?: ReactNode }) {
     if (reminder?.state === 'downloaded') {
       if (installInFlightRef.current) return;
       installInFlightRef.current = true;
+      setInstallPending(true);
       void requestDownloadedAppUpdate({
         installUpdate: controller.commands.installUpdate,
         confirmActiveTasks: () => toast.confirm({
@@ -108,6 +111,7 @@ export function AppUpdateProvider(props: { readonly children?: ReactNode }) {
         })
         .finally(() => {
           installInFlightRef.current = false;
+          setInstallPending(false);
         });
       return;
     }
@@ -137,12 +141,14 @@ export function AppUpdateProvider(props: { readonly children?: ReactNode }) {
       checking: controller.checking,
       checkForUpdates: controller.commands.checkForUpdates,
       installDownloadedUpdate,
+      installPending,
     }),
     [
       controller.checking,
       controller.commands.checkForUpdates,
       controller.status,
       installDownloadedUpdate,
+      installPending,
     ],
   );
 

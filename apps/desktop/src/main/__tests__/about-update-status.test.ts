@@ -70,16 +70,12 @@ test('the row only offers a check where the service would honour one', () => {
   }
 });
 
-test('every state carries a second line, so the row keeps one height', () => {
-  const rows = [
-    aboutUpdateRow(null, copy),
-    aboutUpdateRow({ state: 'checking', currentVersion: current }, copy),
-    aboutUpdateRow({ state: 'not-available', currentVersion: current }, copy),
-    aboutUpdateRow({ state: 'available', currentVersion: current, latestVersion: latest }, copy),
-    aboutUpdateRow({ state: 'downloaded', currentVersion: current, latestVersion: latest }, copy),
-    aboutUpdateRow({ state: 'installing', currentVersion: current, latestVersion: latest }, copy),
-  ];
-  for (const row of rows) assert.ok(row.description.length > 0, row.label);
+test('the version lives on the second line, so the label never truncates against the button', () => {
+  for (const state of ['available', 'verifying', 'downloaded', 'installing'] as const) {
+    const row = aboutUpdateRow({ state, currentVersion: current, latestVersion: latest }, copy);
+    assert.equal(row.label.includes(latest), false, state);
+    assert.ok(row.description.includes(`v${latest}`), state);
+  }
 });
 
 test('the nightly steady states each read as themselves', () => {
@@ -93,20 +89,18 @@ test('the nightly steady states each read as themselves', () => {
     copy,
   );
   assert.deepEqual(downloading, {
-    label: '正在下载 v0.2.0-dev.12.20260901（42%）',
-    description: '下载完成后可在这里重启安装。',
+    label: '正在下载（42%）',
+    description: 'v0.2.0-dev.12.20260901，完成后可在这里重启安装。',
     action: 'busy',
   });
 
-  // A downloaded update offers the restart right here, not only in the
-  // sidebar footer.
   const downloaded = aboutUpdateRow(
     { state: 'downloaded', currentVersion: current, latestVersion: latest },
     copy,
   );
   assert.deepEqual(downloaded, {
-    label: 'v0.2.0-dev.12.20260901 已下载',
-    description: '重启 Maka 即可完成安装；有任务在进行时会先询问。',
+    label: '新版本已下载',
+    description: 'v0.2.0-dev.12.20260901，重启 Maka 即可完成安装。',
     action: 'install',
   });
 });

@@ -18,7 +18,7 @@
  */
 
 import { useEffect, useState, type ReactNode, type RefObject } from 'react';
-import { Heading, Link, Text, VStack } from '@astryxdesign/core';
+import { Link, Text, VStack } from '@astryxdesign/core';
 import {
   Banner,
   Button,
@@ -65,8 +65,6 @@ const RELEASES_URL = `${REPOSITORY_URL}/releases`;
 /* The ghost `sm` button pads its label by one spacing step; without the same
    inset the link's text sits 12px further right than the buttons' text. */
 const linkInRowEnd = { paddingInline: 'var(--spacing-3)' } as const;
-/* Same brand tint the onboarding and empty-chat marks wear. */
-const wordmarkStyle = { color: 'var(--maka-brand)' } as const;
 type AboutCopy = ReturnType<typeof getSettingsPreferencesCopy>['about'];
 
 /**
@@ -106,21 +104,20 @@ function AboutUpdateStatusRow(props: {
   }
 
   /* One button in every state, so the row never changes shape: the updater's
-     own work only disables it, and a downloaded update swaps its label. The
-     install handler is the sidebar footer's, so the two entries cannot drift
-     in what they confirm or how they fail. */
-  const end = row.action === 'install' && update.installDownloadedUpdate ? (
+     own work only disables it, and a downloaded update swaps its label. */
+  const end = row.action === 'install' ? (
     <Button
       variant="primary"
       size="sm"
-      onClick={update.installDownloadedUpdate}
+      isLoading={update.installPending}
+      onClick={() => update.installDownloadedUpdate?.()}
       label={copy.installUpdate}
     />
   ) : (
     <Button
       variant="secondary"
       size="sm"
-      isDisabled={row.action === 'busy' || row.action === 'install'}
+      isDisabled={row.action === 'busy'}
       isLoading={update.checking || row.action === 'checking'}
       onClick={() => void checkForUpdates()}
       label={copy.checkForUpdates}
@@ -182,20 +179,6 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
     }
   }
 
-  const provenance = (
-    <Text type="supporting" color="secondary">
-      {copy.openSourceSummary}
-      {' · '}
-      <Link href={REPOSITORY_URL} target="_blank" rel="noreferrer noopener" type="inherit">
-        {copy.sourceCode}
-      </Link>
-      {' · '}
-      <Link href={RELEASES_URL} target="_blank" rel="noreferrer noopener" type="inherit">
-        {copy.releaseNotes}
-      </Link>
-    </Text>
-  );
-
   let identity: ReactNode;
   if (!info && !infoError) {
     identity = (
@@ -211,9 +194,11 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
   } else if (!info) {
     identity = <Banner status="info" role="alert" title={copy.unavailable} description={infoError} />;
   } else {
+    /* The wordmark names the product, so the version stands alone; as text,
+       not a Heading, so it does not rank beside the 更新 and 支持 group titles. */
     identity = (
       <VStack gap={1}>
-        <Heading level={3}>{`Maka v${info.appVersion}`}</Heading>
+        <Text weight="semibold">{`v${info.appVersion}`}</Text>
         <Text type="supporting" color="secondary">{aboutChannelSummary(info, copy)}</Text>
       </VStack>
     );
@@ -221,14 +206,22 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
 
   return (
     <SettingsPage>
-      {/* The lead is the wordmark over the build and its provenance: what the
-          page is about, before any row. Unlabeled because the page title
-          already says 关于. */}
+      {/* Unlabeled because the page title already says 关于. */}
       <SettingsSection variant="bare">
         <VStack gap={4}>
-          <MakaWordmark width={128} style={wordmarkStyle} />
+          <MakaWordmark width={128} title="Maka" />
           {identity}
-          {provenance}
+          <Text type="supporting" color="secondary">
+            {copy.openSourceSummary}
+            {' · '}
+            <Link href={REPOSITORY_URL} target="_blank" rel="noreferrer noopener" type="inherit">
+              {copy.sourceCode}
+            </Link>
+            {' · '}
+            <Link href={RELEASES_URL} target="_blank" rel="noreferrer noopener" type="inherit">
+              {copy.releaseNotes}
+            </Link>
+          </Text>
         </VStack>
       </SettingsSection>
       {/* A dev checkout follows no feed, so it gets no update group at all: its

@@ -2973,7 +2973,8 @@ export const About: Story = {
     const canvas = within(canvasElement);
     // The lead is the wordmark over the version and the channel sentence; a
     // dev checkout says it does not update and gets no 更新 group at all.
-    await expect(canvas.findByRole('heading', { name: /^Maka v\d/ })).resolves.toBeTruthy();
+    await expect(canvas.findByRole('img', { name: 'Maka' })).resolves.toBeTruthy();
+    await expect(canvas.findByText(/^v\d/)).resolves.toBeTruthy();
     await expect(canvas.findByText('本地开发构建，不检查更新。')).resolves.toBeTruthy();
     await expect(canvas.queryByRole('heading', { name: '更新' })).not.toBeInTheDocument();
     await expect(canvas.queryByRole('button', { name: '检查更新' })).not.toBeInTheDocument();
@@ -3001,8 +3002,11 @@ export const About: Story = {
 // and auto-downloads, so `downloaded` — not `not-available` — is what a nightly
 // user actually opens this page to. The version string is the shipped shape:
 // <product>-dev.<run>.<UTC day>. 重启安装 here is the sidebar footer's restart
-// offered on the page itself, through the same install command.
-const nightlyInstallUpdate = fn(async (_input: AppUpdateInstallRequest) => ({ ok: true as const }));
+// offered on the page itself. The fake refuses the first, guarded request
+// because tasks are running, so the play walks the confirmation the sidebar
+// walks: an About wired to its own install call would never show the dialog.
+const nightlyInstallUpdate = fn(async (input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult> =>
+  input.allowInterruptActiveTasks ? { ok: true } : { ok: false, reason: 'active_tasks' });
 export const AboutNightly: Story = {
   decorators: [
     withPackagedChannelBridge({
@@ -3021,12 +3025,16 @@ export const AboutNightly: Story = {
     nightlyInstallUpdate.mockClear();
     const canvas = within(canvasElement);
     await expect(canvas.findByRole('heading', { name: '更新' })).resolves.toBeTruthy();
-    // The row keeps one control: 重启安装 takes 检查更新's slot instead of joining it.
     await expect(canvas.queryByRole('button', { name: '检查更新' })).not.toBeInTheDocument();
     const install = await canvas.findByRole('button', { name: '重启安装' });
     await userEvent.click(install);
     await waitFor(() => {
       expect(nightlyInstallUpdate).toHaveBeenCalledWith({ allowInterruptActiveTasks: false });
+    });
+    const screen = within(document.body);
+    await userEvent.click(await screen.findByRole('button', { name: '仍然更新' }));
+    await waitFor(() => {
+      expect(nightlyInstallUpdate).toHaveBeenCalledWith({ allowInterruptActiveTasks: true });
     });
   },
 };

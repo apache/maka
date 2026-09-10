@@ -241,18 +241,18 @@ export type SettingsPreferencesCopy = {
     checkingForUpdates: string;
     updateIdle: string;
     updateNotAvailable: string;
-    updateAvailable: (version: string) => string;
-    updateDownloading: (version: string, percent: number) => string;
-    updateVerifying: (version: string) => string;
     updateTitle: string;
-    updateDownloaded: (version: string) => string;
+    updateAvailable: string;
+    updateDownloading: (percent: number) => string;
+    updateVerifying: string;
+    updateDownloaded: string;
+    updateInstalling: string;
     installUpdate: string;
-    updateInstalling: (version: string) => string;
-    /** The row's second line per phase; always present so the row keeps one height. */
-    updateAutoHint: string;
-    updateDownloadingHint: string;
-    updateDownloadedHint: string;
-    updateInstallingHint: string;
+    /** The row's second line, carrying the version. Every phase has one, so the row keeps one height. */
+    updateScheduleHint: string;
+    updateFetchingHint: (version: string) => string;
+    updateDownloadedHint: (version: string) => string;
+    updateInstallingHint: (version: string) => string;
     updateFailed: Record<'check' | 'download' | 'install', string>;
     /** Provenance in one line: project, foundation status, licence. */
     openSourceSummary: string;
@@ -359,17 +359,17 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       checkingForUpdates: '正在检查更新…',
       updateIdle: '尚未检查更新',
       updateNotAvailable: '已是最新版本',
-      updateAvailable: (version) => `发现新版本 v${version}`,
-      updateDownloading: (version, percent) => `正在下载 v${version}（${percent}%）`,
-      updateVerifying: (version) => `正在验证 v${version} 的发布来源`,
-      updateDownloaded: (version) => `v${version} 已下载`,
       updateTitle: '更新',
+      updateAvailable: '发现新版本',
+      updateDownloading: (percent) => `正在下载（${percent}%）`,
+      updateVerifying: '正在验证发布来源',
+      updateDownloaded: '新版本已下载',
+      updateInstalling: '正在安装',
       installUpdate: '重启安装',
-      updateInstalling: (version) => `正在安装 v${version}`,
-      updateAutoHint: 'Maka 会自动检查并下载新版本。',
-      updateDownloadingHint: '下载完成后可在这里重启安装。',
-      updateDownloadedHint: '重启 Maka 即可完成安装；有任务在进行时会先询问。',
-      updateInstallingHint: 'Maka 即将重启。',
+      updateScheduleHint: 'Maka 会定期在后台检查。',
+      updateFetchingHint: (version) => `v${version}，完成后可在这里重启安装。`,
+      updateDownloadedHint: (version) => `v${version}，重启 Maka 即可完成安装。`,
+      updateInstallingHint: (version) => `v${version}，请稍候。`,
       updateFailed: { check: '检查更新失败', download: '下载更新失败', install: '安装更新失败' },
       openSourceSummary: 'Apache Maka (incubating) · Apache License 2.0',
       sourceCode: '源码', releaseNotes: '发行说明',
@@ -455,17 +455,17 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       checkingForUpdates: '正在檢查更新…',
       updateIdle: '尚未檢查更新',
       updateNotAvailable: '已是最新版本',
-      updateAvailable: (version) => `發現新版本 v${version}`,
-      updateDownloading: (version, percent) => `正在下載 v${version}（${percent}%）`,
-      updateVerifying: (version) => `正在驗證 v${version} 的發佈來源`,
-      updateDownloaded: (version) => `v${version} 已下載`,
       updateTitle: '更新',
-      installUpdate: '重新啟動安裝',
-      updateInstalling: (version) => `正在安裝 v${version}`,
-      updateAutoHint: 'Maka 會自動檢查並下載新版本。',
-      updateDownloadingHint: '下載完成後可在這裡重新啟動安裝。',
-      updateDownloadedHint: '重新啟動 Maka 即可完成安裝；有任務進行中時會先詢問。',
-      updateInstallingHint: 'Maka 即將重新啟動。',
+      updateAvailable: '發現新版本',
+      updateDownloading: (percent) => `正在下載（${percent}%）`,
+      updateVerifying: '正在驗證發佈來源',
+      updateDownloaded: '新版本已下載',
+      updateInstalling: '正在安裝',
+      installUpdate: '重新啟動並安裝',
+      updateScheduleHint: 'Maka 會定期在背景檢查。',
+      updateFetchingHint: (version) => `v${version}，完成後可在這裡重新啟動安裝。`,
+      updateDownloadedHint: (version) => `v${version}，重新啟動 Maka 即可完成安裝。`,
+      updateInstallingHint: (version) => `v${version}，請稍候。`,
       updateFailed: { check: '檢查更新失敗', download: '下載更新失敗', install: '安裝更新失敗' },
       openSourceSummary: 'Apache Maka (incubating) · Apache License 2.0',
       sourceCode: '原始碼', releaseNotes: '發行說明',
@@ -522,17 +522,17 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       checkingForUpdates: 'Checking for updates…',
       updateIdle: 'No update check has run yet',
       updateNotAvailable: 'You are on the latest version',
-      updateAvailable: (version) => `v${version} is available`,
-      updateDownloading: (version, percent) => `Downloading v${version} (${percent}%)`,
-      updateVerifying: (version) => `Verifying the release provenance for v${version}`,
-      updateDownloaded: (version) => `v${version} is ready to install`,
       updateTitle: 'Updates',
+      updateAvailable: 'Update available',
+      updateDownloading: (percent) => `Downloading (${percent}%)`,
+      updateVerifying: 'Verifying release provenance',
+      updateDownloaded: 'Update downloaded',
+      updateInstalling: 'Installing',
       installUpdate: 'Restart to install',
-      updateInstalling: (version) => `Installing v${version}`,
-      updateAutoHint: 'Maka checks for and downloads new versions on its own.',
-      updateDownloadingHint: 'Once downloaded, you can restart to install it from here.',
-      updateDownloadedHint: 'Restart Maka to finish installing; you will be asked first if tasks are running.',
-      updateInstallingHint: 'Maka is about to restart.',
+      updateScheduleHint: 'Maka checks periodically in the background.',
+      updateFetchingHint: (version) => `v${version}; restart from here once it finishes.`,
+      updateDownloadedHint: (version) => `v${version}; restart Maka to finish installing.`,
+      updateInstallingHint: (version) => `v${version}; this takes a moment.`,
       updateFailed: { check: 'Could not check for updates', download: 'Could not download the update', install: 'Could not install the update' },
       openSourceSummary: 'Apache Maka (incubating) · Apache License 2.0',
       sourceCode: 'Source code', releaseNotes: 'Release notes',

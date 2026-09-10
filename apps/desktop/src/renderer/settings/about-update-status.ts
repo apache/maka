@@ -41,9 +41,9 @@ export function aboutChannelSummary(
 }
 
 export interface AboutUpdateRow {
-  /** What the updater is doing or has found, as the row's label. */
+  /** The phase, a few words: the label never truncates against the button. */
   readonly label: string;
-  /** What happens next or why it failed. Always one line, so the row keeps its height across states. */
+  /** The version and what happens next, or why it failed. Always present, so the row keeps its height across states. */
   readonly description: string;
   /**
    * The row's one control, always present so the row keeps its shape:
@@ -69,41 +69,41 @@ export function aboutUpdateRow(
   options: { readonly errorDetail?: (message: string) => string } = {},
 ): AboutUpdateRow {
   if (!status || status.state === 'idle') {
-    return { label: copy.updateIdle, description: copy.updateAutoHint, action: 'check' };
+    return { label: copy.updateIdle, description: copy.updateScheduleHint, action: 'check' };
   }
   switch (status.state) {
     case 'checking':
-      return { label: copy.checkingForUpdates, description: copy.updateAutoHint, action: 'checking' };
+      return { label: copy.checkingForUpdates, description: copy.updateScheduleHint, action: 'checking' };
     case 'not-available':
-      return { label: copy.updateNotAvailable, description: copy.updateAutoHint, action: 'check' };
+      return { label: copy.updateNotAvailable, description: copy.updateScheduleHint, action: 'check' };
     case 'available':
       return {
-        label: copy.updateAvailable(status.latestVersion),
-        description: copy.updateDownloadingHint,
+        label: copy.updateAvailable,
+        description: copy.updateFetchingHint(status.latestVersion),
         action: 'busy',
       };
     case 'downloading':
       return {
-        label: copy.updateDownloading(status.latestVersion, Math.round(status.progress.percent)),
-        description: copy.updateDownloadingHint,
+        label: copy.updateDownloading(Math.round(status.progress.percent)),
+        description: copy.updateFetchingHint(status.latestVersion),
         action: 'busy',
       };
     case 'verifying':
       return {
-        label: copy.updateVerifying(status.latestVersion),
-        description: copy.updateDownloadingHint,
+        label: copy.updateVerifying,
+        description: copy.updateFetchingHint(status.latestVersion),
         action: 'busy',
       };
     case 'downloaded':
       return {
-        label: copy.updateDownloaded(status.latestVersion),
-        description: copy.updateDownloadedHint,
+        label: copy.updateDownloaded,
+        description: copy.updateDownloadedHint(status.latestVersion),
         action: 'install',
       };
     case 'installing':
       return {
-        label: copy.updateInstalling(status.latestVersion),
-        description: copy.updateInstallingHint,
+        label: copy.updateInstalling,
+        description: copy.updateInstallingHint(status.latestVersion),
         action: 'busy',
       };
     case 'error':
