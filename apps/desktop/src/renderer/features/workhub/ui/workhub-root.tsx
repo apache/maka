@@ -253,8 +253,8 @@ export function WorkHubRoot() {
               sendBlocked={!controller.sessionId || controller.sending || !session?.model}
               allowAttachmentImportWhileStreaming
               stopPending={controller.stopPending}
-              onSend={async (text, attachments) => {
-                const accepted = await controller.send(text, attachments);
+              onSend={async (text, attachments, followUpMode) => {
+                const accepted = await controller.send(text, attachments, followUpMode);
                 if (accepted) {
                   setConversationExpanded(true);
                   if (progress) call(services.presentation.showConversation(presentation.progressRequest));

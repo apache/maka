@@ -48,9 +48,9 @@ async function mountController(failFirstRead = false) {
   const requests: Array<Parameters<WorkHubServices['answer']>[1]> = [];
   let rootTurn: { turnId: string; runId: string; status: 'running' | 'cancelled' | 'completed' } | undefined;
   const queueMutations: unknown[][] = [];
-  const steers: Array<Parameters<WorkHubServices['steer']>> = [];
-  let steerResult: Awaited<ReturnType<WorkHubServices['steer']>> = 'admitted';
-  let onSteer: ((input: Parameters<WorkHubServices['steer']>) => void) | undefined;
+  const steers: Array<Parameters<WorkHubServices['enqueueMessage']>> = [];
+  let steerResult: Awaited<ReturnType<WorkHubServices['enqueueMessage']>> = 'admitted';
+  let onSteer: ((input: Parameters<WorkHubServices['enqueueMessage']>) => void) | undefined;
   const interrupts: Array<{ sessionId: string; turnId: string; runId: string }> = [];
   const handlers = new Map<string, IpcHandler>();
   const ipc = { handle: (channel: string, handler: IpcHandler) => { handlers.set(channel, handler); } };
@@ -98,7 +98,7 @@ async function mountController(failFirstRead = false) {
     promoteQueueEntry: async (...input: Parameters<WorkHubServices['promoteQueueEntry']>) => { queueMutations.push(['promote', ...input]); },
     updateQueueEntry: async (...input: Parameters<WorkHubServices['updateQueueEntry']>) => { queueMutations.push(['update', ...input]); },
     reorderQueueEntries: async (...input: Parameters<WorkHubServices['reorderQueueEntries']>) => { queueMutations.push(['reorder', ...input]); },
-    steer: async (...input: Parameters<WorkHubServices['steer']>) => { steers.push(input); onSteer?.(input); return steerResult; },
+    enqueueMessage: async (...input: Parameters<WorkHubServices['enqueueMessage']>) => { steers.push(input); onSteer?.(input); return steerResult; },
     answer: (_id: string, input: Parameters<WorkHubServices['answer']>[1]) => invoke('workhub:answer', input),
     stop: (target: string, turnId: string) => invoke('sessions:stop', target, { source: 'stop_button', expectedTurnId: turnId }),
   } as unknown as WorkHubServices;
@@ -358,10 +358,10 @@ test('WorkHub steering keeps the current Turn and Stop authority and reconciles 
   h.admit(turnId);
   await act(async () => { h.admission.resolve({ turnId }); await sent; });
   const attachments: AttachmentRef[] = [{ kind: 'doc', name: 'brief.txt', mimeType: 'text/plain', bytes: 4, ref: { kind: 'workspace_file', relativePath: 'brief.txt' } }];
-  await act(async () => { assert.equal(await h.controller.send('change direction', attachments), true); });
+  await act(async () => { assert.equal(await h.controller.send('change direction', attachments, 'steer'), true); });
   assert.equal(h.requests.length, 1, 'steering must not start or queue another answer');
   assert.equal(h.controller.liveTurn?.turnId, turnId);
-  assert.deepEqual(h.steers[0]!.slice(2), ['change direction', attachments]);
+  assert.deepEqual(h.steers[0]!.slice(2), ['change direction', attachments, 'current_turn']);
   const messageId = h.steers[0]![1];
   const original: StoredMessage = { type: 'user', id: 'original-canonical-id', turnId, text: 'original request', ts: 1 };
   await act(() => h.publish([original]));
@@ -380,16 +380,16 @@ test('uncertain steering retains its identity across Turn completion and rejecti
   const h = await mountController();
   await act(() => h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }));
   h.setSteerResult('rejected');
-  await act(async () => { assert.equal(await h.controller.send('change direction', []), false); });
+  await act(async () => { assert.equal(await h.controller.send('change direction', [], 'steer'), false); });
   assert.equal(h.controller.liveTurn?.turnId, 'active-turn');
   assert.equal(h.controller.busy, true);
   assert.deepEqual(h.controller.transientMessages, []);
   h.setSteerResult('unknown');
-  await act(async () => { assert.equal(await h.controller.send('change direction', []), false); });
+  await act(async () => { assert.equal(await h.controller.send('change direction', [], 'steer'), false); });
   const messageId = h.steers[1]![1];
   await act(() => h.emit({ type: 'complete', id: 'done', turnId: 'active-turn', ts: 2, stopReason: 'end_turn' }));
   h.setSteerResult('admitted');
-  await act(async () => { assert.equal(await h.controller.send('change direction', []), true); });
+  await act(async () => { assert.equal(await h.controller.send('change direction', [], 'steer'), true); });
   assert.equal(h.steers[2]![1], messageId);
   assert.equal(h.requests.length, 0, 'retry must recover the steering receipt even after its Turn ends');
   h.latestRead.resolve();
@@ -401,7 +401,7 @@ test('steering observed before its admission response renders once and outranks 
   await act(() => h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }));
   h.setSteerResult('unknown');
   h.onSteer(([, messageId, text]) => h.emit({ type: 'steering_message', id: 'consumed', turnId: 'active-turn', messageId, ts: 2, content: { text } }));
-  await act(async () => { assert.equal(await h.controller.send('change direction', []), true); });
+  await act(async () => { assert.equal(await h.controller.send('change direction', [], 'steer'), true); });
   assert.deepEqual(h.controller.transientMessages, []);
   assert.equal(h.controller.error, undefined);
   assert.equal(h.controller.liveTurn?.turnId, 'active-turn');
@@ -419,7 +419,7 @@ test('queued steering restores the pending list, deduplicates admission, and ret
       content: { text },
     }],
   }));
-  await act(async () => { assert.equal(await h.controller.send('change direction', []), true); });
+  await act(async () => { assert.equal(await h.controller.send('change direction', [], 'steer'), true); });
   const messageId = h.steers[0]![1];
   assert.equal(h.controller.transientMessages.length, 1);
   assert.equal(h.controller.transientMessages[0]?.pendingSteering, true);
@@ -451,5 +451,43 @@ test('WorkHub sends queue edits, withdrawal and both queue orders to the Host an
   await act(() => h.emit({ type: 'message_admission', id: 'retracted', turnId: 'active-turn', ts: 3, messageId: 'first', outcome: 'retracted' }));
   assert.deepEqual(h.controller.messageQueue.entries.map((entry) => entry.content.text), ['edited second']);
   assert.deepEqual(h.controller.transientMessages.map((entry) => entry.text), ['edited second']);
+  h.latestRead.resolve();
+});
+
+
+test('WorkHub defaults to follow-up and moves each message into its admitted successor Turn', async () => {
+  const h = await mountController();
+  await act(() => h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }));
+  const attachments: AttachmentRef[] = [{ kind: 'doc', name: 'brief.txt', mimeType: 'text/plain', bytes: 4, ref: { kind: 'workspace_file', relativePath: 'brief.txt' } }];
+  await act(async () => {
+    assert.equal(await h.controller.send('first follow-up', attachments), true);
+    assert.equal(await h.controller.send('second follow-up', []), true);
+  });
+  assert.deepEqual(h.steers.map((input) => input.slice(2)), [
+    ['first follow-up', attachments, 'next_turn'], ['second follow-up', [], 'next_turn'],
+  ]);
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.controller.liveTurn?.turnId, 'active-turn');
+  const first = h.steers[0]![1];
+  const second = h.steers[1]![1];
+  assert.deepEqual(h.controller.transientMessages.map((message) => message.transientPlacement), ['next_turn', 'next_turn']);
+  await act(() => h.emit({ type: 'message_admission', id: 'first-admission', turnId: 'successor', messageId: first, ts: 2, outcome: 'admitted' }));
+  assert.equal(h.controller.transientMessages[0]?.hostTurnId, 'successor');
+  assert.equal(h.controller.transientMessages[0]?.transientPlacement, 'current_turn');
+  assert.equal(h.controller.transientMessages[1]?.transientPlacement, 'next_turn');
+  await act(() => h.publish([{ type: 'user', id: first, turnId: 'successor', text: 'first follow-up', attachments, ts: 2 }]));
+  assert.deepEqual(h.controller.transientMessages.map((message) => message.id), [second]);
+  h.latestRead.resolve();
+});
+
+test('follow-up admission before an uncertain response keeps its successor placement', async () => {
+  const h = await mountController();
+  await act(() => h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }));
+  h.setSteerResult('unknown');
+  h.onSteer(([, messageId]) => h.emit({ type: 'message_admission', id: 'admitted', turnId: 'successor', messageId, ts: 2, outcome: 'admitted' }));
+  await act(async () => { assert.equal(await h.controller.send('next request', []), true); });
+  assert.equal(h.controller.transientMessages[0]?.transientPlacement, 'current_turn');
+  assert.equal(h.controller.transientMessages[0]?.hostTurnId, 'successor');
+  assert.equal(h.controller.error, undefined);
   h.latestRead.resolve();
 });

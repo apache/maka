@@ -3724,6 +3724,9 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
   for (const toolProfile of ['workhub-coordination-v1', 'workhub-coordination-v2'] as const) {
     let backend: BlockingRootBackend | undefined;
     const consumed: string[] = [];
+    const sent: BackendSendInput[] = [];
+    const successorReady = [deferred<void>(), deferred<void>()];
+    const successorRelease = [deferred<void>(), deferred<void>()];
     const fixture = await createFailureFixture({
       registerBackend: (backends) => {
         backends.register(
@@ -3731,6 +3734,13 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
           (context) =>
             (backend = new (class extends BlockingRootBackend {
               override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+                sent.push(input);
+                const successorIndex = sent.length - 2;
+                if (successorIndex >= 0) {
+                  successorReady[successorIndex]!.resolve();
+                  await successorRelease[successorIndex]!.promise;
+                  this.release();
+                }
                 for await (const event of super.send(input)) {
                   for (const lease of input.pullSteering?.() ?? []) {
                     yield {
@@ -3776,7 +3786,7 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
             originHostEpoch: fixture.hostEpoch,
             sessionId: WORKHUB_COORDINATION_SESSION_ID,
             messageId,
-            content: { text: 'Change direction immediately' },
+            content: { text: messageId },
             placement,
           },
           operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop'),
@@ -3813,11 +3823,40 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
       );
       assert.equal(
         (await submit('workhub-followup', 'next_turn')).ok,
-        false,
-        'WorkHub cannot queue another ordinary Turn',
+        toolProfile === 'workhub-coordination-v2',
+        'only active v2 WorkHub can queue a coordination successor',
       );
       if (toolProfile === 'workhub-coordination-v2') {
+        assert.equal((await submit('workhub-followup-second', 'next_turn')).ok, true);
         backend!.release();
+        await withTimeout(
+          successorReady[0]!.promise,
+          5_000,
+          'first WorkHub successor did not start',
+        );
+        assert.equal(sent.length, 2);
+        assert.equal(sent[1]!.text, 'workhub-followup');
+        assert.deepEqual(await fixture.coordinator.readActiveWorkHubRequest(sent[1]!.turnId), {
+          text: 'workhub-followup',
+        });
+        assert.deepEqual(
+          fixture.messages
+            .projection(WORKHUB_COORDINATION_SESSION_ID)
+            .followup.map((entry) => entry.messageId),
+          ['workhub-followup-second'],
+        );
+        successorRelease[0]!.resolve();
+        await withTimeout(
+          successorReady[1]!.promise,
+          5_000,
+          'second WorkHub successor did not start',
+        );
+        assert.equal(sent[2]!.text, 'workhub-followup-second');
+        assert.notEqual(sent[1]!.turnId, sent[2]!.turnId);
+        assert.deepEqual(await fixture.coordinator.readActiveWorkHubRequest(sent[2]!.turnId), {
+          text: 'workhub-followup-second',
+        });
+        successorRelease[1]!.resolve();
         await fixture.coordinator.whenIdle(WORKHUB_COORDINATION_SESSION_ID);
         assert.deepEqual(consumed, ['workhub-steering']);
         assert.equal(
@@ -3834,8 +3873,23 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
       await fixture.coordinator.whenIdle(WORKHUB_COORDINATION_SESSION_ID);
       assert.equal(await fixture.coordinator.readActiveWorkHubRequest(turnId), undefined);
       assert.equal((await submit('completed-steering')).ok, false);
+      if (toolProfile === 'workhub-coordination-v2') {
+        await fixture.coordinator.close();
+        const recovery = fixture.createRecoveryCoordinator();
+        try {
+          await recovery.recover();
+        } finally {
+          await recovery.close();
+        }
+        assert.equal(
+          fixture.drainRequested(),
+          false,
+          'queued coordination admissions remain valid during recovery',
+        );
+      }
     } finally {
       backend?.release();
+      for (const release of successorRelease) release.resolve();
       await fixture.coordinator.close();
       await fixture.dispose();
     }

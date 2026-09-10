@@ -79,11 +79,11 @@ export function createDesktopWorkHubServices(
     readAttachmentBytes: bridge.attachments.readBytes,
     prepareAttachments: (sessionId, items) => bridge.workHub.prepareAttachments(sessionId, items),
     answer: (sessionId, input) => bridge.workHub.answer(sessionId, input),
-    steer: async (sessionId, messageId, text, attachments) => {
-      const result = await bridge.sessions.submitMessage(sessionId, 'current_turn', {
+    enqueueMessage: async (sessionId, messageId, text, attachments, placement) => {
+      const result = await bridge.sessions.submitMessage(sessionId, placement, {
         messageId, text, retainedAttachments: attachments,
       }, { waitForHostAdmission: true });
-      if (result.ok) return result.disposition === 'steering' ? 'admitted' : 'rejected';
+      if (result.ok) return result.disposition === (placement === 'current_turn' ? 'steering' : 'followup') ? 'admitted' : 'rejected';
       return result.reason === 'outcome_unknown' ? 'unknown' : 'rejected';
     },
     retractQueueEntry: (sessionId, entryId) => bridge.sessions.retractQueueEntry(sessionId, entryId),

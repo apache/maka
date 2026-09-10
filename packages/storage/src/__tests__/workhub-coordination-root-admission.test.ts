@@ -22,6 +22,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { aggregateMessageContents, messageContentDigest } from '@maka/core/events';
 import type { RootExecutionDescriptor } from '@maka/core/runtime-invocation';
 import { createSqliteAgentRunStore } from '../agent-run-store.js';
 
@@ -74,6 +75,58 @@ for (const actionId of [undefined, 'stable-action']) {
       );
       reopened.close?.();
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const count of [1, 3]) {
+  test(`WorkHub queued source admission survives restart (${count} messages) and cannot authorize an action root`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-queued-admission-'));
+    let store = createSqliteAgentRunStore(root);
+    try {
+      const sourceMessages = Array.from({ length: count }, (_, index) => ({
+        messageId: `message-${index}`,
+        content: { text: `request ${index}` },
+        placement: count === 1 ? ('next_turn' as const) : ('current_turn' as const),
+        disposition: count === 1 ? ('followup' as const) : ('steering' as const),
+      }));
+      const normalizedInput = aggregateMessageContents(
+        sourceMessages.map((source) => source.content),
+      );
+      const input = {
+        sessionId: 'coordination-session',
+        turnId: 'queued-turn',
+        proposedRunId: 'queued-run',
+        proposedUserMessageId: count === 1 ? sourceMessages[0]!.messageId : null,
+        execution: {
+          kind: 'workhub_coordination' as const,
+          inputDigest: messageContentDigest(normalizedInput),
+        },
+        previousRootTurnId: null,
+        normalizedInput,
+        sourceMessages,
+        admittedAt: 50,
+      };
+      const admitted = await store.admitRootTurn(input);
+      store.close?.();
+      store = createSqliteAgentRunStore(root);
+      assert.deepEqual(
+        await store.readRootTurnAdmission(input.sessionId, input.turnId),
+        admitted.admission,
+      );
+      await assert.rejects(
+        () =>
+          store.admitRootTurn({
+            ...input,
+            turnId: 'invalid-action',
+            proposedUserMessageId: 'action-message',
+            execution: { ...input.execution, operation: 'action', actionId: 'action' },
+          }),
+        /host-authored execution cannot have source messages/,
+      );
+    } finally {
+      store.close?.();
       await rm(root, { recursive: true, force: true });
     }
   });

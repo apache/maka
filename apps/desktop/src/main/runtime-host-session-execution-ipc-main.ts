@@ -429,7 +429,7 @@ export function registerRuntimeHostSessionExecutionIpc(
       // the row it already rendered, and what makes a retry the same Message.
       // Minting one here would hand back an identity the caller never showed.
       if (!command.messageId) throw new Error("Submitted message has no identity");
-      // Host admission validates the target, including steering-only Sessions
+      // Host admission validates the target, including reserved Sessions
       // such as WorkHub that intentionally do not appear in the task catalog.
       let attachments = retainedAttachmentsForSession(
         sessionId,

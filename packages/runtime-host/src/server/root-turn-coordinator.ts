@@ -526,7 +526,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       ) {
         const header = await this.stores.sessionStore.readHeaderSnapshot(sessionId);
         if (header.toolProfile === 'workhub-coordination-v2') {
-          return { isArchived: header.isArchived, steeringOnly: true };
+          return { isArchived: header.isArchived, activeTurnOnly: true };
         }
       }
       return {
@@ -3072,7 +3072,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       proposedRunId: randomUUID(),
       proposedUserMessageId: batch.sources.length === 1 ? batch.sources[0]!.messageId : null,
       execution: {
-        kind: 'external_message',
+        kind:
+          previous.descriptor.kind === 'workhub_coordination'
+            ? 'workhub_coordination'
+            : 'external_message',
         inputDigest: messageContentDigest(batch.submittedContent),
       },
       normalizedInput: batch.content,
