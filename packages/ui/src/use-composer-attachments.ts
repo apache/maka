@@ -74,8 +74,16 @@ type ComposerPendingState = {
 };
 
 class ComposerAttachmentLifecycle {
+  mounted = true;
   stagedKeys = new Set<string>();
+  readonly previewUrls = new Map<string, string>();
   readonly #shownOwners = new Set<string>();
+
+  releasePreview(stagingKey: string): void {
+    const url = this.previewUrls.get(stagingKey);
+    if (url) URL.revokeObjectURL(url);
+    this.previewUrls.delete(stagingKey);
+  }
 
   claimImageNotice(ownerKey: string): boolean {
     if (this.#shownOwners.has(ownerKey)) return false;
@@ -167,10 +175,6 @@ async function probeImageUrl(url: string): Promise<boolean> {
   }
 }
 
-function releasePreviewUrl(url: string | undefined): void {
-  if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
-}
-
 export interface ComposerAttachmentCopy {
   attachmentFailedTitle: string;
   tryAgain: string;
@@ -208,6 +212,20 @@ export function useComposerAttachments(options: {
   // Live mirror of every staged item's key, for async preview arrivals to
   // check before writing: state snapshots inside a .then are stale by design.
   const lifecycleRef = useRef(new ComposerAttachmentLifecycle());
+  useEffect(() => {
+    const lifecycle = lifecycleRef.current;
+    lifecycle.mounted = true;
+    return () => {
+      lifecycle.mounted = false;
+      // StrictMode replays setup immediately. Keep live previews in that case,
+      // but release even URLs still awaiting image.decode() on real unmount.
+      queueMicrotask(() => {
+        if (lifecycle.mounted) return;
+        lifecycle.stagedKeys.clear();
+        for (const key of lifecycle.previewUrls.keys()) lifecycle.releasePreview(key);
+      });
+    };
+  }, []);
   function updateAttachments(
     update: (current: PendingByKey<PendingAttachment>) => PendingByKey<PendingAttachment>,
   ): void {
@@ -257,12 +275,14 @@ export function useComposerAttachments(options: {
       for (const item of items) liveKeys.add(item.stagingKey);
     }
     lifecycleRef.current.stagedKeys = liveKeys;
+    for (const key of lifecycleRef.current.previewUrls.keys()) {
+      if (!liveKeys.has(key)) lifecycleRef.current.releasePreview(key);
+    }
     setPreviewByStagingKey((current) => {
       const deadKeys = Object.keys(current).filter((key) => !liveKeys.has(key));
       if (deadKeys.length === 0) return current;
       const next = { ...current };
       for (const key of deadKeys) {
-        releasePreviewUrl(next[key]);
         delete next[key];
       }
       return next;
@@ -270,9 +290,9 @@ export function useComposerAttachments(options: {
   }, [pendingByKey]);
 
   function commitPreview(stagingKey: string, url: string): void {
-    if (!lifecycleRef.current.stagedKeys.has(stagingKey)) {
-      // The item was removed or sent while the preview was in flight.
-      releasePreviewUrl(url);
+    if (!lifecycleRef.current.mounted || !lifecycleRef.current.stagedKeys.has(stagingKey)) {
+      // The item was removed, sent, or its composer unmounted during decoding.
+      lifecycleRef.current.releasePreview(stagingKey);
       return;
     }
     setPreviewByStagingKey((current) => ({ ...current, [stagingKey]: url }));
@@ -300,17 +320,21 @@ export function useComposerAttachments(options: {
    * shows named file cards until each thumbnail lands. */
   async function loadPreviewsSequentially(staged: readonly PendingAttachment[]): Promise<void> {
     for (const item of staged) {
+      if (!lifecycleRef.current.mounted) return;
       if (item.kind !== 'image') continue;
       if (!lifecycleRef.current.stagedKeys.has(item.stagingKey)) continue;
       try {
         if (item.source.type === 'file') {
           const url = URL.createObjectURL(item.source.file);
+          lifecycleRef.current.previewUrls.set(item.stagingKey, url);
           if (await probeImageUrl(url)) commitPreview(item.stagingKey, url);
-          else releasePreviewUrl(url);
+          else lifecycleRef.current.releasePreview(item.stagingKey);
           continue;
         }
         if (item.source.type === 'retained') continue;
         const preview = await options.service.previewApproval(item.source.approvalId);
+        if (!lifecycleRef.current.mounted) return;
+        if (!lifecycleRef.current.stagedKeys.has(item.stagingKey)) continue;
         if (!preview.ok) continue;
         const url = `data:${preview.mimeType};base64,${preview.base64}`;
         if (await probeImageUrl(url)) commitPreview(item.stagingKey, url);
@@ -321,8 +345,10 @@ export function useComposerAttachments(options: {
   }
 
   async function pickAttachments(): Promise<void> {
+    if (!lifecycleRef.current.mounted) return;
     try {
       const result = await options.service.pickFiles();
+      if (!lifecycleRef.current.mounted) return;
       if (!result.ok) return;
       // Resolved after the dialog closes, never captured before it opens: the
       // surface can change while a native dialog is up, and files the user just
@@ -335,6 +361,7 @@ export function useComposerAttachments(options: {
       notifyStagedImages(ownerKey, staged);
       void loadPreviewsSequentially(staged);
     } catch (error) {
+      if (!lifecycleRef.current.mounted) return;
       options.toastApi.error(
         copy.attachmentFailedTitle,
         options.formatError(error, copy.tryAgain),
@@ -343,11 +370,13 @@ export function useComposerAttachments(options: {
   }
 
   async function pickDirectory(): Promise<void> {
+    if (!lifecycleRef.current.mounted) return;
     const owner = liveOptionsRef.current.directoryOwner;
     if (!owner.directoryHostId || !owner.service.pickDirectory) return;
     const ownerKey = `${owner.draftKey}:${owner.directoryHostId}`;
     try {
       const result = await owner.service.pickDirectory();
+      if (!lifecycleRef.current.mounted) return;
       if (!result.ok) return;
       const current = liveOptionsRef.current.directoryOwner;
       if (
@@ -368,6 +397,7 @@ export function useComposerAttachments(options: {
         return { ...all, [ownerKey]: [...previous, result.reference] };
       });
     } catch (error) {
+      if (!lifecycleRef.current.mounted) return;
       owner.toastApi.error(
         copy.attachmentFailedTitle,
         options.formatError(error, copy.tryAgain),
@@ -376,7 +406,7 @@ export function useComposerAttachments(options: {
   }
 
   async function attachFilePaths(files: File[]): Promise<void> {
-    if (files.length === 0) return;
+    if (!lifecycleRef.current.mounted || files.length === 0) return;
     // Bind the owner AFTER the sniff reads resolve, never before: fileToPending
     // became async to read each file's leading bytes, so the surface can change
     // during that I/O (a network volume or spun-down drive makes it seconds).
@@ -384,6 +414,7 @@ export function useComposerAttachments(options: {
     // they have since left, where they would be invisible but still sendable.
     // Same reasoning as pickAttachments above.
     const staged = await Promise.all(files.map(fileToPending));
+    if (!lifecycleRef.current.mounted) return;
     const ownerKey = liveOptionsRef.current.draftKey;
     updateAttachments((map) => appendPending(map, ownerKey, staged));
     for (const item of staged) lifecycleRef.current.stagedKeys.add(item.stagingKey);
@@ -392,7 +423,7 @@ export function useComposerAttachments(options: {
   }
 
   function restoreAttachments(ownerKey: string, attachments: readonly AttachmentRef[]): void {
-    if (attachments.length === 0) return;
+    if (!lifecycleRef.current.mounted || attachments.length === 0) return;
     const staged = attachments.map(retainedToPending);
     updateAttachments((map) => appendPending(map, ownerKey, staged));
     for (const item of staged) lifecycleRef.current.stagedKeys.add(item.stagingKey);
