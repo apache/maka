@@ -188,6 +188,12 @@ export async function exportSessionBundle(
       if (error.details?.quota !== undefined) {
         return { ok: false, reason: { kind: 'bundle_limit', details: error.details } };
       }
+      // The precheck fails fast, but the packer publishes atomically and can
+      // still lose the race. Reporting that as a generic IO failure would give
+      // a caller a different exit code for the same outcome.
+      if (error.code === 'destination_exists') {
+        return { ok: false, reason: { kind: 'destination_exists' } };
+      }
       return { ok: false, reason: { kind: 'io_failed', message: error.message } };
     }
     const failure = asExportFailure(error, input.workspaceRoot);

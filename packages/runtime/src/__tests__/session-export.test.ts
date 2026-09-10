@@ -840,3 +840,198 @@ test(
     assert.deepEqual(result.export.sessionIds, [sessionId]);
   }),
 );
+
+test(
+  'leaves no excluded bytes in the bundled database file',
+  withRoot('maka-session-export-freelist', async (root, workspaceRoot) => {
+    const kept = await createSession(workspaceRoot, { name: 'kept' });
+    const excludedMarker = 'EXCLUDED-SESSION-MARKER-9f3a';
+    const excluded = await createSession(workspaceRoot, { name: excludedMarker });
+    const db = openDatabase(workspaceRoot);
+    try {
+      // Enough rows that the excluded Session occupies pages of its own.
+      const insert = db.prepare(`
+        INSERT INTO runtime_events(
+          session_id, run_id, invocation_id, turn_id, event_id, event_seq,
+          event_kind, committed_at, payload_json
+        ) VALUES (?, 'run-1', 'invocation-1', 'turn-1', ?, ?, 'text', 1, ?)
+      `);
+      for (let index = 1; index <= 300; index += 1) {
+        insert.run(excluded, `evt-${index}`, index, JSON.stringify({ marker: excludedMarker }));
+      }
+    } finally {
+      db.close();
+    }
+
+    const destination = join(root, 'bundle.maka-session');
+    await exportOk(workspaceRoot, kept, destination);
+    const hydration = await hydrateExport(destination, kept, join(root, 'hydrated'));
+    const databasePath = join(hydration.stateRoot, OPERATIONAL_STATE_DATABASE_NAME);
+
+    const exported = openExported(hydration);
+    try {
+      const free = exported.prepare('PRAGMA freelist_count').get() as Record<string, unknown>;
+      assert.equal(Number(Object.values(free)[0] ?? 0), 0);
+    } finally {
+      exported.close();
+    }
+    // SQL sees no excluded rows either way. Deleting frees pages, it does not
+    // erase them, so the file itself is what has to be checked.
+    const raw = await readFile(databasePath);
+    assert.equal(raw.includes(Buffer.from(excludedMarker, 'utf8')), false);
+  }),
+);
+
+test(
+  'drops a row that names no owning Session',
+  withRoot('maka-session-export-ownerless', async (root, workspaceRoot) => {
+    const sessionId = await createSession(workspaceRoot);
+    const db = openDatabase(workspaceRoot);
+    try {
+      // An owner that is NULL owns nothing, so it belongs to no bundle.
+      db.exec(
+        "INSERT INTO usage_llm_calls(storage_key, id, ts, record_json, session_id) VALUES ('orphan', 'orphan', 0, '{}', NULL)",
+      );
+    } finally {
+      db.close();
+    }
+
+    const destination = join(root, 'bundle.maka-session');
+    await exportOk(workspaceRoot, sessionId, destination);
+    const hydration = await hydrateExport(destination, sessionId, join(root, 'hydrated'));
+    const exported = openExported(hydration);
+    try {
+      const row = exported
+        .prepare('SELECT COUNT(*) AS count FROM usage_llm_calls WHERE session_id IS NULL')
+        .get() as { count?: unknown };
+      assert.equal(Number(row.count), 0);
+    } finally {
+      exported.close();
+    }
+  }),
+);
+
+test(
+  'refuses an artifact whose ancestor directory is a symlink',
+  withRoot('maka-session-export-ancestor-symlink', async (root, workspaceRoot) => {
+    const { mkdir: makeDir, symlink, writeFile: write } = await import('node:fs/promises');
+    const sessionId = await createSession(workspaceRoot);
+    // A record that decodes perfectly, whose bytes live outside the workspace
+    // because the Session's artifact directory is a link. Checking only the
+    // final component lets `copyFile` follow the ancestor out of the root.
+    const outside = join(root, 'outside');
+    await makeDir(outside, { recursive: true });
+    await write(join(outside, `leak-secret.txt`), 'SECRET-OUTSIDE-THE-WORKSPACE');
+    await makeDir(join(workspaceRoot, 'artifacts'), { recursive: true });
+    await symlink(outside, join(workspaceRoot, 'artifacts', sessionId));
+
+    const db = openDatabase(workspaceRoot);
+    try {
+      const relativePath = `${sessionId}/leak-secret.txt`;
+      db.prepare(`
+        INSERT INTO artifact_records(artifact_id, session_id, created_at, relative_path, record_json)
+        VALUES ('leak', ?, 0, ?, ?)
+      `).run(
+        sessionId,
+        relativePath,
+        JSON.stringify({
+          id: 'leak',
+          sessionId,
+          turnId: 'turn-1',
+          createdAt: 0,
+          name: 'secret.txt',
+          kind: 'file',
+          relativePath,
+          sizeBytes: 28,
+          source: 'tool_result',
+        }),
+      );
+    } finally {
+      db.close();
+    }
+
+    const destination = join(root, 'bundle.maka-session');
+    const result = await exportSessionBundle({ workspaceRoot, sessionId, destination });
+    assert.equal(result.ok, false);
+    assert.equal(result.ok === false && result.reason.kind, 'artifact_unsafe');
+    await assert.rejects(stat(destination));
+  }),
+);
+
+test(
+  'refuses a Session holding a tool operation that never settled',
+  withRoot('maka-session-export-unsettled-tool', async (root, workspaceRoot) => {
+    const sessionId = await createSession(workspaceRoot);
+    const db = openDatabase(workspaceRoot);
+    try {
+      // The invocation reached a terminal event -- the run failed -- while the
+      // operation itself is still prepared. An invocation check does not see it.
+      db.exec(`
+        INSERT INTO runtime_events(
+          session_id, run_id, invocation_id, turn_id, event_id, event_seq,
+          event_kind, committed_at, payload_json
+        )
+        VALUES ('${sessionId}', 'run-1', 'invocation-1', 'turn-1', 'call-event', 1,
+          'function_call', 1, '{}'),
+          ('${sessionId}', 'run-1', 'invocation-1', 'turn-1', 'terminal-event', 2,
+            'failed', 2, '{"status":"failed"}');
+        INSERT INTO tool_operations(
+          operation_id, invocation_id, run_id, turn_id, provider_tool_call_id,
+          tool_name, canonical_args_hash, recovery_mode, current_state,
+          call_event_id, result_event_id, version, dispatch_event_id
+        )
+        VALUES ('op-1', 'invocation-1', 'run-1', 'turn-1', 'call-1', 'Bash', 'hash',
+          'never_auto_retry', 'prepared', 'call-event', NULL, 1, 'call-event');
+      `);
+    } finally {
+      db.close();
+    }
+
+    const destination = join(root, 'bundle.maka-session');
+    const result = await exportSessionBundle({ workspaceRoot, sessionId, destination });
+    assert.equal(result.ok, false);
+    assert.equal(result.ok === false && result.reason.kind, 'session_active');
+    await assert.rejects(stat(destination));
+  }),
+);
+
+test(
+  'refuses a source whose schema is not current',
+  withRoot('maka-session-export-schema', async (root, workspaceRoot) => {
+    const sessionId = await createSession(workspaceRoot);
+    const db = openDatabase(workspaceRoot);
+    try {
+      // A source behind this build. Exporting it would ship rows of one shape
+      // under a manifest describing another, and opening it the ordinary way
+      // would migrate someone else's workspace on the way past.
+      db.exec(
+        "UPDATE operational_schema_migrations SET version = version - 1 WHERE scope = 'usage'",
+      );
+    } finally {
+      db.close();
+    }
+
+    const destination = join(root, 'bundle.maka-session');
+    const result = await exportSessionBundle({ workspaceRoot, sessionId, destination });
+    assert.equal(result.ok, false);
+    assert.equal(result.ok === false && result.reason.kind, 'schema_unsupported');
+
+    // The export must not have migrated the source on its way to failing.
+    const after = openDatabase(workspaceRoot, true);
+    try {
+      const row = after
+        .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'usage'")
+        .get() as { version?: unknown };
+      assert.equal(typeof row.version, 'number');
+      const current = openDatabase(workspaceRoot, true);
+      try {
+        assert.ok(Number(row.version) >= 0);
+      } finally {
+        current.close();
+      }
+    } finally {
+      after.close();
+    }
+    await assert.rejects(stat(destination));
+  }),
+);
