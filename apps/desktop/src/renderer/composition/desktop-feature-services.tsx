@@ -42,6 +42,12 @@ import { createDesktopSessionNavigationServices } from '../platform/desktop/crea
 import { createDesktopSessionSettingsServices } from '../platform/desktop/create-session-settings-services';
 import { createDesktopTaskEntryServices } from '../platform/desktop/create-task-entry-services';
 import { createDesktopWorkbarServices } from '../platform/desktop/create-workbar-services';
+import { observeReactPerformanceMeasures } from '../platform/desktop/react-performance-measures';
+
+if (import.meta.env.DEV) {
+  const stopObserving = observeReactPerformanceMeasures();
+  import.meta.hot?.dispose(stopObserving);
+}
 
 export function createDesktopFeatureServices() {
   return {

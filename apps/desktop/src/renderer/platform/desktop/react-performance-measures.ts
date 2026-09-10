@@ -31,7 +31,8 @@ export function observeReactPerformanceMeasures(): () => void {
       if (
         detail?.devtools?.track === 'Components ⚛' ||
         detail?.devtools?.trackGroup === 'Scheduler ⚛'
-      ) names.add(entry.name);
+      )
+        names.add(entry.name);
     }
     for (const name of names) performance.clearMeasures(name);
   });

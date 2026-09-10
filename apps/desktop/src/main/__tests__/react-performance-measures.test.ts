@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { PerformanceObserver as NodePerformanceObserver } from 'node:perf_hooks';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
-import { observeReactPerformanceMeasures } from '../../renderer/react-performance-measures.js';
+import { observeReactPerformanceMeasures } from '../../renderer/platform/desktop/react-performance-measures.js';
 
 test('retires React measures, preserves other diagnostics, and releases its observer', async () => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'PerformanceObserver');
