@@ -99,6 +99,7 @@ import {
   createHostGoalEvaluator,
   createHostMemoryExtractionModel,
   createHostSessionEffectModel,
+  createHostWorkHubRoutingModel,
 } from '../server/execution-model-authority.js';
 import {
   createHostAiSdkBackend,
@@ -3405,6 +3406,102 @@ test('Host auxiliary calls preserve resolved DeepSeek reasoning settings', async
   }
 });
 
+test('WorkHub routing reuses the saved Session model and calls Intent before bounded Recall', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-workhub-routing-'));
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  try {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'workhub-routing-provider',
+        name: 'WorkHub routing provider',
+        providerType: 'deepseek',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: ['deepseek-v4-flash'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0]!;
+    await policy.credentialVault.set({
+      locator: { scope: 'connection', connectionId: connection.connectionId, kind: 'api_key' },
+      expected: null,
+      secret: API_KEY,
+    });
+    await publishConnectionModel(policy, connection.connectionId, 'deepseek-v4-flash');
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: connection.connectionId,
+      llmConnectionSlug: connection.slug,
+      model: 'deepseek-v4-flash',
+      thinkingLevel: 'high',
+      permissionMode: 'ask',
+    });
+    const model = createHostWorkHubRoutingModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      usage,
+      requestDrain: () => assert.fail('WorkHub routing telemetry must not drain the Host'),
+    });
+    let candidateReads = 0;
+    const decision = await model.decide({
+      turnId: 'routing-turn',
+      header: session,
+      userText: '继续支付重试的工作',
+      transcript: [{ role: 'assistant', text: '上一轮已定位支付重试。' }],
+      resolveCandidates: async () => {
+        candidateReads += 1;
+        return {
+          candidateSetId: `sha256:${'a'.repeat(64)}`,
+          candidates: [
+            {
+              candidateRef: 'whc_payments',
+              sessionName: 'Payments',
+              workspaceName: 'payments',
+              state: 'active',
+              recency: 'today',
+            },
+          ],
+        };
+      },
+      abortSignal: new AbortController().signal,
+    });
+    assert.deepEqual(decision, {
+      kind: 'routing',
+      disposition: 'delegate_existing',
+      candidateSetId: `sha256:${'a'.repeat(64)}`,
+      candidateRef: 'whc_payments',
+    });
+    assert.equal(candidateReads, 1);
+    const requests = provider.requests.slice(-2);
+    assert.equal(requests.length, 2);
+    assert.ok(requests.every((request) => request.authorization === `Bearer ${API_KEY}`));
+    assert.ok(
+      requests.every((request) => JSON.stringify(request.body).includes('deepseek-v4-flash')),
+    );
+    const outbound = JSON.stringify(requests);
+    assert.doesNotMatch(outbound, /session-secret|\/Users\/a404/u);
+    const logs = await usage.telemetry.logs({ range: 'all' });
+    assert.ok(logs.rows.some((row) => row.callKind === 'workhub_intent'));
+    assert.ok(logs.rows.some((row) => row.callKind === 'workhub_recall'));
+  } finally {
+    await owner.close();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('Host auxiliary models meter provider usage and abort physical requests', {
   timeout: 20_000,
 }, async () => {
@@ -5066,7 +5163,20 @@ async function handleProviderRequest(
     body,
   });
   if (request.url === '/v1/responses') {
-    respondProviderResponsesText(response, RESPONSE_TEXT);
+    const serialized = JSON.stringify(body);
+    if (serialized.includes('Classify one WorkHub request')) {
+      respondProviderResponsesJsonText(
+        response,
+        JSON.stringify({ kind: 'routing', mode: 'continue' }),
+      );
+    } else if (serialized.includes('Rank the supplied opaque WorkHub candidates')) {
+      respondProviderResponsesJsonText(
+        response,
+        JSON.stringify({ kind: 'ranked', candidateRefs: ['whc_payments'] }),
+      );
+    } else {
+      respondProviderResponsesText(response, RESPONSE_TEXT);
+    }
     return;
   }
   if (body.stream !== true) {
@@ -5361,6 +5471,29 @@ function respondProviderResponsesText(response: ServerResponse, text: string): v
   ];
   response.writeHead(200, { 'content-type': 'text/event-stream' });
   response.end(`${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\n`);
+}
+
+function respondProviderResponsesJsonText(response: ServerResponse, text: string): void {
+  response.writeHead(200, { 'content-type': 'application/json' });
+  response.end(
+    JSON.stringify({
+      id: 'resp-workhub-routing',
+      object: 'response',
+      created_at: 1,
+      status: 'completed',
+      model: 'deepseek-v4-flash',
+      output: [
+        {
+          type: 'message',
+          id: 'msg-workhub-routing',
+          status: 'completed',
+          role: 'assistant',
+          content: [{ type: 'output_text', text, annotations: [], logprobs: [] }],
+        },
+      ],
+      usage: { input_tokens: 11, output_tokens: 5, total_tokens: 16 },
+    }),
+  );
 }
 
 function respondProviderText(response: ServerResponse, text: string, promptTokens = 11): void {

@@ -122,6 +122,10 @@ export interface InteractiveRunComposerInput {
   readonly deepResearch?: {
     readonly tools: readonly MakaTool[];
   };
+  readonly resolveProfileSystemPrompt?: (
+    context: HostModelPromptContext,
+    basePrompt: string,
+  ) => Promise<string>;
 }
 
 /** Composes one Interactive prompt and tool surface from canonical Host authorities. */
@@ -196,12 +200,11 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
   const resolvedSystemPrompts = new Map<string, Promise<ResolvedRunPrompt>>();
   const resolveSystemPrompt = (context: HostModelPromptContext): Promise<ResolvedRunPrompt> => {
     if (runProfile) {
-      return Promise.resolve(
-        Object.freeze({
-          text: runProfile.systemPrompt,
-          sourceRevisions: [],
-        }),
-      );
+      return (
+        input.resolveProfileSystemPrompt
+          ? input.resolveProfileSystemPrompt(context, runProfile.systemPrompt)
+          : Promise.resolve(runProfile.systemPrompt)
+      ).then((text) => Object.freeze({ text, sourceRevisions: [] }));
     }
     const key = `${context.sessionId}\u0000${context.turnId}`;
     const cached = resolvedSystemPrompts.get(key);
@@ -448,6 +451,9 @@ export function createInteractiveRunComposerFactory(
           : {}),
         skillBudget: contextWindow === null ? {} : { contextWindow },
         shell,
+        ...(input.resolveProfileSystemPrompt
+          ? { resolveProfileSystemPrompt: input.resolveProfileSystemPrompt }
+          : {}),
       });
       return Object.freeze({
         ...composer,

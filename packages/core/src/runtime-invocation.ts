@@ -33,6 +33,7 @@ import type {
   RuntimeInvocationLineage,
 } from './runtime-event.js';
 import { isTerminalRuntimeEvent } from './runtime-event.js';
+import type { WorkHubRoutingDecision } from './workhub-routing.js';
 
 export interface RuntimeInvocationRecord {
   sessionId: string;
@@ -247,6 +248,8 @@ export type RootExecutionDescriptor =
       /** Stable request identity shared by physical action retries. */
       actionId?: string;
       inputDigest: `sha256:${string}`;
+      /** Model-derived, Policy-owned advice bound before the main Turn starts. */
+      routingDecision?: WorkHubRoutingDecision;
     }
   | { kind: 'regenerate'; sourceTurnId: string }
   | { kind: 'context_compact' }

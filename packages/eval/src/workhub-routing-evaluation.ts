@@ -18,27 +18,21 @@
  */
 
 import type { NormalizedUsage } from './result.js';
+import {
+  applyWorkHubRoutingPolicy,
+  type WorkHubIntentAssessment,
+  type WorkHubRecallAssessment,
+  type WorkHubRoutingOutcome,
+} from '@maka/core/workhub-routing';
+
+export {
+  applyWorkHubRoutingPolicy,
+  type WorkHubIntentAssessment,
+  type WorkHubRecallAssessment,
+  type WorkHubRoutingOutcome,
+} from '@maka/core/workhub-routing';
 
 export const WORKHUB_ROUTING_EVALUATION_SCHEMA_VERSION = 'maka.workhub.routing-eval.v2' as const;
-
-export type WorkHubIntentAssessment =
-  | { readonly kind: 'routing'; readonly mode: 'discuss' | 'execute' | 'create' | 'continue' }
-  | { readonly kind: 'linked'; readonly operation: 'correct' | 'stop' | 'resume' }
-  | { readonly kind: 'unclear' };
-
-export type WorkHubRecallAssessment =
-  | { readonly kind: 'not_applicable' }
-  | { readonly kind: 'none' }
-  | { readonly kind: 'ranked' | 'ambiguous'; readonly candidateRefs: readonly string[] };
-
-export type WorkHubRoutingOutcome =
-  | { readonly kind: 'routing'; readonly disposition: 'answer_here' | 'create_new' | 'clarify' }
-  | {
-      readonly kind: 'routing';
-      readonly disposition: 'delegate_existing';
-      readonly candidateRef: string;
-    }
-  | { readonly kind: 'linked'; readonly operation: 'correct' | 'stop' | 'resume' };
 
 export interface WorkHubRoutingCandidate {
   /** Request-scoped opaque identity. Stable Session ids are not evaluation/model input. */
@@ -148,25 +142,6 @@ export interface WorkHubRoutingEvaluationReport {
   readonly datasetId: string;
   readonly trials: readonly WorkHubRoutingTrial[];
   readonly summaries: readonly WorkHubRoutingSummary[];
-}
-
-/** Shared side-effect-free Policy used by every comparison arm. */
-export function applyWorkHubRoutingPolicy(
-  intent: WorkHubIntentAssessment,
-  recall: WorkHubRecallAssessment,
-): WorkHubRoutingOutcome {
-  if (intent.kind === 'unclear') return { kind: 'routing', disposition: 'clarify' };
-  if (intent.kind === 'linked') return { kind: 'linked', operation: intent.operation };
-  if (intent.mode === 'discuss') return { kind: 'routing', disposition: 'answer_here' };
-  if (intent.mode === 'create') return { kind: 'routing', disposition: 'create_new' };
-  if (recall.kind === 'ranked' && recall.candidateRefs[0]) {
-    return {
-      kind: 'routing',
-      disposition: 'delegate_existing',
-      candidateRef: recall.candidateRefs[0],
-    };
-  }
-  return { kind: 'routing', disposition: 'clarify' };
 }
 
 /** Run repeatable, side-effect-free comparisons over one frozen dataset. */
