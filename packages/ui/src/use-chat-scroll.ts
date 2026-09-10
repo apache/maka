@@ -54,9 +54,11 @@ export function useChatScroll(input: {
   onReadingAnchorChange?(turnId?: string): void;
   behavior: ScrollBehavior;
   hasOlderHistory?: boolean;
-  onLoadEarlierHistory?(anchorTurnId?: string): Promise<void> | void;
+  onLoadEarlierHistory?(): Promise<void> | void;
   hasNewerHistory?: boolean;
-  onLoadLaterHistory?(anchorTurnId?: string): Promise<void> | void;
+  onLoadLaterHistory?(): Promise<void> | void;
+  /** The turns the reader can still reach within the retained band; the rest may go. */
+  onRetainWindow?(window: { firstTurnId: string; lastTurnId: string }): void;
 }) {
   const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
   const authority = useTranscriptScrollAuthority();
@@ -66,6 +68,8 @@ export function useChatScroll(input: {
   const loadLaterRef = useRef(input.onLoadLaterHistory);
   loadLaterRef.current = input.onLoadLaterHistory;
   const canLoadLater = input.onLoadLaterHistory !== undefined;
+  const retainRef = useRef(input.onRetainWindow);
+  retainRef.current = input.onRetainWindow;
   const handledTarget = useRef<string | null>(null);
   const anchorChangeRef = useRef(input.onReadingAnchorChange);
   anchorChangeRef.current = input.onReadingAnchorChange;
@@ -133,9 +137,7 @@ export function useChatScroll(input: {
       // actually landed, neither an intermediate bounded range nor an empty
       // one says anything new about where the reader intended to be.
       if (commandTarget.current && handledTarget.current !== commandTarget.current) return;
-      const turnId = snapshot.pinned
-        ? undefined
-        : firstVisibleTurnId(input.scrollRef.current);
+      const turnId = snapshot.pinned ? undefined : authority.measureReadingTurn();
       // An empty bounded range has no new reading position. In particular,
       // releasing the pin before a remembered range loads must not erase the
       // Turn that caused that range to be requested.
@@ -171,54 +173,72 @@ export function useChatScroll(input: {
     };
   }, [authority, input.scrollRef, input.sessionId]);
 
+  // The window is a band of pixels around the reader: fetch when less than two
+  // screens remain in a direction that has history, drop what lies more than
+  // six screens away and keep four. Both are re-evaluated whenever content or
+  // the reader moves, so the tail prefetches its history and a reader who
+  // stops mid-transcript never pins more than a bounded slice in memory.
+  const bandCheck = useRef<(() => void) | undefined>(undefined);
   useEffect(() => {
     const root = input.scrollRef.current;
     if (!root) return;
+    const inFlight = { up: false, down: false };
     const canLoad = (direction: 'up' | 'down'): boolean => direction === 'up'
       ? input.hasOlderHistory === true && canLoadEarlier
       : input.hasNewerHistory === true && canLoadLater;
-    // Asking twice is the loader's problem, not this one's: it refuses a
-    // request while one is in flight, and asking for history the reader
-    // already has is idempotent anyway.
     const requestHistory = (direction: 'up' | 'down'): void => {
-      activation.current = { sessionId: input.sessionId };
-      commandTarget.current = null;
-      // Moving input already released following. Only an immovable edge can
-      // still be pinned; do not cancel the input operation that requested data.
-      if (authority.getSnapshot().pinned) authority.releasePin();
-      // A wheel at either edge moves nothing, so no scroll event refreshes the
-      // anchor and the restore effect would load around an evicted Turn.
-      reportReadingAnchor.current?.();
-      const anchorTurnId = direction === 'up'
-        ? firstVisibleTurnId(root)
-        : lastVisibleTurnId(root);
+      if (inFlight[direction]) return;
       // The browser anchors the reader against everything that lands above
-      // them, with one exception: it declines while the scroller sits at zero,
-      // which is exactly where a wheel asks for history. One pixel is the whole
-      // fix — measured in Chromium, an insert of 501px above the reader moves
-      // `scrollTop` by 501 at an offset of 1 and by 0 at an offset of 0.
-      if (direction === 'up' && root.scrollTop < 1) root.scrollTop = 1;
+      // them, with one exception: it declines while the scroller sits at zero.
+      // One pixel is the whole fix — measured in Chromium, an insert of 501px
+      // above the reader moves `scrollTop` by 501 at an offset of 1 and by 0
+      // at an offset of 0.
+      if (direction === 'up' && !authority.getSnapshot().pinned && root.scrollTop < 1) {
+        root.scrollTop = 1;
+      }
       const load = direction === 'up' ? loadEarlierRef.current : loadLaterRef.current;
-      void Promise.resolve(load?.(anchorTurnId)).catch(() => undefined);
+      inFlight[direction] = true;
+      void Promise.resolve(load?.()).catch(() => undefined).finally(() => {
+        inFlight[direction] = false;
+        check();
+      });
     };
-    /** Close enough to the requested edge that the reader is about to reach it. */
-    const nearEdge = (direction: 'up' | 'down'): boolean =>
-      (direction === 'up'
-        ? root.scrollTop
-        : root.scrollHeight - root.clientHeight - root.scrollTop)
-      <= Math.max(640, root.clientHeight * 2);
-    // Nearness alone does not mean the reader wants history — on a transcript
-    // shorter than about three viewports the tail is inside this band too, so
-    // following it would ask on every write, and content landing above would
-    // ask again on every anchoring correction until there was no history left.
-    // Which movements were the reader's is not re-derived here; the authority
-    // watches the scroller and says so.
-    const stopWatchingReader = authority.subscribeToReaderScroll((direction) => {
-      if (canLoad(direction) && nearEdge(direction)) requestHistory(direction);
-    });
-    return stopWatchingReader;
+    const check = (): void => {
+      if (!root.isConnected || bandCheck.current !== check) return;
+      const screen = Math.max(320, root.clientHeight);
+      const above = root.scrollTop;
+      const below = root.scrollHeight - root.clientHeight - root.scrollTop;
+      if (canLoad('up') && above < screen * 2) requestHistory('up');
+      if (canLoad('down') && below < screen * 2) requestHistory('down');
+      if (above <= screen * 6 && below <= screen * 6) return;
+      const rect = root.getBoundingClientRect();
+      const turns = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')];
+      const kept = turns.filter((turn) => {
+        const box = turn.getBoundingClientRect();
+        return box.bottom >= rect.top - screen * 4 && box.top <= rect.bottom + screen * 4;
+      });
+      const first = kept[0]?.dataset.turnId;
+      const last = kept.at(-1)?.dataset.turnId;
+      if (!first || !last || kept.length === turns.length) return;
+      retainRef.current?.({ firstTurnId: first, lastTurnId: last });
+    };
+    bandCheck.current = check;
+    // Both phases matter: a gesture at an edge moves nothing and so reports
+    // only `input`, and that is exactly where the next page is wanted.
+    const stopWatchingReader = authority.subscribeToReaderScroll(() => check());
+    const frame = window.requestAnimationFrame(check);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (bandCheck.current === check) bandCheck.current = undefined;
+      stopWatchingReader();
+    };
   }, [authority, input.hasOlderHistory, input.hasNewerHistory, canLoadEarlier, canLoadLater,
     input.scrollRef, input.sessionId]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => bandCheck.current?.());
+    return () => window.cancelAnimationFrame(frame);
+  }, [input.messages]);
 
   useEffect(() => {
     const explicitTarget = input.target?.turnId
@@ -239,10 +259,12 @@ export function useChatScroll(input: {
       : undefined);
     if (!target) return;
     if (explicitTarget) activation.current = { sessionId: input.sessionId };
-    // This effect re-runs on every transcript update so a target that arrives
-    // before its turn still lands. It stops for good once the turn is on
-    // screen — repeating the release afterwards would take the tail away from
-    // a reader who had already scrolled back to it.
+    // This effect re-runs on every render so a target that arrives before its
+    // turn still lands. What mounts that turn is the resident range, which the
+    // Renderer moves without touching the message list, so no dependency here
+    // can stand for "the turn may be on screen now". It stops for good once the
+    // turn is revealed — repeating the release afterwards would take the tail
+    // away from a reader who had already scrolled back to it.
     const chosen = target.kind === 'search'
       ? `search:${input.sessionId ?? ''}:${target.turnId}:${target.nonce}`
       : restoreCommandKey(input.sessionId, target.turnId, target.unavailable);
@@ -257,7 +279,7 @@ export function useChatScroll(input: {
         if (target.kind !== 'restore' || !target.unavailable) return;
         handledTarget.current = chosen;
         activation.current = { sessionId: input.sessionId };
-        if (!firstVisibleTurnId(root)) authority.pinToTail();
+        if (!authority.measureReadingTurn()) authority.pinToTail();
         reportReadingAnchor.current?.();
         return;
       }
@@ -290,35 +312,11 @@ export function useChatScroll(input: {
       window.cancelAnimationFrame(frame);
       if (clear !== undefined) window.clearTimeout(clear);
     };
-  }, [
-    input.target?.turnId,
-    input.target?.nonce,
-    input.restoreTarget?.turnId,
-    input.restoreTarget?.unavailable,
-    input.behavior,
-    input.sessionId,
-    input.messages,
-    input.scrollRef,
-  ]);
+  });
 
   return {
     highlightedTurnId,
   };
-}
-
-function firstVisibleTurnId(root: HTMLElement | null): string | undefined {
-  if (!root) return undefined;
-  const rootTop = root.getBoundingClientRect().top;
-  return [...root.querySelectorAll<HTMLElement>('[data-turn-id]')]
-    .find((turn) => turn.getBoundingClientRect().bottom > rootTop)
-    ?.dataset.turnId;
-}
-
-function lastVisibleTurnId(root: HTMLElement): string | undefined {
-  const rootBottom = root.getBoundingClientRect().bottom;
-  return [...root.querySelectorAll<HTMLElement>('[data-turn-id]')]
-    .findLast((turn) => turn.getBoundingClientRect().top < rootBottom)
-    ?.dataset.turnId;
 }
 
 function restoreCommandKey(

@@ -19,15 +19,13 @@
 
 export const DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES = 128 * 1024;
 export const DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES = 512 * 1024;
-export const DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS = 10;
+/** Turns the Main tail cache keeps for the projector and for the tail the Renderer opens with. */
+export const DESKTOP_TRANSCRIPT_TAIL_MAX_TURNS = 10;
 export const DESKTOP_TRANSCRIPT_OVERLAY_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 export const DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 
 export interface DesktopTranscriptNavigation {
   readonly navigationVersion: number;
-  readonly intent: 'history' | 'followTail';
-  readonly preserveRange?: boolean;
-  readonly readingTurnId?: string;
 }
 
 export interface DesktopTranscriptFragment {
@@ -39,18 +37,21 @@ export interface DesktopTranscriptFragment {
   readonly data: Uint8Array;
 }
 
+/**
+ * A batch answering a range command carries that command's version and the
+ * edge facts its page established. Broadcast batches (durable catch-up, cache
+ * trims) carry no version and no edge facts: the Renderer owns the window and
+ * applies them to whatever it holds.
+ */
 export interface DesktopTranscriptBatchPayload {
-  /** An omitted version is zero, including cached bootstrap snapshots. */
   readonly navigationVersion?: number;
   readonly sessionId: string;
   readonly generation: string;
   readonly hostEpoch: string;
   readonly durableThrough: number | null;
   readonly fragments: readonly DesktopTranscriptFragment[];
-  readonly evictedDurableSequences: readonly number[];
-  readonly completedOverlayMessageIds: readonly string[];
-  readonly hasOlder: boolean;
-  readonly hasNewer: boolean;
+  readonly hasOlder?: boolean;
+  readonly hasNewer?: boolean;
   readonly reset: boolean;
   readonly ready: boolean;
 }
@@ -67,10 +68,7 @@ export interface DesktopTranscriptOpenResult {
 }
 
 export interface DesktopTranscriptRangeRequest {
-  readonly navigationVersion?: number;
-  readonly intent?: DesktopTranscriptNavigation['intent'];
-  readonly preserveRange?: boolean;
-  readonly readingTurnId?: string;
+  readonly navigationVersion: number;
   readonly consumerId: string;
   readonly sessionId: string;
   readonly hostEpoch: string;
@@ -79,9 +77,10 @@ export interface DesktopTranscriptRangeRequest {
 }
 
 export interface DesktopTranscriptHandle extends DesktopTranscriptOpenResult {
-  loadBefore(anchorSequence: number | null, maxBytes?: number, navigation?: DesktopTranscriptNavigation): Promise<void>;
-  loadAfter(anchorSequence: number | null, maxBytes?: number, navigation?: DesktopTranscriptNavigation): Promise<void>;
-  loadAround(sequence: number | null, maxBytes?: number, navigation?: DesktopTranscriptNavigation): Promise<void>;
+  loadBefore(anchorSequence: number | null, maxBytes: number, navigation: DesktopTranscriptNavigation): Promise<void>;
+  loadAfter(anchorSequence: number | null, maxBytes: number, navigation: DesktopTranscriptNavigation): Promise<void>;
+  loadAround(sequence: number, maxBytes: number, navigation: DesktopTranscriptNavigation): Promise<void>;
+  loadLatest(navigation: DesktopTranscriptNavigation): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -98,16 +97,8 @@ export function assertDesktopTranscriptBatch(value: unknown): DesktopTranscriptB
     typeof batch.hostEpoch !== 'string' ||
     (batch.durableThrough !== null && !isSequence(batch.durableThrough)) ||
     !Array.isArray(batch.fragments) ||
-    !Array.isArray(batch.evictedDurableSequences) ||
-    !batch.evictedDurableSequences.every(isSequence) ||
-    batch.evictedDurableSequences.length > 256 ||
-    !Array.isArray(batch.completedOverlayMessageIds) ||
-    !batch.completedOverlayMessageIds.every(
-      (messageId) => typeof messageId === 'string' && messageId.length > 0 && messageId.length <= 256,
-    ) ||
-    batch.completedOverlayMessageIds.length > 256 ||
-    typeof batch.hasOlder !== 'boolean' ||
-    typeof batch.hasNewer !== 'boolean' ||
+    (batch.hasOlder !== undefined && typeof batch.hasOlder !== 'boolean') ||
+    (batch.hasNewer !== undefined && typeof batch.hasNewer !== 'boolean') ||
     typeof batch.reset !== 'boolean' ||
     typeof batch.ready !== 'boolean'
   ) {

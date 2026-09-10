@@ -94,7 +94,8 @@ interface ChatMessageSurfaceProps extends Omit<
   hasOlderHistory?: boolean;
   hasNewerHistory?: boolean;
   historyLoadPending?: TranscriptHistoryPending;
-  onLoadHistory: (target: 'earlier' | 'later' | 'latest', anchorTurnId?: string) => Promise<void> | void;
+  onLoadHistory: (target: 'earlier' | 'later' | 'latest') => Promise<void> | void;
+  onRetainWindow: (window: { firstTurnId: string; lastTurnId: string }) => void;
 }
 
 function captureLiveContent(liveTurn: LiveTurnProjection | undefined) {
@@ -131,6 +132,7 @@ export function ChatMessageSurface({
   hasNewerHistory,
   historyLoadPending,
   onLoadHistory,
+  onRetainWindow,
   ...chatViewRest
 }: ChatMessageSurfaceProps) {
   const locale = useUiLocale();
@@ -252,8 +254,9 @@ export function ChatMessageSurface({
             historyLoadPending={historyLoadPending && historyLoadPending.sessionId === activeSessionId
               ? historyLoadPending.target === 'earlier' ? 'older' : 'newer'
               : undefined}
-            onLoadEarlierHistory={(anchorTurnId) => onLoadHistory('earlier', anchorTurnId)}
-            onLoadLaterHistory={(anchorTurnId) => onLoadHistory('later', anchorTurnId)}
+            onLoadEarlierHistory={() => onLoadHistory('earlier')}
+            onLoadLaterHistory={() => onLoadHistory('later')}
+            onRetainWindow={onRetainWindow}
           />
         )}
       </ChatViewGoalProjectionConsumer>

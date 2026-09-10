@@ -69,18 +69,15 @@ test('preparing a send follows the new prompt and streaming growth, then lets th
   assert.equal(fixture.scroller.scrollTop, 500);
 });
 
-test('reading a live Turn without a durable sequence preserves its Turn identity', async () => {
+test('reading a live Turn without a durable sequence bookmarks its Turn identity', async () => {
   const fixture = viewportFixture();
   const sequenceForTurn = fixture.controller.store.sequenceForTurn;
   fixture.controller.store.sequenceForTurn = (turnId) => turnId === 'latest' ? null : sequenceForTurn(turnId);
-  const readingCalls: Array<{ sequence: number | null; turnId?: string }> = [];
-  fixture.controller.setReadingAnchor = async (sequence, turnId) => { readingCalls.push({ sequence, turnId }); };
   await fixture.render();
   await fixture.readAt(1900);
 
   assert.equal(fixture.pinned(), false);
   assert.deepEqual(fixture.sessionUi.transcriptReadingAnchorBySessionRef.current['session-a'], { turnId: 'latest' });
-  assert.deepEqual(readingCalls, [{ sequence: null, turnId: 'latest' }]);
 });
 
 test('a send is accepted before latest history loads and its old completion cannot move a new Session viewport', async () => {
@@ -160,15 +157,12 @@ test('geometry changes from the latest range do not cancel the background load o
   fixture.controller.loadLatest = () => latest.promise;
   await fixture.render();
   await fixture.readAt(1000);
-  const readingCalls: Array<number | null> = [];
-  fixture.controller.setReadingAnchor = async (sequence: number | null) => { readingCalls.push(sequence); };
   await act(async () => { assert.equal(await fixture.commands.current!.prepareSend('session-a'), true); });
 
   await fixture.replaceRangeFromHost();
   await act(async () => { latest.resolve(); });
 
   assert.deepEqual(fixture.visibleTurns(), ['latest-b']);
-  assert.deepEqual(readingCalls, [], 'content geometry must not install a new history reading intent');
   assert.equal(fixture.pinned(), true);
   await fixture.append('new-question', 200);
   assert.equal(fixture.scroller.scrollTop, 400);
@@ -250,10 +244,11 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
   let reads = 0;
   const controller = {
     loadAround: async () => {}, loadBefore: async () => {}, loadAfter: async () => {},
-    loadLatest: async () => { reads += 1; }, setReadingAnchor: async (_sequence: number | null, _turnId?: string) => {},
+    loadLatest: async () => { reads += 1; },
     store: {
       sessionId: 'session-a',
       range: () => ({ sessionId: 'session-a' }),
+      retain: () => false,
       sequenceForTurn: (turnId: string) => {
         const sequence = messages.findIndex((message) => message.turnId === turnId);
         return sequence < 0 ? null : sequence;
@@ -270,7 +265,7 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
     searchTarget: undefined, clearSearchTarget: () => {},
     turnIndex: undefined, setTurnIndex: () => {},
     listTurnLandmarks: async () => ({ throughSequence: null, landmarks: [] }),
-    setHistoryPending: () => {}, historyPageBytes: 512 * 1024,
+    setHistoryPending: () => {},
     onRestoreError: (error) => assert.fail(String(error)), onNavigationError: (error) => assert.fail(String(error)),
   };
   let authority: TranscriptScrollAuthority | undefined;

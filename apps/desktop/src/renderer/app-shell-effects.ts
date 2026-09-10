@@ -422,13 +422,16 @@ export function useActiveSessionEvents(options: {
         now: Date.now(),
       }),
     }));
+    const unsubscribeTranscript = transcript.subscribe(() => {
+      if (!disposed) applyTranscript(activeId, transcript, isDisposed);
+    });
     const openTranscript = (signal: AbortSignal) =>
       window.maka.transcripts.open(
         activeId,
         (batch) => {
           if (disposed) return;
           try {
-            if (transcript.accept(batch)) applyTranscript(activeId, transcript, isDisposed);
+            transcript.accept(batch);
           } catch (error) {
             applyReadError(activeId, error, isDisposed);
           }
@@ -498,6 +501,7 @@ export function useActiveSessionEvents(options: {
         options.transcriptRangeRef.current = undefined;
       }
       void controller.close();
+      unsubscribeTranscript();
       unsubscribeSessionEvents();
       markSessionEventStreamClosed(activeId);
     };

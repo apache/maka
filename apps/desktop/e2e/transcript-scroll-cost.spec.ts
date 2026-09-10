@@ -37,11 +37,23 @@
 
 import type { CDPSession, Page } from '@playwright/test';
 import { PROMPT_RAIL_PROMPT_COUNT } from '../src/main/e2e-fixture/seed-helpers';
-import { DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS } from '../src/preload/transcript-contract';
 import { expect, test } from './fixtures';
 
 const SCROLLER = '[data-chat-scroll-container="true"]';
 const TURN = '.maka-transcript-turn';
+
+/**
+ * The mounted range is now a band of pixels, not a Host constant: useChatScroll
+ * keeps the Turns within four screens of the reader and drops what sits beyond
+ * six, so what bounds this count is the viewport these tests set (700px) and
+ * how tall a fixture Turn is — no number the Main tail cache owns.
+ *
+ * Generous on purpose. The property worth guarding is that paging through 120
+ * Turns stops adding Turns; a range that kept everything it paged in would
+ * mount all 120, and a band that quietly doubled would pass no threshold that
+ * left this much room.
+ */
+const MOUNTED_TURNS_MAX = 40;
 
 declare global {
   interface Window {
@@ -149,7 +161,32 @@ async function sample(page: Page): Promise<CostSample> {
   });
 }
 
+/**
+ * A transcript opened at its tail keeps fetching older history until two
+ * screens of it sit above the reader, and trims what falls outside the band it
+ * retains, so the mounted rows churn for as long as that runs. Wait for the
+ * window to stop moving before touching a row: a locator resolved mid-churn
+ * points at an element the Renderer has already unmounted.
+ */
+async function settled(page: Page): Promise<void> {
+  const mounted = async (): Promise<string> => page.evaluate(() => {
+    const turns = document.querySelectorAll('[data-turn-id]');
+    return `${turns.length}:${turns[0]?.getAttribute('data-turn-id')}`;
+  });
+  let previous = await mounted();
+  await expect
+    .poll(async () => {
+      await page.waitForTimeout(250);
+      const current = await mounted();
+      const stable = current === previous;
+      previous = current;
+      return stable;
+    })
+    .toBe(true);
+}
+
 async function moveToTail(page: Page): Promise<void> {
+  await settled(page);
   await page.locator(TURN).last().scrollIntoViewIfNeeded();
   await page.evaluate(() => new Promise<void>((resolve) =>
     requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
@@ -232,9 +269,10 @@ test('the browser skips the Turns the reader has scrolled past', async ({
 
 /**
  * The bound the Desktop transcript is built on: paging back through a history
- * far longer than the active range mounts a bounded number of Turns, not a
- * growing one. Sampled at every page rather than only at the end, because a
- * range that overshoots and is trimmed afterwards is the regression.
+ * far longer than the retained band mounts a bounded number of Turns, not a
+ * growing one. Sampled at every page rather than only at the end, because the
+ * regression is a range that grows while the reader travels and is only trimmed
+ * once they stop.
  */
 test('paging back through the whole history keeps the mounted range bounded', async ({
   promptRailWindow: page,
@@ -267,14 +305,14 @@ test('paging back through the whole history keeps the mounted range bounded', as
 
   expect(pages).toBeGreaterThan(0);
   await expect(turns.first()).toHaveAttribute('data-turn-id', 'turn-prompt-rail-1');
-  expect(mountedMax).toBeLessThanOrEqual(DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS);
+  expect(mountedMax).toBeLessThanOrEqual(MOUNTED_TURNS_MAX);
 
-  // Coming back from the far end is a range reload, not a scroll: the Host
-  // resolves a new window around the tail and the renderer mounts it. The
-  // suite's 10s expect timeout is sized for UI that is already on screen, and
-  // this step measured past it on a loaded CI runner.
+  // Coming back from the far end reads the tail page and rebuilds the window
+  // around it, so it is slower than the scrolling above. The suite's 10s expect
+  // timeout is sized for UI that is already on screen, and this step measured
+  // past it on a loaded CI runner.
   await returnToLatest(page);
   await expect(page.locator(`[data-turn-id="turn-prompt-rail-${PROMPT_RAIL_PROMPT_COUNT}"]`))
     .toHaveCount(1, { timeout: 30_000 });
-  expect(await turns.count()).toBeLessThanOrEqual(DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS);
+  expect(await turns.count()).toBeLessThanOrEqual(MOUNTED_TURNS_MAX);
 });

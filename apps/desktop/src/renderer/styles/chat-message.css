@@ -52,6 +52,16 @@
   overflow-anchor: auto;
 }
 
+/* These rows mount and unmount around the reader without being anything the
+   reader is reading, so anchoring on one moves the transcript for no content:
+   a boundary gap, a send that is not durable yet, the placeholder held until
+   the live Turn exists. */
+.maka-transcript-gap-row,
+[data-transient-message-id],
+.maka-turn[data-live-streaming='true']:not([data-turn-id]) {
+  overflow-anchor: none;
+}
+
 .maka-transcript-turn {
   display: flex;
   width: 100%;

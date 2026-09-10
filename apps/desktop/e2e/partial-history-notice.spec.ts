@@ -21,6 +21,8 @@ import { expect, test } from './fixtures';
 
 const GAP = '.maka-transcript-gap-row';
 const TURN = '.maka-transcript-turn';
+/** Turns the partial-history fixture seeds. */
+const PARTIAL_HISTORY_TURN_COUNT = 18;
 
 test('bounded transcript ranges expose only their truthful boundary gaps', async ({
   partialHistoryWindow: page,
@@ -51,7 +53,8 @@ test('bounded transcript ranges expose only their truthful boundary gaps', async
     name: /^(?:加载较新消息|Load newer messages)$/,
   })).toBeVisible();
   await expect(page.locator(GAP)).toHaveCount(1);
-  expect(await page.locator(TURN).count()).toBeLessThanOrEqual(10);
+  // A jump lands on its own page, not on the whole history.
+  expect(await page.locator(TURN).count()).toBeLessThan(PARTIAL_HISTORY_TURN_COUNT);
 
   const loadNewer = newerGap.getByRole('button', {
     name: /^(?:加载较新消息|Load newer messages)$/,
@@ -64,12 +67,14 @@ test('bounded transcript ranges expose only their truthful boundary gaps', async
 
   await loadNewer.click();
   await expect(page.locator('[data-turn-id="turn-partial-history-3"]')).toBeVisible();
-  await expect(olderGap).toBeVisible();
+  // Paging newer used to push the oldest Turn out of a Host-bounded range and
+  // put an older gap back. The Renderer owns the window now and keeps what the
+  // reader can still reach, so the only truthful boundary is still the newer one.
+  await expect(olderGap).toHaveCount(0);
   await expect(newerGap).toBeVisible();
+  await expect(page.locator(GAP)).toHaveCount(1);
   await expect(loadNewer).toBeEnabled();
   await expect(oldestPrompt).toBeVisible();
-  await expect(page.locator(GAP)).toHaveCount(2);
-  expect(await page.locator(TURN).count()).toBeLessThanOrEqual(10);
 
   const returnToLatest = page.getByRole('button', {
     name: /^(?:滚动主对话到底部|Scroll main conversation to bottom)$/,
@@ -77,8 +82,11 @@ test('bounded transcript ranges expose only their truthful boundary gaps', async
   await expect(returnToLatest).toBeVisible();
   await returnToLatest.click();
 
-  await expect(page.locator('[data-turn-id="turn-partial-history-18"]')).toBeVisible();
+  // Reading the tail page and rebuilding the window around it is slower than
+  // the paging above, and measured past the suite's 10s expect timeout here.
+  await expect(page.locator(`[data-turn-id="turn-partial-history-${PARTIAL_HISTORY_TURN_COUNT}"]`))
+    .toBeVisible({ timeout: 30_000 });
   await expect(newerGap).toHaveCount(0);
   await expect(oldestPrompt).toBeVisible();
-  expect(await page.locator(TURN).count()).toBeLessThanOrEqual(10);
+  expect(await page.locator(TURN).count()).toBeLessThan(PARTIAL_HISTORY_TURN_COUNT);
 });

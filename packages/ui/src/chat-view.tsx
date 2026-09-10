@@ -317,8 +317,9 @@ export function ChatView(props: {
   hasOlderHistory?: boolean;
   hasNewerHistory?: boolean;
   historyLoadPending?: TranscriptHistoryLoadDirection;
-  onLoadEarlierHistory?(anchorTurnId?: string): Promise<void> | void;
-  onLoadLaterHistory?(anchorTurnId?: string): Promise<void> | void;
+  onLoadEarlierHistory?(): Promise<void> | void;
+  onLoadLaterHistory?(): Promise<void> | void;
+  onRetainWindow?(window: { firstTurnId: string; lastTurnId: string }): void;
   transcriptTurnIndex?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>;
   /** Optional identity decorations shared with a host's work navigation. */
   promptRailDecorations?: ReadonlyMap<string, Pick<PromptAnchorRailTurn, 'accentColor' | 'highlighted'>>;
@@ -639,6 +640,7 @@ export function ChatView(props: {
     onLoadEarlierHistory: props.onLoadEarlierHistory,
     hasNewerHistory: props.hasNewerHistory,
     onLoadLaterHistory: props.onLoadLaterHistory,
+    onRetainWindow: props.onRetainWindow,
   });
   const { quote: selectionQuote, clear: clearSelectionQuote } = useMessageSelectionQuote(
     scrollRef,
@@ -839,12 +841,12 @@ export function ChatView(props: {
                     ? {
                         description: copy.transcriptGap.olderDescription,
                         actionLabel: copy.transcriptGap.olderAction,
-                        activate: () => props.onLoadEarlierHistory?.(turns[0]?.turnId),
+                        activate: () => props.onLoadEarlierHistory?.(),
                       }
                     : {
                         description: copy.transcriptGap.newerDescription,
                         actionLabel: copy.transcriptGap.newerAction,
-                        activate: () => props.onLoadLaterHistory?.(turns.at(-1)?.turnId),
+                        activate: () => props.onLoadLaterHistory?.(),
                       };
                   return (
                     <TranscriptHistoryGapRow

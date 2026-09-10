@@ -309,8 +309,8 @@ test('WorkHub does not infer live running when the Session catalog is unavailabl
   }]))[0]?.state, 'recovering');
 });
 
-// Keep the real preload's navigation defaults and filtering in this consumer
-// regression; the IPC stub models the observer's authoritative reset reply.
+// Keep the real preload in this consumer regression; the IPC stub models the
+// observer's authoritative reset reply to a latest command.
 test('WorkHub tail navigation converges through the preload with a fragmented sparse tail', { timeout: 5_000 }, async (t) => {
   const owner = {
     hostId: 'owner-host', targetEpoch: 'owner-epoch', profileId: 'local',
@@ -355,7 +355,7 @@ test('WorkHub tail navigation converges through the preload with a fragmented sp
         }
         return { ...snapshot, readThroughMessageId: null };
       }
-      if (channel === 'sessions:transcript:load-around') {
+      if (channel === 'sessions:transcript:load-latest') {
         const request = args[1] as DesktopTranscriptRangeRequest;
         requests.push(request);
         // Bound a regressed request loop so the test reports its cause.
@@ -369,12 +369,8 @@ test('WorkHub tail navigation converges through the preload with a fragmented sp
             deliver(batch);
             if (!batch.ready) {
               partialProjectionCounts.push(projections.length);
-              // A rejected ready/reset must not publish a partial valid snapshot
-              // or clear the load guard, even if a caller bypasses preload filtering.
-              deliverDirect?.({
-                ...batch, navigationVersion: 0, fragments: [], ready: true,
-                deliverySequence: ++deliverySequence,
-              });
+              // A batch from another replica generation must not publish a
+              // partial valid snapshot or clear the load guard.
               deliverDirect?.({
                 ...batch, generation: 'unrelated-generation', reset: false, fragments: [], ready: true,
                 deliverySequence: ++deliverySequence,
@@ -436,7 +432,6 @@ test('WorkHub tail navigation converges through the preload with a fragmented sp
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(requests.length, 1);
     assert.equal(requests[0]!.navigationVersion, 1);
-    assert.equal(requests[0]!.intent, 'followTail');
     assert.equal(requests[0]!.anchorSequence, null);
     assert.deepEqual(partialProjectionCounts, [1, 1]);
     assert.deepEqual(projections, [[], ['latest-message']]);
@@ -495,7 +490,7 @@ for (const initial of ['failure-before-ready', 'failure-after-ready', 'cached'] 
           const unavailable = async () => { throw new Error('Reconnect the Host to load uncached history'); };
           return {
             ...snapshot, readThroughMessageId: null,
-            loadBefore: unavailable, loadAfter: unavailable,
+            loadBefore: unavailable, loadAfter: unavailable, loadLatest: unavailable,
             loadAround: cached ? unavailable : async (_sequence, _maxBytes, navigation) => deliver(navigation?.navigationVersion),
             close: async () => { closedCount++; },
           };

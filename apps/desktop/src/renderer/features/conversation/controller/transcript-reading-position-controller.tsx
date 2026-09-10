@@ -24,20 +24,20 @@ import {
   captureTranscriptReadingAnchor,
   createTranscriptRestoreLifecycle,
   currentTranscriptRange,
-  loadTranscriptHistory,
   newestDurablePromptSequence,
   prepareTranscriptForSend,
   refreshTranscriptTurnLandmarks,
   restoreSessionTranscriptRange,
-  type TranscriptHistoryGate,
-  type TranscriptHistoryGates,
   type TranscriptHistoryPending,
-  type TranscriptHistoryRequest,
+  type TranscriptHistoryTarget,
 } from './transcript-reading-position.js';
 
 type RangeController = NonNullable<Parameters<typeof restoreSessionTranscriptRange<StoredMessage>>[0]['controller']> & {
-  loadBefore(maxBytes?: number, anchorTurnId?: string): Promise<void>;
-  loadAfter(maxBytes?: number, anchorTurnId?: string): Promise<void>;
+  readonly store: {
+    retain(oldestSequence: number | null, newestSequence: number | null): boolean;
+  };
+  loadBefore(maxBytes?: number): Promise<void>;
+  loadAfter(maxBytes?: number): Promise<void>;
   loadLatest(): Promise<void>;
 };
 
@@ -50,7 +50,8 @@ interface TurnIndex {
 export interface TranscriptReadingPositionCommands {
   prepareSend(sessionId: string): Promise<boolean>;
   captureAnchor(turnId?: string): void;
-  loadHistory(target: TranscriptHistoryRequest['target'], anchorTurnId?: string): Promise<void>;
+  loadHistory(target: TranscriptHistoryTarget): Promise<void>;
+  retainWindow(window: { firstTurnId: string; lastTurnId: string }): void;
 }
 
 /** The conversation owns restoration lifetime; the shell supplies explicit ports. */
@@ -69,18 +70,16 @@ export function TranscriptReadingPositionController(props: {
   setTurnIndex: Dispatch<SetStateAction<TurnIndex | undefined>>;
   listTurnLandmarks: Parameters<typeof refreshTranscriptTurnLandmarks<TurnIndex['turns'][number]>>[0]['list'];
   setHistoryPending: Dispatch<SetStateAction<TranscriptHistoryPending | undefined>>;
-  historyPageBytes: number;
   onRestoreError(error: unknown, sessionId: string): void;
   onNavigationError(error: unknown, sessionId: string): void;
 }) {
   const [lifecycle] = useState(createTranscriptRestoreLifecycle);
-  const historyGates = useRef<TranscriptHistoryGates>(new WeakMap());
+  const lastLiveGeneration = useRef<
+    { sessionId: string; generation: string; hostEpoch: string } | undefined
+  >(undefined);
   const isCurrent = (sessionId: string, controller: object) =>
     props.currentSessionId.current === sessionId && props.rangeController.current === controller;
   const cancelHistory = (sessionId: string) => {
-    const controller = props.rangeController.current;
-    if (currentTranscriptRange(controller, sessionId) === undefined) return;
-    if (controller) historyGates.current.delete(controller);
     props.setHistoryPending((current) => current?.sessionId === sessionId ? undefined : current);
   };
   const cancel = (sessionId: string, clearAnchor = false) => {
@@ -102,51 +101,44 @@ export function TranscriptReadingPositionController(props: {
     },
     captureAnchor(turnId) {
       const { sessionId } = props;
-      const controller = props.rangeController.current;
       if (!sessionId || props.currentSessionId.current !== sessionId) return;
-      const previous = props.sessionUi.transcriptReadingAnchorBySessionRef.current[sessionId];
       props.sessionUi.setTranscriptRestoreUnavailable(sessionId, undefined);
       captureTranscriptReadingAnchor({
-        sessionId, currentSessionId: props.currentSessionId.current, turnId, controller,
+        sessionId, currentSessionId: props.currentSessionId.current, turnId,
+        controller: props.rangeController.current,
         setAnchor: props.sessionUi.setTranscriptReadingAnchor,
       });
-      const range = currentTranscriptRange(controller, sessionId);
-      if (range === undefined) return;
-      const sequence = turnId ? controller?.store.sequenceForTurn(turnId) : undefined;
-      // The send command already cleared its bookmark before publishing the
-      // pin. Its empty-anchor acknowledgement is not another reader intent.
-      if (previous?.turnId === turnId && previous?.sequence === (sequence ?? undefined)) return;
-      let navigation: Promise<void> | undefined;
-      cancelHistory(sessionId);
-      if (turnId) navigation = controller?.setReadingAnchor(sequence ?? null, turnId);
-      else if (!turnId && previous && !range.hasNewer) {
-        cancel(sessionId, true);
-        navigation = controller?.loadLatest();
-      }
-      void navigation?.catch((error) => {
-        if (controller && isCurrent(sessionId, controller)) props.onNavigationError(error, sessionId);
-      });
     },
-    async loadHistory(target, anchorTurnId) {
+    retainWindow(window) {
+      const controller = props.rangeController.current;
+      const { sessionId } = props;
+      if (!controller || !sessionId || !isCurrent(sessionId, controller)) return;
+      if (currentTranscriptRange(controller, sessionId) === undefined) return;
+      try {
+        controller.store.retain(
+          controller.store.sequenceForTurn(window.firstTurnId, 'first'),
+          controller.store.sequenceForTurn(window.lastTurnId, 'last'),
+        );
+      } catch {
+        // A stale range has no window to trim.
+      }
+    },
+    async loadHistory(target) {
       const controller = props.rangeController.current;
       const { sessionId } = props;
       if (!controller || !sessionId || !isCurrent(sessionId, controller)) return;
       cancel(sessionId, target === 'latest');
-      // A direct latest command must enter the range controller now, so it
-      // invalidates older pages rather than waiting behind a paging gate.
-      if (target === 'latest' || historyGates.current.get(controller)?.active?.target === 'latest') {
-        cancelHistory(sessionId);
+      props.setHistoryPending({ sessionId, target });
+      try {
+        if (target === 'latest') await controller.loadLatest();
+        else if (target === 'earlier') await controller.loadBefore();
+        else await controller.loadAfter();
+      } catch (error) {
+        if (isCurrent(sessionId, controller)) props.onNavigationError(error, sessionId);
+      } finally {
+        props.setHistoryPending((current) =>
+          current?.sessionId === sessionId && current.target === target ? undefined : current);
       }
-      const gates = historyGates.current;
-      const gate: TranscriptHistoryGate = gates.get(controller) ?? { pending: false };
-      gates.set(controller, gate);
-      await loadTranscriptHistory({
-        gates, sessionId, request: { target, anchorTurnId }, controller,
-        maxBytes: props.historyPageBytes,
-        isCurrent: () => isCurrent(sessionId, controller) && gates.get(controller) === gate,
-        setPending: props.setHistoryPending,
-        onError: (error) => props.onNavigationError(error, sessionId),
-      });
     },
   }));
 
@@ -180,10 +172,27 @@ export function TranscriptReadingPositionController(props: {
       : undefined,
     controller: props.rangeController.current,
     isCurrent,
-    isLiveTurn: (sessionId, turnId) => props.sessionUi.liveTurnBySessionRef.current[sessionId]?.turnId === turnId,
     setReadingAnchor: props.sessionUi.setTranscriptReadingAnchor,
     onRestoreUnavailable: props.sessionUi.setTranscriptRestoreUnavailable,
     onError: props.onRestoreError,
   }), [props.sessionId, props.profileId, props.messages, props.searchTarget?.nonce]);
+  useEffect(() => {
+    const controller = props.rangeController.current;
+    const { sessionId } = props;
+    const range = currentTranscriptRange(controller, sessionId);
+    if (!controller || !sessionId || !range?.generation || !range.hostEpoch) return;
+    if (range.generation.startsWith('cached:')) return;
+    const previous = lastLiveGeneration.current;
+    lastLiveGeneration.current = { sessionId, generation: range.generation, hostEpoch: range.hostEpoch };
+    if (!previous || previous.sessionId !== sessionId || previous.generation === range.generation) return;
+    // Sequences only mean the same rows within one Host epoch.
+    if (previous.hostEpoch !== range.hostEpoch) return;
+    const anchor = props.sessionUi.transcriptReadingAnchorBySessionRef.current[sessionId];
+    if (anchor?.sequence === undefined) return;
+    if (controller.store.sequenceForTurn(anchor.turnId) !== null) return;
+    void controller.loadAround(anchor.sequence).catch((error) => {
+      if (isCurrent(sessionId, controller)) props.onNavigationError(error, sessionId);
+    });
+  }, [props.sessionId, props.messages]);
   return null;
 }

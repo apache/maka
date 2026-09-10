@@ -19,24 +19,30 @@
 
 import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
 import { markPersisted } from '@maka/core/persisted-value';
-import type {
-  DesktopTranscriptBatchPayload,
-  DesktopTranscriptFragment,
-  DesktopTranscriptHandle,
-  DesktopTranscriptNavigation,
+import {
+  DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+  type DesktopTranscriptBatchPayload,
+  type DesktopTranscriptFragment,
+  type DesktopTranscriptHandle,
+  type DesktopTranscriptNavigation,
 } from '../../../preload/transcript-contract.js';
 import { projectDesktopStoredMessage } from '../../../shared/desktop-session-projection.js';
 import { parseDesktopSessionKey } from '../../../shared/runtime-host-identity.js';
 
+/**
+ * The Renderer's window onto one Session transcript. `loadAround` and
+ * `loadLatest` replace the window and mint a navigation version; `loadBefore`
+ * and `loadAfter` extend it under the current version. Main answers the
+ * request and otherwise only broadcasts tail growth.
+ */
 export interface DesktopTranscriptRangeController {
   readonly store: DesktopTranscriptRangeStore;
   ready(): Promise<void>;
   waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean>;
-  loadBefore(maxBytes?: number, anchorTurnId?: string): Promise<void>;
-  loadAfter(maxBytes?: number, anchorTurnId?: string): Promise<void>;
-  loadAround(sequence: number): Promise<void>;
-  setReadingAnchor(sequence: number | null, readingTurnId?: string): Promise<void>;
-  loadLatest(maxBytes?: number): Promise<void>;
+  loadBefore(maxBytes?: number): Promise<void>;
+  loadAfter(maxBytes?: number): Promise<void>;
+  loadAround(sequence: number, maxBytes?: number): Promise<void>;
+  loadLatest(): Promise<void>;
   reload(): Promise<void>;
   close(): Promise<void>;
 }
@@ -48,40 +54,52 @@ export function createDesktopTranscriptRangeController(
   let closed = false;
   let openController = new AbortController();
   let handle = open(openController.signal);
-  type Navigation = DesktopTranscriptNavigation & {
-    readonly kind: 'before' | 'after' | 'around' | 'latest' | 'anchor';
-    readonly sequence: number | null;
-    readonly maxBytes?: number;
-  };
-  let navigation: Navigation = {
-    navigationVersion: 0, intent: 'followTail', kind: 'latest', sequence: null,
-  };
+  let navigationVersion = 0;
+  const extending: { older?: Promise<void>; newer?: Promise<void> } = {};
   const current = async () => {
     if (closed) throw new Error('Desktop transcript range is closed');
     return handle;
   };
-  const dispatch = async (command: Navigation) => {
+  const command = async (
+    replace: boolean,
+    run: (value: DesktopTranscriptHandle, navigation: DesktopTranscriptNavigation) => Promise<void>,
+  ) => {
+    if (replace) {
+      navigationVersion += 1;
+      // Invalidate before awaiting an open handle or any in-flight page.
+      store.expectNavigation(navigationVersion);
+    }
+    const version = navigationVersion;
     const opening = handle;
-    const isCurrent = () => !closed && navigation === command && opening === handle;
+    const isCurrent = () => !closed && version === navigationVersion && opening === handle;
     try {
       const value = await current();
       if (!isCurrent()) return;
-      if (command.kind === 'before') {
-        await value.loadBefore(command.sequence, command.maxBytes, command);
-      } else if (command.kind === 'after') {
-        await value.loadAfter(command.sequence, command.maxBytes, command);
-      } else {
-        await value.loadAround(command.sequence, command.maxBytes, command);
-      }
+      await run(value, { navigationVersion: version });
     } catch (error) {
       if (isCurrent()) throw error;
     }
   };
-  const navigate = (command: Omit<Navigation, 'navigationVersion'>) => {
-    navigation = { ...command, navigationVersion: navigation.navigationVersion + 1 };
-    // Invalidate before awaiting an open handle or any previous page request.
-    store.expectNavigation(navigation.navigationVersion);
-    return dispatch(navigation);
+  const extend = (edge: 'older' | 'newer', maxBytes: number): Promise<void> => {
+    const pending = extending[edge];
+    if (pending) return pending;
+    let range: DesktopTranscriptRangeState;
+    try {
+      range = store.range();
+    } catch {
+      return Promise.resolve();
+    }
+    if (edge === 'older' ? !range.hasOlder : !range.hasNewer) return Promise.resolve();
+    const anchor = edge === 'older' ? range.oldestSequence : range.newestSequence;
+    const task = command(false, (value, navigation) =>
+      edge === 'older'
+        ? value.loadBefore(anchor, maxBytes, navigation)
+        : value.loadAfter(anchor, maxBytes, navigation),
+    ).finally(() => {
+      if (extending[edge] === task) extending[edge] = undefined;
+    });
+    extending[edge] = task;
+    return task;
   };
   return {
     store,
@@ -90,48 +108,17 @@ export function createDesktopTranscriptRangeController(
       await current();
       return store.waitForDurableMessage(messageId, timeoutMs);
     },
-    async loadBefore(maxBytes, anchorTurnId) {
-      const range = store.range();
-      const anchor = anchorTurnId === undefined ? undefined : store.sequenceForTurn(anchorTurnId);
-      if (anchor === null) {
-        await navigate({ intent: 'history', kind: 'anchor', sequence: null,
-          readingTurnId: anchorTurnId, preserveRange: true });
-        return;
-      }
-      if (!range.hasOlder) return;
-      await navigate({
-        intent: 'history', kind: 'before', maxBytes,
-        sequence: anchor ?? range.oldestSequence,
-        readingTurnId: anchorTurnId,
-      });
+    loadBefore(maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES) {
+      return extend('older', maxBytes);
     },
-    loadAround(sequence) {
-      return navigate({ intent: 'history', kind: 'around', sequence });
+    loadAfter(maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES) {
+      return extend('newer', maxBytes);
     },
-    async loadAfter(maxBytes, anchorTurnId) {
-      const range = store.range();
-      const anchor = anchorTurnId === undefined ? undefined : store.sequenceForTurn(anchorTurnId, 'last');
-      if (anchor === null) {
-        await navigate({ intent: 'history', kind: 'anchor', sequence: null,
-          readingTurnId: anchorTurnId, preserveRange: true });
-        return;
-      }
-      if (!range.hasNewer) return;
-      await navigate({
-        intent: 'history', kind: 'after', maxBytes,
-        sequence: anchor ?? range.newestSequence,
-        readingTurnId: anchorTurnId,
-      });
+    loadAround(sequence, maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES) {
+      return command(true, (value, navigation) => value.loadAround(sequence, maxBytes, navigation));
     },
-    setReadingAnchor(sequence, readingTurnId) {
-      if (navigation.kind === 'anchor' && navigation.sequence === sequence &&
-        navigation.readingTurnId === readingTurnId) {
-        return Promise.resolve();
-      }
-      return navigate({ intent: 'history', kind: 'anchor', sequence, readingTurnId, preserveRange: true });
-    },
-    loadLatest(maxBytes) {
-      return navigate({ intent: 'followTail', kind: 'latest', sequence: null, maxBytes });
+    loadLatest() {
+      return command(true, (value, navigation) => value.loadLatest(navigation));
     },
     async reload() {
       const previous = handle;
@@ -146,13 +133,6 @@ export function createDesktopTranscriptRangeController(
         });
       handle = replacement;
       await replacement;
-      if (closed || handle !== replacement) return;
-      const command = navigation;
-      // An anchor notification needs a real range read on a replacement handle.
-      if (command.kind === 'anchor' || command.kind === 'before' || command.kind === 'after') {
-        navigation = { ...command, kind: 'around', preserveRange: false };
-      }
-      await dispatch(navigation);
     },
     async close() {
       if (closed) return;
@@ -336,6 +316,7 @@ export class DesktopTranscriptRangeStore {
   #batchChanged = false;
   #snapshot: DesktopTranscriptRangeSnapshot | undefined;
   readonly #durableWaiters = new Set<() => void>();
+  readonly #listeners = new Set<() => void>();
 
   constructor(sessionKey: string) {
     const { hostId, sessionId } = parseDesktopSessionKey(sessionKey);
@@ -351,43 +332,55 @@ export class DesktopTranscriptRangeStore {
     this.#batchChanged = false;
   }
 
+  /**
+   * A batch answering a command is current only under the version that issued
+   * it. A reset for a new replica generation is always current: Main replaced
+   * the transcript underneath every window. Broadcasts carry no version.
+   */
   accepts(batch: DesktopTranscriptBatchPayload): boolean {
-    // A stale reset must be rejected before it can clear the current range.
-    if ((batch.navigationVersion ?? 0) !== this.#navigationVersion) return false;
     if (this.#retiredGenerations.has(batch.generation)) return false;
-    return batch.reset || (
-      batch.sessionId === this.#sourceSessionId &&
+    if (batch.reset) {
+      return batch.navigationVersion === undefined ||
+        batch.navigationVersion === this.#navigationVersion ||
+        batch.generation !== this.#liveGeneration;
+    }
+    if (batch.navigationVersion !== undefined && batch.navigationVersion !== this.#navigationVersion) {
+      return false;
+    }
+    return batch.sessionId === this.#sourceSessionId &&
       batch.generation === this.#generation &&
-      batch.hostEpoch === this.#hostEpoch
-    );
+      batch.hostEpoch === this.#hostEpoch;
   }
 
   accept(batch: DesktopTranscriptBatchPayload): boolean {
     if (!this.accepts(batch)) return false;
     if (batch.reset) this.#reset(batch);
-    let changed =
-      batch.reset ||
-      batch.durableThrough !== this.#durableThrough ||
-      batch.hasOlder !== this.#hasOlder ||
-      batch.hasNewer !== this.#hasNewer;
-    this.#durableThrough = batch.durableThrough;
-    this.#hasOlder = batch.hasOlder;
-    this.#hasNewer = batch.hasNewer;
-    for (const sequence of batch.evictedDurableSequences) {
-      if (this.#durable.delete(sequence)) {
-        removeOrdered(this.#durableOrder, sequence);
-        this.#refreshSequenceBounds(sequence);
+    let changed = batch.reset;
+    const answersCommand = batch.navigationVersion !== undefined;
+    if (batch.hasOlder !== undefined && batch.hasOlder !== this.#hasOlder) {
+      this.#hasOlder = batch.hasOlder;
+      changed = true;
+    }
+    if (batch.hasNewer !== undefined) {
+      // A page read before the tail grew cannot close the window's newer edge;
+      // the rows that landed meanwhile were dropped below, so ask again.
+      const hasNewer = batch.hasNewer ||
+        (batch.durableThrough !== null && this.#durableThrough !== null &&
+          batch.durableThrough < this.#durableThrough);
+      if (hasNewer !== this.#hasNewer) {
+        this.#hasNewer = hasNewer;
         changed = true;
       }
     }
-    for (const messageId of batch.completedOverlayMessageIds) {
-      if (this.#overlay.delete(messageId)) {
-        removeOrdered(this.#overlayOrder, messageId);
-        changed = true;
-      }
+    if (batch.durableThrough !== null &&
+      (this.#durableThrough === null || batch.durableThrough > this.#durableThrough)) {
+      this.#durableThrough = batch.durableThrough;
+      changed = true;
     }
+    // Tail growth belongs to the window only while the window reaches the tail.
+    const installDurable = answersCommand || !this.#hasNewer;
     for (const fragment of batch.fragments) {
-      changed = this.#acceptFragment(fragment) || changed;
+      changed = this.#acceptFragment(fragment, installDurable) || changed;
     }
     if (batch.ready && !this.#ready) {
       this.#ready = true;
@@ -397,9 +390,47 @@ export class DesktopTranscriptRangeStore {
     if (!batch.ready) return false;
     const committed = this.#batchChanged;
     this.#batchChanged = false;
-    if (committed) this.#snapshot = this.#createSnapshot();
+    if (committed) this.#commit();
     for (const notify of this.#durableWaiters) notify();
     return committed;
+  }
+
+  /** Fires after every committed change to `snapshot()`. */
+  subscribe(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => { this.#listeners.delete(listener); };
+  }
+
+  /**
+   * Drops durable rows outside `[oldestSequence, newestSequence]`. Either edge
+   * that lost rows becomes a history edge again.
+   */
+  retain(oldestSequence: number | null, newestSequence: number | null): boolean {
+    let changed = false;
+    for (const sequence of [...this.#durableOrder]) {
+      const older = oldestSequence !== null && sequence < oldestSequence;
+      const newer = newestSequence !== null && sequence > newestSequence;
+      if (!older && !newer) continue;
+      this.#durable.delete(sequence);
+      removeOrdered(this.#durableOrder, sequence);
+      if (older) this.#hasOlder = true;
+      else this.#hasNewer = true;
+      changed = true;
+    }
+    if (!changed) return false;
+    this.#oldestSequence = this.#durableOrder[0] ?? null;
+    this.#newestSequence = this.#durableOrder.at(-1) ?? null;
+    this.#newestUserSequence = null;
+    for (const sequence of this.#durableOrder) {
+      if (this.#durable.get(sequence)?.message.type === 'user') this.#newestUserSequence = sequence;
+    }
+    this.#commit();
+    return true;
+  }
+
+  #commit(): void {
+    this.#snapshot = this.#createSnapshot();
+    for (const listener of [...this.#listeners]) listener();
   }
 
   snapshot(): DesktopTranscriptRangeSnapshot {
@@ -492,14 +523,14 @@ export class DesktopTranscriptRangeStore {
     this.#oldestSequence = null;
     this.#newestSequence = null;
     this.#newestUserSequence = null;
-    this.#hasOlder = batch.hasOlder;
-    this.#hasNewer = batch.hasNewer;
+    this.#hasOlder = batch.hasOlder ?? false;
+    this.#hasNewer = batch.hasNewer ?? false;
     this.#ready = false;
     this.#batchChanged = false;
     this.#snapshot = undefined;
   }
 
-  #acceptFragment(fragment: DesktopTranscriptFragment): boolean {
+  #acceptFragment(fragment: DesktopTranscriptFragment, installDurable: boolean): boolean {
     const key = `${fragment.source}:${typeof fragment.identity}:${fragment.identity}`;
     let pending = this.#pending.get(key);
     if (!pending) {
@@ -534,23 +565,34 @@ export class DesktopTranscriptRangeStore {
     pending.bytes.set(bytes, fragment.byteOffset);
     pending.receivedBytes += bytes.byteLength;
     if (pending.receivedBytes < pending.totalBytes) return false;
+    this.#pending.delete(key);
+    // A declined row could still be the durable body of a message this window
+    // is showing as an overlay, which only its id can tell us.
+    if (pending.source === 'durable' && !installDurable && this.#overlay.size === 0) return false;
     const encoded = new TextDecoder('utf-8', { fatal: true }).decode(pending.bytes);
     const message = freezeTranscriptValue(projectDesktopStoredMessage(
       { hostId: this.#hostId },
       decodeStoredMessage(markPersisted<StoredMessage>(JSON.parse(encoded))),
     ));
     const projected = JSON.stringify(message);
-    this.#pending.delete(key);
     if (pending.source === 'durable') {
       if (!Number.isSafeInteger(pending.identity) || (pending.identity as number) < 0) {
         throw new Error('Invalid Desktop transcript durable identity');
       }
+      const overlaid = this.#overlay.has(message.id);
+      if (!installDurable && !overlaid) return false;
       const sequence = pending.identity as number;
       const existing = this.#durable.get(sequence);
       if (existing && existing.encoded !== projected) {
         throw new Error('Desktop transcript durable record changed');
       }
-      if (existing) return false;
+      // The durable row retires the overlay it settles, in the same step: a
+      // window that keeps one without the other loses the message.
+      if (overlaid) {
+        this.#overlay.delete(message.id);
+        removeOrdered(this.#overlayOrder, message.id);
+      }
+      if (existing) return overlaid;
       this.#durable.set(sequence, { message, encoded: projected });
       insertOrdered(this.#durableOrder, sequence, (left, right) => left - right);
       this.#oldestSequence = Math.min(this.#oldestSequence ?? sequence, sequence);
@@ -558,7 +600,7 @@ export class DesktopTranscriptRangeStore {
       if (message.type === 'user') {
         this.#newestUserSequence = Math.max(this.#newestUserSequence ?? sequence, sequence);
       }
-      return !existing;
+      return true;
     }
     if (typeof pending.identity !== 'string' || message.id !== pending.identity) {
       throw new Error('Desktop transcript overlay identity changed');
@@ -589,12 +631,6 @@ export class DesktopTranscriptRangeStore {
       },
     );
     return true;
-  }
-
-  #refreshSequenceBounds(deletedSequence: number): void {
-    if (deletedSequence !== this.#oldestSequence && deletedSequence !== this.#newestSequence) return;
-    this.#oldestSequence = this.#durableOrder[0] ?? null;
-    this.#newestSequence = this.#durableOrder.at(-1) ?? null;
   }
 
   #createSnapshot(): DesktopTranscriptRangeSnapshot {

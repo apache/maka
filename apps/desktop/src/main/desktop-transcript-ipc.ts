@@ -26,6 +26,7 @@ import {
 import type {
   DesktopSequencedTranscriptMessage,
   DesktopTranscriptReplicaChange,
+  DesktopTranscriptReplicaPage,
   DesktopTranscriptReplicaSnapshot,
 } from './desktop-transcript-replica.js';
 
@@ -40,10 +41,8 @@ interface TranscriptBatchContent {
   readonly durableThrough: number | null;
   readonly durable: readonly DesktopSequencedTranscriptMessage[];
   readonly overlay: readonly StoredMessage[];
-  readonly evictedDurableSequences: readonly number[];
-  readonly completedOverlayMessageIds: readonly string[];
-  readonly hasOlder: boolean;
-  readonly hasNewer: boolean;
+  readonly hasOlder?: boolean;
+  readonly hasNewer?: boolean;
   readonly reset: boolean;
 }
 
@@ -54,11 +53,23 @@ export function encodeDesktopTranscriptSnapshot(
     durableThrough: snapshot.durableThrough,
     durable: snapshot.durable,
     overlay: snapshot.overlay,
-    evictedDurableSequences: [],
-    completedOverlayMessageIds: [],
     hasOlder: snapshot.hasOlder,
     hasNewer: snapshot.hasNewer,
     reset: true,
+  });
+}
+
+export function encodeDesktopTranscriptPage(
+  identity: TranscriptBatchIdentity,
+  page: DesktopTranscriptReplicaPage,
+): Iterable<DesktopTranscriptBatchPayload> {
+  return encodeDesktopTranscriptBatches(identity, {
+    durableThrough: page.durableThrough,
+    durable: page.durable,
+    overlay: [],
+    hasOlder: page.hasOlder,
+    hasNewer: page.hasNewer,
+    reset: false,
   });
 }
 
@@ -70,10 +81,6 @@ export function encodeDesktopTranscriptChange(
     durableThrough: change.durableThrough,
     durable: change.durableUpserts,
     overlay: [],
-    evictedDurableSequences: change.evictedDurableSequences,
-    completedOverlayMessageIds: change.completedOverlayMessageIds,
-    hasOlder: change.hasOlder,
-    hasNewer: change.hasNewer,
     reset: false,
   });
 }
@@ -84,15 +91,8 @@ function* encodeDesktopTranscriptBatches(
 ): Iterable<DesktopTranscriptBatchPayload> {
   const fragments = encodeMessages(content);
   let fragment = fragments.next();
-  let evictedIndex = 0;
-  let completedIndex = 0;
   let first = true;
-  while (
-    !fragment.done ||
-    evictedIndex < content.evictedDurableSequences.length ||
-    completedIndex < content.completedOverlayMessageIds.length ||
-    first
-  ) {
+  while (!fragment.done || first) {
     const batchFragments: DesktopTranscriptFragment[] = [];
     let rawBytes = 0;
     while (!fragment.done) {
@@ -104,41 +104,19 @@ function* encodeDesktopTranscriptBatches(
       rawBytes += bytes;
       fragment = fragments.next();
     }
-    const evictedDurableSequences = content.evictedDurableSequences.slice(
-      evictedIndex,
-      evictedIndex + 256,
-    );
-    evictedIndex += evictedDurableSequences.length;
-    const completedOverlayMessageIds: string[] = [];
-    let identityBytes = 0;
-    while (completedIndex < content.completedOverlayMessageIds.length) {
-      const messageId = content.completedOverlayMessageIds[completedIndex]!;
-      const bytes = Buffer.byteLength(messageId, 'utf8');
-      if (
-        completedOverlayMessageIds.length >= 256 ||
-        (completedOverlayMessageIds.length > 0 &&
-          identityBytes + bytes > DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES)
-      ) {
-        break;
-      }
-      completedOverlayMessageIds.push(messageId);
-      identityBytes += bytes;
-      completedIndex += 1;
-    }
-    const ready =
-      fragment.done === true &&
-      evictedIndex === content.evictedDurableSequences.length &&
-      completedIndex === content.completedOverlayMessageIds.length;
     yield {
-      ...identity,
+      ...(identity.navigationVersion === undefined
+        ? {}
+        : { navigationVersion: identity.navigationVersion }),
+      sessionId: identity.sessionId,
+      generation: identity.generation,
+      hostEpoch: identity.hostEpoch,
       durableThrough: content.durableThrough,
       fragments: batchFragments,
-      evictedDurableSequences,
-      completedOverlayMessageIds,
-      hasOlder: content.hasOlder,
-      hasNewer: content.hasNewer,
+      ...(content.hasOlder === undefined ? {} : { hasOlder: content.hasOlder }),
+      ...(content.hasNewer === undefined ? {} : { hasNewer: content.hasNewer }),
       reset: content.reset && first,
-      ready,
+      ready: fragment.done === true,
     };
     first = false;
   }

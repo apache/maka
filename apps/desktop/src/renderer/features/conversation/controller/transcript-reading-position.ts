@@ -21,8 +21,13 @@ import type { TranscriptReadingAnchor } from '../model/session-ui-state.js';
 
 interface TranscriptRangeStore<Message> {
   readonly sessionId: string;
-  range(): { readonly sessionId: string; readonly hasNewer?: boolean };
-  sequenceForTurn(turnId: string): number | null;
+  range(): {
+    readonly sessionId: string;
+    readonly hasNewer?: boolean;
+    readonly generation?: string;
+    readonly hostEpoch?: string;
+  };
+  sequenceForTurn(turnId: string, edge?: 'first' | 'last'): number | null;
   newestDurableUserSequence(): number | null;
   snapshot(): { readonly messages: readonly Message[] };
 }
@@ -30,7 +35,6 @@ interface TranscriptRangeStore<Message> {
 interface TranscriptRangeController<Message> {
   readonly store: TranscriptRangeStore<Message>;
   loadAround(sequence: number): Promise<void>;
-  setReadingAnchor(sequence: number | null, readingTurnId?: string): Promise<void>;
 }
 
 interface SearchTarget {
@@ -213,87 +217,11 @@ export function refreshTranscriptTurnLandmarks<T>(options: {
   };
 }
 
-export interface TranscriptHistoryRequest {
-  readonly target: 'earlier' | 'later' | 'latest';
-  readonly anchorTurnId?: string;
-}
+export type TranscriptHistoryTarget = 'earlier' | 'later' | 'latest';
 
 export interface TranscriptHistoryPending {
   readonly sessionId: string;
-  readonly target: TranscriptHistoryRequest['target'];
-}
-
-export interface TranscriptHistoryGate {
-  pending: boolean;
-  active?: TranscriptHistoryRequest;
-  queued?: TranscriptHistoryRequest;
-}
-
-function updateTranscriptHistoryPending(
-  current: TranscriptHistoryPending | undefined,
-  sessionId: string,
-  request: TranscriptHistoryRequest | undefined,
-): TranscriptHistoryPending | undefined {
-  if (request) return { sessionId, target: request.target };
-  return current?.sessionId === sessionId ? undefined : current;
-}
-
-/** One gate per controller: the shell rebuilds the controller per Session, so
- *  keying by it keeps Sessions from queuing behind each other's loads. */
-export type TranscriptHistoryGates = WeakMap<object, TranscriptHistoryGate>;
-
-export async function loadTranscriptHistory(options: {
-  readonly gates: TranscriptHistoryGates;
-  readonly sessionId: string;
-  readonly request: TranscriptHistoryRequest;
-  readonly controller: {
-    loadBefore(maxBytes: number, anchorTurnId?: string): Promise<void>;
-    loadAfter(maxBytes: number, anchorTurnId?: string): Promise<void>;
-    loadLatest(): Promise<void>;
-  };
-  readonly maxBytes: number;
-  readonly isCurrent: () => boolean;
-  readonly setPending: (
-    update: (
-      current: TranscriptHistoryPending | undefined,
-    ) => TranscriptHistoryPending | undefined,
-  ) => void;
-  readonly onError: (error: unknown) => void;
-}): Promise<void> {
-  const { gates, controller, request } = options;
-  let gate = gates.get(controller) ?? { pending: false };
-  gates.set(controller, gate);
-  if (gate.pending) {
-    // The scroller asks on every reader movement; dropping the request behind
-    // an in-flight load strands the reader until they move again.
-    if (request.target === 'latest' || gate.queued?.target !== 'latest') gate.queued = request;
-    return;
-  }
-  gate.pending = true;
-  gate.active = request;
-  options.setPending((current) =>
-    updateTranscriptHistoryPending(current, options.sessionId, request));
-  try {
-    if (request.target === 'latest') await controller.loadLatest();
-    else await controller[request.target === 'earlier' ? 'loadBefore' : 'loadAfter'](
-      options.maxBytes, request.anchorTurnId,
-    );
-  } catch (error) {
-    if (options.isCurrent()) options.onError(error);
-  } finally {
-    gate.pending = false;
-    gate.active = undefined;
-    // A send, search or explicit return to latest may replace this gate while
-    // its page is in flight. Its cleanup cannot clear the replacement's state
-    // or replay an older queued direction after the new navigation.
-    if (gates.get(controller) === gate && options.isCurrent()) {
-      options.setPending((current) =>
-        updateTranscriptHistoryPending(current, options.sessionId, undefined));
-      const queued = gate.queued;
-      gate.queued = undefined;
-      if (queued) void loadTranscriptHistory({ ...options, request: queued });
-    }
-  }
+  readonly target: TranscriptHistoryTarget;
 }
 
 export function restoreSessionTranscriptRange<Message>(options: {
@@ -304,7 +232,6 @@ export function restoreSessionTranscriptRange<Message>(options: {
   readonly readingAnchor?: TranscriptReadingAnchor;
   readonly controller?: TranscriptRangeController<Message>;
   readonly isCurrent: (sessionId: string, controller: TranscriptRangeController<Message>) => boolean;
-  readonly isLiveTurn?: (sessionId: string, turnId: string) => boolean;
   readonly setReadingAnchor: (
     sessionId: string,
     anchor: TranscriptReadingAnchor | undefined,
@@ -347,12 +274,11 @@ export function restoreSessionTranscriptRange<Message>(options: {
     const residentSequence = currentTranscriptRange(controller, sessionId)
       ? controller.store.sequenceForTurn(target.turnId)
       : null;
-    const sequence = residentSequence ?? target.sequence;
-    // Admit intent before awaiting the open handle. Resident and live-only
-    // targets retain their range while invalidating older navigation requests.
-    admitted = residentSequence !== null || sequence === undefined
-      ? controller.setReadingAnchor(sequence ?? null, target.turnId)
-      : controller.loadAround(sequence);
+    // A resident target needs no page: the scroller reveals it from the window
+    // the Renderer already holds.
+    admitted = residentSequence !== null || target.sequence === undefined
+      ? Promise.resolve()
+      : controller.loadAround(target.sequence);
   } catch (error) {
     admitted = Promise.reject(error);
   }
@@ -366,7 +292,7 @@ export function restoreSessionTranscriptRange<Message>(options: {
         }
         return false;
       }
-      if (options.isLiveTurn?.(sessionId, target.turnId) || controller.store.snapshot().messages.some((message) =>
+      if (controller.store.snapshot().messages.some((message) =>
         message !== null && typeof message === 'object' &&
         'turnId' in message && message.turnId === target.turnId,
       )) {

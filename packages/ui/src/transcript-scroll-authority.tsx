@@ -51,6 +51,12 @@ export interface TranscriptScrollSnapshot {
   readonly pinned: boolean;
   /** Far enough up that the return-to-tail affordance earns its place. */
   readonly awayFromTail: boolean;
+  /**
+   * The Turn the reader is on: the first whose box crosses the scrollport's
+   * top edge. One reading line for every consumer — the bookmark that survives
+   * a session switch and the rail's current tick have to name the same Turn.
+   */
+  readonly readingTurnId: string | undefined;
 }
 
 export interface TranscriptScrollAuthority {
@@ -70,6 +76,12 @@ export interface TranscriptScrollAuthority {
    * consumers do not interpret raw wheel or scroll events themselves.
    */
   subscribeToReaderScroll(listener: (direction: 'up' | 'down', phase: 'input' | 'scroll') => void): () => void;
+  /**
+   * The reading position, measured now and published like any other move. For
+   * a caller that has just moved the viewport or the content itself and cannot
+   * wait for the scroll or resize that will report it.
+   */
+  measureReadingTurn(): string | undefined;
   subscribe(listener: () => void): () => void;
   getSnapshot(): TranscriptScrollSnapshot;
 }
@@ -95,15 +107,27 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   // Geometry belongs to a known input operation, never the other way around.
   // scrollend also covers smooth keyboard scrolling and touchpad inertia.
   let gesture: { top: number; direction?: 'up' | 'down' } | undefined;
-  let snapshot: TranscriptScrollSnapshot = { pinned, awayFromTail };
+  let readingTurnId: string | undefined;
+  let snapshot: TranscriptScrollSnapshot = { pinned, awayFromTail, readingTurnId };
   const listeners = new Set<() => void>();
   const readerListeners = new Set<(direction: 'up' | 'down', phase: 'input' | 'scroll') => void>();
   const distanceToTail = (): number =>
     root ? root.scrollHeight - root.scrollTop - root.clientHeight : 0;
+  const readTurn = (): string | undefined => {
+    if (!root) return undefined;
+    const top = root.getBoundingClientRect().top;
+    for (const turn of root.querySelectorAll<HTMLElement>('[data-turn-id]')) {
+      if (turn.getBoundingClientRect().bottom > top) {
+        return turn.getAttribute('data-turn-id') ?? undefined;
+      }
+    }
+    return undefined;
+  };
   const publish = (): void => {
     if (root) root.style.overflowAnchor = pinned ? 'none' : 'auto';
-    if (snapshot.pinned === pinned && snapshot.awayFromTail === awayFromTail) return;
-    snapshot = { pinned, awayFromTail };
+    if (snapshot.pinned === pinned && snapshot.awayFromTail === awayFromTail
+      && snapshot.readingTurnId === readingTurnId) return;
+    snapshot = { pinned, awayFromTail, readingTurnId };
     for (const listener of listeners) listener();
   };
   const writeToTail = (): void => {
@@ -189,6 +213,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       const onTouchEnd = (): void => { touchY = undefined; };
       const onScroll = (): void => {
         awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
+        readingTurnId = readTurn();
         if (gesture) {
           const delta = target.scrollTop - gesture.top;
           gesture.top = target.scrollTop;
@@ -247,20 +272,28 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       // outside Turns. Resize changes position only; it never changes intent.
       const box = new ResizeObserver(() => {
         if (pinned && !gesture) writeToTail();
-        else {
-          awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
-          publish();
-        }
+        else awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
+        // Turns mounting, unmounting and growing all reach this before they
+        // reach any scroll event, so this is where the reading position moves
+        // when the reader does not.
+        readingTurnId = readTurn();
+        publish();
       });
       const observeBox = (): void => {
         box.disconnect();
         box.observe(target);
         for (const child of target.children) box.observe(child);
       };
-      const childList = new MutationObserver(observeBox);
+      const childList = new MutationObserver(() => {
+        observeBox();
+        readingTurnId = readTurn();
+        publish();
+      });
       childList.observe(target, { childList: true });
       observeBox();
       if (pinned) writeToTail();
+      readingTurnId = readTurn();
+      publish();
       return () => {
         childList.disconnect();
         box.disconnect();
@@ -296,6 +329,11 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
     subscribeToReaderScroll(listener) {
       readerListeners.add(listener);
       return () => { readerListeners.delete(listener); };
+    },
+    measureReadingTurn() {
+      readingTurnId = readTurn();
+      publish();
+      return readingTurnId;
     },
     subscribe(listener) {
       listeners.add(listener);

@@ -2285,7 +2285,7 @@ export const SubmittedPromptSettlesWithoutReversing: Story = {
 /** Lets a play function drive props React owns. One story renders per page. */
 let appendTurn: (() => void) | undefined;
 
-/** Every `onLoadEarlierHistory` the transcript asked for, anchor turn first. */
+/** Every `onLoadEarlierHistory` the transcript asked for, oldest resident turn first. */
 const historyLoads: string[] = [];
 
 const HISTORY_BATCH = 4;
@@ -2313,7 +2313,13 @@ function SettledTranscriptHarness({
   return <ComposedShell chat={{ messages: transcriptTurns(0, turns + extra) }} composer={composer} />;
 }
 
-/** The history seam is two props: `hasOlderHistory`, and a loader that prepends. */
+/**
+ * The history seam is two props: `hasOlderHistory`, and a loader that prepends.
+ * The loader settles a frame later, the way a page fetched over IPC does — the
+ * transcript reads the band again as soon as a page settles, so a loader that
+ * settled before its turns were laid out would be asked for the next page
+ * against the geometry of the previous one.
+ */
 function HistoryHarness({ turns }: { turns: number }) {
   const [range, setRange] = useState({ from: 0, count: turns });
   useEffect(() => {
@@ -2324,21 +2330,34 @@ function HistoryHarness({ turns }: { turns: number }) {
       chat={{
         messages: transcriptTurns(range.from, range.count),
         hasOlderHistory: range.from > -HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE,
-        onLoadEarlierHistory: (anchorTurnId) => {
-          historyLoads.push(anchorTurnId ?? '(none)');
+        onLoadEarlierHistory: async () => {
+          historyLoads.push(firstResidentTurnId() ?? '(none)');
           setRange((current) => ({
             from: current.from - HISTORY_BATCH,
             count: current.count + HISTORY_BATCH,
           }));
+          await painted(2);
         },
       }}
     />
   );
 }
 
-/** The band inside which the transcript treats a reader move as asking. */
+/** The band inside which the transcript keeps history loaded around the reader. */
 function loadBand(): number {
   return Math.max(640, tailScroller().clientHeight * 2);
+}
+
+/** History stops arriving once the band above the reader is full. */
+async function historySettled(): Promise<void> {
+  await waitFor(() => {
+    const settled = tailMetrics();
+    expect(settled.scrollTop, JSON.stringify(settled)).toBeGreaterThan(loadBand());
+    expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+  }, { timeout: 10_000 });
+  const loads = historyLoads.length;
+  await painted(12);
+  expect(historyLoads.length, 'history kept arriving after the band was full').toBe(loads);
 }
 
 export const TailFollowsGrowthOutsideTurns: Story = {
@@ -2465,11 +2484,7 @@ export const DockAffordanceReturnsToTail: Story = {
 export const NestedScrollerNearHistoryBoundaryAsksForNothing: Story = {
   render: () => <HistoryHarness turns={7} />,
   play: async () => {
-    await waitFor(() => {
-      const settled = tailMetrics();
-      expect(settled.scrollTop, JSON.stringify(settled)).toBeLessThanOrEqual(loadBand());
-      expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
-    });
+    await historySettled();
 
     const nested = injectNestedScroller(messageList());
     await painted(6);
@@ -2850,19 +2865,24 @@ export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
  * assertions here are geometric.
  *
  * Tick count comes from `transcriptTurnIndex`, not from mounted Turns: the
- * transcript holds only the Host's active range and the index carries the rest
- * of the landmarks, so the rail gets all 64 ticks against 10 Turns. That is
- * what the Host does in production.
+ * transcript holds a slice of the history and the index carries the rest of the
+ * landmarks, so the rail gets all 64 ticks against 10 Turns. That is what the
+ * Host does in production.
  */
 const PROMPT_RAIL_TURN_COUNT = 120;
 
-/** `DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS`, restated to keep stories off preload. */
-const PROMPT_RAIL_ACTIVE_RANGE = 10;
+/**
+ * The Turns this story feeds the transcript — the tail a Session opens with,
+ * `DESKTOP_TRANSCRIPT_TAIL_MAX_TURNS`, restated to keep stories off preload.
+ * What the reader ends up mounting is the Renderer's own retained band; this
+ * story never scrolls far enough to grow past its own slice.
+ */
+const PROMPT_RAIL_TAIL_TURNS = 10;
 
 /** `MAX_PROMPT_RAIL_TICKS` in prompt-anchor-rail.tsx, which does not export it. */
 const PROMPT_RAIL_MAX_TICKS = 64;
 
-const PROMPT_RAIL_TAIL_RANGE_START = PROMPT_RAIL_TURN_COUNT - PROMPT_RAIL_ACTIVE_RANGE + 1;
+const PROMPT_RAIL_TAIL_RANGE_START = PROMPT_RAIL_TURN_COUNT - PROMPT_RAIL_TAIL_TURNS + 1;
 
 const promptRailIndex = Array.from({ length: PROMPT_RAIL_TURN_COUNT }, (_, offset) => ({
   turnId: `turn-scroll-${offset + 1}`,
@@ -2870,7 +2890,7 @@ const promptRailIndex = Array.from({ length: PROMPT_RAIL_TURN_COUNT }, (_, offse
   label: `第 ${offset + 1} 个问题`,
 }));
 
-const promptRailMessages = transcriptTurns(PROMPT_RAIL_TAIL_RANGE_START, PROMPT_RAIL_ACTIVE_RANGE);
+const promptRailMessages = transcriptTurns(PROMPT_RAIL_TAIL_RANGE_START, PROMPT_RAIL_TAIL_TURNS);
 
 function PromptRailHarness() {
   return (
@@ -3030,7 +3050,7 @@ export const ActiveTurnsKeepStableDomIdentities: Story = {
     const sourceCount = Number(
       messageList().getAttribute('data-turn-source-count'),
     );
-    expect(sourceCount).toBe(PROMPT_RAIL_ACTIVE_RANGE);
+    expect(sourceCount).toBe(PROMPT_RAIL_TAIL_TURNS);
     expect(document.querySelectorAll('[data-turn-id]')).toHaveLength(sourceCount);
 
     // Marked on the elements themselves: a remount drops the attribute, which
@@ -3132,7 +3152,7 @@ function PromptRailNavigationHarness() {
   return (
     <ComposedShell
       chat={{
-        messages: transcriptTurns(firstIndex, PROMPT_RAIL_ACTIVE_RANGE),
+        messages: transcriptTurns(firstIndex, PROMPT_RAIL_TAIL_TURNS),
         transcriptTurnIndex: promptRailIndex,
         onLoadTranscriptTurn: (target) => setFirstIndex(target.sequence),
       }}

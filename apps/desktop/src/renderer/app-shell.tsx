@@ -119,7 +119,6 @@ import type {
   DesktopSessionSummary,
   OnboardingSnapshot,
 } from '../preload/bridge-contract.js';
-import { DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES } from '../preload/transcript-contract.js';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
@@ -2334,7 +2333,6 @@ function AppShellContent({
         setTurnIndex={setTranscriptTurnIndex}
         listTurnLandmarks={(sessionId) => window.maka.sessions.listTurnLandmarks(sessionId)}
         setHistoryPending={setHistoryLoadPending}
-        historyPageBytes={DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES}
         onRestoreError={(error, sessionId) => sessionUiController.setMessageLoadErrorBySession((current) => ({
           ...current,
           [sessionId]: localizedShellErrorMessage(error, desktopConversationCopy.actions.operationFailedFallback, uiLocale),
@@ -2691,7 +2689,8 @@ function AppShellContent({
                 hasOlderHistory={activeTranscriptRange?.hasOlder}
                 hasNewerHistory={activeTranscriptRange?.hasNewer}
                 historyLoadPending={historyLoadPending}
-                onLoadHistory={(target, anchorTurnId) => transcriptReadingCommands.current?.loadHistory(target, anchorTurnId)}
+                onLoadHistory={(target) => transcriptReadingCommands.current?.loadHistory(target)}
+                onRetainWindow={(window) => transcriptReadingCommands.current?.retainWindow(window)}
                 liveContentSeedRevision={liveContent.liveContentSeedRevision(activeEventSeed, activeId)}
                 messages={messages}
                 transientMessages={transientMessages}
