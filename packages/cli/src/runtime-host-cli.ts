@@ -142,6 +142,7 @@ export type RuntimeHostCliCommand =
       bindPairingToClient?: true;
       repairRootAfterRemount?: true;
       updateExisting?: true;
+      reuseExistingEnvironment?: true;
       allowInterruptActiveTasks?: true;
       clientDataRoot?: string;
       rootPath?: string;
@@ -239,6 +240,7 @@ export type RuntimeHostCliCommand =
       operatorDeploymentId?: string;
       expectedTarget: RuntimeHostManagedServiceTarget;
       expectedHost?: RuntimeHostExpectedHost;
+      expectedConfigFingerprint?: string;
       selector?: RuntimeHostUpdateSelector;
       allowManualUpdate?: true;
       allowInterruptActiveTasks?: true;
@@ -703,6 +705,7 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
   let bindPairingToClient = false;
   let repairRootAfterRemount = false;
   let updateExisting = false;
+  let reuseExistingEnvironment = false;
   let allowInterruptActiveTasks = false;
   let clientDataRoot: string | undefined;
   let enableDirectPeer = false;
@@ -756,6 +759,10 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
         if (allowInterruptActiveTasks) return error('Duplicate --allow-interrupt-active-tasks');
         allowInterruptActiveTasks = true;
       },
+      '--reuse-existing-environment': () => {
+        if (reuseExistingEnvironment) return error('Duplicate --reuse-existing-environment');
+        reuseExistingEnvironment = true;
+      },
       '--update-existing': () => {
         if (updateExisting) return error('Duplicate --update-existing');
         updateExisting = true;
@@ -763,6 +770,18 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
     },
   });
   if ('kind' in options) return options;
+  if (
+    reuseExistingEnvironment &&
+    ((lifecycle as string) !== 'on_demand' ||
+      updateExisting ||
+      enableDirectPeer ||
+      deferPairingCommit ||
+      bindPairingToClient)
+  ) {
+    return error(
+      '--reuse-existing-environment requires on-demand local setup without update or remote pairing options',
+    );
+  }
   if (allowInterruptActiveTasks && !updateExisting) {
     return error('--allow-interrupt-active-tasks requires --update-existing');
   }
@@ -786,6 +805,7 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
     ...(bindPairingToClient ? { bindPairingToClient: true } : {}),
     ...(repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
     ...(updateExisting ? { updateExisting: true } : {}),
+    ...(reuseExistingEnvironment ? { reuseExistingEnvironment: true } : {}),
     ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
     ...(clientDataRoot ? { clientDataRoot } : {}),
     ...(enableDirectPeer ? { directPeer: { coordinationRelays } } : {}),
@@ -925,7 +945,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
             },
           }
         : {}),
-      ...(action === 'configure'
+      ...(action === 'configure' || action === 'update'
         ? {
             '--expected-config-fingerprint': (value: string) => {
               if (expectedConfigFingerprint !== undefined) {
@@ -1035,6 +1055,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
         : {}),
       expectedTarget: options.expectedTarget!,
       ...(expectedHost ? { expectedHost } : {}),
+      ...(expectedConfigFingerprint ? { expectedConfigFingerprint } : {}),
       ...(selector ? { selector } : {}),
       ...(allowManualUpdate ? { allowManualUpdate: true } : {}),
       ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),

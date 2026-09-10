@@ -465,6 +465,7 @@ export async function runMakaCli(
         bindPairingToClient: command.bindPairingToClient,
         ...(command.repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
         updateExisting: command.updateExisting,
+        reuseExistingEnvironment: command.reuseExistingEnvironment,
         allowInterruptActiveTasks: command.allowInterruptActiveTasks,
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),
         ...(command.projectDirectoryRoots
@@ -575,6 +576,9 @@ export async function runMakaCli(
           selector: command.selector,
           expectedTarget: command.expectedTarget,
           ...(command.expectedHost ? { expectedHost: command.expectedHost } : {}),
+          ...(command.expectedConfigFingerprint
+            ? { expectedConfigFingerprint: command.expectedConfigFingerprint }
+            : {}),
           ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
           ...(command.operatorDeploymentId
             ? { operatorDeploymentId: command.operatorDeploymentId }
@@ -593,6 +597,9 @@ export async function runMakaCli(
         version,
         expectedTarget: command.expectedTarget,
         ...(command.expectedHost ? { expectedHost: command.expectedHost } : {}),
+        ...(command.expectedConfigFingerprint
+          ? { expectedConfigFingerprint: command.expectedConfigFingerprint }
+          : {}),
         ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
         ...(command.operatorDeploymentId
           ? { operatorDeploymentId: command.operatorDeploymentId }

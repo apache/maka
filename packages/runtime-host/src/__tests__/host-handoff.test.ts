@@ -528,3 +528,53 @@ test('cancellation does not abandon an in-flight deployment transaction', async 
   await assert.rejects(running, /cancelled/);
   assert.equal(settled, true);
 });
+
+test('managed handoff rechecks without mutation and requests interruption only after safe admission refuses', async () => {
+  const ui = surfaceHarness();
+  const policies: string[] = [];
+  let observations = 0;
+  let ready = false;
+  const running = runHostHandoff({
+    openSurface: ui.openSurface,
+    pollIntervalMs: 1,
+    observe: async () => {
+      observations += 1;
+      if (ready) return { kind: 'ready', value: resource('connected') };
+      return blocked({
+        ...base,
+        manualRecheck: true,
+        activity: idle,
+        packageChange: { current: '0.2.0', target: '0.3.0' },
+        replacement: {
+          kind: 'replace',
+          canReplaceIdle: true,
+          canInterrupt: true,
+          requiresExplicitSelection: true,
+          execute: async (policy, _progress, consent) => {
+            assert.equal(consent, 'explicit');
+            policies.push(policy);
+            if (policy === 'refuse_active_work') return { kind: 'active_work' };
+            ready = true;
+            return { kind: 'completed' };
+          },
+        },
+      });
+    },
+  });
+  const initial = await ui.view();
+  assert.equal(initial.reason, 'replacement_required');
+  assert.match(formatHostHandoff(initial, 'zh-CN').detail, /0\.2\.0 → 0\.3\.0/u);
+  assert.deepEqual(initial.actions, ['cancel', 'retry', 'replace']);
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.equal(observations, 1);
+  ui.choose(initial, 'retry');
+  const checked = await ui.view((view) => view.revision !== initial.revision);
+  assert.deepEqual(policies, []);
+  ui.choose(checked, 'replace');
+  const busy = await ui.view((view) => view.state === 'attention' && view.reason === 'busy');
+  assert.deepEqual(policies, ['refuse_active_work']);
+  assert.ok(busy.actions.includes('interrupt'));
+  ui.choose(busy, 'interrupt');
+  assert.equal((await running).value, 'connected');
+  assert.deepEqual(policies, ['refuse_active_work', 'interrupt_active_work']);
+});

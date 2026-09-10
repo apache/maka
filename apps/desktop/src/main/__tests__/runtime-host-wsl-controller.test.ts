@@ -33,6 +33,7 @@ import {
 import {
   runDesktopRuntimeHostWslManagement,
   runDesktopRuntimeHostWslSetup,
+  runDesktopRuntimeHostWslUpdate,
 } from '../runtime-host-wsl-controller.js';
 
 const OPERATOR = {
@@ -213,4 +214,72 @@ test('released WSL onboarding cannot authorize replacement or interruption', asy
     },
   }), /Use the update workflow/u);
   assert.doesNotMatch(command, /--update-existing|--allow-interrupt-active-tasks/u);
+  assert.match(command, /--reuse-existing-environment/u);
+});
+
+
+test('WSL update cancellation closes retirement input without killing the transaction', async () => {
+  const abort = new AbortController();
+  let finish!: () => void;
+  let stdin!: PassThrough;
+  let killed = false;
+  let launch: readonly string[] = [];
+  const running = runDesktopRuntimeHostWslUpdate({
+    distribution: 'Ubuntu', setupPackage: { kind: 'npm', specifier: 'maka-agent@0.3.0' },
+    expectedTarget: { serviceId: 'a'.repeat(64), rootId: 'a'.repeat(64), rootPath: '/state', deploymentId: '00000000-0000-4000-8000-000000000001' },
+    expectedConfigFingerprint: `sha256:${'b'.repeat(64)}`,
+    expectedHost: { hostEpoch: 'old-host', pid: 42 },
+    allowInterruptActiveTasks: false, signal: abort.signal,
+  }, () => {}, {
+    wslExecutable: 'wsl.exe',
+    processFactory: (_executable, args) => {
+      launch = args;
+      const child = new EventEmitter() as ChildProcessWithoutNullStreams;
+      stdin = new PassThrough();
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      Object.assign(child, { stdin, stdout, stderr, kill: () => { killed = true; return true; } });
+      finish = () => {
+        stdout.end(); stderr.end(); child.emit('close', 1, null);
+      };
+      return child;
+    },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(stdin.writableEnded, false);
+  assert.match(launch.at(-1)!, /--expected-config-fingerprint/u);
+  assert.match(launch.at(-1)!, /--expected-host-json/u);
+  assert.doesNotMatch(launch.at(-1)!, /--allow-interrupt-active-tasks/u);
+  let settled = false;
+  const outcome = running.finally(() => { settled = true; });
+  const rejected = assert.rejects(outcome, /abort/iu);
+  abort.abort();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(stdin.writableEnded, true);
+  assert.equal(killed, false);
+  assert.equal(settled, false);
+  finish();
+  await rejected;
+});
+
+
+test('released WSL discovery accepts an existing binding without a credential or package mutation', async () => {
+  const existing = {
+    schemaVersion: 1 as const, sequence: 0, kind: 'existing_environment' as const,
+    version: '0.3.0', serviceId: 'a'.repeat(64), rootId: 'a'.repeat(64), rootPath: '/state',
+    deploymentId: '00000000-0000-4000-8000-000000000001', operator: OPERATOR,
+  };
+  const result = await runDesktopRuntimeHostWslSetup({
+    distribution: 'Ubuntu', setupPackage: { kind: 'npm', specifier: 'maka-agent@0.2.0' }, principalId: 'desktop:client',
+  }, () => {}, undefined, {
+    wslExecutable: 'wsl.exe',
+    processFactory: () => {
+      const child = new EventEmitter() as ChildProcessWithoutNullStreams;
+      const stdout = new PassThrough(); const stderr = new PassThrough();
+      Object.assign(child, { stdin: new PassThrough(), stdout, stderr, kill: () => true });
+      process.nextTick(() => { stdout.end(encodeRuntimeHostSetupFrame(existing)); stderr.end(); child.emit('close', 0, null); });
+      return child;
+    },
+  });
+  assert.deepEqual(result, existing);
 });

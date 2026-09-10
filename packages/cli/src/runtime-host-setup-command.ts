@@ -34,6 +34,7 @@ import {
   encodeRuntimeHostSetupFrame,
   isSha512PackageIntegrity,
   resolveRuntimeHostManagedDeployment,
+  resolveRuntimeHostManagedDeploymentAuthority,
   runtimeHostManagedOperatorCommand,
   RUNTIME_HOST_SETUP_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES,
@@ -140,6 +141,7 @@ export interface RuntimeHostSetupCliOptions {
   readonly bindPairingToClient?: boolean;
   readonly repairRootAfterRemount?: true;
   readonly updateExisting?: boolean;
+  readonly reuseExistingEnvironment?: boolean;
   readonly allowInterruptActiveTasks?: boolean;
   readonly rootPath?: string;
   readonly projectDirectoryRoots?: readonly {
@@ -284,7 +286,7 @@ export async function runRuntimeHostSetupCli(
               () =>
                 withRuntimeHostManagedServiceLifecycleLock(
                   controlRoot,
-                  () => runRuntimeHostSetupLocked(options, deps, emit),
+                  () => runRuntimeHostSetupLocked(options, deps, emit, rootId),
                   SETUP_LOCK_TIMEOUT_MS,
                 ),
               SETUP_LOCK_TIMEOUT_MS,
@@ -334,7 +336,37 @@ async function runRuntimeHostSetupLocked(
   options: RuntimeHostSetupCliOptions,
   deps: RuntimeHostSetupDeps,
   emit: SetupEmitter,
+  rootId: string,
 ): Promise<void> {
+  if (options.reuseExistingEnvironment) {
+    if (options.lifecycle !== 'on_demand' || options.updateExisting) {
+      throw new RuntimeHostSetupError(
+        'invalid_setup',
+        'Environment discovery cannot replace a deployment',
+      );
+    }
+    const existing = await resolveRuntimeHostManagedDeploymentAuthority(rootId);
+    if (existing) {
+      const { config, capability } = await resolveRuntimeHostManagedDeployment(rootId);
+      assertCanonicalSetupTarget(options.expectedTarget, rootId, capability.canonicalPath);
+      assertExpectedDeploymentGeneration(options.expectedTarget, config);
+      // The binding comes from canonical authority. The installed operator validates
+      // its own projection when connected; discovery must not rewrite an older launcher.
+      emit({
+        kind: 'existing_environment',
+        version: config.launch.package.version,
+        serviceId: rootId,
+        deploymentId: config.deploymentId,
+        rootId,
+        rootPath: capability.canonicalPath,
+        operator: runtimeHostManagedOperatorCommand(
+          config,
+          process.platform === 'win32' ? 'win32' : 'posix',
+        ),
+      });
+      return;
+    }
+  }
   if (options.lifecycle === 'on_demand') {
     await runRuntimeHostOnDemandSetupLocked(options, deps, emit);
     return;
@@ -874,6 +906,7 @@ async function runRuntimeHostOnDemandSetupLocked(
                 : 'install',
           ...(current ? { current } : {}),
           desired: desiredConfig,
+          retainDesiredOnActivationFailure: Boolean(current && packageChanged),
           ...(legacyToMigrate && legacyBackend ? { retirementSupervisor: legacyBackend } : {}),
           ...(legacyToMigrate && legacyBackend
             ? { activatePrevious: () => legacyBackend.start() }
@@ -1260,6 +1293,10 @@ type SetupEmitter = (
   frame:
     | Omit<Extract<RuntimeHostSetupFrame, { kind: 'progress' }>, 'schemaVersion' | 'sequence'>
     | Omit<Extract<RuntimeHostSetupFrame, { kind: 'complete' }>, 'schemaVersion' | 'sequence'>
+    | Omit<
+        Extract<RuntimeHostSetupFrame, { kind: 'existing_environment' }>,
+        'schemaVersion' | 'sequence'
+      >
     | Omit<Extract<RuntimeHostSetupFrame, { kind: 'error' }>, 'schemaVersion' | 'sequence'>,
 ) => void;
 
@@ -1277,7 +1314,7 @@ function createEmitter(json: boolean, deps: RuntimeHostSetupDeps): SetupEmitter 
     }
     if (frame.kind === 'progress') {
       deps.writeOutput(`${humanPhase(frame.phase)}\n`);
-    } else if (frame.kind === 'complete') {
+    } else if (frame.kind === 'complete' || frame.kind === 'existing_environment') {
       deps.writeOutput(`${JSON.stringify(frame, null, 2)}\n`);
     } else {
       deps.writeError(`${frame.error.message}\n`);
