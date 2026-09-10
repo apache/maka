@@ -217,13 +217,6 @@ export function refreshTranscriptTurnLandmarks<T>(options: {
   };
 }
 
-export type TranscriptHistoryTarget = 'earlier' | 'later' | 'latest';
-
-export interface TranscriptHistoryPending {
-  readonly sessionId: string;
-  readonly target: TranscriptHistoryTarget;
-}
-
 export function restoreSessionTranscriptRange<Message>(options: {
   readonly lifecycle: TranscriptRestoreLifecycle;
   readonly sessionId?: string;

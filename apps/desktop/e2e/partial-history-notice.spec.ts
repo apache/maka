@@ -24,19 +24,18 @@ const TURN = '.maka-transcript-turn';
 /** Turns the partial-history fixture seeds. */
 const PARTIAL_HISTORY_TURN_COUNT = 18;
 
-test('bounded transcript ranges expose only their truthful boundary gaps', async ({
+test('a bounded transcript range reaches its whole history without a control to ask', async ({
   partialHistoryWindow: page,
 }) => {
   await page.setViewportSize({ width: 1_400, height: 800 });
 
-  const olderGap = page.locator('[data-transcript-gap="older"]');
-  const newerGap = page.locator('[data-transcript-gap="newer"]');
-  await expect(olderGap).toBeVisible();
-  await expect(olderGap.getByRole('button', {
-    name: /^(?:加载较早消息|Load earlier messages)$/,
-  })).toBeVisible();
-  await expect(newerGap).toHaveCount(0);
+  // The window is bounded, and its boundaries are not something the reader is
+  // shown or has to act on: the transcript renders Turns and nothing else.
+  await expect(page.locator(TURN).first()).toBeVisible();
+  await expect(page.locator(GAP)).toHaveCount(0);
+  await expect(page.locator('[data-transcript-gap]')).toHaveCount(0);
   await expect(page.locator('.maka-transcript-history-controls')).toHaveCount(0);
+  expect(await page.locator(TURN).count()).toBeLessThan(PARTIAL_HISTORY_TURN_COUNT);
 
   const oldestPrompt = page.locator(
     '.maka-prompt-rail-tick[data-prompt-turn-id="turn-partial-history-1"]',
@@ -44,42 +43,24 @@ test('bounded transcript ranges expose only their truthful boundary gaps', async
   await expect(oldestPrompt).toBeVisible();
   await oldestPrompt.click();
 
-  const firstTurn = page.locator('[data-turn-id="turn-partial-history-1"]');
-  await expect(firstTurn).toBeVisible();
+  await expect(page.locator('[data-turn-id="turn-partial-history-1"]')).toBeVisible();
   // Where the jump landed, read from the reading position rather than from
   // `data-search-highlight`: that highlight clears itself 2.2s after the
   // command lands, so waiting for the Turn to mount and then asserting it
   // fails whenever loading the page around it takes longer than the flash —
   // measured here as a 3s pass turning into an 18s timeout under load.
   await expect(oldestPrompt).toHaveAttribute('data-active', 'true');
-  await expect(olderGap).toHaveCount(0);
-  await expect(newerGap).toBeVisible();
-  await expect(newerGap.getByRole('button', {
-    name: /^(?:加载较新消息|Load newer messages)$/,
-  })).toBeVisible();
-  await expect(page.locator(GAP)).toHaveCount(1);
   // A jump lands on its own page, not on the whole history.
   expect(await page.locator(TURN).count()).toBeLessThan(PARTIAL_HISTORY_TURN_COUNT);
+  await expect(page.locator('[data-transcript-gap]')).toHaveCount(0);
 
-  const loadNewer = newerGap.getByRole('button', {
-    name: /^(?:加载较新消息|Load newer messages)$/,
-  });
-  await loadNewer.click();
-  await expect(page.locator('[data-turn-id="turn-partial-history-2"]')).toBeVisible();
-  await expect(olderGap).toHaveCount(0);
-  await expect(newerGap).toBeVisible();
-  await expect(loadNewer).toBeEnabled();
-
-  await loadNewer.click();
-  await expect(page.locator('[data-turn-id="turn-partial-history-3"]')).toBeVisible();
-  // Paging newer used to push the oldest Turn out of a Host-bounded range and
-  // put an older gap back. The Renderer owns the window now and keeps what the
-  // reader can still reach, so the only truthful boundary is still the newer one.
-  await expect(olderGap).toHaveCount(0);
-  await expect(newerGap).toBeVisible();
-  await expect(page.locator(GAP)).toHaveCount(1);
-  await expect(loadNewer).toBeEnabled();
-  await expect(oldestPrompt).toBeVisible();
+  // The newer side of the jump fills on its own as the reader moves into it.
+  await page.mouse.move(700, 400);
+  await expect(async () => {
+    await page.mouse.wheel(0, 400);
+    await expect(page.locator('[data-turn-id="turn-partial-history-3"]')).toBeVisible();
+  }).toPass({ timeout: 30_000 });
+  await expect(page.locator('[data-transcript-gap]')).toHaveCount(0);
 
   const returnToLatest = page.getByRole('button', {
     name: /^(?:滚动主对话到底部|Scroll main conversation to bottom)$/,
@@ -91,7 +72,6 @@ test('bounded transcript ranges expose only their truthful boundary gaps', async
   // the paging above, and measured past the suite's 10s expect timeout here.
   await expect(page.locator(`[data-turn-id="turn-partial-history-${PARTIAL_HISTORY_TURN_COUNT}"]`))
     .toBeVisible({ timeout: 30_000 });
-  await expect(newerGap).toHaveCount(0);
   await expect(oldestPrompt).toBeVisible();
   expect(await page.locator(TURN).count()).toBeLessThan(PARTIAL_HISTORY_TURN_COUNT);
 });

@@ -28,8 +28,6 @@ import {
   prepareTranscriptForSend,
   refreshTranscriptTurnLandmarks,
   restoreSessionTranscriptRange,
-  type TranscriptHistoryPending,
-  type TranscriptHistoryTarget,
 } from './transcript-reading-position.js';
 
 type RangeController = NonNullable<Parameters<typeof restoreSessionTranscriptRange<StoredMessage>>[0]['controller']> & {
@@ -51,7 +49,7 @@ interface TurnIndex {
 export interface TranscriptReadingPositionCommands {
   prepareSend(sessionId: string): Promise<boolean>;
   captureAnchor(turnId?: string): void;
-  loadHistory(target: TranscriptHistoryTarget): Promise<void>;
+  returnToLatest(): Promise<void>;
   prefetchHistory(edge: 'older' | 'newer'): Promise<boolean>;
   retainWindow(window: { firstTurnId: string; lastTurnId: string }): void;
 }
@@ -71,7 +69,6 @@ export function TranscriptReadingPositionController(props: {
   turnIndex: TurnIndex | undefined;
   setTurnIndex: Dispatch<SetStateAction<TurnIndex | undefined>>;
   listTurnLandmarks: Parameters<typeof refreshTranscriptTurnLandmarks<TurnIndex['turns'][number]>>[0]['list'];
-  setHistoryPending: Dispatch<SetStateAction<TranscriptHistoryPending | undefined>>;
   onRestoreError(error: unknown, sessionId: string): void;
   onNavigationError(error: unknown, sessionId: string): void;
 }) {
@@ -81,9 +78,6 @@ export function TranscriptReadingPositionController(props: {
   >(undefined);
   const isCurrent = (sessionId: string, controller: object) =>
     props.currentSessionId.current === sessionId && props.rangeController.current === controller;
-  const cancelHistory = (sessionId: string) => {
-    props.setHistoryPending((current) => current?.sessionId === sessionId ? undefined : current);
-  };
   const cancel = (sessionId: string, clearAnchor = false) => {
     lifecycle.cancel(sessionId);
     if (props.searchTarget?.sessionId === sessionId) props.clearSearchTarget();
@@ -94,7 +88,6 @@ export function TranscriptReadingPositionController(props: {
   };
   useImperativeHandle(props.commands, () => ({
     prepareSend(sessionId) {
-      cancelHistory(sessionId);
       return prepareTranscriptForSend({
         sessionId, currentSessionId: props.currentSessionId,
         controller: props.rangeController, cancel,
@@ -127,10 +120,11 @@ export function TranscriptReadingPositionController(props: {
     },
     /**
      * Fills the window at an edge the reader is approaching. Deliberately not
-     * `loadHistory`: that one cancels restoration and clears the search target,
-     * because a reader who asks for history has decided where to be. Filling
-     * decides nothing, so it must leave an outstanding jump alone — the page it
-     * is waiting for can still be in flight — and it answers whether the window
+     * `returnToLatest`: that one cancels restoration and clears the search
+     * target, because a reader who asks to go somewhere has decided where to
+     * be. Filling decides nothing, so it must leave an outstanding jump alone —
+     * the page it is waiting for can still be in flight — and it answers
+     * whether the window
      * moved, so its caller can tell a filled window from a read that failed or
      * was refused as stale and would fail again unchanged.
      */
@@ -143,21 +137,15 @@ export function TranscriptReadingPositionController(props: {
       else await controller.loadAfter();
       return controller.store.snapshot() !== before;
     },
-    async loadHistory(target) {
+    async returnToLatest() {
       const controller = props.rangeController.current;
       const { sessionId } = props;
       if (!controller || !sessionId || !isCurrent(sessionId, controller)) return;
-      cancel(sessionId, target === 'latest');
-      props.setHistoryPending({ sessionId, target });
+      cancel(sessionId, true);
       try {
-        if (target === 'latest') await controller.loadLatest();
-        else if (target === 'earlier') await controller.loadBefore();
-        else await controller.loadAfter();
+        await controller.loadLatest();
       } catch (error) {
         if (isCurrent(sessionId, controller)) props.onNavigationError(error, sessionId);
-      } finally {
-        props.setHistoryPending((current) =>
-          current?.sessionId === sessionId && current.target === target ? undefined : current);
       }
     },
   }));
@@ -177,11 +165,6 @@ export function TranscriptReadingPositionController(props: {
   useEffect(() => () => {
     lifecycle.deactivate();
   }, [props.sessionId, props.profileId, lifecycle]);
-  useEffect(() => {
-    if (props.searchTarget) {
-      cancelHistory(props.searchTarget.sessionId);
-    }
-  }, [props.searchTarget?.nonce]);
   useEffect(() => restoreSessionTranscriptRange({
     lifecycle,
     sessionId: props.sessionId,

@@ -22,5 +22,4 @@ export {
   prepareTranscriptForSend,
   refreshTranscriptTurnLandmarks,
   restoreSessionTranscriptRange,
-  type TranscriptHistoryPending,
 } from './controller/transcript-reading-position.js';

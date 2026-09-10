@@ -29,7 +29,6 @@ import {
   createAppShellSessionUiStateController,
   TranscriptReadingPositionController,
   type TranscriptReadingPositionCommands,
-  type TranscriptHistoryPending,
 } from '../../renderer/features/conversation/index.js';
 import {
   createTranscriptRestoreLifecycle,
@@ -139,60 +138,40 @@ test('an overlay-only bookmark stays available without loading another range', a
   }
 });
 
-test('a history load holds its pending state until the page settles', async () => {
-  const fixture = controllerFixture();
-  const older = deferred<void>();
-  const calls: string[] = [];
-  fixture.controller.loadBefore = async () => { calls.push('older'); await older.promise; };
-  await fixture.render();
-
-  const loading = fixture.commands.current!.loadHistory('earlier');
-  assert.deepEqual(calls, ['older']);
-  assert.equal(fixture.pending(), 'session-1');
-  older.resolve();
-  await loading;
-  assert.equal(fixture.pending(), undefined);
-});
-
-test('a failed history load reports to its own Session and clears its pending state', async () => {
+test('a failed return to the tail reports to its own Session', async () => {
   const fixture = controllerFixture();
   const errors: string[] = [];
   fixture.props.onNavigationError = (error) => { errors.push(String(error)); };
-  fixture.controller.loadAfter = async () => { throw new Error('later read failed'); };
+  fixture.controller.loadLatest = async () => { throw new Error('tail read failed'); };
   await fixture.render();
 
-  await fixture.commands.current!.loadHistory('later');
-  assert.deepEqual(errors, ['Error: later read failed']);
-  assert.equal(fixture.pending(), undefined);
+  await fixture.commands.current!.returnToLatest();
+  assert.deepEqual(errors, ['Error: tail read failed']);
 });
 
-test('an old Session history load cannot report or clear the new Session state', async () => {
+test('an old Session return to the tail cannot report against the new Session', async () => {
   const fixture = controllerFixture();
   const first = deferred<void>();
   fixture.props.onNavigationError = () => assert.fail('a superseded Session must not report');
-  fixture.controller.loadBefore = () => first.promise;
+  fixture.controller.loadLatest = () => first.promise;
   await fixture.render();
-  const loadingFirst = fixture.commands.current!.loadHistory('earlier');
-  assert.equal(fixture.pending(), 'session-1');
+  const returningFirst = fixture.commands.current!.returnToLatest();
 
   fixture.props.currentSessionId.current = 'session-2';
   fixture.props.sessionId = 'session-2';
   fixture.props.rangeController.current = {
     ...fixture.controller,
     store: { ...fixture.controller.store, sessionId: 'session-2', range: () => ({ sessionId: 'session-2' }) },
-    loadBefore: async () => {},
+    loadLatest: async () => {},
   };
   await fixture.render();
-  const loadingSecond = fixture.commands.current!.loadHistory('earlier');
-  await loadingSecond;
-  assert.equal(fixture.pending(), undefined);
+  await fixture.commands.current!.returnToLatest();
 
-  first.reject(new Error('superseded history request failed'));
-  await loadingFirst;
-  assert.equal(fixture.pending(), undefined);
+  first.reject(new Error('superseded tail request failed'));
+  await returningFirst;
 });
 
-test('filling an edge leaves an outstanding jump and its pending state alone', async () => {
+test('filling an edge leaves an outstanding jump alone', async () => {
   const fixture = controllerFixture();
   let cleared = 0;
   fixture.props.searchTarget = { sessionId: 'session-1', nonce: 1, turnId: 'turn-1' } as never;
@@ -205,7 +184,6 @@ test('filling an edge leaves an outstanding jump and its pending state alone', a
   // towards decides nothing, so it must not answer for the reader.
   await assert.rejects(fixture.commands.current!.prefetchHistory('older'), failure);
   assert.equal(cleared, 0);
-  assert.equal(fixture.pending(), undefined);
 });
 
 test('retaining the reader window trims the store to the visible Turns', async () => {
@@ -240,7 +218,6 @@ function controllerFixture() {
       snapshot: () => ({ messages: [] }),
     },
   };
-  let pending: TranscriptHistoryPending | undefined;
   const props: ComponentProps<typeof TranscriptReadingPositionController> = {
     commands,
     sessionId: 'session-1',
@@ -253,12 +230,11 @@ function controllerFixture() {
     turnIndex: undefined,
     setTurnIndex: () => {},
     listTurnLandmarks: async () => ({ throughSequence: null, landmarks: [] }),
-    setHistoryPending: (next) => { pending = typeof next === 'function' ? next(pending) : next; },
     onRestoreError: (error) => assert.fail(String(error)),
     onNavigationError: (error) => assert.fail(String(error)),
   };
   return {
-    commands, controller, props, pending: () => pending?.sessionId,
+    commands, controller, props,
     render: () => act(() => root.render(createElement(TranscriptReadingPositionController, props))),
   };
 }

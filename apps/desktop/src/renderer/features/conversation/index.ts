@@ -27,9 +27,6 @@ export const transcriptReadingPosition = {
   restoreTarget: transcriptRestoreTarget,
 };
 
-export type {
-  TranscriptHistoryPending,
-} from './controller/transcript-reading-position.js';
 export {
   TranscriptReadingPositionController,
   type TranscriptReadingPositionCommands,

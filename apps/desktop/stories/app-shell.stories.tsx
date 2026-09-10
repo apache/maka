@@ -1972,50 +1972,22 @@ function PartialHistoryHarness() {
         onLoadTranscriptTurn: () => setReadingEarlier(true),
         hasOlderHistory: !readingEarlier,
         hasNewerHistory: readingEarlier,
-        onLoadLaterHistory: () => setReadingEarlier(false),
+        onPrefetchHistory: async (edge) => {
+          if (edge === 'newer') setReadingEarlier(false);
+          return true;
+        },
       }}
     />
   );
 }
 
-function historyGapPresentation(gap: HTMLElement) {
-  const style = getComputedStyle(gap);
-  const box = gap.getBoundingClientRect();
-  const composer = document.querySelector<HTMLElement>('.maka-composer-astryx');
-  const frame = gap.closest<HTMLElement>('.appFrame');
-  if (!composer || !frame) throw new Error('The shell geometry is incomplete');
-  const composerBox = composer.getBoundingClientRect();
-  const frameBox = frame.getBoundingClientRect();
-  return {
-    backgroundColor: style.backgroundColor,
-    borderWidths: [
-      style.borderTopWidth,
-      style.borderRightWidth,
-      style.borderBottomWidth,
-      style.borderLeftWidth,
-    ],
-    display: style.display,
-    flexWrap: style.flexWrap,
-    justifyContent: style.justifyContent,
-    widthDelta: Math.abs(box.width - composerBox.width),
-    centerDelta: Math.abs(
-      (box.left + box.right) / 2 - (composerBox.left + composerBox.right) / 2,
-    ),
-    fitsFrame: box.left >= frameBox.left && box.right <= frameBox.right,
-    clientWidth: gap.clientWidth,
-    scrollWidth: gap.scrollWidth,
-    hasHorizontalOverflow: gap.scrollWidth > gap.clientWidth,
-  };
-}
 
-// Real path: selecting a prompt outside the loaded transcript range, then
-// loading the newer range. Each boundary stays a quiet reading-column
-// control and every inactive prompt-rail tick uses one neutral treatment.
+// Real path: selecting a prompt outside the loaded transcript range. The
+// transcript shows Turns and nothing else — a range boundary is not a thing to
+// read — and every inactive prompt-rail tick uses one neutral treatment.
 export const PartialHistoryNotice: Story = {
   render: () => <PartialHistoryHarness />,
   play: async ({ canvasElement }) => {
-    expect(canvasElement.querySelector('[data-transcript-gap="older"]')).not.toBeNull();
-    expect(canvasElement.querySelector('[data-transcript-gap="newer"]')).toBeNull();
     const firstPrompt = canvasElement.querySelector<HTMLButtonElement>(
       '.maka-prompt-rail-tick[data-prompt-turn-id="turn-scroll-1"]',
     );
@@ -2023,22 +1995,9 @@ export const PartialHistoryNotice: Story = {
     firstPrompt.click();
 
     await waitFor(() => {
-      expect(canvasElement.querySelector('[data-transcript-gap="newer"]')).not.toBeNull();
+      expect(canvasElement.querySelector('[data-turn-id="turn-scroll-1"]')).not.toBeNull();
     });
-    const gap = canvasElement.querySelector<HTMLElement>('[data-transcript-gap="newer"]');
-    if (!gap) throw new Error('The newer transcript gap did not render');
-    expect(gap.textContent).toContain('下方还有未加载的较新消息');
-    expect(gap.textContent).toContain('加载较新消息');
-
-    const regular = historyGapPresentation(gap);
-    expect(regular.backgroundColor).toBe('rgba(0, 0, 0, 0)');
-    expect(regular.borderWidths).toEqual(['0px', '0px', '0px', '0px']);
-    expect(regular.display).toBe('flex');
-    expect(regular.flexWrap).toBe('wrap');
-    expect(regular.justifyContent).toBe('center');
-    expect(regular.widthDelta).toBeLessThanOrEqual(1);
-    expect(regular.centerDelta).toBeLessThanOrEqual(1);
-    expect(regular.hasHorizontalOverflow, JSON.stringify(regular)).toBe(false);
+    expect(canvasElement.querySelectorAll('[data-transcript-gap]')).toHaveLength(0);
 
     const neutralPaint = [
       ...canvasElement.querySelectorAll<HTMLElement>('.maka-prompt-rail-tick'),
@@ -2063,21 +2022,6 @@ export const PartialHistoryNotice: Story = {
         [...sheet.cssRules].filter((rule) => rule.cssText.includes('data-resident'))),
     ).toHaveLength(0);
 
-    const frame = canvasElement.querySelector<HTMLElement>('.appFrame');
-    if (!frame) throw new Error('Shell frame did not render');
-    frame.style.width = '520px';
-    await painted(2);
-    const narrow = historyGapPresentation(gap);
-    expect(narrow.centerDelta).toBeLessThanOrEqual(1);
-    expect(narrow.fitsFrame).toBe(true);
-    expect(narrow.hasHorizontalOverflow, JSON.stringify(narrow)).toBe(false);
-
-    const loadNewerButton = within(gap).getByRole('button', { name: '加载较新消息' });
-    loadNewerButton.click();
-    await waitFor(() => {
-      expect(canvasElement.querySelector('[data-transcript-gap="newer"]')).toBeNull();
-      expect(canvasElement.querySelector('[data-turn-id="turn-scroll-8"]')).not.toBeNull();
-    });
   },
 };
 
@@ -2285,14 +2229,12 @@ export const SubmittedPromptSettlesWithoutReversing: Story = {
 /** Lets a play function drive props React owns. One story renders per page. */
 let appendTurn: (() => void) | undefined;
 
-/** Every `onLoadEarlierHistory` the transcript asked for, oldest resident turn first. */
+/** Every older fill the transcript asked for, oldest resident turn first. */
 const historyLoads: string[] = [];
 
 const HISTORY_BATCH = 4;
 
-// More than any story here consumes. Running the history out retires the
-// "earlier history" notice, and that removal is a height change above the
-// reader with no arrival to explain it.
+// More than any story here consumes, so no story reaches the end of history.
 const HISTORY_BATCHES_AVAILABLE = 8;
 
 /** A settled transcript with a turn the play function can make arrive. */
@@ -2330,13 +2272,15 @@ function HistoryHarness({ turns }: { turns: number }) {
       chat={{
         messages: transcriptTurns(range.from, range.count),
         hasOlderHistory: range.from > -HISTORY_BATCH * HISTORY_BATCHES_AVAILABLE,
-        onLoadEarlierHistory: async () => {
+        onPrefetchHistory: async (edge) => {
+          if (edge !== 'older') return false;
           historyLoads.push(firstResidentTurnId() ?? '(none)');
           setRange((current) => ({
             from: current.from - HISTORY_BATCH,
             count: current.count + HISTORY_BATCH,
           }));
           await painted(2);
+          return true;
         },
       }}
     />

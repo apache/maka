@@ -296,6 +296,12 @@ export function useChatScroll(input: {
     authority.releasePin();
     const frame = window.requestAnimationFrame(() => {
       if (commandTarget.current !== chosen) return;
+      // A reader who asked for the tail while this frame was queued outranks it:
+      // the bookmark describes where they were, the pin where they said to be.
+      if (authority.getSnapshot().pinned) {
+        handledTarget.current = chosen;
+        return;
+      }
       const root = input.scrollRef.current;
       if (!root) return;
       const element = root.querySelector(`[data-turn-id="${CSS.escape(target.turnId)}"]`);
