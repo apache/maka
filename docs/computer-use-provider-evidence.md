@@ -1,3 +1,15 @@
+---
+doc_id: computer-use-provider-evidence
+title: "Computer Use Provider Evidence"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: synced
+last_verified: 2026-09-11
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file

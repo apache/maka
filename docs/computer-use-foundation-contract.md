@@ -1,3 +1,15 @@
+---
+doc_id: computer-use-foundation-contract
+title: "Maka Computer Use Foundation Contract"
+language: zh-CN
+source_language: zh-CN
+implementation_status: current
+document_status: current
+translation_status: original
+last_verified: 2026-09-11
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -114,8 +126,11 @@ Maka 自己的 Electron renderer 也是 Computer Use 的目标。它不能依赖
 2. `scripts/ax-tree-audit.mjs` 是 Storybook 与 Electron E2E 共用的测试侧 AX 规则源，
    拒绝无名或同一语义作用域内歧义的可操作 node、多 `main`、无名 dialog，以及缺少
    checked/selected/expanded/value 的状态控件。
-3. `apps/desktop/e2e/accessibility-coverage.spec.ts` 读取真实 Electron Chromium AX tree，
-   从运行时设置导航枚举所有设置页，并覆盖模块页、全局弹窗、会话页和 7 个工作栏面板。
+3. Electron 侧的广域设置导航 AX 清单（原
+   `apps/desktop/e2e/accessibility-coverage.spec.ts`）已随 #4803 撤下：该类
+   broad route inventory 由第 2 层的 `ax-tree-audit.mjs` 规则与第 4 层的
+   Storybook smoke 在各自的 owning boundary 承担；Electron E2E 保留修订、
+   WorkHub 与草稿焦点等边界内 journey。
 4. `scripts/storybook-visual-smoke.mjs` 对 Storybook 全目录读取 AX tree，执行 `play`
    函数到最终态，并验证 modal 焦点、隐藏/惰性 surface 和关键 Computer Use story
    inventory；名字含 `narrow` 的故事必须在窄视口运行。独立 WebContentsView 由
