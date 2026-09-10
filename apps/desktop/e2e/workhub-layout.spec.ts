@@ -313,6 +313,11 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await expect(prompt).toHaveCount(1);
   await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
   await expect(stop).toBeVisible();
+  await workhub.locator(COMPOSER_INPUT).fill('立即调整方向，保持当前任务');
+  await workhub.getByRole('button', { name: /^(发送|Send)$/ }).click();
+  await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Acknowledged steering: 立即调整方向，保持当前任务');
+  await expect(workhub.locator('.maka-user-message').filter({ hasText: '立即调整方向，保持当前任务' })).toHaveCount(1);
+  await expect(stop).toBeVisible();
   await stop.click();
   await expect(stop).toHaveCount(0);
   await expect(workhub.locator('[data-transient-message-id]')).toHaveCount(0);

@@ -162,21 +162,32 @@
   .workHubRevealMark svg { filter: drop-shadow(0 2px 12px var(--background)); }
   .workHubLive[data-conversation-expanded='false'] .workHubRevealMark { visibility: hidden; }
   .workHubLiveWelcome > svg { color: var(--maka-brand); }
-  .workHubHistory { transition: opacity 180ms ease-out, visibility 0s; }
-  .workHubLive[data-conversation-expanded='false'] .workHubHistory { visibility: hidden; opacity: 0; transition-delay: 0s, 180ms; }
+  .workHubHistory { transition: opacity 240ms ease-out, visibility 0s; }
+  .workHubLive[data-conversation-expanded='false'] .workHubHistory { visibility: hidden; opacity: 0; transition-delay: 0s, 240ms; }
   .workHubWindowControls { position: absolute; inset: 4px 12px auto; height: 28px; display: flex; align-items: center; justify-content: space-between; z-index: 2; -webkit-app-region: drag; }
   .workHubWindowActions { display: flex; gap: 4px; }
   .workHubWindowControls button { -webkit-app-region: no-drag; color: var(--muted-foreground); }
   .workHubWindowControls .workHubCloseButton { width: 18px; height: 18px; min-width: 18px; min-height: 18px; padding: 0; border-radius: 50%; background: color-mix(in oklch, var(--foreground) 13%, transparent); }
   /* Transparent Windows windows need content clipping, including the global grain overlay. */
   .workHubLive[data-placement='floating'], body:has(.workHubLive[data-placement='floating'])::after {
-    border-radius: 20px;
+    border-radius: 26px;
+    transition: border-radius 420ms cubic-bezier(0.22, 1, 0.36, 1);
   }
   .workHubLive[data-placement='floating'] {
     overflow: hidden;
     padding-top: 32px;
-    background: linear-gradient(145deg, color-mix(in oklch, var(--background) 90%, transparent), color-mix(in oklch, var(--background) 84%, transparent));
+    background: linear-gradient(145deg, rgb(255 255 255 / 3%), transparent 70%);
+    background-color: color-mix(in oklch, var(--background) 86%, transparent);
+    transition: border-radius 420ms cubic-bezier(0.22, 1, 0.36, 1), background-color 420ms ease-out;
   }
+  .workHubLive[data-placement='floating']::before {
+    content: ''; position: absolute; inset: 0; z-index: 4; pointer-events: none; border-radius: inherit;
+    background: linear-gradient(155deg, rgb(255 255 255 / 7%), transparent 38%, transparent 72%, rgb(255 255 255 / 3%));
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 24%), inset 0 -1px 0 color-mix(in oklch, var(--foreground) 9%, transparent), inset 0 0 0 1px color-mix(in oklch, var(--foreground) 7%, transparent);
+    opacity: 0.65; transition: opacity 420ms ease-out;
+  }
+  .workHubLive[data-placement='floating'][data-conversation-expanded='false'], body:has(.workHubLive[data-placement='floating'][data-conversation-expanded='false'])::after { border-radius: 20px; }
+  .workHubLive[data-placement='floating'][data-conversation-expanded='false']::before { opacity: 1; }
   .workHubLive[data-placement='floating'] .workhub-anchor-rail { display: none; }
   .workHubLive[data-placement='floating'] .maka-chat-layout { background: transparent; }
   .workHubLive[data-placement='floating'] .maka-composer {
@@ -207,21 +218,31 @@ html:has(.workHubLive), body:has(.workHubLive), #root:has(.workHubLive) { backgr
   .workhub-filters { flex-wrap: nowrap; overflow-x: auto; }
 }
 
-/* Progress is a passive companion; the conversation stays mounted behind it. */
-.workHubLive[data-progress-parked='true'] { visibility: hidden; pointer-events: none; }
-.workHubProgressCard {
-  position: fixed; inset: 0 auto auto 0; width: 360px; height: 112px; box-sizing: border-box;
-  display: flex; flex-direction: column; gap: 4px; padding: 11px 13px 9px;
+/* Progress and conversation share the same editor, including its IME state. */
+.workHubLive[data-placement='floating'][data-progress='true'] {
   border: 1px solid color-mix(in oklch, var(--foreground) 12%, transparent); border-radius: 18px;
-  background: linear-gradient(135deg, color-mix(in oklch, var(--background) 96%, transparent), color-mix(in oklch, var(--background) 88%, transparent));
-  color: var(--foreground); overflow: hidden; -webkit-app-region: drag;
+  background-color: color-mix(in oklch, var(--background) 94%, transparent);
+  overflow: hidden;
 }
-body:has(.workHubProgressCard)::after { width: 360px; height: 112px; border-radius: 18px; }
+.workHubProgressCard {
+  position: absolute; inset: 0 0 auto; box-sizing: border-box; z-index: 2;
+  display: flex; flex-direction: column; gap: 4px; padding: 11px 13px 7px;
+  color: var(--foreground); -webkit-app-region: drag;
+}
+body:has(.workHubLive[data-placement='floating'][data-progress='true'])::after { border-radius: 18px; }
+.workHubLive[data-progress='true'][data-progress-editing='true'], body:has(.workHubLive[data-progress='true'][data-progress-editing='true'])::after { border-radius: 24px; }
+.workHubLive[data-progress='true'][data-progress-editing='true'] { background-color: color-mix(in oklch, var(--background) 90%, transparent); }
 .workHubProgressHeader { display: flex; align-items: center; gap: 9px; min-height: 18px; }
 .workHubProgressBrand { display: flex; opacity: 0.7; }
 .workHubProgressStatus { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; font-size: 11px; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .workHubProgressStatus i { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--muted-foreground); }
 .workHubProgressStatus i[data-active='true'] { background: var(--maka-brand); }
-.workHubProgressCard .workHubProgressClose { width: 18px; height: 18px; min-width: 18px; padding: 0; -webkit-app-region: no-drag; color: var(--muted-foreground); }
+.workHubProgressCard :is(.workHubProgressClose, .workHubProgressOpen) { width: 18px; height: 18px; min-width: 18px; padding: 0; -webkit-app-region: no-drag; color: var(--muted-foreground); }
 .workHubProgressText { margin: 0; height: 36px; font-size: 13px; line-height: 18px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.workHubProgressOpen { align-self: flex-end; -webkit-app-region: no-drag; }
+.workHubLive[data-progress='true'] .workHubComposerSurface { border-top: 1px solid color-mix(in oklch, var(--foreground) 8%, transparent); }
+.workHubLive[data-progress='true'] .maka-composer { --color-background-popover: transparent; }
+.workHubLive[data-progress='true'][data-progress-editing='false'] .maka-composer-astryx > div > div:has(.maka-composer-left-controls) { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .workHubLive[data-placement='floating'], .workHubLive[data-placement='floating']::before, body:has(.workHubLive[data-placement='floating'])::after, .workHubLive[data-conversation-expanded] .workHubHistory { transition: none; }
+}

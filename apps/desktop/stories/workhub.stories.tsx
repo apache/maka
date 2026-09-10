@@ -50,8 +50,9 @@ function makeServices(failFirst: boolean, withHistory: boolean): WorkHubServices
   let updateSessions: (() => void) | undefined;
   const publish = () => updateTranscript?.({ messages, hasOlder: false, hasNewer: false, ready: true });
   return {
+    steer: async () => 'admitted',
     surface: 'workhub', initialLocale: 'zh-CN', subscribeAppearance: () => () => {},
-    presentation: { ready: async () => {}, progressReady: async () => {}, showConversation: async () => {}, getSnapshot: async () => ({ placement: 'docked', floatingVisible: false, shortcutRegistered: true, rendererCrashed: false }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openSession: async (id) => { writes.open(id); }, subscribe: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
+    presentation: { ready: async () => {}, progressReady: async () => {}, resizeProgress: async () => {}, showConversation: async () => {}, getSnapshot: async () => ({ placement: 'docked', floatingVisible: false, shortcutRegistered: true, rendererCrashed: false }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openSession: async (id) => { writes.open(id); }, subscribe: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
     control: { getSnapshot: async () => ({ revision: 0, phase: 'idle', canUndo: false }), subscribe: () => () => {}, stop: async () => {}, undo: async () => {} },
     resolve: async () => sessionId, subscribeHosts: () => () => {}, subscribeAvailability: () => () => {},
     getSession: async () => session,

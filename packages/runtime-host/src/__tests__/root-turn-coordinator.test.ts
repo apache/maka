@@ -3723,11 +3723,32 @@ test('WorkHub v2 binds the requesting Desktop before admission while v1 stays un
 test('active WorkHub authority reads the admitted v2 input and refuses other or completed Turns', async () => {
   for (const toolProfile of ['workhub-coordination-v1', 'workhub-coordination-v2'] as const) {
     let backend: BlockingRootBackend | undefined;
+    const consumed: string[] = [];
     const fixture = await createFailureFixture({
       registerBackend: (backends) => {
         backends.register(
           'ai-sdk',
-          (context) => (backend = new BlockingRootBackend(context.sessionId)),
+          (context) =>
+            (backend = new (class extends BlockingRootBackend {
+              override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+                for await (const event of super.send(input)) {
+                  for (const lease of input.pullSteering?.() ?? []) {
+                    yield {
+                      type: 'steering_message',
+                      id: randomUUID(),
+                      turnId: input.turnId,
+                      ts: Date.now(),
+                      messageId: lease.messageId,
+                      content: lease.content,
+                      submittedContentDigest: lease.submittedContentDigest,
+                    };
+                    input.ackSteering?.([lease.id]);
+                    consumed.push(lease.messageId);
+                  }
+                  yield event;
+                }
+              }
+            })(context.sessionId)),
         );
       },
     });
@@ -3746,6 +3767,25 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
           permissionMode: toolProfile === 'workhub-coordination-v2' ? 'bypass' : 'explore',
         },
       });
+      const submit = (
+        messageId: string,
+        placement: 'current_turn' | 'next_turn' = 'current_turn',
+      ) =>
+        fixture.messages.handlers['turn.message.submit'](
+          {
+            originHostEpoch: fixture.hostEpoch,
+            sessionId: WORKHUB_COORDINATION_SESSION_ID,
+            messageId,
+            content: { text: 'Change direction immediately' },
+            placement,
+          },
+          operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop'),
+        );
+      assert.equal(
+        (await submit('idle-steering')).ok,
+        false,
+        'idle WorkHub cannot start an ordinary Turn',
+      );
       const turnId = 'live-workhub-turn';
       const content = { text: 'Continue Payments and explain the result here' };
       assert.equal(await fixture.coordinator.readActiveWorkHubRequest(turnId), undefined);
@@ -3766,6 +3806,26 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
         toolProfile === 'workhub-coordination-v2' ? content : undefined,
       );
       assert.equal(await fixture.coordinator.readActiveWorkHubRequest('other-turn'), undefined);
+      const submitted = await submit('workhub-steering');
+      assert.equal(
+        submitted.ok && submitted.result.disposition,
+        toolProfile === 'workhub-coordination-v2' ? 'steering' : false,
+      );
+      assert.equal(
+        (await submit('workhub-followup', 'next_turn')).ok,
+        false,
+        'WorkHub cannot queue another ordinary Turn',
+      );
+      if (toolProfile === 'workhub-coordination-v2') {
+        backend!.release();
+        await fixture.coordinator.whenIdle(WORKHUB_COORDINATION_SESSION_ID);
+        assert.deepEqual(consumed, ['workhub-steering']);
+        assert.equal(
+          (await submit('workhub-steering')).ok,
+          true,
+          'a lost reply is recovered from durable admission after completion',
+        );
+      }
       await fixture.coordinator.stopRoot({
         sessionId: WORKHUB_COORDINATION_SESSION_ID,
         turnId,
@@ -3773,6 +3833,7 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
       });
       await fixture.coordinator.whenIdle(WORKHUB_COORDINATION_SESSION_ID);
       assert.equal(await fixture.coordinator.readActiveWorkHubRequest(turnId), undefined);
+      assert.equal((await submit('completed-steering')).ok, false);
     } finally {
       backend?.release();
       await fixture.coordinator.close();

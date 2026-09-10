@@ -25,6 +25,7 @@ import { installMainWindowPermissionPolicy } from './main-window-permission-poli
 
 const COMMAND = 'workhub-presentation:command';
 const SHORTCUT = 'CommandOrControl+Shift+K';
+const RESIZE_DURATION = 420;
 
 export interface WorkHubPresentationDeps {
   mainWindow(): BrowserWindow | undefined;
@@ -147,6 +148,8 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
 
   function resizeFloating(bounds: Electron.Rectangle, animate: boolean): void {
     const window = floating!;
+    if (resizeTarget && bounds.x === resizeTarget.x && bounds.y === resizeTarget.y &&
+      bounds.width === resizeTarget.width && bounds.height === resizeTarget.height) return;
     const initial = window.getBounds();
     cancelFloatingAnimation();
     if (!animate || !window.isVisible() || systemPreferences.getAnimationSettings().prefersReducedMotion) {
@@ -164,13 +167,15 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
         cancelFloatingAnimation();
         return;
       }
-      const progress = Math.min(1, (performance.now() - started) / 240);
-      // Shrinking a fully visible conversation needs a gentle start as well
-      // as a gentle landing; expansion reveals its content after growing.
-      const eased = bounds.height < initial.height ? progress * progress * (3 - 2 * progress) : 1 - (1 - progress) ** 3;
+      const progress = Math.min(1, (performance.now() - started) / RESIZE_DURATION);
+      // A critically damped response gives the glass a soft start and a long
+      // landing without overshooting the screen or scaling the live editor.
+      const eased = (1 - (1 + 7 * progress) * Math.exp(-7 * progress)) / (1 - 8 * Math.exp(-7));
       const height = Math.round(initial.height + (bounds.height - initial.height) * eased);
+      const width = Math.round(initial.width + (bounds.width - initial.width) * eased);
+      const center = initial.x + initial.width / 2 + (bounds.x + bounds.width / 2 - initial.x - initial.width / 2) * eased;
       const bottom = Math.round(initial.y + initial.height + (bounds.y + bounds.height - initial.y - initial.height) * eased);
-      const next = { ...bounds, height, y: bottom - height };
+      const next = { width, height, x: Math.round(center - width / 2), y: bottom - height };
       if (next.x !== previous.x || next.y !== previous.y || next.width !== previous.width || next.height !== previous.height) {
         window.setBounds(next);
         fitFloating();
@@ -180,7 +185,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
         // Keep frame deadlines independent of native resize work; do not add
         // another full frame's delay after every setBounds/resize callback.
         const elapsed = performance.now() - started;
-        const nextFrame = Math.min(240, (Math.floor(elapsed / frameDuration) + 1) * frameDuration);
+        const nextFrame = Math.min(RESIZE_DURATION, (Math.floor(elapsed / frameDuration) + 1) * frameDuration);
         resizeTimer = setTimeout(tick, Math.max(1, nextFrame - elapsed));
       }
       else cancelFloatingAnimation();
@@ -196,10 +201,10 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   }
 
   function fitFloating(): void {
-    if (!floating || floating.isDestroyed() || parent !== floating || !view || progressRequest !== undefined) return;
+    if (!floating || floating.isDestroyed() || parent !== floating || !view) return;
     const { width, height } = floating.getContentBounds();
     setViewBounds({ x: 0, y: 0, width, height });
-    if (conversationExpanded && !resizeTarget) expandedHeight = height;
+    if (progressRequest === undefined && conversationExpanded && !resizeTarget) expandedHeight = height;
   }
 
   function ensureFloating(): BrowserWindow {
@@ -317,12 +322,10 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     placement = 'floating';
     attach(target);
     view!.setVisible(true);
-    // Preserve the parked conversation's viewport. The native window clips the
-    // small card; no transcript layout or composer state needs to be replaced.
-    setViewBounds({ x: 0, y: 0, width: Math.max(360, viewBounds?.width ?? 520), height: Math.max(112, viewBounds?.height ?? 720) });
     const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
     const width = Math.min(360, area.width), height = Math.min(112, area.height);
     target.setBounds({ width, height, x: area.x + Math.round((area.width - width) / 2), y: Math.max(area.y, area.y + area.height - height - 96) });
+    fitFloating();
     // The renderer acknowledges its painted card before showInactive, avoiding
     // one frame of the old full conversation in the compact native window.
     changed();
@@ -413,6 +416,10 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
         return { main, isMain };
       };
       authorize();
+      if (command === 'show-conversation' && payload !== undefined) {
+        if (typeof payload !== 'number' || !Number.isSafeInteger(payload)) throw new Error('Invalid progress request');
+        if (payload !== progressRequest) return;
+      }
       const changesPresentation = command === 'detach' || command === 'show-conversation' || command === 'dock' || command === 'hide' || command === 'session';
       const revision = changesPresentation ? ++presentationRevision : presentationRevision;
       return enqueue(async () => {
@@ -474,11 +481,44 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
               changed();
             }
             return;
-          case 'show-conversation':
+          case 'progress-layout': {
+            if (isMain) throw new Error('Only the WorkHub view can size its progress card');
+            const value = payload as { request?: unknown; height?: unknown } | null;
+            if (!value || typeof value.request !== 'number' || !Number.isSafeInteger(value.request) ||
+              typeof value.height !== 'number' || !Number.isFinite(value.height) || value.height <= 0) throw new Error('Invalid WorkHub progress layout');
+            if (value.request !== progressRequest || !floating || !deps.isEnabled()) return;
+            const bounds = resizeTarget ?? floating.getBounds();
+            const area = screen.getDisplayMatching(bounds).workArea;
+            const height = Math.min(Math.max(112, Math.ceil(value.height)), area.height);
+            if (height !== bounds.height) resizeFloating({ ...bounds, height, y: Math.max(area.y, bounds.y + bounds.height - height) }, true);
+            return;
+          }
+          case 'show-conversation': {
+            if (payload !== undefined && payload !== progressRequest) return;
             conversationExpanded = true;
             expandOnFocus = true;
+            if (progressRequest !== undefined && floating) {
+              const current = floating.getBounds();
+              const area = screen.getDisplayMatching(current).workArea;
+              const width = Math.min(conversationBounds?.width ?? 520, area.width);
+              const height = Math.min(expandedHeight, area.height);
+              clearProgressRequest();
+              conversationBounds = undefined;
+              floating.setResizable(true);
+              changed();
+              resizeFloating({
+                width, height,
+                x: Math.max(area.x, Math.min(current.x + Math.round((current.width - width) / 2), area.x + area.width - width)),
+                y: Math.max(area.y, Math.min(current.y + current.height - height, area.y + area.height - height)),
+              }, true);
+              // A send acknowledgement can arrive after the user has switched
+              // apps. Growing the conversation must not steal focus back.
+              if (floating.isFocused()) focusComposer();
+              return;
+            }
             detach(true);
             return;
+          }
           case 'detach': detach(); return;
           case 'conversation-layout': {
             if (isMain) throw new Error('Only the WorkHub view can size its conversation');

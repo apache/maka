@@ -48,7 +48,8 @@ export interface WorkHubPresentationBridge {
   setHost(host: WorkHubHost): Promise<string | void>;
   setConversationLayout(layout: { expanded: boolean; compactHeight: number }): Promise<void>;
   progressReady(request: number): Promise<void>;
-  showConversation(): Promise<void>;
+  resizeProgress(request: number, height: number): Promise<void>;
+  showConversation(progressRequest?: number): Promise<void>;
   detach(): Promise<void>;
   dock(): Promise<void>;
   hide(): Promise<void>;

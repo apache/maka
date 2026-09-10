@@ -518,6 +518,17 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
 
   async readSessionHeader(sessionId: string): Promise<HostMessageSessionHeader | null> {
     if (isWorkHubCoordinationSessionId(sessionId)) {
+      const active = this.#executions.get(sessionId);
+      if (
+        active?.descriptor.kind === 'workhub_coordination' &&
+        !active.descriptor.operation &&
+        !active.stopRequested
+      ) {
+        const header = await this.stores.sessionStore.readHeaderSnapshot(sessionId);
+        if (header.toolProfile === 'workhub-coordination-v2') {
+          return { isArchived: header.isArchived, steeringOnly: true };
+        }
+      }
       return {
         isArchived: false,
         unavailableReason: WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON,

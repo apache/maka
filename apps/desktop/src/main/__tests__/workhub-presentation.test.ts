@@ -277,17 +277,17 @@ test('animates from the current height, keeps the bottom anchored and survives r
   assert.equal(floating.bounds.y + floating.bounds.height, bottom);
   // A composer measurement during expansion must not restart or shrink it.
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 114 });
-  h.advance(160);
+  h.advance(340);
   assert.equal(floating.bounds.height, 720);
   await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 110 });
   h.advance(18);
-  assert.ok(floating.bounds.height > 700, 'collapse starts gently while the visible conversation fades');
+  assert.ok(floating.bounds.height >= 700, 'collapse starts gently while the visible conversation fades');
   h.advance(62);
   const intermediate = floating.bounds.height;
   assert.ok(intermediate > 110 && intermediate < 720);
   await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 110 });
   assert.equal(floating.bounds.height, intermediate);
-  h.advance(240);
+  h.advance(420);
   assert.equal(floating.bounds.height, 720);
   assert.equal(floating.bounds.y + floating.bounds.height, bottom);
   await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 110 });
@@ -612,7 +612,7 @@ test('native resize callbacks do not submit duplicate view bounds and follow dis
   const before = view.boundsUpdates.length;
   h.advance(9);
   assert.ok(view.boundsUpdates.length > before, 'a 120Hz display gets its next animation frame before 16ms');
-  h.advance(231);
+  h.advance(411);
   assert.equal(h.windows[1]!.bounds.height, 720);
   for (let index = 1; index < view.boundsUpdates.length; index++) {
     assert.notDeepEqual(view.boundsUpdates[index], view.boundsUpdates[index - 1]);
@@ -753,5 +753,64 @@ test('the shortcut opens the normal composer from progress without waiting for i
   assert.equal(h.views[0]!.webContents.backgroundThrottling, true);
   await h.command(h.views[0]!.webContents, 'progress-ready', request);
   assert.equal(floating.bounds.width, 520);
+  h.controller.dispose();
+});
+
+
+test('editing progress grows at its existing bottom and opening interpolates both dimensions without stealing focus', async () => {
+  const h = await harness(true);
+  await h.controller.prepareControl('turn');
+  const view = h.views[0]!;
+  const floating = h.windows[1]!;
+  const request = h.controller.getSnapshot().progressRequest!;
+  await h.command(view.webContents, 'ready');
+  await h.command(view.webContents, 'progress-ready', request);
+  floating.isFocused = () => false;
+  const bottom = floating.bounds.y + floating.bounds.height;
+  const center = floating.bounds.x + floating.bounds.width / 2;
+  await assert.rejects(h.command(h.main.webContents, 'progress-layout', { request, height: 180 }), /Only the WorkHub view/);
+  await assert.rejects(h.command(view.webContents, 'progress-layout', { request, height: NaN }), /Invalid WorkHub progress layout/);
+  await h.command(view.webContents, 'progress-layout', { request, height: 180 });
+  h.advance(80);
+  assert.ok(floating.bounds.height > 112 && floating.bounds.height < 180);
+  assert.equal(floating.bounds.width, 360);
+  assert.equal(floating.bounds.y + floating.bounds.height, bottom);
+  assert.equal(h.controller.getSnapshot().progressRequest, request, 'editing does not open the conversation');
+  h.advance(340);
+  assert.equal(floating.bounds.height, 180);
+  await h.command(view.webContents, 'show-conversation', request);
+  h.advance(80);
+  assert.ok(floating.bounds.width > 360 && floating.bounds.width < 520);
+  assert.ok(floating.bounds.height > 180 && floating.bounds.height < 720);
+  assert.ok(Math.abs(floating.bounds.x + floating.bounds.width / 2 - center) <= 0.5);
+  assert.equal(floating.bounds.y + floating.bounds.height, bottom);
+  h.advance(340);
+  assert.equal(floating.bounds.height, 720);
+  assert.equal(floating.bounds.width, 520);
+  assert.deepEqual({ ...view.boundsUpdates.at(-1) }, { x: 0, y: 0, width: 520, height: 720 });
+  assert.equal(floating.focused, 0);
+  assert.equal(h.main.focused, 0);
+  assert.equal(view.webContents.sent.some(([channel]) => channel.endsWith('focus-composer')), false);
+  h.controller.dispose();
+});
+
+test('late progress measurements and send acknowledgements cannot revive a dismissed card or invalidate the next card paint', async () => {
+  const h = await harness();
+  await h.controller.prepareControl('first');
+  const view = h.views[0]!;
+  const first = h.controller.getSnapshot().progressRequest!;
+  await h.command(view.webContents, 'hide');
+  await h.command(view.webContents, 'show-conversation', first);
+  assert.equal(h.controller.getSnapshot().floatingVisible, false);
+  await h.controller.prepareControl('second');
+  const second = h.controller.getSnapshot().progressRequest!;
+  await h.command(view.webContents, 'show-conversation', first);
+  await h.command(view.webContents, 'progress-layout', { request: first, height: 600 });
+  await h.command(view.webContents, 'progress-ready', second);
+  assert.equal(h.controller.getSnapshot().floatingVisible, true);
+  assert.equal(h.windows[1]!.bounds.height, 112);
+  await h.command(view.webContents, 'progress-layout', { request: second, height: 180 });
+  assert.equal(h.windows[1]!.bounds.height, 180, 'reduced motion applies the final layout immediately');
+  assert.equal(h.controller.getSnapshot().progressRequest, second);
   h.controller.dispose();
 });

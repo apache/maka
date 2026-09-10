@@ -105,6 +105,8 @@ const EMPTY_SKILL_INVOCATION: SkillInvocationResult = {
 export interface HostMessageSessionHeader {
   readonly isArchived: boolean;
   readonly unavailableReason?: string;
+  /** A reserved execution may accept steering without admitting a successor Turn. */
+  readonly steeringOnly?: boolean;
 }
 
 export type HostMessageRootState =
@@ -1256,9 +1258,15 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         if (header.unavailableReason) {
           return failure('operation_unavailable', header.unavailableReason);
         }
+        if (header.steeringOnly && input.placement !== 'current_turn') {
+          return failure('operation_unavailable', 'This Session accepts steering only');
+        }
         const rootState = await this.#root.readRootState(input.sessionId);
         if (this.#failStopped) {
           return failure('host_draining', 'Runtime Host message authority has failed');
+        }
+        if (header.steeringOnly && rootState.kind !== 'active') {
+          return failure('operation_unavailable', 'No active Turn can accept steering');
         }
         if (rootState.kind === 'idle') {
           const existingState = this.#sessions.get(input.sessionId);

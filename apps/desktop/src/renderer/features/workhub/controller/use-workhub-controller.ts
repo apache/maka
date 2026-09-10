@@ -76,6 +76,7 @@ export function useWorkHubController() {
   currentSessionId.current = sessionId;
   const sendingRef = useRef(false);
   const pendingSend = useRef<SendAttempt | undefined>(undefined);
+  const pendingSteer = useRef<{ sessionId: string; turnId: string; messageId: string; text: string; attachments: AttachmentRef[]; observed: boolean }>(undefined);
   const report = (reason: unknown) =>
     setError(reason instanceof Error ? reason.message : String(reason));
 
@@ -254,6 +255,12 @@ export function useWorkHubController() {
       sessionId,
       (event) => {
         if (disposed) return;
+        if (event.type === 'steering_message') {
+          if (pendingSteer.current?.messageId === event.messageId) pendingSteer.current.observed = true;
+          // The live Turn now owns this row, before the durable transcript
+          // necessarily catches up. Retire its admission placeholder.
+          setTransientMessages((previous) => previous.filter((message) => message.id !== event.messageId));
+        }
         reconcileAdmission(sessionId, event.turnId, event.type === 'abort' || event.type === 'error' || event.type === 'complete');
         setLiveTurn((previous) => {
           const next = applyLiveTurnEvent(previous, event, localeRef.current);
@@ -284,7 +291,8 @@ export function useWorkHubController() {
           messages.some((message) => message.type === 'turn_state' && message.status !== 'running'));
       }
       setTransientMessages((previous) => previous.filter((pending) =>
-        !snapshot.messages.some((message) => message.type === 'user' && message.turnId === pending.hostTurnId),
+        !snapshot.messages.some((message) => message.type === 'user' &&
+          (message.id === pending.id || (pending.id === pending.hostTurnId && message.turnId === pending.hostTurnId))),
       ));
       setLiveTurn((previous) =>
         previous ? reconcileTerminalLiveTurn(previous, [...snapshot.messages]) : previous,
@@ -317,12 +325,34 @@ export function useWorkHubController() {
     pendingTurnId ?? (liveTurn && !liveTurn.terminal ? liveTurn.turnId : session?.runningTurnIds?.[0]);
   const busy = sending || Boolean(runningTurnId);
   async function send(text: string, attachments: AttachmentRef[]) {
-    if (!sessionId || !text.trim() || busy || sendingRef.current) return false;
+    if (!sessionId || !text.trim() || sendingRef.current) return false;
     const target = sessionId;
+    const previousSteer = pendingSteer.current;
+    const sameSteer = previousSteer?.sessionId === target && previousSteer.text === text &&
+      JSON.stringify(previousSteer.attachments) === JSON.stringify(attachments) ? previousSteer : undefined;
+    const steeringTurnId = sameSteer?.turnId ?? runningTurnId;
     sendingRef.current = true;
     setSending(true);
     setError(undefined);
     try {
+      if (steeringTurnId) {
+        const attempt = sameSteer ?? { sessionId: target, turnId: steeringTurnId, messageId: crypto.randomUUID(), text, attachments: [...attachments], observed: false };
+        pendingSteer.current = attempt;
+        const result = await services.steer(target, attempt.messageId, text, attachments);
+        if (result === 'rejected' && pendingSteer.current === attempt) pendingSteer.current = undefined;
+        if (result !== 'admitted' && !attempt.observed) throw new Error(workHubLiveCopy[localeRef.current][result === 'unknown' ? 'sendUnknown' : 'sendNotAdmitted']);
+        if (pendingSteer.current === attempt) pendingSteer.current = undefined;
+        if (currentSessionId.current === target) {
+          viewportNavigation.followLatest(target);
+          if (!attempt.observed && !transcriptRef.current.messages.some((message) => message.id === attempt.messageId)) {
+            setTransientMessages((messages) => [...messages, {
+              id: attempt.messageId, hostTurnId: steeringTurnId, text, attachments: [...attachments],
+              ts: Date.now(), transientPlacement: 'current_turn',
+            }]);
+          }
+        }
+        return true;
+      }
       const previous = pendingSend.current;
       const sameRejected = previous?.sessionId === target && previous.admission === 'rejected' && previous.input.text === text && JSON.stringify(previous.input.attachments ?? []) === JSON.stringify(attachments);
       const attempt: SendAttempt = {
@@ -344,6 +374,10 @@ export function useWorkHubController() {
       const result = await services.answer(target, attempt.input);
       return acceptAnswer(attempt, result);
     } catch (reason) {
+      if (steeringTurnId) {
+        if (currentSessionId.current === target) report(reason);
+        return false;
+      }
       if (currentSessionId.current === target) {
         const attempt = pendingSend.current;
         const failedTurnId = attempt?.input.turnId;
