@@ -18,6 +18,7 @@
  */
 
 import { app, BrowserWindow, nativeImage } from 'electron';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   APP_ICONS,
@@ -32,7 +33,13 @@ import {
   listCustomAppIconIds,
   resolveCustomAppIconPath,
 } from './custom-app-icon-store.js';
-import { appIconLoadOrder, pickReadableAppIconPath, resolveAppIconPath } from './app-icon.js';
+import {
+  appIconLoadOrder,
+  encodeWindowsIco,
+  pickReadableAppIconPath,
+  resolveAppIconPath,
+  WINDOWS_TASKBAR_ICON_SIZES,
+} from './app-icon.js';
 import { desktopAssetRoot } from './desktop-assets.js';
 
 /**
@@ -59,13 +66,58 @@ export function appIconPath(value: unknown): string {
  * The path a window should be born with: the same fallback `applyAppIcon`
  * walks, so a window created after the artwork went missing gets the brand
  * mark rather than a path that decodes to nothing.
+ *
+ * On Windows this resolves to the rebuilt multi-size ICO file (see
+ * `windowsTaskbarIconFile`) because the taskbar needs the small/large HICON
+ * a PNG NativeImage does not provide. macOS and Linux take the 1024px PNG
+ * master path directly.
  */
 export function readableAppIconPath(value: unknown): string {
+  if (process.platform === 'win32') {
+    const icoPath = windowsTaskbarIconFile(value);
+    if (icoPath !== null) return icoPath;
+  }
   return pickReadableAppIconPath(
     toAppIconChoice(value),
     appIconPath,
     (path) => !nativeImage.createFromPath(path).isEmpty(),
   );
+}
+
+/**
+ * The Windows taskbar icon, as the `.ico` file path Electron wants.
+ *
+ * `BrowserWindow`'s `icon` option and `setIcon` take either a NativeImage or
+ * a file path, and on Windows a path to an `.ico` is what reaches the small
+ * and large HICONs `WM_SETICON` asks for. A NativeImage built from the 1024px
+ * PNG master does not: Chromium keeps the packaged `.exe` tile, so the picker
+ * and the taskbar disagree.
+ *
+ * The rebuilt ICO cannot be handed to Windows as bytes either — `nativeImage`
+ * only decodes PNG/JPG, so `createFromBuffer` of an ICO returns an EMPTY
+ * image. So the artwork is written to the app-owned cache and its path is
+ * returned. Every failure — unreadable art, an encode or write error — returns
+ * null so the caller falls back to the PNG master rather than to a path that
+ * decodes to nothing.
+ */
+export function windowsTaskbarIconFile(value: unknown): string | null {
+  const image = loadAppIcon(toAppIconChoice(value));
+  if (!image) return null;
+  const frames = WINDOWS_TASKBAR_ICON_SIZES.flatMap((size) => {
+    const png = image.resize({ width: size, height: size, quality: 'better' }).toPNG();
+    return png.byteLength > 0 ? [{ size, png: Buffer.from(png) }] : [];
+  });
+  if (frames.length === 0) return null;
+  try {
+    const directory = join(app.getPath('userData'), 'app-icon-cache');
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, 'taskbar.ico');
+    writeFileSync(path, encodeWindowsIco(frames));
+    return path;
+  } catch (error) {
+    console.error('[icon] failed to cache the Windows taskbar icon:', error);
+    return null;
+  }
 }
 
 /**
@@ -97,20 +149,24 @@ let shippedPreviews: readonly AppIconPreview[] | undefined;
  * per-window icons are ignored. Windows and Linux draw it per window instead,
  * which is why every open window is updated: the `icon` option in
  * `createWindow` only covers windows opened *after* the choice was persisted.
+ *
+ * Windows is handed a path to the rebuilt `.ico` (see `readableAppIconPath`):
+ * a PNG NativeImage leaves the taskbar on the packaged `.exe` tile.
  */
 export function applyAppIcon(value: unknown, onIconError: (error: unknown) => void): void {
   const icon = toAppIconChoice(value);
   try {
-    const image = loadAppIcon(icon);
-    if (!image) {
-      onIconError(new Error(`no readable artwork for app icon "${icon}"`));
-      return;
-    }
     if (app.dock) {
+      const image = loadAppIcon(icon);
+      if (!image) {
+        onIconError(new Error(`no readable artwork for app icon "${icon}"`));
+        return;
+      }
       app.dock.setIcon(image);
       return;
     }
-    for (const window of BrowserWindow.getAllWindows()) window.setIcon(image);
+    const surface = readableAppIconPath(icon);
+    for (const window of BrowserWindow.getAllWindows()) window.setIcon(surface);
   } catch (error) {
     onIconError(error);
   }

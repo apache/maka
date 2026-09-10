@@ -66,3 +66,60 @@ export function pickReadableAppIconPath(
   }
   return toPath('default');
 }
+
+/**
+ * Sizes Windows asks for when a running window replaces the .exe resource.
+ *
+ * A 1024px PNG handed to `BrowserWindow.setIcon` is a valid NativeImage, but
+ * `WM_SETICON` wants a small (16) and large (32) HICON, and Chromium does not
+ * promote a single-frame PNG into those sizes. The taskbar then keeps the
+ * packaged `.exe` tile — currently `sky` — so Settings can show the classic
+ * mascot selected while the taskbar still draws the geometric mark.
+ */
+export const WINDOWS_TASKBAR_ICON_SIZES = [16, 24, 32, 48, 64, 256] as const;
+
+export interface WindowsIcoFrame {
+  readonly size: number;
+  readonly png: Uint8Array;
+}
+
+/**
+ * PNG-in-ICO container.
+ *
+ * `nativeImage` only decodes PNG/JPG, so an ICO handed to
+ * `nativeImage.createFromBuffer` comes back EMPTY; the ICO has to reach
+ * Windows as a *file path* instead (see `windowsTaskbarIconFile`). This
+ * builds that file: one directory entry per size, each carrying a PNG frame,
+ * which is what the Windows icon loader reads.
+ */
+export function encodeWindowsIco(frames: readonly WindowsIcoFrame[]): Buffer {
+  const headerSize = 6 + 16 * frames.length;
+  let imageOffset = headerSize;
+  const entries = frames.map((frame) => {
+    const entry = { ...frame, offset: imageOffset };
+    imageOffset += frame.png.byteLength;
+    return entry;
+  });
+  const encoded = Buffer.alloc(imageOffset);
+  encoded.writeUInt16LE(0, 0);
+  encoded.writeUInt16LE(1, 2);
+  encoded.writeUInt16LE(frames.length, 4);
+  let cursor = 6;
+  for (const entry of entries) {
+    // 256 is stored as 0: the field is one byte, and 0 is the width/height the
+    // format reserves for 256px. Golden rule for this and the next byte.
+    encoded.writeUInt8(entry.size >= 256 ? 0 : entry.size, cursor);
+    encoded.writeUInt8(entry.size >= 256 ? 0 : entry.size, cursor + 1);
+    encoded.writeUInt8(0, cursor + 2);
+    encoded.writeUInt8(0, cursor + 3);
+    encoded.writeUInt16LE(1, cursor + 4);
+    encoded.writeUInt16LE(32, cursor + 6);
+    encoded.writeUInt32LE(entry.png.byteLength, cursor + 8);
+    encoded.writeUInt32LE(entry.offset, cursor + 12);
+    cursor += 16;
+  }
+  for (const entry of entries) {
+    Buffer.from(entry.png).copy(encoded, entry.offset);
+  }
+  return encoded;
+}
