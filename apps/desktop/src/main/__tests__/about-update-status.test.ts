@@ -59,15 +59,27 @@ test('the row only offers a check where the service would honour one', () => {
     aboutUpdateRow({ state: 'checking', currentVersion: current }, copy).action,
     'checking',
   );
-  // The service returns the current status untouched for these, so a check
-  // button here was a control that did nothing when pressed.
+  // The service returns the current status untouched for these, so the check
+  // button is disabled rather than a control that does nothing when pressed.
   for (const state of ['available', 'verifying', 'installing'] as const) {
     assert.equal(
       aboutUpdateRow({ state, currentVersion: current, latestVersion: latest }, copy).action,
-      'none',
+      'busy',
       state,
     );
   }
+});
+
+test('every state carries a second line, so the row keeps one height', () => {
+  const rows = [
+    aboutUpdateRow(null, copy),
+    aboutUpdateRow({ state: 'checking', currentVersion: current }, copy),
+    aboutUpdateRow({ state: 'not-available', currentVersion: current }, copy),
+    aboutUpdateRow({ state: 'available', currentVersion: current, latestVersion: latest }, copy),
+    aboutUpdateRow({ state: 'downloaded', currentVersion: current, latestVersion: latest }, copy),
+    aboutUpdateRow({ state: 'installing', currentVersion: current, latestVersion: latest }, copy),
+  ];
+  for (const row of rows) assert.ok(row.description.length > 0, row.label);
 });
 
 test('the nightly steady states each read as themselves', () => {
@@ -82,8 +94,8 @@ test('the nightly steady states each read as themselves', () => {
   );
   assert.deepEqual(downloading, {
     label: '正在下载 v0.2.0-dev.12.20260901（42%）',
-    description: null,
-    action: 'none',
+    description: '下载完成后可在这里重启安装。',
+    action: 'busy',
   });
 
   // A downloaded update offers the restart right here, not only in the
@@ -94,7 +106,7 @@ test('the nightly steady states each read as themselves', () => {
   );
   assert.deepEqual(downloaded, {
     label: 'v0.2.0-dev.12.20260901 已下载',
-    description: null,
+    description: '重启 Maka 即可完成安装；有任务在进行时会先询问。',
     action: 'install',
   });
 });

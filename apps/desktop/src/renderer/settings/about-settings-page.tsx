@@ -105,31 +105,29 @@ function AboutUpdateStatusRow(props: {
     }
   }
 
-  let end: ReactNode;
-  if (row.action === 'install' && update.installDownloadedUpdate) {
-    /* The same handler the sidebar footer's restart button calls, so the two
-       entries cannot drift in what they confirm or how they fail. */
-    end = (
-      <Button
-        variant="primary"
-        size="sm"
-        onClick={update.installDownloadedUpdate}
-        label={copy.installUpdate}
-      />
-    );
-  } else if (row.action === 'check' || row.action === 'checking') {
-    end = (
-      <Button
-        variant="secondary"
-        size="sm"
-        isLoading={update.checking || row.action === 'checking'}
-        onClick={() => void checkForUpdates()}
-        label={copy.checkForUpdates}
-      />
-    );
-  }
+  /* One button in every state, so the row never changes shape: the updater's
+     own work only disables it, and a downloaded update swaps its label. The
+     install handler is the sidebar footer's, so the two entries cannot drift
+     in what they confirm or how they fail. */
+  const end = row.action === 'install' && update.installDownloadedUpdate ? (
+    <Button
+      variant="primary"
+      size="sm"
+      onClick={update.installDownloadedUpdate}
+      label={copy.installUpdate}
+    />
+  ) : (
+    <Button
+      variant="secondary"
+      size="sm"
+      isDisabled={row.action === 'busy' || row.action === 'install'}
+      isLoading={update.checking || row.action === 'checking'}
+      onClick={() => void checkForUpdates()}
+      label={copy.checkForUpdates}
+    />
+  );
 
-  return <SettingsRow label={row.label} description={row.description ?? undefined} end={end} />;
+  return <SettingsRow label={row.label} description={row.description} end={end} />;
 }
 
 export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {

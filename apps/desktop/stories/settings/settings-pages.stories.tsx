@@ -3021,6 +3021,7 @@ export const AboutNightly: Story = {
     nightlyInstallUpdate.mockClear();
     const canvas = within(canvasElement);
     await expect(canvas.findByRole('heading', { name: '更新' })).resolves.toBeTruthy();
+    // The row keeps one control: 重启安装 takes 检查更新's slot instead of joining it.
     await expect(canvas.queryByRole('button', { name: '检查更新' })).not.toBeInTheDocument();
     const install = await canvas.findByRole('button', { name: '重启安装' });
     await userEvent.click(install);
@@ -3041,6 +3042,29 @@ export const AboutRelease: Story = {
     }),
   ],
   render: () => <SettingsStory section="about" />,
+};
+
+// Real path: the same page mid-download. The row keeps the shape of every
+// other state — label, one line, the check button (disabled) — so the page
+// does not jump as the updater moves from checking to downloaded.
+export const AboutDownloading: Story = {
+  decorators: [
+    withPackagedChannelBridge({
+      updateChannel: 'release',
+      appVersion: '0.2.0',
+      updateStatus: {
+        state: 'downloading',
+        currentVersion: '0.2.0',
+        latestVersion: '0.2.1',
+        progress: { percent: 42.4, bytesPerSecond: 1_048_576, transferred: 21_000_000, total: 50_000_000 },
+      },
+    }),
+  ],
+  render: () => <SettingsStory section="about" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByRole('button', { name: '检查更新' })).resolves.toBeDisabled();
+  },
 };
 
 // Real path: a packaged install whose auto-download failed. The row names the
