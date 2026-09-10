@@ -195,6 +195,9 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
   const childInstruction = input.childInstruction?.trim();
   const runProfile = hostedExecutionRunProfile(input.toolProfile);
   const resolvedSystemPrompts = new Map<string, Promise<ResolvedRunPrompt>>();
+  let latestCompletedPromptText:
+    | { readonly key: string; readonly text: string | undefined }
+    | undefined;
   const resolveSystemPrompt = (context: HostModelPromptContext): Promise<ResolvedRunPrompt> => {
     if (runProfile) {
       return Promise.resolve(
@@ -247,8 +250,14 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
               input.deepResearch ? buildDeepResearchSystemPromptFragment() : undefined,
               input.sideConversation ? buildSideConversationSystemPromptFragment() : undefined,
             ]);
-        return Object.freeze({
-          text,
+        // Keep each turn's source revisions independent while sharing identical
+        // immutable text already retained by the turn cache.
+        const sharedText =
+          latestCompletedPromptText !== undefined && latestCompletedPromptText.text === text
+            ? latestCompletedPromptText.text
+            : text;
+        const resolvedPrompt = Object.freeze({
+          text: sharedText,
           sourceRevisions: interactiveSourceRevisions({
             runtimePolicyRevision: promptState.runtimePolicyRevision,
             memoryBundleRevision: promptState.memoryBundleRevision,
@@ -256,6 +265,10 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
             skillCatalogRevision: inventory.revision,
           }),
         });
+        if (resolvedSystemPrompts.get(key) === pending) {
+          latestCompletedPromptText = { key, text: sharedText };
+        }
+        return resolvedPrompt;
       })
       .catch((error: unknown) => {
         if (resolvedSystemPrompts.get(key) === pending) resolvedSystemPrompts.delete(key);
@@ -264,7 +277,10 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     resolvedSystemPrompts.set(key, pending);
     if (resolvedSystemPrompts.size > 100) {
       const oldest = resolvedSystemPrompts.keys().next().value;
-      if (typeof oldest === 'string' && oldest !== key) resolvedSystemPrompts.delete(oldest);
+      if (typeof oldest === 'string' && oldest !== key) {
+        resolvedSystemPrompts.delete(oldest);
+        if (latestCompletedPromptText?.key === oldest) latestCompletedPromptText = undefined;
+      }
     }
     return pending;
   };
