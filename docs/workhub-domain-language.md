@@ -63,6 +63,17 @@ operation target from a similar display name.
 **Coordination policy** combines intent and resolved evidence into either a routing
 disposition or a linked-operation proposal. Its output remains advisory.
 
+**Routing evaluation dataset** is a versioned, sanitized set of requests, expected
+intents, recall labels, dispositions, and one frozen candidate snapshot. It is test
+evidence, not production state or a source of execution authority.
+
+**Routing arm** is one side-effect-free Intent/Recall strategy evaluated against
+that same snapshot. A model arm receives bounded text and opaque candidate
+references, has no WorkHub tools, and must use the shared deterministic policy.
+
+**Routing observation** records Intent, Recall, proposed outcome, latency, token
+usage, and cost for one scenario. It never crosses the Action Gate or admits work.
+
 **Active-Turn action** names the currently executing coordination Turn. The Host
 checks its live execution, durable admission and coordination tool profile, then
 reads the original request and attachments from that admission. A tool cannot
@@ -146,3 +157,4 @@ WorkHub does not scan or rewrite that content for secrets.
 | Transcript services | [create-workhub-services.ts](../apps/desktop/src/renderer/platform/desktop/create-workhub-services.ts) |
 | Native window presentation | [workhub-presentation.ts](../apps/desktop/src/main/workhub-presentation.ts) |
 | Shared document appearance | [document-appearance.ts](../apps/desktop/src/renderer/platform/desktop/document-appearance.ts) |
+| Intent and Recall evaluation | [workhub-routing-evaluation.ts](../packages/eval/src/workhub-routing-evaluation.ts) |

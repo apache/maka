@@ -130,6 +130,16 @@ remain transcript outcomes; only the side-effecting routing subset crosses the H
 proposal boundary. Historical R2.4/R3 experiment configurations remain evaluation
 evidence, not a second production policy or a renderer-owned language authority.
 
+Model changes to Intent and Session Recall are compared in a side-effect-free
+evaluation module before any production default changes. Every arm receives the
+same versioned request set and frozen, privacy-filtered candidate snapshot. Intent
+sees no candidates; Recall sees only bounded summaries with request-scoped opaque
+references. All arms use the same deterministic Coordination policy, never invoke
+WorkHub tools, and report Intent accuracy, recall-kind accuracy, Recall@K, MRR,
+outcome accuracy, unsafe binds, implicit creation, unnecessary clarification,
+latency, token usage, and cost separately. The production Coordination model and
+Host-owned Action Gate remain unchanged by running an evaluation.
+
 Intent output contains no target. Session Resolver output contains only bounded
 opaque candidate references; it cannot return creation or a disposition. Linked
 target evidence is likewise advisory and cannot prove ownership. Model ranking or
